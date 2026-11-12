@@ -4,6 +4,8 @@
 //! fewer tasks than undeclared ones, and the render on a pool is bit for bit
 //! the serial one.
 
+use tutti_sampler::VoiceWindow;
+
 use std::sync::Arc;
 use tutti_fixtures::signal::plane_bits as bits;
 use tutti_types::MaxBlock;
@@ -37,7 +39,8 @@ fn tone(secs: f64) -> Arc<Wave> {
 fn stretched(wave: &Arc<Wave>) -> VoiceNode {
     VoiceNode::new(Voice {
         source: VoiceSource::Memory(
-            MemorySource::placed(Arc::clone(wave), Beat(0.0), None).expect("a placeable wave"),
+            MemorySource::placed(Arc::clone(wave), VoiceWindow::from(Beat(0.0)))
+                .expect("a placeable wave"),
         ),
         play: Playback {
             stretch: StretchFactor::new(0.5),
@@ -89,8 +92,9 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executo
     for k in 0..sources {
         let key = NodeKey(k + 1);
         if k < READS {
-            let read = MemorySource::placed(Arc::clone(wave), Beat(k as f64 * 0.001), None)
-                .expect("a placeable wave");
+            let read =
+                MemorySource::placed(Arc::clone(wave), VoiceWindow::from(Beat(k as f64 * 0.001)))
+                    .expect("a placeable wave");
             if declared {
                 ed.insert(key, "read", read);
             } else {
@@ -147,7 +151,8 @@ fn each_node_declares_its_class() {
     let wave = tone(0.1);
     let plain = VoiceNode::new(Voice {
         source: VoiceSource::Memory(
-            MemorySource::placed(Arc::clone(&wave), Beat(0.0), None).expect("a placeable wave"),
+            MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat(0.0)))
+                .expect("a placeable wave"),
         ),
         play: Playback::default(),
     });

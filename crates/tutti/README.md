@@ -112,6 +112,7 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::midi_runtime` | `tutti-midi-runtime` | MIDI graph nodes, Beat Clock and MTC sync, JR timestamps, MPE ingest | `midi` |
 | `tutti::midi_file` | `tutti-midi-file` | Standard MIDI File and MIDI 2.0 Clip File codecs | `midi` |
 | `tutti::midi_hardware` | `tutti-midi-hardware` | OS MIDI I/O: endpoints, send and receive | `midi-hardware` |
+| `tutti::midi` | `tutti-session` and the MIDI crates | the common MIDI path's names in one place: `MidiFile`, `Track`, `Message`, `Ump`, `Stamp`, `TapEvent`, `MidiRouteRule`, `MidiEvent`, `midi::Error` | `midi` |
 | `tutti::plugin` | `tutti-plugin` | VST2, VST3, CLAP and AU plugins as graph nodes | `plugin` + a format |
 
 Each module is the whole crate, so its own docs are the reference for it.
@@ -131,7 +132,7 @@ None are on by default.
 - `audio-io` — mic capture and recording (implies `io`; the capture stream
   itself needs `device`).
 - `export` — `tutti::export`.
-- `midi` — `tutti::ump`, `tutti::midi_protocol`, `tutti::midi_runtime`, `tutti::midi_file`.
+- `midi` — `tutti::midi`, `tutti::ump`, `tutti::midi_protocol`, `tutti::midi_runtime`, `tutti::midi_file`. `crates/tutti/examples/midi_all.rs` uses every piece together, offline.
 - `midi-hardware` — `tutti::midi_hardware` (implies `midi`).
 - `synth`, `soundfont`, `sampler`, `dsp`, `modulation` — the
   matching module (`dsp` gives both `tutti::dsp` and `tutti::measure`). `soundfont` implies `midi`; `sampler` implies `wav`.

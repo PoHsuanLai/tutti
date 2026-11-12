@@ -33,8 +33,9 @@ pub struct FileRow {
 /// cannot outlive the state that justifies it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FileState {
-    /// The plugins the file holds. One per file today; a shell file may hold
-    /// several.
+    /// The plugins the file holds, in the probe's order: every descriptor of a
+    /// CLAP factory, every audio class of a VST3 factory, every unit of an AU
+    /// bundle, every sub-plugin of a VST2 shell; one for any other file.
     Probed(Vec<PluginDescriptor>),
     /// The file brought a scan down and will not be opened.
     Blacklisted {
@@ -178,7 +179,7 @@ pub struct BlacklistedFile<'a> {
 /// it. Every change goes through [`apply`](Self::apply).
 ///
 /// A path matches exactly; the table never touches the filesystem to resolve
-/// one. A scan, the pedal's recovery and `tutti_plugin::catalog::Plugins` key
+/// one. A scan, the pedal's recovery and `tutti_plugin::catalog::Catalog` key
 /// rows by [`canonical_path`](crate::canonical_path), so a caller that reads
 /// this table directly asks with a canonical path too: an alias of a file finds
 /// no row.

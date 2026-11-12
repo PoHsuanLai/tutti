@@ -5,6 +5,8 @@
 use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
+use tutti_midi_runtime::SendAt;
 use tutti_ump::{
     Address, MidiChannel, MidiGroup, NoteNumber, Sysex7Packet, SysexStatus, System, U7, Voice1,
     Voice2,
@@ -46,8 +48,8 @@ fn rpn(bank: u8, index: u8, value: u32) -> Ump {
 
 fn convert(wire: &mut Wire, events: &[Ump]) -> Vec<Ump> {
     let events: Vec<UmpAt> = events.iter().copied().map(at).collect();
-    wire.convert(&events);
-    wire.batch().iter().map(|&(_, ump)| ump).collect()
+    wire.convert(&Outgoing::now_batch(&events));
+    wire.batch().iter().map(|o| o.ump).collect()
 }
 
 /// The `(controller, value)` of each Control Change of a MIDI 1.0 packet list,
@@ -246,7 +248,7 @@ fn the_accepted_count_is_in_the_callers_events() {
     let jr = Ump::from(Message::Utility(Utility::JrClock(1)));
     let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
     let events: Vec<UmpAt> = [jr, rpn(0, 0, 0), note].into_iter().map(at).collect();
-    wire.convert(&events);
+    wire.convert(&Outgoing::now_batch(&events));
     assert_eq!(wire.batch().len(), 5, "no JR, four for the RPN, one note");
     // The device took n of the five packets.
     let counts: Vec<usize> = (0..=5).map(|n| wire.accepted(n)).collect();
@@ -270,4 +272,32 @@ fn a_change_of_protocol_makes_the_narrower_forget() {
         ..MIDI1
     });
     assert_eq!(controls(&convert(&mut wire, &[rpn(0, 0, 0)])).len(), 2);
+}
+
+/// **A send time stays with its event through the conversion:** an RPN that
+/// narrows to several MIDI 1.0 packets sends every one of them at the event's
+/// time, and a neighbour keeps its own.
+#[test]
+fn a_send_time_stays_with_its_event_through_the_conversion() {
+    let t = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let rpn_event = Outgoing {
+        at: Offset::ZERO,
+        send: SendAt::At(t),
+        ump: rpn(0, 0, 12 << 25),
+    };
+    let after = Outgoing {
+        at: Offset::ZERO,
+        send: SendAt::Now,
+        ump: rpn(0, 0, 12 << 25),
+    };
+    let mut wire = Wire::new(MIDI1);
+    wire.convert(&[rpn_event, after]);
+    let sends: Vec<SendAt> = wire.batch().iter().map(|o| o.send).collect();
+    assert!(sends.len() > 2, "an RPN narrows to several packets");
+    let first_now = sends.iter().position(|s| *s == SendAt::Now).unwrap();
+    assert!(sends[..first_now].iter().all(|s| *s == SendAt::At(t)));
+    assert!(
+        first_now > 1,
+        "the narrowed RPN is more than one packet, all at its time"
+    );
 }

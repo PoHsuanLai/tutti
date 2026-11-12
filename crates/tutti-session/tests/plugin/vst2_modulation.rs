@@ -39,7 +39,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 /// the outputs, its parameter values read.
 fn session_with_probe() -> (Session, NodeKey) {
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("a detached session builds");
     let node = s
@@ -52,6 +52,7 @@ fn session_with_probe() -> (Session, NodeKey) {
     let _ = s.update();
     assert!(
         s.plugin(node)
+            .ok()
             .and_then(|p| p.param_values())
             .is_some_and(|m| m.is_ready()),
         "an in-process plugin's values are read as it opens"
@@ -151,6 +152,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     );
     assert_eq!(
         s.plugin(node)
+            .ok()
             .and_then(|p| p.param_values())
             .expect("the mirror")
             .get(ParamId::new(0)),

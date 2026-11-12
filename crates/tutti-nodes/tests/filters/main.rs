@@ -1,7 +1,6 @@
 //! Filters and dynamics: responses, block independence and non-finite input.
 
 mod delay_echoes;
-mod dynamics_per_block;
 mod filter_block_independence;
 mod filter_responses;
 mod non_finite_constructors;

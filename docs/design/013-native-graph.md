@@ -492,10 +492,12 @@ the two drift. Nothing corrects it: a producer ahead finds the ring full and
 its writer refuses whole frames, counting them; one behind leaves it empty and
 the node writes silence. Neither side blocks. What the session can check it
 checks once, at open: `Graph::open_inlet(width, capacity, producer_rate)` (and
-`add_inlet` over a ring the producer already built, as `tutti-cpal`'s
-`MicIn::open_with_monitor` does) refuses a producer rate that is not the
-graph's with `InletError::RateMismatch`. A re-prepare to another rate later is
-not checked.
+`add_inlet` over an `InletRing` the producer already built, which carries the
+rate it fills it at, as `tutti-cpal`'s `MicIn::open_with_monitor` does) refuses
+a producer rate that is not the graph's with `InletError::RateMismatch`. A
+re-prepare to another rate later is not checked by the inlet: the session's
+`add_input` reopens the capture at the new rate after a restart, into the same
+node.
 
 #### Meters: level metering as an op in the plan
 
@@ -7834,7 +7836,7 @@ fourth.
   is the notes it started: it ends them (note-off on the frame) when
   playback stops, jumps by more than half a frame from where the last
   segment left off, wraps its loop, or the clip is replaced
-  (`MidiClipControls::set_events`, through `RtPublish`). A note-off the port
+  (`MidiClipControls::set`, through `RtPublish`). A note-off the port
   refuses stays owed and goes out the next block.
 - **`PolySynth: Node + IntoNode`**: one MIDI event input, stereo out, the
   release as its tail, `Resolution::Sample`; a native fork source. The
@@ -7866,7 +7868,7 @@ fourth.
   synth, a SoundFont player or a plugin inserted as a graph node) plays
   through the session's clip for that target (`Midi::play_clip`, a
   `MidiClipNode` wired to its event input through the session's feeds;
-  `SequencedClips`), edited in place with `set_events`; a target with no
+  `SequencedClips`), edited in place with `set`; a target with no
   event input takes no MIDI. Found in review and fixed: removing a clip node (the last
   install gone, or the target off the event path) sends an all-notes-off
   through the target's port, as the port path does; a loop that wraps exactly
@@ -10310,7 +10312,7 @@ by width alone.
   (`FoldError::Unnamed`) rather than guess. A `Wave` built from a count is SMPTE
   where the engine has an order and `Unassigned` elsewhere. The mic is a
   `TapReader`/`TapWriter` pair (whole frames, any width), delivers the inputs it
-  was opened with (`MicIn::open_inputs`, `Fold::select`) as `Unassigned`, and
+  was opened with (`MicConfig::inputs`, `Fold::select`) as `Unassigned`, and
   `InletNode` is as wide as its ring. The sampler places a mono source with
   `MonoSpread`, the lone-centre rule: the centre of a 6, 8 or 12-wide memory
   voice (a 12-wide one is placed as an 8-wide frame, the most the sampler

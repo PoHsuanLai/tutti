@@ -10,7 +10,10 @@
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi::{cc, key_of, note_off, note_on, pitch_bend};
+use tutti_fixtures::midi::{
+    cc, channel_pressure, from_midi1_bytes, key_of, m1_cc, note_off, note_on, per_note_controller,
+    pitch_bend, program_change, registered_rpn, relative_registered_controller,
+};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
@@ -19,7 +22,7 @@ use tutti_graph::{
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, U7, U14, Voice1};
+use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Rpn, U7, U14, Voice1, Voice2};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;
@@ -60,7 +63,7 @@ fn off(note: u8) -> Ump {
 }
 
 fn at(frame: u64, event: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(beat_of(frame), event)
+    TimedMidiEvent::new(beat_of(frame), event).unwrap()
 }
 
 /// A clip at key 1 feeding the sink at key 2, blocks of at most `max`.
@@ -193,8 +196,8 @@ fn a_new_clip_ends_the_old_clips_notes() {
     let clip = MidiClipNode::new([at(10, on(60)), at(1_000, off(60))]);
     let (_ed, mut exec, controls, seen) = rig(clip, 64);
     exec.process(64, &rolling(0), &[], &mut []);
-    controls.set_events([at(100, on(72))]);
-    assert_eq!(controls.event_count(), 1);
+    controls.set([at(100, on(72))]);
+    assert_eq!(controls.len(), 1);
     exec.process(64, &rolling(64), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
@@ -213,7 +216,7 @@ fn a_fork_plays_the_clip_as_it_was_at_the_fork() {
         .expect("a clip is forkable")
         .fork(ForkMode::Live)
         .expect("a clip forks");
-    controls.set_events([at(100, on(72))]);
+    controls.set([at(100, on(72))]);
     let (_ed, mut exec, (), seen) = rig_with(Unforkable(forked.node), 256);
     roll(&mut exec, 512, 256);
     assert_eq!(*seen.lock().unwrap(), vec![(300, on(60))]);
@@ -238,16 +241,17 @@ fn a_loop_that_wraps_at_a_block_edge_ends_its_held_notes() {
     assert_eq!(*seen.lock().unwrap(), vec![(50, on(60)), (200, off(60))]);
 }
 
-/// **A beat that is not finite is dropped, not the clip.** A NaN made at run
-/// time (negative on x86, which `total_cmp` sorts first) beside a note at
-/// frame 100: the note plays.
+/// **A beat that is not finite is refused at construction**, so a clip never
+/// holds one: NaN (negative on x86, made at run time) and both infinities
+/// build no event, and a finite beat does.
 #[test]
-fn a_nan_beat_does_not_silence_the_clip() {
+fn a_beat_that_is_not_finite_builds_no_event() {
     let nan = Beat(0.0 / std::hint::black_box(0.0));
-    let clip = MidiClipNode::new([TimedMidiEvent::new(nan, on(61)), at(100, on(60))]);
-    let (_ed, mut exec, _c, seen) = rig(clip, 256);
-    roll(&mut exec, 256, 256);
-    assert_eq!(*seen.lock().unwrap(), vec![(100, on(60))]);
+    for bad in [nan, Beat(f64::INFINITY), Beat(f64::NEG_INFINITY)] {
+        assert_eq!(TimedMidiEvent::new(bad, on(61)), None, "{bad:?}");
+    }
+    let good = TimedMidiEvent::new(Beat(1.5), on(61)).expect("a finite beat");
+    assert_eq!((good.beat(), good.event()), (Beat(1.5), on(61)));
 }
 
 /// **Note-offs the port refuses go out in the blocks after, until none is
@@ -293,7 +297,7 @@ fn setting_the_same_events_cuts_nothing() {
     let events = [at(10, on(60)), at(1_000, off(60))];
     let (_ed, mut exec, controls, seen) = rig(MidiClipNode::new(events), 64);
     exec.process(64, &rolling(0), &[], &mut []);
-    controls.set_events([events[1], events[0]]);
+    controls.set([events[1], events[0]]);
     exec.process(64, &rolling(64), &[], &mut []);
     assert_eq!(*seen.lock().unwrap(), vec![(10, on(60))]);
 }
@@ -309,8 +313,8 @@ fn setting_the_same_events_cuts_nothing() {
 #[test]
 fn a_note_lands_on_its_frame_at_ninety_bpm() {
     let clip = MidiClipNode::new([
-        TimedMidiEvent::new(Beat(1.0), on(60)),
-        TimedMidiEvent::new(Beat(3.0), on(62)),
+        TimedMidiEvent::new(Beat(1.0), on(60)).unwrap(),
+        TimedMidiEvent::new(Beat(3.0), on(62)).unwrap(),
     ]);
     let (_ed, mut exec, _c, seen) = rig(clip, 64);
     let mut f = 0u64;
@@ -574,7 +578,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
         notes
             .iter()
             .enumerate()
-            .map(|(i, &b)| TimedMidiEvent::new(Beat(b), on(60 + i as u8))),
+            .map(|(i, &b)| TimedMidiEvent::new(Beat(b), on(60 + i as u8)).unwrap()),
     );
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     let region = Region::new(start, end).unwrap();
@@ -637,7 +641,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
 fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, Ump)>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60))]);
+        let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60)).unwrap()]);
         let (_ed, mut exec, _c, seen) = rig(clip, 64);
         let mut clock =
             tutti_types::FrameClock::new(start, tutti_types::Bpm::of(120.0), SampleRate(RATE));
@@ -828,10 +832,13 @@ fn a_loop_wrap_lifts_the_pedal_after_the_note_off() {
     );
 }
 
-/// **A seek lifts the pedal and centres the bend where the jump happens.**
-/// Playback seeks to beat 2 at frame 200 of a 512-frame block, with the
-/// pedal down and the bend off centre: both are returned at frame 200, after
-/// the note-off, and not again by the next block.
+/// **A seek lifts the pedal and centres the bend where the jump happens,
+/// then chases them to where the timeline holds them.** Playback seeks to
+/// beat 4 at frame 200 of a 512-frame block, with the pedal down and the
+/// bend off centre: both are returned at frame 200, after the note-off; the
+/// clip set both before beat 4, so the chase sends them again after the
+/// return (the note is not restarted), and the next block, continuing from
+/// where playback is, sends nothing.
 #[test]
 fn a_seek_returns_the_controllers_where_the_jump_happens() {
     let clip = MidiClipNode::new([
@@ -845,7 +852,7 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
         .push(Offset::new(200, Samples(512)).unwrap(), rolling(96_000))
         .unwrap();
     exec.process_with_changes(512, &rolling(0), &changes, &[], &mut []);
-    exec.process(512, &rolling(96_512), &[], &mut []);
+    exec.process(512, &rolling(96_312), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
@@ -855,6 +862,8 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
             (200, off(60)),
             (200, pedal(0, CCNumber::SUSTAIN, 0)),
             (200, bend(0, CENTRE)),
+            (200, pedal(0, CCNumber::SUSTAIN, DOWN)),
+            (200, bend(0, 0x7000_0000)),
         ]
     );
 }
@@ -961,4 +970,148 @@ fn a_midi_1_pedal_and_bend_are_returned_in_midi_1() {
         .map(|&(_, u)| u)
         .collect();
     assert_eq!(late, vec![m1_pedal(CCNumber::SUSTAIN, 0), m1_bend(0x2000)]);
+}
+
+// ---------------------------------------------------------------------------
+// The chase: playback that starts away from the clip's start hears the
+// channel state the clip set before that beat.
+// ---------------------------------------------------------------------------
+
+/// **A render that starts mid-clip (a bounce's first block, a start from a
+/// locate) first sends, for each state the clip set before its beat, the
+/// last value that set it**, by group and channel, each channel's program
+/// first, then its registered controllers, its controllers, its pressure
+/// and its bend. Notes, per-note controllers and relative controllers are
+/// not chased; a state set after the beat is not chased; an event on the
+/// start beat itself is played once, by the walk, after the chase.
+#[test]
+fn a_render_that_starts_mid_clip_starts_from_the_timelines_state() {
+    let (g, c0, c1) = (MidiGroup::FIRST, MidiChannel::FIRST, MidiChannel::of(1));
+    let volume = |ch, v| cc(g, ch, CCNumber::VOLUME, v);
+    let range = registered_rpn(g, c0, Rpn::PITCH_BEND_SENSITIVITY, 0x1800_0000);
+    let clip = MidiClipNode::new([
+        at(10, program_change(g, c0, 5, None)),
+        at(20, volume(c0, 0x1000_0000)),
+        at(30, on(60)),
+        at(35, per_note_controller(g, c0, 60, 3, 0x4000_0000, true)),
+        at(40, volume(c0, 0x2000_0000)),
+        at(45, relative_registered_controller(g, c0, 0, 0, 0x100)),
+        at(50, range),
+        at(60, bend(0, 0x7000_0000)),
+        at(70, channel_pressure(g, c0, 0x3000_0000)),
+        at(80, volume(c1, 0x5000_0000)),
+        at(96_000, volume(c0, 0x6000_0000)),
+        at(100_000, volume(c0, 0x7000_0000)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(96_000), &[], &mut []);
+    let got: Vec<Ump> = seen.lock().unwrap().iter().map(|&(_, u)| u).collect();
+    assert!(
+        seen.lock().unwrap().iter().all(|&(f, _)| f == 0),
+        "all on the first frame"
+    );
+    assert_eq!(
+        got,
+        vec![
+            program_change(g, c0, 5, None),
+            range,
+            volume(c0, 0x2000_0000),
+            channel_pressure(g, c0, 0x3000_0000),
+            bend(0, 0x7000_0000),
+            volume(c1, 0x5000_0000),
+            volume(c0, 0x6000_0000),
+        ]
+    );
+}
+
+/// **A render that starts at the clip's start chases nothing**: no state was
+/// set before beat 0, so the first block holds only what the walk plays.
+#[test]
+fn a_render_from_the_start_chases_nothing() {
+    let clip = MidiClipNode::new([at(0, bend(0, 0x7000_0000)), at(10, on(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(0, bend(0, 0x7000_0000)), (10, on(60))]
+    );
+}
+
+/// **A chased Program Change selects the bank the timeline holds there**,
+/// even when the last one carried none. MIDI 1.0 Bank Select (MSB 1), then
+/// Program Change 5, then Program Change 7 with no Bank Select before it:
+/// the channel keeps bank 1 (M1 p.13), and a render that starts past both
+/// chases program 7 on bank 1, so a receiver last on another bank is moved.
+#[test]
+fn a_chased_program_carries_the_bank_in_force() {
+    let c = MidiChannel::FIRST;
+    let clip = MidiClipNode::new([
+        at(10, m1_cc(c, CCNumber::BANK_SELECT, U7::of(1))),
+        at(11, from_midi1_bytes(&[0xC0, 5]).unwrap()),
+        at(20, from_midi1_bytes(&[0xC0, 7]).unwrap()),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(96_000), &[], &mut []);
+    let programs: Vec<(u8, Option<u8>)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|&(_, u)| match u.decode() {
+            Ok(Message::Midi2(_, Voice2::ProgramChange { program, bank })) => {
+                Some((program.get(), bank.map(|b| b.msb.get())))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(programs, vec![(7, Some(1))]);
+}
+
+/// **The Channel Mode messages are not chased** (CC 120 to 127, M1 p.20):
+/// they are commands, and Reset All Controllers re-sent after the chased
+/// controllers would undo them. Volume, Reset All Controllers, then Volume
+/// again: a render past all three chases the last Volume and nothing else.
+#[test]
+fn channel_mode_messages_are_not_chased() {
+    let (g, c) = (MidiGroup::FIRST, MidiChannel::FIRST);
+    let clip = MidiClipNode::new([
+        at(10, cc(g, c, CCNumber::VOLUME, 0x1000_0000)),
+        at(20, cc(g, c, CCNumber::of(121), 0)),
+        at(30, cc(g, c, CCNumber::VOLUME, 0x2000_0000)),
+        at(40, cc(g, c, CCNumber::ALL_SOUND_OFF, 0)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(96_000), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(0, cc(g, c, CCNumber::VOLUME, 0x2000_0000))]
+    );
+}
+
+/// **A chase larger than the port is cut short, and what is cut is counted.**
+/// Thirty controllers on each of sixteen channels are 480 states; a
+/// 256-frame block's port holds 256 events, so a render that starts past
+/// them sends the first 256 in chase order (channel 0's first) and the graph
+/// is told of the 224 it refused.
+#[test]
+fn a_chase_larger_than_the_port_is_cut_short_and_counted() {
+    let g = MidiGroup::FIRST;
+    let clip = MidiClipNode::new((0..16u8).flat_map(|ch| {
+        (40..70u8).map(move |n| {
+            at(
+                u64::from(ch) * 30 + u64::from(n),
+                cc(g, MidiChannel::of(ch), CCNumber::of(n), 0x1000_0000),
+            )
+        })
+    }));
+    let (mut ed, mut exec, _c, seen) = rig(clip, 256);
+    exec.process(256, &rolling(96_000), &[], &mut []);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 256);
+    assert_eq!(
+        seen[0].1,
+        cc(g, MidiChannel::FIRST, CCNumber::of(40), 0x1000_0000),
+        "channel 0's first"
+    );
+    let refused: u32 = ed.take_event_losses().map(|l| l.count).sum();
+    assert_eq!(refused, 480 - 256);
 }

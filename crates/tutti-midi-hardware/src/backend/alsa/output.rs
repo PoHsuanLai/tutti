@@ -1,14 +1,17 @@
 //! Sending UMP to a sequencer port.
 
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 use tutti_graph::UmpAt;
 
 use super::enumerate::unpack_id;
 use crate::endpoints::DeviceOut;
 use crate::error::{Error, Result};
-use tutti_alsa_ffi::{CAP_READ, Client, TYPE_APPLICATION, TYPE_MIDI_GENERIC};
+use tutti_alsa_ffi::{
+    CAP_READ, Client, QueueClock, TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpVersion,
+};
 use tutti_midi_device::EndpointId;
-use tutti_midi_runtime::MidiOut;
+use tutti_midi_runtime::{MidiOut, Outgoing, SendAt};
 
 /// An open ALSA output, as a [`MidiOut`].
 pub struct AlsaOutput {
@@ -24,10 +27,28 @@ pub struct AlsaOutput {
 struct Sender {
     seq: Client,
     port: u8,
+    /// The client's own queue, started when the output opened, which holds an
+    /// event until its time.
+    queue: QueueClock,
+    /// The queue's real time and the `Instant` read together when the output
+    /// opened: [`Sender::queue_time`]'s pairing.
+    paired: (Instant, Duration),
+}
+
+impl Sender {
+    /// The queue's real time at `at`: the one place an `Instant` becomes
+    /// ALSA's clock, by the pairing taken at the output's open
+    /// ([`crate::stamp::departure`]).
+    fn queue_time(&self, at: Instant) -> Option<Duration> {
+        crate::stamp::departure(self.paired.0, self.paired.1, at)
+    }
 }
 
 impl AlsaOutput {
-    /// Sends one UMP message, surfacing the real error.
+    /// Sends one UMP message, surfacing the real error, held by the sequencer
+    /// until `at` (`Now` is at once; an instant is the queue's real time, and
+    /// one before the queue's pairing is sent at once, as a time already past
+    /// is).
     ///
     /// The inherent-method-plus-thin-trait-impl idiom: a caller holding the
     /// concrete type gets the ALSA code, while the erased [`MidiOut`] keeps the
@@ -40,7 +61,7 @@ impl AlsaOutput {
     ///
     /// [`Error::Alsa`] with the code
     /// `snd_seq_ump_event_output_direct` returned.
-    pub fn send_ump(&self, words: &[u32]) -> Result<()> {
+    pub fn send_ump_at(&self, words: &[u32], at: SendAt) -> Result<()> {
         if words.is_empty() {
             return Ok(());
         }
@@ -51,7 +72,18 @@ impl AlsaOutput {
         let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
         // A UMP message is 1-4 words; only the first four are sent.
-        inner.seq.send_to_subscribers(inner.port, words)?;
+        match at {
+            SendAt::At(instant) => match inner.queue_time(instant) {
+                Some(time) => {
+                    inner
+                        .seq
+                        .send_to_subscribers_at(inner.port, words, &inner.queue, time)?;
+                }
+                // Beyond what a queue's clock holds: not schedulable, so now.
+                None => inner.seq.send_to_subscribers(inner.port, words)?,
+            },
+            SendAt::Now => inner.seq.send_to_subscribers(inner.port, words)?,
+        }
         Ok(())
     }
 }
@@ -79,9 +111,15 @@ impl MidiOut for AlsaOutput {
     /// Skipping would report a number that no contiguous run matches, and would
     /// deliver a note-off whose note-on never left.
     fn queue(&self, events: &[UmpAt]) -> usize {
+        self.queue_timed(&Outgoing::now_batch(events))
+    }
+
+    /// Each event is held by the sequencer's queue until its time (an `At`),
+    /// or sent directly (`Now`).
+    fn queue_timed(&self, events: &[Outgoing]) -> usize {
         let mut accepted = 0;
-        for (_, ump) in events {
-            if let Err(e) = self.send_ump(ump.words()) {
+        for event in events {
+            if let Err(e) = self.send_ump_at(event.ump.words(), event.send) {
                 tracing::debug!("ALSA MIDI send: {e}");
                 break;
             }
@@ -109,7 +147,7 @@ pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
 
     // Blocking: a send should apply back-pressure rather than silently drop when
     // the destination's queue is full. Only the *input* pump needs to poll.
-    let seq = super::client::open("tutti-out", false)?;
+    let seq = super::client::open("tutti-out", false, UmpVersion::Midi2)?;
     let port = seq.open_port(
         "tutti-out",
         // Not subscribable by others, so never listed as a device (see
@@ -122,6 +160,21 @@ pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
 
     seq.connect_to(port, dest_client, dest_port)?;
 
+    // The queue that holds scheduled events, paired with the OS's clock once:
+    // the queue's real time is read between two readings of `Instant`, and the
+    // pairing is their midpoint. A queue the client never created answers
+    // `-EINVAL` to a scheduled send, so it is the client's own and started.
+    let mut queue = seq.start_queue()?;
+    let before = Instant::now();
+    let started = queue.now(&seq);
+    let after = Instant::now();
+    let started = started.ok_or_else(|| Error::Alsa {
+        operation: "snd_seq_get_queue_status",
+        // The sequencer would not read its own queue: `-EINVAL`.
+        code: -22,
+    })?;
+    let paired = (before + after.duration_since(before) / 2, started);
+
     // The destination is not stored: once `connect_to` has subscribed us, every
     // send addresses `SUBSCRIBERS` rather than the endpoint by name. Keeping the
     // address around would invite exactly the explicit-`dest` send that ALSA
@@ -130,6 +183,8 @@ pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
         inner: Mutex::new(Sender {
             seq,
             port: own_port,
+            queue,
+            paired,
         }),
     })
 }

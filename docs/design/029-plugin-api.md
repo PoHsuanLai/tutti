@@ -168,20 +168,24 @@ lets run off the OS main thread on Linux and Windows.
 
 ### 3.3 Events
 
-`SessionEvent::Plugin { node, event: PluginEvent }`, with `PluginEvent`:
+`SessionEvent::Plugin(PluginEvent)`, nested like `Midi(MidiEvent)`,
+`Device(DeviceEvent)` and `Take(TakeEvent)`. The node is the session's own
+`NodeKey`, inside the event: `PluginEvent { node, change: PluginChange }`, both
+`#[non_exhaustive]`.
 
-| Variant | Replaces |
+| `PluginChange` | Replaces |
 |---|---|
-| `ParamChanged { id, value, gesture }` | `on_parameter_changed` |
-| `ParamsRescanned`, `ParamTitlesChanged` | `on_invalidate`'s parameter cases |
-| `LatencyChanged`, `TailChanged`, `IoChanged` | `PluginLatencyChanged`, `on_refresh` |
-| `PresetChanged(PresetId)` | polling `current_preset` |
-| `EditorWantsSize(EditorSize)` | `poll_editor_resize_request` |
+| `GestureBegan { id }`, `ParamChanged { id, value, recorded }`, `GestureEnded { id }` | `on_parameter_changed` (a plugin's own edit, its gesture's ends kept) |
+| `ParamsRescanned`, `ParamTitlesChanged` | `on_refresh`, and `on_invalidate`'s parameter cases |
+| `LatencyChanged { latency }`, `TailChanged { tail }`, `IoChanged` | `PluginLatencyChanged`, `on_invalidate` |
+| `PresetChanged(PresetId)` | polling `current_preset` (step 4) |
+| `EditorWantsSize(EditorSize)` | `poll_editor_resize_request` (step 2, editor half) |
 | `Died`, `Reloading`, `Recovered`, `GaveUp` | the existing `Plugin*` events, moved under one variant |
 
-A host that needs a push (a parameter mirror on another thread) gets
-`subscribe(f) -> Subscription`, which unsubscribes on drop; there is no
-`clear_*`.
+A host that needs a push from the thread that hears the plugin (a parameter
+mirror on another thread) subscribes at the low layer,
+`PluginHandle::subscribe(f) -> Subscription`, which unsubscribes on drop; there
+is no `clear_*`, and the session has no second channel for the same events.
 
 ### 3.4 The spawner
 
@@ -197,6 +201,20 @@ host writes nothing. It is the session's facility, not the plugins': the
 bounce's job (`bounce_start` / `finish_bounce`) moves onto it later.
 `load_plugin(..).run()` stays for a host that wants the load's latency in its
 own hands.
+
+As built (`tutti-session`'s `jobs` module): the public surface is
+`SessionBuilder::spawn_with` and `Job::run`; a job the spawner drops unrun ends
+as failed (`JobFailed::Dropped`), and a panic in it is caught
+(`JobFailed::Panicked`). Inside the crate, `submit(work, land)` lands one result
+and `submit_stream(work, land)` lands each message the work sends through its
+`Landings` (unbounded, never blocking) and then its end, exactly once and after
+every message: `work` borrows the `Landings`, so nothing it sends outlives it.
+Landing is the first thing `Phase::Collect` does, so what a job landed is in the
+graph that update commits. There is no cancel: a job that stops carries its own
+flag, and `Landings::is_closed` (a send returns the message) tells it the session
+is gone. The recording take's pump (doc 030 step 8) and the MIDI file and
+SoundFont loads (doc 017 L1f-b) are its first users; the bounce moves onto it
+later.
 
 ### 3.5 Where it meets the graph and MIDI
 
@@ -218,8 +236,9 @@ doing each thing:
   route. Per-note control is MIDI 2.0's own messages (no note-expression type);
   a plugin's MIDI out is read by the same event tap as a native node's.
 - **Events.** The session's rule, agreed with core and MIDI: one variant per
-  area, `SessionEvent::Plugin { node, event: PluginEvent }` beside
-  `SessionEvent::Midi(MidiEvent)`, `#[non_exhaustive]` at both levels.
+  area, a tuple, `SessionEvent::Plugin(PluginEvent)` beside
+  `SessionEvent::Midi(MidiEvent)` and `Device(DeviceEvent)`, with the node
+  inside the event; `#[non_exhaustive]` at both levels.
 - **Errors.** The session's rule: one variant per area. One
   `tutti::plugin::Error`, its specifics (`BridgeError`, `StateError`,
   `PresetError`, `EditorError`) as sources, is `tutti::Error::Plugin`.
@@ -236,11 +255,62 @@ what it replaces; no deprecated twin is kept.
 | # | Step | Deletes | Test |
 |---|---|---|---|
 | 1 (built) | **Identity and state.** `PluginRef` from `&PluginEntry`; the load passes the plugin id; `PluginState` and `StateError::OtherPlugin`; one `state()` view with `last_good()`, `withheld()`, `save()` and `restore()`; the acceptance example `crates/tutti/examples/plugin_host.rs` (scan, load, wire, MIDI, parameters, editor, save, bounce), which each later step rewrites to its shape | `PluginId` as a path; `snapshot()`; `Load::new()` in the open | the second plugin of the CLAP test bundle loads by its entry; a state restored into another plugin is refused |
-| 2 | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
+| 2 (view and events built; main-thread view and editor servicing open) | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
 | 3 | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
 | 4 | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
 | 5 | **The spawner.** `spawn_with`, `Job`; jobs landed in `update()` | `land_snapshot`, `land_params`, `land_reload` as public calls; the `*Due` events | a reload completes with no host code but `update()` |
 | 6 | **The catalog and the facade.** `Catalog::open_db`, `scan()`; `Plugins::open` removed; the probe lists every plugin of a bundle (`FileState::Probed` already holds several); 021 step 6's `Hosting` as a `PluginRef` field (`Auto`, `InProcess`, `OutOfProcess`) | `with_fresh_scan`, `Plugins::open`, `Backend` | a blacklisted plugin is refused at load, not at open |
+
+**As built (step 2, the view and events).** `session.plugin(node)` lends a
+`Plugin<'_>` (`Result<_, NoSuchNode>`; `plugins()` yields them): `node`, `name`,
+`descriptor`, `plugin`, `state`, `liveness`, and, until steps 3 and 4 replace
+them, `handle`, `controls`, `meter` and `param_values`. The record behind it,
+`HostedPlugin`, is crate-private. The handle's three one-slot callbacks
+(`on_parameter_changed`, `on_refresh`, `on_invalidate`, and their `clear_*`) are
+gone: a backend feeds three `Listener`s, now fan-outs, and
+`PluginHandle::subscribe(f) -> Subscription` hears all three as a `Notice`
+(every subscriber hears every notice, so the parameter mirror and the session no
+longer fight over one slot). The session subscribes once per plugin
+(re-subscribing when a crossfade or reload replaces the handle), queues what is
+heard, and `Phase::Plugins` turns it into `PluginEvent`s in the order the plugin
+made them. A latency the plugin reports is not an event of its own: the update
+that hands it to the graph reports `LatencyChanged` once; a rate refusal, a
+crash and an in-place reload stay the plugin's health (step 4's `Health`).
+A gesture is three variants, not a field:
+`GestureBegan`, `ParamChanged { recorded }`, `GestureEnded`, since the two ends
+carry no value (`ParamEdit`). `PluginSnapshotDue`, `PluginParamsDue` and
+`PluginReloadDue` stay `SessionEvent` variants until step 5. Still open in
+step 2: `MainSession` and `Session::main`, `update()` servicing editors, the
+editor's `Opened`, `resize` and `rescale`, `EditorWantsSize`, and removing the
+freeing paths' `debug_assert!`.
+
+**As built (the typed cause, step 4's, done early).** The cause of a death is
+`tutti_plugin_types::PluginFailure`, latched by the bridge where it notices
+(`mark_crashed(PluginFailure)`) and the one value behind `Health::crash_cause`,
+`PluginStatus::Dead`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed`,
+`RecoveryEvent::Died`, `PluginRenderFault::Crashed` and the session's
+`PluginChange::Died` and `PluginLiveness::Dead`. Its
+variants are what the call sites produce: `Connect`, `Handshake` (a version skew
+is `BridgeError::ProtocolMismatch`, a wrong first message `UnexpectedMessage`),
+`StreamClosed`, `ServerExited`, `TimedOut`, `Io`, `Protocol` and `Bridge` (a
+stream error, classified once in `PluginFailure::from_stream`),
+`Terminated { reason: TerminationReason }` and `Unreported`: only what a backend
+or the host latches. The session's reload reasoning is its own type,
+`tutti_session::RecoveryFailure` (`ReloadFailed`, the load's `BridgeError`;
+`ReplacementDied { cause: PluginFailure }`; `ReplacementPorts { got, was }` over
+the session's `PortCounts`; `ReplacementRefused`, whose `source` is the graph's
+`CrossfadeRefused`; `ReplacementInProcess`; `ReloadDropped`; `ReloadTimedOut`),
+and the events say which cause they hold: `PluginChange::Died` carries a
+`PluginFailure`, while `PluginChange::Reloading`, `PluginLiveness::Recovering` and
+`GiveUp::last` carry a `ReloadCause` (`Died(PluginFailure)` or
+`Attempt(RecoveryFailure)`, a reload follows either), and
+`RecoveryEvent::LoadFailed` a `RecoveryFailure`. `tutti-plugin-types` names no
+graph type. A `BridgeError` or other error behind a failure is its `source` (held
+in an `Arc`, as `BridgeError` is not `Clone`), downcast to the type the caller
+knows. `terminate` takes a `TerminationReason`, a closed set (its
+only reason today is `Hung`, the session's), not free text. None of these
+implements `PartialEq`, since an `io::Error` is not comparable. The server sends no cause, so the wire and `PROTOCOL_VERSION` are
+unchanged.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 
@@ -255,11 +325,97 @@ because a bare handle does not know its file. `PluginGaveUp` carries the
 `PluginState` (`state`), and `state().restore` takes the `MainThread` the
 handle's `load_state` takes. The editor-only instance of a served plugin loads the same plugin: the ipc
 `EditorLoader` takes the `Load`, and the `PluginBridge` is made with the
-`Origin` (file and `Load`) it serves. One thing stays for step 6: the probe
-describes only the first plugin of a file, so a catalog lists one plugin per
-bundle until the probe lists them all. `PluginClient::new` and `open` take a
+`Origin` (file and `Load`) it serves. (The probe described only the first plugin
+of a file until step 6a; it lists every one now, below.) `PluginClient::new` and `open` take a
 `&PluginRef` (`PluginRef::file` is the explicit "the file's first"); no
 path-only open is left.
+
+**As built (step 6a).** The probe lists every plugin of a file, in every format,
+and the catalog holds them all; `Catalog::open_db`, `scan()`, the removal of
+`Plugins::open`, `with_fresh_scan` and `Backend`, and `Hosting` are 6b (below).
+- **The wire.** `ProbeOutcome::Described` carries a `Vec<PluginDescriptor>` (never
+  empty: a file with no plugin is a `Failed`), and the result file's magic is
+  version 3 (a version 2 file, one descriptor, is refused by its magic).
+  `probe_metadata_with` returns the list, `probe_record_with` puts one `FileRow`
+  of it, and the scanner's probe (`tutti-plugin-db`'s `Scanner::new`) returns a
+  `Vec`; the db file is version 3, because a row written by a version 2 probe
+  lists a file's first plugin only and, up to date by its time, would never be
+  read again.
+- **Per format.** CLAP: each descriptor of the factory (`ClapLoaded::probe_all`).
+  VST3: each audio class of the factory, one entry per class id
+  (`Vst3Loaded::probe_all`; a class the factory lists and cannot create is left
+  out). AU: each unit the bundle declares in `AudioComponents` that the registry
+  has, described from the component and none created
+  (`AuLoaded::describe_all`; the probe gains an `au` feature, macOS only, and
+  routes `.component`; before this the probe read no AU at all). VST2: a file
+  that is no shell is one plugin; a shell (`effGetPlugCategory` is
+  `kPlugCategShell`, read with the shell loaded as id 0) is each sub-plugin
+  `effShellGetNextPlugin` names (`Vst2Loaded::describe_all`), each described by
+  loading it, falling back to the shell's own id, name and vendor with an
+  unasked category when it will not load.
+- **VST2's `Load`.** A choice is `vst2.<uniqueID>`, which is the descriptor id,
+  so `PluginRef::load()` carries the id in every format. The host answers
+  `audioMasterCurrentId` with the id chosen while `VSTPluginMain` runs (`0`
+  when none: `HostState`'s `current_id`, which replaces the constant `'DAWI'`),
+  answers `supportShell` and `shellCategory` yes, and checks that the plugin that
+  came up has the id asked for (a shell that does not know an id creates its
+  default, which is refused). The `Origin` keeps the choice, so a reopen loads
+  the same sub-plugin. VST2 is not served, so a served pick is CLAP's and
+  VST3's; a served VST2 load is still `NotOutOfProcess`.
+- **Tests.** `tutti-vst2-shell-plugin` (testing; two sub-plugins, nothing
+  configures it: its answer is the host's `audioMasterCurrentId`) is the
+  shell. The probe suite (`tutti-plugin-contract`'s `probe`) lists the CLAP test
+  plugin's two descriptors, the shared plugin's three VST3 classes and the
+  shell's two sub-plugins through the binary, loads each by the `PluginRef` of
+  its entry (a server for CLAP and VST3, in process for VST2); the probe crate's
+  `vst2_shell` loads and refuses by id. Not covered: an AU bundle of several
+  units (the AU probe is checked on macOS against the installed bundles); a
+  VST3 factory with a class that cannot be created.
+
+**As built (step 6b).**
+- **The catalog.** `Plugins` is `Catalog` (`tutti_plugin::catalog::Catalog`,
+  in the prelude with `Hosting`). `Catalog::open_db(config)` reads the JSON
+  file (feature `json`; `with_db` and `empty` stay for a host's own store),
+  `scan() -> Result<ScanResult, ScanBusy>` is the blocking scan (was
+  `rescan`), `spawn_scan` and `poll_scan` the background one. `PluginDb` is
+  still the one owner of rows: the catalog changes one only through
+  `PluginDb::apply` and its `blacklist` and `unblacklist`.
+  `with_fresh_scan`, `Plugins::open` and `Plugins::load` are gone, no twin.
+- **The catalog opens nothing.** Its one refusal is `Catalog::check(&PluginRef)
+  -> Result<(), BridgeError>` (`Blacklisted` with the recorded reason; the check
+  is mtime-aware, so a changed file is re-admitted). The load asks it:
+  `PluginLoad::with_catalog(&catalog)` takes the catalog's `AudioConfig` and
+  its verdict (asked now, the catalog not borrowed past the call, so the load
+  stays `Send`), and `run()` answers a refusal as the load's failure, before
+  any server or library. A load that names no catalog consults no blacklist,
+  which is how a host offers to load a plugin anyway; `Plugin::open` stays the
+  file API and consults none.
+- **`Hosting`** (`Auto`, `InProcess`, `OutOfProcess`; not 021's draft names
+  `Local` and `Isolated`) is a field of `PluginRef` (`with_hosting`,
+  `hosting`; serde with `default`), not part of the plugin's identity
+  (`is_same_plugin` ignores it: a state saved from one restores into the other).
+  `Auto` is the format's default (021 Q3): **CLAP, VST3 and AU out of process,
+  VST2 in process**. `InProcess` hosts CLAP, VST3 and AU in the host's process
+  too, through the generic `InProcClient<F>` (it needs the main thread and the
+  format's `tutti-plugin` feature; AU on macOS). `Plugin::hosting_of(&PluginRef)`
+  resolves it, `Plugin::hosting()` reports it, and the private `Backend` enum is
+  `Placed`, one arm per in-process format beside the served client.
+  `PluginLoad::opens_in_process` follows the resolved hosting.
+- **Refusals are the load's, typed and early.** VST2 asked for `OutOfProcess` is
+  `BridgeError::NotOutOfProcess`, not moved in process; a format this build has
+  no in-process host for (VST2 included, with `vst2` off, even for `Auto`) is the
+  new `BridgeError::NotInProcess`. Both come before a server is looked for.
+  `Auto` never moves a blacklisted plugin in process (021 Q11): it stays served,
+  and the catalog's check refuses.
+- **Tests.** The step's test is `tutti-session`'s `plugin_hosting`: a blacklisted
+  plugin is refused at load with its reason (no server could be found, so the
+  refusal is not a failed launch), admitted by a load with no catalog and once
+  unblacklisted. `tutti-plugin`'s `hosting` suite loads the reference CLAP
+  plugin as `Auto`, `OutOfProcess` (a server pid) and `InProcess` (none; the main
+  thread demanded), VST2 as `Auto` in process and `OutOfProcess` refused, and
+  `scan()` over a directory that gains a file between two scans counts only the
+  new one. Not covered: VST3 and AU in process through `Plugin` (the contract's
+  `hostings` run both formats in process; AU is checked on macOS).
 
 ### Lane order
 
@@ -368,9 +524,9 @@ The latent violations (no known plugin breaks on them) go into the same PRs as t
 
 | Finding | Step |
 |---|---|
-| VST2 shell plugins (`effShellGetNextPlugin`, a sub-plugin id) make "one plugin per VST2 file" false; `audioMasterCurrentId` answers 0 outside a shell | 6 (the catalog lists every plugin of a file, shells included) |
+| VST2 shell plugins (`effShellGetNextPlugin`, a sub-plugin id) make "one plugin per VST2 file" false; `audioMasterCurrentId` answers 0 outside a shell | 6a (done: the probe lists every plugin of a file, a shell's sub-plugins included; the `Load` is `vst2.<uniqueID>`; `audioMasterCurrentId` answers the chosen id, 0 when none) |
 | AU's 20 contract gaps are one missing AU shared plugin, not AU limits; the two `f32` round trips want a per-format tolerance, not a gap | AU completeness (the fixture is an in-process registered `AUAudioUnit` subclass) |
-| AU input as UMP (`MusicDeviceMIDIEventList`, `HostMIDIProtocol` / `AudioUnitMIDIProtocol`, the Group in each packet); the legacy path keeps the `Narrower`; v2 has no cable routing | AU MIDI input parity |
+| AU input as UMP (`MusicDeviceMIDIEventList`, `HostMIDIProtocol` / `AudioUnitMIDIProtocol`, the Group in each packet); the legacy path keeps the `Narrower`; v2 has no cable routing | AU MIDI input parity (done: `initialize` reads `AudioUnitMIDIProtocol` before `AudioUnitInitialize`; `HostMIDIProtocol` is not written, since writing it breaks withdrawing the legacy output callback (macOS 26.6) and is the output lane's, with the event-list callback; a unit that says MIDI 2.0 gets UMP unchanged, one list per protocol, timestamps are frame offsets, the list built in a buffer reserved at activation (`tutti_au_ffi::EventList`); MIDI 1.0 or no answer keeps `midi1` and `MusicDeviceMIDIEvent`, Group 0 only, other Groups and unnarrowable messages counted. Not covered: no installed Apple unit answers the protocol property, so the UMP path is tested over a sink and the call on AUSampler, not end to end through a unit that takes MIDI 2.0; waits for the AU shared plugin) |
 | Project time computed from beats at one tempo (`transport_source.rs`), not from the `TempoMap`; VST2 extrapolates a split block's transport at the block's first tempo | a transport PR beside step 4 |
 | A VST3 aux bus without `kDefaultActive` stays inactive though the graph wires it | step 4 (buses as graph handles activate what is wired) |
 | VST3 editor: the served editor's run loop not pumped on Linux, in-process resize stubbed, no content-scale update after open | step 2 (`update()` services every editor) |

@@ -1,6 +1,6 @@
 //! [`VoicePool`] — one graph node that plays every voice on a track.
 //!
-//! The pool owns its slots, drains [`VoiceCommand`]s each buffer, and sums the
+//! The pool owns its slots, drains the commands its handle queued each buffer, and sums the
 //! results itself. One node per track rather than one per voice plus a dynamic
 //! summing unit: adding or removing a voice then costs a queued command instead
 //! of a graph edit, which is what keeps voice churn off the commit path.
@@ -13,13 +13,11 @@ use super::clock::{BlockClock, Clock};
 use super::command::{
     COMMAND_CAPACITY, MAX_RESIDENT_VOICES, Queued, SharedRate, VoiceCommand, VoicePoolHandle,
 };
-use super::memory_source::LoopSetting;
+use super::loop_span::Loop;
+use super::memory_source::MemorySource;
 use super::slot::{PlaybackSlot, stretch_wanted};
-use super::types::{SlotId, Voice, VoiceSource};
+use super::types::{Playback, SlotId, Voice, VoiceSource};
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
-// Only `playback_of` names it, and that is a `#[cfg(test)]` helper.
-#[cfg(test)]
-use super::types::Playback;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -140,11 +138,10 @@ pub(crate) enum Retired {
 /// ([`VoicePoolHandle::drops`]), never a log line from the callback.
 ///
 /// Each is a count of commands (or values) and only ever grows. The
-/// `loops_streamer_gone`, `loops_no_streamer` and `directions_dropped` counts
-/// are taken where a streaming voice's loop or direction is passed to its
-/// stream, on the control thread ([`VoicePoolHandle::send`],
-/// [`add_streaming`](VoicePoolHandle::add_streaming), [`VoicePool::insert_voice`]);
-/// the rest by the drain.
+/// `loops_streamer_gone` and `directions_dropped` counts are taken where a
+/// streaming voice's loop or direction is passed to its stream, on the
+/// control thread ([`VoicePoolHandle::set_loop`],
+/// [`add_streaming`](VoicePoolHandle::add_streaming)); the rest by the drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct PoolDrops {
@@ -152,29 +149,22 @@ pub struct PoolDrops {
     /// thread exited. The loop is not recorded in the voice's `Playback`: the
     /// handle puts the record back, as far as the queue has room to.
     pub loops_streamer_gone: u64,
-    /// Streaming loops turned on (`LoopSetting::On`) for a voice with no
-    /// stream to set them on: a streaming voice added without its
-    /// [`Stream`](crate::Stream) (an [`AddVoice`](VoiceCommand::AddVoice), or
-    /// [`VoicePool::insert_voice`]; [`add_streaming`](VoicePoolHandle::add_streaming)
-    /// takes the stream). Clearing a loop there is a no-op, not a drop.
-    pub loops_no_streamer: u64,
     /// Loop commands (set or cleared) the drain found aimed at a streaming
-    /// slot whose stream the handle had not passed them to: a voice
-    /// inserted with [`VoicePool::insert_voice`] after the handle was made,
-    /// or a slot the handle's stream no longer belongs to. Not recorded, since
-    /// the stream was not told.
+    /// slot whose stream the handle had not passed them to: a slot the
+    /// handle's stream no longer belongs to. Not recorded, since the stream
+    /// was not told.
     pub loops_not_forwarded: u64,
     /// Streaming directions (reverse, or back to forward) that never reached
-    /// their stream: the voice has none (added without its
-    /// [`Stream`](crate::Stream)), the streamer thread has exited, or the
-    /// drain found the command aimed at a slot whose stream the handle had
-    /// not passed it to. Not recorded in the voice's `Playback`.
+    /// their stream: the streamer thread has exited, or the drain found the
+    /// command aimed at a slot whose stream the handle had not passed it to.
+    /// Not recorded in the voice's `Playback`.
     pub directions_dropped: u64,
-    /// `ReplaceWave` commands aimed at a streaming voice, which changes
-    /// source by a fresh `AddVoice` instead.
+    /// [`replace_wave`](VoicePoolHandle::replace_wave) calls aimed at a
+    /// streaming voice, which changes source by a fresh
+    /// [`add_streaming`](VoicePoolHandle::add_streaming) instead.
     pub wave_swaps_ignored: u64,
-    /// `AddVoice` commands for a new slot refused because the pool already
-    /// held `MAX_RESIDENT_VOICES` (64) slots. The voice goes back through
+    /// Adds for a new slot refused because the pool already held
+    /// `MAX_RESIDENT_VOICES` (64) slots. The voice goes back through
     /// the retirement channel to be freed by
     /// [`collect_retired`](VoicePoolHandle::collect_retired).
     pub voices_refused: u64,
@@ -190,7 +180,6 @@ pub struct PoolDrops {
 #[derive(Debug, Default)]
 pub(crate) struct DrainCounters {
     pub(crate) loops_streamer_gone: AtomicU64,
-    pub(crate) loops_no_streamer: AtomicU64,
     pub(crate) loops_not_forwarded: AtomicU64,
     pub(crate) directions_dropped: AtomicU64,
     wave_swaps_ignored: AtomicU64,
@@ -207,7 +196,6 @@ impl DrainCounters {
         let load = |c: &AtomicU64| c.load(Ordering::Relaxed);
         PoolDrops {
             loops_streamer_gone: load(&self.loops_streamer_gone),
-            loops_no_streamer: load(&self.loops_no_streamer),
             loops_not_forwarded: load(&self.loops_not_forwarded),
             directions_dropped: load(&self.directions_dropped),
             wave_swaps_ignored: load(&self.wave_swaps_ignored),
@@ -238,22 +226,6 @@ impl Voice {
     }
 }
 
-/// A streaming voice with no [`Stream`](crate::Stream) to steer it: what a loop
-/// or a direction it asks for becomes, since neither can reach its stream.
-/// Both are put back to the stream's own start (no loop, forward) and counted
-/// (an `Off` loop and a forward direction lose nothing), so the voice's
-/// `Playback` never claims what its stream was not told. Control thread.
-pub(crate) fn without_stream(voice: &mut Voice, counters: &DrainCounters) {
-    if matches!(voice.play.loop_, LoopSetting::On { .. }) {
-        DrainCounters::bump(&counters.loops_no_streamer);
-    }
-    voice.play.loop_ = LoopSetting::Off;
-    if voice.play.direction.is_reverse() {
-        DrainCounters::bump(&counters.directions_dropped);
-    }
-    voice.play.direction = super::types::Direction::Forward;
-}
-
 /// A [`VoicePool`] asked for more channels than the sampler reads
 /// ([`MAX_SAMPLER_CHANNELS`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -276,7 +248,7 @@ pub struct PoolTooWide {
 /// command queue, reads the transport from the block's `Env`, then reads and
 /// sums its slots — all of it on the audio thread, and all of it
 /// allocation-free provided the control side did its share:
-/// [`VoicePoolHandle::send`] builds any stretch filter a command implies, and
+/// `VoicePoolHandle::send` builds any stretch filter a command implies, and
 /// [`VoicePoolHandle::collect_retired`] frees what the drain hands back.
 ///
 /// # As a graph node
@@ -291,7 +263,7 @@ pub struct PoolTooWide {
 /// queue and no streamer: the voices a pool holds arrived through its queue on
 /// the audio thread, where no control-side copy of them exists to fork. A
 /// host that renders a track's clips offline rebuilds them in a pool of its
-/// own ([`insert_voice`](Self::insert_voice)) before inserting it.
+/// own ([`insert`](Self::insert)) before inserting it.
 ///
 /// Both source tiers live here side by side, as the `Memory` / `Disk` arms of
 /// [`VoiceSource`]; the slot's read forks on that enum rather than on a trait,
@@ -301,7 +273,7 @@ pub struct VoicePool {
     /// `MAX_RESIDENT_VOICES` at construction, and the audio-thread
     /// `AddVoice` drain never grows it: an add for a new slot once it is full
     /// is refused and retired (`Retired::Refused`). Only a control-thread
-    /// [`insert_voice`](Self::insert_voice) may grow it, and the drain then
+    /// [`insert`](Self::insert) may grow it, and the drain then
     /// fills the larger capacity before refusing.
     pub(crate) voices: Vec<PlaybackSlot>,
     /// Commands from the control thread, drained at the top of every block.
@@ -430,11 +402,10 @@ impl VoicePool {
     /// controls come with it into the graph ([`IntoNode`]).
     ///
     /// A streaming voice's loop and direction are its [`Stream`](crate::Stream)'s,
-    /// set from the control thread, never from here: a streaming voice is added
-    /// with its stream through the handle
-    /// ([`add_streaming`](VoicePoolHandle::add_streaming)), and one added
-    /// without has its loop and direction dropped and counted
-    /// ([`PoolDrops::loops_no_streamer`], [`PoolDrops::directions_dropped`]).
+    /// set from the control thread, never from here: a streaming voice is
+    /// added with its stream through the handle
+    /// ([`add_streaming`](VoicePoolHandle::add_streaming)), and the pool
+    /// takes no other.
     #[must_use]
     pub fn new() -> Self {
         Self::from_parts(ChannelLayout::STEREO)
@@ -466,12 +437,7 @@ impl VoicePool {
     ///
     /// The handle holds the [`Stream`](crate::Stream) of every streaming voice
     /// added through it ([`add_streaming`](VoicePoolHandle::add_streaming)): a
-    /// loop or a direction sent for one is set on its stream. A streaming voice
-    /// [`insert_voice`](Self::insert_voice) adds after this has no stream
-    /// here: its `On` is counted ([`PoolDrops::loops_no_streamer`]), and a loop
-    /// sent for it through the handle reaches the drain unforwarded
-    /// ([`PoolDrops::loops_not_forwarded`]). Add streaming voices through the
-    /// handle.
+    /// loop or a direction set for one is set on its stream.
     #[must_use]
     pub fn with_handle(mut self) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
@@ -550,7 +516,7 @@ impl VoicePool {
     /// `Playback`.
     ///
     /// - In-memory: primes / clears the loop range on the `MemorySource`
-    ///   in-unit (`MemorySource::set_loop_setting`).
+    ///   in-unit (`MemorySource::set_loop`).
     /// - Streaming: the loop is the stream's — the streamer reads the loop's
     ///   fade lead-in off disk and publishes the loop as applied, neither
     ///   reachable from the reader — and the control thread has already set it
@@ -563,12 +529,12 @@ impl VoicePool {
     ///   given.
     ///
     /// Allocation-free and send-free: the drain runs it.
-    fn apply_loop(&mut self, id: SlotId, setting: LoopSetting) {
+    fn apply_loop(&mut self, id: SlotId, setting: Option<Loop>) {
         let Some(slot) = self.voices.iter_mut().find(|s| s.id == id) else {
             return;
         };
         if let VoiceSource::Memory(sampler) = &mut slot.voice.source {
-            sampler.set_loop_setting(setting);
+            sampler.set_loop(setting);
         }
         slot.voice.play.loop_ = setting;
     }
@@ -582,7 +548,12 @@ impl VoicePool {
     /// the decision rests on the command, not on the handle's table.
     ///
     /// Allocation-free and send-free: the drain runs it.
-    fn apply_queued_loop(&mut self, id: SlotId, setting: LoopSetting, forwarded: Option<StreamId>) {
+    fn apply_queued_loop(
+        &mut self,
+        id: SlotId,
+        setting: Option<Loop>,
+        forwarded: Option<StreamId>,
+    ) {
         let Some(slot) = self.voices.iter().find(|s| s.id == id) else {
             return;
         };
@@ -620,75 +591,45 @@ impl VoicePool {
         slot.voice.play.direction = direction;
     }
 
-    /// As [`insert_voice`](Self::insert_voice), taking a stretch filter the
-    /// caller already built. `None` leaves the slot without a filter, which is
-    /// correct both for a voice that does not stretch and (transiently) for
-    /// one whose filter has not arrived yet — the hot paths then read the
-    /// source dry rather than silencing it.
+    /// Inserts an in-memory voice as a new slot, `source` played as `play`
+    /// says (its gain, speed, direction, loop, stretch and pitch; the loop in
+    /// `play` is the voice's, replacing any the source holds), building the
+    /// stretch filter here if the voice needs one. An insert at an id already
+    /// resident replaces that slot.
     ///
-    /// Boxes the voice (the slot holds it boxed), so control thread only; the
-    /// audio-thread drain hands the box it received straight to the slot.
-    pub fn insert_voice_with_stretch(
-        &mut self,
-        id: SlotId,
-        mut voice: Voice,
-        stretch: Option<stretch::Unit>,
-    ) {
-        // No stream is given here: a streaming voice's loop and direction have
-        // nowhere to go (the handle's `add_streaming` takes the stream).
-        if matches!(voice.loop_route(), LoopRoute::Stream(_)) {
-            without_stream(&mut voice, &self.counters);
-        }
-        self.insert_voice_inner(id, Box::new(voice), stretch);
+    /// For a pool that is not yet in a graph (a host rebuilding a track's
+    /// clips offline before inserting the pool); a live pool is added to
+    /// through its handle ([`VoicePoolHandle::add`]). A streaming voice has no
+    /// door here: its loop and direction are its stream's, set through the
+    /// handle ([`VoicePoolHandle::add_streaming`]).
+    ///
+    /// Allocates (the filter, when the voice stretches, and the slot's box):
+    /// control thread only.
+    pub fn insert(&mut self, id: SlotId, source: MemorySource, play: Playback) {
+        self.insert_voice(
+            id,
+            Voice {
+                source: VoiceSource::Memory(source),
+                play,
+            },
+        );
     }
 
-    /// Inserts a fully-built [`Voice`] as a new slot and realises its full
-    /// `Playback` intent per-tier, building the stretch filter here if the voice
-    /// needs one.
-    ///
-    /// The single path [`VoiceCommand::AddVoice`] funnels through. Public so a
-    /// voice-aware caller (the offline region render's `Populate` step) can hand
-    /// the reader a `Voice` it built from ECS data — gain / loop / direction /
-    /// stretch / pitch carried on `voice.play` — instead of pre-poking a
-    /// `MemorySource` before the send.
-    ///
-    /// # How the intent is realised
-    ///
-    /// The `Playback` is control-INTENT, and each tier applies it its own way.
-    /// Rather than duplicate the tier fork, this replays the exact cold-path
-    /// appliers the `Update*` commands use: `VoiceSource::apply_*` (per-tier
-    /// match — in-memory stores on the `MemorySource`, streaming writes the
-    /// stream's cells the streamer ring also reads) for gain / speed, and
-    /// `apply_loop` for loop (in-memory primes the range in-unit; a streaming
-    /// loop is the stream's, set by the control thread first, then recorded).
-    /// A streaming voice's direction is the stream's too, so it is only
-    /// recorded. Stretch and pitch are primed from `play` when the slot is
-    /// built.
-    ///
-    /// # Thread
-    ///
-    /// Allocates (the filter, when the voice stretches, and the slot's box)
-    /// — control-thread callers only. The audio-thread drain moves in the
-    /// box and the filter the command carries instead, both built by the
-    /// sender, and sends nothing to the streamer.
-    ///
-    /// # Streaming voices
-    ///
-    /// A streaming voice inserted here has no [`Stream`](crate::Stream) to set
-    /// its loop or direction on, so both are dropped: an `On` loop and a
-    /// reverse direction are counted ([`PoolDrops::loops_no_streamer`],
-    /// [`PoolDrops::directions_dropped`]) and the voice plays forward,
-    /// unlooped. Add streaming voices through the pool's handle
-    /// ([`VoicePoolHandle::add_streaming`]), which takes the stream.
-    ///
-    pub fn insert_voice(&mut self, id: SlotId, voice: Voice) {
+    /// [`insert`](Self::insert) for a voice of either tier. The `Playback` is
+    /// control-INTENT, and each tier applies it its own way: `VoiceSource::apply_*`
+    /// (in-memory stores on the `MemorySource`, streaming writes the stream's
+    /// cells the streamer ring also reads) for gain and speed, `apply_loop`
+    /// for the loop (in-memory primes it in-unit; a streaming loop is the
+    /// stream's, set by the control thread first, then recorded). A streaming
+    /// voice's direction is the stream's too, so it is only recorded.
+    pub(crate) fn insert_voice(&mut self, id: SlotId, voice: Voice) {
         let stretch = stretch_wanted(&voice.play).then(|| {
             let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
             unit.set_stretch_factor(voice.play.stretch);
             unit.set_pitch_cents(voice.play.pitch);
             unit
         });
-        self.insert_voice_with_stretch(id, voice, stretch);
+        self.insert_voice_inner(id, Box::new(voice), stretch);
     }
 
     /// Allocation-free, free-free and send-free, so the drain can run it: the
@@ -696,7 +637,7 @@ impl VoicePool {
     /// one replaces goes to the retirement channel rather than being dropped
     /// here. A streaming voice's loop and direction arrive already set on its
     /// stream (or `Off` and forward); see [`apply_loop`](Self::apply_loop).
-    fn insert_voice_inner(
+    pub(super) fn insert_voice_inner(
         &mut self,
         id: SlotId,
         mut voice: Box<Voice>,
@@ -709,7 +650,7 @@ impl VoicePool {
         // Take the loop out, leaving `Off` behind: `apply_loop` needs the slot
         // present to look it up, and applies it (an in-memory loop is primed
         // on the source) as it records it.
-        let loop_ = std::mem::replace(&mut voice.play.loop_, LoopSetting::Off);
+        let loop_ = voice.play.loop_.take();
         let gain = voice.play.gain;
         let speed = voice.play.speed;
         let direction = voice.play.direction;
@@ -808,18 +749,12 @@ impl VoicePool {
                     };
                     self.retire(Retired::Wave(shed));
                 }
-                VoiceCommand::UpdatePlacement {
-                    id,
-                    start_beat,
-                    duration_beats,
-                } => {
+                VoiceCommand::UpdatePlacement { id, window } => {
                     if let Some(slot) = self.slot_mut(id) {
                         // The source owns the window: each backend's setter
                         // overwrites it, and the next block's read places the
                         // voice by it.
-                        slot.voice
-                            .source
-                            .apply_placement(start_beat, duration_beats);
+                        slot.voice.source.apply_window(window);
                     }
                 }
                 VoiceCommand::UpdateGain { id, gain } => {

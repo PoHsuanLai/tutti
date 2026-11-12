@@ -66,7 +66,8 @@ impl Virtual {
 }
 
 fn plug(name: &str) -> Virtual {
-    let seq = super::client::open(name, true).expect("a sequencer to open (modprobe snd-seq)");
+    let seq = super::client::open(name, true, tutti_alsa_ffi::UmpVersion::Midi2)
+        .expect("a sequencer to open (modprobe snd-seq)");
     let caps = CAP_READ | CAP_SUBS_READ | CAP_WRITE | CAP_SUBS_WRITE;
     seq.open_port("port", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)
         .expect("a port");
@@ -239,7 +240,8 @@ fn a_saved_alsa_device_resolves_by_name_only() {
 fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
     let devices = Watched::open();
     let name = unique("caps");
-    let seq = super::client::open(&name, true).expect("a sequencer to open (modprobe snd-seq)");
+    let seq = super::client::open(&name, true, tutti_alsa_ffi::UmpVersion::Midi2)
+        .expect("a sequencer to open (modprobe snd-seq)");
     let kind = TYPE_MIDI_GENERIC | TYPE_APPLICATION;
     let port = seq.open_port("port", 0, kind).expect("a port");
     let want = format!("{name}: port");
@@ -254,13 +256,13 @@ fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
 #[test]
 fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
             4,
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
-    )));
+    ));
     let name = unique("held");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
@@ -351,13 +353,13 @@ fn an_idle_devices_does_not_wake_itself() {
 #[test]
 fn the_engines_own_clients_are_not_listed() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
             4,
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
-    )));
+    ));
     let name = unique("own");
     let device = plug(&name);
     let mut backlog = Vec::new();
@@ -492,13 +494,13 @@ impl crate::MidiEndpoints for Panicky {
         _: tutti_midi_device::EndpointId,
         _: crate::InputProducerHandle,
     ) -> crate::Result<Box<dyn crate::InputConnection>> {
-        Err(crate::Error::MidiDevice("none".into()))
+        Err(crate::Error::device("none"))
     }
     fn open_output(
         &self,
         _: tutti_midi_device::EndpointId,
     ) -> crate::Result<Box<dyn crate::DeviceOut>> {
-        Err(crate::Error::MidiDevice("none".into()))
+        Err(crate::Error::device("none"))
     }
 }
 
@@ -604,13 +606,14 @@ struct Pumped {
 impl Pumped {
     /// A pump whose events are placed `lead` after they arrived.
     fn open(lead: Duration) -> Self {
-        let inlets = std::sync::Arc::new(tutti_midi_runtime::DeviceInlets::new(
-            4,
-            tutti_graph::EventCapacity::of(64),
-            lead,
-        ));
+        Self::over(plug(&unique("pump")), lead)
+    }
+
+    /// A pump on `device`'s port 0.
+    fn over(device: Virtual, lead: Duration) -> Self {
+        let inlets =
+            tutti_midi_runtime::DeviceInlets::new(4, tutti_graph::EventCapacity::of(64), lead);
         let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::clone(&inlets)));
-        let device = plug(&unique("pump"));
         let id = super::enumerate::pack_id(device.0.id(), 0);
         let producer = ports.open_input_port("pump").expect("a slot");
         let mut rig = crate::testing::Rig::over(&inlets, Instant::now());
@@ -643,6 +646,104 @@ impl Pumped {
         }
         None
     }
+}
+
+/// A legacy (non-UMP) sequencer client with a subscribable port, the kind of
+/// source a MIDI 1.0 device or an old application is.
+fn plug_legacy(name: &str) -> Virtual {
+    let seq = tutti_alsa_ffi::Client::open_legacy(name, true)
+        .expect("a sequencer to open (modprobe snd-seq)");
+    let caps = CAP_READ | CAP_SUBS_READ;
+    seq.open_port("port", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)
+        .expect("a port");
+    Virtual(seq)
+}
+
+/// Plays the graph until `count` events have reached it, and returns them.
+fn arrive(pumped: &mut Pumped, count: usize) -> Vec<tutti_ump::Ump> {
+    let deadline = Instant::now() + PATIENCE;
+    let mut got = Vec::new();
+    while got.len() < count {
+        assert!(Instant::now() < deadline, "only {got:?} arrived");
+        pumped.rig.run_to(Instant::now());
+        got.extend(pumped.rig.take().into_iter().map(|(_, _, ump)| ump));
+        std::thread::yield_now();
+    }
+    got
+}
+
+/// A MIDI 1.0 source reaches the graph as MIDI 1.0 UMP (type 2), not converted
+/// to MIDI 2.0 by the kernel: tutti's own `Translator` is the one conversion
+/// (design 017 L6d). A legacy client's Note On and control change, both.
+#[test]
+fn a_legacy_source_arrives_as_midi1_ump_not_converted_by_the_kernel() {
+    use tutti_alsa_ffi::LegacyEvent;
+    let mut pumped = Pumped::over(plug_legacy(&unique("legacy")), Duration::ZERO);
+    let send = |event| {
+        pumped
+            .device
+            .0
+            .send_legacy_to_subscribers(0, event)
+            .unwrap()
+    };
+    send(LegacyEvent::NoteOn {
+        channel: 2,
+        note: 60,
+        velocity: 100,
+    });
+    send(LegacyEvent::Controller {
+        channel: 2,
+        param: 7,
+        value: 90,
+    });
+    let got = arrive(&mut pumped, 2);
+    // The message type is the top nibble of the first word.
+    let words: Vec<u32> = got.iter().map(|u| u.words()[0]).collect();
+    assert_eq!(words, [0x2092_3C64, 0x20B2_075A], "{got:?}");
+}
+
+/// An Endpoint that offers the MIDI 2.0 Protocol is a MIDI 2.0 client: its own
+/// type 4 packet arrives as sent, not narrowed.
+#[test]
+fn a_midi2_endpoint_arrives_as_midi2_ump() {
+    let mut pumped = Pumped::over(
+        plug_ump(&unique("two-in"), tutti_alsa_ffi::PROTO_MIDI2),
+        Duration::ZERO,
+    );
+    // Note On, group 0, channel 0, note 60, velocity 0xC000, no attribute.
+    let note_on = [0x4090_3C00, 0xC000_0000];
+    pumped.device.0.send_to_subscribers(0, &note_on).unwrap();
+    let got = arrive(&mut pumped, 1);
+    assert_eq!(got[0].words(), note_on, "{got:?}");
+}
+
+/// Which sources are opened as MIDI 1.0: a legacy client (no record) and an
+/// Endpoint whose record offers no MIDI 2.0 Protocol. An Endpoint that offers
+/// it is opened as MIDI 2.0 even while it is in MIDI 1.0, since the session
+/// negotiates up and the kernel would narrow what it then sends natively.
+#[test]
+fn only_a_source_that_cannot_speak_midi2_is_opened_as_midi1() {
+    use tutti_alsa_ffi::{PROTO_MIDI1, PROTO_MIDI2, UmpEndpoint, UmpVersion};
+    let record = |protocol, protocol_caps| UmpEndpoint {
+        protocol,
+        protocol_caps,
+        name: None,
+        blocks: Vec::new(),
+    };
+    let version = super::input::version_for;
+    assert_eq!(version(None), UmpVersion::Midi1);
+    assert_eq!(
+        version(Some(&record(PROTO_MIDI1, PROTO_MIDI1))),
+        UmpVersion::Midi1
+    );
+    assert_eq!(
+        version(Some(&record(PROTO_MIDI1, PROTO_MIDI1 | PROTO_MIDI2))),
+        UmpVersion::Midi2
+    );
+    assert_eq!(
+        version(Some(&record(PROTO_MIDI2, PROTO_MIDI1 | PROTO_MIDI2))),
+        UmpVersion::Midi2
+    );
 }
 
 /// Input sent to a pump that has been idle arrives promptly: the pump is woken
@@ -704,13 +805,13 @@ fn dropping_an_input_stops_a_blocked_pump_promptly() {
 #[test]
 fn an_input_whose_pump_fails_reads_as_gone() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
             4,
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
-    )));
+    ));
     let name = unique("dies");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
@@ -817,7 +918,102 @@ fn an_output_with_a_poisoned_lock_still_sends() {
     let id = super::enumerate::pack_id(target.0.id(), 0);
     let output = super::output::connect(id).expect("the output to open");
     output.poison();
-    output.send_ump(&[0x2090_3C64]).expect("the send to go");
+    output
+        .send_ump_at(&[0x2090_3C64], tutti_midi_runtime::SendAt::Now)
+        .expect("the send to go");
+}
+
+/// The next note message (type `0x2`) that reaches `device`'s port, polling
+/// for up to `patience`; the sequencer's own notices about the subscription
+/// (Stream messages) pass by.
+fn next_note(device: &Virtual, patience: Duration) -> Option<(u32, Instant)> {
+    let deadline = Instant::now() + patience;
+    while Instant::now() < deadline {
+        match device.0.read_event() {
+            Ok(tutti_alsa_ffi::Read::Event(e)) if e.ump[0] >> 28 == 2 => {
+                return Some((e.ump[0], Instant::now()));
+            }
+            Ok(tutti_alsa_ffi::Read::Event(_)) => {}
+            _ => std::thread::sleep(Duration::from_micros(500)),
+        }
+    }
+    None
+}
+
+/// When the first note reaches `device`'s port, as an `Instant`.
+fn arrival_at(device: &Virtual, patience: Duration) -> Option<Instant> {
+    next_note(device, patience).map(|(_, at)| at)
+}
+
+/// **The sequencer holds a scheduled event until its time.** Against the real
+/// kernel: an event sent `At` 100 ms ahead is not at the subscriber 50 ms
+/// after the call, and arrives no earlier than the `Instant` the send asked
+/// for (less the pairing's few ms of slack) and soon after it; one sent
+/// `Now` is there at once. The bounds are generous because the kernel
+/// schedules it; what they cannot be is both of these without a queue.
+#[test]
+fn a_scheduled_event_arrives_at_its_time_and_now_at_once() {
+    let target = plug(&unique("scheduled"));
+    let id = super::enumerate::pack_id(target.0.id(), 0);
+    let output = super::output::connect(id).expect("the output to open");
+    let slack = Duration::from_millis(10);
+
+    let asked = Instant::now() + Duration::from_millis(100);
+    output
+        .send_ump_at(&[0x2090_3C64], tutti_midi_runtime::SendAt::At(asked))
+        .expect("the scheduled send to go");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        next_note(&target, Duration::ZERO).is_none(),
+        "50 ms into a 100 ms wait the event was already delivered"
+    );
+    let arrived = arrival_at(&target, Duration::from_millis(500)).expect("the event to arrive");
+    assert!(
+        arrived + slack >= asked,
+        "arrived {:?} before the instant it asked for",
+        asked - arrived
+    );
+    assert!(
+        arrived <= asked + Duration::from_millis(100),
+        "arrived {:?} after the instant it asked for",
+        arrived - asked
+    );
+
+    let sent = Instant::now();
+    output
+        .send_ump_at(&[0x2090_3C64], tutti_midi_runtime::SendAt::Now)
+        .expect("the direct send to go");
+    let arrived = arrival_at(&target, Duration::from_millis(500)).expect("the event to arrive");
+    assert!(
+        arrived - sent < Duration::from_millis(50),
+        "a `Now` took {:?}",
+        arrived - sent
+    );
+}
+
+/// **A time already past is delivered at once**, and a run of events keeps its
+/// order: scheduled out of order, they arrive by time.
+#[test]
+fn events_are_delivered_by_their_times_and_a_past_time_at_once() {
+    let target = plug(&unique("ordered"));
+    let id = super::enumerate::pack_id(target.0.id(), 0);
+    let output = super::output::connect(id).expect("the output to open");
+    let now = Instant::now();
+    let late = now + Duration::from_millis(80);
+    let early = now + Duration::from_millis(40);
+    let first = [0x2090_3C64];
+    let second = [0x2090_3D64];
+    let third = [0x2090_3E64];
+    use tutti_midi_runtime::SendAt;
+    output.send_ump_at(&first, SendAt::At(late)).unwrap();
+    output.send_ump_at(&second, SendAt::At(early)).unwrap();
+    output
+        .send_ump_at(&third, SendAt::At(now - Duration::from_millis(500)))
+        .unwrap();
+    let got: Vec<u32> = (0..3)
+        .map_while(|_| next_note(&target, Duration::from_millis(500)).map(|(w, _)| w))
+        .collect();
+    assert_eq!(got, [third[0], second[0], first[0]]);
 }
 
 /// A device named `name` that publishes a UMP Endpoint in `protocol` with a
@@ -909,14 +1105,12 @@ fn a_device_on_the_sequencer_is_negotiated_through_the_pump_and_the_output() {
     let name = unique("negotiated");
     let device = plug_ump(&name, tutti_alsa_ffi::PROTO_MIDI1);
     let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(
-            4,
-            tutti_graph::EventCapacity::of(64),
-            Duration::ZERO,
-        ),
-    )));
-    let session = crate::MidiSession::open(ports).unwrap();
+    let inlets = tutti_midi_runtime::DeviceInlets::new(
+        4,
+        tutti_graph::EventCapacity::of(64),
+        Duration::ZERO,
+    );
+    let session = crate::MidiSession::open(inlets).unwrap();
     let want = format!("{name}: port");
     let deadline = Instant::now() + PATIENCE;
     let id = loop {

@@ -153,22 +153,20 @@ fn tone_at(i: usize) -> f32 {
 /// One sampler voice on a second of the tone, placed at beat 0 and pitched
 /// by `cents`. It reads the transport from its blocks' `Env`.
 fn voice(cents: f32) -> tutti_sampler::VoicePool {
-    use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+    use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
     let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
     for i in 0..RATE as usize {
         wave.push_frame(&[tone_at(i)]);
     }
-    let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None)
+    let source = MemorySource::placed(Arc::new(wave), VoiceWindow::from(tutti_types::Beat(0.0)))
         .expect("a placeable wave");
     let mut pool = VoicePool::new();
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                pitch: tutti_types::Cents::new(cents),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            pitch: tutti_types::Cents::new(cents),
+            ..Default::default()
         },
     );
     pool
@@ -316,7 +314,7 @@ fn an_offline_render_feeds_the_master_meter() {
     assert_eq!(r[0].frames, Samples(128));
 
     let mut detached = Session::builder()
-        .outputs_floor(1)
+        .outputs_floor(ChannelLayout::MONO)
         .build_detached(SampleRate(RATE))
         .expect("builds");
     let mut meter = detached.take_master_meter().expect("declared at the build");
@@ -634,7 +632,7 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
 #[test]
 fn a_detached_render_feeds_a_tap() {
     let mut s = Session::builder()
-        .outputs_floor(1)
+        .outputs_floor(ChannelLayout::MONO)
         .build_detached(SampleRate(RATE))
         .expect("builds");
     let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
@@ -890,11 +888,13 @@ fn a_dropped_heard_reader_frees_the_tap() {
 #[test]
 fn a_project_the_device_cannot_take_is_refused_at_build() {
     let build = |floor: usize, device: u16| {
-        Session::builder().outputs_floor(floor).build_offline(
-            SampleRate(RATE),
-            ChannelLayout::from(device),
-            MaxBlock::of(Samples(256)),
-        )
+        Session::builder()
+            .outputs_floor(ChannelLayout::clamped(floor))
+            .build_offline(
+                SampleRate(RATE),
+                ChannelLayout::from(device),
+                MaxBlock::of(Samples(256)),
+            )
     };
     assert!(matches!(
         build(6, 5),

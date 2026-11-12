@@ -42,7 +42,9 @@ use crate::ParameterChangeSink;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, Control, EditorError, Health, InProcess, StateError, defer_to_main,
 };
-use tutti_plugin_types::{Normalized, ParamId, ParameterInfo, RenderMode};
+use tutti_plugin_types::{
+    Normalized, ParamId, ParameterInfo, PluginFailure, RenderMode, TerminationReason,
+};
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
 /// idle calls can drain plugin-internal automation events and notify
@@ -55,7 +57,7 @@ pub(crate) struct ControlBackend<F: InProcess> {
     /// activates it, which allocates.
     pub(crate) pending_sample_rate: Arc<AtomicU64>,
     /// Where a re-read that found the plugin's latency, tail or pins moved is
-    /// reported (`PluginHandle::on_invalidate`).
+    /// reported (`PluginHandle::subscribe`).
     pub(crate) invalidate_sink: crate::InvalidateSink,
     /// The plugin's format name, for the refusal of an advisory no in-process
     /// format carries.
@@ -232,7 +234,7 @@ impl<F: InProcess> Health for ControlBackend<F> {
         false
     }
 
-    fn crash_cause(&self) -> Option<String> {
+    fn crash_cause(&self) -> Option<PluginFailure> {
         None
     }
 
@@ -244,7 +246,7 @@ impl<F: InProcess> Health for ControlBackend<F> {
         tutti_plugin_types::BlockCounts::default()
     }
 
-    fn terminate(&self, _cause: &str) {}
+    fn terminate(&self, _reason: TerminationReason) {}
 }
 
 impl<F> MainThreadControl for ControlBackend<F>
@@ -478,15 +480,17 @@ mod off_main_tests {
         let _main = main_thread();
         let (_client, handle) = loaded();
         assert!(!handle.is_crashed());
-        assert_eq!(handle.status(), crate::PluginStatus::Alive);
+        assert!(matches!(handle.status(), crate::PluginStatus::Alive));
         assert_eq!(
             handle.block_counts(),
             tutti_plugin_types::BlockCounts::default()
         );
-        handle.terminate("a test");
-        assert_eq!(
-            handle.status(),
-            crate::PluginStatus::Alive,
+        handle.terminate(tutti_plugin_types::TerminationReason::Hung {
+            blocks: 16,
+            held: std::time::Duration::from_secs(5),
+        });
+        assert!(
+            matches!(handle.status(), crate::PluginStatus::Alive),
             "there is no process to end"
         );
     }

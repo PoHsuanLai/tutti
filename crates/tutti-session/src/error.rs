@@ -49,6 +49,15 @@ impl NoSuchNode {
     }
 }
 
+/// The disk streamer's own failure (its thread would not start), as the
+/// session's sampler error.
+#[cfg(feature = "sampler")]
+impl From<tutti_sampler::Error> for Error {
+    fn from(error: tutti_sampler::Error) -> Self {
+        Self::Sampler(crate::SamplerError::Streamer(error))
+    }
+}
+
 impl From<NoSuchNode> for ConnectError {
     fn from(e: NoSuchNode) -> Self {
         Self::NoSuchNode(e.node())
@@ -138,6 +147,124 @@ pub enum ConnectError {
     Bus(#[from] tutti_graph::BusError),
 }
 
+/// Why a MIDI call of the session failed (design 030, convention 2: one error
+/// for the area, each cause carried as its source). `tutti::midi::Error` in
+/// the umbrella; the session's own [`Error::Midi`] holds it, and every cause
+/// below converts into both with `?`.
+#[cfg(feature = "midi")]
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum MidiError {
+    /// The OS port layer failed: enumeration, opening a device or its
+    /// watch. Only a session with `midi-hardware` has a fallible MIDI step of
+    /// this kind.
+    #[cfg(feature = "midi-hardware")]
+    #[error("MIDI hardware: {0}")]
+    Hardware(#[from] tutti_midi_hardware::Error),
+
+    /// A MIDI file could not be read, built or written.
+    #[error("MIDI file: {0}")]
+    File(#[from] tutti_midi_file::Error),
+
+    /// A session job did not finish ([`Midi::load_file`](crate::Midi::load_file),
+    /// `Midi::load_soundfont`): its work panicked, or the spawner dropped it.
+    #[error("MIDI load: {0}")]
+    Job(#[from] crate::JobFailed),
+
+    /// A SoundFont file could not be read.
+    #[cfg(feature = "soundfont")]
+    #[error("SoundFont file: {0}")]
+    SoundFont(#[from] tutti_sf2::Error),
+
+    /// A SoundFont unit could not be built from the font and its settings.
+    #[cfg(feature = "soundfont")]
+    #[error("SoundFont instrument: {0}")]
+    Instrument(#[from] tutti_soundfont::Error),
+
+    /// A message was not queued ([`SendError::Full`](crate::SendError::Full)).
+    #[error("MIDI send: {0}")]
+    Send(#[from] crate::SendError),
+
+    /// There is no such route rule ([`Midi::unroute`](crate::Midi::unroute)).
+    #[error(transparent)]
+    NoSuchRoute(#[from] crate::NoSuchMidiRoute),
+
+    /// A MIDI call named a target that is not in the graph, or takes no
+    /// MIDI (it has no event input): `Midi::play_clip`, `Midi::live_input`,
+    /// `Midi::retarget`, `Midi::record`.
+    #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
+    NoEventInput(tutti_graph::NodeKey),
+
+    /// A route rule on a session with no MIDI input node (one built
+    /// detached).
+    #[error("the session has no MIDI input node to route")]
+    NoMidiInput,
+
+    /// A hardware call on a session with no OS MIDI layer
+    /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)
+    /// was not asked for).
+    #[cfg(feature = "midi-hardware")]
+    #[error("the session has no OS MIDI layer; build it with `midi_hardware()`")]
+    NoHardware,
+
+    /// `Midi::retarget` named a node that is not a clip or live input of
+    /// the session's.
+    #[error("{0:?} is not a clip or live input of this session's")]
+    NotSessionMidi(tutti_graph::NodeKey),
+
+    /// The hardware input's routes have one declarer: the session's own
+    /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
+    /// (`Midi::set_routes`), not both at once.
+    #[error(
+        "the MIDI routes are declared by {0}; clear those before declaring \
+         them the other way"
+    )]
+    TwoRouteDeclarers(RouteDeclarer),
+}
+
+/// Who holds the hardware input's routes when the other declarer is refused
+/// ([`MidiError::TwoRouteDeclarers`]).
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteDeclarer {
+    /// The session's own rules: `Midi::route` and `Midi::set_route_fallback`.
+    Session,
+    /// A host's whole table: `Midi::set_routes`.
+    Host,
+}
+
+#[cfg(feature = "midi")]
+impl std::fmt::Display for RouteDeclarer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Session => "the session's own `route`",
+            Self::Host => "a host's `set_routes`",
+        })
+    }
+}
+
+#[cfg(feature = "midi")]
+macro_rules! midi_cause_into_error {
+    ($($(#[$m:meta])* $ty:ty),* $(,)?) => {$(
+        $(#[$m])*
+        impl From<$ty> for Error {
+            fn from(e: $ty) -> Self {
+                Self::Midi(e.into())
+            }
+        }
+    )*};
+}
+
+// `?` on a cause reaches the session's one `Error` in a step.
+#[cfg(feature = "midi")]
+midi_cause_into_error!(
+    #[cfg(feature = "midi-hardware")]
+    tutti_midi_hardware::Error,
+    tutti_midi_file::Error,
+    crate::SendError,
+    crate::NoSuchMidiRoute,
+);
+
 /// Every subsystem's error, so `?` propagates across crate boundaries.
 ///
 /// Each variant wraps a subsystem error via `#[from]`. Device failures arrive
@@ -162,6 +289,21 @@ pub enum Error {
     #[error("the graph root cannot be placed on the output: {0}")]
     Output(#[from] tutti_types::FoldError),
 
+    /// A device restart was refused or failed
+    /// ([`LiveSession::restart`](crate::LiveSession::restart)).
+    #[cfg(feature = "device")]
+    #[error(transparent)]
+    Restart(#[from] crate::RestartError),
+
+    /// An inlet refused its producer's ring ([`Graph::add_inlet`](crate::Graph::add_inlet)).
+    #[error(transparent)]
+    Inlet(#[from] InletError),
+
+    /// A swap of one node for another was refused
+    /// ([`Graph::crossfade`](crate::Graph::crossfade)).
+    #[error(transparent)]
+    Crossfade(#[from] crate::CrossfadeRefused),
+
     /// The graph refused a re-prepare: a device restart asked for a block
     /// past the engine's capacity, came while another re-prepare was between
     /// its halves, or met a graph that no longer compiles at the new block.
@@ -181,20 +323,13 @@ pub enum Error {
     #[error(transparent)]
     Device(#[from] tutti_cpal::Error),
 
-    /// MIDI subsystem failure. Wraps `tutti_midi_hardware::Error`, and is
-    /// therefore gated on **`midi-hardware`** rather than `midi`: the error
-    /// type comes from the OS port layer, and the software-only build has no
-    /// fallible MIDI step.
-    #[cfg(feature = "midi-hardware")]
-    #[error("MIDI: {0}")]
-    Midi(#[from] tutti_midi_hardware::Error),
-
-    /// A MIDI call named a target that is not in the graph, or takes no
-    /// MIDI (it has no event input): `Midi::play_clip`, `Midi::live_input`,
-    /// `Midi::retarget`.
+    /// A MIDI failure of any kind: the OS port layer, a file, a send, a
+    /// route, or a target that takes no MIDI. One variant for the area
+    /// (design 030, convention 2); [`MidiError`] says which, each with its
+    /// own error as the source.
     #[cfg(feature = "midi")]
-    #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
-    NoEventInput(tutti_graph::NodeKey),
+    #[error(transparent)]
+    Midi(#[from] MidiError),
 
     /// [`Session::instrument`](crate::Session::instrument) (or
     /// `add_instrument`, `instrument_plugin`) was given a node that cannot be
@@ -208,38 +343,16 @@ pub enum Error {
         why: crate::NotInstrument,
     },
 
-    /// A route rule on a session with no MIDI input node (one built
-    /// detached).
-    #[cfg(feature = "midi")]
-    #[error("the session has no MIDI input node to route")]
-    NoMidiInput,
-
-    /// `Midi::retarget` named a node that is not a clip or live input of
-    /// the session's.
-    #[cfg(feature = "midi")]
-    #[error("{0:?} is not a clip or live input of this session's")]
-    NotSessionMidi(tutti_graph::NodeKey),
-
-    /// The hardware input's routes have one declarer: the session's own
-    /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
-    /// (`Midi::set_routes`), not both at once.
-    #[cfg(feature = "midi")]
-    #[error(
-        "the MIDI routes are declared by {0}; clear those before declaring \
-         them the other way"
-    )]
-    TwoRouteDeclarers(&'static str),
-
     /// SoundFont subsystem failure. Wraps `tutti_soundfont::Error`. (The
     /// polyphonic synth has none: a `PolySynth` is built infallibly.)
     #[cfg(feature = "soundfont")]
     #[error("SoundFont: {0}")]
     SoundFont(#[from] tutti_soundfont::Error),
 
-    /// Sampler subsystem failure. Wraps `tutti_sampler::Error`.
+    /// A sampler call or open did not go through ([`SamplerError`](crate::SamplerError)).
     #[cfg(feature = "sampler")]
-    #[error("Sampler: {0}")]
-    Sampler(#[from] tutti_sampler::Error),
+    #[error(transparent)]
+    Sampler(#[from] crate::SamplerError),
 
     /// Spatial-audio subsystem failure. Wraps `tutti_nodes::VbapError`
     /// (VBAP speaker-layout construction). HRTF has its own error type and
@@ -306,6 +419,12 @@ pub enum Error {
     #[cfg(feature = "export")]
     #[error(transparent)]
     BounceConfig(#[from] crate::BounceConfigError),
+
+    /// A take could not be armed or did not end cleanly
+    /// ([`Session::record`](crate::Session::record)).
+    #[cfg(all(feature = "device", feature = "audio-io"))]
+    #[error(transparent)]
+    Take(#[from] crate::TakeError),
 
     /// Standard I/O error encountered while reading or writing audio data.
     #[error(transparent)]

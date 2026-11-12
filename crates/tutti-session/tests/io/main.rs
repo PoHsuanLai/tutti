@@ -5,12 +5,17 @@
 // no longer turns it on).
 #[cfg(feature = "device")]
 mod device;
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod device_input;
 #[cfg(feature = "device")]
 mod device_listing;
 // A restart onto another rate, width or block (the session halves of
 // `bevy-tutti`'s `engine::restart` tests), and the MIDI clock's re-rate.
 #[cfg(all(feature = "device", feature = "midi"))]
 mod device_midi_clock;
+// The hardware out is sent at the time of each event's frame.
+#[cfg(all(feature = "device", feature = "midi"))]
+mod device_midi_out_timing;
 #[cfg(feature = "device")]
 mod device_restart;
 // The recorder: its thread, and the pump over a tap and a decoded file.
@@ -24,3 +29,6 @@ mod recorder_thread;
 mod tap_close;
 #[cfg(feature = "record")]
 mod tap_to_wav_roundtrip;
+// Takes: a recording placed on the graph's clock, punched, and reported.
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod takes;

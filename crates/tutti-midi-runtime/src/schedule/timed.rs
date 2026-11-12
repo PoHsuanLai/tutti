@@ -3,45 +3,44 @@
 use tutti_types::Beat;
 use tutti_ump::Ump;
 
-/// One [`Ump`] tagged with the absolute beat at which it fires.
+/// One [`Ump`] tagged with the finite beat at which it fires.
 ///
 /// What a [`MidiClipNode`](super::MidiClipNode) plays and clip-file import
-/// yields, so a parsed file drops straight into a clip.
+/// yields, so a parsed file drops straight into a clip. The beat is checked
+/// when the value is built ([`new`](Self::new)), so a clip never meets a beat
+/// that has no frame.
+///
+/// [`Beat`] is `tutti-types`' and a plain `f64`, which holds NaN; this type is
+/// where a beat of an event is refused for it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimedMidiEvent {
-    /// The event itself. It carries no offset in storage —
-    /// [`beat`](Self::beat) is the authority, and a reader stamps the offset
-    /// from it at poll time.
-    pub event: Ump,
-    /// Beat position when this event should trigger.
-    pub beat: Beat,
+    event: Ump,
+    beat: Beat,
 }
 
 impl TimedMidiEvent {
-    /// A timed event at `beat`. Field-order-independent, so callers never have
-    /// to remember whether `beat` or `event` comes first.
+    /// A timed event at `beat`, or `None` when `beat` is not finite (NaN or
+    /// infinite: it names no frame). Field-order-independent, so callers never
+    /// have to remember whether `beat` or `event` comes first.
     #[inline]
     #[must_use]
-    pub const fn new(beat: Beat, event: Ump) -> Self {
-        Self { event, beat }
+    pub fn new(beat: Beat, event: impl Into<Ump>) -> Option<Self> {
+        let event = event.into();
+        beat.get().is_finite().then_some(Self { event, beat })
     }
-}
 
-impl From<(f64, Ump)> for TimedMidiEvent {
-    /// `(beat, event)`, for a caller that divides ticks itself and has no
-    /// `Beat` yet. Converted here, once, on the way in.
+    /// The event itself. It carries no offset in storage: [`beat`](Self::beat)
+    /// is the authority, and a reader stamps the offset from it at poll time.
     #[inline]
-    fn from((beat, event): (f64, Ump)) -> Self {
-        Self {
-            event,
-            beat: Beat(beat),
-        }
+    #[must_use]
+    pub const fn event(&self) -> Ump {
+        self.event
     }
-}
 
-impl From<(Beat, Ump)> for TimedMidiEvent {
+    /// Beat position when this event should trigger: always finite.
     #[inline]
-    fn from((beat, event): (Beat, Ump)) -> Self {
-        Self { event, beat }
+    #[must_use]
+    pub const fn beat(&self) -> Beat {
+        self.beat
     }
 }

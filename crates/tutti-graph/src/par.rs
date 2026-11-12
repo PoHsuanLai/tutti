@@ -601,7 +601,13 @@ impl Shared<'_, '_> {
                     let a = ArenaView {
                         view: self.arena.view(held_audio),
                     };
-                    crate::tap::tap_op(tap, &a, &self.plan.audio_list[srcs.range()], frames);
+                    crate::tap::tap_op(
+                        tap,
+                        &a,
+                        &self.plan.audio_list[srcs.range()],
+                        self.env.frame,
+                        frames,
+                    );
                 }
             }
             Op::EventTap { tap, src } => {

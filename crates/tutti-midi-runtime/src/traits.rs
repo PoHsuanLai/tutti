@@ -8,6 +8,8 @@
 
 use tutti_graph::UmpAt;
 
+use crate::Outgoing;
+
 // -----------------------------------------------------------------------------
 // Delivery: write side (out) and read side (in)
 // -----------------------------------------------------------------------------
@@ -32,4 +34,28 @@ pub trait MidiOut: Send + Sync {
     /// hits a failure stops there rather than skipping and continuing, so the
     /// count always names an unbroken run and the stream stays in order.
     fn queue(&self, events: &[UmpAt]) -> usize;
+
+    /// [`queue`](Self::queue) for events that say when to send
+    /// ([`SendAt`](crate::SendAt)). A sink that schedules (a hardware output)
+    /// overrides it and sends each at its time; the default hands the events
+    /// to `queue` and ignores the time, which is every sink that has no wire
+    /// clock (a mailbox, a test's). Same count and prefix semantics.
+    fn queue_timed(&self, events: &[Outgoing]) -> usize {
+        // Chunked on the stack: no allocation for a sink that may be on the
+        // audio thread.
+        const CHUNK: usize = 64;
+        let mut accepted = 0;
+        for chunk in events.chunks(CHUNK) {
+            let mut buf = [(tutti_graph::Offset::ZERO, tutti_ump::Ump([0; 4])); CHUNK];
+            for (slot, e) in buf.iter_mut().zip(chunk) {
+                *slot = (e.at, e.ump);
+            }
+            let taken = self.queue(&buf[..chunk.len()]);
+            accepted += taken;
+            if taken < chunk.len() {
+                break;
+            }
+        }
+        accepted
+    }
 }

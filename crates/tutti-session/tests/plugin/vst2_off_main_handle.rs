@@ -11,6 +11,7 @@
 //! `tutti-plugin` unit tests pump it directly).
 
 use std::time::Duration;
+use tutti_types::ChannelLayout;
 
 use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::{MainThread, Normalized, ParamId};
@@ -25,7 +26,7 @@ use tutti_types::SampleRate;
 fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
     let main = MainThread::claim().expect("one test, one process");
     let mut session = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate(48_000.0))
         .expect("a detached session builds");
     let node = session

@@ -257,6 +257,31 @@ impl Au {
         }
     }
 
+    /// The protocol the active unit takes MIDI in; `None` before activation or
+    /// for a legacy unit.
+    pub fn midi_protocol(&self) -> Option<tutti_au_ffi::Wire> {
+        match &self.state {
+            State::Active { processor, .. } => processor.borrow().midi_protocol(),
+            _ => None,
+        }
+    }
+
+    /// See [`AuProcessor::groups_dropped`]; zero before activation.
+    pub fn groups_dropped(&self) -> u64 {
+        match &self.state {
+            State::Active { processor, .. } => processor.borrow().groups_dropped(),
+            _ => 0,
+        }
+    }
+
+    /// See [`AuProcessor::unsendable_dropped`]; zero before activation.
+    pub fn unsendable_dropped(&self) -> u64 {
+        match &self.state {
+            State::Active { processor, .. } => processor.borrow().unsendable_dropped(),
+            _ => 0,
+        }
+    }
+
     /// See [`AuProcessor::sysex_dropped`]; zero before activation.
     pub fn sysex_dropped(&self) -> u64 {
         match &self.state {

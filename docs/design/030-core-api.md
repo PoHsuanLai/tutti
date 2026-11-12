@@ -8,7 +8,7 @@ tempo, modulation, the sampler, the codec, export, and writing a custom node.
 session's plan (lanes L1e to L1h) does it for MIDI. The three share one set of
 conventions (§2).
 
-Status: inventory, two designs (§4, §5) and the one lane (§6); nothing in §4 to §6 is implemented. Written 2026-11-12
+Status: inventory, two designs (§4, §5) and the one lane (§6); the lane is built through step 8. Written 2026-11-12
 against `main` at `f583038f6`, from three read-only sweeps whose full findings
 (each with today's code, the friction, the fix and a size) are kept outside the
 repo in `~/tutti-audit/api-inventory/`. Already landed or in flight, and not
@@ -87,12 +87,12 @@ finding where the API produces wrong results today, not only friction.
 
 | # | finding | fix | size |
 |---|---|---|---|
-| S1 | `build_device` and every `MicIn::open*` hard-wire `AudioHost::Default`, so JACK is unreachable. A rate-changing restart leaves the host to redo the mic, the inlet and the wiring. `add_inlet(ring, rate)` passes the rate apart from the ring | `SessionBuilder::host(..)`; a `MicConfig` (`Default` plus struct update); a ring that carries its rate; `Session::add_mic`, which the restart reopens | M-L |
-| S2 | Restart is spelled four ways (`restart`, `restart_following`, `restart_wanted`, `restart_on`), with a separate `&mut Device` any session accepts. `watch_devices` takes `want`/`running_on` by hand. Events carry `String` errors | one `DeviceRestart` value with a `follow` hook; `watch_devices` reads the device; typed errors in events | M |
+| S1 | `build_device` and every `MicIn::open*` hard-wire `AudioHost::Default`, so JACK is unreachable. A rate-changing restart leaves the host to redo the mic, the inlet and the wiring. `add_inlet(ring, rate)` passes the rate apart from the ring | `SessionBuilder::host(..)`; a `MicConfig` (`Default` plus struct update); a ring that carries its rate; `Session::add_input`, which the restart reopens | M-L (built, step 7) |
+| S2 | Restart is spelled four ways (`restart`, `restart_following`, `restart_wanted`, `restart_on`), with a separate `&mut Device` any session accepts. `watch_devices` takes `want`/`running_on` by hand. Events carry `String` errors | one `DeviceRestart` value with a `follow` hook; `watch_devices` reads the device; typed errors in events | M (built, step 7) |
 | S3 | **Bug**: `let (s, _) = build_device(..)` drops the `Device` and silences the stream. `#[must_use]` does not fire on a destructure | return a named `#[must_use]` struct (`LiveSession { session, device }`) that also pairs the device with its session for S2 | S |
 | S4 | `InstrumentHandle` and `LiveInput` duplicate `note_on`/`note_off`/`send`/`send_at`/`clock`/`dropped` over `SharedKeys`. `note_on` takes a bare `u16` velocity | one shared keys handle (with the MIDI plan's `MidiKeys`), and a velocity type | S-M |
-| S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M |
-| S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S |
+| S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M (built: the kinds in #636, step 8's `Drop`) |
+| S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S (built, step 7) |
 | S7 | Removal is spelled `remove`, `remove_instrument`, `GeneralMidi::remove`, `unroute` and `close_*`, returning `bool` or `()`. `insert` against `add` is a trap (`insert` skips the reclaim sweep). `open_event_inlet` panics on a bad capacity | one `remove(key)` on typed keys, returning `Result`; `insert` folded into `add`; a checked capacity | S-M (built, 2d) |
 | S8 | The heard tap's `Backpressure` is a transient error mixed in with permanent ones. `LoadMeter::take` is `Clone`, so two readers split the peaks. tutti-cpal lists devices five ways | split the error; one reader, not `Clone`; one listing (built, §6 item 5) | S |
 
@@ -101,7 +101,7 @@ finding where the API produces wrong results today, not only friction.
 | # | finding | fix | size |
 |---|---|---|---|
 | T1 | **Bug**: a route onto a target with no `range()` is accepted. The next apply refuses with `CompileError::UndeclaredTarget` and freezes *all* modulation, reported only by an event | the range is part of the route: `route(src, target.within(lo..hi), depth)`, or a typestate target that has a range | M-L |
-| T2 | `Mods::range`, `Take::record`, `Trajectory::with_range` and `Graph::set_param` take bare `f32` for params that have units. Min > max is not refused | unit-typed targets from `Key<N>` param methods; a checked range | M |
+| T2 | `Mods::range`, `AutomationTake::record`, `Trajectory::with_range` and `Graph::set_param` take bare `f32` for params that have units. Min > max is not refused | unit-typed targets from `Key<N>` param methods; a checked range | M |
 | T3 | `Graph::set_param` returns `()` and ignores a missing node or param, although `ParamSet::set` returns `bool`. `set_node_params` is plumbing a user can forget | `Result` and `#[must_use]`; the plumbing made `pub(crate)` | S-M |
 | T4 | A route cannot be found again. `RouteKey`/`SourceKey` are opaque with public `u64`s, there is no `routes()` or `routes_to(target)`, and edits are `route_mut` plus public fields. `route` hard-codes polarity and the curve | private minted keys; iterators; a route builder (`.polarity(..).curve(Law::..)`) | M (built, step 4) |
 | T5 | "Why is nothing modulating" has three channels (`ModState::refusal`, `unresolved_*`, a `SessionEvent`), and the errors name opaque keys | one `problems()` iterator whose `Display` names the node and the param | M (built, step 4) |
@@ -119,12 +119,12 @@ finding where the API produces wrong results today, not only friction.
 | N2 | A user's `ParamNode` needs a hand-written `SessionNode` before `Graph::add` takes it (the macro the built-in nodes use is private) | a `Params(node)` wrapper, beside `ForkByClone` and `Unforkable` | S |
 | N3 | `Clone` means opposite things to `ForkByClone` (a fork) and to `param_parts` (a shared cell), so `ForkByClone(param'd node)` compiles and forks onto the live cell | `Params(node)` (N2) is the only way in for a param'd node; refuse the other by type | M |
 | N4 | `Shape`, `Io::channel(c).map(..)` and the shortest node bodies are not in the docs | a node-writing guide in `tutti-graph`'s crate docs | S |
-| A1 | `VoicePoolHandle` is only `send(VoiceCommand::..)`. `AddVoice` on a disk voice silently drops its loop and direction. The `stretch` argument is never `Some` | handle methods; a streaming voice type; the dead argument removed | M |
-| A2 | `VoiceNodeHandle` sets only gain and placement, and the caller must keep the disk `Stream` alive or the voice goes silent | loop, speed and play/stop on the handle; the handle owns the `Stream` | M |
-| A3 | Five loop setters, `crossfade_frames: usize`, a public unchecked `LoopSetting::On`, and the checked `LoopSpan` hidden | one checked `Loop` value in `Samples` | M |
-| A4 | Disk voices take `Beat` plus `Option<BeatDuration>` where memory voices take `VoiceWindow`. `tutti_sampler::Source` and `Status` are unused and collide with other crates' names | one window type; delete the unused | S |
-| A5 | `DiskStreamer::open` can only be polled in a sleep loop. `take_disk_streamer` and the detached session | a blocking open on the spawner, landing in `update()`; the take kept until `bevy-tutti` un-parks | S |
-| A6 | `Clip` (from #632) covers memory only | `Clip` also streams from disk past a size threshold, or with `.streamed()` | M |
+| A1 | `VoicePoolHandle` is only `send(VoiceCommand::..)`. `AddVoice` on a disk voice silently drops its loop and direction. The `stretch` argument is never `Some` | handle methods; a streaming voice type; the dead argument removed | M (built, step 9) |
+| A2 | `VoiceNodeHandle` sets only gain and placement, and the caller must keep the disk `Stream` alive or the voice goes silent | loop, speed and play/stop on the handle; the handle owns the `Stream` | M (built, step 9) |
+| A3 | Five loop setters, `crossfade_frames: usize`, a public unchecked `LoopSetting::On`, and the checked `LoopSpan` hidden | one checked `Loop` value in `Samples` | M (built, step 9) |
+| A4 | Disk voices take `Beat` plus `Option<BeatDuration>` where memory voices take `VoiceWindow`. `tutti_sampler::Source` and `Status` are unused and collide with other crates' names | one window type; delete the unused | S (built, step 9) |
+| A5 | `DiskStreamer::open` can only be polled in a sleep loop. `take_disk_streamer` and the detached session | a blocking open on the spawner, landing in `update()`; the take kept until `bevy-tutti` un-parks | S (built, step 9) |
+| A6 | `Clip` (from #632) covers memory only | `Clip` also streams from disk past a size threshold, or with `.streamed()` | M (built, step 9) |
 | C1 | **Bug**: `Wave::read` silently assumes 44.1 kHz when the container has no rate | refuse with `DecodeError`, or take the rate as an argument | S |
 | C2 | Saving a `Wave` takes a hand-built `Spec` and hand interleaving, and `Rendered` and `Wave` do not convert | `Wave::write(path, format)`, `layout`, `interleaved`, and `From<Rendered> for Wave` | M |
 | C3 | `Spec` holds a `layout` and an optional `topology` that must agree. Codec constructors disagree on argument order and error type | `Spec` from a topology alone; one constructor shape | S |
@@ -136,8 +136,8 @@ finding where the API produces wrong results today, not only friction.
 
 | # | finding | fix | size |
 |---|---|---|---|
-| R1 | A take carries no position on the timeline, input and output latency are not compensated, and a recording starts on wall time | `s.record(input, At) -> Take`: the start frame and beat, the compensation, punch in and out through `At`, with monitoring and recording opened in one call | L |
-| R2 | The playhead is two atomics (`beat()`, `is_playing()`) that can disagree, and it moves in block steps | one `s.playhead() -> Playhead { beat, frame, seconds, playing, at }` (a sequence lock), and `beat_now(Instant)` extrapolated from the block clock | S-M |
+| R1 | A take carries no position on the timeline, input and output latency are not compensated, and a recording starts on wall time | `s.record(input, At) -> Take`: the start frame and beat, the compensation, punch in and out through `At`, with monitoring and recording opened in one call | L (built, step 8) |
+| R2 | The playhead is two atomics (`beat()`, `is_playing()`) that can disagree, and it moves in block steps | one `s.playhead() -> Playhead { beat, frame, seconds, playing, at }` (a sequence lock), and `beat_now(now)` extrapolated from the block clock on `tutti_rt::monotonic_ns` | S-M (R2 built, §6 item 6) |
 
 ## 4. Design: declicked wiring
 
@@ -203,6 +203,15 @@ Two changes to `tutti-graph`:
   advances it too.
 - Taps already ride the commit queue and survive edits; nothing else is
   needed.
+
+**Built** (§6 item 8, first half). The writer pushes a run (start frame, frames
+taken) into a small ring before each block's samples, so a reader that sees a
+sample sees its run; a block the lanes had no room for leaves no run, and the
+reader's clock jumps to the next run's start. `TapReader::contiguous` is the
+frames readable before that jump, so a consumer that places every frame never
+reads across a gap. A `pair` writer (an inlet's producer, the engine's heard tap)
+has no graph clock and numbers its frames from zero. An aligned tap is on the
+output's clock.
 
 ### 5.2 Where the take is placed
 
@@ -288,7 +297,7 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      `set_event_sources` and `EventSource` deleted; event input 0 is the main
      one, where a chase delivers) and typed params (T2, T3, N2). N3 is partial:
      `Params(node)` is the way in, but Rust cannot refuse `ForkByClone(param
-     node)` by type. `Take::record` and `Trajectory::with_range` are not typed yet.
+     node)` by type. `AutomationTake::record` and `Trajectory::with_range` are not typed yet.
    - 2d (built): removal (S7). Every removal and close is a `Result` naming what
      was not there (`RemoveError`, `CloseError`, `HeardTapError::NotOpen`,
      `NoSuchModSource`, `NoSuchModRoute`, `NoSuchMidiRoute`); `Graph::add`
@@ -353,11 +362,136 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
    takeover is delayed by a fade is held in the queued crossfade, its injection
    sized with the plan, and delivered when the fade ends (`end_fades`), not dropped;
    `chase_skipped_count` is gone.
-6. **Playhead:** R2.
-7. **Device:** S1 (`add_input`), S2, S6, `Device::latency`, typed event
-   errors.
-8. **Takes:** §5 (`TapReader::next_frame`, `Take`, `Punch`).
-9. **Sampler:** A1 to A6.
+6. **Playhead** (built): R2. `Session::playhead() -> Playhead` is one read of
+   the block clock's cell (`tutti-engine`'s `block_clock`, one sequence-lock cell, no
+   second copy): the audio thread writes it once per render call, from the
+   transport of the call's first frame after the commands due on it, so
+   `beat`, `frame`, `seconds` and `playing` are one instant. `at` is the call's
+   `tutti_rt::monotonic_ns`, the clock the MIDI edge's `ClockMap` already uses, and
+   the snapshot also carries the tempo in force and the call's length.
+   `Playhead::beat_now(now)` (`Session::beat_now()` reads the clock itself) is
+   the beat plus the tempo's beats over the time since `at`, held at the beat
+   when stopped, before a call has rendered or for a `now` before `at`, and
+   **clamped to one call's length** past `at`, so a stalled audio thread
+   leaves the playhead one block on, never running away. Through a tempo ramp
+   the line is at the tempo of the call's first frame: wrong by the ramp's change over
+   one block at most. A session with no engine rendering reads
+   `Playhead::default()` (stopped at the origin, `at` is `None`); an offline
+   `Bounce` renders a fork and never moves it. `TransportSettings::beat` and
+   `MotionFsm::{is_playing, is_stopped}` are gone from the public surface (the
+   transport's own `Timeline` reads of beat and rolling stay, for the code
+   that is the transport's), and `MotionFsm::motion` is crate-private. The
+   example of §1: `let p = s.playhead(); draw(p.beat_now(tutti_rt::monotonic_ns()), p.playing())`.
+7. **Device** (built): S1, S2, S6, `Device::latency`, typed event errors.
+   - S1: `SessionBuilder::host(AudioHost)` is the host of the output and of
+     every input; `Session::add_input(InputConfig) -> Input` opens a
+     `tutti_cpal::MicIn` (opened by a `MicConfig`: host, device, inputs by
+     `Fold::select`, the monitor ring's depth) and its inlet in one call, and a
+     restart reopens each at the graph's new rate into the same inlet node
+     (`Input::node()`, a `Key<InletNode>`; nothing rewired). The ring carries
+     its rate: `tutti_graph::InletRing::pair(width, capacity, rate)`, and
+     `Graph::add_inlet(ring)` refuses one whose rate is not the graph's
+     (`InletError::RateMismatch` stays). `MicIn::open*` are one
+     `open(&MicConfig, rate)` and `open_with_monitor`.
+   - S2: one `DeviceRestart` value (`DeviceRestart::to(device)`, `.max_block`),
+     applied through `LiveSession::restart(request) -> Result<RestartOutcome,
+     RestartError>` (the pair, so no foreign `Device` can be passed;
+     `RestartOutcome::Stale` is a stale request of the policy's, dropped,
+     `Restarted(DeviceRestarted)` the rates before and after). The host's
+     hook for what it holds itself is `LiveSession::on_restart`, set once and run
+     at the end of every restart's hook, and `LiveSession::watch_devices(source,
+     policy)` reads what the device was opened with and runs on. `restart_following`,
+     `restart_wanted` and `Session::restart` are gone; `restart_on`,
+     `Session::watch_devices` (four arguments) and `build_device_on` are behind
+     `testing`. Device events are `SessionEvent::Device(DeviceEvent)`,
+     `#[non_exhaustive]` at both levels: `Fault`, `Lost`, `Appeared`,
+     `DefaultChanged`, `RestartWanted`, `Restarted`, `RestartFailed(RestartError)`
+     (a shared `Error`, its `source()`; `Error::Restart` for `?`),
+     `InputReopenFailed { input, error }`, `OutputsListed`,
+     `OutputsListFailed(tutti_cpal::Error)` and `OutputsListSlow`.
+   - S6: `inputs` and `outputs_floor` take a `ChannelLayout` (so a count no layout
+     holds is unwritable, and `root_width`'s project width is one);
+     `render_workers(Workers)`: `Workers::PerCore`, `Workers::Exactly(NonZeroUsize)`,
+     `Workers::SERIAL` (a constant and the default, so there is one spelling of
+     the callback alone: `Exactly(1)` is it) and `Workers::of(n)`.
+   - `Device::latency() -> DeviceLatency { input, output: Option<Samples> }`, the
+     streams' callback timestamps (output: playback against callback; input:
+     callback against capture, `tutti_cpal::StreamLatency` cells the callbacks
+     record into) at the graph's rate, `None` for a direction not yet reported
+     (after a restart too) and never a zero. `Session::latency()` stays the
+     plan's compensation.
+8. **Takes** (built): §5 (`TapReader::next_frame`, `Take`, `Punch`). Two PRs:
+   `next_frame` (with `TapReader::contiguous`) on its own, then the session's take.
+   - `Session::record(&Input, Punch, TakeTarget) -> Result<Take<Armed>, TakeError>`
+     (features `device` and `audio-io`): a plan tap (raw) on the input's inlet
+     node, and a pump on the spawner (`submit_stream`) into a `FileOut` or a
+     sink of the caller's. A gap the tap lost is silence in place, counted in
+     `Recorded::lost`, so the take stays aligned (a plain `Recorder` closes up).
+   - `Punch::at(impl Into<At>)`, `.until(..)` refused where it is made when it
+     is not after the start; a beat is a frame through the project's tempo map
+     from the playhead, and a beat while the transport is stopped is
+     `TakeError::TransportStopped`. A punch in the past starts at once.
+   - Placement: `Terms { in_latency, out_latency: Option<Samples>, inlet_lead,
+     offset: Trim }`, read when the first frame arrives; an unreported latency
+     is `None` and `Terms::is_complete` says so; `Start::{At, BeforeOrigin}` keeps
+     a start before the origin rather than clamping it. `offset` is per input
+     (`InputConfig::offset`, so it survives a restart), signed (`Trim`).
+     `inlet_lead` is `OpenedInput::lead`, declared by the opener (the sound
+     card's ring is not prefilled: 0).
+   - `Take<Armed>` -> `Take<Rolling>` (`rolling()`, once the first frame is in)
+     and `finish()` on both; dropping the handle stops the take. `Recorded`:
+     path, `Placement` (first frame, terms, start, start beat), frames, lost,
+     and `clip()` (feature `sampler`).
+   - `SessionEvent::Take(TakeEvent::{Started, Finished, Failed})`,
+     `Error::Take(TakeError)`, both `#[non_exhaustive]`.
+   - A restart during a take is not followed: its frames after the restart are on
+     the new rate.
+   - S5: the `Live`/`Finite` recorder kinds had landed (#636); a live
+     recorder's `Drop` stops, joins and finalizes, and now logs a failed sink
+     at `error` with the frames lost; `Recorder` stays source-to-sink, off the
+     spawner (it owns no session).
+9. **Sampler** (built): A1 to A6, one PR. As built:
+   - A3: `Loop`, a span of whole frames in `Samples` (`Loop::new(a..b)` refuses an
+     empty or reversed span, `with_crossfade` one longer than the loop:
+     `LoopError::{EmptySpan, CrossfadeTooLong}`) replaces `LoopSetting`, the five
+     setters and `crossfade_frames: usize`. Every tier takes `Option<Loop>`
+     (`MemorySource::set_loop`, `Stream::set_loop`, a pool's and a node's handles) and the
+     streamer's `LoopError::Position` is gone: a position that is not a frame cannot
+     be written. `Loop` keeps the file-bound derivation (`LoopSpan`: the fade
+     after the clamp to the file, the fade into the head, where a wrap lands)
+     as the one internal read of it; `LoopSpan` stayed because the derived figures
+     depend on the file's length, which a `Loop` made on the control side may not
+     know yet.
+   - A4: `VoiceWindow` is the one window (kept: it was the memory voices' and is
+     already in the prelude): `DiskVoice::from_reader(reader, VoiceWindow)`,
+     `set_window`, `MemorySource::placed(wave, VoiceWindow)`. `tutti_sampler::Source`
+     and `Status` were used by nothing and are deleted (`DiskStreamer::sample_rate()`
+     replaces `status()`); `tutti-sampler`'s `voice` module is private and the crate
+     joins the per-module path gate.
+   - A1: `VoicePoolHandle` is methods over a private `VoiceCommand`: `add` takes a
+     `MemorySource`, `add_streaming` a `DiskVoice` and its `Stream` and a `Playback`,
+     so a disk voice cannot be added without the stream that steers its loop and
+     direction (the add that dropped both is not writable). `VoicePool::insert`
+     is the same for a pool not yet in a graph. `SendError` carries nothing.
+   - A2: `VoiceNodeHandle` sets window, loop, speed and play/stop beside gain, and
+     `VoiceNode::streaming(DiskVoice, Stream, Playback)` hands the stream to the
+     handle, which owns it (an owned cross-thread handle, convention 4): it ends with the
+     last clone, and the session's reclaimer keeps a clone for as long as the node is in the
+     graph. A disk voice's loop is set on the stream; `stop` is a gate on the node (silent,
+     nothing read), which a free-running voice resumes from where it stopped.
+   - A5: `Session::open_stream(path, Placement) -> Result<SamplerLoad, SamplerError>`
+     opens on the spawner (`Opening::wait` sleeps on the reply) and lands
+     `SessionEvent::Sampler(SamplerEvent::Opened { id, stream, reader } | OpenFailed { id, error })`;
+     `Error::Sampler(SamplerError)` is the one error variant. `take_disk_streamer` stays
+     until `bevy-tutti` un-parks; `disk_streamer()` had one user, which moved to the new call.
+   - A6: `Clip` is a `VoiceNode` over either tier (`Clip::new(wave)` resident,
+     `Clip::streaming(reader, stream)`), its controls the node's handle.
+     `Session::load_clip(path, Residency)` decides the tier for a file: `Auto` streams
+     past `STREAM_ABOVE_BYTES` (32 MiB of decoded `f32`, about 95 s of 44.1 kHz stereo:
+     a few such files would take the streamer's 1 GiB cache for audio read once
+     through) and lands `SamplerEvent::ClipLoaded`. The force is the `Residency` argument,
+     not `.streamed()` on the clip: the choice is made in the load job, before there is a clip
+     to call it on. `Recorded::clip()` is unchanged (resident).
 10. **Codec and export:** C2, C3, E1, E2, then C4.
 11. **Tempo and names:** T6, T8, T10.
 12. **Instruments:** S4, with the MIDI session's keys handle.

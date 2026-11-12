@@ -12,13 +12,15 @@
 //! start steps across the wrap by less than a cut's step, which the wave
 //! gives analytically.
 
+use tutti_sampler::VoiceWindow;
+
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Executor, LoopRange, Prepare, Transport, WorkerPool};
 use tutti_graph::{OutPort, Source};
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource, Wave};
+use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, Wave};
 use tutti_types::{Beat, Bpm, FrameClock, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
@@ -60,18 +62,12 @@ fn graph(wave: &Arc<Wave>, workers: usize, host: Host) -> Executor {
         let key = NodeKey(k + 1);
         // Placed before the loop's start, on it, and inside the fade.
         let at = [0.0, LOOP.0, LOOP.0 + 0.002][k as usize % 3] + k as f64 * 0.0001;
-        let source =
-            MemorySource::placed(Arc::clone(wave), Beat(at), None).expect("a placeable wave");
+        let source = MemorySource::placed(Arc::clone(wave), VoiceWindow::from(Beat(at)))
+            .expect("a placeable wave");
         match host {
             Host::Pool => {
                 let mut pool = VoicePool::new();
-                pool.insert_voice(
-                    SlotId(1),
-                    Voice {
-                        source: VoiceSource::Memory(source),
-                        play: Playback::default(),
-                    },
-                );
+                pool.insert(SlotId(1), source, Playback::default());
                 ed.insert(key, "pool", pool);
             }
             Host::Node => {

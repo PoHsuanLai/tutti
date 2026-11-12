@@ -15,10 +15,10 @@
 use tutti_cpal::{ManualStream, ManualStreamDriver, OutputSpec};
 use tutti_graph::NodeKey;
 use tutti_graph::{CrossfadeCurve, ForkByClone};
-use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::{Osc, Through};
+use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{Crossfade, Error, InPort, OutPort, Root, Session};
-use tutti_transport::MotionEvent;
+use tutti_transport::{MotionEvent, Timeline};
 use tutti_types::{At, ChannelLayout, Db, Frame, Hz, MaxBlock, SampleRate, Samples, Seconds};
 
 const OLD: f64 = 44_100.0;
@@ -52,11 +52,11 @@ fn engine() -> (
         .expect("builds with no device")
         .into_parts();
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
-    let (lim, _) = s.graph().add(LimiterNode::with_channels(
-        ChannelLayout::MONO,
-        Db(0.0),
-        Db(0.0),
-    ));
+    let (lim, _) = s.graph().add(LimiterNode::mono(LimiterControls {
+        threshold: Db(0.0),
+        ceiling: Db(0.0),
+        ..LimiterControls::DEFAULT
+    }));
     s.graph()
         .set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
         .unwrap();
@@ -135,12 +135,12 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
         (period(&before[4_410..]) - 44.1).abs() < 0.01,
         "1 kHz at 44.1 kHz"
     );
-    assert!((t.settings().beat().get() - 2.0).abs() < 1e-9, "one second");
+    assert!((t.beat().get() - 2.0).abs() < 1e-9, "one second");
     let old_latency = s.graph_ref().node_latency(lim).unwrap();
     assert_eq!(s.latency(), old_latency, "the 44.1 kHz figure is published");
 
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect("restarts");
     assert!(!old.is_open() && new.is_open(), "on the new device");
     assert_eq!(
@@ -177,24 +177,24 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
          of a re-prepare with its units out"
     );
     assert!(
-        (t.settings().beat().get() - 2.02).abs() < 1e-9,
+        (t.beat().get() - 2.02).abs() < 1e-9,
         "the beat carries on from 2.0 at the new rate, not from {}",
-        t.settings().beat().get()
+        t.beat().get()
     );
     after.extend(play(&mut s, &new, 480, 54));
     // One frame of 48 kHz is 1/24 000 of a beat: 1e-9 pins the frame.
-    assert!(t.motion().is_stopped(), "the stop landed");
+    assert!(!t.is_rolling(), "the stop landed");
     assert!(
-        (t.settings().beat().get() - 3.0).abs() < 1e-9,
+        (t.beat().get() - 3.0).abs() < 1e-9,
         "the stop lands on 1.5 s of wall clock, frame 72 000 (beat 3), not at beat {}",
-        t.settings().beat().get()
+        t.beat().get()
     );
     after.extend(play(&mut s, &new, 480, 45));
-    assert!(t.motion().is_playing(), "the later play landed");
+    assert!(t.is_rolling(), "the later play landed");
     assert!(
-        (t.settings().beat().get() - 3.5).abs() < 1e-9,
+        (t.beat().get() - 3.5).abs() < 1e-9,
         "rolling again from frame 84 000, 12 000 frames to go (beat 3.5), not beat {}",
-        t.settings().beat().get()
+        t.beat().get()
     );
     assert!(
         (period(&after[4_800..]) - 48.0).abs() < 0.01,
@@ -226,12 +226,11 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
             spec_at(NEW),
             driver,
             Some(MaxBlock::of(Samples(16_384))),
-            |_| {},
         )
         .expect_err("past the capacity");
     assert!(
         matches!(
-            err,
+            err.error(),
             Error::Reprepare(tutti_graph::CommitError::BlockTooLong {
                 max_block: 16_384,
                 limit: 8_192
@@ -252,7 +251,6 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
         spec_with(NEW, 6),
         driver,
         Some(MaxBlock::of(Samples(2_048))),
-        |_| {},
     )
     .expect("at a block the engine holds");
     assert!(new.is_open());
@@ -272,7 +270,7 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
     assert_eq!(s.graph_ref().outputs(), 2);
 
     let (driver, surround) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_with(NEW, 6), driver, None, |_| {})
+    s.restart_on(&mut device, spec_with(NEW, 6), driver, None)
         .expect("restarts");
     assert_eq!(
         s.graph_ref().outputs(),
@@ -292,7 +290,7 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
     );
 
     let (driver, stereo) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect("restarts");
     assert_eq!(s.graph_ref().outputs(), 6);
     assert_eq!(device.spec().channels, ChannelLayout::STEREO);
@@ -320,7 +318,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
         .set_sources(InPort::new(lim, 0), [OutPort::new(loop_back, 0)])
         .unwrap();
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect_err("the graph no longer compiles");
     assert!(!old.is_open() && !new.is_open(), "left stopped");
     assert_eq!(device.graph_rate(), SampleRate(OLD));
@@ -333,7 +331,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     s.graph().remove(loop_back).unwrap();
     let _ = s.update();
     let (driver, back) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(OLD), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(OLD), driver, None)
         .expect("recovers");
     assert!(back.is_open());
     let out = play(&mut s, &back, 441, 20);
@@ -354,7 +352,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
 fn a_crossfade_after_the_restart_lands_at_once() {
     let (mut s, mut device, _old, osc, _) = engine();
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect("restarts");
     let landed = s
         .graph()

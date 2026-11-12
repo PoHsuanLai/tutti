@@ -77,7 +77,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
     queues and the one it replaces goes back to the control side
     (`tutti-engine/src/hearing.rs`).
   Both count what a slow reader loses (`TapReader::take_lost`, and
-  `Source::take_lost` through `Recorder::lost`).
+  `Source::take_lost` through `Recorder::lost`). A reader also keeps the graph's
+  clock: `TapReader::next_frame` is the graph frame of the next frame it hands
+  out (each block of a plan tap is stamped with its start, a lost block advances
+  it, a `pair` writer numbers its frames from zero), and `TapReader::contiguous`
+  is what can be read before the first gap, for a consumer that places every
+  frame (a take).
 - Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
   and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
   `Editor::open_event_tap` / `Graph::taps().open_event` on one event output, read
@@ -85,19 +90,35 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   layout). MIDI only, each event a `TapEvent { frame, ump }` on the graph's
   absolute clock (a `u64`, after any `TapAlign` delay), the ring `note_off_room`
   of the capacity named at open so a note-off outlives the others, loss counted
-  in events (`take_lost`). A port that goes missing later reads nothing and
+  in events (`take_lost`), read with `EventTapReader::drain()` (an allocation-free
+  iterator over what is there when it is called; it counts no loss). A port that goes missing later reads nothing and
   counts nothing; a closed tap compiles to no op and a fork carries none. Its
   frames are on the rate the reader was opened at (`EventTapReader::rate`), so
   whoever re-prepares at another rate reopens its own (`Taps::reopen_event`, one id;
   `reopen_events` replaces every reader, a caller's too). The session's hardware MIDI
   out is such a tap, on the clock node, `ToOutput`, drained in `Phase::MidiOut`.
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
-  `InletNode` (`tutti-graph`) copies a ring (`TapReader::pair`)
+  `InletNode` (`tutti-graph`) copies a ring (`InletRing::pair`, which states
+  the rate its producer fills it at)
   a thread of your own fills (a capture callback) into the graph, and
   `Graph::open_inlet` / `add_inlet` (`tutti-session`) refuse a producer whose
   rate is not the graph's with `InletError::RateMismatch`. An inlet does not
   resample and two clocks drift; what fills or empties the ring is counted,
-  never blocked on. Gain is a node downstream, not the inlet's.
+  never blocked on. Gain is a node downstream, not the inlet's. A capture
+  device is an **input**: `Session::add_input(InputConfig)` opens a
+  `tutti_cpal::MicIn` (on the builder's `host`, by a `MicConfig`) and its inlet
+  in one call, `Input::node()` names the node, and a device restart
+  (`LiveSession::restart`) reopens every input at the new rate into the same
+  node. A **take** (`Session::record(&Input, Punch, TakeTarget) -> Take<Armed>`,
+  features `device` and `audio-io`, doc 030 §5) records a plan tap on the input's
+  inlet through a pump on the session's spawner, so it is on the graph's clock; it
+  states where it belongs term by term (`Terms`: the capture's and playback's
+  latency, `None` while unreported and never 0, the ring's lead, the input's
+  `Trim`) and `SessionEvent::Take` reports it started and ended once. A gap the
+  tap lost is silence in place, counted; a plain `Recorder` closes up over it. A restart is one `DeviceRestart` value through the `LiveSession` (the
+  pair), and device events are `SessionEvent::Device(DeviceEvent)` with typed
+  errors; `Device::latency` is what the streams' callback timestamps report, per
+  direction, `None` until reported.
 - Copying events into the graph is the **event inlet**: `EventInletNode`
   (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
   `push(impl Into<Stamp>, Ump)` (a `Stamp` is `NextBlock`, a `Frame` or a `Moment`: a beat is unwritable; `push_all` takes a run), held on `Env::due` until its frame
@@ -116,10 +137,27 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `tutti_engine::BlockClockReader`, a `tutti-rt` sequence cell; the session
   turns it into the runtime's `ArrivalClock`), the device's thread holds a `ClockMap` fed those
   readings, places each arrival on a frame plus a fixed lead (one block) and
-  pushes it with `push` (a `Moment` stamp); the audio thread converts no time. The graph side
+  pushes it with `push` (a `Moment` stamp); the audio thread converts no time. A
+  `DeviceInput` **holds its slot until it drops** (the drop gives it back and queues the
+  inlet's removal: nothing closes a slot by hand; `DeviceInlets::new` returns the `Arc` the
+  inputs give the slot back to). The graph side
   is `MidiIngestNode`, one event input per device slot with a translator and
   MPE state each, and the session wires a device's inlet to its slot in
-  `Phase::Poll` (doc 017 E5, open question 8).
+  `Phase::Poll` from `DeviceInlets::take_changes`, an iterator that drains a change per step
+  with no lock held across the caller's work (doc 017 E5, open question 8). A node built
+  `.following(&DeviceInlets)` restarts a slot's translator and MPE state itself when a new
+  device takes it (it compares the slot's epoch per block; no one calls it). A port's one id
+  is `tutti_midi_runtime::DeviceSlot` (slot index and generation; ephemeral, no serde), which
+  `tutti-midi-hardware`'s `HardwareMidiInputs`, `PortInfo`, `InputProducerHandle::slot` and
+  `OpenInput::slot` all use.
+- **The playhead is one read** (doc 030 R2): `Session::playhead() -> Playhead`
+  (`tutti-engine`) is the block clock's one `tutti-rt` sequence cell, written once
+  per render call from the transport of the call's first frame, so `beat`,
+  `frame`, `seconds` and `playing` are one instant; `at` is that call's
+  `tutti_rt::monotonic_ns`. `Playhead::beat_now(now)` extrapolates at the tempo
+  in force, clamped to one call's length past `at`. An app reads this, not
+  `TransportSettings::beat` or `MotionFsm::is_playing` (crate-private; the
+  transport's own `Timeline` reads stay for code that is the transport's).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or
@@ -412,7 +450,19 @@ crates/          everything shipped; directory name = package name; no nesting
                  `Range`, `BounceLatency`, `BounceTail`, `stem`s, each a plan tap) through
                  `Session::{bounce, bounce_start, finish_bounce}`, `BounceJob`,
                  `BounceHandle` and `BounceError`; it derives the figures and
-                 `tutti-export` renders them.
+                 `tutti-export` renders them. Its MIDI front is `Session::midi()`
+                 (`Midi`, feature `midi`): clips, live inputs, routes, the one `MpeMode`
+                 (`set_mpe`; a synth added through `add_instrument` follows it over its own
+                 `SynthConfig::mpe`: `SessionInstrument::bind_mpe`, which every instrument
+                 `add_instrument` takes states), `record(target, capacity)` (a
+                 take: an event tap on the live input, placed by `TakePlacement`) and, with
+                 `midi-hardware`, the devices (`devices`, `connect_input`/`connect_output`,
+                 `reconnect_saved -> Resolution`), and `load_file` and (`soundfont`)
+                 `load_soundfont`, jobs on the session's spawner that return a `MidiLoad`
+                 and land `FileLoaded` / `SoundFontLoaded` in `update()`. Its events are `SessionEvent::Midi(MidiEvent)`
+                 and its error `Error::Midi(MidiError)`, each cause (hardware, file, send,
+                 route) the source of one variant; `MidiRouteRule<T>` has `serde` behind the
+                 `serde` feature, keyed by the app's own stable id, never a `NodeKey`.
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-rt.
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
@@ -514,7 +564,23 @@ crates/          everything shipped; directory name = package name; no nesting
                  (`Encoder::create_file_planned`), a resampled length the resampler's
                  (`StreamingResampler::output_frames`), the clamp count the encoder's
   tutti-nodes (the `Node` adapters, the VBAP and HRTF panners among them), tutti-sampler
-                 (a placed sample is a `Clip`, itself a graph node; `memory_voice` is for pools), tutti-polysynth,
+                 (a placed sample is a `Clip`, itself a graph node, resident or streamed from disk
+                 and a `VoiceNode` underneath; `memory_voice` is for pools; **a loop is one checked
+                 `Loop`**, a span of whole frames in `Samples` with a crossfade that fits it, refused
+                 where it is made, taken by every tier (`MemorySource::set_loop`,
+                 `Stream::set_loop`, a pool's and a node's handles); **a window is one `VoiceWindow`**,
+                 memory and disk voices alike; **`VoicePoolHandle` is methods, not commands**
+                 (`add` takes a `MemorySource`, `add_streaming` a `DiskVoice` with the `Stream`
+                 that steers its loop and direction, so a disk voice cannot be added without its
+                 stream), and **`VoiceNodeHandle` owns a streaming node's `Stream`**
+                 (`VoiceNode::streaming`): the stream lives as long as the last clone of the handle,
+                 which the session's graph keeps for as long as the node is in it. The tier decision
+                 is the caller's or the session's, never the sampler's alone: `Session::open_stream`
+                 opens a stream on the spawner and `Session::load_clip` a `Clip` by `Residency`
+                 (`Auto` streams past `STREAM_ABOVE_BYTES`), each landing in `update()` as
+                 `SessionEvent::Sampler(SamplerEvent)` with the id the call returned; `tutti_sampler`'s
+                 modules are private but `stretch` and `testing`, and the per-module path gate covers
+                 them), tutti-polysynth,
   tutti-soundfont (the SoundFont player: the node, the voices, the patch that
                  turns a note into voices; it executes `tutti-voicing`'s
                  commands), tutti-sf2 (the SoundFont 2 file as data)
@@ -694,7 +760,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Extend<Ump>` and allocates nothing, `Connection` (`new` returns `(Self, Action)`, the first `Action::Send`) is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
+  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` (an iterator over the devices that settled) from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which answers `Pushed::{Sent, Diverted, Full}` and also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); **the send time is `tutti_midi_runtime::OutputPlan`'s** (the frame's instant on `ClockMap::os_at` + the audio output's latency, `None` while unreported and never a zero, - the device's MIDI latency + the user's `OutputOffset`; now or past is `SendAt::Now`, more than `MAX_OUTPUT_AHEAD` is refused and counted) and every send time is an `Instant` the backend converts to its own clock in one function (`MidiOut::queue_timed`); `Endpoint::reply` has no caller, since tutti publishes no endpoint. **A MIDI 1.0 source is opened as MIDI 1.0 and widened by the ingest node's `Translator`, never by the OS** (ALSA's `UmpVersion`, CoreMIDI's `Midi10` port). A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with
@@ -799,9 +865,20 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Family`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
   `SvfFamily<F>`, `LadderFamily<F>` and `CrossoverFamily` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
-  written once), the dynamics curves, followers and kernels and the brickwall clipper
+  written once), the dynamics curves, followers and kernels, the brickwall clipper
   (`BrickwallFamily`, `BrickwallRecurrence`: the first dynamics family on the model, its
-  ceiling a fast lane), the partitioned
+  ceiling a fast lane) the compressor (`CompressorFamily`, `CompressorRecurrence`: its threshold a fast lane,
+  its makeup gliding over `GAIN_GLIDE`; the block `CompressorKernel` stays for the
+  multiband) and the noise gate (`GateFamily`, `GateRecurrence`: threshold a fast lane, the
+  range gliding over `GAIN_GLIDE`), both on a typed `KeySource` (`KeySource::Sidechain`, a key bus that
+  must be wired, `Channels::keyed`; `KeySource::Own`, the signal itself, `Channels::same`), the
+  lookahead limiter (`LimiterFamily`, `LimiterRecurrence`: threshold and ceiling fast lanes,
+  every coefficient landing whole; the lookahead a constructor constant that is the member's
+  latency, a checked `Lookahead` (above zero, at most 1 s, never clamped), `LimiterFamily::new(input, Lookahead)`) (a dynamics node is built from its named
+  controls struct: `CompressorNode::new(input, key, CompressorControls { .. })`,
+  `GateNode::new(input, key, GateControls { .. })`, `LimiterNode::new(input, lookahead,
+  LimiterControls { .. })`, each with `mono` and `stereo` shorthands; a gate's closed floor is
+  the caller's: `GateControls::DEFAULT`'s range is 0 dB), the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the
@@ -964,6 +1041,14 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`cargo xtask check-layout` holds it per crate, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
   `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
+- `tutti-midi-hardware`'s `MidiSession::open(inlets)` owns its `HardwareMidiInputs`
+  (`ports()` reads it); `connect_input`, `disconnect_input` and `connect_output` take a
+  `DeviceQuery` (`From<&DeviceId>`, `From<&str>`: a name is a case-insensitive substring, the
+  lowest id wins), `output() -> Option<OutputInfo>` reads the open output, a name that matches
+  nothing is `Error::NoDeviceNamed { name, searched }`, and `Error::{MidiPort, MidiDevice}`
+  keep the error under them as `source` (`Error::{port, port_from, device, device_from}`).
+  `Resolved::bind(BindPolicy)` takes a saved device unasked and `Resolved::into_candidates`
+  lists what an app asks about.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
   types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.
@@ -1144,7 +1229,7 @@ Scalars use `Param<U>`.
   the streaming tier reads a file at its own width and order. The input edges
   report a topology: a decoded file (`Wave::topology`, `FileIn::topology`,
   `WaveMetadata::topology`), a capture device (its inputs are `Unassigned`;
-  `MicIn::open_inputs` chooses them with `Fold::select`). The quad spelling is
+  `MicConfig::inputs` chooses them with `Fold::select`). The quad spelling is
   WAVE's (`FL FR BL BR`); `Fold` treats the side-surround spelling the plugin
   hosts decode as the same four feeds.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
@@ -1396,8 +1481,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `EventInletWriter::push_at` and `push(At, ..)` → `push(impl Into<Stamp>, ..)` (`At::Beat` and `Refused::Beat` and `SendError::Beat` are unwritable), `InstrumentHandle::send_at` and `LiveInput::send_at` → `send` with a `Moment`, `EventInletWriter::{lost, evicted, refused, late}` and `InletCounts::{lost, evicted, refused, late}` → `InletCounts::losses() -> Losses`, `MidiIngestControls::dropped_events` and `ClockMaster::dropped_events` → `losses()` (all `refused`), `HardwareMidiInputs::dropped_events` and `PortInfo::{dropped, late}` → `losses()` / `PortInfo::losses`, `InstrumentHandle::dropped` and `LiveInput::dropped` → `losses()`, `MidiKeys::new(writer)` → `MidiKeys::new(writer, MidiGroup)`, `Reclaimer::new(closure)` → `Reclaimer::of(&controls)` over `tutti_rt::Reclaim` (the inherent `reclaim` of `MidiClipControls`, `HarmonyControls`, `MidiIngestControls` and `VoiceNodeHandle` is that trait's), `tutti_polysynth::{Error, Result}` and `tutti_session::Error::Synth` → deleted (`PolySynth::new` is infallible: `SynthConfig::polyphony` is a `NonZeroUsize`), `SynthConfig::{sample_rate, max_voices, mpe_enabled, mpe_pitch_bend_range}` → deleted (the rate is `Node::prepare`'s), `polyphony` and `mpe: MpeMode` (a zone's member range is the per-note range), `PolySynth::{volume_atomic, detune_atomic, spread_atomic}` and `UnisonEngine`'s → the synth's `ParamSet` (`ParamSet::cell`), `PolySynth::{mpe_enabled, set_mpe_enabled}` → `mpe` / `set_mpe(MpeMode)`, `set_volume(f32)`, `set_unison_stereo_spread(f32)`, `set_unison_voice_count(u8)` and `UnisonConfig::voice_count: u8` → `Amplitude`, `Spread` and `UnisonVoices` (1 to 16, refused not clamped), `tutti_sf2::SoundFont::new(&mut R)` → `SoundFont::from_reader(R)` / `SoundFont::open(path)`, `Settings::new(rate)`, `Settings::with_sample_rate` and `Settings::{MAX_POLYPHONY, DEFAULT_POLYPHONY}` → `Settings::new()` and `Polyphony::{MAX, DEFAULT}` (`Polyphony::new -> Option`), `SoundFontUnit::{with_preset, with_sample_rate}` → `select(channel, &Preset)` and `prepare`, `tutti_soundfont::Error::{Io, SampleRateOutOfRange, PolyphonyOutOfRange}` → deleted (`Error::UnplayablePreset` is `select`'s), `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
-  channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
+- **Dead crate names:** A plugin's cause of death as a `String` (doc 029, "the typed cause") → `tutti_plugin_types::PluginFailure` (`Health::crash_cause -> Option<PluginFailure>`, `PluginStatus::Dead { cause: PluginFailure }` and `PluginStatus::cause() -> Option<&PluginFailure>`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed`, `PluginChange::{Died, Reloading}`, `PluginLiveness::{Recovering, Dead}`, `PluginRenderFault::Crashed`, `OfflineWait::{death, latch_crash}`, `mark_crashed(PluginFailure)`; `RecoveryEvent::Died { cause }`, `RecoveryEvent::LoadFailed { reason: String }` → `LoadFailed { cause: RecoveryFailure }`, `GiveUp::last: String` → `ReloadCause` (`Died(PluginFailure)` or `Attempt(RecoveryFailure)`, which `PluginChange::Reloading` and `PluginLiveness::Recovering` carry too); the error behind a failure is its `source`, and `PluginFailure::from_stream` is the one place a stream's `BridgeError` is classified), `Health::terminate(&str)` and `PluginHandle::terminate(&str)` → `terminate(TerminationReason)` (`TerminationReason::Hung`; the cause reads `PluginFailure::Terminated`), `RecoveryAction::Terminate { cause: String }` → `Terminate { reason: TerminationReason }`, a failed attempt's `String` reason (the replacement's ports, an in-process open, a dropped job) → `tutti_session::RecoveryFailure::{ReloadFailed, ReplacementDied, ReplacementPorts, ReplacementRefused, ReplacementInProcess, ReloadDropped, ReloadTimedOut}` (the session's own; `PluginFailure` holds only what a backend or the host latches), and `tutti_plugin_types::PortCounts` → `tutti_session::PortCounts`, `Reload::cause` (the session's private field) → deleted; "no cause latched" and "the backend reported a crash without a cause" → `PluginFailure::Unreported`, `tutti_plugin::catalog::Plugins` → `Catalog` (`Plugins::load` → `Catalog::open_db`, `rescan` / `spawn_rescan` / `poll_rescan` → `scan` / `spawn_scan` / `poll_scan`, `with_fresh_scan` → deleted: call `scan()`, `Plugins::open` → deleted: the catalog opens nothing, its refusal is `Catalog::check` and `Session::plugin_load(..).with_catalog(&catalog)` refuses a blacklisted plugin at load), `Plugin::opens_in_process(path)` → `Plugin::hosting_of(&PluginRef)` (the ref's `Hosting`: `Auto`, `InProcess`, `OutOfProcess`; doc 029 step 6b), `SessionEvent::{MidiOutDropped, MidiInputDropped, MidiDevice, MidiInputLost, MidiStream, MidiOutputLost, MidiWatchFailed}` → `SessionEvent::Midi(MidiEvent::{OutputDropped { total }, InputsDropped { total }, Added | Removed | Changed | InputLost | OutputLost { info } (`info.id` is the device), StreamSettled { device, stream }, WatchFailed})`, `tutti_session::Error::{NoEventInput, NoMidiInput, NotSessionMidi, TwoRouteDeclarers}` and `Error::Midi(tutti_midi_hardware::Error)` → `Error::Midi(MidiError)` (`MidiError::{Hardware, File, Send, NoSuchRoute, NoEventInput, NoMidiInput, NoHardware, NotSessionMidi, TwoRouteDeclarers(RouteDeclarer)}`, each cause its `source`; `Midi`'s calls return `Result<_, MidiError>`, and `?` converts into the session's `Error`; the umbrella's is `tutti::midi::Error`), `Midi::unroute -> Result<(), NoSuchMidiRoute>` → `Result<(), MidiError>` (`MidiError::NoSuchRoute`), `Session::midi_io()` → `s.midi().{devices, connect_input, disconnect_input, connect_output, disconnect_output, reconnect_saved}` (the raw `MidiSession` is `Session::testing_midi_io`, behind `testing`), `EventInletWriter::push(at, Ump)` / `push_all` / `InstrumentHandle::send` / `LiveInput::send` / `TimedMidiEvent::new(beat, Ump)` taking only an `Ump` → `impl Into<Ump>` (a decoded `Message` goes as it is), `DeviceInlets::close` and a hand-called slot close → `DeviceInput`'s drop, `MidiIngestControls::restart_slot` → deleted (`MidiIngestNode::following(&DeviceInlets)` restarts a slot by epoch), `DeviceInlets::take_changes() -> Vec` → a draining `Changes` iterator, `tutti_midi_hardware::PortId` and its `port_id()` → `tutti_midi_runtime::DeviceSlot` and `slot()`, `HardwareMidiInputs::drain_stream(id, closure)` → `drain_stream(id) -> StreamDrain`, `MidiSession::open(Arc<HardwareMidiInputs>)` and `open_over(backend, ports)` → `open(Arc<DeviceInlets>)` and `open_over(backend, inlets)`, `MidiSession::{connect_input_by_name, disconnect_input_by_name, connect_output_by_name}` → `connect_input`, `disconnect_input`, `connect_output` over a `DeviceQuery`, `MidiSession::{is_output_connected, output_device_name, output_device, output_config}` → `output() -> Option<OutputInfo>`, `InputProducerHandle::push -> bool` → `Pushed`, `MidiSession::poll -> Vec` → an iterator, `Error::NoDeviceNamed(String)`, `Error::MidiPort(String)` and `Error::MidiDevice(String)` → struct variants (`searched`; `what` and `source`), `DeviceEvents::try_iter -> impl Iterator` → `Pending` (and `for e in &events`), `MtcDecoder::feed(u8)` → `feed(&Ump)`, `MidiClockDecoder::{feed, tick}(.., u64 microseconds)` → an `Instant`, `MidiClockDecoder::beat_position() -> f64` → `Beat`, `SmpteFrameRate::from_u8` → `TryFrom<u8>` (`UnknownFrameRate`), `ClockMap::set_rate -> bool` → `Result<(), InvalidRate>`, `ClockMaster::new(rate)` and `ClockNode::new()` (a zero-rate master, and `Default`) → `new(MidiGroup, SampleRate)`, `tutti_midi_runtime::outbound::MpeIngest` → `live` (inbound state; still exported at the crate root), `TimedMidiEvent`'s public fields, `From<(f64, Ump)>` and `From<(Beat, Ump)>` → private fields with `beat()`/`event()` and `TimedMidiEvent::new -> Option` (a non-finite beat is refused; `Midi::play_clip` takes `TimedMidiEvent`s), `MidiClipControls::{set_events, event_count}` → `set`, `len` (and `is_empty`), `EventInletWriter::push_at` and `push(At, ..)` → `push(impl Into<Stamp>, ..)` (`At::Beat` and `Refused::Beat` and `SendError::Beat` are unwritable), `InstrumentHandle::send_at` and `LiveInput::send_at` → `send` with a `Moment`, `EventInletWriter::{lost, evicted, refused, late}` and `InletCounts::{lost, evicted, refused, late}` → `InletCounts::losses() -> Losses`, `MidiIngestControls::dropped_events` and `ClockMaster::dropped_events` → `losses()` (all `refused`), `HardwareMidiInputs::dropped_events` and `PortInfo::{dropped, late}` → `losses()` / `PortInfo::losses`, `InstrumentHandle::dropped` and `LiveInput::dropped` → `losses()`, `MidiKeys::new(writer)` → `MidiKeys::new(writer, MidiGroup)`, `Reclaimer::new(closure)` → `Reclaimer::of(&controls)` over `tutti_rt::Reclaim` (the inherent `reclaim` of `MidiClipControls`, `HarmonyControls`, `MidiIngestControls` and `VoiceNodeHandle` is that trait's), `tutti_polysynth::{Error, Result}` and `tutti_session::Error::Synth` → deleted (`PolySynth::new` is infallible: `SynthConfig::polyphony` is a `NonZeroUsize`), `SynthConfig::{sample_rate, max_voices, mpe_enabled, mpe_pitch_bend_range}` → deleted (the rate is `Node::prepare`'s), `polyphony` and `mpe: MpeMode` (a zone's member range is the per-note range), `PolySynth::{volume_atomic, detune_atomic, spread_atomic}` and `UnisonEngine`'s → the synth's `ParamSet` (`ParamSet::cell`), `PolySynth::{mpe_enabled, set_mpe_enabled}` → `mpe` / `set_mpe(MpeMode)`, `set_volume(f32)`, `set_unison_stereo_spread(f32)`, `set_unison_voice_count(u8)` and `UnisonConfig::voice_count: u8` → `Amplitude`, `Spread` and `UnisonVoices` (1 to 16, refused not clamped), `tutti_sf2::SoundFont::new(&mut R)` → `SoundFont::from_reader(R)` / `SoundFont::open(path)`, `Settings::new(rate)`, `Settings::with_sample_rate` and `Settings::{MAX_POLYPHONY, DEFAULT_POLYPHONY}` → `Settings::new()` and `Polyphony::{MAX, DEFAULT}` (`Polyphony::new -> Option`), `SoundFontUnit::{with_preset, with_sample_rate}` → `select(channel, &Preset)` and `prepare`, `tutti_soundfont::Error::{Io, SampleRateOutOfRange, PolyphonyOutOfRange}` → deleted (`Error::UnplayablePreset` is `select`'s), `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+  channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti_sampler::LoopSetting` (`Off`/`On { start, end, crossfade_frames }`), `MemorySource::{set_looping, is_looping, set_loop_range, clear_loop_range, loop_range, set_loop_setting, loop_setting}` and `MemorySourceConfig::loop_setting` → `Loop` (`Loop::new(Samples..Samples)?.with_crossfade(Samples)?`) and `Option<Loop>`: `MemorySource::{set_loop, loop_}`, `MemorySourceConfig::loop_`, `Playback::loop_`, `Stream::{set_loop, loop_}`; the streamer's old `LoopError::{Position, StreamerGone}` → `Stream::set_loop -> Result<(), StreamerGone>` (a position that is not a frame is unwritable) and `LoopError` is now `Loop`'s (`EmptySpan`, `CrossfadeTooLong`); `VoiceCommand`, `VoicePoolHandle::send` and `SendError::{Full, Disconnected}(VoiceCommand)` with `into_command` → `VoicePoolHandle::{add, add_streaming, remove, replace_wave, set_window, set_gain, set_speed, set_loop, set_direction, set_stretch}` (`SendError` carries nothing); `VoicePool::{insert_voice, insert_voice_with_stretch}` → `VoicePool::insert(id, MemorySource, Playback)`; `VoicePoolHandle::add_streaming(id, Voice, stream, stretch)` → `add_streaming(id, DiskVoice, stream, Playback)` (the never-`Some` `stretch` argument is gone, and `PoolDrops::loops_no_streamer` with the add that dropped a disk voice's loop and direction); `VoiceNodeHandle::set_placement(Beat, Option<BeatDuration>)`, `DiskVoice::set_placement`, `DiskVoice::from_reader(reader, Beat, Option<BeatDuration>)` and `MemorySource::placed(wave, Beat, Option<BeatDuration>)` → `VoiceWindow` (`set_window`, `from_reader(reader, VoiceWindow)`, `placed(wave, VoiceWindow)`); a disk voice node whose `Stream` the caller kept apart → `VoiceNode::streaming(DiskVoice, Stream, Playback)`; `tutti_sampler::{Source, Status}` and `DiskStreamer::status()` → deleted (`DiskStreamer::sample_rate()`; the tier is the caller's, see `probe`); `Clip::into_source` and `Clip`'s `ParamSet` controls → `VoiceNodeHandle`; `Session::disk_streamer()` → `Session::open_stream` / `load_clip` (`take_disk_streamer` stays for a host that holds the streamer); `tutti_session::Error::Sampler(tutti_sampler::Error)` → `Error::Sampler(SamplerError)`; `tutti::prelude::LoopSetting` → `Loop`; `DiskVoice::new`, `DiskSource` and `DiskVoiceConfig` and the public `tutti_sampler::voice::*` paths → private (a voice is built from a `StreamReader`, `DiskVoice::from_reader`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output
   channels, the graph sums the fan-in); `tutti_types::{Topology, NodeKey, Valid, TapId, TapSpec, TapAlign,
@@ -1456,8 +1541,20 @@ read the `Cargo.toml`, grep for the type, run the probe.
   unresolved_sources}` → `problems()`; `SessionEvent::{ModulationRefused,
   ModulationUnresolved}` → `SessionEvent::Modulation(Problem)`; `Mods` returning
   `tutti_modulation::{SourceKey, RouteKey}` → `ModSourceId` and `ModRouteId`;
-  `CompileError::BadRoute` → deleted (a `Depth` is never NaN). A comment or doc that
+  `CompileError::BadRoute` → deleted (a `Depth` is never NaN)., `UmpOut::send_frames(events)` and `MidiOutRouter { out, drops }` → `send_frames(events, Option<&OutputTiming>) -> usize` (the refused count) and a `timing` field (an offset-only send was the defect: the OS never scheduled it), `AlsaOutput::send_ump(words)` → `send_ump_at(words, SendAt)`. A comment or doc that
   disagrees with the code is the bug.
+- **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
+  restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook
+  `LiveSession::on_restart`; `restart_on`, `Session::watch_devices` with four
+  arguments and `SessionBuilder::build_device_on` are behind `testing`);
+  `Device::select_device` → the request's device; `MicIn::{open_inputs,
+  open_inputs_with_monitor}` → `MicIn::open(&MicConfig, rate)`;
+  `Graph::add_inlet(ring, rate)` → `add_inlet(InletRing)`;
+  `SessionEvent::{DeviceFault, DeviceLost, DeviceAppeared, DefaultChanged,
+  RestartWanted, DeviceRestarted, RestartFailed, OutputsListed, OutputsListFailed,
+  OutputsListSlow}` → `SessionEvent::Device(DeviceEvent::..)`; `render_workers(usize)`
+  (0 for per core) → `Workers`; `inputs`/`outputs_floor` of a bare `usize` →
+  `ChannelLayout`.
 - **Dead export names** (doc 019): `tutti-export`'s `ExportConfig`, `RenderConfig`,
   `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,
   `render_to_buffers`, `render_normalized_to_file` and their `_with` twins → `render` /
@@ -1483,6 +1580,17 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `BounceError::Cancelled`; the bounce's `Latency` and `Tail` → `BounceLatency` and `BounceTail` (the graph's `tutti_types::{Latency, Tail}` keep their names); `Transport`'s public `settings` and `motion` fields → `Transport::settings()` and
   `Transport::motion()` (and the session's `play`, `stop`, `locate`, `schedule`, `set_tempo`). `bevy-tutti`'s `ExportRequest`,
   `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
+
+- **Dead plugin-event and callback names** (doc 029 step 2): `SessionEvent::{PluginDied,
+  PluginLatencyChanged, PluginReloading, PluginRecovered, PluginGaveUp}` →
+  `SessionEvent::Plugin(PluginEvent { node, change, .. })` with `PluginChange::{Died, LatencyChanged,
+  Reloading, Recovered, GaveUp}` (the three `*Due` job events stay until step 5);
+  `PluginHandle::{on_parameter_changed, on_refresh, on_invalidate, clear_parameter_callback,
+  clear_refresh_callback, clear_invalidate_callback}` → `PluginHandle::subscribe(f) -> Subscription`
+  (the low layer; a host reads `SessionEvent::Plugin`); `Listener::{set, clear}` (one slot, last writer wins) → `Listener::subscribe`
+  (a fan-out); `HostedPlugin` (public) → the `Plugin<'_>` view of `Session::plugin(node) ->
+  Result<Plugin<'_>, NoSuchNode>` (`Option<&HostedPlugin>` before), `Session::plugins()` yielding
+  `Plugin<'_>`.
 
 ## Consumers: the pin that must stay in step
 

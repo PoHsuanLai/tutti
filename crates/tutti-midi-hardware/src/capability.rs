@@ -28,8 +28,9 @@ pub struct UmpCapability {
     /// The protocol the endpoint speaks now.
     ///
     /// `Midi1` is the common case even on a UMP-native transport: most hardware
-    /// in the world is MIDI 1.0, and both CoreMIDI and the ALSA kernel converter
-    /// will happily hand us UMP words that *originated* as MIDI 1.0. That is a
+    /// in the world is MIDI 1.0, and the OS can hand us UMP words for it (a MIDI
+    /// 1.0 source is opened as MIDI 1.0 and arrives as type 2, widened by the
+    /// ingest node's `Translator`, never by the OS). That is a
     /// real distinction a caller may act on (a per-note controller is pointless
     /// to send to a `Midi1` endpoint), so it is recorded rather than flattened.
     pub protocol: Protocol,

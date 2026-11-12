@@ -9,7 +9,7 @@ use crate::transport::shm::AudioSlab;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use tutti_plugin_types::{BridgeResult, Delivered, EditorError, StateError};
+use tutti_plugin_types::{BridgeResult, Delivered, EditorError, PluginFailure, StateError};
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
 use tutti_plugin_types::{Editor, Load, Origin};
@@ -367,13 +367,13 @@ impl PluginBridge {
     }
 
     /// See [`AudioBridge::mark_crashed`](super::audio::AudioBridge::mark_crashed).
-    pub fn mark_crashed(&self, cause: &str) {
+    pub fn mark_crashed(&self, cause: PluginFailure) {
         self.audio.mark_crashed(cause);
     }
 
     /// Why the bridge died, or `None` while it is alive. See
     /// [`AudioBridge::crash_cause`](super::audio::AudioBridge::crash_cause).
-    pub fn crash_cause(&self) -> Option<String> {
+    pub fn crash_cause(&self) -> Option<PluginFailure> {
         self.audio.crash_cause()
     }
 

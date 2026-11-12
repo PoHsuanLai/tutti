@@ -1,6 +1,7 @@
 //! `Graph::open_inlet`: audio a thread of your own pushes into the graph, the
 //! mirror of the tap.
 
+use tutti_graph::InletRing;
 use tutti_session::{InletError, OutPort, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -72,4 +73,27 @@ fn a_producer_at_another_rate_is_refused() {
         !s.graph().is_edited(),
         "a refused inlet leaves the graph as it was"
     );
+}
+
+/// **A ring carries the rate its producer fills it at**, and `add_inlet`
+/// checks it against the graph's, with no rate to give apart from the ring:
+/// one made at another rate is refused with both rates and adds no node, and
+/// one at the graph's is added.
+#[test]
+fn add_inlet_checks_the_rate_the_ring_carries() {
+    let mut s = offline();
+    let _ = s.update();
+    let (ring, _writer) = InletRing::pair(ChannelLayout::STEREO, Samples(64), SampleRate(44_100.0));
+    assert_eq!(
+        s.graph().add_inlet(ring).expect_err("another rate"),
+        InletError::RateMismatch {
+            producer: SampleRate(44_100.0),
+            graph: RATE
+        }
+    );
+    assert!(!s.graph().is_edited(), "nothing was added");
+
+    let (ring, _writer) = InletRing::pair(ChannelLayout::STEREO, Samples(64), RATE);
+    s.graph().add_inlet(ring).expect("the graph's rate");
+    assert!(s.graph().is_edited(), "the node was added");
 }

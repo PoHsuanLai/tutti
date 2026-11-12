@@ -110,8 +110,8 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
     probe_env("TUTTI_PLUGIN_SERVER", plugin_server().display());
     probe_env("TUTTI_CLAP_PROBE_RENDER_MODE", mode);
     let mut session = Session::builder()
-        .inputs(0)
-        .outputs_floor(2)
+        .inputs(ChannelLayout::EMPTY)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     session.graph().set_sample_rate(SampleRate(RATE));
@@ -264,7 +264,7 @@ fn instrument_at(rate: f64) {
         } else {
             note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
         };
-        TimedMidiEvent::new(Beat(beat), event)
+        TimedMidiEvent::new(Beat(beat), event).unwrap()
     };
     session
         .midi()

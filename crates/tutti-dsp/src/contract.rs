@@ -66,7 +66,7 @@ mod reverb;
 
 pub use family_case::{FamilyCase, Figure, Hook, LtiCase, RecurrenceCase, ReverbCase};
 pub use harness::{
-    Burst, MAX_BLOCK, WINDOW, built, burst, energy, noise, render, rms, setup, widths,
+    Burst, MAX_BLOCK, WINDOW, Widths, built, burst, energy, noise, render, rms, setup, widths,
 };
 
 /// The cases, one function each, by level and group.

@@ -43,7 +43,8 @@ pub enum ScanPhase {
 }
 
 /// What a scanner calls to read one plugin file's metadata.
-type ProbeFn = dyn Fn(&Path, PluginFormat) -> Result<PluginDescriptor, ProbeFailure> + Send + Sync;
+type ProbeFn =
+    dyn Fn(&Path, PluginFormat) -> Result<Vec<PluginDescriptor>, ProbeFailure> + Send + Sync;
 
 /// Scans plugin directories into a [`PluginDb`], with crash recovery.
 ///
@@ -51,7 +52,7 @@ type ProbeFn = dyn Fn(&Path, PluginFormat) -> Result<PluginDescriptor, ProbeFail
 /// out-of-process one); unchanged ones (same modification time) are skipped. A
 /// plugin that fails to load, hangs or crashes its probe is blacklisted with the
 /// reason, and a sentinel file (the "dead-man's pedal") blacklists the plugin a
-/// crashed scan was probing on the next run. `tutti_plugin::catalog::Plugins`
+/// crashed scan was probing on the next run. `tutti_plugin::catalog::Catalog`
 /// drives a scanner for most hosts.
 ///
 /// A scanner holds no database. Every scan takes the database it reads from and
@@ -80,7 +81,7 @@ impl Scanner {
     /// it loads the plugin, so a crash or a hang cannot take the scan down.
     pub fn new(
         pedal_path: impl Into<PathBuf>,
-        probe: impl Fn(&Path, PluginFormat) -> Result<PluginDescriptor, ProbeFailure>
+        probe: impl Fn(&Path, PluginFormat) -> Result<Vec<PluginDescriptor>, ProbeFailure>
         + Send
         + Sync
         + 'static,
@@ -450,12 +451,9 @@ impl Job {
         let probed = (self.probe)(path, format);
         self.pedal.disarm(path);
         match probed {
-            Ok(descriptor) => (
+            Ok(plugins) => (
                 ScanOutcome::New,
-                Some(Delta::put(
-                    path,
-                    FileRow::probed(format, facts, vec![descriptor]),
-                )),
+                Some(Delta::put(path, FileRow::probed(format, facts, plugins))),
             ),
             Err(failure) if failure.blacklistable => {
                 warn!("failed to probe plugin {:?}: {}", path, failure.reason);
@@ -589,8 +587,11 @@ mod tests {
             .unwrap();
     }
 
-    fn filename_probe(path: &Path, format: PluginFormat) -> Result<PluginDescriptor, ProbeFailure> {
-        Ok(probe_plugin_fallback(path, format))
+    fn filename_probe(
+        path: &Path,
+        format: PluginFormat,
+    ) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
+        Ok(vec![probe_plugin_fallback(path, format)])
     }
 
     fn no_save(_: &PluginDb) -> std::io::Result<()> {
@@ -604,7 +605,7 @@ mod tests {
     /// A scanner whose probe counts its calls and answers `answer`.
     fn counting_scanner(
         dir: &Path,
-        answer: fn(&Path) -> Result<PluginDescriptor, ProbeFailure>,
+        answer: fn(&Path) -> Result<Vec<PluginDescriptor>, ProbeFailure>,
     ) -> (Scanner, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&calls);
@@ -615,11 +616,11 @@ mod tests {
         (scanner, calls)
     }
 
-    fn named(path: &Path) -> Result<PluginDescriptor, ProbeFailure> {
-        Ok(probe_plugin_fallback(path, PluginFormat::Clap))
+    fn named(path: &Path) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
+        Ok(vec![probe_plugin_fallback(path, PluginFormat::Clap)])
     }
 
-    fn crashes(_: &Path) -> Result<PluginDescriptor, ProbeFailure> {
+    fn crashes(_: &Path) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
         Err(ProbeFailure {
             reason: "crashed during probe".into(),
             blacklistable: true,
@@ -654,7 +655,7 @@ mod tests {
     /// caller with a `Vec<String>`, a borrowed config field, or a filtered
     /// iterator does not have to materialise a `Vec<PathBuf>` first. Each arm
     /// here is a distinct shape that fails to compile under a narrower
-    /// signature: `&Vec<PathBuf>` is what `Plugins::rescan` passes, `[&str; 1]`
+    /// signature: `&Vec<PathBuf>` is what `Catalog::scan` passes, `[&str; 1]`
     /// covers the no-PathBuf-in-sight caller, and the `filter` covers a lazy
     /// iterator with no length to read.
     #[test]
@@ -947,6 +948,31 @@ mod tests {
 
     // New tests.
 
+    fn two_plugins(path: &Path) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
+        let first = probe_plugin_fallback(path, PluginFormat::Clap);
+        let second = PluginDescriptor::new("second", "Second", PluginClass::Unknown);
+        Ok(vec![first, second])
+    }
+
+    /// **A file that probes into several plugins is one row listing all of them**, in the
+    /// probe's order, each its own catalog entry. The scan keeps the whole list: it does
+    /// not stop at a file's first plugin.
+    #[test]
+    fn a_file_with_several_plugins_is_one_row_with_every_plugin() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = plugins_dir(&dir);
+        let bundle = create_fake_plugin(&plugins_dir, "bundle.clap");
+        let (scanner, _) = counting_scanner(dir.path(), two_plugins);
+        let mut db = PluginDb::new();
+
+        scanner.scan(&mut db, [&plugins_dir], no_save).unwrap();
+
+        assert_eq!(db.len(), 1, "one file, one row");
+        let ids: Vec<_> = db.plugins().map(|p| p.descriptor.id.clone()).collect();
+        assert_eq!(ids, ["clap.bundle", "second"]);
+        assert!(db.plugins().all(|p| p.path == bundle));
+    }
+
     /// A second scan of an unchanged file does not probe it again.
     #[test]
     fn rescanning_an_unchanged_file_does_not_reprobe_it() {
@@ -1077,7 +1103,7 @@ mod tests {
             if path.ends_with("fatal.clap") {
                 panic!("the host went down inside the plugin");
             }
-            Ok(probe_plugin_fallback(path, format))
+            Ok(vec![probe_plugin_fallback(path, format)])
         });
         let mut before = PluginDb::new();
         let scan = dying.spawn(&mut before, [&plugins_dir], no_save).unwrap();
@@ -1150,7 +1176,11 @@ mod tests {
                 parked_tx.send(path.to_path_buf()).unwrap();
                 release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
             }
-            Ok(PluginDescriptor::new("new", "new", PluginClass::Unknown))
+            Ok(vec![PluginDescriptor::new(
+                "new",
+                "new",
+                PluginClass::Unknown,
+            )])
         });
         let scan = scanner.spawn(&mut db, [&plugins_dir], no_save).unwrap();
 
@@ -1230,7 +1260,7 @@ mod tests {
     /// parked, a sender that releases it, and the probe count.
     fn gated_scanner(
         dir: &Path,
-        answer: fn(&Path) -> Result<PluginDescriptor, ProbeFailure>,
+        answer: fn(&Path) -> Result<Vec<PluginDescriptor>, ProbeFailure>,
     ) -> (
         Scanner,
         crossbeam_channel::Receiver<PathBuf>,
@@ -1251,7 +1281,7 @@ mod tests {
         (scanner, parked_rx, release_tx, calls)
     }
 
-    fn environmental(_: &Path) -> Result<PluginDescriptor, ProbeFailure> {
+    fn environmental(_: &Path) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
         Err(ProbeFailure {
             reason: "no plugin-server".into(),
             blacklistable: false,

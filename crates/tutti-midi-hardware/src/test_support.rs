@@ -26,11 +26,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use tutti_graph::UmpAt;
 
-use crate::InputProducerHandle;
 use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use crate::{InputProducerHandle, Pushed};
 use tutti_midi_device::{EndpointId, Identity, OsChange, PortDirection};
 use tutti_midi_runtime::MidiOut;
 
@@ -61,7 +61,7 @@ pub struct FakeBackend {
 type Producers = Arc<Mutex<Vec<(EndpointId, InputProducerHandle)>>>;
 
 /// The packets handed to the fake sinks, by the device they were sent to.
-type SentLog = Arc<Mutex<Vec<(EndpointId, tutti_ump::Ump)>>>;
+type SentLog = Arc<Mutex<Vec<(EndpointId, tutti_ump::Ump, tutti_midi_runtime::SendAt)>>>;
 
 /// The fake OS's device lists, and the channel into each running watch.
 #[derive(Debug, Default)]
@@ -138,9 +138,21 @@ impl FakeCounters {
     /// oldest first: what the fake device received on the wire.
     pub fn take_sent(&self, id: EndpointId) -> Vec<tutti_ump::Ump> {
         let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
-        let (mine, rest) = log.drain(..).partition(|(device, _)| *device == id);
+        let (mine, rest) = log.drain(..).partition(|(device, ..)| *device == id);
         *log = rest;
-        mine.into_iter().map(|(_, ump)| ump).collect()
+        mine.into_iter().map(|(_, ump, _)| ump).collect()
+    }
+
+    /// [`take_sent`](Self::take_sent), each packet with the time the sink was
+    /// told to send it at.
+    pub fn take_sent_timed(
+        &self,
+        id: EndpointId,
+    ) -> Vec<(tutti_ump::Ump, tutti_midi_runtime::SendAt)> {
+        let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mine, rest) = log.drain(..).partition(|(device, ..)| *device == id);
+        *log = rest;
+        mine.into_iter().map(|(_, ump, at)| (ump, at)).collect()
     }
 
     /// Events handed to the sink so far.
@@ -152,7 +164,8 @@ impl FakeCounters {
     /// The fake device `id` sends `ump`, which the OS delivered at `arrival`:
     /// pushed through the producer of its open input connection, as a driver's
     /// thread would. `false` when no connection to `id` is open, or the
-    /// port's inlet is full.
+    /// port's inlet is full ([`Pushed::Full`]); an event kept out of the graph
+    /// on purpose ([`Pushed::Diverted`]) was taken.
     pub fn send_input(
         &self,
         id: EndpointId,
@@ -166,7 +179,7 @@ impl FakeCounters {
         producers
             .iter_mut()
             .find(|(device, _)| *device == id)
-            .is_some_and(|(_, producer)| producer.push(ump, arrival))
+            .is_some_and(|(_, producer)| producer.push(ump, arrival) != Pushed::Full)
     }
 
     /// Input ports opened so far.
@@ -286,12 +299,16 @@ impl DeviceOut for FakeSink {}
 
 impl MidiOut for FakeSink {
     fn queue(&self, events: &[UmpAt]) -> usize {
+        self.queue_timed(&tutti_midi_runtime::Outgoing::now_batch(events))
+    }
+
+    fn queue_timed(&self, events: &[tutti_midi_runtime::Outgoing]) -> usize {
         self.sent.fetch_add(events.len(), Ordering::SeqCst);
         let taken = self.accepts.min(events.len());
         self.log
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .extend(events.iter().take(taken).map(|(_, ump)| (self.id, *ump)));
+            .extend(events.iter().take(taken).map(|e| (self.id, e.ump, e.send)));
         taken
     }
 }
@@ -401,7 +418,7 @@ impl MidiEndpoints for FakeBackend {
                         Report::Change(change) => sink.send(change),
                         Report::Fail(why) => {
                             // Like a real watch that has died: nothing more.
-                            sink.fail(Error::MidiPort(why));
+                            sink.fail(Error::port(why));
                             let _ = done.send(());
                             return;
                         }
@@ -430,7 +447,7 @@ impl MidiEndpoints for FakeBackend {
         producer: InputProducerHandle,
     ) -> Result<Box<dyn InputConnection>> {
         if !self.devices().inputs.iter().any(|e| e.id == id) {
-            return Err(Error::MidiDevice("no such input".into()));
+            return Err(Error::device("no such input"));
         }
         self.opens.fetch_add(1, Ordering::SeqCst);
         self.producers
@@ -445,7 +462,7 @@ impl MidiEndpoints for FakeBackend {
 
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         if !self.devices().outputs.iter().any(|e| e.id == id) {
-            return Err(Error::MidiDevice("no such output".into()));
+            return Err(Error::device("no such output"));
         }
         Ok(Box::new(FakeSink {
             sent: Arc::clone(&self.sent),

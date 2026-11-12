@@ -1,7 +1,7 @@
 //! Asking a file whether this sampler can stream it, before committing to play it.
 //!
-//! A caller choosing a playback tier ([`Source::Memory`](crate::Source) vs
-//! [`Source::Disk`](crate::Source)) needs two facts about a file: how long it is,
+//! A caller choosing a playback tier (a resident wave or a disk stream) needs
+//! two facts about a file: how long it is,
 //! and whether the streamer can serve arbitrary ranges from it. Both come from the
 //! container header, and neither needs a single audio packet decoded.
 //!

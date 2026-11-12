@@ -40,8 +40,8 @@
 //!
 //! Each configuration renders 1 s to warm up (notes attack, voices start),
 //! then 10 s measured, block by block, at 64 and 128 frames, serial
-//! (`render_workers(1)`) and on a pool of one thread per core
-//! (`render_workers(0)`).
+//! (`Workers::SERIAL`) and on a pool of one thread per core
+//! (`Workers::PerCore`).
 //!
 //! # Where the spikes land
 //!
@@ -123,10 +123,10 @@ impl Variant {
 
 use tutti_fixtures::midi;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
-use tutti_nodes::{BusStripNode, ConvolverNode, LimiterNode};
+use tutti_nodes::{BusStripNode, ConvolverNode, LimiterControls, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-use tutti_session::{InPort, OutPort, Root, Session};
+use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
+use tutti_session::{InPort, OutPort, Root, Session, Workers};
 use tutti_transport::MotionEvent;
 use tutti_types::{
     Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MaxBlock, PlaybackRate,
@@ -223,7 +223,7 @@ fn add_stereo(
 
 /// The scene the module docs describe, on `workers` render threads, its
 /// transport rolling.
-fn scene(block: usize, workers: usize, variant: Variant) -> Session {
+fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     let mut s = Session::builder()
         .render_workers(workers)
         .build_offline(
@@ -270,32 +270,28 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
     for t in 0..SAMPLER_TRACKS {
         let mut pool = VoicePool::new();
         for v in 0..SAMPLER_VOICES {
-            pool.insert_voice(
+            pool.insert(
                 SlotId(v as u128 + 1),
-                Voice {
-                    source: VoiceSource::Memory(
-                        MemorySource::placed(Arc::clone(&tone), Beat(0.0), None)
-                            .expect("a placeable wave"),
-                    ),
-                    play: {
-                        let k = (t * SAMPLER_VOICES + v) as f32;
-                        let interval = Cents::new(-350.0 + 25.0 * k + 3.0);
-                        let play = Playback {
-                            gain: Amplitude(0.1),
-                            ..Default::default()
-                        };
-                        if variant.vocoder() {
-                            Playback {
-                                pitch: interval,
-                                ..play
-                            }
-                        } else {
-                            Playback {
-                                speed: PlaybackRate::new_clamped(interval.to_pitch_ratio()),
-                                ..play
-                            }
+                MemorySource::placed(Arc::clone(&tone), VoiceWindow::from(Beat(0.0)))
+                    .expect("a placeable wave"),
+                {
+                    let k = (t * SAMPLER_VOICES + v) as f32;
+                    let interval = Cents::new(-350.0 + 25.0 * k + 3.0);
+                    let play = Playback {
+                        gain: Amplitude(0.1),
+                        ..Default::default()
+                    };
+                    if variant.vocoder() {
+                        Playback {
+                            pitch: interval,
+                            ..play
                         }
-                    },
+                    } else {
+                        Playback {
+                            speed: PlaybackRate::new_clamped(interval.to_pitch_ratio()),
+                            ..play
+                        }
+                    }
                 },
             );
         }
@@ -341,11 +337,11 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
     for strip in &sums {
         add_stereo(&mut s, master, *strip);
     }
-    let (limiter, _) = s.graph().add(LimiterNode::with_channels(
-        ChannelLayout::STEREO,
-        Db(-1.0),
-        Db(0.0),
-    ));
+    let (limiter, _) = s.graph().add(LimiterNode::stereo(LimiterControls {
+        threshold: Db(-1.0),
+        ceiling: Db(0.0),
+        ..LimiterControls::DEFAULT
+    }));
     connect_stereo(&mut s, limiter, 0, master);
     for c in 0..2 {
         s.graph()
@@ -376,7 +372,7 @@ struct Figures {
     peak_out: f32,
 }
 
-fn measure(block: usize, workers: usize, variant: Variant) -> Figures {
+fn measure(block: usize, workers: Workers, variant: Variant) -> Figures {
     let s = scene(block, workers, variant);
     let meter = s.load_meter().expect("an offline engine");
     let mut out = vec![0.0f32; block * 2];
@@ -456,7 +452,7 @@ fn main() {
     );
     for variant in VARIANTS {
         for block in [64usize, 128] {
-            for (label, workers) in [("1", 1usize), ("cores", 0)] {
+            for (label, workers) in [("1", Workers::SERIAL), ("cores", Workers::PerCore)] {
                 let f = measure(block, workers, variant);
                 // A silent render would measure nothing worth reading.
                 assert!(f.peak_out > 0.0, "the scene sounds");

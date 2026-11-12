@@ -19,17 +19,22 @@ use std::time::{Duration, Instant};
 use tutti_graph::UmpAt;
 
 use tutti_graph::{EventTapId, EventTapReader, Losses, NodeKey, Offset, Stamp, TapEvent};
+use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{
-    MidiClipControls, MidiClipNode, MidiInputPorts, MidiReceiver, RouteRule, TimedMidiEvent,
+    ClockMap, MidiClipControls, MidiClipNode, MidiInputPorts, MidiReceiver, Outgoing,
+    OutputLatency, OutputPlan, OutputTerms, Placement, RouteRule, SendAt, TimedMidiEvent,
     compile_routes,
 };
 use tutti_types::{Frame, Moment, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 
-use crate::SendError;
 use crate::graph::{Feeder, Graph};
 use crate::instrument::SharedKeys;
-use crate::{Error, EventOutPort, MidiNodes, Result};
+use crate::{EventOutPort, MidiError, MidiEvent, MidiNodes};
+use crate::{RouteDeclarer, SendError};
+
+/// What a [`Midi`] call returns: the area's one error.
+type Result<T> = std::result::Result<T, MidiError>;
 
 /// Max events drained per chunk into the stack buffer: one frame of clock at
 /// any sane tempo is a handful of events, so this is generous headroom.
@@ -66,20 +71,96 @@ pub(crate) fn input_lead(block: Samples, rate: tutti_types::SampleRate) -> Durat
 pub(crate) fn arrival_clock(
     clock: tutti_engine::BlockClockReader,
 ) -> tutti_midi_runtime::ArrivalClock {
-    use std::sync::OnceLock;
-    static PAIRING: OnceLock<(Instant, i64)> = OnceLock::new();
-    let (instant, ns) = *PAIRING.get_or_init(|| (Instant::now(), tutti_rt::monotonic_ns()));
     std::sync::Arc::new(move || {
         let reading = clock.read()?;
-        let delta = reading.os_ns.saturating_sub(ns);
-        let span = Duration::from_nanos(delta.unsigned_abs());
-        let os = if delta >= 0 {
-            instant.checked_add(span)?
-        } else {
-            instant.checked_sub(span)?
-        };
-        Some((os, Moment::new(reading.frame, reading.rate)))
+        Some((
+            os_instant(reading.os_ns)?,
+            Moment::new(reading.frame, reading.rate),
+        ))
     })
+}
+
+/// The `Instant` of a reading of [`tutti_rt::monotonic_ns`]: the one pairing of
+/// the two clocks, read once per process, so the conversion is an offset.
+/// `None` where it is beyond what an `Instant` holds.
+#[cfg(any(feature = "device", feature = "midi-hardware"))]
+fn os_instant(ns: i64) -> Option<Instant> {
+    use std::sync::OnceLock;
+    static PAIRING: OnceLock<(Instant, i64)> = OnceLock::new();
+    let (instant, base) = *PAIRING.get_or_init(|| (Instant::now(), tutti_rt::monotonic_ns()));
+    let delta = ns.saturating_sub(base);
+    let span = Duration::from_nanos(delta.unsigned_abs());
+    if delta >= 0 {
+        instant.checked_add(span)
+    } else {
+        instant.checked_sub(span)
+    }
+}
+
+/// What the session reads of the engine to time the hardware out: its block
+/// clock and the audio output's latency (the stream's cell, which the device's
+/// callback writes, `None` until it reports, and a restart resets in place).
+#[cfg(feature = "device")]
+#[derive(Clone, Debug)]
+pub(crate) struct OutputClockSource {
+    clock: tutti_engine::BlockClockReader,
+    audio_latency: std::sync::Arc<tutti_cpal::StreamLatency>,
+}
+
+#[cfg(feature = "device")]
+impl OutputClockSource {
+    pub(crate) fn new(
+        clock: tutti_engine::BlockClockReader,
+        audio_latency: std::sync::Arc<tutti_cpal::StreamLatency>,
+    ) -> Self {
+        Self {
+            clock,
+            audio_latency,
+        }
+    }
+
+    /// The audio output's latency as the device reports it now: read on every
+    /// drain, for it can arrive or change after a restart.
+    fn audio_output(&self) -> Option<Duration> {
+        self.audio_latency.get()
+    }
+
+    /// The timing of a drain now: the latest block's map, `Instant::now()` and
+    /// the terms as the device reports them.
+    fn timing(&self, latency: OutputLatency) -> OutputTiming {
+        OutputTiming {
+            map: self.map(),
+            now: Instant::now(),
+            terms: OutputTerms {
+                audio_output: self.audio_output(),
+                latency,
+            },
+        }
+    }
+
+    /// The latest block reading as a map from frames to instants: `None`
+    /// before the first block.
+    fn map(&self) -> Option<ClockMap> {
+        let reading = self.clock.read()?;
+        ClockMap::new(
+            reading.rate,
+            tutti_midi_runtime::ClockReading::new(os_instant(reading.os_ns)?, reading.frame),
+        )
+    }
+}
+
+/// What [`UmpOut::send_frames`] times a batch by: the frames' map to the OS
+/// clock, the caller's reading of that clock and every other term of the send
+/// time ([`OutputPlan`]).
+#[derive(Clone, Copy, Debug)]
+pub struct OutputTiming {
+    /// Places a frame on the OS clock; `None` before the engine's first block,
+    /// when every frame is sent at once.
+    pub map: Option<ClockMap>,
+    /// The OS clock now: what a send time is compared with.
+    pub now: Instant,
+    /// The audio output's latency and the output's own.
+    pub terms: OutputTerms,
 }
 
 /// The hardware out's tap, in events: the ring the clock's output is copied
@@ -117,6 +198,10 @@ pub struct UmpOut {
     stamped: Vec<UmpAt>,
     /// Scratch for a batch of frames rebased onto offsets, reused likewise.
     rebased: Vec<UmpAt>,
+    /// Scratch: when each offset of the batch is sent, by offset.
+    sends: Vec<(Offset, SendAt)>,
+    /// Scratch for the batch as the sink takes it, with its send times.
+    outgoing: Vec<Outgoing>,
 }
 
 impl core::fmt::Debug for UmpOut {
@@ -150,6 +235,8 @@ impl UmpOut {
             stamping: false,
             stamped: Vec::new(),
             rebased: Vec::new(),
+            sends: Vec::new(),
+            outgoing: Vec::new(),
         }
     }
 
@@ -176,16 +263,7 @@ impl UmpOut {
     /// advance by the events it was handed, so a silent stream never
     /// clocks. With stamping off the events go out unchanged.
     pub fn send_stamped(&mut self, events: &[UmpAt]) {
-        if !self.stamping {
-            self.send_all(events);
-            return;
-        }
-        // Taken out and put back so `stream` and the buffer can be borrowed
-        // mutably at once; `stamp` clears it, so the swap carries no state.
-        let mut buf = core::mem::take(&mut self.stamped);
-        self.stream.stamp(events, &mut buf);
-        self.send_all(&buf);
-        self.stamped = buf;
+        self.send_batch(events);
     }
 
     /// Like [`send_stamped`](Self::send_stamped), but tells the stream how
@@ -194,7 +272,7 @@ impl UmpOut {
     /// traffic).
     pub fn send_stamped_span(&mut self, events: &[UmpAt], block: Samples) {
         if !self.stamping {
-            self.send_all(events);
+            self.send_batch(events);
             return;
         }
         let mut buf = core::mem::take(&mut self.stamped);
@@ -209,28 +287,86 @@ impl UmpOut {
     /// runs to the last frame inclusive, so what the stamper reads is the
     /// events' spacing and the JR Clock advances by the span. An empty batch
     /// sends nothing.
-    pub fn send_frames(&mut self, events: &[(Frame, Ump)]) {
+    ///
+    /// With `timing`, each event is sent at the time its frame has on the OS
+    /// clock ([`OutputPlan`]: the frame's instant, plus the audio output's
+    /// latency, less the device's, plus the offset), and the sink schedules it;
+    /// without, every event goes at once. An event whose time is more than
+    /// [`MAX_OUTPUT_AHEAD`](tutti_midi_runtime::MAX_OUTPUT_AHEAD) ahead is not
+    /// sent, and the call returns how many were refused. The JR stamps keep the
+    /// events' spacing whether or not they are scheduled.
+    pub fn send_frames(&mut self, events: &[(Frame, Ump)], timing: Option<&OutputTiming>) -> usize {
         let (Some(first), Some(last)) = (
             events.iter().map(|e| e.0).min(),
             events.iter().map(|e| e.0).max(),
         ) else {
-            return;
+            return 0;
         };
         let span = Samples((last.get() - first.get()) as usize + 1);
+        let plan = timing.map(|t| OutputPlan::new(t.terms));
         let mut batch = core::mem::take(&mut self.rebased);
+        let mut sends = core::mem::take(&mut self.sends);
         batch.clear();
-        batch.extend(events.iter().filter_map(|&(frame, ump)| {
+        sends.clear();
+        let mut refused = 0;
+        for &(frame, ump) in events {
+            let send = match (plan.as_ref(), timing) {
+                (Some(plan), Some(t)) => match plan.place(frame, t.map.as_ref(), t.now) {
+                    Placement::Send(send) => send,
+                    Placement::TooFar => {
+                        refused += 1;
+                        continue;
+                    }
+                },
+                _ => SendAt::Now,
+            };
             // Always `Some`: every rebased frame is below the span.
-            Offset::new((frame.get() - first.get()) as usize, span).map(|at| (at, ump))
-        }));
-        self.send_stamped(&batch);
+            if let Some(at) = Offset::new((frame.get() - first.get()) as usize, span) {
+                batch.push((at, ump));
+                sends.push((at, send));
+            }
+        }
+        sends.sort_unstable_by_key(|&(at, _)| at);
+        self.sends = sends;
+        self.send_batch(&batch);
+        self.sends.clear();
         self.rebased = batch;
+        refused
+    }
+
+    /// Stamps `events` (when stamping) and sends them, each at the time
+    /// `self.sends` has for its offset, else at once.
+    fn send_batch(&mut self, events: &[UmpAt]) {
+        if !self.stamping {
+            self.send_all(events);
+            return;
+        }
+        // Taken out and put back so `stream` and the buffer can be borrowed
+        // mutably at once; `stamp` clears it, so the swap carries no state.
+        let mut buf = core::mem::take(&mut self.stamped);
+        self.stream.stamp(events, &mut buf);
+        self.send_all(&buf);
+        self.stamped = buf;
     }
 
     fn send_all(&mut self, events: &[UmpAt]) {
-        // One `queue` for the batch: a backend may pack several UMP
+        let mut out = core::mem::take(&mut self.outgoing);
+        out.clear();
+        // A JR stamp is at its event's offset, so it is sent with it.
+        out.extend(events.iter().map(|&(at, ump)| {
+            Outgoing {
+                at,
+                send: self
+                    .sends
+                    .binary_search_by_key(&at, |&(o, _)| o)
+                    .map_or(SendAt::Now, |i| self.sends[i].1),
+                ump,
+            }
+        }));
+        // One `queue_timed` for the batch: a backend may pack several UMP
         // messages into one packet.
-        self.sink.queue(events);
+        self.sink.queue_timed(&out);
+        self.outgoing = out;
     }
 
     /// The absolute frame the next stamp starts from. For tests and
@@ -253,13 +389,16 @@ pub struct MidiOutDrops {
 }
 
 impl MidiOutDrops {
-    /// Events discarded for want of a connected output.
+    /// Events discarded for want of a connected output, refused by the hardware
+    /// out's tap for want of room, or refused as scheduled more than
+    /// [`MAX_OUTPUT_AHEAD`](tutti_midi_runtime::MAX_OUTPUT_AHEAD) ahead.
     pub fn count(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
 
-    /// Record `n` events the hardware out's tap refused for want of room: a
-    /// count, with no warning of its own (there is an output to blame).
+    /// Record `n` events the hardware out's tap refused for want of room, or
+    /// the plan refused as too far ahead: a count, with no warning of its own
+    /// (there is an output to blame).
     fn record_refused(&self, n: u64) {
         self.dropped.fetch_add(n, Ordering::Relaxed);
     }
@@ -294,6 +433,9 @@ pub struct MidiOutRouter<'a> {
     /// Where events with nowhere to go are counted. `None` keeps the drop
     /// silent.
     pub drops: Option<&'a MidiOutDrops>,
+    /// What the events are timed by ([`UmpOut::send_frames`]); `None` sends
+    /// them at once. An event refused as too far ahead is counted in `drops`.
+    pub timing: Option<&'a OutputTiming>,
 }
 
 impl MidiOutRouter<'_> {
@@ -302,7 +444,12 @@ impl MidiOutRouter<'_> {
     /// no output is dropped (the ring must not back up), counted first.
     pub fn route(&mut self, events: &[(Frame, Ump)]) {
         match self.out.as_mut() {
-            Some(out) => out.send_frames(events),
+            Some(out) => {
+                let refused = out.send_frames(events, self.timing);
+                if let Some(drops) = self.drops {
+                    drops.record_refused(refused as u64);
+                }
+            }
             None => {
                 if let Some(drops) = self.drops {
                     drops.record(events.len());
@@ -367,7 +514,11 @@ impl LiveInput {
     ///
     /// [`SendError::Full`] when the ring is full (a note-off dropped there
     /// leaves a note stuck).
-    pub fn send(&self, at: impl Into<Stamp>, ump: Ump) -> std::result::Result<(), SendError> {
+    pub fn send(
+        &self,
+        at: impl Into<Stamp>,
+        ump: impl Into<Ump>,
+    ) -> std::result::Result<(), SendError> {
         self.keys.send(at, ump)
     }
 
@@ -414,6 +565,42 @@ impl LiveInput {
 #[error("no MIDI route {0:?}")]
 pub struct NoSuchMidiRoute(pub MidiRouteId);
 
+/// Where a take's events belong on the timeline (doc 030 §5.2): the figure
+/// [`Midi::record`]'s readers are placed by. A note played at graph frame `F`
+/// was answered by output the device played `output` after it was rendered, and
+/// reached the graph `input` plus the inlet's `lead` after it was played, so
+/// it was meant for `F - (input + output + lead) + trim`.
+///
+/// A pure function of the figures a host reads (the device's reported
+/// latencies, the inlet's lead) and sets (the trim); the session keeps none of
+/// them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TakePlacement {
+    /// How long a played event took to reach the graph (the device's input latency).
+    pub input: Samples,
+    /// How long the graph's output took to be heard (the device's output latency).
+    pub output: Samples,
+    /// The inlet's fixed lead: the distance a hardware event is placed after it arrived.
+    pub lead: Samples,
+    /// The user's manual trim for a device that misreports, added after.
+    pub trim: Samples,
+}
+
+impl TakePlacement {
+    /// The frame an event the tap read at `frame` was played for, at 0 where the
+    /// compensation reaches before the start of the clock.
+    #[must_use]
+    pub fn place(self, frame: Frame) -> Frame {
+        let back = self
+            .input
+            .0
+            .saturating_add(self.output.0)
+            .saturating_add(self.lead.0);
+        let back = u64::try_from(back).unwrap_or(u64::MAX);
+        Frame::new(frame.get().saturating_sub(back)) + self.trim
+    }
+}
+
 /// An id [`Midi::route`] returns, for [`Midi::unroute`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MidiRouteId(u64);
@@ -429,7 +616,15 @@ pub struct MidiRouteId(u64);
 ///
 /// Several rules may name the same channel; every matching rule's targets
 /// receive the event.
+///
+/// **Persisting a rule** (feature `serde`): a [`NodeKey`] names a node of one
+/// session and means nothing in the next, so a rule that is saved is keyed by
+/// the app's own stable id, `MidiRouteRule<AppId>` (`AppId: Serialize`), and
+/// the app maps it to a key when it loads: [`set_routes`](Midi::set_routes)
+/// takes the rules keyed by `T` and a `resolve` from `T` to a node, which is
+/// where the app's table lives. `MidiRouteRule<NodeKey>` itself has no serde.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MidiRouteRule<T = NodeKey> {
     /// Group filter: `None` matches every Group the input hears, `Some(g)`
     /// only Group `g`.
@@ -479,10 +674,12 @@ impl<T> MidiRouteRule<T> {
         self
     }
 
-    /// Adds a destination.
+    /// Adds a destination: a `T`, or anything that converts into one (a
+    /// session's own rule takes a graph [`Key`](crate::Key) as it takes a
+    /// [`NodeKey`]).
     #[must_use]
-    pub fn to(mut self, target: T) -> Self {
-        self.targets.push(target);
+    pub fn to(mut self, target: impl Into<T>) -> Self {
+        self.targets.push(target.into());
         self
     }
 
@@ -516,16 +713,27 @@ pub(crate) struct MidiState {
     rules: BTreeMap<MidiRouteId, MidiRouteRule>,
     fallback: Option<NodeKey>,
     minted: u64,
+    /// The last load id minted ([`MidiLoad`]).
+    loads: u64,
     /// The sinks the last route compile fed.
     routed: BTreeSet<NodeKey>,
     /// Whether a host's last `set_routes` declared any rule or fallback:
     /// the routes are then the host's, and the session's own are refused.
     host_routes: bool,
-    out: Option<UmpOut>,
+    pub(crate) out: Option<UmpOut>,
+    /// The session's one MPE mode ([`Midi::set_mpe`]).
+    mpe: MpeMode,
     /// The hardware out's tap on the clock, which `Phase::MidiOut` drains;
     /// `None` when the session has no engine MIDI (or the clock left).
     hardware_tap: Option<EventTapReader>,
     drops: MidiOutDrops,
+    /// What the engine gives the hardware out's timing: its block clock and the
+    /// audio output's latency. `None` with no audio device, where every event
+    /// is sent at once.
+    #[cfg(feature = "device")]
+    output_clock: Option<OutputClockSource>,
+    /// The hardware out's own latency and offset ([`Midi::set_output_latency`]).
+    output_latency: OutputLatency,
     /// The drop count the last `MidiOut` phase reported, and when.
     drops_seen: u64,
     reported_at: Option<Instant>,
@@ -566,13 +774,13 @@ impl std::fmt::Debug for MidiState {
 }
 
 /// How often a rising drop count is reported at most
-/// ([`SessionEvent::MidiOutDropped`](crate::SessionEvent::MidiOutDropped)):
+/// ([`MidiEvent::OutputDropped`]):
 /// a clock running with no output drops ticks on every update.
 pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
 /// How often a rising count of events the hardware inputs' inlets dropped is
 /// reported at most
-/// (`SessionEvent::MidiInputDropped`, feature `midi-hardware`):
+/// (`MidiEvent::InputsDropped`, feature `midi-hardware`):
 /// a stalled audio callback with a busy controller drops on every update.
 pub const MIDI_INPUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
@@ -598,6 +806,24 @@ impl MidiState {
         }
     }
 
+    /// The hardware out is timed by `clock` from now on (a session with an
+    /// audio device).
+    #[cfg(feature = "device")]
+    pub(crate) fn set_output_clock(&mut self, clock: OutputClockSource) {
+        self.output_clock = Some(clock);
+    }
+
+    /// The state with the session's MPE mode as the builder declared it.
+    pub(crate) fn with_mpe(mut self, mpe: MpeMode) -> Self {
+        self.mpe = mpe;
+        self
+    }
+
+    /// The session's MPE mode.
+    pub(crate) fn mpe(&self) -> &MpeMode {
+        &self.mpe
+    }
+
     /// `node` left the graph: a clip or live input of the session's own is
     /// forgotten (the graph took it out of every feed), and a routed sink
     /// is no longer one.
@@ -608,7 +834,7 @@ impl MidiState {
     }
 
     /// `Phase::Poll`: steps the UMP Stream negotiation of each held input and
-    /// reports those that settled (`SessionEvent::MidiStream`), reports the
+    /// reports those that settled ([`MidiEvent::StreamSettled`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -627,25 +853,33 @@ impl MidiState {
         let Some(io) = io else { return false };
         let events = self.device_events.as_ref();
         for event in events.into_iter().flat_map(|events| events.try_iter()) {
-            out.push(crate::SessionEvent::MidiDevice(event.clone()));
+            out.push(MidiEvent::of_device(event.clone()).into());
             if let tutti_midi_hardware::DeviceEvent::Removed(device) = event {
                 // Held ones are closed here, not left to fail on a dead
                 // handle: the port goes and the lists agree.
                 if io.disconnect_input(&device.id) {
-                    out.push(crate::SessionEvent::MidiInputLost(device.clone()));
+                    out.push(
+                        MidiEvent::InputLost {
+                            info: device.clone(),
+                        }
+                        .into(),
+                    );
                 }
-                if io.output_device().as_ref() == Some(&device.id) && io.disconnect_output() {
-                    out.push(crate::SessionEvent::MidiOutputLost(device));
+                if io.output().is_some_and(|open| open.id == device.id) && io.disconnect_output() {
+                    out.push(MidiEvent::OutputLost { info: device }.into());
                 }
             }
         }
         // The devices' UMP Stream negotiations take their step at `now`: the
         // session's control tick is their timer.
         for (device, stream) in io.poll(now) {
-            out.push(crate::SessionEvent::MidiStream {
-                device,
-                stream: Box::new(stream),
-            });
+            out.push(
+                MidiEvent::StreamSettled {
+                    device,
+                    stream: Box::new(stream),
+                }
+                .into(),
+            );
         }
         // What the poll settled or changed is heard by the output at once: the
         // `MidiOut` phase that drains next stamps by it.
@@ -655,7 +889,7 @@ impl MidiState {
             && let Some(why) = events.and_then(tutti_midi_hardware::DeviceEvents::failure)
         {
             self.watch_failure_reported = true;
-            out.push(crate::SessionEvent::MidiWatchFailed(why));
+            out.push(MidiEvent::WatchFailed(why).into());
         }
         let total = io.ports().losses().dropped();
         let due = self
@@ -664,7 +898,7 @@ impl MidiState {
         if total != self.input_drops_seen && due {
             self.input_drops_seen = total;
             self.input_reported_at = Some(now);
-            out.push(crate::SessionEvent::MidiInputDropped(total));
+            out.push(MidiEvent::InputsDropped { total }.into());
         }
         wired
     }
@@ -681,9 +915,17 @@ impl MidiState {
             ump: Ump([0; 4]),
         }; DRAIN_CHUNK];
         let mut batch = [(Frame::ZERO, Ump([0; 4])); DRAIN_CHUNK];
+        #[cfg(feature = "device")]
+        let timing = self
+            .output_clock
+            .as_ref()
+            .map(|source| source.timing(self.output_latency));
+        #[cfg(not(feature = "device"))]
+        let timing: Option<OutputTiming> = None;
         let mut router = MidiOutRouter {
             out: self.out.as_mut(),
             drops: Some(&self.drops),
+            timing: timing.as_ref(),
         };
         loop {
             let n = tap.pop_into(&mut events);
@@ -747,7 +989,7 @@ impl MidiState {
         if count != self.drops_seen && due {
             self.drops_seen = count;
             self.reported_at = Some(now);
-            out.push(crate::SessionEvent::MidiOutDropped(count));
+            out.push(MidiEvent::OutputDropped { total: count }.into());
         }
     }
 }
@@ -755,13 +997,18 @@ impl MidiState {
 /// Sets `out` to stamp iff the session's output device receives JR Timestamps.
 #[cfg(feature = "midi-hardware")]
 fn follow_output_config(out: Option<&mut UmpOut>, io: Option<&tutti_midi_hardware::MidiSession>) {
-    if let (Some(out), Some(config)) = (
-        out,
-        io.and_then(tutti_midi_hardware::MidiSession::output_config),
-    ) {
-        out.set_stamping(config.rx_jr);
+    if let (Some(out), Some(config)) = (out, io.and_then(tutti_midi_hardware::MidiSession::output))
+    {
+        out.set_stamping(config.config.rx_jr);
     }
 }
+
+/// A file load a [`Midi`] started, named so the event that lands it can be
+/// matched to the call: [`Midi::load_file`] and `Midi::load_soundfont`
+/// return one, and [`MidiEvent::FileLoaded`] and
+/// `SoundFontLoaded` carry it. The session mints it; it names nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MidiLoad(u64);
 
 /// The session's MIDI (design 015 §4.3): live inputs, clips, the hardware
 /// input's routes and the hardware out. [`Session::midi`](crate::Session::midi)
@@ -771,12 +1018,16 @@ pub struct Midi<'a> {
     pub(crate) graph: &'a mut Graph,
     pub(crate) state: &'a mut MidiState,
     pub(crate) nodes: Option<&'a MidiNodes>,
+    pub(crate) jobs: &'a mut crate::jobs::Jobs,
+    /// The OS MIDI layer, when the builder opened it.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) io: Option<&'a tutti_midi_hardware::MidiSession>,
 }
 
 /// Applies the devices' inlet changes: an inlet added to the graph and
-/// wired to its slot's event input of the ingest node (whose slot
-/// then starts over, so the device before it leaves no half-sent run), or
-/// taken out. Whether the graph was edited. A session with no ingest node
+/// wired to its slot's event input of the ingest node (which starts the
+/// slot over by itself when a new device takes it, so the device before it
+/// leaves no half-sent run), or taken out. Whether the graph was edited. A session with no ingest node
 /// has nothing to wire, and the changes are dropped with it.
 #[cfg(feature = "midi-hardware")]
 fn wire_inlets(
@@ -787,13 +1038,17 @@ fn wire_inlets(
 ) -> bool {
     use tutti_midi_runtime::InletChange;
     let changes = inlets.take_changes();
-    let Some(nodes) = nodes else { return false };
-    let edited = !changes.is_empty();
+    let Some(nodes) = nodes else {
+        // Dropped with the session that has no ingest node.
+        changes.for_each(drop);
+        return false;
+    };
+    let mut edited = false;
     for change in changes {
+        edited = true;
         match change {
             InletChange::Attach { slot, node } => {
                 let key = graph.add_event_inlet(node).erase();
-                nodes.input_controls.restart_slot(slot);
                 if let Err(e) = graph.set_sources(
                     crate::EventInPort::new(nodes.input, slot),
                     [EventOutPort::new(key, 0)],
@@ -817,12 +1072,73 @@ fn wire_inlets(
 }
 
 impl Midi<'_> {
+    fn next_load(&mut self) -> MidiLoad {
+        self.state.loads += 1;
+        MidiLoad(self.state.loads)
+    }
+
+    /// Reads the MIDI file at `path` on the session's spawner. Returns at
+    /// once; the result lands as [`MidiEvent::FileLoaded`] with the returned
+    /// id in a later [`Session::update`](crate::Session::update), on the
+    /// thread that calls `update()`. A file that cannot be read lands as
+    /// [`MidiError::File`], a job that did not finish as [`MidiError::Job`].
+    #[must_use = "the id matches the event that lands the load"]
+    pub fn load_file(&mut self, path: impl Into<std::path::PathBuf>) -> MidiLoad {
+        let load = self.next_load();
+        let path = path.into();
+        self.jobs.submit(
+            move || tutti_midi_file::MidiFile::read(path),
+            move |_, done, events| {
+                let file = match done {
+                    Ok(read) => read.map_err(MidiError::from),
+                    Err(failed) => Err(failed.into()),
+                };
+                events.push(MidiEvent::FileLoaded { load, file }.into());
+            },
+        );
+        load
+    }
+
+    /// Opens the SoundFont at `path` and builds a unit from it with
+    /// `settings`, on the session's spawner. Returns at once; the result
+    /// lands as [`MidiEvent::SoundFontLoaded`] with the returned id in a later
+    /// [`Session::update`](crate::Session::update), on the thread that calls
+    /// `update()`. The host adds the unit (`add_instrument`,
+    /// `add_general_midi`) when it lands.
+    #[must_use = "the id matches the event that lands the load"]
+    #[cfg(feature = "soundfont")]
+    pub fn load_soundfont(
+        &mut self,
+        path: impl Into<std::path::PathBuf>,
+        settings: tutti_soundfont::Settings,
+    ) -> MidiLoad {
+        let load = self.next_load();
+        let path = path.into();
+        self.jobs.submit(
+            move || -> Result<Box<tutti_soundfont::SoundFontUnit>> {
+                let font = tutti_sf2::SoundFont::open(path)?;
+                Ok(Box::new(tutti_soundfont::SoundFontUnit::new(
+                    std::sync::Arc::new(font),
+                    settings,
+                )?))
+            },
+            move |_, done, events| {
+                let unit = match done {
+                    Ok(built) => built,
+                    Err(failed) => Err(failed.into()),
+                };
+                events.push(MidiEvent::SoundFontLoaded { load, unit }.into());
+            },
+        );
+        load
+    }
+
     /// `target`, if it takes MIDI: it is in the graph with an event input.
     fn takes_midi(&self, target: NodeKey) -> Result<()> {
         if self.graph.node_event_inputs(target).is_ok_and(|n| n > 0) {
             Ok(())
         } else {
-            Err(Error::NoEventInput(target))
+            Err(MidiError::NoEventInput(target))
         }
     }
 
@@ -834,7 +1150,7 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoEventInput`] when `target` is not in the graph or takes
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI.
     pub fn live_input(&mut self, target: impl Into<NodeKey>) -> Result<LiveInput> {
         let target = target.into();
@@ -866,28 +1182,27 @@ impl Midi<'_> {
     /// sounding), or a new `MidiClipNode` fed into its event input. Returns
     /// the clip's node.
     ///
-    /// The events are anything that is `Into<TimedMidiEvent>`: a
-    /// [`TimedMidiEvent`] or a `(Beat, Ump)` pair, so a file's
-    /// `MidiFile::timeline()` plays as it is. They are absolute-beat
-    /// positioned, in any order; the clip
+    /// The events are [`TimedMidiEvent`]s (each beat finite: it is checked
+    /// where one is built, `TimedMidiEvent::new`); a file's
+    /// `MidiFile::timeline()` is `(Beat, Ump)` pairs a caller builds them from.
+    /// They are absolute-beat positioned, in any order; the clip
     /// reads its block's `Env`, so a note lands on its frame through seeks
     /// and loop wraps, and an export forks it with the target.
     ///
     /// # Errors
     ///
-    /// [`Error::NoEventInput`] when `target` is not in the graph or takes
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI.
     pub fn play_clip(
         &mut self,
         target: impl Into<NodeKey>,
-        events: impl IntoIterator<Item = impl Into<TimedMidiEvent>>,
+        events: impl IntoIterator<Item = TimedMidiEvent>,
     ) -> Result<NodeKey> {
         let target = target.into();
         self.takes_midi(target)?;
-        let events = events.into_iter().map(Into::into);
         let clip = match self.clip(target) {
             Some(clip) => {
-                self.state.clips[&clip].controls.set_events(events);
+                self.state.clips[&clip].controls.set(events);
                 clip
             }
             None => {
@@ -948,8 +1263,8 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoEventInput`] when `target` is not in the graph or takes
-    /// no MIDI; [`Error::NotSessionMidi`] when `node` is not a clip or live
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
+    /// no MIDI; [`MidiError::NotSessionMidi`] when `node` is not a clip or live
     /// input of this session's.
     pub fn retarget(&mut self, node: impl Into<NodeKey>, target: impl Into<NodeKey>) -> Result<()> {
         let node = node.into();
@@ -966,7 +1281,7 @@ impl Midi<'_> {
                 Feeder::LiveInput,
             )
         } else {
-            return Err(Error::NotSessionMidi(node));
+            return Err(MidiError::NotSessionMidi(node));
         };
         if old != target
             && self
@@ -992,8 +1307,8 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoMidiInput`] on a session with no MIDI input node (one
-    /// built detached); [`Error::TwoRouteDeclarers`] while a host's
+    /// [`MidiError::NoMidiInput`] on a session with no MIDI input node (one
+    /// built detached); [`MidiError::TwoRouteDeclarers`] while a host's
     /// `set_routes` declares the routes.
     pub fn route(&mut self, rule: MidiRouteRule) -> Result<MidiRouteId> {
         let input = self.input()?;
@@ -1009,11 +1324,11 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`NoSuchMidiRoute`] when there is no rule `id` (removed already, or
+    /// [`MidiError::NoSuchRoute`] ([`NoSuchMidiRoute`]) when there is no rule `id` (removed already, or
     /// never added); nothing changes.
-    pub fn unroute(&mut self, id: MidiRouteId) -> std::result::Result<(), NoSuchMidiRoute> {
+    pub fn unroute(&mut self, id: MidiRouteId) -> Result<()> {
         if self.state.rules.remove(&id).is_none() {
-            return Err(NoSuchMidiRoute(id));
+            return Err(NoSuchMidiRoute(id).into());
         }
         if let Ok(input) = self.input() {
             self.compile_own(input);
@@ -1026,27 +1341,27 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoMidiInput`] on a session with no MIDI input node;
-    /// [`Error::TwoRouteDeclarers`] while a host's
+    /// [`MidiError::NoMidiInput`] on a session with no MIDI input node;
+    /// [`MidiError::TwoRouteDeclarers`] while a host's
     /// [`set_routes`](Self::set_routes) declares the routes.
-    pub fn set_route_fallback(&mut self, fallback: Option<NodeKey>) -> Result<()> {
+    pub fn set_route_fallback(&mut self, fallback: Option<impl Into<NodeKey>>) -> Result<()> {
         let input = self.input()?;
         self.own_may_declare()?;
-        self.state.fallback = fallback;
+        self.state.fallback = fallback.map(Into::into);
         self.compile_own(input);
         Ok(())
     }
 
     fn own_may_declare(&self) -> Result<()> {
         if self.state.host_routes {
-            Err(Error::TwoRouteDeclarers("a host's `set_routes`"))
+            Err(MidiError::TwoRouteDeclarers(RouteDeclarer::Host))
         } else {
             Ok(())
         }
     }
 
     fn input(&self) -> Result<NodeKey> {
-        self.nodes.map(|n| n.input).ok_or(Error::NoMidiInput)
+        self.nodes.map(|n| n.input).ok_or(MidiError::NoMidiInput)
     }
 
     /// The layout of the input's ports; the first Group's with no input,
@@ -1082,7 +1397,7 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::TwoRouteDeclarers`] while the session's own rules or
+    /// [`MidiError::TwoRouteDeclarers`] while the session's own rules or
     /// fallback are declared ([`unroute`](Self::unroute) them first).
     /// Nothing is changed.
     pub fn set_routes<'r, T: Copy + Ord + 'r>(
@@ -1094,7 +1409,7 @@ impl Midi<'_> {
     ) -> Result<()> {
         let input = input.into();
         if !self.state.rules.is_empty() || self.state.fallback.is_some() {
-            return Err(Error::TwoRouteDeclarers("the session's own `route`"));
+            return Err(MidiError::TwoRouteDeclarers(RouteDeclarer::Session));
         }
         let rules: Vec<&MidiRouteRule<T>> = rules.into_iter().collect();
         self.state.host_routes = !rules.is_empty() || fallback.is_some();
@@ -1143,17 +1458,93 @@ impl Midi<'_> {
         }
     }
 
+    // --- MPE ---
+
+    /// The session's one MPE mode: how the hardware input is ingested and how a
+    /// synth added through [`Session::add_instrument`](crate::Session::add_instrument)
+    /// occupies the channels. Begins as the builder's
+    /// ([`SessionBuilder::mpe_mode`](crate::SessionBuilder::mpe_mode)),
+    /// `Disabled` by default.
+    #[must_use]
+    pub fn mpe(&self) -> MpeMode {
+        *self.state.mpe()
+    }
+
+    /// Sets the session's MPE mode, once for everything that follows it.
+    ///
+    /// - The hardware input ingests classic MPE in `mode` from the next block
+    ///   ([`MidiIngestControls::set_mpe_mode`](tutti_midi_runtime::MidiIngestControls::set_mpe_mode)),
+    ///   on a session that has the input node.
+    /// - A synth added after this through
+    ///   [`Session::add_instrument`](crate::Session::add_instrument) is built
+    ///   in `mode`: **the session's mode wins over the synth's own
+    ///   `SynthConfig::mpe`**, so the ingest and the voices cannot disagree.
+    ///   A synth already in the graph keeps the mode it was added with (a
+    ///   node in a graph cannot be reached from here); add it again to move
+    ///   it. A synth inserted with `Graph::add` is the caller's own and keeps
+    ///   its config.
+    pub fn set_mpe(&mut self, mode: MpeMode) {
+        self.state.mpe = mode;
+        if let Some(nodes) = self.nodes {
+            nodes.input_controls.set_mpe_mode(mode);
+        }
+    }
+
+    // --- Recording a take ---
+
+    /// Records what is played into `target`: an event tap on the event output
+    /// of its live input ([`live_input`](Self::live_input), opened when it has
+    /// none), which every note sent through the live input passes. A reader of
+    /// `capacity` events (a non-note-off is refused once that many are held, a
+    /// note-off is kept up to [`note_off_room`](tutti_graph::note_off_room) of
+    /// it; both counted by [`EventTapReader::take_lost`]).
+    ///
+    /// Read it with [`EventTapReader::drain`] from a thread of your own. Each
+    /// event's [`frame`](TapEvent::frame) is the frame of the graph's clock it
+    /// was due on, as it left the inlet and before the target heard it; where
+    /// a take places it on the timeline is
+    /// [`TakePlacement::place`] (doc 030 §5.2: the frame minus the input and
+    /// output latency and the inlet's lead, plus the user's trim).
+    ///
+    /// The tap is on the **live input**: notes a hardware input routes straight
+    /// to `target` ([`route`](Self::route)) do not pass it. To record a
+    /// hardware player, send what its device pushes through the live input, or
+    /// tap the ingest node's port with `Graph::taps`.
+    ///
+    /// The tap is closed when its reader is dropped (the next
+    /// [`Reclaim`](crate::Phase::Reclaim) phase) or with
+    /// `Graph::taps().close_event`. A re-prepare at another rate reopens the
+    /// session's own taps only (the hardware out's); reopen this one with
+    /// `Graph::taps().reopen_event`.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes no MIDI.
+    pub fn record(
+        &mut self,
+        target: impl Into<NodeKey>,
+        capacity: tutti_graph::EventCapacity,
+    ) -> Result<EventTapReader> {
+        let live = self.live_input(target)?;
+        let source = EventOutPort::new(live.node, 0);
+        self.graph
+            .taps()
+            .open_event(source, tutti_graph::TapAlign::Raw, capacity.get() as usize)
+            // The live input was just found or opened in this graph, with its port.
+            .map_err(|_| MidiError::NoEventInput(live.node))
+    }
+
     // --- Hardware out ---
 
     /// The output the hardware out (an event tap on the clock, aligned to the
     /// graph's outputs) drains to at each update's
     /// [`MidiOut`](crate::Phase::MidiOut) phase. `None`: its events are counted as dropped
-    /// ([`SessionEvent::MidiOutDropped`](crate::SessionEvent::MidiOutDropped)).
+    /// ([`MidiEvent::OutputDropped`]).
     ///
     /// **Whether it JR-stamps is the device's.** With the `midi-hardware`
     /// feature, each `MidiOut` phase sets the output's stamping from the
     /// configuration of the output device the session holds
-    /// (`tutti_midi_hardware::MidiSession::output_config`):
+    /// (`tutti_midi_hardware::MidiSession::output`):
     /// on only when the device receives JR Timestamps (`rx_jr`, which the
     /// session asks for off, so a device that does not turn it on itself is
     /// sent none), and the device's own output refuses a JR message otherwise.
@@ -1170,6 +1561,7 @@ impl Midi<'_> {
         MidiOutRouter {
             out: self.state.out.as_mut(),
             drops: Some(&self.state.drops),
+            timing: None,
         }
     }
 
@@ -1183,6 +1575,45 @@ impl Midi<'_> {
     /// tap for want of room (1 024 events between two updates), counted.
     pub fn out_drops(&self) -> u64 {
         self.state.drops.count()
+    }
+
+    /// Sets the hardware out's own latency and offset: what its MIDI device
+    /// takes to sound an event (it is sent that much earlier) and a trim on top
+    /// (positive sends later), added to the terms every event is timed by
+    /// ([`output_terms`](Self::output_terms)). Applies from the next drain; the
+    /// session has one output, and the setting stays when another device is
+    /// connected to it.
+    pub fn set_output_latency(&mut self, latency: OutputLatency) {
+        self.state.output_latency = latency;
+    }
+
+    /// The hardware out's own latency and offset, as set.
+    #[must_use]
+    pub fn output_latency(&self) -> OutputLatency {
+        self.state.output_latency
+    }
+
+    /// The terms the hardware out's events are timed by now: the audio
+    /// output's latency as the device reports it, and the output's own
+    /// ([`set_output_latency`](Self::set_output_latency)). `None` on a session
+    /// with no audio device, which sends every event at once.
+    ///
+    /// **While [`is_complete`](OutputTerms::is_complete) is false the audio
+    /// output's latency is not reported yet** (before the stream's first
+    /// callback, and again after a restart): events are timed with the terms
+    /// known, so they leave early by that latency.
+    #[must_use]
+    pub fn output_terms(&self) -> Option<OutputTerms> {
+        #[cfg(feature = "device")]
+        {
+            let source = self.state.output_clock.as_ref()?;
+            Some(OutputTerms {
+                audio_output: source.audio_output(),
+                latency: self.state.output_latency,
+            })
+        }
+        #[cfg(not(feature = "device"))]
+        None
     }
 
     /// The sample rate the hardware out's frames are on: the rate the graph
@@ -1292,6 +1723,7 @@ mod tests {
         let mut router = MidiOutRouter {
             out: None,
             drops: Some(&drops),
+            timing: None,
         };
         router.route(&[at(0), at(1), at(2)]);
         assert_eq!(drops.count(), 3);
@@ -1305,6 +1737,7 @@ mod tests {
         let mut router = MidiOutRouter {
             out: Some(&mut out),
             drops: Some(&drops),
+            timing: None,
         };
         router.route(&[at(0), at(1)]);
         assert_eq!(count.load(Ordering::SeqCst), 2, "both reached the sink");
@@ -1336,6 +1769,7 @@ mod tests {
         let mut router = MidiOutRouter {
             out: Some(&mut out),
             drops: None,
+            timing: None,
         };
         router.route(&[at(1_250), at(1_000), at(1_999)]);
         let sent = log.lock().unwrap().remove(0);
@@ -1351,6 +1785,7 @@ mod tests {
         MidiOutRouter {
             out: Some(&mut out),
             drops: None,
+            timing: None,
         }
         .route(&[at(1_250), at(1_000), at(1_999)]);
         assert_eq!(out.origin().since(before), Some(Samples(1_000)), "the span");
@@ -1368,6 +1803,7 @@ mod tests {
         let mut router = MidiOutRouter {
             out: Some(&mut out),
             drops: None,
+            timing: None,
         };
         drain_receiver_through(&rx, &mut router);
         let sent = log.lock().unwrap().remove(0);
@@ -1376,5 +1812,144 @@ mod tests {
             sent.iter().map(|e| e.0).collect::<Vec<_>>(),
             [0, 10].map(|o| Offset::new(o, span).unwrap())
         );
+    }
+
+    /// Keeps every batch's events with the time each was sent at.
+    struct Timed(Arc<std::sync::Mutex<Vec<Outgoing>>>);
+    impl tutti_midi_runtime::MidiOut for Timed {
+        fn queue(&self, events: &[UmpAt]) -> usize {
+            events.len()
+        }
+        fn queue_timed(&self, events: &[Outgoing]) -> usize {
+            self.0.lock().unwrap().extend_from_slice(events);
+            events.len()
+        }
+    }
+
+    fn timing_at(t0: Instant, terms: OutputTerms) -> OutputTiming {
+        OutputTiming {
+            map: ClockMap::new(
+                SampleRate::new(48_000.0),
+                tutti_midi_runtime::ClockReading::new(t0, Frame::ZERO),
+            ),
+            now: t0 - Duration::from_millis(10),
+            terms,
+        }
+    }
+
+    fn taken(log: &Arc<std::sync::Mutex<Vec<Outgoing>>>) -> Vec<Outgoing> {
+        log.lock().unwrap().clone()
+    }
+
+    fn timed_out() -> (UmpOut, Arc<std::sync::Mutex<Vec<Outgoing>>>) {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let out = UmpOut::new(Box::new(Timed(log.clone())), SampleRate::new(48_000.0));
+        (out, log)
+    }
+
+    /// **Events are sent at the instants their frames have, spaced as the
+    /// frames are.** Ticks 1 000 frames apart at 48 kHz are 20.833 ms apart in
+    /// `SendAt::At`, and the first is where the clock puts frame 1 000.
+    #[test]
+    fn frames_are_sent_at_their_instants_spaced_by_the_rate() {
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let (mut out, log) = timed_out();
+        let timing = timing_at(t0, OutputTerms::default());
+        let refused = out.send_frames(&[at(1_000), at(2_000), at(3_000)], Some(&timing));
+        assert_eq!(refused, 0);
+        let sends: Vec<SendAt> = log.lock().unwrap().iter().map(|e| e.send).collect();
+        let SendAt::At(first) = sends[0] else {
+            panic!("not scheduled: {sends:?}")
+        };
+        assert_eq!(Some(first), timing.map.unwrap().os_at(Frame::new(1_000)));
+        for pair in sends.windows(2) {
+            let (SendAt::At(a), SendAt::At(b)) = (pair[0], pair[1]) else {
+                panic!("not scheduled: {pair:?}")
+            };
+            let gap = b.duration_since(a).as_secs_f64();
+            assert!((gap - 1_000.0 / 48_000.0).abs() < 1e-6, "{gap}");
+        }
+    }
+
+    /// **An output's offset shifts every event by exactly it**, and the audio
+    /// latency and the device's go in as the plan says.
+    #[test]
+    fn the_terms_shift_every_event() {
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let sent_with = |terms: OutputTerms| {
+            let (mut out, log) = timed_out();
+            out.send_frames(&[at(1_000), at(2_000)], Some(&timing_at(t0, terms)));
+            taken(&log)
+        };
+        let base = sent_with(OutputTerms::default());
+        let terms = OutputTerms {
+            audio_output: Some(Duration::from_millis(30)),
+            latency: OutputLatency::new(
+                Duration::from_millis(5),
+                tutti_midi_runtime::OutputOffset::new(tutti_types::Seconds(0.25)).unwrap(),
+            )
+            .unwrap(),
+        };
+        let shifted = sent_with(terms);
+        for (a, b) in base.iter().zip(&shifted) {
+            let (SendAt::At(a), SendAt::At(b)) = (a.send, b.send) else {
+                panic!("not scheduled")
+            };
+            assert_eq!(b.duration_since(a), Duration::from_millis(30 - 5 + 250));
+        }
+    }
+
+    /// **A JR stamp is sent with its event**, so a stamping output schedules
+    /// the pair together and the stamps keep the spacing.
+    #[test]
+    fn a_jr_stamp_is_sent_at_its_events_time() {
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let (mut out, log) = timed_out();
+        out.set_stamping(true);
+        let timing = timing_at(t0, OutputTerms::default());
+        out.send_frames(&[at(1_000), at(2_000)], Some(&timing));
+        let sent = log.lock().unwrap().clone();
+        let events: Vec<&Outgoing> = sent
+            .iter()
+            .filter(|e| e.ump == note(0).1 || e.ump.message_type() == 0)
+            .collect();
+        assert!(events.len() >= 4, "a stamp for each event");
+        for pair in sent.windows(2) {
+            if pair[0].ump.message_type() == 0 && pair[1].ump == note(0).1 {
+                assert_eq!(pair[0].send, pair[1].send, "a stamp rides with its event");
+            }
+        }
+        assert!(
+            sent.iter()
+                .all(|e| matches!(e.send, SendAt::At(_)) || e.ump.message_type() == 0),
+            "every note is scheduled"
+        );
+    }
+
+    /// **An event beyond the cap is not sent and is counted**; one within it
+    /// goes.
+    #[test]
+    fn an_event_beyond_the_cap_is_refused_and_counted() {
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let (mut out, log) = timed_out();
+        let drops = MidiOutDrops::default();
+        let timing = timing_at(t0, OutputTerms::default());
+        let beyond = 48_000 * 3;
+        MidiOutRouter {
+            out: Some(&mut out),
+            drops: Some(&drops),
+            timing: Some(&timing),
+        }
+        .route(&[at(1_000), at(beyond)]);
+        assert_eq!(drops.count(), 1);
+        assert_eq!(log.lock().unwrap().len(), 1, "only the one within the cap");
+    }
+
+    /// With no timing, every event is sent at once, as before.
+    #[test]
+    fn without_timing_every_event_is_sent_now() {
+        let (mut out, log) = timed_out();
+        out.send_frames(&[at(1_000), at(2_000)], None);
+        assert!(log.lock().unwrap().iter().all(|e| e.send == SendAt::Now));
     }
 }

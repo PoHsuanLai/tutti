@@ -52,8 +52,9 @@ It opens the plugin with `Plugin::open`, offers it every per-block input
 the audio node over as a graph node (`Plugin::bind(tempo)` gives a `BoundPlugin`, a `tutti_graph::IntoNode`).
 
 To go through a catalog instead — scanning directories, and honouring the
-blacklist a crashed scan recorded — use `Plugins::find` to get a path and
-`Plugins::open` to load it.
+blacklist a crashed scan recorded — find the plugin with `Catalog::find` and
+load it with `Session::plugin_load(..).with_catalog(&catalog)`, which refuses a
+blacklisted one.
 
 ## Note
 

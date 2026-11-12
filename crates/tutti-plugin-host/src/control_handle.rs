@@ -4,20 +4,20 @@
 //! capability the backend lacks reads as `None` rather than erroring at the call.
 //! Audio never travels through here; this is the off-RT half.
 
-use crate::{InvalidateSink, ParameterChangeSink, RefreshSink};
+use crate::{InvalidateSink, Notice, ParameterChangeSink, RefreshSink, Subscription};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
 use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, Control, EditorCapabilities, EditorError, Health, PluginError,
-    StateError, WindowHandle,
+    PluginFailure, StateError, TerminationReason, WindowHandle,
 };
 use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{
-    LayoutSupport, LoadedPlugin, ParamEdit, PluginBus, PluginDescriptor, Preset, PresetId,
-    PresetSupport,
+    LayoutSupport, LoadedPlugin, PluginBus, PluginDescriptor, Preset, PresetId, PresetSupport,
 };
+#[cfg(doc)]
 use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
 /// How a [`PluginHandle`] reaches a plugin's main-thread [`Control`].
@@ -71,7 +71,7 @@ fn editor_error(error: PluginError) -> EditorError {
 /// that is merely misbehaving is a judgement made by counting failed calls, and
 /// how many failures over how long is the host's policy, not the engine's. See
 /// [`PluginHandle::status`] for why `Alive` must not be read as "healthy".
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum PluginStatus {
     /// The bridge is up. **Not** a promise the plugin is behaving — only that
     /// it has not died in a way the engine can see.
@@ -84,7 +84,7 @@ pub enum PluginStatus {
     /// was alive.
     Dead {
         /// Why the plugin died, latched at the detection site.
-        cause: String,
+        cause: PluginFailure,
     },
     /// The plugin refused the sample rate the engine runs at. It stays
     /// loaded and renders silence, and it is retried at every later rate
@@ -107,8 +107,14 @@ impl PluginStatus {
         matches!(self, Self::Dead { .. })
     }
 
+    /// `true` for [`Alive`](Self::Alive).
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        matches!(self, Self::Alive)
+    }
+
     /// Why the plugin died, or `None` while it is alive.
-    pub fn cause(&self) -> Option<&str> {
+    pub fn cause(&self) -> Option<&PluginFailure> {
         match self {
             Self::Dead { cause } => Some(cause),
             Self::Alive | Self::RateRefused { .. } => None,
@@ -222,7 +228,7 @@ impl PluginHandle {
         }
     }
 
-    /// This handle with `sink` as the one `on_invalidate` registers into: how
+    /// This handle with `sink` as the one `subscribe` hears: how
     /// an in-process backend that re-reads its plugin raises
     /// [`PluginInvalidation`]s.
     ///
@@ -232,7 +238,7 @@ impl PluginHandle {
         self
     }
 
-    /// This handle with `sink` as the one `on_refresh` registers into: how a
+    /// This handle with `sink` as the one `subscribe` hears: how a
     /// backend whose plugin raises cosmetic refreshes (the out-of-process
     /// client, over its wire) delivers [`PluginRefresh`]es.
     ///
@@ -332,7 +338,7 @@ impl PluginHandle {
     /// with your own debounce if you need one; do not read `Alive` as "healthy".
     ///
     /// For prompt notice rather than polling, subscribe with
-    /// [`on_invalidate`](Self::on_invalidate) and match
+    /// [`subscribe`](Self::subscribe) and match
     /// [`PluginInvalidation::Crashed`].
     pub fn status(&self) -> PluginStatus {
         match self.health.crash_cause() {
@@ -342,7 +348,7 @@ impl PluginHandle {
             // why, and losing the death because the reason is missing would be
             // the worse failure.
             None if self.health.is_crashed() => PluginStatus::Dead {
-                cause: "the backend reported a crash without a cause".to_string(),
+                cause: PluginFailure::Unreported,
             },
             None => match self.health.rate_refusal() {
                 Some((rate, reason)) => PluginStatus::RateRefused { rate, reason },
@@ -451,15 +457,15 @@ impl PluginHandle {
     /// (unless it died of something else first), so [`status`](Self::status)
     /// turns [`Dead`](PluginStatus::Dead) as for any crash. Nothing for an
     /// in-process plugin. Not for the audio thread.
-    pub fn terminate(&self, cause: &str) {
-        self.health.terminate(cause);
+    pub fn terminate(&self, reason: TerminationReason) {
+        self.health.terminate(reason);
     }
 
     /// How many parameter-change events the plugin sent that the host lost,
     /// over the plugin's life. Monotonic; the plugin's
     /// [`Control::dropped_reported_edits`]. A dropped event costs a
     /// stale readout, not audio, and the subprocess backend follows each drop
-    /// with an [`on_refresh`](Self::on_refresh) of
+    /// with an [`subscribe`](Self::subscribe) of
     /// [`PluginRefresh::ParamValues`] so a host that re-reads loses nothing.
     pub fn dropped_parameter_events(&self) -> u64 {
         self.control
@@ -679,59 +685,26 @@ impl PluginHandle {
         self.any_thread.set_automation_mode(mode)
     }
 
-    // ---- Notify sinks (plugin → host reactions) ----------------------------
+    // ---- Notices (plugin -> host) -------------------------------------------
 
-    /// Registers a callback invoked when the plugin edits one of its own
-    /// parameters (its editor, a preset load, its own automation), once per
-    /// [`ParamEdit`]: a gesture's `Begin`, each change and its `End`, in the
-    /// order the plugin made them (doc 029 section 6.1). Fires on the bridge
-    /// thread for the out-of-process backend; on the GUI thread (during
-    /// `editor_idle`) for the in-process one. Move heavy work to another thread
-    /// before touching graph state. Replaces any previous callback.
-    pub fn on_parameter_changed<F: Fn(ParamEdit) + Send + Sync + 'static>(&self, f: F) -> &Self {
-        self.param_sink.set(f);
-        self
-    }
-
-    /// Registers a callback for **cosmetic** refresh signals: the host's cached
-    /// *view* of some plugin state is stale ([`PluginRefresh::ParamValues`] /
-    /// [`PluginRefresh::ParamTitles`]) and should be re-read, but the audio graph
-    /// is unaffected. See [`Self::on_parameter_changed`] for thread caveats. Only
-    /// the out-of-process backend emits these; replaces any previous callback.
-    pub fn on_refresh<F: Fn(PluginRefresh) + Send + Sync + 'static>(&self, f: F) -> &Self {
-        self.refresh_sink.set(f);
-        self
-    }
-
-    /// Registers a callback for **structural** invalidation signals: the plugin
-    /// changed its latency ([`PluginInvalidation::Latency`]) or bus layout
-    /// ([`PluginInvalidation::Io`]), or reloaded in place
-    /// ([`PluginInvalidation::Reloaded`]) — the host must rewire and re-run
-    /// latency compensation (PDC). Latency and IO changes share one callback
-    /// because they demand the identical host response. See
-    /// [`Self::on_parameter_changed`] for thread caveats. Only the
-    /// out-of-process backend emits these; replaces any previous callback.
-    pub fn on_invalidate<F: Fn(PluginInvalidation) + Send + Sync + 'static>(&self, f: F) -> &Self {
-        self.invalidate_sink.set(f);
-        self
-    }
-
-    /// Removes the parameter-changed callback, if any.
-    pub fn clear_parameter_callback(&self) -> &Self {
-        self.param_sink.clear();
-        self
-    }
-
-    /// Removes the refresh callback, if any.
-    pub fn clear_refresh_callback(&self) -> &Self {
-        self.refresh_sink.clear();
-        self
-    }
-
-    /// Removes the invalidate callback, if any.
-    pub fn clear_invalidate_callback(&self) -> &Self {
-        self.invalidate_sink.clear();
-        self
+    /// Calls `f` with everything the plugin reports (a [`Notice`]) until the
+    /// returned [`Subscription`] drops. Any number of subscribers may hear one
+    /// plugin; nothing is replaced and nothing is cleared.
+    ///
+    /// `f` runs on the thread that heard the plugin: the bridge thread for a
+    /// served plugin, the GUI thread (during the editor's service) for an
+    /// in-process one. Move heavy work elsewhere before touching graph state.
+    /// The session's `SessionEvent::Plugin` is built on this; a host that needs
+    /// a push of its own subscribes through the session.
+    pub fn subscribe<F: Fn(Notice) + Send + Sync + 'static>(&self, f: F) -> Subscription {
+        let f = Arc::new(f);
+        let (a, b, c) = (f.clone(), f.clone(), f);
+        Subscription::all([
+            self.param_sink.subscribe(move |e| a(Notice::Param(e))),
+            self.refresh_sink.subscribe(move |e| b(Notice::Refresh(e))),
+            self.invalidate_sink
+                .subscribe(move |e| c(Notice::Invalidate(e))),
+        ])
     }
 }
 
@@ -895,7 +868,7 @@ mod tests {
             fn is_crashed(&self) -> bool {
                 false
             }
-            fn crash_cause(&self) -> Option<String> {
+            fn crash_cause(&self) -> Option<PluginFailure> {
                 None
             }
             fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
@@ -904,7 +877,7 @@ mod tests {
             fn block_counts(&self) -> BlockCounts {
                 BlockCounts::default()
             }
-            fn terminate(&self, _cause: &str) {}
+            fn terminate(&self, _reason: TerminationReason) {}
         }
 
         PluginHandle::from_backend(

@@ -1,725 +1,285 @@
-//! CompressorNode with external sidechain, soft knee and makeup gain.
+//! The feed-forward [`CompressorNode`] with an external side-chain, soft knee and
+//! makeup gain.
 
-use std::sync::Arc;
-use tutti_graph::{
-    Cx, InBus, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
-};
-use tutti_types::ChannelLayout;
-use tutti_types::UnitParam;
-use tutti_types::{AtomicF32, AtomicF64};
+use tutti_dsp::{CompressorControls, CompressorFamily, KeySource};
+use tutti_types::{BusTopology, CompressionRatio, Db, SampleRate, Seconds};
 
-use super::params::{AttackRelease, ThresholdParams};
-use super::utils::{apply_gain_lane, sidechain_levels};
-use tutti_dsp::{CompressorBlock, CompressorKernel};
-use tutti_types::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
+use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
-use crate::buses::keyed;
-use crate::ramp::{LastGood, clamp_finite};
-
-/// Shared compressor state used by the per-sample gain computation.
-#[derive(Clone, Debug)]
-pub(super) struct CompressorCore {
-    pub threshold: ThresholdParams,
-    pub ratio: Param<CompressionRatio>,
-    pub timing: AttackRelease,
-    pub makeup_db: Param<Db>,
-
-    kernel: CompressorKernel,
-    /// The makeup gain the previous block ended on, the start of this block's
-    /// ramp. `None` until the first block, which then starts on its own value
-    /// — a node has no "previous" makeup to ramp in from.
-    last_makeup: Option<Db>,
-    /// Last finite threshold, knee, ratio, makeup, attack and release. Every
-    /// one of them reaches the envelope follower — a recursive state that a
-    /// single NaN or ±∞ leaves NaN for good — so a non-finite write reads as
-    /// unchanged (see [`LastGood`]).
-    good: [LastGood; 6],
-}
-
-impl CompressorCore {
-    /// Builds the shared core. The follower is seeded at the placeholder
-    /// [`SampleRate::DEFAULT`]; `CompressorNode`'s `prepare` retunes it
-    /// from `timing`, which is why the times are kept as [`Seconds`] rather
-    /// than only as coefficients — the seconds are the recoverable form, the
-    /// coefficients are not.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
-    pub fn new(
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        let threshold_db = threshold_db.into();
-        let ratio = CompressionRatio::new_clamped(ratio.into().get());
-        let attack = attack.into();
-        let release = release.into();
-        Self {
-            threshold: ThresholdParams::new(threshold_db, Db(0.0)),
-            ratio: Param::new(ratio),
-            timing: AttackRelease::new(attack, release),
-            makeup_db: Param::new(Db(0.0)),
-            kernel: CompressorKernel::new(attack, release, SampleRate::DEFAULT),
-            last_makeup: None,
-            good: [
-                LastGood::new(threshold_db.get(), 0.0),
-                LastGood::fixed(0.0),
-                LastGood::new(ratio.get(), CompressionRatio::UNITY.get()),
-                LastGood::fixed(0.0),
-                LastGood::new(attack.to_f32(), 0.0),
-                LastGood::new(release.to_f32(), 0.0),
-            ],
-        }
-    }
-
-    pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {
-        self.threshold.knee = Param::new(Db(knee_db.into().get().max(0.0)));
-        self
-    }
-
-    pub fn with_makeup(mut self, makeup_db: impl Into<Db>) -> Self {
-        self.makeup_db = Param::new(makeup_db.into());
-        self
-    }
-
-    pub fn gain_reduction_db(&self) -> Db {
-        self.kernel.gain_reduction_db()
-    }
-
-    /// Detaches every control cell (see [`Param::detach`]): the `fork_fresh`
-    /// half of the core, keeping the current values. A cell added to the core
-    /// is detached here, once, for every node that forks it.
-    pub fn detach(&mut self) {
-        self.threshold.detach();
-        self.ratio.detach();
-        self.timing.detach();
-        self.makeup_db.detach();
-    }
-
-    /// The sidechain peak the detector last saw. An `Amplitude`, not a
-    /// unitless envelope — `GateCore::gate_level` has the same shape and name
-    /// but is a 0..1 open-fraction, and the types are what stop the two being
-    /// swapped.
-    pub fn envelope_level(&self) -> Amplitude {
-        self.kernel.envelope_level()
-    }
-
-    pub fn reset(&mut self) {
-        self.kernel.reset();
-        // Ramp history is state like the envelope: a reset node starts its
-        // next block on the current makeup rather than ramping in from a
-        // value it held before the discontinuity.
-        self.last_makeup = None;
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_types::SampleRate>) {
-        let (attack, release) = self.times([None, None]);
-        self.kernel.set_sample_rate(sample_rate, attack, release);
-    }
-
-    /// `driven` is the block's attack and release from the node's param
-    /// ports where a lane drives them; `None` reads the cell.
-    #[inline]
-    pub fn update_coefficients(&mut self, driven: [Option<f32>; 2]) {
-        let (attack, release) = self.times(driven);
-        self.kernel.update_coefficients(attack, release);
-    }
-
-    /// Attack and release, with non-finite writes held off, floored as
-    /// the setters floor them ([`AttackRelease::clamp_time`]), driven or
-    /// not.
-    #[inline]
-    fn times(&mut self, [attack, release]: [Option<f32>; 2]) -> (Seconds, Seconds) {
-        (
-            Seconds::from_f32(AttackRelease::clamp_time(
-                self.good[4].read(attack.unwrap_or_else(|| self.timing.attack.load().to_f32())),
-            )),
-            Seconds::from_f32(AttackRelease::clamp_time(
-                self.good[5].read(release.unwrap_or_else(|| self.timing.release.load().to_f32())),
-            )),
-        )
-    }
-
-    /// Reads every block-rate control once, and moves the makeup ramp's start
-    /// to this block's end. `driven` is the block's knee, ratio and makeup
-    /// from the node's param ports where a lane drives them; `None` reads the
-    /// cell. Knee and ratio are clamped as the setters clamp (a knee floored
-    /// at 0, a ratio at 1), a cell written raw as well as a driven value.
-    #[inline]
-    pub fn begin_block(&mut self, [knee, ratio, makeup]: [Option<f32>; 3]) -> CompressorBlock {
-        let (threshold, knee_cell) = self.threshold.load();
-        let threshold = Db(self.good[0].read(threshold.get()));
-        let knee = Db(
-            self.good[1].read(clamp_finite(knee.unwrap_or(knee_cell.get()), |k| {
-                k.max(0.0)
-            })),
-        );
-        let makeup_to =
-            Db(self.good[3].read(makeup.unwrap_or_else(|| self.makeup_db.load().get())));
-        let makeup_from = self.last_makeup.unwrap_or(makeup_to);
-        self.last_makeup = Some(makeup_to);
-        CompressorBlock {
-            threshold,
-            knee,
-            ratio: CompressionRatio(self.good[2].read(clamp_finite(
-                ratio.unwrap_or_else(|| self.ratio.load().get()),
-                |r| CompressionRatio::new_clamped(r).get(),
-            ))),
-            makeup_from,
-            makeup_to,
-        }
-    }
-
-    /// Compressor gain (linear) for frame `i` of an `n`-frame block; see
-    /// [`CompressorKernel::gain`].
-    #[inline]
-    pub fn gain(
-        &mut self,
-        block: &CompressorBlock,
-        i: usize,
-        n: usize,
-        sc_level: f32,
-        threshold_override: Option<Db>,
-    ) -> f32 {
-        self.kernel.gain(block, i, n, sc_level, threshold_override)
-    }
-}
-
-/// CompressorNode with external sidechain. Channel-count is runtime-configurable:
-/// `channels = N` means N audio inputs + N sidechain inputs + N outputs, with
-/// a single linked gain computed from the max-abs of the sidechain channels.
+/// A compressor: `channels = N` means N audio inputs, then (for a side-chain key) N key
+/// inputs, and N outputs, with one **linked** gain computed from the loudest key channel and
+/// applied to every output.
 ///
-/// - `CompressorNode::mono(..)` — 2 inputs (audio + sidechain), 1 output.
-/// - `CompressorNode::stereo(..)` — 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gain.
-/// - `CompressorNode::with_channels(.., n)` — arbitrary N (1..=8 in practice).
+/// A [`FamilyNode`] over [`CompressorFamily`], the detector and the gain being the
+/// family's recurrence; this file holds the cells and how the graph reaches them.
 ///
-/// # Modulated threshold
+/// - [`new`](Self::new): any width up to one bus (16 channels), on a checked
+///   [`BusTopology`], with the [`KeySource`] and the [`CompressorControls`] you give it.
+/// - [`mono`](Self::mono): 2 inputs (audio, key), 1 output, a side-chain key.
+/// - [`stereo`](Self::stereo): 4 inputs (L, R, key L, key R), 2 outputs, linked gain, a
+///   side-chain key.
 ///
-/// The audio inputs (`0..ch`) come first, then the sidechain inputs
-/// (`ch..2*ch`). The threshold is modulatable by the graph: a per-frame threshold in [`Db`] on the
-/// param port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold
-/// cell per sample. Unmodulated, the node reads its cell once per block,
-/// which is the common case; the arity never changes.
+/// # The key
+///
+/// The detector listens to a [`KeySource`], chosen when the node is built. `mono` and
+/// `stereo` have a **side-chain** key (as does `new` with [`KeySource::Sidechain`]), a
+/// second bus after the audio inputs, **and it must be wired**: the graph feeds an
+/// unconnected input silence, which compresses nothing, so a compressor whose key nobody
+/// wired does nothing. Wire it with a bus edge, for example
+/// `graph.connect(kick.bus_out(0), comp.bus_in(1))` in `tutti-session`, or each key channel
+/// into the inputs after the audio. A compressor that should listen to its own signal, as
+/// an ordinary compressor does, is `new(.., KeySource::Own, ..)`, which has no key bus and
+/// needs nothing wired.
+///
+/// The node declares no tail: the release decays after the key goes silent, but it only
+/// scales, so a silent input is a silent output.
+///
+/// # Controls
+///
+/// Threshold, knee, ratio, attack, release and makeup (as [`UnitParam::GainDb`](tutti_types::UnitParam::GainDb)) are live
+/// [`Params`](crate::Params) shared across clones, set through the node's
+/// [`ParamSet`](tutti_graph::ParamSet) or the graph's `set_param` (a knee under 0 reads as
+/// 0, a ratio under 1 as 1 and a time under 0 as 0: a compressor does not expand).
+///
+/// **The threshold is read per frame** when the graph drives it: a lane on its port is the
+/// recurrence's own ([`Feed`](tutti_dsp::Feed) lane 0), and the cell is the base a frame
+/// nobody drives (or a non-finite one) is compared against. **Every other control is on
+/// the stream grid** (16 frames from the last reset, [`Family::CADENCE`](tutti_dsp::Family::CADENCE)):
+/// a cell write or a driven port is sampled at the grid's solve frame, so it reaches the
+/// render within 16 frames and the render does not depend on how the stream is cut into
+/// blocks. The detector's controls land whole (the follower smooths them), and the makeup
+/// glides over [`GAIN_GLIDE`](tutti_dsp::GAIN_GLIDE), 5 ms.
 ///
 /// # In a graph
 ///
-/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over threshold, ratio, attack, release and makeup (as
-/// [`UnitParam::GainDb`]), and a fork of it starts from the values last set
-/// through that set. The graph prepares it at the device rate before its
-/// first block.
-pub struct CompressorNode {
-    core: CompressorCore,
-    /// Audio, then the key as a `Sidechain` bus; the output is the audio's.
-    ports: Shape,
-    /// The key's handle.
-    key: InBus,
-    /// The per-frame gain lane, sized to the prepared `MaxBlock`.
-    gains: Vec<f32>,
-}
-
-impl std::fmt::Debug for CompressorNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CompressorNode")
-            .field("core", &self.core)
-            .field("channels", &self.ports.audio_out())
-            .finish_non_exhaustive()
-    }
-}
-
-// The params a [`CompressorNode`] lets the graph modulate, in port order:
-// every param in its set. The threshold is read per sample; the ratio,
-// the times and the makeup are block-rate in the node (read once per
-// block, the makeup ramped across it), so a driven port is read the same
-// way (`ParamInput::last_frame`).
-tutti_graph::declare_params!([] CompressorNode, n {
-    Threshold => Db = &n.core.threshold.threshold,
-    Ratio => CompressionRatio = &n.core.ratio,
-    Attack => Seconds = &n.core.timing.attack,
-    Release => Seconds = &n.core.timing.release,
-    // The make-up gain is addressed as `GainDb`.
-    GainDb => Db = &n.core.makeup_db,
-});
+/// A graph node ([`IntoNode`](tutti_graph::IntoNode)): inserted, a fork of it starts from
+/// the values last set through its [`ParamSet`](tutti_graph::ParamSet). The graph prepares
+/// it at the device rate before its first block.
+pub type CompressorNode = FamilyNode<CompressorFamily>;
 
 impl CompressorNode {
-    /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
+    /// A compressor on the bus `input`, its detector on `key`, running at `controls`.
     ///
-    /// `threshold_db` is the level in [`Db`] above which reduction begins —
-    /// typically negative, since 0 dB is full scale. `ratio` is the
-    /// [`CompressionRatio`]: `4.0` means 4 dB in yields 1 dB out above the
-    /// threshold, and it is clamped to at least `1.0` (no expansion). `attack`
-    /// and `release` are [`Seconds`] envelope times — short attacks catch
-    /// transients, long releases sound smoother.
+    /// The main bus keeps its speaker placement; a [`KeySource::Sidechain`] is a second bus
+    /// as wide, which is a level to read, not a placement, so it has none. **A side-chain key
+    /// must be wired** (see the [type](CompressorNode)); a [`KeySource::Own`] compressor
+    /// listens to its own signal and has no key bus. `new(BusTopology::STEREO, ..)` is
+    /// [`stereo`](Self::stereo) for a side-chain; an `n`-channel one on the engine's order
+    /// for that width is `new(BusTopology::assumed(n)?, ..)`, which refuses a width past
+    /// one bus.
     ///
-    /// Knee is hard and makeup is 0 dB; add them with
-    /// [`with_soft_knee`](Self::with_soft_knee) / [`with_makeup`](Self::with_makeup).
-    ///
-    /// The envelope's one-pole coefficients are derived from the times at
-    /// the rate [`Node::prepare`] hands it.
-    pub fn mono(
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::with_channels(threshold_db, ratio, attack, release, 1)
-    }
-
-    /// Stereo + stereo sidechain: 4 inputs (L, R, SC-L, SC-R), 2 outputs.
-    ///
-    /// The gain is **linked** — one reduction computed from the loudest
-    /// sidechain channel and applied to both — so the stereo image does not
-    /// shift when one side is louder. Parameters are as [`mono`](Self::mono).
-    pub fn stereo(
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::with_channels(threshold_db, ratio, attack, release, 2)
-    }
-
-    /// Arbitrary channel count — 4 for quad, 6 for 5.1 — clamped to at least 1.
-    ///
-    /// `N` audio inputs, then `N` sidechain inputs, then `N` outputs, with one
-    /// **linked** gain computed from the loudest sidechain channel. Parameters
-    /// are as [`mono`](Self::mono).
-    ///
-    /// # Panics
-    ///
-    /// If `channels` is past 16: a key that wide fits no bus.
-    pub fn with_channels(
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-        channels: u8,
-    ) -> Self {
-        let (ports, key) = keyed(ChannelLayout::from(channels.max(1)));
-        Self {
-            core: CompressorCore::new(threshold_db, ratio, attack, release),
-            ports,
-            key,
-            gains: Vec::new(),
-        }
-    }
-
-    /// Softens the threshold over a `knee_db`-wide band in [`Db`], floored at
-    /// 0.
-    ///
-    /// The ratio eases in across the knee rather than switching on at the
-    /// threshold, which is what makes compression on vocals and busses sound
-    /// gradual instead of grabbing. `0.0` is a hard knee — the default. Typical
-    /// musical values are 6–12 dB; the band straddles the threshold, so half
-    /// sits below it.
+    /// The controls are as [`CompressorControls`] says, and are the cells' values: the
+    /// threshold (`Db`, typically negative, since 0 dB is full scale), the knee width, the
+    /// ratio (`4.0` is 4 dB in for 1 dB out above the threshold; at least 1, no expansion),
+    /// the envelope times (short attacks catch transients, long releases sound smoother)
+    /// and the makeup gain (applied after the reduction, unconditionally). The envelope's
+    /// one-pole coefficients are derived from the times at the rate
+    /// [`Node::prepare`](tutti_graph::Node::prepare) hands it.
+    /// [`CompressorControls::DEFAULT`] does nothing (ratio 1, threshold 0 dB), so a caller
+    /// names what it wants: `CompressorControls { threshold, ratio, ..CompressorControls::DEFAULT }`.
     #[must_use]
-    pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {
-        self.core = self.core.with_soft_knee(knee_db);
-        self
+    pub fn new(input: BusTopology, key: KeySource, controls: CompressorControls) -> Self {
+        Self::live(CompressorFamily::new(input, key), controls)
     }
 
-    /// Adds `makeup_db` of output gain in [`Db`], applied after reduction.
+    /// Mono + mono side-chain: 2 inputs (audio, key), 1 output.
     ///
-    /// Compression lowers the peaks, so makeup restores the perceived level —
-    /// it is what makes a compressed signal comparable to the uncompressed one.
-    /// Applied unconditionally, including when nothing is being reduced.
+    /// **The key is a side-chain that must be wired** (see the [type](CompressorNode)); for
+    /// a compressor that listens to its own signal use [`new`](Self::new) with
+    /// [`KeySource::Own`].
     #[must_use]
-    pub fn with_makeup(mut self, makeup_db: impl Into<Db>) -> Self {
-        self.core = self.core.with_makeup(makeup_db);
-        self
+    pub fn mono(controls: CompressorControls) -> Self {
+        Self::new(BusTopology::MONO, KeySource::Sidechain, controls)
     }
 
-    /// The audio channel width this compressor was built for.
+    /// Stereo + stereo side-chain: 4 inputs (L, R, key L, key R), 2 outputs.
     ///
-    /// It has `2 * channels` inputs (audio then sidechain) and `channels`
-    /// outputs, plus a threshold port if one was requested.
-    pub fn channels(&self) -> u8 {
-        self.ports.audio_out().count() as u8
-    }
-
-    /// The width this compressor was built for, as the engine's channel
-    /// vocabulary. [`channels`](Self::channels) is the same number as a bare
-    /// count, kept for callers doing port arithmetic.
-    pub fn layout(&self) -> ChannelLayout {
-        self.ports.audio_out()
-    }
-
-    /// The shared threshold cell in [`Db`] — the level above which reduction
-    /// begins.
-    ///
-    /// **A threshold the graph feeds overrides this per sample.** Read
-    /// once per sample otherwise. Shared across clones.
-    pub fn threshold(&self) -> Arc<AtomicF32> {
-        self.core.threshold.threshold.as_atomic()
-    }
-
-    /// The shared [`CompressionRatio`] cell: dB in per dB out above the
-    /// threshold.
-    ///
-    /// A raw write below `1.0` reads as `1.0`, as [`set_ratio`](Self::set_ratio)
-    /// clamps: a compressor does not expand.
-    pub fn ratio(&self) -> Arc<AtomicF32> {
-        self.core.ratio.as_atomic()
-    }
-
-    /// The shared attack-time cell in [`Seconds`] — how fast the envelope rises
-    /// toward a new, louder level.
-    ///
-    /// Shorter catches transients, longer lets them through. Coefficients are
-    /// recomputed once per block from this.
-    pub fn attack_time(&self) -> Arc<AtomicF64> {
-        self.core.timing.attack.as_atomic()
-    }
-
-    /// The shared release-time cell in [`Seconds`] — how fast the envelope
-    /// falls once the signal drops.
-    ///
-    /// Too short pumps audibly on sustained material; longer sounds smoother.
-    pub fn release_time(&self) -> Arc<AtomicF64> {
-        self.core.timing.release.as_atomic()
-    }
-
-    /// The shared makeup-gain cell in [`Db`], applied after reduction.
-    pub fn makeup_gain(&self) -> Arc<AtomicF32> {
-        self.core.makeup_db.as_atomic()
-    }
-
-    /// The shared knee-width cell in [`Db`]. `0.0` is a hard knee.
-    pub fn knee_width(&self) -> Arc<AtomicF32> {
-        self.core.threshold.knee.as_atomic()
-    }
-
-    /// Sets the threshold in [`Db`], unclamped.
-    ///
-    /// While the graph modulates the threshold this sets the *base* its
-    /// modulation rides on, not what the compressor runs at.
-    pub fn set_threshold(&self, db: impl Into<Db>) {
-        self.core.threshold.threshold.store(db.into());
-    }
-
-    /// Sets the [`CompressionRatio`], clamped to at least `1.0`.
-    ///
-    /// `1.0` is no compression; higher reduces more. The clamp is what keeps a
-    /// compressor from becoming an expander.
-    pub fn set_ratio(&self, ratio: impl Into<CompressionRatio>) {
-        self.core
-            .ratio
-            .store(CompressionRatio::new_clamped(ratio.into().get()));
-    }
-
-    /// Sets the attack time in [`Seconds`], floored at 0.
-    pub fn set_attack(&self, seconds: impl Into<Seconds>) {
-        self.core
-            .timing
-            .attack
-            .store(AttackRelease::floor(seconds.into()));
-    }
-
-    /// Sets the release time in [`Seconds`], floored at 0.
-    pub fn set_release(&self, seconds: impl Into<Seconds>) {
-        self.core
-            .timing
-            .release
-            .store(AttackRelease::floor(seconds.into()));
-    }
-
-    /// Sets the makeup gain in [`Db`], applied after reduction.
-    pub fn set_makeup(&self, db: impl Into<Db>) {
-        self.core.makeup_db.store(db.into());
-    }
-
-    /// The gain reduction currently applied, in [`Db`] — a **measurement**, for
-    /// driving a reduction meter.
-    ///
-    /// [`Db::UNITY`] means nothing is being reduced; larger values mean more
-    /// reduction. Reflects the smoothed envelope, so it follows the attack and
-    /// release times rather than the instantaneous level.
-    pub fn gain_reduction_db(&self) -> Db {
-        self.core.gain_reduction_db()
-    }
-
-    /// The sidechain peak the detector last saw, as an [`Amplitude`] — a
-    /// **measurement**, for driving an input meter.
-    ///
-    /// This is the level *fed to* the detector, before any gain decision.
-    /// Distinct from `GateNode`'s similarly-shaped reading, which is an open
-    /// fraction rather than a level; the unit types are what keep them apart.
-    pub fn envelope_level(&self) -> Amplitude {
-        self.core.envelope_level()
+    /// The gain is **linked**: one reduction computed from the loudest key channel and
+    /// applied to both, so the stereo image does not shift when one side is louder. The key
+    /// is as [`mono`](Self::mono)'s: a side-chain that must be wired.
+    #[must_use]
+    pub fn stereo(controls: CompressorControls) -> Self {
+        Self::new(BusTopology::STEREO, KeySource::Sidechain, controls)
     }
 }
 
-impl Node for CompressorNode {
-    /// `2 * channels` in (audio, then sidechain), `channels` out, every
-    /// param modulatable .
-    ///
-    /// No tail: the release envelope decays after the input goes silent,
-    /// but it only scales (`output = input * gain`), so a silent input is a
-    /// silent output whatever the envelope is doing.
-    fn shape(&self) -> Shape {
-        self.ports
-            .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::None)
-            .with_param_addrs(self.declared_ports().as_slice())
-    }
+/// The compressor's controls: threshold, knee, ratio, attack, release and makeup.
+#[derive(Clone, Copy, Debug)]
+pub struct CompressorSet;
 
-    fn prepare(&mut self, p: &Prepare) {
-        self.core.set_sample_rate(p.sample_rate());
-        self.gains = vec![0.0; p.max_block().get()];
-    }
+control_set! {
+    CompressorSet(_s): CompressorControls = CompressorControls::DEFAULT;
+    live: (all);
+    Threshold => Db = threshold { fast },
+    Knee => Db = knee { whole },
+    Ratio => CompressionRatio = ratio { whole },
+    Attack => Seconds = attack { whole },
+    Release => Seconds = release { whole },
+    // The makeup glides in the recurrence, over `GAIN_GLIDE`: the reader must not ramp it
+    // across the block as well. It is addressed as `GainDb`.
+    GainDb => Db = makeup { whole };
 
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames();
-        self.core.update_coefficients([
-            self.declared_param::<{ UnitParam::Attack as u16 }>(&io)
-                .last_frame(),
-            self.declared_param::<{ UnitParam::Release as u16 }>(&io)
-                .last_frame(),
-        ]);
-        let block = self.core.begin_block([
-            None,
-            self.declared_param::<{ UnitParam::Ratio as u16 }>(&io)
-                .last_frame(),
-            self.declared_param::<{ UnitParam::GainDb as u16 }>(&io)
-                .last_frame(),
-        ]);
-        // A modulated threshold overrides the cell per sample; the cell is
-        // the base the graph's modulation rides on.
-        let threshold_fed = self
-            .declared_param::<{ UnitParam::Threshold as u16 }>(&io)
-            .frames();
-        let (inputs, mut outputs) = io.split();
-
-        // The detector is a recursive envelope, so it runs sample-outer into a
-        // per-block gain lane; the gain is then applied channel-outer over
-        // planar slices, a memoryless multiply the compiler can vectorize.
-        // The lane is sized to the prepared `MaxBlock`.
-        let gains = &mut self.gains[..size];
-        sidechain_levels(&inputs.bus(self.key), gains);
-        for (i, g) in gains.iter_mut().enumerate() {
-            let sc = *g;
-            let threshold = threshold_fed.map(|v| Db(v[i]));
-            *g = self.core.gain(&block, i, size, sc, threshold);
-        }
-        apply_gain_lane(gains, &inputs, &mut outputs);
-        Status::Modified
-    }
-
-    fn reset(&mut self) {
-        self.core.reset();
-    }
-
-    fn param_base(&self, k: usize) -> Option<f32> {
-        self.declared_base(k)
+    fn defaults(&self) -> CompressorControls {
+        CompressorControls::DEFAULT
     }
 }
 
-impl ParamNode for CompressorNode {
-    /// Threshold, ratio, attack, release, and the makeup gain as
-    /// [`UnitParam::GainDb`] (the address `set(Setting)` took it by).
-    fn param_set(&self) -> ParamSet {
-        self.declared_set()
+/// A compressor rings on only as a gain (it scales its input), so it declares no tail and
+/// never parks: its follower must keep tracking the key, which the main input's silence
+/// says nothing of.
+impl NodeFamily for CompressorFamily {
+    type Set = CompressorSet;
+
+    const RINGS: Rings = Rings::Silent;
+    const SAMPLING: tutti_dsp::Cadence = <Self as tutti_dsp::Family>::CADENCE;
+
+    fn set(&self, _: &CompressorControls) -> CompressorSet {
+        CompressorSet
     }
 
-    /// A clone with every control cell detached (the knee too, which has no
-    /// address but is read per block), its envelope cleared.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.core.detach();
-        Node::reset(&mut fork);
-        fork
-    }
-}
-
-/// Inserted with its [`ParamSet`] as its controls and a fork from the values
-/// last set through it ([`tutti_graph::param_parts`]).
-impl IntoNode for CompressorNode {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-/// Shares the control cells (the template [`tutti_graph::param_parts`]
-/// forks from); the detector state is copied.
-impl Clone for CompressorNode {
-    fn clone(&self) -> Self {
-        Self {
-            core: self.core.clone(),
-            ports: self.ports,
-            key: self.key,
-            gains: self.gains.clone(),
-        }
-    }
+    fn capacity(&self, _: SampleRate) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
-    use core::sync::atomic::Ordering;
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_graph::{Node, ParamNode};
     use tutti_types::UnitParam;
+
+    /// The controls of a compressor the tests name four of, the others at the default's.
+    fn four(threshold: f32, ratio: f32, attack: f64, release: f64) -> CompressorControls {
+        CompressorControls {
+            threshold: Db::new(threshold),
+            ratio: CompressionRatio::new(ratio),
+            attack: Seconds::new(attack),
+            release: Seconds::new(release),
+            ..CompressorControls::DEFAULT
+        }
+    }
+
+    fn comp(threshold: f32, ratio: f32, attack: f64, release: f64) -> CompressorNode {
+        CompressorNode::mono(four(threshold, ratio, attack, release))
+    }
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
     #[test]
     fn a_fork_shares_no_cell() {
-        assert_param_fork(
-            CompressorNode::stereo(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.001),
-                Seconds::new(0.1),
-            )
-            .with_makeup(Db::new(3.0)),
-        );
+        assert_param_fork(CompressorNode::stereo(CompressorControls {
+            knee: Db::new(6.0),
+            makeup: Db::new(3.0),
+            ..four(-20.0, 4.0, 0.001, 0.1)
+        }));
     }
 
-    /// The block reads a raw ratio cell below 1 as 1 and a knee below 0 as 0,
-    /// as the setters clamp.
-    #[test]
-    fn begin_block_clamps_a_raw_ratio_and_knee() {
-        let mut core = CompressorCore::new(
-            Db::new(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds::new(0.001),
-            Seconds::new(0.1),
-        );
-        core.ratio.store(CompressionRatio(0.25));
-        core.threshold.knee.store(Db(-6.0));
-        let block = core.begin_block([None, None, None]);
-        assert_eq!(block.ratio, CompressionRatio(1.0));
-        assert_eq!(block.knee, Db(0.0));
-    }
-
-    /// A block longer than 64 frames renders whole: the
-    /// gain lane is sized from the prepared `MaxBlock`, not a constant.
+    /// A block longer than 64 frames renders whole: the gain lane is sized from the
+    /// prepared `MaxBlock`, not a constant.
     #[test]
     fn a_block_up_to_the_prepared_maximum_renders() {
-        let mut comp = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
+        let mut node = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
         let audio = vec![0.5f32; 1024];
         let sc = vec![0.9f32; 1024];
-        let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
+        let out = drive(&mut node, RATE_44K, &[&audio, &sc], &[]).remove(0);
         assert!(out[1023] < 0.5, "the loud sidechain reduced the tail");
     }
 
-    /// A NaN ratio at construction is read as no compression, not as 0, which
-    /// is below the type's floor: the output stays finite, `reset` is not
-    /// needed to recover, and a later finite ratio takes effect.
+    /// A NaN ratio at construction is read as no compression, not as 0, which is below
+    /// the type's floor: the output stays finite, `reset` is not needed to recover, and a
+    /// later finite ratio takes effect.
     #[test]
     fn a_nan_ratio_at_construction_is_finite_and_recovers() {
-        let mut comp = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio(f32::NAN),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
+        let mut node = prepared_at(comp(-20.0, f32::NAN, 0.0001, 0.1), RATE_44K);
         let audio = vec![0.5f32; 256];
         let sc = vec![0.9f32; 256];
         for _ in 0..16 {
-            let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
+            let out = drive(&mut node, RATE_44K, &[&audio, &sc], &[]).remove(0);
             assert!(out.iter().all(|s| s.is_finite()), "NaN ratio");
+            assert!(
+                out.iter().all(|&s| s == 0.5),
+                "NaN ratio compresses nothing"
+            );
         }
-        comp.set_ratio(CompressionRatio(4.0));
+        assert!(node.param_set().set(UnitParam::Ratio, 4.0));
         let mut last = 0.5;
         for _ in 0..16 {
-            let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
-            assert!(out.iter().all(|s| s.is_finite()), "after set_ratio");
+            let out = drive(&mut node, RATE_44K, &[&audio, &sc], &[]).remove(0);
+            assert!(out.iter().all(|s| s.is_finite()), "after the write");
             last = out[255];
         }
         assert!(last < 0.5, "the finite ratio compresses: {last}");
-        Node::reset(&mut comp);
-        let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
+        Node::reset(&mut node);
+        let out = drive(&mut node, RATE_44K, &[&audio, &sc], &[]).remove(0);
         assert!(out.iter().all(|s| s.is_finite()), "after reset");
+    }
+
+    /// An own-key compressor listens to its signal: no key bus (one input a channel), a
+    /// loud signal is reduced and a quiet one under the threshold is not.
+    #[test]
+    fn an_own_key_compressor_listens_to_its_signal() {
+        let mk = || {
+            CompressorNode::new(
+                BusTopology::MONO,
+                KeySource::Own,
+                four(-20.0, 4.0, 0.0001, 0.1),
+            )
+        };
+        let shape = mk().shape();
+        assert_eq!(
+            (shape.audio_in().count(), shape.audio_out().count()),
+            (1, 1)
+        );
+        let mut output = [0.0f32];
+        let mut loud = prepared_at(mk(), RATE_44K);
+        for _ in 0..1000 {
+            tick(&mut loud, &[0.5], &mut output);
+        }
+        assert!(output[0] < 0.4, "a loud signal ducks itself: {}", output[0]);
+        let mut quiet = prepared_at(mk(), RATE_44K);
+        for _ in 0..1000 {
+            tick(&mut quiet, &[0.05], &mut output);
+        }
+        assert_eq!(output[0], 0.05, "under the threshold nothing is reduced");
     }
 
     #[test]
     fn test_compressor_mono_reduces_gain_on_loud_sidechain() {
-        let mut comp = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
+        let mut node = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
         let mut output = [0.0f32];
-
         for _ in 0..1000 {
-            tick(&mut comp, &[0.5, 0.9], &mut output);
+            tick(&mut node, &[0.5, 0.9], &mut output);
         }
-
-        assert!(comp.gain_reduction_db() > Db::UNITY);
         assert!(output[0] < 0.5);
     }
 
     #[test]
     fn test_compressor_mono_no_reduction_below_threshold() {
-        let mut comp = prepared_at(
-            CompressorNode::mono(
-                Db::new(-10.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
+        let mut node = prepared_at(comp(-10.0, 4.0, 0.001, 0.1), RATE_44K);
         let mut output = [0.0f32];
-
         for _ in 0..1000 {
-            tick(&mut comp, &[0.5, 0.1], &mut output);
+            tick(&mut node, &[0.5, 0.1], &mut output);
         }
-
-        assert!(comp.gain_reduction_db() < Db(1.0));
+        // A key at -20 dB under a -10 dB threshold: the gain is 1.
+        assert_eq!(output[0], 0.5);
     }
 
     #[test]
     fn test_compressor_soft_knee_differs_from_hard_knee() {
-        let mut hard = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
+        let mut hard = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
         let mut soft = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            )
-            .with_soft_knee(Db::new(12.0)),
+            CompressorNode::mono(CompressorControls {
+                knee: Db::new(12.0),
+                ..four(-20.0, 4.0, 0.0001, 0.1)
+            }),
             RATE_44K,
         );
-
         let mut hard_out = [0.0f32];
         let mut soft_out = [0.0f32];
-
         for _ in 0..1000 {
             tick(&mut hard, &[0.5, 0.15], &mut hard_out);
             tick(&mut soft, &[0.5, 0.15], &mut soft_out);
         }
-
         assert!(
             (hard_out[0] - soft_out[0]).abs() > 0.001,
             "Soft knee should produce different output near threshold: hard={}, soft={}",
@@ -730,211 +290,252 @@ mod tests {
 
     #[test]
     fn test_compressor_makeup_gain() {
-        let mut comp = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            )
-            .with_makeup(Db::new(6.0)),
+        let mut with = prepared_at(
+            CompressorNode::mono(CompressorControls {
+                makeup: Db::new(6.0),
+                ..four(-20.0, 4.0, 0.0001, 0.1)
+            }),
             RATE_44K,
         );
-
-        let mut comp_no_makeup = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
+        let mut without = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
         let mut output = [0.0f32];
         let mut output_no_makeup = [0.0f32];
-
         for _ in 0..1000 {
-            tick(&mut comp, &[0.5, 0.9], &mut output);
-            tick(&mut comp_no_makeup, &[0.5, 0.9], &mut output_no_makeup);
+            tick(&mut with, &[0.5, 0.9], &mut output);
+            tick(&mut without, &[0.5, 0.9], &mut output_no_makeup);
         }
-
-        assert!(output[0] > output_no_makeup[0]);
+        // Six dB is a factor of 10^(6/20), the same gain on the same reduction.
+        let ratio = f64::from(output[0]) / f64::from(output_no_makeup[0]);
+        assert!((ratio - 10f64.powf(6.0 / 20.0)).abs() < 1e-4, "{ratio}");
     }
 
+    /// `reset` clears the follower: a quiet key after it reads no reduction, where without
+    /// it the slow release (100 ms) would still hold the last one.
     #[test]
-    fn test_compressor_reset() {
-        let mut comp = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
+    fn a_reset_clears_the_follower() {
+        let mut node = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
         let mut output = [0.0f32];
         for _ in 0..1000 {
-            tick(&mut comp, &[0.5, 0.9], &mut output);
+            tick(&mut node, &[0.5, 0.9], &mut output);
         }
-        assert!(comp.gain_reduction_db() > Db::UNITY);
+        tick(&mut node, &[0.5, 0.0], &mut output);
+        assert!(output[0] < 0.5, "the release still holds the reduction");
 
-        comp.reset();
-        assert_eq!(comp.gain_reduction_db(), Db::UNITY);
-        assert_eq!(comp.envelope_level(), Amplitude::SILENT);
+        Node::reset(&mut node);
+        tick(&mut node, &[0.5, 0.0], &mut output);
+        assert_eq!(output[0], 0.5, "a reset follower is at no reduction");
     }
 
+    /// A ratio written below 1 reads as 1: a compressor does not expand, and at ratio 1
+    /// nothing is reduced.
     #[test]
-    fn test_compressor_ratio_clamps_to_minimum() {
-        let comp = CompressorNode::mono(
-            Db::new(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds::new(0.001),
-            Seconds::new(0.1),
-        );
-        comp.set_ratio(CompressionRatio::new(0.5));
-        assert_eq!(comp.ratio().load(Ordering::Acquire), 1.0);
+    fn a_ratio_below_one_reads_as_one() {
+        let mut node = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        assert!(node.param_set().set(UnitParam::Ratio, 0.5));
+        let mut output = [0.0f32];
+        for _ in 0..100 {
+            tick(&mut node, &[0.5, 0.9], &mut output);
+        }
+        assert_eq!(output[0], 0.5);
     }
 
     #[test]
     fn test_compressor_stereo_reduces_on_loud_sidechain() {
-        let mut comp = prepared_at(
-            CompressorNode::stereo(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
+        let mut node = prepared_at(
+            CompressorNode::stereo(four(-20.0, 4.0, 0.0001, 0.1)),
             RATE_44K,
         );
-
         let mut output = [0.0f32; 2];
-
         for _ in 0..1000 {
-            tick(&mut comp, &[0.5, 0.5, 0.9, 0.9], &mut output);
+            tick(&mut node, &[0.5, 0.5, 0.9, 0.9], &mut output);
         }
-
         assert!((output[0] - output[1]).abs() < 0.001);
         assert!(output[0] < 0.5);
     }
 
+    /// `2 * width` inputs (audio, then key) and `width` outputs for a side-chain compressor
+    /// and `width` inputs for an own-key one, at every width, from `new` and from the
+    /// shorthands: the shorthands are a side-chain key at their width.
     #[test]
-    fn test_compressor_stereo_channel_count() {
-        let mono = CompressorNode::mono(
-            Db::new(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds::new(0.001),
-            Seconds::new(0.1),
-        );
-        assert_eq!(mono.channels(), 1);
-        assert_eq!(mono.shape().audio_in().count(), 2);
-        assert_eq!(mono.shape().audio_out().count(), 1);
-
-        let stereo = CompressorNode::stereo(
-            Db::new(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds::new(0.001),
-            Seconds::new(0.1),
-        );
-        assert_eq!(stereo.channels(), 2);
-        assert_eq!(stereo.shape().audio_in().count(), 4);
-        assert_eq!(stereo.shape().audio_out().count(), 2);
-
-        let quad = CompressorNode::with_channels(
-            Db::new(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds::new(0.001),
-            Seconds::new(0.1),
-            4,
-        );
-        assert_eq!(quad.channels(), 4);
-        assert_eq!(quad.shape().audio_in().count(), 8);
-        assert_eq!(quad.shape().audio_out().count(), 4);
+    fn the_constructors_and_the_key_choice_are_the_port_layout() {
+        let c = four(-20.0, 4.0, 0.001, 0.1);
+        let wide = BusTopology::assumed(tutti_types::ChannelLayout::from(4u16))
+            .expect("at most one bus wide");
+        for (node, inputs, outputs) in [
+            (CompressorNode::mono(c), 2, 1),
+            (CompressorNode::stereo(c), 4, 2),
+            (CompressorNode::new(wide, KeySource::Sidechain, c), 8, 4),
+            (
+                CompressorNode::new(BusTopology::MONO, KeySource::Own, c),
+                1,
+                1,
+            ),
+            (
+                CompressorNode::new(BusTopology::STEREO, KeySource::Own, c),
+                2,
+                2,
+            ),
+            (CompressorNode::new(wide, KeySource::Own, c), 4, 4),
+        ] {
+            let shape = node.shape();
+            assert_eq!(
+                (shape.audio_in().count(), shape.audio_out().count()),
+                (inputs, outputs)
+            );
+        }
     }
 
-    // ── Modulated threshold (the graph's param feed) ────────────────────────
+    /// The controls given to a constructor are the cells' values, all six of them (the
+    /// knee and makeup too, which the old positional constructors left to builders).
+    #[test]
+    fn the_constructor_controls_reach_the_cells() {
+        let c = CompressorControls {
+            threshold: Db(-18.0),
+            knee: Db(6.0),
+            ratio: CompressionRatio(3.0),
+            attack: Seconds(0.002),
+            release: Seconds(0.25),
+            makeup: Db(2.5),
+        };
+        for node in [
+            CompressorNode::stereo(c),
+            CompressorNode::new(BusTopology::MONO, KeySource::Own, c),
+        ] {
+            let bases: Vec<_> = (0..6).map(|k| node.param_base(k)).collect();
+            assert_eq!(
+                bases,
+                [-18.0, 6.0, 3.0, 0.002, 0.25, 2.5].map(Some),
+                "threshold, knee, ratio, attack, release, makeup"
+            );
+        }
+    }
 
-    /// The shape declares every param (threshold, ratio, attack, release,
-    /// makeup), and it never changes the arity: audio plus sidechain, at
-    /// every width. (Doc 014 §12.6 widened the list: a route onto any of
-    /// these was refused once the frame-rate driver went.)
+    /// The shape declares every control in the order of the set (threshold, knee, ratio,
+    /// attack, release, makeup as `GainDb`), with the cells as their bases, no latency and
+    /// no tail, at every width.
     #[test]
     fn compressor_declares_its_params() {
-        let m = CompressorNode::mono(
-            Db::new(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds::new(0.0001),
-            Seconds::new(0.1),
-        );
+        let m = comp(-20.0, 4.0, 0.0001, 0.1);
+        let shape = m.shape();
         assert_eq!(
-            m.shape().params.as_slice(),
+            shape.params.as_slice(),
             &[
                 UnitParam::Threshold,
+                UnitParam::Knee,
                 UnitParam::Ratio,
                 UnitParam::Attack,
                 UnitParam::Release,
                 UnitParam::GainDb
             ][..]
         );
-        assert_eq!(m.shape().audio_in().count(), 2);
-        assert_eq!(
-            m.param_base(0),
-            Some(-20.0),
-            "the base is the threshold control"
-        );
-        assert_eq!(m.param_base(1), Some(4.0), "the ratio's base");
-        assert_eq!(m.param_base(2), Some(0.0001), "the attack's base");
-        assert_eq!(m.param_base(3), Some(0.1), "the release's base");
-        assert_eq!(m.param_base(4), Some(0.0), "the makeup's base");
-        let s = CompressorNode::stereo(
-            Db::new(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds::new(0.0001),
-            Seconds::new(0.1),
-        );
-        assert_eq!(s.shape().audio_in().count(), 4);
+        assert_eq!(shape.audio_in().count(), 2);
+        assert_eq!(shape.latency, tutti_types::Latency::ZERO);
+        assert_eq!(shape.tail, tutti_types::Tail::None);
+        for (k, base) in [-20.0, 0.0, 4.0, 0.0001, 0.1, 0.0].into_iter().enumerate() {
+            assert_eq!(m.param_base(k), Some(base), "control {k}'s base");
+        }
     }
 
+    /// A fed threshold is read per frame: a frame fed a lower threshold than the cell's is
+    /// reduced more than one at the cell's, and the cell is the base a frame nobody
+    /// drives sits at.
     #[test]
-    fn compressor_unmodulated_matches_held_constant() {
-        // A modulated mono compressor whose fed threshold is held at the same
-        // value as a plain compressor's atomic must produce identical output.
-        let mut plain = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
+    fn a_fed_threshold_is_the_one_read_per_frame() {
+        let mut held = prepared_at(comp(-10.0, 4.0, 0.0, 0.0), RATE_44K);
+        let mut fed = prepared_at(comp(-10.0, 4.0, 0.0, 0.0), RATE_44K);
+        let (mut a, mut b) = ([0.0f32], [0.0f32]);
+        tick(&mut held, &[0.5, 0.5], &mut a);
+        tick_fed(&mut fed, &[0.5, 0.5], &[Some(-40.0)], &mut b);
+        assert!(
+            b[0] < a[0],
+            "a lower threshold reduces more: {} vs {}",
+            b[0],
+            a[0]
         );
+        // A key at -6 dB, ratio 4, threshold -40: 25.5 dB of reduction, instant follower.
+        let want = 0.5 * 10f32.powf(-0.75 * (-6.0206 + 40.0) / 20.0);
+        assert!((b[0] - want).abs() < 1e-4, "{} vs {want}", b[0]);
+    }
 
-        let mut modn = prepared_at(
-            CompressorNode::mono(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
+    /// A threshold that moves inside a block is read at the frame it moves on, not at the
+    /// stream grid's next solve (16 frames on): frame 5 of a block whose lane steps from
+    /// 20 dB to -40 dB there is reduced, the frame before it is not.
+    #[test]
+    fn a_threshold_that_steps_inside_a_block_acts_on_that_frame() {
+        let mut node = prepared_at(comp(-10.0, 4.0, 0.0, 0.0), RATE_44K);
+        let n = 64;
+        let (audio, key) = (vec![0.5f32; n], vec![0.5f32; n]);
+        let lane: Vec<f32> = (0..n).map(|i| if i < 5 { 20.0 } else { -40.0 }).collect();
+        let out = drive(&mut node, RATE_44K, &[&audio, &key], &[Some(&lane)]).remove(0);
+        assert_eq!(out[4], 0.5, "over the 20 dB threshold: no reduction");
+        assert!(
+            out[5] < 0.2,
+            "the -40 dB threshold reduces at once: {}",
+            out[5]
         );
+    }
 
-        let mut plain_out = [0.0f32];
-        let mut mod_out = [0.0f32];
-        for n in 0..1000 {
-            // Feed the same audio + sidechain; modulated node also gets the
-            // threshold fed at its atomic value (-20.0).
-            let audio = 0.5;
-            let sc = if n % 2 == 0 { 0.9 } else { 0.3 };
-            tick(&mut plain, &[audio, sc], &mut plain_out);
-            tick_fed(&mut modn, &[audio, sc], &[Some(-20.0)], &mut mod_out);
-            assert!(
-                (plain_out[0] - mod_out[0]).abs() < 1e-6,
-                "modulated-held output diverges from plain at sample {n}: {} vs {}",
-                plain_out[0],
-                mod_out[0]
-            );
+    /// A control other than the threshold is sampled on the stream's 16-frame grid, so a
+    /// write reaches the render within 16 frames wherever the blocks fall, and (the
+    /// follower being instant here) lands whole.
+    #[test]
+    fn a_cell_write_reaches_the_render_within_a_grid_step() {
+        let mut node = prepared_at(comp(-20.0, 2.0, 0.0, 0.0), RATE_44K);
+        let mut out = [0.0f32];
+        for _ in 0..40 {
+            tick(&mut node, &[0.5, 0.5], &mut out);
         }
+        let before = out[0];
+        assert!(node.param_set().set(UnitParam::Ratio, 8.0));
+        for _ in 0..16 {
+            tick(&mut node, &[0.5, 0.5], &mut out);
+        }
+        assert!(
+            out[0] < before,
+            "ratio 8 reduces more than 2: {} vs {before}",
+            out[0]
+        );
+        // A key at 0.5 (-6.02 dB) over -20 dB at 8:1: 7/8 of the 13.98 dB over it.
+        let want = 0.5 * 10f32.powf(-0.875 * (20.0 * 0.5f32.log10() + 20.0) / 20.0);
+        assert!((out[0] - want).abs() < 1e-4, "{} vs {want}", out[0]);
+    }
+
+    /// A makeup written between blocks glides over 5 ms (240 frames at 48 kHz) wherever the
+    /// blocks fall: monotone, starting near the old gain and landing on the new one, which
+    /// is the old times 10^(6/20).
+    #[test]
+    fn a_makeup_write_glides_over_five_milliseconds() {
+        let rate = SampleRate(48_000.0);
+        let mut node = tutti_graph::contract::prepared(comp(0.0, 1.0, 0.0, 0.0), rate, 64);
+        let (audio, key) = (vec![0.5f32; 64], vec![0.0f32; 64]);
+        for _ in 0..4 {
+            drive(&mut node, rate, &[&audio, &key], &[]);
+        }
+        assert!(node.param_set().set(UnitParam::GainDb, 6.0));
+        let mut out = Vec::new();
+        for _ in 0..8 {
+            out.extend(drive(&mut node, rate, &[&audio, &key], &[]).remove(0));
+        }
+        // The write is sampled on the grid (within 16 frames), then 240 frames of glide.
+        assert!(
+            out[0] < 0.5 * 1.01,
+            "the first frame is near the old gain: {}",
+            out[0]
+        );
+        for w in out.windows(2) {
+            assert!(w[1] >= w[0], "the glide is monotone: {w:?}");
+            // 6 dB over 240 frames is 0.025 dB a frame, a factor of 1.0029.
+            assert!(w[1] / w[0] < 1.0035, "no step in the glide: {w:?}");
+        }
+        let want = 0.5 * 10f32.powf(6.0 / 20.0);
+        assert!(
+            (out[out.len() - 1] - want).abs() < 1e-5,
+            "{}",
+            out[out.len() - 1]
+        );
+        assert!(
+            out[16 + 240 + 16] > want * 0.9999,
+            "arrived by 5 ms after the grid point"
+        );
     }
 }

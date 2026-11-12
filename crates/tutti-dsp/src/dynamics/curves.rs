@@ -91,13 +91,8 @@ pub fn compute_compressor_gain_reduction(
     }
 }
 
-/// Gate gain from gate level (unitless 0..1) and range in dB.
-#[inline]
-pub(crate) fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Amplitude {
-    gate_gain_at(gate_level, range_db.into().to_amplitude().get())
-}
-
-/// [`compute_gate_gain`] with the range already converted to linear.
+/// The gate's gain: `range_linear` closed (`gate_level` 0) to 1 open (`gate_level` 1),
+/// from the open fraction (unitless, 0..1) and the range already as an amplitude.
 #[inline]
 pub(crate) fn gate_gain_at(gate_level: f32, range_linear: f32) -> Amplitude {
     Amplitude(range_linear + gate_level * (1.0 - range_linear))
@@ -161,7 +156,7 @@ pub fn compute_limiter_gain(
 /// `ceiling - threshold` is clamped to `MAX_GAP_DB` and the threshold
 /// amplitude to `f32::MIN_POSITIVE`; neither moves a threshold at or above
 /// -144 dB.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LimiterCurve {
     /// The threshold as an amplitude.
     threshold: f32,
@@ -183,9 +178,12 @@ impl LimiterCurve {
         let (threshold, ceiling) = (threshold.get(), ceiling.get());
         let gap = (ceiling - threshold).min(Self::MAX_GAP_DB);
         let threshold_lin = Db(threshold).to_amplitude().get().max(f32::MIN_POSITIVE);
+        let over = Db(gap).to_amplitude().get() * threshold_lin;
         Self {
             threshold: threshold_lin,
-            over: Db(gap).to_amplitude().get() * threshold_lin,
+            // A threshold of `+inf` dB (nothing is over it, so `over` is never read) makes
+            // `0 * inf`: 0 keeps the curve comparable (a NaN is not equal to itself).
+            over: if over.is_nan() { 0.0 } else { over },
             below: Db(gap).to_amplitude().get(),
         }
     }

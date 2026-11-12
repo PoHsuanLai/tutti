@@ -41,6 +41,7 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # where it saw those.
 tracing = "0.1"
 thiserror.workspace = true
+serde = { version = "1", optional = true, features = ["derive"] }
 
 # The sound card. Off: offline only, and no ALSA headers needed.
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
@@ -52,6 +53,8 @@ tutti-midi-file = { path = "../tutti-midi-file", optional = true }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
+# The font a `Midi::load_soundfont` job opens (`tutti-soundfont` does not re-export it).
+tutti-sf2 = { path = "../tutti-sf2", optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 # `DecodeError` (in `Error::Decode`, whatever decoders are on) and `Format`,
@@ -77,7 +80,7 @@ device = ["dep:tutti-cpal"]
 # taps without a microphone (`bevy-tutti`'s `AudioPump`) takes it alone.
 record = ["dep:tutti-dsp"]
 # The live I/O edge: `record`, and with `device`, the mic capture too.
-audio-io = ["record", "tutti-cpal?/capture"]
+audio-io = ["record", "tutti-cpal?/capture", "tutti-codec/encode-wav"]
 modulation = ["dep:tutti-modulation"]
 midi = [
     "dep:tutti-midi-protocol",
@@ -85,8 +88,11 @@ midi = [
     "dep:tutti-midi-file",
 ]
 midi-hardware = ["midi", "dep:tutti-midi-hardware"]
-sampler = ["dep:tutti-sampler"]
-soundfont = ["midi", "dep:tutti-soundfont"]
+# `serde` for `MidiRouteRule<T>` (keyed by the app's own stable id, not a
+# `NodeKey`): its Group and channel are `tutti-ump`'s, with its `serde`.
+serde = ["midi", "dep:serde", "tutti-ump/serde"]
+sampler = ["dep:tutti-sampler", "tutti-sampler/wav", "tutti-codec/decode-wav"]
+soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2"]
 synth = ["dep:tutti-polysynth"]
 convolution = ["tutti-nodes/convolution"]
 # Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
@@ -111,9 +117,6 @@ testing = []
 [dev-dependencies]
 # Turns `testing` on for this crate's own tests, benches and doctests.
 tutti-session = { path = ".", features = ["testing"] }
-# The SoundFont type the instrument contract's subject decodes a font into
-# (`tutti-soundfont` does not re-export it).
-tutti-sf2 = { path = "../tutti-sf2" }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
@@ -123,6 +126,8 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "decode-wav", "decode-flac"] }
 # An independent reader for the WAV files the recorder tests write.
 hound = "3.5"
+# `MidiRouteRule`'s serde round trip (`tests/midi/midi_front.rs`).
+serde_json = "1"
 # `test-support`'s hand-stepped streamer, and the WAV reader the disk voice's
 # fork reads its file with (`export_fork_sampler`).
 tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support", "wav"] }

@@ -18,7 +18,7 @@
 //! use tutti_session::{Root, Session};
 //!
 //! let mut s = Session::builder()
-//!     .outputs_floor(1)
+//!     .outputs_floor(ChannelLayout::MONO)
 //!     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(512)))
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
@@ -62,11 +62,18 @@ mod fork;
 #[cfg(feature = "soundfont")]
 mod general_midi;
 mod graph;
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod input;
 #[cfg(feature = "midi")]
 mod instrument;
+mod jobs;
 mod key;
 #[cfg(feature = "midi")]
 mod midi;
+#[cfg(feature = "midi")]
+mod midi_event;
+#[cfg(feature = "midi-hardware")]
+mod midi_hardware;
 #[cfg(feature = "modulation")]
 mod modulation;
 mod node;
@@ -77,7 +84,11 @@ mod plugin;
 mod recorder;
 #[cfg(feature = "plugin")]
 mod recovery;
+#[cfg(feature = "sampler")]
+mod sampler;
 mod session;
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod take;
 #[cfg(feature = "device")]
 mod watch;
 
@@ -87,11 +98,16 @@ pub use bounce::{
     BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, ExportClock, Field,
     FileMaster, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
-pub use builder::{SessionBuilder, root_width};
+pub use builder::{SessionBuilder, Workers, root_width};
 #[cfg(feature = "device")]
-pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
+pub use device::{
+    Device, DeviceEvent, DeviceLatency, DeviceRestart, DeviceRestarted, LiveSession, RestartError,
+    RestartOutcome,
+};
 pub use edge::EdgeGainError;
 pub use error::{ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result};
+#[cfg(feature = "midi")]
+pub use error::{MidiError, RouteDeclarer};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]
@@ -103,48 +119,66 @@ pub use graph::{
     Committed, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph, LIVE_MAX_BLOCK, Meters,
     ReplaceRefused, Taps,
 };
+#[cfg(all(feature = "device", feature = "audio-io"))]
+pub use input::{Input, InputConfig, InputOpener, OpenedInput, Trim};
 #[cfg(feature = "midi")]
-pub use instrument::{InstrumentHandle, NotInstrument, SendError};
+pub use instrument::{InstrumentHandle, NotInstrument, SendError, SessionInstrument};
+pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
     Inlet, Key, MainBus, MainSink, OutPort, Outlet, Root, Weighted, Wire,
 };
 #[cfg(feature = "midi")]
 pub use midi::{
-    LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi,
-    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, UmpOut,
-    drain_receiver_through,
+    LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad,
+    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, OutputTiming,
+    TakePlacement, UmpOut, drain_receiver_through,
 };
+#[cfg(feature = "midi")]
+pub use midi_event::MidiEvent;
+#[cfg(feature = "midi-hardware")]
+pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    MixRef, ModRefusal, ModRouteId, ModSourceId, ModState, ModTarget, Mods, ModsView, NoAutomation,
-    NoSuchModRoute, NoSuchModSource, ParamRef, Problem, Ranged, RouteError, RouteInfo, RouteMut,
-    RouteSpec, SourceInfo, SourceName, Take, TargetName, UNRESOLVED_WARNING, declare_targets,
+    AutomationTake, MixRef, ModRefusal, ModRouteId, ModSourceId, ModState, ModTarget, Mods,
+    ModsView, NoAutomation, NoSuchModRoute, NoSuchModSource, ParamRef, Problem, Ranged, RouteError,
+    RouteInfo, RouteMut, RouteSpec, SourceInfo, SourceName, TargetName, UNRESOLVED_WARNING,
+    declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
 pub use params::{ParamError, RangeError, TypedParamRef};
 #[cfg(feature = "plugin")]
 pub use plugin::{
-    HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
-    PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore,
-    StateView,
+    Plugin, PluginChange, PluginEvent, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded,
+    PluginReload, PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL,
+    StateRestore, StateView,
 };
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};
 #[cfg(feature = "record")]
 pub use recorder::{Finite, IDLE_PARK, Live, PumpLoop, PumpPass, Recorder, RecorderError};
 #[cfg(feature = "plugin")]
-pub use recovery::{GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy};
+pub use recovery::{
+    GiveUp, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure, RecoveryPolicy,
+    ReloadCause,
+};
+#[cfg(feature = "sampler")]
+pub use sampler::{Residency, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerLoad};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
+#[cfg(all(feature = "device", feature = "audio-io"))]
+pub use take::{
+    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeError,
+    TakeEvent, TakeId, TakeTarget, Terms, Window,
+};
 #[cfg(any(feature = "record", feature = "export"))]
 pub use tutti_dsp::DitherShape;
 #[cfg(feature = "record")]
 pub use tutti_dsp::{DitherSink, DitherSpec};
-pub use tutti_engine::HeardOpen;
+pub use tutti_engine::{HeardOpen, Playhead};
 #[cfg(feature = "export")]
 pub use tutti_export::{
     EventLossPolicy, Normalize, Outcome, Produced, Progress, Rendered, Resample, Stage, Written,

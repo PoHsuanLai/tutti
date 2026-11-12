@@ -1,47 +1,33 @@
-//! The lookahead limiter's delay ring with its sliding gain minimum, and the
-//! brickwall clip.
+//! The lookahead limiter's delay ring with its sliding gain minimum, and the linked-peak
+//! fold. The [`LimiterRecurrence`](super::LimiterRecurrence) holds them in its state.
 
 use super::window::{FixedDelay, MonotonicMinDeque};
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 #[derive(Clone, Debug)]
-pub struct LookaheadRing {
+pub(crate) struct LookaheadRing {
     /// One lookahead ring per audio channel; `buffers.len()` == width. Built at
     /// construction — never resized in the RT path.
     buffers: Vec<FixedDelay>,
     min_deque: MonotonicMinDeque,
     sample_counter: u64,
-    lookahead_samples: usize,
 }
 
 impl LookaheadRing {
     /// A ring of `channels` channels delaying by `lookahead_samples` frames.
     #[must_use]
-    pub fn new(channels: usize, lookahead_samples: usize) -> Self {
+    pub(crate) fn new(channels: usize, lookahead_samples: usize) -> Self {
         let n = lookahead_samples.max(1);
         Self {
             buffers: (0..channels.max(1)).map(|_| FixedDelay::new(n)).collect(),
             // n + 1 frames: the one delayed out now and the n after it.
             min_deque: MonotonicMinDeque::new(n + 1),
             sample_counter: 0,
-            lookahead_samples: n,
         }
     }
 
-    /// The window length in frames: the latency the delay adds.
-    #[inline]
-    #[must_use]
-    pub fn lookahead_samples(&self) -> usize {
-        self.lookahead_samples
-    }
-
-    /// Re-sizes the window to `lookahead_samples`, clearing it.
-    pub fn resize(&mut self, lookahead_samples: usize) {
-        *self = Self::new(self.buffers.len(), lookahead_samples);
-    }
-
     /// Empties the rings and the minimum tracker.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for b in &mut self.buffers {
             b.clear();
         }
@@ -55,7 +41,7 @@ impl LookaheadRing {
     /// gain that scales a sample is never later than its own target's: the
     /// push drops the gain leaving the window before adding this one.
     #[inline]
-    pub fn push_gain(&mut self, gain: f32) -> f32 {
+    pub(crate) fn push_gain(&mut self, gain: f32) -> f32 {
         self.min_deque.push(self.sample_counter, gain);
         self.sample_counter = self.sample_counter.wrapping_add(1);
         self.min_deque.min().unwrap_or(gain)
@@ -67,7 +53,7 @@ impl LookaheadRing {
     /// back. The channels' rings are independent, so a block runs one
     /// channel at a time.
     #[inline]
-    pub fn delay_scaled(&mut self, c: usize, input: &[f32], gains: &[f32], out: &mut [f32]) {
+    pub(crate) fn delay_scaled(&mut self, c: usize, input: &[f32], gains: &[f32], out: &mut [f32]) {
         let ring = &mut self.buffers[c];
         for ((o, &x), &g) in out.iter_mut().zip(input).zip(gains) {
             let d = ring.step(x);
@@ -82,6 +68,20 @@ impl LookaheadRing {
 /// The linked-peak fold: `max` returns the other operand for a NaN, so a NaN
 /// sample never reaches the peak.
 #[inline]
-pub fn fold_peak(peak: f32, x: f32) -> f32 {
+pub(crate) fn fold_peak(peak: f32, x: f32) -> f32 {
     peak.max(x.abs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_peak;
+
+    /// The peak fold ignores a NaN (`max` returns the other operand), so a NaN sample never
+    /// reaches the detector, and takes the magnitude of a negative one.
+    #[test]
+    fn a_nan_fed_to_the_peak_fold_is_ignored() {
+        assert_eq!(fold_peak(0.5, f32::NAN), 0.5);
+        assert_eq!(fold_peak(0.0, f32::NAN), 0.0);
+        assert_eq!(fold_peak(0.5, -0.75), 0.75);
+    }
 }

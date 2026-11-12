@@ -212,7 +212,9 @@ param_session_node!(tutti_nodes::VbapPannerNode, tutti_nodes::HrtfBinauralNode);
 
 // The synth as a graph node: one MIDI event input, and its live params
 // (master volume, unison detune and spread) as a `ParamSet`, so a param
-// write reaches it and a fork of it starts from what was set.
+// write reaches it and a fork of it starts from what was set. Added through
+// `Session::add_instrument` it takes the session's MPE mode
+// (`SessionInstrument`).
 #[cfg(feature = "synth")]
 param_session_node!(tutti_polysynth::PolySynth);
 
@@ -254,16 +256,22 @@ impl SessionNode for tutti_sampler::MemorySource {
     }
 }
 
-/// A [`Clip`](tutti_sampler::Clip) as a graph node: the placed clip reader it
-/// builds, its gain addressed by its set.
+/// A [`Clip`](tutti_sampler::Clip) as a graph node: the voice node it
+/// builds, its gain addressed by its set, and the placements it replaced (and
+/// a streamed clip's stream) kept by its reclaimer for as long as the node is
+/// in the graph.
 #[cfg(feature = "sampler")]
 impl SessionNode for tutti_sampler::Clip {
     fn bind_tempo(self, tempo: &tutti_transport::TempoReader) -> Self {
         self.with_tempo(tempo.clone())
     }
 
-    fn params(controls: &ParamSet) -> Option<ParamSet> {
-        Some(controls.clone())
+    fn params(controls: &tutti_sampler::VoiceNodeHandle) -> Option<ParamSet> {
+        Some(controls.params().clone())
+    }
+
+    fn reclaimer(controls: &tutti_sampler::VoiceNodeHandle) -> Option<Reclaimer> {
+        Some(Reclaimer::of(controls))
     }
 }
 
@@ -306,8 +314,7 @@ mod tests {
                     1,
                     tutti_types::SampleRate::new(48_000.0),
                 )),
-                tutti_types::Beat(0.0),
-                None,
+                tutti_sampler::VoiceWindow::from(tutti_types::Beat(0.0)),
             )
             .expect("a placeable wave");
             assert!(keeps_one(tutti_sampler::VoiceNode::new(

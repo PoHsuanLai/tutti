@@ -26,7 +26,7 @@ use crate::protocol::{
     ScaleChanges, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
-use tutti_plugin_types::{BridgeResult, Delivered, StateError};
+use tutti_plugin_types::{BridgeResult, Delivered, PluginFailure, StateError};
 use tutti_types::SampleRate;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
@@ -193,7 +193,7 @@ impl AudioBridge {
     /// Latched at the detection site, so it answers for a crash that happened
     /// before any listener was installed — which the connect- and
     /// handshake-failure paths routinely do.
-    pub fn crash_cause(&self) -> Option<String> {
+    pub fn crash_cause(&self) -> Option<PluginFailure> {
         self.lifecycle.crash_cause()
     }
 
@@ -229,7 +229,7 @@ impl AudioBridge {
     /// Latches `cause` as the reason the bridge is dead (the first cause
     /// wins), so a host that ends the server itself reads the reason it
     /// gave.
-    pub fn mark_crashed(&self, cause: &str) {
+    pub fn mark_crashed(&self, cause: PluginFailure) {
         self.lifecycle.mark_crashed(cause);
     }
 
@@ -767,7 +767,7 @@ mod tests {
 
         assert_eq!(bridge.save_state(), Err(StateError::Busy));
         assert_eq!(bridge.load_state(&[1, 2, 3]), Err(StateError::Busy));
-        bridge.lifecycle.mark_crashed("gone");
+        bridge.lifecycle.mark_crashed(PluginFailure::StreamClosed);
         assert_eq!(
             bridge.load_state(&[1, 2, 3]),
             Err(StateError::PluginCrashed)

@@ -8,26 +8,29 @@
 //! (the component mirror, `PluginHealth`, and the entity's `AudioNode`
 //! removal stayed with the adapter), moved here when the adapter was parked.
 //! The plugin is a fake backend (`PluginHandle::from_backend`) hosted at a
-//! node with `Graph::host_plugin`, so no `plugin-server` is needed; the real
+//! node with `Graph::host_plugin`, so no `plugin-server` is needed; what the
+//! plugin reports (`SessionEvent::Plugin`'s `ParamChanged` and the rest) is driven through the same fake's listeners. The real
 //! plugin's death is `plugin.rs`'s
 //! `a_plugin_dead_for_the_window_is_removed_and_reported_once`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tutti_types::ChannelLayout;
 
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::Const;
 use tutti_plugin_host::Liveness;
 use tutti_plugin_host::PluginHandle;
-use tutti_plugin_types::ParameterInfo;
+use tutti_plugin_types::{BridgeError, ParameterInfo, PluginFailure};
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{Phase, PhaseCx, PluginLiveness, Session, SessionEvent};
+use tutti_session::{PluginChange, PluginEvent};
 use tutti_types::SampleRate;
 
 /// A backend whose liveness is whatever the test says it is.
 struct FakeBackend {
-    cause: Option<String>,
+    cause: Option<PluginFailure>,
 }
 
 impl tutti_plugin_types::AnyThread for FakeBackend {
@@ -68,7 +71,7 @@ impl tutti_plugin_types::Health for FakeBackend {
     fn is_crashed(&self) -> bool {
         self.cause.is_some()
     }
-    fn crash_cause(&self) -> Option<String> {
+    fn crash_cause(&self) -> Option<PluginFailure> {
         self.cause.clone()
     }
     fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
@@ -77,14 +80,12 @@ impl tutti_plugin_types::Health for FakeBackend {
     fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
         tutti_plugin_types::BlockCounts::default()
     }
-    fn terminate(&self, _cause: &str) {}
+    fn terminate(&self, _reason: tutti_plugin_types::TerminationReason) {}
 }
 
-fn handle_with(cause: Option<&str>) -> PluginHandle {
+fn handle_with(cause: Option<PluginFailure>) -> PluginHandle {
     PluginHandle::from_backend(
-        Arc::new(FakeBackend {
-            cause: cause.map(str::to_string),
-        }),
+        Arc::new(FakeBackend { cause }),
         None,
         Default::default(),
         Default::default(),
@@ -98,9 +99,9 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 
 /// A detached session with a fake plugin (reporting `cause`) hosted at a dc
 /// node.
-fn session_with(cause: Option<&str>) -> (Session, NodeKey) {
+fn session_with(cause: Option<PluginFailure>) -> (Session, NodeKey) {
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
@@ -115,7 +116,7 @@ fn session_with(cause: Option<&str>) -> (Session, NodeKey) {
 }
 
 /// `Phase::Plugins` at `t0 + ms`: the deaths it reported.
-fn deaths_at(s: &mut Session, t0: Instant, ms: u64) -> Vec<(NodeKey, String)> {
+fn deaths_at(s: &mut Session, t0: Instant, ms: u64) -> Vec<(NodeKey, PluginFailure)> {
     let mut out = Vec::new();
     s.run_phase(
         Phase::Plugins,
@@ -124,7 +125,11 @@ fn deaths_at(s: &mut Session, t0: Instant, ms: u64) -> Vec<(NodeKey, String)> {
     );
     out.into_iter()
         .filter_map(|e| match e {
-            SessionEvent::PluginDied { node, cause } => Some((node, cause)),
+            SessionEvent::Plugin(PluginEvent {
+                node,
+                change: PluginChange::Died { cause },
+                ..
+            }) => Some((node, cause)),
             _ => None,
         })
         .collect()
@@ -132,7 +137,7 @@ fn deaths_at(s: &mut Session, t0: Instant, ms: u64) -> Vec<(NodeKey, String)> {
 
 /// One observation every half window, as frames at 60 Hz span it: `frames`
 /// of them. The deaths each reported.
-fn observe(s: &mut Session, frames: usize) -> Vec<(NodeKey, String)> {
+fn observe(s: &mut Session, frames: usize) -> Vec<(NodeKey, PluginFailure)> {
     let _ = main_thread();
     let t0 = Instant::now();
     let half = Liveness::DEFAULT_WINDOW.as_millis() as u64 / 2;
@@ -152,7 +157,7 @@ fn observe(s: &mut Session, frames: usize) -> Vec<(NodeKey, String)> {
 fn a_non_plugin_node_never_marks_the_graph_edited() {
     let _ = main_thread();
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     s.graph().add(ForkByClone(Const::mono(0.0)));
@@ -174,17 +179,27 @@ fn a_non_plugin_node_never_marks_the_graph_edited() {
 /// alone.
 #[test]
 fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
-    let (mut s, node) = session_with(Some(
-        "could not connect to plugin-server: No such file or directory",
-    ));
+    let latched = PluginFailure::Connect {
+        source: Arc::new(BridgeError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No such file or directory",
+        ))),
+    };
+    let (mut s, node) = session_with(Some(latched));
     let died = observe(&mut s, Liveness::DEATHS as usize);
-    assert_eq!(
-        died,
-        [(
-            node,
-            "could not connect to plugin-server: No such file or directory".to_string()
-        )],
-        "the cause must be the engine's latched reason, carried through unchanged"
+    assert_eq!(died.len(), 1, "{died:?}");
+    assert_eq!(died[0].0, node);
+    let cause = &died[0].1;
+    assert!(
+        matches!(cause, PluginFailure::Connect { .. }),
+        "the cause must be the engine's latched failure, carried through as its kind: {cause:?}"
+    );
+    // The `BridgeError` behind it is still the `source`, not flattened to text.
+    let source = std::error::Error::source(cause).expect("a connect failure has a source");
+    assert!(
+        matches!(source.downcast_ref::<BridgeError>(), Some(BridgeError::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound),
+        "{source:?}"
     );
 }
 
@@ -195,14 +210,14 @@ fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
 #[test]
 fn a_crash_is_not_declared_until_the_debounce_elapses() {
     for frames in 1..Liveness::DEATHS as usize {
-        let (mut s, node) = session_with(Some("stream closed"));
+        let (mut s, node) = session_with(Some(PluginFailure::StreamClosed));
         let died = observe(&mut s, frames);
         assert!(died.is_empty(), "at {frames} observation(s): {died:?}");
-        assert_eq!(
-            s.plugin(node).expect("hosted").liveness(),
-            &PluginLiveness::Failing {
-                consecutive: frames as u8
-            },
+        assert!(
+            matches!(
+                s.plugin(node).expect("hosted").liveness(),
+                PluginLiveness::Failing { consecutive } if *consecutive == frames as u8
+            ),
             "at {frames} observation(s) the plugin is failing, not dead"
         );
         assert!(
@@ -215,7 +230,7 @@ fn a_crash_is_not_declared_until_the_debounce_elapses() {
 /// **Declaring a plugin dead removes its node and its record.**
 #[test]
 fn declaring_death_removes_the_node_and_the_record() {
-    let (mut s, node) = session_with(Some("stream closed"));
+    let (mut s, node) = session_with(Some(PluginFailure::StreamClosed));
     let died = observe(&mut s, Liveness::DEATHS as usize);
     assert_eq!(died.len(), 1, "{died:?}");
     assert!(
@@ -233,9 +248,135 @@ fn a_live_plugin_is_never_declared_dead() {
     let (mut s, node) = session_with(None);
     let died = observe(&mut s, Liveness::DEATHS as usize + 5);
     assert!(died.is_empty(), "{died:?}");
-    assert_eq!(
+    assert!(matches!(
         s.plugin(node).expect("hosted").liveness(),
-        &PluginLiveness::Healthy
-    );
+        PluginLiveness::Healthy
+    ));
     assert!(s.graph_ref().contains(node), "a healthy plugin stays wired");
+}
+
+/// A detached session with a fake plugin hosted at a dc node, and the
+/// listeners its backend reports through (firing one is the plugin
+/// reporting).
+fn session_reporting() -> (
+    Session,
+    NodeKey,
+    tutti_plugin_host::ParameterChangeSink,
+    tutti_plugin_host::RefreshSink,
+    tutti_plugin_host::InvalidateSink,
+) {
+    let (params, refresh, invalidate) = (
+        tutti_plugin_host::ParameterChangeSink::new(),
+        tutti_plugin_host::RefreshSink::new(),
+        tutti_plugin_host::InvalidateSink::new(),
+    );
+    let handle = PluginHandle::from_backend(
+        Arc::new(FakeBackend { cause: None }),
+        None,
+        Default::default(),
+        Default::default(),
+        params.clone(),
+    )
+    .with_refresh_sink(refresh.clone())
+    .with_invalidate_sink(invalidate.clone());
+    let mut s = Session::builder()
+        .outputs_floor(ChannelLayout::STEREO)
+        .build_detached(SampleRate::DEFAULT)
+        .expect("a detached session builds");
+    let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
+    assert!(s.graph().host_plugin(
+        node,
+        handle,
+        tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
+    ));
+    s.commit();
+    (s, node.erase(), params, refresh, invalidate)
+}
+
+/// The plugin events one `Phase::Plugins` reported.
+fn plugin_events(s: &mut Session) -> Vec<PluginEvent> {
+    let mut out = Vec::new();
+    s.run_phase(Phase::Plugins, PhaseCx::at(Instant::now()), &mut out);
+    out.into_iter()
+        .filter_map(|e| match e {
+            SessionEvent::Plugin(event) => Some(event),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **A plugin's own edit of a parameter arrives as `ParamChanged`**, in the
+/// order the plugin made it, with its gesture's ends, at the plugin's node: a
+/// gesture is a `GestureBegan`, a change with its value and its
+/// recording flag, a `GestureEnded`. A later update reports nothing again.
+#[test]
+fn a_plugins_own_edit_arrives_as_param_changed() {
+    use tutti_plugin_types::ParamEdit;
+    let _ = main_thread();
+    let (mut s, node, params, _, _) = session_reporting();
+    let id = ParamId::new(7);
+    let value = Normalized::clamped(0.25);
+    params.fire(ParamEdit::Begin(id));
+    params.fire(ParamEdit::change(id, value));
+    params.fire(ParamEdit::change(id, value).unrecorded());
+    params.fire(ParamEdit::End(id));
+    let events = plugin_events(&mut s);
+    let changes: Vec<_> = events
+        .iter()
+        .inspect(|e| assert_eq!(e.node, node))
+        .map(|e| e.change.clone())
+        .collect();
+    assert!(
+        matches!(
+            changes.as_slice(),
+            [
+                PluginChange::GestureBegan { id: a },
+                PluginChange::ParamChanged { id: b, value: v1, recorded: true },
+                PluginChange::ParamChanged { id: c, value: v2, recorded: false },
+                PluginChange::GestureEnded { id: d },
+            ] if [*a, *b, *c, *d] == [id; 4] && *v1 == value && *v2 == value
+        ),
+        "{changes:?}"
+    );
+    assert!(plugin_events(&mut s).is_empty(), "each is reported once");
+}
+
+/// **What a plugin reports besides edits reaches the same stream**: a refresh
+/// is `ParamsRescanned` or `ParamTitlesChanged`, a tail and a bus change are
+/// `TailChanged` and `IoChanged`. A latency it reports is not repeated here
+/// (the update that gives it to the graph reports it once, as
+/// `LatencyChanged`), and a rate refusal is the plugin's health.
+#[test]
+fn a_plugins_refreshes_and_invalidations_arrive_in_the_stream() {
+    use tutti_plugin_types::{PluginInvalidation, PluginRefresh, PluginTail};
+    let _ = main_thread();
+    let (mut s, _, _, refresh, invalidate) = session_reporting();
+    refresh.fire(PluginRefresh::ParamValues);
+    refresh.fire(PluginRefresh::ParamTitles);
+    invalidate.fire(PluginInvalidation::Latency {
+        samples: tutti_types::Samples(64),
+    });
+    invalidate.fire(PluginInvalidation::Tail {
+        tail: PluginTail::Unbounded,
+    });
+    invalidate.fire(PluginInvalidation::Io);
+    invalidate.fire(PluginInvalidation::RateRestored);
+    let changes: Vec<_> = plugin_events(&mut s)
+        .into_iter()
+        .map(|e| e.change)
+        .collect();
+    assert!(
+        matches!(
+            changes.as_slice(),
+            [
+                PluginChange::ParamsRescanned,
+                PluginChange::ParamTitlesChanged,
+                PluginChange::TailChanged {
+                    tail: PluginTail::Unbounded
+                },
+                PluginChange::IoChanged,
+            ]
+        ),
+        "{changes:?}"
+    );
 }

@@ -138,6 +138,9 @@ jobs:
       # And `tutti-sf2` and `tutti-soundfont`: modules private, the root names every item.
       - run: cargo xtask check-paths tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
       - run: cargo xtask check-paths tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
+      # And `tutti-sampler`: its modules are private but `stretch` (the vocoder's
+      # `stretch::Unit` is named by its module) and the test-support `testing`.
+      - run: cargo xtask check-paths tutti_sampler clip error lanes probe streamer voice
       # And `tutti-tempo`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_tempo error grid map point segment
       # And `tutti-curve`, which keeps its modules private.
@@ -376,7 +379,9 @@ jobs:
       #   tutti-session/device — tests/io/device.rs (the device-free restart and
       #                         watch tests over `ManualStreamDriver`). A
       #                         workspace run turned it on only through the
-      #                         adapter that is now parked.
+      #                         adapter that is now parked. With `audio-io`,
+      #                         tests/io/device_input.rs (the inputs a restart
+      #                         reopens, over a test's own capture).
       #   tutti-au-host/installed-units — linted by the macOS clippy job (the
       #                         crate is empty on Linux) and run only locally
       #                         (`cargo xtask test-au-installed`, part of `test-all`):
@@ -422,8 +427,8 @@ jobs:
         run: |
           cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device --all-targets -- -D warnings
-          cargo clippy --locked -p tutti --features clap,export,modulation,sampler,dsp --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,audio-io,serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti --features clap,export,modulation,sampler,dsp,midi-hardware,synth --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings
           cargo clippy --locked -p tutti-export --lib -- -D warnings
@@ -470,8 +475,8 @@ jobs:
         run: |
           cargo nextest run --locked -p tutti-cpal --features capture
           cargo nextest run --locked -p tutti-session --features audio-io
-          cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device
-          cargo nextest run --locked -p tutti --features clap,export,modulation,sampler,dsp
+          cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,audio-io,serde
+          cargo nextest run --locked -p tutti --features clap,export,modulation,sampler,dsp,midi-hardware,synth
           cargo nextest run --locked -p tutti --features audio-io
           cargo nextest run --locked -p tutti --no-default-features --features io
           cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg

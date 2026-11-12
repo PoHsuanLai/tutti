@@ -28,6 +28,7 @@ use tutti_plugin::handles::PluginClient;
 use tutti_session::{
     Crossfade, OutPort, PHASES, Phase, PhaseCx, PluginLoadRequest, Root, Session, SessionEvent,
 };
+use tutti_session::{PluginChange, PluginEvent};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -108,8 +109,13 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
             }
         }
         assert!(
-            !out.iter()
-                .any(|e| matches!(e, SessionEvent::PluginLatencyChanged { .. })),
+            !out.iter().any(|e| matches!(
+                e,
+                SessionEvent::Plugin(PluginEvent {
+                    change: PluginChange::LatencyChanged { .. },
+                    ..
+                })
+            )),
             "{out:?}"
         );
     }
@@ -130,7 +136,7 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            SessionEvent::PluginLatencyChanged { node: n, latency }
+            SessionEvent::Plugin(PluginEvent { node: n, change: PluginChange::LatencyChanged { latency }, .. })
                 if *n == node && *latency == Samples(300 + BLOCK)
         )),
         "{events:?}"
@@ -244,7 +250,7 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
     assert_eq!(s.latency(), s.graph_ref().node_latency(node).unwrap());
 
     let (driver, _new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec(256), driver, None, |_| {})
+    s.restart_on(&mut device, spec(256), driver, None)
         .expect("restarts");
     assert_eq!(
         s.graph_ref().node_latency(node).unwrap(),

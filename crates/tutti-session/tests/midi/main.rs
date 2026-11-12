@@ -22,3 +22,10 @@ mod general_midi;
 // The hardware out as an event tap on the clock (doc 017, E3).
 #[cfg(feature = "midi")]
 mod midi_out_tap;
+// The session's MIDI front: hardware through the view, the session's MPE mode,
+// a recorded take and its placement, a saved route rule.
+#[cfg(feature = "midi")]
+mod midi_front;
+// File loads as jobs: a MIDI file and a SoundFont land as events in `update()`.
+#[cfg(feature = "midi")]
+mod loads;

@@ -133,7 +133,8 @@ impl Subject for Plugin {
     fn transcript(rig: &Rig) -> Option<tutti_shared_plugin::transcript::Transcript> {
         let state = rig
             .session
-            .plugin(rig.node)?
+            .plugin(rig.node)
+            .ok()?
             .handle()
             .any_thread()
             .save_state()

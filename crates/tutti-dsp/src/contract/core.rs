@@ -101,13 +101,14 @@ pub(super) mod realization {
 
     /// A unit impulse arrives first exactly `musical_delay + latency`
     /// frames in (the model's own shortest path, pre-delay included, and the
-    /// realization's declared latency),
-    /// on the earliest channel, and on no channel before.
+    /// latency: the member's, a limiter's lookahead, plus what the recurrence adds
+    /// to it), on the earliest channel, and on no channel before.
     pub fn arrival<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.static_probes() {
                 let (mut k, network) = built(d, &c, rate);
-                let expected = d.musical_delay(&network) + k.latency().get();
+                let expected =
+                    d.musical_delay(&network) + network.latency().get() + k.latency().get();
                 let mut x = vec![0.0f32; expected + 4000];
                 x[0] = 1.0;
                 let out = render(&mut k, widths(d), &x, 64);
@@ -125,16 +126,21 @@ pub(super) mod realization {
         Ok(())
     }
 
-    /// The realization declares the model's own latency (zero for a time-domain
-    /// model, a partition for a FIR), never a pre-delay or a tap spacing.
+    /// Latency has one home per cause (design 024 section 2.7.2): the member's own (a
+    /// limiter's lookahead) is the member's, and the realization adds only what the
+    /// member does not have (a convolver's block). The node declares the sum **once**,
+    /// from the family's blank member, so a member's latency must be the blank's whatever
+    /// the controls: a latency that moved with a control would be a shape the graph's PDC
+    /// cannot follow. (The first impulse of `arrival` is placed against the sum.)
     pub fn latency<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
+            let declared = d.blank(rate).latency();
             for c in d.static_probes() {
-                let (k, model) = built(d, &c, rate);
-                if k.latency() != model.latency() {
+                let (_, model) = built(d, &c, rate);
+                if model.latency() != declared {
                     return Err(format!(
-                        "declares {} frames of latency, the model has {}",
-                        k.latency(),
+                        "a member has {} frames of latency, the blank {declared} \
+                         the node declares",
                         model.latency()
                     ));
                 }
@@ -331,7 +337,7 @@ pub(super) mod realization {
             let models = [d.member(&a, rate), d.member(&b, rate)];
             let run = |block: usize| {
                 let (mut k, _) = built(d, &a, rate);
-                let mut out: Vec<Vec<f32>> = vec![Vec::new(); shape.1];
+                let mut out: Vec<Vec<f32>> = vec![Vec::new(); shape.outputs];
                 for (n, span) in x.chunks(SPAN).enumerate() {
                     if n > 0 {
                         k.retarget(&models[n % 2]);

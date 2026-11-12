@@ -23,7 +23,8 @@ use tutti_fixtures::signal::bits;
 use tutti_graph::contract::drive;
 use tutti_graph::{IntoNode, Prepare, Solo};
 use tutti_nodes::{
-    CompressorNode, CrossoverNode, DelayLineNode, FamilyNode, GateNode, ModDelayNode, PhaserNode,
+    CompressorControls, CompressorNode, CrossoverNode, DelayLineNode, FamilyNode, GateControls,
+    GateNode, ModDelayNode, PhaserNode,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
@@ -310,14 +311,30 @@ fn a_keyed_node_and_a_split_are_blended_on_their_main_bus() {
     let s = Seconds::new;
     check_io(
         "gate (stereo, keyed)",
-        &|| GateNode::stereo(Db(-20.0), s(0.001), s(0.01), s(0.05)),
+        &|| {
+            GateNode::stereo(GateControls {
+                threshold: Db(-20.0),
+                attack: s(0.001),
+                hold: s(0.01),
+                release: s(0.05),
+                range: Db(-80.0),
+            })
+        },
         4,
         2,
         0,
     );
     check_io(
         "compressor (stereo, keyed)",
-        &|| CompressorNode::stereo(Db(-20.0), CompressionRatio::new(4.0), s(0.005), s(0.05)),
+        &|| {
+            CompressorNode::stereo(CompressorControls {
+                threshold: Db(-20.0),
+                ratio: CompressionRatio::new(4.0),
+                attack: s(0.005),
+                release: s(0.05),
+                ..CompressorControls::DEFAULT
+            })
+        },
         4,
         2,
         0,

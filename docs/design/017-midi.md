@@ -122,7 +122,7 @@ A single message is built as `Ump::from(Message::..)`; tests use
 
 **The `Translator` is built (stage 3a).** `tutti_midi_protocol::Translator` runs
 at the two input edges there are: `MidiInputNode`, per polled event, and a clip
-as it is loaded (`MidiClipNode::new` and `MidiClipControls::set_events`, in beat
+as it is loaded (`MidiClipNode::new` and `MidiClipControls::set`, in beat
 order, each result in its source's place). The old `Midi1ToMidi2Translator` is
 deleted. A mailbox's `MidiSender` queue and a plugin's MIDI output are not translated: a
 host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
@@ -553,6 +553,25 @@ core takes an `Instant`; the hardware layer only passes one on).
   the OS reported at open: a backend's output is a `DeviceOut` (a `MidiOut` that is also told
   `follow(protocol)`), `OpenOutput` calls it as the output opens and at each `set_config`, and
   the event list is `Midi20` or `Midi10` by the last call.
+- *One conversion for MIDI 1.0 input (L6(d)).* tutti's own `Translator`, in the ingest node,
+  widens every MIDI 1.0 source on every OS (RPN and NRPN runs assembled into Registered and
+  Assignable Controllers, Bank Select folded into Program Change, a velocity-0 Note On as a
+  Note Off, the M2-115 scaling: M2-104 App. D.3); the OS never up-converts, so the behaviour
+  does not depend on which OS converter a device met. A backend opens an input in the
+  protocol its source can speak. ALSA: `Client::open` takes an `UmpVersion`, and an input
+  whose source is a legacy client (no UMP Endpoint) or an Endpoint whose record offers no
+  MIDI 2.0 Protocol is a MIDI 1.0 UMP client (`SND_SEQ_CLIENT_UMP_MIDI_1_0`), so the kernel
+  hands it type 2; an Endpoint that offers MIDI 2.0 is a MIDI 2.0 client even while it is in
+  MIDI 1.0, because the session negotiates up and the version is fixed for the pump's life (a
+  MIDI 1.0 client would have the kernel narrow what the device then sends natively). An
+  output is always a MIDI 2.0 client; `OpenOutput::queue` narrows. CoreMIDI chooses the same
+  way, one port per opened input: `Midi20` for a UMP Endpoint whose `supportedMIDIProtocols`
+  includes MIDI 2.0 (`UmpEndpointInfo::supports_midi2`), and for a source with no Endpoint
+  record whose `kMIDIPropertyProtocolID` is MIDI 2.0; `Midi10` otherwise. Pinned by `tutti-midi-hardware`'s sequencer suite (a legacy
+  client's Note On and control change arrive as type 2, a MIDI 2.0 Endpoint's type 4 as sent)
+  and, through the node, by `tutti-midi-runtime`'s `an_rpn_run_split_across_blocks_is_assembled`
+  (type 2 in, one Registered Controller out). The kernel's `ump_conversion` stays on: it is
+  what turns a legacy client's events into UMP at all.
 - *Received JR (L6(c)).* A JR Clock or JR Timestamp a device sends is dropped at
   `InputProducerHandle::push` (`Ump::is_jr`), not read. §7.2.2.1 leaves the use to the
   Receiver ("the Receiver may use smoothing or averaging of time from each JR Clock message
@@ -565,7 +584,7 @@ core takes an `Instant`; the hardware layer only passes one on).
   three sends in all, and then the device is `Basis::Unanswered`, taken as the OS describes
   it (the protocol the OS reports, JR off, its blocks), never the core's blanket
   MIDI 1.0 fallback: an OS that has already discovered the device knows better. The result
-  is `DeviceStream` (`MidiSession::stream`, `SessionEvent::MidiStream`).
+  is `DeviceStream` (`MidiSession::stream`, `MidiEvent::StreamSettled`).
 - *`UmpCapability`* is built from an `Endpoint` (`UmpCapability::of`): the protocol in
   use and the Function Blocks.
 - *What each OS exposes.* ALSA: the kernel runs the USB discovery itself and keeps the
@@ -752,11 +771,11 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   `Devices` tests over the fake backend and compiles and lints the rest.
 - **A watch that dies says so.** An error or a panic in the watch thread sets
   the subscribers' `DeviceEvents::failure` and `recv_timeout` (and is logged); the list is then the last it saw.
-  The session reports `SessionEvent::MidiWatchFailed` once, and `bevy-tutti`
+  The session reports `MidiEvent::WatchFailed` once, and `bevy-tutti`
   logs it.
 - **Session.** `Phase::Poll` reads the session's `DeviceEvents`, reports each event as
-  `SessionEvent::MidiDevice`, and closes a held input or output whose device was
-  removed, reporting `MidiInputLost` or `MidiOutputLost` after it
+  `MidiEvent::{Added, Removed, Changed}`, and closes a held input or output whose device was
+  removed, reporting `MidiEvent::InputLost` or `OutputLost` after it
   (`SessionBuilder::midi_hardware_over` takes a `FakeBackend`). `bevy-tutti` writes
   `MidiHotplug` for each device event and clears its poll timer for a lost port.
 
@@ -779,13 +798,13 @@ sounding until the node that tracks notes exists.
 
 ### Timing at the edge
 
-**Stage 4c, part 1: the clock map and the timestamped input. Built.** Output
-scheduling (`OutputPlan`) is the next part and is not.
+**Stage 4c, part 1: the clock map and the timestamped input. Built.** **Part 2,
+output scheduling (`OutputPlan`), is built** (below, "Output").
 
 - **The clock map.** `ClockMap` (`tutti-midi-runtime`: it needs `tutti-types`'
   `Frame`, `SampleRate` and `Moment`, and `tutti-midi-device` is a layer too low
   for them) converts an OS time to a frame (`frame_at`, `moment_at`) and a frame to
-  an OS time (`os_at`, which `OutputPlan` needs). It is pure and holds no clock:
+  an OS time (`os_at`, which `OutputPlan` reads). It is pure and holds no clock:
   it is built from one `ClockReading`, the OS instant and the graph's frame at the
   same moment, and takes more as values (`observe`). The OS time is a
   `std::time::Instant`, the OS's monotonic clock on every target, so the map is
@@ -868,11 +887,48 @@ scheduling (`OutputPlan`) is the next part and is not.
     map's: the bound stated above, within the OS stamp's own accuracy. It is
     late (and counted, `Losses::late` of `InletCounts::losses`, `PortInfo::losses`) only when the
     thread pushes it more than the lead after it arrived.
-- **Output.** Schedule from the event's frame, on the OS's timestamp or queue.
-  Today output is flushed once per Bevy frame with no timestamp, so MIDI clock
-  leaves in bursts, and a headless `Session` does no better. This is the largest
-  timing defect that users can hear from external gear. `ClockMap::os_at` is the
-  conversion it needs; the plan is the next part of stage 4c.
+- **Output. Built (L6e).** A hardware out's events are sent at the time their
+  frame is heard, scheduled by the OS, not flushed when the host runs
+  `Phase::MidiOut` (that was the largest timing defect a user could hear from
+  external gear: MIDI clock left in bursts). `OutputPlan` (`tutti-midi-runtime`,
+  beside `ClockMap`) is pure and reads no clock: `place(frame, map, now)` is
+  `SendAt::Now` or `SendAt::At(Instant)` or `Placement::TooFar`, where
+  **send time = `ClockMap::os_at(frame)` + the audio output's latency - the MIDI
+  device's latency + the user's offset.**
+  - **Terms.** `OutputTerms { audio_output: Option<Duration>, latency: OutputLatency }`;
+    `OutputLatency { device: Duration, offset: OutputOffset }` is per output
+    (`Midi::set_output_latency`, `output_latency`); `OutputOffset` is a
+    range-checked `Seconds`, signed, at most `MAX_OUTPUT_LATENCY` (1 s) either way,
+    and a device latency is bound by the same second (`OutputLatency::new -> Option`).
+    The audio output's latency is the device's (`StreamLatency`), **read on every
+    drain** and `None` until the stream's first callback reports (and again after
+    a restart): it is not turned into zero. `Midi::output_terms()` returns the
+    terms with `is_complete()`; while incomplete, events leave **early by the
+    unreported audio latency**. `None` on a session with no audio device, which
+    schedules nothing (every event `Now`, as offline).
+  - **Bounds.** A send time at or before now is `Now`; a frame the clock cannot
+    place (no block reading yet) is `Now`; one more than `MAX_OUTPUT_AHEAD` (2 s)
+    ahead is refused and **counted with the other output drops**
+    (`MidiOutDrops::count`, `MidiEvent::OutputDropped`), never queued without
+    bound.
+  - **One clock.** Every send time is an `Instant` from the plan to the sink
+    (`MidiOut::queue_timed(&[Outgoing])`, an `Outgoing` being the batch offset, its
+    `SendAt` and the packet; a sink with no wire clock takes the default, which
+    ignores the time). The session builds the `ClockMap` from the engine's block
+    clock (`tutti_rt::monotonic_ns`, paired with `Instant` once per process,
+    `arrival_clock`'s pairing) on each drain. Each backend converts an `Instant`
+    to its own clock in one function over `stamp::departure` (the inverse of
+    `arrival`): CoreMIDI to mach host time (`Pairing::host_time_of`, read afresh with
+    each send), ALSA to its queue's real time (`Sender::queue_time`, paired when
+    the output opens; the output's own started queue, `Client::start_queue`,
+    and `send_to_subscribers_at`).
+  - **JR.** Stamping still reads the batch's spacing (`UmpOut::send_frames` rebases
+    onto offsets for the stamper), and a stamp is sent with its event. Scheduling
+    and JR are independent: a device that takes JR gets both, consistent.
+  - **Not built.** Measuring a device's MIDI latency (it is declared or the
+    user's), re-pairing the ALSA queue on drift (the pairing is at open), a
+    per-output offset when a session holds several outputs (it has one), and the
+    mailbox path's frames (a host's own sends are `Now`).
 
 ### MIDI-CI
 
@@ -1049,10 +1105,10 @@ Every MIDI feature has four layers:
 | Device detection | `DeviceTable` |
 | Connection steps | `Connection` |
 | OS time to frame | `ClockMap` |
-| Output scheduling | `OutputPlan` |
+| Output scheduling | `OutputPlan` (built) |
 | Held notes and controllers | `HeldState` |
 | Recording into clips | `ClipBuilder` |
-| Chase on seek | `ChaseIndex` |
+| Chase on seek | `MidiClipNode`'s chase table (private, built with the clip) |
 | Clock, MTC and MMC slave | `ClockFollower` |
 | CC modulation and MIDI learn | `Binding`, `LearnState` |
 | Events across the graph's edge | `EventTapReader`, `EventInletWriter` (`tutti-graph`) |
@@ -1148,8 +1204,8 @@ copied into a ring a thread of your own drains.
 | What the reader gets | `TapEvent { frame: Frame, ump: Ump }`, 24 bytes, `Copy`. `frame` is `Env::frame_at(offset)` of the block the op ran in, after any alignment delay | An offset is relative to a block the reader never sees. An absolute frame on the graph's clock keeps the spacing between events whatever the block sizes were, orders events across taps and against the transport's `At::Frame`, and is what `ClockMap` converts to an OS time for output scheduling (§5, "Timing at the edge"). `u64`, so it does not wrap the way `MidiOutNode`'s `u32` stamp does |
 | A bypassed or muted node | Doc 013's `NodeMode`: a `Bypassed` or `Muted` node's event outputs are empty, so a tap on one reads nothing for those blocks (no loss is counted). An `EventInletNode` is not bypassed in practice; if it is, its waiting list holds and late events land at offset 0 when it runs again | Keeps M1 and E1 in agreement: `NodeMode` decides what a port carries, and the tap copies what it carries |
 | Capacity | An event count named at open (a count of events, a bare `usize` as `Shape::with_event_capacity` takes one: no unit covers it). The ring holds `note_off_room(capacity)`; an event that is not a note-off is refused once `capacity` are held | The ring that decides what a slow reader loses should keep what a hung note needs: the same rule the ports follow (§8). The check is the producer's own occupancy, which can only be an underestimate, as in `TapWriter` |
-| Loss | A refused event is counted once in an `Arc<AtomicU64>` shared with the reader: `EventTapReader::take_lost() -> u64`, events, cleared by the read. A block with no reader writes nothing and counts nothing | As `TapReader::take_lost`. The count is also the session's drop report (`MidiOutDropped`) |
-| Reader | One consumer: `&mut self`, not `Clone`. `pop_into(&mut self, &mut [TapEvent]) -> usize`, `available()`, `id()`, `watch()` | A second consumer is a second tap. Reading advances the read index |
+| Loss | A refused event is counted once in an `Arc<AtomicU64>` shared with the reader: `EventTapReader::take_lost() -> u64`, events, cleared by the read. A block with no reader writes nothing and counts nothing | As `TapReader::take_lost`. The count is also the session's drop report (`MidiEvent::OutputDropped`) |
+| Reader | One consumer: `&mut self`, not `Clone`. `pop_into(&mut self, &mut [TapEvent]) -> usize`, `drain() -> impl Iterator<Item = TapEvent>` (L1f-a), `available()`, `id()`, `watch()` | A second consumer is a second tap. Reading advances the read index |
 | Missing port | The port goes missing later (node replaced by one with fewer event outputs, node removed): the compiler emits no op, the writer stays in the plan's tap table, the commit succeeds, the reader sees no events and is not told, and nothing counts as lost. Opening refuses a source that does not exist now: `MissingSource::EventPort { node, port, width }` (the enum is `#[non_exhaustive]`; `Port` names an audio output) | Silence is the absence of events, so there is nothing to write. The writer is kept so a later commit that restores the port resumes it |
 | Closed and fork | A closed tap is not in the topology and compiles to no op, and its writer is freed on the control side with the old state. A fork carries none. Reopening an id replaces the tap. Reader dropped first: the tap writes nothing until reaped (`reap_taps` takes event taps too) | As `Op::Tap`. An export fork has no wire to send to, which is what `MidiOutNode`'s discarding fork did |
 | Commit | `EventTapWriter` rides the commit in a new `Commit.event_taps: Vec<(EventTapId, EventTapWriter)>`, carried by id across plans, as the audio writers are (`exec.rs:1307`) | No new mechanism. `EventTapId` is its own type: the audio `TapId` names a `Topology.taps` key, and the two maps must not share a namespace |
@@ -1355,7 +1411,7 @@ The hardware out is an `EventTapReader` on the clock node's event output
 (`TapAlign::ToOutput`, 1 024 events: the deleted ring's size), opened in the
 builder and held by the session's MIDI state; `Phase::MidiOut` reads it dry
 into the `UmpOut` and adds `take_lost` to the drop count that
-`SessionEvent::MidiOutDropped` reports. `MidiOutNode`, `MidiOutControls`,
+`MidiEvent::OutputDropped` reports. `MidiOutNode`, `MidiOutControls`,
 `MIDI_OUT_CAPACITY`, `MidiNodes::hardware_out` and `out_controls` and the
 `Feeder::Clock` variant are deleted. Built as specified, except:
 
@@ -1524,8 +1580,9 @@ Each with the recommendation to take unless the owner says otherwise.
    has a fixed number of event inputs, one per slot
    (`SessionBuilder::midi_devices`, 8 by default), holds a `Translator` and a
    `MpeIngest` for each, and a hot-plug wires the new device's inlet to a free
-   slot's input (`Graph::set_event_sources`) and restarts that slot
-   (`MidiIngestControls::restart_slot`): the routes, which name the ingest
+   slot's input (`Graph::set_event_sources`); the node restarts that slot itself
+   (it follows the slot's epoch, which the inlets bump as a device opens it: L1h,
+   `MidiIngestNode::following`; `MidiIngestControls::restart_slot` is gone): the routes, which name the ingest
    node's outputs, never change. A device past the slots is refused
    (`Error::NoFreeSlot`).
 9. **The default alignment of the hardware out's tap.** Recommended: `ToOutput`,
@@ -1930,8 +1987,19 @@ holds the second borrow of the port).
 
 Each is its own lane after its dependency stage.
 
-1. **Chase on seek** in `MidiClipNode`: controllers, program and bend, and notes
-   spanning the seek point. Starting at beat 2 of a clip emits nothing today.
+1. **Chase on seek** in `MidiClipNode`, done for a channel's state (L4d-b): wherever playback
+   jumps (a start, a seek, a loop wrap, a bounce's first block), after the held notes and
+   controllers are returned, the clip sends for each state it set before the beat (a program, a
+   controller, a registered or assignable controller, pressure, bend) the last message that set
+   it, per group and channel in that order. The table is built on the control side with the clip
+   (each state's setters, in beat order), so a jump is a binary search per state and allocates
+   nothing. Not chased: notes spanning the beat (a note the playhead lands inside is not struck,
+   as a DAW's default), per-note controllers, which live with their notes, and relative
+   controllers, which add to what is there, nor the Channel Mode messages (CC 120 to 127), which
+   are commands. A chased Program Change carries the bank in force at its beat (one sent with no
+   Bank Select keeps the channel's bank, M1 p.13), so the receiver is moved to the timeline's bank.
+   An event less than a frame behind the beat is also played by the walk; the repeat sets the same
+   state. A port without room for the whole chase refuses the rest, counted like any refused event.
 2. **MIDI recording** into clips, timestamped against the transport.
 3. **CC modulation source and MIDI learn for native nodes.**
 4. **Windows backend** (Windows MIDI Services), **Linux virtual ports** and more
@@ -2933,9 +3001,13 @@ helpers below only build `Ump`s).
   beat, a divided message or one with an 8-bit byte dropped; `Meta`, `Escape` and `Unknown`
   are dropped, because the tempo is the file's `TempoMap` and the rest are not messages. The
   pair is plain `(Beat, Ump)`: `tutti-midi-file` and `tutti-midi-runtime` are both layer 4, so
-  neither names the other's type. `Midi::play_clip` takes `impl IntoIterator<Item = impl
-  Into<TimedMidiEvent>>`, so `play_clip(synth, file.timeline()?)` is the whole call. (A
-  literal `[]` needs its type now: `std::iter::empty::<TimedMidiEvent>()`.)
+  neither names the other's type. `Midi::play_clip` takes `impl IntoIterator<Item =
+  TimedMidiEvent>`, and a `TimedMidiEvent` is built by `TimedMidiEvent::new(beat, ump)`, which
+  refuses a beat that is not finite (L1h: the checking is at construction, so a clip never
+  meets one, and there is no `From<(Beat, Ump)>`). A file's timeline plays through
+  `file.timeline()?.map(|(beat, ump)| TimedMidiEvent::new(beat, ump))`, collected into a
+  `Result`/`Option` by the caller. (A literal `[]` needs its type:
+  `std::iter::empty::<TimedMidiEvent>()`.)
 - **Writing messages.** `tutti_ump::Message` has named constructors, MIDI 1.0 as the plain
   name and MIDI 2.0 with a `2`: `note_on`, `note_off`, `control_change`, `program_change`,
   `pitch_bend` and `note_on2`, `note_off2`, `control_change2`, `program_change2`,
@@ -3069,3 +3141,87 @@ such as reassembled SysEx; that is decided when that code is written.
   Result<_, BlockError>` replaces `new` and the `with_*` chain. `DeviceTable::list` is an
   `ExactSizeIterator` of `&DeviceInfo`. `CiMessage::encode_into(&mut impl Extend<u8>)` and
   `CiMessage::packets(group)` (SysEx7 `Ump`s) replace encode, frame, packets.
+
+### L1h part 2 (runtime and hardware API): as built
+
+- **Device inputs.** A `DeviceInput` holds its slot until it drops: the drop gives the slot
+  back and queues the inlet's removal (`DeviceInlets::close` is gone), through a `Weak` to the
+  inlets (`DeviceInlets::new` returns the `Arc`). `take_changes` returns a `Changes` iterator
+  that pops one change per step under the lock and holds none while the owner works, so
+  applying a change may open or drop a device, and what is not read stays queued. A slot's
+  epoch (the generation of the device that took it, plus one) is bumped in `open`;
+  `MidiIngestNode::following(&DeviceInlets)` shares the epochs and compares them each block,
+  so a new device in a slot starts with an empty translator and MPE state with no call.
+  There is one id, `DeviceSlot` (index and generation, ephemeral: no serde), which
+  `tutti-midi-hardware`'s `PortId` was; `HardwareMidiInputs` keeps its table keyed by it.
+  Removing a port retires its list entry; the slot is the handle's.
+- **Sync and clock.** `MtcDecoder::feed(&Ump) -> bool`; `MidiClockDecoder::{feed, tick}` take
+  an `Instant`, `beat_position()` is a `Beat`; `SmpteFrameRate: TryFrom<u8>`
+  (`UnknownFrameRate`); `ClockMap::set_rate -> Result<(), InvalidRate>`;
+  `ClockMaster::new(MidiGroup, SampleRate)` and `ClockNode::new(MidiGroup, SampleRate)` (no
+  zero-rate master, no `Default`).
+- **Schedule.** `TimedMidiEvent` has private fields (`beat()`, `event()`) and
+  `new(Beat, Ump) -> Option`, which refuses a beat that is not finite (`Beat` is
+  `tutti-types`' plain `f64`); `MidiClipControls::{set, len, is_empty}` match
+  `HarmonyControls`. `MpeIngest` moved from `outbound/` to `live/`.
+- **Hardware.** `MidiSession::open(Arc<DeviceInlets>)` owns its `HardwareMidiInputs`;
+  `DeviceQuery` (`&DeviceId` or `&str`) replaces the `*_by_name` forms; `output() ->
+  Option<OutputInfo>` replaces the output getters; `InputProducerHandle::push -> Pushed`;
+  `poll` and `drain_stream` return iterators; `Error::{MidiPort, MidiDevice}` keep a `source`
+  and `NoDeviceNamed` lists what it searched; `Resolved::bind(BindPolicy)` and
+  `into_candidates`; `for e in &events` over a `DeviceEvents`. Not done, by decision: a
+  typestate `MidiSession`, a sealed `MidiEndpoints`, a blocking reader `Iterator`, serde on
+  slot ids, `Extend` on `MidiMailbox`, `Clone` on `EventInletWriter`.
+
+### L1f-a (the session's MIDI front): as built
+
+- **One event, one error.** `SessionEvent::Midi(MidiEvent)` replaced the seven `Midi*` variants
+  of the session (`#[non_exhaustive]` at both levels). A variant about one device names it once:
+  a listing carries its `DeviceInfo`, whose `id` is the device (`Added`, `Removed`, `Changed`,
+  `InputLost`, `OutputLost` `{ info }`), and `StreamSettled { device, stream }` its `DeviceId`; a count over every input or the
+  output is its own variant with no device (`InputsDropped { total }`, `OutputDropped { total }`),
+  and `WatchFailed` is the watch's. `Error::Midi(MidiError)` is the one MIDI error of the
+  session: `Hardware`, `File`, `Send`, `NoSuchRoute` carry their cause as the `source`, beside the
+  session's own refusals (`NoEventInput`, `NoMidiInput`, `NoHardware`, `NotSessionMidi`,
+  `TwoRouteDeclarers(RouteDeclarer)`, naming who holds the routes); the calls of `Midi` return `Result<_, MidiError>` and `?` converts a
+  cause (or a `MidiError`) into the session's `Error`. The umbrella names it `tutti::midi::Error`.
+- **Hardware through `s.midi()`.** `devices()`, `connect_input`, `disconnect_input`,
+  `connect_output` and `disconnect_output` take a `DeviceQuery` (`&DeviceId` or `&str`) and
+  forward to the session's `MidiSession`, which `Session::midi_io` no longer hands out (a test
+  reaches it by `Session::testing_midi_io`, behind `testing`). `connect_output` gives the
+  hardware out a sink when it has none. `reconnect_saved(&DeviceInfo) -> Result<Resolution>`
+  binds only an `Exact` device (`BindPolicy::ExactOnly`), in the directions it was saved with;
+  `SameName`, `Ambiguous` and `Missing` come back as `Resolution` variants, so an app that asks
+  has the candidates and nothing is opened unasked.
+- **Loads are jobs.** `Midi::load_file(path) -> MidiLoad` and, with `soundfont`,
+  `load_soundfont(path, Settings) -> MidiLoad` return at once and run on the session's spawner
+  (`Jobs::submit`; `Midi` holds the jobs, not the session). The result lands in `update()` as
+  `MidiEvent::FileLoaded { load, file }` / `SoundFontLoaded { load, unit }` (the unit boxed),
+  each `Result<_, MidiError>`: `File`, `SoundFont` (`tutti_sf2::Error`) and `Instrument`
+  (`tutti_soundfont::Error`) are the read's and the build's causes, `Job(JobFailed)` a panic or a
+  dropped job. `MidiLoad` is the session's counter and names only the call. The host then adds
+  the unit (`add_instrument`, `add_general_midi`) or plays the file's clip.
+- **MPE once.** The session holds one `MpeMode` (`Midi::set_mpe`, `mpe`; the builder's
+  `mpe_mode` is its start). The ingest node is told at once; a synth added through
+  `Session::add_instrument` is built in it through `SessionInstrument::bind_mpe` (the trait `add_instrument` takes;
+  an instrument that reads no MPE, the SoundFont player, returns itself and says so), **so the session's
+  mode wins over `SynthConfig::mpe`**. A synth already in the graph keeps the mode it was added
+  with, and one inserted with `Graph::add` is the caller's own.
+- **Senders take `impl Into<Ump>`** (`EventInletWriter::push`/`push_all`, `InstrumentHandle::send`,
+  `LiveInput::send`, `TimedMidiEvent::new`), so a decoded `Message` goes as it is. A `Voice1` or
+  `Voice2` needs an address, so it has no such conversion.
+- **A take.** `Midi::record(target, EventCapacity) -> EventTapReader` opens an event tap
+  (`TapAlign::Raw`) on the output of the target's live input, which every note sent through it
+  passes; a hardware player's notes, routed straight to the target, do not (tap the ingest
+  node's port for those). `EventTapReader::drain()` reads it. A take is placed by doc 030 §5.2:
+  `TakePlacement { input, output, lead, trim }::place(frame)` is `frame - (input + output + lead)
+  + trim`, at 0 where that reaches before the start of the clock; the figures are the device's
+  and the user's, which the session keeps none of.
+- **Routes.** `MidiRouteRule<T>::to` takes anything `Into<T>`, so a session's own rule takes a
+  `Key<N>` as it takes a `NodeKey`. A `NodeKey` names a node of one session, so a rule that is
+  saved is keyed by the app's own stable id: with the session's `serde` feature
+  `MidiRouteRule<AppId>` is `Serialize` and `Deserialize` (its Group and channel read back through
+  their range checks), and the app maps its id to a node in `set_routes`' `resolve`.
+- **Not built:** MIDI Time Code out, MIDI-CI and profiles beyond the codec, and the
+  `s.midi().input(target)` that replaces `live_input` (Core's S4). The acceptance program is
+  `crates/tutti/examples/midi_all.rs`, run as a test in CI.

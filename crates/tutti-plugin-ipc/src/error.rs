@@ -5,7 +5,7 @@
 //! failed while rendering.
 
 use thiserror::Error;
-use tutti_plugin_types::BridgeError;
+use tutti_plugin_types::{BridgeError, PluginFailure};
 use tutti_types::SampleRate;
 
 /// How a forked plugin instance failed while rendering.
@@ -20,7 +20,8 @@ pub enum PluginRenderFault {
     #[error("the forked instance's plugin-server died: {cause}")]
     Crashed {
         /// What the bridge latched when it noticed.
-        cause: String,
+        #[source]
+        cause: PluginFailure,
     },
     /// The fork's plugin refused the sample rate it renders at, so it renders
     /// silence: the whole export is wrong from the first block.

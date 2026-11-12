@@ -1,4 +1,5 @@
 use super::*;
+use crate::Pushed;
 use crate::testing::{RATE, Rig, ports};
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi::{noop, note_on};
@@ -16,11 +17,7 @@ fn note(n: u8) -> Ump {
 /// A rig over `slots` inlets with `lead`, whose clock has read once (frame 0 at
 /// `origin`), so an arrival can be placed.
 fn rig(slots: usize, capacity: u32, lead: Duration) -> (Arc<HardwareMidiInputs>, Rig) {
-    let inlets = Arc::new(DeviceInlets::new(
-        slots,
-        tutti_graph::EventCapacity::of(capacity),
-        lead,
-    ));
+    let inlets = DeviceInlets::new(slots, tutti_graph::EventCapacity::of(capacity), lead);
     let manager = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let mut rig = Rig::over(&inlets, now());
     rig.run(1);
@@ -31,7 +28,7 @@ fn rig(slots: usize, capacity: u32, lead: Duration) -> (Arc<HardwareMidiInputs>,
 fn test_create_ports() {
     let manager = ports(4);
 
-    let input_id = manager.open_input_port("Test Input").unwrap().port_id();
+    let input_id = manager.open_input_port("Test Input").unwrap().slot();
     assert_eq!(input_id.index(), 0);
 
     let input_ports = manager.list_input_ports();
@@ -45,8 +42,8 @@ fn test_create_ports() {
 fn test_list_ports() {
     let manager = ports(4);
 
-    let id1 = manager.open_input_port("Input 1").unwrap().port_id();
-    let id2 = manager.open_input_port("Input 2").unwrap().port_id();
+    let id1 = manager.open_input_port("Input 1").unwrap().slot();
+    let id2 = manager.open_input_port("Input 2").unwrap().slot();
 
     let inputs = manager.list_input_ports();
     assert_eq!(inputs.len(), 2);
@@ -58,7 +55,7 @@ fn test_list_ports() {
 fn test_port_active_state() {
     let manager = ports(4);
 
-    let port_id = manager.open_input_port("Test").unwrap().port_id();
+    let port_id = manager.open_input_port("Test").unwrap().slot();
     assert!(manager.is_port_active(port_id));
 
     manager.set_port_active(port_id, false);
@@ -86,11 +83,18 @@ fn a_port_beyond_the_slots_is_refused_and_a_freed_slot_is_reused() {
         "the refused made no port"
     );
 
-    assert!(manager.remove_input_port(first.port_id()));
-    assert!(
-        manager.open_input_port("C").is_ok(),
-        "the freed slot is taken"
+    let freed = first.slot();
+    assert!(manager.remove_input_port(freed));
+    assert_eq!(
+        manager.open_input_port("C").unwrap_err(),
+        NoFreeSlot { slots: 2 },
+        "the slot is the handle's: removing the entry does not free it"
     );
+    drop(first);
+    let taken = manager
+        .open_input_port("C")
+        .expect("the freed slot is taken");
+    assert_eq!(taken.slot().index(), freed.index());
 }
 
 /// **An event reaches the graph on its frame**: pushed for an arrival 130
@@ -102,8 +106,8 @@ fn a_ports_events_reach_the_graph_on_their_frames_and_slots() {
     let mut a = manager.open_input_port("A").unwrap();
     let mut b = manager.open_input_port("B").unwrap();
     rig.apply();
-    assert!(a.push(note(60), rig.time_of(130)));
-    assert!(b.push(note(64), rig.time_of(200)));
+    assert_eq!(a.push(note(60), rig.time_of(130)), Pushed::Sent);
+    assert_eq!(b.push(note(64), rig.time_of(200)), Pushed::Sent);
     rig.run(4);
     assert_eq!(rig.take(), vec![(0, 130, note(60)), (1, 200, note(64))]);
 }
@@ -119,7 +123,7 @@ fn arrivals_keep_their_spacing_and_the_lead_is_added_to_each() {
     let mut port = manager.open_input_port("A").unwrap();
     rig.apply();
     for (n, frame) in [(60u8, 130u64), (61, 200), (62, 333)] {
-        assert!(port.push(note(n), rig.time_of(frame)));
+        assert_eq!(port.push(note(n), rig.time_of(frame)), Pushed::Sent);
     }
     rig.run(8);
     let frames: Vec<u64> = rig.take().iter().map(|e| e.1).collect();
@@ -135,14 +139,14 @@ fn an_arrival_past_its_block_is_emitted_late_and_counted() {
     let mut port = manager.open_input_port("A").unwrap();
     rig.apply();
     rig.run(3); // with the block `rig` ran, frames 0..256 have been rendered
-    assert!(port.push(note(60), rig.time_of(10)));
+    assert_eq!(port.push(note(60), rig.time_of(10)), Pushed::Sent);
     rig.run(1);
     assert_eq!(
         rig.take(),
         vec![(0, 256, note(60))],
         "the next block's first frame"
     );
-    let info = manager.port_info(port.port_id()).unwrap();
+    let info = manager.port_info(port.slot()).unwrap();
     assert_eq!(
         (info.losses.late, info.losses.dropped()),
         (1, 0),
@@ -157,13 +161,17 @@ fn an_arrival_past_its_block_is_emitted_late_and_counted() {
 fn an_inactive_port_discards_its_events() {
     let (manager, mut rig) = rig(1, 64, Duration::ZERO);
     let mut port = manager.open_input_port("A").unwrap();
-    let id = port.port_id();
+    let id = port.slot();
     rig.apply();
 
     manager.set_port_active(id, false);
-    assert!(port.push(note(60), rig.time_of(100)), "discarded, not lost");
+    assert_eq!(
+        port.push(note(60), rig.time_of(100)),
+        Pushed::Diverted,
+        "discarded, not lost"
+    );
     manager.set_port_active(id, true);
-    assert!(port.push(note(61), rig.time_of(120)));
+    assert_eq!(port.push(note(61), rig.time_of(120)), Pushed::Sent);
     rig.run(4);
     assert_eq!(rig.take(), vec![(0, 120, note(61))]);
     assert_eq!(manager.losses().dropped(), 0);
@@ -195,7 +203,7 @@ fn concurrent_creators_all_land() {
                 (0..PER_THREAD)
                     .map(|i| {
                         let handle = manager.open_input_port(format!("{t}/{i}")).unwrap();
-                        (handle.port_id().index(), t, i, handle)
+                        (handle.slot().index(), t, i, handle)
                     })
                     .collect::<Vec<_>>()
             })
@@ -227,39 +235,42 @@ fn concurrent_creators_all_land() {
     }
 }
 
-/// Hot-plugging reuses freed indices rather than growing the list: an
-/// interior index (below a live port) and a trailing one (past every live
-/// port) are both reused, and the list shrinks back when its last port goes.
+/// Hot-plugging reuses freed slots rather than growing the list: an interior
+/// slot (below a live port) and a trailing one (past every live port) are both
+/// reused, each by a new port with a new generation, and the list holds only
+/// the live ports.
 #[test]
 fn hot_plug_cycles_reuse_freed_slots() {
     let manager = ports(3);
-    let mut interior = manager.open_input_port("Interior").unwrap().port_id();
-    let anchor = manager.open_input_port("Anchor").unwrap().port_id();
-    assert_eq!((interior.index(), anchor.index()), (0, 1));
+    let mut interior = manager.open_input_port("Interior").unwrap();
+    let anchor = manager.open_input_port("Anchor").unwrap();
+    assert_eq!((interior.slot().index(), anchor.slot().index()), (0, 1));
 
     let mut trailing_gone = None;
     for cycle in 0..100 {
+        let old = interior.slot();
+        drop(interior);
         assert!(
-            manager.remove_input_port(interior),
+            manager.remove_input_port(old),
             "cycle {cycle}: the interior port is there"
         );
-        let reused = manager.open_input_port("Interior").unwrap().port_id();
+        interior = manager.open_input_port("Interior").unwrap();
         assert_eq!(
-            reused.index(),
+            interior.slot().index(),
             0,
             "cycle {cycle}: the freed index is reused"
         );
-        assert_ne!(reused, interior, "cycle {cycle}: by a new port");
-        interior = reused;
+        assert_ne!(interior.slot(), old, "cycle {cycle}: by a new port");
 
-        let trailing = manager.open_input_port("Trailing").unwrap().port_id();
-        assert_eq!(trailing.index(), 2, "cycle {cycle}");
+        let trailing = manager.open_input_port("Trailing").unwrap();
+        assert_eq!(trailing.slot().index(), 2, "cycle {cycle}");
+        let trailing = trailing.slot();
         assert!(manager.remove_input_port(trailing));
         trailing_gone = Some(trailing);
 
         assert_eq!(manager.list_input_ports().len(), 2, "cycle {cycle}");
         assert_eq!(
-            manager.slot_count(),
+            manager.port_count(),
             2,
             "cycle {cycle}: the list does not grow"
         );
@@ -272,38 +283,45 @@ fn hot_plug_cycles_reuse_freed_slots() {
     assert!(manager.port_info(trailing_gone).is_none());
 }
 
-/// **A removed port's inlet leaves the graph**: its slot's change is a
-/// `Detach`, and the slot is another device's after it.
+/// **A port's inlet leaves the graph when its handle drops**: the slot's
+/// change is a `Detach`, and the slot is another device's after it. Removing
+/// the list entry changes nothing in the graph.
 #[test]
-fn a_removed_port_queues_its_inlets_removal() {
+fn a_dropped_handle_queues_its_inlets_removal() {
     use tutti_midi_runtime::InletChange;
     let manager = ports(2);
     let port = manager.open_input_port("A").unwrap();
-    let slot = port.port_id();
-    let first = manager.inlets().take_changes();
+    let slot = port.slot();
+    let first: Vec<_> = manager.inlets().take_changes().collect();
     assert!(matches!(
         first.as_slice(),
         [InletChange::Attach { slot: 0, .. }]
     ));
     assert!(manager.remove_input_port(slot));
-    let after = manager.inlets().take_changes();
+    assert_eq!(
+        manager.inlets().take_changes().count(),
+        0,
+        "the entry's removal is not the slot's"
+    );
+    drop(port);
+    let after: Vec<_> = manager.inlets().take_changes().collect();
     assert!(matches!(
         after.as_slice(),
         [InletChange::Detach { slot: 0 }]
     ));
 }
 
-/// A stale `PortId` cannot reach the port that took its index.
+/// A stale `DeviceSlot` cannot reach the port that took its index.
 ///
 /// Port A is removed and port B created at the same index. A's id must not
 /// remove, toggle or describe B.
 #[test]
-fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
+fn a_stale_slot_cannot_reach_the_port_that_reused_its_slot() {
     let manager = ports(2);
-    let a = manager.open_input_port("A").unwrap().port_id();
+    let a = manager.open_input_port("A").unwrap().slot();
     assert!(manager.remove_input_port(a));
     let b = manager.open_input_port("B").unwrap();
-    let b_id = b.port_id();
+    let b_id = b.slot();
     assert_eq!(b_id.index(), a.index(), "B reuses A's index");
     assert_ne!(b_id, a);
 
@@ -322,11 +340,57 @@ fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
 fn a_full_inlet_counts_what_it_drops() {
     let (manager, _rig) = rig(1, 4, Duration::ZERO);
     let mut handle = manager.open_input_port("Busy").unwrap();
-    let id = handle.port_id();
-    let taken = (0..10).filter(|_| handle.push(noop(), now())).count();
+    let id = handle.slot();
+    let taken = (0..10)
+        .filter(|_| handle.push(noop(), now()) == Pushed::Sent)
+        .count();
     assert_eq!(taken, 4);
     assert_eq!(manager.port_info(id).map(|p| p.losses.lost), Some(6));
     assert_eq!(manager.losses().lost, 6);
     assert!(manager.remove_input_port(id));
     assert_eq!(manager.losses().lost, 6, "a removed port's drops stay");
+}
+
+/// **The stream drain is lazy**: it takes a message per step, so a caller that
+/// stops after one leaves the rest queued for its next read, and an id that
+/// names no port drains nothing.
+#[test]
+fn the_stream_drain_takes_a_message_per_step() {
+    use tutti_ump::{DiscoveryFilter, Message, Stream};
+    let manager = ports(1);
+    let mut port = manager.open_input_port("A").unwrap();
+    let slot = port.slot();
+    // Three distinct Stream messages: which of the filter's fields is asked.
+    let stream = |which: usize| {
+        Ump::from(Message::Stream(Stream::EndpointDiscovery {
+            version: tutti_midi_device::UMP_VERSION,
+            filter: DiscoveryFilter {
+                endpoint_info: which == 0,
+                device_identity: which == 1,
+                endpoint_name: which == 2,
+                product_instance_id: false,
+                stream_configuration: false,
+            },
+        }))
+    };
+    let (a, b, c) = (stream(0), stream(1), stream(2));
+    for ump in [a, b, c] {
+        assert_eq!(port.push(ump, now()), Pushed::Diverted);
+    }
+    let mut drain = manager.drain_stream(slot);
+    assert_eq!(drain.next(), Some(a));
+    drop(drain);
+    assert_eq!(
+        manager.drain_stream(slot).collect::<Vec<_>>(),
+        [b, c],
+        "what was not read stays, in order"
+    );
+    assert_eq!(manager.drain_stream(slot).count(), 0);
+    drop(port);
+    assert!(manager.remove_input_port(slot));
+    assert_eq!(
+        manager.drain_stream(slot).count(),
+        0,
+        "a stale id drains nothing"
+    );
 }

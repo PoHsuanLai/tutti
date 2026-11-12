@@ -12,12 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::StreamerSender;
 use super::cells::Cells;
 use super::command::{StreamId, StreamerCommand};
-use super::control::{LoopError, StreamFile, StreamerGone};
+use super::control::{StreamFile, StreamerGone};
 use super::loops::RingControl;
 use super::status::{StatusCell, StreamStatus};
-use crate::voice::{Direction, LoopSetting};
+use crate::Loop;
+use crate::voice::Direction;
 use tutti_rt::ArcLend;
-use tutti_types::SamplePosition;
 
 /// The way onto one streamer's command queue, cloned into every [`Stream`].
 ///
@@ -44,34 +44,10 @@ impl StreamerPort {
 }
 
 /// The streamer's command for a loop `setting` on `stream`.
-///
-/// A position that is not a frame of a file (negative, or not a number) is
-/// refused, never clamped: a loop that began at the first frame when it was
-/// asked to begin before it is a loop nobody asked for (doc 025 §9, decision
-/// 22).
-fn loop_command(stream: StreamId, setting: LoopSetting) -> Result<StreamerCommand, LoopError> {
+fn loop_command(stream: StreamId, setting: Option<Loop>) -> StreamerCommand {
     match setting {
-        LoopSetting::On {
-            start,
-            end,
-            crossfade_frames,
-        } => {
-            let frame = |p: SamplePosition| {
-                let p = p.get();
-                // `!(p >= 0.0)` also refuses NaN.
-                if p >= 0.0 {
-                    Ok(p as u64)
-                } else {
-                    Err(LoopError::Position)
-                }
-            };
-            Ok(StreamerCommand::SetStreamLoop {
-                stream,
-                range: (frame(start)?, frame(end)?),
-                crossfade_frames,
-            })
-        }
-        LoopSetting::Off => Ok(StreamerCommand::ClearStreamLoop { stream }),
+        Some(looped) => StreamerCommand::SetStreamLoop { stream, looped },
+        None => StreamerCommand::ClearStreamLoop { stream },
     }
 }
 
@@ -123,7 +99,7 @@ pub struct Stream {
     /// The loop as last set through this handle, whose send succeeded: the
     /// loop a caller asked for, which a voice's own record of its loop is
     /// kept equal to.
-    loop_: LoopSetting,
+    loop_: Option<Loop>,
     /// The direction as last set through this handle, whose send succeeded.
     direction: Direction,
 }
@@ -151,7 +127,7 @@ impl Stream {
             underruns: AtomicU64::new(0),
             file,
             control,
-            loop_: LoopSetting::Off,
+            loop_: None,
             direction: Direction::Forward,
         }
     }
@@ -195,10 +171,9 @@ impl Stream {
     /// The loop as last set through this handle: the request, which the
     /// streamer applies on its own thread
     /// ([`status`](Self::status)`.loop_` is what it applied).
-    /// [`LoopSetting::Off`] until one is set. A set whose send failed is not
-    /// recorded here.
+    /// `None` until one is set. A set whose send failed is not recorded here.
     #[must_use]
-    pub fn loop_(&self) -> LoopSetting {
+    pub fn loop_(&self) -> Option<Loop> {
         self.loop_
     }
 
@@ -215,13 +190,16 @@ impl Stream {
         self.id
     }
 
-    /// Sets, replaces or clears the loop the stream plays, in file frames
-    /// ([`LoopSetting::On`]'s positions index the file, not the engine's
-    /// rate).
+    /// Sets, replaces or clears the loop the stream plays (its frames index
+    /// the file, not the engine's rate).
     ///
     /// A change near the playhead is heard about 256 frames past the block
-    /// being played, crossfaded; one further ahead, exactly where it takes
-    /// effect. See [`LoopSetting::On`] for the whole rule.
+    /// being played, crossfaded over the stream's seek crossfade
+    /// (`DiskStreamerConfig::seek_crossfade_frames`) from what the old loop
+    /// would have played; one further ahead, exactly where the memory tier
+    /// hears it. From there on the stream plays the new loop exactly as the
+    /// memory tier does ([`Loop`] has the rule). An export fork taken after
+    /// the change reads the new loop from the start of its render.
     ///
     /// `Ok` means the command was *queued*; the streamer applies it on its
     /// own thread. Control thread: it waits while the streamer's bounded queue
@@ -229,15 +207,13 @@ impl Stream {
     ///
     /// # Errors
     ///
-    /// [`LoopError::Position`]: a point of the loop is negative or not a
-    /// number. Nothing was sent and the stream is as it was.
-    ///
-    /// [`LoopError::StreamerGone`] means the streamer thread has exited and
-    /// the command was discarded. It is permanent: every later command fails
-    /// the same way, so a caller should stop rather than retry.
+    /// [`StreamerGone`] means the streamer thread has exited and the command
+    /// was discarded; the stream's loop is as it was. It is permanent: every
+    /// later command fails the same way, so a caller should stop rather than
+    /// retry.
     #[must_use = "a discarded loop is a loop that never plays"]
-    pub fn set_loop(&mut self, setting: LoopSetting) -> Result<(), LoopError> {
-        self.port.send(loop_command(self.id, setting)?)?;
+    pub fn set_loop(&mut self, setting: Option<Loop>) -> Result<(), StreamerGone> {
+        self.port.send(loop_command(self.id, setting))?;
         // Recorded only once the streamer has the command: a failed send leaves
         // the stream as it was.
         self.loop_ = setting;
@@ -298,7 +274,7 @@ impl Stream {
                     super::loops::Arrangement::plain(tutti_types::Samples::new(0)),
                     0,
                 ),
-                LoopSetting::Off,
+                None,
             ))),
         )
     }
@@ -307,13 +283,10 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loop_frames;
 
-    fn on(start: f64, end: f64) -> LoopSetting {
-        LoopSetting::On {
-            start: SamplePosition(start),
-            end: SamplePosition(end),
-            crossfade_frames: 7,
-        }
+    fn on(start: usize, end: usize) -> Option<Loop> {
+        Some(loop_frames(start, end, 7))
     }
 
     /// Both loop variants report a dead streamer, and dropping a stream whose
@@ -327,33 +300,9 @@ mod tests {
         let (tx, queue) = crossbeam_channel::bounded(8);
         let mut stream = Stream::detached(StreamId(0), StreamerPort::new(tx));
         drop(queue);
-        assert_eq!(
-            stream.set_loop(LoopSetting::Off),
-            Err(LoopError::StreamerGone)
-        );
-        assert_eq!(
-            stream.set_loop(on(0.0, 100.0)),
-            Err(LoopError::StreamerGone)
-        );
+        assert_eq!(stream.set_loop(None), Err(StreamerGone));
+        assert_eq!(stream.set_loop(on(0, 100)), Err(StreamerGone));
         drop(stream);
-    }
-
-    /// **A loop point that is not a file frame is refused, not clamped**: a
-    /// negative or NaN start or end answers `LoopError::Position`, sends
-    /// nothing, and leaves the stream's loop as it was; the first frame is a
-    /// valid point.
-    #[test]
-    fn a_negative_loop_position_is_refused() {
-        let (tx, queue) = crossbeam_channel::bounded(8);
-        let mut stream = Stream::detached(StreamId(5), StreamerPort::new(tx));
-        for bad in [on(-5.0, 100.0), on(0.0, -1.0), on(f64::NAN, 100.0)] {
-            assert_eq!(stream.set_loop(bad), Err(LoopError::Position), "{bad:?}");
-        }
-        assert_eq!(stream.loop_(), LoopSetting::Off, "the stream is as it was");
-        assert!(queue.try_recv().is_err(), "nothing was sent");
-        stream
-            .set_loop(on(0.0, 100.0))
-            .expect("the first frame is a frame");
     }
 
     /// Every command a stream sends names that stream, and only it: two streams
@@ -367,8 +316,8 @@ mod tests {
             Stream::detached(StreamId(1), port.clone()),
             Stream::detached(StreamId(2), port),
         );
-        a.set_loop(on(5.0, 100.0)).unwrap();
-        b.set_loop(LoopSetting::Off).unwrap();
+        a.set_loop(on(5, 100)).unwrap();
+        b.set_loop(None).unwrap();
         drop(a);
         drop(b);
         let sent: Vec<_> = queue.try_iter().collect();
@@ -378,8 +327,7 @@ mod tests {
                 [
                     StreamerCommand::SetStreamLoop {
                         stream: StreamId(1),
-                        range: (5, 100),
-                        crossfade_frames: 7,
+                        looped: first,
                     },
                     StreamerCommand::ClearStreamLoop {
                         stream: StreamId(2)
@@ -390,7 +338,7 @@ mod tests {
                     StreamerCommand::Close {
                         stream: StreamId(2)
                     },
-                ]
+                ] if *first == on(5, 100).unwrap()
             ),
             "{sent:?}"
         );
@@ -404,24 +352,21 @@ mod tests {
     fn a_failed_send_leaves_the_stream_as_it_was() {
         let (tx, queue) = crossbeam_channel::bounded(8);
         let mut stream = Stream::detached(StreamId(3), StreamerPort::new(tx));
-        assert_eq!(stream.loop_(), LoopSetting::Off);
+        assert_eq!(stream.loop_(), None);
         assert_eq!(stream.direction(), Direction::Forward);
-        stream.set_loop(on(0.0, 100.0)).expect("the streamer lives");
+        stream.set_loop(on(0, 100)).expect("the streamer lives");
         stream
             .set_direction(Direction::Reverse)
             .expect("the streamer lives");
-        assert_eq!(stream.loop_(), on(0.0, 100.0), "recorded once sent");
+        assert_eq!(stream.loop_(), on(0, 100), "recorded once sent");
         assert_eq!(stream.direction(), Direction::Reverse);
 
         drop(queue);
-        assert_eq!(
-            stream.set_loop(LoopSetting::Off),
-            Err(LoopError::StreamerGone)
-        );
+        assert_eq!(stream.set_loop(None), Err(StreamerGone));
         assert_eq!(stream.set_direction(Direction::Forward), Err(StreamerGone));
         assert_eq!(
             stream.loop_(),
-            on(0.0, 100.0),
+            on(0, 100),
             "the failed loop is not recorded"
         );
         assert_eq!(stream.direction(), Direction::Reverse);

@@ -47,15 +47,15 @@ use tutti_graph::CrossfadeCurve;
 use tutti_graph::{BusRef, BusSource, Buses, EdgeFade, EdgeGain};
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, InletNode,
-    IntoNode, MeterReader, MixError, ModeError, NodeMode, ParamIn, ParamMod, ParamRange, ParamSet,
-    Prepare, TapReader, TapWriter, Transport,
+    InletRing, IntoNode, MeterReader, MixError, ModeError, NodeMode, ParamIn, ParamMod, ParamRange,
+    ParamSet, Prepare, TapWriter, Transport,
 };
 use tutti_graph::{
     Edge as RawEdge, EdgeId, InPort as RawIn, NodeKey, OutPort as RawOut, Sink, Source,
 };
 use tutti_graph::{
     EventCapacity, EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec, MissingSource,
-    TapAlign, TapId,
+    TapAlign,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -295,7 +295,7 @@ pub struct Graph {
     /// Plans sent, for a host (or a test) asking whether an update sent one.
     commits: u64,
     /// Threads per block, the caller included (`0` for one per core).
-    render_workers: usize,
+    render_workers: crate::Workers,
     /// Run by each live helper on its own thread, before it takes work.
     render_worker_start: Option<RenderWorkerStart>,
     /// Each sink's event input 0, by feeder: the sources each feeder feeds
@@ -333,7 +333,7 @@ pub struct Graph {
     /// crossfade to another plugin and a removal update them where they
     /// happen.
     #[cfg(feature = "plugin")]
-    pub(crate) plugins: BTreeMap<NodeKey, crate::HostedPlugin>,
+    pub(crate) plugins: BTreeMap<NodeKey, crate::plugin::HostedPlugin>,
     /// A reader of the session's tempo map, the template each plugin and
     /// each sampler node inserted through the graph is bound with (a clone
     /// of it: the node lends the map once per block and a fork clones its
@@ -460,7 +460,7 @@ impl Graph {
             nodes: BTreeMap::new(),
             edited: true,
             commits: 0,
-            render_workers: 1,
+            render_workers: crate::Workers::SERIAL,
             render_worker_start: None,
             feeds: BTreeMap::new(),
             fed_edges: BTreeMap::new(),
@@ -486,13 +486,14 @@ impl Graph {
         feature = "testing",
         feature = "midi",
         feature = "plugin",
-        feature = "sampler"
+        feature = "sampler",
+        all(feature = "device", feature = "audio-io")
     ))]
     pub(crate) fn prepared(&self) -> Prepare {
         *self.editor.prepare()
     }
 
-    pub(crate) fn set_render_workers(&mut self, workers: usize) {
+    pub(crate) fn set_render_workers(&mut self, workers: crate::Workers) {
         self.render_workers = workers;
     }
 
@@ -508,10 +509,7 @@ impl Graph {
         name: &str,
         start: Option<&RenderWorkerStart>,
     ) -> Option<Arc<dyn tutti_graph::Pool>> {
-        let n = match self.render_workers {
-            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
-            n => n,
-        };
+        let n = self.render_workers.threads();
         if n < 2 {
             return None;
         }
@@ -688,7 +686,8 @@ impl Graph {
     ///
     /// An inlet **does not resample**, and its clock is not the graph's: the
     /// producer must run at the graph's rate, checked here, once, as
-    /// `producer_rate`. After that two clocks drift however slowly, and
+    /// `producer_rate` (a producer that makes its own ring states its rate
+    /// there, [`InletRing::pair`], and takes it to [`add_inlet`](Self::add_inlet)). After that two clocks drift however slowly, and
     /// nothing corrects it: a producer ahead of the graph finds the ring full
     /// and its writer refuses whole frames, counting them; one behind leaves
     /// the ring empty and the node writes silence for the frames it lacks.
@@ -708,30 +707,35 @@ impl Graph {
         capacity: Samples,
         producer_rate: SampleRate,
     ) -> Result<(Key<InletNode>, TapWriter), InletError> {
-        let (ring, writer) = TapReader::pair(TapId(0), usize::from(width.count()), capacity);
-        Ok((self.add_inlet(ring, producer_rate)?, writer))
+        let (ring, writer) = InletRing::pair(width, capacity, producer_rate);
+        Ok((self.add_inlet(ring)?, writer))
     }
 
     /// [`open_inlet`](Self::open_inlet) over a ring the producer's layer
-    /// already built ([`TapReader::pair`]), for a producer that must
-    /// choose its width and rate before the graph sees it (a capture device).
+    /// already built ([`InletRing::pair`], which states the rate its producer
+    /// fills it at), for a producer that must choose its width and rate before
+    /// the graph sees it (a capture device).
     ///
     /// # Errors
     ///
-    /// [`InletError::RateMismatch`] as for [`open_inlet`](Self::open_inlet).
-    pub fn add_inlet(
-        &mut self,
-        ring: TapReader,
-        producer_rate: SampleRate,
-    ) -> Result<Key<InletNode>, InletError> {
+    /// [`InletError::RateMismatch`] when the ring's rate is not the graph's;
+    /// nothing is opened.
+    pub fn add_inlet(&mut self, ring: InletRing) -> Result<Key<InletNode>, InletError> {
+        let node = self.inlet_node(ring)?;
+        Ok(self.add(node).0)
+    }
+
+    /// The node for `ring`, once its rate is the graph's: what
+    /// [`add_inlet`](Self::add_inlet) adds and an input's reopening swaps in.
+    pub(crate) fn inlet_node(&self, ring: InletRing) -> Result<InletNode, InletError> {
         let graph = self.editor.prepare().sample_rate();
-        if producer_rate != graph {
+        if ring.rate() != graph {
             return Err(InletError::RateMismatch {
-                producer: producer_rate,
+                producer: ring.rate(),
                 graph,
             });
         }
-        Ok(self.add(InletNode::new(ring)).0)
+        Ok(InletNode::new(ring.into_reader()))
     }
 
     /// Opens an event inlet: MIDI a thread of your own pushes into the graph,
@@ -790,7 +794,7 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> NodeKey {
         let node = NodeKey::fresh();
-        let hosted = crate::HostedPlugin::new(client.handle(), client.plugin().clone())
+        let hosted = crate::plugin::HostedPlugin::new(client.handle(), client.plugin().clone())
             .with_controls(client.controls());
         let tempo = self.tempo.clone();
         let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind(tempo));
@@ -815,7 +819,7 @@ impl Graph {
     ///
     /// `plugin` is which plugin it is, which the handle does not know (the
     /// file it came from): the one the host opened, and the ref its states
-    /// are saved under ([`HostedPlugin::state`](crate::HostedPlugin::state)).
+    /// are saved under ([`Plugin::state`](crate::Plugin::state)).
     ///
     /// A host that binds a plugin itself (`PluginClient::bind`) gives it a
     /// reader of the session's tempo map, `session.transport().settings
@@ -833,7 +837,7 @@ impl Graph {
             return false;
         }
         self.plugins
-            .insert(node, crate::HostedPlugin::new(handle, plugin));
+            .insert(node, crate::plugin::HostedPlugin::new(handle, plugin));
         true
     }
 
@@ -885,7 +889,8 @@ impl Graph {
                     None => {
                         self.plugins.insert(
                             node,
-                            crate::HostedPlugin::new(handle, plugin).with_controls(controls),
+                            crate::plugin::HostedPlugin::new(handle, plugin)
+                                .with_controls(controls),
                         );
                     }
                 }
@@ -964,7 +969,7 @@ impl Graph {
             + self
                 .plugins
                 .values()
-                .filter_map(crate::HostedPlugin::meter)
+                .filter_map(crate::plugin::HostedPlugin::meter)
                 .map(tutti_plugin_host::PluginMeter::reclaim)
                 .sum::<usize>();
         pinned
@@ -3031,12 +3036,12 @@ pub trait ModKeys {
 /// target's key names its node, a native target's knob is that node's
 /// `Param` cell, a plugin target feeds the node's event input 0 and starts at
 /// the plugin's mirrored value (the session's record of it,
-/// `HostedPlugin::param_values`).
+/// `Plugin::param_values`).
 #[cfg(feature = "modulation")]
 struct ModHostOver<'a> {
     nodes: &'a BTreeMap<NodeKey, Entry>,
     #[cfg(feature = "plugin")]
-    plugins: &'a BTreeMap<NodeKey, crate::HostedPlugin>,
+    plugins: &'a BTreeMap<NodeKey, crate::plugin::HostedPlugin>,
     keys: &'a dyn ModKeys,
     /// Each plugin target the apply resolved, by node and parameter: where
     /// `Phase::Plugins` writes a GUI edit (`ModState::plugin_target`).

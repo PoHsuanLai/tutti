@@ -25,8 +25,8 @@ use tutti_graph::{OutPort, Source};
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
-    CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterNode, ModDelayNode, PhaserNode,
-    SvfFilterNode, SvfType,
+    CompressorControls, CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterControls,
+    LimiterNode, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
 use tutti_types::{BeatDuration, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples};
 use tutti_types::{ChannelLayout, UnitParam};
@@ -318,14 +318,17 @@ fn chorus_rate_write_moves_the_nodes_own_cell() {
 /// its set.
 #[test]
 fn compressor_makeup_is_addressed_as_gain_db() {
-    let node = CompressorNode::with_channels(
-        tutti_types::Db(-12.0),
-        tutti_types::CompressionRatio(4.0),
-        tutti_types::Seconds(0.01),
-        tutti_types::Seconds(0.1),
-        2,
-    );
-    let makeup = node.makeup_gain();
+    let node = CompressorNode::stereo(CompressorControls {
+        threshold: tutti_types::Db(-12.0),
+        ratio: tutti_types::CompressionRatio(4.0),
+        attack: tutti_types::Seconds(0.01),
+        release: tutti_types::Seconds(0.1),
+        ..CompressorControls::DEFAULT
+    });
+    let makeup = node
+        .param_set()
+        .cell(UnitParam::GainDb)
+        .expect("makeup is GainDb");
     assert!(set(&node, UnitParam::GainDb, 6.0), "makeup is GainDb");
     assert_eq!(makeup.load(Ordering::Acquire), 6.0);
     assert!(!addresses(&node, UnitParam::Makeup));
@@ -528,7 +531,11 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
     let mut input = tone(1.0, BURST);
     input.extend(tone(0.05, 36_000));
     let out = render_driven(
-        LimiterNode::with_channels(ChannelLayout::MONO, Db::new(-12.0), Db::new(-12.0)),
+        LimiterNode::mono(LimiterControls {
+            threshold: Db::new(-12.0),
+            ceiling: Db::new(-12.0),
+            ..LimiterControls::DEFAULT
+        }),
         UnitParam::Release,
         ParamRange::new(-1.0, 1.0),
         -0.25,

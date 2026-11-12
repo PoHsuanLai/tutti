@@ -16,6 +16,10 @@ mod plugin_bypass;
 // the reference CLAP bundle exports two, in a real `plugin-server`.
 #[cfg(feature = "clap")]
 mod plugin_identity;
+// What a load asks of the catalog (a blacklisted plugin is refused at load) and
+// of the ref's `Hosting`: the reference CLAP plugin.
+#[cfg(feature = "clap")]
+mod plugin_hosting;
 // What `Phase::Plugins` does with a hosted plugin's health, over a fake
 // backend (no `plugin-server`): the session half of `bevy-tutti`'s
 // `plugin_host::health` tests.

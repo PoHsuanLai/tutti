@@ -14,11 +14,13 @@
 //!
 //! # Threading
 //!
-//! Everything here is control-thread. Inbound events never pass through this
+//! Everything here is control-thread. Inbound **events** never pass through this
 //! type — a backend pushes them straight into the
 //! [`InputProducerHandle`] of a [`HardwareMidiInputs`] port, which places each
 //! arrival on a frame and pushes it into the device's event inlet, read by the
-//! graph's ingest node. That is why there is no `poll` on this type.
+//! graph's ingest node. What [`poll`](MidiSession::poll) steps is only the
+//! devices' *talk about themselves*: the UMP Stream negotiation of each open
+//! input, read from the port's stream ring.
 //!
 //! The connection map is a plain `Mutex`, not an [`ArcLend`]: nothing here is
 //! read from the audio thread, and `CLAUDE.md` names device enumeration in this
@@ -40,7 +42,7 @@ use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo};
-use tutti_midi_runtime::MidiOut;
+use tutti_midi_runtime::{DeviceInlets, MidiOut, Outgoing};
 use tutti_ump::StreamConfig;
 
 /// The set of open MIDI connections, and the endpoints available to open.
@@ -115,14 +117,84 @@ impl core::fmt::Debug for MidiSession {
     }
 }
 
+/// Which device a name or an id picks: what
+/// [`connect_input`](MidiSession::connect_input), its output and disconnect
+/// forms take, from a `&`[`DeviceId`] or a `&str`.
+///
+/// # Matching a name
+///
+/// **Case-insensitive substring, first hit wins.** The name is lowercased and
+/// tested with `contains` against each device's lowercased name, in the order
+/// [`inputs`](MidiSession::inputs) or [`outputs`](MidiSession::outputs)
+/// returns them: by id. So `"iac"` matches `"IAC Driver Bus 1"`, and a name
+/// matching two devices picks the one with the lowest id. Connect by
+/// [`DeviceId`] when that matters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceQuery(Query);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Query {
+    Id(DeviceId),
+    Name(String),
+}
+
+impl From<&DeviceId> for DeviceQuery {
+    fn from(id: &DeviceId) -> Self {
+        Self(Query::Id(id.clone()))
+    }
+}
+
+impl From<&str> for DeviceQuery {
+    fn from(name: &str) -> Self {
+        Self(Query::Name(name.to_owned()))
+    }
+}
+
+impl DeviceQuery {
+    /// The device this picks among `list`, or the error naming what was
+    /// searched. An id is taken as it is (the open reports a stale one).
+    fn pick(&self, list: Vec<DeviceInfo>) -> Result<DeviceId> {
+        match &self.0 {
+            Query::Id(id) => Ok(id.clone()),
+            Query::Name(name) => {
+                let needle = name.to_lowercase();
+                match list
+                    .iter()
+                    .find(|d| d.name.to_lowercase().contains(&needle))
+                {
+                    Some(found) => Ok(found.id.clone()),
+                    None => Err(Error::NoDeviceNamed {
+                        name: name.clone(),
+                        searched: list.into_iter().map(|d| d.name).collect(),
+                    }),
+                }
+            }
+        }
+    }
+}
+
+/// The open output: what [`MidiSession::output`] reads of it in one look.
+#[derive(Clone, Debug)]
+pub struct OutputInfo {
+    /// The device it is open on.
+    pub id: DeviceId,
+    /// The device's name when it was opened.
+    pub name: String,
+    /// The Protocol and JR Timestamps it sends in: the OS's description of
+    /// its device, or what the negotiation settled.
+    pub config: StreamConfig,
+}
+
 impl MidiSession {
-    /// Opens a session over this platform's backend.
+    /// Opens a session over this platform's backend, its input ports slots of
+    /// `inlets` (the session builds and owns the [`HardwareMidiInputs`] over
+    /// them: [`ports`](Self::ports)).
     ///
     /// # Errors
     ///
     /// As [`Devices::open`].
-    pub fn open(ports: Arc<HardwareMidiInputs>) -> Result<Self> {
-        Self::open_over(backend::active(), ports)
+    pub fn open(inlets: Arc<DeviceInlets>) -> Result<Self> {
+        Self::open_over(backend::active(), inlets)
     }
 
     /// A session over a supplied backend.
@@ -135,14 +207,11 @@ impl MidiSession {
     /// # Errors
     ///
     /// As [`Devices::open_over`].
-    pub fn open_over(
-        backend: Box<dyn MidiEndpoints>,
-        ports: Arc<HardwareMidiInputs>,
-    ) -> Result<Self> {
+    pub fn open_over(backend: Box<dyn MidiEndpoints>, inlets: Arc<DeviceInlets>) -> Result<Self> {
         Ok(Self {
             inner: Arc::new(Inner {
                 open: Mutex::new(Open::default()),
-                ports,
+                ports: Arc::new(HardwareMidiInputs::new(inlets)),
                 devices: Devices::open_over(backend)?,
             }),
         })
@@ -155,7 +224,9 @@ impl MidiSession {
         &self.inner.devices
     }
 
-    /// The ring manager inbound events land in. The audio thread polls this.
+    /// The input ports the session opened, and the inlets they are slots of
+    /// ([`HardwareMidiInputs::inlets`]): the graph's owner takes the inlets'
+    /// changes from it.
     pub fn ports(&self) -> &Arc<HardwareMidiInputs> {
         &self.inner.ports
     }
@@ -178,56 +249,50 @@ impl MidiSession {
         list
     }
 
-    /// The shared name match for every `*_by_name` method here: **case-
-    /// insensitive substring, first hit wins**, in the backend's enumeration
-    /// order. See [`connect_input_by_name`](MidiSession::connect_input_by_name)
-    /// for what that means for a caller.
-    fn find(list: Vec<DeviceInfo>, name: &str) -> Option<DeviceInfo> {
-        let needle = name.to_lowercase();
-        list.into_iter()
-            .find(|e| e.name.to_lowercase().contains(&needle))
-    }
-
     // --- Input ---
 
-    /// Opens an input endpoint. Idempotent — connecting an already-open endpoint
+    /// Opens an input endpoint, by [`DeviceId`] or by name (see
+    /// [`DeviceQuery`]). Idempotent — connecting an already-open endpoint
     /// succeeds without reopening it, because a second driver connection to one
     /// device duplicates every inbound event.
     ///
-    /// Each newly opened input gets its own ring in [`ports`](Self::ports); the
+    /// Each newly opened input gets its own port in [`ports`](Self::ports); the
     /// backend pushes into it from the driver's thread and the audio thread
     /// drains it. Events never pass through this type.
     ///
     /// # Errors
     ///
-    /// [`Error::NoDevice`] when `id` names no present device — the shape a
-    /// stale id takes after a hot-plug — and [`Error::WrongDirection`] when it
-    /// is not an input. Otherwise whatever the backend raises while opening the
-    /// port.
-    pub fn connect_input(&self, id: &DeviceId) -> Result<()> {
+    /// [`Error::NoDeviceNamed`] when a name matches no input (listing the
+    /// inputs it searched; an absent device is an error, never a silent
+    /// no-op). [`Error::NoDevice`] when an id names no present device — the
+    /// shape a stale id takes after a hot-plug — and [`Error::WrongDirection`]
+    /// when it is not an input. Otherwise whatever the backend raises while
+    /// opening the port.
+    pub fn connect_input(&self, device: impl Into<DeviceQuery>) -> Result<()> {
+        let id = device.into().pick(self.inputs())?;
         let mut open = self.inner.open();
         // An input whose reader died is replaced, not kept: it is silent.
         if open
             .inputs
-            .get(id)
+            .get(&id)
             .is_some_and(|held| held.input.is_alive())
         {
             return Ok(());
         }
-        open.inputs.remove(id);
+        open.inputs.remove(&id);
 
         // One ring per connection, retired with it.
-        let input = self.inner.devices.open_input(id, &self.inner.ports)?;
+        let input = self.inner.devices.open_input(&id, &self.inner.ports)?;
         // A UMP Endpoint with an output is asked what it is by the next
         // `poll`. Its output is the negotiation's own, not the session's one
         // destination: asking must not wait for, or disturb, that choice.
-        let os = self.inner.devices.capability(id).unwrap_or_default();
+        let os = self.inner.devices.capability(&id).unwrap_or_default();
         let out = os
             .is_ump_endpoint()
-            .then(|| self.inner.devices.open_output(id).ok())
+            .then(|| self.inner.devices.open_output(&id).ok())
             .flatten();
         open.inputs.insert(
-            id.clone(),
+            id,
             Held {
                 stream: Negotiation::new(os, out),
                 input,
@@ -236,58 +301,36 @@ impl MidiSession {
         Ok(())
     }
 
-    /// Opens the first input endpoint whose name contains `name`.
+    /// Closes an open input and retires the port its events landed in, by
+    /// [`DeviceId`] or by name. Returns whether one was open; closing one that
+    /// is not is a no-op.
     ///
-    /// # Matching
-    ///
-    /// **Case-insensitive substring, first hit wins.** `name` is lowercased and
-    /// tested with `contains` against each device's lowercased name, in the
-    /// order [`inputs`](Self::inputs) returns them: by id. So `"iac"` matches
-    /// `"IAC Driver Bus 1"`, and a `name` matching two devices picks the one
-    /// with the lowest id. Connect by [`DeviceId`] when that matters.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NoDeviceNamed`] when nothing matches. A device that is absent is
-    /// an error here, never a silent no-op.
-    pub fn connect_input_by_name(&self, name: &str) -> Result<()> {
-        let info =
-            Self::find(self.inputs(), name).ok_or_else(|| Error::NoDeviceNamed(name.to_owned()))?;
-        self.connect_input(&info.id)
-    }
-
-    /// Closes an input endpoint and retires the port its events landed in.
-    /// Returns whether it was open; closing one that is not is a no-op.
+    /// A name is matched against the **open** inputs' names, case-insensitively
+    /// as a substring, and the lowest [`DeviceId`] among those matching is the
+    /// one closed (at most one: use [`disconnect_all_inputs`](Self::disconnect_all_inputs)
+    /// to close every one).
     ///
     /// Events still queued in that port are discarded with it.
-    pub fn disconnect_input(&self, id: &DeviceId) -> bool {
-        self.inner.open().inputs.remove(id).is_some()
-    }
-
-    /// Closes one open input whose name contains `name`, matched
-    /// case-insensitively.
-    ///
-    /// Closes **at most one**, and the search runs over a `HashMap` of open
-    /// connections — so unlike the `connect_*_by_name` pair there is no
-    /// "first" to speak of: a `name` matching two open inputs closes an
-    /// arbitrary one of them. Pass a [`DeviceId`] to
-    /// [`disconnect_input`](Self::disconnect_input) to be exact, or
-    /// [`disconnect_all_inputs`](Self::disconnect_all_inputs) to close every
-    /// one.
-    ///
-    /// Matching nothing is a no-op, not an error.
-    pub fn disconnect_input_by_name(&self, name: &str) {
-        let needle = name.to_lowercase();
-        let id = {
-            let open = self.inner.open();
-            open.inputs
-                .iter()
-                .find(|(_, held)| held.input.name().to_lowercase().contains(&needle))
-                .map(|(id, _)| id.clone())
+    pub fn disconnect_input(&self, device: impl Into<DeviceQuery>) -> bool {
+        let mut open = self.inner.open();
+        let id = match device.into().0 {
+            Query::Id(id) => id,
+            Query::Name(name) => {
+                let needle = name.to_lowercase();
+                let Some(id) = open
+                    .inputs
+                    .iter()
+                    .filter(|(_, held)| held.input.name().to_lowercase().contains(&needle))
+                    .map(|(id, _)| id)
+                    .min()
+                    .cloned()
+                else {
+                    return false;
+                };
+                id
+            }
         };
-        if let Some(id) = id {
-            self.disconnect_input(&id);
-        }
+        open.inputs.remove(&id).is_some()
     }
 
     /// Closes every open input, retiring each one's port.
@@ -321,42 +364,28 @@ impl MidiSession {
 
     // --- Output ---
 
-    /// Opens an output endpoint, replacing any currently open one.
+    /// Opens an output endpoint, by [`DeviceId`] or by name (see
+    /// [`DeviceQuery`]), replacing any currently open one.
     ///
     /// One at a time: a session sends to a single destination, so connecting a
     /// second output closes the first rather than fanning out.
     ///
     /// # Errors
     ///
-    /// [`Error::NoDevice`] when `id` names no present device,
+    /// [`Error::NoDeviceNamed`] when a name matches no output,
+    /// [`Error::NoDevice`] when an id names no present device,
     /// [`Error::WrongDirection`] when it is not an output, plus whatever the
     /// backend raises while opening.
-    pub fn connect_output(&self, id: &DeviceId) -> Result<()> {
-        let output = self.inner.devices.open_output(id)?;
+    pub fn connect_output(&self, device: impl Into<DeviceQuery>) -> Result<()> {
+        let id = device.into().pick(self.outputs())?;
+        let output = self.inner.devices.open_output(&id)?;
         let mut open = self.inner.open();
         // A device whose input is held may have settled already.
-        if let Some(stream) = open.inputs.get(id).and_then(|held| held.stream.settled()) {
+        if let Some(stream) = open.inputs.get(&id).and_then(|held| held.stream.settled()) {
             output.set_config(stream.config());
         }
         open.output = Some(output);
         Ok(())
-    }
-
-    /// Opens the first output endpoint whose name contains `name`, replacing any
-    /// currently open one.
-    ///
-    /// Matches exactly as
-    /// [`connect_input_by_name`](Self::connect_input_by_name) does:
-    /// case-insensitive substring, first hit in [`outputs`](Self::outputs)
-    /// order.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NoDeviceNamed`] when nothing matches.
-    pub fn connect_output_by_name(&self, name: &str) -> Result<()> {
-        let info = Self::find(self.outputs(), name)
-            .ok_or_else(|| Error::NoDeviceNamed(name.to_owned()))?;
-        self.connect_output(&info.id)
     }
 
     /// Closes the output endpoint, if one is open. Returns whether one was.
@@ -364,31 +393,15 @@ impl MidiSession {
         self.inner.open().output.take().is_some()
     }
 
-    /// Whether an output is open.
+    /// The open output, if one is: its device, name and the Protocol and JR
+    /// Timestamps it sends in, as of this look.
     #[must_use]
-    pub fn is_output_connected(&self) -> bool {
-        self.inner.open().output.is_some()
-    }
-
-    /// The open output's name, if any.
-    pub fn output_device_name(&self) -> Option<String> {
-        self.inner
-            .open()
-            .output
-            .as_ref()
-            .map(|o| o.name().to_owned())
-    }
-
-    /// The open output's device, if any.
-    pub fn output_device(&self) -> Option<DeviceId> {
-        self.inner.open().output.as_ref().map(|o| o.id().clone())
-    }
-
-    /// The Protocol and JR Timestamps the open output sends in, if one is open:
-    /// the OS's description of its device, or what the negotiation settled.
-    #[must_use]
-    pub fn output_config(&self) -> Option<StreamConfig> {
-        self.inner.open().output.as_ref().map(OpenOutput::config)
+    pub fn output(&self) -> Option<OutputInfo> {
+        self.inner.open().output.as_ref().map(|o| OutputInfo {
+            id: o.id().clone(),
+            name: o.name().to_owned(),
+            config: o.config(),
+        })
     }
 
     /// Whether `id` is an open input that is still delivering: one whose
@@ -411,19 +424,20 @@ impl MidiSession {
     /// Endpoint that did not declare them static), once each. The open output
     /// follows its device's Protocol and JR Timestamps.
     ///
+    /// The stepping is done when this returns; the iterator only hands out what
+    /// it found (a list built under the session's lock, which is not held
+    /// while the caller reads it), so ignoring it loses nothing but the report.
+    ///
     /// `now` is the caller's time: nothing here reads a clock or waits, so a
     /// device that never answers costs a few packets over a few seconds of
     /// polls and then reads as [`Unanswered`](crate::Basis::Unanswered). Call
     /// it from the control tick (the session's `Phase::Poll`); it only reads
     /// rings and sends.
-    pub fn poll(&self, now: Instant) -> Vec<(DeviceId, DeviceStream)> {
+    pub fn poll(&self, now: Instant) -> std::vec::IntoIter<(DeviceId, DeviceStream)> {
         let mut settled = Vec::new();
         let mut open = self.inner.open();
         for (id, held) in &mut open.inputs {
-            let mut said = Vec::new();
-            self.inner
-                .ports
-                .drain_stream(held.input.port_id(), |ump| said.push(ump));
+            let said: Vec<_> = self.inner.ports.drain_stream(held.input.slot()).collect();
             if let Some(stream) = held.stream.poll(now, said) {
                 settled.push((id.clone(), stream));
             }
@@ -434,7 +448,7 @@ impl MidiSession {
         {
             out.set_config(stream.config());
         }
-        settled
+        settled.into_iter()
     }
 
     /// What is known of the UMP Stream state of the open input `id`: `None`
@@ -463,9 +477,16 @@ impl MidiSession {
     /// count names an unbroken **prefix** of `events`. Control-thread only: this
     /// takes a lock and the backends allocate per send.
     pub fn send(&self, events: &[UmpAt]) -> usize {
+        self.send_timed(&Outgoing::now_batch(events))
+    }
+
+    /// [`send`](Self::send) with a time for each event: the device is handed
+    /// each at its [`SendAt`](tutti_midi_runtime::SendAt) (the backend
+    /// schedules it natively), after the conversion to its wire form.
+    pub fn send_timed(&self, events: &[Outgoing]) -> usize {
         let open = self.inner.open();
         match open.output.as_ref() {
-            Some(out) => out.queue(events),
+            Some(out) => out.queue_timed(events),
             None => 0,
         }
     }
@@ -478,6 +499,10 @@ impl MidiSession {
 impl MidiOut for MidiSession {
     fn queue(&self, events: &[UmpAt]) -> usize {
         self.send(events)
+    }
+
+    fn queue_timed(&self, events: &[Outgoing]) -> usize {
+        self.send_timed(events)
     }
 }
 

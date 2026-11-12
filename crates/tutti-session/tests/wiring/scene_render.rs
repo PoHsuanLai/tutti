@@ -31,7 +31,9 @@ use tutti_graph::{
     CrossfadeCurve, Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
 };
 use tutti_nodes::testing::Osc;
-use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
+use tutti_nodes::{
+    DistortionNode, LimiterControls, LimiterNode, ShapeKind, SvfFilterNode, SvfType,
+};
 use tutti_session::{AudioSide, InPort, Key, OutPort, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds};
@@ -49,7 +51,11 @@ fn shaper(drive: f32) -> DistortionNode {
     DistortionNode::new(ShapeKind::Tanh, Drive::new(drive))
 }
 fn limiter() -> LimiterNode {
-    LimiterNode::with_channels(ChannelLayout::MONO, Db(-12.0), Db(-1.0))
+    LimiterNode::mono(LimiterControls {
+        threshold: Db(-12.0),
+        ceiling: Db(-1.0),
+        ..LimiterControls::DEFAULT
+    })
 }
 
 /// The scene's waveshaper drive, unless a test says otherwise.
@@ -74,7 +80,7 @@ fn scene(with_limiter: bool) -> Scene {
 /// [`scene`], with the waveshaper at `drive`.
 fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     let mut session = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("builds");
     session.graph().set_sample_rate(SampleRate(RATE));

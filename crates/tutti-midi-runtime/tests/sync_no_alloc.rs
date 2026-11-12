@@ -11,13 +11,16 @@
 //! moves to a `Vec`-backed interval history or similar.
 
 use assert_no_alloc::AllocDisabler;
+use std::time::{Duration, Instant};
 use tutti_midi_runtime::MidiClockDecoder;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-fn us_per_tick(bpm: f64) -> u64 {
-    (60_000_000.0 / (bpm * f64::from(tutti_ump::System::TIMING_CLOCKS_PER_QUARTER))) as u64
+fn us_per_tick(bpm: f64) -> Duration {
+    Duration::from_micros(
+        (60_000_000.0 / (bpm * f64::from(tutti_ump::System::TIMING_CLOCKS_PER_QUARTER))) as u64,
+    )
 }
 
 #[test]
@@ -28,7 +31,7 @@ fn midi_clock_decoder_tick_is_allocation_free() {
     // Warm up the interval ring buffer so subsequent calls take the
     // tempo-update branch every time.
     let interval = us_per_tick(120.0);
-    let mut ts = 0u64;
+    let mut ts = Instant::now();
     for _ in 0..48 {
         clock.tick(ts);
         ts += interval;
@@ -61,7 +64,7 @@ fn midi_clock_decoder_queries_are_allocation_free() {
     let mut clock = MidiClockDecoder::new();
     clock.start_msg();
     let interval = us_per_tick(140.0);
-    let mut ts = 0u64;
+    let mut ts = Instant::now();
     for _ in 0..48 {
         clock.tick(ts);
         ts += interval;

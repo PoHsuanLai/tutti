@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// What the scan found on disk for one candidate, read once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileFacts {
-    /// Whether the path exists. Only `tutti_plugin::catalog::Plugins::prune_missing`
+    /// Whether the path exists. Only `tutti_plugin::catalog::Catalog::prune_missing`
     /// reads it.
     pub exists: bool,
     /// Seconds since the Unix epoch of the file's last modification, if it has

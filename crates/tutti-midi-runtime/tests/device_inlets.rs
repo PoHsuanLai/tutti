@@ -84,7 +84,7 @@ struct Rig {
 impl Rig {
     fn new(inlets: &DeviceInlets) -> Self {
         let input = inlets.open().expect("a free slot");
-        let Some(InletChange::Attach { node, .. }) = inlets.take_changes().pop() else {
+        let Some(InletChange::Attach { node, .. }) = inlets.take_changes().last() else {
             panic!("an open queues its inlet");
         };
         let (mut editor, exec) =
@@ -136,7 +136,7 @@ fn after(t: Instant, frames: u64) -> Instant {
     t + Duration::from_secs_f64(frames as f64 / RATE)
 }
 
-fn inlets(lead: Duration) -> DeviceInlets {
+fn inlets(lead: Duration) -> Arc<DeviceInlets> {
     DeviceInlets::new(2, tutti_graph::EventCapacity::of(64), lead)
 }
 
@@ -256,33 +256,38 @@ fn a_reading_at_another_rate_is_rescaled_by_the_inlet() {
     assert_eq!(rig.take(), vec![(1480, note(60))]);
 }
 
-/// **A device takes a slot and gives it back; a stale slot names nothing.**
-/// With two slots, a third open is refused; closing one frees it for the next,
-/// and closing it again, after another device took it, changes nothing.
+/// **A device holds a slot until it drops; a stale slot names nothing.**
+/// With two slots, a third open is refused; dropping one device frees its slot
+/// for the next, which is a different `DeviceSlot` (the generation differs)
+/// at the same index.
 #[test]
-fn slots_are_taken_and_given_back() {
+fn a_slot_is_held_until_its_device_drops() {
     let inlets = inlets(Duration::ZERO);
     let a = inlets.open().unwrap();
     let _b = inlets.open().unwrap();
     assert_eq!(inlets.open().unwrap_err(), NoFreeSlot { slots: 2 });
     let slot = a.slot();
     assert_eq!(slot.index(), 0);
-    assert!(inlets.close(slot));
+    drop(a);
     let c = inlets.open().unwrap();
     assert_eq!(c.slot().index(), 0, "the freed slot is taken");
     assert_ne!(c.slot(), slot);
-    assert!(!inlets.close(slot), "a stale slot closes nothing");
-    assert!(inlets.close(c.slot()));
+    assert!(c.slot().generation() > slot.generation());
+    assert_eq!(
+        inlets.open().unwrap_err(),
+        NoFreeSlot { slots: 2 },
+        "the new device holds it"
+    );
 }
 
 /// **The owner takes the changes in order**: an attach for each open, a detach
-/// for each close of an inlet the owner has taken.
+/// for each drop of a device whose inlet the owner has taken.
 #[test]
 fn the_owner_takes_attaches_and_detaches_in_order() {
     let inlets = inlets(Duration::ZERO);
     let a = inlets.open().unwrap();
     let b = inlets.open().unwrap();
-    let first = inlets.take_changes();
+    let first: Vec<_> = inlets.take_changes().collect();
     assert!(matches!(
         first.as_slice(),
         [
@@ -290,9 +295,9 @@ fn the_owner_takes_attaches_and_detaches_in_order() {
             InletChange::Attach { slot: 1, .. }
         ]
     ));
-    assert!(inlets.close(b.slot()));
-    assert!(inlets.close(a.slot()));
-    let second = inlets.take_changes();
+    drop(b);
+    drop(a);
+    let second: Vec<_> = inlets.take_changes().collect();
     assert!(matches!(
         second.as_slice(),
         [
@@ -300,20 +305,50 @@ fn the_owner_takes_attaches_and_detaches_in_order() {
             InletChange::Detach { slot: 0 }
         ]
     ));
-    assert!(inlets.take_changes().is_empty(), "taken once");
+    assert_eq!(inlets.take_changes().count(), 0, "taken once");
 }
 
 /// **A device that comes and goes before the owner looks leaves nothing**: its
 /// attach and detach cancel, so a connect and disconnect loop with no owner
 /// draining does not pile up inlets.
 #[test]
-fn an_inlet_closed_before_it_was_taken_is_never_queued() {
+fn an_inlet_dropped_before_it_was_taken_is_never_queued() {
     let inlets = inlets(Duration::ZERO);
     for _ in 0..100 {
-        let device = inlets.open().unwrap();
-        assert!(inlets.close(device.slot()));
+        drop(inlets.open().unwrap());
     }
-    assert!(inlets.take_changes().is_empty());
+    assert_eq!(inlets.take_changes().count(), 0);
+}
+
+/// **A change the owner does not read stays queued, and applying one may open
+/// or drop a device**: `take_changes` drains a change per step and holds no
+/// lock between steps, so the owner's own handling of an attach (here, a device
+/// dropping, which takes the lock) cannot deadlock, and what it queues is read
+/// by the same iterator.
+#[test]
+fn draining_changes_holds_no_lock_across_the_owners_work() {
+    let inlets = inlets(Duration::ZERO);
+    let a = inlets.open().unwrap();
+    let mut a = Some(a);
+    let mut seen = Vec::new();
+    for change in inlets.take_changes() {
+        match change {
+            InletChange::Attach { slot, .. } => {
+                seen.push(("attach", slot));
+                // The device goes while the owner is handling its attach.
+                drop(a.take());
+            }
+            InletChange::Detach { slot } => seen.push(("detach", slot)),
+        }
+    }
+    assert_eq!(seen, [("attach", 0), ("detach", 0)]);
+    // An iterator read part way leaves the rest queued.
+    let _b = inlets.open().unwrap();
+    let _c = inlets.open().unwrap();
+    let mut changes = inlets.take_changes();
+    assert!(changes.next().is_some());
+    drop(changes);
+    assert_eq!(inlets.take_changes().count(), 1);
 }
 
 /// **The counts are readable from the control side while the thread pushes**:

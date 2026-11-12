@@ -3,7 +3,7 @@
 
 use tutti_types::SampleRate;
 
-use crate::{PluginTail, Samples};
+use crate::{PluginFailure, PluginTail, Samples};
 
 /// Which aspect of plugin state the plugin asked the host to re-read.
 ///
@@ -46,7 +46,7 @@ impl ResyncKind {
 /// the host should fire.
 ///
 /// Not `Copy`, following [`PluginInvalidation`], which it wraps.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ResyncClass {
     /// Re-read a cached view; nothing the graph holds is wrong.
     Refresh(PluginRefresh),
@@ -58,7 +58,7 @@ pub enum ResyncClass {
 /// stale.
 ///
 /// Re-read the state; the audio graph is unaffected. Delivered via
-/// `tutti-plugin`'s `PluginHandle::on_refresh`.
+/// `tutti-plugin`'s `PluginHandle::subscribe`.
 /// Mirrors CLAP `params.rescan(flags)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginRefresh {
@@ -72,13 +72,13 @@ pub enum PluginRefresh {
 /// the audio graph's plan.
 ///
 /// The host must rewire and re-run latency compensation (PDC). Delivered via
-/// `tutti-plugin`'s `PluginHandle::on_invalidate`.
+/// `tutti-plugin`'s `PluginHandle::subscribe`.
 /// Mirrors CLAP `request_restart()` + `audio_ports.rescan()` + `latency.changed()`.
 ///
 /// **Not `Copy`**, because [`Crashed`](Self::Crashed) carries an owned cause.
 /// `Clone` is enough: every consumer takes this by value through
 /// `Fn(PluginInvalidation)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum PluginInvalidation {
     /// The plugin reported new processing latency. Carries the new value; the
     /// node's own atomic is already updated live, but compensation delays across
@@ -124,6 +124,6 @@ pub enum PluginInvalidation {
     /// `BridgeEvent::Crashed` for why both exist.
     Crashed {
         /// Why the plugin died, latched at the detection site.
-        cause: String,
+        cause: PluginFailure,
     },
 }

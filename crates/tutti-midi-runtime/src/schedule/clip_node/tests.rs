@@ -3,12 +3,12 @@ use tutti_fixtures::midi::{m1_cc, m1_note_on, note_on};
 use tutti_types::Beat;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, U7};
 
-/// **A clip a block still held when `set_events` replaced it is freed by
+/// **A clip a block still held when `set` replaced it is freed by
 /// the next `reclaim`**, with no further publish.
 #[test]
 fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
     let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
-    let mut node = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on)]);
+    let mut node = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on).unwrap()]);
     let controls = MidiClipControls {
         shared: Arc::clone(&node.shared),
     };
@@ -41,28 +41,32 @@ fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
     let note = NoteNumber::of(60);
     let on0 = m1_note_on(MidiChannel::FIRST, note, U7::of(0));
     let events = [
-        TimedMidiEvent::new(Beat(3.0), on0),
+        TimedMidiEvent::new(Beat(3.0), on0).unwrap(),
         TimedMidiEvent::new(
             Beat(2.0),
             m1_cc(MidiChannel::FIRST, CCNumber::DATA_ENTRY_LSB, U7::of(50)),
-        ),
+        )
+        .unwrap(),
         TimedMidiEvent::new(
             Beat(1.0),
             m1_cc(MidiChannel::FIRST, CCNumber::DATA_ENTRY, U7::of(12)),
-        ),
+        )
+        .unwrap(),
         TimedMidiEvent::new(
             Beat(0.0),
             m1_cc(MidiChannel::FIRST, CCNumber::RPN_MSB, U7::of(0)),
-        ),
+        )
+        .unwrap(),
         TimedMidiEvent::new(
             Beat(0.0),
             m1_cc(MidiChannel::FIRST, CCNumber::RPN_LSB, U7::of(0)),
-        ),
+        )
+        .unwrap(),
     ];
     let out = translated(events);
     let decoded: Vec<(f64, tutti_ump::Message)> = out
         .iter()
-        .map(|e| (e.beat.get(), e.event.decode().unwrap()))
+        .map(|e| (e.beat().get(), e.event().decode().unwrap()))
         .collect();
     let address = tutti_ump::Address {
         group: MidiGroup::FIRST,

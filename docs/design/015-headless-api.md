@@ -233,7 +233,7 @@ A load, step by step:
 | Asset loader, write tasks | `midi/file.rs:169-330` | glue | stays |
 
 Clip sequencing keeps one `MidiClipNode` per target. It updates the events
-in place with `set_events`, and clears or removes the node when the clip is
+in place with `set`, and clears or removes the node when the clip is
 unplayable.
 
 ### 2.6 Samples, SoundFonts and export
@@ -1623,7 +1623,7 @@ Where the code differs from the text above:
   `MIDI_OUT_DROP_REPORT` (1 s) of `now`.
 - **The routes have one declarer**, as modulation does: the session's own
   `route`/`set_route_fallback` or a host's `set_routes`, the other refused
-  with `Error::TwoRouteDeclarers`. `set_routes` returns a `Result`.
+  with `MidiError::TwoRouteDeclarers(RouteDeclarer)` (`Session` or `Host`, whichever holds them). `set_routes` returns a `Result`.
 - **The §5.1 example** uses `build_offline` and `Graph::add`, not a
   device and `add`, and an LFO and a follower on an SVF.
 

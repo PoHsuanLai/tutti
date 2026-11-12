@@ -16,9 +16,11 @@
 //!
 //! # Protocol is asked, not assumed
 //!
-//! Input ports open with `Protocol::Midi20`, which makes CoreMIDI up-convert a
-//! MIDI-1.0 device's traffic to UMP. That is *not* the same as the device
-//! speaking MIDI 2.0, so [`UmpCapability`] records `kMIDIPropertyProtocolID` as
+//! An input port opens in the protocol of its source (one port per opened
+//! input): `Protocol::Midi10` for a source whose [`UmpCapability`] is MIDI 1.0,
+//! so CoreMIDI hands it MIDI 1.0 UMP (type 2) and the ingest node's `Translator`
+//! widens it, never the OS (design 017 L6d); `Protocol::Midi20` otherwise.
+//! A MIDI 1.0 source is not a device speaking MIDI 2.0, so [`UmpCapability`] records `kMIDIPropertyProtocolID` as
 //! the OS reports it — and falls back to `Midi1` when the property is absent,
 //! which is the conservative direction (see `UmpCapability::default`).
 //!
@@ -47,7 +49,7 @@ use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use tutti_coremidi_ffi::{UmpEndpointInfo, ump_endpoints};
 use tutti_midi_device::{EndpointId, Identity, OsDevice};
-use tutti_midi_runtime::MidiOut;
+use tutti_midi_runtime::{MidiOut, Outgoing, SendAt};
 use tutti_ump::{Protocol, split_stream};
 
 mod host_time;
@@ -120,6 +122,27 @@ fn endpoint_capability(object: &coremidi::Object, ump: Option<&UmpEndpointInfo>)
     match protocol_id {
         Ok(id) if id == PROTOCOL_ID_MIDI_2_0 => UmpCapability::midi2(),
         _ => UmpCapability::midi1(),
+    }
+}
+
+/// The protocol an input port on `source` is created with, as ALSA chooses
+/// its client's version (design 017 L6d): MIDI 1.0 for a source that cannot
+/// speak the MIDI 2.0 Protocol, so CoreMIDI hands it MIDI 1.0 UMP (type 2)
+/// and the ingest node's `Translator` widens it, never the OS. A UMP Endpoint
+/// that supports MIDI 2.0 opens as MIDI 2.0 even while it is in MIDI 1.0:
+/// the session asks every Endpoint for MIDI 2.0, and a MIDI 1.0 port would
+/// have CoreMIDI narrow what it then sends natively. A source with no UMP
+/// Endpoint record (a MIDI 1.0 device, or macOS before 15) follows
+/// `kMIDIPropertyProtocolID`.
+fn input_protocol(source: &coremidi::Object, ump: Option<&UmpEndpointInfo>) -> CmProtocol {
+    let midi2 = match ump {
+        Some(ump) => ump.supports_midi2,
+        None => endpoint_capability(source, None).protocol == Protocol::Midi2,
+    };
+    if midi2 {
+        CmProtocol::Midi20
+    } else {
+        CmProtocol::Midi10
     }
 }
 
@@ -294,16 +317,22 @@ impl MidiEndpoints for CoreMidiEndpoints {
     ) -> Result<Box<dyn InputConnection>> {
         let client = self.client()?;
         let source = Self::find_source(id)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI source with id {}", id.raw())))?;
+            .ok_or_else(|| Error::device(format!("no MIDI source with id {}", id.raw())))?;
 
-        // No byte parser on this path, deliberately. The port opens with
-        // `Protocol::Midi20`, so CoreMIDI delivers UMP words — a MIDI-1.0
-        // device's SysEx arrives already fragmented into UMP SysEx7 packets,
-        // which `tutti_ump::SysexAssembler` (one layer up) rejoins.
-        // `tutti_ump::Midi1Parser` is for a transport that delivers raw
-        // `F0 … F7` bytes.
+        // The port speaks the source's protocol: a MIDI 1.0 source is delivered
+        // as MIDI 1.0 UMP (type 2), which the ingest node's `Translator`
+        // widens; CoreMIDI up-converts nothing. A MIDI 2.0 source is delivered
+        // as MIDI 2.0 UMP.
+        //
+        // No byte parser on this path, deliberately: CoreMIDI delivers UMP
+        // words either way, and a MIDI-1.0 device's SysEx arrives already
+        // fragmented into UMP SysEx7 packets, which `tutti_ump::SysexAssembler`
+        // (one layer up) rejoins. `tutti_ump::Midi1Parser` is for a transport
+        // that delivers raw `F0 … F7` bytes.
+        let endpoints = ump_endpoints().unwrap_or_default();
+        let protocol = input_protocol(&source, ump_of(&endpoints, &source, true));
         let mut port = client
-            .input_port_with_protocol("tutti-in", CmProtocol::Midi20, move |event_list, _ctx| {
+            .input_port_with_protocol("tutti-in", protocol, move |event_list, _ctx| {
                 // The packet's own host time, as an `Instant`: when the event
                 // reached CoreMIDI, not when this callback ran.
                 let pairing = host_time::Pairing::now();
@@ -312,7 +341,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
                     // One CoreMIDI packet is a packed word stream of several
                     // concatenated UMP messages.
                     for event in split_stream(packet.data()) {
-                        if !producer.push(event, arrived) {
+                        if producer.push(event, arrived) == crate::Pushed::Full {
                             tracing::debug!("MIDI input ring full, dropping event");
                         }
                     }
@@ -334,9 +363,8 @@ impl MidiEndpoints for CoreMidiEndpoints {
 
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         let client = self.client()?;
-        let destination = Self::find_destination(id).ok_or_else(|| {
-            Error::MidiDevice(format!("no MIDI destination with id {}", id.raw()))
-        })?;
+        let destination = Self::find_destination(id)
+            .ok_or_else(|| Error::device(format!("no MIDI destination with id {}", id.raw())))?;
 
         let port = client
             .output_port("tutti-out")
@@ -385,16 +413,24 @@ impl CoreMidiOutput {
     /// The inherent-method-plus-thin-trait-impl idiom `MidiSender` already uses:
     /// a caller holding the concrete type gets the `OSStatus`, while the erased
     /// [`MidiOut`] stays the ring-shaped `queue`.
-    fn send_ump(&self, words: &[u32]) -> Result<()> {
+    fn send_ump(&self, words: &[u32], at: SendAt) -> Result<()> {
         if words.is_empty() {
             return Ok(());
         }
+        // CoreMIDI holds a packet stamped in the future until then; 0 is now.
+        // The host clock is read afresh with each send, so the pairing neither
+        // drifts nor spans a sleep (`Instant` and `mach_absolute_time` differ
+        // there).
+        let time = match at {
+            SendAt::Now => 0,
+            SendAt::At(instant) => host_time::Pairing::now().host_time_of(instant),
+        };
         let cm_protocol = if self.midi2.load(Ordering::Relaxed) {
             CmProtocol::Midi20
         } else {
             CmProtocol::Midi10
         };
-        let buffer = EventBuffer::new(cm_protocol).with_packet(0, words);
+        let buffer = EventBuffer::new(cm_protocol).with_packet(time, words);
         self.port
             .send(&self.destination, &buffer)
             .map_err(|status| Error::CoreMidi {
@@ -421,9 +457,15 @@ impl MidiOut for CoreMidiOutput {
     /// contiguous run matches, and would deliver a note-off whose note-on never
     /// left. The ALSA backend's `queue` behaves identically.
     fn queue(&self, events: &[UmpAt]) -> usize {
+        self.queue_timed(&Outgoing::now_batch(events))
+    }
+
+    /// Each packet is stamped with the host time of its [`SendAt`] and CoreMIDI
+    /// schedules it.
+    fn queue_timed(&self, events: &[Outgoing]) -> usize {
         let mut accepted = 0;
-        for (_, ump) in events {
-            if let Err(e) = self.send_ump(ump.words()) {
+        for event in events {
+            if let Err(e) = self.send_ump(event.ump.words(), event.send) {
                 tracing::debug!("CoreMIDI send: {e}");
                 break;
             }

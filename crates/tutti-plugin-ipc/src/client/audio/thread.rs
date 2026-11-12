@@ -10,7 +10,9 @@ use super::messages::{AudioResponse, BridgeEvent, Command, Unsolicited};
 use super::payload_pool::PayloadPool;
 use crate::transport::control::{self as ipc, ControlStream};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
+use tutti_plugin_types::{BridgeError, PluginFailure};
 
 /// The bridge thread of an [`AudioBridge`](super::AudioBridge): it speaks to
 /// the server for the queues. Dropping it shuts it down and joins it.
@@ -97,7 +99,9 @@ fn run_thread(
             crash(
                 &lifecycle,
                 &listener,
-                format!("could not connect to plugin-server: {e}"),
+                PluginFailure::Connect {
+                    source: Arc::new(e),
+                },
             );
             // A block queued before the crash was marked is never sent.
             drain_with_errors(&channels);
@@ -117,15 +121,23 @@ fn run_thread(
         // version skew and a peer that never said `Ready` are different
         // problems for whoever reads the message, and the first is actionable.
         other => {
-            let why = match other {
-                Ok(crate::protocol::BridgeMessage::Ready { protocol_version }) => format!(
-                    "plugin-server speaks protocol v{protocol_version}, this host speaks v{}",
-                    crate::protocol::PROTOCOL_VERSION
-                ),
-                Ok(_) => "plugin-server did not send Ready as its first message".to_string(),
-                Err(e) => format!("plugin-server handshake failed: {e}"),
+            let source = match other {
+                Ok(crate::protocol::BridgeMessage::Ready { protocol_version }) => {
+                    BridgeError::ProtocolMismatch {
+                        expected: crate::protocol::PROTOCOL_VERSION,
+                        got: protocol_version,
+                    }
+                }
+                Ok(got) => crate::error::unexpected_message("Ready", &got),
+                Err(e) => e,
             };
-            crash(&lifecycle, &listener, why);
+            crash(
+                &lifecycle,
+                &listener,
+                PluginFailure::Handshake {
+                    source: Arc::new(source),
+                },
+            );
             drain_with_errors(&channels);
             return;
         }
@@ -178,11 +190,10 @@ fn pump(
         drain_unsolicited(&mut inbox, channels, listener);
 
         if let Err(e) = result {
-            // The error is stringified here, at the only place it exists.
+            // The error is classified here, at the only place it exists.
             // `BridgeError` is not `Clone`, and the crash notification outlives
-            // this frame, so the alternative is a hardcoded placeholder that
-            // reports every death alike.
-            crash(lifecycle, listener, format!("{e}"));
+            // this frame, so the failure holds it behind an `Arc`.
+            crash(lifecycle, listener, PluginFailure::from_stream(e));
             // Connection-level: the stream is gone, so this ends every
             // in-flight and queued block, not just one. `None` matches
             // whichever request the audio thread is waiting on.
@@ -205,7 +216,7 @@ fn pump(
 /// handshake-failure sites usually have no subscriber yet. That is exactly why
 /// the latch comes first and is authoritative: `Lifecycle::crash_cause` answers
 /// for a crash nobody heard.
-fn crash(lifecycle: &Lifecycle, listener: &ListenerSlot, cause: String) {
+fn crash(lifecycle: &Lifecycle, listener: &ListenerSlot, cause: PluginFailure) {
     lifecycle.mark_crashed(cause.clone());
     let cb = listener.lock().clone();
     if let Some(f) = cb.as_ref() {

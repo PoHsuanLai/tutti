@@ -16,7 +16,7 @@ use tutti_types::Samples;
 use super::bell::Bell;
 use super::io::refill::{Refill, needs_refill};
 use super::loops::RingControl;
-use crate::{Direction, LoopSetting};
+use crate::{Direction, Loop};
 
 /// The audio side's two handles on a ring: its position reader and the
 /// reader of its published control, registered together on the control side.
@@ -250,7 +250,7 @@ impl Block<'_> {
 
     /// The loop the stream runs, as the streamer applied it.
     #[inline]
-    pub fn applied_loop(&self) -> &LoopSetting {
+    pub fn applied_loop(&self) -> &Option<Loop> {
         &self.control.loop_
     }
 

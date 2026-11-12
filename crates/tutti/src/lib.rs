@@ -151,6 +151,41 @@ pub use tutti_midi_runtime as midi_runtime;
 #[cfg(feature = "midi")]
 pub use tutti_midi_file as midi_file;
 
+/// The names of the common MIDI path in one place (design 030, convention 3):
+/// a file (`MidiFile`, `Track`, `Tick`), a message (`Message`, `Ump`,
+/// `MidiChannel`, `MidiGroup`, `NoteNumber`), a timed event, what a live input
+/// is sent with (`Stamp`) and a take read with (`TapEvent`, `EventTapReader`),
+/// the session's route rule, events and errors (`MidiRouteRule`, `MidiEvent`,
+/// `midi::Error`), and under `midi-hardware` a device (`DeviceId`,
+/// `DeviceInfo`) and what a saved one resolves to (`Resolution`). The
+/// lower layers (`Translator`, `Narrower`, `SysexAssembler`, `ClockMap`) are
+/// by path through [`ump`], [`midi_protocol`] and [`midi_runtime`]; the
+/// MIDI-CI codec is `tutti-midi-device`'s. Feature `midi`.
+#[cfg(feature = "midi")]
+pub mod midi {
+    pub use tutti_graph::{EventCapacity, EventTapReader, Stamp, TapEvent};
+    pub use tutti_midi_file::{MidiFile, Tick, Track};
+    pub use tutti_midi_runtime::TimedMidiEvent;
+    pub use tutti_ump::{Message, MidiChannel, MidiGroup, NoteNumber, Ump};
+
+    /// The session's one MIDI error (`tutti_session::MidiError`): each cause
+    /// (hardware, file, send, route) is its source.
+    #[cfg(feature = "session")]
+    pub use tutti_session::MidiError as Error;
+    #[cfg(feature = "session")]
+    pub use tutti_session::RouteDeclarer;
+    #[cfg(feature = "session")]
+    pub use tutti_session::{
+        InstrumentHandle, LiveInput, Midi, MidiEvent, MidiLoad, MidiRouteRule, SendError,
+        SessionInstrument, TakePlacement,
+    };
+
+    #[cfg(feature = "midi-hardware")]
+    pub use tutti_midi_hardware::{DeviceId, DeviceInfo, DeviceQuery};
+    #[cfg(all(feature = "session", feature = "midi-hardware"))]
+    pub use tutti_session::Resolution;
+}
+
 /// OS MIDI I/O (`tutti-midi-hardware`): CoreMIDI, ALSA seq-UMP. Feature
 /// `midi-hardware`.
 #[cfg(feature = "midi-hardware")]
@@ -185,12 +220,14 @@ pub use tutti_plugin_host as plugin_host;
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` and `RouteSpec` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest`, `PluginRef`, `PluginState`, `ParamId` and `Normalized`
-/// (`plugin`), and, under `midi`, the names a
+/// `PluginLoadRequest`, `Plugin` (the view `Session::plugin` lends), `PluginEvent`, `PluginChange`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
+/// `Normalized` (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
-/// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`; `MidiChannel` and
-/// `MidiGroup` are always in), with the offline timeline an export runs on.
-/// The one `Error`, the sampler's `Clip` and `LoopSetting` (`sampler`), `Wave`
+/// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`, `MidiRouteRule` and
+/// `MidiEvent`; `MidiChannel` and `MidiGroup` are always in, `Stamp` and
+/// `TapEvent` are the graph's; the MIDI error is `midi::Error`), with the offline timeline an export runs on.
+/// The one `Error`, the sampler's `Clip` and `Loop` (`sampler`; with `session`, the
+/// `SamplerEvent` and `SamplerLoad` of a stream's open), `Wave`
 /// (`codec`), `Format` and `Pcm` (`export`), `Lfo` and `Follower`
 /// (`modulation`) and the common nodes (`dsp`) are there too.
 /// `Result`, `Sample` and `Unit` are left out because each would shadow a
@@ -225,10 +262,10 @@ pub mod prelude {
 
     // The device handle and a device's identity.
     #[cfg(feature = "device")]
-    pub use tutti_cpal::{DeviceId, TuttiDriver};
+    pub use tutti_cpal::{AudioHost, DeviceId, TuttiDriver};
 
     #[cfg(feature = "sampler")]
-    pub use tutti_sampler::{Clip, LoopSetting, Playback, Voice, VoiceWindow};
+    pub use tutti_sampler::{Clip, Loop, Playback, Voice, VoiceWindow};
 
     // The file formats a program names: a decoded wave, and what a bounce
     // writes.
@@ -252,12 +289,17 @@ pub mod prelude {
     #[cfg(feature = "session")]
     pub use tutti_session::Error;
 
-    #[cfg(all(feature = "session", feature = "device"))]
-    pub use tutti_session::Device;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Key,
-        NoSuchNode, OutPort, Phase, Root, Session, SessionBuilder, SessionEvent, TypedParamRef,
+        ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Job,
+        JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder,
+        SessionEvent, TypedParamRef, Workers,
+    };
+    #[cfg(all(feature = "session", feature = "device"))]
+    pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};
+    #[cfg(all(feature = "session", feature = "device", feature = "audio-io"))]
+    pub use tutti_session::{
+        Input, InputConfig, Punch, Recorded, Take, TakeError, TakeEvent, TakeTarget, Trim,
     };
 
     // What a session's calls take, by the feature that gates each (design
@@ -267,17 +309,24 @@ pub mod prelude {
     #[cfg(feature = "midi")]
     pub use tutti_midi_runtime::TimedMidiEvent;
     #[cfg(feature = "plugin")]
-    pub use tutti_plugin::catalog::{PluginRef, PluginState};
+    pub use tutti_plugin::catalog::{Catalog, Hosting, PluginRef, PluginState};
     #[cfg(feature = "plugin")]
-    pub use tutti_plugin::{Normalized, ParamId};
-    #[cfg(all(feature = "session", feature = "plugin"))]
-    pub use tutti_session::PluginLoadRequest;
+    pub use tutti_plugin::{Normalized, ParamId, PluginFailure};
     #[cfg(all(feature = "session", feature = "export"))]
     pub use tutti_session::{
         Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
     };
+    #[cfg(all(feature = "session", feature = "midi"))]
+    pub use tutti_session::{MidiEvent, MidiRouteRule};
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::{ParamRef, RouteSpec};
+    #[cfg(all(feature = "session", feature = "plugin"))]
+    pub use tutti_session::{
+        Plugin, PluginChange, PluginEvent, PluginLoadRequest, PortCounts, RecoveryFailure,
+        ReloadCause,
+    };
+    #[cfg(all(feature = "session", feature = "sampler"))]
+    pub use tutti_session::{SamplerEvent, SamplerLoad};
     #[cfg(feature = "midi")]
     pub use tutti_ump::{Message, NoteNumber, Ump};
 }

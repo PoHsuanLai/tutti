@@ -17,7 +17,9 @@ mod records;
 mod sys;
 mod ump;
 
-pub use client::{Client, QueueClock, Read};
+#[cfg(feature = "test-support")]
+pub use client::LegacyEvent;
+pub use client::{Client, QueueClock, Read, UmpVersion};
 pub use error::{Error, Result};
 pub use event::{Announced, Received};
 pub use poll::{Poller, Wait};

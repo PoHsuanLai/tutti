@@ -132,6 +132,18 @@ impl AuLoaded {
             self.write_render_mode(offline);
         }
 
+        // The unit's own protocol, read before `AudioUnitInitialize` (the
+        // header: it should not change after). It is what `send_midi` delivers
+        // in; a unit (or a macOS before 12) with no answer is a legacy MIDI 1.0
+        // unit. `HostMIDIProtocol` is not written: see `identity.rs`.
+        // A macOS without `MusicDeviceMIDIEventList` (before 12) is legacy too.
+        let midi_protocol =
+            if self.au_type().receives_midi() && tutti_au_ffi::event_list_available() {
+                self.unit().midi_protocol()
+            } else {
+                None
+            };
+
         if let Err(e) = self.unit().initialize() {
             return Err((Some(self), e.into()));
         }
@@ -195,6 +207,7 @@ impl AuLoaded {
             ranges: ranges.reader(),
             transport: self.share_transport(),
             receives_midi: self.au_type().receives_midi(),
+            midi_protocol,
             block_size: self.config().block_size,
             stage,
             deferred: deferred_in,

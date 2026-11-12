@@ -117,7 +117,11 @@ fn a_refused_rate_is_silent_visible_and_retried() {
     let handle = probe.handle.clone();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
-    handle.on_invalidate(move |e| sink.lock().unwrap().push(e));
+    let _subscription = handle.subscribe(move |n| {
+        if let tutti_plugin_host::Notice::Invalidate(e) = n {
+            sink.lock().unwrap().push(e);
+        }
+    });
 
     let mut unit = Rig::new(
         probe.client.bind(
@@ -127,11 +131,11 @@ fn a_refused_rate_is_silent_visible_and_retried() {
         BLOCK,
     );
     assert!(renders_live(&mut unit), "the plugin renders at {LOAD_RATE}");
-    assert_eq!(handle.status(), PluginStatus::Alive);
+    assert!(handle.status().is_alive());
 
     // The graph moves to a rate the plugin refuses.
     reprepare(&mut unit, REFUSED_RATE);
-    let status = wait_for(&mut unit, &handle, |s| *s != PluginStatus::Alive);
+    let status = wait_for(&mut unit, &handle, |s| !s.is_alive());
     assert!(refused_at(&status, REFUSED_RATE), "{status:?}");
     assert!(!status.is_dead() && !handle.is_crashed());
     let missed = unit.controls.missed_chunks();
@@ -157,8 +161,8 @@ fn a_refused_rate_is_silent_visible_and_retried() {
 
     // A rate the plugin takes brings it back.
     reprepare(&mut unit, OTHER_RATE);
-    let status = wait_for(&mut unit, &handle, |s| *s == PluginStatus::Alive);
-    assert_eq!(status, PluginStatus::Alive, "the error clears");
+    let status = wait_for(&mut unit, &handle, |s| s.is_alive());
+    assert!(status.is_alive(), "the error clears: {status:?}");
     assert!(renders_live(&mut unit), "the plugin renders again");
     assert!(
         events
@@ -172,7 +176,7 @@ fn a_refused_rate_is_silent_visible_and_retried() {
 
     // Refused once more, then dropped: teardown does not wait out anything.
     reprepare(&mut unit, REFUSED_RATE);
-    let status = wait_for(&mut unit, &handle, |s| *s != PluginStatus::Alive);
+    let status = wait_for(&mut unit, &handle, |s| !s.is_alive());
     assert!(refused_at(&status, REFUSED_RATE), "{status:?}");
     let started = Instant::now();
     drop(unit);

@@ -13,7 +13,7 @@ use tutti_transport::{FadeOut, MotionEvent, QueueFull, ScheduleFull, Transport};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, Samples};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
-use crate::{HeardOpen, HeardTapError, RemoveError};
+use crate::{HeardOpen, HeardTapError, Playhead, RemoveError};
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
 ///
@@ -22,7 +22,9 @@ use crate::{HeardOpen, HeardTapError, RemoveError};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Phase {
-    /// Crossfades that waited out a re-prepare are retried, what bounces
+    /// What the session's jobs sent lands first (`SessionBuilder::spawn_with`:
+    /// each message, then each end, in arrival order). Then crossfades that
+    /// waited out a re-prepare are retried, what bounces
     /// sent back is dropped (feature `export`; and a bounce in flight for
     /// `BOUNCE_STALL_WARNING` of `PhaseCx::now` warned about, once), then
     /// `Editor::collect` frees what the audio thread retired (here, on the
@@ -30,8 +32,8 @@ pub enum Phase {
     Collect,
     /// Hosted plugins' health, latency, parameter edits and state
     /// snapshots (feature `plugin`): a dead plugin's node is removed
-    /// (`SessionEvent::PluginDied`), a moved latency handed to the graph
-    /// (`SessionEvent::PluginLatencyChanged`), a due snapshot handed to the
+    /// (`PluginChange::Died`), a moved latency handed to the graph
+    /// (`PluginChange::LatencyChanged`), a due snapshot handed to the
     /// host as a job (`SessionEvent::PluginSnapshotDue`).
     Plugins,
     /// The plugins' render mode (features `plugin` and `export`): Offline
@@ -56,7 +58,7 @@ pub enum Phase {
     /// The hardware out (an event tap on the clock)
     /// drained to the output (feature `midi`; `Midi::set_hardware_out`).
     MidiOut,
-    /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
+    /// The device's faults, as `DeviceEvent::Fault` (feature `device`).
     Poll,
     /// Frees, here, what the audio thread let go of in every cell the
     /// session publishes to (`ArcLend::reclaim`): the project meter and the
@@ -214,67 +216,14 @@ pub enum SessionEvent {
     /// A [`LoadMeter::reset`](tutti_metering::LoadMeter::reset) between
     /// updates restarts the count without an event.
     BlocksSilenced(u64),
-    /// The audio backend reported a fault (a device unplugged mid-session):
-    /// the most recent one since the last poll.
+    /// The sound card or its devices: a fault, a device that came or went, a
+    /// restart wanted, done or failed ([`DeviceEvent`](crate::DeviceEvent)).
     #[cfg(feature = "device")]
-    DeviceFault(tutti_cpal::StreamFault),
-    /// A device is no longer listed by the host (a [`DeviceWatch`](crate::DeviceWatch)
-    /// is running; design 018). The stream's own loss is
-    /// [`DeviceFault`](Self::DeviceFault).
-    #[cfg(feature = "device")]
-    DeviceLost {
-        /// Which way it played or captured.
-        direction: tutti_cpal::Direction,
-        /// The device.
-        id: tutti_cpal::DeviceId,
-    },
-    /// A device is listed that was not (the first look lists them all).
-    #[cfg(feature = "device")]
-    DeviceAppeared {
-        /// Which way it plays or captures.
-        direction: tutti_cpal::Direction,
-        /// The device.
-        id: tutti_cpal::DeviceId,
-    },
-    /// The host's default device moved; `None`: there is none now.
-    #[cfg(feature = "device")]
-    DefaultChanged {
-        /// Which direction's default.
-        direction: tutti_cpal::Direction,
-        /// The new default.
-        id: Option<tutti_cpal::DeviceId>,
-    },
-    /// The device policy wants the stream restarted: run it with
-    /// [`Session::restart_wanted`](crate::Session::restart_wanted) (a
-    /// headless host) or the adapter's restart. The outcome is reported by
-    /// the next update, and tells the policy, which waits out its backoff
-    /// before it asks again.
-    #[cfg(feature = "device")]
-    RestartWanted(crate::DeviceRestart),
-    /// A restart moved the stream. A host that holds a capture stream at the
-    /// graph's rate (`MicIn`) reopens it when
-    /// [`rate_changed`](crate::DeviceRestarted::rate_changed): the session
-    /// does not hold it.
-    #[cfg(feature = "device")]
-    DeviceRestarted(crate::DeviceRestarted),
-    /// The listing started with [`Session::list_outputs`] answered: the
-    /// host's output devices, in enumeration order. Reported once.
-    #[cfg(feature = "device")]
-    OutputsListed(Vec<tutti_cpal::DeviceId>),
-    /// The listing started with [`Session::list_outputs`] failed (the
-    /// message is the error's). Reported once.
-    #[cfg(feature = "device")]
-    OutputsListFailed(String),
-    /// The listing started with [`Session::list_outputs`] has not answered
-    /// after [`LISTING_WARNING`](crate::LISTING_WARNING) of
-    /// [`PhaseCx::now`]: the host's enumeration is stuck or slow. Reported
-    /// once; the listing goes on waiting.
-    #[cfg(feature = "device")]
-    OutputsListSlow(std::time::Duration),
-    /// A restart was refused or failed (the message is the error's). See
-    /// [`Session::restart`](crate::Session::restart) for the stream's state.
-    #[cfg(feature = "device")]
-    RestartFailed(String),
+    Device(crate::DeviceEvent),
+    /// A take of the session's: its first frame arrived, it ended, or it
+    /// failed ([`TakeEvent`](crate::TakeEvent)).
+    #[cfg(all(feature = "device", feature = "audio-io"))]
+    Take(crate::TakeEvent),
     /// A modulation problem (design 015 §4.7), the one type
     /// [`ModState::problems`](crate::ModState::problems) lists. Reported
     /// once: a refusal when it starts or changes (the problems list holds it
@@ -284,75 +233,22 @@ pub enum SessionEvent {
     /// once per stretch it stays unresolved.
     #[cfg(feature = "modulation")]
     Modulation(crate::Problem),
-    /// The hardware out dropped events for want of an output: the total so
-    /// far, reported when it rises, at most once per
-    /// [`MIDI_OUT_DROP_REPORT`](crate::MIDI_OUT_DROP_REPORT) of
-    /// [`PhaseCx::now`].
+    /// A MIDI event of the session's, by area (design 030, convention 1):
+    /// a device came or went, a held input or the output was lost, a
+    /// negotiation settled, the device watch ended, or events were dropped.
+    /// See [`MidiEvent`](crate::MidiEvent).
     #[cfg(feature = "midi")]
-    MidiOutDropped(u64),
-    /// The hardware devices' event inlets dropped events because they were
-    /// full: the total so far, reported when it rises, at most once per
-    /// [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT) of
-    /// [`PhaseCx::now`]. An inlet's ring is emptied each block; it fills when
-    /// blocks stop coming (a stalled callback) or the device sends faster than
-    /// they empty it.
-    #[cfg(feature = "midi-hardware")]
-    MidiInputDropped(u64),
-    /// A MIDI device was added, removed or changed, in the order the OS
-    /// reported (design 017 §5). The session reads the devices in
-    /// `Phase::Poll`; the list at any time is
-    /// [`MidiSession::devices`](tutti_midi_hardware::MidiSession::devices).
-    #[cfg(feature = "midi-hardware")]
-    MidiDevice(tutti_midi_hardware::DeviceEvent),
-    /// A device the session held open as an input vanished: its connection
-    /// is closed and its port retired, after the [`MidiDevice`](Self::MidiDevice)
-    /// `Removed` that said so. What the device had queued is discarded; notes
-    /// it held are not released (design 017 §8.3 is not built).
-    #[cfg(feature = "midi-hardware")]
-    MidiInputLost(tutti_midi_hardware::DeviceInfo),
-    /// A device the session holds open as an input has settled its UMP Stream
-    /// negotiation (design 017 §5, M2-104 §7.1.6.1): the Endpoint it declared,
-    /// or the OS's description of it where it did not answer, and the Protocol
-    /// in use. Reported once per connection, from `Phase::Poll`; the state
-    /// stays readable as
-    /// [`MidiSession::stream`](tutti_midi_hardware::MidiSession::stream).
-    #[cfg(feature = "midi-hardware")]
-    MidiStream {
-        /// The device.
-        device: tutti_midi_hardware::DeviceId,
-        /// What is known of it (boxed: an Endpoint is large).
-        stream: Box<tutti_midi_hardware::DeviceStream>,
-    },
-    /// The device the session held open as its output vanished: the output is
-    /// closed, and what the hardware out sends is counted as dropped until a
-    /// host connects another.
-    #[cfg(feature = "midi-hardware")]
-    MidiOutputLost(tutti_midi_hardware::DeviceInfo),
-    /// The OS watch for MIDI devices ended on its own (the reason is the
-    /// message): the device list is frozen at what it last saw and no further
-    /// hot-plug is reported. Reported once.
-    #[cfg(feature = "midi-hardware")]
-    MidiWatchFailed(tutti_midi_hardware::WatchFailure),
-    /// A hosted plugin was declared dead (`tutti_plugin_host::Liveness`) with
-    /// recovery off: its node was removed. Reported once. With recovery on
-    /// the death is `PluginReloading`, and the node's removal
-    /// `PluginGaveUp`.
+    Midi(crate::MidiEvent),
+    /// A stream an [`open_stream`](Session::open_stream) started opened or
+    /// failed to. See [`SamplerEvent`](crate::SamplerEvent).
+    #[cfg(feature = "sampler")]
+    Sampler(crate::SamplerEvent),
+    /// A hosted plugin's event, by area (design 029 section 3.3, design 030
+    /// convention 1): what the plugin reported (its own edit of a parameter, a
+    /// new tail) and every transition of its life (died, reloading, recovered,
+    /// gave up). See [`PluginEvent`](crate::PluginEvent).
     #[cfg(feature = "plugin")]
-    PluginDied {
-        /// The node it was at, now removed.
-        node: NodeKey,
-        /// The engine's latched reason.
-        cause: String,
-    },
-    /// A hosted plugin's declared latency moved, and the graph took it: the
-    /// next commit compensates it.
-    #[cfg(feature = "plugin")]
-    PluginLatencyChanged {
-        /// The plugin's node.
-        node: NodeKey,
-        /// Its latency now.
-        latency: Samples,
-    },
+    Plugin(crate::PluginEvent),
     /// A healthy plugin's state is due a snapshot: run the job off the
     /// control thread and land it with
     /// [`Session::land_snapshot`](crate::Session::land_snapshot).
@@ -364,52 +260,12 @@ pub enum SessionEvent {
     /// mirror is not ready.
     #[cfg(all(feature = "plugin", feature = "modulation"))]
     PluginParamsDue(crate::PluginParamRead),
-    /// A hosted plugin died or hung and recovery is on
-    /// ([`RecoveryPolicy`](crate::RecoveryPolicy)): its node stays in the
-    /// graph, silent, and a replacement loads after `delay`. Reported once
-    /// per attempt.
-    #[cfg(feature = "plugin")]
-    PluginReloading {
-        /// The plugin's node, kept.
-        node: NodeKey,
-        /// Why it needs a replacement: the engine's latched cause, or a
-        /// failed attempt's reason.
-        cause: String,
-        /// Failures within the budget's window so far, this one included.
-        attempt: u32,
-        /// The wait before the load is handed out.
-        delay: std::time::Duration,
-    },
     /// A replacement plugin is due its load: run the job off the control
     /// thread and land it with
     /// [`Session::land_reload`](crate::Session::land_reload). A job dropped
     /// unrun counts as a failed attempt.
     #[cfg(feature = "plugin")]
     PluginReloadDue(crate::PluginReload),
-    /// A replacement is in the graph at the same node, with the same wiring.
-    #[cfg(feature = "plugin")]
-    PluginRecovered {
-        /// The plugin's node.
-        node: NodeKey,
-        /// Whether its state came back, and from how long before.
-        state: crate::StateRestore,
-        /// The node's latency before the failure and now. PDC follows at
-        /// the next commit.
-        latency: (Samples, Samples),
-        /// Attempts it took.
-        attempts: u32,
-    },
-    /// Recovery stopped: the failures spent the budget. The node is removed.
-    #[cfg(feature = "plugin")]
-    PluginGaveUp {
-        /// The node it was at, now removed.
-        node: NodeKey,
-        /// Why.
-        why: crate::GiveUp,
-        /// The last state worth keeping, for a host that offers the user a
-        /// manual reload: the state a reload withheld, else the last good one.
-        state: Option<tutti_plugin::catalog::PluginState>,
-    },
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -427,53 +283,15 @@ impl std::fmt::Debug for SessionEvent {
                 .field("refused", refused)
                 .finish(),
             #[cfg(feature = "device")]
-            Self::DeviceFault(fault) => f.debug_tuple("DeviceFault").field(fault).finish(),
-            #[cfg(feature = "device")]
-            Self::DeviceLost { direction, id } => f
-                .debug_struct("DeviceLost")
-                .field("direction", direction)
-                .field("id", id)
-                .finish(),
-            #[cfg(feature = "device")]
-            Self::DeviceAppeared { direction, id } => f
-                .debug_struct("DeviceAppeared")
-                .field("direction", direction)
-                .field("id", id)
-                .finish(),
-            #[cfg(feature = "device")]
-            Self::DefaultChanged { direction, id } => f
-                .debug_struct("DefaultChanged")
-                .field("direction", direction)
-                .field("id", id)
-                .finish(),
-            #[cfg(feature = "device")]
-            Self::RestartWanted(request) => f.debug_tuple("RestartWanted").field(request).finish(),
-            #[cfg(feature = "device")]
-            Self::DeviceRestarted(r) => f.debug_tuple("DeviceRestarted").field(r).finish(),
-            #[cfg(feature = "device")]
-            Self::RestartFailed(why) => f.debug_tuple("RestartFailed").field(why).finish(),
+            Self::Device(event) => f.debug_tuple("Device").field(event).finish(),
+            #[cfg(all(feature = "device", feature = "audio-io"))]
+            Self::Take(event) => f.debug_tuple("Take").field(event).finish(),
             #[cfg(feature = "modulation")]
             Self::Modulation(problem) => f.debug_tuple("Modulation").field(problem).finish(),
             #[cfg(feature = "midi")]
-            Self::MidiOutDropped(count) => f.debug_tuple("MidiOutDropped").field(count).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiInputDropped(count) => {
-                f.debug_tuple("MidiInputDropped").field(count).finish()
-            }
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiDevice(event) => f.debug_tuple("MidiDevice").field(event).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiInputLost(device) => f.debug_tuple("MidiInputLost").field(device).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiStream { device, stream } => f
-                .debug_struct("MidiStream")
-                .field("device", device)
-                .field("stream", stream)
-                .finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiWatchFailed(why) => f.debug_tuple("MidiWatchFailed").field(why).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiOutputLost(device) => f.debug_tuple("MidiOutputLost").field(device).finish(),
+            Self::Midi(event) => f.debug_tuple("Midi").field(event).finish(),
+            #[cfg(feature = "sampler")]
+            Self::Sampler(event) => f.debug_tuple("Sampler").field(event).finish(),
             Self::EventsDropped {
                 node,
                 port,
@@ -486,70 +304,19 @@ impl std::fmt::Debug for SessionEvent {
                 .field("count", count)
                 .field("recovered", recovered)
                 .finish(),
-            #[cfg(feature = "device")]
-            Self::OutputsListed(ids) => f.debug_tuple("OutputsListed").field(ids).finish(),
-            #[cfg(feature = "device")]
-            Self::OutputsListFailed(why) => f.debug_tuple("OutputsListFailed").field(why).finish(),
-            #[cfg(feature = "device")]
-            Self::OutputsListSlow(waited) => {
-                f.debug_tuple("OutputsListSlow").field(waited).finish()
-            }
             Self::BlocksSilenced(count) => f.debug_tuple("BlocksSilenced").field(count).finish(),
             Self::EventsDroppedElsewhere(count) => f
                 .debug_tuple("EventsDroppedElsewhere")
                 .field(count)
                 .finish(),
             #[cfg(feature = "plugin")]
-            Self::PluginDied { node, cause } => f
-                .debug_struct("PluginDied")
-                .field("node", node)
-                .field("cause", cause)
-                .finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginLatencyChanged { node, latency } => f
-                .debug_struct("PluginLatencyChanged")
-                .field("node", node)
-                .field("latency", latency)
-                .finish(),
+            Self::Plugin(event) => f.debug_tuple("Plugin").field(event).finish(),
             #[cfg(feature = "plugin")]
             Self::PluginSnapshotDue(job) => f.debug_tuple("PluginSnapshotDue").field(job).finish(),
             #[cfg(all(feature = "plugin", feature = "modulation"))]
             Self::PluginParamsDue(job) => f.debug_tuple("PluginParamsDue").field(job).finish(),
             #[cfg(feature = "plugin")]
-            Self::PluginReloading {
-                node,
-                cause,
-                attempt,
-                delay,
-            } => f
-                .debug_struct("PluginReloading")
-                .field("node", node)
-                .field("cause", cause)
-                .field("attempt", attempt)
-                .field("delay", delay)
-                .finish(),
-            #[cfg(feature = "plugin")]
             Self::PluginReloadDue(job) => f.debug_tuple("PluginReloadDue").field(job).finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginRecovered {
-                node,
-                state,
-                latency,
-                attempts,
-            } => f
-                .debug_struct("PluginRecovered")
-                .field("node", node)
-                .field("state", state)
-                .field("latency", latency)
-                .field("attempts", attempts)
-                .finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginGaveUp { node, why, state } => f
-                .debug_struct("PluginGaveUp")
-                .field("node", node)
-                .field("why", why)
-                .field("state_bytes", &state.as_ref().map(|s| s.bytes().len()))
-                .finish(),
         }
     }
 }
@@ -621,7 +388,7 @@ pub enum RootTopologyStatus {
 ///
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
-///     .outputs_floor(1)
+///     .outputs_floor(ChannelLayout::MONO)
 ///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
@@ -644,6 +411,9 @@ pub struct Session {
     /// The engine's tap after the fader and the device width it was built
     /// for; `None` detached.
     pub(crate) heard: Option<(tutti_engine::HeardTaps, ChannelLayout)>,
+    /// The engine's block clock, for [`playhead`](Self::playhead); `None`
+    /// detached, where nothing renders.
+    pub(crate) clock: Option<tutti_engine::BlockClockReader>,
     /// The root topology last asked for
     /// ([`declare_root_topology`](Self::declare_root_topology)), applied or not.
     pub(crate) root_request: Option<ChannelTopology>,
@@ -675,6 +445,9 @@ pub struct Session {
     pub(crate) midi_io: Option<tutti_midi_hardware::MidiSession>,
     #[cfg(feature = "sampler")]
     pub(crate) disk_streamer: Option<tutti_sampler::DiskStreamer>,
+    /// The last [`SamplerLoad`](crate::SamplerLoad) minted.
+    #[cfg(feature = "sampler")]
+    pub(crate) sampler_opens: u64,
     /// The device's fault record, shared with the [`Device`](crate::Device),
     /// and the count the last poll saw.
     #[cfg(feature = "device")]
@@ -691,6 +464,9 @@ pub struct Session {
     /// A listing was started by [`Session::list_outputs_once`].
     #[cfg(feature = "device")]
     pub(crate) outputs_listed: bool,
+    /// The capture inputs added ([`Session::add_input`]) and the host they open on.
+    #[cfg(all(feature = "device", feature = "audio-io"))]
+    pub(crate) inputs: crate::input::Inputs,
     /// How often a healthy plugin's state is captured.
     #[cfg(feature = "plugin")]
     pub(crate) snapshot_interval: std::time::Duration,
@@ -707,6 +483,8 @@ pub struct Session {
     /// The bounce token and the leftovers' channel.
     #[cfg(feature = "export")]
     pub(crate) bounce: crate::bounce::BounceState,
+    /// The blocking work running on the spawner, landed in `Phase::Collect`.
+    pub(crate) jobs: crate::jobs::Jobs,
 }
 
 impl Session {
@@ -835,6 +613,8 @@ impl Session {
         match phase {
             Phase::Collect => {
                 crate::main_thread();
+                // First, so what a job landed is in the graph this update commits.
+                self.land_jobs(out);
                 // Before the collect, as a frame's spawns run before its
                 // commit: a crossfade lands on the update that first finds
                 // the re-prepare resumed.
@@ -1102,6 +882,9 @@ impl Session {
             graph: &mut self.graph,
             state: &mut self.midi_state,
             nodes: self.midi.as_ref(),
+            jobs: &mut self.jobs,
+            #[cfg(feature = "midi-hardware")]
+            io: self.midi_io.as_ref(),
         }
     }
 
@@ -1145,6 +928,34 @@ impl Session {
     /// The transport: its rate follows the device's.
     pub fn transport(&self) -> &Transport {
         &self.transport
+    }
+
+    /// The playhead, in one read: its beat, the graph frame, the transport
+    /// time, whether it is rolling, and the OS clock reading they were taken
+    /// at ([`Playhead`]). The audio thread writes it once per render call
+    /// through a sequence lock, so the fields are one instant, never a beat
+    /// of one call beside the play state of another.
+    ///
+    /// It moves in block steps; [`beat_now`](Self::beat_now) (or
+    /// [`Playhead::beat_now`] on a snapshot already held) is the beat
+    /// extrapolated to the moment a UI draws. A session with no engine
+    /// rendering (detached, or before the first block) reads
+    /// [`Playhead::default`]: stopped at the origin, with no clock reading
+    /// ([`Playhead::at`] is `None`). An offline bounce renders a fork on
+    /// its own timeline and never moves this one.
+    #[must_use]
+    pub fn playhead(&self) -> Playhead {
+        self.clock
+            .as_ref()
+            .map_or_else(Playhead::default, tutti_engine::BlockClockReader::playhead)
+    }
+
+    /// The playhead's beat now, extrapolated from the last block by
+    /// [`Playhead::beat_now`] on [`tutti_rt::monotonic_ns`], the clock the
+    /// block was stamped on.
+    #[must_use]
+    pub fn beat_now(&self) -> Beat {
+        self.playhead().beat_now(tutti_rt::monotonic_ns())
     }
 
     /// Starts the transport rolling from where it stands, at the next block.
@@ -1332,10 +1143,14 @@ impl Session {
         self.midi.as_ref()
     }
 
-    /// The OS MIDI layer, when the builder opened it
-    /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)).
-    #[cfg(feature = "midi-hardware")]
-    pub fn midi_io(&self) -> Option<&tutti_midi_hardware::MidiSession> {
+    /// The raw OS MIDI layer, when the builder opened it
+    /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)):
+    /// for a test that drives the layer under the session (a fake backend's
+    /// hot-plug, a device's ports and negotiation). A host reaches devices
+    /// through [`Midi`](crate::Midi) (`s.midi().connect_input(..)`) and the
+    /// events of `Session::update`.
+    #[cfg(all(feature = "midi-hardware", feature = "testing"))]
+    pub fn testing_midi_io(&self) -> Option<&tutti_midi_hardware::MidiSession> {
         self.midi_io.as_ref()
     }
 
@@ -1345,12 +1160,6 @@ impl Session {
     #[cfg(feature = "sampler")]
     pub fn take_disk_streamer(&mut self) -> Option<tutti_sampler::DiskStreamer> {
         self.disk_streamer.take()
-    }
-
-    /// The disk streamer the builder made, while the session holds it.
-    #[cfg(feature = "sampler")]
-    pub fn disk_streamer(&self) -> Option<&tutti_sampler::DiskStreamer> {
-        self.disk_streamer.as_ref()
     }
 }
 

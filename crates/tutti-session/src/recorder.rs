@@ -23,7 +23,9 @@
 //!   which only a [`FiniteSource`] can start, so waiting on a live source does
 //!   not compile.
 //! - Dropping a live recorder stops, joins and finalizes it, so a file's header
-//!   is always patched. `Drop` cannot return the result; a failure is logged.
+//!   is always patched. `Drop` cannot return the result; a failure is logged
+//!   at `error`. A recording that must be placed on the timeline, with its end
+//!   reported to `Session::update`, is `Session::record`'s take, not this.
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -723,12 +725,21 @@ impl<K> Recorder<K> {
     }
 }
 
-/// Stops, joins and finalizes a recorder nobody shut down; a failure is
-/// logged, since `Drop` has nowhere to return it.
+/// Stops, joins and finalizes a recorder nobody shut down, so a file's header
+/// is always patched. A destructor has nowhere to return the result, so a
+/// failure is logged at `error` with the frames the source lost: the one path
+/// whose result is not a value, which is why the type is `#[must_use]` and a
+/// take that matters ends with [`finish`](Recorder::finish) or
+/// [`wait`](Recorder::wait). For a take that is placed on the timeline, and
+/// whose end is reported to `Session::update`, use `Session::record`.
 impl<K> Drop for Recorder<K> {
     fn drop(&mut self) {
+        let lost = self.lost();
         if let Some(Err(error)) = self.finish_in_place() {
-            tracing::warn!("recorder dropped; its sink did not close cleanly: {error}");
+            tracing::error!(
+                lost = lost.get(),
+                "recorder dropped; its sink did not close cleanly: {error}"
+            );
         }
     }
 }

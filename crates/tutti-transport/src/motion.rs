@@ -11,7 +11,7 @@
 //!
 //! | output | consumer | why it can't be read from the FSM directly |
 //! |---|---|---|
-//! | [`MotionFsm::motion`] | the UI | the FSM is the engine's |
+//! | `motion` (crate-private) | the transport's `Timeline`, and the session's playhead | the FSM is the engine's |
 //! | `seek` ([`SeekSlot`]) | `TransportClock` | consumed once per buffer |
 //!
 //! The settings half — tempo, recording — lives in
@@ -374,7 +374,7 @@ impl MotionFsm {
     /// `Ok` means only that the event was *queued* — the FSM decides on the
     /// audio thread whether it actually applies, and that decision is not
     /// available synchronously. Observe the outcome by reading
-    /// [`MotionFsm::motion`] on a later frame.
+    /// the session's `playhead` on a later block.
     ///
     /// With no engine running over the transport, events stay queued. Past
     /// [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) in flight (timed
@@ -410,22 +410,17 @@ impl MotionFsm {
     }
 
     /// The current motion, as published by the engine's last applied command.
-    pub fn motion(&self) -> MotionState {
+    pub(crate) fn motion(&self) -> MotionState {
         MotionState::from(self.motion.load(Ordering::Acquire))
     }
 
     /// Whether the published motion is exactly [`MotionState::Rolling`] —
-    /// `false` while scrubbing or mid-fade.
+    /// `false` while scrubbing or mid-fade. The transport's own read
+    /// ([`Timeline::is_rolling`](super::Timeline::is_rolling)); an app reads
+    /// the session's playhead.
     #[must_use]
-    pub fn is_playing(&self) -> bool {
+    pub(crate) fn is_playing(&self) -> bool {
         self.motion() == MotionState::Rolling
-    }
-
-    /// Whether the published motion is exactly [`MotionState::Stopped`] —
-    /// `false` during a fade that has not yet completed.
-    #[must_use]
-    pub fn is_stopped(&self) -> bool {
-        self.motion() == MotionState::Stopped
     }
 }
 
@@ -474,7 +469,7 @@ impl MotionAudio {
     }
 
     /// The FSM's own motion, which the published mirror follows.
-    pub fn motion(&self) -> MotionState {
+    pub(crate) fn motion(&self) -> MotionState {
         self.fsm.motion()
     }
 
@@ -666,11 +661,14 @@ mod tests {
     #[test]
     fn send_then_drain_applies_the_transition() {
         let (m, mut a) = fsm();
-        assert!(m.is_stopped());
+        assert!(m.motion() == MotionState::Stopped);
 
         assert!(m.try_send(MotionEvent::Play).is_ok());
         // Nothing happens until the audio thread drains.
-        assert!(m.is_stopped(), "send must not apply the transition itself");
+        assert!(
+            m.motion() == MotionState::Stopped,
+            "send must not apply the transition itself"
+        );
 
         a.drain();
         assert!(m.is_playing());
@@ -693,7 +691,10 @@ mod tests {
         let mut again = Audio::of(&clone);
         let _ = m.try_send(MotionEvent::stop_unfaded());
         again.drain();
-        assert!(m.is_stopped(), "the returned FSM knew it was rolling");
+        assert!(
+            m.motion() == MotionState::Stopped,
+            "the returned FSM knew it was rolling"
+        );
     }
 
     /// A completed fade settles the machine itself, not only the mirror: a
@@ -742,7 +743,10 @@ mod tests {
         m.try_send(MotionEvent::stop_unfaded()).expect("room");
         m.cancel_scheduled();
         a.drain();
-        assert!(m.is_stopped(), "the immediate stop stood");
+        assert!(
+            m.motion() == MotionState::Stopped,
+            "the immediate stop stood"
+        );
         assert_eq!(m.scheduled_outstanding(), 0, "the timed one was taken back");
     }
 
@@ -772,7 +776,10 @@ mod tests {
             })
         );
         a.drain();
-        assert!(m.is_stopped(), "the stop applied, last in send order");
+        assert!(
+            m.motion() == MotionState::Stopped,
+            "the stop applied, last in send order"
+        );
         m.try_send(MotionEvent::Play)
             .expect("the engine took the credits back");
     }
@@ -789,13 +796,16 @@ mod tests {
 
         // The fade completing is what actually stops it.
         a.complete_declick();
-        assert!(m.is_stopped());
+        assert!(m.motion() == MotionState::Stopped);
 
         let _ = m.try_send(MotionEvent::Play);
         a.drain();
         let _ = m.try_send(MotionEvent::stop_unfaded());
         a.drain();
-        assert!(m.is_stopped(), "StopNow stops immediately");
+        assert!(
+            m.motion() == MotionState::Stopped,
+            "StopNow stops immediately"
+        );
     }
 
     #[test]
@@ -825,7 +835,7 @@ mod tests {
         let _ = m.try_send(MotionEvent::stop_unfaded());
         a.drain();
         assert!(
-            m.is_stopped(),
+            m.motion() == MotionState::Stopped,
             "a transport that started rolling must be stoppable"
         );
     }
@@ -853,7 +863,7 @@ mod tests {
 
         a.complete_declick();
         assert_eq!(m.seek.take(), None, "no second jump");
-        assert!(m.is_stopped());
+        assert!(m.motion() == MotionState::Stopped);
     }
 
     /// A declick stop pauses the playhead on its command; the motion mirror
@@ -868,7 +878,7 @@ mod tests {
         assert_eq!(m.motion(), MotionState::DeclickToStop);
         assert!(m.settings.is_paused());
         a.complete_declick();
-        assert!(m.is_stopped() && m.settings.is_paused());
+        assert!(m.motion() == MotionState::Stopped && m.settings.is_paused());
     }
 
     /// Pressing Stop while already stopped has nothing to fade, so it returns
@@ -881,7 +891,7 @@ mod tests {
         let _ = m.try_send(MotionEvent::stop_then_locate(Beat(0.0)));
         a.drain();
 
-        assert!(m.is_stopped());
+        assert!(m.motion() == MotionState::Stopped);
         assert_eq!(m.seek.take(), Some(Beat(0.0)));
     }
 

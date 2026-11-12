@@ -38,7 +38,6 @@ pub(crate) use cells::Cells;
 pub use command::StreamId;
 pub(crate) use command::StreamerCommand;
 pub(crate) use config::BufferConfig;
-pub(crate) use handlers::SessionRate;
 #[cfg(test)]
 pub(crate) use loops::GUARD_FRAMES;
 #[cfg(test)]
@@ -55,7 +54,7 @@ pub(crate) use bell::StreamerSender;
 // and the one failure every stream-control command can report.
 pub use block::Block;
 pub(crate) use block::RingReader;
-pub use control::{LoopError, StreamFile, StreamerGone};
+pub use control::{StreamFile, StreamerGone};
 pub use open::{Open, OpenError, Opening, Placement, RefusedPlacement, StreamReader};
 pub(crate) use status::StatusCell;
 pub use status::{StreamFault, StreamPhase, StreamStatus};
@@ -76,7 +75,6 @@ pub(crate) use prefetch::RegionBuffer;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Result;
-use crate::ports::Status;
 use decode::Seams;
 use handlers::Handles;
 use thread::Built;
@@ -89,8 +87,8 @@ use tutti_types::SampleRate;
 /// lifetime of the audio engine; dropping it stops the streamer thread. A
 /// stream is opened with [`open`](Self::open), whose reply is the stream's
 /// control-side [`Stream`] and the [`StreamReader`] a
-/// [`DiskVoice`](crate::DiskVoice) is built from; [`status`](Self::status) is
-/// the READ port (a [`Status`] carrying the sample rate).
+/// [`DiskVoice`](crate::DiskVoice) is built from; [`sample_rate`](Self::sample_rate)
+/// is the session rate it streams at.
 ///
 /// Its type says how it is driven: [`DiskStreamer<Running>`](Running) (the
 /// default, from `new`) on a thread of its own, or, with the `test-support`
@@ -107,7 +105,7 @@ use tutti_types::SampleRate;
 ///
 /// ```no_run
 /// use tutti_types::Beat;
-/// use tutti_sampler::{DiskStreamer, DiskVoice, Open, Placement};
+/// use tutti_sampler::{DiskStreamer, DiskVoice, Open, Placement, VoiceWindow};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let streamer = DiskStreamer::new(tutti_types::SampleRate::new(48_000.0), Default::default())?;
@@ -128,7 +126,7 @@ use tutti_types::SampleRate;
 /// // full length. `voice` is a graph node: insert it into the graph that
 /// // renders the track. The `stream` is the control thread's: keep it while
 /// // the voice plays, drop it to end the stream.
-/// let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
+/// let voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0)));
 /// # drop((voice, stream));
 /// # Ok(())
 /// # }
@@ -356,10 +354,11 @@ impl<D> DiskStreamer<D> {
         Opening::new(id, answer, StreamerPort::new(self.streamer_tx.clone()))
     }
 
-    /// READ port: a cloneable [`Status`] snapshot carrying the session rate.
+    /// The session rate: the one the streamer was built with, or the one
+    /// [`set_sample_rate`](Self::set_sample_rate) last moved it to.
     #[must_use]
-    pub fn status(&self) -> Status {
-        Status::new(self.shared.session_rate.clone())
+    pub fn sample_rate(&self) -> SampleRate {
+        self.shared.session_rate.get()
     }
 
     /// Moves the session rate to `sample_rate`: what a device restart at a new
@@ -368,8 +367,8 @@ impl<D> DiskStreamer<D> {
     /// Every open stream keeps its file and its position (in file frames, which
     /// the rate does not touch) and has its conversion ratio re-derived against
     /// the new rate, so it plays on at the right pitch and speed; a stream
-    /// opened later derives its ratio against the new rate too, and every
-    /// [`Status`] — clones taken earlier included — reports it at once. The
+    /// opened later derives its ratio against the new rate too, and
+    /// [`sample_rate`](Self::sample_rate) reports it at once. The
     /// ratios are the streamer's own to write, so the re-derivation happens on
     /// its thread when it takes the command this sends: at its next cycle (a
     /// hand-stepped streamer, at its next step). `&self`: the rate is one
@@ -410,6 +409,8 @@ pub struct DiskStreamerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::VoiceWindow;
+    use crate::testing::loop_frames;
     use std::sync::Arc;
 
     /// A loop change on a streamed file reads only the frames it needs:
@@ -421,9 +422,6 @@ mod tests {
     /// the loop's frames past its end).
     #[test]
     fn a_loop_change_reads_only_the_frames_it_needs() {
-        use crate::voice::LoopSetting;
-        use tutti_types::SamplePosition;
-
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("loop.wav");
         write_tone(&path, 48_000, 2.0);
@@ -434,11 +432,7 @@ mod tests {
             crate::testing::settle(&mut sampler, opening).expect("the file opens");
         for fade in [0usize, 500] {
             stream
-                .set_loop(LoopSetting::On {
-                    start: SamplePosition(10_000.0),
-                    end: SamplePosition(20_000.0),
-                    crossfade_frames: fade,
-                })
+                .set_loop(Some(loop_frames(10_000, 20_000, fade)))
                 .expect("the streamer is alive");
             let _ = sampler.step_until_settled(1_000);
         }
@@ -476,7 +470,7 @@ mod tests {
     ///
     /// - the open stream's ratio is re-derived, to unity — it plays on at the
     ///   right pitch and speed rather than 8.8% sharp;
-    /// - a `Status` taken *before* the restart reports the new rate;
+    /// - the streamer's `sample_rate` reports the new rate at once;
     /// - a disk voice taken after it still converts beats to file frames at
     ///   the file's 48 kHz (its seek targets stay where they were);
     /// - a 44.1 kHz file streamed after it gets 44.1/48, not unity.
@@ -491,7 +485,6 @@ mod tests {
 
         let mut sampler =
             DiskStreamer::manual(SampleRate::new(44_100.0), Default::default()).unwrap();
-        let early = sampler.status();
         let stream = |sampler: &mut DiskStreamer<ByHand>, path: &std::path::Path| {
             let opening = sampler.open(path, Placement::HEAD);
             crate::testing::settle(sampler, opening).expect("the file opens")
@@ -510,7 +503,7 @@ mod tests {
 
         sampler.set_sample_rate(SampleRate::new(48_000.0));
         assert_eq!(
-            early.sample_rate(),
+            sampler.sample_rate(),
             SampleRate(48_000.0),
             "the rate is stored at once"
         );
@@ -526,7 +519,7 @@ mod tests {
             "the open stream is re-rated"
         );
 
-        let voice = crate::DiskVoice::from_reader(first, Beat(0.0), None);
+        let voice = crate::DiskVoice::from_reader(first, VoiceWindow::from(Beat(0.0)));
         assert_eq!(voice.file_sample_rate(), SampleRate(48_000.0));
 
         let (_second_stream, second) = stream(&mut sampler, &at_44);

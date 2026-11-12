@@ -527,8 +527,10 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      `ScheduleError::BeatWhileStopped { beat, event }` (`ScheduleError` is now the call's error,
      `Full(ScheduleFull)` the other case; `Error::Schedule` carries it), as `TakeError::TransportStopped`
      does for a punch. A stop or a plain locate at a beat still waits for the beat, which is
-     meaningful. The check reads `Session::playhead()`, a block old: a transport that was
-     started in the same moment reads stopped, and the play is refused rather than lost.
+     meaningful. The check is the control side's word: the last motion the session sent
+     for the next block (`play`, a rolling locate, `stop`), or else what the playhead last
+     rendered (a transport started through `transport()`), so a play at a beat straight
+     after `play()` is taken.
 12. **Instruments:** S4, with the MIDI session's keys handle.
 13. **Test leftovers** (built, #641 by the DSP session): `tutti-nodes`'
     `width_generic_golden.rs` replaced by analytic properties per node.

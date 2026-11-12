@@ -543,6 +543,7 @@ impl SessionBuilder {
             latency: Samples(0),
             resumed: false,
             silenced_seen: 0,
+            rolling_sent: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "midi")]
             midi: parts.midi,
             #[cfg(all(feature = "midi", not(feature = "midi-hardware")))]

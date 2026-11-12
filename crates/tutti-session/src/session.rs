@@ -3,6 +3,7 @@
 
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use tutti_graph::NodeKey;
@@ -433,6 +434,10 @@ pub struct Session {
     /// the last update read it: the next update reports the rise
     /// ([`SessionEvent::BlocksSilenced`]).
     pub(crate) silenced_seen: u64,
+    /// Whether the last motion this session sent for the next block left the
+    /// transport rolling (a play, a rolling locate) or stopped. The control
+    /// side's own word, which the playhead (one block old) cannot give.
+    pub(crate) rolling_sent: std::sync::atomic::AtomicBool,
     #[cfg(feature = "midi")]
     pub(crate) midi: Option<MidiNodes>,
     /// Clips, live inputs, routes and the hardware out's output.
@@ -970,7 +975,9 @@ impl Session {
     /// [`QueueFull`] when the transport's command queue is full; the event
     /// is handed back in it.
     pub fn play(&self) -> Result<(), QueueFull> {
-        self.transport.motion().try_send(MotionEvent::Play)
+        self.transport.motion().try_send(MotionEvent::Play)?;
+        self.rolling_sent.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Stops the transport where it stands, at the next block, after the
@@ -980,7 +987,11 @@ impl Session {
     ///
     /// [`QueueFull`], as [`play`](Self::play).
     pub fn stop(&self, fade: FadeOut) -> Result<(), QueueFull> {
-        self.transport.motion().try_send(MotionEvent::Stop { fade })
+        self.transport
+            .motion()
+            .try_send(MotionEvent::Stop { fade })?;
+        self.rolling_sent.store(false, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Jumps to `beat` at the next block, keeping whatever the transport was
@@ -990,7 +1001,10 @@ impl Session {
     ///
     /// [`QueueFull`], as [`play`](Self::play).
     pub fn locate(&self, beat: Beat) -> Result<(), QueueFull> {
-        self.transport.motion().try_send(MotionEvent::locate(beat))
+        self.transport
+            .motion()
+            .try_send(MotionEvent::locate(beat))?;
+        Ok(())
     }
 
     /// Sends a motion `event` to take effect at `at`: a frame, a beat, or the
@@ -1004,7 +1018,9 @@ impl Session {
     /// rolls. A command that starts the transport rolling ([`MotionEvent::Play`],
     /// or a locate that then rolls) timed at a beat while the transport is
     /// stopped could only fire after the playback it starts, so it is refused
-    /// where it is made. A command that does not start playback (a stop, a
+    /// where it is made. Stopped is the control side's word: the last motion
+    /// this session sent (a `play` just before is rolling), not the playhead,
+    /// which is a block old. A command that does not start playback (a stop, a
     /// plain locate) waits for the playback to reach its beat, as any beat
     /// command does.
     ///
@@ -1022,13 +1038,28 @@ impl Session {
                     ..
                 }
         );
+        // Rolling as far as the control side knows: the last motion this
+        // session sent for the next block, or what the engine last rendered
+        // (a transport started through `transport()` directly).
+        let rolling = self.rolling_sent.load(Ordering::Relaxed) || self.playhead().playing();
         if let At::Beat(beat) = at
             && starts
-            && !self.playhead().playing()
+            && !rolling
         {
             return Err(ScheduleError::BeatWhileStopped { beat, event });
         }
-        Ok(self.transport.motion().schedule(at, event)?)
+        self.transport.motion().schedule(at, event)?;
+        if at == At::NextBlock {
+            match event {
+                MotionEvent::Play
+                | MotionEvent::Locate {
+                    then: Then::Roll, ..
+                } => self.rolling_sent.store(true, Ordering::Relaxed),
+                MotionEvent::Stop { .. } => self.rolling_sent.store(false, Ordering::Relaxed),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Loops the transport over `range` from the next block, and arms it: the

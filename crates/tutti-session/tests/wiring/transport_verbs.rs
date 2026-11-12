@@ -213,13 +213,24 @@ fn a_play_at_a_beat_on_a_stopped_transport_is_refused() {
     assert!(s.schedule(Frame(48_000), MotionEvent::Play).is_ok());
 }
 
-/// **The same play is taken once the transport rolls**: a beat is a frame by
-/// then.
+/// **A play at a beat straight after `play()` is taken**, before any block has
+/// rendered: the session knows it started the transport. It fires at its beat
+/// (at 60 BPM, beat 1 is frame 48 000): pending after half a second, applied
+/// after 1.25 s. A `stop()` after it makes a later beat play refused again.
 #[test]
-fn a_play_at_a_beat_is_taken_while_rolling() {
+fn a_play_at_a_beat_right_after_play_is_taken_and_fires() {
     let s = offline();
     s.set_tempo(Bpm::of(60.0));
     s.play().unwrap();
-    render(&s, 1_000);
-    assert!(s.schedule(Beat(4.0), MotionEvent::Play).is_ok());
+    s.schedule(Beat(1.0), MotionEvent::Play).unwrap();
+    // The play and the timed play, neither applied yet.
+    assert_eq!(s.transport().motion().scheduled_outstanding(), 2);
+    render(&s, 24_000);
+    assert_eq!(s.transport().motion().scheduled_outstanding(), 1, "not yet");
+    render(&s, 36_000);
+    assert_eq!(s.transport().motion().scheduled_outstanding(), 0, "fired");
+
+    s.stop(FadeOut::Immediate).unwrap();
+    render(&s, 2_000);
+    assert!(s.schedule(Beat(9.0), MotionEvent::Play).is_err());
 }

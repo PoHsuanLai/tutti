@@ -96,7 +96,7 @@ impl Class {
         let key = |key: Key| NoteKey {
             group: address.group,
             channel: address.channel,
-            note: NoteNumber::masked(key.note()),
+            note: key.note(),
         };
         match event {
             KeyEvent::On(k) => Self::On(key(k)),

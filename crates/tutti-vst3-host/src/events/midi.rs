@@ -6,7 +6,6 @@ use tutti_midi_protocol::{
     unit_f32_to_u32, widen, widen_bytes,
 };
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi};
-use tutti_types::Semitones;
 use tutti_ump::{
     Address, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn,
     SysexMessage, Ump, Voice1, Voice2,
@@ -80,10 +79,7 @@ impl MidiEncoder {
     pub fn new(buses: usize) -> Self {
         let buses = buses.clamp(1, usize::from(MidiGroup::COUNT));
         Self {
-            notes: PerNoteState::new(
-                buses,
-                Semitones(PitchBendSensitivity::MPE_DEFAULT.as_semitones_f32()),
-            ),
+            notes: PerNoteState::new(buses, PitchBendSensitivity::MPE_DEFAULT.semitones()),
             narrower: Narrower::new(),
             buses,
             groups_dropped: 0,
@@ -203,7 +199,7 @@ impl MidiEncoder {
     /// The event bus of `address`'s Group, or `None` (counted) when the plugin
     /// has none.
     fn bus_of(&mut self, address: Address) -> Option<i32> {
-        let bus = usize::from(address.group.get());
+        let bus = address.group.index();
         if bus < self.buses {
             i32::try_from(bus).ok()
         } else {

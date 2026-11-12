@@ -2,7 +2,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::{Address, CCNumber, MidiChannel, MidiGroup};
+use crate::{Address, CCNumber, MidiChannel, MidiGroup, NoteNumber, Protocol};
 
 /// One Universal MIDI Packet: four 32-bit words, of which the message type in
 /// the top nibble of the first word says how many are meaningful
@@ -170,13 +170,13 @@ impl Ump {
     pub const fn key_event(&self) -> Option<KeyEvent> {
         let w = self.0[0];
         let status = (w >> 20) & 0xf;
-        let lane = ((w >> 24) & 0xf) as u8 * 16 + ((w >> 16) & 0xf) as u8;
         let m2 = w >> 28 == 0x4;
-        match w >> 28 {
-            0x2 | 0x4 => {}
-            _ => return None,
-        }
-        let key = Key::new(m2, lane, ((w >> 8) & 0x7f) as u8);
+        let address = match self.address() {
+            Some(address) => address,
+            None => return None,
+        };
+        let note = NoteNumber::masked((w >> 8) as u8);
+        let key = Key::pack(m2, address, note);
         match status {
             0x8 => Some(KeyEvent::Off(key)),
             0x9 => {
@@ -192,7 +192,11 @@ impl Ump {
                 } else {
                     w & 0x7f >= 64
                 };
-                Some(KeyEvent::Sustain { m2, lane, down })
+                Some(KeyEvent::Sustain {
+                    protocol: key.protocol(),
+                    address,
+                    down,
+                })
             }
             _ => None,
         }
@@ -202,25 +206,31 @@ impl Ump {
     /// with a zero 16-bit velocity).
     #[must_use]
     pub const fn note_off(key: Key) -> Ump {
-        let lane = key.lane() as u32;
-        let (g, c) = (lane >> 4, lane & 0xf);
-        let head = ((g << 24) | (0x8 << 20) | (c << 16)) | ((key.note() as u32) << 8);
-        if key.is_m2() {
+        let address = key.address();
+        let head = ((address.group.get() as u32) << 24)
+            | (0x8 << 20)
+            | ((address.channel.get() as u32) << 16)
+            | ((key.note().get() as u32) << 8);
+        if key.is_midi2() {
             Ump([0x4000_0000 | head, 0, 0, 0])
         } else {
             Ump([0x2000_0000 | head, 0, 0, 0])
         }
     }
 
-    /// Sustain pedal up (CC 64 = 0) on `lane` (`group * 16 + channel`).
+    /// Sustain pedal up (CC 64 = 0) on `address`, in `protocol`'s channel
+    /// voice packet; `None` for a protocol with no channel voice message (a
+    /// [`Protocol::Reserved`] one).
     #[must_use]
-    pub const fn sustain_up(m2: bool, lane: u8) -> Ump {
-        let (g, c) = ((lane >> 4) as u32, (lane & 0xf) as u32);
-        let head = (g << 24) | (0xb << 20) | (c << 16) | (64 << 8);
-        if m2 {
-            Ump([0x4000_0000 | head, 0, 0, 0])
-        } else {
-            Ump([0x2000_0000 | head, 0, 0, 0])
+    pub const fn sustain_up(protocol: Protocol, address: Address) -> Option<Ump> {
+        let head = ((address.group.get() as u32) << 24)
+            | (0xb << 20)
+            | ((address.channel.get() as u32) << 16)
+            | ((CCNumber::SUSTAIN.get() as u32) << 8);
+        match protocol {
+            Protocol::Midi2 => Some(Ump([0x4000_0000 | head, 0, 0, 0])),
+            Protocol::Midi1 => Some(Ump([0x2000_0000 | head, 0, 0, 0])),
+            Protocol::Reserved(_) => None,
         }
     }
 }
@@ -297,35 +307,62 @@ impl core::fmt::UpperHex for Ump {
 pub struct Key(u16);
 
 impl Key {
-    /// The key of `note` on `lane` (`group * 16 + channel`).
+    /// The key of `note` on `address` in `protocol`, or `None` for a protocol
+    /// that has no channel voice message ([`Protocol::Reserved`]).
     #[must_use]
-    pub const fn new(m2: bool, lane: u8, note: u8) -> Self {
-        Key(((m2 as u16) << 15) | ((lane as u16) << 7) | (note & 0x7f) as u16)
+    pub const fn new(protocol: Protocol, address: Address, note: NoteNumber) -> Option<Self> {
+        match protocol {
+            Protocol::Midi1 => Some(Self::pack(false, address, note)),
+            Protocol::Midi2 => Some(Self::pack(true, address, note)),
+            Protocol::Reserved(_) => None,
+        }
     }
+
+    const fn pack(m2: bool, address: Address, note: NoteNumber) -> Self {
+        Key(((m2 as u16) << 15) | ((address.index() as u16) << 7) | note.get() as u16)
+    }
+
     /// Packed form, `0..=65535`.
     #[must_use]
     pub const fn index(self) -> u16 {
         self.0
     }
+
     /// From the packed form.
     #[must_use]
     pub const fn from_index(i: u16) -> Self {
         Key(i)
     }
-    /// Whether the key was opened by a MIDI 2.0 packet.
+
+    /// The protocol of the packet that opened the key: [`Protocol::Midi1`] or
+    /// [`Protocol::Midi2`].
     #[must_use]
-    pub const fn is_m2(self) -> bool {
+    pub const fn protocol(self) -> Protocol {
+        if self.is_midi2() {
+            Protocol::Midi2
+        } else {
+            Protocol::Midi1
+        }
+    }
+
+    const fn is_midi2(self) -> bool {
         self.0 >> 15 != 0
     }
-    /// `group * 16 + channel`.
+
+    /// The Group and Channel.
     #[must_use]
-    pub const fn lane(self) -> u8 {
-        ((self.0 >> 7) & 0xff) as u8
+    pub const fn address(self) -> Address {
+        let lane = ((self.0 >> 7) & 0xff) as u8;
+        Address {
+            group: MidiGroup::masked(lane >> 4),
+            channel: MidiChannel::masked(lane),
+        }
     }
+
     /// The note number.
     #[must_use]
-    pub const fn note(self) -> u8 {
-        (self.0 & 0x7f) as u8
+    pub const fn note(self) -> NoteNumber {
+        NoteNumber::masked((self.0 & 0x7f) as u8)
     }
 }
 
@@ -338,10 +375,10 @@ pub enum KeyEvent {
     Off(Key),
     /// The sustain pedal of a channel changes.
     Sustain {
-        /// MIDI 2.0 packet.
-        m2: bool,
-        /// `group * 16 + channel`.
-        lane: u8,
+        /// The protocol of the packet: [`Protocol::Midi1`] or [`Protocol::Midi2`].
+        protocol: Protocol,
+        /// The Group and Channel.
+        address: Address,
         /// Pedal down (value at least half).
         down: bool,
     },

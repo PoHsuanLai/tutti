@@ -236,7 +236,7 @@ fn the_group_is_the_parsers() {
     assert_eq!(groups.len(), 1 + 3 + 1 + 6 + 1 + 3);
     assert!(groups.iter().all(|&group| group == g), "{groups:?}");
     for bytes in [&[0x90u8, 60, 100][..], &[0xF3, 4], &[0xF6], &[0xFA]] {
-        let message = Midi1Parser::message(g, bytes).expect("a message");
+        let message = parse_exact(g, bytes).expect("a message");
         let (Message::Midi1(Address { group, .. }, _) | Message::System(group, _)) = message else {
             panic!("{message:?}");
         };
@@ -409,7 +409,7 @@ fn message_reads_one_message_and_ignores_the_padding() {
             Voice1::ProgramChange(u7(p)),
         )
     };
-    let read = |bytes: &[u8]| Midi1Parser::message(MidiGroup::FIRST, bytes);
+    let read = |bytes: &[u8]| parse_exact(MidiGroup::FIRST, bytes);
     assert_eq!(read(&[0xC0, 5, 0]), Some(program(5)));
     assert_eq!(read(&[0xC0, 5, 9]), Some(program(5)));
     assert_eq!(read(&[0xC0, 5]), Some(program(5)));
@@ -422,7 +422,7 @@ fn message_reads_one_message_and_ignores_the_padding() {
 /// take one data byte, `0xF2` two.
 #[test]
 fn message_takes_the_length_the_status_gives() {
-    let read = |bytes: &[u8]| Midi1Parser::message(MidiGroup::FIRST, bytes);
+    let read = |bytes: &[u8]| parse_exact(MidiGroup::FIRST, bytes);
     assert_eq!(read(&[0xF3, 4]), Some(system(System::SongSelect(u7(4)))));
     assert_eq!(read(&[0xF3, 4, 9]), Some(system(System::SongSelect(u7(4)))));
     assert_eq!(
@@ -439,7 +439,7 @@ fn message_takes_the_length_the_status_gives() {
 
 #[test]
 fn message_refuses_what_is_not_one() {
-    let read = |bytes: &[u8]| Midi1Parser::message(MidiGroup::FIRST, bytes);
+    let read = |bytes: &[u8]| parse_exact(MidiGroup::FIRST, bytes);
     assert_eq!(read(&[]), None);
     assert_eq!(read(&[60, 100, 0]), None, "data byte first");
     assert_eq!(read(&[0x90, 60]), None, "cut short");

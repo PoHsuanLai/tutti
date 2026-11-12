@@ -426,7 +426,7 @@ impl PolySynth {
 
     /// The frequency ratio a channel's bend applies.
     fn bend_ratio(&self, channel: MidiChannel) -> f32 {
-        self.bends[usize::from(channel.get())].to_pitch_ratio()
+        self.bends[channel.index()].to_pitch_ratio()
     }
 
     fn handle_note_on(
@@ -570,7 +570,7 @@ impl PolySynth {
         let base_freq = voice
             .tuned()
             .unwrap_or_else(|| tuning.fractional_note_to_freq(f32::from(voice.note().get())));
-        let bend = bends[usize::from(voice.channel().get())].to_pitch_ratio();
+        let bend = bends[voice.channel().index()].to_pitch_ratio();
         voice.set_pitch(base_freq * voice.glide_ratio() * bend);
     }
 
@@ -586,7 +586,7 @@ impl PolySynth {
                     self.bank.kill_voice(i);
                 }
                 Gate::Retune(channel, bend) => {
-                    self.bends[usize::from(channel.get())] = bend;
+                    self.bends[channel.index()] = bend;
                     retuned = true;
                 }
                 Gate::Control(i, control) => self.apply_note_control(i, control),

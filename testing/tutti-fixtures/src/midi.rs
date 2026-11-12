@@ -10,8 +10,9 @@
 
 use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, widen};
 use tutti_ump::{
-    Address, Bank, CCNumber, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
+    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Rpn, Sysex7Packets, System, U7, U14, Ump, Utility, Voice1, Voice2,
+    parse_exact,
 };
 
 /// A MIDI 2.0 velocity at the midpoint of its 16-bit range: M2-115 section 3
@@ -36,7 +37,7 @@ impl BendRanges {
     /// The range on `channel`, in semitones.
     #[must_use]
     pub fn semitones(&self, channel: MidiChannel) -> f32 {
-        self.0[usize::from(channel.get())]
+        self.0[channel.index()]
     }
 
     /// Follows `ump`: a per-note bend sensitivity sets its channel's range, and
@@ -50,8 +51,10 @@ impl BendRanges {
         if Rpn::new(bank, index) != Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY {
             return false;
         }
-        self.0[usize::from(address.channel.get())] =
-            tutti_midi_protocol::PitchBendSensitivity::from_rpn_bits(value).as_semitones_f32();
+        self.0[address.channel.index()] =
+            tutti_midi_protocol::PitchBendSensitivity::from_rpn_bits(value)
+                .semitones()
+                .get();
         true
     }
 }
@@ -83,10 +86,10 @@ pub fn m1_cc(channel: MidiChannel, controller: CCNumber, value: U7) -> Ump {
 }
 
 /// The packet of the first Group that one MIDI 1.0 message's bytes make
-/// (`Midi1Parser::message`: a status byte and its data, padding ignored), or
+/// (`parse_exact`: a status byte and its data, padding ignored), or
 /// `None` for what it refuses.
 pub fn from_midi1_bytes(bytes: &[u8]) -> Option<Ump> {
-    Midi1Parser::message(MidiGroup::FIRST, bytes).map(Ump::from)
+    parse_exact(MidiGroup::FIRST, bytes).map(Ump::from)
 }
 
 /// The packets of one SysEx7 message of `payload` (7-bit bytes, without

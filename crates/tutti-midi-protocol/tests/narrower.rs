@@ -281,10 +281,9 @@ fn the_round_trip_returns_the_controller_sequence() {
             let mut n = Narrower::new();
             let mut back = Vec::new();
             for ump in sent {
-                t.feed(ump, |u| {
-                    let m = u.decode().unwrap();
-                    n.feed(m, |b| back.push(b.as_slice().to_vec()));
-                });
+                if let Some(u) = t.translate(ump) {
+                    n.feed(u, |b| back.push(b.as_slice().to_vec()));
+                }
             }
             let want: Vec<Vec<u8>> = [
                 (hi, hv),

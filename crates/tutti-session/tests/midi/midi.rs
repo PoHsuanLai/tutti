@@ -123,7 +123,7 @@ fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
         .unwrap()
         .iter()
         .filter_map(|&(f, e)| match e.key_event() {
-            Some(KeyEvent::On(key)) => Some((f, key.note())),
+            Some(KeyEvent::On(key)) => Some((f, key.note().get())),
             _ => None,
         })
         .collect()

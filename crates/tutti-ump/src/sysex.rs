@@ -3,7 +3,7 @@
 
 use core::iter::FusedIterator;
 
-use crate::{Message, MidiGroup, Sysex7Packet, SysexStatus, U7, Ump};
+use crate::{Message, MidiGroup, Sysex7Packet, SysexStatus, Ump};
 
 /// The longest SysEx7 payload (the bytes between `0xF0` and `0xF7`) tutti
 /// carries: 64 KiB. It is tutti's cap on one message, used to size a
@@ -71,7 +71,8 @@ impl<'a> SysexMessage<'a> {
     }
 
     /// The message as SysEx7 packets on `group` (M2-104 section 7.7): see
-    /// [`sysex7_packets`].
+    /// [`Sysex7Packets`]. The one way to packetise a checked message; a
+    /// payload of unchecked bytes goes through [`Sysex7Packets::checked`].
     #[must_use]
     pub fn packets(self, group: MidiGroup) -> Sysex7Packets<'a> {
         // Checked in `new`: every byte between the delimiters is below 128.
@@ -80,7 +81,9 @@ impl<'a> SysexMessage<'a> {
 }
 
 /// The SysEx7 packets (M2-104 section 7.7) of one payload: the bytes between
-/// `0xF0` and `0xF7`, without them.
+/// `0xF0` and `0xF7`, without them. Made by [`SysexMessage::packets`] for a
+/// checked message, or by [`Sysex7Packets::checked`] for a payload of plain
+/// bytes that arrives unchecked.
 ///
 /// A payload of up to six bytes is one `Complete` packet (an empty one is a
 /// `Complete` with no bytes). A longer one is a `Start`, any number of
@@ -89,20 +92,13 @@ impl<'a> SysexMessage<'a> {
 /// the caller pairs each with an offset. [`SysexAssembler`] is the inverse.
 ///
 /// ```
-/// use tutti_ump::{MidiGroup, SysexStatus, U7, Message, sysex7_packets};
+/// use tutti_ump::{MidiGroup, SysexStatus, Sysex7Packets, Message};
 ///
-/// let payload = [U7::of(1); 7];
-/// let mut packets = sysex7_packets(MidiGroup::of(0), &payload);
+/// let mut packets = Sysex7Packets::checked(MidiGroup::of(0), &[1; 7]).unwrap();
 /// assert_eq!(packets.len(), 2);
 /// let Ok(Message::Sysex7(_, first)) = packets.next().unwrap().decode() else { unreachable!() };
 /// assert_eq!(first.status(), SysexStatus::Start);
 /// ```
-#[must_use]
-pub fn sysex7_packets(group: MidiGroup, payload: &[U7]) -> Sysex7Packets<'_> {
-    Sysex7Packets::over(group, bytemuck::cast_slice(payload))
-}
-
-/// The packets of one SysEx payload; see [`sysex7_packets`].
 #[derive(Clone, Debug)]
 pub struct Sysex7Packets<'a> {
     group: MidiGroup,
@@ -304,6 +300,17 @@ enum Run {
 /// Mixed Data Set UMP. A Utility or UMP Stream message has no Group and ends
 /// nothing; neither does a reserved type, which names no Group here.
 ///
+/// # Why there is no block guard
+///
+/// A design where the assembler lends one block (`block() -> Block<'_>`, a
+/// `push` that lends the finished message, the block ending on drop) was
+/// weighed and not built: its six callers (the CLAP, VST2, VST3 and AU hosts,
+/// the plugin intake and MIDI-CI) hand a plugin a pointer to every message of
+/// a block at once, so they keep each [`SysexRef`] until the whole block is
+/// pushed. A lending `push` would make each copy its message first. The
+/// contract stays in prose: read a [`SysexRef`] only before the next
+/// [`begin_block`](Self::begin_block).
+///
 /// # Policy
 ///
 /// - **At most `lanes` messages are open at once**, one per Group. Each owns a
@@ -417,7 +424,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
             Err(_) => return self.other(ump),
         };
         let payload = packet.data();
-        let g = usize::from(group.get());
+        let g = group.index();
         match packet.status() {
             SysexStatus::Complete => {
                 self.end_run(g);
@@ -500,7 +507,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
             // between the UMPs of a message; anything else on the Group ends it.
             let real_time = ump.message_type() == 0x1 && (ump.0[0] >> 16) & 0xFF >= 0xF8;
             if !real_time {
-                self.end_run(usize::from(group.get()));
+                self.end_run(group.index());
             }
         }
         SysexStep::NotSysex

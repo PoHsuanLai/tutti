@@ -36,7 +36,7 @@
 
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::Narrower;
-use tutti_ump::{Message, Midi1Parser, Protocol, StreamConfig, Ump, Utility};
+use tutti_ump::{Message, Protocol, StreamConfig, Ump, Utility, parse_exact};
 
 /// One device output's wire form: its configuration, the [`Narrower`] that
 /// serves it for as long as it is in MIDI 1.0, and the buffers one batch is
@@ -100,9 +100,7 @@ impl Wire {
                     if let Ok(message @ Message::Midi2(address, _)) = ump.decode() {
                         let out = &mut self.out;
                         self.narrower.feed(message, |bytes| {
-                            if let Some(packet) =
-                                Midi1Parser::message(address.group, bytes.as_slice())
-                            {
+                            if let Some(packet) = parse_exact(address.group, bytes.as_slice()) {
                                 out.push((at, Ump::from(packet)));
                             }
                         });

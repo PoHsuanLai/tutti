@@ -5,6 +5,18 @@
 //! the MIDI 1.0 to 2.0 resolution path (`widen` and the `narrow_*` family):
 //! `u32_to_unit_f32` loses low bits through f32's 24-bit mantissa. Consumers
 //! call these at their own boundary, not through a shared decode layer.
+//!
+//! **Where the types stop** (CLAUDE.md, "Unit types"): these return a bare
+//! `f32`, and the reason is that the number has no meaning of its own. A
+//! normalized `[0, 1]` controller value is a velocity, a pressure, a
+//! controller position or a plugin's normalized parameter, depending on who
+//! reads it, and a bend in `[-1, 1]` is a position on a range the receiver
+//! owns (`PitchBendSensitivity` is that range). No `tutti_types` unit covers
+//! these ranges without lending a meaning that is not the packet's (`Mix` is a
+//! position among a node's own settings, `Depth` a modulation amount,
+//! `Amplitude` a gain), so each caller wraps the value in the unit it means at
+//! its own seam. The inverses take the same bare `f32`, as the plugin formats
+//! carry it, and clamp.
 
 /// 7-bit value (0-127) → `[0.0, 1.0]`.
 #[inline]

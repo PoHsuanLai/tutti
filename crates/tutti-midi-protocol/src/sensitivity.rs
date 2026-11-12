@@ -1,5 +1,6 @@
 //! Per-note pitch-bend sensitivity as the MIDI 2.0 wire value.
 
+use tutti_types::Semitones;
 use tutti_ump::Pitch;
 
 /// Per-note pitch bend range as the spec's 7.25 fixed-point semitone value
@@ -76,11 +77,12 @@ impl PitchBendSensitivity {
         Self(bits)
     }
 
-    /// Sensitivity in semitones as a float (integer + fractional parts).
+    /// The sensitivity in semitones (integer and fractional parts). The `f32`
+    /// rounds the 32-bit word: a word near the top reads as 128.0.
     #[inline]
     #[must_use]
-    pub fn as_semitones_f32(self) -> f32 {
-        Pitch::from_q7_25(self.0).note_number()
+    pub fn semitones(self) -> Semitones {
+        Semitones::new(Pitch::from_q7_25(self.0).note_number())
     }
 }
 

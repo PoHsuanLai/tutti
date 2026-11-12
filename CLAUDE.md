@@ -417,22 +417,22 @@ crates/          everything shipped; directory name = package name; no nesting
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
-                 `frame` and `Midi1Parser` (the one reader of MIDI 1.0 bytes, framing and
-                 completing them into `Message`s), the status bytes the hosts use,
+                 `frame`, `Midi1Parser` (the stream reader of MIDI 1.0 bytes, framing and
+                 completing them into `Message`s) and `parse_exact` (the stateless
+                 one-message read), the status bytes the hosts use,
                  `NoteId` (`channel * 128 + note`),
                  `split_stream` (a buffer of concatenated packets into `Ump`s by
                  Table 4, the one walker), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
                  (SysEx7 packets to whole messages over a caller's buffer) and its
-                 inverse `sysex7_packets` (`SysexMessage::packets`,
-                 `Sysex7Packets::checked` for a payload of plain bytes), with
+                 inverse `SysexMessage::packets` (`Sysex7Packets::checked` for a payload of plain bytes), with
                  `Sysex7Packet::data` and `SysexRef::new`; no
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen`, `narrow` and `midi1`, the stateful `Translator` and `Narrower`, the M2-115 scaling, and the
+                 stateless `widen`, `narrow` (refusing with a `NoMidi1Form`) and `midi1`, the stateful `Translator` (`translate`, `flush`, `finish`) and `Narrower`, the M2-115 scaling, and the
                  float converters (`u32_to_unit_f32` and kin), and the MPE zone
                  values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
-                 `tutti-ump` alone
+                 `tutti-ump` and `tutti-types`
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
                  pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
                  (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
@@ -597,6 +597,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
   exports `MidiChannel` behind `midi`. A consumer that persists one with serde
   depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
+  `MidiChannel::index`/`MidiGroup::index` (`usize`), `all()`, `Address::index` and the 1-based
+  `numbered(n)` (which `Display` writes; `Debug` is the wire raw) are the table and display doors.
+  `Key::new(Protocol, Address, NoteNumber)` and `Ump::sustain_up(Protocol, Address)` return `Option` (a reserved protocol has no channel voice packet).
   `MidiGroup::new`, `MidiChannel::new` and `CCNumber::new` return `Option` and
   refuse out of range, like the field types (`U7`, `U14`, `NoteNumber`, ...),
   which have the same shape. `of` is for a literal or a constant (it panics out
@@ -615,10 +618,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   64 KiB cap on one message (the spec sets none), for sizing an assembler. An RPN
   address is `Rpn` (`bank`, `index`, and the named `PITCH_BEND_SENSITIVITY`,
   `MPE_CONFIGURATION`, `PER_NOTE_PITCH_BEND_SENSITIVITY`), never a bare `u8` pair.
-- `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
+- `tutti-midi-protocol` depends on `tutti-ump` and `tutti-types` (layer 0, for `Semitones`), keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. Its functions (`widen`, `narrow`,
-  `midi1`) hold no state; its two translators, `Translator` (MIDI 1.0 in) and
+  `midi1`) hold no state, and take a packet as `impl Into<Ump>` (one input type: `Translator::translate`, `Narrower::feed`, `midi1`, `channel_voice`); `narrow` refuses with a `NoMidi1Form`, and `widen`/`narrow` are free functions because `From`/`TryFrom` between the voice types would sit in `tutti-ump` with the M2-115 scaling; its two translators, `Translator` (MIDI 1.0 in) and
   `Narrower` (MIDI 2.0 out, per group and channel: RPN/NRPN selects, Bank
   Select), are fixed-size values, hold no clock, and allocate nothing after
   `new`. A consumer's call to `widen` is transitional: the stage 3 translator
@@ -916,7 +919,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. The SMF reader is our own (doc 017 stage 6b): `winnow` combinators for the
   framing (chunks, variable-length quantities, meta and sysex lengths) with running status threaded as a
   value, in `src/smf/read.rs`; `tutti-ump` decodes a channel message (`Voice1::data_len`,
-  `Midi1Parser::message`); the writer (`src/smf/write.rs`) is a fold of pure functions. The Clip File reader
+  `parse_exact`); the writer (`src/smf/write.rs`) is a fold of pure functions. The Clip File reader
   (`src/clip_file/read.rs`, doc 017 L1b) is a `winnow` grammar over the packets `split_stream` and `Ump::decode`
   made, each M2-116 placement rule one rule of it. No winnow type is in a
   public signature, field or error, and no file but those two `read.rs` names `winnow`
@@ -1283,7 +1286,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output

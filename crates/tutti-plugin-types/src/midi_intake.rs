@@ -185,7 +185,7 @@ impl MidiIntake {
 /// Whether `a` and `b` are the same note: group, channel and number, whichever
 /// protocol spelled each (a MIDI 1.0 off ends a MIDI 2.0 on).
 fn same_note(a: Key, b: Key) -> bool {
-    (a.lane(), a.note()) == (b.lane(), b.note())
+    (a.address(), a.note()) == (b.address(), b.note())
 }
 
 /// A SysEx7 packet's status, or `None` for any other message.
@@ -213,10 +213,9 @@ mod tests {
     }
 
     fn packets(group: MidiGroup, len: usize) -> Vec<WireMidi> {
-        let payload: Vec<tutti_ump::U7> = (0..len)
-            .map(|i| tutti_ump::U7::of((i % 0x7F) as u8))
-            .collect();
-        tutti_ump::sysex7_packets(group, &payload)
+        let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
+        tutti_ump::Sysex7Packets::checked(group, &payload)
+            .expect("7-bit bytes")
             .map(wire)
             .collect()
     }
@@ -466,7 +465,7 @@ mod tests {
         // The later note-on of key 5 (index 133) is the one that went.
         let ons_of_5 = list
             .iter()
-            .filter(|e| matches!(e.ump.key_event(), Some(KeyEvent::On(k)) if k.note() == 5))
+            .filter(|e| matches!(e.ump.key_event(), Some(KeyEvent::On(k)) if k.note().get() == 5))
             .count();
         assert_eq!(ons_of_5, 1);
         assert_eq!(list[5], on(5));

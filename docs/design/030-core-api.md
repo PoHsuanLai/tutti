@@ -8,7 +8,7 @@ tempo, modulation, the sampler, the codec, export, and writing a custom node.
 session's plan (lanes L1e to L1h) does it for MIDI. The three share one set of
 conventions (§2).
 
-Status: inventory, two designs (§4, §5) and the one lane (§6); nothing in §4 to §6 is implemented. Written 2026-11-12
+Status: inventory, two designs (§4, §5) and the one lane (§6); the lane is built through step 6. Written 2026-11-12
 against `main` at `f583038f6`, from three read-only sweeps whose full findings
 (each with today's code, the friction, the fix and a size) are kept outside the
 repo in `~/tutti-audit/api-inventory/`. Already landed or in flight, and not
@@ -137,7 +137,7 @@ finding where the API produces wrong results today, not only friction.
 | # | finding | fix | size |
 |---|---|---|---|
 | R1 | A take carries no position on the timeline, input and output latency are not compensated, and a recording starts on wall time | `s.record(input, At) -> Take`: the start frame and beat, the compensation, punch in and out through `At`, with monitoring and recording opened in one call | L |
-| R2 | The playhead is two atomics (`beat()`, `is_playing()`) that can disagree, and it moves in block steps | one `s.playhead() -> Playhead { beat, frame, seconds, playing, at }` (a sequence lock), and `beat_now(Instant)` extrapolated from the block clock | S-M |
+| R2 | The playhead is two atomics (`beat()`, `is_playing()`) that can disagree, and it moves in block steps | one `s.playhead() -> Playhead { beat, frame, seconds, playing, at }` (a sequence lock), and `beat_now(now)` extrapolated from the block clock on `tutti_rt::monotonic_ns` | S-M (R2 built, §6 item 6) |
 
 ## 4. Design: declicked wiring
 
@@ -353,7 +353,26 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
    takeover is delayed by a fade is held in the queued crossfade, its injection
    sized with the plan, and delivered when the fade ends (`end_fades`), not dropped;
    `chase_skipped_count` is gone.
-6. **Playhead:** R2.
+6. **Playhead** (built): R2. `Session::playhead() -> Playhead` is one read of
+   the block clock's cell (`tutti-engine`'s `block_clock`, one sequence-lock cell, no
+   second copy): the audio thread writes it once per render call, from the
+   transport of the call's first frame after the commands due on it, so
+   `beat`, `frame`, `seconds` and `playing` are one instant. `at` is the call's
+   `tutti_rt::monotonic_ns`, the clock the MIDI edge's `ClockMap` already uses, and
+   the snapshot also carries the tempo in force and the call's length.
+   `Playhead::beat_now(now)` (`Session::beat_now()` reads the clock itself) is
+   the beat plus the tempo's beats over the time since `at`, held at the beat
+   when stopped, before a call has rendered or for a `now` before `at`, and
+   **clamped to one call's length** past `at`, so a stalled audio thread
+   leaves the playhead one block on, never running away. Through a tempo ramp
+   the line is at the tempo of the call's first frame: wrong by the ramp's change over
+   one block at most. A session with no engine rendering reads
+   `Playhead::default()` (stopped at the origin, `at` is `None`); an offline
+   `Bounce` renders a fork and never moves it. `TransportSettings::beat` and
+   `MotionFsm::{is_playing, is_stopped}` are gone from the public surface (the
+   transport's own `Timeline` reads of beat and rolling stay, for the code
+   that is the transport's), and `MotionFsm::motion` is crate-private. The
+   example of §1: `let p = s.playhead(); draw(p.beat_now(tutti_rt::monotonic_ns()), p.playing())`.
 7. **Device** (built): S1, S2, S6, `Device::latency`, typed event errors.
    - S1: `SessionBuilder::host(AudioHost)` is the host of the output and of
      every input; `Session::add_input(InputConfig) -> Input` opens a

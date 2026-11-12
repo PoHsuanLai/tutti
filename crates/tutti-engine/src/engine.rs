@@ -85,7 +85,7 @@ use tutti_graph::{
     TransportChanges,
 };
 
-use crate::block_clock::{BlockClock, BlockClockReader};
+use crate::block_clock::{BlockClock, BlockClockReader, Pose};
 use crate::output::{DEFAULT_DEVICE_WIDTHS, OutputControl, OutputFolds};
 use std::time::Instant;
 use tutti_metering::{LoadMeter, LoadRecorder};
@@ -218,6 +218,32 @@ struct GraphRender {
     /// frame clock: what a producer thread's `ClockMap` is fed
     /// ([`Engine::block_clock`]).
     clock: BlockClock,
+}
+
+impl GraphRender {
+    /// Publishes one render call's start: the OS time it began at
+    /// (`os_ns`), the frame it renders first, and `first`, the transport at
+    /// that frame (after the commands due on it), for producer threads that
+    /// hold an OS time (doc 017 section 5, "Timing at the edge") and for the
+    /// session's one-read playhead (doc 030, R2). `frames` is the whole
+    /// call's length.
+    fn publish_call(
+        &mut self,
+        os_ns: i64,
+        rate: SampleRate,
+        frames: usize,
+        first: &GraphTransport,
+    ) {
+        let beat = first.beat();
+        let pose = Pose {
+            beat,
+            seconds: self.transport.seconds_at(beat, first.tempo),
+            tempo: first.tempo,
+            playing: first.playing,
+            span: Samples(frames),
+        };
+        self.clock.write(os_ns, self.exec.frame(), rate, pose);
+    }
 }
 
 impl Engine {
@@ -520,15 +546,12 @@ impl Engine {
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
-            if done == 0 {
-                // The call's start and the frame it renders first: one
-                // reading per call, for producer threads that hold an OS
-                // time (doc 017 section 5, "Timing at the edge").
-                g.clock
-                    .write(tutti_rt::monotonic_ns(), g.exec.frame(), rate);
-            }
+            let began = (done == 0).then(tutti_rt::monotonic_ns);
             let len = (frames - done).min(bound);
             let t = g.transport.begin_block();
+            if let Some(os_ns) = began {
+                g.publish_call(os_ns, rate, frames, &t);
+            }
             // The tempo steps inside the block, if the map has any; a block
             // that would need more than it holds ends before the first that
             // does not fit, and the loop carries on from there.
@@ -609,13 +632,7 @@ impl Engine {
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
-            if done == 0 {
-                // The call's start and the frame it renders first: one
-                // reading per call, for producer threads that hold an OS
-                // time (doc 017 section 5, "Timing at the edge").
-                g.clock
-                    .write(tutti_rt::monotonic_ns(), g.exec.frame(), rate);
-            }
+            let began = (done == 0).then(tutti_rt::monotonic_ns);
             let len = (frames - done).min(bound);
             let frame0 = g.exec.frame();
             let mut pieces = GraphPieces {
@@ -634,6 +651,9 @@ impl Engine {
                 &mut pieces,
             );
             let changes = pieces.changes;
+            if let Some(os_ns) = began {
+                g.publish_call(os_ns, rate, frames, &walk.start);
+            }
             // The walk cut the block short where a tempo step did not fit
             // its changes; the rest is the next iteration's block.
             let len = walk.frames;
@@ -1187,6 +1207,7 @@ impl GraphRender {
 mod tests {
     use super::*;
     use tutti_graph::Prepare;
+    use tutti_transport::Timeline;
     use tutti_transport::{MotionEvent, Transport};
     use tutti_types::Bpm;
     use tutti_types::ChannelTopology;
@@ -1282,9 +1303,9 @@ mod tests {
         }
         assert!(buf.iter().all(|&x| x == 0.0), "a refused block is silent");
         assert!(seg.iter().all(|&x| x == 0.0), "a refused segment is silent");
-        assert!(transport.motion().is_stopped(), "the queued Play waits");
+        assert!(!transport.is_rolling(), "the queued Play waits");
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        assert!(transport.motion().is_playing(), "the next block applies it");
+        assert!(transport.is_rolling(), "the next block applies it");
     }
 
     /// A refused block is silence in the heard tap too: the tap keeps a
@@ -1335,7 +1356,7 @@ mod tests {
             let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
             let _ = transport.motion().try_send(MotionEvent::Play);
             engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            assert!(transport.motion().is_playing());
+            assert!(transport.is_rolling());
         }
         let (mut ed, exec) = Editor::new(Prepare::new(
             SampleRate(48_000.0),
@@ -1344,10 +1365,7 @@ mod tests {
         let engine = Engine::new(&transport, &mut ed, exec).expect("the first engine is gone");
         let _ = transport.motion().try_send(MotionEvent::stop_unfaded());
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        assert!(
-            transport.motion().is_stopped(),
-            "the machine knew it was rolling"
-        );
+        assert!(!transport.is_rolling(), "the machine knew it was rolling");
     }
 
     /// A clone of a transport shares its motion machine, which is where the
@@ -1406,7 +1424,7 @@ mod tests {
             }
             let mut buf = vec![0.0f32; 64 * 2];
             engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            transport.motion().is_playing()
+            transport.is_rolling()
         };
         assert!(!run(true), "play then stop ends stopped");
         assert!(run(false), "stop then play ends rolling");
@@ -1438,10 +1456,10 @@ mod tests {
             .expect("room");
         let mut buf = vec![0.0f32; 64 * 2];
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        let first = transport.settings().beat().get();
+        let first = transport.beat().get();
         assert!((first - (8.0 + 64.0 / 24_000.0)).abs() < 1e-9, "{first}");
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        let second = transport.settings().beat().get();
+        let second = transport.beat().get();
         assert!((second - (8.0 + 128.0 / 24_000.0)).abs() < 1e-9, "{second}");
 
         // Into a loop's last frames: one wrap, counted once.
@@ -1460,7 +1478,7 @@ mod tests {
             .expect("room");
         let mut buf = vec![0.0f32; 1024 * 2];
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        let wrapped = transport.settings().beat().get();
+        let wrapped = transport.beat().get();
         let expected = 3.99 + 1024.0 / 24_000.0 - 4.0;
         assert!((wrapped - expected).abs() < 1e-9, "{wrapped} vs {expected}");
     }

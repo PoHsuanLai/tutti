@@ -54,19 +54,22 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
 - Copying audio out of the graph is a **tap**, read through one `TapReader`
   (it is a `Source` as it is: `impl Source for TapReader`), and there are two
   kinds:
-  - **The plan tap** (`Graph::open_tap`, `open_output_tap`; opening refuses a
+  - **The plan tap** (`Graph::taps().open`, `.open_output`: taps and meters are
+    two facets of the session graph, `g.taps()` and `g.meters()`; opening refuses a
     source that does not exist then with `MissingSource`, and a lane whose port
     goes missing later reads silence, never failing a commit): `Topology.taps`,
     one `Op::Tap` per tap in the plan, any port and width, aligned by the
     compiler or raw (`TapSpec::Ports`), or the outputs form
-    (`TapSpec::Outputs`, `open_output_tap`: each output channel post-sum and
+    (`TapSpec::Outputs`, `Taps::open_output`: each output channel post-sum and
     aligned, so a fan-in channel is heard whole, and it follows re-wiring), a `ringbuf` ring per lane written together (the lanes
     cannot tear), the writer riding the commit queue. A closed tap compiles to
     no op; a fork carries none. It sees the graph's signal **before the
     engine's declick fader** and the fold to the device width, so a
     transport-gated source steps at a stop.
   - **The heard tap** (`Session::open_heard_tap`, the default for recording
-    what the output sounds like): `Engine` writes each chunk of its output
+    what the output sounds like; it is the session's, not `g.taps()`'s, since the
+    writer lives in the engine's output buffer. An audio thread that is behind is
+    `HeardOpen::Retry`, an outcome and not a `HeardTapError`): `Engine` writes each chunk of its output
     buffer after the fader, every device channel, from `process` and
     `process_segment` (a device callback and an offline `render`, silence for
     a refused block); an export forks without the engine and never writes to
@@ -77,7 +80,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `Source::take_lost` through `Recorder::lost`).
 - Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
   and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
-  `Editor::open_event_tap` / `Graph::open_event_tap` on one event output, read
+  `Editor::open_event_tap` / `Graph::taps().open_event` on one event output, read
   through `EventTapReader` (its own type, not a `TapReader`: no lanes, no
   layout). MIDI only, each event a `TapEvent { frame, ump }` on the graph's
   absolute clock (a `u64`, after any `TapAlign` delay), the ring `note_off_room`
@@ -85,8 +88,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   in events (`take_lost`). A port that goes missing later reads nothing and
   counts nothing; a closed tap compiles to no op and a fork carries none. Its
   frames are on the rate the reader was opened at (`EventTapReader::rate`), so
-  whoever re-prepares at another rate reopens its own (`Graph::reopen_event_tap`, one id;
-  `reopen_event_taps` replaces every reader, a caller's too). The session's hardware MIDI
+  whoever re-prepares at another rate reopens its own (`Taps::reopen_event`, one id;
+  `reopen_events` replaces every reader, a caller's too). The session's hardware MIDI
   out is such a tap, on the clock node, `ToOutput`, drained in `Phase::MidiOut`.
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
   `InletNode` (`tutti-graph`) copies a ring (`TapReader::pair`)
@@ -181,7 +184,9 @@ serial one.
   one consumer (`&mut self`, not `Clone`) and a second consumer opens a
   second meter. Opening refuses a source that does not exist then (`MissingSource`); a lane whose port goes missing later reads silence.
   Ballistics are the reader's.
-  `LoadMeter` stays in `Engine`: it times the block and is not audio.
+  `LoadMeter` stays in `Engine`: it times the block and is not audio. Like a level
+  meter it has one reader (`take(&mut self)`, not `Clone`; `Engine::take_load_meter`
+  hands it over, `peek` reads without taking).
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
@@ -1192,9 +1197,18 @@ Scalars use `Param<U>`.
   and into the root it folds to the declared topology, `BusError::RootUndeclared`
   otherwise). `Graph::chain` does a main bus down a list. All refuse with
   `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **One failure rule** (doc 013, "The session graph's surface"): a `Graph` or
+  `Session` call that names a key or port that does not exist fails at the call with
+  a named error (`ConnectError`, `NoSuchNode`, `MissingSource`, `RemoveError`), never
+  later at the commit and never as a default (a count of 0, `Mix::WET`); a port that
+  goes missing after a successful call still reads silence. A feed (`set_feed`) and a
+  modulation declaration are declarations, resolved when their nodes exist, and are
+  the exception. What only the session drives (`take_audio_side`, `AudioSide`, the
+  sent plan, `Graph::testing()`) is behind tutti-session's off-by-default `testing`
+  feature, which its own tests turn on through a dev-dependency on itself.
 - **Removal is a `#[must_use]` `Result` that names what was not there** (doc 030
   step 2d, doc 013 "As built (removal)"): `Graph::remove` / `Session::remove`
-  (`RemoveError`, declicked), `close_tap` / `close_event_tap` / `close_meter`
+  (`RemoveError`, declicked), `Taps::close` / `close_event` and `Meters::close`
   (`CloseError`), `close_heard_tap` (`HeardTapError::NotOpen`), the session's
   modulation `remove_source` / `remove_route` and `Midi::unroute`; never a `bool`.
   A refusal changes nothing. **`Graph::add` is the one way a node enters** and
@@ -1206,7 +1220,7 @@ Scalars use `Param<U>`.
   `events_out_at(i)` / `events_in_at(i)` take an index. `connect`, `disconnect`,
   `sources`, `set_sources` and `disconnect_all` cover the `Event` wire (never
   faded); `set_event_sources`, `event_sources` and `EventSource` are gone, and
-  `open_event_tap(key.events_out(), ..)` takes the port. A node's params are
+  `taps().open_event(key.events_out(), ..)` takes the port. A node's params are
   methods of its key (`lp.cutoff()`, `mb.threshold_at(1)`), a `TypedParamRef<U>`
   that converts into `ParamRef`, generated from the node's own declaration of
   its params (`tutti_graph::declare_params!` next to its `Param<U>` cells, doc 030

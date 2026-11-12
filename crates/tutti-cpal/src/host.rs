@@ -7,7 +7,6 @@
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
 use crate::roster::{DeviceId, Direction, Snapshot};
 
@@ -150,36 +149,12 @@ impl DeviceHost {
         self.id
     }
 
-    /// Lists this host's output devices.
-    ///
-    /// A device whose name cannot be read is listed with an empty name.
-    ///
-    /// # Errors
-    /// [`Error::DevicesError`] if the host cannot enumerate.
-    pub fn output_devices(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(DeviceInfo::list(
-            self.inner
-                .output_devices()?
-                .map(|d| d.name().unwrap_or_default()),
-        ))
-    }
-
-    /// Lists this host's input devices, as
-    /// [`output_devices`](Self::output_devices) does.
-    ///
-    /// # Errors
-    /// [`Error::DevicesError`] if the host cannot enumerate.
-    pub fn input_devices(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(DeviceInfo::list(
-            self.inner
-                .input_devices()?
-                .map(|d| d.name().unwrap_or_default()),
-        ))
-    }
-
-    /// Every device and both defaults, in one look: what
-    /// [`DevicePoller`](crate::DevicePoller) publishes. Blocks as long as the
-    /// host's enumeration does.
+    /// **The one listing of a host's devices**: every device of both
+    /// directions and both defaults, in one look ([`Snapshot::devices`] for
+    /// one direction). It is what [`DevicePoller`](crate::DevicePoller)
+    /// publishes and [`DeviceListing`](crate::DeviceListing) fetches on a
+    /// thread. A device whose name cannot be read is listed with an empty
+    /// name. Blocks as long as the host's enumeration does.
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.

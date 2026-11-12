@@ -54,7 +54,6 @@ use tutti_types::Samples;
 use tutti_types::{ChannelLayout, ChannelTopology, Fold};
 use tutti_types::{Pull, Source};
 
-use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
 use crate::host::{AudioHost, DeviceHost, DeviceSelector};
@@ -366,15 +365,6 @@ impl MicIn {
             path,
             &Spec::new(format, Source::layout(self), self.sample_rate),
         )
-    }
-
-    /// Lists the default host's input devices; a [`DeviceInfo::id`] is what
-    /// [`open`](Self::open) takes as a selector.
-    ///
-    /// # Errors
-    /// [`Error::DevicesError`] if the host cannot enumerate.
-    pub fn input_devices() -> Result<Vec<DeviceInfo>> {
-        DeviceHost::open(AudioHost::Default)?.input_devices()
     }
 }
 

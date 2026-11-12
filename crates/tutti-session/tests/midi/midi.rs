@@ -132,7 +132,12 @@ fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
 
 /// The nodes the last plan sent holds.
 fn plan_nodes(s: &Session) -> usize {
-    s.graph_ref().sent_plan().expect("a plan").order().len()
+    s.graph_ref()
+        .testing()
+        .sent_plan()
+        .expect("a plan")
+        .order()
+        .len()
 }
 
 /// **A clip lands its note on its frame**: a third of a beat in at 120 BPM
@@ -224,7 +229,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     let _ = s.update();
     assert_eq!(s.midi().clip(new), Some(clip), "the same clip");
     assert_eq!(s.midi().live_input(new).unwrap().node, live.node);
-    let mut fed = s.graph_ref().sources(EventInPort::new(new, 0));
+    let mut fed = s.graph_ref().sources(EventInPort::new(new, 0)).unwrap();
     fed.sort_by_key(|e| e.node());
     let mut want = vec![EventOutPort::new(clip, 0), EventOutPort::new(live.node, 0)];
     want.sort_by_key(|e| e.node());
@@ -559,11 +564,14 @@ fn the_sessions_midi_nodes_keep_their_reclaimers() {
         .midi()
         .play_clip(synth, note(60, Beat(0.0), BeatDuration(1.0)))
         .expect("the tap takes MIDI");
-    assert!(s.graph_ref().keeps_reclaimer(clip), "the clip's");
+    assert!(s.graph_ref().testing().keeps_reclaimer(clip), "the clip's");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
-    assert!(s.graph_ref().keeps_reclaimer(input), "the live input's");
     assert!(
-        !s.graph_ref().keeps_reclaimer(synth),
+        s.graph_ref().testing().keeps_reclaimer(input),
+        "the live input's"
+    );
+    assert!(
+        !s.graph_ref().testing().keeps_reclaimer(synth),
         "a tap publishes nothing"
     );
 }
@@ -959,7 +967,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .unwrap();
     let _ = s.update();
     assert_eq!(
-        sorted(s.graph_ref().sources(input(synth))),
+        sorted(s.graph_ref().sources(input(synth)).unwrap()),
         sorted(vec![hand.events_out(), EventOutPort::new(clip, 0)]),
         "the sequencer's clip joins the hand-wired one"
     );
@@ -973,14 +981,14 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .set_sources(input(synth), [hand2.events_out()])
         .unwrap();
     assert_eq!(
-        sorted(s.graph_ref().sources(input(synth))),
+        sorted(s.graph_ref().sources(input(synth)).unwrap()),
         sorted(vec![hand2.events_out(), EventOutPort::new(clip, 0)]),
         "the host's call sets its own edges, beside the feed's"
     );
 
     s.midi().retarget(clip, other).unwrap();
     assert_eq!(
-        s.graph_ref().sources(input(synth)),
+        s.graph_ref().sources(input(synth)).unwrap(),
         vec![hand2.events_out()],
         "the feed's edge goes, the host's stays"
     );

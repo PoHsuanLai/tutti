@@ -15,7 +15,6 @@
 //! what the prelude does not carry (the node contract, the nodes, the
 //! modulation sources) is named through `tutti::`.
 
-use std::sync::Arc;
 use tutti::prelude::{InPort, OutPort, Root};
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
@@ -121,18 +120,14 @@ fn main() -> Result<(), tutti::Error> {
     play(&mut s, 20);
 
     // A depth edit: the LFO's lane republishes its program, keeping phase.
-    // No plan is sent.
-    let sent = s.graph().sent_plan();
+    // It edits no wiring, so the graph holds nothing for a commit and no
+    // plan is sent.
     s.mods_mut()
         .route_of(sweep)
         .expect("the route")
         .set_depth(Depth::of(0.45));
+    assert!(!s.graph_ref().is_edited(), "a depth edit sends no plan");
     report(s.update());
-    assert!(
-        sent.zip(s.graph().sent_plan())
-            .is_some_and(|(a, b)| Arc::ptr_eq(&a, &b)),
-        "a depth edit sends no plan"
-    );
     println!("LFO depth 0.45:");
     play(&mut s, 20);
     Ok(())

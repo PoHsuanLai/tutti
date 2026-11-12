@@ -83,12 +83,12 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     let node = add_probe_on_outputs(&mut s);
 
     assert_eq!(
-        s.graph_ref().node_event_inputs(node),
+        s.graph_ref().node_event_inputs(node).unwrap(),
         1,
         "a plugin takes MIDI (and automation) on its node's event input"
     );
     assert_eq!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + BLOCK),
         "the graph plans PDC against the node's whole latency"
     );
@@ -123,7 +123,7 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     controls.set_latency(Samples(300));
     let events = s.update();
     assert_eq!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         Samples(300 + BLOCK),
         "a changed plugin latency reaches the graph"
     );
@@ -139,7 +139,7 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     controls.set_latency(Samples(10_000_000));
     let _ = s.update();
     assert_eq!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         tutti_graph::MAX_NODE_LATENCY,
         "clamped to what PDC compensates"
     );
@@ -156,7 +156,7 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
     const INCOMING: usize = 211;
     let mut s = offline();
     let node = add_probe_on_outputs(&mut s);
-    let outgoing = s.graph_ref().node_latency(node);
+    let outgoing = s.graph_ref().node_latency(node).unwrap();
 
     let incoming = PluginClient::new(
         tutti_plugin::BridgeConfig::default(),
@@ -181,19 +181,19 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
 
     assert!(s.graph_ref().contains(node), "the node keeps its key");
     assert_ne!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         outgoing,
         "precondition: the figures differ"
     );
     assert_eq!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         Samples(INCOMING + BLOCK),
         "the graph plans against the incoming plugin's declared latency"
     );
     controls.set_latency(Samples(INCOMING + 7));
     let _ = s.update();
     assert_eq!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         Samples(INCOMING + 7 + BLOCK),
         "the latency phase must read the incoming plugin"
     );
@@ -237,17 +237,17 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
     let _ = stream.render_block(512).expect("the stream is open");
     let _ = s.update();
     assert_eq!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         Samples(137 + 512),
         "one 512-frame callback"
     );
-    assert_eq!(s.latency(), s.graph_ref().node_latency(node));
+    assert_eq!(s.latency(), s.graph_ref().node_latency(node).unwrap());
 
     let (driver, _new) = ManualStreamDriver::new();
     s.restart_on(&mut device, spec(256), driver, None, |_| {})
         .expect("restarts");
     assert_eq!(
-        s.graph_ref().node_latency(node),
+        s.graph_ref().node_latency(node).unwrap(),
         Samples(137 + 256),
         "one 256-frame callback"
     );

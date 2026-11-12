@@ -36,7 +36,7 @@ use crate::live::order::{in_offset_order, offset_of};
 /// frames at 120 BPM and 48 kHz, 600 at 300 BPM) wraps about 14 times in an
 /// 8 192-frame block, well under the cap; it takes a loop of about sixty
 /// frames (a millisecond) to reach it. Past it the events of later passes are refused and
-/// counted ([`ClockMaster::dropped_events`]).
+/// counted ([`ClockMaster::losses`]).
 pub const CLOCK_EVENT_CAPACITY: usize = 256;
 
 /// Outbound MIDI clock and timecode as a graph node with one event output.
@@ -58,7 +58,7 @@ pub struct ClockNode {
     master: Arc<ClockMaster>,
     /// Where a block's events are gathered, to go out in offset order. Capped
     /// at the port's capacity: past it an event is refused and counted on the
-    /// master ([`ClockMaster::dropped_events`]), never grown into.
+    /// master ([`ClockMaster::losses`]), never grown into.
     pending: RtVec<UmpAt, CLOCK_EVENT_CAPACITY>,
 }
 

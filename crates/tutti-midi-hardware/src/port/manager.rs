@@ -6,9 +6,9 @@
 //! returns the [`InputProducerHandle`] the driver thread pushes through, and
 //! removing it gives the slot back.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use tutti_graph::Losses;
 use tutti_midi_runtime::{DeviceInlets, NoFreeSlot};
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
@@ -61,14 +61,13 @@ pub struct PortInfo {
     /// Whether the port delivers. An inactive port's events are discarded at
     /// the driver's thread, not queued.
     pub active: bool,
-    /// How many events the port's inlet had no room for, since the port
-    /// opened.
-    pub dropped: u64,
-    /// How many events reached the graph after their frame had begun, and
-    /// sounded at the first frame of the block that found them: late, not
-    /// lost. The lead the inlets place arrivals with
-    /// ([`DeviceInlets`]) is what prevents it.
-    pub late: u64,
+    /// What the port's inlet has lost since the port opened, in events:
+    /// `lost` for want of room in its ring, `evicted` from its waiting list,
+    /// `refused` by the graph's port, and `late`: events that reached the graph
+    /// after their frame had begun and sounded at the first frame of the block
+    /// that found them (late, not lost; the lead the inlets place arrivals with
+    /// ([`DeviceInlets`]) is what prevents it).
+    pub losses: Losses,
     /// How many UMP Stream messages the port's stream ring had no room for,
     /// since the port opened.
     pub stream_lost: u64,
@@ -80,8 +79,7 @@ impl PortInfo {
             id: port.id(),
             name: port.name().to_string(),
             active: port.is_active(),
-            dropped: port.dropped(),
-            late: port.late(),
+            losses: port.losses(),
             stream_lost: port.stream_lost(),
         }
     }
@@ -101,9 +99,9 @@ impl PortInfo {
 pub struct HardwareMidiInputs {
     inlets: Arc<DeviceInlets>,
     ports: Mutex<Ports>,
-    /// The drops of the ports removed so far, so a retired port's count stays
-    /// in [`dropped_events`](Self::dropped_events).
-    retired_dropped: AtomicU64,
+    /// The losses of the ports removed so far, so a retired port's counts stay
+    /// in [`losses`](Self::losses).
+    retired: Mutex<Losses>,
 }
 
 /// The port list: one slot per index, `None` where a port was removed and no
@@ -121,7 +119,7 @@ impl HardwareMidiInputs {
         Self {
             inlets,
             ports: Mutex::new(Ports::default()),
-            retired_dropped: AtomicU64::new(0),
+            retired: Mutex::new(Losses::NONE),
         }
     }
 
@@ -137,20 +135,20 @@ impl HardwareMidiInputs {
         self.ports.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Events the ports' inlets had no room for, over all ports, current and
-    /// removed, since this list was built. An inlet fills only when events
-    /// arrive faster than blocks take them for long enough to fill it. Control
-    /// side.
+    /// What the ports' inlets have lost, summed over all ports, current and
+    /// removed, since this list was built (see [`PortInfo::losses`]). An inlet
+    /// fills only when events arrive faster than blocks take them for long
+    /// enough to fill it. Control side.
     #[must_use]
-    pub fn dropped_events(&self) -> u64 {
-        let live: u64 = self
+    pub fn losses(&self) -> Losses {
+        let live: Losses = self
             .ports()
             .slots
             .iter()
             .flatten()
-            .map(|p| p.dropped())
+            .map(|p| p.losses())
             .sum();
-        live + self.retired_dropped.load(Ordering::Relaxed)
+        live + *self.retired.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Creates an input port named `name` and returns the **only** producer
@@ -216,8 +214,7 @@ impl HardwareMidiInputs {
         }
         match removed {
             Some(port) => {
-                self.retired_dropped
-                    .fetch_add(port.dropped(), Ordering::Relaxed);
+                *self.retired.lock().unwrap_or_else(PoisonError::into_inner) += port.losses();
                 self.inlets.close(port.slot());
                 true
             }

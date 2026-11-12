@@ -35,7 +35,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use tutti_graph::UmpAt;
+use tutti_graph::{Losses, UmpAt};
 
 use tutti_graph::{
     Cx, Event, EventDensity, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io,
@@ -217,7 +217,7 @@ pub struct MidiIngestNode {
     /// its cell (`Reader::cell`), which the controls publish to.
     mpe_request: Reader<Option<MpeMode>>,
     /// Translated events a block had no room for in `out`
-    /// ([`MidiIngestControls::dropped_events`]).
+    /// ([`MidiIngestControls::losses`]).
     dropped: Arc<AtomicU64>,
     /// The events a block translates and each port holds, from the block the
     /// node was prepared for.
@@ -370,23 +370,15 @@ impl MidiIngestControls {
         }
     }
 
-    /// Frees the requests the node has let go of since the last
-    /// [`set_mpe_mode`](Self::set_mpe_mode), without publishing; returns how
-    /// many are still held. Control thread, from the owner's tick (a
-    /// session's `Reclaim` phase sweeps its hardware input's); with nothing
-    /// retired it is a lock and a length check.
-    pub fn reclaim(&self) -> usize {
-        self.request.reclaim()
-    }
-
-    /// How many translated events the node has dropped since it was built:
-    /// past the node's capacity in one block, an event's
+    /// What the node has lost since it was built, in events: all of it
+    /// `refused`, the translated events that found no room past the node's
+    /// capacity in one block. An event's
     /// translation (a bend range or an MPE reset fans out over a zone) is
     /// dropped whole rather than cut partway. What a device's inlet could not
     /// hold is counted at the inlet, not here
     /// ([`DeviceInlets`](crate::DeviceInlets)).
-    pub fn dropped_events(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+    pub fn losses(&self) -> Losses {
+        Losses::refused(self.dropped.load(Ordering::Relaxed))
     }
 
     /// The mode last asked for through [`set_mpe_mode`](Self::set_mpe_mode),
@@ -558,6 +550,14 @@ impl IntoNode for MidiIngestNode {
             controls,
             fork: Some(Box::new(fork)),
         }
+    }
+}
+
+/// Frees what the control side retired and no block holds, without publishing
+/// (the MPE requests a replacement left behind); control thread, from the owner's tick.
+impl tutti_rt::Reclaim for MidiIngestControls {
+    fn reclaim(&self) -> usize {
+        self.request.reclaim()
     }
 }
 

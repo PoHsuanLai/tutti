@@ -735,16 +735,15 @@ impl Graph {
     /// each event on its frame. A ring of [`capacity`](EventCapacity) events is read by an
     /// [`EventInletNode`] (unwired; its one event output feeds what you
     /// connect it to, like any node), and the writer is the producer's end:
-    /// [`push`](EventInletWriter::push) for an [`At`](tutti_types::At) from one
+    /// [`push`](EventInletWriter::push) at a [`Stamp`](tutti_graph::Stamp) from one
     /// thread. The inverse of [`open_event_tap`](Self::open_event_tap). `capacity`
     /// is the ring, the waiting list and the port's declared event capacity
     /// (a live input's is `tutti_midi_runtime::LIVE_INLET_CAPACITY`, 256).
     ///
-    /// Nothing blocks and what does not fit is counted, each in its own count
-    /// on the writer ([`lost`](EventInletWriter::lost),
-    /// [`evicted`](EventInletWriter::evicted),
-    /// [`refused`](EventInletWriter::refused), and
-    /// [`late`](EventInletWriter::late) for what was found past). A producer
+    /// Nothing blocks and what does not fit is counted in the writer's
+    /// [`Losses`](tutti_graph::Losses) (`EventInletWriter::counts`, then
+    /// `losses()`: `lost`, `evicted`, `refused`, and `late` for what was found
+    /// past). A producer
     /// has no rate to match: an event names a frame, or a
     /// [`Moment`](tutti_types::Moment) that carries its rate, so there is
     /// nothing to refuse and nothing resampled.

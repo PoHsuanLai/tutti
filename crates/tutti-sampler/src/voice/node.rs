@@ -458,7 +458,7 @@ mod tests {
             handle.set_placement(Beat::new(1.0), None);
         }
         assert_eq!(handle.placement.retired_len(), 1, "pinned until a scan");
-        assert_eq!(handle.reclaim(), 0);
+        assert_eq!(tutti_rt::Reclaim::reclaim(&handle), 0);
         assert_eq!(handle.placement.retired_len(), 0, "freed by the reclaim");
     }
 }

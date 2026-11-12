@@ -483,16 +483,6 @@ impl VoiceNodeHandle {
         self.placement.publish(window);
     }
 
-    /// Frees the windows the node has let go of since the last
-    /// [`set_placement`](Self::set_placement) (one a block still held when it
-    /// was replaced), without publishing; returns how many are still held.
-    /// Control thread, from the owner's tick (`bevy-tutti` sweeps every
-    /// voice entity's handle each frame); with nothing retired it is a lock
-    /// and a length check.
-    pub fn reclaim(&self) -> usize {
-        self.placement.reclaim()
-    }
-
     /// Sets the voice's gain, from the node's next block on; a NaN or infinite gain
     /// is silence. A write to a
     /// shared cell: never lost, never queued.
@@ -918,6 +908,14 @@ impl VoicePoolHandle {
             }
             other => other,
         }
+    }
+}
+
+/// Frees what the control side retired and no block holds, without publishing
+/// (the placement windows a replacement left behind); control thread, from the owner's tick.
+impl tutti_rt::Reclaim for VoiceNodeHandle {
+    fn reclaim(&self) -> usize {
+        self.placement.reclaim()
     }
 }
 

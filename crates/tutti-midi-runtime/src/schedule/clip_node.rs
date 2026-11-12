@@ -322,16 +322,6 @@ impl MidiClipControls {
         self.set_events([]);
     }
 
-    /// Frees the clips the node has let go of since the last
-    /// [`set_events`](Self::set_events) (one a block still held when it was
-    /// replaced), without publishing; returns how many are still held.
-    /// Control thread, from the owner's tick (a session's `Reclaim` phase
-    /// sweeps its own clips); with nothing retired it is a lock and a length
-    /// check.
-    pub fn reclaim(&self) -> usize {
-        self.shared.cell.reclaim()
-    }
-
     /// How many events the clip holds.
     pub fn event_count(&self) -> usize {
         self.shared.current().events.len()
@@ -518,6 +508,14 @@ impl ForkSource for ClipFork {
             next_generation: AtomicU64::new(0),
         });
         Ok(Forked::new(Box::new(MidiClipNode::over(shared))))
+    }
+}
+
+/// Frees what the control side retired and no block holds, without publishing
+/// (the clips a replacement left behind); control thread, from the owner's tick.
+impl tutti_rt::Reclaim for MidiClipControls {
+    fn reclaim(&self) -> usize {
+        self.shared.cell.reclaim()
     }
 }
 

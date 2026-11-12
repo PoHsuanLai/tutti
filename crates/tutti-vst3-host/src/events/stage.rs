@@ -70,8 +70,15 @@ impl Stager {
         self.encoder.groups_dropped()
     }
 
-    /// The plugin was stopped or reset: it forgot its notes and its MIDI 1.0
-    /// state ([`MidiEncoder::reset`]).
+    /// MIDI messages dropped because VST3 has no event for them
+    /// ([`MidiEncoder::unsendable_dropped`]).
+    #[must_use]
+    pub fn unsendable_dropped(&self) -> u64 {
+        self.encoder.unsendable_dropped()
+    }
+
+    /// The plugin was stopped or reset: it forgot its notes
+    /// ([`MidiEncoder::reset`]).
     pub fn reset(&mut self) {
         self.encoder.reset();
     }
@@ -144,7 +151,6 @@ impl Stager {
                 // all or none.
                 if events.len() > 1 && stage.room() < events.len() {
                     stage.count_dropped(events.len() as u64);
-                    self.encoder.forget_selection();
                     return;
                 }
                 for &event in events {

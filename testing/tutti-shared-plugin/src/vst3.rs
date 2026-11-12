@@ -8,7 +8,7 @@ use std::ffi::{c_char, c_void};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 
-use vst3::{Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*, uid};
+use vst3::{Class, ComPtr, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*, uid};
 
 use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample, Transport};
 
@@ -110,6 +110,34 @@ struct Plugin {
     /// The factory's host context, for the view.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     context: HostContext,
+    /// The host's component handler, which a state load tells (core, "Notice").
+    handler: Mutex<Option<ComPtr<IComponentHandler>>>,
+}
+
+/// The controller `IMidiMapping` maps to `level`, on event bus 0, channel 0
+/// (core, "VST3 controllers and flushes").
+const MAPPED_CONTROLLER: i16 = 74;
+
+/// The channel whose note ons are reported through `outputParameterChanges`.
+const REPORTING_CHANNEL: i16 = 15;
+
+impl Plugin {
+    /// What `core::NOTICE_ON_LOAD` says a VST3 plugin does on a state load: an
+    /// edit of `aux` to 0.75 through the host's component handler.
+    fn notice(&self) {
+        if self.core.notice() != core::NOTICE_ON_LOAD {
+            return;
+        }
+        let handler = self.handler.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = handler.as_ref() {
+            // SAFETY: `h` is the host's handler, held since `setComponentHandler`.
+            unsafe {
+                h.beginEdit(core::AUX);
+                h.performEdit(core::AUX, 0.75);
+                h.endEdit(core::AUX);
+            }
+        }
+    }
 }
 
 impl Class for Plugin {
@@ -118,6 +146,7 @@ impl Class for Plugin {
         IAudioProcessor,
         IProcessContextRequirements,
         IEditController,
+        IMidiMapping,
     );
 }
 
@@ -235,7 +264,11 @@ impl IComponentTrait for Plugin {
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
         // SAFETY, for this function's `unsafe` blocks: `state` is the host's stream, null-checked by `ComRef`.
         match unsafe { stream_bytes(state) } {
-            Some(b) if self.core.load(&b).is_ok() => kResultOk,
+            Some(b) if self.core.load(&b).is_ok() => {
+                // One object is both halves, so the load is also the controller's.
+                self.notice();
+                kResultOk
+            }
             _ => kResultFalse,
         }
     }
@@ -333,6 +366,12 @@ impl IAudioProcessorTrait for Plugin {
         if let Some(ctx) = unsafe { d.processContext.as_ref() } {
             self.core.log_transport(told(ctx));
         }
+        let flushing = d.numSamples == 0;
+        // `inputParameterChanges` is not annotated optional (ivstaudioprocessor.h):
+        // a null one is recorded (core, "VST3 controllers and flushes").
+        if d.inputParameterChanges.is_null() {
+            self.core.push(dsp, Ev::NullParams);
+        }
         if let Some(changes) = unsafe { ComRef::from_raw(d.inputParameterChanges) } {
             for q in 0..unsafe { changes.getParameterCount() } {
                 let Some(queue) = (unsafe { ComRef::from_raw(changes.getParameterData(q)) }) else {
@@ -366,6 +405,25 @@ impl IAudioProcessorTrait for Plugin {
                     Event_::EventTypes_::kNoteOnEvent => {
                         let key = unsafe { e.__field0.noteOn.pitch } as u8;
                         self.core.push(dsp, Ev::NoteOn { offset, key });
+                        if unsafe { e.__field0.noteOn.channel } == REPORTING_CHANNEL {
+                            self.report_key(d, offset, key);
+                        }
+                    }
+                    Event_::EventTypes_::kDataEvent => {
+                        let data = unsafe { e.__field0.data };
+                        let first = if data.bytes.is_null() || data.size == 0 {
+                            0
+                        } else {
+                            unsafe { *data.bytes }
+                        };
+                        self.core.push(
+                            dsp,
+                            Ev::Data {
+                                offset,
+                                first,
+                                size: data.size,
+                            },
+                        );
                     }
                     Event_::EventTypes_::kNoteOffEvent => {
                         let key = unsafe { e.__field0.noteOff.pitch } as u8;
@@ -376,8 +434,12 @@ impl IAudioProcessorTrait for Plugin {
             }
         }
 
+        if flushing {
+            // A parameter flush (numSamples == 0): the points are applied now.
+            self.core.flush(dsp);
+            return kResultOk;
+        }
         if d.numInputs < 1 || d.numOutputs < 1 || d.inputs.is_null() || d.outputs.is_null() {
-            // Parameter-only flush: render nothing.
             return kResultOk;
         }
         let (ib, ob) = unsafe { (&*d.inputs, &*d.outputs) };
@@ -399,6 +461,25 @@ impl IAudioProcessorTrait for Plugin {
     }
     unsafe fn getTailSamples(&self) -> u32 {
         core::TAIL
+    }
+}
+
+impl Plugin {
+    /// Writes the point `aux = key / 127` into the block's
+    /// `outputParameterChanges` (core, "VST3 controllers and flushes").
+    fn report_key(&self, d: &ProcessData, offset: u32, key: u8) {
+        let value = f64::from(key) / 127.0;
+        // SAFETY, for this function's `unsafe` blocks: the list, when the host gave one, is valid for the call.
+        let Some(out) = (unsafe { ComRef::from_raw(d.outputParameterChanges) }) else {
+            return;
+        };
+        let (id, mut index) = (core::AUX, 0);
+        let Some(queue) = (unsafe { ComRef::from_raw(out.addParameterData(&id, &mut index)) })
+        else {
+            return;
+        };
+        let mut at = 0;
+        unsafe { queue.addPoint(offset as i32, value, &mut at) };
     }
 }
 
@@ -440,6 +521,24 @@ impl IProcessContextRequirementsTrait for Plugin {
         state_bit(F::kNeedTempo)
             | state_bit(F::kNeedProjectTimeMusic)
             | state_bit(F::kNeedTransportState)
+    }
+}
+
+impl IMidiMappingTrait for Plugin {
+    unsafe fn getMidiControllerAssignment(
+        &self,
+        bus: i32,
+        channel: i16,
+        controller: CtrlNumber,
+        id: *mut ParamID,
+    ) -> tresult {
+        if bus == 0 && channel == 0 && controller == MAPPED_CONTROLLER {
+            // SAFETY: `id` is an out-pointer the host owns for the call.
+            unsafe { *id = core::LEVEL };
+            kResultTrue
+        } else {
+            kResultFalse
+        }
     }
 }
 
@@ -524,7 +623,10 @@ impl IEditControllerTrait for Plugin {
         self.core.set_param(id, v);
         kResultOk
     }
-    unsafe fn setComponentHandler(&self, _h: *mut IComponentHandler) -> tresult {
+    unsafe fn setComponentHandler(&self, h: *mut IComponentHandler) -> tresult {
+        // SAFETY: `h` is the host's handler or null; `ComRef` checks for null.
+        let handler = unsafe { ComRef::from_raw(h) }.map(|r| r.to_com_ptr());
+        *self.handler.lock().unwrap_or_else(|e| e.into_inner()) = handler;
         kResultOk
     }
     unsafe fn createView(&self, _name: *const c_char) -> *mut IPlugView {
@@ -667,6 +769,7 @@ impl IPluginFactoryTrait for Factory {
             refuses_processing: wanted == STUBBORN_CID,
             init_thread: AtomicUsize::new(0),
             context: self.context.clone(),
+            handler: Mutex::new(None),
         });
         let Some(unknown) = plugin.to_com_ptr::<FUnknown>() else {
             return kInternalError;

@@ -185,29 +185,32 @@ impl Plugin {
         is_ok(unsafe { self.processor.canProcessSampleSize(K_SAMPLE_64_INT) })
     }
 
-    /// `IAudioProcessor::setupProcessing`. `Ok(false)` is `kResultFalse`, which
-    /// the SDK lets a plugin answer without failing.
+    /// `IAudioProcessor::setupProcessing`. `kResultFalse` is a refusal of the
+    /// setup (a rate, block size or sample width the plugin cannot run): the
+    /// processor is not set up, and the call order that follows (`activateBus`,
+    /// `setActive`, `process`) does not apply.
     ///
     /// # Errors
     ///
-    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; any other refusal.
+    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists;
+    /// [`Vst3Error::False`] when the plugin refuses the setup; any other
+    /// refusal.
     ///
     /// What was set up (the sample size and the longest block) is remembered
-    /// when the plugin does not fail the call (`Ok(true)` or `Ok(false)`: a
-    /// `kResultFalse` setup is tolerated, as the host's activation expects): the
-    /// audio half refuses a block that does not fit it. A call that errors
-    /// leaves no setup, and the previous one is forgotten when the call is made.
+    /// when the plugin accepts the call: the audio half refuses a block that
+    /// does not fit it. A call that errors leaves no setup, and the previous
+    /// one is forgotten when the call is made.
     pub fn setup_processing(
         &self,
         main: &MainThread,
         mut setup: ProcessSetup,
-    ) -> Result<bool, Vst3Error> {
+    ) -> Result<(), Vst3Error> {
         let _scope = self.scoped(main);
         let mut state = self.shared.lock_for_control()?;
         state.setup = None;
         // SAFETY: `setup` is a valid in-parameter for the call, and the claim is
         // held with no audio half out.
-        let result = check_bool(unsafe { self.processor.setupProcessing(&mut setup) });
+        let result = check(unsafe { self.processor.setupProcessing(&mut setup) });
         if result.is_ok() {
             state.setup = Some(Setup {
                 symbolic_size: setup.symbolicSampleSize,

@@ -101,16 +101,6 @@ pub(crate) fn is_ok(code: tresult) -> bool {
     code == kResultOk
 }
 
-/// For a call whose `kResultFalse` is an answer: `true` for `kResultOk`,
-/// `false` for `kResultFalse`, the error for anything else.
-pub(crate) fn check_bool(code: tresult) -> Result<bool, Vst3Error> {
-    match check(code) {
-        Ok(()) => Ok(true),
-        Err(Vst3Error::False) => Ok(false),
-        Err(e) => Err(e),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,17 +123,11 @@ mod tests {
         }
     }
 
-    /// `kResultOk` is the only success, and `kResultFalse` is an error to
-    /// `check` but an answer to `check_bool`.
+    /// `kResultOk` is the only success, and `kResultFalse` is an error.
     #[test]
-    fn only_ok_is_success_and_false_is_an_answer_to_check_bool() {
+    fn only_ok_is_success() {
         assert_eq!(check(kResultOk), Ok(()));
         assert_eq!(check(kResultFalse), Err(Vst3Error::False));
-        assert_eq!(check_bool(kResultOk), Ok(true));
-        assert_eq!(check_bool(kResultFalse), Ok(false));
-        assert_eq!(
-            check_bool(kInvalidArgument),
-            Err(Vst3Error::InvalidArgument)
-        );
+        assert_eq!(check(kInvalidArgument), Err(Vst3Error::InvalidArgument));
     }
 }

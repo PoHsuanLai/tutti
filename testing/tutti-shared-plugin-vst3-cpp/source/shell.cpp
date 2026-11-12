@@ -4,6 +4,7 @@
 
 #include "base/source/fstreamer.h"
 #include "pluginterfaces/base/ibstream.h"
+#include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "public.sdk/source/main/pluginfactory.h"
@@ -80,6 +81,16 @@ public:
 		for (size_t c = 0; c < copy.size (); ++c) copy[c].assign (in[c], in[c] + frames);
 		core.process<S> (frames, 0, copy, out, size_t (ob->numChannels));
 	}
+	// A note on of `key` on channel 15 writes the point `aux = key / 127` into the
+	// block's outputParameterChanges (core.rs, "VST3 controllers and flushes").
+	void reportKey (ProcessData& d, int32 offset, int16 key)
+	{
+		double v = double (key) / 127.0;
+		if (!d.outputParameterChanges) return;
+		int32 index = 0, at = 0;
+		if (auto* queue = d.outputParameterChanges->addParameterData (shared::kAux, index))
+			queue->addPoint (offset, v, at);
+	}
 	tresult PLUGIN_API process (ProcessData& d) SMTG_OVERRIDE
 	{
 		if (auto* c = d.processContext)
@@ -92,6 +103,8 @@ public:
 			if (c->state & ProcessContext::kProjectTimeMusicValid) f |= shared::kBeatValid;
 			core.logTransport (0, f, c->tempo, c->projectTimeMusic);
 		}
+		// `inputParameterChanges` is not annotated optional (ivstaudioprocessor.h): a null one is recorded.
+		if (!d.inputParameterChanges) core.push ({6, 0, 0, 0});
 		if (d.inputParameterChanges)
 			for (int32 q = 0; q < d.inputParameterChanges->getParameterCount (); ++q)
 				if (auto* queue = d.inputParameterChanges->getParameterData (q))
@@ -107,9 +120,17 @@ public:
 				Event e;
 				if (d.inputEvents->getEvent (i, e) != kResultOk) continue;
 				uint32_t off = uint32_t (e.sampleOffset < 0 ? 0 : e.sampleOffset);
-				if (e.type == Event::kNoteOnEvent) core.push ({2, off, uint32_t (e.noteOn.pitch), 0});
+				if (e.type == Event::kNoteOnEvent)
+				{
+					core.push ({2, off, uint32_t (e.noteOn.pitch), 0});
+					if (e.noteOn.channel == 15) reportKey (d, int32 (off), e.noteOn.pitch);
+				}
+				else if (e.type == Event::kDataEvent)
+					core.push ({5, off, e.data.size && e.data.bytes ? uint32_t (e.data.bytes[0]) : 0u, double (e.data.size)});
 				else if (e.type == Event::kNoteOffEvent) core.push ({3, off, uint32_t (e.noteOff.pitch), 0});
 			}
+		// A parameter flush (numSamples == 0): the points are applied now.
+		if (d.numSamples == 0) { core.flush (); return kResultOk; }
 		if (d.numInputs < 1 || d.numOutputs < 1) return kResultOk;
 		if (d.symbolicSampleSize == kSample64)
 			run<double> (d, [] (AudioBusBuffers& b) { return b.channelBuffers64; });
@@ -119,9 +140,22 @@ public:
 	}
 };
 
-class SharedController : public EditController
+class SharedController : public EditController, public IMidiMapping
 {
 public:
+	OBJ_METHODS (SharedController, EditController)
+	DEFINE_INTERFACES
+		DEF_INTERFACE (IMidiMapping)
+	END_DEFINE_INTERFACES (EditController)
+	REFCOUNT_METHODS (EditController)
+
+	// Event bus 0, channel 0: controller 74 drives `level`; nothing else is mapped (core.rs).
+	tresult PLUGIN_API getMidiControllerAssignment (int32 bus, int16 channel, CtrlNumber controller, ParamID& id) SMTG_OVERRIDE
+	{
+		if (bus != 0 || channel != 0 || controller != 74) return kResultFalse;
+		id = shared::kLevel;
+		return kResultTrue;
+	}
 	static FUnknown* createInstance (void*) { return (IEditController*)new SharedController (); }
 	tresult PLUGIN_API initialize (FUnknown* ctx) SMTG_OVERRIDE
 	{
@@ -139,6 +173,13 @@ public:
 		shared::Core tmp;
 		if (!tmp.load (b.data (), b.size ())) return kResultFalse;
 		for (uint32_t id = 0; id < shared::kParams; ++id) { double v; tmp.param (id, v); setParamNormalized (id, v); }
+		// The notice (core.rs): an edit of `aux` to 0.75 through the host's component handler on every state load.
+		if (tmp.notice == shared::kNoticeOnLoad)
+		{
+			beginEdit (shared::kAux);
+			performEdit (shared::kAux, 0.75);
+			endEdit (shared::kAux);
+		}
 		return kResultOk;
 	}
 };

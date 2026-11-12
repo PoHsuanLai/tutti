@@ -130,6 +130,11 @@ fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
         MIN_POINT_ROOM,
         tutti_plugin_types::PointPool::default(),
     );
+    let in_params = ParameterChangesImpl::with_queues(
+        4,
+        MIN_POINT_ROOM,
+        tutti_plugin_types::PointPool::default(),
+    );
 
     let mut block = |side: &mut AudioSide| {
         let ins_data = vec![0.0f32; BLOCK];
@@ -145,7 +150,7 @@ fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
             outputs: output.bind_outputs_f32(&mut outs)?,
             input_events: &in_events,
             output_events: &out_events,
-            input_params: None,
+            input_params: &in_params,
             output_params: &params,
             context: &mut context,
             setup: &setup,
@@ -162,18 +167,22 @@ fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
 /// `kResultFalse`.
 const SETUP_FAILS: &str = "7";
 
-/// A setup the plugin answers `kResultFalse` to is tolerated (the host's
-/// activation proceeds, as `a_refused_setup_is_tolerated_by_design` pins), and
-/// the setup is recorded so the audio half is handed out and holds blocks to it.
+/// A setup the plugin answers `kResultFalse` to is a refusal
+/// (`IAudioProcessor::setupProcessing`: the call order that follows does not
+/// apply to a processor that is not set up): the call fails with `False`, no
+/// setup is recorded and no audio half is handed out.
 #[test]
-fn a_setup_answered_false_is_tolerated_and_recorded() {
+fn a_setup_answered_false_is_a_refusal_and_records_nothing() {
     // SAFETY: nextest runs each test in its own process, so nothing else reads
     // the environment while this sets it, and the probe reads it at creation.
     unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", SETUP_FAILS) };
     let (_module, mut plugin) = plugin();
-    assert_eq!(plugin.setup_processing(&main_thread(), setup()), Ok(false));
+    assert_eq!(
+        plugin.setup_processing(&main_thread(), setup()),
+        Err(Vst3Error::False)
+    );
     plugin.set_active(&main_thread(), true).expect("activate");
-    assert!(plugin.audio_side().is_some());
+    assert!(plugin.audio_side().is_none(), "no setup was recorded");
 }
 
 /// Opening one module image from several threads at once is safe.

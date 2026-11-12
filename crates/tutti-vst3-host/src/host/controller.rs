@@ -9,10 +9,10 @@ use tutti_plugin_types::MainThread;
 use tutti_rt::{DrainMark, DrainWatch};
 
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, Controller, Edit, EditSink, EditorSize, EditorWindow,
-    Loaded, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError,
-    PluginResult, PluginTail, Prepare, Preset, PresetId, Processor, Refused, RenderMode, Request,
-    RescanScope, RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
+    AutomationMode, ContentScale, Control, Controller, Edit, EditDrain, EditSink, EditorSize,
+    EditorWindow, Loaded, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
+    PluginError, PluginResult, PluginTail, Prepare, Preset, PresetId, Processor, Refused,
+    RenderMode, Request, RescanScope, RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
 };
 
 use crate::types::{ProcessMode, Vst3Sample};
@@ -61,6 +61,10 @@ pub struct Vst3Controller {
     handed: Vec<Handed>,
     /// Reads the Processor's drain count.
     watch: DrainWatch,
+    /// The plugin's `outputParameterChanges`, the last value of each parameter
+    /// per block, applied to the controller on a tick
+    /// ([`flush_edits`](Control::flush_edits)).
+    reports: EditDrain,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -106,6 +110,7 @@ impl Vst3Controller {
         edits: EditSink,
         handed: Vec<Handed>,
         watch: DrainWatch,
+        reports: EditDrain,
     ) -> Self {
         Self {
             loaded: Some(loaded),
@@ -115,6 +120,7 @@ impl Vst3Controller {
             reset_pending: false,
             handed,
             watch,
+            reports,
             _not_sync: PhantomData,
         }
     }
@@ -168,6 +174,21 @@ impl Vst3Controller {
         }
         let sent_at = sent.then(|| self.watch.mark());
         self.hand(id, value, sent_at);
+    }
+
+    /// Applies the values the Processor reported from the plugin's
+    /// `outputParameterChanges` to the controller. They are not queued back to
+    /// the Processor: the plugin made them.
+    fn apply_reports(&mut self, main: &MainThread) {
+        let mut reported = Vec::new();
+        self.reports.drain(|edit| {
+            if let Edit::Param { id, value } = edit {
+                reported.push((id, value));
+            }
+        });
+        for (id, value) in reported {
+            Control::set_parameter(self.loaded_mut(), main, id, value);
+        }
     }
 
     /// Records the write as handed to the Processor, replacing an earlier one
@@ -318,8 +339,16 @@ impl Control for Vst3Controller {
         Control::set_render_mode(self.loaded_mut(), main, mode)
     }
 
+    /// The edits the plugin's own editor made, reported to the caller and
+    /// queued to the Processor: a plugin whose component is separate from its
+    /// controller has no other way to hear of them.
     fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        let first = out.len();
         Control::take_reported_edits(self.loaded_mut(), main, out);
+        let reported = out[first..].to_vec();
+        for (id, value) in reported {
+            self.queue_edit(id, value);
+        }
     }
 
     fn dropped_reported_edits(&self) -> u64 {
@@ -330,9 +359,12 @@ impl Control for Vst3Controller {
         Control::rebuild_midi_mapping(self.loaded_mut(), main);
     }
 
-    /// Retries what the ring refused, oldest first, and lets the retired
-    /// midi-mapping tables go.
-    fn flush_edits(&mut self, _main: &MainThread) {
+    /// Applies what the plugin's `outputParameterChanges` reported to the edit
+    /// controller (`setParamNormalized`, on this thread, as the portal's
+    /// "Processor and Controller" section has it), retries what the ring
+    /// refused, oldest first, and lets the retired midi-mapping tables go.
+    fn flush_edits(&mut self, main: &MainThread) {
+        self.apply_reports(main);
         self.loaded_mut().midi_cc.reclaim();
         // A tick is a control-side moment: plugins whose last holder was a
         // Processor are destroyed here, not on its thread.
@@ -495,6 +527,7 @@ impl Vst3Loaded {
         let context_requirements = loaded.context_requirements();
         let shell = Arc::new(Shell::new());
         let (sink, drain) = tutti_plugin_types::edits(EDIT_CAPACITY);
+        let (reports_in, reports_out) = tutti_plugin_types::edits(EDIT_CAPACITY);
         let (beat, watch) = tutti_rt::drain_clock();
         let handed = carried
             .iter()
@@ -510,12 +543,13 @@ impl Vst3Loaded {
             audio_side,
             context_requirements,
             drain,
+            reports: reports_in,
             beat,
             carried,
         });
         Ok((
             processor,
-            Vst3Controller::new(loaded, shell, sink, handed, watch),
+            Vst3Controller::new(loaded, shell, sink, handed, watch, reports_out),
         ))
     }
 

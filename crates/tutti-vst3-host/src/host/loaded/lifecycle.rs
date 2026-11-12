@@ -115,6 +115,7 @@ impl Vst3Loaded {
             active: Activation::default(),
             carried: Vec::new(),
             midi_cc: Arc::new(ArcLend::new(MidiCcCell(MidiCcMapping::empty()))),
+            stashed: Vec::new(),
         }
     }
 
@@ -173,6 +174,9 @@ impl Vst3Loaded {
         // caller polls on a live active instance, so the re-enumeration would
         // run mid-activation. The activation sequence reconciles.
         let mut restart = self.take_restart();
+        for event in self.stashed.drain(..) {
+            on_event(event);
+        }
         while let Some(event) = self.plugin.handler().pop_notification() {
             on_event(event);
         }
@@ -278,17 +282,26 @@ impl Vst3Loaded {
 
         self.plugin.read_process_context_requirements();
 
-        let separate_controller = self.plugin.has_separate_controller();
+        let mut separate_controller = self.plugin.has_separate_controller();
 
-        // A separate controller is initialized with the same host context, and
-        // wired to the component. Neither answer is fatal: the plugin simply
-        // runs unconnected.
-        if separate_controller {
-            let _ = self.plugin.initialize_controller(main);
-            let _connected = self.plugin.connect_controller(main);
+        // A separate controller is initialized with the same host context. One
+        // that refuses is released and the plugin runs without a controller
+        // (ipluginbase.h: it is never used again). The component handler is
+        // attached before the two halves are connected, as the portal's Edit
+        // Controller diagram has it (`setComponentHandler` in Initialized,
+        // `connect` in Connected): a plugin that calls `restartComponent` from
+        // `connect` or `notify` finds it. A refused connection is not fatal:
+        // the plugin simply runs unconnected.
+        if separate_controller && self.plugin.initialize_controller(main).is_err() {
+            self.plugin.discard_uninitialized_controller();
+            separate_controller = false;
         }
 
         self.plugin.attach_component_handler(main);
+
+        if separate_controller {
+            let _connected = self.plugin.connect_controller(main);
+        }
 
         if separate_controller && let Ok(state) = self.read_component_state(main) {
             self.push_controller_state(main, &state);

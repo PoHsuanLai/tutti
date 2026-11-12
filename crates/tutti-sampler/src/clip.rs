@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use tutti_codec::Wave;
-use tutti_graph::{IntoNode, NodeParts, ParamSet};
+use tutti_graph::{HasParam, IntoNode, NodeParts, ParamSet};
 use tutti_transport::TempoReader;
 use tutti_types::{Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate};
 
@@ -117,6 +117,14 @@ impl Clip {
     pub fn into_source(self) -> MemorySource {
         self.source.placed_at(self.window)
     }
+}
+
+/// A clip has the params of the source it builds.
+impl<const P: u16> HasParam<P> for Clip
+where
+    MemorySource: HasParam<P>,
+{
+    type Unit = <MemorySource as HasParam<P>>::Unit;
 }
 
 impl IntoNode for Clip {

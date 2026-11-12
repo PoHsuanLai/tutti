@@ -113,6 +113,16 @@ impl UnisonEngine {
         self.spread.detach();
     }
 
+    /// The detune cell (cents), for the synth's declared params.
+    pub(crate) fn detune(&self) -> &Param<Cents> {
+        &self.detune
+    }
+
+    /// The stereo-spread cell (0..1), for the synth's declared params.
+    pub(crate) fn spread(&self) -> &Param<Spread> {
+        &self.spread
+    }
+
     /// The shared detune atomic (cents), for control-rate modulation.
     pub fn detune_atomic(&self) -> Arc<AtomicF32> {
         self.detune.as_atomic()

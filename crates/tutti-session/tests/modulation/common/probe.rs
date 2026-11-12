@@ -20,10 +20,15 @@ use tutti_types::{AtomicF32, ChannelLayout, Drive, Hz, UnitParam};
 
 // A probe's kind is chosen when it is built; its type declares the ones the
 // tests write by key (a probe that does not have one refuses the write).
-tutti_session::declare_params!(ProbeUnit {
-    UnitParam::Cutoff => Hz,
-    UnitParam::Drive => Drive
-});
+// Its params are chosen when it is built and its knobs are raw atomics, so a
+// declaration has no cell to check a unit against: its typed side is written
+// by hand.
+impl tutti_session::HasParam<{ UnitParam::Cutoff as u16 }> for ProbeUnit {
+    type Unit = Hz;
+}
+impl tutti_session::HasParam<{ UnitParam::Drive as u16 }> for ProbeUnit {
+    type Unit = Drive;
+}
 
 /// One param (`Cutoff` unless told) whose knob is a cell, and an output that
 /// carries the value the param port reads: the port's frames under

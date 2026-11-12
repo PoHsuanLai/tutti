@@ -2204,6 +2204,115 @@ server's `loaders/au.rs` drives `Lifecycle<AuLoaded>` as the CLAP loader does.
 editor-only instance is `AuEditorInstance`, in this crate, and the contract's AU
 format loads Apple's AUDelay, since the shared plugin has no AU build.
 
+### 3.5 Values across the formats
+
+The formats type and range the same quantity differently. This section is the
+reference for where a value changes type, range or meaning on its way through the
+shared layer. Read it with these rules:
+
+- A format cell names the format's own type and range and the header it comes
+  from (CLAP 1.2.10 `clap/...`, the VST3 SDK's `pluginterfaces/vst/...`, the AU
+  AudioToolbox headers, the VST2 2.4 `aeffect.h` and `aeffectx.h`).
+- A tutti cell names the shared type and says what it keeps and what it loses.
+  **Lossy** and **wrong** mark a cell that is not yet faithful, with the step
+  that fixes it from [029](029-plugin-api.md) §4 and §6. "No step yet" means the
+  plan does not cover it.
+- The tables describe the code after the spec-audit fixes #647 (VST2 struct),
+  #651 (VST2), #652 (CLAP), #653 (VST3), #654 (AU) and #657 (VST2 flag bits).
+- A frame count is `Samples(usize)` and a time is `Seconds(f64)` (`tutti_types`).
+
+#### Parameter id
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Type | `clap_id`, `uint32_t`; `CLAP_INVALID_ID = UINT32_MAX` (`id.h:8`). A `void *cookie` the host may pass back or leave null (`ext/params.h:237-242`) | `ParamID`, `uint32`, "value in range `[0, 0x7FFFFFFF]`" (`vsttypes.h:91`) | `AudioUnitParameterID`, `UInt32` (`AUComponent.h:922`), addressed with a scope and an element | none: a position, `int32` in `[0, numParams)` (`aeffect.h:194`) | `ParamId(u32)`, opaque: no arithmetic, no order that means anything |
+| What tutti keeps | The cookie is sent null, which the spec allows. `UINT32_MAX` is not refused; nothing mints it | The full `u32`; nothing checks the SDK's `0x7FFFFFFF` bound | **Lossy:** a parameter on a scope other than global or an element other than 0 has no `ParamId`; the `_at` functions of `tutti-au-host` reach it, the shared surface does not. AUv3's 64-bit address does not fit either (029 §6.4: step 3 decides whether `ParamId` widens). AU completeness | The position is the id: a `u32` from a non-negative `i32`, refused at or above `numParams` | `ParamAddr::Id(u32)` is the graph's twin |
+
+#### Parameter value
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Native | **Plain** `double`: `min_value`, `max_value`, `default_value`, finite (`ext/params.h:253-255`); `clap_event_param_value.value` is plain (`events.h:236`). A stepped value is converted to integer by a cast, "equivalent to trunc" (`ext/params.h:135-136`) | **Normalized** `ParamValue`, `double` in `[0, 1]` (`vsttypes.h:90`); plain only through `normalizedParamToPlain` and `plainParamToNormalized`, which fix no shape (`ivsteditcontroller.h:508-514`); `defaultNormalizedValue` (`:56`) | **Plain** `AudioUnitParameterValue`, `Float32` (`AUComponent.h:929`); `AudioUnitParameterInfo` carries min, max, default, a unit code and flags (`AudioUnitProperties.h:1637`) | **Normalized** `float` (`setParameter`, `getParameter`, `aeffect.h:162-163`); `0..1` is the convention, the header states no range. Plain only as `minInteger` and `maxInteger` of `VstParameterProperties` (`aeffectx.h:449`) | `Normalized(f64)`: finite on `0..=1`; `new` refuses NaN, `clamped` maps it to 0 |
+| What `Normalized` is | A position tutti invents: `(v - min) / (max - min)` over the plugin's `f64` range | The plugin's own value, exact | A position tutti invents, linear over `[min, max]`. The display-curve flags (`DisplayLogarithmic`, ...) are read into `DisplayCurve` and not applied | The plugin's own value (`f32` widened, `Normalized::clamped`) | The same `Normalized(0.5)` is a different plain value per format. **Wrong** for CLAP and AU once a consumer needs the plain value (`TypedParam<U>`): §6.1 item 1, format-owned conversion |
+| tutti's plain range | `ParamRange::Plain { min, max, default }`, `f64`, as declared. `ParamBounds::plain` computes in `f64` and rounds a stepped value to the nearest integer, so the plugin's truncation reads the step named; a read-only parameter is never written (#652) | `ParamRange::Plain` from three probes of `normalizedParamToPlain` at 0, 0.5 and 1: kept if monotonic, `min` and `max` re-ordered, then assumed **linear**. **Wrong** for a log map (`to_plain` and the default are off) and a decreasing one (it runs backwards). Set and get stay exact, being normalized. §6.1 item 1 | `ParamRange::Plain` from `ParameterInfo`, `f32` bounds widened to `f64`; `ParamBounds` maps in `f64` and narrows to `f32` for `AudioUnitSetParameter` | `ParamRange::Plain` when an integer range is declared, mapped **linearly**, which the header does not promise; otherwise `ParamRange::Normalized { default }`. The range is read under `UsesIntegerMinMax` (see below) | `ParamRange::{Normalized, Plain}`, all `f64`; `to_plain` is linear and clamps |
+| Where tutti narrows | None in process | None in process | `f32` is the format's | `f32` is the format's | **Lossy:** the served wire carries set, get and changed as `f32` (`wire::normalized`, protocol 29), while automation points and text queries are `f64`. `0.3` arrives as `0.30000001192`; invisible for AU and VST2, whose values are `f32`. §6.1 item 3, `f64` on the wire |
+| Edit by the plugin | `PARAM_VALUE` out events; `PARAM_GESTURE_BEGIN` and `END` (`events.h:115`); the header flags `DONT_RECORD` and `IS_LIVE` (`events.h:32-38`) | `beginEdit`, `performEdit`, `endEdit` on `IComponentHandler` (`ivsteditcontroller.h:224-229`); `outputParameterChanges` (delivered to the controller, #653) | parameter listener; `kAudioUnitEvent_BeginParameterChangeGesture` (`AudioUnitUtilities.h:73`) | `audioMasterAutomate`, `BeginEdit`, `EndEdit` (`aeffectx.h:332-333`) | `take_reported_edits` returns `(ParamId, Normalized)`. **Lossy:** no gesture, no record flag; a drag and a preset load look alike. §6.1 item 2, `ParamEdit { id, value, gesture }` |
+
+#### Parameter flags, steps, units, taper
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Flags | `u32`, bits 0-16: `STEPPED`, `PERIODIC`, `HIDDEN`, `READONLY`, `BYPASS`, `AUTOMATABLE`, `AUTOMATABLE_PER_NOTE_ID/KEY/CHANNEL/PORT`, `MODULATABLE` and its four `_PER_` twins, `REQUIRES_PROCESS`, `IS_ENUM` (`ext/params.h:136-206`) | `int32`: `kCanAutomate`, `kIsReadOnly`, `kIsWrapAround`, `kIsList`, `kIsHidden`, `kIsProgramChange`, `kIsBypass` (`ivsteditcontroller.h:75-102`) | `AudioUnitParameterInfo::flags`: `IsWritable`, `NonRealTime`, `CanRamp`, `MeterReadOnly`, `HasClump`, the display curves, `ValuesHaveStrings` (`AudioUnitProperties.h:1572-1586`) | `effCanBeAutomated`, asked per index; `VstParameterFlags` in the properties struct (`aeffectx.h:492-498`) | `ParamFlags` with a `known` mask: a clear bit means "reported false" only where `known` says it was reported |
+| What tutti keeps | All but `REQUIRES_PROCESS`, and `IS_ENUM` becomes `ParamUnit::Choice`. **Lossy:** the automation and modulation per-voice bits merge into one `PER_*` set, and nothing shared can address a note, key, channel or port or pick modulation over automation. No step yet (doc 014) | All reported | Only `READ_ONLY` (from `IsWritable`) is known; automatable, hidden and bypass are unknown. `CanRamp` and `ValuesHaveStrings` are read and not shared; `NonRealTime` is read and written between blocks (#654) | `AUTOMATABLE` only | `READ_ONLY`, `HIDDEN`, `BYPASS`, `WRAP`, `AUTOMATABLE`, `PROGRAM_CHANGE` (VST3), `MODULATABLE`, `PER_*` |
+| Steps | `STEPPED`: every value in `[min, max]` is an integer; `ParamSteps::from_span(max - min)`, span plus 1 positions | `int32 stepCount`: 0 continuous, 1 toggle, `n` means `n + 1` positions (`ivsteditcontroller.h:53-58`); `kIsList` makes a `Choice` | `Boolean` is `Toggle`; `Indexed` is `from_span` of the range | integer range with a step: `span / step + 1` positions; no range is `ParamSteps::Unknown`, not continuous | `ParamSteps::{Unknown, Continuous, Toggle, Enumerated(u32)}` |
+| Units | none; `module` is a `/` path, kept as `group` | `units`, `String128` (UTF-16); `unitId` is a tree, flattened to a `group` name | `AudioUnitParameterUnit` code | `effGetParamLabel`, 8 characters (`aeffect.h:317`) | `unit: String` and `measures: Option<ParamUnit>`: exact from 18 of the 27 AU codes, from 8 labels (`Hz dB s ms % ct st BPM`) for VST3 and VST2, never for CLAP |
+| Taper | none | whatever `normalizedParamToPlain` is | `DisplayLogarithmic` and its kin, a display hint | none | none. **Lossy** for VST3 and AU: §6.1 item 1 |
+
+**VST2's flag bits** are the header's (`aeffectx.h:492-498`, #657): `IsSwitch`
+reads as `Toggle`; an integer range (`UsesIntegerMinMax`) alone is
+`Enumerated(span + 1)` and an integer step (`UsesIntStep`) divides it; a step with
+no range is `Unknown`. Before #657 every bit was shifted by one and `IsSwitch`
+was missing.
+
+#### Notes and expression
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Note identity | `note_id` `int32`, `>= 0` or `-1`; `port_index`, `channel`, `key` `int16`, `-1` a wildcard (`events.h:165-168`); a note is matched on the four together | `noteId` `int32`, `-1` when unavailable; `channel` `int16`; `pitch` `int16` `0..127`; the event bus is `busIndex` `int32` (`ivstevents.h:43-62`, `:144`) | MIDI 1.0 through `MusicDeviceMIDIEvent`, or `MusicDeviceStartNote` returning a `NoteInstanceID` (`MusicDevice.h:35-39`) | none: MIDI 1.0 bytes in `VstMidiEvent.midiData[4]` (`aeffectx.h:123-137`) | `NoteId(u32)` = `channel * 128 + note` (`0..=2047`), or an id minted above `MAX_CHANNEL_NOTE`. It carries no Group by design: Group N is port or bus N, so a note is `(Group, NoteId)` at the port edge and the wire id stays `channel * 128 + note`. CLAP and VST3 get it as `i32` (`-1` past `i32::MAX`). AU never calls `StartNote`, so it has none; VST2 has none |
+| Group | each input note port is a Group | `busIndex` is the Group; a Group with no event bus is dropped and counted (#653) | **Lossy:** `send_midi` never reads the Group, so every Group lands on the same channels. AU MIDI input parity (§6.3) | one MIDI input, Group 0 only; other Groups are dropped and counted | `Ump` carries the Group, channel and a 16-bit velocity |
+| Velocity, tuning | `velocity` `double` `0..1`. The MIDI dialect rounds to 7 bits, floor 1 on a note-on; the MIDI 2.0 and MPE dialects are never sent (#652) | `velocity` `float` `0..1`; `tuning` `float` in cents; MIDI 2.0 velocity arrives at full width | `Float32` pitch (fractional, `0 < p < 128`) and velocity in `MusicDeviceNoteParams` (`MusicDevice.h:126-132`) | `midiData` is 7 bits; `detune` `-64..+63` cents (`aeffectx.h:133`) | AU and VST2 get the MIDI 1.0 form, **lossy** to 7 bits, and a message with no MIDI 1.0 form (a per-note controller) is dropped. AU is AU MIDI input parity; VST2 no step yet |
+| Expression | seven ids (`events.h:189-203`): volume `0 < x <= 4` linear, pan `0..1`, tuning in semitones `-120..120`, vibrato, expression, brightness and pressure `0..1`; addressed by `note_id` and port, channel, key | `NoteExpressionValueEvent`: `typeId` `uint32`, `value` `double` (`ivstnoteexpression.h:34-36`). Normalized: volume `0.25` is 0 dB, tuning `0.5` is none and `0..1` spans 240 semitones; text and phoneme are text events; custom from 100000 | none | none | `NoteExpressionValue { note_id: i32, expression_type, value: f64 }` carries `value` in **the format's own convention**, unconverted; `NoteExpressionType::{Volume, Pan, Tuning, Vibrato, Brightness, Pressure, Expression, Custom(u32)}` |
+| What tutti loses | **Lossy:** the legacy route sends port 0 and channel and key `-1`, so a note on port 1 never matches; `Custom` is dropped. The UMP route (`per_note_expression`) carries port, channel and key | **Wrong:** the legacy route clamps `value` to `0..1`, so a CLAP-convention tuning in semitones is clamped to the end of the range; `Pressure` has no `typeId` and is dropped. The UMP route converts (`0.5 + semitones / 240`) | | | One fix for both: the legacy route goes with the MIDI route (029 §3.5, §6.3: plugin MIDI out by Group) |
+
+#### Transport
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Struct | `clap_event_transport` (`events.h:263-301`): at the block's start and at each change inside it | `ProcessContext` (`ivstprocesscontext.h:121-148`), one per call | three callbacks the unit pulls: beat and tempo, musical time, transport state (`AudioUnitProperties.h:1146-1271`) | `VstTimeInfo` (`aeffectx.h:180-198`), one per call | `TransportInfo` (`tutti-plugin-types`), and `TransportChanges` for changes inside a chunk, which only CLAP reads |
+| Tempo | `tempo` `double` BPM; `tempo_inc` `double`, BPM per sample | `tempo` `double`; no slope | `outCurrentTempo` `Float64`; no slope | `tempo` `double`; no slope | `tempo: f64`, flagged only if finite and positive; `tempo_inc: f64`, read only by CLAP |
+| Position | `song_pos_beats` and `song_pos_seconds`, `int64` fixed point, `2^31` per unit, `round(x * 2^31)` (`fixedpoint.h:9-16`) | `projectTimeMusic` quarters `double`, flagged; `projectTimeSamples` `int64`, **always valid**, no flag | beat `Float64`, "0 is the first beat"; `outCurrentSampleInTimeLine` `Float64` | `ppqPos` quarters `double`; `samplePos` `double`, always valid | `quarters: f64`, `beats: f64`, `seconds: Seconds`, `samples: Option<i64>`. VST3, VST2 and AU send `0` for a `None` sample position, as they have no flag for it; VST2 clamps a negative to 0. **Lossy:** CLAP's fixed point truncates where the spec rounds, one unit of `2^-31` low (toward zero for a negative position). No step yet |
+| Project time | seconds and beats are two views of one position | samples and quarters likewise | | | **Wrong against a tempo map:** samples roll by the frames played and are re-seated from `beat * 60 / tempo * rate` at a jump (first block, seek, loop wrap, rate change), so after a tempo change they disagree with the beats. A transport PR beside step 4 (§6.3) |
+| Continuous | `steady_time` `int64`, in `clap_process` and not the transport (`process.h:38`) | `continousTimeSamples` `int64`, optional | none | none | `continuous_samples: i64`: VST3 reads it (falling back to `samples`). CLAP's `steady_time` is the host's own counter, `0` at activation and advanced by the block length |
+| Bar | `bar_start` fixed point; `bar_number` `int32`, "bar at song pos 0 has the number 0" (`events.h:297-298`) | `barPositionMusic` quarters; no number | measure downbeat `Float64`; no number | `barStartPos` quarters; no number | `BarInfo { position_quarters, start_beats, number: BarNumber(i64) }`. `BarNumber` is **1-based**; the CLAP edge sends `BarNumber::index()` (#652), saturating to `i32` |
+| Signature | `tsig_num`, `tsig_denom` `uint16`; `HAS_TIME_SIGNATURE` always set | `timeSigNumerator`, `timeSigDenominator` `int32` | numerator `Float32`, denominator `UInt32` | `timeSigNumerator`, `timeSigDenominator` `int32` | `TimeSignature`, validated, so each width is a `From` with no wrap |
+| Loop | `loop_start_beats`, `loop_end_beats`, `loop_start_seconds`, `loop_end_seconds`, fixed point | `cycleStartMusic`, `cycleEndMusic` quarters; `kCycleValid` is apart from `kCycleActive` | cycling flag; start and end beat `Float64` | `cycleStartPos`, `cycleEndPos` quarters | `LoopRegion { start_quarters, end_quarters, start_beats, end_beats, seconds: Option<(Seconds, Seconds)> }`. Seconds come from the tempo map (#652); `None` means CLAP claims no seconds timeline while looping |
+| Flags | `IS_PLAYING`, `IS_RECORDING`, `IS_LOOP_ACTIVE`, `IS_WITHIN_PRE_ROLL` | `kPlaying`, `kRecording`, `kCycleActive`, each under `kNeedTransportState` | playing; recording (`GetTransportState2`); changed | `kVstTransportPlaying`, `Recording`, `CycleActive`, `Changed` | `TransportFlags { playing, recording, cycle_active }`. Pre-roll is not represented. VST2's `Changed` is set when play, record or cycle differ from the last block, not on a seek |
+| Host clock | none | `systemTime` `int64` ns | none | `nanoSeconds` `double` | `system_time_ns: Option<i64>`, `None` offline; VST2 narrows it to `f64` |
+| Inside a block | one `CLAP_EVENT_TRANSPORT` per `TransportChange` | none | none | none | VST2 extrapolates the next piece of a split block from the first piece's tempo and signature: **wrong** across a tempo or meter change (§6.3, the transport PR) |
+
+#### Buses and layouts
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Bus | audio port: `id`, `channel_count` `uint32`, `port_type` string, `IS_MAIN`, `in_place_pair` (`ext/audio-ports.h:28-64`) | `BusInfo`: `channelCount` `int32`, name, `busType` `kMain` or `kAux` ("sidechain"), `flags` `kDefaultActive`, `kIsControlVoltage` (`ivstcomponent.h:93-114`) | an element per scope; `AUChannelInfo` is a pair of `SInt16` with `0`, `-1`, `-2` and `< -2` as sentinels (`kAudioUnitProperty_SupportedNumChannels`, `AudioUnitProperties.h:206`) | pins: `numInputs`, `numOutputs` `int32`; no bus | `PluginBus { channels: ChannelLayout(u16), topology: Option<ChannelTopology>, role: BusRole }` |
+| Layout | `clap.surround` channel map; ambisonic config | `SpeakerArrangement`, a `uint64` bit set, mono is `kSpeakerM` (`vsttypes.h:117`, `vstspeaker.h:61`) | an `AudioChannelLayout` tag, and the stream format's channel count | `VstSpeakerArrangement` through `effSetSpeakerArrangement` (`aeffectx.h:639`) | `topology` is `None` when the plugin declined or names a speaker tutti lacks. The accepted set is **not stored** (023 G1) |
+| Role | `IS_MAIN` is `Main`, the rest `Aux`; no sidechain marker | `kMain` is `Main`, `kAux` is `Aux`, though the SDK calls it a sidechain | one bus, element 0: this host is single-bus | one bus a side; the arrangement call is never sent | `BusRole::Sidechain` is never produced |
+| What tutti drops | `in_place_pair`, the port id and name | **Lossy:** `kDefaultActive` and the control-voltage flag. A `kAux` bus without `kDefaultActive` stays inactive though the graph wires it, so the plugin hears nothing. Step 4: buses as graph handles activate what is wired | `SupportedNumChannels` is decoded in `tutti-au-host`, not shared; more than one element is not hosted | | |
+
+#### Latency and tail
+
+A plugin's tail excludes its latency in all four formats, and tutti's `Tail` does
+too (doc 013).
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Latency | `uint32` samples (`ext/latency.h:14`); change is `clap_host_latency.changed`, which asks for a restart | `uint32` samples, `getLatencySamples` (`ivstaudioprocessor.h:326`); change is `kLatencyChanged` (`ivsteditcontroller.h:141`) | `Float64` **seconds**, `kAudioUnitProperty_Latency` (`AudioUnitProperties.h:199-205`); change is a property listener | `initialDelay` `int32` samples (`aeffect.h:203`); change is `audioMasterIOChanged` (`aeffectx.h:291`), re-read after every activation | `Samples(usize)`. AU's seconds are rounded to samples (truncating under-compensates by one); a refused AU read keeps the last figure; VST2 clamps a negative to 0. A change is a `RequestBit` the pure core turns into a re-read (§2.1) |
+| Tail | `uint32` samples; **`>= INT32_MAX` is infinite**; no extension is unknown (`ext/tail.h:13-15`) | `uint32` samples; `kNoTail = 0`, **`kInfiniteTail = UINT32_MAX`** (`ivstaudioprocessor.h:160-168`); always answered | `Float64` **seconds**, `kAudioUnitProperty_TailTime` (`AudioUnitProperties.h:290-296`); instruments, mixers and generators reject the property; `+inf` occurs | `effGetTailSize` `int`: **`0` is "no information", `1` is "no tail"** (`aeffectx.h:389`); there is no infinite value | `Tail { Unknown, None, Finite(Samples), Unbounded }` (`tutti_types`), one decode per format: `Tail::from_clap_samples`, `Tail::from_vst3_samples`, `Tail::from_seconds` (rounds up; NaN, negative and `-inf` are `Unknown`; `+inf` is `Unbounded`) and VST2's own. `u32::MAX` through the CLAP decode is `Unbounded`; `INT32_MAX` through the VST3 decode is finite. **Lossy:** VST2 cannot say unbounded. No step yet |
+
+#### State
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Native | `save` and `load` over `clap_ostream` and `clap_istream` (`ext/state.h:24-34`) | `IComponent::getState` and `setState` over `IBStream` (`ivstcomponent.h:200-204`); the controller has its own `getState`, `setState` and `setComponentState` | `kAudioUnitProperty_ClassInfo`, a property list (`AudioUnitProperties.h:121`) | `effGetChunk` and `effSetChunk`, index 0 a bank and 1 a program (`aeffect.h:290-291`), under `effFlagsProgramChunks` (`:237`) | `Vec<u8>` through `Control::save_state` and `load_state`. `PluginState { PluginRef, bytes }` names the plugin, and a restore into another is refused. The wire carries up to `MAX_STATE_BYTES` (1 GiB), in chunks |
+| What tutti stores | the stream's bytes | **one tutti-private blob**: component state, controller state and the undrained parameter edits (`pack_state_with_pending`). A controller whose `getState` fails degrades to empty. It is not a `.vstpreset`; no other host reads it | the `ClassInfo` as a binary plist; a `.aupreset` import or export checks the identity keys against the component | the current program's chunk (index 1) and its program index, tagged `CHK\x01`; without chunks the `f32` parameters, tagged `PRM\x01`. A bank chunk is never saved; the `effSetChunk` return is not read (#651) | the plugin's version is carried, not refused (029 Q2) |
+
+#### Presets
+
+| | CLAP | VST3 | AU | VST2 | tutti |
+|---|---|---|---|---|---|
+| Native | `clap_plugin_preset_load.from_location(location_kind, location, load_key)` (`ext/preset-load.h:15-24`); listing is the factory-level preset discovery | program lists: `ProgramListInfo { id: ProgramListID (int32), name, programCount (int32) }` (`ivstunits.h:56-61`); a program change is a `kIsProgramChange` parameter; `.vstpreset` files | `AUPreset { presetNumber: SInt32, presetName }`; `>= 0` selects a factory preset, `< 0` is a user preset (`AudioUnitProperties.h:1098`) | `effSetProgram` takes an index; `numPrograms` is `int32` (`aeffect.h:193`, `:261`); names are 24 characters (`:316`); banks | `PresetId` |
+| tutti | `PresetId::Location(PathBuf)`. **Lossy:** no enumeration, `PRESET_LIST` unprobed | `PresetId::Program { list_id: i32, index: u32 }`. **Lossy:** no `.vstpreset` | `PresetId::Number(i32)`. **Lossy:** user presets absent | `PresetId::Number(i32)`, programs only | step 4 (`Presets`, `PresetError`) and 023 G3 |
+
 ## 4. What is deleted
 
 > Superseded by doc 021 §2.3 and §10 step 5 (`Served<F>`).

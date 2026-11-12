@@ -2,8 +2,8 @@ use super::*;
 use crate::testing::aim;
 use tutti_dsp::HRTF_STEP;
 use tutti_graph::contract::{drive, prepared};
-use tutti_types::ChannelLayout;
 use tutti_types::MaxBlock;
+use tutti_types::{ChannelLayout, UnitParam};
 
 const RATE: SampleRate = SampleRate(44_100.0);
 const BLOCK: usize = 64;
@@ -453,7 +453,10 @@ fn the_renderer_declares_its_params() {
     node.azimuth.store(Azimuth(10.0));
     node.elevation.store(Elevation(20.0));
     node.blend.store(Mix(0.3));
-    assert_eq!(node.shape().params.as_slice(), &HRTF_BINAURAL_PARAMS[..]);
+    assert_eq!(
+        node.shape().params.as_slice(),
+        &[UnitParam::Azimuth, UnitParam::Elevation, UnitParam::Wet,][..]
+    );
     let bases: Vec<_> = (0..4).map(|k| node.param_base(k)).collect();
     assert_eq!(
         bases,

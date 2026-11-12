@@ -37,13 +37,13 @@
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
 //! - Spatial: [`VbapPannerNode`] ([`VbapError`]) and [`HrtfBinauralNode`],
-//!   steered by their params ([`VBAP_PANNER_PARAMS`], [`HRTF_BINAURAL_PARAMS`]:
-//!   bearing, height, and the VBAP spread and width or the HRTF blend).
+//!   steered by their params (bearing, height, and the VBAP spread and width
+//!   or the HRTF blend).
 //! - Mixing: [`BusStripNode`]. Summing is the graph's (a port or an output
 //!   channel sums its sources), not a node's, and so is folding between
 //!   channel layouts (a bus edge between declared buses).
-//! - Param ports: each node's `*_PARAMS` port list (for example
-//!   [`DELAY_PARAMS`]), which a control lane drives
+//! - Param ports: the params each node declares once, with its cells
+//!   (`tutti_graph::declare_params!`), which a control lane drives
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
 //! - Modules: [`automation`] (lanes and recording).
 //!
@@ -55,6 +55,7 @@
 
 // Per-block control reads and the ramps that keep them from stepping.
 mod buses;
+#[macro_use]
 mod params;
 mod ramp;
 
@@ -85,17 +86,17 @@ mod modulator;
 // `LfoNode` is `ModulatorNode<Wave>` — the graph node over a pure
 // `Modulator`. `LfoShape` and `Wave` are re-exported from `tutti-modulation` through
 // `lfo`, so `use tutti_nodes::LfoShape` works.
-pub use lfo::{LFO_PARAMS, LfoMode, LfoNode, LfoShape, ModulatorNode, Wave};
+pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Wave};
 pub use modulator::Modulator;
 
 mod delay;
-pub use delay::{DELAY_PARAMS, DelayLineNode};
+pub use delay::DelayLineNode;
 // `InterpolationMode` is in `DelayLineNode::with_interpolation`'s signature;
 // the ring itself (`DelayLine`) is `tutti-dsp`'s only.
 pub use tutti_dsp::InterpolationMode;
 
 mod distortion;
-pub use distortion::{DISTORTION_PARAMS, DistortionNode};
+pub use distortion::DistortionNode;
 // `ShapeKind` is in `DistortionNode::new`'s signature; the curves behind it are
 // `tutti-dsp`'s.
 pub use tutti_dsp::ShapeKind;
@@ -111,14 +112,14 @@ pub use tutti_dsp::{
 
 mod dynamics;
 pub use dynamics::{
-    BAND_PARAMS, BRICKWALL_PARAMS, BrickwallLimiterNode, COMPRESSOR_PARAMS, CompressorNode,
-    GATE_PARAMS, GateNode, LIMITER_PARAMS, LimiterNode, MultibandCompressorNode, MultibandControls,
+    BAND_PARAMS, BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode,
+    MultibandCompressorNode, MultibandControls,
 };
 
 // The mixer strip: volume, stereo balance, mute. Ungated: a fader is not a
 // spatial concept.
 mod strip;
-pub use strip::{BusStripNode, STRIP_PARAMS};
+pub use strip::BusStripNode;
 
 // The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.
@@ -135,12 +136,10 @@ pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign, Sv
 
 // The spatial panners: VBAP speaker panning and binaural HRTF rendering.
 mod spatial;
-pub use spatial::{
-    HRTF_BINAURAL_PARAMS, HrtfBinauralNode, VBAP_PANNER_PARAMS, VbapError, VbapPannerNode,
-};
+pub use spatial::{HrtfBinauralNode, VbapError, VbapPannerNode};
 
 mod modulation;
-pub use modulation::{MOD_DELAY_PARAMS, ModDelayConfig, ModDelayNode, PHASER_PARAMS, PhaserNode};
+pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode};
 
 // The signal-driven sources a `tutti_modulation::compile` declaration describes
 // (`SourceNode`): nodes that send a raw value into control lanes.

@@ -2,17 +2,14 @@
 //! [`DesignNode`] over [`CrossoverDesign`]. The algorithm is `tutti-dsp`'s; this
 //! file holds the cells and how a block reads them.
 
-use std::sync::Arc;
-
 use tutti_dsp::{
     CrossoverControls, CrossoverDesign, CrossoverError, CrossoverTree, MAX_SPLITS, fit_to_rate,
 };
-use tutti_types::{
-    AtomicF32, BusTopology, ChannelLayout, Hz, Param, SampleRate, UnitAddr, UnitParam,
-};
+use tutti_types::{BusTopology, ChannelLayout, Hz, Param, SampleRate};
+#[cfg(test)]
+use tutti_types::{UnitAddr, UnitParam};
 
 use super::NodeKernel;
-use crate::params::ControlSet;
 use crate::ramp::LastGood;
 use crate::reverb::DesignNode;
 
@@ -36,18 +33,14 @@ impl Splits {
     }
 
     /// The address of crossover `i`: a cutoff, indexed.
+    #[cfg(test)]
     pub(crate) const fn addr(i: usize) -> UnitAddr {
         UnitAddr::new(UnitParam::Cutoff, i as u8)
     }
 
-    /// Crossover `i`'s cell, for the node's [`ParamSet`](tutti_graph::ParamSet).
-    pub(crate) fn cell(&self, i: usize) -> Arc<AtomicF32> {
-        self.cells[i].as_atomic()
-    }
-
-    /// Crossover `i`'s value, or `None` past the last.
-    pub(crate) fn base(&self, i: usize) -> Option<f32> {
-        self.cells.get(i).map(|c| c.load().get())
+    /// Crossover `i`'s cell, for the node's declared params.
+    pub(crate) fn param(&self, i: usize) -> &Param<Hz> {
+        &self.cells[i]
     }
 
     /// Stops sharing every cell, keeping the values.
@@ -129,38 +122,22 @@ pub struct CrossoverSet {
     splits: usize,
 }
 
-impl ControlSet for CrossoverSet {
-    type Controls = CrossoverControls;
-
-    fn addrs(&self) -> &'static [UnitAddr] {
-        static ADDRS: [UnitAddr; MAX_SPLITS] = [
-            Splits::addr(0),
-            Splits::addr(1),
-            Splits::addr(2),
-            Splits::addr(3),
-            Splits::addr(4),
-        ];
-        &ADDRS[..self.splits]
-    }
+// One cutoff per split, up to `MAX_SPLITS`.
+control_set! {
+    CrossoverSet(s): CrossoverControls = CrossoverControls {
+        frequencies: [Hz(0.0); MAX_SPLITS],
+    };
+    live: (s.splits);
+    Cutoff[0] => Hz = frequencies[0],
+    Cutoff[1] => Hz = frequencies[1],
+    Cutoff[2] => Hz = frequencies[2],
+    Cutoff[3] => Hz = frequencies[3],
+    Cutoff[4] => Hz = frequencies[4];
 
     fn defaults(&self) -> CrossoverControls {
         CrossoverControls {
             frequencies: [Hz(0.0); MAX_SPLITS],
         }
-    }
-
-    fn flatten(&self, c: &CrossoverControls, out: &mut [f32]) {
-        for (o, f) in out.iter_mut().zip(&c.frequencies) {
-            *o = f.get();
-        }
-    }
-
-    fn assemble(&self, v: &[f32]) -> CrossoverControls {
-        let mut frequencies = [Hz(0.0); MAX_SPLITS];
-        for (f, &v) in frequencies.iter_mut().zip(v) {
-            *f = Hz(v);
-        }
-        CrossoverControls { frequencies }
     }
 }
 

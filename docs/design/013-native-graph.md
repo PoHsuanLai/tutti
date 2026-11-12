@@ -10682,6 +10682,8 @@ the chase delivers there) and `events_out_at(i)`, `events_in_at(i)`, returning
 `disconnect`, `sources`, `set_sources` and `disconnect_all` cover event edges
 (the last three through the sealed `Fanin`); they are never faded. A feed
 (`set_feed`) still owns its edges on input 0, and a hand-wired edge on a fed
-input stays when the feed drops it. Params: `declare_params!` states a node's
-kinds and units; `Key` methods are generated from `HasParam<const P: u16>`;
-`Params(node)` is the wrapper for a host's `ParamNode`.
+input stays when the feed drops it. Params: a node declares them once, next to its
+`Param<U>` cells, with `tutti_graph::declare_params!` (doc 030 N1), which writes
+its `HasParam<const P: u16>` impls (the unit taken from the cell's type), its
+`ParamSet` and its shape's param ports; `Key` methods are generated from
+`HasParam`; `Params(node)` is the wrapper for a host's `ParamNode`.

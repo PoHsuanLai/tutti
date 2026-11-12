@@ -65,21 +65,29 @@ pub const MAX_MIDI_KEY: i32 = 127;
 ///
 /// Modelled as typed flags rather than a bool because the flags word is the
 /// *validity gate* for the rest of the struct, and each bit gates a different
-/// group: reading `min_integer`/`max_integer` without `USES_INT_STEP`, or
-/// `category` without `USES_CATEGORY`, reads whatever the plugin left in the
+/// group: reading `min_integer`/`max_integer` without `USES_INTEGER_MIN_MAX`,
+/// or `category` without `SUPPORTS_DISPLAY_CATEGORY`, reads whatever the plugin left in the
 /// buffer. Collapsing them to "has properties" would lose exactly the
 /// information that makes the payload safe to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ParameterPropertyFlags {
-    /// The integer range (`min`/`max`/`step`/`large_step`) is meaningful.
-    pub uses_int_step: bool,
-    /// The float step trio is meaningful.
+    /// `kVstParameterIsSwitch`: the parameter is an on/off switch.
+    pub is_switch: bool,
+    /// `kVstParameterUsesIntegerMinMax`: the integer range (`min`/`max`) is
+    /// meaningful.
+    pub uses_integer_min_max: bool,
+    /// `kVstParameterUsesFloatStep`: the float step trio is meaningful.
     pub uses_float_step: bool,
-    /// `display_index` is meaningful.
-    pub uses_index: bool,
-    /// The category fields are meaningful.
-    pub uses_category: bool,
-    /// The plugin says this parameter can be ramped/automated smoothly.
+    /// `kVstParameterUsesIntStep`: the integer steps (`step`/`large_step`) are
+    /// meaningful. Independent of [`Self::uses_integer_min_max`].
+    pub uses_int_step: bool,
+    /// `kVstParameterSupportsDisplayIndex`: `display_index` is meaningful.
+    pub supports_display_index: bool,
+    /// `kVstParameterSupportsDisplayCategory`: the category fields are
+    /// meaningful.
+    pub supports_display_category: bool,
+    /// `kVstParameterCanRamp`: the plugin says this parameter can be ramped
+    /// smoothly.
     pub can_ramp: bool,
 }
 
@@ -92,10 +100,13 @@ impl ParameterPropertyFlags {
     fn from_bits(raw: i32) -> Self {
         let bits = api::ParameterFlags::from_bits_truncate(raw);
         Self {
-            uses_int_step: bits.contains(api::ParameterFlags::USES_INT_STEP),
+            is_switch: bits.contains(api::ParameterFlags::IS_SWITCH),
+            uses_integer_min_max: bits.contains(api::ParameterFlags::USES_INTEGER_MIN_MAX),
             uses_float_step: bits.contains(api::ParameterFlags::USES_FLOAT_STEP),
-            uses_index: bits.contains(api::ParameterFlags::USES_INDEX),
-            uses_category: bits.contains(api::ParameterFlags::USES_CATEGORY),
+            uses_int_step: bits.contains(api::ParameterFlags::USES_INT_STEP),
+            supports_display_index: bits.contains(api::ParameterFlags::SUPPORTS_DISPLAY_INDEX),
+            supports_display_category: bits
+                .contains(api::ParameterFlags::SUPPORTS_DISPLAY_CATEGORY),
             can_ramp: bits.contains(api::ParameterFlags::CAN_RAMP),
         }
     }
@@ -103,10 +114,10 @@ impl ParameterPropertyFlags {
 
 /// The integer range a parameter declares, when it declares one.
 ///
-/// A separate type because it exists only under `USES_INT_STEP`. Making that
-/// conditionality structural (`Option<IntegerRange>`) means a caller cannot read
-/// the bounds without having handled their absence — the flat-struct
-/// alternative invites reading a `min`/`max` pair that is meaningless.
+/// A separate type because it exists only under `USES_INTEGER_MIN_MAX`. Making
+/// that conditionality structural (`Option<IntegerRange>`) means a caller
+/// cannot read the bounds without having handled their absence. The integer
+/// steps are a different bit, so they are a different type: [`IntegerSteps`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntegerRange {
     /// Lowest value in plain (not normalized) units. May exceed `max` — a plugin
@@ -115,34 +126,42 @@ pub struct IntegerRange {
     pub min: i32,
     /// Highest value in plain (not normalized) units.
     pub max: i32,
+}
+
+impl IntegerRange {
+    /// Number of discrete steps of size `step` the range spans, or `None` if
+    /// the plugin reported a range or step that cannot be stepped through.
+    ///
+    /// Guards three plugin answers that are each individually plausible and
+    /// jointly fatal to a naive `(max - min) / step`: a non-positive `step`
+    /// (division by zero, or an infinite loop in a caller that walks the
+    /// range), an inverted range, and a `max - min` that overflows `i32`.
+    pub fn step_count(&self, step: i32) -> Option<u32> {
+        if step <= 0 || self.max < self.min {
+            return None;
+        }
+        let span = (self.max as i64) - (self.min as i64);
+        Some((span / step as i64) as u32)
+    }
+}
+
+/// The integer step increments a parameter declares, under `USES_INT_STEP`.
+///
+/// Granularity only — this carries no bounds, which are [`IntegerRange`]'s own
+/// flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegerSteps {
     /// Increment for a single step.
     pub step: i32,
     /// Increment for a coarse (page) step.
     pub large_step: i32,
 }
 
-impl IntegerRange {
-    /// Number of discrete steps the range spans, or `None` if the plugin
-    /// reported a range that cannot be stepped through.
-    ///
-    /// Guards three plugin answers that are each individually plausible and
-    /// jointly fatal to a naive `(max - min) / step`: a non-positive `step`
-    /// (division by zero, or an infinite loop in a caller that walks the
-    /// range), an inverted range, and a `max - min` that overflows `i32`.
-    pub fn step_count(&self) -> Option<u32> {
-        if self.step <= 0 || self.max < self.min {
-            return None;
-        }
-        let span = (self.max as i64) - (self.min as i64);
-        Some((span / self.step as i64) as u32)
-    }
-}
-
 /// The float step granularity a parameter declares, under `USES_FLOAT_STEP`.
 ///
-/// Granularity only — this carries no bounds. `USES_FLOAT_STEP` and
-/// `USES_INT_STEP` are independent flags, so a plugin may declare steps here
-/// while declaring no [`IntegerRange`] at all.
+/// Granularity only — this carries no bounds. `USES_FLOAT_STEP`,
+/// `USES_INT_STEP` and `USES_INTEGER_MIN_MAX` are independent flags, so a
+/// plugin may declare steps here while declaring no [`IntegerRange`] at all.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FloatSteps {
     /// Increment for a single step, in normalized units.
@@ -153,7 +172,7 @@ pub struct FloatSteps {
     pub large_step: f32,
 }
 
-/// The grouping a parameter declares, under `USES_CATEGORY`.
+/// The grouping a parameter declares, under `SUPPORTS_DISPLAY_CATEGORY`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterCategory {
     /// VST2 numbers categories from 1; `0` means "uncategorised" even with the
@@ -180,13 +199,15 @@ pub struct ParameterProperties {
     pub short_label: String,
     /// The raw validity flags, decoded.
     pub flags: ParameterPropertyFlags,
-    /// Integer range, when `uses_int_step`.
+    /// Integer range, when `uses_integer_min_max`.
     pub integer_range: Option<IntegerRange>,
+    /// Integer step increments, when `uses_int_step`.
+    pub integer_steps: Option<IntegerSteps>,
     /// Float step granularity, when `uses_float_step`.
     pub float_steps: Option<FloatSteps>,
-    /// Preferred display position, when `uses_index`.
+    /// Preferred display position, when `supports_display_index`.
     pub display_index: Option<u16>,
-    /// Grouping, when `uses_category` and the index is non-zero.
+    /// Grouping, when `supports_display_category` and the index is non-zero.
     pub category: Option<ParameterCategory>,
 }
 
@@ -282,7 +303,7 @@ impl ParameterProperties {
     /// hand-built structs. That is not a convenience: no plugin available here
     /// implements the opcode, so a test that could only go through a real
     /// plugin would assert nothing.
-    fn decode(index: i32, raw: &api::ParameterProperties) -> Self {
+    pub(crate) fn decode(index: i32, raw: &api::ParameterProperties) -> Self {
         let flags = ParameterPropertyFlags::from_bits(raw.flags);
 
         Self {
@@ -292,9 +313,11 @@ impl ParameterProperties {
             flags,
             // Each payload is read only under its own gate. The plugin is not
             // required to zero the fields it does not describe.
-            integer_range: flags.uses_int_step.then_some(IntegerRange {
+            integer_range: flags.uses_integer_min_max.then_some(IntegerRange {
                 min: raw.min_integer,
                 max: raw.max_integer,
+            }),
+            integer_steps: flags.uses_int_step.then_some(IntegerSteps {
                 step: raw.step_integer,
                 large_step: raw.large_step_integer,
             }),
@@ -306,11 +329,11 @@ impl ParameterProperties {
             // `display_index` is a position, so a negative one is not a
             // smaller position — it is a malformed answer.
             display_index: flags
-                .uses_index
+                .supports_display_index
                 .then(|| u16::try_from(raw.display_index).ok())
                 .flatten(),
             category: flags
-                .uses_category
+                .supports_display_category
                 .then(|| Self::decode_category(raw))
                 .flatten(),
         }
@@ -604,7 +627,7 @@ mod tests {
         out
     }
 
-    /// The integer range must be readable only under `USES_INT_STEP`.
+    /// The integer range must be readable only under `USES_INTEGER_MIN_MAX`.
     ///
     /// Catches a decoder that populates `integer_range` unconditionally: the
     /// plugin here reports a real-looking 0..127 range while declaring the
@@ -619,19 +642,91 @@ mod tests {
 
         let ungated = ParameterProperties::decode(0, &raw);
         assert_eq!(ungated.integer_range, None);
-        assert!(!ungated.flags.uses_int_step);
+        assert!(!ungated.flags.uses_integer_min_max);
+
+        raw.flags = api::ParameterFlags::USES_INTEGER_MIN_MAX.bits();
+        let gated = ParameterProperties::decode(0, &raw);
+        assert_eq!(gated.integer_range, Some(IntegerRange { min: 0, max: 127 }));
+        // The range bit does not declare the steps.
+        assert_eq!(gated.integer_steps, None);
+    }
+
+    /// The integer steps are their own flag and do not expose a range.
+    #[test]
+    fn integer_steps_are_gated_on_their_own_flag() {
+        let mut raw = raw_properties(0);
+        raw.min_integer = 0;
+        raw.max_integer = 127;
+        raw.step_integer = 1;
+        raw.large_step_integer = 12;
+        assert_eq!(ParameterProperties::decode(0, &raw).integer_steps, None);
 
         raw.flags = api::ParameterFlags::USES_INT_STEP.bits();
-        let gated = ParameterProperties::decode(0, &raw);
+        let decoded = ParameterProperties::decode(0, &raw);
         assert_eq!(
-            gated.integer_range,
-            Some(IntegerRange {
-                min: 0,
-                max: 127,
+            decoded.integer_steps,
+            Some(IntegerSteps {
                 step: 1,
-                large_step: 0,
+                large_step: 12
             })
         );
+        assert_eq!(decoded.integer_range, None);
+    }
+
+    /// The header's literal bit values, not the crate's constants: a host
+    /// whose constants are shifted agrees with a plugin built on the same
+    /// constants and would pass every symbolic test.
+    ///
+    /// `aeffectx.h`: IsSwitch `1<<0`, UsesIntegerMinMax `1<<1`, UsesFloatStep
+    /// `1<<2`, UsesIntStep `1<<3`, SupportsDisplayIndex `1<<4`,
+    /// SupportsDisplayCategory `1<<5`, CanRamp `1<<6`.
+    #[test]
+    fn the_header_bit_values_gate_the_right_groups() {
+        let mut raw = raw_properties(0);
+        raw.min_integer = -5;
+        raw.max_integer = 5;
+        raw.step_integer = 1;
+        raw.large_step_integer = 2;
+        raw.step_float = 0.5;
+        raw.display_index = 4;
+        raw.category = 1;
+
+        raw.flags = 1 << 1;
+        let d = ParameterProperties::decode(0, &raw);
+        assert_eq!(d.integer_range, Some(IntegerRange { min: -5, max: 5 }));
+        assert_eq!((d.integer_steps, d.float_steps), (None, None));
+        assert!(!d.flags.is_switch);
+
+        // `1 << 3` alone is the integer step: it must not expose a range.
+        raw.flags = 1 << 3;
+        let d = ParameterProperties::decode(0, &raw);
+        assert_eq!(d.integer_range, None);
+        assert!(d.integer_steps.is_some());
+
+        raw.flags = 1 << 2;
+        let d = ParameterProperties::decode(0, &raw);
+        assert!(d.float_steps.is_some());
+        assert_eq!((d.integer_range, d.integer_steps), (None, None));
+
+        raw.flags = 1 << 0;
+        let d = ParameterProperties::decode(0, &raw);
+        assert!(d.flags.is_switch);
+        assert_eq!(
+            (
+                d.integer_range,
+                d.integer_steps,
+                d.float_steps,
+                d.display_index
+            ),
+            (None, None, None, None)
+        );
+
+        raw.flags = 1 << 4;
+        assert_eq!(ParameterProperties::decode(0, &raw).display_index, Some(4));
+        raw.flags = 1 << 5;
+        assert!(ParameterProperties::decode(0, &raw).category.is_some());
+        raw.flags = 1 << 6;
+        assert!(ParameterProperties::decode(0, &raw).flags.can_ramp);
     }
 
     /// Same gate, on the float-step and display-index groups.
@@ -647,7 +742,9 @@ mod tests {
         assert_eq!(ungated.float_steps, None);
         assert_eq!(ungated.display_index, None);
 
-        raw.flags = (api::ParameterFlags::USES_FLOAT_STEP | api::ParameterFlags::USES_INDEX).bits();
+        raw.flags = (api::ParameterFlags::USES_FLOAT_STEP
+            | api::ParameterFlags::SUPPORTS_DISPLAY_INDEX)
+            .bits();
         let gated = ParameterProperties::decode(0, &raw);
         assert_eq!(
             gated.float_steps,
@@ -660,7 +757,7 @@ mod tests {
         assert_eq!(gated.display_index, Some(7));
     }
 
-    /// A plugin that sets `USES_CATEGORY` but leaves the index at VST2's
+    /// A plugin that sets `SUPPORTS_DISPLAY_CATEGORY` but leaves the index at VST2's
     /// `0` = uncategorised must not be reported as belonging to "category 0".
     ///
     /// Catches a decoder that trusts the flag alone: every uncategorised
@@ -668,7 +765,7 @@ mod tests {
     /// category renders them as a single bogus folder.
     #[test]
     fn category_zero_means_uncategorised_even_with_the_flag_set() {
-        let mut raw = raw_properties(api::ParameterFlags::USES_CATEGORY.bits());
+        let mut raw = raw_properties(api::ParameterFlags::SUPPORTS_DISPLAY_CATEGORY.bits());
         raw.category = 0;
         raw.num_parameters_in_category = 4;
 
@@ -726,14 +823,14 @@ mod tests {
     ///
     /// Catches a `from_bits` that returns `None`/errors on unknown bits and a
     /// decoder that then discards the whole flags word — the plugin's real
-    /// `USES_INT_STEP` declaration would be lost.
+    /// `USES_INTEGER_MIN_MAX` declaration would be lost.
     #[test]
     fn undefined_flag_bits_are_ignored_not_fatal() {
-        let raw = raw_properties(api::ParameterFlags::USES_INT_STEP.bits() | (1 << 20));
+        let raw = raw_properties(api::ParameterFlags::USES_INTEGER_MIN_MAX.bits() | (1 << 20));
         let decoded = ParameterProperties::decode(0, &raw);
-        assert!(decoded.flags.uses_int_step);
+        assert!(decoded.flags.uses_integer_min_max);
         assert!(decoded.integer_range.is_some());
-        assert!(!decoded.flags.uses_category);
+        assert!(!decoded.flags.supports_display_category);
     }
 
     /// `step_count` must refuse the three plugin answers that break naive
@@ -744,46 +841,24 @@ mod tests {
     /// subtraction.
     #[test]
     fn step_count_refuses_unusable_ranges() {
-        let usable = IntegerRange {
-            min: 0,
-            max: 127,
-            step: 1,
-            large_step: 12,
-        };
-        assert_eq!(usable.step_count(), Some(127));
+        let usable = IntegerRange { min: 0, max: 127 };
+        assert_eq!(usable.step_count(1), Some(127));
 
-        let coarse = IntegerRange {
-            min: 0,
-            max: 100,
-            step: 25,
-            large_step: 50,
-        };
-        assert_eq!(coarse.step_count(), Some(4));
+        let coarse = IntegerRange { min: 0, max: 100 };
+        assert_eq!(coarse.step_count(25), Some(4));
 
-        let zero_step = IntegerRange {
-            min: 0,
-            max: 127,
-            step: 0,
-            large_step: 0,
-        };
-        assert_eq!(zero_step.step_count(), None);
+        assert_eq!(usable.step_count(0), None);
+        assert_eq!(usable.step_count(-1), None);
 
-        let inverted = IntegerRange {
-            min: 127,
-            max: 0,
-            step: 1,
-            large_step: 0,
-        };
-        assert_eq!(inverted.step_count(), None);
+        let inverted = IntegerRange { min: 127, max: 0 };
+        assert_eq!(inverted.step_count(1), None);
 
         // `max - min` here is 4294967295, which overflows i32.
         let overflowing = IntegerRange {
             min: i32::MIN,
             max: i32::MAX,
-            step: 1,
-            large_step: 0,
         };
-        assert_eq!(overflowing.step_count(), Some(u32::MAX));
+        assert_eq!(overflowing.step_count(1), Some(u32::MAX));
     }
 
     /// VST2's `255` bank sentinel must decode to absence, not to the number.

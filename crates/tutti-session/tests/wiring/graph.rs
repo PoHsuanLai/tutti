@@ -88,9 +88,7 @@ impl Node for Knob {
 
 impl ParamNode for Knob {
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Drive, self.drive.as_atomic())
-            .build()
+        self.declared_set()
     }
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
@@ -99,7 +97,7 @@ impl ParamNode for Knob {
     }
 }
 
-tutti_session::declare_params!(Knob { UnitParam::Drive => Drive });
+tutti_graph::declare_params!([] Knob, n { Drive => Drive = &n.drive });
 
 /// A node that cannot run above 90 kHz: its `prepare` panics there, which is
 /// how a re-prepare poisons an editor.

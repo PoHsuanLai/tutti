@@ -10,11 +10,10 @@
 //! the cells and how a block reads them.
 
 use tutti_dsp::{Ladder, LadderControls, LadderDesign, LadderType, Real};
-use tutti_types::{ChannelLayout, Drive, Hz, Resonance, UnitAddr, UnitParam};
+use tutti_types::{ChannelLayout, Drive, Hz, Resonance};
 
 use super::NodeKernel;
 use super::filter_bus;
-use crate::params::ControlSet;
 use crate::reverb::DesignNode;
 
 /// A Moog-style four-stage ladder filter with resonance and drive, of any
@@ -116,37 +115,20 @@ impl<F: Real> LadderFilterNode<F> {
 #[derive(Clone, Copy, Debug)]
 pub struct LadderSet(LadderType);
 
-impl ControlSet for LadderSet {
-    type Controls = LadderControls;
+// The resonance is addressed as `Q`, in `Resonance`.
+control_set! {
+    LadderSet(s): LadderControls = LadderControls { ty: s.0, ..LadderControls::DEFAULT };
+    live: (all);
+    Cutoff => Hz = freq,
+    Q => Resonance = res,
+    Drive => Drive = drive;
 
     fn moved(&self, applied: &LadderControls, target: &LadderControls) -> bool {
         target.moved_from(applied)
     }
 
-    fn addrs(&self) -> &'static [UnitAddr] {
-        const ADDRS: [UnitAddr; 3] = [
-            UnitAddr::first(UnitParam::Cutoff),
-            UnitAddr::first(UnitParam::Q),
-            UnitAddr::first(UnitParam::Drive),
-        ];
-        &ADDRS
-    }
-
     fn defaults(&self) -> LadderControls {
         LadderControls::DEFAULT
-    }
-
-    fn flatten(&self, c: &LadderControls, out: &mut [f32]) {
-        out.copy_from_slice(&[c.freq.get(), c.res.get(), c.drive.get()]);
-    }
-
-    fn assemble(&self, v: &[f32]) -> LadderControls {
-        LadderControls {
-            ty: self.0,
-            freq: Hz(v[0]),
-            res: Resonance(v[1]),
-            drive: Drive(v[2]),
-        }
     }
 }
 
@@ -166,6 +148,7 @@ mod tests {
     use tutti_graph::contract::assert_param_fork;
     use tutti_graph::{Node, ParamNode};
     use tutti_types::Tail;
+    use tutti_types::UnitParam;
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.

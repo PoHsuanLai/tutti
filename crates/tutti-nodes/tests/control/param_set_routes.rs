@@ -265,10 +265,8 @@ fn render_chorus(
 /// rate cell: a +2 Hz offset on the 1 Hz knob renders the chorus as it
 /// renders at 3 Hz, and not as it does at 1 Hz, and the cell still holds
 /// the knob (the lane sends to the port and never writes it, doc 014
-/// §4.2). The rate is a port ([`MOD_DELAY_PARAMS`]). The claim the old
+/// §4.2). The rate is a port. The claim the old
 /// `chorus_rate_route_moves_the_nodes_own_cell` made, on the lane.
-///
-/// [`MOD_DELAY_PARAMS`]: tutti_nodes::MOD_DELAY_PARAMS
 #[test]
 fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
     const FRAMES: usize = 24_000;
@@ -401,7 +399,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
     (out, knob.load(Ordering::Acquire))
 }
 
-/// **A lane drives an `LfoNode`'s depth and rate** ([`LFO_PARAMS`]), each
+/// **A lane drives an `LfoNode`'s depth and rate**, each
 /// around the LFO's own cell. The depth knob at 0.25 plus half of a 0..1
 /// range swings the 1 Hz sine to ±0.75; the 1 Hz rate knob plus a fifth of a
 /// 0..10 Hz range runs it at 3 Hz. Over a second and a quarter, 3 Hz rises
@@ -409,8 +407,6 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
 /// render) once, at frame 48 000. The LFO's clock is exact, so each crossing
 /// is pinned to within a frame of where it belongs; a count alone would
 /// miss a clock that drifts. Neither cell moves.
-///
-/// [`LFO_PARAMS`]: tutti_nodes::LFO_PARAMS
 #[test]
 fn a_lane_drives_an_lfo_nodes_depth_and_rate() {
     let (out, knob) = render_lfo(UnitParam::Depth, ParamRange::new(0.0, 1.0), 0.5);

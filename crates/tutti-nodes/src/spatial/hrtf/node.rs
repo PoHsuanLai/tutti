@@ -6,11 +6,12 @@
 use tutti_dsp::{HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::Latency;
+use tutti_types::UnitParam;
 use tutti_types::{
     Azimuth, BusTopology, Direction, Elevation, Mix, Param, SampleRate, Samples, Tail,
 };
 
-use crate::ramp::{LastGood, block_driven};
+use crate::ramp::LastGood;
 use crate::spatial::target::AngleSmoother;
 
 // The params an [`HrtfBinauralNode`] lets the graph modulate, in port order.
@@ -25,10 +26,10 @@ tutti_graph::declare_params!([] HrtfBinauralNode, n {
 ///
 /// Build it with [`new`](Self::new) from the dataset bytes. The input pair is
 /// folded to mono, placed at the commanded bearing and height, and blended
-/// against the (equally delayed) dry mono by the blend ([`UnitParam::Wet`](tutti_types::UnitParam::Wet):
+/// against the (equally delayed) dry mono by the blend ([`UnitParam::Wet`]:
 /// 1.0, the default, is full HRTF, 0.0 the dry mono).
 /// It is a graph node (`tutti_graph::Node` and [`ParamNode`]); inserting it
-/// hands back its [`ParamSet`] ([`UnitParam::Azimuth`](tutti_types::UnitParam::Azimuth),
+/// hands back its [`ParamSet`] ([`UnitParam::Azimuth`],
 /// [`Elevation`](tutti_types::UnitParam::Elevation) and [`Wet`](tutti_types::UnitParam::Wet)), which
 /// move the source lock-free while it renders, and a graph's control lanes
 /// may drive all three .
@@ -193,13 +194,19 @@ impl Node for HrtfBinauralNode {
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         // The cells are the one copy of the commanded position and blend; the
         // renderer reads them here, once per block, a lane that drives one
-        // overriding it at the block's last frame (`block_driven`).
-        let target = self.placement([block_driven(&io, 0), block_driven(&io, 1)]);
+        // overriding it at the block's last frame (`ParamInput::last_frame`).
+        let target = self.placement([
+            self.declared_param::<{ UnitParam::Azimuth as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Elevation as u16 }>(&io)
+                .last_frame(),
+        ]);
         // `Mix::new_clamped` passes a NaN through, so the blend is held too.
-        let blend = Mix(self
-            .good
-            .blend
-            .read(block_driven(&io, 2).unwrap_or_else(|| self.blend.load().get())));
+        let blend = Mix(self.good.blend.read(
+            self.declared_param::<{ UnitParam::Wet as u16 }>(&io)
+                .last_frame()
+                .unwrap_or_else(|| self.blend.load().get()),
+        ));
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);

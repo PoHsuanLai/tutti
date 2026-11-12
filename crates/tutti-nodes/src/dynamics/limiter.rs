@@ -135,7 +135,7 @@ impl std::fmt::Debug for LimiterNode {
 // The params a [`LimiterNode`] lets the graph modulate, in port order.
 // The ceiling and threshold are read per sample; the release is
 // block-rate in the node, so a driven port is read once per block
-// (`block_driven`).
+// (`ParamInput::last_frame`).
 tutti_graph::declare_params!([] LimiterNode, n {
     Ceiling => Db = &n.ceiling_db,
     Threshold => Db = &n.threshold_db,
@@ -365,8 +365,16 @@ impl Node for LimiterNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        self.update_coefficients(crate::ramp::block_driven(&io, 2));
-        let (ceiling_fed, threshold_fed) = (io.param(0).frames(), io.param(1).frames());
+        self.update_coefficients(
+            self.declared_param::<{ UnitParam::Release as u16 }>(&io)
+                .last_frame(),
+        );
+        let (ceiling_fed, threshold_fed) = (
+            self.declared_param::<{ UnitParam::Ceiling as u16 }>(&io)
+                .frames(),
+            self.declared_param::<{ UnitParam::Threshold as u16 }>(&io)
+                .frames(),
+        );
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
         let (inputs, mut outputs) = io.split();
@@ -615,7 +623,9 @@ impl Node for BrickwallLimiterNode {
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
         let n = self.channels;
-        let ceiling_fed = io.param(0).frames();
+        let ceiling_fed = self
+            .declared_param::<{ UnitParam::Ceiling as u16 }>(&io)
+            .frames();
         let (inputs, mut outputs) = io.split();
         // The cell's ceiling, re-derived once per block: the unmodulated
         // clip, and a fed NaN frame's fallback. A NaN cell keeps the last.

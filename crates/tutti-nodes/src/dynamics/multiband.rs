@@ -13,7 +13,6 @@ use tutti_types::{ChannelLayout, UnitAddr, UnitParam};
 
 use super::compressor::CompressorCore;
 use crate::filter::Splits;
-use crate::ramp::block_driven;
 use tutti_dsp::{Crossover, CrossoverError};
 
 /// The crossover frequencies a band count starts with.
@@ -313,9 +312,9 @@ impl MultibandCompressorNode {
     }
 }
 
-// The params, band by band in the order of `BAND_PARAMS` (the render reads
-// port `band * PER_BAND + k`), then a toggle pair per band that is no port,
-// then one crossover per split. A band's make-up gain is addressed as
+// The params, band by band in the order of `BAND_PARAMS`, then a toggle pair
+// per band that is no port, then one crossover per split. The render reads
+// them by kind and band (`declared_param_at`), not by port. A band's make-up gain is addressed as
 // `GainDb`.
 tutti_graph::declare_params!([] MultibandCompressorNode, n {
     [b in 0..n.bands.len()] {
@@ -369,18 +368,38 @@ impl Node for MultibandCompressorNode {
         let n = io.frames();
         let ch = self.filters.len();
         let nb = self.bands.len();
-        let targets = self.splits.read(self.filters[0].sample_rate(), |i| {
-            block_driven(&io, nb * PER_BAND + i)
-        });
+        let mut cutoff = [None; MAX_CROSSOVERS];
+        for (i, c) in cutoff.iter_mut().enumerate().take(nb - 1) {
+            *c = self
+                .declared_param_at::<{ UnitParam::Cutoff as u16 }>(&io, i as u8)
+                .last_frame();
+        }
+        let targets = self
+            .splits
+            .read(self.filters[0].sample_rate(), |i| cutoff[i]);
         // What the graph drives on each band's ports, taken before the split
         // of `io`: the threshold's frames, and the others' last frame.
         let mut driven = [[None; PER_BAND]; Self::MAX_BANDS];
         let mut threshold_fed = [None; Self::MAX_BANDS];
         for b in 0..nb {
-            threshold_fed[b] = io.param(b * PER_BAND).frames();
-            for (k, d) in driven[b].iter_mut().enumerate() {
-                *d = block_driven(&io, b * PER_BAND + k);
-            }
+            let band = b as u8;
+            threshold_fed[b] = self
+                .declared_param_at::<{ UnitParam::Threshold as u16 }>(&io, band)
+                .frames();
+            // In the order of `BAND_PARAMS`; the threshold is read per sample.
+            driven[b] = [
+                None,
+                self.declared_param_at::<{ UnitParam::Knee as u16 }>(&io, band)
+                    .last_frame(),
+                self.declared_param_at::<{ UnitParam::Ratio as u16 }>(&io, band)
+                    .last_frame(),
+                self.declared_param_at::<{ UnitParam::Attack as u16 }>(&io, band)
+                    .last_frame(),
+                self.declared_param_at::<{ UnitParam::Release as u16 }>(&io, band)
+                    .last_frame(),
+                self.declared_param_at::<{ UnitParam::GainDb as u16 }>(&io, band)
+                    .last_frame(),
+            ];
         }
         let (inputs, mut outputs) = io.split();
 

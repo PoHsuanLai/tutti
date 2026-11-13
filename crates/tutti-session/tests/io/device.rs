@@ -158,7 +158,7 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     in_step(&s, "96 kHz, after");
 }
 
-// ---- the device watch (design 018) ----
+// ---- the device watch ----
 
 /// A source the test feeds by hand.
 #[derive(Clone, Default)]

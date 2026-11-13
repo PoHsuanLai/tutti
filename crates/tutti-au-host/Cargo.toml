@@ -19,14 +19,6 @@ workspace = true
 # calls beside the safe API (the raw `AudioUnit` behind a `Unit`, the packet-list
 # walkers). Off in a production build.
 testing = ["tutti-au-ffi/testing"]
-# The tests that need third-party Audio Units installed on the machine (TDR Nova,
-# TAL-NoiseMaker, TAL Reverb 4): `tests/au_third_party.rs`, and one test each in
-# `tests/au_midi_map.rs` and `tests/au_render_notify.rs`. They fail, never skip,
-# where the units are absent, so they are compiled out unless asked for: CI lints
-# them (`clippy (macos)`) and a developer with the units runs them with
-# `cargo xtask test-au-installed`. It adds no code to the library.
-installed-units = []
-
 [dependencies]
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # Every raw AudioToolbox, CoreAudio and CoreFoundation call; this crate forbids

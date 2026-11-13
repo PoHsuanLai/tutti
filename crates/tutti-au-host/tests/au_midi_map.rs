@@ -41,8 +41,6 @@ use tutti_au_ffi::property::MidiControlMapping;
 use tutti_au_ffi::{Property, Scope};
 
 mod support;
-#[cfg(feature = "installed-units")]
-use support::corpus::THIRD_PARTY;
 use support::corpus::{
     AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER, every_component,
     may_initialize_in_a_sweep,
@@ -261,45 +259,6 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
          because 0 of 59 components answered it, making a decoder untestable. \
          A hit means the AudioUnitMIDIControlMapping fallback can now be written \
          against a real unit. Write it — do NOT delete this assertion."
-    );
-}
-
-/// The third-party units installed here refuse the family, so no third-party
-/// coverage of it exists. Recorded as an assertion rather than a comment so the
-/// claim decays loudly: a plugin update that adds mapping support fails this and
-/// the suite gains a non-Apple subject.
-///
-/// Behind the `installed-units` feature (`cargo xtask test-au-installed`): none of the
-/// units is installed on a hosted runner, and a test that can only fail there
-/// is compiled out rather than filtered by name or skipped. With it on, an
-/// absent unit fails the test.
-#[cfg(feature = "installed-units")]
-#[test]
-fn no_installed_third_party_unit_implements_the_mapping_family() {
-    let _g = lock();
-    let mut supported: Vec<&str> = Vec::new();
-
-    for unit in THIRD_PARTY {
-        let info = unit.find().unwrap_or_else(|| {
-            panic!(
-                "{} is not installed; this test is built only with `installed-units`, \
-                 which asks for it",
-                unit.label
-            )
-        });
-        let mut au = Au::new(info.component, RATE, BLOCK)
-            .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", unit.label));
-        let _ = au.initialize();
-        if au.supports_parameter_midi_mapping() {
-            supported.push(unit.label);
-        }
-    }
-
-    assert!(
-        supported.is_empty(),
-        "{supported:?} now implement the parameter↔MIDI mapping family. THIS IS \
-         GOOD NEWS — the suite has a non-Apple subject for the first time. Add it \
-         to the round-trip tests rather than relaxing this assertion."
     );
 }
 

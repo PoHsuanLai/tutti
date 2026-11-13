@@ -10,3 +10,11 @@ pub mod transcript;
 mod clap;
 mod vst2;
 mod vst3;
+
+#[cfg(target_os = "macos")]
+mod au;
+#[cfg(target_os = "macos")]
+pub use au::{
+    AU_ID, AU_MANUFACTURER, AU_NAME, AU_SUBTYPE, AU_TYPE, AU_VERSION, PlugInInterface,
+    TuttiSharedAuFactory, register_au,
+};

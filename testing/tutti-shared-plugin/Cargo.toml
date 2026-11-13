@@ -3,7 +3,7 @@ name = "tutti-shared-plugin"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "One test plugin: a format-free core and a shell per plugin format (CLAP, VST2, VST3), in one library"
+description = "One test plugin: a format-free core and a shell per plugin format (CLAP, VST2, VST3, and AU on macOS), in one library"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -21,3 +21,10 @@ clap-sys = "0.5"
 tutti-vst2-author = { path = "../tutti-vst2-author" }
 num-traits = "0.2"
 vst3 = "0.3"
+
+# AU shell (macOS only): the plug-in interface over AudioToolbox, and the
+# CoreFoundation objects of its state and parameter list. It names no tutti
+# crate, like the other shells.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+coreaudio-sys = "0.2"

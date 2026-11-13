@@ -235,7 +235,7 @@ pub const TAIL: u32 = 8191;
 pub const TAIL_DEFAULT: u32 = 0;
 /// The tail behaviour that reports the formats' infinite marker, `u32::MAX`
 /// (VST3's `kInfiniteTail`; CLAP reads every count from `INT32_MAX` up as
-/// infinite). VST2 and AU cannot say it.
+/// infinite; AU says `+inf` seconds). VST2 cannot say it.
 pub const TAIL_INFINITE: u32 = 1;
 /// The tail behaviour that reports a finite tail of [`TAIL_PAST_CAP_FRAMES`].
 pub const TAIL_PAST_CAP: u32 = 2;

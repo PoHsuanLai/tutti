@@ -26,6 +26,8 @@ pub use format::{Format, Gap, ParamTiming, run};
 #[cfg(target_os = "macos")]
 pub use formats::Au;
 pub use formats::{Clap, Vst2, Vst3, Vst3Cpp};
+#[cfg(target_os = "macos")]
+pub use plugin::au_bundle;
 pub use plugin::{bundle_of, clap as clap_path, library, vst3_cpp_module, vst3_module};
 pub use transcript::{
     Kind, Logged, Told, Transcript, find_blob, patch_level, patch_mode, replace_blob, select,

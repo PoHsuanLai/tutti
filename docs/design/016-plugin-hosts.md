@@ -2216,7 +2216,7 @@ from the unit's own change. `AuInstance` and its `State` are deleted; the
 server's `loaders/au.rs` drives `Lifecycle<AuLoaded>` as the CLAP loader does.
 `AuLoaded` implements `InProcess` and `OutOfProcess` (doc 021 step 7): the
 editor-only instance is `AuEditorInstance`, in this crate, and the contract's AU
-format loads Apple's AUDelay, since the shared plugin has no AU build.
+format loads the shared plugin's AU shell, registered in process (doc 029 §6.3, AU completeness).
 
 ### 3.5 Values across the formats
 

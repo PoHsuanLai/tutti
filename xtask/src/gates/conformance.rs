@@ -13,8 +13,9 @@
 //! lowercase token (`host`, `plugin`, `core`, `initiator`, ..). `maturity` is
 //! `stable`, `draft` or empty; `kind` is `required`, `recommended`, `permitted`
 //! or empty; `section` is free text or empty; `paraphrase` is the item in our
-//! own words and is not empty in a committed row; `facts` is empty or space-separated `name=int`
-//! pairs (`name` a lowercase identifier, `int` decimal or `0x` hex, no name
+//! own words and is not empty in a committed row; `facts` is empty or
+//! space-separated `name=int` pairs (`name` a lowercase identifier, `int`
+//! decimal or `0x` hex, no name
 //! twice). `na-kind` (`deprecated`, `forbidden-for-side`, `other-side`) and
 //! `cite` (the spec location) are both empty or both set. A row with the wrong
 //! column count or any invalid column is an error naming the file and line;
@@ -28,7 +29,7 @@
 //! a finding.
 //!
 //! The rows whose id starts `clap.` are held to the `clap-sys` source the lock
-//! file pins ([`clap_sys`](super::clap_sys)): the committed `(id, side,
+//! file pins ([`super::clap_sys`]): the committed `(id, side,
 //! maturity)` triples equal the extracted ones. With the source absent the
 //! comparison is skipped and said so, unless `TUTTI_CONFORMANCE=require`.
 

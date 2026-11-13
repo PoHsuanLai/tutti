@@ -1,5 +1,4 @@
-//! Nodes for the modulation suite, copied from `bevy-tutti`'s
-//! `tests/common/probe.rs` (design 015 §5.1: the session's tests have
+//! Nodes for the modulation suite (design 015 §5.1: the session's tests have
 //! their own probe nodes).
 //!
 //! - [`ProbeUnit`]: a host's `ParamNode` with one param (its knob a `Param`

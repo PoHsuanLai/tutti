@@ -11,8 +11,8 @@
 //! **The read is a job, and nothing here spawns it.** [`PluginParamValues::start`]
 //! installs the report callback and hands back the mirror plus a `Send`
 //! [`ParamRead`]; the host runs [`ParamRead::run`] on whatever thread or pool
-//! it owns, and hands the result to [`PluginParamValues::land`]. A Bevy host
-//! puts it on its task pool; a headless one may run it on a thread of its
+//! it owns, and hands the result to [`PluginParamValues::land`]. A host
+//! may put it on its task pool, run it on a thread of its
 //! own, or inline when it can afford the round trips. A plugin's rescan is the
 //! same read again: landing it replaces the declarations and the values
 //! together, so a value never outlives the declaration it was read against.

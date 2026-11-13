@@ -14,8 +14,6 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# No `bevy` feature: nothing here is a component. The Bevy adapter derives
-# what it needs on its own side.
 default = []
 # The sample-accuracy contract suite's harness, `tutti_graph::contract`:
 # test support, so off by default. This crate's own

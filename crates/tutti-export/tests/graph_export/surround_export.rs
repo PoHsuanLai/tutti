@@ -1,4 +1,4 @@
-//! End-to-end surround export, in pure tutti — no ECS, no Bevy.
+//! End-to-end surround export, in pure tutti.
 //!
 //! Builds a surround producer graph entirely from engine primitives
 //! (`VbapPannerNode` places each source, and the graph sums the panners onto

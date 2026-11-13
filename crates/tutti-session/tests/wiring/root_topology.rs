@@ -215,8 +215,7 @@ fn a_refusal_is_a_status_not_a_log_line() {
 ///
 /// The equal-request early return in `declare_root_topology` is
 /// not observable here (the graph and engine ignore an equal declaration
-/// themselves); the host-level first-frame case it protects is pinned in
-/// `bevy-tutti`'s `a_builders_declaration_survives_the_first_frame`.
+/// themselves).
 #[test]
 fn declaring_the_same_topology_again_changes_nothing() {
     let mut s = offline(Session::builder().root_topology(buses(4)), 6).unwrap();

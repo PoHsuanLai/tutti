@@ -18,8 +18,6 @@ use super::memory_source::MemorySource;
 use super::slot::{PlaybackSlot, stretch_wanted};
 use super::types::{Playback, SlotId, Voice, VoiceSource};
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
-#[cfg(feature = "bevy")]
-use bevy_ecs::prelude::*;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,29 +28,6 @@ use tutti_graph::{
 };
 use tutti_transport::TempoReader;
 use tutti_types::{ChannelLayout, SampleRate, Tail};
-
-// ---------------------------------------------------------------------------
-// ECS components — live on the track entity.
-// ---------------------------------------------------------------------------
-
-/// The control-thread handle to a track's pool, parked on the track entity so a
-/// system that has the entity can queue commands without a side registry.
-///
-/// Not `Clone` as a component even though the handle is: one owner per track,
-/// and a system that needs a second sender clones the inner
-/// [`VoicePoolHandle`].
-#[cfg(feature = "bevy")]
-#[derive(Component, Debug)]
-pub struct VoicePoolRef(pub VoicePoolHandle);
-
-/// The graph key the track's pool occupies, so a wiring system can name it as
-/// a source without searching the graph.
-///
-/// The key, not the unit: the unit belongs to the audio thread, and holding one
-/// here would be a second owner of state the graph already owns.
-#[cfg(feature = "bevy")]
-#[derive(Component, Debug, Clone, Copy)]
-pub struct VoicePoolNode(pub tutti_graph::NodeKey);
 
 // ---------------------------------------------------------------------------
 // Retirement — values the audio thread must not drop.

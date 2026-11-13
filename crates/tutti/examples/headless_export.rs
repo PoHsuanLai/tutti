@@ -12,8 +12,7 @@
 //!
 //! The imports group by *subsystem* rather than by crate boundary, which is
 //! the actual readability win. `tutti-dsp` and `tutti-measure` are reachable
-//! here and **are not reachable through `bevy-tutti` at all**, which does not
-//! depend on them.
+//! here.
 //!
 //! Run: `cargo run -p tutti --features "export,dsp,wav" \
 //!        --example headless_export -- <outdir>`

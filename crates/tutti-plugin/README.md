@@ -16,8 +16,6 @@ The crate also drives discovery (scanning plugin directories, a persistent
 catalog with incremental rescan and crash blacklisting, in `tutti-plugin-db`)
 and covers the main-thread control surface (parameters, state, presets, editor windows).
 
-`bevy-tutti` builds its plugin-hosting feature (`plugin`) on this crate.
-
 ## Quick start
 
 Load a plugin and put its node into a tutti graph. `no_run`: the load spawns a

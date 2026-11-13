@@ -156,15 +156,14 @@ send MIDI on its event input.
 
 ## Scope
 
-- No asset loading: the crate takes a decoded `SoundFont`. `bevy-tutti`
-  provides asset-managed loading for Bevy apps.
+- No asset loading: the crate takes a decoded `SoundFont`.
 - No audio-file playback: that is `tutti-sampler`.
 - No MIDI device I/O: that is `tutti-midi-hardware`; the message types are
   `tutti-ump`'s.
 
 A file is decoded by `tutti-sf2` (`tutti_sf2::SoundFont`), which this crate does not re-export: one path for a type. The `tutti` crate re-exports it as `tutti::sf2`.
 The `tutti` crate re-exports this one as `tutti::soundfont` behind its
-`soundfont` feature, and `bevy-tutti` uses it behind the same feature.
+`soundfont` feature.
 
 ## Features
 

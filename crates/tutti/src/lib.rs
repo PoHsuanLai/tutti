@@ -5,8 +5,7 @@
 //
 // This file holds only `pub use`, `pub mod` and docs: a convenience
 // constructor belongs in the crate that owns what it wires, or, when it
-// composes several crates, in `tutti-session`, where `bevy-tutti` gets it
-// too. `tests/no_logic.rs` enforces this.
+// composes several crates, in `tutti-session`. `tests/no_logic.rs` enforces this.
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -15,8 +14,7 @@
 
 /// The API layer (`tutti-session`): a [`Session`] is a
 /// graph, its transport and the engine side it renders on, built offline or
-/// on a device by a [`SessionBuilder`]. The same
-/// layer `bevy-tutti` runs on. Feature `session`, on by default.
+/// on a device by a [`SessionBuilder`]. Feature `session`, on by default.
 #[cfg(feature = "session")]
 pub use tutti_session as session;
 
@@ -34,7 +32,7 @@ pub use tutti_session::Error;
 // `Source` in two — and aliasing away the `tutti_` prefix is also what keeps
 // `cargo xtask check-paths` honest: with no `tutti_x::` spelling
 // reachable through this crate, the redundant path it exists to catch cannot
-// be written in the first place. `bevy-tutti` aliases the same way.
+// be written in the first place.
 
 /// The engine (`tutti-engine`): `Engine`, the per-block graph render.
 pub use tutti_engine as engine;

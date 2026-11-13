@@ -2,8 +2,7 @@
 //! rendered, so a break anywhere between the declaration and the speaker
 //! fails it.
 //!
-//! The session half of `bevy-tutti`'s `midi_soundfont` suite (its ECS half,
-//! the `PlaySoundFont` spawner and the asset, stayed there). Every other MIDI
+//! Every other MIDI
 //! test asserts on the plumbing (`midi.rs`' stand-in synth logs the events
 //! at its port, `general_midi.rs` reads the topology); these render a real
 //! `SoundFontUnit` through the graph and measure the output.
@@ -12,9 +11,7 @@
 //! one fails with the resolved path rather than skipping.
 //!
 //! The clip tests roll the transport from beat 0 at 120 BPM (24 000 frames a
-//! beat), where the `bevy-tutti`
-//! ones moved a hand-kept playhead; the property is the same (a note sounds
-//! on its beat and not before).
+//! beat); the property is that a note sounds on its beat and not before.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

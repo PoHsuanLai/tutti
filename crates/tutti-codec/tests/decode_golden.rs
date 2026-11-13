@@ -359,7 +359,7 @@ fn seek_lands_on_the_whole_file_load_frames() {
     }
 }
 
-/// `Wave::from_bytes` — the Bevy loader's path, which probes from the
+/// `Wave::from_bytes` — which probes from the
 /// bytes alone with no extension hint — decodes to the same samples as the
 /// path-based load, for every fixture.
 #[test]

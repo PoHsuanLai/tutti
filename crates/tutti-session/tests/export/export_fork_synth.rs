@@ -1,8 +1,7 @@
 //! Built-in synths (`PolySynth` and `SoundFontUnit`) inserted as graph nodes
 //! and exported through a fork, playing the clip `Session::midi().play_clip`
 //! wires to them: a clip node, which the export forks with the synth and
-//! which reads the render's `Env`. The session halves of what `bevy-tutti`'s
-//! export suite pinned before that crate was parked.
+//! which reads the render's `Env`.
 //!
 //! Every tempo here is 90 BPM: a beat is 32 000 frames at 48 kHz (64 000 at
 //! 96 kHz), placed to the frame since clips place on integer frames.
@@ -241,8 +240,7 @@ fn an_exported_polysynth_plays_its_clip() {
 /// `ParamNode` added as a graph node, so a write of `UnitParam::Volume` lands
 /// in its master-volume cell, which the live synth reads on its next block
 /// and an export's fork starts from: the exported note at a quarter volume
-/// peaks at a quarter of the note at unity. (The Bevy `AudioParam` that
-/// carried the write is the adapter's; the session's write is
+/// peaks at a quarter of the note at unity. (The write is
 /// `Graph::set_param`.)
 #[test]
 fn a_param_on_a_synth_reaches_it_and_its_fork() {

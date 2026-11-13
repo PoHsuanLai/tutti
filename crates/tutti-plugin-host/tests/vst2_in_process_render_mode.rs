@@ -1,8 +1,7 @@
 //! Does a render mode set on the *handle* reach the plugin that renders?
 //!
-//! `AnyThread::set_render_mode` through the handle is the route a bounce driver uses — it is
-//! what `bevy_tutti::plugin_host::render_mode` calls, because `into_parts`
-//! consumes the `Plugin` at load and only the handle survives into the ECS.
+//! `AnyThread::set_render_mode` through the handle is the route a bounce driver uses, because `into_parts`
+//! consumes the `Plugin` at load and only the handle survives.
 //!
 //! The in-process VST2 path must populate that route. With the `render_mode`
 //! slot left `None`, `any_thread().set_render_mode` returns `false` and does nothing,

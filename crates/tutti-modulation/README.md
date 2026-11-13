@@ -37,8 +37,6 @@ signal-driven source's node, and the event edges between them. The
   `NoteEnvelopeNode`), the control lane that evaluates a program
   (`ControlLaneNode`) and the reconcile that wires them into a graph
   (`Modulation`) are `tutti-nodes`'.
-- **The ECS.** The Bevy declarations (`Mods`, `ModRoute`, `ModRange`) are
-  `bevy_tutti::modulation`'s, one layer up.
 
 It depends only on `tutti-types` and `tutti-curve` (for `Law`).
 
@@ -97,9 +95,6 @@ assert!(compiled.nodes.is_empty() && compiled.edges.is_empty());
 ## Features
 
 `default = []`: everything above.
-
-- `bevy`: `Reflect` on the `LfoShape`/`Polarity` vocabulary a Bevy
-  component carries.
 
 ## License
 

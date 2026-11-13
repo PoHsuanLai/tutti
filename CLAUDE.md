@@ -176,7 +176,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
   no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
-- **A platform difference sits behind one seam** (doc 029 §6.6): the `cfg` is only
+- **A platform difference sits behind one seam**: the `cfg` is only
   where a platform module is chosen (the server's `main_loop/{unix,windows,fallback}.rs`,
   `tutti-au-host`'s `src/macos/`, `tutti-plugin-host`'s `wakeups`), never on each item of a
   format host, the loop or the session; a one-platform test is one `cfg`'d submodule. A

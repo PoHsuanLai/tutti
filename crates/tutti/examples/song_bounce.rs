@@ -6,13 +6,17 @@
 //! cargo run -p tutti --features "export,sampler,dsp,modulation" --example song_bounce -- <outdir>
 //! ```
 //!
-//! `use tutti::prelude::*;` carries the session, the units, the sampler's
-//! `Clip`, the nodes, `Lfo`, `Bounce` and `Format`; the two bus names a fold
+//! `tutti`'s root carries the session, the units, the sampler's `Clip`, the
+//! nodes, `Lfo`, `Bounce` and `Format`; the two bus names a fold
 //! needs are `tutti::session::` paths. Every fallible call returns the one
-//! `tutti::Error`, so `?` runs the whole program.
+//! `Error`, so `?` runs the whole program.
 
 use tutti::export::Written;
-use tutti::prelude::*;
+use tutti::{
+    Amplitude, Beat, Bounce, Bpm, ChannelLayout, Clip, Depth, Error, Format, FreeverbNode, Hz, Lfo,
+    MaxBlock, Pcm, Q, Root, RouteSpec, SampleRate, Samples, Session, SessionEvent, SvfFilterNode,
+    SvfType, Wave,
+};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -35,7 +39,7 @@ fn saw() -> Wave {
     wave
 }
 
-fn main() -> Result<(), tutti::Error> {
+fn main() -> Result<(), Error> {
     let dir = std::env::args_os()
         .nth(1)
         .map_or_else(std::env::temp_dir, Into::into);
@@ -45,7 +49,7 @@ fn main() -> Result<(), tutti::Error> {
 }
 
 /// The song, bounced into `dir`.
-fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
+fn song(dir: &std::path::Path) -> Result<Written, Error> {
     std::fs::create_dir_all(dir)?;
 
     let mut s = Session::builder().build_offline(

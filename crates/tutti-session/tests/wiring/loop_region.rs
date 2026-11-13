@@ -1,8 +1,6 @@
 //! The loop region a host edits, and the form it reads back.
 //!
-//! The vocabulary half of `bevy-tutti`'s `prelude_surface`
-//! `the_loop_region_round_trips_through_the_prelude` (the prelude half, that
-//! every type is nameable from it, stayed there). An edit is a scheduled
+//! An edit is a scheduled
 //! `LoopEdit`; the region is the engine's, so a read shows an edit only once
 //! a block has applied it. `LoopRange::try_from` is where an inverted brace is
 //! refused.

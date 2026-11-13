@@ -431,7 +431,7 @@ fn refused_context_load_is_not_retried_context_free() {
     // taken — succeeds and returns `Ok`. A payload that failed both ways would
     // let a buggy host pass this test for the wrong reason.
     let blob = loaded
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the probe's plain save works while nothing is armed");
     param_reset();
 

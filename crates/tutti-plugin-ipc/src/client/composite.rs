@@ -481,9 +481,12 @@ impl PluginBridge {
         // instance remains the source of truth and nothing is written back. So
         // this logs rather than failing the editor open, which would leave the
         // user with no window at all.
-        let state_to_sync = self.audio.save_state().inspect_err(|e| {
-            tracing::warn!("[bridge] could not mirror plugin state into the editor: {e}");
-        });
+        let state_to_sync = self
+            .audio
+            .save_state(tutti_plugin_types::StateUse::Project)
+            .inspect_err(|e| {
+                tracing::warn!("[bridge] could not mirror plugin state into the editor: {e}");
+            });
 
         tracing::info!("[bridge] open_editor: calling gui.open_editor(parent={parent:?})");
         let size = gui
@@ -537,9 +540,12 @@ impl PluginBridge {
         // instance remains the source of truth and nothing is written back. So
         // this logs rather than failing the editor open, which would leave the
         // user with no window at all.
-        let state_to_sync = self.audio.save_state().inspect_err(|e| {
-            tracing::warn!("[bridge] could not mirror plugin state into the editor: {e}");
-        });
+        let state_to_sync = self
+            .audio
+            .save_state(tutti_plugin_types::StateUse::Project)
+            .inspect_err(|e| {
+                tracing::warn!("[bridge] could not mirror plugin state into the editor: {e}");
+            });
 
         gui.open_floating_editor(main)
             .map_err(|e| EditorError::PluginError(e.to_string()))?;
@@ -675,7 +681,8 @@ impl PluginBridge {
     fn pull_editor_state(&self, main: &MainThread, gui: &mut dyn Editor) {
         let mut baseline = self.baseline.lock().unwrap_or_else(PoisonError::into_inner);
         let pulled = pull_editor_state(main, gui, &mut baseline, |state| {
-            self.audio.load_state(state)
+            self.audio
+                .load_state(state, tutti_plugin_types::StateUse::Project)
         });
         if let Err(e) = pulled {
             tracing::warn!("[bridge] the editor's state did not reach the audio instance: {e}");
@@ -687,20 +694,11 @@ impl PluginBridge {
     /// # Errors
     ///
     /// As [`AudioBridge::save_state`].
-    pub fn save_state(&self) -> std::result::Result<Vec<u8>, tutti_plugin_types::StateError> {
-        self.audio.save_state()
-    }
-
-    /// See [`AudioBridge::save_state_for`].
-    ///
-    /// # Errors
-    ///
-    /// As [`AudioBridge::save_state_for`].
-    pub fn save_state_for(
+    pub fn save_state(
         &self,
         state_use: tutti_plugin_types::StateUse,
     ) -> std::result::Result<Vec<u8>, tutti_plugin_types::StateError> {
-        self.audio.save_state_for(state_use)
+        self.audio.save_state(state_use)
     }
 
     /// The **audio** instance's answer is the one returned.
@@ -718,22 +716,9 @@ impl PluginBridge {
         &self,
         main: &MainThread,
         data: &[u8],
-    ) -> std::result::Result<(), StateError> {
-        self.load_state_for(main, data, tutti_plugin_types::StateUse::Project)
-    }
-
-    /// As [`load_state`](Self::load_state), for a state saved for `state_use`.
-    ///
-    /// # Errors
-    ///
-    /// As [`AudioBridge::load_state`].
-    pub fn load_state_for(
-        &self,
-        main: &MainThread,
-        data: &[u8],
         state_use: tutti_plugin_types::StateUse,
     ) -> std::result::Result<(), StateError> {
-        let audio = self.audio.load_state_for(data, state_use);
+        let audio = self.audio.load_state(data, state_use);
         // Also load into GUI instance so its display stays in sync.
         if let Ok(mut guard) = self.gui.lock()
             && let Some(gui) = guard.as_mut()

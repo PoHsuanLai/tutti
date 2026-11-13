@@ -583,7 +583,9 @@ impl Loaded for Vst3Loaded {
     /// old instance (`kReloadComponent`). The new instance is built first, so a
     /// refusal leaves the old one in place.
     fn rebuild(mut self, main: &MainThread) -> Result<Self, Refused<Self>> {
-        let state = self.save_state(main).ok();
+        let state = self
+            .save_state(main, tutti_plugin_types::StateUse::Project)
+            .ok();
         let options = match self.origin.load().chosen() {
             Some(class) => super::loaded::LoadOptions::new().class_id(class),
             None => super::loaded::LoadOptions::new(),
@@ -600,7 +602,7 @@ impl Loaded for Vst3Loaded {
         if let Some(state) = state {
             // A plugin that refuses its own state leaves the fresh instance at
             // its defaults.
-            let _ = fresh.load_state(main, &state);
+            let _ = fresh.load_state(main, &state, tutti_plugin_types::StateUse::Project);
         }
         fresh.carried = std::mem::take(&mut self.carried);
         Ok(fresh)

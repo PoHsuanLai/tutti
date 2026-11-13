@@ -317,7 +317,7 @@ impl<F: ServerSide> Served<F> {
             before_restore();
             match this.lifecycle.control() {
                 Some(control) => control
-                    .load_state_for(main, data, state_use)
+                    .load_state(main, data, state_use)
                     .err()
                     .map(|e| e.to_string()),
                 None => Some(lost().to_string()),
@@ -855,7 +855,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
             .lifecycle
             .control()
             .ok_or_else(lost)?
-            .save_state_for(main, state_use);
+            .save_state(main, state_use);
         if home {
             // The tick lends the Processor again.
             self.drive(main, Event::Tick);
@@ -867,7 +867,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         self.lifecycle
             .control()
             .ok_or_else(lost)?
-            .save_state_for(main, state_use)
+            .save_state(main, state_use)
     }
 
     fn load_state(
@@ -879,6 +879,6 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         self.lifecycle
             .control()
             .ok_or_else(lost)?
-            .load_state_for(main, data, state_use)
+            .load_state(main, data, state_use)
     }
 }

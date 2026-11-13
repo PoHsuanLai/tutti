@@ -472,9 +472,15 @@ fn the_controller_serves_the_surface_while_the_processor_renders() {
             std::thread::yield_now();
         }
         for round in 0..40 {
-            let saved = controller.save_state(&main_thread()).expect("saves");
+            let saved = controller
+                .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+                .expect("saves");
             controller
-                .load_state(&main_thread(), &saved)
+                .load_state(
+                    &main_thread(),
+                    &saved,
+                    tutti_plugin_types::StateUse::Project,
+                )
                 .expect("loads");
             controller.set_parameter(
                 &main_thread(),
@@ -762,13 +768,24 @@ fn a_state_carries_the_program_and_a_restore_selects_it_first() {
     let probe = Probe::acquire();
     let mut live = probe.load();
     assert!(live.set_program(&main_thread(), 1));
-    let saved = Control::save_state(&mut live, &main_thread()).expect("saves");
+    let saved = Control::save_state(
+        &mut live,
+        &main_thread(),
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("saves");
     drop(live);
 
     let mut fresh = probe.load();
     assert_eq!(fresh.current_program(&main_thread()), 0, "a fresh instance");
     clear_trace();
-    Control::load_state(&mut fresh, &main_thread(), &saved).expect("restores");
+    Control::load_state(
+        &mut fresh,
+        &main_thread(),
+        &saved,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("restores");
     let sent: Vec<(i32, i32)> = trace()
         .into_iter()
         .filter(|(op, _)| matches!(*op, SET_PROGRAM | SET_CHUNK))

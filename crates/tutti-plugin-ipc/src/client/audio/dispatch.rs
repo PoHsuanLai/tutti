@@ -650,9 +650,8 @@ pub(super) fn handle(
                 ipc::send(
                     stream,
                     &HostMessage::LoadStateChunk {
-                        state_use,
                         seq,
-                        last,
+                        last: last.then_some(state_use),
                         bytes: bytes.to_vec(),
                     },
                 )?;

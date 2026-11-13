@@ -119,7 +119,7 @@ impl Editor for ClapEditor {
 
     fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
         self.inner
-            .load_state(main, data)
+            .load_state(main, data, tutti_plugin_types::StateUse::Project)
             .map_err(|e| editor_error(format!("CLAP set_state failed: {e}")))
     }
 
@@ -147,7 +147,7 @@ impl Editor for ClapEditor {
     }
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut self.inner, main)
+        Control::save_state(&mut self.inner, main, tutti_plugin_types::StateUse::Project)
     }
 
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {

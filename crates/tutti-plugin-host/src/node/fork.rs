@@ -20,7 +20,7 @@
 //!    delivery's record, `host::node`'s `param_delivery`), then **ask the
 //!    live instance for its state**, under its lock: the current preset,
 //!    when the plugin lists any (`Control::current_preset`), its state blob
-//!    (`Control::save_state_for` as a [`StateUse::Duplicate`]; VST2's is the plugin's own chunk when it
+//!    (`Control::save_state` as a [`StateUse::Duplicate`]; VST2's is the plugin's own chunk when it
 //!    declares `effFlagsProgramChunks`, else every parameter's value), and
 //!    the render mode the instance runs in. Nothing else is touched. The lock is the control side's: the
 //!    live node's audio thread renders through its lent Processor meanwhile,
@@ -34,7 +34,7 @@
 //!    unloaded (`tutti-vst2-ffi`'s `PluginInstance` leaks the module on purpose),
 //!    so the library outlives both instances whatever order they drop in.
 //! 3. **Check it is the same plugin** (its id), then **restore the state**:
-//!    the preset first, then the blob (`Control::load_state_for`, a duplicate). In that order
+//!    the preset first, then the blob (`Control::load_state`, a duplicate). In that order
 //!    because a preset change may move every parameter; the blob is what the
 //!    live instance holds now.
 //! 4. **Read the transport from the block's `Cx`**, as the live node does:
@@ -184,7 +184,7 @@ where
                 None
             };
             let state = control
-                .save_state_for(main, StateUse::Duplicate)
+                .save_state(main, StateUse::Duplicate)
                 .map_err(|e| PluginForkError::SaveState(StateError::Rejected(e.to_string())))?;
             (preset, state, live_mode)
         };
@@ -200,7 +200,7 @@ where
                     "the live instance's preset {preset:?} is not in the fresh instance"
                 ));
             }
-            Control::load_state_for(loaded, main, &state, StateUse::Duplicate)
+            Control::load_state(loaded, main, &state, StateUse::Duplicate)
                 .map_err(|e| e.to_string())
         };
         // From the stored `Origin`, not `Reopen::reopen`: an active `Lifecycle`

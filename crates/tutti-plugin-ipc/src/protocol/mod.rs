@@ -85,8 +85,9 @@ pub(crate) mod wire;
 ///   serves it) while the control connection carries every other request and
 ///   the plugin's unsolicited news (its main thread serves it, and an editor's
 ///   paint may keep it busy). A version-33 server accepts no third connection.
-/// - **Version 35** says what a state is for: `SaveState` and the `StagedState`
-///   a load declares carry a `StateUse` (the project's own, or a duplicate's),
+/// - **Version 35** says what a state is for: `SaveState`, the final
+///   `LoadStateChunk` of a sequence and the `StagedState` a load declares carry a
+///   `StateUse` (the project's own, or a duplicate's),
 ///   which a format that distinguishes them (CLAP's `state-context`) acts on.
 pub const PROTOCOL_VERSION: u32 = 35;
 

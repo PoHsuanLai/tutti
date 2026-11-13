@@ -353,22 +353,14 @@ impl Control for ClapLoaded {
         )))
     }
 
-    /// The project's state: `state-context` for `CLAP_STATE_CONTEXT_FOR_PROJECT`
-    /// when the plugin has it, plain `state` when not.
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.save_state_for(main, StateUse::Project)
-    }
-
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        self.load_state_for(main, bytes, StateUse::Project)
-    }
-
-    fn save_state_for(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+    /// `state-context` for the context `state_use` names when the plugin has
+    /// it, plain `state` when not.
+    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
         self.state_with_context(main, state_use.into())
             .map_err(plugin_error)
     }
 
-    fn load_state_for(
+    fn load_state(
         &mut self,
         main: &MainThread,
         bytes: &[u8],

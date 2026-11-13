@@ -64,7 +64,7 @@ macro_rules! served_control {
             }
 
             fn save_state(&self) -> Result<Vec<u8>, StateError> {
-                self.link.bridge.save_state()
+                self.link.bridge.save_state(StateUse::Project)
             }
 
             /// Queued on the command bus as the blocks around it are, so the
@@ -208,29 +208,18 @@ macro_rules! served_control {
                 AnyThread::parameter_value_from_text(self, id, text)
             }
 
-            fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
-                AnyThread::save_state(self).map_err(PluginError::StateFailed)
-            }
-
-            fn save_state_for(
+            fn save_state(
                 &mut self,
                 _main: &MainThread,
                 state_use: StateUse,
             ) -> PluginResult<Vec<u8>> {
                 self.link
                     .bridge
-                    .save_state_for(state_use)
+                    .save_state(state_use)
                     .map_err(PluginError::StateFailed)
             }
 
-            fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-                self.link
-                    .bridge
-                    .load_state(main, bytes)
-                    .map_err(PluginError::StateFailed)
-            }
-
-            fn load_state_for(
+            fn load_state(
                 &mut self,
                 main: &MainThread,
                 bytes: &[u8],
@@ -238,7 +227,7 @@ macro_rules! served_control {
             ) -> PluginResult<()> {
                 self.link
                     .bridge
-                    .load_state_for(main, bytes, state_use)
+                    .load_state(main, bytes, state_use)
                     .map_err(PluginError::StateFailed)
             }
 

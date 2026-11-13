@@ -259,7 +259,7 @@ impl ServedFork {
         // would be recorded as the fork's though its state predates it.
         let delivered = self.controls.delivered();
         let state = live
-            .save_state_for(tutti_plugin_types::StateUse::Duplicate)
+            .save_state(tutti_plugin_types::StateUse::Duplicate)
             .map_err(PluginForkError::SaveState)?;
         drop(live);
         let origin = self.origin.clone().ok_or_else(|| PluginForkError::Load {

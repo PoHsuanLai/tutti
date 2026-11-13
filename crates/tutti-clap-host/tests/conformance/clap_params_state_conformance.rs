@@ -936,7 +936,7 @@ fn host_round_trips_plugin_state_through_its_streams() {
 
     loaded.set_plain_value(&main_thread(), p.id, 999.0);
     let saved = loaded
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("state save should succeed");
 
     // The payload must be the plugin's, not an empty or truncated stand-in.
@@ -965,7 +965,11 @@ fn host_round_trips_plugin_state_through_its_streams() {
     assert_eq!(probe.peek(p.id), Some(101.0));
 
     loaded
-        .load_state(&main_thread(), &saved)
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("state load should succeed");
     assert_eq!(
         probe.peek(p.id),
@@ -990,13 +994,21 @@ fn state_load_restores_every_parameter_to_its_own_value() {
     for &(id, v) in &marks {
         loaded.set_plain_value(&main_thread(), id, v);
     }
-    let saved = loaded.save_state(&main_thread()).expect("save");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
     // Scramble them all, then restore.
     for &(id, _) in &marks {
         loaded.set_plain_value(&main_thread(), id, 0.0);
     }
-    loaded.load_state(&main_thread(), &saved).expect("load");
+    loaded
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("load");
 
     for &(id, v) in &marks {
         assert_eq!(
@@ -1014,9 +1026,17 @@ fn state_load_restores_every_parameter_to_its_own_value() {
 fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let saved = loaded.save_state(&main_thread()).expect("save");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
-    loaded.load_state(&main_thread(), &saved).expect("load");
+    loaded
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("load");
 
     let cap = probe.capture();
     assert_eq!(cap.load_calls, 1);
@@ -1045,12 +1065,18 @@ fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
 fn host_reports_a_load_failure_when_the_payload_is_corrupt() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let mut saved = loaded.save_state(&main_thread()).expect("save");
+    let mut saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
     // Flip one byte of the magic.
     saved[0] ^= 0xFF;
 
-    let result = loaded.load_state(&main_thread(), &saved);
+    let result = loaded.load_state(
+        &main_thread(),
+        &saved,
+        tutti_plugin_types::StateUse::Project,
+    );
     assert!(
         result.is_err(),
         "a payload the plugin rejects must surface as an error, not a silent \
@@ -1066,7 +1092,7 @@ fn empty_state_is_a_no_op() {
     let mut loaded = probe.load();
 
     loaded
-        .load_state(&main_thread(), &[])
+        .load_state(&main_thread(), &[], tutti_plugin_types::StateUse::Project)
         .expect("empty state is not an error");
 
     assert_eq!(
@@ -1197,7 +1223,12 @@ fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
 
-    let project = Control::save_state(&mut loaded, &main_thread()).expect("project save");
+    let project = Control::save_state(
+        &mut loaded,
+        &main_thread(),
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("project save");
     assert_eq!(
         probe.capture().last_save_context,
         3,
@@ -1205,7 +1236,7 @@ fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
     );
     assert_eq!(project[STATE_MAGIC.len()], 3);
 
-    let copy = Control::save_state_for(&mut loaded, &main_thread(), StateUse::Duplicate)
+    let copy = Control::save_state(&mut loaded, &main_thread(), StateUse::Duplicate)
         .expect("duplicate save");
     assert_eq!(
         probe.capture().last_save_context,
@@ -1214,13 +1245,19 @@ fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
     );
     assert_eq!(copy[STATE_MAGIC.len()], 2);
 
-    Control::load_state(&mut loaded, &main_thread(), &project).expect("project load");
+    Control::load_state(
+        &mut loaded,
+        &main_thread(),
+        &project,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("project load");
     assert_eq!(
         probe.capture().last_load_context,
         3,
         "load_state is FOR_PROJECT"
     );
-    Control::load_state_for(&mut loaded, &main_thread(), &copy, StateUse::Duplicate)
+    Control::load_state(&mut loaded, &main_thread(), &copy, StateUse::Duplicate)
         .expect("duplicate load");
     assert_eq!(
         probe.capture().last_load_context,

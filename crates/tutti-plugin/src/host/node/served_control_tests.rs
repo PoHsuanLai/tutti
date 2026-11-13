@@ -79,7 +79,8 @@ fn the_served_control_and_any_thread_answer_alike() {
 
     let state = AnyThread::save_state(&any).expect("the probe saves");
     assert_eq!(
-        Control::save_state(&mut control, &main).expect("the probe saves"),
+        Control::save_state(&mut control, &main, tutti_plugin_types::StateUse::Project)
+            .expect("the probe saves"),
         state,
         "the state"
     );
@@ -99,7 +100,7 @@ fn the_served_control_and_any_thread_answer_alike() {
 
 /// **A live served load carries what the state is for**: the probe takes a
 /// state only saved for and loaded in `CLAP_STATE_CONTEXT_FOR_DUPLICATE` (2),
-/// so a duplicate's blob loads through `load_state_for(Duplicate)` and is
+/// so a duplicate's blob loads through `load_state(Duplicate)` and is
 /// refused by `load_state`, which is a project's (3).
 #[test]
 fn a_live_served_load_reaches_the_plugin_in_the_context_it_names() {
@@ -120,12 +121,17 @@ fn a_live_served_load_reaches_the_plugin_in_the_context_it_names() {
     let main = main_thread();
     let mut control = ipc.controller();
 
-    let copy = Control::save_state_for(&mut control, &main, StateUse::Duplicate)
+    let copy = Control::save_state(&mut control, &main, StateUse::Duplicate)
         .expect("the probe saves for a duplicate");
-    Control::load_state_for(&mut control, &main, &copy, StateUse::Duplicate)
+    Control::load_state(&mut control, &main, &copy, StateUse::Duplicate)
         .expect("a duplicate's state loads in the duplicate context");
-    Control::load_state(&mut control, &main, &copy)
-        .expect_err("a project load is not the duplicate context the probe accepts");
+    Control::load_state(
+        &mut control,
+        &main,
+        &copy,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect_err("a project load is not the duplicate context the probe accepts");
 }
 
 /// **A client launched with no editor loader asks the real server for its

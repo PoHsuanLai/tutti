@@ -490,22 +490,13 @@ impl AudioBridge {
 
     // --- Main-thread sync request+response ---
 
-    /// The plugin's state, read through the server. Blocks while it travels.
-    ///
-    /// # Errors
-    ///
-    /// The plugin is dead, refused, or the transfer stalled.
-    pub fn save_state(&self) -> std::result::Result<Vec<u8>, StateError> {
-        self.save_state_for(StateUse::Project)
-    }
-
     /// The plugin's state for `state_use`, read through the server. Blocks while
     /// it travels.
     ///
     /// # Errors
     ///
-    /// As [`save_state`](Self::save_state).
-    pub fn save_state_for(&self, state_use: StateUse) -> std::result::Result<Vec<u8>, StateError> {
+    /// The plugin is dead, refused, or the transfer stalled.
+    pub fn save_state(&self, state_use: StateUse) -> std::result::Result<Vec<u8>, StateError> {
         if self.lifecycle.is_crashed() {
             return Err(StateError::PluginCrashed);
         }
@@ -529,22 +520,13 @@ impl AudioBridge {
         progress.wait(ask_resp)
     }
 
-    /// Restores a state in the plugin. Blocks while it travels.
-    ///
-    /// # Errors
-    ///
-    /// The plugin is dead, refused it, or the transfer stalled.
-    pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
-        self.load_state_for(data, StateUse::Project)
-    }
-
     /// Restores a state saved for `state_use` in the plugin. Blocks while it
     /// travels.
     ///
     /// # Errors
     ///
-    /// As [`load_state`](Self::load_state).
-    pub fn load_state_for(
+    /// The plugin is dead, refused it, or the transfer stalled.
+    pub fn load_state(
         &self,
         data: &[u8],
         state_use: StateUse,
@@ -888,11 +870,17 @@ mod tests {
         };
         while bridge.channels.push_command(Command::Reset) {}
 
-        assert_eq!(bridge.save_state(), Err(StateError::Busy));
-        assert_eq!(bridge.load_state(&[1, 2, 3]), Err(StateError::Busy));
+        assert_eq!(
+            bridge.save_state(tutti_plugin_types::StateUse::Project),
+            Err(StateError::Busy)
+        );
+        assert_eq!(
+            bridge.load_state(&[1, 2, 3], tutti_plugin_types::StateUse::Project),
+            Err(StateError::Busy)
+        );
         bridge.lifecycle.mark_crashed(PluginFailure::StreamClosed);
         assert_eq!(
-            bridge.load_state(&[1, 2, 3]),
+            bridge.load_state(&[1, 2, 3], tutti_plugin_types::StateUse::Project),
             Err(StateError::PluginCrashed)
         );
     }

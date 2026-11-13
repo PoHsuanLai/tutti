@@ -353,7 +353,10 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
     )
     .expect("the reference plugin loads in a real server")
     .ipc;
-    let state = first.bridge().save_state().expect("the state saves");
+    let state = first
+        .bridge()
+        .save_state(tutti_plugin_types::StateUse::Project)
+        .expect("the state saves");
     let first_pid = first.guard().pid();
     let reopened = std::thread::spawn(move || {
         assert!(

@@ -147,13 +147,12 @@ pub enum HostMessage {
     /// [`MAX_STATE_BYTES`]: crate::protocol::MAX_STATE_BYTES
     /// [`MAX_FRAME_BYTES`]: crate::protocol::MAX_FRAME_BYTES
     LoadStateChunk {
-        /// What the state is restored for; the server acts on the final
-        /// chunk's.
-        state_use: StateUse,
         /// Position in the sequence, starting at 0 and incrementing by one.
         seq: u32,
-        /// Whether this is the final chunk. A one-chunk state sets it on `seq` 0.
-        last: bool,
+        /// `Some` on the final chunk, naming what the whole state is restored
+        /// for, and `None` on every other: the sequence names its use once. A
+        /// one-chunk state is `Some` on `seq` 0.
+        last: Option<StateUse>,
         /// Opaque, format-defined bytes. Never interpret them host-side.
         #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,

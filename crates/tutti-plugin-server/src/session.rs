@@ -419,12 +419,9 @@ impl Session {
             }
 
             M::SaveState { state_use } => Ok(self.handle_save_state(main, state_use)),
-            M::LoadStateChunk {
-                state_use,
-                seq,
-                last,
-                bytes,
-            } => Ok(self.handle_load_state_chunk(main, state_use, seq, last, &bytes)),
+            M::LoadStateChunk { seq, last, bytes } => {
+                Ok(self.handle_load_state_chunk(main, seq, last, &bytes))
+            }
             M::StageStateChunk { seq, last, bytes } => {
                 Ok(self.handle_stage_state_chunk(seq, last, &bytes))
             }
@@ -809,11 +806,11 @@ impl Session {
     fn handle_load_state_chunk(
         &mut self,
         main: &MainThread,
-        state_use: StateUse,
         seq: u32,
-        last: bool,
+        ending: Option<StateUse>,
         bytes: &[u8],
     ) -> Reaction {
+        let last = ending.is_some();
         // **One answer per sequence, on its `last` chunk**, whatever went
         // wrong before it: the host reads one `StateLoaded` per load, and an
         // early answer left every later chunk of the sequence to fail again
@@ -853,6 +850,12 @@ impl Session {
         let Some(plugin) = self.plugin.as_mut() else {
             return BridgeMessage::StateLoaded {
                 error: Some("no plugin is loaded".to_string()),
+            }
+            .into();
+        };
+        let Some(state_use) = ending else {
+            return BridgeMessage::StateLoaded {
+                error: Some("the state sequence ended without naming its use".to_string()),
             }
             .into();
         };
@@ -1357,9 +1360,8 @@ mod tests {
             .handle(
                 &main_thread(),
                 HostMessage::LoadStateChunk {
-                    state_use: StateUse::Project,
                     seq: 0,
-                    last: true,
+                    last: Some(StateUse::Project),
                     bytes: vec![1, 2, 3],
                 },
             )
@@ -1380,13 +1382,12 @@ mod tests {
     #[test]
     fn a_refused_load_sequence_is_answered_once_at_its_end() {
         let mut s = Rig::new();
-        let mut chunk = |seq, last| {
+        let mut chunk = |seq, last: bool| {
             s.handle(
                 &main_thread(),
                 HostMessage::LoadStateChunk {
-                    state_use: StateUse::Project,
                     seq,
-                    last,
+                    last: last.then_some(StateUse::Project),
                     bytes: vec![1, 2, 3],
                 },
             )
@@ -2173,9 +2174,8 @@ mod tests {
                 .handle(
                     &main_thread(),
                     HostMessage::LoadStateChunk {
-                        state_use: StateUse::Project,
                         seq,
-                        last,
+                        last: last.then_some(StateUse::Project),
                         bytes: bytes.to_vec(),
                     },
                 )

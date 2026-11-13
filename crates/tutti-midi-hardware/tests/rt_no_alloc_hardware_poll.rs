@@ -115,7 +115,7 @@ impl Rig {
                     port: 0,
                 },
                 TapAlign::Raw,
-                1024,
+                tutti_graph::EventCapacity::of(1024),
             )
             .expect("the ingest node is in the graph");
         editor.commit().expect("commits");

@@ -1443,9 +1443,9 @@ impl Executor {
         // none: the same figure the source's writer enforces.
         // The rate is what the port can hold, note-off room included: the
         // FIFO takes every event the port wrote.
-        let rate = |from: EventOut| {
+        let rate = |from: crate::EventTapSource| {
             crate::event::note_off_room(
-                plan.event_port_capacity(from)
+                plan.event_tap_capacity(from)
                     .map_or(cap, |n| n.get() as usize),
             )
         };
@@ -1459,24 +1459,14 @@ impl Executor {
                     .and_then(|&i| old.rings.get_mut(i))
                     .and_then(Option::take);
                 Some(match (d.key, carried) {
-                    (
-                        DelayKey::Event { from, .. }
-                        | DelayKey::ParamEvent { from, .. }
-                        | DelayKey::EdgeGain { from, .. }
-                        | DelayKey::EventTap { from, .. },
-                        Some(Ring::Event(mut f)),
-                    ) => {
+                    (key, Some(Ring::Event(mut f))) if let Some(from) = key.event_origin() => {
                         f.retune(d.len);
                         f.resize(rate(from), max_block);
                         Ring::Event(f)
                     }
-                    (
-                        DelayKey::Event { from, .. }
-                        | DelayKey::ParamEvent { from, .. }
-                        | DelayKey::EdgeGain { from, .. }
-                        | DelayKey::EventTap { from, .. },
-                        _,
-                    ) => Ring::Event(EventFifo::sized(d.len, rate(from), max_block)),
+                    (key, _) if let Some(from) = key.event_origin() => {
+                        Ring::Event(EventFifo::sized(d.len, rate(from), max_block))
+                    }
                     (_, Some(Ring::Audio(mut r))) => {
                         r.retune(d.len);
                         Ring::Audio(r)
@@ -1521,13 +1511,16 @@ impl Executor {
                     .and_then(|&i| old.event_fb.get_mut(i))
                     .and_then(Option::take)
                     .map(|mut fifo| {
-                        fifo.resize(rate(from), max_block);
+                        fifo.resize(rate(crate::EventTapSource::Out(from)), max_block);
                         fifo
                     });
-                Some(
-                    carried
-                        .unwrap_or_else(|| EventFifo::sized(f.key.delay(), rate(from), max_block)),
-                )
+                Some(carried.unwrap_or_else(|| {
+                    EventFifo::sized(
+                        f.key.delay(),
+                        rate(crate::EventTapSource::Out(from)),
+                        max_block,
+                    )
+                }))
             })
             .collect();
 

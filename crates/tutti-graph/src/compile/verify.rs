@@ -904,16 +904,12 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
                     .delays
                     .get(delay as usize)
                     .ok_or_else(|| VerifyError(format!("op {m} names delay {delay}")))?;
-                let (crate::plan::DelayKey::Event { from, .. }
-                | crate::plan::DelayKey::ParamEvent { from, .. }
-                | crate::plan::DelayKey::EdgeGain { from, .. }
-                | crate::plan::DelayKey::EventTap { from, .. }) = d.key
-                else {
+                let Some(from) = d.key.event_origin() else {
                     return Err(VerifyError(format!(
                         "event delay {delay} is not keyed as events"
                     )));
                 };
-                EventSlotCapacity::fifo(plan.event_port_capacity(from), d.len, block)
+                EventSlotCapacity::fifo(plan.event_tap_capacity(from), d.len, block)
             }
             Op::EventMerge { srcs, .. } => {
                 let mut need = EventSlotCapacity::NONE;

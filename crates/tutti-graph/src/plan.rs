@@ -155,8 +155,8 @@ pub enum DelayKey {
     EventTap {
         /// The event tap.
         tap: crate::EventTapId,
-        /// The event output copied.
-        from: EventOut,
+        /// The event port copied.
+        from: crate::EventTapSource,
     },
     /// One lane of an aligned tap, delayed like an output channel.
     Tap {
@@ -167,6 +167,20 @@ pub enum DelayKey {
         /// What feeds it.
         from: Source,
     },
+}
+
+impl DelayKey {
+    /// The event port whose stream this delay carries; `None` for an audio
+    /// delay.
+    pub(crate) fn event_origin(self) -> Option<crate::EventTapSource> {
+        match self {
+            Self::Event { from, .. }
+            | Self::ParamEvent { from, .. }
+            | Self::EdgeGain { from, .. } => Some(crate::EventTapSource::Out(from)),
+            Self::EventTap { from, .. } => Some(from),
+            _ => None,
+        }
+    }
 }
 
 /// One PDC delay in a plan.
@@ -464,7 +478,8 @@ pub enum Op {
         srcs: Span,
     },
     /// Push every MIDI event of an event slot into an event tap's ring, each
-    /// stamped with its frame.
+    /// stamped with its frame. The slot is an output port's, or the merge a
+    /// node reads at an input.
     EventTap {
         /// Index into `Plan::event_taps`.
         tap: u32,
@@ -1171,6 +1186,18 @@ impl Plan {
         self.unit(port.node)
             .filter(|u| port.port < u.shape.event_out)
             .and_then(|u| u.shape.event_capacity)
+    }
+
+    /// The capacity an event tap's source declares: an output's own, or, for
+    /// an input, its node's.
+    pub(crate) fn event_tap_capacity(&self, source: crate::EventTapSource) -> Option<NonZeroU32> {
+        match source {
+            crate::EventTapSource::Out(port) => self.event_port_capacity(port),
+            crate::EventTapSource::In(at) => self
+                .unit(at.node)
+                .filter(|u| at.port < u.shape.event_in)
+                .and_then(|u| u.shape.event_capacity),
+        }
     }
 
     /// Feedback slots of `kind`.

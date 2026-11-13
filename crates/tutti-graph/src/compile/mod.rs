@@ -381,7 +381,7 @@ enum Pre {
     },
     EventTap {
         tap: u32,
-        src: u32,
+        src: ERef,
     },
     Meter {
         meter: u32,
@@ -808,6 +808,9 @@ pub fn compile(
 
     let mut audio_out_val: BTreeMap<OutPort, u32> = BTreeMap::new();
     let mut event_out_val: BTreeMap<EventOut, u32> = BTreeMap::new();
+    // What each event input reads, after its sources' delays and merge: the
+    // stream an event tap of an input copies.
+    let mut event_in_val: BTreeMap<EventIn, ERef> = BTreeMap::new();
 
     for &n in &order {
         let key = keys[n];
@@ -926,7 +929,9 @@ pub fn compile(
                     }
                 });
             }
-            ein.push(merge_tree(&mut em, refs));
+            let merged = merge_tree(&mut em, refs);
+            event_in_val.insert(at, merged);
+            ein.push(merged);
         }
 
         // Driven params, in port order: each source through its PDC delay
@@ -1230,12 +1235,30 @@ pub fn compile(
         let Some(from) = spec.source else {
             continue;
         };
-        let (Some(&v), Some(&n)) = (event_out_val.get(&from), dense.get(&from.node)) else {
-            continue;
+        // What the port carries, and when it departs (an output) or arrives
+        // (an input, which an aligned tap delays to the output time too).
+        let (carried, at_time) = match from {
+            crate::EventTapSource::Out(port) => {
+                let (Some(&v), Some(&n)) = (event_out_val.get(&port), dense.get(&port.node)) else {
+                    continue;
+                };
+                (ERef::Val(v), departure(n))
+            }
+            crate::EventTapSource::In(at) => {
+                let (Some(&r), Some(&n)) = (event_in_val.get(&at), dense.get(&at.node)) else {
+                    continue;
+                };
+                (r, arrival[n])
+            }
         };
-        let mut src = v;
-        if spec.align == crate::TapAlign::ToOutput {
-            let d = departure(n).gap_to(total);
+        if carried == ERef::Empty {
+            continue;
+        }
+        let mut src = carried;
+        // A feedback edge's slot is read as the node reads it: it has no
+        // value to delay.
+        if let (crate::TapAlign::ToOutput, ERef::Val(v)) = (spec.align, carried) {
+            let d = at_time.gap_to(total);
             if !d.is_zero() {
                 let delay = em.delays.len() as u32;
                 em.delays.push(DelaySpec {
@@ -1252,11 +1275,11 @@ pub fn compile(
                 if let Pre::EventDelay { dst, .. } = &mut em.pre[op as usize] {
                     *dst = dv;
                 }
-                src = dv;
+                src = ERef::Val(dv);
             }
         }
         let op = em.push(Pre::EventTap { tap: index, src });
-        em.read_event(src, op);
+        em.read_eref(src, op);
     }
 
     // Meters: one lane per source. `Outputs` reads what each output channel
@@ -1426,15 +1449,11 @@ pub fn compile(
             }
             Pre::EventDelay { delay, dst, .. } => {
                 let d = &em.delays[*delay as usize];
-                let (DelayKey::Event { from, .. }
-                | DelayKey::ParamEvent { from, .. }
-                | DelayKey::EdgeGain { from, .. }
-                | DelayKey::EventTap { from, .. }) = d.key
-                else {
+                let Some(from) = d.key.event_origin() else {
                     unreachable!("an event delay is keyed as events")
                 };
                 value_cap[*dst as usize] = EventSlotCapacity::fifo(
-                    node_shapes[dense[&from.node]].event_capacity,
+                    node_shapes[dense[&from.node()]].event_capacity,
                     d.len,
                     block,
                 );
@@ -1591,7 +1610,7 @@ pub fn compile(
             },
             Pre::EventTap { tap, src } => Op::EventTap {
                 tap: *tap,
-                src: eslot(*src),
+                src: eref_slot(*src),
             },
             Pre::Meter { meter, srcs } => Op::Meter {
                 meter: *meter,

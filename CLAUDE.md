@@ -91,7 +91,11 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   frame (a take).
 - Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
   and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
-  `Editor::open_event_tap` / `Graph::taps().open_event` on one event output, read
+  `Editor::open_event_tap` / `Graph::taps().open_event` on one event output
+  (what the port wrote) or one event input (what the node hears: its sources
+  merged in the order the executor hands them, after any `TapAlign` delay; an
+  `EventTapSource` / the session's `EventTapPort`, which `key.events_out()` and
+  `key.events_in()` both convert into), the capacity an `EventCapacity`, read
   through `EventTapReader` (its own type, not a `TapReader`: no lanes, no
   layout). MIDI only, each event a `TapEvent { frame, ump }` on the graph's
   absolute clock (a `u64`, after any `TapAlign` delay), the ring `note_off_room`

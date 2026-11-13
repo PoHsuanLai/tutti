@@ -23,6 +23,8 @@ inline double toneNormalized (double plain)
 	return std::min (1.0, std::max (0.0, std::log (kTonePlainMax / p) / std::log (kTonePlainMax / kTonePlainMin)));
 }
 constexpr uint32_t kLatency = 137, kTail = 8191;
+// The tail byte (core.rs, "Tail"): the default, the infinite marker (kInfiniteTail), or a finite 61 s.
+constexpr uint32_t kTailInfinite = 1, kTailPastCap = 2, kTails = 3, kTailPastCapFrames = 48000 * 61;
 constexpr uint32_t kMagic = 0x31505354; // "TSP1"
 constexpr size_t kStateHead = 24;
 // A transport's flags (core.rs, "State"), and how many the log keeps.
@@ -42,7 +44,11 @@ struct Ev { int kind; uint32_t offset; uint32_t id; double value; };
 struct Core
 {
 	std::atomic<double> level {0.5}, aux {0.25}, tone {0.5};
-	std::atomic<uint32_t> mode {0}, notice {0};
+	std::atomic<uint32_t> mode {0}, notice {0}, tailSel {0};
+	uint32_t tailSamples () const
+	{
+		return tailSel == kTailInfinite ? 0xFFFFFFFFu : tailSel == kTailPastCap ? kTailPastCapFrames : kTail;
+	}
 	std::atomic<uint64_t> calls {0}, frames {0};
 	std::atomic<uint32_t> prepares {0}, maxBlock {0};
 	std::atomic<double> rate {0};
@@ -181,7 +187,7 @@ struct Core
 	std::vector<uint8_t> save () const
 	{
 		std::vector<uint8_t> b;
-		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode | notice << 16); put<double> (b, level); put<double> (b, aux);
+		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode | notice << 16 | tailSel << 24); put<double> (b, level); put<double> (b, aux);
 		put<uint64_t> (b, calls); put<uint64_t> (b, frames); put<uint32_t> (b, prepares);
 		put<double> (b, rate); put<uint32_t> (b, maxBlock); put<uint32_t> (b, overflow);
 		uint32_t nb = blocksN, kept = std::min<uint32_t> (nb, 16);
@@ -201,12 +207,12 @@ struct Core
 	bool load (const uint8_t* p, size_t n)
 	{
 		if (n < kStateHead) return false;
-		uint32_t magic, word, m, editor, nt; double l, a;
+		uint32_t magic, word, m, editor, nt, tl; double l, a;
 		std::memcpy (&magic, p, 4); std::memcpy (&word, p + 4, 4); std::memcpy (&l, p + 8, 8); std::memcpy (&a, p + 16, 8);
-		m = word & 0xFF; editor = (word >> 8) & 0xFF; nt = word >> 16;
+		m = word & 0xFF; editor = (word >> 8) & 0xFF; nt = (word >> 16) & 0xFF; tl = word >> 24;
 		// This plugin has no editor: it refuses the editor byte, and takes the notice byte.
-		if (magic != kMagic || m >= kModes || editor != 0 || nt >= kNotices || !std::isfinite (l) || !std::isfinite (a)) return false;
-		mode = m; notice = nt; setParam (kLevel, l); setParam (kAux, a);
+		if (magic != kMagic || m >= kModes || editor != 0 || nt >= kNotices || tl >= kTails || !std::isfinite (l) || !std::isfinite (a)) return false;
+		mode = m; notice = nt; tailSel = tl; setParam (kLevel, l); setParam (kAux, a);
 		return true;
 	}
 };

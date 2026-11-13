@@ -51,6 +51,7 @@ macro_rules! contract {
             latency_applied,
             reset_clears_the_delay_line,
             tail_reported,
+            tail_markers_reported,
             the_control_surface_answers_alike_loaded_and_active,
             a_gesture_is_reported_in_order,
             parameters_listed,

@@ -137,6 +137,8 @@ pub struct Layout {
     pub outputs: PluginBuses,
 }
 
+use tutti_graph::MAX_NODE_TAIL;
+
 /// How long a plugin keeps producing audio after its input goes silent.
 ///
 /// An alias of the engine-wide [`Tail`](tutti_types::Tail), so a hosted
@@ -199,12 +201,23 @@ impl Processing {
     /// `Unbounded` stand whatever was measured (one impulse at default
     /// settings proves nothing about another patch), and a finite claim is
     /// never cut below what the plugin said.
+    ///
+    /// **A finite figure past [`MAX_NODE_TAIL`] is `Unbounded`**, never that
+    /// figure clamped: the graph bounds a node's finite tail there (it sizes a
+    /// bounce's file from it), and a ceiling cut to 60 s would end a two-minute
+    /// reverb early and park its node while it still rings. `Unbounded` claims
+    /// nothing false: nothing parks on it and an export runs to its own silence
+    /// or range rule.
     pub fn ceiling(&self) -> PluginTail {
-        match (self.tail, self.measured.and_then(|m| m.tail)) {
+        let raised = match (self.tail, self.measured.and_then(|m| m.tail)) {
             (PluginTail::Finite(claimed), Some(measured)) if measured > claimed => {
                 PluginTail::Finite(measured)
             }
             (tail, _) => tail,
+        };
+        match raised {
+            PluginTail::Finite(frames) if frames > MAX_NODE_TAIL => PluginTail::Unbounded,
+            other => other,
         }
     }
 }
@@ -529,5 +542,20 @@ mod tests {
             let empty = Processing::new(claim).with_measured(Measured::default());
             assert_eq!(empty.ceiling(), claim);
         }
+    }
+
+    /// **A finite tail past the graph's bound is `Unbounded`, not clamped**: a
+    /// clamp would declare a ceiling shorter than the plugin rings; the bound
+    /// itself still fits.
+    #[test]
+    fn a_finite_tail_past_the_graphs_bound_is_unbounded() {
+        let at = PluginTail::Finite(MAX_NODE_TAIL);
+        assert_eq!(Processing::new(at).ceiling(), at);
+        let past = PluginTail::Finite(Samples(MAX_NODE_TAIL.get() + 1));
+        assert_eq!(Processing::new(past).ceiling(), PluginTail::Unbounded);
+        // A measurement that raises a claim past the bound goes the same way.
+        let raised = Processing::new(PluginTail::Finite(Samples(10)))
+            .with_measured(measured(MAX_NODE_TAIL.get() + 1));
+        assert_eq!(raised.ceiling(), PluginTail::Unbounded);
     }
 }

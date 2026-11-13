@@ -1705,7 +1705,7 @@ impl Editor {
     ///
     /// [`CommitError::NoSuchNode`] for a key with no node,
     /// [`CommitError::TailTooLong`] for a finite tail past
-    /// [`MAX_NODE_TAIL`] (a probed tail is clamped there, a figure set by
+    /// [`MAX_NODE_TAIL`] (a figure set by
     /// hand is refused), [`CommitError::Repreparing`] between a re-prepare's
     /// two commits (its second half re-reads every unit's shape and would
     /// overwrite this) or [`CommitError::Poisoned`]; nothing changes.

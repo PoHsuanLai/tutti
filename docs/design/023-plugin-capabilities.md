@@ -738,7 +738,16 @@ the same experiment out of process.
   `tail.changed`, through `Notice::TailChanged`, over the wire as
   `BridgeMessage::TailChanged`); the session's plugin phase now compares the
   controls' ceiling with the graph's, as it does the latency
-  (`Graph::refresh_node_tail`, `Editor::set_tail`), clamped to `MAX_NODE_TAIL`.
+  (`Graph::refresh_node_tail`, `Editor::set_tail`). **A finite figure past
+  `MAX_NODE_TAIL` is `Unbounded`, never clamped** (`Processing::ceiling`, which both
+  the node's `shape` and the session go through): a clamp would declare a ceiling
+  shorter than the plugin rings, ending a bounce of a two-minute reverb at 60 s and
+  parking its node early, where `Unbounded` claims nothing false and is never
+  refused. CLAP's infinite marker (`INT32_MAX` and above), VST3's `kInfiniteTail`
+  and AU's `+inf` `TailTime` already map to `Unbounded` in `PluginTail::from_*`;
+  the shared plugin's tail byte tests the two format hosts through the contract
+  (`tail_markers_reported`). `MAX_NODE_TAIL` stays: it bounds the length a bounce is
+  sized from (`graph_tail`), not any arithmetic (sums saturate).
   AU's `TailTime` property listener raises the same `Request::TailChanged` and
   takes the same route. VST3 (its restart flags have no tail flag; the host
   reads `getTailSamples` at load) and VST2 (no changed callback) have no source

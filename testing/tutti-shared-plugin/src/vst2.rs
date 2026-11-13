@@ -155,7 +155,7 @@ impl Plugin for Shared {
         }
     }
     fn get_tail_size(&self) -> isize {
-        core::TAIL as isize
+        self.core.tail_samples() as isize
     }
     fn get_parameter_object(&mut self) -> Arc<dyn PluginParameters> {
         Arc::new(Params(Arc::clone(&self.core), self.host))

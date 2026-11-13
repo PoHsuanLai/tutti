@@ -432,18 +432,6 @@ fn clamp_latency(latency: Latency) -> Latency {
     Latency::new(latency.samples().min(tutti_graph::MAX_NODE_LATENCY))
 }
 
-/// `tail` with a finite figure clamped to what a node may declare
-/// ([`tutti_graph::MAX_NODE_TAIL`]), as the editor clamps a tail it probes at
-/// insert: `set_tail` refuses a figure past it, and a refused one would never
-/// be retried (the poll only fires again when the plugin's figure moves).
-#[cfg(feature = "plugin")]
-fn clamp_tail(tail: Tail) -> Tail {
-    match tail {
-        Tail::Finite(frames) => Tail::Finite(frames.min(tutti_graph::MAX_NODE_TAIL)),
-        other => other,
-    }
-}
-
 impl Graph {
     /// An empty graph with `inputs` global inputs and `outputs` global
     /// outputs, prepared for `rate`, `max_block` and the device's callback
@@ -2968,7 +2956,8 @@ impl Graph {
 
     /// A node's tail ceiling moved at runtime (a plugin's tail-changed
     /// callback): hand `tail` (the ceiling its `Shape` declares now) to the
-    /// editor (`Editor::set_tail`), clamped to what a node may declare, so
+    /// editor (`Editor::set_tail`), a finite figure past what a node may
+    /// declare (`MAX_NODE_TAIL`) becoming `Unbounded`, so
     /// the next commit moves the plan, the export length and the silence skip
     /// to it without touching the running node. The ceiling moves at that
     /// commit, as a latency does.
@@ -2980,7 +2969,10 @@ impl Graph {
         if !self.nodes.contains_key(&node) {
             return false;
         }
-        let tail = clamp_tail(tail);
+        // A finite figure past what a node may declare is `Unbounded`, never
+        // clamped (a clamp would declare a ceiling shorter than the plugin
+        // rings), and so never refused: nothing retries it.
+        let tail = tutti_plugin_types::Processing::new(tail).ceiling();
         if self.node_tail(node) == Ok(tail) {
             return false;
         }
@@ -3212,11 +3204,11 @@ mod tail_tests {
     }
 
     /// **A node's tail ceiling follows the figure the host hands the graph,
-    /// is clamped to what a node may declare, and edits nothing when it has
+    /// a finite figure past what a node may declare becomes `Unbounded`, and edits nothing when it has
     /// not moved**: an idle poll must not recompile and republish every
     /// frame. A node the graph does not have is not touched.
     #[test]
-    fn refresh_node_tail_follows_the_figure_and_clamps() {
+    fn refresh_node_tail_follows_the_figure_and_bounds() {
         let mut g = graph();
         let (node, _) = g.add(ForkByClone(Const::mono(0.0)));
         g.commit();
@@ -3237,11 +3229,20 @@ mod tail_tests {
         assert!(g.refresh_node_tail(node, past));
         assert_eq!(
             g.node_tail(node),
-            Ok(Tail::Finite(tutti_graph::MAX_NODE_TAIL)),
-            "a figure past the most a node declares is clamped, not refused"
+            Ok(Tail::Unbounded),
+            "a figure past the most a node declares is unbounded: not clamped, not refused"
         );
-        assert!(g.refresh_node_tail(node, Tail::Unbounded));
-        assert_eq!(g.node_tail(node), Ok(Tail::Unbounded));
+        g.commit();
+        assert!(
+            !g.is_edited(),
+            "the graph took it: nothing is left to retry"
+        );
+        assert!(
+            !g.refresh_node_tail(node, Tail::Unbounded),
+            "the same figure again edits nothing"
+        );
+        assert!(g.refresh_node_tail(node, Tail::None));
+        assert_eq!(g.node_tail(node), Ok(Tail::None));
 
         assert!(
             !g.refresh_node_tail(NodeKey(9_999), Tail::None),

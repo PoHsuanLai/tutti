@@ -67,6 +67,14 @@ use tutti_types::{Samples, Tail};
 /// Applied per node, so a long chain can legitimately sum past it. That is the
 /// same property the latency bound has: the clamp rejects one bad answer, it
 /// does not cap the graph.
+///
+/// **What it protects**: the length of a bounce. `graph_tail`'s `known` figure
+/// sizes an export's tail, and a garbage finite figure would size a file by
+/// it (bounded by the disk, not by an arithmetic overflow: sums saturate), so
+/// `graph_tail` and [`Editor::set_tail`](crate::Editor::set_tail) hold a node's
+/// finite tail to it. It is not a way to declare a longer ring-out: a host that
+/// has one declares `Tail::Unbounded` (the plugin hosts do, for any finite
+/// figure past this), which claims nothing false.
 pub const MAX_NODE_TAIL: Samples = Samples(48_000 * 60);
 
 /// A [`LatencyGraph`] whose nodes may also keep producing after their input

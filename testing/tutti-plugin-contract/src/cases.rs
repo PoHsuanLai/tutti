@@ -2,6 +2,7 @@
 //! makes a test of each. Expected figures come from [`spec`].
 
 use crate::active::main_thread;
+use crate::transcript::select_tail;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
@@ -183,6 +184,29 @@ pub fn tail_reported<F: Format>() {
         active_in::<F>(Mode::Tag).controller().tail(&main_thread()),
         PluginTail::Finite(spec::TAIL)
     );
+}
+
+/// **The format host reports the plugin's tail whole**: a tail past what the
+/// graph bounds (`MAX_NODE_TAIL`, 60 s) is the finite figure the plugin gave,
+/// not a clamped one (a clamp here would cut a longer ring-out off), and the
+/// format's infinite marker is `Unbounded`, not a huge finite count.
+pub fn tail_markers_reported<F: Format>() {
+    let spec = F::SURFACE;
+    if !spec.selects_tail {
+        return;
+    }
+    let main = main_thread();
+    let mut loaded = F::load();
+    select_tail::<F, _>(&mut loaded, spec::TAIL_PAST_CAP);
+    assert_eq!(
+        loaded.wiring(&main).tail,
+        PluginTail::Finite(spec::TAIL_PAST_CAP_FRAMES),
+        "a finite tail past the graph's bound"
+    );
+    if let Some(infinite) = spec.infinite_tail {
+        select_tail::<F, _>(&mut loaded, spec::TAIL_INFINITE);
+        assert_eq!(loaded.wiring(&main).tail, infinite, "the infinite marker");
+    }
 }
 
 /// The plugin lists its parameters with their names, defaults and, where the

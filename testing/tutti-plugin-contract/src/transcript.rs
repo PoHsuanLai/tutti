@@ -59,6 +59,21 @@ pub fn select<F: Format, C: Control + ?Sized>(c: &mut C, editor: u32, notice: u3
         .expect("the plugin takes its configuration");
 }
 
+/// Selects the plugin's tail behaviour (the fourth byte of the mode word),
+/// keeping the rest of the word, through the state like [`set_mode`].
+pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
+    let state = c.save_state(&main_thread()).expect("the plugin saves");
+    let mut blob = F::extract_blob(&state);
+    let at = MAGIC.len();
+    let mut word = [0u8; 4];
+    word.copy_from_slice(&blob[at..at + 4]);
+    let kept = u32::from_le_bytes(word) & 0x00FF_FFFF;
+    blob[at..at + 4].copy_from_slice(&(kept | tail << 24).to_le_bytes());
+    let patched = F::embed_blob(&state, &blob);
+    c.load_state(&main_thread(), &patched)
+        .expect("the plugin takes its configuration");
+}
+
 /// `blob` with its `level` set.
 #[must_use]
 pub fn patch_level(mut blob: Vec<u8>, level: f64) -> Vec<u8> {

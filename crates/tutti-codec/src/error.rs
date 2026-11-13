@@ -132,7 +132,7 @@ pub enum SpecError {
 }
 
 /// The codec behind an [`Error::Encoding`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Codec {
     /// FLAC.

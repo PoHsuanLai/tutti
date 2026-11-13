@@ -42,7 +42,7 @@ const WRITE_CHUNK: usize = 8192;
 /// assert_eq!(wave.len(), tutti_types::Samples(2));
 /// assert_eq!(wave.channel(1), &[-0.5, -0.25]);
 /// ```
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Wave {
     /// One vector per channel.
     vec: Vec<Vec<f32>>,

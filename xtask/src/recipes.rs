@@ -159,6 +159,16 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "unsafe lives only in the -ffi crates (plugin formats and MIDI), everything else forbids it",
     ),
     (
+        "check-lints",
+        "",
+        "every crate takes the workspace lints and missing_debug_implementations denies",
+    ),
+    (
+        "check-value-traits",
+        "",
+        "a fieldless public Eq enum derives Hash",
+    ),
+    (
         "check-layout",
         "",
         "the repo layout, the crate layering, the codec boundary and the depth-free test paths",
@@ -374,6 +384,8 @@ impl Planner<'_> {
             "check-guards" => self.out.push(Step::Gate(Gate::Guards)),
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
+            "check-lints" => self.out.push(Step::Gate(Gate::Lints)),
+            "check-value-traits" => self.out.push(Step::Gate(Gate::ValueTraits)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
             "check-doc-features" => self.out.push(Step::DocFeatures),
@@ -424,6 +436,7 @@ impl Planner<'_> {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-lints", "check-value-traits",
                     "check-submodule-pins",
                     "check-features",
                     "check-loom", "test", "test-features", "test-doc",

@@ -12,6 +12,9 @@ readme = "README.md"
 keywords = ["audio", "dsp", "real-time", "daw", "midi"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [dependencies]
 # Always present: the vocabulary, the runtime, the node contract, the DSP.
 # Everything else is a feature, because a headless consumer that only bounces

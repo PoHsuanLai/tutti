@@ -16,11 +16,13 @@ mod guards;
 mod hosting;
 mod layout;
 mod lex;
+mod lints;
 mod range_types;
 mod session;
 mod submodule_pins;
 mod test_paths;
 mod toml;
+mod value_traits;
 
 pub(crate) use doc_features::doc_runs;
 
@@ -94,6 +96,10 @@ pub(crate) enum Gate {
     Hosting,
     /// `tutti-session` reaches no Bevy crate and re-exports no crate whole.
     Session,
+    /// Every crate takes the workspace lints, and `missing_debug_implementations` denies.
+    Lints,
+    /// A fieldless public `Eq` enum is `Hash`.
+    ValueTraits,
 }
 
 impl Gate {
@@ -108,6 +114,8 @@ impl Gate {
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
+            Gate::Lints => "gate check-lints".to_owned(),
+            Gate::ValueTraits => "gate check-value-traits".to_owned(),
         }
     }
 
@@ -126,6 +134,10 @@ impl Gate {
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
+            Gate::Lints => lints::check(&tree, lints::UNLINTED),
+            Gate::ValueTraits => {
+                value_traits::check(&tree, value_traits::ALLOW, value_traits::MIN_FILES)
+            }
         }
     }
 }

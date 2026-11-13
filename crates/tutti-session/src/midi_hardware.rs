@@ -5,7 +5,10 @@
 //! negotiation come back as [`MidiEvent`](crate::MidiEvent)s from
 //! `Session::update`.
 
-use tutti_midi_hardware::{DeviceId, DeviceInfo, DeviceQuery, Resolved};
+use std::sync::Arc;
+
+use tutti_midi_hardware::{CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Resolved};
+use tutti_ump::DeviceIdentity;
 
 use crate::MidiError;
 use crate::midi::{Midi, UmpOut};
@@ -62,6 +65,51 @@ impl Midi<'_> {
     /// an input, the device has no free slot, or the OS refuses it.
     pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
         Ok(self.hardware()?.connect_input(device)?)
+    }
+
+    /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off by
+    /// default**: a Discovery carries a System Exclusive manufacturer id, tutti
+    /// has none, and MIDI 1.0's `7D` is "not to be used on any product released
+    /// to the public", so the app gives the id it registered (an identity
+    /// under `ManufacturerId::NON_COMMERCIAL` is for development and research
+    /// only). It reaches the inputs already open (at the next update, after any
+    /// Identity Request in progress) and later ones. Called again with the
+    /// identity in use it changes nothing; with another, the running devices end
+    /// as [`disable_ci`](Self::disable_ci) ends them and start again under a new
+    /// MUID. Found peers are
+    /// [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer) and
+    /// [`ci_peers`](Self::ci_peers).
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer.
+    pub fn enable_ci(&mut self, identity: DeviceIdentity) -> Result<()> {
+        self.hardware()?.enable_ci(identity);
+        Ok(())
+    }
+
+    /// Turns MIDI-CI off: every running device sends an Invalidate MUID for its
+    /// own MUID at the next update (M2-101 §5.9: a shutdown is a reason), and
+    /// its peers are reported lost.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer.
+    pub fn disable_ci(&mut self) -> Result<()> {
+        self.hardware()?.disable_ci();
+        Ok(())
+    }
+
+    /// The MIDI-CI peers found on the open input `id`, by Group then MUID: what
+    /// a device that answered the session's Discovery declared (identity,
+    /// categories, receivable SysEx size, Function Block). Empty when the
+    /// input is not open, the device has no output to talk on, or nothing
+    /// answered; a change is a [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer).
+    /// The list is shared, not copied (a read clones a pointer), and stays as it
+    /// was when read: read it again after a `CiPeer` event.
+    #[must_use]
+    pub fn ci_peers(&self, id: &DeviceId) -> Arc<[CiPeerInfo]> {
+        self.io.map_or_else(Arc::default, |io| io.ci_peers(id))
     }
 
     /// Closes an input, by id or name. Whether one was open.

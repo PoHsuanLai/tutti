@@ -61,6 +61,18 @@ pub enum MidiEvent {
         /// What is known of it (boxed: an Endpoint is large).
         stream: Box<tutti_midi_hardware::DeviceStream>,
     },
+    /// A MIDI-CI peer of a device the session holds open as an input was
+    /// found, changed or lost (design 017 L8, M2-101): the session runs a
+    /// MIDI-CI Device (Management only) on the input for as long as it is open
+    /// and reports each change once, from `Phase::Poll`. The peers now are
+    /// [`Midi::ci_peers`](crate::Midi::ci_peers).
+    #[cfg(feature = "midi-hardware")]
+    CiPeer {
+        /// The device.
+        device: tutti_midi_hardware::DeviceId,
+        /// What happened to the peer.
+        change: tutti_midi_hardware::CiChange,
+    },
     /// The hardware devices' event inlets dropped events because they were
     /// full: the total over every input so far, reported when it rises, at
     /// most once per [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT)

@@ -705,3 +705,101 @@ fn an_lfo_reads_a_driven_depth_per_frame() {
     assert_eq!(out[37], 1.0, "the pulse's frame");
     assert_eq!(out[38], 0.0, "the frame after it");
 }
+
+/// A low shelf at +12 dB held by a lane for 512 frames of DC, then the lane's
+/// route removed, then 512 frames more, in blocks of `block`: the output, the
+/// shelf's DC gain at each frame.
+fn shelf_handed_back(block: usize) -> Vec<f32> {
+    let shelf = SvfFilterNode::<f32>::with_controls(
+        ChannelLayout::MONO,
+        tutti_nodes::SvfControls {
+            ty: SvfType::LowShelf,
+            freq: Hz::new(1000.0),
+            q: Q::new(0.7),
+            gain: Db(0.0),
+        },
+    );
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (n, params) = g.add_with_controls(shelf);
+    g.connect_input(0, n, 0).connect_output(n, 0, 0);
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::GainDb.into(),
+    };
+    g.spec_mut()
+        .set_param_range(at, ParamRange::new(-24.0, 24.0));
+    let mut r = g
+        .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256))))
+        .expect("builds");
+    r.set_block(Samples(block));
+    let ed = r.editor_mut();
+    let layer = Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Waveform::Const(1.0),
+        // A quarter of the 48 dB range above the 0 dB knob: +12 dB.
+        amount: Amount {
+            depth: Depth::of(0.25),
+            polarity: Polarity::Bipolar,
+            curve: Law::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let knob = params.cell(UnitParam::GainDb).expect("addressed");
+    let range = ed.param_range_cell(at).expect("a port");
+    let lane = ControlLaneNode::for_unit(UnitParam::GainDb, program, Some(knob), Some(range));
+    let lane_out = EventOut {
+        node: NodeKey(9_000),
+        port: 0,
+    };
+    ed.insert(NodeKey(9_000), "lane", lane);
+    ed.spec_mut().connect_param(at, lane_out);
+    ed.commit().expect("the lane commits");
+    let dc = vec![1.0; 512];
+    let mut out = r.render_input(&[&dc]).swap_remove(0);
+    let ed = r.editor_mut();
+    assert!(ed.spec_mut().disconnect_param(at, lane_out));
+    ed.commit().expect("the removal commits");
+    out.extend(r.render_input(&[&dc]).swap_remove(0));
+    out
+}
+
+/// A control a lane lets go of is handed back to its cell without a step: the
+/// port declicks from the lane's last value to its base, the cell, over
+/// `PARAM_DECLICK` (256 frames), delivering frames all the while, so the node
+/// reads the port until it stands at the cell and never sees the jump. A low
+/// shelf held at +12 dB by a lane (a DC gain of 3.98) whose route is removed
+/// at frame 512 is still above 3 sixteen frames later (a step to its 0 dB
+/// cell would be there within the coefficients' 16-frame chord), and is at
+/// the cell's unity gain by the end. The hand-back is the same, bit for bit,
+/// at blocks of 1, 17, 64 and 256 frames.
+#[test]
+fn a_control_a_lane_lets_go_of_is_handed_back_without_a_step() {
+    let out = shelf_handed_back(64);
+    let held = 10f32.powf(12.0 / 20.0);
+    assert!(
+        (out[511] - held).abs() < 0.05,
+        "held at +12 dB: {}",
+        out[511]
+    );
+    assert!(out[512 + 16] > 3.0, "glides, not steps: {}", out[512 + 16]);
+    assert!(
+        (out[1023] - 1.0).abs() < 0.01,
+        "arrives at the cell: {}",
+        out[1023]
+    );
+    for block in [1, 17, 256] {
+        let other = shelf_handed_back(block);
+        assert!(
+            other
+                .iter()
+                .zip(&out)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "blocks of {block} differ from blocks of 64"
+        );
+    }
+}

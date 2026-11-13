@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-use tutti_dsp::{MAX_LANES, Ramp};
+use tutti_dsp::{GAIN_GLIDE, MAX_LANES, Ramp};
 use tutti_graph::{Io, ParamSetBuilder};
 use tutti_types::{AtomicF32, SampleRate, UnitAddr};
 
@@ -69,8 +69,9 @@ pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
 /// How the reader takes a control from its cell and its port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlRead {
-    /// Glides from the controls last designed to its cell's value across the block,
-    /// or reads its port at the solve frame when a lane drives it.
+    /// A moved cell glides on the stream clock over [`GAIN_GLIDE`], from where the
+    /// control stood on the first frame of the block that first sees the write, or its
+    /// port is read at the solve frame when a lane drives it.
     Glide,
     /// As [`Glide`](Self::Glide), but a moved cell lands whole: a control whose glide
     /// is the recurrence's own (a detector's) is not ramped by the reader.
@@ -276,20 +277,43 @@ macro_rules! control_set {
     (@has $set:ident; $kind:ident [$ix:tt] => $unit:ty) => {};
 }
 
-/// Where in a block a node reads its controls, and what it last designed from.
+/// Where in a block a node reads its controls.
 #[derive(Clone, Copy, Debug)]
-pub struct At<C> {
-    /// The frame of the block to read a driven port at.
+pub struct At {
+    /// The stream frame the block begins on, what a cell's glide is counted on.
+    pub position: u64,
+    /// The frame of the block to read at.
     pub frame: usize,
-    /// The frames a cell's glide ramps over: the block, or up to its last solve
-    /// when a grid solves inside it.
-    pub block: usize,
-    /// The controls the model was designed from at the start of the block, where
-    /// a cell's glide starts; `None` before the first design (after a prepare),
-    /// when there is nothing to glide from.
-    pub applied: Option<C>,
     /// The rate the node runs at, for a control that is only valid against it.
     pub rate: SampleRate,
+}
+
+/// A [`ControlRead::Glide`] cell's glide on the stream clock: from where the control
+/// stood to the cell's value, over the frames from `start`.
+#[derive(Clone, Copy, Debug)]
+struct CellGlide {
+    ramp: Ramp,
+    /// Where it arrives: the cell's value it glides to.
+    to: f32,
+    /// The stream frame of the ramp's first frame.
+    start: u64,
+}
+
+impl CellGlide {
+    /// Landed on `value` at stream frame `start`.
+    fn landed(value: f32, start: u64) -> Self {
+        Self {
+            ramp: Ramp::new(value, value, 1),
+            to: value,
+            start,
+        }
+    }
+
+    /// The control's value at stream frame `position`.
+    fn at(&self, position: u64) -> f32 {
+        let i = position.saturating_sub(self.start);
+        self.ramp.at(usize::try_from(i).unwrap_or(usize::MAX))
+    }
 }
 
 /// The cells of a [`ControlSet`] and how a block reads them.
@@ -306,6 +330,13 @@ pub struct Params<S: ControlSet> {
     fast: [usize; MAX_LANES],
     /// How many of `fast` are filled.
     fast_len: usize,
+    /// Each [`ControlRead::Glide`] cell's glide on the stream clock.
+    glides: [CellGlide; MAX_CONTROLS],
+    /// A glide's length in frames: [`GAIN_GLIDE`] at the prepared rate, or none.
+    glide: usize,
+    /// Whether the glides have a value to start from: not after a prepare or a reset,
+    /// when a cell lands whole.
+    primed: bool,
 }
 
 impl<S: ControlSet> Params<S> {
@@ -347,7 +378,57 @@ impl<S: ControlSet> Params<S> {
             controls,
             fast,
             fast_len,
+            glides: [CellGlide::landed(0.0, 0); MAX_CONTROLS],
+            glide: 1,
+            primed: false,
         }
+    }
+
+    /// Takes the rate a cell's glide is measured at, and whether a moved cell glides
+    /// at all: a family whose realization glides its own coefficients between block
+    /// designs (a block cadence) lands it whole. Every cell lands whole on the next
+    /// block, as after [`land`](Self::land).
+    pub(crate) fn retune(&mut self, rate: SampleRate, glides: bool) {
+        self.glide = if glides {
+            GAIN_GLIDE.to_samples(rate).get().max(1)
+        } else {
+            1
+        };
+        self.land();
+    }
+
+    /// Back to no glide: every cell lands whole on the next block (a prepare, a reset).
+    pub(crate) fn land(&mut self) {
+        self.primed = false;
+    }
+
+    /// The block beginning at stream frame `position`: each [`ControlRead::Glide`]
+    /// cell's value, read once for the block, and a glide started from where the control
+    /// stands to it if it moved. A glide is on the stream clock, so it is the same
+    /// whatever the blocks: it starts on the first frame of the block the write is first
+    /// seen in, and arrives [`GAIN_GLIDE`] later.
+    pub(crate) fn begin(&mut self, position: u64) {
+        for k in 0..self.cells.len() {
+            let control = self.controls[k];
+            if control.read != ControlRead::Glide {
+                continue;
+            }
+            let x = self.cells[k].load(Relaxed);
+            let to = self.good[k].read_if(x, control.accepts(x));
+            let glide = &mut self.glides[k];
+            if !self.primed {
+                *glide = CellGlide::landed(to, position);
+            } else if to.to_bits() != glide.to.to_bits() {
+                // Where it stood on the frame before this block, the last one rendered.
+                let from = glide.at(position.saturating_sub(1));
+                *glide = CellGlide {
+                    ramp: Ramp::new(from, to, self.glide),
+                    to,
+                    start: position,
+                };
+            }
+        }
+        self.primed = true;
     }
 
     /// Each control's lowest and highest value in the block (the cell's where no
@@ -394,14 +475,11 @@ impl<S: ControlSet> Params<S> {
     /// The controls at `at.frame`: each cell, or the value its port carries when the
     /// graph modulates it, read through [`LastGood`] so a value the control refuses
     /// ([`Control::accepts`]: non-finite by default) reads as unchanged. A
-    /// [`ControlRead::Fast`] control is its cell whatever its port carries, and a
-    /// [`ControlRead::Whole`] one is not ramped.
-    pub(crate) fn read(&mut self, io: &Io<'_>, at: At<S::Controls>) -> S::Controls {
+    /// [`ControlRead::Glide`] cell is its glide at that frame ([`begin`](Self::begin)),
+    /// a [`ControlRead::Fast`] control is its cell whatever its port carries, and a
+    /// [`ControlRead::Whole`] one is its cell.
+    pub(crate) fn read(&mut self, io: &Io<'_>, at: At) -> S::Controls {
         let n = self.cells.len();
-        let mut from = [0.0; MAX_CONTROLS];
-        if let Some(applied) = &at.applied {
-            self.set.flatten(applied, &mut from[..n]);
-        }
         let mut value = [0.0; MAX_CONTROLS];
         for (k, v) in value[..n].iter_mut().enumerate() {
             let control = self.controls[k];
@@ -409,20 +487,18 @@ impl<S: ControlSet> Params<S> {
                 ControlRead::Fast => None,
                 ControlRead::Glide | ControlRead::Whole => io.param(k).frames(),
             };
-            *v = match lane {
-                Some(lane) => {
+            *v = match (lane, control.read) {
+                (Some(lane), _) => {
                     let x = lane[at.frame];
                     self.good[k].read_if(x, control.accepts(x))
                 }
-                None => {
+                (None, ControlRead::Glide) => {
+                    debug_assert!(self.primed, "a block reads its glides after `begin`");
+                    self.glides[k].at(at.position + at.frame as u64)
+                }
+                (None, _) => {
                     let x = self.cells[k].load(Relaxed);
-                    let to = self.good[k].read_if(x, control.accepts(x));
-                    match at.applied {
-                        Some(_) if control.read == ControlRead::Glide => {
-                            Ramp::new(from[k], to, at.block).at(at.frame)
-                        }
-                        _ => to,
-                    }
+                    self.good[k].read_if(x, control.accepts(x))
                 }
             };
         }
@@ -434,6 +510,21 @@ impl<S: ControlSet> Params<S> {
     pub(crate) fn driven(&self, io: &Io<'_>) -> bool {
         (0..self.cells.len())
             .any(|k| self.controls[k].read != ControlRead::Fast && io.param(k).frames().is_some())
+    }
+
+    /// The first corner at or after block offset `from` among the ports that drive a
+    /// slow control ([`ParamInput::corners`](tutti_graph::ParamInput::corners): where
+    /// the trajectory a port delivers changes piece), if any. A fast control is read
+    /// every frame and needs none.
+    pub(crate) fn corner_from(&self, io: &Io<'_>, from: usize) -> Option<usize> {
+        (0..self.cells.len())
+            .filter(|&k| self.controls[k].read != ControlRead::Fast)
+            .filter_map(|k| {
+                let corners = io.param(k).corners();
+                let i = corners.partition_point(|&c| (c as usize) < from);
+                corners.get(i).map(|&c| c as usize)
+            })
+            .min()
     }
 
     /// The per-frame lanes of the [`ControlRead::Fast`] controls, for the

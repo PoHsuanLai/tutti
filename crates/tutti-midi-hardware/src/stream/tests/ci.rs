@@ -916,3 +916,56 @@ fn closing_an_input_without_midi_ci_sends_nothing() {
     assert!(wire.session.disconnect_input(&wire.id.clone()));
     assert!(ci_sent(&wire).is_empty());
 }
+
+/// The device's own word (here its Identity Reply) is its identity; a MIDI-CI
+/// peer fills only what that left, so its Product Instance Id (M2-101
+/// §5.8.3.1, learned by Endpoint Inquiry) is added and its Discovery identity,
+/// which speaks for a Function Block, never replaces the device's.
+#[test]
+fn a_ci_peers_product_instance_id_fills_what_the_device_left() {
+    use tutti_midi_device::{CiInstanceId, EndpointInfo, ProductInstanceId};
+
+    let (wire, ours) = midi1_running();
+    let mut data = peer_data();
+    data.identity = model_identity(9);
+    data.function_block = Some(tutti_ump::FunctionBlockId::new(0).unwrap());
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data,
+        },
+        40,
+    );
+    assert!(matches!(
+        polled(&wire, 50).as_slice(),
+        [Polled::Ci(_, CiChange::Found(_))]
+    ));
+    let learned = wire.session.learned(&wire.id);
+    assert_eq!(learned.identity(), Some(&identity()), "the device's own");
+    assert_eq!(learned.instance_id(), None, "not asked yet");
+
+    let serial = CiInstanceId::new(ProductInstanceId::new("SN-9").unwrap()).unwrap();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::EndpointReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            info: EndpointInfo::ProductInstanceId(serial),
+        },
+        60,
+    );
+    assert!(matches!(
+        polled(&wire, 70).as_slice(),
+        [Polled::Ci(_, CiChange::Updated(_))]
+    ));
+    let learned = wire.session.learned(&wire.id);
+    assert_eq!(learned.identity(), Some(&identity()));
+    assert_eq!(
+        learned.instance_id().map(ProductInstanceId::as_str),
+        Some("SN-9")
+    );
+}

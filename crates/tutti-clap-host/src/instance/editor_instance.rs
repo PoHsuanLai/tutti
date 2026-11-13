@@ -193,10 +193,24 @@ impl EditorWindow for ClapEditor {
         EditorWindow::close_editor(&mut self.inner, main);
     }
 
+    fn wakeups(&mut self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+        EditorWindow::wakeups(&mut self.inner, main, out);
+    }
+
+    fn wake(
+        &mut self,
+        main: &MainThread,
+        ready: &[tutti_plugin_types::Ready],
+        now: std::time::Instant,
+    ) {
+        EditorWindow::wake(&mut self.inner, main, ready, now);
+    }
+
     fn editor_idle(&mut self, main: &MainThread) {
         // The editor's timers (a UI toolkit's repaint tick), its callbacks to
         // the main thread and its file descriptors are all served from here:
-        // this is the only main-thread tick the instance has.
+        // this is the only main-thread tick the instance has. What the host's
+        // loop found ready (`wake`) is latched, and is taken here.
         let mut requests = Vec::new();
         Control::take_requests(&mut self.inner, main, &mut requests);
         let mut reread = false;

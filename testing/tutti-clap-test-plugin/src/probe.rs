@@ -44,6 +44,9 @@ pub enum ClapSwitch {
     /// Milliseconds every `on_timer` takes (0 for none): a slow paint on the
     /// host's main thread.
     TimerStall,
+    /// The period (milliseconds) the plugin's next registered timer asks for;
+    /// 0 for due on every poll.
+    TimerPeriod,
 }
 
 impl ClapSwitch {
@@ -67,6 +70,7 @@ impl ClapSwitch {
             Self::TailExtension => b"tutti_test_plugin_set_tail_extension\0",
             Self::ApplyGain => b"tutti_test_plugin_set_apply_gain\0",
             Self::TimerStall => b"tutti_test_plugin_set_timer_stall_ms\0",
+            Self::TimerPeriod => b"tutti_test_plugin_set_timer_period_ms\0",
         }
     }
 }
@@ -128,6 +132,16 @@ impl ClapProbe {
                 f(cmd);
             }
         }
+    }
+
+    /// Makes the plugin's registered pipe readable (unix): `false` when the
+    /// plugin has registered none. Pokes the cargo artifact's image, which
+    /// [`thread_capture`](Self::thread_capture) reads, and the image the suites
+    /// load by that path.
+    pub fn fd_poke(&self) -> bool {
+        // SAFETY: `tutti_test_plugin_fd_poke` is `#[no_mangle] pub extern "C"
+        // fn() -> bool` in `fds.rs`.
+        unsafe { get::<extern "C" fn() -> bool>(&self.artifact, b"tutti_test_plugin_fd_poke\0")() }
     }
 
     /// `tutti_test_plugin_param_command(cmd)` in every image: make a

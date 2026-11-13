@@ -62,7 +62,9 @@
 use std::time::Instant;
 
 use tutti_graph::Offset;
-use tutti_midi_device::{Action, Connection, Ending, Endpoint, IdentityInquiry, InquiryAction};
+use tutti_midi_device::{
+    Action, Connection, Ending, Endpoint, IdentityInquiry, InquiryAction, Learned,
+};
 use tutti_midi_protocol::{Addressed, Read, Universal, read};
 use tutti_midi_runtime::MidiOut;
 use tutti_ump::{
@@ -125,6 +127,26 @@ impl DeviceStream {
     #[must_use]
     pub const fn basis(&self) -> Basis {
         self.basis
+    }
+
+    /// Returns what the device itself said of itself: the Device Identity and
+    /// Product Instance Id of a device that [`Negotiated`](Basis::Negotiated),
+    /// the identity of one that was [`Inquired`](Basis::Inquired). The OS's
+    /// description of an [`Unanswered`](Basis::Unanswered) or
+    /// [`Described`](Basis::Described) one carries neither (only a device's own
+    /// message sets them), so it says nothing.
+    #[must_use]
+    pub fn said(&self) -> Learned {
+        let learned = self
+            .endpoint
+            .identity()
+            .map_or_else(Learned::new, |identity| {
+                Learned::new().with_identity(*identity)
+            });
+        match self.endpoint.instance_id() {
+            Some(id) => learned.with_instance_id(*id),
+            None => learned,
+        }
     }
 
     /// The Protocol and JR Timestamps in use.

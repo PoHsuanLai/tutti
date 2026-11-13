@@ -1,6 +1,5 @@
 //! [`ControlLaneNode`]: one target's [`ControlProgram`], evaluated on the
-//! play-clock grid and sent to the target as curve segments (design doc 014
-//! §5).
+//! play-clock grid and sent to the target as curve segments.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -12,7 +11,7 @@ use tutti_graph::{
     Status, TransportPosition,
 };
 use tutti_modulation::{
-    Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Waveform,
+    CONTROL_GRID, Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Waveform,
 };
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
 use tutti_types::{
@@ -20,18 +19,7 @@ use tutti_types::{
     UnitAddr,
 };
 
-/// The control lane's grid step, in frames of the play clock: a lane ends a
-/// piece on every frame whose play count is a multiple of this, and on every
-/// corner between (doc 014 §5.3). Equal live and offline, because the play
-/// clock is.
-pub const CONTROL_STEP: u32 = 32;
-
-/// Segments one lane sends per block, at most: a 4096-frame block's grid
-/// (128 points) and as many corners. Past it the lane thins its grid and
-/// counts it ([`LaneControls::thinned`]); past it with no grid left to thin,
-/// it drops the block's last points and counts that
-/// ([`LaneControls::truncated`]).
-pub const LANE_EVENT_CAPACITY: u32 = 256;
+use crate::SOURCE_EVENT_CAPACITY;
 
 /// How a lane builds a segment for its target: the typed key (or foreign
 /// id) bound in, so the lane itself is not generic.
@@ -215,13 +203,12 @@ impl LaneControls {
     }
 
     /// Blocks whose grid the lane thinned to stay within
-    /// [`LANE_EVENT_CAPACITY`] (doc 014 §5.3): each may differ between live
-    /// and export.
+    /// [`SOURCE_EVENT_CAPACITY`]: each may differ between live and export.
     pub fn thinned(&self) -> u64 {
         self.0.thinned.load(Ordering::Relaxed)
     }
 
-    /// Blocks in which the lane dropped points past [`LANE_EVENT_CAPACITY`]
+    /// Blocks in which the lane dropped points past [`SOURCE_EVENT_CAPACITY`]
     /// with no grid left to thin (more than that many corners in one block).
     pub fn truncated(&self) -> u64 {
         self.0.truncated.load(Ordering::Relaxed)
@@ -279,10 +266,10 @@ struct Seen {
 /// One target's control lane: it reads a [`ControlProgram`] (published
 /// through [`LaneControls`]), its target's knob and range, the transport
 /// and play clock at its input's time, and its event input's signal
-/// sources, and sends the target piecewise segments (doc 014 §5).
+/// sources, and sends the target piecewise segments.
 ///
 /// - **Points**, where a piece starts: every frame whose play count is a
-///   multiple of [`CONTROL_STEP`]; every corner of the program (a
+///   multiple of the [control grid](CONTROL_GRID); every corner of the program (a
 ///   breakpoint, an edge, a peak, a zero crossing of a curved bipolar
 ///   layer, a rate anchor); every transport change, seek and loop wrap;
 ///   every input event; frame 0 when nothing is in flight or the program,
@@ -300,6 +287,23 @@ struct Seen {
 ///   sends one held value and no grid.
 /// - **The clamp** is the native port's, per frame. A plugin lane clamps
 ///   its own pieces, split where they cross a bound.
+///
+/// - **Capacity.** It sends at most [`SOURCE_EVENT_CAPACITY`] segments a
+///   block, as a [`SourceNode`](crate::SourceNode) does. Past it the lane
+///   thins its grid and counts it ([`LaneControls::thinned`]); past it with
+///   no grid left to thin, it drops the block's last points and counts that
+///   ([`LaneControls::truncated`]).
+///
+/// The lane is its own node, not a [`SourceNode`](crate::SourceNode) over a
+/// [`ControlSource`](tutti_modulation::ControlSource): a program reads two
+/// clocks (the transport's beat and seconds beside the play count), takes
+/// its signal sources' trajectories rather than MIDI, re-reads a published
+/// program, knob and range each block, and clamps or splits its pieces for
+/// its target, none of which a source states. For the same reason it reads
+/// the play clock at its own points beside the transport, and finds play
+/// starts as transport changes, rather than walking the play clock frame by
+/// frame as a source node does: a second walk would only repeat what its
+/// transport reading has found.
 ///
 /// No allocation on the audio thread: per-input state is a fixed array of
 /// [`MAX_LANE_INPUTS`], and the block's events are built in a buffer
@@ -371,7 +375,7 @@ impl ControlLaneNode {
             native,
             walk: fresh_walk(),
             seen: fresh_seen(),
-            scratch: Vec::with_capacity(LANE_EVENT_CAPACITY as usize),
+            scratch: Vec::with_capacity(SOURCE_EVENT_CAPACITY as usize),
         }
     }
 
@@ -598,7 +602,7 @@ impl Block<'_> {
 
     /// Sends `seg` at frame `p`.
     fn send(&self, out: &mut Vec<Event>, p: usize, seg: ParamSegment) -> Result<(), Overflow> {
-        if out.len() >= LANE_EVENT_CAPACITY as usize {
+        if out.len() >= SOURCE_EVENT_CAPACITY as usize {
             return Err(Overflow::Full);
         }
         if let Some(at) = Offset::new(p, self.cx.env.block_len) {
@@ -766,7 +770,7 @@ impl Block<'_> {
         consider(moving);
         if !d.is_finite() {
             // Gliding into a steady value: one grid step.
-            d = f64::from(CONTROL_STEP);
+            d = f64::from(CONTROL_GRID.stride());
         }
         let end = ProgramTime {
             beat: Beat(fpb.map_or(beat, |f| beat + d / f)),
@@ -961,14 +965,14 @@ impl Node for ControlLaneNode {
     fn shape(&self) -> Shape {
         Shape::EMPTY
             .with_events(1, 1)
-            .with_event_capacity(LANE_EVENT_CAPACITY)
+            .with_event_capacity(SOURCE_EVENT_CAPACITY)
             .with_cost(Cost::Moderate)
             .with_tail(Tail::Unbounded)
             .with_no_note_events()
     }
 
     fn prepare(&mut self, _: &Prepare) {
-        self.scratch.reserve(LANE_EVENT_CAPACITY as usize);
+        self.scratch.reserve(SOURCE_EVENT_CAPACITY as usize);
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1038,7 +1042,7 @@ impl Node for ControlLaneNode {
             span,
             native: self.native,
             make: &*self.make,
-            stride: u64::from(CONTROL_STEP),
+            stride: u64::from(CONTROL_GRID.stride()),
             truncate: false,
             seconds: has_seconds(program),
         };

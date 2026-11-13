@@ -73,14 +73,14 @@ pub struct ParameterQueue {
 
 impl ParameterQueue {
     /// The spacing, in frames, a chunk's point room is sized for: a
-    /// control lane's grid step (`tutti-nodes`' `CONTROL_STEP`), so a
+    /// control lane's grid step (`tutti-modulation`'s `CONTROL_GRID`), so a
     /// parameter can carry a point every this many frames of a chunk.
     pub const POINT_SPACING: usize = 32;
 
     /// Points a queue has room for beyond one per
     /// [`POINT_SPACING`](Self::POINT_SPACING) and the chunk's last frame:
     /// the corners a control lane can send in one block (`tutti-nodes`'
-    /// `LANE_EVENT_CAPACITY`).
+    /// `SOURCE_EVENT_CAPACITY`).
     pub const CORNER_POINTS: usize = 256;
 
     /// The points one parameter can carry in a chunk of `chunk` frames:

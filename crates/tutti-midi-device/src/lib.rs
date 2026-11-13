@@ -1,10 +1,12 @@
 //! The pure core of MIDI device detection (design 017 §5), and the MIDI-CI codec.
 //!
 //! Detection first. The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])
-//! turns Discovery, Invalidate MUID, Inquiry: Endpoint, ACK and NAK into SysEx payload bytes and back;
+//! turns Discovery, Invalidate MUID, Inquiry: Endpoint, ACK, NAK and the Profile Configuration messages
+//! into SysEx payload bytes and back;
 //! it holds no state and no transport. [`CiDevice`] is the Management state
 //! machine over it (Discovery, MUID collisions, Invalidate MUID, NAK, Endpoint
-//! Inquiry), shaped as [`Connection`] is.
+//! Inquiry), shaped as [`Connection`] is, and [`ProfileInitiator`] the Initiator of Profile
+//! Configuration with one peer.
 //!
 //! A backend reports what the OS says as an [`OsChange`]; [`DeviceTable::apply`]
 //! returns the [`DeviceEvent`] that change causes, or `None` when it alters
@@ -63,16 +65,24 @@ mod connection;
 mod endpoint;
 mod id;
 mod inquiry;
+mod learned;
 mod name;
 mod table;
 
 pub use ci::{
-    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, CiAction, CiCategories, CiDevice, CiDeviceId,
-    CiHeader, CiInstanceId, CiMessage, CiPeer, CiVersion, DISCOVERY_WINDOW, Decoded, Destination,
-    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, MessageText, Muid, Nak,
-    NotADeviceId, NotAMuid, NotASysexSize, NotAVersion, SUB_ID2_ACK, SUB_ID2_DISCOVERY,
-    SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY, SUB_ID2_ENDPOINT_REPLY,
-    SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, Unread, UnreadReason,
+    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, ChannelsDetail, CiAction, CiCategories,
+    CiDevice, CiDeviceId, CiHeader, CiInstanceId, CiMessage, CiPeer, CiVersion, DISCOVERY_WINDOW,
+    Decoded, Destination, DetailsData, DiscoveryData, EndpointInfo, EndpointStatus, InquiryTarget,
+    ListTooLong, ManufacturerProfile, MaxSysexSize, MessageText, Muid, Nak, NotADeviceId, NotAMuid,
+    NotASysexSize, NotAVersion, Outcome, PROFILE_TIMEOUT, ProfileAction, ProfileChange,
+    ProfileChannels, ProfileDataError, ProfileEntry, ProfileId, ProfileInitiator, ProfileLists,
+    ProfileState, ProfileTable, ProfileTarget, Request, RequestError, SUB_ID2_ACK,
+    SUB_ID2_DISCOVERY, SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY, SUB_ID2_ENDPOINT_REPLY,
+    SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, SUB_ID2_PROFILE_ADDED, SUB_ID2_PROFILE_DETAILS_INQUIRY,
+    SUB_ID2_PROFILE_DETAILS_REPLY, SUB_ID2_PROFILE_DISABLED, SUB_ID2_PROFILE_ENABLED,
+    SUB_ID2_PROFILE_INQUIRY, SUB_ID2_PROFILE_REMOVED, SUB_ID2_PROFILE_REPLY,
+    SUB_ID2_PROFILE_SPECIFIC_DATA, SUB_ID2_SET_PROFILE_OFF, SUB_ID2_SET_PROFILE_ON, SpecificData,
+    StandardProfile, Unread, UnreadReason,
 };
 
 pub use connection::{Action, Connection, Ending, MAX_ATTEMPTS, NAME_GRACE, STEP_TIMEOUT};
@@ -82,5 +92,6 @@ pub use endpoint::{
 };
 pub use id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection};
 pub use inquiry::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT, IdentityInquiry, InquiryAction};
+pub use learned::{Learned, Match, SavedDevice};
 pub use name::{BlockName, EndpointName, Name, NameError, ProductInstanceId};
 pub use table::{BindPolicy, DeviceEvent, DeviceTable, OsChange, OsDevice, Resolved};

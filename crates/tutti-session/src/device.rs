@@ -199,7 +199,7 @@ impl LiveSession {
         self.follow = Some(Box::new(hook));
     }
 
-    /// Starts watching the host's devices (design 018): `source` is polled on
+    /// Starts watching the host's devices: `source` is polled on
     /// every [`Phase::Poll`](crate::Phase::Poll), its changes are reported as
     /// [`DeviceEvent`]s, and `policy` decides which of them restart the stream
     /// ([`DeviceEvent::RestartWanted`]). What the policy follows is what the
@@ -533,7 +533,7 @@ pub enum DeviceEvent {
     /// the most recent one since the last poll.
     Fault(StreamFault),
     /// A device is no longer listed by the host (a [`DeviceWatch`] is
-    /// running; design 018). The stream's own loss is [`Fault`](Self::Fault).
+    /// running). The stream's own loss is [`Fault`](Self::Fault).
     Lost {
         /// Which way it played or captured.
         direction: tutti_cpal::Direction,
@@ -761,8 +761,8 @@ impl Session {
         self.start_watch(source, policy, want, running_on);
     }
 
-    /// Starts listing the host's output devices on a thread of its own
-    /// (design 018): enumeration can block for good, so it never runs here.
+    /// Starts listing the host's output devices on a thread of its own:
+    /// enumeration can block for good, so it never runs here.
     /// The answer is taken without blocking by a later
     /// [`Phase::Poll`](crate::Phase::Poll) and reported once, as
     /// [`DeviceEvent::OutputsListed`] or [`DeviceEvent::OutputsListFailed`];

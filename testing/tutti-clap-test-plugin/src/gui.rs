@@ -850,6 +850,17 @@ unsafe extern "C" fn gui_show(plugin: *const clap_plugin) -> bool {
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
     // arguments valid per the CLAP ABI.
     unsafe { run_pending_command(plugin) };
+    // `show` is `[main-thread]` too, so it is a legal place for what the
+    // threading probe latched for the main thread (a timer or a descriptor
+    // registered with an editor open, which an in-process host serves without a
+    // callback from the audio side).
+    // SAFETY: as above.
+    unsafe {
+        crate::threading::run_pending_command(
+            crate::threading::Site::OnMainThread,
+            crate::plugin_host(plugin),
+        )
+    };
     true
 }
 

@@ -14,9 +14,7 @@ use crate::types::{
 };
 use std::sync::Arc;
 use tutti_clap_ffi::GuiError;
-#[cfg(unix)]
-use tutti_clap_ffi::{Extension, FdPoller};
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{FdId, Interest, MainThread, Ready, Wakeups};
 
 #[cfg(feature = "clap-extras")]
 fn menu_target(target: ContextMenuTarget) -> tutti_clap_ffi::MenuTarget {
@@ -545,57 +543,17 @@ impl ClapLoaded {
         self.plugin.notify_tuning_changed(main);
     }
 
-    /// Calls `on_fd` for each POSIX descriptor the plugin registered that is
-    /// ready now, with the events that are ready among those it asked for
-    /// (`ext/posix-fd-support.h`). Never blocks. Returns the number of
-    /// callbacks invoked.
-    ///
-    /// `on_fd` is `[main-thread]`.
-    #[cfg(unix)]
-    pub fn poll_posix_fds(&mut self, main: &MainThread) -> usize {
-        if self.scan_fds().is_none() {
-            return 0;
-        }
-        let ready: Vec<i32> = self.work.ready_fds().iter().map(|&(fd, _)| fd).collect();
-        ready
-            .into_iter()
-            .filter(|&fd| self.fire_fd(main, fd))
-            .count()
-    }
-
-    /// Polls the registered descriptors without calling the plugin: fills
-    /// [`MainThreadWork::ready_fds`]. `None` when the plugin has no
-    /// `posix-fd-support`, or its descriptor list is unreadable.
-    #[cfg(unix)]
-    fn scan_fds(&mut self) -> Option<()> {
-        if !self.plugin.supports(Extension::PosixFdSupport) {
-            return None;
-        }
-        let scratch = &mut self.work.fds;
-        scratch.watched.clear();
-        match self.host_state.resources.posix_fds.lock() {
-            Ok(fds) => scratch.watched.extend(fds.iter().map(|e| (e.fd, e.flags))),
-            Err(_) => {
-                scratch.ready.clear();
-                return None;
-            }
-        }
-        scratch.poller.poll(&scratch.watched, &mut scratch.ready);
-        Some(())
-    }
-
-    /// Calls `on_fd` for descriptor `fd` if the last scan found it ready and it
-    /// is still registered (an earlier callback may have unregistered it).
+    /// Calls `on_fd` for descriptor `fd` if a wake found it ready and it is
+    /// still registered (an earlier callback may have unregistered it).
     /// Returns whether the plugin was called.
-    #[cfg(unix)]
     pub(crate) fn fire_fd(&mut self, main: &MainThread, fd: i32) -> bool {
         if !self.plugin.has_on_fd() {
             return false;
         }
-        let Some(at) = self.work.fds.ready.iter().position(|&(f, _)| f == fd) else {
+        let Some(at) = self.woken.fds.iter().position(|&(f, _)| f == fd) else {
             return false;
         };
-        let (_, ready) = self.work.fds.ready.remove(at);
+        let (_, ready) = self.woken.fds.remove(at);
         let registered = self
             .host_state
             .resources
@@ -625,100 +583,97 @@ impl ClapLoaded {
         registered && on_timer
     }
 
-    /// Which scans are due, and the timers that are, without calling the
-    /// plugin. The clock is read at most once, and only when a timer or a
-    /// descriptor is registered.
-    pub(crate) fn due_work(
-        &mut self,
-        clock: impl FnOnce() -> std::time::Instant,
-    ) -> (WorkRan, Vec<u32>) {
+    /// What the plugin wants the host's main loop to wait on: the descriptors
+    /// it registered (`posix-fd-support`) and the earliest of its timers
+    /// (`timer-support`), each only while the plugin has the callback that
+    /// would serve it. Added to `out`.
+    pub(crate) fn describe_wakeups(&mut self, out: &mut Wakeups) {
+        if self.plugin.has_on_fd()
+            && let Ok(fds) = self.host_state.resources.posix_fds.lock()
+        {
+            for entry in fds.iter() {
+                out.watch(FdId(entry.fd), interest_of(entry.flags));
+            }
+        }
         let timer = &self.host_state.timer;
-        #[cfg(unix)]
-        let fds_registered = self
-            .host_state
-            .resources
-            .posix_fd_count
-            .load(std::sync::atomic::Ordering::Acquire)
-            > 0;
-        #[cfg(not(unix))]
-        let fds_registered = false;
-        let next_timer = timer.next_due_nanos();
-        if !work_needs_clock(next_timer, fds_registered) {
-            return (WorkRan::default(), Vec::new());
+        let next = timer.next_due_nanos();
+        if next != crate::host::state::TimerState::NONE && self.plugin.has_on_timer() {
+            out.due_at(timer.epoch() + std::time::Duration::from_nanos(next));
         }
-        let now = clock();
-        let ran = work_due(
-            next_timer,
-            timer.epoch(),
-            fds_registered,
-            self.work.last_fd_scan,
-            now,
-        );
-        let due = if ran.timers {
-            collect_due_timers(&self.host_state.timer, now)
-        } else {
-            Vec::new()
-        };
-        #[cfg(unix)]
-        if ran.fds {
-            self.work.last_fd_scan = Some(now);
-            self.scan_fds();
+    }
+
+    /// Latches what a wait found: the ready descriptors that are still
+    /// registered, with the events they asked for, and the timers due at `now`
+    /// (each restarting its period). Nothing is called: the plugin hears of
+    /// them when [`take_requests_now`](Self::take_requests_now) hands them to
+    /// the lifecycle, which serves them within its budget.
+    pub(crate) fn latch_wakeups(&mut self, ready: &[Ready], now: std::time::Instant) {
+        if let Ok(registered) = self.host_state.resources.posix_fds.lock() {
+            for r in ready {
+                let Some(entry) = registered.iter().find(|e| e.fd == r.fd.0) else {
+                    continue;
+                };
+                let flags = flags_of(r.events) & entry.flags;
+                if flags == 0 {
+                    continue;
+                }
+                match self.woken.fds.iter_mut().find(|(fd, _)| *fd == r.fd.0) {
+                    Some((_, held)) => *held |= flags,
+                    None => {
+                        self.woken.fds.push((r.fd.0, flags));
+                        self.woken.announce.push(r.fd.0);
+                    }
+                }
+            }
         }
-        (ran, due)
+        let timer = &self.host_state.timer;
+        let next = timer.next_due_nanos();
+        if next != crate::host::state::TimerState::NONE
+            && now.saturating_duration_since(timer.epoch()).as_nanos() >= u128::from(next)
+        {
+            self.woken.timers.extend(collect_due_timers(timer, now));
+        }
     }
 }
 
-/// What the per-block pass keeps between calls.
+/// What a wake latched for the next take: the timers that came due, the ready
+/// descriptors with the events to tell the plugin (kept until `on_fd` runs),
+/// and the descriptors not yet announced as requests.
 #[derive(Default)]
-pub(crate) struct MainThreadWork {
-    /// When the descriptors were last polled.
-    last_fd_scan: Option<std::time::Instant>,
-    /// Room the descriptor scan reuses.
-    #[cfg(unix)]
-    fds: FdScratch,
+pub(crate) struct Woken {
+    pub(crate) timers: Vec<u32>,
+    pub(crate) fds: Vec<(i32, u32)>,
+    pub(crate) announce: Vec<i32>,
 }
 
-impl MainThreadWork {
-    /// The descriptors the last scan found ready, with the events ready.
-    #[cfg(unix)]
-    pub(crate) fn ready_fds(&self) -> &[(i32, u32)] {
-        &self.fds.ready
-    }
+/// A `clap_posix_fd_flags` word as the shared interest.
+fn interest_of(flags: u32) -> Interest {
+    use clap_sys::ext::posix_fd_support::{
+        CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
+    };
+    [
+        (CLAP_POSIX_FD_READ, Interest::READ),
+        (CLAP_POSIX_FD_WRITE, Interest::WRITE),
+        (CLAP_POSIX_FD_ERROR, Interest::ERROR),
+    ]
+    .into_iter()
+    .filter(|&(flag, _)| flags & flag != 0)
+    .fold(Interest::NONE, |all, (_, interest)| all.union(interest))
 }
 
-/// Which scans a pass ran.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct WorkRan {
-    pub timers: bool,
-    pub fds: bool,
-}
-
-/// The least time between two polls of the registered descriptors.
-const FD_SCAN_PERIOD: std::time::Duration = std::time::Duration::from_millis(5);
-
-/// Whether the pass needs to read the clock at all: a timer is registered or a
-/// descriptor is.
-fn work_needs_clock(next_timer_nanos: u64, fds_registered: bool) -> bool {
-    next_timer_nanos != crate::host::state::TimerState::NONE || fds_registered
-}
-
-/// Which scans are due at `now`: the timers once the earliest deadline has
-/// passed, the descriptors once [`FD_SCAN_PERIOD`] has passed since the last.
-fn work_due(
-    next_timer_nanos: u64,
-    epoch: std::time::Instant,
-    fds_registered: bool,
-    last_fd_scan: Option<std::time::Instant>,
-    now: std::time::Instant,
-) -> WorkRan {
-    let since_epoch = now.saturating_duration_since(epoch).as_nanos();
-    WorkRan {
-        timers: next_timer_nanos != crate::host::state::TimerState::NONE
-            && since_epoch >= u128::from(next_timer_nanos),
-        fds: fds_registered
-            && last_fd_scan
-                .is_none_or(|last| now.saturating_duration_since(last) >= FD_SCAN_PERIOD),
-    }
+/// The shared interest as a `clap_posix_fd_flags` word.
+fn flags_of(interest: Interest) -> u32 {
+    use clap_sys::ext::posix_fd_support::{
+        CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
+    };
+    [
+        (CLAP_POSIX_FD_READ, Interest::READ),
+        (CLAP_POSIX_FD_WRITE, Interest::WRITE),
+        (CLAP_POSIX_FD_ERROR, Interest::ERROR),
+    ]
+    .into_iter()
+    .filter(|&(_, i)| interest.contains(i))
+    .fold(0, |all, (flag, _)| all | flag)
 }
 
 /// Takes the timers due at `now`, each restarting its period, and caches the
@@ -736,10 +691,7 @@ fn collect_due_timers(state: &crate::host::state::TimerState, now: std::time::In
 /// Stored under the lock, so a registration's `note_due` is not overwritten.
 fn cache_next_deadline(state: &crate::host::state::TimerState) {
     if let Ok(timers) = state.timers.lock() {
-        let next = timers
-            .iter()
-            .map(|t| t.last_fire + std::time::Duration::from_millis(u64::from(t.period_ms)))
-            .min();
+        let next = timers.iter().map(TimerEntry::wake_at).min();
         state.set_next_due(next);
     }
 }
@@ -771,15 +723,6 @@ fn fire_due_timers(
     // After the callbacks, which may have registered or unregistered timers.
     cache_next_deadline(state);
     fired
-}
-
-/// Room for one scan of the registered descriptors.
-#[cfg(unix)]
-#[derive(Default)]
-struct FdScratch {
-    watched: Vec<(i32, u32)>,
-    poller: FdPoller,
-    ready: Vec<(i32, u32)>,
 }
 
 /// Which registered timers are due at `now`, marking each as fired.
@@ -980,47 +923,40 @@ mod main_thread_work_tests {
     use crate::host::state::TimerState;
     use std::time::{Duration, Instant};
 
-    /// **With no timer and no descriptor the pass does not read the clock**,
-    /// and a pass over registered ones does.
+    /// **A timer's wake-up is its period after its last fire, and never less
+    /// than the floor**: a timer that asks for a period of zero does not have
+    /// the main loop wake again at once.
     #[test]
-    fn nothing_registered_needs_no_clock() {
-        assert!(!work_needs_clock(TimerState::NONE, false));
-        assert!(work_needs_clock(0, false));
-        assert!(work_needs_clock(TimerState::NONE, true));
-    }
-
-    /// **The timers are scanned only once the earliest deadline has passed.**
-    #[test]
-    fn timers_wait_for_the_earliest_deadline() {
-        let epoch = Instant::now();
-        let at = |ms| epoch + Duration::from_millis(ms);
-        let due = |now| work_due(10_000_000, epoch, false, None, now);
-        assert!(!due(at(9)).timers, "before the deadline");
-        assert!(due(at(10)).timers, "at the deadline");
-        assert!(due(at(50)).timers, "after it");
-        assert!(!work_due(TimerState::NONE, epoch, false, None, at(50)).timers);
-    }
-
-    /// **The descriptors are polled at most once per scan period, and only
-    /// while one is registered.**
-    #[test]
-    fn descriptors_are_polled_once_per_period() {
-        let epoch = Instant::now();
-        let last = epoch + Duration::from_millis(100);
-        let fds = |reg, last_scan, ms| {
-            work_due(
-                TimerState::NONE,
-                epoch,
-                reg,
-                last_scan,
-                last + Duration::from_millis(ms),
-            )
-            .fds
+    fn a_timer_wakes_the_loop_at_its_period_and_not_sooner_than_the_floor() {
+        use crate::host::state::TIMER_FLOOR;
+        let at = Instant::now();
+        let wake = |period_ms| {
+            TimerEntry {
+                id: 1,
+                period_ms,
+                last_fire: at,
+            }
+            .wake_at()
         };
-        assert!(fds(true, None, 0), "never scanned");
-        assert!(!fds(true, Some(last), 1), "just scanned");
-        assert!(fds(true, Some(last), 5), "a period later");
-        assert!(!fds(false, None, 50), "none registered");
+        assert_eq!(wake(250), at + Duration::from_millis(250));
+        assert_eq!(wake(0), at + TIMER_FLOOR, "a zero period is floored");
+        assert_eq!(wake(1), at + TIMER_FLOOR);
+    }
+
+    /// **The CLAP flag word and the shared interest convert both ways**, and a
+    /// bit CLAP has no event for is dropped.
+    #[test]
+    fn clap_fd_flags_and_the_shared_interest_convert_both_ways() {
+        use clap_sys::ext::posix_fd_support::{
+            CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
+        };
+        for flags in 0..8u32 {
+            assert_eq!(flags_of(interest_of(flags)), flags);
+        }
+        assert_eq!(interest_of(CLAP_POSIX_FD_READ), Interest::READ);
+        assert_eq!(interest_of(CLAP_POSIX_FD_WRITE), Interest::WRITE);
+        assert_eq!(interest_of(CLAP_POSIX_FD_ERROR), Interest::ERROR);
+        assert_eq!(interest_of(1 << 9), Interest::NONE);
     }
 
     /// A state holding the timers `(id, period_ms)`, each last fired at the

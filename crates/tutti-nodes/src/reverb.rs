@@ -362,6 +362,9 @@ impl<F: NodeFamily> FamilyNode<F> {
             },
         );
         self.applied = None;
+        // A block cadence's realization glides its own coefficients between the designs of
+        // its blocks, so the reader lands a moved cell whole there.
+        self.params.retune(rate, F::SAMPLING != Cadence::BLOCK);
         // Latency has one home per cause (design 024 section 2.7.2): the member's and the
         // realization's, summed here once. It is the blank member's: a latency that moved
         // with a control would be a shape the graph cannot follow (the contract's `latency`
@@ -391,6 +394,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         self.ring = 0;
         self.since = UNBOUNDED;
         self.position = 0;
+        self.params.land();
     }
 
     /// Designs `controls` into the node's network and retargets the realization.
@@ -510,25 +514,39 @@ impl<F: NodeFamily> FamilyNode<F> {
     /// not move render together, in one call, with the model held; the rest of a
     /// segment an earlier block began is rendered with the model that block set.
     fn render_steps(&mut self, io: &mut Io<'_>, position: u64) {
+        // Only a stream grid steps (`process`): a block cadence designs once, at the
+        // block's last frame, so a step's solve is its first frame and a corner
+        // inside a step is never read before the frames it designs.
+        debug_assert!(F::SAMPLING != Cadence::BLOCK, "a block cadence never steps");
         let size = io.frames();
-        // A cell glides from where the block began, whatever the steps designed,
-        // and arrives at its value on the block's last solve.
-        let applied = self.applied;
-        let span = F::SAMPLING
-            .steps(position, size, applied.is_none())
+        // The stops: each grid point (cut at its step's start, read at its solve
+        // frame), and each corner of a port driving a slow control (cut and read on
+        // its frame; doc 024 §4.5, "Solve at corners"), in order.
+        let mut grid = F::SAMPLING
+            .steps(position, size, self.applied.is_none())
             .filter(|step| step.grid_point)
-            .map(|step| step.solve_at + 1)
-            .last()
-            .unwrap_or(size);
+            .map(|step| (step.frames.start, step.solve_at))
+            .peekable();
         let mut held = 0;
-        for step in F::SAMPLING.steps(position, size, applied.is_none()) {
-            if !step.grid_point {
-                continue;
-            }
+        let mut from = 0;
+        loop {
+            let corner = self.params.corner_from(io, from);
+            let (cut, solve_at) = match (grid.peek().copied(), corner) {
+                (Some((cut, solve)), Some(c)) if cut <= c => {
+                    grid.next();
+                    (cut, solve)
+                }
+                (_, Some(c)) => (c, c),
+                (Some(g), None) => {
+                    grid.next();
+                    g
+                }
+                (None, None) => break,
+            };
+            from = cut + 1;
             let at = At {
-                frame: step.solve_at,
-                block: span,
-                applied,
+                position,
+                frame: solve_at,
                 rate: self.rate,
             };
             let target = self.params.read(io, at);
@@ -537,10 +555,9 @@ impl<F: NodeFamily> FamilyNode<F> {
                 .as_ref()
                 .is_none_or(|applied| self.params.moved(applied, &target))
             {
-                self.render(io, held..step.frames.start);
+                self.render(io, held..cut);
                 self.apply(target);
-                self.render(io, step.frames.clone());
-                held = step.frames.end;
+                held = cut;
             }
         }
         self.render(io, held..size);
@@ -638,15 +655,17 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
         // (it glides across the block, one design per step of the grid).
         let target = match self.mode {
             Mode::Fixed(c) => c,
-            Mode::Live => self.params.read(
-                &io,
-                At {
-                    frame: size - 1,
-                    block: size,
-                    applied: self.applied,
-                    rate: self.rate,
-                },
-            ),
+            Mode::Live => {
+                self.params.begin(position);
+                self.params.read(
+                    &io,
+                    At {
+                        position,
+                        frame: size - 1,
+                        rate: self.rate,
+                    },
+                )
+            }
         };
         let moved = |applied: &F::Controls| self.params.moved(applied, &target);
         let stepped = F::SAMPLING != Cadence::BLOCK

@@ -27,7 +27,10 @@ use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::{PluginRef, PluginState};
-use tutti_plugin_types::{BridgeError, PluginFailure, TerminationReason};
+use tutti_plugin_types::PluginFailure;
+// Only the Linux-only server-death tests name these.
+#[cfg(target_os = "linux")]
+use tutti_plugin_types::{BridgeError, TerminationReason};
 use tutti_session::BufferMaster;
 use tutti_session::{
     Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginHealth,

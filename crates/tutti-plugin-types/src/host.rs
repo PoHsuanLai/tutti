@@ -32,8 +32,8 @@ use crate::{
     PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, SampleRate, Samples, WindowHandle,
 };
 use crate::{
-    FdId, MainThread, Prepare, Ready, RenderMode, Request, RescanScope, RestartRules, TimerId,
-    Wakeups,
+    FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
+    RestartRules, TimerId, Wakeups,
 };
 
 /// What the main thread asks of a plugin, in any state that has one.
@@ -185,11 +185,15 @@ pub trait Control: EditorWindow {
         let _ = (main, out);
     }
 
-    /// Tells the plugin its render mode now. `true` when the format applied it
-    /// without a restart; `false` when it cannot, and the caller reconfigures
-    /// through the [`Lifecycle`](crate::Lifecycle), whose
-    /// [`Prepare::mode`](crate::Prepare::mode) the next activation carries. A
-    /// `false` changes nothing.
+    /// Returns how this plugin takes a change of render mode: told live,
+    /// read at its next activation, or not at all.
+    fn render_mode_support(&self, main: &MainThread) -> RenderModeSupport;
+
+    /// Tells a [`Live`](RenderModeSupport::Live) plugin its render mode now,
+    /// and returns whether it took it. A host calls this only where
+    /// [`render_mode_support`](Self::render_mode_support) is `Live`; elsewhere
+    /// the mode reaches the plugin as the [`Prepare::mode`](crate::Prepare::mode)
+    /// of its next activation, and this answers `false` and changes nothing.
     fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
         let _ = (main, mode);
         false
@@ -401,12 +405,6 @@ pub trait Wraps {
     /// the Processor ([`queue_write`](Self::queue_write)).
     const WRITES_PLUGIN: bool = true;
 
-    /// Whether the render mode can change while active. `false` where the mode
-    /// is fixed at activation (AU's is written before `AudioUnitInitialize`):
-    /// the caller reconfigures through the `Lifecycle` and the answer is
-    /// `false`.
-    const SWITCHES_RENDER_MODE: bool = true;
-
     /// The plugin.
     fn plugin(&self) -> &Self::Plugin;
 
@@ -575,8 +573,12 @@ impl<W: Wraps> Control for W {
         self.plugin_mut().take_requests(main, out);
     }
 
+    fn render_mode_support(&self, main: &MainThread) -> RenderModeSupport {
+        self.plugin().render_mode_support(main)
+    }
+
     fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
-        W::SWITCHES_RENDER_MODE && self.plugin_mut().set_render_mode(main, mode)
+        self.plugin_mut().set_render_mode(main, mode)
     }
 
     fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {

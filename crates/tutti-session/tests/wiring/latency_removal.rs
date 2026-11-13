@@ -1,9 +1,6 @@
 //! The published latency shrinks when the latency-bearing node leaves.
 //!
-//! The session half of `bevy-tutti`'s `graph_value`
-//! `the_latency_plan_shrinks_when_the_latency_bearing_node_leaves`, which
-//! read the figure off the adapter's topology value. Here it is the figure
-//! the session publishes after the compiler's solve: the total, and the
+//! The figure is what the session publishes after the compiler's solve: the total, and the
 //! per-channel compensation a source outside the graph seeks by.
 //!
 //! Two paths reach the outputs: one through a lookahead limiter, one dry. The

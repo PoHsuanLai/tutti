@@ -5,9 +5,8 @@
 //!
 //! A node's own API hands out typed `Param<U>` handles (`cutoff: Param<Hz>`),
 //! and a caller that knows the node's type uses those. A host that does not
-//! — bevy-tutti's `AudioParam<U, P>`, which names a param by its packed
-//! [`UnitAddr`] and reaches the node through its graph key — needs the same
-//! cells by address.
+//! (it names a param by its packed [`UnitAddr`] and reaches the node through its
+//! graph key) needs the same cells by address.
 //! A graph node's controls **are** its cells, shared with the running unit, so a write lands
 //! on the next block without a ring and a fork reads the values it needs from
 //! the controls rather than from a shadow copy of the unit.

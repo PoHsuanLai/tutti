@@ -26,7 +26,7 @@ use tutti_midi_runtime::{
     OutputLatency, OutputPlan, OutputTerms, Placement, RouteRule, SendAt, TimedMidiEvent,
     compile_routes,
 };
-use tutti_types::{Frame, Samples};
+use tutti_types::{Beat, BeatDuration, Frame, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 use crate::FollowTempo;
@@ -34,7 +34,7 @@ use crate::RouteDeclarer;
 use crate::graph::{Feeder, Graph};
 use crate::instrument::open_keys;
 use crate::midi_follow::{FOLLOW_TAP_CAPACITY, Follow, FollowCx};
-use crate::{EventOutPort, MidiError, MidiEvent, MidiNodes};
+use crate::{EventOutPort, Key, MidiError, MidiEvent, MidiNodes};
 
 /// What a [`Midi`] call returns: the area's one error.
 type Result<T> = std::result::Result<T, MidiError>;
@@ -275,35 +275,18 @@ impl UmpOut {
     /// prefixes and the events) to the sink. The stream advances its own
     /// origin, so successive blocks stay monotonic whichever drain called.
     ///
-    /// Prefer [`send_stamped_span`](Self::send_stamped_span): the JR Clock
-    /// cadence advances with the *block*, and this entry point can only
-    /// advance by the events it was handed, so a silent stream never
-    /// clocks. With stamping off the events go out unchanged.
+    /// The JR Clock cadence advances only by the events handed in, so a
+    /// silent stream never clocks. With stamping off the events go out
+    /// unchanged.
     pub fn send_stamped(&mut self, events: &[UmpAt]) {
         self.send_batch(events);
     }
 
-    /// Like [`send_stamped`](Self::send_stamped), but tells the stream how
-    /// long the block was so the JR Clock cadence keeps running through
-    /// silence (§7.2.2.1: the cadence is a property of elapsed time, not of
-    /// traffic).
-    pub fn send_stamped_span(&mut self, events: &[UmpAt], block: Samples) {
-        if !self.stamping {
-            self.send_batch(events);
-            return;
-        }
-        let mut buf = core::mem::take(&mut self.stamped);
-        self.stream.stamp_span(events, block, &mut buf);
-        self.send_all(&buf);
-        self.stamped = buf;
-    }
-
-    /// Sends a batch of events, each on its frame on the graph's clock, as
-    /// [`send_stamped_span`](Self::send_stamped_span) sends a block: the batch
-    /// is the block, its first frame (the earliest) is its start, and its span
-    /// runs to the last frame inclusive, so what the stamper reads is the
-    /// events' spacing and the JR Clock advances by the span. An empty batch
-    /// sends nothing.
+    /// Sends a batch of events, each on its frame on the graph's clock. The
+    /// batch is one block: its first frame (the earliest) is its start, and
+    /// its span runs to the last frame inclusive, so what the stamper reads
+    /// is the events' spacing and the JR Clock advances by the span. An empty
+    /// batch sends nothing.
     ///
     /// With `timing`, each event is sent at the time its frame has on the OS
     /// clock ([`OutputPlan`]: the frame's instant, plus the audio output's
@@ -618,7 +601,7 @@ impl<T> MidiRouteRule<T> {
     }
 
     /// Adds a destination: a `T`, or anything that converts into one (a
-    /// session's own rule takes a graph [`Key`](crate::Key) as it takes a
+    /// session's own rule takes a graph [`Key`] as it takes a
     /// [`NodeKey`]).
     #[must_use]
     pub fn to(mut self, target: impl Into<T>) -> Self {
@@ -1138,10 +1121,25 @@ impl Midi<'_> {
 
     // --- Live input ---
 
-    /// The keys of `target`'s live input (a synth, a plugin): an event inlet
-    /// fed into its main event input, for a keyboard, a preview or an
-    /// all-notes-off the host sends. What is sent plays from the next block
-    /// ([`Stamp::NextBlock`](tutti_graph::Stamp::NextBlock)) or on a frame of the engine's clock.
+    /// Returns the keys of `target`'s live input: an event inlet fed into the
+    /// main event input of **any node that takes MIDI** that is not an
+    /// instrument of the session (a plugin effect, a modulator, your own
+    /// node), for a keyboard, a preview or an all-notes-off the host sends.
+    /// What is sent plays from the next block
+    /// ([`Stamp::NextBlock`](tutti_graph::Stamp::NextBlock)) or on a frame of
+    /// the engine's clock.
+    ///
+    /// **An instrument has its keys already**: one made by
+    /// [`Session::add_instrument`](crate::Session::add_instrument) or
+    /// [`Session::instrument`](crate::Session::instrument) is played through
+    /// [`InstrumentHandle::keys_mut`](crate::InstrumentHandle::keys_mut), and
+    /// asking for its input here is refused, so an instrument never has two
+    /// live inlets.
+    ///
+    /// Like the handle's, these keys are a performance: they play in the live
+    /// graph and reach the device output, and a bounce does not contain them
+    /// (an event inlet's fork is silent). Notes an export must hold are a
+    /// clip ([`play_clip`](Self::play_clip)).
     ///
     /// A target has one live input and its keys are the inlet's one
     /// producer: they are handed out once. [`record`](Self::record) opens the
@@ -1150,7 +1148,9 @@ impl Midi<'_> {
     /// # Errors
     ///
     /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
-    /// no MIDI; [`MidiError::InputTaken`] when the keys were handed out already.
+    /// no MIDI; [`MidiError::InstrumentKeys`] when `target` is an instrument
+    /// with a handle; [`MidiError::InputTaken`] when the keys were handed out
+    /// already.
     pub fn input(&mut self, target: impl Into<NodeKey>) -> Result<MidiKeys> {
         let target = target.into();
         let node = self.live_inlet(target)?;
@@ -1161,12 +1161,24 @@ impl Midi<'_> {
             .ok_or(MidiError::InputTaken(target))
     }
 
+    /// The queue the handle of instrument `target` plays through, if it has a
+    /// handle.
+    fn instrument_queue(&self, target: NodeKey) -> Option<NodeKey> {
+        self.graph
+            .feed(target, Feeder::Instrument)
+            .first()
+            .map(|port| port.node())
+    }
+
     /// The node of `target`'s live input, opened with its keys held if it has
     /// none.
     fn live_inlet(&mut self, target: NodeKey) -> Result<NodeKey> {
         self.takes_midi(target)?;
         if let Some((node, _)) = self.fed_by(target, Feeder::LiveInput, &self.state.live) {
             return Ok(node);
+        }
+        if self.instrument_queue(target).is_some() {
+            return Err(MidiError::InstrumentKeys(target));
         }
         let (node, keys) = open_keys(self.graph);
         let node = node.erase();
@@ -1184,33 +1196,59 @@ impl Midi<'_> {
 
     // --- Clips ---
 
-    /// Plays `events` on `target` through its clip: the one it has, its
-    /// events replaced in place (which ends the notes the old events left
-    /// sounding), or a new `MidiClipNode` fed into its event input. Returns
-    /// the clip's node.
+    /// Plays `events` on `target` through its clip, `at` the beat the
+    /// events' beat 0 lands on: the clip it has, its events replaced in place
+    /// (which ends the notes the old events left sounding), or a new
+    /// [`MidiClipNode`] fed into its event input. A target has one clip; it
+    /// is found again with [`clip`](Self::clip) and emptied with
+    /// [`stop_clip`](Self::stop_clip).
     ///
-    /// The events are [`TimedMidiEvent`]s (each beat finite: it is checked
-    /// where one is built, `TimedMidiEvent::new`); a file's
-    /// `MidiFile::timeline()` is `(Beat, Ump)` pairs a caller builds them from.
-    /// They are absolute-beat positioned, in any order; the clip
-    /// reads its block's `Env`, so a note lands on its frame through seeks
-    /// and loop wraps, and an export forks it with the target.
+    /// The events are [`TimedMidiEvent`]s, positioned in beats from the
+    /// clip's own start, in any order; a clip file's
+    /// [`MidiFile::timeline`](tutti_midi_file::MidiFile::timeline) is the
+    /// `(Beat, Ump)` pairs they are built from, and
+    /// [`play_file`](Self::play_file) does that for a file. The clip reads its
+    /// block's `Env`, so a note lands on its frame through seeks and loop
+    /// wraps, and **a bounce contains it**: an export forks the clip with its
+    /// target, where the keys of a live input are not in one.
+    ///
+    /// **A clip does not loop itself**: it plays on the transport's timeline,
+    /// so a repeat is the transport's loop
+    /// ([`Session::set_loop`](crate::Session::set_loop)) over the beats it
+    /// occupies.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // The melody's beats 0..4, played from bar 3 of 4/4.
+    /// session.midi().play_clip(synth.node(), Beat(8.0), melody)?;
+    /// ```
     ///
     /// # Errors
     ///
     /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
-    /// no MIDI.
+    /// no MIDI; [`MidiError::BeatNotFinite`] when `at`, or an event moved by
+    /// it, is not a finite beat (nothing changes).
     pub fn play_clip(
         &mut self,
         target: impl Into<NodeKey>,
+        at: Beat,
         events: impl IntoIterator<Item = TimedMidiEvent>,
-    ) -> Result<NodeKey> {
+    ) -> Result<()> {
         let target = target.into();
         self.takes_midi(target)?;
+        if !at.get().is_finite() {
+            return Err(MidiError::BeatNotFinite(at));
+        }
+        let by = BeatDuration(at.get());
+        let events = events
+            .into_iter()
+            .map(|e| e.shifted(by).ok_or(MidiError::BeatNotFinite(at)))
+            .collect::<Result<Vec<_>>>()?;
         let clip = match self.clip(target) {
             Some(clip) => {
-                self.state.clips[&clip].controls.set(events);
-                clip
+                self.state.clips[&clip.erase()].controls.set(events);
+                clip.erase()
             }
             None => {
                 let (clip, controls) = self.graph.add(MidiClipNode::new(events));
@@ -1223,28 +1261,61 @@ impl Midi<'_> {
         // edit flag) alone.
         self.graph
             .set_feed(target, Feeder::Sequencer, vec![EventOutPort::new(clip, 0)]);
-        Ok(clip)
+        Ok(())
+    }
+
+    /// Plays the MIDI file `file` on `target` through its clip, `at` the beat
+    /// the file's beat 0 lands on: [`play_clip`](Self::play_clip) over the
+    /// file's one timeline
+    /// ([`MidiFile::timeline`](tutti_midi_file::MidiFile::timeline)), with
+    /// its looping and bounce behaviour. A file arrives from
+    /// [`load_file`](Self::load_file) as [`MidiEvent::FileLoaded`].
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::File`] for a format 2 file, which has no one timeline
+    /// ([`tutti_midi_file::Error::NoCommonTimeline`]); otherwise as
+    /// [`play_clip`](Self::play_clip).
+    pub fn play_file(
+        &mut self,
+        target: impl Into<NodeKey>,
+        at: Beat,
+        file: &tutti_midi_file::MidiFile,
+    ) -> Result<()> {
+        let events = file
+            .timeline()
+            .map_err(tutti_midi_file::Error::from)?
+            .map(|(beat, packet)| {
+                TimedMidiEvent::new(beat, packet).ok_or(MidiError::BeatNotFinite(beat))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.play_clip(target, at, events)
     }
 
     /// Empties `target`'s clip, ending the notes it left sounding. The clip
-    /// stays, to play the next [`play_clip`](Self::play_clip). `false`
-    /// when `target` has none.
-    pub fn stop_clip(&mut self, target: impl Into<NodeKey>) -> bool {
+    /// stays, to play the next [`play_clip`](Self::play_clip).
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoClip`] when `target` has none.
+    #[must_use = "a target with no clip is an error"]
+    pub fn stop_clip(&mut self, target: impl Into<NodeKey>) -> Result<()> {
         let target = target.into();
         match self.clip(target) {
             Some(clip) => {
-                self.state.clips[&clip].controls.clear();
-                true
+                self.state.clips[&clip.erase()].controls.clear();
+                Ok(())
             }
-            None => false,
+            None => Err(MidiError::NoClip(target)),
         }
     }
 
-    /// `target`'s clip node, if it has one.
-    pub fn clip(&self, target: impl Into<NodeKey>) -> Option<NodeKey> {
+    /// Returns `target`'s clip node, if it has one.
+    #[must_use]
+    pub fn clip(&self, target: impl Into<NodeKey>) -> Option<Key<MidiClipNode>> {
         let target = target.into();
         self.fed_by(target, Feeder::Sequencer, &self.state.clips)
-            .map(|(clip, _)| clip)
+            .map(|(clip, _)| Key::new(clip))
     }
 
     /// The node of `ours` that `feeder` feeds `target` with: the feed is
@@ -1521,8 +1592,14 @@ impl Midi<'_> {
     // --- Recording a take ---
 
     /// Records what is played into `target`: an event tap on the event output
-    /// of its live input ([`input`](Self::input), opened when it has
-    /// none), which every note sent through the live input passes. A reader of
+    /// of the inlet that feeds it, which every note sent through its keys
+    /// passes. For an instrument with a handle
+    /// ([`Session::add_instrument`](crate::Session::add_instrument),
+    /// [`Session::instrument`](crate::Session::instrument)) that inlet is the
+    /// handle's own queue, so **what the handle's
+    /// [`keys`](crate::InstrumentHandle::keys_mut) play is recorded**; any
+    /// other target is tapped on its live input ([`input`](Self::input),
+    /// opened when it has none). A reader of
     /// `capacity` events (a non-note-off is refused once that many are held, a
     /// note-off is kept up to [`note_off_room`](tutti_graph::note_off_room) of
     /// it; both counted by [`EventTapReader::take_lost`]).
@@ -1531,13 +1608,14 @@ impl Midi<'_> {
     /// event's [`frame`](TapEvent::frame) is the frame of the graph's clock it
     /// was due on, as it left the inlet and before the target heard it; where
     /// a take places it on the timeline is
-    /// [`TakePlacement::place`] (doc 030 §5.2: the frame minus the input and
+    /// [`TakePlacement::place`] (the frame minus the input and
     /// output latency and the inlet's lead, plus the user's trim).
     ///
-    /// The tap is on the **live input**: notes a hardware input routes straight
-    /// to `target` ([`route`](Self::route)) do not pass it. To record a
-    /// hardware player, send what its device pushes through the live input, or
-    /// tap the ingest node's port with `Graph::taps`.
+    /// The tap is on **the keys' inlet only**: a clip ([`play_clip`](Self::play_clip))
+    /// is already on the timeline, and notes a hardware input routes straight to
+    /// `target` ([`route`](Self::route)) do not pass it. To record a
+    /// hardware player, tap the ingest node's port with `Graph::taps`, or
+    /// send what its device pushes through the keys.
     ///
     /// The tap is closed when its reader is dropped (the next
     /// [`Reclaim`](crate::Phase::Reclaim) phase) or with
@@ -1553,7 +1631,11 @@ impl Midi<'_> {
         target: impl Into<NodeKey>,
         capacity: tutti_graph::EventCapacity,
     ) -> Result<EventTapReader> {
-        let node = self.live_inlet(target.into())?;
+        let target = target.into();
+        let node = match self.instrument_queue(target) {
+            Some(queue) if self.takes_midi(target).is_ok() => queue,
+            _ => self.live_inlet(target)?,
+        };
         let source = EventOutPort::new(node, 0);
         self.graph
             .taps()
@@ -1571,6 +1653,11 @@ impl Midi<'_> {
     /// [`Poll`](crate::Phase::Poll) phase and publishes them to the transport,
     /// reported as [`MidiEvent::TempoFollowed`] and [`MidiEvent::MeterFollowed`].
     /// **Off by default**: until this is called, a Flex tempo changes nothing.
+    ///
+    /// **Flex Set Tempo on one Group is the only source today**: MIDI Clock
+    /// (the `0xF8` ticks) and MIDI Time Code are not followed, though the
+    /// runtime has decoders for both, and a device that sends only those
+    /// changes nothing.
     ///
     /// **It overlays the project's maps; it does not replace them.** The tempo
     /// map and meter the project has now are kept; from the beat of each change,

@@ -439,8 +439,7 @@ mod tests {
         assert_eq!(stereo.mBytesPerPacket, 4);
     }
 
-    /// The `IsFloat` / `IsNonInterleaved` flag bits must be set (the checks the
-    /// original `test_asbd_float32` made), now against the bindgen field.
+    /// The `IsFloat` / `IsNonInterleaved` flag bits must be set.
     #[test]
     fn test_asbd_float32_flags_set() {
         let asbd = AudioStreamBasicDescription::float32(48000.0, 1);

@@ -49,15 +49,6 @@ pub struct LoadReading {
     pub dropped_events: u64,
 }
 
-impl LoadReading {
-    /// The spike indicator: the peak over the mean. Near `1.0` the load is
-    /// steady; far above it a few blocks cost much more than the rest.
-    /// `None` before any load was measured.
-    pub fn peak_over_mean(&self) -> Option<f32> {
-        (self.mean > 0.0).then(|| self.peak / self.mean)
-    }
-}
-
 /// The cells both halves share. Every field is its own relaxed atomic, and
 /// no reading depends on the order of two of them: a reading may straddle
 /// two blocks, which a meter accepts. The peak is a `fetch_max` on the bits

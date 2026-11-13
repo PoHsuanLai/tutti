@@ -11,31 +11,22 @@ const NOTE_ON_FLOOR: U7 = U7::of(1);
 /// Why a MIDI 2.0 channel voice message has no single MIDI 1.0 message
 /// ([`narrow`]'s refusal): the kind of message, as M2-104 Appendix D.2 groups
 /// them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum NoMidi1Form {
     /// A Registered or Assignable Per-Note Controller, or Per-Note Pitch Bend
     /// (D.2.8): MIDI 1.0 has no per-note expression.
+    #[error("a per-note controller or bend has no MIDI 1.0 message")]
     PerNote,
     /// A Registered or Assignable Controller, absolute or relative: MIDI 1.0
     /// sends it as four Control Changes ([`Narrower`](crate::Narrower), which
     /// keeps the select).
+    #[error("a registered or assignable controller is four MIDI 1.0 messages")]
     Parameter,
     /// Per-Note Management: MIDI 1.0 has no per-note state to manage.
+    #[error("per-note management has no MIDI 1.0 message")]
     PerNoteManagement,
 }
-
-impl core::fmt::Display for NoMidi1Form {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::PerNote => "a per-note controller or bend has no MIDI 1.0 message",
-            Self::Parameter => "a registered or assignable controller is four MIDI 1.0 messages",
-            Self::PerNoteManagement => "per-note management has no MIDI 1.0 message",
-        })
-    }
-}
-
-impl core::error::Error for NoMidi1Form {}
 
 /// `voice` at MIDI 1.0 resolution (M2-115 section 3.4), or the [`NoMidi1Form`]
 /// that says why MIDI 1.0 has no single message for it: per-note controllers

@@ -20,6 +20,15 @@
 //! rate has become since, including between the read and the send; a bare
 //! frame is counted at the rate the queue has when it takes the message.
 //!
+//! # Live keys are a performance
+//!
+//! A note sent through [`InstrumentHandle::keys_mut`] plays in the live graph
+//! and reaches the device output; **it is not in a bounce**. The keys are an
+//! event inlet's producer, and an inlet's fork is silent, so a bounce of the
+//! project renders the instrument with nothing played. Notes that belong in an
+//! export go through [`Midi::play_clip`](crate::Midi::play_clip), a clip on the
+//! timeline, which a fork plays with its target.
+//!
 //! Everything a handle does is a port or a cell: a message is pushed into the
 //! event inlet's ring through its [`MidiKeys`] (never blocking the audio
 //! thread), stamped with a [`Stamp`](tutti_graph::Stamp), and a gain is a store into the strip's
@@ -34,6 +43,13 @@ use tutti_types::{Amplitude, UnitParam};
 use tutti_ump::MidiGroup;
 
 use crate::{Feeder, Graph, Key, OutPort, RemoveError, Root, Session, SessionNode};
+
+/// The type of an instrument's key when the session was given a node by its
+/// [`NodeKey`] ([`Session::instrument`]), so its type is not known. A [`Key`]
+/// of it has every port method; only the node's own params are not methods of
+/// it.
+#[derive(Debug, Clone, Copy)]
+pub enum AnyNode {}
 
 /// Why a node is not an instrument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -69,12 +85,14 @@ pub(crate) fn open_keys(graph: &mut Graph) -> (Key<EventInletNode>, MidiKeys) {
 /// A played instrument: its node, the strip after its main pair, and the
 /// [`MidiKeys`] that play it.
 ///
+/// `N` is the instrument's node type when [`Session::add_instrument`] built it,
+/// and [`AnyNode`] for a node the session was given by its [`NodeKey`].
+///
 /// The keys are an event inlet's one producer, so the handle is not `Clone`:
 /// move it to the thread that plays, or share it behind a lock of your own on
 /// the control side.
-#[derive(Debug)]
-pub struct InstrumentHandle {
-    node: NodeKey,
+pub struct InstrumentHandle<N: ?Sized = AnyNode> {
+    node: Key<N>,
     main: [u16; 2],
     strip: Key<BusStripNode>,
     queue: Key<EventInletNode>,
@@ -82,11 +100,38 @@ pub struct InstrumentHandle {
     strip_params: ParamSet,
 }
 
-impl InstrumentHandle {
-    /// The instrument's own node, with all of its outputs.
+impl<N: ?Sized> std::fmt::Debug for InstrumentHandle<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstrumentHandle")
+            .field("node", &self.node)
+            .field("main", &self.main)
+            .field("strip", &self.strip)
+            .field("queue", &self.queue)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<N: ?Sized> InstrumentHandle<N> {
+    /// The instrument's own node, with all of its outputs and its event
+    /// ports: wire a source of your own into
+    /// [`events_in`](Key::events_in).
     #[must_use]
-    pub fn node(&self) -> NodeKey {
+    pub fn node(&self) -> Key<N> {
         self.node
+    }
+
+    /// The handle with its node's type forgotten, to keep handles of different
+    /// instruments in one collection.
+    #[must_use]
+    pub fn erase(self) -> InstrumentHandle {
+        InstrumentHandle {
+            node: Key::new(self.node.erase()),
+            main: self.main,
+            strip: self.strip,
+            queue: self.queue,
+            keys: self.keys,
+            strip_params: self.strip_params,
+        }
     }
 
     /// The instrument's main pair, the output ports a host plays (the
@@ -103,21 +148,30 @@ impl InstrumentHandle {
         self.strip
     }
 
-    /// The queue node before the event input.
+    /// The queue node before the event input: the event inlet the handle's
+    /// [`keys`](Self::keys) fill. Everything the handle plays passes its event
+    /// output, which is what [`Midi::record`](crate::Midi::record) taps.
     #[must_use]
     pub fn queue(&self) -> Key<EventInletNode> {
         self.queue
     }
 
-    /// The keys that play the instrument: [`EventInletWriter::clock`](tutti_graph::EventInletWriter::clock) reads the engine's
+    /// Returns the keys that play the instrument:
+    /// [`EventInletWriter::clock`](tutti_graph::EventInletWriter::clock) reads the engine's
     /// frame clock where its queue last ended a block, `push` and the key
     /// helpers send, and `counts().losses()` says what the queue has lost.
+    ///
+    /// Live keys are a performance: they play in the live graph and reach the
+    /// device output, and a bounce does not contain them (an event inlet's
+    /// fork is silent). Notes an export must hold go through
+    /// [`Midi::play_clip`](crate::Midi::play_clip).
     #[must_use]
     pub fn keys(&self) -> &MidiKeys {
         &self.keys
     }
 
-    /// The keys, to send with.
+    /// Returns the keys, to send with. They are a performance and not part
+    /// of a bounce, as [`keys`](Self::keys) says.
     pub fn keys_mut(&mut self) -> &mut MidiKeys {
         &mut self.keys
     }
@@ -163,12 +217,23 @@ impl SessionInstrument for tutti_soundfont::SoundFontUnit {
 
 /// What [`Session::add_instrument`] hands back: the instrument's handle and
 /// the controls its node was added with.
-#[derive(Debug)]
-pub struct AddedInstrument<C> {
+pub struct AddedInstrument<I: SessionInstrument> {
     /// The instrument, playable, and wired to the master.
-    pub handle: InstrumentHandle,
+    pub handle: InstrumentHandle<I>,
     /// The node's controls (`SessionNode::Controls`).
-    pub controls: C,
+    pub controls: I::Controls,
+}
+
+impl<I: SessionInstrument> std::fmt::Debug for AddedInstrument<I>
+where
+    I::Controls: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddedInstrument")
+            .field("handle", &self.handle)
+            .field("controls", &self.controls)
+            .finish()
+    }
 }
 
 impl Session {
@@ -193,10 +258,10 @@ impl Session {
     pub fn add_instrument<I: SessionInstrument>(
         &mut self,
         instrument: I,
-    ) -> Result<AddedInstrument<I::Controls>, crate::Error> {
+    ) -> Result<AddedInstrument<I>, crate::Error> {
         let added = self.add_instrument_unwired(instrument)?;
         if let Err(e) = self.graph().connect(added.handle.out(), Root) {
-            let node = added.handle.node();
+            let node = added.handle.node().erase();
             let _ = self.remove_instrument(added.handle); // made a moment ago
             let _ = self.remove(node); // added a moment ago
             return Err(e.into());
@@ -207,7 +272,8 @@ impl Session {
     /// [`add_instrument`](Self::add_instrument) with nothing wired after the
     /// strip: for a mix that routes [`InstrumentHandle::out`] itself (a bus, a
     /// send, a wide root), as [`instrument`](Self::instrument) leaves a node
-    /// it is given.
+    /// it is given. Its keys are live only, as `add_instrument`'s are: a bounce
+    /// does not contain what they play.
     ///
     /// # Errors
     ///
@@ -217,12 +283,11 @@ impl Session {
     pub fn add_instrument_unwired<I: SessionInstrument>(
         &mut self,
         instrument: I,
-    ) -> Result<AddedInstrument<I::Controls>, crate::Error> {
+    ) -> Result<AddedInstrument<I>, crate::Error> {
         let main = instrument.main_outputs();
         // The session's MPE mode, over whatever the instrument was configured with.
         let instrument = instrument.bind_mpe(*self.midi_state.mpe());
         let (node, controls) = self.graph().add(instrument);
-        let node = node.erase();
         match self.instrument_at(node, main) {
             Ok(handle) => Ok(AddedInstrument { handle, controls }),
             Err(e) => {
@@ -243,7 +308,7 @@ impl Session {
         &mut self,
         node: impl Into<NodeKey>,
     ) -> Result<InstrumentHandle, crate::Error> {
-        self.instrument_at(node.into(), [0, 1])
+        self.instrument_at(Key::new(node.into()), [0, 1])
     }
 
     /// Hosts a loaded plugin as an instrument. Its format says what it is only
@@ -278,18 +343,23 @@ impl Session {
     /// [`RemoveError::NoSuchNode`] naming the first of the queue and the strip
     /// that is not in the graph (removed by its key). The other is removed all
     /// the same.
-    pub fn remove_instrument(&mut self, handle: InstrumentHandle) -> Result<(), RemoveError> {
+    pub fn remove_instrument<N: ?Sized>(
+        &mut self,
+        handle: InstrumentHandle<N>,
+    ) -> Result<(), RemoveError> {
         // The feed into the instrument goes with the queue (`Graph::remove`).
         let queue = self.remove(handle.queue.erase());
         let strip = self.remove(handle.strip.erase());
         queue.and(strip)
     }
 
-    fn instrument_at(
+    fn instrument_at<N: ?Sized>(
         &mut self,
-        node: NodeKey,
+        node: Key<N>,
         main: [u16; 2],
-    ) -> Result<InstrumentHandle, crate::Error> {
+    ) -> Result<InstrumentHandle<N>, crate::Error> {
+        let key = node;
+        let node = node.erase();
         let why = |why| crate::Error::NotInstrument { node, why };
         if !self.graph_ref().contains(node) {
             return Err(why(NotInstrument::Missing));
@@ -323,7 +393,7 @@ impl Session {
         graph.connect(OutPort::new(node, usize::from(main[0])), strip.input(0))?;
         graph.connect(OutPort::new(node, usize::from(main[1])), strip.input(1))?;
         Ok(InstrumentHandle {
-            node,
+            node: key,
             main,
             strip,
             queue,

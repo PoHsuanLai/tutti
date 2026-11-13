@@ -19,26 +19,30 @@ use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, ChannelTimes, CompressorControls, CompressorNode,
     DelayControls, DelayFamily, DelayNode, DistortionNode, EqBandNode, GateControls, GateNode,
-    InterpolationMode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterControls,
+    InterpolationMode, KeySource, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterControls,
     LimiterNode, MaxDelay, ModDelayNode, PhaserControls, PhaserNode, ShapeKind, Stages,
     SvfControls, SvfFilterNode, SvfType,
 };
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
-    PhaseIncrement, Q, Resonance, Seconds, UnitParam,
+    Q, Resonance, Seconds, UnitParam,
 };
 
 #[test]
 fn compressor() {
     IsolateRow::new("CompressorNode (stereo)", || {
-        CompressorNode::stereo(CompressorControls {
-            threshold: Db(-20.0),
-            knee: Db(3.0),
-            ratio: CompressionRatio::new(4.0),
-            attack: Seconds(0.005),
-            release: Seconds(0.05),
-            makeup: Db(2.0),
-        })
+        CompressorNode::new(
+            BusTopology::STEREO,
+            KeySource::Sidechain,
+            CompressorControls {
+                threshold: Db(-20.0),
+                knee: Db(3.0),
+                ratio: CompressionRatio::new(4.0),
+                attack: Seconds(0.005),
+                release: Seconds(0.05),
+                makeup: Db(2.0),
+            },
+        )
     })
     .control("threshold", |c| {
         assert!(c.param_set().set(UnitParam::Threshold, -30.0));
@@ -64,13 +68,17 @@ fn compressor() {
 #[test]
 fn gate() {
     IsolateRow::new("GateNode (stereo)", || {
-        GateNode::stereo(GateControls {
-            threshold: Db(-15.0),
-            attack: Seconds(0.001),
-            hold: Seconds(0.005),
-            release: Seconds(0.02),
-            range: Db(-40.0),
-        })
+        GateNode::new(
+            BusTopology::STEREO,
+            KeySource::Sidechain,
+            GateControls {
+                threshold: Db(-15.0),
+                attack: Seconds(0.001),
+                hold: Seconds(0.005),
+                release: Seconds(0.02),
+                range: Db(-40.0),
+            },
+        )
     })
     .control("threshold", |g| {
         assert!(g.param_set().set(UnitParam::Threshold, -35.0));
@@ -166,12 +174,13 @@ fn distortion() {
 fn lfo() {
     IsolateRow::new("LfoNode (sine, 3 Hz)", || {
         LfoNode::new(LfoShape::Sine)
-            .with_frequency(Hz(3.0))
+            .with_rate(Hz(3.0))
             .with_depth(Depth::clamped(0.8))
     })
-    .control("frequency", |l| l.set_frequency(Hz(5.0)))
-    .control("depth", |l| l.set_depth(Depth::clamped(0.3)))
-    .control("phase offset", |l| l.set_phase_offset(PhaseIncrement(0.25)))
+    .control("rate", |l| assert!(l.param_set().set(UnitParam::Rate, 5.0)))
+    .control("depth", |l| {
+        assert!(l.param_set().set(UnitParam::Depth, 0.3))
+    })
     .check();
 }
 

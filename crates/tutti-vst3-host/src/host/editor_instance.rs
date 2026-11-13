@@ -24,7 +24,7 @@ fn editor_error(reason: String) -> PluginError {
 ///
 /// It is what [`OutOfProcess::load_editor`](tutti_plugin_types::OutOfProcess)
 /// builds: `Vst3Loaded` is hostable in this process and over IPC (the twin of
-/// the refusal on `Vst2Loaded`, design 021 §3.4):
+/// the refusal on `Vst2Loaded`):
 ///
 /// ```
 /// use tutti_plugin_types::{InProcess, OutOfProcess};
@@ -59,7 +59,7 @@ impl Vst3Editor {
     /// `kParamValuesChanged` (or `notifications_overflowed`) from this editor
     /// instance is dropped, so a preset loaded inside the plugin's own UI does
     /// not refresh the host's parameter values (its state still reaches the
-    /// audio instance on close, design 021 Q8). Progress / unit notifications
+    /// audio instance on close). Progress / unit notifications
     /// are not surfaced either.
     fn drain(&mut self, main: &MainThread) {
         use crate::{ParameterEditEvent, PluginNotification};

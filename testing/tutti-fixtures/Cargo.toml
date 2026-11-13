@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Where the test suites find repo assets, the reference plugin cdylibs and the plugin-server binary, and a SoundFont built in memory"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+repository = "https://github.com/PoHsuanLai/tutti"
 publish = false
 
 # A dev-dependency of the crates whose tests read a repo asset or load a
@@ -34,9 +34,14 @@ serde_json = "1"
 # meet.
 tutti-plugin-types = { path = "../../crates/tutti-plugin-types", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
+# `vst3-cpp`: the C++ twin of the shared plugin, built by cargo in the same
+# invocation; its `links` key hands the bundle directory to `build.rs`.
+tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp", optional = true }
 
 [features]
 plugin = ["dep:tutti-plugin-types", "dep:raw-window-handle"]
+# `vst3_cpp_module` and `bundle_of`: where the C++ twin is.
+vst3-cpp = ["plugin", "dep:tutti-shared-plugin-vst3-cpp"]
 
 [dev-dependencies]
 # The lock test's private directory.

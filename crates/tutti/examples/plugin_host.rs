@@ -19,7 +19,7 @@
 //! it is a [`PluginEvent`] in `update()`'s events. The host's thread claims the
 //! main thread and calls `session.main(main).update()`, which services the
 //! editors it opened (`ui.plugin(node)?.editor().open(&window, scale)`, with a
-//! window of a winit or Bevy app; this host has none) and raises
+//! window of a winit app; this host has none) and raises
 //! `PluginChange::EditorWantsSize` when one asks for a size.
 //!
 //! It is not run in CI (it needs a plugin directory and the two binaries
@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         session
             .midi()
-            .play_clip(node, [note(0.0, true), note(2.0, false)])?;
+            .play_clip(node, Beat(0.0), [note(0.0, true), note(2.0, false)])?;
     }
 
     // 6. Set a parameter: the first one it lists, to the middle of its range.

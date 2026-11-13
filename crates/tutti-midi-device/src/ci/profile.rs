@@ -22,7 +22,6 @@
 //! per list, the most two 7-bit bytes can count, so a Reply it builds is always
 //! writable.
 
-use std::fmt;
 use std::vec::Vec;
 
 use tutti_ump::{ManufacturerId, U7, U14};
@@ -244,24 +243,12 @@ pub enum ProfileState {
 }
 
 /// A list the wire cannot hold: a count is 14 bits (§7.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{} Profile Ids do not fit a 14-bit count (at most {})", .len, ProfileLists::MAX_LEN)]
 pub struct ListTooLong {
     /// The length refused.
     pub len: usize,
 }
-
-impl fmt::Display for ListTooLong {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} Profile Ids do not fit a 14-bit count (at most {})",
-            self.len,
-            ProfileLists::MAX_LEN
-        )
-    }
-}
-
-impl std::error::Error for ListTooLong {}
 
 /// The two lists of a Reply to Profile Inquiry (§7.3): the Profiles supported and
 /// currently enabled, and those supported but currently disabled. Each holds at
@@ -349,24 +336,15 @@ impl InquiryTarget {
 }
 
 /// Why bytes are not Profile data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProfileDataError {
     /// A byte has its top bit set: System Exclusive carries 7-bit data.
+    #[error("a data byte has its top bit set")]
     NotSevenBit,
     /// More bytes than the message's length field holds.
+    #[error("more data than the length field holds")]
     TooLong,
 }
-
-impl fmt::Display for ProfileDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::NotSevenBit => "a data byte has its top bit set",
-            Self::TooLong => "more data than the length field holds",
-        })
-    }
-}
-
-impl std::error::Error for ProfileDataError {}
 
 macro_rules! seven_bit_data {
     ($(#[$doc:meta])* $name:ident, $max:expr) => {

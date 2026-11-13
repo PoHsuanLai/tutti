@@ -7,11 +7,6 @@ use crate::types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig, AudioPortInfo,
     NoteDialect, NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
 };
-use tutti_plugin_types::MainThread;
-use tutti_types::ChannelTopology;
-// Audio-port *reconfiguration* is speculative (gated); the type it consumes.
-#[cfg(feature = "clap-extras")]
-use crate::types::AudioPortConfigRequest;
 use clap_sys::ext::ambisonic::{
     CLAP_AMBISONIC_NORMALIZATION_MAXN, CLAP_AMBISONIC_NORMALIZATION_N2D,
     CLAP_AMBISONIC_NORMALIZATION_N3D, CLAP_AMBISONIC_NORMALIZATION_SN2D,
@@ -23,8 +18,8 @@ use clap_sys::ext::note_ports::{
     CLAP_NOTE_DIALECT_MIDI2,
 };
 use clap_sys::ext::voice_info::CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
-#[cfg(feature = "clap-extras")]
-use tutti_clap_ffi::PortConfigRequest;
+use tutti_plugin_types::MainThread;
+use tutti_types::ChannelTopology;
 
 impl ClapLoaded {
     /// Number of input or output audio ports exposed by the plugin.
@@ -263,80 +258,6 @@ impl ClapLoaded {
         })
     }
 
-    /// Asks the plugin whether it could apply a set of port-configuration
-    /// requests without actually applying them. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn can_apply_audio_port_configuration(
-        &self,
-        main: &MainThread,
-        requests: &[AudioPortConfigRequest],
-    ) -> bool {
-        self.plugin
-            .can_apply_audio_port_configuration(main, &port_config_requests(requests))
-            .unwrap_or(false)
-    }
-
-    /// Applies a set of port-configuration requests via
-    /// `CLAP_EXT_CONFIGURABLE_AUDIO_PORTS`. Returns success. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn apply_audio_port_configuration(
-        &mut self,
-        main: &MainThread,
-        requests: &[AudioPortConfigRequest],
-    ) -> bool {
-        self.plugin
-            .apply_audio_port_configuration(main, &port_config_requests(requests))
-            .unwrap_or(false)
-    }
-
-    /// Whether the plugin supports activating/deactivating ports while
-    /// processing is running. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn can_activate_audio_port_while_processing(&self, main: &MainThread) -> bool {
-        self.plugin.can_activate_audio_port_while_processing(main)
-    }
-
-    /// Activates or deactivates a single audio port.
-    /// `sample_size` is the bit depth (32 or 64). Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn set_audio_port_active(
-        &mut self,
-        main: &MainThread,
-        is_input: bool,
-        port_index: u32,
-        is_active: bool,
-        sample_size: u32,
-    ) -> bool {
-        self.plugin
-            .set_audio_port_active(main, is_input, port_index, is_active, sample_size)
-            .unwrap_or(false)
-    }
-
-    /// Asks the plugin to add a new port via the draft
-    /// `CLAP_EXT_EXTENSIBLE_AUDIO_PORTS`. Returns whether the plugin added it.
-    /// Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn add_audio_port(
-        &mut self,
-        main: &MainThread,
-        is_input: bool,
-        channel_count: u32,
-        port_type: Option<&str>,
-    ) -> bool {
-        self.plugin
-            .add_audio_port(main, is_input, channel_count, port_type)
-            .unwrap_or(false)
-    }
-
-    /// Counterpart to [`Self::add_audio_port`]. Returns whether the plugin
-    /// removed the port. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn remove_audio_port(&mut self, main: &MainThread, is_input: bool, index: u32) -> bool {
-        self.plugin
-            .remove_audio_port(main, is_input, index)
-            .unwrap_or(false)
-    }
-
     /// Asks whether the plugin can process the given ambisonic ordering +
     /// normalization. Returns false when `CLAP_EXT_AMBISONIC` is unsupported.
     #[must_use]
@@ -476,18 +397,6 @@ fn audio_port_info_from_ffi(info: &tutti_clap_ffi::AudioPortInfo) -> Option<Audi
         flags: info.flags,
         in_place_pair_id: info.in_place_pair,
     })
-}
-
-#[cfg(feature = "clap-extras")]
-fn port_config_requests(requests: &[AudioPortConfigRequest]) -> Vec<PortConfigRequest> {
-    requests
-        .iter()
-        .map(|r| PortConfigRequest {
-            is_input: r.is_input,
-            port_index: r.port_index,
-            channel_count: r.channel_count,
-        })
-        .collect()
 }
 
 #[cfg(test)]

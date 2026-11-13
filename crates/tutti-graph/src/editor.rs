@@ -54,7 +54,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Sink, Source};
-use crate::{EventTapId, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
+use crate::{
+    EventCapacity, EventTapId, EventTapSource, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign,
+    TapId, TapSpec,
+};
 use crate::{MAX_NODE_LATENCY, MAX_NODE_TAIL};
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::{Latency, Samples, Tail};
@@ -407,6 +410,15 @@ pub enum MissingSource {
         /// The graph's input width.
         width: usize,
     },
+    /// The node has no such event input port.
+    EventInPort {
+        /// The node.
+        node: NodeKey,
+        /// The port asked for.
+        port: u16,
+        /// The node's event input width.
+        width: usize,
+    },
     /// The node has no such event output port.
     EventPort {
         /// The node.
@@ -428,6 +440,11 @@ impl std::fmt::Display for MissingSource {
             Self::Global { channel, width } => {
                 write!(f, "no global input {channel} (the graph has {width})")
             }
+            Self::EventInPort { node, port, width } => write!(
+                f,
+                "node {} has no event input {port} (it has {width})",
+                node.0
+            ),
             Self::EventPort { node, port, width } => write!(
                 f,
                 "node {} has no event output {port} (it has {width})",
@@ -813,13 +830,19 @@ impl Editor {
         gone.len()
     }
 
-    /// Declares a tap on one event output (`source`) and returns its reader.
+    /// Declares a tap on one event port (`source`: an [`EventOut`] or an
+    /// [`EventIn`], or an [`EventTapSource`]) and returns its reader.
     /// It takes effect at the next [`commit`](Self::commit), which compiles
     /// the tap's op and hands the executor its producer; until then the
     /// reader sees nothing. `capacity` is a count of events: a
     /// non-note-off is refused once that many are held, a note-off is kept up
     /// to [`note_off_room`](crate::note_off_room) of it, and each refusal is
     /// counted ([`EventTapReader::take_lost`]).
+    ///
+    /// A tap of an output copies what the port wrote. A tap of an input copies
+    /// what its node reads there: the node's sources merged in the order the
+    /// node is handed them, after their own latency delays. (An aligned tap reads an input whose only
+    /// source is a feedback edge undelayed.)
     ///
     /// What the reader gets is the MIDI events the port carries, each with the
     /// frame it was due on ([`TapEvent`](crate::TapEvent)); ramps, segments,
@@ -843,28 +866,35 @@ impl Editor {
     ///
     /// # Errors
     ///
-    /// [`MissingSource::Node`] or [`MissingSource::EventPort`].
+    /// [`MissingSource::Node`], [`MissingSource::EventPort`] or
+    /// [`MissingSource::EventInPort`].
     pub fn open_event_tap(
         &mut self,
         id: EventTapId,
-        source: EventOut,
+        source: impl Into<EventTapSource>,
         align: TapAlign,
-        capacity: usize,
+        capacity: EventCapacity,
     ) -> Result<EventTapReader, MissingSource> {
+        let source = source.into();
         let t = &self.spec.topology;
-        if !t.nodes.contains_key(&source.node) {
-            return Err(MissingSource::Node { node: source.node });
+        let node = source.node();
+        if !t.nodes.contains_key(&node) {
+            return Err(MissingSource::Node { node });
         }
-        let width = self
-            .shapes
-            .get(&source.node)
-            .map_or(0, |s| usize::from(s.event_out));
-        if usize::from(source.port) >= width {
-            return Err(MissingSource::EventPort {
-                node: source.node,
-                port: source.port,
-                width,
-            });
+        let shape = self.shapes.get(&node);
+        match source {
+            EventTapSource::Out(EventOut { port, .. }) => {
+                let width = shape.map_or(0, |s| usize::from(s.event_out));
+                if usize::from(port) >= width {
+                    return Err(MissingSource::EventPort { node, port, width });
+                }
+            }
+            EventTapSource::In(EventIn { port, .. }) => {
+                let width = shape.map_or(0, |s| usize::from(s.event_in));
+                if usize::from(port) >= width {
+                    return Err(MissingSource::EventInPort { node, port, width });
+                }
+            }
         }
         let (reader, writer) = EventTapReader::pair(id, capacity, self.prepare.sample_rate());
         self.pending_event_taps.retain(|(k, _)| *k != id);
@@ -1226,23 +1256,6 @@ impl Editor {
         Ok(())
     }
 
-    /// As [`connect_bus`](Self::connect_bus), channel by index
-    /// ([`BusFold::ByIndex`]): sink channel `c` is source channel `c`, a wider
-    /// sink zero-filled, whatever either bus names. For an edge whose author
-    /// knows the channels line up, never a fallback.
-    ///
-    /// # Errors
-    ///
-    /// As [`connect_bus`](Self::connect_bus); the fold refuses a sink
-    /// narrower than the source.
-    pub fn connect_bus_by_index(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
-        self.spec
-            .check_bus_edge(&self.shapes, from, to, BusFold::ByIndex)?;
-        self.touch();
-        self.spec.connect_bus_by_index(from, to);
-        Ok(())
-    }
-
     /// Removes the bus edge `from -> to`: its lanes and their weights go with
     /// it at the next commit, and the author's own edges and gains stay.
     /// Returns whether it was declared.
@@ -1268,20 +1281,6 @@ impl Editor {
             .check_root_bus_edge(&self.shapes, from, BusFold::Speakers)?;
         self.touch();
         self.spec.connect_bus_to_root(from);
-        Ok(())
-    }
-
-    /// As [`connect_bus_to_root`](Self::connect_bus_to_root), channel by
-    /// index ([`BusFold::ByIndex`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`connect_bus_to_root`](Self::connect_bus_to_root).
-    pub fn connect_bus_to_root_by_index(&mut self, from: BusSource) -> Result<(), BusError> {
-        self.spec
-            .check_root_bus_edge(&self.shapes, from, BusFold::ByIndex)?;
-        self.touch();
-        self.spec.connect_bus_to_root_by_index(from);
         Ok(())
     }
 
@@ -2500,7 +2499,7 @@ impl Editor {
             }
             // And an event tap, which then reads nothing.
             for spec in t.event_taps.values_mut() {
-                if spec.source.is_some_and(|s| s.node == key) {
+                if spec.source.is_some_and(|s| s.node() == key) {
                     spec.source = None;
                 }
             }

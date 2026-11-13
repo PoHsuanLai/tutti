@@ -71,7 +71,7 @@
 //!
 //! # Recovery
 //!
-//! With a [`RecoveryPolicy`] (the default; `SessionBuilder::plugin_recovery`),
+//! With a [`RecoveryPolicy`](crate::RecoveryPolicy) (the default; `SessionBuilder::plugin_recovery`),
 //! an out-of-process plugin that dies, or hangs (stops answering blocks), is
 //! reloaded at its own node instead of removed. The policy is the pure
 //! [`Recovery`]; this module carries out what it decides:
@@ -127,11 +127,10 @@ use tutti_types::{SampleRate, Samples, Seconds};
 use crate::plugin_diagnostics::Figures;
 use crate::{
     Diagnostics, GiveUp, JobFailed, Key, Params, PluginBuses, PortCounts, Recovery, RecoveryAction,
-    RecoveryEvent, RecoveryFailure, RecoveryPolicy, ReloadCause, Session, SessionEvent,
+    RecoveryEvent, RecoveryFailure, ReloadCause, Session, SessionEvent,
 };
 
-/// How often a healthy plugin's state is captured, by default: 8 s, the
-/// 512 frames at 60 Hz `bevy-tutti` counted before (design 015 §4.4).
+/// How often a healthy plugin's state is captured, by default: 8 s (design 015 §4.4).
 /// [`SessionBuilder::snapshot_interval`](crate::SessionBuilder::snapshot_interval)
 /// sets another.
 pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(8);
@@ -405,7 +404,7 @@ pub enum StateRestore {
     /// defaults.
     NoSnapshot,
     /// The snapshot was left out: the plugin died within
-    /// [`RecoveryPolicy::state_probation`] of loading it last time (or while
+    /// [`RecoveryPolicy::state_probation`](crate::RecoveryPolicy::state_probation) of loading it last time (or while
     /// loading it), so it is taken for the cause. The replacement loads at
     /// its defaults, and the snapshot is gone from the record.
     Withheld {
@@ -597,7 +596,7 @@ pub enum PluginChange {
         cause: PluginFailure,
     },
     /// A hosted plugin died or hung and recovery is on
-    /// ([`RecoveryPolicy`]): its node stays in the
+    /// ([`RecoveryPolicy`](crate::RecoveryPolicy)): its node stays in the
     /// graph, silent, and a replacement loads after `delay`. Reported once per
     /// attempt.
     Reloading {
@@ -1420,25 +1419,6 @@ impl Session {
         }
     }
 
-    /// What a hosted plugin's death or hang does from now on
-    /// ([`SessionBuilder::plugin_recovery`](crate::SessionBuilder::plugin_recovery),
-    /// which says which plugins it covers: out-of-process ones loaded through
-    /// [`add_plugin`](Self::add_plugin), not in-process VST2 or
-    /// `insert_plugin`/`host_plugin`).
-    /// Plugins already hosted start over with the new policy (their failure
-    /// history is dropped); a plugin already being replaced finishes that
-    /// first. `None` removes a dead plugin's node.
-    pub fn set_plugin_recovery(&mut self, policy: Option<RecoveryPolicy>) {
-        self.recovery = policy;
-        for hosted in self.graph.plugins.values_mut() {
-            if hosted.origin.is_none() || matches!(hosted.status, PluginLiveness::Recovering { .. })
-            {
-                continue;
-            }
-            hosted.recovery = policy.map(Recovery::new);
-        }
-    }
-
     /// Lands a finished reload, at the time of the last `Phase::Plugins`: the
     /// replacement takes the dead plugin's node, with its wiring
     /// (`Graph::replace_plugin`), its snapshot and failure history. What
@@ -2108,7 +2088,7 @@ mod tests {
     //! `tests/plugin/plugin.rs`.
 
     use super::*;
-    use crate::Job;
+    use crate::{Job, RecoveryPolicy};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tutti_plugin_types::{Normalized, ParamId, ParameterInfo};
 

@@ -51,7 +51,7 @@ pub const NAME_GRACE: Duration = Duration::from_millis(100);
 pub const MAX_ATTEMPTS: u8 = 3;
 
 /// How a connection ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Ending {
     /// The steps ran: the Endpoint's active configuration is what its last
     /// Stream Configuration Notification reported, whether or not that is what

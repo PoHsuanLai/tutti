@@ -14,7 +14,7 @@
 //! - the sample-accuracy contract's param row drives index 1.
 //!
 //! The kind-and-index encoding itself is pinned in `tutti-types`
-//! (`unit_param.rs`); the session and Bevy sides in their own suites.
+//! (`unit_param.rs`); the session side in its own suites.
 
 use tutti_graph::testing as common;
 

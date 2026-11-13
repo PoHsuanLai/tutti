@@ -153,7 +153,7 @@ println!("{} bytes of preset state", preset.len());
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 if plugin.has_editor(&main) {
-    // Any winit, Bevy or other `raw-window-handle` window.
+    // Any winit or other `raw-window-handle` window.
     let handle = WindowHandle::from_window(window)?;
     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);
@@ -227,18 +227,6 @@ holds no `unsafe` of its own (`#![forbid(unsafe_code)]`).
 A parameter written to a [`ClapController`] does not call across: it is queued
 in an edit ring, and the Processor drains it at the head of its next block into
 `PARAM_VALUE` events ahead of the block's own automation.
-
-## Features
-
-`default = []`.
-
-- `clap-extras` — the less commonly needed part of the CLAP surface:
-  param-indication, remote controls, context menus, triggers, tuning, audio-port
-  reconfiguration, POSIX-fd polling, preset load, track info, transport
-  requests, and the plugin undo/redo and resource-directory extensions. Without
-  it those methods and types are not public. The core extensions (audio and
-  note ports, params, state, gui, latency, voice-info, render mode, note names)
-  are always available.
 
 ## Threading and real-time safety
 

@@ -11,7 +11,7 @@ use tutti_plugin_types::{
     ParameterChanges, PluginBus, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor,
     Reopen, SampleFormat, Samples, TransportChange, TransportInfo,
 };
-use tutti_plugin_types::{ParamEdit, RenderMode, Request};
+use tutti_plugin_types::{ParamEdit, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::spec::{self, Mode, Param};
@@ -505,7 +505,8 @@ pub fn transport_change_is_told_at_its_frame<F: Format>() {
 #[derive(Debug, PartialEq)]
 struct Surfaced {
     has_editor: bool,
-    render_mode_live: bool,
+    render_mode: tutti_plugin_types::RenderModeSupport,
+    reports_render_mode: bool,
     requests: Vec<Request>,
     edits: Vec<ParamEdit>,
 }
@@ -536,16 +537,21 @@ fn surfaced<F: Format>(c: &mut dyn Control) -> Surfaced {
     c.take_reported_edits(&main, &mut edits);
     Surfaced {
         has_editor: c.has_editor(&main),
-        render_mode_live: c.set_render_mode(&main, RenderMode::Offline),
+        render_mode: c.render_mode_support(&main),
+        reports_render_mode: c
+            .wiring(&main)
+            .features
+            .contains(tutti_plugin_types::Features::RENDER_MODE),
         requests,
         edits,
     }
 }
 
-/// The control surface a shell reads through (`has_editor`, `set_render_mode`,
+/// The control surface a shell reads through (`has_editor`, `render_mode_support`
+/// and the `RENDER_MODE` feature that reports it,
 /// `take_requests`, `take_reported_edits`) answers the same in a loaded plugin
 /// and in an active one, and each answer is the spec's row for the format. A
-/// format that has no editor, no live render mode, or reports nothing outside a
+/// format that has no editor, no render mode, or reports nothing outside a
 /// block answers so in both states.
 pub fn the_control_surface_answers_alike_loaded_and_active<F: Format>() {
     let spec = F::SURFACE;
@@ -559,7 +565,8 @@ pub fn the_control_surface_answers_alike_loaded_and_active<F: Format>() {
 
     let expected = Surfaced {
         has_editor: spec.has_editor,
-        render_mode_live: spec.render_mode_live,
+        render_mode: spec.render_mode,
+        reports_render_mode: spec.render_mode != tutti_plugin_types::RenderModeSupport::Unsupported,
         requests: spec.request.into_iter().collect(),
         edits: spec.edits.iter().map(|e| e.expected()).collect(),
     };

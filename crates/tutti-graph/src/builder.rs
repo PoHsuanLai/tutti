@@ -466,19 +466,6 @@ impl GraphBuilder {
         self
     }
 
-    /// Removes `source` from the sources of global output `channel`; the
-    /// others stay.
-    ///
-    /// # Panics
-    ///
-    /// If `channel` or `source` is out of range.
-    pub fn disconnect_output_from(&mut self, channel: usize, source: Source) -> &mut Self {
-        self.check_channel(channel);
-        let source = self.check_source(source);
-        self.spec.topology.disconnect_output(channel, source);
-        self
-    }
-
     fn check_channel(&self, channel: usize) {
         let n = self.outputs();
         assert!(
@@ -499,11 +486,6 @@ impl GraphBuilder {
             source => vec![source],
         };
         self
-    }
-
-    /// Feeds global output `output` straight from global input `input`.
-    pub fn pass_through(&mut self, input: usize, output: usize) -> &mut Self {
-        self.set_output(output, Source::Global(input as u16))
     }
 
     /// Feeds every input of `to` from the outputs of `from`, in order. The
@@ -892,22 +874,6 @@ impl Renderer {
             .expect("a graph with no global outputs has nothing to render into")
             .len();
         self.run(frames, None, output);
-    }
-
-    /// Renders `input` into `output`, planar. The frame count is the
-    /// channels' length.
-    ///
-    /// # Panics
-    ///
-    /// If either side has the wrong channel count, the channels are not all
-    /// one length, or there are no channels on either side.
-    pub fn render_input_into(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        let frames = input
-            .first()
-            .map(|c| c.len())
-            .or_else(|| output.first().map(|c| c.len()))
-            .expect("no channels to count frames by");
-        self.run(frames, Some(input), output);
     }
 
     /// Render `frames` in blocks, reading `input` (silence when `None`).

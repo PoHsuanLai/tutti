@@ -20,7 +20,7 @@ use tutti_graph::{
     Offset, Prepare, Shape, Status, TransportChanges, TransportPosition, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
-use tutti_types::{Beat, Bpm, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Rpn, U7, U14, Voice1, Voice2};
 
@@ -255,6 +255,18 @@ fn a_beat_that_is_not_finite_builds_no_event() {
     }
     let good = TimedMidiEvent::new(Beat(1.5), on(61)).expect("a finite beat");
     assert_eq!((good.beat(), good.event()), (Beat(1.5), on(61)));
+}
+
+/// **A shifted event is the same packet at the moved beat**, and a shift that
+/// leaves the finite beats (an overflow) builds no event.
+#[test]
+fn a_shifted_event_moves_its_beat_and_refuses_a_beat_that_is_not_finite() {
+    let e = TimedMidiEvent::new(Beat(1.5), on(61)).unwrap();
+    let moved = e.shifted(BeatDuration(2.0)).expect("finite");
+    assert_eq!((moved.beat(), moved.event()), (Beat(3.5), on(61)));
+    assert_eq!(e.shifted(BeatDuration(-1.5)).unwrap().beat(), Beat(0.0));
+    let huge = TimedMidiEvent::new(Beat(f64::MAX), on(61)).unwrap();
+    assert_eq!(huge.shifted(BeatDuration(f64::MAX)), None);
 }
 
 /// **Note-offs the port refuses go out in the blocks after, until none is

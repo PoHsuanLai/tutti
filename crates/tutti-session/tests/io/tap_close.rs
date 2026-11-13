@@ -1,6 +1,5 @@
 //! A tap opened and closed on a running detached session.
 //!
-//! The session half of `bevy-tutti`'s `graph_reconcile` `graph_tap` module.
 //! `engine.rs` covers a tap fed by a render
 //! (`a_detached_render_feeds_a_tap`, `an_offline_render_feeds_an_output_tap`)
 //! and one closed by its reader's drop

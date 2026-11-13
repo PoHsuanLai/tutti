@@ -1,13 +1,13 @@
 //! An alsa-lib failure: the call and its code.
 
 use std::ffi::CStr;
-use std::fmt;
 
 /// An alsa-lib call that returned a negative code.
 ///
 /// ALSA reports failure as a negated `errno`, so the sign carries the meaning
 /// and the magnitude is the code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("ALSA error: {} ({})", .operation, .code)]
 pub struct Error {
     /// The alsa-lib function that failed, as a static label.
     pub operation: &'static str,
@@ -25,14 +25,6 @@ impl Error {
         message(self.code)
     }
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ALSA error: {} ({})", self.operation, self.code)
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// `snd_strerror` as an owned string.
 pub(crate) fn message(code: i32) -> String {

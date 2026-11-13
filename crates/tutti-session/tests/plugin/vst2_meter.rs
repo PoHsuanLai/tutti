@@ -4,9 +4,6 @@
 //! and the plugin's `audioMasterGetTime` answers in the project's 7/8, read
 //! back out of the reference VST2 probe.
 //!
-//! This is the session half of `bevy-tutti`'s `plugin_vst2_meter`, moved here
-//! when the adapter was parked. What stayed with the adapter is entity-shaped:
-//! the `PluginShadow` and the `PluginMeterBound` marker.
 
 use std::sync::Arc;
 use tutti_session::Root;

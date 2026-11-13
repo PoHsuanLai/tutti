@@ -1,4 +1,4 @@
-//! [`Modulation`]: the reconcile step (design doc 014 §8.2), Bevy-free.
+//! [`Modulation`]: the reconcile step (design doc 014 §8.2).
 //!
 //! A host declares sources, routes and targets ([`Declarations`]); this
 //! compiles them ([`tutti_modulation::compile`]) and applies the difference to an
@@ -340,7 +340,7 @@ struct SourcePlan {
 }
 
 /// The modulation reconciler (doc 014 §8.2): declarations in, lanes,
-/// signal-source nodes and event edges in an [`Editor`] out, Bevy-free.
+/// signal-source nodes and event edges in an [`Editor`] out.
 ///
 /// Each [`apply`](Self::apply) compiles against the previous compile (so
 /// sources keep their ids and rate edits are dated), then **diffs per

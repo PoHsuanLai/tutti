@@ -1,5 +1,5 @@
 /// Whether a hold coming up lets the note go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[must_use = "a note that is `Now` released must be released"]
 pub enum Release {
     /// Nothing holds the note any more: release it now.

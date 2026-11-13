@@ -39,7 +39,7 @@
 //!   The multiband compressor is a family too ([`MultibandFamily`], run by
 //!   [`MultibandRecurrence`]): a crossover tree per channel and the compressor's frame step per
 //!   band, each band's makeup, bypass and solo gliding over [`GAIN_GLIDE`].
-//! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
+//! - **Reverb** (`reverb/`): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
 //!   families over it, [`FreeverbFamily`] (run by [`FreeverbRecurrence`]) and [`FdnFamily`]

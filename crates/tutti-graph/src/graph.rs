@@ -41,14 +41,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::latency::{ChannelFeed, Feed, LatencyGraph, PortFeed};
-use crate::spec::EventOut;
+use crate::spec::{EventIn, EventOut};
 use crate::tail::TailGraph;
 use tutti_types::ChannelLayout;
 use tutti_types::{Samples, Tail};
 
 /// A stable identity for a node, chosen by the **author** of the topology.
 ///
-/// A `NodeKey` is supplied from outside (a Bevy `Entity`'s bits, a document
+/// A `NodeKey` is supplied from outside (a document
 /// node id, a test's literal), so it stays the same across any number of
 /// recompiles and across a crossfade that replaces the node: a handle a caller
 /// stored never goes stale. The runtime's own id is derived from it while
@@ -201,10 +201,6 @@ pub enum Edge {
 pub enum ParamValue {
     /// A continuous value, in the parameter's own unit.
     Scalar(f32),
-    /// A switch.
-    Bool(bool),
-    /// A choice from an unassigned list.
-    Index(u32),
 }
 
 // `PartialEq` and `Hash` are both hand-written over the same bit-pattern key, so
@@ -239,8 +235,6 @@ impl ParamValue {
     fn key(&self) -> (u8, u64) {
         match *self {
             ParamValue::Scalar(v) => (0, v.to_bits() as u64),
-            ParamValue::Bool(b) => (1, b as u64),
-            ParamValue::Index(i) => (2, i as u64),
         }
     }
 }
@@ -460,17 +454,53 @@ pub enum TapAlign {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventTapId(pub u32);
 
-/// "Tap this event output": one port of any node, copied out with the frame
-/// each event was due on.
+/// The event port an event tap copies: an output, or an input.
+///
+/// An [`EventOut`] and an [`EventIn`] both convert into it, so one open call
+/// takes either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EventTapSource {
+    /// An event output: what the port wrote.
+    Out(EventOut),
+    /// An event input: what the node reads there, every source merged in the
+    /// order the node is handed them.
+    In(EventIn),
+}
+
+impl EventTapSource {
+    /// The node whose port this is.
+    #[must_use]
+    pub const fn node(self) -> NodeKey {
+        match self {
+            Self::Out(p) => p.node,
+            Self::In(p) => p.node,
+        }
+    }
+}
+
+impl From<EventOut> for EventTapSource {
+    fn from(port: EventOut) -> Self {
+        Self::Out(port)
+    }
+}
+
+impl From<EventIn> for EventTapSource {
+    fn from(port: EventIn) -> Self {
+        Self::In(port)
+    }
+}
+
+/// "Tap this event port": one output or input of any node, copied out with
+/// the frame each event was due on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EventTapSpec {
-    /// The event output copied. `None` once its node was removed (a key is
+    /// The event port copied. `None` once its node was removed (a key is
     /// the author's and can be inserted again, and a tap left naming it would
     /// read the new node, as [`TapSpec::Ports`] says of an audio lane): it
     /// reads nothing. A port that does not exist (a node replaced by one with
-    /// fewer event outputs) reads nothing too; it does not fail a commit.
+    /// fewer event ports) reads nothing too; it does not fail a commit.
     /// Opening an event tap refuses a port that does not exist at that moment.
-    pub source: Option<EventOut>,
+    pub source: Option<EventTapSource>,
     /// Where the copy sits in time.
     pub align: TapAlign,
 }

@@ -345,7 +345,7 @@ impl Control for AuLoaded {
                     .with_flags(ParamFlags::READ_ONLY, flags)
                     .with_group(group)
                     // The unit code is a closed enumeration, so it types the
-                    // parameter exactly (doc 023 section 5.2).
+                    // parameter exactly.
                     .with_measures(crate::unit_measures(p.unit_code))
                     .with_role(crate::unit_role(p.unit_code))
             })

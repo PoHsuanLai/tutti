@@ -109,8 +109,9 @@ fn a_missing_file_lands_open_failed_with_the_typed_error() {
 /// A session with no disk streamer refuses an open at the call.
 #[test]
 fn a_session_without_a_streamer_refuses_an_open_at_the_call() {
-    let mut s = session();
-    drop(s.take_disk_streamer());
+    let mut s = Session::builder()
+        .build_detached(SampleRate::of(RATE))
+        .expect("builds");
     let dir = tempfile::tempdir().expect("a temp dir");
     assert!(matches!(
         s.open_stream(dir.path().join("a.wav"), Placement::HEAD),

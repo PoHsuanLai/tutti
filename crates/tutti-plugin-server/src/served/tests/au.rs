@@ -451,6 +451,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
         edits: Vec::new(),
         events: Vec::new(),
         refused: false,
+        process_requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let prepare = Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(512)));
     assert!(

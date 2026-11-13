@@ -425,11 +425,11 @@ impl Source for MicIn {
     /// [`Ended`](Pull::Ended): a consumer that stopped there would end a
     /// recording within milliseconds of starting it.
     ///
-    /// [`Failed`](Pull::Failed) means the backend reported the device
-    /// disconnected (any other backend error may be transient and does not fail
-    /// the source) **and** the ring is empty. The fault flag is read before the
-    /// ring ([`StreamFaults::drain`]), so frames the callback pushed before the
-    /// disconnect are never hidden behind it.
+    /// [`Failed`](Pull::Failed) means the stream is gone (the backend reported
+    /// the device disconnected, or the capture callback panicked; any other
+    /// backend error may be transient and does not fail the source) **and** the
+    /// ring is empty. The fault flag is read before the ring, so frames the
+    /// callback pushed before the fault are never hidden behind it.
     fn pull(&mut self, out: &mut [f32]) -> Pull {
         let tap = &mut self.tap;
         match self.faults.drain(|| {

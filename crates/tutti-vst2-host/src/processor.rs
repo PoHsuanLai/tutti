@@ -383,6 +383,9 @@ impl Vst2Processor {
     }
 
     fn dispatch_midi(&mut self, midi: &[UmpAt], start: usize, len: usize, total: usize) {
+        // Marked live unless the host renders offline, as `audioMasterGetCurrentProcessLevel`
+        // answers.
+        self.midi.send.set_live(!self.host.is_offline());
         self.midi
             .send
             .send_piece(&mut self.render, midi, start, len, total);

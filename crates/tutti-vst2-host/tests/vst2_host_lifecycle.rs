@@ -938,6 +938,36 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
     assert_eq!(cap.events[0].midi_data[1], 62);
 }
 
+/// `kVstMidiEventIsRealtime` (bit 0 of the event's flags) is set on a block rendered in
+/// realtime and clear on a block rendered offline, and set again when the host goes back to
+/// realtime.
+#[test]
+fn the_realtime_flag_is_set_live_and_clear_offline() {
+    const IS_REALTIME: i32 = 1;
+    let _guard = lock_probe();
+    let mut instance = load(BLOCK);
+    let note = [(
+        Offset::new(10, Samples(64)).unwrap(),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+    )];
+    let flags = |instance: &mut Active| {
+        render_f32(instance, 64, &note, None, 0.0);
+        let cap = read_capture();
+        assert_eq!(cap.event_count, 1);
+        cap.events[0].flags
+    };
+
+    assert_eq!(flags(&mut instance) & IS_REALTIME, IS_REALTIME, "live");
+    instance.loaded().set_offline_render(true);
+    assert_eq!(flags(&mut instance) & IS_REALTIME, 0, "offline");
+    instance.loaded().set_offline_render(false);
+    assert_eq!(
+        flags(&mut instance) & IS_REALTIME,
+        IS_REALTIME,
+        "live again"
+    );
+}
+
 /// A later piece's transport snapshot is the block's advanced by the frames
 /// before it: the sample position and the musical position (while rolling).
 #[test]

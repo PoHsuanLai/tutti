@@ -570,9 +570,10 @@ impl Host for HostState {
     ///
     /// `No`, because the host does not do it: `supplyIdle`
     /// (`audioMasterIdle` is not routed to anything). Everything else is
-    /// `Maybe`, VST 2.4's "don't know": among them `sendVstMidiEventFlagIsRealtime`, since
-    /// the flag means an event is played live and not in playback, and the engine's events
-    /// carry no such distinction.
+    /// `Maybe`, VST 2.4's "don't know": among them `sendVstMidiEventFlagIsRealtime`. The host
+    /// marks the events of a realtime block `kVstMidiEventIsRealtime` and not those of an
+    /// offline render, but the flag means an event is played live and not in playback, and
+    /// the engine's events carry no such distinction.
     ///
     /// The strings and the reference set are JUCE's host `canDo` answers
     /// (`juce_VSTPluginFormat.cpp`), an open re-implementation of the

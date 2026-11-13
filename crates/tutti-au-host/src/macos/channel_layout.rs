@@ -31,8 +31,6 @@
 //! [`set_layout_tag`] (the width gate) and [`element_name`] (the retain-count
 //! leak).
 
-#![cfg(target_os = "macos")]
-
 use std::mem::size_of;
 use tutti_au_ffi::Element;
 use tutti_au_ffi::property::{AudioChannelLayoutProperty, ElementName, SupportedChannelLayoutTags};

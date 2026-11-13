@@ -8,8 +8,6 @@
 //! as callable from any thread and serializes property access, and each holds
 //! its own [`Unit`] handle so the instance outlives whichever drops last.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::Arc;
 
 use tutti_au_ffi::{

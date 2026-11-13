@@ -44,8 +44,8 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 /// excludes latency, and what the delay holds when the input stops comes out within it.
 /// The release shapes gain, and gain applied to silence is silence.
 ///
-/// The envelope starts at 0, so the first audio after a prepare or a reset fades in over
-/// about one release time.
+/// The first audio after a prepare or a reset is limited from its first sample: the
+/// envelope has no history then, and the first frame takes its target at once.
 ///
 /// # Controls
 ///
@@ -334,7 +334,7 @@ mod tests {
     /// on, at the new ceiling and not the old.
     #[test]
     fn a_ceiling_set_by_address_reaches_the_limiter() {
-        // A release of 5 ms: the envelope starts at 0, and settles within the warm-up.
+        // A release of 5 ms, which the warm-up outlasts.
         let mut lim = prepared_at(
             limiter_releasing(Db::new(-6.0), Db::new(-0.3), 0.005),
             RATE_44K,

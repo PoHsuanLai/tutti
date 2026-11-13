@@ -5,8 +5,6 @@
 //! `tutti-au-ffi`'s [`TransportState`](tutti_au_ffi::TransportState); this module is the property reads and
 //! writes around them.
 
-#![cfg(target_os = "macos")]
-
 use tutti_au_ffi::Unit;
 use tutti_au_ffi::property::{PresentationLatency, TailTime};
 use tutti_au_ffi::{Element, Scope};

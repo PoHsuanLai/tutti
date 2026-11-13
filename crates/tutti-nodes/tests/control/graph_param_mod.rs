@@ -52,6 +52,18 @@ fn noise(seed: u32) -> Vec<f32> {
     Noise::seeded(seed).take(FRAMES).map(|x| 0.8 * x).collect()
 }
 
+/// Bursts of [`noise`] (100 frames in every 2 400) over a quiet bed at a quarter of its
+/// level: what a limiter's release is heard on. On dense noise the gain is the minimum of
+/// a lookahead window that nearly always holds a peak, whatever the release; between
+/// bursts it is the release that brings the gain back up.
+fn bursts(seed: u32) -> Vec<f32> {
+    noise(seed)
+        .into_iter()
+        .enumerate()
+        .map(|(i, x)| if i % 2_400 < 100 { x } else { 0.25 * x })
+        .collect()
+}
+
 /// A delay `w` channels wide: 10 ms of line, a 0.3 ms time and half feedback.
 fn delay_of(w: usize) -> DelayNode {
     DelayNode::new(
@@ -112,7 +124,11 @@ fn drive(ed: &mut Editor, at: ParamIn, knob: Arc<AtomicF32>, layers: Vec<Layer>)
 /// the graph's, and — when `fed` — `param` driven to exactly `v` by a
 /// control lane whose knob is at `v`, whatever the node's own control.
 /// Renders `FRAMES` in 100-frame blocks (not a multiple of 64).
-fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
+fn render(
+    node: NodeParts<()>,
+    fed: Option<(UnitParam, f32)>,
+    input: fn(u32) -> Vec<f32>,
+) -> Vec<Vec<f32>> {
     let shape = node.node.shape();
     let (ins, outs) = (
         usize::from(shape.audio_in().count()),
@@ -139,7 +155,7 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
         };
         drive(r.editor_mut(), at, Arc::new(AtomicF32::new(v)), vec![]);
     }
-    let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
+    let input: Vec<Vec<f32>> = (0..ins).map(|c| input(c as u32 + 7)).collect();
     let refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
     r.render_input(&refs)
 }
@@ -222,6 +238,8 @@ struct Case {
     make: fn(usize, Option<f32>) -> NodeParts<()>,
     lo: f32,
     hi: f32,
+    /// The input every channel is fed, by its seed.
+    input: fn(u32) -> Vec<f32>,
 }
 
 fn cases() -> Vec<Case> {
@@ -293,6 +311,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 200.0,
             hi: 8_000.0,
+            input: noise,
         },
         Case {
             name: "svf q",
@@ -306,6 +325,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 0.5,
             hi: 8.0,
+            input: noise,
         },
         Case {
             name: "ladder cutoff",
@@ -319,6 +339,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 200.0,
             hi: 8_000.0,
+            input: noise,
         },
         Case {
             name: "ladder resonance",
@@ -332,6 +353,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 0.0,
             hi: 0.9,
+            input: noise,
         },
         Case {
             name: "ladder drive",
@@ -345,6 +367,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 1.0,
             hi: 8.0,
+            input: noise,
         },
         Case {
             name: "delay feedback",
@@ -358,6 +381,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 0.0,
             hi: 0.9,
+            input: noise,
         },
         Case {
             name: "delay time",
@@ -371,6 +395,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 0.0002,
             hi: 0.0008,
+            input: noise,
         },
         Case {
             name: "distortion drive",
@@ -388,6 +413,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 0.5,
             hi: 5.0,
+            input: noise,
         },
         Case {
             name: "compressor threshold",
@@ -401,6 +427,7 @@ fn cases() -> Vec<Case> {
             },
             lo: -40.0,
             hi: 0.0,
+            input: noise,
         },
         Case {
             name: "gate threshold",
@@ -415,6 +442,7 @@ fn cases() -> Vec<Case> {
             lo: -60.0,
             // Above the noise's peak: the gate stays shut.
             hi: 6.0,
+            input: noise,
         },
         Case {
             name: "limiter ceiling",
@@ -428,6 +456,7 @@ fn cases() -> Vec<Case> {
             },
             lo: -12.0,
             hi: -0.3,
+            input: noise,
         },
         Case {
             name: "limiter threshold",
@@ -441,6 +470,7 @@ fn cases() -> Vec<Case> {
             },
             lo: -20.0,
             hi: -1.0,
+            input: noise,
         },
         Case {
             name: "brickwall ceiling",
@@ -457,6 +487,7 @@ fn cases() -> Vec<Case> {
             },
             lo: -12.0,
             hi: 0.0,
+            input: noise,
         },
         Case {
             name: "strip volume",
@@ -472,6 +503,7 @@ fn cases() -> Vec<Case> {
             },
             lo: 0.2,
             hi: 0.9,
+            input: noise,
         },
         Case {
             name: "strip pan",
@@ -487,6 +519,7 @@ fn cases() -> Vec<Case> {
             },
             lo: -1.0,
             hi: 1.0,
+            input: noise,
         },
     ];
     // The block-rate params doc 014 §12.6 made ports: a route onto any of
@@ -556,6 +589,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: -12.0,
             hi: 12.0,
+            input: noise,
         },
         Case {
             name: "compressor ratio",
@@ -569,6 +603,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 1.5,
             hi: 20.0,
+            input: noise,
         },
         Case {
             name: "compressor attack",
@@ -582,6 +617,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.0005,
             hi: 0.05,
+            input: noise,
         },
         Case {
             name: "compressor release",
@@ -595,6 +631,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.005,
             hi: 0.5,
+            input: noise,
         },
         Case {
             name: "compressor makeup",
@@ -608,6 +645,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: -6.0,
             hi: 6.0,
+            input: noise,
         },
         Case {
             name: "gate attack",
@@ -621,6 +659,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.0005,
             hi: 0.05,
+            input: noise,
         },
         Case {
             name: "gate release",
@@ -634,13 +673,14 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.002,
             hi: 0.2,
+            input: noise,
         },
         Case {
             name: "limiter release",
             param: UnitParam::Release,
             make: |w, v| {
-                // Threshold and ceiling near the noise's peak: the limiter
-                // lets go between peaks, so its release is heard.
+                // Bursts over a quiet bed, the threshold between them: the
+                // limiter lets go between bursts, so its release is heard.
                 let n = LimiterNode::new(
                     BusTopology::assumed(
                         ChannelLayout::try_from(w).expect("a test width is small"),
@@ -648,8 +688,8 @@ fn block_rate_cases() -> Vec<Case> {
                     .expect("at most one bus wide"),
                     Lookahead::DEFAULT,
                     LimiterControls {
-                        threshold: Db::new(-3.0),
-                        ceiling: Db::new(-2.5),
+                        threshold: Db::new(-6.0),
+                        ceiling: Db::new(-6.0),
                         ..LimiterControls::DEFAULT
                     },
                 );
@@ -660,6 +700,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.005,
             hi: 0.5,
+            input: bursts,
         },
         Case {
             name: "chorus rate",
@@ -673,6 +714,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.5,
             hi: 5.0,
+            input: noise,
         },
         Case {
             name: "chorus depth",
@@ -686,6 +728,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.001,
             hi: 0.02,
+            input: noise,
         },
         Case {
             name: "chorus feedback",
@@ -699,6 +742,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.0,
             hi: 0.8,
+            input: noise,
         },
         Case {
             name: "flanger depth",
@@ -717,6 +761,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.0005,
             hi: 0.008,
+            input: noise,
         },
         Case {
             name: "phaser rate",
@@ -730,6 +775,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.5,
             hi: 5.0,
+            input: noise,
         },
         Case {
             name: "phaser depth",
@@ -743,6 +789,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.2,
             hi: 1.0,
+            input: noise,
         },
         Case {
             name: "phaser feedback",
@@ -756,6 +803,7 @@ fn block_rate_cases() -> Vec<Case> {
             },
             lo: 0.0,
             hi: 0.8,
+            input: noise,
         },
     ];
     cases
@@ -792,8 +840,8 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
         for case in cases() {
             let at = |v: f32| {
                 (
-                    render((case.make)(w, None), Some((case.param, v))),
-                    render((case.make)(w, Some(v)), None),
+                    render((case.make)(w, None), Some((case.param, v)), case.input),
+                    render((case.make)(w, Some(v)), None, case.input),
                 )
             };
             let (fed_lo, ctl_lo) = at(case.lo);
@@ -927,6 +975,7 @@ fn plain_distortion(d: f32) -> Vec<f32> {
             Drive::new(d),
         )),
         None,
+        noise,
     )
     .remove(0)
 }

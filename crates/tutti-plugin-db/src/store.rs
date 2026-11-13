@@ -11,6 +11,7 @@
 //! and returns an error if the row was a blacklisted one.
 
 use super::fs::replace_file;
+use super::os_path;
 use super::table::{Delta, FileRow, PluginDb};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -42,10 +43,7 @@ struct In {
 #[serde(untagged)]
 enum StoredPath<'a> {
     Text(&'a str),
-    #[cfg(unix)]
-    Bytes {
-        bytes: &'a [u8],
-    },
+    Bytes { bytes: &'a [u8] },
 }
 
 #[derive(Deserialize)]
@@ -57,18 +55,10 @@ enum StoredPathOwned {
 
 impl<'a> StoredPath<'a> {
     fn of(path: &'a Path) -> Option<Self> {
-        if let Some(text) = path.to_str() {
-            return Some(Self::Text(text));
+        match path.to_str() {
+            Some(text) => Some(Self::Text(text)),
+            None => os_path::raw_bytes(path).map(|bytes| Self::Bytes { bytes }),
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            Some(Self::Bytes {
-                bytes: path.as_os_str().as_bytes(),
-            })
-        }
-        #[cfg(not(unix))]
-        None
     }
 }
 
@@ -76,13 +66,7 @@ impl StoredPathOwned {
     fn into_path(self) -> PathBuf {
         match self {
             Self::Text(text) => PathBuf::from(text),
-            #[cfg(unix)]
-            Self::Bytes { bytes } => {
-                use std::os::unix::ffi::OsStrExt;
-                PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
-            }
-            #[cfg(not(unix))]
-            Self::Bytes { bytes } => PathBuf::from(String::from_utf8_lossy(&bytes).into_owned()),
+            Self::Bytes { bytes } => os_path::from_bytes(&bytes),
         }
     }
 }
@@ -567,24 +551,6 @@ mod tests {
         .unwrap();
     }
 
-    /// A name that is not UTF-8 keeps its row, blacklist included, through a
-    /// save and a load: a crashing plugin with such a name must not be probed
-    /// again after a restart.
-    #[cfg(unix)]
-    #[test]
-    fn a_non_utf8_path_round_trips_through_the_file() {
-        use std::os::unix::ffi::OsStrExt;
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("db.json");
-        let mut db = db_of(&["kept"]);
-        let odd = PathBuf::from(std::ffi::OsStr::from_bytes(b"/plugins/caf\xe9.vst3"));
-        db.blacklist(&odd, "boom".into(), &no_file());
-
-        save(&db, &path).unwrap();
-
-        assert_eq!(load(&path), db);
-    }
-
     /// A row of one plugin whose `measured` is `measured`.
     fn measured_row(name: &str, measured: Measured) -> FileRow {
         let mut row = row(name);
@@ -652,5 +618,27 @@ mod tests {
         assert_eq!(loaded, db);
         assert_eq!(loaded.plugins().count(), 4);
         assert!(loaded.plugins().all(|p| p.descriptor.measured.is_some()));
+    }
+
+    #[cfg(unix)]
+    mod unix_tests {
+        use super::*;
+
+        /// A name that is not UTF-8 keeps its row, blacklist included, through a
+        /// save and a load: a crashing plugin with such a name must not be probed
+        /// again after a restart.
+        #[test]
+        fn a_non_utf8_path_round_trips_through_the_file() {
+            use std::os::unix::ffi::OsStrExt;
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("db.json");
+            let mut db = db_of(&["kept"]);
+            let odd = PathBuf::from(std::ffi::OsStr::from_bytes(b"/plugins/caf\xe9.vst3"));
+            db.blacklist(&odd, "boom".into(), &no_file());
+
+            save(&db, &path).unwrap();
+
+            assert_eq!(load(&path), db);
+        }
     }
 }

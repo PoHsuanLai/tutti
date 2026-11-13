@@ -241,7 +241,8 @@ fn the_recurrence_adds_no_latency_of_its_own() {
 /// An independent figure for every output sample, from the definition and not from the
 /// code's own helpers: `f64` throughout, the curve in its piecewise form, the envelope
 /// by its two rules and the window minimum by brute force over `L + 1` frames. `x` is
-/// the input of every channel.
+/// the input of every channel. The envelope starts with no history, so the first frame
+/// takes its target at once.
 fn oracle(x: &[Vec<f32>], c: &LimiterControls, rate: f64) -> Vec<Vec<f64>> {
     let n = x[0].len();
     let (drive, threshold) = (
@@ -249,7 +250,7 @@ fn oracle(x: &[Vec<f32>], c: &LimiterControls, rate: f64) -> Vec<Vec<f64>> {
         amplitude(f64::from(c.threshold.get())),
     );
     let coeff = 1.0 - (-1.0 / (c.release.get() * rate)).exp();
-    let mut envelope = 0.0f64;
+    let mut envelope = f64::INFINITY;
     let mut gain = Vec::with_capacity(n);
     for i in 0..n {
         let peak = x
@@ -324,13 +325,14 @@ fn the_output_is_the_delayed_input_scaled_by_the_window_minimum_of_the_envelope(
             worst > 0.0 || c.release.get() > 0.0,
             "the figure was compared"
         );
-        // The figure was not vacuous: some sample was reduced.
-        let reduced = got[0]
+        // The figure was not vacuous: the curve engaged, some sample leaving well under
+        // its input moved by the drive (the gain of a signal under the threshold).
+        let drive = amplitude(f64::from(c.ceiling.get()) - f64::from(c.threshold.get()));
+        let reduced = want[0]
             .iter()
-            .zip(want[0].iter())
             .skip(L)
             .zip(x[0].iter())
-            .any(|((_, &w), &x)| w.abs() < 0.5 * f64::from(x).abs());
+            .any(|(&w, &x)| w.abs() < 0.5 * drive * f64::from(x).abs());
         assert!(reduced, "{c:?} reduced nothing");
     }
 }
@@ -369,12 +371,12 @@ fn the_output_never_exceeds_the_ceiling() {
 }
 
 /// With a threshold equal to the ceiling the drive is 1: a signal under it passes
-/// untouched apart from the delay, once the envelope (which starts at 0) has risen to 1,
-/// and a louder one is only ever reduced. And in general a signal under the threshold is
-/// moved by the drive, the ceiling over the threshold in dB.
+/// untouched apart from the delay, from the first sample that leaves the delay (a reset
+/// envelope has no history to rise from), and a louder one is only ever reduced. And in
+/// general a signal under the threshold is moved by the drive, the ceiling over the
+/// threshold in dB.
 #[test]
 fn a_signal_under_the_threshold_is_moved_by_the_drive_and_delayed() {
-    // 1 s at a 10 ms release is 100 time constants: the envelope has settled.
     let n = 48_000;
     for (threshold, ceiling, level) in [
         (-6.0f32, -6.0f32, 0.1f32),
@@ -389,7 +391,7 @@ fn a_signal_under_the_threshold_is_moved_by_the_drive_and_delayed() {
         let mut k = runner(&controls(threshold, ceiling, 0.01));
         let out = run_mono(&mut k, &x);
         let drive = amplitude(f64::from(ceiling - threshold));
-        for i in n / 2..n {
+        for i in L..n {
             let want = f64::from(x[i - L]) * drive;
             assert!(
                 (f64::from(out[i]) - want).abs() <= 1e-4 * want.abs().max(1e-3),
@@ -397,6 +399,31 @@ fn a_signal_under_the_threshold_is_moved_by_the_drive_and_delayed() {
                 out[i]
             );
         }
+    }
+}
+
+/// **The first audio after a reset is limited from its first sample** (design 024
+/// section 2.7.4, law 1: `s₀` is a state the limiter could have reached, here on silence,
+/// where the envelope rests at the drive): a full-scale step from frame 0 leaves the delay
+/// at exactly the ceiling, not faded in from 0 over a release. With the old start (an
+/// envelope at 0) the first delayed sample came out at 0 and reached the ceiling only
+/// after about a release time. And a reset puts it back: the same step after a reset
+/// leaves at the ceiling again.
+#[test]
+fn the_first_audio_after_a_reset_is_limited_from_its_first_sample() {
+    let ceiling = Db(-6.0).to_amplitude().get();
+    let x = vec![1.0f32; 4 * L];
+    let mut k = runner(&controls(-6.0, -6.0, 0.1));
+    for pass in 0..2 {
+        let out = run_mono(&mut k, &x);
+        assert!(out[..L].iter().all(|&s| s == 0.0), "pass {pass}: the delay");
+        for (i, &y) in out.iter().enumerate().skip(L) {
+            assert!(
+                (y - ceiling).abs() <= 2.0 * f32::EPSILON,
+                "pass {pass}, frame {i}: {y}, the ceiling is {ceiling}"
+            );
+        }
+        k.reset();
     }
 }
 

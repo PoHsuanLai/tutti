@@ -19,8 +19,6 @@
 //! `get_parameter`, `parameters`): reach those through the trait
 //! (`Control::set_parameter(&mut au, ..)`) when the normalized one is meant.
 
-#![cfg(target_os = "macos")]
-
 use std::cell::Cell;
 use std::sync::Arc;
 

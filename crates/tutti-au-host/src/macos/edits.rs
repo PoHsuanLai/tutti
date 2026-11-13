@@ -8,8 +8,6 @@
 //! [`Control::take_reported_edits`](tutti_plugin_types::Control::take_reported_edits).
 //! Not a realtime path: neither end is the audio thread, so a mutex is fine.
 
-#![cfg(target_os = "macos")]
-
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};

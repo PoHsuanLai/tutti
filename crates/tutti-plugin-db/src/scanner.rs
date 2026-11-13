@@ -1449,86 +1449,6 @@ mod tests {
         assert!(matches!(end, ScanPoll::Died), "{end:?}");
     }
 
-    /// The same file reached through a link and through its real directory is
-    /// one row, whichever order the roots come in, across scans.
-    #[cfg(unix)]
-    #[test]
-    fn roots_that_alias_one_directory_never_duplicate_a_row() {
-        let dir = TempDir::new().unwrap();
-        let real = plugins_dir(&dir);
-        let synth = create_fake_plugin(&real, "s.clap");
-        let alias = dir.path().join("alias");
-        std::os::unix::fs::symlink(&real, &alias).unwrap();
-        let (scanner, calls) = counting_scanner(dir.path(), named);
-        let mut db = PluginDb::new();
-
-        scanner.scan(&mut db, [&alias, &real], no_save).unwrap();
-        scanner.scan(&mut db, [&real, &alias], no_save).unwrap();
-        scanner.scan(&mut db, [&alias], no_save).unwrap();
-
-        assert_eq!(db.len(), 1, "{:?}", db.rows().collect::<Vec<_>>());
-        assert_eq!(db.plugins().count(), 1);
-        assert!(db.row(&synth).is_some());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    /// A link named `.clap` to a file named anything is keyed by the target and
-    /// keeps the link's format, even in a row that records only a failure.
-    #[cfg(unix)]
-    #[test]
-    fn a_link_to_a_differently_named_file_keeps_its_format() {
-        let dir = TempDir::new().unwrap();
-        let plugins_dir = plugins_dir(&dir);
-        let target = create_fake_plugin(&plugins_dir, "libsynth.bin");
-        let links = dir.path().join("links");
-        std::fs::create_dir(&links).unwrap();
-        std::os::unix::fs::symlink(&target, links.join("synth.clap")).unwrap();
-        let (scanner, _) = counting_scanner(dir.path(), crashes);
-        let mut db = PluginDb::new();
-
-        scanner.scan(&mut db, [&links], no_save).unwrap();
-
-        let row = db.row(&target).expect("keyed by the target");
-        assert_eq!(row.format, PluginFormat::Clap);
-        assert!(row.blacklist_reason().is_some());
-    }
-
-    /// A pedal reached by another name is the same pedal: through a link to its
-    /// directory, or through a `..` path. Compared as raw strings, the second
-    /// user got in, blacklisted a plugin that had not crashed and deleted the
-    /// live sentinel.
-    #[cfg(unix)]
-    #[test]
-    fn a_pedal_reached_by_another_name_is_still_claimed() {
-        let dir = TempDir::new().unwrap();
-        let plugins_dir = plugins_dir(&dir);
-        let a = create_fake_plugin(&plugins_dir, "a.clap");
-        let (scanner, parked, release, _) = gated_scanner(dir.path(), named);
-        let mut db = PluginDb::new();
-        let scan = scanner.spawn(&mut db, [&plugins_dir], no_save).unwrap();
-        parked.recv_timeout(Duration::from_secs(30)).unwrap();
-
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
-        let detour = dir.path().join("plugins").join("..").join(".scanning");
-        for name in [link.join(".scanning"), detour] {
-            let other = Scanner::new(name.clone(), filename_probe);
-            assert_eq!(
-                other.recover_crash(&mut db, no_save),
-                Err(ScanBusy),
-                "{name:?}"
-            );
-        }
-        assert_eq!(
-            std::fs::read(dir.path().join(".scanning")).unwrap(),
-            a.as_os_str().as_encoded_bytes()
-        );
-        assert!(!db.is_blacklisted(&a));
-
-        release.send(()).unwrap();
-        assert!(scan.wait(&mut db).is_some());
-    }
-
     fn failing_save(_: &PluginDb) -> std::io::Result<()> {
         Err(std::io::Error::other("no store"))
     }
@@ -1577,5 +1497,87 @@ mod tests {
         assert!(next.is_blacklisted(Path::new("/plugins/crashy.vst3")));
         assert!(next.is_blacklisted(&fatal));
         assert!(!pedal_file.exists());
+    }
+
+    #[cfg(unix)]
+    mod unix_tests {
+        use super::*;
+
+        /// The same file reached through a link and through its real directory is
+        /// one row, whichever order the roots come in, across scans.
+        #[test]
+        fn roots_that_alias_one_directory_never_duplicate_a_row() {
+            let dir = TempDir::new().unwrap();
+            let real = plugins_dir(&dir);
+            let synth = create_fake_plugin(&real, "s.clap");
+            let alias = dir.path().join("alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let (scanner, calls) = counting_scanner(dir.path(), named);
+            let mut db = PluginDb::new();
+
+            scanner.scan(&mut db, [&alias, &real], no_save).unwrap();
+            scanner.scan(&mut db, [&real, &alias], no_save).unwrap();
+            scanner.scan(&mut db, [&alias], no_save).unwrap();
+
+            assert_eq!(db.len(), 1, "{:?}", db.rows().collect::<Vec<_>>());
+            assert_eq!(db.plugins().count(), 1);
+            assert!(db.row(&synth).is_some());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+
+        /// A link named `.clap` to a file named anything is keyed by the target and
+        /// keeps the link's format, even in a row that records only a failure.
+        #[test]
+        fn a_link_to_a_differently_named_file_keeps_its_format() {
+            let dir = TempDir::new().unwrap();
+            let plugins_dir = plugins_dir(&dir);
+            let target = create_fake_plugin(&plugins_dir, "libsynth.bin");
+            let links = dir.path().join("links");
+            std::fs::create_dir(&links).unwrap();
+            std::os::unix::fs::symlink(&target, links.join("synth.clap")).unwrap();
+            let (scanner, _) = counting_scanner(dir.path(), crashes);
+            let mut db = PluginDb::new();
+
+            scanner.scan(&mut db, [&links], no_save).unwrap();
+
+            let row = db.row(&target).expect("keyed by the target");
+            assert_eq!(row.format, PluginFormat::Clap);
+            assert!(row.blacklist_reason().is_some());
+        }
+
+        /// A pedal reached by another name is the same pedal: through a link to its
+        /// directory, or through a `..` path. Compared as raw strings, the second
+        /// user got in, blacklisted a plugin that had not crashed and deleted the
+        /// live sentinel.
+        #[test]
+        fn a_pedal_reached_by_another_name_is_still_claimed() {
+            let dir = TempDir::new().unwrap();
+            let plugins_dir = plugins_dir(&dir);
+            let a = create_fake_plugin(&plugins_dir, "a.clap");
+            let (scanner, parked, release, _) = gated_scanner(dir.path(), named);
+            let mut db = PluginDb::new();
+            let scan = scanner.spawn(&mut db, [&plugins_dir], no_save).unwrap();
+            parked.recv_timeout(Duration::from_secs(30)).unwrap();
+
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            let detour = dir.path().join("plugins").join("..").join(".scanning");
+            for name in [link.join(".scanning"), detour] {
+                let other = Scanner::new(name.clone(), filename_probe);
+                assert_eq!(
+                    other.recover_crash(&mut db, no_save),
+                    Err(ScanBusy),
+                    "{name:?}"
+                );
+            }
+            assert_eq!(
+                std::fs::read(dir.path().join(".scanning")).unwrap(),
+                a.as_os_str().as_encoded_bytes()
+            );
+            assert!(!db.is_blacklisted(&a));
+
+            release.send(()).unwrap();
+            assert!(scan.wait(&mut db).is_some());
+        }
     }
 }

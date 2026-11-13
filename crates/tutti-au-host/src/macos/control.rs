@@ -8,8 +8,6 @@
 //! reported and written as the plain value it was given, never scaled by a
 //! guessed range.
 
-#![cfg(target_os = "macos")]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -1,5 +1,6 @@
 //! The MIDI-CI message codec (M2-101): the header, the MUID, and Discovery,
-//! Invalidate MUID, ACK and NAK.
+//! Invalidate MUID, Inquiry: Endpoint, ACK and NAK; and [`CiDevice`], the
+//! Management core over it.
 //!
 //! MIDI-CI lets two MIDI devices discover each other before either knows what the
 //! other speaks. It is **not** a UMP message type: a CI message is a byte payload
@@ -16,23 +17,27 @@
 //! the bytes a `tutti_ump::SysexAssembler` completes to [`CiMessage::decode`].
 //! A message the codec cannot read comes back as an [`Unread`] that keeps what
 //! its header said, so the NAK that §5.3 and §5.11 require can be addressed.
-//! There is no state machine here (design 017 §5, "MIDI-CI" lists what a
-//! rebuild needs).
+//! The codec holds no state; the state machine over it is [`CiDevice`].
 
 use std::fmt;
 use std::vec::Vec;
 
 use tutti_ump::{MidiChannel, MidiGroup, Sysex7Packets, U7, Ump};
 
+mod device;
 mod discovery;
+mod endpoint;
 mod read;
 mod status;
 mod text;
 
+pub use device::{CiAction, CiDevice, CiPeer, DISCOVERY_WINDOW};
 pub use discovery::{
     CiCategories, DiscoveryData, MaxSysexSize, NotASysexSize, SUB_ID2_ACK, SUB_ID2_DISCOVERY,
-    SUB_ID2_DISCOVERY_REPLY, SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK,
+    SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY, SUB_ID2_ENDPOINT_REPLY,
+    SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK,
 };
+pub use endpoint::{CiInstanceId, EndpointInfo, EndpointStatus};
 pub use status::{Ack, Nak};
 pub use text::MessageText;
 
@@ -237,6 +242,15 @@ impl Muid {
         }
     }
 
+    /// A MUID from a caller's random word: its low 28 bits, or `None` when
+    /// they fall in the reserved range or on the broadcast value, so the caller
+    /// draws again. No random source is named here: a MUID "should" come from a
+    /// good one (M2-101 Appendix A.1), and whose is the owner's.
+    #[must_use]
+    pub const fn from_entropy(word: u32) -> Option<Self> {
+        Self::new(word & Self::BROADCAST_RAW)
+    }
+
     /// The 28-bit value.
     #[must_use]
     pub const fn get(self) -> u32 {
@@ -423,6 +437,25 @@ pub enum CiMessage {
         /// The MUID being invalidated: the colliding one, not the sender's.
         target: Muid,
     },
+    /// Inquiry: Endpoint (M2-101 §5.7): asks the UMP Endpoint behind a Function
+    /// Block for one piece of information. To one device, never broadcast.
+    EndpointInquiry {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The device asked.
+        to: Muid,
+        /// What is asked.
+        status: EndpointStatus,
+    },
+    /// Reply to Endpoint (M2-101 §5.8): the Status and the data it names.
+    EndpointReply {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The device that asked.
+        to: Muid,
+        /// The answer.
+        info: EndpointInfo,
+    },
     /// ACK: a positive answer or a notice of activity under way (M2-101 §5.10).
     Ack {
         /// Addressing preamble.
@@ -451,6 +484,8 @@ impl CiMessage {
             CiMessage::Discovery { header, .. }
             | CiMessage::DiscoveryReply { header, .. }
             | CiMessage::InvalidateMuid { header, .. }
+            | CiMessage::EndpointInquiry { header, .. }
+            | CiMessage::EndpointReply { header, .. }
             | CiMessage::Ack { header, .. }
             | CiMessage::Nak { header, .. } => header,
         }
@@ -465,6 +500,8 @@ impl CiMessage {
                 Destination::Broadcast
             }
             CiMessage::DiscoveryReply { to, .. }
+            | CiMessage::EndpointInquiry { to, .. }
+            | CiMessage::EndpointReply { to, .. }
             | CiMessage::Ack { to, .. }
             | CiMessage::Nak { to, .. } => Destination::Muid(*to),
         }
@@ -477,6 +514,8 @@ impl CiMessage {
             CiMessage::Discovery { .. } => SUB_ID2_DISCOVERY,
             CiMessage::DiscoveryReply { .. } => SUB_ID2_DISCOVERY_REPLY,
             CiMessage::InvalidateMuid { .. } => SUB_ID2_INVALIDATE_MUID,
+            CiMessage::EndpointInquiry { .. } => SUB_ID2_ENDPOINT_INQUIRY,
+            CiMessage::EndpointReply { .. } => SUB_ID2_ENDPOINT_REPLY,
             CiMessage::Ack { .. } => SUB_ID2_ACK,
             CiMessage::Nak { .. } => SUB_ID2_NAK,
         }
@@ -503,6 +542,8 @@ impl CiMessage {
             CiMessage::Discovery { data, .. } => data.encode_body(false, out),
             CiMessage::DiscoveryReply { data, .. } => data.encode_body(true, out),
             CiMessage::InvalidateMuid { target, .. } => out.extend(target.to_bytes()),
+            CiMessage::EndpointInquiry { status, .. } => out.extend([status.get().get()]),
+            CiMessage::EndpointReply { info, .. } => info.encode_body(out),
             CiMessage::Ack { ack, .. } => ack.encode_body(out),
             CiMessage::Nak { nak, .. } => nak.encode_body(out),
         }
@@ -581,33 +622,54 @@ impl CiMessage {
             Destination::Muid(muid) => Some(muid),
             Destination::Broadcast => None,
         };
-        let message = match (sub_id2, unicast) {
-            (SUB_ID2_DISCOVERY, None) => DiscoveryData::decode_body(false, body)
-                .map(|data| CiMessage::Discovery { header, data }),
-            (SUB_ID2_INVALIDATE_MUID, None) => {
-                read::target_body(body).map(|target| CiMessage::InvalidateMuid { header, target })
-            }
-            (SUB_ID2_DISCOVERY_REPLY, Some(to)) => DiscoveryData::decode_body(true, body)
-                .map(|data| CiMessage::DiscoveryReply { header, to, data }),
-            (SUB_ID2_ACK, Some(to)) => {
-                Ack::decode_body(body).map(|ack| CiMessage::Ack { header, to, ack })
-            }
-            (SUB_ID2_NAK, Some(to)) => {
-                Nak::decode_body(body).map(|nak| CiMessage::Nak { header, to, nak })
-            }
-            // A message sent to the one kind of destination it is not defined
-            // with: Broadcast where it must not be, a device where it must be
-            // Broadcast.
-            (
-                SUB_ID2_DISCOVERY
-                | SUB_ID2_INVALIDATE_MUID
-                | SUB_ID2_DISCOVERY_REPLY
-                | SUB_ID2_ACK
-                | SUB_ID2_NAK,
-                _,
-            ) => return unread(UnreadReason::WrongDestination),
-            _ => return unread(UnreadReason::UnsupportedMessage),
-        };
+        let message =
+            match (sub_id2, unicast) {
+                (SUB_ID2_DISCOVERY, None) => DiscoveryData::decode_body(false, body)
+                    .map(|data| CiMessage::Discovery { header, data }),
+                (SUB_ID2_INVALIDATE_MUID, None) => read::target_body(body)
+                    .map(|target| CiMessage::InvalidateMuid { header, target }),
+                (SUB_ID2_DISCOVERY_REPLY, Some(to)) => DiscoveryData::decode_body(true, body)
+                    .map(|data| CiMessage::DiscoveryReply { header, to, data }),
+                (SUB_ID2_ENDPOINT_INQUIRY, Some(to)) => match read::endpoint_inquiry_body(body) {
+                    None => None,
+                    Some(raw) => match EndpointStatus::new(raw) {
+                        Some(status) => Some(CiMessage::EndpointInquiry { header, to, status }),
+                        None => return unread(UnreadReason::ReservedStatus),
+                    },
+                },
+                (SUB_ID2_ENDPOINT_REPLY, Some(to)) => match read::endpoint_reply_body(body) {
+                    None => None,
+                    Some((raw, data)) => match EndpointStatus::new(raw) {
+                        Some(EndpointStatus::ProductInstanceId) => CiInstanceId::from_bytes(data)
+                            .map(|id| CiMessage::EndpointReply {
+                                header,
+                                to,
+                                info: EndpointInfo::ProductInstanceId(id),
+                            }),
+                        None => return unread(UnreadReason::ReservedStatus),
+                    },
+                },
+                (SUB_ID2_ACK, Some(to)) => {
+                    Ack::decode_body(body).map(|ack| CiMessage::Ack { header, to, ack })
+                }
+                (SUB_ID2_NAK, Some(to)) => {
+                    Nak::decode_body(body).map(|nak| CiMessage::Nak { header, to, nak })
+                }
+                // A message sent to the one kind of destination it is not defined
+                // with: Broadcast where it must not be, a device where it must be
+                // Broadcast.
+                (
+                    SUB_ID2_DISCOVERY
+                    | SUB_ID2_INVALIDATE_MUID
+                    | SUB_ID2_DISCOVERY_REPLY
+                    | SUB_ID2_ENDPOINT_INQUIRY
+                    | SUB_ID2_ENDPOINT_REPLY
+                    | SUB_ID2_ACK
+                    | SUB_ID2_NAK,
+                    _,
+                ) => return unread(UnreadReason::WrongDestination),
+                _ => return unread(UnreadReason::UnsupportedMessage),
+            };
         match message {
             Some(message) => Decoded::Message(message),
             None => unread(UnreadReason::Malformed),
@@ -673,9 +735,12 @@ pub enum UnreadReason {
     BadDestination,
     /// A sub-ID#2 this codec does not model.
     UnsupportedMessage,
+    /// An Inquiry: Endpoint or its reply with a Status that is reserved
+    /// (`0x01..=0x7F`, Table 10): the Device cannot give that information.
+    ReservedStatus,
     /// A message of a kind it models, sent to the wrong kind of destination
-    /// (§3.3.3): Discovery or Invalidate MUID to one device, or a reply, ACK or
-    /// NAK to the Broadcast MUID.
+    /// (§3.3.3): Discovery or Invalidate MUID to one device, or a reply, an
+    /// Endpoint message, ACK or NAK to the Broadcast MUID.
     WrongDestination,
     /// The body is malformed: too short, a byte with its top bit set, or a field
     /// out of range (a Receivable Maximum SysEx Message Size under 128, a
@@ -694,6 +759,10 @@ impl UnreadReason {
         match self {
             Self::ReservedVersionBits | Self::VersionZero => Nak::STATUS_VERSION_NOT_SUPPORTED,
             Self::UnsupportedMessage => Nak::STATUS_MESSAGE_NOT_SUPPORTED,
+            // §5.8: "If the Device is not able to provide the requested
+            // information of the given Status, it should reply with a MIDI-CI
+            // NAK": the generic "NAK, do not retry".
+            Self::ReservedStatus => Nak::STATUS_NAK,
             _ => Nak::STATUS_MALFORMED,
         }
     }

@@ -541,7 +541,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  `reply` to Discovery, Function Block Discovery and a Stream
                  Configuration Request) and `Connection` (the discoverer's steps, time
                  as an `Instant` value), and the MIDI-CI codec (`CiMessage`: Discovery
-                 and its Reply, Invalidate MUID, ACK, NAK, over SysEx payload bytes);
+                 and its Reply, Inquiry: Endpoint and its Reply, Invalidate MUID, ACK, NAK, over
+                 SysEx payload bytes) and its Management core (`CiDevice`);
                  the Device Inquiry initiator of a MIDI 1.0 port (`IdentityInquiry`);
                  no OS, no thread, and no dependency but `tutti-ump`, `bitflags`,
                  `unicode-normalization` (names are NFC), `winnow` (the CI decode,
@@ -824,8 +825,16 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `F7`, `packets(group)` for a UMP stream, or `tutti_ump::frame` for a byte stream,
   and `tutti_ump::SysexAssembler` to reassemble; `DiscoveryData::new` takes a
   `tutti_ump::DeviceIdentity`; `Muid::new`
-  refuses the reserved range and broadcast, which is a `Destination`). The CI codec has
-  no state machine; design 017 §5, "MIDI-CI", is the rebuild. `CiMessage::decode` is a `winnow`
+  refuses the reserved range and broadcast, which is a `Destination`). The codec holds no state;
+  `CiDevice` is the pure Management core over it, shaped as `Connection` is (`new(.., entropy, now)
+  -> (Self, Vec<CiAction>)`, `on_message(&Decoded, now)`, `on_timeout`, `deadline`; no clock, no OS,
+  one Group, no Function Block so Device ID and Function Block `7F`): it discovers (a 3 s window,
+  `DISCOVERY_WINDOW`), answers Discovery echoing the Output Path ID, resolves a MUID collision always
+  by §5.9.1 Option B and §5.9.2 (its own Discovery or Reply looped back by a Thru is an echo, never a collision: Appendix A.1.1), honours Invalidate MUID, NAKs only what is addressed to its own MUID
+  and is not an ACK or a NAK, asks a peer's Endpoint for its Product Instance Id once (no retry) and
+  NAKs that inquiry itself; its MUIDs come from a caller's entropy (`Muid::from_entropy`). A
+  Product Instance Id on the CI wire is a `CiInstanceId` (at most 16 bytes, §5.8.3.1, where
+  `ProductInstanceId` allows M2-104's 42). `CiMessage::decode` is a `winnow`
   grammar in `src/ci/read.rs` (the crate's one parser module, listed in `check-layout`'s
   `WINNOW_HOMES`; no `winnow` type is in a public signature, field or error: the bodies are
   read through `DiscoveryData::decode_body` and `Nak`/`Ack::decode_body`, which answer `Option`).

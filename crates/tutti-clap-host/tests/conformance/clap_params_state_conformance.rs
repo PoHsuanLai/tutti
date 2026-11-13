@@ -35,7 +35,7 @@ use tutti_clap_test_plugin::{
     PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture,
     ProcessCapture, STATE_MAGIC,
 };
-use tutti_plugin_types::{AutomationMode, Control};
+use tutti_plugin_types::{AutomationMode, Control, StateUse};
 use tutti_plugin_types::{Normalized, ParamFlags, ParamId, ParamSteps, Request, RescanScope};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
@@ -1091,8 +1091,7 @@ fn host_passes_the_state_context_through_to_the_plugin() {
 
     // (StateContext, the CLAP wire value the plugin must observe)
     let cases = [
-        (StateContext::ForPreset, 1u32),
-        (StateContext::ForDuplicate, 2),
+        (StateContext::ForDuplicate, 2u32),
         (StateContext::ForProject, 3),
     ];
     for (ctx, wire) in cases {
@@ -1177,4 +1176,45 @@ fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
             "{mode:?} must reach every automatable parameter as {raw}"
         );
     }
+}
+
+/// The shared layer's save is a project save, and a duplicate is saved and
+/// loaded as `CLAP_STATE_CONTEXT_FOR_DUPLICATE`: the context values the plugin
+/// observes are CLAP's 3 (project) and 2 (duplicate), never the plain entry
+/// point's 0.
+#[test]
+fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+
+    let project = Control::save_state(&mut loaded, &main_thread()).expect("project save");
+    assert_eq!(
+        probe.capture().last_save_context,
+        3,
+        "save_state is FOR_PROJECT"
+    );
+    assert_eq!(project[STATE_MAGIC.len()], 3);
+
+    let copy = Control::save_state_for(&mut loaded, &main_thread(), StateUse::Duplicate)
+        .expect("duplicate save");
+    assert_eq!(
+        probe.capture().last_save_context,
+        2,
+        "a duplicate is FOR_DUPLICATE"
+    );
+    assert_eq!(copy[STATE_MAGIC.len()], 2);
+
+    Control::load_state(&mut loaded, &main_thread(), &project).expect("project load");
+    assert_eq!(
+        probe.capture().last_load_context,
+        3,
+        "load_state is FOR_PROJECT"
+    );
+    Control::load_state_for(&mut loaded, &main_thread(), &copy, StateUse::Duplicate)
+        .expect("duplicate load");
+    assert_eq!(
+        probe.capture().last_load_context,
+        2,
+        "a duplicate is FOR_DUPLICATE"
+    );
 }

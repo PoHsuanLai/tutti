@@ -720,7 +720,7 @@ fn calls_after_a_crash_fail_fast_instead_of_waiting_out_the_timeout() {
 #[test]
 fn a_crash_during_save_state_does_not_block_the_caller_forever() {
     let mock = MockServer::start("save-death", |msg| match msg {
-        HostMessage::SaveState => Action::Die,
+        HostMessage::SaveState { .. } => Action::Die,
         _ => Action::Silent,
     });
 
@@ -1238,7 +1238,7 @@ fn a_state_larger_than_one_frame_round_trips() {
     let expected = big.clone();
 
     let mock = MockServer::start("big-state", move |msg| match msg {
-        HostMessage::SaveState => Action::ReplyMany(
+        HostMessage::SaveState { .. } => Action::ReplyMany(
             crate::transport::state_chunk::split(&big)
                 .map(|(seq, last, bytes)| BridgeMessage::StateChunk {
                     seq,
@@ -1385,7 +1385,7 @@ fn a_slow_but_progressing_state_transfer_completes() {
         "slow-state",
         SLOW_TRANSFER_TIMEOUT,
         move |msg| match msg {
-            HostMessage::SaveState => Action::ReplyManySlowly {
+            HostMessage::SaveState { .. } => Action::ReplyManySlowly {
                 msgs: msgs.clone(),
                 gap: GAP,
             },
@@ -1456,7 +1456,7 @@ fn a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy() {
         "stalled-save",
         STATE_PROGRESS_TIMEOUT,
         move |msg| match msg {
-            HostMessage::SaveState => Action::ReplyManySlowly {
+            HostMessage::SaveState { .. } => Action::ReplyManySlowly {
                 msgs: (0..2)
                     .map(|i| BridgeMessage::StateChunk {
                         seq: i,
@@ -1713,7 +1713,7 @@ fn the_rest_of_a_stalled_state_is_not_the_next_answer() {
         "stalled-rest",
         STATE_PROGRESS_TIMEOUT,
         |msg| match msg {
-            HostMessage::SaveState => Action::ReplyManySlowly {
+            HostMessage::SaveState { .. } => Action::ReplyManySlowly {
                 msgs: (0..2)
                     .map(|seq| BridgeMessage::StateChunk {
                         seq,

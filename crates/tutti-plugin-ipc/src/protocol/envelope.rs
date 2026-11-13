@@ -17,7 +17,7 @@ use super::Samples;
 use super::process::ProcessAudioData;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
-use tutti_plugin_types::{BlockStatus, ContentScale, EditorSize, Load};
+use tutti_plugin_types::{BlockStatus, ContentScale, EditorSize, Load, StateUse};
 use tutti_types::SampleRate;
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
@@ -36,6 +36,8 @@ fn default_block_size() -> usize {
 pub struct StagedState {
     /// The staged state's length in bytes.
     pub len: u64,
+    /// What the state is restored for.
+    pub state_use: StateUse,
 }
 
 /// A request travelling host → subprocess.
@@ -123,9 +125,12 @@ pub enum HostMessage {
     },
     /// Clear the plugin's internal state — tails, delay lines, voices.
     Reset,
-    /// Ask the plugin to serialize its state, answered by
+    /// Ask the plugin to serialize its state for `state_use`, answered by
     /// `BridgeMessage::StateData`.
-    SaveState,
+    SaveState {
+        /// What the state is saved for.
+        state_use: StateUse,
+    },
     /// One slice of a plugin state being restored, in order.
     ///
     /// State is the only message whose size a plugin chooses, and it routinely

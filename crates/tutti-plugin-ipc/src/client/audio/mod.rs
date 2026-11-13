@@ -29,7 +29,7 @@ use crate::protocol::{
 use crate::transport::shm::AudioSlab;
 use tutti_plugin_types::{
     BlockStatus, BridgeResult, ContentScale, Delivered, EditorError, EditorSize, PluginFailure,
-    StateError,
+    StateError, StateUse,
 };
 use tutti_types::SampleRate;
 
@@ -496,12 +496,23 @@ impl AudioBridge {
     ///
     /// The plugin is dead, refused, or the transfer stalled.
     pub fn save_state(&self) -> std::result::Result<Vec<u8>, StateError> {
+        self.save_state_for(StateUse::Project)
+    }
+
+    /// The plugin's state for `state_use`, read through the server. Blocks while
+    /// it travels.
+    ///
+    /// # Errors
+    ///
+    /// As [`save_state`](Self::save_state).
+    pub fn save_state_for(&self, state_use: StateUse) -> std::result::Result<Vec<u8>, StateError> {
         if self.lifecycle.is_crashed() {
             return Err(StateError::PluginCrashed);
         }
         let (ask_resp, reply) = ask::<std::result::Result<Vec<u8>, StateError>>();
         let progress = StateProgress::new(self.state_progress_timeout);
         if !self.channels.push_command(Command::SaveState {
+            state_use,
             progress: progress.clone(),
             reply,
         }) {

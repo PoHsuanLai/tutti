@@ -258,7 +258,9 @@ impl ServedFork {
         // the fork once, harmlessly. Read after, a value delivered in between
         // would be recorded as the fork's though its state predates it.
         let delivered = self.controls.delivered();
-        let state = live.save_state().map_err(PluginForkError::SaveState)?;
+        let state = live
+            .save_state_for(tutti_plugin_types::StateUse::Duplicate)
+            .map_err(PluginForkError::SaveState)?;
         drop(live);
         let origin = self.origin.clone().ok_or_else(|| PluginForkError::Load {
             path: std::path::PathBuf::new(),

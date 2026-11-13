@@ -305,6 +305,35 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
     }
 }
 
+/// **A fork is a duplicate, and a project save is a project's.** The plugin
+/// takes a state only saved for and loaded in `CLAP_STATE_CONTEXT_FOR_DUPLICATE`
+/// (2), so the fork succeeds only if the live instance saved it for a
+/// duplicate and the fresh one restored it as one, through the server's wire;
+/// the project's own save, from the same live instance, is tagged 3.
+#[test]
+fn a_fork_is_saved_and_restored_as_a_duplicate_and_a_project_save_is_not() {
+    let _lock = machine_lock();
+    let _env = env().load_only_context(2);
+    let probe = load_probe(SAMPLE_RATE);
+
+    // The probe stamps the context after its 4-byte magic.
+    const CONTEXT_BYTE: usize = 4;
+    let project = probe
+        .handle
+        .any_thread()
+        .save_state()
+        .expect("the project save");
+    assert_eq!(project[CONTEXT_BYTE], 3, "a project save is FOR_PROJECT");
+
+    probe
+        .client
+        .fork_instance(
+            ForkMode::Offline,
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        )
+        .expect("the fork saved for a duplicate and restored as one");
+}
+
 /// **A plugin that cannot save its state cannot be forked**, and says so
 /// before any fresh instance is started.
 #[test]

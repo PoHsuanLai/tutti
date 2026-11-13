@@ -59,7 +59,7 @@ impl ClapLoaded {
     }
 
     /// Saves state, telling the plugin whether it is being saved for a
-    /// preset, project, or duplicate.
+    /// project or a duplicate.
     ///
     /// Falls back to [`Control::save_state`](tutti_plugin_types::Control::save_state) **only** when the plugin does not
     /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `save`

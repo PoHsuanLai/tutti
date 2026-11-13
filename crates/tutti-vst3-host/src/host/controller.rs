@@ -264,7 +264,11 @@ impl Wraps for Vst3Controller {
 
     /// Saves the state, with the writes no block has taken yet beside the
     /// component's stream, which does not hold them.
-    fn save_with_pending(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_with_pending(
+        &mut self,
+        main: &MainThread,
+        _state_use: tutti_plugin_types::StateUse,
+    ) -> PluginResult<Vec<u8>> {
         let undrained = self.undrained();
         self.loaded_mut().save_state_with(main, &undrained)
     }

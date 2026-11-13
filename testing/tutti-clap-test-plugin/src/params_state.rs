@@ -1197,6 +1197,9 @@ unsafe fn load_impl(stream: *const clap_istream, context: u32) -> bool {
     let Some((bytes, clean_eof)) = (unsafe { read_all(stream) }) else {
         return false;
     };
+    if crate::subprocess::refuse_load_in_context(context, bytes.get(STATE_MAGIC.len()).copied()) {
+        return false;
+    }
 
     let expected_len = STATE_MAGIC.len() + 1 + PARAMS.len() * (4 + 8);
     let magic_ok = bytes.len() >= STATE_MAGIC.len() && &bytes[..4] == STATE_MAGIC;
@@ -1265,7 +1268,7 @@ unsafe extern "C" fn state_context_save(
     // the refusal as "extension not applicable" and falls back to the plain
     // `state.save` is caught by the context tag on the bytes it returns rather
     // than by their length. Off unless a test armed it — see `crate::refusal`.
-    if crate::refusal::refuse_context_save() {
+    if crate::refusal::refuse_context_save() || crate::subprocess::refuse_state_save() {
         return false;
     }
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
@@ -1281,8 +1284,7 @@ unsafe extern "C" fn state_context_load(
     // REFUSAL: refuse *before* reading, so `load_calls` / `last_load_context`
     // record only the calls the probe actually serviced — a host that falls
     // back to the plain `state.load` then shows up as a load at context 0.
-    crate::subprocess::die_if_state_load_crashes();
-    if crate::refusal::refuse_context_load() {
+    if crate::subprocess::refuse_state_load() || crate::refusal::refuse_context_load() {
         return false;
     }
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and

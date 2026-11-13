@@ -691,6 +691,18 @@ impl PluginBridge {
         self.audio.save_state()
     }
 
+    /// See [`AudioBridge::save_state_for`].
+    ///
+    /// # Errors
+    ///
+    /// As [`AudioBridge::save_state_for`].
+    pub fn save_state_for(
+        &self,
+        state_use: tutti_plugin_types::StateUse,
+    ) -> std::result::Result<Vec<u8>, tutti_plugin_types::StateError> {
+        self.audio.save_state_for(state_use)
+    }
+
     /// The **audio** instance's answer is the one returned.
     ///
     /// The GUI instance is a second dlopen of the same plugin kept only so its

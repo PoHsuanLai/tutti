@@ -382,7 +382,7 @@ fn accepted_sample_rate_change_reaches_the_plugin() {
 
 /// A refused `state_context.save` must not be answered with a plain
 /// `state.save` blob — a substitution that only surfaces later, when someone
-/// loads the preset.
+/// loads the project.
 ///
 /// The probe tags every blob with the context it was saved at, and its plain
 /// `state.save` still succeeds while the context-aware one is armed. So a
@@ -401,8 +401,8 @@ fn refused_context_save_is_not_silently_downgraded() {
     set_state_context_refusal(true, false);
 
     let err = loaded
-        .state_with_context(&main_thread(), StateContext::ForPreset)
-        .expect_err("the plugin refused the preset-context save; the host must not substitute");
+        .state_with_context(&main_thread(), StateContext::ForProject)
+        .expect_err("the plugin refused the project-context save; the host must not substitute");
 
     assert!(matches!(err, ClapError::StateError(_)), "{err:?}");
 
@@ -438,8 +438,8 @@ fn refused_context_load_is_not_retried_context_free() {
     set_state_context_refusal(false, true);
 
     let err = loaded
-        .set_state_with_context(&main_thread(), &blob, StateContext::ForPreset)
-        .expect_err("the plugin refused the preset-context load; the host must not retry");
+        .set_state_with_context(&main_thread(), &blob, StateContext::ForProject)
+        .expect_err("the plugin refused the project-context load; the host must not retry");
 
     assert!(matches!(err, ClapError::StateError(_)), "{err:?}");
 
@@ -465,7 +465,7 @@ fn unrefused_context_save_takes_the_context_aware_path() {
     let loaded = probe.load();
 
     let blob = loaded
-        .state_with_context(&main_thread(), StateContext::ForPreset)
+        .state_with_context(&main_thread(), StateContext::ForProject)
         .expect("nothing armed: the context-aware save succeeds");
     assert!(!blob.is_empty());
 

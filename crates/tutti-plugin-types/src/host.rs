@@ -33,7 +33,7 @@ use crate::{
 };
 use crate::{
     FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
-    RestartRules, TimerId, Wakeups,
+    RestartRules, StateUse, TimerId, Wakeups,
 };
 
 /// What the main thread asks of a plugin, in any state that has one.
@@ -118,6 +118,35 @@ pub trait Control: EditorWindow {
     ///
     /// [`PluginError::State`] when the plugin rejects the bytes.
     fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()>;
+
+    /// The plugin's state as [`save_state`](Self::save_state), for `state_use`.
+    /// A format with one state for every use answers `save_state`, which is
+    /// [`StateUse::Project`].
+    ///
+    /// # Errors
+    ///
+    /// As [`save_state`](Self::save_state).
+    fn save_state_for(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+        let _ = state_use;
+        self.save_state(main)
+    }
+
+    /// Restores state saved by [`save_state_for`](Self::save_state_for) with
+    /// the same `state_use`. A format with one state for every use answers
+    /// `load_state`.
+    ///
+    /// # Errors
+    ///
+    /// As [`load_state`](Self::load_state).
+    fn load_state_for(
+        &mut self,
+        main: &MainThread,
+        bytes: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()> {
+        let _ = state_use;
+        self.load_state(main, bytes)
+    }
 
     /// The plugin's factory presets. Empty when the format has none.
     fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
@@ -429,8 +458,12 @@ pub trait Wraps {
     /// # Errors
     ///
     /// As [`Control::save_state`].
-    fn save_with_pending(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.plugin_mut().save_state(main)
+    fn save_with_pending(
+        &mut self,
+        main: &MainThread,
+        state_use: StateUse,
+    ) -> PluginResult<Vec<u8>> {
+        self.plugin_mut().save_state_for(main, state_use)
     }
 
     /// Appends what the Processor reported to `out`, after the plugin's own,
@@ -512,11 +545,24 @@ impl<W: Wraps> Control for W {
     }
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.save_with_pending(main)
+        self.save_with_pending(main, StateUse::Project)
     }
 
     fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let result = self.plugin_mut().load_state(main, bytes);
+        self.load_state_for(main, bytes, StateUse::Project)
+    }
+
+    fn save_state_for(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+        self.save_with_pending(main, state_use)
+    }
+
+    fn load_state_for(
+        &mut self,
+        main: &MainThread,
+        bytes: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()> {
+        let result = self.plugin_mut().load_state_for(main, bytes, state_use);
         self.after_restore(main);
         result
     }

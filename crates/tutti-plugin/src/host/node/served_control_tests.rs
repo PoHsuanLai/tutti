@@ -39,6 +39,7 @@ fn the_served_control_and_any_thread_answer_alike() {
         tutti_plugin_types::Load::new(),
         SampleRate::SR_48K,
         None,
+        tutti_plugin_types::StateUse::Project,
         Some(crate::format::gui::load_gui_instance),
     )
     .expect("the probe launches in a real plugin-server");
@@ -118,6 +119,7 @@ fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
         tutti_plugin_types::Load::new(),
         SampleRate::SR_48K,
         None,
+        tutti_plugin_types::StateUse::Project,
         None,
     )
     .expect("the probe launches in a real plugin-server with no editor loader");

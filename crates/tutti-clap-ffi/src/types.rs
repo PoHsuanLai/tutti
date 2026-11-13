@@ -30,7 +30,7 @@ use clap_sys::ext::params::{
     CLAP_PARAM_RESCAN_VALUES, clap_param_info,
 };
 use clap_sys::ext::state_context::{
-    CLAP_STATE_CONTEXT_FOR_DUPLICATE, CLAP_STATE_CONTEXT_FOR_PRESET, CLAP_STATE_CONTEXT_FOR_PROJECT,
+    CLAP_STATE_CONTEXT_FOR_DUPLICATE, CLAP_STATE_CONTEXT_FOR_PROJECT,
 };
 use clap_sys::ext::voice_info::clap_voice_info;
 use clap_sys::process::{
@@ -137,12 +137,10 @@ impl ProcessStatus {
 
 /// Which use-case a state save or load is for (`clap.state-context`).
 ///
-/// The plugin may serialize differently per context: a preset typically
-/// excludes the project-specific bindings a project save keeps.
+/// The plugin may serialize differently per context. The host reaches two of
+/// the three the extension defines: it has no preset save.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateContext {
-    /// Saving or loading a user preset.
-    ForPreset,
     /// Saving or loading as part of the enclosing project.
     ForProject,
     /// Duplicating an existing instance.
@@ -154,9 +152,18 @@ impl StateContext {
     #[must_use]
     pub fn raw(self) -> u32 {
         match self {
-            Self::ForPreset => CLAP_STATE_CONTEXT_FOR_PRESET,
             Self::ForProject => CLAP_STATE_CONTEXT_FOR_PROJECT,
             Self::ForDuplicate => CLAP_STATE_CONTEXT_FOR_DUPLICATE,
+        }
+    }
+}
+
+impl From<tutti_plugin_types::StateUse> for StateContext {
+    fn from(state_use: tutti_plugin_types::StateUse) -> Self {
+        use tutti_plugin_types::StateUse;
+        match state_use {
+            StateUse::Project => Self::ForProject,
+            StateUse::Duplicate => Self::ForDuplicate,
         }
     }
 }

@@ -612,8 +612,12 @@ pub(super) fn handle(
         Command::Shutdown => {
             ipc::send(stream, &HostMessage::Shutdown)?;
         }
-        Command::SaveState { progress, reply } => {
-            ipc::send(stream, &HostMessage::SaveState)?;
+        Command::SaveState {
+            state_use,
+            progress,
+            reply,
+        } => {
+            ipc::send(stream, &HostMessage::SaveState { state_use })?;
             reply.send(recv_state(stream, inbox, owed, channels, &progress)?);
         }
         Command::LoadState {

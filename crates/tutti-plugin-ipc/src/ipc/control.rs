@@ -11,7 +11,7 @@ use tutti_plugin_types::{
     EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Features, Health, LoadedPlugin,
     MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure,
     PluginResult, Preset, PresetId, RenderMode, RenderModeSupport, Request, SampleRate, StateError,
-    TerminationReason, WindowHandle,
+    StateUse, TerminationReason, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -210,6 +210,17 @@ macro_rules! served_control {
 
             fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
                 AnyThread::save_state(self).map_err(PluginError::StateFailed)
+            }
+
+            fn save_state_for(
+                &mut self,
+                _main: &MainThread,
+                state_use: StateUse,
+            ) -> PluginResult<Vec<u8>> {
+                self.link
+                    .bridge
+                    .save_state_for(state_use)
+                    .map_err(PluginError::StateFailed)
             }
 
             fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {

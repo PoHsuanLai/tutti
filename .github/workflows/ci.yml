@@ -273,7 +273,6 @@ jobs:
       # The CoreMIDI backend: the native-UMP source and the host clock are
       # `tutti-coremidi-ffi`'s, the rest of the backend is `tutti-midi-hardware`'s.
       - run: cargo clippy --locked -p tutti-coremidi-ffi -p tutti-midi-hardware --all-targets -- -D warnings
-      - run: cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
       # The editor loader's AU arm (`format/gui`) is compiled here only; the AU
       # contract suite (`tutti-plugin-contract`'s `tests/au.rs`, the shared plugin's AU shell) runs in
       # the macOS `test` job.
@@ -375,12 +374,6 @@ jobs:
       #                         watch tests over `ManualStreamDriver`). With `audio-io`,
       #                         tests/io/device_input.rs (the inputs a restart
       #                         reopens, over a test's own capture).
-      #   tutti-au-host/installed-units — linted by the macOS clippy job (the
-      #                         crate is empty on Linux) and run only locally
-      #                         (`cargo xtask test-au-installed`, part of `test-all`):
-      #                         it asserts a claim about third-party Audio
-      #                         Units installed on the machine, and fails,
-      #                         never skips, where there are none
       #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
       #                         only locally (`cargo xtask test-features`): the suite
       #                         needs the kernel's `snd-seq` module, which the
@@ -621,10 +614,6 @@ jobs:
       # editor on the process main thread; it answers nextest's
       # `--list --format terse` and `<case> --exact`, so it runs here like any
       # other binary.
-      # `no_installed_third_party_unit_implements_the_mapping_family` is behind
-      # `tutti-au-host`'s `installed-units` feature, which this run leaves off:
-      # it asserts a claim about third-party Audio Units installed on the
-      # machine and fails, never skips, where there are none.
       - name: Test
         shell: bash
         run: |

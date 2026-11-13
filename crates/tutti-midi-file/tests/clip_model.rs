@@ -544,7 +544,7 @@ fn two_header_set_tempos_are_refused() {
     assert_eq!(clip_error(&parts), ClipFileError::DuplicateHeaderTempo);
 }
 
-/// Section 6.1.1: the Set Tempo "shall" be the first message after the DCTPQ,
+/// Section 6.1.1: the Set Tempo is the first message after the DCTPQ,
 /// at a delta of 0 (or sharing the DCTPQ's DCS, which is also 0).
 #[test]
 fn a_header_set_tempo_not_first_or_not_at_delta_zero_is_misplaced() {
@@ -702,8 +702,8 @@ fn ci(sub_id2: u8, status: tutti_ump::SysexStatus) -> Ump {
     sysex7(status, &[0x7E, 0x7F, 0x0D, sub_id2, 0, 0])
 }
 
-/// Section 3.2.1 and section 6: "The DCTPQ shall have a preceding Delta
-/// Clockstamp (DCS) with Number of Ticks Since Last Event set to 0x00000."
+/// Section 3.2.1 and section 6: the DCTPQ has a preceding Delta
+/// Clockstamp (DCS) with its tick count set to 0.
 #[test]
 fn the_dctpq_has_a_zero_delta_clockstamp_before_it() {
     let tail = [dcs(0), start(), dcs(0), end()];
@@ -724,8 +724,8 @@ fn the_dctpq_has_a_zero_delta_clockstamp_before_it() {
     );
 }
 
-/// Section 6: "Set Profile On messages shall not have a prepended Delta
-/// Clockstamp (DCS)."
+/// Section 6: a Set Profile On message has no Delta
+/// Clockstamp (DCS) before it.
 #[test]
 fn a_set_profile_on_has_no_delta_clockstamp_before_it() {
     let after = [dcs(0), dctpq(TPQ), dcs(0), start(), dcs(0), end()];
@@ -754,10 +754,9 @@ fn a_set_profile_on_has_no_delta_clockstamp_before_it() {
     );
 }
 
-/// Section 6.1.2: the header's Set Time Signature "shall use the Delta
-/// Clockstamp which precedes the DCTPQ message or shall have a preceding Delta
-/// Clockstamp with Number of Ticks Since Last Event set to 0x00000", as the Set
-/// Tempo does (section 6.1.1).
+/// Section 6.1.2: the header's Set Time Signature uses the Delta
+/// Clockstamp that precedes the DCTPQ or has a preceding one of 0 ticks, as the
+/// Set Tempo does (section 6.1.1).
 #[test]
 fn the_header_time_signature_is_at_delta_zero() {
     for header in [
@@ -782,9 +781,9 @@ fn the_header_time_signature_is_at_delta_zero() {
     ));
 }
 
-/// Section 6.4: "Property Data for PE Resources shall not be included in a MIDI
-/// Clip File." Section 7.2: the sequence data holds "any MIDI messages in UMP
-/// Format, except Property Exchange messages". Property Exchange is MIDI-CI
+/// Section 6.4: Property Data for PE Resources is not included in a Clip File.
+/// Section 7.2: the sequence data holds any UMP message but Property
+/// Exchange. Property Exchange is MIDI-CI
 /// sub-ID#2 `0x30` to `0x3F` (M2-101 Table 5), so its neighbours are fine.
 #[test]
 fn property_exchange_is_refused_everywhere() {
@@ -843,9 +842,9 @@ fn property_exchange_is_refused_everywhere() {
     }
 }
 
-/// Section 6.1: "the cumulative values of all Delta Clockstamp up to and
-/// including the Delta Clockstamp for the Start of Clip Message determines the
-/// total length of time allocated to the Clip Configuration Header." The last
+/// Section 6.1: the Delta Clockstamps up to and including the one for the
+/// Start of Clip add up to the time allocated to the Clip Configuration
+/// Header. The last
 /// gap is kept, read and written.
 #[test]
 fn the_header_keeps_its_duration() {
@@ -917,11 +916,10 @@ fn text_packets(kind: tutti_ump::FlexTextKind, text: &str) -> Vec<(Tick, FileEve
         .collect()
 }
 
-/// M2-104 sections 7.5.10 and 7.5.12: "When placed in a MIDI Clip File, all parts
-/// of the Lyric Data Message shall be placed at the same time, sharing a single
-/// Delta Clock Stamp", and M2-116 section 3.2.2: a Delta Clockstamp "declares the
-/// time of all following messages which occur before the next Delta Clockstamp
-/// message". The parts of a Lyric or Ruby message are written behind one DCS;
+/// M2-104 sections 7.5.10 and 7.5.12: in a Clip File all parts of a Lyric
+/// Data Message are placed at the same time, sharing one Delta Clockstamp, and
+/// M2-116 section 3.2.2: a Delta Clockstamp sets the time of the messages that
+/// follow it until the next one. The parts of a Lyric or Ruby message are written behind one DCS;
 /// the parts of any other message, and separate messages, keep their own.
 #[test]
 fn the_parts_of_a_lyric_or_ruby_message_share_one_delta_clockstamp() {

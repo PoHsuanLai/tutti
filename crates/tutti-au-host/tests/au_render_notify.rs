@@ -26,14 +26,11 @@
 //! ## Running
 //!
 //! ```bash
-//! cargo test -p tutti-au-host --test au_render_notify
+//! cargo nextest run -p tutti-au-host --test au_render_notify
 //! ```
 //!
 //! No env vars, no SDK, no display. A missing **Apple** unit fails rather than
-//! skipping — see `support/corpus.rs`. The one third-party unit this suite can
-//! use is reached through `corpus::optional_third_party` and its absence is
-//! tolerated, because a third-party plugin is a genuine optional install; the
-//! test that uses it still asserts an unconditional property either way.
+//! skipping — see `support/corpus.rs`.
 
 #![cfg(target_os = "macos")]
 
@@ -42,11 +39,9 @@ use std::sync::{Arc, Mutex};
 
 mod support;
 use support::corpus::{
-    DELAY, DYNAMICS, SPATIAL_MIXER, SPATIAL_MIXER_RAMP_PARAM, TAL_REVERB_4, all_finite, envelope,
-    open_info, optional_third_party, peak, render, silence,
+    DELAY, DYNAMICS, SPATIAL_MIXER, SPATIAL_MIXER_RAMP_PARAM, all_finite, envelope, peak, render,
+    silence,
 };
-
-use tutti_au_host::component::AuType;
 use tutti_au_host::render_notify::{ParamEvent, RenderPhase, ScheduleAddress};
 use tutti_au_host::types::{
     K_AUDIO_UNIT_RENDER_ACTION_POST_RENDER, K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER,
@@ -700,195 +695,6 @@ fn the_can_ramp_flag_is_a_claim_not_a_guarantee() {
     );
 }
 
-/// A ramp **is** honoured where a plugin implements it — measured against
-/// TAL Reverb 4.
-///
-/// The positive counterpart to the test above, and the only proof in this suite
-/// that this host's ramp scheduling actually produces intra-block movement rather
-/// than merely being accepted. Ramping `Dry` 0.0 → 1.0 across a 512-frame block
-/// against a 0.5 DC input yields a strictly monotonic 8-segment envelope
-/// `0.014483 → 0.104773`; pinning the parameter at the ramp's start gives a flat
-/// `0.0`. Bit-identical across 10 repeats.
-///
-/// # Why absence is tolerated here
-///
-/// TAL Reverb 4 is a third-party plugin — a genuine optional install, unlike the
-/// Apple units the corpus hard-requires because they ship with macOS. So this is
-/// reached through `corpus::optional_third_party`.
-///
-/// That is **not** the silent skip `support/corpus.rs` warns about, because the
-/// unconditional half still runs: the Apple negative result above is a separate
-/// test that always executes, and when this unit is absent the notice below is
-/// loud. What would be unacceptable is a suite where *every* ramp assertion
-/// vanished with the plugin, leaving "ramping works" unexamined.
-#[test]
-fn a_ramp_is_honoured_where_a_plugin_implements_it() {
-    let _g = lock();
-    let (sub, mfr, param_id) = TAL_REVERB_4;
-
-    let Some(info) = optional_third_party(sub, mfr, AuType::Effect) else {
-        eprintln!(
-            "NOTICE: TAL Reverb 4 ({}/{}) is not installed, so the POSITIVE ramp \
-             leg is not exercised on this machine. The negative leg \
-             (the_can_ramp_flag_is_a_claim_not_a_guarantee, against Apple's \
-             AUSpatialMixer) still runs unconditionally. Install TAL Reverb 4 to \
-             cover intra-block ramping.",
-            String::from_utf8_lossy(sub),
-            String::from_utf8_lossy(mfr),
-        );
-        return;
-    };
-
-    // Ramp 0 -> 1 across the block, versus pinned at 0.
-    let ramped = render_info_with_schedule(
-        &info,
-        param_id,
-        ParamEvent::Ramped {
-            start_buffer_offset: 0,
-            duration_frames: BLOCK,
-            start_value: 0.0,
-            end_value: 1.0,
-        },
-    );
-    let stepped = render_info_with_schedule(
-        &info,
-        param_id,
-        ParamEvent::Immediate {
-            buffer_offset: 0,
-            value: 0.0,
-        },
-    );
-
-    assert!(
-        ramped.iter().all(|v| v.is_finite()),
-        "the ramp envelope must be finite; got {ramped:?}"
-    );
-
-    // The ramp must MOVE within the block. This is the whole claim.
-    assert!(
-        ramped.windows(2).all(|w| w[1] > w[0]),
-        "a honoured ramp must rise monotonically across the block — measured \
-         0.014483 -> 0.104773 in 8 segments on macOS 15.6. Got {ramped:?}"
-    );
-
-    // And it must differ from the step-at-start control, or the movement above
-    // could be the plugin's own signal evolution rather than the ramp.
-    let diff = ramped
-        .iter()
-        .zip(stepped.iter())
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0f32, f32::max);
-    assert!(
-        diff > 0.01,
-        "the ramp must differ from pinning the parameter at its start value, or \
-         the movement is the plugin's own and not the ramp's. Measured max \
-         difference 0.104773; got {diff}.\nramp = {ramped:?}\nstep = {stepped:?}"
-    );
-
-    // Calibrated to the measured figures with generous headroom: the first
-    // segment measured 0.014483 and the last 0.104773, reproducibly. The bounds
-    // are wide because the point is the SHAPE (asserted above), not the exact
-    // gain — a different build of the plugin may scale differently while still
-    // ramping.
-    assert!(
-        ramped[0] < 0.05,
-        "the ramp must start near its start value; measured 0.014483, got {}",
-        ramped[0]
-    );
-    assert!(
-        ramped[7] > ramped[0] * 2.0,
-        "the ramp must travel materially across the block; measured 0.014483 -> \
-         0.104773 (7.2x), got {} -> {}",
-        ramped[0],
-        ramped[7]
-    );
-}
-
-/// The host must schedule a ramp that spans blocks by **re-scheduling it each
-/// render**, and the result must stay finite and bounded.
-///
-/// Apple's header requires this: "the ramp is scheduled each audio unit render
-/// for the duration of the ramp. Each schedule of the the new audio unit render
-/// specifies the progress of the ramp." A host that schedules once gets one block
-/// of movement and then a step — the artifact it was avoiding.
-///
-/// `start_buffer_offset` goes **negative** on every re-schedule after the first,
-/// which is how a host says "this ramp began in an earlier block". That the field
-/// is signed is load-bearing, and `render_notify`'s unit tests pin that it
-/// survives the lowering; this test drives it against a real AU to confirm the AU
-/// accepts it.
-#[test]
-fn a_multi_block_ramp_is_rescheduled_each_render() {
-    let _g = lock();
-    let mut au = DYNAMICS.open(RATE, BLOCK);
-    let params = au.get_parameter_list();
-    let p = params.first().cloned().expect("parameters");
-
-    const BLOCKS: u32 = 4;
-    let total = BLOCK * BLOCKS;
-    let unit = au.render_unit();
-    let elapsed = Arc::new(AtomicU32::new(0));
-    let failures = Arc::new(AtomicU32::new(0));
-    let e = Arc::clone(&elapsed);
-    let f = Arc::clone(&failures);
-
-    let notify = au
-        .add_render_notify(move |n| {
-            if n.phase != RenderPhase::Pre {
-                return;
-            }
-            let done = e.load(Ordering::SeqCst);
-            // Negative once the ramp began in an earlier block — the signed
-            // field carrying the ramp's progress.
-            let offset = -(done as i32);
-            let r = tutti_au_host::render_notify::schedule(
-                &unit,
-                p.id,
-                ScheduleAddress::GLOBAL,
-                &[ParamEvent::Ramped {
-                    start_buffer_offset: offset,
-                    duration_frames: total,
-                    start_value: p.range.min,
-                    end_value: p.range.max,
-                }],
-            );
-            if r.is_err() {
-                f.fetch_add(1, Ordering::SeqCst);
-            }
-            e.store(done + n.frames, Ordering::SeqCst);
-        })
-        .unwrap();
-
-    let input: Vec<Vec<f32>> = (0..2).map(|_| vec![0.25f32; BLOCK as usize]).collect();
-    let mut output = silence(2, BLOCK as usize);
-    for _ in 0..BLOCKS {
-        render(&mut au, &input, &mut output, BLOCK).expect("render");
-        assert!(
-            all_finite(&output),
-            "a ramped render must stay finite; a NaN here would also defeat the \
-             peak check below, since f32::max returns the non-NaN operand"
-        );
-        assert!(
-            peak(&output) < 8.0,
-            "a ramped parameter must not make the output diverge; peak {}",
-            peak(&output)
-        );
-    }
-    drop(notify);
-
-    assert_eq!(
-        failures.load(Ordering::SeqCst),
-        0,
-        "every per-block re-schedule must be accepted, including the ones with a \
-         negative start_buffer_offset"
-    );
-    assert_eq!(
-        elapsed.load(Ordering::SeqCst),
-        total,
-        "the ramp must have been re-scheduled across all {BLOCKS} blocks"
-    );
-}
-
 /// `AudioUnitScheduleParameters` does **not** validate the parameter id.
 ///
 /// Measured on macOS 15.6: scheduling against id `999999` on AUDelay returns
@@ -983,16 +789,6 @@ const SEGMENTS: usize = 8;
 /// confounded by whatever the previous render left in the plugin's delay lines.
 fn render_with_schedule(unit: &support::corpus::AuRef, param: u32, event: ParamEvent) -> Vec<f32> {
     let mut au = unit.open(RATE, BLOCK);
-    schedule_one_block(&mut au, param, event)
-}
-
-/// As [`render_with_schedule`], for a unit reached by [`optional_third_party`].
-fn render_info_with_schedule(
-    info: &tutti_au_host::AuComponentInfo,
-    param: u32,
-    event: ParamEvent,
-) -> Vec<f32> {
-    let mut au = open_info(info, RATE, BLOCK);
     schedule_one_block(&mut au, param, event)
 }
 

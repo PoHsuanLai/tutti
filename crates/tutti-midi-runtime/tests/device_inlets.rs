@@ -1,8 +1,8 @@
-//! `DeviceInlets` and `DeviceInput` (doc 017 stage E5): a device's thread places
+//! `DeviceInlets` and `DeviceInput`: a device's thread places
 //! each arrival on a frame with a `ClockMap` fed the engine's block clock, and
 //! pushes it into its own event inlet. Figures are analytic: a reading says OS
 //! time `T` is frame `F`, so an arrival `d` after `T` is frame `F + d * rate`,
-//! plus the lead (doc 017 section 5, "Timing at the edge").
+//! plus the lead.
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};

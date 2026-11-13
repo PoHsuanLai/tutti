@@ -424,7 +424,7 @@ fn the_later_of_two_tempos_on_one_tick_governs() {
     assert_eq!(file.tempo_map().tempo_at(Beat(0.0)), Bpm::of(60.0));
 }
 
-/// A zero microseconds-per-quarter is "no valid tempo": kept as an event,
+/// A zero microseconds-per-quarter is no valid tempo: kept as an event,
 /// absent from the map. Any other value is a tempo, however absurd (1 us is 60
 /// million BPM, 0xFFFFFF us about 3.58 BPM).
 #[test]
@@ -454,7 +454,7 @@ fn a_zero_tempo_is_not_a_tempo_and_an_absurd_one_is_read_as_written() {
 }
 
 /// Writing a tempo above the wire's range writes the fastest quarter, 1 us,
-/// not the wire's "no valid tempo" zero.
+/// not the wire's no-valid-tempo zero.
 #[test]
 fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
     assert_eq!(

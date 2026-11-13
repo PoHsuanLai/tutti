@@ -8,8 +8,8 @@
 //! of one Group of the connection (a [`Decoded`] from
 //! [`CiMessage::decode`]), and sends every [`CiAction::Send`].
 //!
-//! tutti has no Function Block, so the device is one that "is not associated with a
-//! Function Block" (§5.6.2): it speaks with Device ID `0x7F` and answers Discovery
+//! tutti has no Function Block, so the device is one that is not associated with a
+//! Function Block (§5.6.2): it speaks with Device ID `0x7F` and answers Discovery
 //! with Function Block `0x7F`. A device with Function Blocks would owe a Function Block
 //! Info Change Alert (UMP) whenever its MUID changes (§3.3.1); this one has none to
 //! alert, and [`CiAction::MuidChanged`] is how the caller learns of the change.
@@ -51,13 +51,13 @@
 //!   another MUID, one to the Broadcast MUID, an ACK and a NAK are never NAK'd.
 //! - Profile Configuration as Responder (§7, M2-102 §2.4 to §2.7): tutti has no Profiles, and
 //!   its Discovery does not declare the category. A Profile Inquiry to the device is
-//!   still answered, "may" for a device that declares no Profile Configuration (§7.13): a Reply
+//!   still answered, optionally for a device that declares no Profile Configuration (§7.13): a Reply
 //!   on the address the Inquiry used, with both lists empty, so an Initiator that asked the
-//!   Function Block gets the final Reply on `0x7F` "to indicate that no further replies will
-//!   follow" (M2-102 §2.4). A Set Profile On, Set Profile Off or Profile Details
+//!   Function Block gets the final Reply on `0x7F`, which shows that no further replies will
+//!   follow (M2-102 §2.4). A Set Profile On, Set Profile Off or Profile Details
 //!   Inquiry is a Profile the device does not support: a NAK with Status `0x04`, whose
-//!   details are the Profile Id (M2-101 §5.11.3, M2-102 §2.4, §2.6, §2.7: "should reply with
-//!   a MIDI-CI NAK"), on the address it came on. A Reply, Report, Details Reply or Profile
+//!   details are the Profile Id (M2-101 §5.11.3, M2-102 §2.4, §2.6, §2.7: the device should reply
+//!   with a NAK), on the address it came on. A Reply, Report, Details Reply or Profile
 //!   Specific Data is the Initiator's to read ([`ProfileInitiator`](super::ProfileInitiator))
 //!   and is ignored here; Profile Specific Data to a device with no Profiles is not answered,
 //!   as nothing requires it and a NAK of data would invite one back.
@@ -67,8 +67,8 @@
 //!   §5.7 and §5.8 give none, the id is a convenience (Appendix A.1.1), and a peer
 //!   that never answers is just one with no id.
 //! - Endpoint Inquiry as Responder (§5.8): tutti has no UMP Endpoint Product
-//!   Instance Id to report, so it NAKs ("If the Device is not able to provide the
-//!   requested information ... it should reply with a MIDI-CI NAK"), status `0x00`.
+//!   Instance Id to report, so it NAKs (§5.8: a device that cannot provide the
+//!   requested information replies with a NAK), status `0x00`.
 //!
 //! Every new MUID is drawn from the `entropy` the caller gave, redrawn while it is
 //! reserved, the device's own or a found peer's. The closure must not return one
@@ -89,7 +89,7 @@ use tutti_ump::FunctionBlockId;
 
 use crate::name::ProductInstanceId;
 
-/// How long a Discovery waits for its replies: "at least 3 seconds" (§5.5.5).
+/// How long a Discovery waits for its replies: at least 3 seconds (§5.5.5).
 pub const DISCOVERY_WINDOW: Duration = Duration::from_secs(3);
 
 /// What the driver does next.
@@ -327,8 +327,8 @@ impl<R: FnMut() -> u32> CiDevice<R> {
             }
             CiMessage::ProfileInquiry { header, to } => {
                 if *to == self.muid {
-                    // §7.13: "Number of Currently Enabled Profiles set to 0x00 and ...
-                    // Disabled Profiles Supported set to 0x00", on the address asked.
+                    // §7.13: both counts, enabled and disabled Profiles, are 0x00, on the
+                    // address asked.
                     actions.push(CiAction::Send(CiMessage::ProfileReply {
                         header: CiHeader {
                             device_id: header.device_id,

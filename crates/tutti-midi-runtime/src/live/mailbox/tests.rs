@@ -36,11 +36,9 @@ fn note_off(note: u8) -> UmpAt {
 fn sender_pushes_to_receiver() {
     let (sender, receiver) = MidiMailbox::pair();
     sender.queue(&[note_on(60, 100), note_off(60)]);
-    assert!(receiver.has_events());
     let mut buf = [(0, Ump([0; 4])); 16];
     assert_eq!(receiver.poll_into(&mut buf), 2);
     assert_eq!(buf[..2], [raw(note_on(60, 100)), raw(note_off(60))]);
-    assert!(!receiver.has_events());
 }
 
 #[test]

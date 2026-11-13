@@ -118,7 +118,7 @@ fn the_bend_ranges_are_set_independently() {
 }
 
 /// **A zone starts at MPE's default ranges per role** (RP-053 / M1-100-UM,
-/// "Pitch Bend Sensitivity": the master channel 2 semitones, every member 48,
+/// Pitch Bend Sensitivity: the master channel 2 semitones, every member 48,
 /// what a receiver of an MCM resets to).
 #[test]
 fn zones_default_to_rp053_ranges_per_role() {

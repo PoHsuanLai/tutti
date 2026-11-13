@@ -452,7 +452,7 @@ fn flex(w: [u32; 4]) -> Option<Flex> {
             }))
         }
         (0x00, 0x05) if complete => {
-            // A signed nibble: `-8` is "unknown or non-standard".
+            // A signed nibble: `-8` is unknown or non-standard.
             let sharps_flats = ((w[1] >> 28) as i8) << 4 >> 4;
             Some(Flex::SetKeySignature(
                 address,

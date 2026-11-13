@@ -49,7 +49,7 @@ fn discovery_round_trips() {
     };
     let bytes = msg.encode();
     assert_eq!(bytes[3], SUB_ID2_DISCOVERY);
-    assert_eq!(bytes.len(), CiHeader::LEN + DiscoveryData::DISCOVERY_LEN);
+    assert_eq!(bytes.len(), 13 + 17);
     assert_eq!(decoded(&bytes), msg);
 }
 
@@ -62,22 +62,17 @@ fn discovery_and_reply_have_the_version_2_trailers() {
 
     let mut discovery = Vec::new();
     d.encode_body(false, &mut discovery);
-    assert_eq!(discovery.len(), DiscoveryData::DISCOVERY_LEN);
+    assert_eq!(discovery.len(), 17);
     assert_eq!(
-        discovery[DiscoveryData::BODY_LEN],
-        0x05,
+        discovery[16], 0x05,
         "Output Path ID is the last Discovery byte"
     );
 
     let mut reply = Vec::new();
     d.encode_body(true, &mut reply);
-    assert_eq!(reply.len(), DiscoveryData::REPLY_LEN);
-    assert_eq!(reply[DiscoveryData::BODY_LEN], 0x05, "path id echoed");
-    assert_eq!(
-        reply[DiscoveryData::BODY_LEN + 1],
-        0x03,
-        "Function Block follows it"
-    );
+    assert_eq!(reply.len(), 18);
+    assert_eq!(reply[16], 0x05, "path id echoed");
+    assert_eq!(reply[16 + 1], 0x03, "Function Block follows it");
 
     // Both directions decode back to what they encoded.
     assert_eq!(
@@ -94,13 +89,13 @@ fn discovery_and_reply_have_the_version_2_trailers() {
 
 #[test]
 fn a_version_1_body_still_decodes() {
-    // §5.3: a receiver must "process the fields, values, and bits defined in
-    // the received version" when it is lower than its own. A v1 peer sends
+    // §5.3: a receiver processes only the fields, values and bits of
+    // the received version when it is lower than its own. A v1 peer sends
     // the body with no Version-2 trailer at all.
     let d = sample_discovery();
     let mut body = Vec::new();
     d.encode_body(true, &mut body);
-    body.truncate(DiscoveryData::BODY_LEN); // strip the v2 trailer
+    body.truncate(16); // strip the v2 trailer
 
     let back = DiscoveryData::decode_body(true, &body).expect("v1 body decodes");
     assert_eq!(back.identity, d.identity);
@@ -148,8 +143,21 @@ fn categories_survive_round_trip() {
     assert!(!back.categories.contains(CiCategories::PROCESS_INQUIRY));
 }
 
-// §5.5.3: "The allowed values in the Receivable Maximum SysEx Message Size are
-// 128 or greater."
+// Table 7: D2 Profile Configuration, D3 Property Exchange, D4 Process Inquiry;
+// D1, Protocol Negotiation, is deprecated, so a 1.1 peer's D1 is not read.
+#[test]
+fn the_category_bits_are_table_7s_and_a_peers_deprecated_d1_is_dropped() {
+    assert_eq!(CiCategories::PROFILE_CONFIGURATION.bits(), 0x04);
+    assert_eq!(CiCategories::PROPERTY_EXCHANGE.bits(), 0x08);
+    assert_eq!(CiCategories::PROCESS_INQUIRY.bits(), 0x10);
+    let mut body = Vec::new();
+    sample_discovery().encode_body(true, &mut body);
+    body[11] = 0x02 | 0x04;
+    let back = DiscoveryData::decode_body(true, &body).expect("decodes");
+    assert_eq!(back.categories, CiCategories::PROFILE_CONFIGURATION);
+}
+
+// §5.5.3: the Receivable Maximum SysEx Message Size is 128 or greater.
 #[test]
 fn a_receivable_size_under_128_is_malformed() {
     let mut body = Vec::new();
@@ -170,13 +178,13 @@ fn a_receivable_size_under_128_is_malformed() {
     assert!(is_malformed(&body, false));
 }
 
-// §5.6.2: the Function Block is "the number of the Function Block", 0 to 31, or
-// "0x7F (no Function Block)"; the numbers between are not a Function Block.
+// §5.6.2: the Function Block is the number of the Function Block, 0 to 31, or
+// 0x7F for none; the numbers between are not a Function Block.
 #[test]
 fn the_function_block_of_a_reply_is_0_to_31_or_none() {
     let mut body = Vec::new();
     sample_discovery().encode_body(true, &mut body);
-    let at = DiscoveryData::BODY_LEN + 1;
+    let at = 16 + 1;
     for (raw, expected) in [(0, Some(0)), (31, Some(31)), (0x7F, None)] {
         body[at] = raw;
         let got = DiscoveryData::decode_body(true, &body).unwrap();

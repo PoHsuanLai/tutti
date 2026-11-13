@@ -122,7 +122,7 @@ reason as above.
 
 ```rust,no_run
 # use std::path::Path;
-# use tutti_plugin_types::{Control, Normalized, ParamId};
+# use tutti_plugin_types::{Control, Normalized, ParamId, StateUse};
 # use tutti_vst3_host::{LoadOptions, Vst3Loaded};
 # fn ex() -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
@@ -151,8 +151,8 @@ if let Some(&id) = plugin.parameter_ids(&main).first() {
 
 // State save/restore is legal before any buffer exists — a project load
 // restores state before the transport rolls.
-let saved = plugin.save_state(&main)?;
-plugin.load_state(&main, &saved)?;
+let saved = plugin.save_state(&main, StateUse::Project)?;
+plugin.load_state(&main, &saved, StateUse::Project)?;
 
 // One drain, four kinds of news — not a poller per kind. Edits, progress and
 // unit news come to the closure in arrival order; `restartComponent` requests

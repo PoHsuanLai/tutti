@@ -1,4 +1,4 @@
-//! [`Modulation`]: the reconcile step (design doc 014 §8.2).
+//! [`Modulation`]: the reconcile step.
 //!
 //! A host declares sources, routes and targets ([`Declarations`]); this
 //! compiles them ([`tutti_modulation::compile`]) and applies the difference to an
@@ -56,7 +56,7 @@ pub enum Target {
     /// A native param port (`TargetKey::param` a `ParamAddr::Unit` or
     /// `ParamAddr::Indexed`; a host resolves both, `ParamAddr::as_unit`): the
     /// node, and its own `Param` cell for the param (`ParamSet::cell`), the
-    /// lane's knob (doc 014 §4.2). `None`: no knob, the base is automation
+    /// lane's knob. `None`: no knob, the base is automation
     /// alone.
     Native {
         /// The node the param is on.
@@ -94,7 +94,7 @@ pub enum Target {
         id: EdgeId,
     },
     /// The mix of a node (`TargetKey::Mix`): the node's blend with its aligned
-    /// input (doc 013, "Bypass and mute are graph state"). The lane drives it
+    /// input. The lane drives it
     /// through [`GraphSpec::connect_param`](tutti_graph::GraphSpec::connect_param)
     /// at [`NodeMix::ADDR`] and clamps to the port's range (narrowed to
     /// `0..=1`). Its knob is the node's own mix cell
@@ -128,7 +128,7 @@ pub enum ReconcileError {
     #[error("modulation does not compile")]
     Compile(#[from] CompileError),
     /// A route from a signal source whose input is downstream of the route's
-    /// own target (doc 014 §6): its edge would close a cycle.
+    /// own target: its edge would close a cycle.
     #[error("route {}: its source's input is downstream of its target", route.0)]
     Cycle {
         /// The route.
@@ -339,7 +339,7 @@ struct SourcePlan {
     width: ChannelLayout,
 }
 
-/// The modulation reconciler (doc 014 §8.2): declarations in, lanes,
+/// The modulation reconciler: declarations in, lanes,
 /// signal-source nodes and event edges in an [`Editor`] out.
 ///
 /// Each [`apply`](Self::apply) compiles against the previous compile (so
@@ -1286,7 +1286,7 @@ impl Modulation {
                 // The port's range cell is the one a commit handed out for
                 // the unit the last plan has at the node. The next commit
                 // keeps the key's cells for a unit declaring the same params
-                // and gives fresh ones for another list (doc 014 §4.2). So a
+                // and gives fresh ones for another list. So a
                 // node not in that plan yet, or replaced since by a unit
                 // with another list, waits for the commit: a lane built on
                 // the cell now would read one nothing writes. A replace
@@ -1372,7 +1372,7 @@ impl Modulation {
     }
 
     /// Refuses, by route, an edge from a signal source to a target whose
-    /// node reaches the source's input (doc 014 §6). The graph is the spec
+    /// node reaches the source's input. The graph is the spec
     /// as it stands without this reconciler's own lanes and source wiring,
     /// plus what this apply would wire: each source's feed, and each edge as
     /// source → target node.

@@ -1,6 +1,5 @@
-//! The modulation reconciler (`tutti_nodes::Modulation`, doc 014
-//! §8.2, §12.5): declarations applied to a plain `Editor`, rendered by its
-//! executor, against analytic figures and invariants of the render.
+//! The modulation reconciler (`tutti_nodes::Modulation`): declarations applied to a plain
+//! `Editor`, rendered by its executor, against analytic figures and invariants of the render.
 //!
 //! The no-allocation
 //! gate across an `apply` that republishes is in `rt_no_alloc_modulation.rs`,
@@ -459,14 +458,14 @@ fn lfo_value(depth: f64, rate: f64, play: usize) -> f64 {
     500.0 + 1000.0 * depth * (std::f64::consts::TAU * rate * play as f64 / RATE).sin()
 }
 
-/// Doc 014 §5.3's bound for a linear sine at `rate` on a 32-frame grid,
+/// The bound for a linear sine at `rate` on a 32-frame grid,
 /// times the swing, plus `f32` rounding of values near 1000.
 fn lfo_tolerance(depth: f64, rate: f64) -> f64 {
     let h = std::f64::consts::TAU * rate * STEP as f64 / RATE;
     h * h / 8.0 * 1000.0 * depth + 1e-3
 }
 
-/// The §8.1 rig: an LFO (2 Hz sine, depth 0.3) on probe 1's cutoff
+/// The rig: an LFO (2 Hz sine, depth 0.3) on probe 1's cutoff
 /// (`0..=1000`, knob 500), and a follower of a stereo pulse (0.8 on frames
 /// `4800..7200`, attack 1 ms, release 50 ms) on probe 2 (`0..=1`, knob
 /// 0.8) at depth −0.6.
@@ -517,7 +516,7 @@ fn rig(max: usize) -> Rig {
 }
 
 /// The follower's analytic level at grid point `g`, and its one-step-late
-/// linear piece at frame `f` (doc 014 §6): `signal_sources.rs`' figure.
+/// linear piece at frame `f`: `signal_sources.rs`' figure.
 fn ducked(f: usize) -> f64 {
     let pole = |tau: f64| (-1.0 / (tau * RATE)).exp();
     let (ca, cr) = (pole(0.001), pole(0.05));
@@ -542,8 +541,8 @@ fn ducked(f: usize) -> f64 {
 
 // ---------------------------------------------------------------- tests --
 
-/// **Doc 014 §8.1, headless.** An LFO on a native cutoff renders the
-/// analytic sine within §5.3's bound (past the connect's declick), and the
+/// An LFO on a native cutoff renders the
+/// analytic sine within the bound (past the connect's declick), and the
 /// pad (probe 2) dips with the kick through a follower, analytically.
 #[test]
 fn the_8_1_example_renders_its_analytic_values() {
@@ -1099,7 +1098,7 @@ fn a_port_with_another_event_source_is_refused() {
 /// inserts nodes of its own at the LFO lane's key and at the follower's:
 /// the next apply undoes the wiring around both, leaves the host's nodes
 /// and builds a new lane and follower at fresh keys. The render is the
-/// §8.1 figures again (the LFO past the new lane's declick).
+/// rig's figures again (the LFO past the new lane's declick).
 #[test]
 fn a_key_the_host_takes_is_followed() {
     let mut r = rig(128);
@@ -1486,7 +1485,7 @@ fn a_lane_on_a_param_with_no_typed_key_reaches_its_port() {
 // ------------------------------------------------------ unchanged inputs --
 //
 // `Modulation::apply` skips an apply whose inputs equal the last one's
-// (its `Memo`). Each test below settles the §8.1 rig until applies are
+// (its `Memo`). Each test below settles the rig until applies are
 // skipped, changes one input alone, and asserts the next apply follows it.
 // The input each test changes is one `Memo::holds` reads: were it not, the
 // apply would be skipped and the edit lost.
@@ -1518,7 +1517,7 @@ impl tutti_modulation::Curve for Flat {
 }
 
 /// **A steady apply is skipped and the render is the one it was.** The
-/// §8.1 rig, applied every block, renders its analytic LFO and follower,
+/// rig, applied every block, renders its analytic LFO and follower,
 /// and every apply after the first two is skipped.
 #[test]
 fn a_steady_apply_is_skipped_and_renders_the_same() {

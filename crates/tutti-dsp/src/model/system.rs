@@ -32,7 +32,7 @@ impl Ring {
     }
 }
 
-/// A causal system from input signals to output signals (design 024 section 4.2):
+/// A causal system from input signals to output signals:
 /// the base of every processor class. It answers where the response to a unit
 /// impulse starts and where it effectively ends.
 pub trait System {

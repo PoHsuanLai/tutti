@@ -1,4 +1,4 @@
-//! The parallel executor against the serial one (doc 013, "The parallel executor"), on this
+//! The parallel executor against the serial one, on this
 //! crate's filters, at 1, 2, 4 and 8 participants.
 //!
 //! Shapes, each one block of `FRAMES` at 48 kHz, driven through the
@@ -13,7 +13,7 @@
 //!   serial walk for a one-task plan.
 //! - `tiny/<lanes>` — `lanes` single cheap gains off one input, summed:
 //!   tasks too small to be worth dispatching. The gains declare
-//!   `Cost::Light`, so the cost model (doc 013 step 6) packs them and keeps
+//!   `Cost::Light`, so the cost model packs them and keeps
 //!   the block serial. `tiny/<lanes>-undeclared` is the same graph with
 //!   gains that declare nothing: every gain its own task, spread over the
 //!   pool — where a pool loses.
@@ -33,8 +33,7 @@
 //! cargo bench -p tutti-nodes --bench parallel_render
 //! ```
 //!
-//! The figures in doc 013 ("Go fast") were taken on the machine named
-//! there; they do not travel. Eight participants on a four-core machine
+//! Eight participants on a four-core machine
 //! oversubscribe it and are reported as measured, not dropped.
 
 use std::hint::black_box;

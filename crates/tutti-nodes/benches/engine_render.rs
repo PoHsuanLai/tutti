@@ -86,11 +86,7 @@ fn chain_engine(outputs: usize) -> Engine {
         "eq",
         EqBandNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(1.0), Db(6.0)),
     );
-    ed.insert(
-        strip,
-        "strip",
-        BusStripNode::with_channels(ChannelLayout::STEREO),
-    );
+    ed.insert(strip, "strip", BusStripNode::stereo());
     wire(&mut ed, eq, 0, osc, 0);
     wire(&mut ed, strip, 0, eq, 0);
     wire(&mut ed, strip, 1, eq, 0);

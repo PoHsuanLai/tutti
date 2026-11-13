@@ -1,9 +1,9 @@
-//! [`BrickwallFamily`]: the hard clipper as a [`Family`] (design 024 section 3, row 8).
+//! [`BrickwallFamily`]: the hard clipper as a [`Family`].
 //!
 //! A brickwall clamps every sample to `+-c` and has nothing else: no state, no
 //! envelope, no lookahead and so no latency and no tail. It is the one family whose
 //! only control is a **fast lane**: the ceiling is read per frame from the
-//! [`Feed`] when the graph drives it (design 024 section 4.5, "Where cadence stops"),
+//! [`Feed`] when the graph drives it,
 //! and the member's ceiling is the base for a frame nobody drives.
 //!
 //! The ceiling is in dB and the clamp bound is its amplitude. `+inf` dB passes

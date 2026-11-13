@@ -1,9 +1,7 @@
 //! **A band's bypass and a strip's mute are the graph's `NodeMode`**, and
 //! once its declick is over they are exact: the band's output is its input
 //! bit for bit, the strip's is `+0.0`, and un-muted the strip is its fader
-//! again. The nodes hold no flag of their own (doc 013, "Bypass and mute are
-//! graph state", M3), so what is pinned here is the graph's mode through the
-//! nodes this change took the flags out of.
+//! again. The nodes hold no flag of their own.
 //!
 //! The figures are analytic (the input itself, zero, the fader's gain), never
 //! another render. The declick is 256 frames (`MODE_DECLICK`), counted from
@@ -64,7 +62,7 @@ fn a_bypassed_band_is_its_input_bit_for_bit() {
 /// fader again, exactly: the mute never touched the fader's cell.
 #[test]
 fn a_muted_strip_is_silence_and_un_muted_is_its_fader() {
-    let mut s = solo(BusStripNode::new());
+    let mut s = solo(BusStripNode::stereo());
     assert!(s.controls().set(UnitParam::Volume, 0.75));
     // No denormal: the node multiplies under flush-to-zero, this test does not.
     let mut x = input();

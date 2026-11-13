@@ -5,7 +5,7 @@ use crate::error::{ClapError, Result};
 use crate::host::{InputStream, OutputStream};
 use crate::types::StateContext;
 use std::path::Path;
-use tutti_clap_ffi::{CallError, Extension};
+use tutti_clap_ffi::CallError;
 use tutti_plugin_types::MainThread;
 
 impl ClapLoaded {
@@ -59,7 +59,7 @@ impl ClapLoaded {
     }
 
     /// Saves state, telling the plugin whether it is being saved for a
-    /// preset, project, or duplicate.
+    /// project or a duplicate.
     ///
     /// Falls back to [`Control::save_state`](tutti_plugin_types::Control::save_state) **only** when the plugin does not
     /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `save`
@@ -133,7 +133,7 @@ impl ClapLoaded {
     /// Whether the plugin implements `CLAP_EXT_STATE_CONTEXT`.
     #[must_use]
     pub fn supports_state_context(&self) -> bool {
-        self.plugin.supports(Extension::StateContext)
+        self.plugin.supports_state_context()
     }
 
     /// Whether the plugin implements `CLAP_EXT_PRESET_LOAD`, i.e. whether
@@ -145,7 +145,7 @@ impl ClapLoaded {
     /// already knows.
     #[must_use]
     pub fn supports_preset_load(&self) -> bool {
-        self.plugin.supports(Extension::PresetLoad)
+        self.plugin.supports_preset_load()
     }
 
     /// Asks the plugin to load a preset from the file at `path` via

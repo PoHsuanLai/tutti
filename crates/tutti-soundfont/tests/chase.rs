@@ -1,4 +1,4 @@
-//! What a font swap keeps (`Node::chase`, doc 013): the outgoing unit's
+//! What a font swap keeps (`Node::chase`): the outgoing unit's
 //! program, bank, controllers and wheel reach the unit that replaces it, on
 //! its first block, whatever that unit is.
 //!

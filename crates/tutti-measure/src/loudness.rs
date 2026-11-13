@@ -633,8 +633,7 @@ mod tests {
     }
 
     /// The rate is honoured, not assumed. A meter built for the wrong rate
-    /// reads a different loudness for the same musical signal — which is the
-    /// bug this module's config exists to prevent.
+    /// reads a different loudness for the same musical signal.
     #[test]
     fn the_configured_rate_is_used() {
         // Same *sample* data interpreted at two rates is a different signal

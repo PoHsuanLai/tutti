@@ -1,7 +1,8 @@
 //! MIDI-CI on a device's wire: the Management side of
 //! [`CiDevice`] (Discovery, Invalidate MUID, NAK)
-//! run on an open input, and the peers it finds
-//! ([`CiPeerInfo`], reported as [`CiChange`]).
+//! run on an open input, the peers it finds
+//! ([`CiPeerInfo`], reported as [`CiChange`]), and Profile Configuration
+//! with those that declare it (reported as [`ProfilesChange`]).
 //!
 //! # Opt-in
 //!
@@ -59,8 +60,24 @@
 //! It runs while enabled and the input is open: the Discovery it sends when it
 //! starts is only the first round, and it answers a Discovery or an Invalidate
 //! MUID from anyone, at any time (M2-101 Appendix E: a Responder). It speaks
-//! Management only ([`CiCategories::empty`]; no Profile, no Property
-//! Exchange), so every other message addressed to it is NAK'd by the core.
+//! Management and, as the Initiator, Profile Configuration; there is no Property
+//! Exchange, so every other message addressed to it is NAK'd by the core.
+//!
+//! # Profiles
+//!
+//! A peer whose Discovery Reply declares Profile Configuration
+//! ([`CiCategories::PROFILE_CONFIGURATION`]) gets a [`ProfileInitiator`], made
+//! when it is found: it sends a Profile Inquiry to the Function Block, keeps the
+//! Profiles the peer answers with and the reports it sends after
+//! ([`MidiSession::profiles`](crate::MidiSession::profiles)), and is stepped by
+//! the same poll and its time as the device is. It sends on the same output.
+//! An app's request to enable or disable a Profile
+//! ([`MidiSession::set_profile`](crate::MidiSession::set_profile)) is queued
+//! and started by the next poll, which has the time its wait counts from. When
+//! the peer is lost (an Invalidate MUID, a collision, a changed MUID of the
+//! device, MIDI-CI disabled or its Group ending) its Initiator and Profiles go
+//! and [`ProfilesChange::Dropped`] says so; closing the input reports nothing, as
+//! for peers.
 //!
 //! The port copies the device's SysEx7 packets to the stream ring while any
 //! device is to run (`hears_sysex`); the graph still gets them all. They are
@@ -75,7 +92,9 @@
 //! # What it declares
 //!
 //! - **Identity**: the app's, as given to `enable_ci`.
-//! - **Categories**: none.
+//! - **Categories**: Profile Configuration. The devices initiate it, and they
+//!   answer a Profile Inquiry with no Profiles (M2-101 §7.13 allows a device
+//!   that has none to reply) and NAK a Set Profile On or Off.
 //! - **Receivable Maximum SysEx Message Size**: [`MAX_SYSEX`], 512 bytes, the
 //!   floor of a device that will initiate Profile Configuration or Property
 //!   Exchange (§5.5.3); the reassembler is sized for it, delimiters included.
@@ -84,6 +103,7 @@
 //!
 //! Time is an argument: nothing here reads a clock.
 
+use std::collections::BTreeMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
@@ -91,16 +111,41 @@ use std::time::Instant;
 
 use tutti_graph::Offset;
 use tutti_midi_device::{
-    CiAction, CiCategories, CiDevice, CiHeader, CiMessage, CiPeer, Decoded, MaxSysexSize, Muid,
+    CiAction, CiCategories, CiDevice, CiHeader, CiMessage, CiPeer, Decoded, DeviceId, MaxSysexSize,
+    Muid, ProfileAction, ProfileInitiator,
 };
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexStep, Ump};
 
 use crate::devices::OpenOutput;
+use crate::profiles::{
+    PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange, Snapshot, Switch,
+};
 use crate::stream::DeviceStream;
 
 /// The Receivable Maximum SysEx Message Size the session declares: 512 bytes
 /// (see the module).
 pub(crate) const MAX_SYSEX: MaxSysexSize = MaxSysexSize::of(MaxSysexSize::INITIATOR_MIN);
+
+/// What the devices declare: Management, and Profile Configuration, which the
+/// session initiates with every peer that declares it too (the module's "What it
+/// does"). They answer a Profile Inquiry with no Profiles, and NAK a Set Profile
+/// On or Off, since they have none to enable.
+const CATEGORIES: CiCategories = CiCategories::PROFILE_CONFIGURATION;
+
+/// What one step of an input's MIDI-CI changed, for the app.
+#[derive(Default)]
+pub(crate) struct CiChanges {
+    /// Peers found, updated or lost.
+    pub(crate) peers: Vec<CiChange>,
+    /// Peers' Profiles.
+    pub(crate) profiles: Vec<ProfilesChange>,
+}
+
+impl CiChanges {
+    fn is_empty(&self) -> bool {
+        self.peers.is_empty() && self.profiles.is_empty()
+    }
+}
 
 /// What one poll of an input's port heard: the packets of its stream ring, and
 /// whether the ring had no room for some.
@@ -204,6 +249,18 @@ fn entropy() -> Entropy {
 struct Member {
     group: MidiGroup,
     device: CiDevice<Entropy>,
+    /// The Initiator of Profile Configuration with each peer that declared it.
+    initiators: BTreeMap<Muid, ProfileInitiator>,
+}
+
+impl Member {
+    fn new(group: MidiGroup, device: CiDevice<Entropy>) -> Self {
+        Self {
+            group,
+            device,
+            initiators: BTreeMap::new(),
+        }
+    }
 }
 
 /// The devices running on one input, and what hears their SysEx.
@@ -216,13 +273,18 @@ struct Running {
 
 /// One input's MIDI-CI: the Groups it is to run on, once the negotiation or the
 /// inquiry has decided them, and the devices while they run.
-#[derive(Default)]
 pub(crate) struct Ci {
+    /// The device the input is, named in every Profile snapshot.
+    device: DeviceId,
     groups: Vec<MidiGroup>,
     running: Option<Box<Running>>,
     /// Every peer found, by Group then MUID: rebuilt when a step changes them,
     /// so a read is a pointer clone, not a copy.
     peers: Arc<[CiPeerInfo]>,
+    /// Each peer's Profiles, rebuilt with `peers`.
+    profiles: Snapshot,
+    /// Switches asked for, started by the next poll (it has the time).
+    queue: Vec<ProfileSwitch>,
 }
 
 /// Group 0, the Group of a MIDI 1.0 port and of an Endpoint that says nothing
@@ -252,6 +314,18 @@ pub(crate) fn groups_of_a_midi1_port() -> Vec<MidiGroup> {
 }
 
 impl Ci {
+    /// MIDI-CI for the input `device`, with nothing decided.
+    pub(crate) fn new(device: DeviceId) -> Self {
+        Self {
+            device,
+            groups: Vec::new(),
+            running: None,
+            peers: Arc::default(),
+            profiles: Arc::default(),
+            queue: Vec::new(),
+        }
+    }
+
     /// MIDI-CI is to run on `groups` when it is enabled.
     pub(crate) fn decide(&mut self, groups: Vec<MidiGroup>) {
         self.groups = groups;
@@ -274,8 +348,8 @@ impl Ci {
         heard: &Heard<'_>,
         enabled: Option<DeviceIdentity>,
         out: &mut OpenOutput,
-    ) -> Vec<CiChange> {
-        let mut changes = Vec::new();
+    ) -> CiChanges {
+        let mut changes = CiChanges::default();
         if self
             .running
             .as_ref()
@@ -287,20 +361,24 @@ impl Ci {
         match (&mut self.running, enabled) {
             (Some(running), _) => {
                 running.reconcile(&self.groups, now, out, &mut changes);
-                changes.extend(running.step(now, heard, out));
+                running.step(now, heard, out, &mut changes);
+                running.start_switches(&mut self.queue, now, out, &mut changes);
             }
             (None, Some(identity)) if !self.groups.is_empty() => {
                 let (running, started) = Running::start(&self.groups, identity, now, out);
                 self.running = Some(Box::new(running));
-                changes.extend(started);
+                changes.peers.extend(started.peers);
+                changes.profiles.extend(started.profiles);
             }
             _ => {}
         }
+        self.queue.clear();
         if self.running.as_ref().is_some_and(|r| r.members.is_empty()) {
             self.running = None;
         }
         if !changes.is_empty() {
             self.peers = self.collect_peers();
+            self.profiles = self.collect_profiles();
         }
         changes
     }
@@ -310,14 +388,63 @@ impl Ci {
     /// it closed the input, so it knows the peers went with it.
     pub(crate) fn close(&mut self, out: &mut OpenOutput) {
         if let Some(running) = self.running.take() {
-            running.stop(out, &mut Vec::new());
+            running.stop(out, &mut CiChanges::default());
         }
         self.peers = Arc::default();
+        self.profiles = Arc::default();
+        self.queue.clear();
+    }
+
+    /// Every peer's Profiles, by Group then MUID: only the peers that declared
+    /// Profile Configuration have an entry.
+    pub(crate) fn profiles(&self) -> Snapshot {
+        Arc::clone(&self.profiles)
+    }
+
+    /// Asks that the peer of `switch` be sent it at the next poll, after
+    /// checking the peer still lists the Profile at that address.
+    pub(crate) fn set_profile(&mut self, switch: ProfileSwitch) -> Result<(), ProfileError> {
+        let peer = self
+            .profiles
+            .iter()
+            .find(|p| p.group() == switch.group && p.muid() == switch.muid)
+            .ok_or(ProfileError::NoSuchPeer)?;
+        let address = match switch.switch {
+            Switch::On(target) => target.address(),
+            Switch::Off(address) => address,
+        };
+        if peer.table().get(address, switch.profile).is_none() {
+            return Err(ProfileError::NotListed);
+        }
+        self.queue.push(switch);
+        Ok(())
     }
 
     /// Every peer found, by Group then MUID.
     pub(crate) fn peers(&self) -> Arc<[CiPeerInfo]> {
         Arc::clone(&self.peers)
+    }
+
+    fn collect_profiles(&self) -> Snapshot {
+        let Some(running) = &self.running else {
+            return Arc::default();
+        };
+        running
+            .members
+            .iter()
+            .flat_map(|member| {
+                member
+                    .initiators
+                    .iter()
+                    .map(|(&muid, initiator)| PeerProfiles {
+                        device: self.device.clone(),
+                        group: member.group,
+                        muid,
+                        known: initiator.is_known(),
+                        table: initiator.table().clone(),
+                    })
+            })
+            .collect()
     }
 
     fn collect_peers(&self) -> Arc<[CiPeerInfo]> {
@@ -345,29 +472,29 @@ impl Running {
         identity: DeviceIdentity,
         now: Instant,
         out: &mut OpenOutput,
-    ) -> (Self, Vec<CiChange>) {
+    ) -> (Self, CiChanges) {
         let mut sends = Vec::new();
         let mut firsts = Vec::new();
         let members: Vec<Member> = groups
             .iter()
             .map(|&group| {
                 let (device, first) =
-                    CiDevice::new(identity, CiCategories::empty(), MAX_SYSEX, entropy(), now);
+                    CiDevice::new(identity, CATEGORIES, MAX_SYSEX, entropy(), now);
                 firsts.push(first);
-                Member { group, device }
+                Member::new(group, device)
             })
             .collect();
         let max = MAX_SYSEX.get() as usize;
         let room = SysexAssembler::room_for(max, 1, members.len());
         let assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), max, members.len());
-        let running = Self {
+        let mut running = Self {
             identity,
             members,
             assembler,
         };
-        let mut changes = Vec::new();
-        for (member, actions) in running.members.iter().zip(firsts) {
-            member.apply(actions, &mut sends, &mut changes);
+        let mut changes = CiChanges::default();
+        for (member, actions) in running.members.iter_mut().zip(firsts) {
+            member.apply(actions, now, &mut sends, &mut changes);
         }
         send(out, &sends);
         (running, changes)
@@ -376,7 +503,7 @@ impl Running {
     /// Ends the devices: each announces that its MUID is no longer valid (an
     /// Invalidate MUID from and for its own MUID, M2-101 §5.9), and its peers
     /// are lost.
-    fn stop(self, out: &mut OpenOutput, changes: &mut Vec<CiChange>) {
+    fn stop(self, out: &mut OpenOutput, changes: &mut CiChanges) {
         stop_members(&self.members, out, changes);
     }
 
@@ -389,7 +516,7 @@ impl Running {
         groups: &[MidiGroup],
         now: Instant,
         out: &mut OpenOutput,
-        changes: &mut Vec<CiChange>,
+        changes: &mut CiChanges,
     ) {
         let same = self.members.len() == groups.len()
             && self.members.iter().zip(groups).all(|(m, g)| m.group == *g);
@@ -407,20 +534,15 @@ impl Running {
             if self.members.iter().any(|m| m.group == group) {
                 continue;
             }
-            let (device, first) = CiDevice::new(
-                self.identity,
-                CiCategories::empty(),
-                MAX_SYSEX,
-                entropy(),
-                now,
-            );
+            let (device, first) =
+                CiDevice::new(self.identity, CATEGORIES, MAX_SYSEX, entropy(), now);
             started.push((group, first));
-            self.members.push(Member { group, device });
+            self.members.push(Member::new(group, device));
         }
         self.members.sort_by_key(|m| m.group);
         for (group, actions) in started {
-            if let Some(member) = self.members.iter().find(|m| m.group == group) {
-                member.apply(actions, &mut sends, changes);
+            if let Some(member) = self.members.iter_mut().find(|m| m.group == group) {
+                member.apply(actions, now, &mut sends, changes);
             }
         }
         // The reader is sized by its Groups; a message open across the change
@@ -435,7 +557,7 @@ impl Running {
 
 /// Each of `members` announces that its MUID is no longer valid (an Invalidate
 /// MUID from and for its own MUID, M2-101 §5.9), and its peers are lost.
-fn stop_members(members: &[Member], out: &mut OpenOutput, changes: &mut Vec<CiChange>) {
+fn stop_members(members: &[Member], out: &mut OpenOutput, changes: &mut CiChanges) {
     let mut sends = Vec::new();
     for member in members {
         let muid = member.device.muid();
@@ -446,19 +568,35 @@ fn stop_members(members: &[Member], out: &mut OpenOutput, changes: &mut Vec<CiCh
                 target: muid,
             },
         ));
-        changes.extend(member.device.peers().map(|(peer, _)| CiChange::Lost {
-            group: member.group,
-            muid: peer,
-        }));
+        changes
+            .peers
+            .extend(member.device.peers().map(|(peer, _)| CiChange::Lost {
+                group: member.group,
+                muid: peer,
+            }));
+        changes.profiles.extend(
+            member
+                .initiators
+                .keys()
+                .map(|&peer| ProfilesChange::Dropped {
+                    group: member.group,
+                    muid: peer,
+                }),
+        );
     }
     send(out, &sends);
 }
 
 impl Running {
     /// Hands the devices what the port heard and the time (see [`Ci::poll`]).
-    fn step(&mut self, now: Instant, heard: &Heard<'_>, out: &mut OpenOutput) -> Vec<CiChange> {
+    fn step(
+        &mut self,
+        now: Instant,
+        heard: &Heard<'_>,
+        out: &mut OpenOutput,
+        changes: &mut CiChanges,
+    ) {
         let mut sends = Vec::new();
-        let mut changes = Vec::new();
         for &ump in heard.sysex() {
             // Only a message of a Group that has a device is read.
             let Some(group) = ump.group() else { continue };
@@ -475,7 +613,8 @@ impl Running {
             }
             for member in self.members.iter_mut().filter(|m| m.group == group) {
                 let actions = member.device.on_message(&decoded, now);
-                member.apply(actions, &mut sends, &mut changes);
+                member.apply(actions, now, &mut sends, changes);
+                member.route(&decoded, now, &mut sends, changes);
             }
         }
         if heard.gap() {
@@ -485,42 +624,210 @@ impl Running {
         for member in &mut self.members {
             if member.device.deadline().is_some_and(|at| now >= at) {
                 let actions = member.device.on_timeout(now);
-                member.apply(actions, &mut sends, &mut changes);
+                member.apply(actions, now, &mut sends, changes);
             }
+            member.expire(now, &mut sends, changes);
         }
         send(out, &sends);
-        changes
+    }
+
+    /// Sends the switches the app asked for (see [`Ci::set_profile`]): each goes
+    /// to the Initiator of its peer, which refuses one already waiting.
+    fn start_switches(
+        &mut self,
+        queue: &mut Vec<ProfileSwitch>,
+        now: Instant,
+        out: &mut OpenOutput,
+        changes: &mut CiChanges,
+    ) {
+        let mut sends = Vec::new();
+        for switch in queue.drain(..) {
+            let Some(member) = self.members.iter_mut().find(|m| m.group == switch.group) else {
+                continue;
+            };
+            member.start_switch(&switch, now, &mut sends, changes);
+        }
+        send(out, &sends);
     }
 }
+
 impl Member {
     /// Carries out `actions`: what is to be sent goes in `sends`, what changed
-    /// for the app in `changes`.
+    /// for the app in `changes`. A peer that declared Profile Configuration
+    /// gets an Initiator, which asks for its Profiles; one that is lost loses it.
     fn apply(
-        &self,
+        &mut self,
         actions: Vec<CiAction>,
+        now: Instant,
         sends: &mut Vec<(MidiGroup, CiMessage)>,
-        changes: &mut Vec<CiChange>,
+        changes: &mut CiChanges,
     ) {
-        let info = |muid| {
-            self.device.peer(muid).map(|peer| CiPeerInfo {
-                group: self.group,
-                muid,
-                peer: peer.clone(),
-            })
-        };
         for action in actions {
             match action {
                 CiAction::Send(message) => sends.push((self.group, message)),
-                CiAction::Found(muid) => changes.extend(info(muid).map(CiChange::Found)),
-                CiAction::Updated(muid) => changes.extend(info(muid).map(CiChange::Updated)),
-                CiAction::Lost(muid) => changes.push(CiChange::Lost {
-                    group: self.group,
-                    muid,
-                }),
+                CiAction::Found(muid) => {
+                    changes.peers.extend(self.info(muid).map(CiChange::Found));
+                    self.initiate(muid, now, sends, changes);
+                }
+                CiAction::Updated(muid) => {
+                    changes.peers.extend(self.info(muid).map(CiChange::Updated));
+                }
+                CiAction::Lost(muid) => {
+                    changes.peers.push(CiChange::Lost {
+                        group: self.group,
+                        muid,
+                    });
+                    if self.initiators.remove(&muid).is_some() {
+                        changes.profiles.push(ProfilesChange::Dropped {
+                            group: self.group,
+                            muid,
+                        });
+                    }
+                }
                 // The device's own MUID changing reaches the app as every peer
-                // lost; the window closing is the core's own bookkeeping.
+                // lost (and so every Initiator dropped); the window closing is
+                // the core's own bookkeeping.
                 _ => {}
             }
+        }
+    }
+
+    fn info(&self, muid: Muid) -> Option<CiPeerInfo> {
+        self.device.peer(muid).map(|peer| CiPeerInfo {
+            group: self.group,
+            muid,
+            peer: peer.clone(),
+        })
+    }
+
+    /// A found peer that declared Profile Configuration is asked for its
+    /// Profiles (M2-101 §7.2): by a new Initiator, or, for one that answered
+    /// Discovery again, by the old one asking again.
+    fn initiate(
+        &mut self,
+        muid: Muid,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let declares = self.device.peer(muid).is_some_and(|peer| {
+            peer.discovery()
+                .categories
+                .contains(CiCategories::PROFILE_CONFIGURATION)
+        });
+        if !declares {
+            return;
+        }
+        let actions = match self.initiators.get_mut(&muid) {
+            Some(initiator) => initiator.inquire(now),
+            None => {
+                let (initiator, first) = ProfileInitiator::new(self.device.muid(), muid, now);
+                self.initiators.insert(muid, initiator);
+                first
+            }
+        };
+        self.carry_out(muid, actions, sends, changes);
+    }
+
+    /// Hands every Initiator the message, which is theirs to keep or ignore.
+    fn route(
+        &mut self,
+        decoded: &Decoded,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let heard: Vec<_> = self
+            .initiators
+            .iter_mut()
+            .map(|(&muid, initiator)| (muid, initiator.on_message(decoded, now)))
+            .collect();
+        for (muid, actions) in heard {
+            self.carry_out(muid, actions, sends, changes);
+        }
+    }
+
+    /// Ends every wait of the Initiators that has run out.
+    fn expire(
+        &mut self,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let ended: Vec<_> = self
+            .initiators
+            .iter_mut()
+            .filter(|(_, initiator)| initiator.deadline().is_some_and(|at| now >= at))
+            .map(|(&muid, initiator)| (muid, initiator.on_timeout(now)))
+            .collect();
+        for (muid, actions) in ended {
+            self.carry_out(muid, actions, sends, changes);
+        }
+    }
+
+    fn start_switch(
+        &mut self,
+        switch: &ProfileSwitch,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let Some(initiator) = self.initiators.get_mut(&switch.muid) else {
+            return;
+        };
+        let started = match switch.switch {
+            Switch::On(target) => initiator.set_on(target, switch.profile, now),
+            Switch::Off(address) => initiator.set_off(address, switch.profile, now),
+        };
+        match started {
+            Ok(actions) => self.carry_out(switch.muid, actions, sends, changes),
+            Err(error) => changes.profiles.push(ProfilesChange::NotSent {
+                group: self.group,
+                muid: switch.muid,
+                profile: switch.profile,
+                error,
+            }),
+        }
+    }
+
+    /// What an Initiator asks for: messages to send, changes to tell.
+    fn carry_out(
+        &self,
+        muid: Muid,
+        actions: Vec<ProfileAction>,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let group = self.group;
+        for action in actions {
+            changes.profiles.push(match action {
+                ProfileAction::Send(message) => {
+                    sends.push((group, message));
+                    continue;
+                }
+                ProfileAction::ProfilesKnown => ProfilesChange::Known { group, muid },
+                ProfileAction::InquiryTimedOut => ProfilesChange::InquiryTimedOut { group, muid },
+                ProfileAction::InquiryRefused(_) => ProfilesChange::InquiryRefused { group, muid },
+                ProfileAction::Changed {
+                    address,
+                    profile,
+                    change,
+                } => ProfilesChange::Changed {
+                    group,
+                    muid,
+                    address,
+                    profile,
+                    change,
+                },
+                ProfileAction::Resolved { request, outcome } => ProfilesChange::Resolved {
+                    group,
+                    muid,
+                    request,
+                    outcome,
+                },
+                // Profile Specific Data is a Profile's own, which tutti has none of.
+                _ => continue,
+            });
         }
     }
 }

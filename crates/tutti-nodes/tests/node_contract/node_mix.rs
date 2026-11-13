@@ -1,9 +1,7 @@
 //! **A node's blend with its input is the graph's mix**, not the node's: the
 //! convolver, the delay, the chorus and flanger, the phaser and the two reverbs output their wet
 //! signal alone, and `Editor::set_mix` blends it with the input delayed by the
-//! node's declared latency (doc 013, "Bypass and mute are graph state", M4).
-//! These nodes once held a dry/wet of their own; each property they pinned is
-//! here, through the graph:
+//! node's declared latency.
 //!
 //! - at `Mix::WET` the graph's output is the node rendered alone, bit for bit;
 //! - at `Mix::DRY` the output is the input delayed by the node's latency, bit
@@ -280,8 +278,7 @@ fn the_reverbs_are_blended_by_the_graph() {
 /// A mix that moves ramps across the block it lands on, from where it was to the
 /// new mix: moving the delay's (six wide) from `WET` to `DRY` leaves the block
 /// `y * m_i + x * (1 - m_i)` with `m_i = 1 - (i + 1) / 64`, ending on the dry
-/// input exactly. (The delay node's own mix once did this: its
-/// `a_mix_change_fades_across_the_next_block`.)
+/// input exactly.
 #[test]
 fn a_mix_move_on_a_delay_ramps_across_the_block() {
     let make = || {

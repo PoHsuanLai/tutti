@@ -18,9 +18,9 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_value,
 };
 use tutti_clap_ffi::{
-    ActivateError, Bundle, CallError, EventRef, EventSink, EventSource, Extension, Host,
-    HostCallbacks, InputStream, OutputStream, Planar, Plugin, PluginEvent, PortScratch,
-    ProcessCall, ProcessError, TaskPool, ThreadRoles, header_size,
+    ActivateError, Bundle, CallError, EventRef, EventSink, EventSource, Host, HostCallbacks,
+    InputStream, OutputStream, Planar, Plugin, PluginEvent, PortScratch, ProcessCall, ProcessError,
+    TaskPool, ThreadRoles, header_size,
 };
 use tutti_clap_test_plugin::{PLUGIN_ID, REPORTED_LATENCY_SAMPLES, probe_tag};
 use tutti_plugin_types::SampleFormat;
@@ -215,7 +215,6 @@ fn the_main_thread_half_reads_the_plugins_extensions() {
     let _g = lock();
     let plugin = load(Arc::default());
     assert_eq!(plugin.latency(&main_thread()), REPORTED_LATENCY_SAMPLES);
-    assert!(plugin.supports(Extension::Params));
     assert!(plugin.param_count(&main_thread()) > 0);
     assert!(plugin.audio_port_count(&main_thread(), false) > 0);
     assert!(plugin.audio_port_info(&main_thread(), 0, false).is_some());
@@ -339,7 +338,7 @@ fn a_missing_extension_is_not_a_refusal() {
     let _g = lock();
     let mut plugin = load(Arc::default());
     // The reference plugin has no `preset-load`.
-    assert!(!plugin.supports(Extension::PresetLoad));
+    assert!(!plugin.supports_preset_load());
     assert_eq!(
         plugin.preset_load_file(&main_thread(), Path::new("/nowhere.preset")),
         Err(CallError::NoExtension)

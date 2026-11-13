@@ -19,8 +19,8 @@
 //! The voices hold the expression of a *sounding* note, derived from the native
 //! per-note messages this emits. What a member channel was told *before* its
 //! Note On is another matter: M1-100 §2.2.6 to 2.2.8 have a receiver keep
-//! tracking the channel's Pitch Bend, Channel Pressure and CC 74 even when no
-//! note is playing, and a note's number is not known until its Note On. So the
+//! tracking the channel's Pitch Bend, Channel Pressure and CC 74 while no note
+//! sounds, and a note's number is not known until its Note On. So the
 //! transform keeps the last value of each, per channel, and sends them as
 //! per-note messages ahead of the Note On they belong to (which a per-note
 //! receiver, `tutti_voicing::PerNoteState`, starts the note with). A manager's
@@ -37,16 +37,26 @@
 //! A message the table prohibits is ignored (§2.3.1).
 //! A channel in no zone is conventional and passes whole (§2.2.1).
 //!
+//! A Mono Mode On or Poly Mode On sent to a zone's lowest-numbered member
+//! channel, not to its manager, switches the zone between MIDI Mode 4 and
+//! Mode 3 (§2.2.4.3). The ingest records only that switch; what Mono means for
+//! a note is the instrument's own `tutti_voicing::Rules`. A Poly Key
+//! Pressure on a member channel is not filtered: it cannot be told from a
+//! native per-note pressure message.
+//!
+//! A manager channel's pedals, All Notes Off and Reset All Controllers apply
+//! to the whole zone and a member's to its own channel; the instrument
+//! (`tutti_voicing::Voicing`) applies that, not this transform.
+//!
 //! # Changing the zones
 //!
-//! A receiver that changes its Zone configurations stops all Sounding Notes
-//! and resets all controls on each Channel entering or leaving MPE control
-//! (§2.2.3): an MCM from the wire
-//! sends, for each such channel, All Sound Off and Reset All Controllers before
-//! the zone's default ranges, and a host-set mode
-//! ([`MpeIngest::set_mode`]) leaves them for
+//! A receiver that changes its zone layout stops the sounding notes and resets
+//! the controllers of every channel that enters or leaves MPE control
+//! (§2.2.3). An MCM from the wire sends, for each such channel, All Sound Off
+//! and Reset All Controllers before the zone's default ranges, and a host-set
+//! mode ([`MpeIngest::set_mode`]) leaves them for
 //! [`zone_defaults`](MpeIngest::zone_defaults), which the host sends. A channel
-//! that did not change keeps its notes.
+//! that did not change keeps its notes and what it was told.
 //!
 //! # Bend ranges
 //!
@@ -353,9 +363,9 @@ fn control(group: MidiGroup, channel: MidiChannel, controller: CCNumber, offset:
     )
 }
 
-/// M1-100 section 2.2.3: the receiver stops all Sounding Notes and
-/// resets all controls on each Channel entering or leaving MPE control. For each channel of `channels` (one bit each),
-/// All Sound Off and Reset All Controllers, at `offset`.
+/// M1-100 section 2.2.3: a channel entering or leaving MPE control has its
+/// notes stopped and its controllers reset. For each channel of `channels`
+/// (one bit each), All Sound Off and Reset All Controllers, at `offset`.
 fn send_stops(group: MidiGroup, offset: Offset, channels: u16, out: &mut impl FnMut(UmpAt)) {
     for c in 0..MidiChannel::COUNT {
         if channels & (1 << c) != 0 {

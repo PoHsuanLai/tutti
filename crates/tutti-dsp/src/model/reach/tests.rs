@@ -2,7 +2,7 @@ use tutti_fixtures::{RangeContract, check_range_contract};
 
 use super::*;
 
-/// `MaxDecay` keeps the range-checked shape of CLAUDE.md: `new` refuses and
+/// `MaxDecay` keeps the range-checked shape: `new` refuses and
 /// never clamps, `TryFrom` agrees and carries the refused raw.
 #[test]
 fn a_max_decay_keeps_the_range_checked_shape() {

@@ -770,6 +770,19 @@ impl Voicing {
     /// Reads one message on `channel`, with `level` to ask about the voices
     /// that exist (the envelope level of a voice, `None` when it has ended), and
     /// returns what to do. The slice is valid until the next call.
+    ///
+    /// # Registered parameters
+    ///
+    /// A Registered Controller sets the channel's pitch bend sensitivity (RPN
+    /// 0), Channel Fine and Coarse Tuning (1 and 2), Tuning Program and Bank
+    /// Select (3 and 4) and Modulation Depth Range (5). A Relative Registered
+    /// Controller (M2-104 section 7.4.8) adds its two's complement delta to the
+    /// value the channel holds for one of those and then takes the same path as
+    /// an absolute one. The sum saturates at the ends of the 32-bit word, which
+    /// the specification leaves open, so a nudge up from the top stays at the
+    /// top. Any other parameter and every Relative Assignable Controller have no
+    /// value here to add to and are ignored, and Data Increment and Decrement
+    /// (CC 96 and 97) are not read. The per-note messages are [`PerNoteState`]'s.
     pub fn step<P: Patch + ?Sized>(
         &mut self,
         channel: MidiChannel,

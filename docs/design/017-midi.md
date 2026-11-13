@@ -17,13 +17,6 @@ are not vendored, and no notes on them are in the repo (the ones that sat in
 - **MIDI's hierarchy.** Transport, UMP Endpoint, Function Block, Group, Channel,
   Note. Devices are modelled as endpoints with function blocks, and every message
   has the scope the specification gives it (§2).
-- **One word type, one message type.** `tutti-ump` holds `Ump`, the `Copy` storage,
-  and `Message`, a `Copy` enum, with `decode` and `encode`: pure, and the only code
-  that knows a bit position. It has no tutti dependency, and `tutti-graph` depends
-  on it. MIDI vocabulary leaves `tutti-types` (§3).
-- **Translation at the edge.** MIDI 1.0 to MIDI 2.0 and MPE happen once, in a
-  stateful `Translator` per group and channel at the input edge. Reading never
-  changes a message's meaning (§4).
 - **Connections as a state machine.** M2-100's connection steps are a no-I/O
   `Connection`, driven by tests with no device (§5).
 - **Events cross the graph's edge through two primitives.** An event tap
@@ -33,9 +26,6 @@ are not vendored, and no notes on them are in the repo (the ones that sat in
   inlet").
 - **Crates follow the layers** (§6).
 - **`midi2` is removed** (§7).
-- **Events are not silently lost.** Capacity follows the block size, note-offs
-  have priority and are retried, drops are counted exactly, and an export reports
-  them (§8).
 - **One event shape, then the shared steps.** Where MIDI stands today is in §1.4,
   the spec's interfaces as traits (mostly not) in §4.1, and the order the remaining
   stages run in is §10: `(Offset, Ump)` first, then the `Translator`,
@@ -82,19 +72,6 @@ IPC and hosts. PDC covers event ports. `MidiClipNode`, `HarmonyNode` and
 `ClockMaster` place events by closed form. The audio-thread side of the hardware
 input (SPSC rings, `ArcLend` port set) and the no-allocation gates are careful.
 About 600k hostile inputs caused no panic in the parsers.
-
-### 1.3 Cost is not the problem
-
-Measured in release, the receive path takes about 0.3% of the budget of a
-64-frame block at 48 kHz, at 40 events per block, with no allocation.
-`tutti-midi-runtime`'s `ingest` bench (L6(f)) reproduces it from the driver
-callback to the drain: on the development machine, 40 events pushed through a
-device's inlet take 4.8 us, and one 512-frame block of an ingest node over 40
-events takes 41 us (0.4% of the block's 10.7 ms), both in one thread, so the
-wall time between a callback and the block that plays it is the inlet's lead by
-design and not a cost. The stack's own code compiles in about 2 s. Neither justifies
-a change on its own. This design is for correctness and for what a caller can
-express.
 
 ### 1.4 Where MIDI stands
 
@@ -159,14 +136,6 @@ host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
   (`channel << 8 | note`) beside `tutti-plugin-types`' `note_id_for` (still standing,
   as above).
 
-**Held-note structures answer different questions and stay separate.**
-`tutti-voicing`'s `Holds` is why one voice is still open (key, sustain,
-sostenuto). `NoteLedger` (§8.4) is which notes a node has started and not ended on
-its own port, and what the port owes. `tutti-graph`'s `held.rs` is which keys an
-event output port carries, so an edge that ends can close them. They have
-different owners, keys and failure modes; unifying them would give one of them a
-question it does not ask.
-
 **`tutti-midi-types` was about 9,000 lines of pre-017 vocabulary:** `mpe/`, `translation/`, `cc/mapping`, and the `MidiIn` and
 `MidiOut` traits, beside the `MidiEvent` above. Stage 5b part (b) left `MidiMessage` and `translation/`, and part (c) deleted both
 with the crate.
@@ -192,229 +161,7 @@ Three choices differ from the specification on purpose:
 - **Graph ports for routing.** Group and channel select a route at the edge. The
   graph does not reproduce the hierarchy.
 
-## 3. `Ump` and `Message`
-
-```rust
-// tutti-ump. No tutti dependency, so tutti-graph can use it.
-#[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable)]
-pub struct Ump([u32; 4]);
-
-impl Ump {
-    pub const fn words(&self) -> &[u32];     // 1, 2, 3 or 4 by message type
-    pub const fn is_note_off(self) -> bool;  // for the graph's FIFOs, the only copy
-}
-```
-
-Message types `0xB` and `0xC` are 96 bits (Table 4), so a packet is 1, 2, 3 or 4
-words. The graph's `EventKind::Midi` holds this `Ump`. Its doc says the graph never
-inspects the words, and `Event` does: `is_note_off` makes that the one place.
-`Pod` lets plugin IPC copy a block of events as one memory copy.
-
-MIDI 1.0 on the wire is `tutti-ump`'s too, so every status byte and bit position is
-in one crate:
-
-```rust
-// tutti-ump
-impl Voice1 { pub fn bytes(self, channel: MidiChannel) -> Midi1Bytes }  // also System, Bank
-pub struct Midi1Bytes;                       // padded() for a fixed 3-byte field, len(), as_slice()
-pub fn frame<B: Copy + Into<u8>>(payload: &[B]) -> Framed<'_, B>;      // F0 .. F7, ExactSizeIterator
-impl Sysex7Packet { pub fn framed(&self) -> Option<Framed<'_, U7>> }    // Complete only
-
-pub struct Midi1Parser;                      // 9 bytes of state, no allocation
-impl Midi1Parser {
-    pub const fn new(group: MidiGroup) -> Self;   // MIDI 1.0 has no group: the port's
-    pub fn feed(&mut self, byte: u8) -> Option<Message>;
-    pub fn feed_all<'a>(&'a mut self, bytes: &'a [u8]) -> impl Iterator<Item = Message> + 'a;
-    pub fn end_of_message(&mut self);        // packet transports: ends a short message, keeps SysEx
-    pub fn message(group: MidiGroup, bytes: &[u8]) -> Option<Message>;  // one message at the start of a fixed field
-}
-```
-
-The parser is per byte, so a state that survives a buffer boundary is the same
-struct. Running status survives data and real-time bytes and ends at any other status
-byte; real-time bytes come out at once wherever they sit; SysEx comes out as
-`Sysex7Packet`s as its bytes arrive, and a status byte other than real-time or `0xF7`
-ends it with no `End` packet (M2-104 §7.7.1), so the receiver of the packets drops
-the open run. A Note On at velocity 0 stays a Note On; reading it as a Note Off is
-translation's. `message` exists because a fixed field cannot be fed to a parser:
-`[0xC0, 5, 0]` would read the padding as running-status data. SMF does not share the
-parser: it has delta times, a running status that meta and SysEx events cancel, no
-real-time bytes and length-prefixed SysEx.
-
-`tutti-ump`'s only normal dependency is `bytemuck`, because the graph and everything
-above it compile it. `tutti-types` has no MIDI vocabulary: `MidiGroup`, `MidiChannel`
-and `CCNumber` move here. `tutti_types::Note` stays, because it is a musical pitch
-(class and octave) used by `tutti-dsp`'s analyzers, not a wire value.
-
-```rust
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Message {
-    Utility(Utility),                  // MT 0x0: no group
-    System(Group, System),             // MT 0x1
-    Midi1(Address, Voice1),            // MT 0x2
-    Sysex7(Group, Sysex7Packet),       // MT 0x3
-    Midi2(Address, Voice2),            // MT 0x4
-    Data128(Group, Data128),           // MT 0x5: SysEx8, Mixed Data Set
-    Flex(Group, Flex),                 // MT 0xD
-    Stream(Stream),                    // MT 0xF: no group
-}
-
-pub fn decode(ump: Ump) -> Result<Message, Unknown>;  // pure
-impl From<Message> for Ump { .. }                     // pure
-```
-
-Rules:
-
-- **No lifetimes.** A message is a value. It can be matched, stored or queued on
-  any thread with no allocation. This is checked against M2-104 App. G: every
-  defined message is one packet of at most 16 bytes, so every field, including
-  text and SysEx chunks, fits in a small array. Strings across packets are
-  reassembled above the codec, off the audio thread.
-- **`Midi1` and `Midi2` stay distinct.** They are different message types on the
-  wire, and decode does not turn one into the other.
-- **Unknown stays intact.** `Err(Unknown(ump))` keeps the words, so a message from
-  a later revision is forwarded unchanged. Reserved message types and a defined
-  message type with an unknown status both land here.
-- **Only the codec shifts bits.** The helpers are private. A consumer matches on
-  `Message`, and the graph calls `Ump::is_note_off`.
-- **Hand-written match arms, not a macro or a proc macro.** There are few messages
-  and each arm is short. A reader checks them against the specification's table,
-  and a macro would hide what they are checking.
-- **Fields are typed.** Note, group, channel and the 4-, 7- and 14-bit values
-  (`NoteNumber`, `U4`, `U7`, `U14`) have a public constructor that refuses
-  out-of-range values and a private one masked off the wire. A note of 200 cannot
-  be built, where today it silently becomes 72 in release. There is no `Velocity`
-  type: MIDI 2.0 velocities stay `u16`, and their scaling is M2-115's. The refusal
-  holds for every public `new`, the three moved types (`MidiGroup`,
-  `MidiChannel`, `CCNumber`) included. `of` builds one from a literal or a
-  constant and panics out of range, and `masked` is the one constructor that
-  masks, for bits a decoder has just framed. Types are added under the rules in
-  CLAUDE.md: a distinct range or a distinct algebra. `Pitch` (Q7.25, widened from
-  the Note On attribute's Q7.9 by zero extension) is one: the two pitch fields
-  share it, and `Attribute::pitch` reads it.
-- **A per-note controller number is typed where Appendix A defines it.**
-  `RegisteredPerNoteController` names each defined number and keeps any other as
-  `Reserved(u8)`, so every raw value re-encodes; build one from a wire number with
-  `From<u8>`, because a hand-built `Reserved` of a named number does not match its
-  named variant. `AssignablePerNote.controller`
-  stays a byte: there are 256 assignable controllers, so it is not a `CCNumber`
-  (7 bits), and masking it would alias controllers 128 to 255 onto 0 to 127.
-- **Flex addressing follows the specification.** Set Tempo, Set Time Signature and
-  Set Metronome are Group messages: §7.5.3 to §7.5.5 fix Format 0 and Address 1,
-  so they carry no `FlexAddress`. Key signature, chord name and text do, and carry
-  it in their variant.
-- **Reserved bits** are ignored on decode and zero on encode. A reserved value in
-  an enumerated field is kept raw (`Letter::Reserved`, `FlexAddress::Reserved`,
-  `Attribute::Reserved`, `RegisteredPerNoteController::Reserved`, the field types'
-  out-of-range `wire`), so the message still decodes and re-encodes exactly.
-  `Unknown` is for a packet that cannot be framed: a reserved message type, or a
-  defined type with an undefined status. A consumer that forwards forwards
-  `Unknown` unchanged and never drops it; one that is a sink says so in its arm.
-- **Name limits are not in the codec.** They apply to a reassembled string, so
-  they are checked where strings are reassembled. Nothing checks them today: the
-  `endpoint_name`, `function_block_name` and `product_instance_id` constructors
-  in `tutti-midi-types` (and, before stage 4a deleted them,
-  `EndpointNegotiator::with_names` and `FunctionBlock::name`) take any `&str`, and
-  the `midi2` crate adds no limit. The limits, from M2-104 v1.1.2 §7.1:
-  - **Endpoint Name:** at most 98 bytes of UTF-8 (seven packets).
-  - **Function Block Name:** at most 91 bytes (seven packets). Version 1.1.2
-    (§7.1.9) lowered it from 98, so a name built to the old figure is now too long.
-  - **Product Instance ID:** at most 42 bytes, every byte ASCII 32 to 126
-    (§7.1.5), so a non-ASCII or control byte is refused, not passed through.
-
-  **Done in stage 4b** (`tutti-midi-device`'s `Name<N>`, `EndpointName`, `BlockName`
-  and `ProductInstanceId`, held inline; `new -> Option`, as the range-checked table
-  of CLAUDE.md has it; the assembler caps at the same limit and drops a longer
-  message whole). The next paragraph is the reasoning.
-
-  A name is a checked value built on the control side (`new -> Result`, never a
-  truncation, as in the range-checked table of CLAUDE.md), so a sender cannot
-  emit an over-long name. A receiver caps what it accumulates at the same limit
-  and drops a name that exceeds it (`EndpointInquiry` has no cap today). Each
-  limit gets three boundary tests, at the limit, one byte over and a long
-  input, each asserting the packet count (7, 7, 3) and the refusal; the
-  Product Instance ID also gets a byte below 32, 127 and a multi-byte
-  character. Mutation: raise a limit by one and the one-over test must fail.
-
-`NoteId` is an engine concept: `MidiMessage` mints one on decode and the wire has
-none. It moves to whichever node assigns voices, and leaves decoding.
-
-`MidiEvent`'s three meanings of `frame_offset` become separate types: `Offset` in
-a block (the graph's `Event` already has it) and an absolute frame in storage.
-
-## 4. Translation
-
-```rust
-// tutti-midi-protocol
-pub struct Translator { /* per (group, channel): RPN, NRPN and Bank Select state */ }
-
-impl Translator {
-    pub fn translate(&mut self, packet: impl Into<Ump>) -> Option<Ump>; // at most one (L1g)
-    pub fn flush(&mut self, out: impl FnMut(Address, Ump));
-    pub fn finish(self, out: impl FnMut(Address, Ump));               // flush, then gone
-}
-```
-
-- It runs once, at the input edge. Nothing else calls it, and no read translates.
-  Its stateless part exists first as `widen(Voice1) -> Voice2` (§10, stage 1.5);
-  the `Translator` calls it for the cases that need no state and adds the rest.
-- State is keyed by group and channel, and the group is kept.
-- It follows M2-104 App. D, which fixes several current defects: a MIDI 1.0 Note
-  On at velocity 0 becomes a Note Off with velocity `0x8000` (D.3.1 in v1.1.2); a
-  MIDI 2.0 Note On at velocity 0 stays a Note On; RPN data is zero-extended for
-  index 0 to 31 (M2-115 §4.1), which `rpn.rs` scales with Min-Center-Max.
-- Translating back is D.2, `Narrower` (`tutti-midi-protocol`, built; no host
-  calls it yet): an RPN or NRPN becomes its four Control Changes (D.2.3), the
-  select skipped while the same parameter stays selected on that group and
-  channel (MIDI 1.0 rule 6), and no Null Function after the run (D.2.3 gives
-  four messages, D.3.3 says Null "is not translated"). Data narrows with
-  rounding for RPN bank 0, index 0 to 31 (M2-115 §4.1, §4.4, the rule the
-  `Translator` zero-extends by) and by the plain shift for every other
-  controller. A Program Change's bank is sent only when it differs from the one
-  last sent (D.2.4), and a Note On that narrows to velocity 0 is 1 (D.2.1). One
-  `Narrower` serves one output, so each plugin host and the hardware out holds
-  its own. Until a host calls it, a keyboard's pitch bend range does not reach
-  a CLAP, VST2, AU or SoundFont consumer as MIDI 1.0.
-- **The clip's end flushes a CC 6-only run** (`Translator::flush`, called by
-  `MidiClipNode`'s loader after the last event): a file that sets a range with
-  `B0 65 00, B0 64 00, B0 06 0C` and nothing after keeps it, on the CC 6's own
-  beat. The live "short timeout after receiving a CC 6" of D.3.3 ("some
-  translators may wish to") is not built: the `Translator` holds no clock, and an
-  input that has one can call `flush` itself. CC 96 and 97 stay Control Changes
-  (D.3.3, quoted in `Translator`'s docs).
-- MPE is a dialect on MIDI 1.0, handled here, by M1-100 (MPE 1.1, the MCM) read in full.
-  The receive rules are `MpeIngest`'s `MpeSpec`, a value, so the MIDI-CI MPE Profile
-  (M2-120, L10b) is another variant of it and not a branch in the code:
-  - Channels outside a zone pass through (§2.2.1, "remain available for conventional use").
-  - A member's bend, pressure and CC 74 are tracked per channel "even when no note is
-    playing" (§2.2.6 to 2.2.8) and sent as per-note messages ahead of the channel's next
-    Note On (a note's number is known only then); a held note takes them at once. A
-    manager's pressure and CC 74 reach every note of its zone, combined with the member's
-    by Max (Appendix D leaves the choice); a manager's bend is `Voicing`'s, summed with the
-    member's (Appendix C.5). After a Note Off the channel's messages wait for the next note.
-  - A manager's pedal, All Notes Off and Reset All Controllers are the zone's
-    (`Voicing`, §2.3.1: "all Sounding Notes across the Manager Channel and all Member
-    Channels"); a member's is its own.
-  - Table 5 (Appendix E), receive side: a prohibited message is ignored (§2.3.1, "it should
-    ignore them"): 120, 126, 127 on a manager, 125 anywhere, RPN 6 on a member, Program
-    Change on a member in Mode 3 (§2.3.3; Bank Select travels in it). 121 to 124 pass. A
-    Mono or Poly Mode On on the zone's lowest member switches Mode 4 and 3 (§2.2.4.3); the
-    ingest keeps only that, the instrument's own `Rules` decide what Mono means. Poly Key
-    Pressure on a member is not filtered: it cannot be told from a native per-note message.
-  - A zone change stops and resets "each Channel entering or leaving MPE control" (§2.2.3):
-    All Sound Off and Reset All Controllers on each, ahead of the zone's default ranges, from
-    an MCM that moves channels and from a host-set mode (`zone_defaults`); the channels that
-    did not change keep their notes and what they were told. The per-note held values of a
-    channel that left are not reset (one `PerNoteManagement` per note number would not fit a
-    block): a note that starts there later is told the ingest's values again.
-  - Sensitivity: an MCM sets a manager to 2 and every member to 48 (§2.2.5); a member's RPN 0
-    is every member's (RPN #00/07 on each).
-
-A plugin host that wants MIDI 2.0 data takes `Midi2` directly. One that speaks
-MIDI 1.0 asks the translator for D.2, so the rule lives in one place. Hosts then
-honour a plugin's declared dialect, including `CLAP_EVENT_MIDI2`, which is never
-sent today.
+## 4. Traits for the spec's interfaces
 
 ### 4.1 The spec's interfaces as traits
 
@@ -435,7 +182,7 @@ in, a value out, no I/O) covers them with less surface. The decisions:
   velocity 0 arrives as a Note Off; a MIDI 2.0 Note On at velocity 0 stays a Note
   On).
 - **Controller state (RPN, NRPN, bank, data entry) is a value, not a trait.** It is
-  the stage 3 `Translator` (§4), one value per input edge. Oracle: M2-115 for the
+  the `Translator` (`tutti-midi-protocol`), one value per input edge. Oracle: M2-115 for the
   scaling and M2-104 App. D for the assembly.
 - **The wire edge consolidates onto `Midi1Parser`.** No trait: once the AU copy is
   gone one implementation remains.
@@ -455,7 +202,7 @@ Rejected:
   implement.
 - **Timing.** Values converted at the edges (§2, "Timing at the edge").
 - **SMF and Clip.** They differ in kind (ticks and meta events against a word
-  stream); both convert to `(Beat, Ump)` (§9, "Files").
+  stream); both convert to `(Beat, Ump)` (`tutti-midi-file`).
 - **A note-logic trait per instrument.** `Voicing::step` with `Rules` and `Patch`
   is already the values form (`tutti-voicing`).
 
@@ -625,7 +372,7 @@ an ordinal on ALSA.
 **Device loss is an event.** Backends watch for removal (the ALSA announce port, a
 CoreMIDI notify proc). Today a vanished device stays listed as connected, verified
 on ALSA, and `Disconnected` never fires. On loss the session retires the port,
-emits `Disconnected`, and the input edge flushes (§8.3).
+emits `Disconnected`, and the input edge flushes.
 
 ### Device detection
 
@@ -795,11 +542,6 @@ Deviations from the sketch above:
   carried.
 - The stage-1 note says `tutti-midi-device` depends on `tutti-ump`; this PR's
   crate does not.
-
-Not built: the flush of held notes when a device is lost (§8.3). Nothing at the
-input edge tracks held notes yet. The retired port discards the UMPs queued in it
-at removal, and releases nothing: a device removed while a note is held leaves it
-sounding until the node that tracks notes exists.
 
 ### Timing at the edge
 
@@ -1688,32 +1430,8 @@ translator, so reading cannot translate, and `tutti-midi-hardware` cannot reach
 the graph. The cycle that keeps `ump` and `translation` together today is mostly
 `message()` calling `normalize`, and it ends with that call.
 
-Moved out of `tutti-midi-types` in stage 5b: `SYSEX7_MAX_PAYLOAD` to `tutti-ump`
-(tutti's cap on one SysEx7 message, for sizing a `SysexAssembler`; M2-104 section 7.7
-sets no maximum), the four RPN address constants (`RPN_BANK_MPE`, `RPN_INDEX_MCM`,
-`RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY`, `RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY`)
-to one `tutti_ump::Rpn` with named addresses, and `PitchBendSensitivity` to
-`tutti-midi-protocol` (an optional `serde` feature, because `MpeZoneConfig` persists
-it). `PerNoteBendRanges` moves with the Plugins lane after these.
+Stage 5b part (a) moved two more items, with no shim left behind:
 
-Stage 5b part (a) moved three more groups, with no shim left behind:
-
-- `clip_file` (`write_clip_file*`, `ParsedClipFile`, `ClipHeader`, `ClipEvent`,
-  `ClipNote`, `ClipFileError`, `CLIP_FILE_MAGIC`) to `tutti-midi-file`, which already
-  held its path-level half. Its only production users were `tutti-midi-file` itself;
-  `tutti-midi-runtime` (the same layer) named it in a doc comment alone and
-  `tutti-midi-hardware` re-exported it, which it no longer does (it depends on no
-  file crate). Part (b) moved its Flex Data onto `tutti_ump::Flex`.
-- `sync/` (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`, `SmpteFrameRate`,
-  `ClockTransportState`) to **`tutti-midi-runtime`**, not `tutti-midi-device`. The
-  decoders speak `Bpm` and `Beat`, and `tutti-midi-device` may not depend on
-  `tutti-types` (the same layer, and it takes no workspace crate but `tutti-ump`);
-  the alternative was bare `f64` at its edge, which the unit rule forbids. The
-  runtime is also where the one production user already is: `ClockMaster` builds
-  `SmpteTimecode` and `SmpteFrameRate` to send MTC, and the decoders are its inverse
-  and its test oracle (the loopback tests). `SmpteTimecode::to_seconds` now returns
-  `Seconds` and `to_beats` a `Beat`. The decoders still have no consumer of their own;
-  they are deleted, not kept, if a clock slave does not arrive.
 - `PerNoteMap` to `tutti-polysynth` as a crate-private type, its only user (the
   slot table's note-id index).
 - `fixed` (`q7_9_to_f32`, `q7_25_to_f32`) was deleted, with no caller: `tutti_ump::Pitch`
@@ -1726,57 +1444,6 @@ deleted and its callers move to `tutti_ump` (`Ump::from(Message)` to build, `dec
 read); a packet-level item `tutti_ump` lacks is added there; state and policy go to the
 one crate that owns them; an item with no caller outside its own tests is deleted.
 
-- **`mpe/`** to `tutti-midi-protocol` (it holds only `tutti-ump` and
-  `PitchBendSensitivity`, so it fits; nothing published or atomic is in it). The
-  values are `MpeZone` (`Lower` and `Upper`), `MpeZoneConfig`, `MpeZones` (the one or two
-  zones an instrument holds) and `MpeMode` (`Disabled`, `Zones(MpeZones)`,
-  `SingleChannelRotation { channel: MidiChannel }`). `MpeZoneConfig` has private fields
-  and `MpeZoneConfig::new(zone, member_count) -> Option<Self>`, which refuses a count
-  outside `1..=15` (0 is "disable the zone" in an MCM and is no zone; nothing clamps),
-  with `lower` and `upper` as `new` for each zone; `MpeZoneConfig::from_mcm` returns the
-  `MpeZone` and the count (`0` included) and refuses an MCM off a master channel or
-  above 15. `MpeZones::new(lower, upper) -> Option<Self>` refuses no zone at all, a zone
-  in the wrong role, and two zones whose members share a channel. The lower zone takes
-  `1..=l` and the upper `15-u..=14`, so they are disjoint exactly when `l + u <= 14`
-  (sixteen channels less two masters; this section's earlier "more than 15" was off by
-  one: 8 and 7 share channel 8). The persisted forms (`serde` feature) are read back
-  through the same checks (`try_from` a private raw), so a document cannot hold what
-  `new` refuses; the single-raw `check_range_contract` does not fit a composite, and
-  the tests state each refusal. An MCM that would overlap the zones is ignored by
-  `MpeIngest`. What went: `MpeZone::SingleChannel`, `MpeZoneConfig::single_channel`
-  and `enabled` (no user; a zone was never disabled), the clamping constructors,
-  `NoteRotationAllocator` (`MpeIngest` minted its ids and dropped them: the mode now
-  keeps the one channel and ignores the rest, which is all a receiver owes a rotation
-  sender, M2-104 Appendix C.3), and `MpeChannelVoiceMap`'s host-allocates half
-  (`assign_note`, `release_note`, voice stealing: "not wired into any runtime path").
-  What `MpeIngest` really used of the map, which note a member channel holds, is a
-  private table in `mpe_ingest.rs` (one for both zones, since they share no channel).
-  `ZoneInfo` was a private helper's return type and is `MpeIngest`'s `Role`.
-- **`ump/`**: everything was a `midi2` constructor of what `tutti_ump::Message` builds,
-  except these. Deleted as dead (no caller outside its tests): the chord, key,
-  metronome and Flex text builders and readers (`flex_set_chord_name`,
-  `flex_set_key_signature`, `flex_set_metronome`, `flex_text`, `push_flex_text`,
-  `FlexTextReassembler` and the `Tonic`, `ChordType`, `Alteration`, ... aliases, which
-  are `tutti_ump`'s `ChordName`, `KeySignature`, `Flex::Text` and kin), SysEx8
-  (`sysex8_fragments`, `sysex8_header`, `sysex8_status`, `is_sysex8_abort`: the packet
-  is `Data128::Sysex8`; no code fragments a SysEx8 payload, so no writer is added until
-  one does), `jr_clock_value` and `jr_timestamp_value` (the callers match
-  `Utility::JrClock` and `Utility::JrTimestamp` from `decode`), `Protocol`
-  (`tutti_ump::Protocol`, which also keeps a reserved value; `UmpCapability` takes it,
-  and an unknown protocol opens as MIDI 1.0), `program_change_bank_of` (a private
-  `decode` in `message.rs`, until it goes) and the `midi2`-oracle test files. Added to
-  `tutti_ump`: `split_stream`, the walk of a buffer of concatenated packets by Table 4,
-  from `split_ump_stream` (it reads the same one size table as `Ump::words`; the old
-  copy had a second). Not packet-level: the tempo helpers (`Bpm` against the Set Tempo
-  field, 10 ns units per quarter note, M2-104 section 7.5.3), whose only users are the
-  Clip File and `MidiFile::tempo_map`, are `tutti-midi-file`'s private `flex.rs`;
-  `tutti-ump` has no unit crate. The Clip File now builds and reads its Set Tempo and
-  Set Time Signature as `tutti_ump::Flex`.
-- **`cc/`**: every constant was an alias of a `CCNumber` constant (nothing missing from
-  `CCNumber`), so the aliases are deleted and callers write `CCNumber::BRIGHTNESS`.
-  `cc::mapping` (`CCMapping`, `CCTarget`, `MappingId`) had no user but
-  `tutti-midi-hardware`'s re-export, public fields and an unvalidated range, and is
-  replaced by the CC modulation source of §9: deleted, not moved.
 - **Root re-exports**: `midi2`, `midly`, `ArcLend`, `Beat`, `BeatDuration` and `Bpm` go,
   from `tutti-midi-types` and with them `tutti-midi-hardware`'s `midi2`, `midly`,
   `Protocol`, MPE and `CCMapping`, and `tutti-midi-runtime`'s MPE types. A user imports
@@ -1815,15 +1482,6 @@ earlier stages built:
   was and is pinned by a test that says it is this reader's choice and not the
   specification's; changing it is a decision for the owner.
 
-`tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
-out, clip, harmony and clock nodes (the queue nodes went in E4) with `ClockMaster`, plus `MidiMailbox` and
-routes (stage 3b deleted `gather_midi` and `BlockSplitter`), about 3,100 of its 5,700 production lines. Its
-layout flattens to match. `jr_timestamp` moves to `tutti-midi-device` (`negotiate` was deleted in stage 4a),
-`mpe_ingest` to `tutti-midi-protocol`, and the SysEx reassemblers are gone (stage 3c:
-`tutti_ump::SysexAssembler` is the one, and `Sysex8PacketReassembler` had no production
-caller). `outbound` goes away, along with the re-exports from
-`tutti-midi-types`, and `pub mod` inside a private parent becomes `mod`.
-
 `tutti-midi-hardware` is a transport and nothing else. Its re-exports go: `midi2`,
 `midly`, the translator, the Clip File codec, MPE, `CCMapping`, the sync
 decoders, the graph nodes, and a prelude that hands out `MidiInputNode`. A consumer
@@ -1836,14 +1494,6 @@ is named for what it is. A byte-stream source is read by `tutti_ump::Midi1Parser
 
 MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only in the
 `-ffi` crates, and `scripts/check-midi-ffi.sh` (a sibling of `check-plugin-ffi.sh`) enforces it.
-
-`sync`'s clock and MTC decoders have no consumer today beyond `ClockMaster`'s loopback
-tests. They are in the runtime (stage 5b), and are deleted if a clock slave (§9) does
-not use them. `MtcDecoder` ignores the quarter-frame bits the MTC text reserves ("receiver should
-ignore!") and reports the assembled position plus the two frames the text says a receiver
-"must keep" ("the information is now actually 2 frames old"). `cc::mapping` was deleted (stage 5b part (b); it had no user and is
-replaced by a CC modulation source, §9), and `jr_timestamp` is rewritten in
-`tutti-midi-device`, where it can be negotiated and driven by elapsed time.
 
 ## 7. `midi2` and `midly`
 
@@ -1875,513 +1525,22 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   pins, and the name-only comparison of the Flex and Stream families. The fuzz target
   is not run in CI yet; nothing here leans on it.
 
-`midly` stayed in `tutti-midi-file` for the SMF container until stage 6b, which wrote
-the reader and writer itself (below); the dependency is gone. Its parse error allocated,
-so a plugin's stray status byte (`[0xF7, 1, 2]`) aborted a debug build under
-`assert_no_alloc`.
-
-## 8. Not losing events
-
-### 8.1 What stage 0 fixed
-
-A dense clip into a slow reader lost events at a fixed block capacity
-(`CLIP_EVENT_CAPACITY`, 256). Measured at 32,000 events per second: 25% lost at
-512 frames, 62% at 1,024. A real `render_to_buffers` export (1,024-frame blocks)
-returned `Ok` while losing 62%, and a chord clip left 144 of 200 notes sounding to
-the end of the file. The executor's drop counter reported about half of the loss,
-because a refused note-on's later note-off is swallowed uncounted. A refused
-note-off was not retried on ordinary playback (`owed` was set only in `release`).
-Stage 0 (#261) fixed both: a withheld note-off is counted and a refused one goes
-out at a later block's first frame.
-
-### 8.2 The change
-
-- **Capacity follows the block.** Port capacity is a function of `Prepare::max_block`
-  and a configured density, sized on the control side.
-- **Note-offs have priority.** A port at capacity refuses a new note-on before a
-  note-off. A refused note-off stays owed and is retried in the next block. The
-  clip node stops forgetting one.
-- **Drops are counted exactly,** per port, and surface as a session event, not only
-  as a load-meter figure.
-- **An export reports loss.** A render that dropped an event returns that in its
-  result, and a caller can make it an error.
-
-### 8.3 Flush
-
-The input edge and queue node track held notes and controllers per group and
-channel. On a route change, device loss, node removal or replacement they send
-Note Offs, then reset what they changed (sustain, bend). Today a held key plus
-`retarget` or `unroute` leaves a stuck note on the old target and an orphan off on
-the new one.
-
-**Built for the hardware input edge (L6(f)): `HeldState` and what ends a source.**
-`HeldState` (`tutti-midi-runtime`, `held.rs`) is the pure core: a bitset over
-`tutti_ump::Key` (protocol, Group, Channel, Note: 8 KiB) and the ledger's
-`Controllers` table (the four hold pedals and the pitch bend, per protocol, Group and
-Channel: 1 KiB, moved from `ledger/` so both share it), `observe(ump)` folds in a message
-the source sent, and `release(group, accept)` hands `accept` the messages that end
-what is held, in key order, then the controllers' returns, and forgets what `accept`
-takes: a receiver with no room refuses and is asked again for the rest, so a release
-never strands one. It reads no clock and allocates only in `new`. The executor's edge
-table (`tutti-graph`'s `held.rs`, audit #7) is the other table of the same facts: a
-bitset of keys and the sustain pedals of one event output port, closed when an edge
-ends. It stays, since it needs no node's cooperation; folding it onto `HeldState` (so
-that an edge close also lifts the sostenuto, soft and hold-2 pedals and the bend) is a
-follow-up, not done here.
-
-*What a release sends, and why not All Notes Off.* Per held key a Note Off in the key's
-own protocol; then a pedal-up for each pedal down and a centred bend for each bend off
-centre. Nothing channelwide (CC 120, 121, 123): a channel is shared (several devices
-merge in one listener's fan-in), so a channelwide message from a device that went would
-end another device's notes and reset its wheel. MIDI 1.0 Detailed Specification 4.2.1,
-p. 24: "recognition of All Notes Off is not required of the receiver, all notes should
-first be turned off by transmitting individual Note-Off messages"; Appendix A-5: a pedal
-that is down "takes priority over Note Off and All Notes Off until it is released", so the
-pedals come after the notes; p. 31 (Stop) and RP-015: the pedals and the pitch wheel return
-to their normal positions. A per-note controller ends with its note (M2-104 section 7.4), so
-none is tracked.
-
-*Where it runs.* The `MidiIngestNode` keeps a `HeldState` per slot, folded from the raw
-messages the device sent (before translation, so a MIDI 1.0 key is released as one), and
-sends a release through the same translator and MPE state as any message (`Device::release`),
-so an MPE member channel's map is consistent with what downstream heard. Three things
-trigger it, in order of the stream:
-
-- *Device change or loss.* A slot's epoch now counts opens and releases (`DeviceInlets`:
-  odd while a device holds the slot). A node that follows the inlets compares it each block;
-  a change releases everything the old device held at the block's first frame, then restarts
-  the slot (translator, MPE state, watch), and a slot whose device went (even) is not read
-  until another takes it. The executor's close of the inlet's edge, which would send the same
-  Note Off at the next update, arrives at a slot nobody holds and is dropped, so a note ends
-  once (`a_disconnected_device_ends_its_held_key_once`, with the fake backend).
-- *Active Sensing lapsed* (below).
-- *System Reset* (below).
-
-The three share one rule: what does not fit the block's room is owed (`Device::owing`, one
-bit per Group) and goes out at the next block's first frame.
-
-*Active Sensing (MIDI 1.0 p. 32).* `ActiveSensing` (`tutti-midi-runtime`, `live/sensing.rs`)
-is the receiver's watchdog as a pure value: `heard(group, frame, is_active_sensing)` (any
-message clears the timer, an FE starts watching the Group) and `next_lapse(now) ->
-Option<(MidiGroup, Frame)>` (the Group over the limit, with the frame its time ran out at;
-the Group is unwatched after it, the spec's "reset flag"). The limit is
-`ACTIVE_SENSING_JUDGE`, 330 ms: the spec sends every 300 ms and recommends that "receivers
-judge at over 330 ms". One watch per Group, because a Group is one cable of a device
-(M2-104 section 2.1.2). **It is stepped by the ingest node in the graph's own frames**, not by
-a clock: the events carry the frame the inlet placed them on (the arrival time on the engine's
-clock plus the lead), so the gap between two frames is the gap between two arrivals to within
-a block, and the node reads no OS clock. The device's thread (a CoreMIDI callback has no
-timer) and `Phase::Poll` (a frame's granularity, and no way to put a release into the graph)
-were the alternatives; neither can place the release at its frame. A lapse releases the
-Group's held state at the frame it ran out and leaves the translator alone, as the spec asks
-for no more than "turn off all voices". An engine stall does not lapse a cable: events that
-arrived during it are placed late, at the first frame of the block that finds them, and clear
-the timer there. The FE is the cable's own and is not sent on.
-
-*System Reset (FF, p. 33).* Per Group: its held state is released at the FF's frame, its
-translator state (`Translator::reset_group`) and MPE state (`MpeIngest::reset_group`) are
-reset and its watch is dropped ("turn voices off", "reset all controllers", "clear running
-status"), and the FF is **not sent on** ("under no condition should this message be echoed").
-No input path keeps a byte parser (ALSA and CoreMIDI deliver UMP; the SysEx assembler is a
-`tutti-ump` value one layer up), so running status and SysEx reassembly state cannot be
-stranded at this edge. Set Local On, Omni On / Poly, Song Position 0 and Stop are the transport's
-and a synth's: nothing in the input edge holds them.
-
-### 8.4 The note ledger
-
-`NoteLedger<T>` (`tutti-midi-runtime`) is the table of notes a node has started and
-not ended, and the only way such a node puts a MIDI event on its port.
-`NoteLedger::block(out, first)` pays every note-off the port refused earlier,
-at `first`, and returns a `Sending`; `Sending::send(at, ump, owner)` is the only
-door to the port, and `release_all(at)` ends every note. A node that writes
-around the `Sending` does not compile (a `compile_fail` doctest on the module
-holds the second borrow of the port).
-
-- **The key is (group, channel, note).** M2-104 §7.4 and Appendix C name a note by
-  that triple and give no other identity. `T` is an optional owner tag for a source
-  that pairs its own messages; the clip's is `ClipNote`, a relay's would be `()`.
-- **One held note per key.** A note-on of a key that sounds ends the sounding note
-  first on the same frame and takes the key, as the clip did before. Appendix C.2
-  allows several notes on one key, told apart by a Detach, which the clip does not
-  carry, so the ledger does not model it.
-- **Two states per held key,** `Sounding` and `Owing` (the port refused the off).
-  Independently a key can be `refused` (the port refused a note-on of it), so that
-  note's off is withheld and counted. Both can hold at once.
-- **Full table.** The clip's table holds 2,048 keys, one group's 16 channels of 128
-  notes; it is a chosen bound, not a measured one. A note-on that finds it full is
-  withheld and counted as a refusal is (`EventWriter::withhold`, in
-  `Executor::dropped_event_count` and `Editor::take_event_losses` against the
-  clip's port). The note does not start, so no off is owed; its tagged off is
-  swallowed and not counted again. A note whose on went out always has its row.
-  An untagged source's off for a withheld note passes through to the port.
-- **A refused on is counted at the on and again at its off.** The off of a note
-  whose on the port refused is withheld and counted, tagged or not, and clears the
-  row, so a note lost entire is two losses (the 44 + 44 of
-  `a_loss_is_counted_exactly_and_leaves_no_orphan`). An off the port refused is a
-  loss that is given back when the off goes out. A key counts its refused ons (to
-  255), so notes that overlap on a key are counted one by one. A relay's table is therefore
-  freed by its sender's offs without a `release_all`.
-- **Memory and cost.** 12 bytes a key with the clip's tag, 24 KiB per clip node,
-  allocated with the node. Per 512-frame block, against the bitsets it replaced
-  (six alternated release runs): a dense clip 4.76 to 5.86 µs, a chord churn over
-  128 held notes 0.31 to 0.41 µs, 1,500 held notes with 4 changing a block 0.39 to
-  1.06 µs. The table is a sorted `Vec`, so a change to a large table is a
-  `memmove`.
-- **Controllers go back with the notes.** The ledger also keeps, per protocol, Group
-  and Channel, whether the hold pedals (CC 64, 66, 67, 69) are down and whether the
-  pitch bend is off centre (512 `u16`s, `held/controllers.rs`; a MIDI 1.0 value of 64
-  or more, a MIDI 2.0 one at or above `0x8000_0000`, is down). MIDI 1.0 Detailed Spec
-  p. 31 (Stop): "any controllers not in their initialized position (pitch wheels,
-  sustain pedal, etc.) should be returned to their normal positions", and A-5: a
-  pedal on "takes priority over Note Off and All Notes Off until it is released", so
-  `release_all` (the clip's stop, seek, loop wrap and replacement) writes the
-  note-offs first, then a pedal-up (value 0) and a centred bend (`0x2000` or
-  `0x8000_0000`) in the protocol the controller was sent in, for each that is off
-  and only those. A reset the port refuses is owed like an off and goes out on a
-  later block, after every owed off. Per-note pitch bend is not tracked: it ends with
-  its note (M2-104), and every note is ended first.
-- **Fork and reset.** The table is not `Clone`; a fork builds a fresh node over a
-  snapshot of the clip and starts with an empty table, and `Node::reset` clears it.
-- **The clip node uses it; the relays do not yet.** The input and queue nodes, a
-  plugin's MIDI output and `MpeIngest::set_mode` still send without a ledger, so
-  audit #14 still holds for them (a note-off lost at the reserve, 8 stuck notes in
-  the scenario that measured it) until stage 4 moves them.
-- **Audit #7 is closed at the executor's edges, not in the ledger.** A debt that
-  crosses an edge change cannot be paid by a value inside its source, so the
-  executor keeps the keys each note-carrying event output port holds (`tutti-graph`'s
-  `held.rs`: a bitset over `tutti_ump::Key`, plus the sustain pedals down) and, when
-  a commit removes an edge, sends the sink that loses it the pedal-ups and
-  note-offs, after the events a vanished delay flushed to it. It needs no node's
-  cooperation, so it covers a clip, a relay and a plugin's MIDI output alike. A
-  replaced or removed source closes its sinks too. A node whose event outputs never
-  carry a note says so with `Shape::with_no_note_events`, and keeps no table.
-  The ledger still owes its own port the offs it refused; the edge table owes the
-  sink the offs of what crossed the edge.
-- **What the close does not do.** An off for a key the sink never saw begin still
-  reaches it (a conforming receiver ignores it). A sink fed by several sources cannot
-  tell whose note a key is, so one source's close or off ends another's note on the
-  same key. So can a close still owed after a replacement: past about 72 held
-  keys (what a block's slot takes) it can end a note the new unit started on the
-  same key. A fork starts with empty tables and closes what it has seen itself.
-  Sostenuto, CC 120 and 123, per-note controllers and pitch bend are not tracked at the edge (the clip's ledger returns the pedals and the bend, above).
-
 ## 9. Missing capabilities, in the order a DAW needs them
 
 Each is its own lane after its dependency stage.
 
-1. **Chase on seek** in `MidiClipNode`, done for a channel's state (L4d-b): wherever playback
-   jumps (a start, a seek, a loop wrap, a bounce's first block), after the held notes and
-   controllers are returned, the clip sends for each state it set before the beat (a program, a
-   controller, a registered or assignable controller, pressure, bend) the last message that set
-   it, per group and channel in that order. The table is built on the control side with the clip
-   (each state's setters, in beat order), so a jump is a binary search per state and allocates
-   nothing. Not chased: notes spanning the beat (a note the playhead lands inside is not struck,
-   as a DAW's default), per-note controllers, which live with their notes, and relative
-   controllers, which add to what is there, nor the Channel Mode messages (CC 120 to 127), which
-   are commands. A chased Program Change carries the bank in force at its beat (one sent with no
-   Bank Select keeps the channel's bank, M1 p.13), so the receiver is moved to the timeline's bank.
-   An event less than a frame behind the beat is also played by the walk; the repeat sets the same
-   state. A port without room for the whole chase refuses the rest, counted like any refused event.
-2. **MIDI recording** into clips, timestamped against the transport.
-3. **CC modulation source and MIDI learn for native nodes.**
-4. **Windows backend** (Windows MIDI Services), **Linux virtual ports** and more
+1. **MIDI recording** into clips, timestamped against the transport.
+2. **CC modulation source and MIDI learn for native nodes.**
+3. **Windows backend** (Windows MIDI Services), **Linux virtual ports** and more
    than one output.
-5. **Clock, MTC and MMC slave** with tempo follow, and a `ClockMaster` that handles
-   a loop wrap inside a block.
-6. **Files**, done (below).
+4. **Clock, MTC and MMC slave** with tempo follow.
 
 Smaller items that no stage owns:
 
-- **No clock while stopped.** `ClockMaster` returns from its tick as soon as the
-  transport is not playing (`tutti-midi-runtime/src/outbound/clock_master.rs`), so
-  external gear that wants a running clock through Stop (arpeggiators, delays)
-  gets none. Make it a setting of the master, off by default, with a test.
 - **No headless live example.** `crates/tutti/examples` has no live-keyboard to
   plugin example (`headless_engine`, `headless_export`, `headless_modulation`
   and `plugin_midi_export` do not read a device). Add one when the live path is
   settled, as the doc for the device API.
-- **The event sort.** `in_offset_order` in `tutti-midi-runtime/src/live/order.rs` is
-  an insertion sort, O(n^2) for input out of order (57 us at 512 events, as measured
-  in the audit). It never allocates, and a wire or ring is usually in order, so this
-  is low priority; revisit with the `(Offset, Ump)` event of stage 5a.
-
-### Files
-
-**Stage 6, done.** `tutti-midi-file` is one file model over both containers, read
-losslessly. Before it, the crate added real work on top of `midly` (musical time, note
-pairing, one reader for SMF and Clip File) but had two read models from one parse
-(`SmfFile`'s tracks and `ParsedMidiFile`'s merged stream, and a third for a Clip
-File), dropped SysEx, time and key signatures and markers, merged Format 2 as if
-parallel, rejected SMPTE division, and returned `Ok` on a truncated file. Writing
-had no tempo map, track names or SysEx. (`pub use midly` and `SmfMessage` had exposed
-`midly`'s types and `iter()` wrote each parsed message to wire bytes to parse it
-again; the M3 lane below fixed both.)
-
-What is built, and where it differs from the sketch this section started from:
-
-```rust
-pub struct MidiFile { /* private */ }          // container, division, tracks, tempo maps
-pub struct Track { pub header: Vec<(Tick, FileEvent)>, pub events: Vec<(Tick, FileEvent)>, pub end: Tick }  // name() is derived; header is a Clip File's
-
-pub enum FileEvent {
-    Message(Message),      // SMF: Midi1 on group 0. Clip File: as stored.
-    Unknown(Unknown),      // a Clip File packet no definition covers, as its words
-    SysEx(Box<[u8]>),      // F0, any length, unlike a packet
-    Escape(Box<[u8]>),     // F7: a continuation or an escape
-    Meta(Meta),            // Text { kind, bytes }, Tempo, TimeSignature, KeySignature, Other { kind, data }
-}
-
-impl MidiFile {
-    pub fn smf(format: SmfFormat, ticks_per_quarter: u16, tracks: Vec<Track>) -> Result<Self>;
-    pub fn clip(ticks_per_quarter: u16, track: Track) -> Result<Self>;
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self>;   // truncation is Error::Truncated
-    pub fn to_bytes(&self) -> Result<Vec<u8>>;
-    pub fn tempo_map(&self) -> &Arc<TempoMap>;          // tutti_tempo, shared (L1e)
-    pub fn tempo_map_of(&self, track: usize) -> Option<&Arc<TempoMap>>;
-    pub fn seconds_at(&self, at: Beat) -> Seconds;      // tempo_map().seconds_at
-    pub fn events(&self) -> Option<impl Iterator<Item = (Beat, &FileEvent)>>;  // merged, None for Format 2
-}
-impl Track { pub fn notes(&self) -> Vec<PairedNote>; }  // allocates and sorts (L1e)
-```
-
-- **The tempo map is derived, not a field to set.** Set Tempo stays an event of its
-  track (`Meta::Tempo { micros_per_quarter }`, a Clip File's Flex Data Set Tempo), so a
-  write gives back the exact event, a zero ("no valid tempo") and two on one tick
-  included; the file builds its `TempoMap` from them in its constructors, steps at the
-  tick each lands on, 120 BPM until the first when none is at tick 0, the later of two
-  on one tick governing. The two cannot disagree. `seconds_at` is `TempoMap::seconds_at`
-  (doc 020's "point `MidiFile::seconds_at` at `TempoMap`" is done here); the old
-  step-only integration and `tempo()` are gone, and a Clip File with no tempo now has
-  the 120 BPM default in its map where `tempo()` was `None`: adopting a tempo is
-  `tempo_map().tempo_at(Beat(0.0))`.
-- **Format 2 is kept apart.** Its tracks are independent sequences: `events()` is `None`
-  (there is no one timeline to merge on), `tempo_map_of(i)` is each sequence's own map
-  and `tempo_map()` is the first's. Formats 0 and 1 and a Clip File merge their tracks
-  by tick, ties in track order.
-- **SMPTE division is refused** (`Error::MidiUnsupportedTiming`), not supported. A
-  timecode file has no beat grid, so no `Beat`, no `TempoMap` and no `events()`;
-  supporting it means a second timing model through every accessor, and importing one
-  means choosing a tempo, which is the caller's to say. It is the one SMF this
-  crate does not read, and it is refused with its own error rather than guessed.
-- **`Track` has `end`, and a name that is derived.** The End of Track (a Clip File's
-  End of Clip, whose Delta Clockstamp is the clip's length) is where the track ends,
-  which a read must give back and an event list cannot say; `name()` is the first Track
-  Name event rather than a field beside it, so the two never disagree.
-- **`FileEvent` adds `Unknown` and `Escape`** to the sketch: a Clip File's packet that
-  no definition covers must write back as its words, and an SMF distinguishes `F0` from
-  `F7`. Text is bytes (the specification names no encoding); the registered meta events
-  `Meta` does not type (sequence number, channel prefix, port, SMPTE offset, sequencer
-  specific) are `Other { kind, data }`.
-- **A fixed-size meta event can be longer than it defines.** SMF 1.0 section 3.3:
-  programs "shouldn't be surprised if it's bigger than they expected. If so, they must
-  ignore everything past what they know about." Set Tempo, Time Signature and Key
-  Signature each carry an `extra` (the bytes past the ones they define, empty for an
-  exact event), so the typed event is read and the file still writes back as it was (a
-  real Time Signature with the compound-signature bytes is `FF 58 06 ...`). An End of
-  Track that is not a track's last event is refused (`Error::MidiFileParse`): section
-  3.3 says it "must occur as the last event in the track", and ending the track there
-  would drop what follows.
-- **A `PairedNote`** is `(group, channel, note, 16-bit velocity, start, end)` in ticks,
-  for both containers (a MIDI 1.0 velocity widened by the specification's scaling, a
-  MIDI 2.0 Note On at velocity 0 neither a start nor an end); `SmfNote`, `ClipNote` and
-  `SmfTrack` are gone.
-- **The Clip File codec is private** under the model (`ParsedClipFile`, `ClipEvent`,
-  `ClipHeader` and the `write_clip_file*` functions, `read_clip` and `write_clip` are
-  deleted; `MidiFile::read` and `write` are the path calls). A tempo or a time
-  signature is an event of the track like any other.
-- **A constructor checks what the container can hold** (`Error::Config`, a `ConfigError`, L1e): events
-  in order, a gap that fits the wire (28 bits in an SMF, 32 in a Clip File), group 0
-  MIDI 1.0 messages in an SMF, packets only in a Clip File and not its own structure,
-  a Set Tempo of 24 bits, a format 0 file of one track. A write cannot then drop or
-  clamp an event.
-- **A read is a write's inverse on the model**, not on the bytes: running status and the
-  spelling of a Delta Clockstamp (NOOP restarts) may differ, and a Clip File's reserved
-  bits are written as zero. Message, Note On at velocity 0 and all, the file layer does
-  not translate: `Translator` runs when a clip is loaded for playback.
-
-- **Our types in the API, the byte parser private.** `midly`'s events borrowed the input
-  bytes, and exposing them would have made it a public dependency; it was the SMF byte
-  parser until stage 6b replaced it with our own (below), behind `smf.rs`.
-- **`TempoMap` is not a MIDI type.** It maps beats to samples and lives in
-  `tutti-tempo`, a small pure crate above `tutti-types` with
-  `#![forbid(unsafe_code)]`, because the transport, the export plan, plugin
-  transport info and SMF import all want it. The file layer builds one from tempo
-  events; [020](020-tempo-map-transport.md) is the design that adopts it in the
-  transport.
-- **Integer ticks.** Events keep their tick and the file its division, so a write is
-  exact with no rounding, and `events()` gives callers `Beat`.
-- **The Clip File reader checks structure order** (M2-116 v1.0 sections 6 to 7.3), one
-  error variant and one test per rule. Everything from the file header up to the DCS of
-  Start of Clip is the **Clip Configuration Header** (section 6), kept as
-  `Track::header` (ticks on the header's own clock, from the DCTPQ; not on `events()`,
-  and not sounding at the sequence's start):
-  - Section 6: Set Profile On messages (a Universal SysEx `7E dev 0D 22`, recognised
-    packet by packet) may lead the file with no DCS; the DCTPQ follows them, behind a DCS
-    of 0. Any other message before the DCTPQ is `DctpqNotFirst`; a second DCTPQ is
-    `DuplicateDctpq`. The writer puts the leading tick-0 Set Profile On packets back
-    before the DCTPQ.
-  - Section 6, 6.3: any other UMP messages between the DCTPQ and Start of Clip
-    (Program Change, Control Change, System Exclusive, ...) are header messages, each
-    behind its own DCS, kept in order with their delta times and written back. They are
-    not an error.
-  - Sections 6.1 to 6.1.2: at most one Set Tempo and one Set Time Signature
-    (`DuplicateHeaderTempo`, `DuplicateHeaderTimeSignature`). The "shall"s on placement
-    are refused too: the Set Tempo must be the first message after the DCTPQ at a delta
-    of 0 or sharing the DCTPQ's DCS (`MisplacedHeaderTempo`), and the Set Time Signature
-    right behind it, or first if there is no Set Tempo (`MisplacedHeaderTimeSignature`).
-    The header's Set Tempo is the tempo from tick 0 of the sequence (the header's clock
-    runs before Start of Clip, so its tick is not a sequence tick); a Set Tempo in the
-    sequence is an ordinary change, and one at tick 0 overrides the header's. The
-    constructor `MidiFile::clip` holds a header to the same rules (`Error::Clip`).
-  - Section 7: Start of Clip is the first UMP of the sequence data (`MissingStartOfClip`,
-    `DuplicateStartOfClip`); section 7.3: End of Clip is last and nothing follows it
-    (`TrailingData`, `MissingEndOfClip`). The DCS before End of Clip is the clip's
-    length (`Track::end`).
-  - Section 3.2.2: a gap past 1,048,575 ticks is written as a DCS of 1,048,575 and a
-    Null message, once per restart, then the remainder's DCS (pinned by word in
-    `a_long_gap_is_written_as_dcs_then_a_null`).
-  - **L1 (M2-116 conformance).** The reader and `MidiFile::clip` also hold: the DCS right
-    before the DCTPQ exists and is 0 (`DctpqDelta`; sections 3.2.1 and 6: "The DCTPQ shall
-    have a preceding Delta Clockstamp ... set to 0x00000"); a Set Profile On has no DCS
-    before it (`ProfileOnDelta`; section 6: "shall not have a prepended Delta Clockstamp
-    (DCS)"); the header's Set Time Signature is at delta 0 like the Set Tempo
-    (`MisplacedHeaderTimeSignature`; section 6.1.2: "shall use the Delta Clockstamp which
-    precedes the DCTPQ message or shall have a preceding Delta Clockstamp with Number of
-    Ticks Since Last Event set to 0x00000"); no Property Exchange message, a MIDI-CI
-    `7E dev 0D 30..3F` System Exclusive 7 (`PropertyExchange` in the reader,
-    `Error::InvalidConfig` from the constructor; sections 6.4 and 7.2). The DCS before Start
-    of Clip is kept as `Track::header_end` (a `Tick` on the header's clock, not before the
-    last header message; section 6.1: "the cumulative values of all Delta Clockstamp up to
-    and including the Delta Clockstamp for the Start of Clip Message determines the total
-    length of time allocated to the Clip Configuration Header"), read and written.
-  - **Ruling: one DCS for the parts of a Lyric or Ruby message.** M2-116 section 3: "A
-    Delta Clockstamp message precedes every UMP to define the timing of each message."
-    M2-104 sections 7.5.10 and 7.5.12: "When placed in a MIDI Clip File, all parts of the
-    Lyric Data Message shall be placed at the same time, sharing a single Delta Clock
-    Stamp" (Ruby the same). They agree through the Clip File's own definition of a DCS,
-    M2-116 section 3.2.2: "The Delta Clockstamp message declares the time of all following
-    messages which occur before the next Delta Clockstamp message ... Simultaneous events
-    may share a single Delta Clockstamp" (M2-104 section 7.2.3.2 likewise): a DCS "precedes"
-    a UMP by governing it. A zero DCS between the parts is not a way to satisfy both: it
-    is a second Delta Clock Stamp, and "a single" is what the shall says. So `write` puts
-    one DCS before the Start packet and none before that message's Continue and End
-    packets (same Group, address and kind, same tick); every other event keeps its own DCS
-    (the Language messages, other texts and SysEx are not covered by the rule). The reader
-    was already liberal: a DCS between the parts reads as before. The first reading in the
-    L1 brief, that a zero DCS between the parts would do, does not hold.
-  A Delta Clockstamp, a Null and a JR message are not content and may come anywhere
-  before the DCTPQ. The refused-event-before-Start-of-Clip rule of the first draft of
-  this stage was wrong: such a message is a header message.
-- **A lossless round trip** is the test (`tests/smf_model.rs`, `tests/clip_model.rs`):
-  a file read and written holds the same events, including SysEx and meta, over hand-built
-  files with every event kind in formats 0, 1 and 2, checked also by a decoder written
-  from the specification that shares no code with the crate, and every strict prefix of a
-  file is refused.
-- **Clip File moves here** from `tutti-midi-types`, its only production consumer.
-
-**Measured (2026-11).** `midly`'s `parallel` feature pulls `rayon`: this crate's normal
-dependency tree goes from 21 crates to 27 (`rayon` is in the lock for others, so the
-workspace gains nothing). A 16 track, 1.6 million event, 16 MB file, release build:
-read 58 ms with `parallel`, 100 ms without; write 35 ms against 47 ms. A 16 KB file:
-write 743 us with it (the first call starts the pool) against 60 us, read 162 us against
-107 us. It pays only past a few megabytes, which a file here is not, and is off.
-`strict` is on. Without it `midly` keeps what it could read of a cut file: a chunk
-longer than the file is read to the end of the file, a track that ends mid-event stops
-silently, a track count that disagrees with the header is ignored. With it each of
-those is an error (`Error::MidiFileParse`), and it also refuses a duplicate header and an
-invalid chunk. `strict` alone refuses every strict prefix of a valid file (the sweep
-passes with `smf::scan` removed), but as a string, so a cut file is told apart by the
-crate's own `scan` (a chunk header short of 8 bytes, a chunk running past the end, fewer
-`MTrk` chunks than the header's count: `Error::Truncated`); `strict` is what catches
-the one `scan` cannot, a chunk whose length is right and whose last event is not.
-
-**Stage 6b, done: our own SMF reader and writer; `midly` goes.** `midly` was the one
-third-party codec under the file model, and the costs measured above (a feature that
-pulls `rayon`, a `strict` flag backed by a pre-scan of our own for `Truncated`, a
-conversion layer from its types to ours) were the price of not owning a few hundred
-lines. The reader (`tutti-midi-file/src/smf/read.rs`) is `winnow` combinators over the
-framing: `MThd` and `MTrk` chunks with `length_take`, the variable-length quantity (at
-most four bytes: a fifth is refused), meta (`FF type len`) and the `F0` and `F7`
-length-prefixed events. Running status is a value: `event(running)` returns the next
-status beside the event and `successors` threads it (SMF 1.0 section 3: a channel event
-may omit its status when it repeats the last; sysex and meta cancel it; `F1` to `F6` and
-`F8` to `FE` are not in a file). What decodes a message is `tutti-ump`'s, never
-re-derived: `Voice1::data_len` (new) says how many data bytes a channel status takes and
-`Midi1Parser::message` turns status and data into a message. The streaming
-`Midi1Parser::feed` is not used: in a file the delta bytes would read as running-status
-data and `FF` as a real-time Reset. The writer (`smf/write.rs`) is a fold of pure
-functions: an event to its bytes, a track body as a fold over the running status
-(eliding a repeated channel status), a chunk's length computed from the body it frames.
-A meta event that is not exactly a typed shape (a Set Tempo whose data is not three
-bytes) is kept as `Meta::Other`, so no byte is lost. A cut file is `Truncated` as in
-stage 6 (a framing fault, or fewer tracks than the header declares); a track with no End
-of Track still ends at its last event. `winnow` is named only in `read.rs` and no type
-of it is public (`scripts/check-layout.sh`). Measured against the figures above
-(release, best of runs, 16 tracks of channel messages at about 4 bytes an event with
-running status): 16 MB, 4 million events, read 222 ms (55 ns an event, against 62 ns
-for `midly` without `parallel`), write 33 ms (8 ns an event, against 29 ns); 16 KB,
-4000 events, read 174 us, write 31 us. A third of the read is `Midi1Parser::message`.
-
-**Stage 6c, done: an SMF converts to a Clip File.** `MidiFile::to_clip` (`tutti-midi-file/src/file/to_clip.rs`)
-turns a format 0 or 1 SMF into a Clip File as M2-116 intends: section 3.3, "Messages
-Replace the Former Meta Events in SMF v1", says the meta events "have been replaced by new
-MIDI messages in the UMP Format", mostly Flex Data (type D), and Appendix B lists them.
-It returns `Converted { clip, dropped }`: a conversion that returned the clip alone would
-lose events without a word, and one that failed on the first would make a file with one
-marker unconvertible, so each event the clip lacks comes back as a `Dropped { track,
-tick, event, reason: DropReason }` in clip order. A format 2 file is `ToClipError::Sequential`
-(a clip is one sequence: one Start of Clip, one End of Clip, section 7) and a Clip File
-`ToClipError::AlreadyClip`. Fields are M2-104 section 7.5's, as `tutti_ump::Flex` models them.
-
-| SMF | Clip File |
-|---|---|
-| channel message | the same `Midi1` packet, group 0 |
-| Set Tempo `FF 51`, us per quarter | Flex Set Tempo, `us * 100` (10 ns units per quarter; 24 bits times 100 fits `u32`) |
-| Time Signature `FF 58` `nn dd cc bb` | Flex Set Time Signature (`nn`, `dd`, `bb`) then Set Metronome (`cc` clocks per click; the bar undivided, so Bar Accent Part 1 is `nn` and Parts 2 and 3 are 0; no Subdivision Clicks: M2-104 §7.5.5) |
-| Key Signature `FF 59` `sf mi` | Flex Set Key Signature on the group: `sf` sharps or flats, and the tonic's letter (the field has no accidental or mode: the circle of fifths F C G D A E B at `sf + 1`, a minor key's from `sf + 3`, so 3 sharps minor is F) |
-| Copyright `FF 02` | Flex Copyright Notice |
-| Lyric `FF 05` | Flex Lyrics |
-| Track Name `FF 03`, format 0 or track 0 of format 1 | Flex Composition Name: SMF 1.0 section 3.3, the first track's name is the sequence's |
-| Text `FF 01` | Flex Unknown Metadata Text (M2-104 Table 16: the message for text of no named kind) |
-| `F0` event, complete 7-bit `F0 .. F7` | SysEx7 packets (`SysexMessage::packets`) |
-| division | the DCTPQ; deltas carry over as ticks |
-| End of Track | End of Clip at the longest track's end |
-
-Long text is split over Flex packets by `tutti_ump::flex_text_packets` (12 bytes a
-packet, Start, Continue, End, zero padded; a text with a NUL is refused as zero is the
-padding). Format 1 merges by tick, ties in track order then the track's own, the rule of
-`MidiFile::events`. Placement follows sections 7.1.1 and 7.1.2: at tick 0 the Set Tempo
-messages come first, then the Set Time Signature messages (each with its Set Metronome),
-then the rest, all in the Clip Sequence Data right after Start of Clip (the header stays
-empty); a file with no Set Tempo at tick 0 gets the SMF default 120 bpm and one with no
-Time Signature 4/4 with 24 clocks and 8 32nds (SMF 1.0 section 3.3: "If no tempo is
-specified, 120 beats per minute is assumed", 4/4 likewise), so the clip states what an
-SMF reader assumed. A later tempo or signature stays on its tick: "where MIDI clocks
-would be located" and "the beginning of a bar" are asks of the author's grid, and
-moving an event would change the music.
-
-No successor (`DropReason`), each reported with its tick: Sequence Number, Marker, Cue
-Point, Instrument, Program and Device Name, Sequencer Specific, any other meta event,
-and an `F7` escape (`NoSuccessor`: Appendix B lists no message for them); SMPTE Offset
-(`SuccessorUndefined`: Appendix B lists an SMPTE Offset message "defined in" M2-104, and
-so Extended MIDI Time Code, but M2-104 v1.1.2 defines neither); Channel Prefix and MIDI Port Prefix (`ReplacedByAddressing`: the UMP carries a
-channel in the packet and a port as a group, and every meta message here is addressed
-to the group); the name of any track but the first (`TrackName`: a clip has no tracks);
-a text that is not UTF-8 or has a NUL (`TextNotUtf8`, `TextHasNul`: Flex text is UTF-8,
-M2-104 §1.8 and §7.5.9; a text that is carried loses a leading BOM and is composed to
-NFC, as §1.8 requires); a Key Signature beyond 7 sharps or flats, a Time Signature whose
-denominator power is 0 and one whose numerator is 0 (`KeySignatureOutOfRange`,
-`WholeNoteDenominator`, `ZeroNumerator`: the Flex fields hold no such value, a
-denominator of 0 reads "non-standard" and a numerator is "a value from 1 to 256",
-§7.5.4); a `F0` event that is not one complete 7-bit message
-(`SysexNotCompleteSevenBit`: a divided message and its `F7` continuations are each
-reported, not joined); a MIDI-CI Property Exchange message (`PropertyExchange`: M2-116
-§6.4 and §7.2 keep PE out of a clip); and an empty text (`EmptyText`: an all-zero
-Complete Lyric is a melisma, M2-104 §7.5.10.1, which an empty SMF event never said).
-A later tempo or time signature keeps its tick even where M2-104 §7.5.3/§7.5.4 ask a
-Standard MIDI File for a MIDI-clock or bar-line position: the source's grid may hold no
-such tick, and moving an event would change the music. The SMF 1.0 defaults (120 bpm, 4/4) are quoted from SMF 1.0,
-whose text is not among the specs in hand.
 
 ## 10. Stages
 
@@ -2389,7 +1548,7 @@ Each stage lands on its own, with renders bit-identical except where a stage nam
 a behaviour change. Stages 0 to 2 are done except the VST2 host's move to `Message` (stage 2); the order of the
 rest is below.
 
-0. **Stop losing events** (§8). No model change needed, and no dependency on the
+0. **Stop losing events.** No model change needed, and no dependency on the
    others. Behaviour change: fewer drops, a new report.
 1. **`tutti-ump`.** First `Ump` and the moved vocabulary, with every caller updated
    and no behaviour change. Then `Message`, the codec, tests and benchmarks,
@@ -2473,7 +1632,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      with it; a new CC 6 never reuses an earlier run's LSB. A sender that ends an
      RPN with a lone CC 6 and nothing after it is never heard live: that is the
      spec's rule, and the reason senders close a run with the Null Function. A
-     clip's loader flushes it (`Translator::flush`, §4).
+     clip's loader flushes it (`Translator::flush`).
    - Each half of a parameter number is kept per kind (RPN and NRPN apart) until
      selected again; Reset All Controllers (CC 121, RP-015) sets both halves of both
      to null (127: a later select of one half pairs with a null other, not with the
@@ -2503,13 +1662,13 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      sensitivity, fine and coarse tuning) and a Program Change's bank, which is
      stage 2's SoundFont residue, done here because the translator absorbs the
      Bank Select the SoundFont followed before. (The registered controllers moved to
-     `Voicing` in L4c, below.) The SoundFont holds a Bank Select (CC 0 and 32; an
+     `Voicing`.) The SoundFont holds a Bank Select (CC 0 and 32; an
      MSB zeroes the held LSB, M1 p.12) until the next Program Change applies it (M1 p.13).
    The plan was: Deletes
    the SoundFont's RPN state machine (`Channel::{set_rpn_*, data_entry_*}`, which
    then reads a registered-controller `Voice2`, NRPN included), `mpe_ingest`'s
    `RpnRun` and the old `Midi1ToMidi2Translator`, and `MidiInputNode` runs the new
-   one. Behaviour change: §4's remaining spec fixes. Oracle: M2-115 and M2-104
+   one. Behaviour change: the remaining spec fixes. Oracle: M2-115 and M2-104
    App. D, as analytic tests.
 - **Stage 3b. `channel_voice`** (§4.1) in `tutti-midi-protocol`. Done.
    `channel_voice(ump) -> Option<(Address, Voice2)>` and `widen_message` replace
@@ -2540,7 +1699,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    (`SysExAssembler` or `Sysex7PacketReassembler`, whichever is left with no
    caller that the survivor cannot serve; choose in the PR from the callers).
    Oracle: M2-104 §7.7.1 for the SysEx7 packets and the byte-stream rules of
-   MIDI 1.0 for the parser (M1-100 is not available, §13). The `Reassemble` trait of
+   MIDI 1.0 for the parser (M1-100 is not available). The `Reassemble` trait of
    §4.1 is revisited here. Two further items for this stage (plan item 5):
    - **One SysEx7 reassembler. Done.** The survivor is the real-time one
      (`SysExAssembler`: bytes out, never allocating, one open run, spans blocks),
@@ -2664,7 +1823,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      `unpack_id` returns `None` for an id with bits above either byte, which
      `pack_id` cannot make, and `open` reports it (a watch's own handles are always
      in range). The input thread's drop waits at most `JOIN_BOUND` (1 s) and then
-     detaches the pump with a warning. (d) **Done.** `tutti-midi-runtime`'s `ingest` bench (push, drain, callback to drain; §1.3).
+     detaches the pump with a warning. (d) **Done.** `tutti-midi-runtime`'s `ingest` bench (push, drain, callback to drain).
    - **Bare frame counts at the edge. Done (4c).** `MidiIn::poll_block` and
      `ClockMaster::tick` take the block as `Samples`. In `outbound/jr_timestamp.rs`
      the origin and the frame a tick is read at are `Frame` (`JrClock::ticks_at`,
@@ -2764,7 +1923,7 @@ lanes. They change no stage above.
 ### L1: spec contradictions (done)
 
 The first step of "The one MIDI lane" of the audit plan: what the code does against a
-spec quote. Four parts.
+spec quote. Three parts.
 
 - **The CI codec** (`tutti-midi-device`, M2-101 v1.2.1). `CiMessage::decode` returns a
   `Decoded`: `Message`, `Unread` or `NotCi`. An `Unread` keeps what the 13-byte preamble
@@ -2792,41 +1951,9 @@ spec quote. Four parts.
   receiver that composes shows and compares one spelling. `tutti-ump` stays
   dependency-free; `unicode-normalization` is `tutti-midi-device`'s (and the file crate's).
   The BOM rule is the leading one, the byte order mark's place.
-- **The Clip File** (`tutti-midi-file`, M2-116): the stage 6 notes above.
 - **Stale comments.** `BlockName`'s doc said section 7.1.9 gives 98 bytes (it says 91);
   five comments in `tutti-midi-hardware` and `tutti-coremidi-ffi` named the deleted
   `to_midi1_bytes`.
-
-### L1b: the Clip File reader is a grammar (done)
-
-The reader (`tutti-midi-file/src/clip_file/read.rs`) is `winnow` combinators, as the SMF
-reader is. The bytes after `SMF2CLIP` are cut into packets once (`tutti_ump::split_stream`)
-and each is classified once (`Ump::decode`: a DCS, a Null, a DCTPQ, Start or End of
-Clip, a message), so the grammar runs over a `&[Packet]` token slice and a rule matches a
-whole packet; no bit field is read in it. Each M2-116 placement rule is one rule of the
-grammar and the hand checks of L1 are gone:
-
-```text
-clip      := "SMF2CLIP" preamble dctpq config start event* end eof
-preamble  := ( gap(no DCS) SetProfileOn )*          -- section 6
-dctpq     := gap(DCS 0) DCTPQ                        -- sections 3.2.1, 6
-config    := [SetTempo @0] [SetTimeSignature @0] ( gap Message )*   -- 6.1 to 6.1.2
-start     := gap StartOfClip                         -- section 7
-event     := gap Message                             -- sections 3.2.2, 7.2
-end       := gap EndOfClip                           -- section 7
-eof                                                  -- section 7.3
-gap       := ( DCS | Null | JR | undefined Utility )*
-```
-
-Every `ClipFileError` variant is kept, each from the rule it names; a rule broken past
-the point where an alternative could still match is a cut, so the error names that rule.
-Two readings sharpened: a Set Profile On message must be complete (a Start with no End,
-adjacent Continues, then End), a DCS between its parts is `ProfileOnDelta` as before, and
-the DCTPQ is `DctpqNotFirst` only when one follows something else, `MissingDctpq`
-when there is none. `MidiFile::clip` checks the header through the same `config` rule
-(`check_header`), and the writer's count of leading Set Profile On packets is the same
-`set_profile_on` rule. `scripts/check-layout.sh` holds winnow per crate: a dependency of
-`tutti-midi-file` only, named only in `smf/read.rs` and `clip_file/read.rs`.
 
 ### L2: SysEx is per Group (done)
 
@@ -2887,12 +2014,6 @@ channel 1 played as Group 1 channel 1. Now:
   an instrument never holds two Groups' channels to merge. Two Groups are two instruments,
   each wired to its Group's ports. The alternative, state keyed by (Group, channel) in the
   core, would size every table by 256 for an instrument that one Group fills.
-- **MPE is per Group.** `MpeIngest` keeps the zone layout and the held member notes of each
-  Group. The configured mode is every Group's starting layout; an MPE Configuration Message
-  configures the Group it arrives in, and its reset ranges leave on that Group (a host-set
-  mode sends them on every Group heard). The per-note messages it builds keep the Group of the
-  message they came from (they were built on the first Group). `MpeIngest::mode` is the
-  configured mode and `mode_of(group)` the one in force.
 - **Already per Group:** `Translator` (RPN, NRPN and Bank Select state is kept per Group and
   channel), `NoteLedger`, and the SysEx assembler (L2).
 - **Not done, in the plugin hosts** (a format with no Group is one Group per port): the CLAP and
@@ -2900,277 +2021,8 @@ channel 1 played as Group 1 channel 1. Now:
   `tutti_plugin_types::PerNoteBendRanges` is keyed by channel, so a plugin fed from two Groups
   merges them; a served plugin is one Group's wire until those take the Group.
 
-### L4: per-note controllers are state (done)
-
-M2-104 section 7.4.15.2: "Controllers create persistent state, so all notes that follow this
-message use the tuning of the Registered Per-Note Controller #3: Pitch 7.25", and Appendix C.3's
-rotation sequence sends Per-Note Management and the Pitch *before* the Note On. The instruments
-applied a per-note message only to a voice that already sounded, so a value sent first was lost, a
-Pitch after a Detach retuned the detached voice, D=1 with S=1 skipped the Reset, the per-note bend
-range was one value for every channel (section 7.4.13: one per channel), and the SoundFont
-ignored all of it. Now:
-
-- **The state is `PerNoteState`**, a pure type in `tutti-voicing` that `Voicing` uses
-  inside and a plugin host (which allocates no voices) can use as it is: one copy of the rules.
-  `PerNoteState::new(groups, default_range)` sizes it (about 270 KiB for each Group; `Voicing`
-  passes 1, since an instrument plays one Group); `step(address, &Voice2) -> &[NoteEvent]` reads
-  one message, `start` is the Note On path, and `clear` drops everything held in place. It keeps
-  one slot for each (Group, channel, Note Number) (`NOTE_CONTROLS` distinct controllers each, the
-  one set longest ago forgotten past that): a Registered or Assignable Per-Note Controller,
-  Polyphonic Pressure and Per-Note Pitch Bend are held when they arrive, whether or not a note
-  sounds. Reset All Controllers leaves them (Appendix B.2). `Voicing::reset` is `clear`;
-  `forget_notes` keeps the state, as it keeps the bends.
-- **Every started note has an id**, a `NoteId` above `NoteId::MAX_CHANNEL_NOTE` that names no
-  (channel, note) pair, so two notes on one key are two ids and a Detach separates them. A number
-  keeps the set of its notes that still respond (`LIVE_NOTES`, 4: tutti's bound, the oldest
-  dropped past it), and a controller or a Reset reaches every one, a releasing tail included
-  (section 7.4.5: after a Detach "all currently playing notes and previous notes" stop
-  responding, so before it they respond). Detach empties the set; `end(id)` removes one note,
-  for an owner that knows it is over (`Voicing` calls it when the last voice of a strike is
-  freed; a host on the plugin's note-end); a Note Off is not an end.
-- **What it says** is a `NoteEvent`: `Started { id, address, note }`, then `Control { id,
-  control: NoteControl }` for each value the number holds in the order told (`NoteControl`:
-  `Pitch`, `Pressure`, `Registered`, `Assignable`), also sent when a message arrives for the
-  current note, and `Reset { id }`.
-  `Voicing` turns them into its own `Command`s: `Control { id, control }` for each voice of the
-  noted id (the voices of one strike share it) and `ResetControls(id)`. An instrument applies
-  what its voice has a place for and drops the rest; it holds no per-note state of its own and
-  no detach flag.
-- **Detach and Reset** are section 7.4.5. Detach empties the number's live set: those notes keep
-  their values and answer nothing more (no event is sent; the next Note On has a new id). Reset
-  clears the number's held values and resets the live notes. With D=1 and S=1 the Detach runs first, so the playing note is told nothing and the
-  next one starts at the defaults.
-- **A note has one sounding pitch** (`NoteControl::Pitch`, absolute), because the plugin hosts
-  have one tuning per note and a consumer without a per-note table cannot add two controls.
-  Section 7.4.15: the Note Number is the default pitch, Pitch 7.25 and the Attribute Pitch
-  override it (the attribute for its one note, "not valid for any subsequent Notes", and over
-  the number's), and "Pitch Bend and Per-Note Pitch Bend act as offsets from" either. So the
-  sounding pitch is the told pitch (attribute, else the number's Pitch 7.25, else the key) plus
-  the Per-Note Pitch Bend, the wheel over the channel's sensitivity (section 7.4.13: the range
-  "from the current sounding pitch"). `PerNoteState` keeps the told pitch for each live note, the
-  number's bend and the channel's sensitivity, and sends the sum when a note starts (after the
-  held values; not for a note whose sounding pitch is its key's) and whenever the told pitch, the
-  bend or the sensitivity changes, in any order; it saturates at Q7.25's ends. The channel's Pitch
-  Bend is not in it: the instrument applies it. A Reset returns a live note's sounding pitch to its
-  key and sends only `Reset` (the consumer returns to the key with its other controls).
-- **The per-note bend sensitivity** (RPN 0/7) is one value for each channel
-  (`Rules::per_note_bend_range` until it is set). A new one re-sends the sounding pitch of each
-  live note whose number holds a bend, since a held bend is a position over the sensitivity.
-- **The polysynth** carries `Control` out on its voices (the sounding pitch, pressure, Volume and
-  Brightness; the assignable indexes 7 and 74 by its convention) and has no global per-note range
-  and no detach of its own. **The SoundFont** carries the sounding pitch (the key still chooses the sample and
-  the envelope scaling), Volume (the GM law) and Pan (replacing the channel's for that note);
-  pressure, modulation, breath, balance, the sound controllers, effects depths and the assignable
-  controllers have no generator in a SoundFont voice and are dropped.
-- **Not done, in the plugin hosts.** CLAP and VST3 address a note by an id minted per (channel,
-  key), drop Pitch 7.25 and Attribute 7.9, and drop Per-Note Management, so after a Detach their
-  per-note expressions still reach the previous note. They take `PerNoteState` events instead: the
-  minted id as the note id, `Control`s as the note's expressions (the held values as the new
-  note's initial ones), `Reset` as an expression reset.
-
-### L4c: channel controllers are state (done)
-
-What a channel has been told that outlives its notes is one value, `ChannelState`, in
-`tutti-voicing`: `Voicing` keeps one for each of the Group's sixteen channels and reads every
-message into it, so the two instruments and a future one share one reading, and a SoundFont
-swap (L4d) hands the sixteen over whole. An instrument asks for what it renders
-(`Voicing::channel`, `channels`); the note logic that follows from it is the core's and reaches
-the instrument as `Command`s.
-
-- **What it holds.** The 14-bit controllers Modulation (CC 1 and 33), Volume (7 and 39), Pan (10
-  and 42), Expression (11 and 43) and Portamento Time (5 and 37), with M1 p.12's rule that an MSB
-  zeroes the LSB; Channel Pressure; the pitch wheel, its sensitivity (RPN 0) and the Channel
-  Tuning (RP-022: RPN 1, fine, 14 bits centred at 2000H over 100 cents, and RPN 2, coarse, an
-  MSB of semitones centred at 64), which `Voicing` folds into one pitch (`Command::Retune`,
-  `channel_pitch`), so no instrument adds tuning of its own; the Modulation Depth Range (CA-026,
-  RPN 5: MSB semitones, LSB 100/128 cent per GM2 3.4.4, default 00H/40H, "+/-50 cents"); the
-  Portamento switch (CC 65), the Legato Footswitch (CC 68) and the pending Portamento Control
-  (CC 84). The Modulation depth is the wheel's position over that range ("linear in cents", GM2
-  3.3.2), so a range of 0 is no modulation.
-- **Reset All Controllers is RP-015's list and no more**, per channel (and a zone master's, for
-  the zone, as the pedals are): Expression to 127, Modulation to 0, the pedals (64 to 67, so
-  Portamento off) up, channel pressure to 0, the wheel centred, and "Reset polyphonic pressure
-  for all notes to 0" (`PerNoteState::reset_pressure`: held Polyphonic Pressure only; M2-104
-  Appendix B.2's list, the Registered and Assignable Per-Note Controllers and Per-Note Pitch Bend,
-  stays). Volume, Pan, the sound controllers (70 to 79), the effects depths, the Legato Footswitch
-  (not in RP-015's list), Bank Select, Program Change and every registered or non-registered
-  parameter (the sensitivity, the tuning, the Modulation Depth Range) are left. The parameter
-  numbers go null in the translator (above), the one place the selection lives. The synth's
-  modulation wheel was one global value that any channel's reset cleared for all; it is the
-  channel's now, as Volume, Pan, Expression and Pressure are.
-- **Legato Footswitch and Portamento Control are note logic** (`Voicing::step`), per channel.
-  The footswitch makes the channel's mode `Legato` while it is down (M1 p.14: 40 to 7F), and the
-  rules' mode again when it is up. A Portamento Control "only affects the next Note-On received on
-  the matching channel", is consumed by it and does not move any sounding note on its own. A
-  Note On after one is "gliding from" the source key, "ignoring portamento on/off": in a poly
-  channel, a sounding voice at the source key is moved to the new key with no new attack ("no new
-  voice should be assigned": `Command::Retarget`, M1 p.16 Example 1, and the note it moved is
-  turned off by the new key, not the source), otherwise a new voice starts with a glide from the
-  source (Example 2); in a mono channel or with the footswitch down an overlapped note "would
-  result in an immediate pitch jump to the key specified by the portamento Control message, and
-  then a glide". With Portamento On (CC 65, GM2 3.3.8: "values between 64 and 127 are recognized
-  as ON", default off) a note glides from the key struck before it (a legato return to a held
-  key, from the key just let go).
-- **A glide is a `Glide { from, time }`** on `Command::Start` and `Retarget`: the voice leaves
-  `from`'s pitch (with the channel's bend on it, as on the note's: "Pitch bend offsets the pitch
-  used by both") and arrives at the note's in `time`, at a constant rate in cents. The rate is
-  Portamento Time's: GM2 3.3.3 gives "the recommended example" as a figure on a log axis from 0.01
-  to 1,000 cent/msec, falling from CC 5 = 0 to 127; `ChannelState::glide_rate` is the figure's end
-  points (the tests' oracle) with the curve between them read off the gridlines, interpolated in
-  log. The default, 0, is the fastest. The time is the interval in cents (100 to the key) over it.
-- **The polysynth glides one voice at a time.** Each voice has its own `Portamento`, and a glide
-  is a factor on the voice's pitch (`Portamento::ratio`), with the note's own pitch (its key's, or
-  the one a per-note controller told it) and the channel's bend as the other two. The glide
-  state was one value for the synth, every sounding voice was driven to it, and
-  `apply_pitch_bend` returned early while it ran and `control_step` rewrote every pitch each
-  step: so a per-note sounding pitch (found in L4e) was lost for as long as a glide ran, and a
-  Portamento Control would have moved every voice. `PortamentoConfig` stays as the synth's own
-  glide, taken when the stream asks for none, from the key last struck.
-- **The channel's Volume, Pan and Expression, Modulation and Pressure in the instruments.**
-  The polysynth renders them per channel: Volume and Expression by GM2 3.3.4's square law ("the
-  square of the value is proportional to the volume", `40 * log10(cc7/127)` dB) relative to their
-  defaults, so a channel told nothing sounds at the voice's own level; Pan by RP-036 below; the
-  wheel scaling the filter's `mod_wheel_depth` by the Modulation Depth over its default range (so
-  RPN 5 scales it); Channel Pressure by the factor per-note pressure has (`1 + p / 2`, the larger of
-  the two). The SoundFont reads the same state in its voice (the vibrato depth by RPN 5, the
-  square law, Pan) and glides and moves its voices by `Start` and `Retarget`; it has no generator
-  to drive with Channel Pressure.
-- **Pan is RP-036's**, which "shall override all previous recommended practices, including [...]
-  GM1, GM2, DLS1, and DLS2": "the effective range for CC#10 is modified to be 1 to 127, and
-  values 0 and 1 both pan hard left", the gains `cos` and `sin` of `Pi/2 * max(0, CC#10 - 1) /
-  126`, so 64 is true centre. The 14-bit pan is read the same way (the subtracted 1 is 128 of its
-  steps). `ChannelState::pan` is that position as a `Pan` (`-1` to `1`). The SoundFont adds it to
-  the SF2 pan generator in the angle (the generator's `+/-50%` and the channel's both move the
-  same `Pi/200 * (pan + 50)`; it was `0` to `16383` read straight, which put 64 off centre by a
-  step and 1 off the wall); the polysynth applies it as a balance on the voice's own pan law
-  (RP-036's gains times `sqrt(2)`, so the centre leaves the voice alone and a mono voice has
-  RP-036's gains exactly). A pan change on a sounding note "without audible artifacts, clicks or
-  zipper noise": both instruments ramp a gain from its last block's value across the next one.
-- **Not done.** A SoundFont does not follow a Rhythm Channel's exemptions from CC 1, 5 and 65 (GM2
-  "Rhythm Channels shall not respond"); Soft Pedal (CC 67), which RP-015 resets, is not modelled, so
-  there is nothing to reset.
-
-### L4d: state survives a swap of instrument (done)
-
-A crossfade, a replace or an insert at an existing key puts a new node where an instrument was,
-and what a performer set (programs, banks, controllers, wheels) lived only in the outgoing node on
-the audio thread. The graph's **chase** (doc 013, "The chase") carries it: `Node::chase` writes the
-state as UMPs, and the executor delivers them at offset 0 of the successor's first block, ahead of
-every other event there.
-
-- **What is chased**, as MIDI 2.0 Channel Voice messages in the instrument's own Group, only for
-  what differs from a fresh channel (a channel nobody touched writes nothing), in channel order.
-  `Voicing::chase` (once, for both instruments) writes each channel's `ChannelState`: the
-  14-bit controllers (Modulation, Volume, Pan, Expression, Portamento Time) as an MSB then, if
-  nonzero, an LSB; the Portamento switch and the Legato Footswitch; a pending Portamento Control;
-  Channel Pressure; the pitch wheel; RPN 0, 1, 2 and 5 as Registered Controllers with the data
-  words `Voicing::step` reads; and the sustain pedal. The SoundFont adds, per channel, its program
-  and bank as one Program Change with the bank riding along, a Bank Select held for the next
-  Program Change (CC 0 and 32), and the two effect sends (CC 91 and 93). A SoundFont swapped for a
-  polysynth (or back) keeps the controllers; a polysynth has no program.
-- **Not chased.** Sounding notes (a held key is not struck again), the sostenuto's captured keys,
-  the per-note controllers and the key a portamento glides from (`last_key`). A successor built
-  on another program keeps it when the old channel was at the default.
-- **The font's samples** are the unit's `Arc<SoundFont>`, set when the unit is built and never
-  replaced: nothing is published to the audio thread, so no `ArcLend` cell is needed (CLAUDE.md,
-  "Publishing to the audio thread"). A swap of font is a swap of unit, the chase's case.
-
-### L1e: using a file and writing messages (done)
-
-Found writing the plugin example (`crates/tutti/examples/plugin_midi_export.rs`, doc
-[029](029-plugin-api.md) section 3.5 holds the agreements with the plugin API that this lane
-keeps: per-note control is MIDI 2.0's own messages, so no note-expression type exists and the
-helpers below only build `Ump`s).
-
-- **A file into a clip.** `MidiFile::timeline() -> Option<impl Iterator<Item = (Beat, Ump)>>`
-  (`Track::timeline(ticks_per_quarter)` for one sequence; `None` for format 2, which has no
-  one timeline). The rule is in its doc: a `Message` passes as its packet, as stored; a
-  `SysEx` event is its SysEx7 packets (`Sysex7Packets::checked` on `Group 1`) at the event's
-  beat, a divided message or one with an 8-bit byte dropped; `Meta`, `Escape` and `Unknown`
-  are dropped, because the tempo is the file's `TempoMap` and the rest are not messages. The
-  pair is plain `(Beat, Ump)`: `tutti-midi-file` and `tutti-midi-runtime` are both layer 4, so
-  neither names the other's type. `Midi::play_clip` takes `impl IntoIterator<Item =
-  TimedMidiEvent>`, and a `TimedMidiEvent` is built by `TimedMidiEvent::new(beat, ump)`, which
-  refuses a beat that is not finite (L1h: the checking is at construction, so a clip never
-  meets one, and there is no `From<(Beat, Ump)>`). A file's timeline plays through
-  `file.timeline()?.map(|(beat, ump)| TimedMidiEvent::new(beat, ump))`, collected into a
-  `Result`/`Option` by the caller. (A literal `[]` needs its type:
-  `std::iter::empty::<TimedMidiEvent>()`.)
-- **Writing messages.** `tutti_ump::Message` has named constructors, MIDI 1.0 as the plain
-  name and MIDI 2.0 with a `2`: `note_on`, `note_off`, `control_change`, `program_change`,
-  `pitch_bend` and `note_on2`, `note_off2`, `control_change2`, `program_change2`,
-  `pitch_bend2`. Each takes `impl Into<Address>`: an `Address`, or a bare `MidiChannel` (in
-  `Group 1`, `From<MidiChannel> for Address`), and the typed fields (`NoteNumber`, `U7`,
-  `U14`, the wire's `u16`/`u32` for the 2.0 forms). They scale nothing: M2-115 is translation's.
-  `Address::new(group, channel)` is the pair.
-- **Writing a file.** `Track::new()` is empty (the events are no longer an argument), with a
-  builder: `note(tick, len, channel, note, velocity)` (an On and an Off of release velocity 64,
-  placed by tick so chords and overlaps are fine), `tempo(tick, Bpm)`, `meta(tick, Meta)`,
-  and the strict `push(tick, impl Into<FileEvent>)`, which refuses a tick before the last
-  event with `OutOfOrder { last, at }`. `FromIterator` and `Extend` over `(Tick, FileEvent)`
-  sort stably by tick. `From<Message>` and `From<Meta>` for `FileEvent`, `Tick`'s opt-in
-  `Add`/`Sub`/`AddAssign` with `u64`, `Tick::quarters(n, tpq)` and `Tick::beats(tpq)`.
-- **Tempo.** `MidiFile` holds each map as an `Arc<TempoMap>`, and `tempo_map()` hands out
-  `&Arc<TempoMap>`: `set_tempo_map(file.tempo_map().clone())` is a reference count
-  (`TransportSettings::set_tempo_map` takes `impl Into<Arc<TempoMap>>`, core's, unchanged).
-- **Typed refusals.** `Error::InvalidConfig(String)` is `Error::Config(ConfigError)`:
-  `NoTracks`, `Division`, `SingleTrack`, `TooManyTracks`, `HeaderInSmf`, `OutOfOrder { track,
-  at }`, `Gap`, the header's and the end's own variants, `Refused { track, in_header,
-  refusal: Refusal }` and `TooLarge` (the writer's refusal, which was a `MidiFileParse`
-  string). The reader's parse errors keep their shapes (`MidiFileParse` is the reader's alone).
-- **Doors.** `MidiFile::read_from(impl Read)`, `write_to(impl Write)`, `TryFrom<&[u8]>`;
-  `Track::notes()` returns a `Vec` and says it allocates; `Meta::text_str()`; `#[must_use]` on
-  `Track::new`, `notes`, `smf` and `to_clip` (and `Converted`, whose `dropped` is to be read).
-- **`tutti-ump`.** `Ump::decode()` and `TryFrom<Ump> for Message` replace the free `decode`;
-  `Unknown` is `Display` and `Error`; `Ump` is `Display`, `LowerHex` and `UpperHex` (the
-  meaningful words, `40903C00 80000000`); `Ump::from_words(&[u32])` reads one packet by
-  Table 4 and `split_stream` is it walked along a slice.
-- **The `tutti` prelude** under `midi`: `MidiFile`, `Track`, `Tick`, `Message`, `Ump`,
-  `NoteNumber`, `TimedMidiEvent` (`MidiChannel` and `MidiGroup` were already in).
-
-### L1g: vocabulary types, part A (`tutti-ump`, `tutti-midi-protocol`)
-
-Breaking, with every workspace caller moved and no forwarders.
-
-- **Indexes.** `MidiChannel::index`/`MidiGroup::index` (`usize`), `all()`, `Address::index` and
-  `Address::from_index` replace the `usize::from(x.get())` noise and the hand-built 16x16 loop in
-  `Translator::flush`. `MidiChannel::numbered(n)` and `MidiGroup::numbered(n)` are the 1-based door
-  (1 to 16); `Display` writes that number, `Debug` the wire raw.
-- **Held keys.** `Key::new(Protocol, Address, NoteNumber) -> Option<Key>` (`None` for a reserved
-  protocol: a key is opened by a channel voice packet, and only M1 and M2 have one),
-  `Key::address()`, `Key::note() -> NoteNumber`, `Key::protocol()`;
-  `Ump::sustain_up(Protocol, Address) -> Option<Ump>` and
-  `KeyEvent::Sustain { protocol, address, down }`. No `m2: bool` with a bare lane.
-- **SysEx.** One packetiser: `SysexMessage::packets`; `Sysex7Packets::checked` is the only door for
-  unchecked bytes; the free `sysex7_packets` is gone. `SysexAssembler` stays a prose contract: the
-  block guard was weighed and not built (see "Why there is no block guard" in its docs): its six
-  callers keep each `SysexRef` until the whole block is pushed, to hand a plugin one pointer per
-  message, and a lending `push` would make each copy first.
-- **`parse_exact`** (free) replaces `Midi1Parser::message`, so `Midi1Parser` has one idiom, the stream.
-- **`#[non_exhaustive]`** on `SysexStatus`, `Flex`, `FlexTextKind`, `Protocol`, `TextKind` and
-  `SmfFormat`; `Message`, `Voice1` and `Voice2` stay exhaustive, with the reason in their docs.
-- **Translation.** `Translator::translate(impl Into<Ump>) -> Option<Ump>` replaces the callback
-  `feed`; `flush` keeps its callback and `finish(self, out)` is the offline caller's. A packet is a
-  `Ump` at every edge (`Translator`, `Narrower::feed`, `midi1`, `channel_voice` take
-  `impl Into<Ump>`). `narrow` returns `Result<Voice1, NoMidi1Form>`.
-  **`widen`/`narrow` stay free functions in `tutti-midi-protocol`** rather than
-  `From<Voice1> for Voice2` / `TryFrom<Voice2> for Voice1`: both types are `tutti-ump`'s, so the
-  impls would live there with the M2-115 scaling and the Note On at velocity 0 rule, which
-  `tutti-ump` deliberately leaves to translation (and which `Translator`/`Narrower` share through
-  `scale`).
-- **Units.** `PitchBendSensitivity::semitones() -> Semitones` (`as_semitones_f32` is gone;
-  `tutti-midi-protocol` depends on `tutti-types`). The `*_to_unit_f32` family keeps bare `f32`: no
-  unit covers a normalized controller value without lending it a meaning that is not the packet's
-  (stated in the module docs, "where the types stop").
-
 ## 11. Testing
 
-- **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115
-  are analytic tests.
-- **`midi2` was an oracle** until stage 5b part (c), a dev-dependency. What it found is
-  spec-pinned tests, and the specification is the only oracle now (§7).
-- **Properties.** `decode` never panics on any words, and `encode(x.decode()) == x`
-  for a canonical `x`.
 - **Fuzzing.** `cargo-fuzz` targets for UMP, SysEx, MIDI-CI and clip files. Only
   `crates/tutti-ump/fuzz/fuzz_targets/decode.rs` exists; the others do not.
 - **Scheduler-free connections.** `Connection` tests take a clock value and never
@@ -3181,46 +2033,15 @@ Breaking, with every workspace caller moved and no forwarders.
   conversion, recorded before stage 2 so the gain or cost is measured.
 - **No-allocation gates** on every new path, and mutation records on new tests.
 
-## 12. Optimization
-
-No layout change is justified by measured CPU. These come at no cost with the
-design, or remove a measured user-visible problem, except item 3, whose small
-measured cost is in §8.4:
-
-1. Decode once per consumer, instead of the 3 to 6 decodes per event today.
-2. Fewer conversions: a note takes up to 9 steps from key to CLAP synth, and its
-   value changes in two. One `Ump` removes most of them, and `Pod` makes plugin
-   IPC one memory copy (gain unmeasured).
-3. The clip node's held notes are a `NoteLedger` of 24 KiB per node (§8.4), which
-   costs 0.1 to 1.1 µs more per 512-frame block than the 143 KB of arrays before it.
-4. Clips can store variable-length word streams as M2-116 does, a memory saving
-   for very large clips only.
-
-`bytes::Bytes` does not fit `Ump`: its handle alone is twice the size of a packet,
-it reference-counts atomically, and its last drop can free on the audio thread,
-which is against the publishing rule. It may suit large off-audio-thread payloads
-such as reassembled SysEx; that is decided when that code is written.
-
 ## 13. Open questions
 
 - **Device-side MIDI 2.0 on ALSA.** Group-to-port mapping is read from kernel docs,
   and no UMP hardware has been tested. Needs a real device before stage 4 is
   declared done.
-- **MPE details.** M1-100 v1.1 is read (see "MPE is a dialect on MIDI 1.0"); the Manager
-  Channel rules of its Table 5 that M2-120 changes (the Profile's manager-only sensitivity
-  and 48 default, §3.5) are L10b's.
 - **The MPE Profile, GM2 and other profiles** are out of the core set and unread.
 
 ### L1g (voicing and device vocabulary): as built
 
-- **`tutti-voicing`.** `Rules::poly(n)`, `mono()`, `legato()`, `Default` and consuming `with_*`
-  setters (const). `Voicing::step(channel, message: Voice2, patch, level)` and
-  `PerNoteState::step` take the message by value. The instrument no longer hands a voice
-  slice sorted by id: `level: impl Fn(VoiceId) -> Option<Amplitude>` answers for a voice id
-  (`None`: it has ended) and is called only on a note message, so `VoiceView` is gone and
-  neither `tutti-polysynth` nor `tutti-soundfont` keeps a view list. `Holds::key_up`,
-  `sustain_up` and `sostenuto_up` return `Release { Now, Held }`. `VoiceSpec::group` is
-  `Option<NonZeroU16>`; `VoiceId` is `new`/`get` over a private `u64`.
 - **`tutti-midi-device`.** `DiscoveryData::identity` is a `tutti_ump::DeviceIdentity`.
   `NameError { TooLong { max }, Nul, Bom, NotPrintableAscii }` with `parse`, `TryFrom<&str>`,
   `FromStr`, `Display` and `AsRef<str>` on `Name<N>`, `ProductInstanceId` and `MessageText`.
@@ -3230,30 +2051,8 @@ such as reassembled SysEx; that is decided when that code is written.
   `ExactSizeIterator` of `&DeviceInfo`. `CiMessage::encode_into(&mut impl Extend<u8>)` and
   `CiMessage::packets(group)` (SysEx7 `Ump`s) replace encode, frame, packets.
 
-### L1h part 2 (runtime and hardware API): as built
+### L1h part 2 (hardware API): as built
 
-- **Device inputs.** A `DeviceInput` holds its slot until it drops: the drop gives the slot
-  back and queues the inlet's removal (`DeviceInlets::close` is gone), through a `Weak` to the
-  inlets (`DeviceInlets::new` returns the `Arc`). `take_changes` returns a `Changes` iterator
-  that pops one change per step under the lock and holds none while the owner works, so
-  applying a change may open or drop a device, and what is not read stays queued. A slot's
-  epoch counts its opens and releases (L6(f); it was the generation of the device that took
-  it, plus one, bumped in `open` alone) and is odd while a device holds the slot;
-  `MidiIngestNode::following(&DeviceInlets)` shares the epochs and compares them each block,
-  so a new device in a slot, or none, releases what the one before held and starts with an
-  empty translator and MPE state with no call (§8.3).
-  There is one id, `DeviceSlot` (index and generation, ephemeral: no serde), which
-  `tutti-midi-hardware`'s `PortId` was; `HardwareMidiInputs` keeps its table keyed by it.
-  Removing a port retires its list entry; the slot is the handle's.
-- **Sync and clock.** `MtcDecoder::feed(&Ump) -> bool`; `MidiClockDecoder::{feed, tick}` take
-  an `Instant`, `beat_position()` is a `Beat`; `SmpteFrameRate: TryFrom<u8>`
-  (`UnknownFrameRate`); `ClockMap::set_rate -> Result<(), InvalidRate>`;
-  `ClockMaster::new(MidiGroup, SampleRate)` and `ClockNode::new(MidiGroup, SampleRate)` (no
-  zero-rate master, no `Default`).
-- **Schedule.** `TimedMidiEvent` has private fields (`beat()`, `event()`) and
-  `new(Beat, Ump) -> Option`, which refuses a beat that is not finite (`Beat` is
-  `tutti-types`' plain `f64`); `MidiClipControls::{set, len, is_empty}` match
-  `HarmonyControls`. `MpeIngest` moved from `outbound/` to `live/`.
 - **Hardware.** `MidiSession::open(Arc<DeviceInlets>)` owns its `HardwareMidiInputs`;
   `DeviceQuery` (`&DeviceId` or `&str`) replaces the `*_by_name` forms; `output() ->
   Option<OutputInfo>` replaces the output getters; `InputProducerHandle::push -> Pushed`;
@@ -3320,48 +2119,6 @@ such as reassembled SysEx; that is decided when that code is written.
 
 What the decoded messages are consumed by, one item each.
 
-- **Flex text, read.** `tutti_ump::FlexTextAssembler<B>` is `flex_text_packets`' reader
-  (`new(buf, max_text, lanes)`, `room_for`, `push(Ump) -> FlexTextStep`, `lost_tail`, `reset`,
-  `dropped`, `invalid`). It lends the finished text (`FlexText { group, address, kind, text }`)
-  from the `push` that completed it, not in a block as `SysexAssembler` does: a Flex text is
-  complete at the `push` of its End or Complete packet and has no caller that holds many at
-  once. One message is open per Group, up to `lanes` of them (a slot of `max_text` bytes each);
-  M2-104 §7.5.2 lets only that message's Continue packets, System Real Time and JR Clock
-  between its Start and End, so any other UMP of the Group, or a packet of another message
-  (address or Table 16 status), drops it, counted once. Text is UTF-8 without a BOM (§7.5.9),
-  checked when whole (a packet may end inside a character); `0x00` is padding, may occur only
-  in a Complete or End packet and everything after it in the packet is `0x00`, and a message
-  that breaks it is not delivered and counted in `invalid`, once. The all-zero Complete packet
-  of Lyrics and Ruby (a melisma, §7.5.10.1) is an empty text. **A spec contradiction, read as
-  7.5.9:** §7.5.10 says a `0x00` in a Continue packet is a melisma, which §7.5.9 and the Start
-  rule beside it exclude; the assembler refuses it. Over capacity drops whole and skips to the
-  End. A Continue or End with no open message costs nothing.
-- **Relative RPN and NRPN.** `tutti_voicing::Voicing::step` applies a
-  `Voice2::RelativeRegistered` (§7.4.8) to the channel state it already keeps for RPN 0, 1, 2
-  and 5: the data word the state reads back (`ChannelState::registered_word`, which `chase`
-  now also writes with: one inverse, not two), plus the two's complement delta, **saturating**
-  at `0` and `u32::MAX` (the spec says nothing about the ends; a wrap would turn a nudge up
-  from the top into the bottom), then the same path as an absolute `Registered`. A
-  parameter the channel does not hold (any other RPN, the per-note sensitivity included) and
-  every Relative Assignable have no value to add to, and nothing here takes an NRPN, so both
-  are ignored; a consumer that holds NRPN values does its own add. A delta below a
-  parameter's resolution is lost with the bits the spec calls undefined.
-- **The 16-bit manufacturer id.** `tutti_ump::ManufacturerId` (§7.10): `new -> Option`
-  refuses a word that is neither `0x00xx` nor `0x8000 | xx << 8 | yy` with 7-bit bytes, `of`,
-  `get`, `TryFrom<u16>` (`NotManufacturerId`), serde through `TryFrom`. `from_sysex_bytes(
-  [U7; 3]) -> Option` and `sysex_bytes()` are the spec's conversion code and the `xx 00 00` /
-  `00 xx yy` of a Device Inquiry reply (§7.1.3); a one-byte id followed by a non-zero byte is
-  refused, because the code would drop that byte. `0x0000` (Reserved) and the three-byte `00 00
-  00` (`0x8000`) share three zero bytes and read as `0x8000`. `DeviceIdentity::manufacturer`
-  and `MixedDataHeader::manufacturer` are this type, so the decoder refuses a Device Identity
-  or Mixed Data header whose id is no id (it was three loose bytes and a bare `u16`), and the
-  MIDI-CI Discovery codec uses the same conversion.
-- **Flex tempo and time signature, as unit values.** `tutti_midi_protocol::flex_tempo(u32) ->
-  Option<Bpm>` (`6e9 / field`, `0` is no tempo; it was private to `tutti-midi-file`, which now
-  calls it) and `flex_time_signature(tutti_ump::TimeSignature) -> Option<tutti_types::TimeSignature>`
-  (numerator is the beats per bar, the denominator field an exponent of 2 with `0` non-standard,
-  anything the meter's `BeatsPerBar` and `NoteValue` refuse is `None`, never clamped; the
-  1/32-notes field does not change the meter and is not read).
 - **The transport's follow mode, for Flex (L7c).** `tutti_midi_runtime::TempoFollower`
   (pure: `step(Ump) -> Option<Followed>`, a `Bpm` or a `TimeSignature`; the Group's Set
   Tempo and Set Time Signature, which are Group messages (§7.5.3, §7.5.4); `TempoSource`
@@ -3375,69 +2132,6 @@ What the decoded messages are consumed by, one item each.
 - **Not built: following MIDI Clock, MTC and MMC.** The inbound sync decoders
   (`MidiClockDecoder::tempo_bpm`, `MtcDecoder`) have no consumer in the session; they
   are other sources of the same follower (doc 020 §11.1), later.
-
-### L7b: Universal System Exclusive: as built (part 1)
-
-- **The parser.** `tutti_midi_protocol::read(SysexMessage) -> Read` is a pure parse of one
-  whole message, a `winnow` grammar in `src/universal/read.rs` (the crate's one parser
-  module, listed in `check-layout`'s `WINNOW_HOMES`; no `winnow` type is in a public
-  signature). `Read::Universal(Addressed { to: Recipient, message: Universal })` (`Recipient::{AllCall, Device(SysexDeviceId)}`; a `SysexDeviceId` is `00` to `7E` and refuses `7F`) for
-  what is read, `Read::Unread` for another Universal sub-id or one of ours that is cut short
-  or has bytes after its end, `Read::Foreign` for a manufacturer's id; none is an error, so a
-  stream is never dropped for a message nobody reads. `Universal` is `#[non_exhaustive]`:
-  Identity Request and Reply (`06 01`, `06 02`, M1 p.40: the reply is `tutti_ump::DeviceIdentity`,
-  a one-byte or `00 xx yy` manufacturer, family and member LSB first), General MIDI On and Off
-  (`09 01`, `09 02`, M1 p.52), Master Volume and Balance (`04 01`, `04 02`, 14 bits LSB first,
-  M1 p.57), Master Fine Tuning (`04 03`) and Master Coarse Tuning (`04 04 00 msb`, CA-025).
-  MIDI-CI (`7E dev 0D`) is Universal too and is `Unread` here: the CI codec's decode is its own
-  grammar in `tutti-midi-device` (see "L8 part 1").
-  **Not read:** GM2 System On (`09 03`, L10(d): it needs the GM2 differences); MTS is part 2, below.
-- **The device id.** `DeviceId` wraps a `U7` (its range is the whole raw, so `new` does not
-  refuse): `ALL_CALL` is `7F` ("if `<device ID>` = 7FH then the device should respond
-  regardless of what `<device ID>` it is set to", M1 p.40) and `DEFAULT` is `00`. The
-  receiver's own id is an instrument setting, `SynthConfig::device` /
-  `Settings::with_device`, default `SysexDeviceId::DEFAULT`: the spec calls it the id "which
-  matches its knob on the front panel", so it is configuration, not something to derive.
-  `UniversalReader::new(group, device)` is the instrument's edge: it takes every UMP of one
-  Group (M2-104 §7.7.1: any other message of the Group ends an open SysEx), reassembles with a
-  `SysexAssembler` it owns (32 bytes a message, nothing allocated after `new`, an overlong
-  message dropped and counted), and answers `Heard { to: Addressee::{All, Own}, message }` only
-  for the all-call and its own id. Master Volume and Balance keep the two apart (below).
-- **The note logic.** `Voicing::universal(Heard) -> &[Command]` is the pure step; it holds
-  `Master` (`master.rs`), the device's volume, balance and tuning. **Master Fine and Coarse
-  Tuning** add to every channel's pitch in `pitch()` (CA-025: "the total displacement [...] is
-  [the] summation" of the master and the channel's RPN tuning), as the existing `Command::Retune`
-  (one per channel), so the instruments' retune path carries them and no instrument keeps a
-  second tuning state; `Rules::percussion` (`with_percussion`) names a key-based channel the
-  master tuning leaves (CA-025, GM2 §4.2), the SoundFont's channel 10. **Master Volume and
-  Balance** keep a scalar for the device's own id and one for the all-call (M1 p.57, "three
-  volume and two balance scalars"), multiplied into `Voicing::master_gain() -> MasterGain {
-  left, right }`, which the instrument reads when it renders. The volume curve is GM2 §4.1's
-  (the square of the value, `(v / 16383)^2`); the balance's is ours, since M1 gives none: the
-  amplifier knob attenuates the side it turns from, linearly, and `0x2000` is unity on both
-  sides. **General MIDI On and Off** cut every sounding note (`Command::Cut`) and return the
-  device to its initial status: `ChannelState::new` on every channel (RP-015's Reset All
-  Controllers and the GM defaults of RP-003 and GM2 §3.3), the pedals up, the master tuning,
-  volume and balance sent to all devices back to default (the own-id scalars are the knob and
-  stay), and a `Retune` for every channel. On is General MIDI 1's wheel, 2 semitones; Off is
-  the instrument's own initialized mode, `Rules::bend_range`.
-  `Voicing::chase` does not carry the master values (System Exclusive; no channel message says
-  them), and `Voicing::reset` returns them to default.
-- **The instruments.** `PolySynth` and `SoundFontUnit` each own a `UniversalReader`, feed it
-  every UMP of their Group, and give `Heard` to the core. `PolySynth` carries the commands out
-  through the gates it already has (`VoiceAllocator::universal`, sharing `carry_out` with the
-  note messages); the SoundFont's `Player::universal` executes them on its voices and, for GM On
-  or Off, sets every `Channel` to a fresh one (program 0, bank 0, bank 128 on channel 10, no
-  sends). Both ramp the master gain linearly across each control step (PolySynth) or 8-frame
-  chunk (SoundFont) from the last step's gain to the new one, so a Master Volume never steps
-  the output; at unity it is the identity, bit for bit. The SoundFont multiplies it into every
-  plane, so the sends carry it and a balance reaches the reverb send through the two sides'
-  gains it sums. `reset` (the graph's) keeps the master values, like the volume and pan a host
-  selected.
-- **System Reset (FF).** Nothing new: the ingest node already acts on it per Group (L6(f):
-  releases held state, resets the translator, does not echo it, M1 p.33), and what reaches an
-  instrument is the Note Offs and pedal-ups it made. An instrument has no output to echo to.
-- **Part 2: the MIDI Tuning Standard** (below).
 
 ### L8 part 1: the CI decode on winnow, and the Identity Request: as built
 
@@ -3613,94 +2307,3 @@ What the decoded messages are consumed by, one item each.
   input, the entry is gone, and it already knows its peers went with it. **Dropping a
   `MidiSession` sends nothing**: a drop runs where no output may be reachable.
 - **Open.** Profile Configuration and Property Exchange, and Endpoint Inquiry, as above.
-
-### L7b: the MIDI Tuning Standard: as built (part 2)
-
-The spec is "MIDI Tuning Updated Specification" (the original messages, CA-020 bank and dump
-extensions, CA-021/RP-020 Scale/Octave), the only oracle.
-
-- **The parser.** `Universal::Tuning(TuningMessage)`, in the same `winnow` grammar
-  (`universal/read.rs`, rules `tuning(Timing)`, `frequency`, `key_changes`, `channel_mask`,
-  `octave_offsets`); the types are `tuning.rs`'s. `DumpRequest { bank: Option<U7>, program }` (`08 00`,
-  `08 03`), `KeyDump { bank, program, name, table: KeyTable }` (`08 01`, `08 04`),
-  `OctaveDump { bank, program, name, offsets }` (`08 05`, `08 06`), `NoteChange { timing, bank,
-  program, changes }` (`08 02` real time, `08 07` in both) and `OctaveTuning { timing, channels,
-  offsets }` (`08 08`, `08 09` in both). `bank: None` is a message with no bank byte. `Timing` is the
-  header's (`7F` real time, `7E` non-real time): CA-020 says the real-time bank form "WILL affect
-  currently sounding notes" and the non-real-time one "will NOT". `08 02` has no non-real-time form
-  in the spec, so under `7E` it is `Unread`.
-- **Frequency data.** `TuningFrequency` is the 21-bit word, `semitone << 14 | fraction`, the fraction
-  most significant byte first (every other 14-bit field of the Universal messages is least
-  significant first; MTS's are not, its examples `44 7F 7F` and `45 00 01` fix it). It follows the range
-  table: `new(u32) -> Option` refusing above 21 bits, `of`, `get`, `TryFrom<u32>`
-  (`NotFrequencyData`), no `Default`. `NO_CHANGE` (`7F 7F 7F`) is a value of it, `is_no_change` and
-  `pitch() -> Option<Semitones>` (`None` for it); `TOP` is `7F 7F 7E`; `nearest(Semitones)` is the
-  named saturation (NaN is note 0, never "no change"), which `Tuning::table` uses. `KeyTable::set`
-  keeps what is stored for a "no change" word: "it should make no change to its stored frequency data
-  for that MIDI key number". `OctaveOffsets` keeps the wire form (`Cents([U7; 12])`: a cent a step, `40`
-  is 0; `Fine([U14; 12])`: `40 00` is 0, "200 cents divided by 16,384"), and `offset(class) ->
-  Cents`. `ChannelMask` is the three channel bytes as one `u16` (`ff` bits 0 and 1 are channels 15 and
-  16, `gg` channels 8 to 14, `hh` 1 to 7); a message with a reserved bit of `ff` set ("must be set to
-  0") is `Unread`. A `KeyChanges` holds at most 127 changes (`ll` is a data byte) in a fixed array, so
-  a `Universal` is about a kilobyte, `Copy`, and reading one allocates nothing; the reader's message
-  room grew to 528 bytes (a 127-change message with a bank is 517).
-- **The checksum.** The Dump messages (`08 04`, `05`, `06`) carry "the XOR of the bytes between
-  `F0` and the checksum, AND 7F"; the original Bulk Tuning Dump (`08 01`) does not have it checked:
-  "it is now recommended that receivers may ignore the checksum in that message". A dump that fails
-  is `Read::BadChecksum(BadChecksum { to, expected, found })`, neither the message nor `Unread`. The
-  spec says nothing of what a receiver does with one, so the choice is ours: it is not applied. A
-  half-trusted table would retune every note, and the sender can send it again. `UniversalReader`
-  counts it (`corrupt()`) only when it was for the all-call or its own id.
-- **The tables and their capacity.** `Voicing` keeps `Tunings` (`tuning.rs`): `banks x programs`
-  `KeyTable`s (512 bytes each), allocated once in `new`. The spec asks for "128 tuning memory
-  locations (programs)" as "a maximum value", allows "any lesser number", and says a Tuning Program or
-  Bank number "for which it has no Program or Bank [...] should ignore that message". So the capacity
-  is `Rules::tuning: TuningCapacity` (`new(banks, programs) -> Option`, each 1 to 128; default one bank
-  of all 128, 64 KiB), a message for a bank or program beyond it changes nothing and is counted in
-  `Voicing::tuning_refused()`, and a host's `Voicing::store_tuning` answers `NoSuchTuning` instead.
-  Every program starts as equal temperament (RP-020), and a message with no bank byte is for bank 0.
-  The tables survive `reset` and General MIDI On (they are stored programs, not controllers); a
-  channel's selection and Scale/Octave offsets do not (the channels return to program 0 of bank 0, no
-  offsets, RP-020's default).
-- **A key's tuning is per voice, not per channel.** The first sketch had `pitch()` read it, but
-  `pitch()` is a channel's (the wheel, RPN 1 and 2, the master tuning: one `Retune` a channel), and
-  a key's tuning differs by key. So a key's tuning is its offset from equal temperament in semitones
-  (the table word's pitch minus the key, plus the channel's Scale/Octave offset for the key's pitch
-  class), told to a voice as `Command::Start::tune`, `Retarget::tune` (a legato or glide move to
-  another key), `Glide::from_tune` (a glide leaves its source key as that key sounds) and
-  `Command::Tune { id, tune }`; the channel's `Retune` stays and the two add, and nothing is in Hz, so
-  A440 is the master tuning's alone. An absolute per-note Pitch (M2-104 7.4.15) carries no key tuning.
-  The percussion channel (`Rules::percussion`) takes none, as it takes no master tuning.
-- **Real time against non-real time.** Real-time messages (`08 02`, `08 07` under `7F`, `08 08` and
-  `08 09` under `7F`) re-tune the sounding notes they reach, once, with a `Command::Tune` for each
-  note whose tuning moved (no cut, no new attack: "without glitching, forced Note-Offs,
-  re-triggering"); the non-real-time forms and every dump are setup messages: they change what the next
-  Note On has and tell no sounding voice (CA-020: "it is assumed that the message will be ignored for
-  notes that are already sounding"). Tuning Program and Bank Select (RPN 3 and 4) "takes effect
-  immediately": they retune the channel's sounding notes. The spec's "tt = 1-128" is its numbering;
-  the data MSB is the program or bank, 0 to 127, as CA-020 says of the dump messages. Data
-  Increment and Decrement (CC 96 and 97) are not read, as for every RPN (M2-104 D.3.3); a Relative
-  Registered Controller steps the program through `ChannelState::registered_word`, saturating.
-  `registered_word` and the chase now carry RPN 3 and 4, so a node swap keeps a channel's selection
-  (`ChannelState::CHASE_MESSAGES` is 21); the tables and Scale/Octave offsets are System Exclusive
-  and are not chased, like the master values.
-- **Scale/Octave.** The offsets are per channel, replace the channel's last ones ("each message that
-  is received will offset from the original preset, not from the modified tuning") and add to the
-  channel's program. A Scale/Octave Tuning Dump (`08 05`, `08 06`) is stored as equal temperament
-  plus the twelve offsets, as a key table in the program it names, so a channel that selects the
-  program hears it.
-- **The instruments.** `PolySynth` and `SoundFontUnit` apply the commands only. `PolySynth` had a
-  `Tuning` read at every note-on (`fractional_note_to_freq`, a geometric interpolation of its table,
-  whose result in an unequal scale differed from a bend's: the 3.9-cent defect its bend test
-  records); that was the second tuning path. It is gone: a voice's pitch is `key_freq(note, tune)`,
-  equal temperament over A4 = 440 Hz plus the voice's `tune` (`SynthVoice::set_tune`, set by `Start`,
-  `Retarget` and `Gate::Tune`), and `SynthConfig::tuning` stays as the construction-time scale, built
-  into the initial table (`Tuning::table`, each key's frequency as frequency data, to its 0.0061
-  cents) stored as program 0 of bank 0, which every channel plays until it selects another. The
-  SoundFont voice adds `tune` to its key's pitch (`Voice::tune`, set by `Start`, `Retarget` and
-  `Tune`) and to the glide's offset; its percussion channel is the core's.
-- **Not built.** The reply to a Bulk Tuning Dump Request: it is parsed
-  (`TuningMessage::DumpRequest`) and answered with nothing, since an instrument has no SysEx output;
-  the responder is L8's. Data Increment and Decrement. A per-program tuning name is parsed
-  (`TuningName`) and not kept. A switchable "instantaneous/next-note-on" option the spec's comments
-  suggest: the real-time messages are instantaneous and the non-real-time ones are not.

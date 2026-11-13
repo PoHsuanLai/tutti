@@ -37,27 +37,6 @@ timbre bug that leaves the pitch exactly right — **passes all 12 native tests*
 and fails 12 Python checks. That case is why the Python layer is worth its
 dependency.
 
-## Verified by mutation
-
-A green harness proves nothing until it has been shown to go red. Each of these
-was applied to the engine, confirmed to fail the right checks, and reverted:
-
-| Mutation | Caught by |
-|---|---|
-| Ignore velocity (always full) | `velocity_scales_the_output_level` |
-| Detune the note-on pitch path by a semitone | 4 native tests, including the stealing and mono-mode pitch assertions |
-| Zero the right channel in one-frame blocks | `the_tick_path_matches_the_block_path` (see below) |
-| Triangle oscillator emits a saw | 12 Python checks; **all 12 native tests still pass** |
-| Filter cutoff off by an octave | 8 Python checks, including the −3 dB point |
-
-## The one-frame path
-
-A graph may hand the node a block of any length down to one frame.
-`the_tick_path_matches_the_block_path` pins one-frame blocks against 64-frame
-blocks: the same pitch, level and channel layout. They are deliberately *not*
-compared sample-by-sample — the voice's control steps are cut at the block
-edges, so their phase relative to a note-on differs by up to one block.
-
 ## One thing the judge gets right that is easy to get wrong
 
 **A filter must be measured against the dry signal, not against itself.**

@@ -402,13 +402,9 @@ fn a_signal_under_the_threshold_is_moved_by_the_drive_and_delayed() {
     }
 }
 
-/// **The first audio after a reset is limited from its first sample** (design 024
-/// section 2.7.4, law 1: `s₀` is a state the limiter could have reached, here on silence,
-/// where the envelope rests at the drive): a full-scale step from frame 0 leaves the delay
-/// at exactly the ceiling, not faded in from 0 over a release. With the old start (an
-/// envelope at 0) the first delayed sample came out at 0 and reached the ceiling only
-/// after about a release time. And a reset puts it back: the same step after a reset
-/// leaves at the ceiling again.
+/// **The first audio after a reset is limited from its first sample**: a full-scale step from
+/// frame 0 leaves the delay at exactly the ceiling, not faded in from 0 over a release. And a
+/// reset puts it back: the same step after a reset leaves at the ceiling again.
 #[test]
 fn the_first_audio_after_a_reset_is_limited_from_its_first_sample() {
     let ceiling = Db(-6.0).to_amplitude().get();
@@ -685,7 +681,7 @@ impl<'de> serde::Deserialize<'de> for Lookahead {
     }
 }
 
-/// `Lookahead` keeps the range-checked shape of CLAUDE.md: `new` refuses what is not a
+/// `Lookahead` keeps the range-checked shape: `new` refuses what is not a
 /// lookahead (not finite, not above zero, past the cap) and never clamps, `of` agrees,
 /// and `TryFrom` carries the refused raw. A silently clamped lookahead would declare a
 /// latency the limiter does not have.

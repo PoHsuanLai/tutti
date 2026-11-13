@@ -13,10 +13,9 @@ use super::routing::MAX_WIDTH;
 /// - [`linked`](Self::linked): every channel follows the control, so the channels track
 ///   (the default);
 /// - [`each`](Self::each): the channels past the first are delayed by these times, which
-///   do not move. A stereo ping-pong's right channel is the usual use. A time per
-///   channel as a control is a later feature.
+///   do not move. A stereo ping-pong's right channel is the usual use.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): every time is finite and
+/// A range-checked value: every time is finite and
 /// not negative, and never clamped. That they fit the delay's width and its
 /// [`MaxDelay`](crate::MaxDelay) is the family's to check, where it is built
 /// ([`DelayFamily::with_times`](crate::DelayFamily::with_times)).

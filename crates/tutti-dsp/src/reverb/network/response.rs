@@ -1,5 +1,4 @@
-//! A [`Network`] as a linear time-invariant system: [`Lti`] (design 024
-//! step 1b).
+//! A [`Network`] as a linear time-invariant system: [`Lti`].
 //!
 //! The response is composed from the stages, never from a pole list: a series of
 //! stages carries a vector of channels, and a feedback delay network is solved

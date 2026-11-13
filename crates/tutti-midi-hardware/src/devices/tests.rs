@@ -647,7 +647,7 @@ fn the_sink_follows_the_protocol_the_output_is_in() {
     use tutti_ump::{Protocol, StreamConfig};
     let told = Arc::default();
     let devices = Devices::open_over(Box::new(Tagging(Arc::clone(&told)))).unwrap();
-    let out = devices.open_output(&id_of(&devices, "Synth")).unwrap();
+    let mut out = devices.open_output(&id_of(&devices, "Synth")).unwrap();
     assert_eq!(*told.lock().unwrap(), [Protocol::Midi2], "at open");
     out.set_config(StreamConfig {
         protocol: Protocol::Midi1,

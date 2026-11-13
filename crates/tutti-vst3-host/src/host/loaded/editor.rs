@@ -110,52 +110,6 @@ impl Vst3Loaded {
         self.plugin.editor_size_constraint(main, requested)
     }
 
-    /// Offer a key press to the open editor. [`KeyOutcome::Consumed`] means the
-    /// plugin took it and the host must not act on it too.
-    ///
-    /// # The two key codes
-    ///
-    /// VST3 carries a character *and* a virtual key, and a caller supplies one
-    /// while zeroing the other (see [`KeyEvent::character`] and
-    /// [`KeyEvent::virtual_key`]). Sending both, or neither, is what plugins
-    /// disagree about handling: pick one.
-    ///
-    /// The SDK's modifier convention is platform-dependent: `COMMAND` is Cmd on
-    /// macOS and Ctrl on Windows and Linux, so a caller mapping from a neutral
-    /// modifier set has to know which platform it is on.
-    ///
-    /// # Arbitration
-    ///
-    /// Honour the return value rather than filtering keys before the call. A
-    /// host that reserves keys for itself — space for transport, say — takes
-    /// them from every plugin that legitimately uses them, and cannot know
-    /// which those are. The spec's answer is the outcome, and it applies only
-    /// while the editor holds focus.
-    ///
-    /// Returns [`KeyOutcome::Ignored`] if no editor is open. Main/UI thread.
-    #[must_use]
-    pub fn send_key_down(&self, main: &MainThread, key: KeyEvent) -> KeyOutcome {
-        outcome(self.plugin.editor_key_down(
-            main,
-            key.character,
-            key.virtual_key,
-            key.modifiers.bits(),
-        ))
-    }
-
-    /// Offer a key release to the open editor. See
-    /// [`send_key_down`](Self::send_key_down) — identical contract, and a host
-    /// that forwards one without the other leaves plugins holding keys down.
-    #[must_use]
-    pub fn send_key_up(&self, main: &MainThread, key: KeyEvent) -> KeyOutcome {
-        outcome(self.plugin.editor_key_up(
-            main,
-            key.character,
-            key.virtual_key,
-            key.modifiers.bits(),
-        ))
-    }
-
     /// Offer a mouse-wheel movement to the open editor, `distance` in wheel
     /// notches. Returns `true` if the plugin consumed it.
     ///
@@ -205,11 +159,3 @@ impl Vst3Loaded {
 }
 
 pub(super) const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
-
-fn outcome(consumed: bool) -> KeyOutcome {
-    if consumed {
-        KeyOutcome::Consumed
-    } else {
-        KeyOutcome::Ignored
-    }
-}

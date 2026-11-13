@@ -225,6 +225,9 @@ impl Vst2Processor {
             return &self.midi.out;
         }
         self.ensure_processing();
+        // An `Arc` clone (no allocation): the scope outlives the `&mut self` calls below.
+        let host = Arc::clone(&self.host);
+        let _in_process = host.enter_process();
 
         // A block longer than the maximum the plugin was told is rendered in
         // pieces no longer than it: a plugin sizes its internal buffers to the
@@ -273,6 +276,9 @@ impl Vst2Processor {
             return &self.midi.out;
         }
         self.ensure_processing();
+        // An `Arc` clone (no allocation): the scope outlives the `&mut self` calls below.
+        let host = Arc::clone(&self.host);
+        let _in_process = host.enter_process();
 
         // Native only when the plugin was told 64-bit at activation: a plugin
         // told 32 is not entered at 64.
@@ -332,7 +338,12 @@ impl Vst2Processor {
     fn update_transport(&mut self, ctx: &Vst2ProcessContext) {
         if let Some(t) = ctx.transport {
             let previous = self.time_info.last();
-            let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref());
+            let next = build_vst2_time_info(
+                t,
+                ctx.sample_rate,
+                previous.as_ref(),
+                self.host.automation(),
+            );
             self.time_info.write(next);
         }
     }
@@ -372,6 +383,9 @@ impl Vst2Processor {
     }
 
     fn dispatch_midi(&mut self, midi: &[UmpAt], start: usize, len: usize, total: usize) {
+        // Marked live unless the host renders offline, as `audioMasterGetCurrentProcessLevel`
+        // answers.
+        self.midi.send.set_live(!self.host.is_offline());
         self.midi
             .send
             .send_piece(&mut self.render, midi, start, len, total);

@@ -140,6 +140,7 @@ fn drive_once(
     read_capture()
 }
 
+/// Spec: clap.entry.init, clap.entry.get_factory, clap.factory.plugin.create_plugin, clap.plugin.init
 #[test]
 fn reference_plugin_loads_and_identifies() {
     let inst = load_plugin();
@@ -151,6 +152,7 @@ fn reference_plugin_loads_and_identifies() {
     );
 }
 
+/// Spec: clap.plugin.process
 #[test]
 fn host_presents_correct_buffer_geometry() {
     let mut inst = load_plugin();
@@ -170,6 +172,7 @@ fn host_presents_correct_buffer_geometry() {
     );
 }
 
+/// Spec: clap.event.note_on, clap.events.input.get, clap.events.input.size
 #[test]
 fn host_sorts_events_by_sample_offset() {
     let mut inst = load_plugin();
@@ -208,6 +211,7 @@ fn host_sorts_events_by_sample_offset() {
     }
 }
 
+/// Spec: clap.event.param_value, clap.events.input.get, clap.events.input.size
 #[test]
 fn host_delivers_param_points_with_offsets() {
     let mut inst = load_plugin();
@@ -345,6 +349,7 @@ fn host_supplies_the_tempo_slope() {
     assert_eq!(drive_once(&mut inst, 64, &ctx).transport_tempo_inc, 0.0);
 }
 
+/// Spec: clap.host.request_callback
 #[test]
 fn host_callback_round_trips() {
     let mut inst = load_plugin();

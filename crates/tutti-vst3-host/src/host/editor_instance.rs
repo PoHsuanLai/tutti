@@ -9,8 +9,8 @@ use std::path::Path;
 
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
-    EditorWindow, InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
-    PluginResult, WindowHandle,
+    EditorWindow, InProcess, KeyEvent, KeyUse, Load, MainThread, Normalized, ParamEdit, ParamId,
+    PluginError, PluginResult, WindowHandle,
 };
 
 use super::loaded::Vst3Loaded;
@@ -154,6 +154,10 @@ impl EditorWindow for Vst3Editor {
             width: size.width,
             height: size.height,
         })
+    }
+
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        EditorWindow::editor_key(&mut self.inner, main, event)
     }
 
     fn close_editor(&mut self, main: &MainThread) {

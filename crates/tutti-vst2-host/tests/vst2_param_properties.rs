@@ -113,6 +113,19 @@ fn set_answer_midi_metadata(path: &Path, enable: bool, serviced_programs: i32) {
     );
 }
 
+/// Make the probe's parameters take `effString2Parameter` text.
+fn set_accept_string_to_parameter(path: &Path, accept: bool) {
+    probe_call(
+        path,
+        b"tutti_vst2_probe_set_accept_string_to_parameter\0",
+        |sym| {
+            // SAFETY: the probe exports this as `extern "C" fn(bool)`.
+            let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
+            f(accept);
+        },
+    );
+}
+
 /// Load the probe with every switch at its default (declining) state.
 fn load_probe() -> (Active, std::path::PathBuf) {
     let path = tutti_fixtures::vst2_probe().to_path_buf();
@@ -922,6 +935,33 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     // An out-of-range index addresses nothing and must not dispatch.
     assert_eq!(instance.loaded().parameter_display(pid(count)), None);
     assert_eq!(instance.loaded().parameter_display(pid(-1)), None);
+}
+
+/// A plugin that takes `effString2Parameter` text reports the value it parsed, and the
+/// parameter holds it: the opcode is a setter, so what the host reads is what the plugin set.
+/// Text it cannot parse is a refusal that leaves the parameter where it was.
+#[test]
+fn an_accepted_string_parse_reports_the_parsed_value_and_writes_it() {
+    let _guard = lock_probe();
+    let (instance, path) = load_probe();
+    set_accept_string_to_parameter(&path, true);
+    assert!(
+        instance
+            .loaded()
+            .write_parameter(pid(0), Normalized::of(0.5))
+    );
+
+    let parsed = instance.loaded().set_parameter_from_string(pid(0), "0.75");
+    let refused = instance.loaded().set_parameter_from_string(pid(0), "loud");
+    set_accept_string_to_parameter(&path, false);
+
+    assert_eq!(parsed, Some(Normalized::of(0.75)));
+    assert_eq!(refused, None, "text that is no number is declined");
+    assert_eq!(
+        instance.loaded().parameter_display(pid(0)),
+        Some("0.750 dB".to_string()),
+        "and the refused parse left the accepted value"
+    );
 }
 
 /// The probe declines `effString2Parameter`, and a decline is reported as

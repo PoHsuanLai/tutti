@@ -55,10 +55,12 @@ impl Native {
         ready: &mut Vec<Ready>,
     ) -> BridgeResult<bool> {
         ready.clear();
-        let readable = if wakeups.watches().is_empty() {
-            transport.wait_readable(timeout)?
-        } else if let Some(stream) = transport.stream() {
+        // A real socket is always waited on with the bell's descriptor: a plugin
+        // that rings it ends the wait at once.
+        let readable = if let Some(stream) = transport.stream() {
             self.wait_on(stream, wakeups, timeout, ready)?
+        } else if wakeups.watches().is_empty() {
+            transport.wait_readable(timeout)?
         } else {
             let readable = transport.wait_readable(timeout.min(NO_DESCRIPTOR_SLICE))?;
             self.asked.clear();
@@ -96,6 +98,8 @@ impl Native {
                 .iter()
                 .map(|w| (w.fd.0, w.interest.bits())),
         );
+        let bell = crate::bell::bell();
+        self.asked.push((bell.fd(), tutti_plugin_ipc_ffi::READ));
         // Rounded up: a wait of 0.3 ms must not become a busy `poll(0)` loop.
         let ms = i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
         let readable = loop {
@@ -108,10 +112,18 @@ impl Native {
                 other => break other?,
             }
         };
-        ready.extend(self.got.iter().map(|&(fd, bits)| Ready {
-            fd: FdId(fd),
-            events: Interest::from_bits(bits),
-        }));
+        if self.got.iter().any(|&(fd, _)| fd == bell.fd()) {
+            bell.drain();
+        }
+        ready.extend(
+            self.got
+                .iter()
+                .filter(|&&(fd, _)| fd != bell.fd())
+                .map(|&(fd, bits)| Ready {
+                    fd: FdId(fd),
+                    events: Interest::from_bits(bits),
+                }),
+        );
         Ok(readable)
     }
 

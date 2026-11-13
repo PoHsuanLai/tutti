@@ -196,6 +196,7 @@ fn assert_roles(cap: &ThreadCapture, site: Site, want_main: bool, want_audio: bo
 /// answers `is_main = true`. CLAP's audio-thread is symbolic — the host may
 /// nominate any OS thread including the main one — so the correct answer inside
 /// an `[audio-thread]` call is `is_main = false`.
+/// Spec: clap.ext.thread_check.host.is_main_thread, clap.ext.thread_check.host.is_audio_thread, clap.plugin.on_main_thread
 #[test]
 fn host_answers_thread_check_correctly_at_every_call_site() {
     let probe = Probe::acquire();
@@ -234,6 +235,7 @@ fn host_answers_thread_check_correctly_at_every_call_site() {
 ///
 /// `visits` is asserted so a host that never called `reset` at all fails here
 /// rather than passing on an unvisited site.
+/// Spec: clap.plugin.reset
 #[test]
 fn reset_runs_under_the_audio_thread_claim() {
     let probe = Probe::acquire();
@@ -303,6 +305,7 @@ fn audio_thread_role_is_released_when_process_returns() {
 /// in `take_callback_requested` would make a host loop call `on_main_thread`
 /// every iteration forever. `visits` counts the plugin-side calls, so the count
 /// is checked rather than inferred.
+/// Spec: clap.host.request_callback, clap.plugin.on_main_thread
 #[test]
 fn request_callback_round_trips_to_on_main_thread_exactly_once() {
     let probe = Probe::acquire();
@@ -356,6 +359,7 @@ fn restart_requested(inst: &mut ClapLoaded) -> bool {
 /// `process()`, so the contract is to record the request and let the embedder
 /// (the core, through `Lifecycle`) pick the moment. The reactivation half is
 /// covered by [`restart_cycle_reactivates_and_reruns_the_plugin_lifecycle`].
+/// Spec: clap.host.request_restart
 #[test]
 fn request_restart_from_process_reaches_the_host() {
     let probe = Probe::acquire();
@@ -417,31 +421,35 @@ fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
     );
 }
 
-/// `request_process` is the other `[thread-safe]` lifecycle request; it must be
-/// recorded and consumed independently of `request_restart`.
-///
-/// The three lifecycle flags live in one struct and share a polling helper, so
-/// a copy-paste pointing `request_process` at `restart_requested` would leave
-/// both single-flag tests passing.
+/// `request_process` is the other `[thread-safe]` lifecycle request: called
+/// from inside `process`, it raises the host's bound wake and nothing else, so
+/// it is not a restart.
+/// Spec: clap.host.request_process
 #[test]
-fn request_process_is_recorded_independently_of_restart() {
+fn request_process_raises_the_bound_wake_and_no_restart() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tutti_plugin_types::{Control, ProcessWake};
+
     let probe = Probe::acquire();
     let mut inst = probe.activate();
+    let raised = Arc::new(AtomicU32::new(0));
+    let count = raised.clone();
+    inst.loaded().bind_wake(ProcessWake::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    }));
 
     probe.command(CMD_REQUEST_PROCESS);
     drive_block(&mut inst, 64, &ClapProcessContext::default());
 
-    assert!(
-        inst.loaded().take_process_requested(),
-        "the plugin called request_process() inside process; the host must record it"
+    assert_eq!(
+        raised.load(Ordering::SeqCst),
+        1,
+        "the plugin called request_process() inside process; the host must raise its wake"
     );
     assert!(
         !restart_requested(inst.loaded_mut()),
-        "request_process() must not raise a restart — they are different requests"
-    );
-    assert!(
-        !inst.loaded().take_process_requested(),
-        "take_process_requested() must consume the flag"
+        "request_process() must not raise a restart: they are different requests"
     );
 }
 
@@ -599,6 +607,7 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
 /// sufficient *for this test*, whose subject is id routing and thread identity
 /// — but it means nothing here constrains the expiry comparison, which is
 /// covered by `polling::timer_due_tests` instead.
+/// Spec: clap.ext.timer_support.host.register_timer, clap.ext.timer_support.host.unregister_timer, clap.ext.timer_support.on_timer
 #[test]
 fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     let probe = Probe::acquire();
@@ -707,6 +716,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 /// as `DEBUG` — would be invisible to anything but a human reading stderr. The
 /// messages are distinct per severity, so a
 /// host collapsing them onto one arm cannot pass on count alone.
+/// Spec: clap.ext.log.host.log
 #[test]
 fn host_routes_plugin_log_lines_at_every_severity() {
     let probe = Probe::acquire();

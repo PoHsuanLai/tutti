@@ -9,6 +9,8 @@
 //! language the pattern accepted (each gate's docs say how).
 
 mod canonical_paths;
+mod clap_sys;
+mod conformance;
 mod decode_boundary;
 mod doc_features;
 mod doc_refs;
@@ -17,6 +19,7 @@ mod guards;
 mod hosting;
 mod layout;
 mod lex;
+mod midi_spec;
 mod pointers;
 mod prose;
 mod range_types;
@@ -101,6 +104,8 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
+    Conformance,
 }
 
 impl Gate {
@@ -117,6 +122,7 @@ impl Gate {
             Gate::Session => "gate check-session".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
 
@@ -137,8 +143,146 @@ impl Gate {
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::Conformance => {
+                let sys = clap_sys_tree(&tree);
+                let midi = midi_spec_text();
+                let require =
+                    conformance::Require::parse(std::env::var("TUTTI_CONFORMANCE").ok().as_deref());
+                conformance::check(
+                    &tree,
+                    sys.as_ref().map(|t| t as &dyn Tree).map_err(Clone::clone),
+                    midi.as_deref().map_err(Clone::clone),
+                    require,
+                )
+            }
         }
     }
+}
+
+/// The `clap-sys` crate's source in the cargo registry, at the version
+/// `Cargo.lock` pins (`CARGO_HOME` defaults to `~/.cargo`); the error names
+/// what is missing.
+fn clap_sys_tree(repo: &RealTree) -> Result<RealTree, String> {
+    let lock = repo.read("Cargo.lock").ok_or("Cargo.lock is missing")?;
+    let ver = conformance::pinned_clap_sys(&lock).ok_or("Cargo.lock pins no clap-sys")?;
+    let home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")))
+        .ok_or("neither CARGO_HOME nor HOME is set")?;
+    let registry = home.join("registry/src");
+    let found = fs::read_dir(&registry)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join(format!("clap-sys-{ver}")))
+        .find(|p| p.is_dir());
+    found.map(|root| RealTree { root }).ok_or_else(|| {
+        format!(
+            "clap-sys {ver} source not found at {}/*/clap-sys-{ver} (cargo fetch --locked)",
+            registry.display()
+        )
+    })
+}
+
+/// The text of the M2-104 spec: the `.txt` of it in the `TUTTI_MIDI_SPECS`
+/// directory (searched recursively), or else what `pdftotext -layout` makes of
+/// the PDF there. The error names what is missing.
+fn midi_spec_text() -> Result<String, String> {
+    let dir = std::env::var_os("TUTTI_MIDI_SPECS")
+        .map(PathBuf::from)
+        .ok_or("TUTTI_MIDI_SPECS is not set")?;
+    let all = RealTree { root: dir.clone() }.files(".", &|_| false);
+    let find = |ext: &str| {
+        all.iter()
+            .find(|p| {
+                let name = p.rsplit('/').next().unwrap_or(p);
+                name.starts_with("M2-104-UM") && name.ends_with(ext)
+            })
+            .cloned()
+    };
+    if let Some(txt) = find(".txt") {
+        let bytes = fs::read(dir.join(&txt)).map_err(|e| format!("cannot read {txt}: {e}"))?;
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let pdf = find(".pdf").ok_or_else(|| {
+        format!(
+            "no M2-104-UM .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
+            dir.display()
+        )
+    })?;
+    let out = process::Command::new("pdftotext")
+        .args(["-layout"])
+        .arg(dir.join(&pdf))
+        .arg("-")
+        .output()
+        .map_err(|e| format!("cannot run pdftotext on {pdf}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("pdftotext failed on {pdf}"));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `conformance-inventory <format>`: rewrite the format's inventory file from
+/// its spec source, keeping the hand-written columns.
+pub(crate) fn conformance_inventory(root: &Path, format: &str) -> Result<(), String> {
+    match format {
+        "clap" => clap_inventory(root),
+        "midi" => midi_inventory(root),
+        _ => Err(format!(
+            "no inventory extractor for `{format}` (`clap` or `midi`)"
+        )),
+    }
+}
+
+fn midi_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    let items = midi_spec::extract(&midi_spec_text()?)?;
+    let path = "testing/conformance/midi-m2-104.txt";
+    let (text, added, removed) = conformance::regenerate_midi(repo.read(path).as_deref(), &items)?;
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} rows", items.len());
+    let text_of: std::collections::BTreeMap<&str, &str> = items
+        .iter()
+        .map(|i| (i.id.as_str(), i.text.as_str()))
+        .collect();
+    for id in &added {
+        println!(
+            "added {id} (side todo, no paraphrase): {}",
+            text_of[id.as_str()]
+        );
+    }
+    for id in &removed {
+        println!("removed {id}: its row is gone from the file; check its tests' tags");
+    }
+    if !added.is_empty() || !removed.is_empty() {
+        println!(
+            "{} added, {} removed: a sentence inserted or dropped shifts the numbers after it, so check the paraphrases of the neighbours",
+            added.len(),
+            removed.len()
+        );
+    }
+    Ok(())
+}
+
+fn clap_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    let sys = clap_sys_tree(&repo)?;
+    let items = clap_sys::extract(&sys)?;
+    let path = "testing/conformance/clap.txt";
+    let text = conformance::regenerate(repo.read(path).as_deref(), &items)?;
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} rows", items.len());
+    Ok(())
 }
 
 /// The checkout on disk.

@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::instrument_generator::InstrumentGenerator;
 use crate::instrument_info::InstrumentInfo;
 use crate::instrument_region::InstrumentRegion;
 use crate::sample_header::SampleHeader;
@@ -16,7 +17,7 @@ impl Instrument {
     fn new(
         info: &InstrumentInfo,
         instrument_id: usize,
-        zones: &[Zone],
+        zones: &[Zone<InstrumentGenerator>],
         samples: &[SampleHeader],
     ) -> Result<Self, Error> {
         let name = info.name.clone();
@@ -41,7 +42,7 @@ impl Instrument {
 
     pub(crate) fn create(
         infos: &[InstrumentInfo],
-        zones: &[Zone],
+        zones: &[Zone<InstrumentGenerator>],
         samples: &[SampleHeader],
     ) -> Result<Vec<Instrument>, Error> {
         if infos.len() <= 1 {

@@ -43,10 +43,12 @@ mod four_cc;
 mod generator;
 mod generator_type;
 mod instrument;
+mod instrument_generator;
 mod instrument_info;
 mod instrument_region;
 mod loop_mode;
 mod preset;
+mod preset_generator;
 mod preset_info;
 mod preset_region;
 mod read_counter;
@@ -56,6 +58,7 @@ mod soundfont_info;
 mod soundfont_parameters;
 mod soundfont_sampledata;
 mod soundfont_version;
+mod summed_generator;
 mod zone;
 mod zone_info;
 
@@ -63,16 +66,19 @@ use std::ops::RangeInclusive;
 
 pub use bank::{Bank, BankError};
 pub use error::{Error, Result};
-pub use generator_type::GeneratorType;
+pub use generator_type::{GeneratorType, WrongLevelGenerator};
 pub use instrument::Instrument;
+pub use instrument_generator::InstrumentGenerator;
 pub use instrument_region::InstrumentRegion;
 pub use loop_mode::LoopMode;
 pub use preset::Preset;
+pub use preset_generator::PresetGenerator;
 pub use preset_region::PresetRegion;
 pub use sample_header::{SampleHeader, Side};
 pub use soundfont::SoundFont;
 pub use soundfont_info::SoundFontInfo;
 pub use soundfont_version::SoundFontVersion;
+pub use summed_generator::SummedGenerator;
 
 /// The inclusive range a range generator packs: the low byte is the first
 /// value, the high byte the last.

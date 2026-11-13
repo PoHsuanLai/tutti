@@ -141,6 +141,10 @@
 //! | after | `m` (u32), then `m` events of 24 bytes in arrival order |
 //! | after | `t` (u32), the transports received since the activation, then the first `min(t, 16)` of 32 bytes each, in arrival order |
 //!
+//! A key the host forwarded to the editor is an event of kind 8 (press) or 9
+//! (release): its `id` is the UTF-16 character in the low 16 bits and the virtual
+//! key in the high 16, its `value` the modifier bits.
+//!
 //! A transport is what the host told the plugin of its transport, as it was
 //! sent, before the plugin reads anything from it: the process call it came
 //! with (u32, counted from 0 since the activation) and its sample offset in
@@ -675,6 +679,15 @@ impl Core {
     /// thread while blocks run can lose an entry.
     pub fn log_set_param(&self, id: u32, value: f64) {
         self.log(1, 0, id, value);
+    }
+
+    /// Records a key the host forwarded to the editor: `down` is a press, `character`
+    /// the UTF-16 unit, `code` the virtual key and `modifiers` the modifier bits as the
+    /// host wrote them. The log has one writer; a key sent while blocks run can lose an
+    /// entry.
+    pub fn log_key(&self, down: bool, character: u16, code: i16, modifiers: i16) {
+        let id = u32::from(character) | u32::from(code as u16) << 16;
+        self.log(if down { 8 } else { 9 }, 0, id, f64::from(modifiers));
     }
 
     /// Records a transport the host sent with the block about to be

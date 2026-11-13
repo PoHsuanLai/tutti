@@ -1,7 +1,83 @@
 //! Editor (plugin GUI) primitives shared across host crates.
 
+use keyboard_types::{Code, Key, KeyState, Modifiers};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
+
+/// Which physical key carries the "command" role, the one a plugin's shortcuts (copy,
+/// paste, undo) use.
+///
+/// A format that numbers its modifier bits by role maps [`Modifiers`] through this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifierConvention {
+    /// The Apple convention: the command role is the Command key
+    /// ([`Modifiers::META`] or [`Modifiers::SUPER`], which both name that key), and the
+    /// Control key is the separate control role.
+    Mac,
+    /// The PC convention: the command role is the Control key
+    /// ([`Modifiers::CONTROL`]), and the Windows key ([`Modifiers::META`] or
+    /// [`Modifiers::SUPER`], which both name it) has no role.
+    Pc,
+}
+
+// The platform's convention is chosen here and nowhere else: a different target is a
+// different file and changes no code that reads `ModifierConvention::HOST`.
+#[cfg(target_os = "macos")]
+#[path = "editor/macos.rs"]
+mod platform;
+#[cfg(not(target_os = "macos"))]
+#[path = "editor/other.rs"]
+mod platform;
+
+impl ModifierConvention {
+    /// The convention of the platform this build runs on.
+    pub const HOST: Self = platform::HOST;
+}
+
+/// A key press or release the host forwards to a plugin's editor.
+///
+/// The vocabulary is the W3C UI Events one, as [`keyboard_types`] spells it, so a windowing
+/// frontend converts its key events name for name. A format carries the typed character
+/// and a virtual key code beside each other (VST2's `effEditKeyDown`, VST3's `onKeyDown`);
+/// a host reads the character from [`key`](Self::key) and the virtual key from
+/// [`key`](Self::key) and [`code`](Self::code) together, as its format defines them. A key
+/// the format has no code or character for is [`KeyUse::Ignored`], not an error.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeyEvent {
+    /// Down or up.
+    pub state: KeyState,
+    /// The key's value: the character it typed, or its name.
+    pub key: Key,
+    /// The physical key, which tells a numeric keypad key from the main block's.
+    pub code: Code,
+    /// The modifiers held.
+    pub modifiers: Modifiers,
+}
+
+impl KeyEvent {
+    /// Whether the Command key (Apple) or the Windows key (PC) is held.
+    ///
+    /// Frontends disagree on which flag that one physical key sets, so
+    /// [`Modifiers::META`] and the legacy [`Modifiers::SUPER`] both name it.
+    #[must_use]
+    #[allow(deprecated)] // `SUPER` is how winit reports the key.
+    pub fn meta_held(&self) -> bool {
+        self.modifiers
+            .intersects(Modifiers::META | Modifiers::SUPER)
+    }
+}
+
+/// What an editor did with a forwarded [`KeyEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyUse {
+    /// The editor used the key: the host does not act on it.
+    Used,
+    /// The editor did not use the key, or the format cannot carry it (a character or a
+    /// modifier it has no way to write): the host may act on it.
+    Ignored,
+}
 
 /// Pixel dimensions of a plugin editor window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +379,10 @@ pub enum EditorError {
     /// Not a fault: nothing needs doing on the plugin's side.
     #[error("the editor takes no new scale after it opened")]
     ScaleUnsupported,
+
+    /// This format forwards no key events to its editor.
+    #[error("this plugin format takes no key events in its editor")]
+    KeysUnsupported,
 
     /// Another `open_editor` holds the GUI lock. Retryable once it completes.
     #[error("could not acquire GUI lock (another open_editor in progress?)")]

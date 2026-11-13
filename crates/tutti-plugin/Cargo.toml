@@ -87,7 +87,7 @@ tempfile = "3"
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # The tests' mock listeners.
-parking_lot = "0.12"
+parking_lot = "0.13"
 # The node tests' mock plugin-server speaks the wire by hand.
 interprocess = { version = "2" }
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
@@ -126,10 +126,10 @@ tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # The reference CLAP plugin the OUT-OF-PROCESS correctness suites drive. A
 # dev-dependency for the artifact, not the API: cargo builds its cdylib in this
 # same `cargo test` (no nested cargo, no target-dir-lock deadlock) and the
-# tests find it beside the test binary. Unlike the VST2 probe, nothing here links
-# its rlib — the plugin is loaded by a `plugin-server` subprocess, so the only
-# thing this crate needs is the file on disk.
-tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+# tests find it beside the test binary. The served suites load it in a
+# `plugin-server` subprocess and need only the file on disk; `clap_wake` also
+# loads it in process and reaches its switches through `ClapProbe` (`probe`).
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin", features = ["probe"] }
 
 # `kill(pid, 0)`, so `real_plugin_pressure`'s leak check asks about the exact
 # `plugin-server` pids it launched rather than spawning `pgrep` to scan the

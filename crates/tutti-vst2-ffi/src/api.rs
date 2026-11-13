@@ -503,7 +503,7 @@ impl From<Supported> for isize {
 
 /// Denotes in which thread the host is in.
 #[repr(i32)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum ProcessLevel {
     /// Unsupported by host.
     Unknown = 0,
@@ -518,93 +518,21 @@ pub enum ProcessLevel {
     Offline,
 }
 
-/// Language that the host is using.
+/// The host's automation state, answered to `audioMasterGetAutomationState`
+/// (`VstAutomationStates`).
 #[repr(i32)]
-#[allow(missing_docs)]
-#[derive(Debug)]
-pub enum HostLanguage {
-    English = 1,
-    German,
-    French,
-    Italian,
-    Spanish,
-    Japanese,
-}
-
-/// The file operation to perform.
-#[repr(i32)]
-#[derive(Debug)]
-pub enum FileSelectCommand {
-    /// Load a file.
-    Load = 0,
-    /// Save a file.
-    Save,
-    /// Load multiple files simultaneously.
-    LoadMultipleFiles,
-    /// Choose a directory.
-    SelectDirectory,
-}
-
-/// Format to select files.
-#[derive(Debug)]
-pub enum FileSelectType {
-    /// Regular file selector.
-    Regular,
-}
-
-/// File type descriptor.
-#[repr(C)]
-#[derive(Debug)]
-pub struct FileType {
-    /// Display name of file type.
-    pub name: [u8; 128],
-
-    /// OS X file type.
-    pub osx_type: [u8; 8],
-    /// Windows file type.
-    pub win_type: [u8; 8],
-    /// Unix file type.
-    pub nix_type: [u8; 8],
-
-    /// MIME type.
-    pub mime_type_1: [u8; 128],
-    /// Additional MIME type.
-    pub mime_type_2: [u8; 128],
-}
-
-/// File selector descriptor used in `host::OpCode::OpenFileSelector`.
-#[repr(C)]
-#[derive(Debug)]
-pub struct FileSelect {
-    /// The type of file selection to perform.
-    pub command: FileSelectCommand,
-    /// The file selector to open.
-    pub select_type: FileSelectType,
-    /// Unknown. 0 = no creator.
-    pub mac_creator: i32,
-    /// Number of file types.
-    pub num_types: i32,
-    /// List of file types to show.
-    pub file_types: *mut FileType,
-
-    /// File selector's title.
-    pub title: [u8; 1024],
-    /// Initial path.
-    pub initial_path: *mut u8,
-    /// Used when operation returns a single path.
-    pub return_path: *mut u8,
-    /// Size of the path buffer in bytes.
-    pub size_return_path: i32,
-
-    /// Used when operation returns multiple paths.
-    pub return_multiple_paths: *mut *mut u8,
-    /// Number of paths returned.
-    pub num_paths: i32,
-
-    /// Reserved by host.
-    pub reserved: isize,
-    /// Reserved for future use.
-    pub future: [u8; 116],
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+pub enum AutomationState {
+    /// The host does not say (`kVstAutomationUnsupported`).
+    Unsupported = 0,
+    /// Automation is off (`kVstAutomationOff`).
+    Off,
+    /// The host plays automation back (`kVstAutomationRead`).
+    Read,
+    /// The host records automation (`kVstAutomationWrite`).
+    Write,
+    /// The host plays back and records (`kVstAutomationReadWrite`).
+    ReadWrite,
 }
 
 /// A struct which contains events.
@@ -1111,6 +1039,7 @@ pub enum SmpteFrameRate {
 
 bitflags! {
     /// Flags for VST channels.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ChannelFlags: i32 {
         /// Indicates channel is active. Ignored by host.
         const ACTIVE = 1;
@@ -1131,6 +1060,7 @@ bitflags! {
     /// `max_integer` without checking `USES_INTEGER_MIN_MAX` reads whatever the
     /// plugin happened to leave there. The range and the integer step are
     /// separate bits: a plugin may declare either without the other.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ParameterFlags: i32 {
         /// `kVstParameterIsSwitch` (`1 << 0`): the parameter is a switch
         /// (on/off).
@@ -1161,6 +1091,7 @@ bitflags! {
 
 bitflags! {
     /// Flags in [`MidiProgramName::flags`] — VST 2.4's `VstMidiProgramNameFlags`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct MidiProgramFlags: i32 {
         /// The program is a General MIDI drum kit rather than a melodic sound,
         /// so its keys are individual instruments and `effGetMidiKeyName` is
@@ -1171,6 +1102,7 @@ bitflags! {
 
 bitflags! {
     /// Flags for VST plugins.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct PluginFlags: i32 {
         /// Plugin has an editor.
         const HAS_EDITOR = 1;
@@ -1189,6 +1121,7 @@ bitflags! {
 
 bitflags! {
     /// Cross platform modifier key flags.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ModifierKey: u8 {
         /// Shift key.
         const SHIFT = 1;
@@ -1203,6 +1136,7 @@ bitflags! {
 
 bitflags! {
     /// MIDI event flags.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct MidiEventFlags: i32 {
         /// This event is played live (not in playback from a sequencer track). This allows the
         /// plugin to handle these flagged events with higher priority, especially when the
@@ -1213,6 +1147,7 @@ bitflags! {
 
 bitflags! {
     /// Used in the `flags` field of `TimeInfo`, and for querying the host for specific values
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct TimeInfoFlags : i32 {
         /// Indicates that play, cycle or record state has changed.
         const TRANSPORT_CHANGED = 1;

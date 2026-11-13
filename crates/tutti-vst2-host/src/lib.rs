@@ -229,6 +229,7 @@ mod controller;
 mod editor;
 mod host;
 mod hosting;
+mod keys;
 mod loaded;
 mod param_properties;
 mod parameters;

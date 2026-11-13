@@ -1336,6 +1336,7 @@ mod param_text_tests {
 
     impl Plain for clap_plugin_params {}
 
+    /// Spec: clap.ext.params.value_to_text
     #[test]
     fn value_to_text_decodes_plugin_string() {
         let params = stub_params(true);
@@ -1343,6 +1344,7 @@ mod param_text_tests {
         assert_eq!(out.as_deref(), Some("42.0 dB"));
     }
 
+    /// Spec: clap.ext.params.text_to_value
     #[test]
     fn text_to_value_parses_plugin_value() {
         let params = stub_params(true);
@@ -1416,6 +1418,7 @@ mod extension_query_tests {
     /// so the query would return null and the host would conclude the plugin
     /// had no surround map at all, identical at every later call site to a
     /// plugin that genuinely lacks the extension.
+    /// Spec: clap.plugin.get_extension
     #[test]
     fn a_plugin_answering_only_the_draft_id_is_still_found() {
         let mut answers = Answers {
@@ -1437,6 +1440,7 @@ mod extension_query_tests {
     /// Order matters beyond tidiness: a plugin implementing *both* must be
     /// bound to its current interface, and a host that asked draft-first would
     /// silently prefer the older spelling for the rest of the session.
+    /// Spec: clap.plugin.get_extension
     #[test]
     fn the_stable_id_is_asked_before_the_draft_id() {
         let mut answers = Answers {

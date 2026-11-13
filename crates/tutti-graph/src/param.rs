@@ -396,7 +396,9 @@ impl<'a> Corners<'a> {
     /// A corner at block offset `i`, at or after the last one.
     #[inline]
     fn mark(&mut self, i: usize) {
-        let i = i as u32;
+        // A block offset is below the block's length, at most `MaxBlock::MAX`
+        // (`u32::MAX` frames), so it fits.
+        let i = u32::try_from(i).expect("a block offset is below MaxBlock::MAX, a u32");
         if self.len == 0 || self.buf[self.len - 1] != i {
             self.buf[self.len] = i;
             self.len += 1;

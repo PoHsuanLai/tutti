@@ -1443,11 +1443,11 @@ flight lands on. The port still takes a re-send (its values are rendered from th
 position, as before); it only marks no corner. The arrival is one function, `arrival(position,
 length)`, which the port, the reference interpreter and `ParamSegment::arrives_after` share; a re-send
 whose arrival rounds to another frame (Q28, past 2^24 frames) is a different trajectory to the port and
-so a corner. The base's glide, a connection's declick and the range clamp make none. The reference
+so a corner. The base's glide, a connection's declick and the range clamp make none (deliberately: each is caught by the grid within a period, and a clamp's kink is not a piece the source sent). The reference
 interpreter derives the same corners from its own absolute-frame state, and the param differential suite
 compares them through a probe's readout. `FamilyNode::render_steps` merges the grid's stops with the
 corners of every port that drives a slow control (`Params::corner_from`; a fast control is read every
-frame and needs none): a corner cuts and solves on its frame. A control that lands whole (a compressor's
+frame and needs none): a corner cuts and solves on its frame. Only a stream grid steps: a family that samples on the block (the reverbs) designs once per block, at its last frame, and takes no corner, its render depending on the block by its declaration. A control that lands whole (a compressor's
 ratio, the delay's cross-feedback) is then exact on its frame; a gliding one has its target read there
 and starts gliding at the runner's next step, so nothing jumps inside a step.
 

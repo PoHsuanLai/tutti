@@ -510,6 +510,10 @@ impl<F: NodeFamily> FamilyNode<F> {
     /// not move render together, in one call, with the model held; the rest of a
     /// segment an earlier block began is rendered with the model that block set.
     fn render_steps(&mut self, io: &mut Io<'_>, position: u64) {
+        // Only a stream grid steps (`process`): a block cadence designs once, at the
+        // block's last frame, so a step's solve is its first frame and a corner
+        // inside a step is never read before the frames it designs.
+        debug_assert!(F::SAMPLING != Cadence::BLOCK, "a block cadence never steps");
         let size = io.frames();
         // A cell glides from where the block began, whatever the steps designed,
         // and arrives at its value on the block's last solve.

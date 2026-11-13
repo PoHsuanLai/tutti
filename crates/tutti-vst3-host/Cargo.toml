@@ -1,6 +1,6 @@
 [package]
 name = "tutti-vst3-host"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "A host for VST3 plugins, with no C++ SDK needed in your project"
@@ -39,15 +39,15 @@ crossbeam-channel = "0.5"
 crossbeam-queue = "0.3"
 # The editor key vocabulary a `KeyEvent` is written in.
 keyboard-types.workspace = true
-tutti-graph = { path = "../tutti-graph" }
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
-tutti-plugin-types = { path = "../tutti-plugin-types" }
-tutti-types = { path = "../tutti-types" }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-voicing = { path = "../tutti-voicing" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-voicing = { version = "0.0.1", path = "../tutti-voicing" }
 vst3 = "0.3"
-tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
+tutti-vst3-ffi = { version = "0.0.1", path = "../tutti-vst3-ffi" }
 
 [build-dependencies]
 cc = "1"

@@ -713,6 +713,12 @@ fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// The session's OS MIDI layer, read.
+#[cfg(feature = "midi-hardware")]
+fn hw(s: &Session) -> &tutti_midi_hardware::MidiSession {
+    s.testing_midi_io().expect("the OS MIDI layer")
+}
+
 #[cfg(feature = "midi-hardware")]
 fn plug(
     fake: &tutti_midi_hardware::test_support::FakeCounters,
@@ -752,10 +758,9 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("keys").expect("connects");
-    assert_eq!(io.connected_input_names(), ["Keys"]);
-    assert_eq!(io.ports().list_input_ports().len(), 1);
+    s.midi().connect_input("keys").expect("connects");
+    assert_eq!(hw(&s).connected_input_names(), ["Keys"]);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
 
     fake.unplug(EndpointId::from_raw(1));
     assert_eq!(
@@ -766,11 +771,14 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
         ]
     );
     assert!(
-        !io.is_any_input_connected(),
+        !hw(&s).is_any_input_connected(),
         "no longer listed as connected"
     );
-    assert!(io.connected_input_names().is_empty());
-    assert!(io.ports().list_input_ports().is_empty(), "the port is gone");
+    assert!(hw(&s).connected_input_names().is_empty());
+    assert!(
+        hw(&s).ports().list_input_ports().is_empty(),
+        "the port is gone"
+    );
 }
 
 /// A session over a fake OS with the device `Keys` (id 1) and `Pads` (id 2)
@@ -812,10 +820,7 @@ fn keyboards(
 /// Connects `name`, and updates: the `Poll` phase wires the new inlet.
 #[cfg(feature = "midi-hardware")]
 fn connect(s: &mut Session, name: &str) {
-    s.testing_midi_io()
-        .expect("the OS MIDI layer")
-        .connect_input(name)
-        .expect("connects");
+    s.midi().connect_input(name).expect("connects");
     let _ = s.update();
 }
 
@@ -860,9 +865,7 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
     notes.sort_unstable();
     assert_eq!(notes, vec![60, 64], "both devices are heard");
 
-    s.testing_midi_io()
-        .expect("the OS MIDI layer")
-        .disconnect_input("keys");
+    let _ = s.midi().disconnect_input("keys");
     let _ = s.update();
     assert_eq!(
         plan_nodes(&s),
@@ -890,9 +893,7 @@ fn a_disconnected_device_ends_its_held_key_once() {
     assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
     roll(&s, 8_192);
     assert_eq!(note_ons(&seen).len(), 1);
-    s.testing_midi_io()
-        .expect("the OS MIDI layer")
-        .disconnect_input("keys");
+    let _ = s.midi().disconnect_input("keys");
     let _ = s.update();
     roll(&s, 8_192);
     let offs: Vec<u8> = seen
@@ -967,13 +968,15 @@ fn a_device_whose_inlet_overflows_is_reported() {
 fn a_device_past_the_slots_is_refused() {
     let (mut s, fake, seen) = keyboards(std::num::NonZeroUsize::MIN);
     connect(&mut s, "keys");
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    let refused = io.connect_input("pads").unwrap_err();
+    let refused = s.midi().connect_input("pads").unwrap_err();
     assert!(
-        matches!(refused, tutti_midi_hardware::Error::NoFreeSlot(_)),
+        matches!(
+            refused,
+            tutti_session::MidiError::Hardware(tutti_midi_hardware::Error::NoFreeSlot(_))
+        ),
         "{refused:?}"
     );
-    assert_eq!(io.ports().list_input_ports().len(), 1);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
     roll(&s, 1_024);
     assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
     roll(&s, 8_192);
@@ -987,9 +990,8 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_output("synth").expect("connects");
-    assert!(io.output().is_some());
+    s.midi().connect_output("synth").expect("connects");
+    assert!(s.midi().output().is_some());
 
     fake.unplug(EndpointId::from_raw(10));
     assert_eq!(
@@ -999,7 +1001,7 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
             ("output lost", "Synth".to_string())
         ]
     );
-    assert!(io.output().is_none());
+    assert!(s.midi().output().is_none());
 }
 
 /// **A watch that dies is reported once**, with its reason: the list is frozen
@@ -1036,15 +1038,14 @@ fn a_remembered_device_resolves_through_the_session() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    let saved = io.devices().list().remove(0);
+    let saved = hw(&s).devices().list().remove(0);
     assert_eq!(
-        io.devices().resolve(&saved),
+        hw(&s).devices().resolve(&saved),
         Resolved::SameName(saved.clone())
     );
     fake.unplug(EndpointId::from_raw(1));
     let _ = s.update();
-    assert_eq!(io.devices().resolve(&saved), Resolved::Missing);
+    assert_eq!(hw(&s).devices().resolve(&saved), Resolved::Missing);
 }
 
 /// **Another device's removal leaves a held input and output alone.**
@@ -1056,18 +1057,17 @@ fn another_devices_removal_leaves_a_held_input_open() {
     plug(&fake, 2, "Pads", PortDirection::Input);
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("keys").expect("connects");
-    io.connect_output("synth").expect("connects");
+    s.midi().connect_input("keys").expect("connects");
+    s.midi().connect_output("synth").expect("connects");
 
     fake.unplug(EndpointId::from_raw(2));
     assert_eq!(
         device_events(&s.update()),
         [("removed", "Pads".to_string())]
     );
-    assert_eq!(io.connected_input_names(), ["Keys"]);
-    assert_eq!(io.ports().list_input_ports().len(), 1);
-    assert!(io.output().is_some());
+    assert_eq!(hw(&s).connected_input_names(), ["Keys"]);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
+    assert!(s.midi().output().is_some());
 }
 
 /// **The feeds are partial, as audio's declarations are: an edge a host
@@ -1190,8 +1190,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("wire").expect("connects");
+    s.midi().connect_input("wire").expect("connects");
 
     let mut device = Endpoint::new(Capabilities {
         midi1: true,
@@ -1221,7 +1220,8 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
         panic!("one StreamSettled event expected, got {settled:?}");
     };
     assert_eq!(
-        io.inputs()
+        hw(&s)
+            .inputs()
             .iter()
             .find(|d| d.id == *id)
             .map(|d| d.name.as_str()),
@@ -1229,7 +1229,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     );
     assert_eq!(stream.basis(), Basis::Negotiated);
     assert_eq!(stream.config().protocol, Protocol::Midi2);
-    assert_eq!(io.stream(id), Some(*stream));
+    assert_eq!(hw(&s).stream(id), Some(*stream));
 }
 
 /// **A MIDI-CI peer of an input the session holds open is a session event**
@@ -1250,8 +1250,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("wire").expect("connects");
+    s.midi().connect_input("wire").expect("connects");
     // Off by default: the app says who it is, with an id it registered.
     s.midi()
         .enable_ci(tutti_ump::DeviceIdentity {
@@ -1334,7 +1333,8 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
         panic!("one peer found, got {found:?}");
     };
     assert_eq!(
-        io.inputs()
+        hw(&s)
+            .inputs()
             .iter()
             .find(|d| d.id == *device_id)
             .map(|d| d.name.as_str()),
@@ -1375,8 +1375,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("wire").expect("connects");
+    s.midi().connect_input("wire").expect("connects");
     let identity = |manufacturer| DeviceIdentity {
         manufacturer,
         family: [U7::of(1); 2],
@@ -1554,13 +1553,8 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     plug(&fake, 7, "Dev", PortDirection::Duplex);
     let _ = s.update();
     let raw = EndpointId::from_raw(7);
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("dev").expect("connects");
-    io.connect_output("dev").expect("connects");
-    s.midi().set_hardware_out(Some(UmpOut::new(
-        Box::new(io.clone()),
-        SampleRate::of(RATE),
-    )));
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
 
     // The device answers the session's Stream messages as an Endpoint does.
     let mut device = Endpoint::new(Capabilities {

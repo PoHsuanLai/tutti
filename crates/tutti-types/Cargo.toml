@@ -1,10 +1,9 @@
 [package]
 name = "tutti-types"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 # The name is an unrelated project's on crates.io; publishing is the owner's call.
-publish = false
 description = "Shared building blocks for audio code: units such as hertz and decibels, channel layouts and audio streams"
 license.workspace = true
 repository.workspace = true

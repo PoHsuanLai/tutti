@@ -192,6 +192,9 @@ jobs:
       - run: cargo xtask check-conformance
         env:
           TUTTI_CONFORMANCE: require
+      # Every crate under `crates/` packages as crates.io takes it: a version on
+      # each dependency, its files inside its own directory. No build.
+      - run: cargo xtask package
 
   clippy:
     name: clippy

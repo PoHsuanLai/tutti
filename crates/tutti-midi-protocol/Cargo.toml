@@ -1,13 +1,12 @@
 [package]
 name = "tutti-midi-protocol"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Translates between MIDI 1.0 and MIDI 2.0 messages"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 keywords = ["midi", "ump", "audio", "real-time"]
 categories = ["multimedia::audio"]
 
@@ -20,8 +19,8 @@ default = []
 serde = ["dep:serde", "tutti-ump/serde"]
 
 [dependencies]
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
 winnow = { workspace = true }
 thiserror = { workspace = true }

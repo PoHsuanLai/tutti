@@ -37,10 +37,7 @@ fn rig_with(groups: Option<MidiGroup>) -> (Session, FakeCounters) {
         )
         .expect("builds");
     let _ = s.update();
-    s.testing_midi_io()
-        .expect("the OS MIDI layer")
-        .connect_input("keys")
-        .expect("connects");
+    s.midi().connect_input("keys").expect("connects");
     let _ = s.update();
     (s, fake)
 }

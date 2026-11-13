@@ -1,6 +1,6 @@
 [package]
 name = "tutti-au-ffi"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Safe bindings to Apple's AudioToolbox for hosting Audio Unit plugins, for tutti"
@@ -9,7 +9,6 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["audio-unit", "au", "audio", "plugin", "ffi"]
 categories = ["multimedia::audio", "os::macos-apis"]
-publish = false
 
 [lints]
 workspace = true
@@ -22,14 +21,14 @@ testing = []
 
 [dependencies]
 # The MIDI 2.0 widening of what a plugin emits.
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 # `WindowHandle` (the parent window of an editor), `TransportInfo` and
 # `WireMidi`: the values the AU surface is spoken in.
-tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 # `Bpm`, `Beat` on the host transport figures.
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 # `Midi1Parser`, which reads a plugin's MIDI 1.0 output.
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

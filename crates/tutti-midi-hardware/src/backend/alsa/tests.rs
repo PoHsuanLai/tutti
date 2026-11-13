@@ -1112,7 +1112,7 @@ fn a_device_on_the_sequencer_is_negotiated_through_the_pump_and_the_output() {
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );
-    let session = crate::MidiSession::open(inlets).unwrap();
+    let mut session = crate::MidiSession::open(inlets).unwrap();
     let want = format!("{name}: port");
     let deadline = Instant::now() + PATIENCE;
     let id = loop {

@@ -25,7 +25,15 @@ Offs.
   per track ([`MidiFile::tempo_map_of`]).
 - **Tempo** is `MidiFile::tempo_map()`, steps at the tick each Set Tempo (an
   SMF's meta event, a Clip File's Flex Data message) lands on; 120 BPM until
-  the first if none is at the start. `seconds_at` integrates it.
+  the first if none is at the start. `seconds_at` integrates it. The map is
+  derived from the events, so a Set Tempo stays an event of its track and a
+  write gives it back exactly.
+- **A Clip File's structure is checked as M2-116 orders it.** The messages
+  before Start of Clip (Set Profile On, the DCTPQ, configuration messages, at
+  most one Set Tempo and one Set Time Signature) are the [`Track`]'s `header`,
+  on a clock of their own and not on the sequence's timeline; each ordering
+  rule of sections 3.2 to 7.3 is one [`ClipFileError`] variant. A header Set
+  Tempo is the tempo from the sequence's first tick.
 - **Metrical timing only.** An SMPTE division is refused with
   [`Error::MidiUnsupportedTiming`]: it has no beat grid to put a tempo map on.
 

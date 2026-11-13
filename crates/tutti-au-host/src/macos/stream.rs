@@ -20,8 +20,8 @@ pub use tutti_au_ffi::BusLayout as AuBusLayout;
 /// can be applied atomically to the AU before initialization.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamConfig {
-    /// Sample rate in Hz.
-    pub sample_rate: f64,
+    /// Sample rate.
+    pub sample_rate: tutti_types::SampleRate,
     /// Maximum frames the AU will be asked to render in a single `process()` call.
     pub block_size: u32,
     /// Channel layout (input + output buses).
@@ -30,7 +30,11 @@ pub struct StreamConfig {
 
 impl StreamConfig {
     /// Builds a config from explicit values.
-    pub fn new(sample_rate: f64, block_size: u32, channels: AuBusLayout) -> Self {
+    pub fn new(
+        sample_rate: tutti_types::SampleRate,
+        block_size: u32,
+        channels: AuBusLayout,
+    ) -> Self {
         Self {
             sample_rate,
             block_size,
@@ -125,9 +129,10 @@ impl StreamConfig {
             // carrying the rate in the ASBD; some AUs only honour one of the
             // two. Both writes are best-effort here — the read-back below is
             // what actually decides whether the rate took.
-            let _ = unit.set::<SampleRate>(Scope::OUTPUT, Element::ZERO, &self.sample_rate);
+            let _ = unit.set::<SampleRate>(Scope::OUTPUT, Element::ZERO, &self.sample_rate.get());
             if self.channels.has_input {
-                let _ = unit.set::<SampleRate>(Scope::INPUT, Element::ZERO, &self.sample_rate);
+                let _ =
+                    unit.set::<SampleRate>(Scope::INPUT, Element::ZERO, &self.sample_rate.get());
             }
 
             // The requested width is sent verbatim — no stereo floor. This used
@@ -146,7 +151,8 @@ impl StreamConfig {
             // floor was a default, never a guard; the default now lives in
             // `AuLoaded::new`, which is the one caller that has to invent a width.
             let out_asbd = AudioStreamBasicDescription::float32(
-                self.sample_rate,
+                // The ASBD is the ABI edge: `mSampleRate` is a raw `f64`.
+                self.sample_rate.get(),
                 self.channels.outputs.count() as u32,
             );
             let _ = unit.set::<StreamFormat>(Scope::OUTPUT, Element::ZERO, &out_asbd);
@@ -164,7 +170,8 @@ impl StreamConfig {
             let mut effective_inputs = self.channels.inputs;
             if self.channels.has_input {
                 let in_asbd = AudioStreamBasicDescription::float32(
-                    self.sample_rate,
+                    // The ASBD is the ABI edge: `mSampleRate` is a raw `f64`.
+                    self.sample_rate.get(),
                     self.channels.inputs.count() as u32,
                 );
                 let _ = unit.set::<StreamFormat>(Scope::INPUT, Element::ZERO, &in_asbd);
@@ -247,11 +254,12 @@ impl StreamConfig {
         if accepted == 0.0 {
             return Ok(());
         }
-        let deviation = (accepted - self.sample_rate).abs();
-        if deviation > self.sample_rate.abs() * Self::SAMPLE_RATE_TOLERANCE {
+        let requested = self.sample_rate.get();
+        let deviation = (accepted - requested).abs();
+        if deviation > requested.abs() * Self::SAMPLE_RATE_TOLERANCE {
             return Err(AuError::SampleRateRejected {
                 scope,
-                requested: self.sample_rate,
+                requested,
                 accepted,
             });
         }
@@ -271,7 +279,7 @@ mod tests {
 
     fn config_at(sample_rate: f64) -> StreamConfig {
         StreamConfig::new(
-            sample_rate,
+            tutti_types::SampleRate::of(sample_rate),
             512,
             AuBusLayout {
                 inputs: ChannelLayout::STEREO,

@@ -59,7 +59,7 @@ use support::probe_au::{
 };
 
 const BLOCK: u32 = 64;
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 
 /// How long to wait for a notification before calling the path dead.
 ///
@@ -160,7 +160,7 @@ fn a_latency_change_reaches_a_watching_host() {
     // The probe reports 0 s at load, like every non-lying Apple unit. 512 frames
     // at 48 kHz is a figure PDC would have to act on and that no rounding could
     // turn back into zero.
-    set_latency_seconds(&w.au, 512.0 / RATE);
+    set_latency_seconds(&w.au, 512.0 / RATE.get());
 
     assert!(
         w.log.wait_for(Latency::ID),
@@ -284,7 +284,7 @@ fn a_watcher_is_not_woken_by_an_unrelated_property() {
 
     // Control: one of the three watched properties does arrive on the same
     // listener, so the silence above is filtering rather than a dead path.
-    set_latency_seconds(&w.au, 128.0 / RATE);
+    set_latency_seconds(&w.au, 128.0 / RATE.get());
     assert!(
         w.log.wait_for(Latency::ID),
         "the control half failed: even a watched Latency change did not arrive, \
@@ -305,7 +305,7 @@ fn a_dropped_listener_stops_receiving() {
 
     // Prove the path is live first, so "nothing arrived after the drop" is not
     // the same observation as "nothing ever arrived".
-    set_latency_seconds(&w.au, 64.0 / RATE);
+    set_latency_seconds(&w.au, 64.0 / RATE.get());
     assert!(
         w.log.wait_for(Latency::ID),
         "the pre-drop control failed; nothing below would be meaningful"
@@ -319,7 +319,7 @@ fn a_dropped_listener_stops_receiving() {
     let before = w.log.count.load(Ordering::Acquire);
 
     for frames in [128.0, 256.0, 512.0] {
-        set_latency_seconds(&w.au, frames / RATE);
+        set_latency_seconds(&w.au, frames / RATE.get());
     }
     std::thread::sleep(SETTLE);
 

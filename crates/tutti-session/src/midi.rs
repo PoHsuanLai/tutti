@@ -780,8 +780,9 @@ impl MidiState {
         self.routed.remove(&node);
     }
 
-    /// `Phase::Poll`: steps the UMP Stream negotiation of each held input and
-    /// reports those that settled ([`MidiEvent::StreamSettled`]), reports the
+    /// `Phase::Poll`: steps the UMP Stream negotiation and the MIDI-CI of each
+    /// held input and reports those that settled ([`MidiEvent::StreamSettled`])
+    /// and the peers found, changed or lost ([`MidiEvent::CiPeer`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -819,11 +820,17 @@ impl MidiState {
         }
         // The devices' UMP Stream negotiations take their step at `now`: the
         // session's control tick is their timer.
-        for (device, stream) in io.poll(now) {
+        for polled in io.poll(now) {
             out.push(
-                MidiEvent::StreamSettled {
-                    device,
-                    stream: Box::new(stream),
+                match polled {
+                    tutti_midi_hardware::Polled::Stream(device, stream) => {
+                        MidiEvent::StreamSettled { device, stream }
+                    }
+                    tutti_midi_hardware::Polled::Ci(device, change) => {
+                        MidiEvent::CiPeer { device, change }
+                    }
+                    // A kind of report this session does not know is not one.
+                    _ => continue,
                 }
                 .into(),
             );

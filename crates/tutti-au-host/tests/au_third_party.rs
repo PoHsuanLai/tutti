@@ -125,7 +125,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     AU_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 const BLOCK: u32 = 512;
 
 /// Announce a skipped unit, loudly and with its codes.
@@ -482,7 +482,7 @@ fn an_infinite_tail_survives_the_host_and_collapses_in_conversion() {
          host could not report an infinite tail at all"
     );
     assert_eq!(
-        inf.to_samples(tutti_types::SampleRate::of(RATE)).get(),
+        inf.to_samples(RATE).get(),
         0,
         "Seconds::to_samples must map non-finite to zero (its documented \
          behaviour). If this changes, the bounce-truncation hazard this test \
@@ -515,7 +515,7 @@ fn an_infinite_tail_survives_the_host_and_collapses_in_conversion() {
 
     // And the downstream consequence, on the real value rather than a literal.
     assert_eq!(
-        tail.to_samples(tutti_types::SampleRate::of(RATE)).get(),
+        tail.to_samples(RATE).get(),
         0,
         "{}: an infinite tail converts to zero tail samples — a bounce that does \
          not check is_finite() first truncates this reverb completely",
@@ -811,7 +811,7 @@ fn reported_latency_matches_and_survives_a_rate_change() {
 
             // Re-read after a rate change rather than trusting a cached value.
             au.uninitialize().expect("uninitialize for rate change");
-            au.set_sample_rate(44_100.0)
+            au.set_sample_rate(tutti_types::SampleRate::SR_44K1)
                 .unwrap_or_else(|e| panic!("{}: set_sample_rate failed: {e:?}", unit.label));
             au.initialize().expect("re-initialize at 44.1 kHz");
             let at_44 = au.get_latency().expect("latency at 44.1 kHz");
@@ -857,7 +857,7 @@ fn every_unit_renders_finite_audio_and_refuses_an_oversized_block() {
         // buffer list has already been built against storage the host sized for
         // BLOCK frames.
         let oversized = BLOCK * 8;
-        let input = sine(2, oversized as usize, 0, 0.5, RATE as f32);
+        let input = sine(2, oversized as usize, 0, 0.5, RATE.get() as f32);
         let mut output = silence(2, oversized as usize);
         let err = render(&mut au, &input, &mut output, oversized)
             .expect_err("a render wider than the configured block must be refused");
@@ -883,7 +883,7 @@ fn every_unit_renders_finite_audio_and_refuses_an_oversized_block() {
 fn assert_renders_finite(au: &mut Au, label: &str, when: &str) {
     let ch_in = au.num_inputs().max(1) as usize;
     let ch_out = au.num_outputs() as usize;
-    let input = sine(ch_in, BLOCK as usize, 0, 0.5, RATE as f32);
+    let input = sine(ch_in, BLOCK as usize, 0, 0.5, RATE.get() as f32);
     let mut output = silence(ch_out, BLOCK as usize);
 
     au.reset().ok();

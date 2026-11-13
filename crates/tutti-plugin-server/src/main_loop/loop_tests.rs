@@ -282,6 +282,11 @@ fn run_ticking(fixture: &mut Fixture, script: &mut Script, tick: Duration) {
 /// plugin registers a period-0 timer (due at every service pass) in the
 /// callback its first block asks for, and the loop's idle ticks must keep
 /// serving it while the host says nothing at all.
+///
+/// The bound separates the two loops, not a wall-clock rate: a loop that waits
+/// for the host serves the timer at most once, a ticking one about fifty times
+/// in 500 ms at a 10 ms tick, and a loaded CI runner's coarse timers have
+/// served as few as four in 300 ms. So at least three.
 #[test]
 fn a_quiet_host_does_not_stop_the_plugins_timers() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -299,15 +304,15 @@ fn a_quiet_host_does_not_stop_the_plugins_timers() {
                 "the render thread answers the block"
             );
         })),
-        Step::Quiet(Duration::from_millis(300)),
+        Step::Quiet(Duration::from_millis(500)),
     ]);
 
     run(&mut session, &mut script);
 
     let ticks = probe.thread_capture().sites[Site::OnTimer as usize].visits;
     assert!(
-        ticks >= 5,
-        "300 ms of a quiet host at a 10 ms tick served the timer {ticks} times"
+        ticks >= 3,
+        "500 ms of a quiet host at a 10 ms tick served the timer {ticks} times"
     );
 }
 

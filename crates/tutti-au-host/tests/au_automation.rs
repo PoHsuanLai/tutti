@@ -18,10 +18,10 @@ use tutti_au_host::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
 use tutti_au_host::{AuController, AuLoaded, AuProcessor};
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Loaded, MainThread, MaxBlock, ParamEdit, ParamId,
-    ParameterChanges, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor, SampleRate,
+    ParameterChanges, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor,
 };
 
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 const BLOCK: usize = 512;
 
 fn delay_loaded() -> AuLoaded {
@@ -37,11 +37,7 @@ fn delay_loaded() -> AuLoaded {
 }
 
 fn activate(au: AuLoaded) -> (AuProcessor, AuController) {
-    let prepare = Prepare::new(
-        SampleRate::of(RATE),
-        MaxBlock::of(tutti_types::Samples(BLOCK as _)),
-    )
-    .unwrap();
+    let prepare = Prepare::new(RATE, MaxBlock::of(tutti_types::Samples(BLOCK as _))).unwrap();
     au.activate(&MainThread::claim().unwrap(), prepare)
         .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
 }
@@ -59,7 +55,7 @@ fn render_block(processor: &mut AuProcessor, level: f32, changes: &ParameterChan
             inputs: &inputs,
             outputs: &mut outputs,
             num_samples: BLOCK,
-            sample_rate: RATE,
+            sample_rate: RATE.get(),
         }),
         ctx: &ctx,
         out: &mut out,

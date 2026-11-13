@@ -121,6 +121,9 @@ tutti-session = { path = ".", features = ["testing"] }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
+# The MIDI-CI messages a fake device answers the session's Discovery with
+# (`tests/midi/midi.rs`).
+tutti-midi-device = { path = "../tutti-midi-device" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The in-memory tone a sampler voice test plays (`Wave`).

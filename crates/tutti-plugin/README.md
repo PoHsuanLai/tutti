@@ -124,15 +124,15 @@ plugin's format.
 ## Features
 
 **Nothing is on by default.** Persistence and format support are the embedding
-app's choices, so the default build pulls no `serde_json` and no format FFI.
+app's choices, so the default build pulls no serde and no format FFI.
 Without any feature, VST3, CLAP, AU and VST2 plugins all load in the
 subprocess, with no editor support.
 
-- `json` — `tutti_plugin_db::{save, load}`, the versioned JSON database file,
-  and `Catalog::open_db` and `Catalog::save`. One ready-made store, not the shape
-  of the API: build a `tutti_plugin_db::PluginDb` from your own store and pass
-  it to `Catalog::with_db`, or use `tutti_plugin_db::discover` with
-  [`probe_record`](catalog::probe_record).
+- `serde` — `PluginRef`, `PluginState` and `tutti_plugin_db::PluginDb` derive
+  `Serialize` and `Deserialize`: the app picks the file format and where it
+  lives. `Catalog::new` takes the `PluginDb` to start from and a closure that
+  stores it; a store's failure comes back as a `PersistError`. Deserializing a
+  `PluginDb` refuses a record of another version.
 - `vst3`, `clap`, `au` — editor support for that format. Loads the plugin
   library a second time in the *host* process for editor rendering only; audio
   still runs out of process. The editor instance is therefore not isolated: a

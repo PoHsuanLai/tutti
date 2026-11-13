@@ -25,8 +25,7 @@
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
-mod common;
-
+use crate::common;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Executor, NodeKey, Prepare};
 use tutti_midi_runtime::ClockNode;

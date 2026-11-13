@@ -3,6 +3,7 @@ use tutti_ump::U7;
 use crate::bank::Bank;
 use crate::error::Error;
 use crate::instrument::Instrument;
+use crate::preset_generator::PresetGenerator;
 use crate::preset_info::PresetInfo;
 use crate::preset_region::PresetRegion;
 use crate::zone::Zone;
@@ -24,7 +25,7 @@ impl Preset {
     fn new(
         info: &PresetInfo,
         preset_id: usize,
-        zones: &[Zone],
+        zones: &[Zone<PresetGenerator>],
         instruments: &[Instrument],
     ) -> Result<Option<Self>, Error> {
         let name = info.name.clone();
@@ -53,7 +54,7 @@ impl Preset {
 
     pub(crate) fn create(
         infos: &[PresetInfo],
-        zones: &[Zone],
+        zones: &[Zone<PresetGenerator>],
         instruments: &[Instrument],
     ) -> Result<Vec<Preset>, Error> {
         if infos.len() <= 1 {

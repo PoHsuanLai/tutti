@@ -21,8 +21,6 @@
 //! and collapsing them would make every mode switch re-pull the whole parameter
 //! list.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::Arc;
 
 use tutti_au_ffi::property::{Latency, ParameterList, TailTime};

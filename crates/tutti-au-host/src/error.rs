@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::platform::os_status_message;
+
 /// The loading step an [`AuError::LoadFailed`] belongs to.
 ///
 /// Re-exported from `tutti-plugin-types`, which shares it across all plugin
@@ -265,146 +267,31 @@ pub struct PresetMismatch {
 /// Convenience alias for `Result<T, AuError>`.
 pub type Result<T> = std::result::Result<T, AuError>;
 
-// These constructors have 19 call sites between them, and every one is in a
-// module `lib.rs` gates on `target_os = "macos"` (`instance`, `offline`,
-// `aupreset`) — while `error` itself is declared unconditionally. So off macOS
-// they compile with no consumers and read as dead. Scoped to `not(macos)`
-// rather than a bare `allow` so the lint still catches real rot where the
-// callers exist.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl AuError {
-    /// Constructs a [`AuError::RenderFailed`] from a failed `AudioUnitRender`
-    /// call, optionally enriched with the AU's last-render-error.
-    pub(crate) fn render_failed(
-        function: &'static str,
-        code: i32,
-        last_render_error: Option<i32>,
-    ) -> Self {
-        AuError::RenderFailed {
-            function,
-            code,
-            last_render_error,
-        }
-    }
-
-    /// Constructs an [`AuError::LoadFailed`] for `component`.
-    pub(crate) fn load_failed(
-        component: impl Into<String>,
-        stage: LoadStage,
-        reason: impl Into<String>,
-    ) -> Self {
-        AuError::LoadFailed(Box::new(LoadFailedError {
-            component: component.into(),
-            stage,
-            reason: reason.into(),
-        }))
-    }
-
-    /// Constructs an [`AuError::InvalidPreset`] for `path`.
-    ///
-    /// A helper rather than an inline `Box::new(PresetFileError { .. })` at each of
-    /// the eight construction sites, matching what
-    /// [`AuError::render_failed`](Self::render_failed) does for the render path.
-    pub(crate) fn invalid_preset(path: impl Into<String>, message: impl Into<String>) -> Self {
-        AuError::InvalidPreset(Box::new(PresetFileError {
-            path: path.into(),
-            message: message.into(),
-        }))
-    }
-
-    /// Constructs an [`AuError::PresetIo`] for `path`.
-    pub(crate) fn preset_io(path: impl Into<String>, message: impl Into<String>) -> Self {
-        AuError::PresetIo(Box::new(PresetFileError {
-            path: path.into(),
-            message: message.into(),
-        }))
-    }
-
     /// Returns a human-readable description of the error.
     ///
     /// For `OsStatus` errors this decodes well-known AudioUnit status codes
     /// (e.g. `-10867` → `"uninitialized"`) and falls back to `"unknown error"`.
     pub fn message(&self) -> &'static str {
-        #[cfg(target_os = "macos")]
-        {
-            let code = match self {
-                AuError::OsStatus { code, .. } => *code,
-                AuError::RenderFailed { code, .. } => *code,
-                AuError::NullComponent => return "null component",
-                AuError::RequiresAsyncInstantiation => {
-                    return "component requires asynchronous instantiation (AUv3 with a view)";
-                }
-                AuError::CfStringAlloc => return "CoreFoundation string allocation failed",
-                AuError::InvalidBuffer(_) => return "invalid buffer",
-                AuError::SampleRateRejected { .. } => return "sample rate rejected",
-                AuError::BlockSizeRejected { .. } => return "block size rejected",
-                AuError::PresetIo(_) => return "preset file I/O failed",
-                AuError::InvalidPreset(_) => return "not a valid .aupreset",
-                AuError::PresetIdentityMismatch(_) => {
-                    return "preset belongs to a different Audio Unit";
-                }
-                AuError::LoadFailed(_) => return "failed to load AudioUnit",
-                AuError::BusTooWide { .. } => return "bus wider than a channel layout holds",
-            };
-            os_status_message(code)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            match self {
-                AuError::NullComponent => "null component",
-                AuError::InvalidBuffer(_) => "invalid buffer",
-                AuError::SampleRateRejected { .. } => "sample rate rejected",
-                AuError::BlockSizeRejected { .. } => "block size rejected",
-                AuError::PresetIo(_) => "preset file I/O failed",
-                AuError::InvalidPreset(_) => "not a valid .aupreset",
-                AuError::PresetIdentityMismatch(_) => "preset belongs to a different Audio Unit",
-                AuError::LoadFailed(_) => "failed to load AudioUnit",
-                AuError::BusTooWide { .. } => "bus wider than a channel layout holds",
-                _ => "unknown error",
+        let code = match self {
+            AuError::OsStatus { code, .. } => *code,
+            AuError::RenderFailed { code, .. } => *code,
+            AuError::NullComponent => return "null component",
+            AuError::RequiresAsyncInstantiation => {
+                return "component requires asynchronous instantiation (AUv3 with a view)";
             }
-        }
-    }
-}
-
-/// Decodes a well-known AudioUnit `OSStatus` into a short description, falling
-/// back to `"unknown error"`. Shared by [`AuError::message`] and the `Display`
-/// text of [`AuError::OsStatus`] / [`AuError::RenderFailed`] so the two cannot
-/// drift.
-#[cfg(target_os = "macos")]
-fn os_status_message(code: i32) -> &'static str {
-    tutti_au_ffi::Status::from_raw(code).message()
-}
-
-/// Off macOS the status constants are not compiled in (they live in the
-/// macOS-gated `types` module), so every code reads as unknown — matching what
-/// [`AuError::message`] reported before the table was shared.
-#[cfg(not(target_os = "macos"))]
-fn os_status_message(_code: i32) -> &'static str {
-    "unknown error"
-}
-
-#[cfg(target_os = "macos")]
-impl From<tutti_au_ffi::OsError> for AuError {
-    fn from(e: tutti_au_ffi::OsError) -> Self {
-        AuError::OsStatus {
-            function: e.function,
-            code: e.status,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl From<tutti_au_ffi::Error> for AuError {
-    fn from(e: tutti_au_ffi::Error) -> Self {
-        match e {
-            tutti_au_ffi::Error::Os(e) => e.into(),
-            tutti_au_ffi::Error::Invalid(why) => AuError::InvalidBuffer(why),
-            tutti_au_ffi::Error::RenderFailed {
-                function,
-                status,
-                last,
-            } => AuError::render_failed(function, status, last),
-            other => AuError::InvalidBuffer(other.to_string()),
-        }
+            AuError::CfStringAlloc => return "CoreFoundation string allocation failed",
+            AuError::InvalidBuffer(_) => return "invalid buffer",
+            AuError::SampleRateRejected { .. } => return "sample rate rejected",
+            AuError::BlockSizeRejected { .. } => return "block size rejected",
+            AuError::PresetIo(_) => return "preset file I/O failed",
+            AuError::InvalidPreset(_) => return "not a valid .aupreset",
+            AuError::PresetIdentityMismatch(_) => {
+                return "preset belongs to a different Audio Unit";
+            }
+            AuError::LoadFailed(_) => return "failed to load AudioUnit",
+            AuError::BusTooWide { .. } => return "bus wider than a channel layout holds",
+        };
+        os_status_message(code)
     }
 }

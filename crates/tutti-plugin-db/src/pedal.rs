@@ -4,6 +4,7 @@
 
 use super::facts::FileFacts;
 use super::fs::{canonical_path, replace_file};
+use super::os_path;
 use super::table::PluginDb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -50,7 +51,7 @@ impl Pedal {
                 if i > 0 {
                     f.write_all(&[0])?;
                 }
-                f.write_all(&path_bytes(entry))?;
+                f.write_all(&os_path::stored_bytes(entry))?;
             }
             Ok(())
         })
@@ -124,31 +125,6 @@ impl Pedal {
     }
 }
 
-/// A path as the pedal stores it: the raw bytes on unix, where a name need not
-/// be UTF-8 and a lossy copy would blacklist a different file; the UTF-8 text
-/// elsewhere (a Windows path that is not valid Unicode is stored lossily).
-#[cfg(unix)]
-fn path_bytes(path: &Path) -> std::borrow::Cow<'_, [u8]> {
-    use std::os::unix::ffi::OsStrExt;
-    std::borrow::Cow::Borrowed(path.as_os_str().as_bytes())
-}
-
-#[cfg(not(unix))]
-fn path_bytes(path: &Path) -> std::borrow::Cow<'_, [u8]> {
-    std::borrow::Cow::Owned(path.to_string_lossy().into_owned().into_bytes())
-}
-
-#[cfg(unix)]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    use std::os::unix::ffi::OsStrExt;
-    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
-}
-
-#[cfg(not(unix))]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
-}
-
 /// Reads the plugins a pedal file names: NUL-separated paths, each trimmed of
 /// surrounding ASCII whitespace; blank entries name nothing.
 pub(super) fn parse_pedal(bytes: &[u8]) -> Vec<PathBuf> {
@@ -156,7 +132,7 @@ pub(super) fn parse_pedal(bytes: &[u8]) -> Vec<PathBuf> {
         .split(|b| *b == 0)
         .map(<[u8]>::trim_ascii)
         .filter(|entry| !entry.is_empty())
-        .map(path_from_bytes)
+        .map(os_path::from_bytes)
         .collect()
 }
 
@@ -275,25 +251,6 @@ mod tests {
         assert!(pedal.path.exists());
     }
 
-    /// A name that is not UTF-8 survives the pedal, so the file that crashed is
-    /// the file that is blacklisted.
-    #[cfg(unix)]
-    #[test]
-    fn a_non_utf8_path_round_trips_through_the_pedal() {
-        use std::os::unix::ffi::OsStrExt;
-        let dir = TempDir::new().unwrap();
-        let pedal = Pedal::new(dir.path().join(".scanning"));
-        let plugin = PathBuf::from(std::ffi::OsStr::from_bytes(b"/plugins/caf\xe9.vst3"));
-        assert!(plugin.to_str().is_none());
-
-        pedal.arm(&plugin).unwrap();
-        let mut db = PluginDb::new();
-        let crashed = pedal.recover(&mut db, |_| Ok(()));
-
-        assert_eq!(crashed, vec![plugin.clone()]);
-        assert!(db.is_blacklisted(&plugin));
-    }
-
     /// Arming beside an entry keeps it, and disarming removes only its own.
     #[test]
     fn entries_sit_side_by_side_and_disarm_removes_only_its_own() {
@@ -308,30 +265,6 @@ mod tests {
         assert_eq!(pedal.entries(), [a]);
         pedal.disarm(a);
         assert!(!pedal.path.exists());
-    }
-
-    /// The pedal is replaced whole, never truncated in place: a read-only
-    /// pedal file (replaceable, because the directory is writable) is rewritten
-    /// without error, which an in-place `File::create` cannot do. Running as
-    /// root defeats the permission check, so there the test cannot fail.
-    #[cfg(unix)]
-    #[test]
-    fn read_only_pedal_is_replaced_not_truncated() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = TempDir::new().unwrap();
-        let pedal = Pedal::new(dir.path().join(".scanning"));
-        let (a, b) = (Path::new("/p/a.vst3"), Path::new("/p/b.vst3"));
-        pedal.arm(a).unwrap();
-        std::fs::set_permissions(&pedal.path, std::fs::Permissions::from_mode(0o444)).unwrap();
-
-        pedal.arm(b).unwrap();
-
-        assert_eq!(pedal.entries(), [a, b]);
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            1,
-            "no temp file"
-        );
     }
 
     /// `forget` drops the entries for a file and keeps the rest.
@@ -350,30 +283,75 @@ mod tests {
         assert!(!pedal.path.exists());
     }
 
-    /// Entries written under an alias of the file (a link to its directory) are
-    /// blacklisted under the canonical key a scan uses, and `forget` takes any
-    /// name for the file. This is what a symlinked temp root (macOS `/var`)
-    /// exercises.
     #[cfg(unix)]
-    #[test]
-    fn entries_under_an_alias_are_keyed_canonically() {
-        let dir = TempDir::new().unwrap();
-        let real = dir.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        let alias = dir.path().join("alias");
-        std::os::unix::fs::symlink(&real, &alias).unwrap();
-        let canonical = real.canonicalize().unwrap().join("a.vst3");
-        let pedal = Pedal::new(dir.path().join(".scanning"));
-        pedal.arm(alias.join("a.vst3")).unwrap();
+    mod unix_tests {
+        use super::*;
 
-        pedal.forget(&alias.join("a.vst3"));
-        assert!(!pedal.path.exists(), "forget took the alias");
+        /// A name that is not UTF-8 survives the pedal, so the file that crashed is
+        /// the file that is blacklisted.
+        #[test]
+        fn a_non_utf8_path_round_trips_through_the_pedal() {
+            use std::os::unix::ffi::OsStrExt;
+            let dir = TempDir::new().unwrap();
+            let pedal = Pedal::new(dir.path().join(".scanning"));
+            let plugin = PathBuf::from(std::ffi::OsStr::from_bytes(b"/plugins/caf\xe9.vst3"));
+            assert!(plugin.to_str().is_none());
 
-        pedal.arm(alias.join("a.vst3")).unwrap();
-        let mut db = PluginDb::new();
-        let crashed = pedal.recover(&mut db, |_| Ok(()));
-        assert_eq!(crashed, std::slice::from_ref(&canonical));
-        assert!(db.is_blacklisted(&canonical));
-        assert_eq!(db.len(), 1);
+            pedal.arm(&plugin).unwrap();
+            let mut db = PluginDb::new();
+            let crashed = pedal.recover(&mut db, |_| Ok(()));
+
+            assert_eq!(crashed, vec![plugin.clone()]);
+            assert!(db.is_blacklisted(&plugin));
+        }
+
+        /// The pedal is replaced whole, never truncated in place: a read-only
+        /// pedal file (replaceable, because the directory is writable) is rewritten
+        /// without error, which an in-place `File::create` cannot do. Running as
+        /// root defeats the permission check, so there the test cannot fail.
+        #[test]
+        fn read_only_pedal_is_replaced_not_truncated() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = TempDir::new().unwrap();
+            let pedal = Pedal::new(dir.path().join(".scanning"));
+            let (a, b) = (Path::new("/p/a.vst3"), Path::new("/p/b.vst3"));
+            pedal.arm(a).unwrap();
+            std::fs::set_permissions(&pedal.path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+            pedal.arm(b).unwrap();
+
+            assert_eq!(pedal.entries(), [a, b]);
+            assert_eq!(
+                std::fs::read_dir(dir.path()).unwrap().count(),
+                1,
+                "no temp file"
+            );
+        }
+
+        /// Entries written under an alias of the file (a link to its directory) are
+        /// blacklisted under the canonical key a scan uses, and `forget` takes any
+        /// name for the file. This is what a symlinked temp root (macOS `/var`)
+        /// exercises.
+        #[test]
+        fn entries_under_an_alias_are_keyed_canonically() {
+            let dir = TempDir::new().unwrap();
+            let real = dir.path().join("real");
+            std::fs::create_dir(&real).unwrap();
+            let alias = dir.path().join("alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let canonical = real.canonicalize().unwrap().join("a.vst3");
+            let pedal = Pedal::new(dir.path().join(".scanning"));
+            pedal.arm(alias.join("a.vst3")).unwrap();
+
+            pedal.forget(&alias.join("a.vst3"));
+            assert!(!pedal.path.exists(), "forget took the alias");
+
+            pedal.arm(alias.join("a.vst3")).unwrap();
+            let mut db = PluginDb::new();
+            let crashed = pedal.recover(&mut db, |_| Ok(()));
+            assert_eq!(crashed, std::slice::from_ref(&canonical));
+            assert!(db.is_blacklisted(&canonical));
+            assert_eq!(db.len(), 1);
+        }
     }
 }

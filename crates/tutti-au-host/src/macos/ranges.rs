@@ -9,8 +9,6 @@
 //! audio thread would be a property round-trip per block, so the ranges are read
 //! once, when the plugin loads, and again when it says its parameter list moved.
 
-#![cfg(target_os = "macos")]
-
 use tutti_au_ffi::Unit;
 use tutti_plugin_types::{Normalized, ParamMapping};
 

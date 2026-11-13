@@ -74,8 +74,6 @@
 //! whether 65 was needed. One trap for that lane: the header says twice that 65
 //! cannot be changed after initialize, but 0 of 55 units enforce that.
 
-#![cfg(target_os = "macos")]
-
 use tutti_au_ffi::Unit;
 use tutti_au_ffi::property::{ContextName, IconLocation, NickName, ParametersForOverview};
 use tutti_au_ffi::{Element, Scope};

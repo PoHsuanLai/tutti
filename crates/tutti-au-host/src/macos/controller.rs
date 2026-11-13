@@ -6,8 +6,6 @@
 //! initialized unit has: the live latency and tail, the range table shared with
 //! the Processor, and the push render path.
 
-#![cfg(target_os = "macos")]
-
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};

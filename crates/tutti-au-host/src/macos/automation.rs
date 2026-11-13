@@ -13,8 +13,6 @@
 //! Both halves run on one thread, one after the other, inside a render; the
 //! [`AudioThreadCell`] is the checked form of that, not a lock.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::Arc;
 
 use tutti_au_ffi::{ParamEvent, RenderNotification, RenderPhase, RenderUnit, ScheduleAddress};

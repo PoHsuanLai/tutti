@@ -8,8 +8,6 @@
 //! `CFArray` is released would be reading freed memory, and nothing in the type
 //! would have warned them.
 
-#![cfg(target_os = "macos")]
-
 /// One factory preset the AU advertises: its selector and its display name.
 ///
 /// `number` is the value to hand back to

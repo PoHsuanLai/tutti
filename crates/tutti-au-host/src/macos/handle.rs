@@ -1,7 +1,5 @@
 //! Owned handle to an instantiated (but not necessarily initialized) AU.
 
-#![cfg(target_os = "macos")]
-
 use tutti_au_ffi::{ComponentRef, Unit};
 
 use crate::component::AuType;

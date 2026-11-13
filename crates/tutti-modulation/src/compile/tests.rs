@@ -529,11 +529,6 @@ fn an_anchor_is_carried_until_a_play_start() {
 /// the next id never given). Removing one frees nothing: no later compile
 /// gives its id again, so no lane can read a removed source's last segment
 /// as a new source's.
-///
-/// Changed in doc 014 §12.4: a removed source's id was reusable from the
-/// compile after the one that removed it (the last assertion read
-/// `SourceId(0)`, "freed last time"); a lane that skipped the program
-/// between could then read the stale segment. Ids are now never reused.
 #[test]
 fn a_signal_source_keeps_its_id() {
     let rig = Rig::new();
@@ -1009,7 +1004,7 @@ fn a_value_that_is_not_finite_is_refused() {
             "{c:?}"
         );
     }
-    // The reviewer's sequence: a rate edit (a live anchor), then an
+    // A rate edit (a live anchor), then an
     // infinite phase on the unrouted LFO.
     let at = |rate, phase, prev: Option<&Compiled>, play| {
         compile(

@@ -19,10 +19,8 @@
 //!    [`a_command_reaches_a_node_across_a_commit`] fails if the rendering unit
 //!    stops hearing its handle.
 //!
-//! 2. A fork must not take the live node's edits. With the old command
-//!    queue a fork sharing the receiver would have *stolen* moves from the
-//!    audio thread. A read of a published cell consumes nothing, so this is
-//!    now structural; [`a_fork_steals_no_commands`] stays as the end-to-end
+//! 2. A fork must not take the live node's edits. A read of a published
+//!    cell consumes nothing, so this is structural; [`a_fork_steals_no_commands`] stays as the end-to-end
 //!    check.
 //!
 //! 3. A fork must still play where the clip was last moved to: the
@@ -192,12 +190,9 @@ fn a_command_reaches_a_node_across_a_commit() {
 /// A fork steals nothing from the live node.
 ///
 /// A fork renders on a worker *while the audio thread plays the original*.
-/// When the placement rode a crossbeam queue, a fork draining the live
-/// receiver would have consumed the user's edits and the live voice would
-/// silently miss them. A placement is now a published value, and reading it
+/// A placement is a published value, and reading it
 /// consumes nothing, so no change to the fork source can make a fork take
-/// the live node's move: this property is structural and the test cannot
-/// fail for that reason any more. It stays as the end-to-end check that a
+/// the live node's move: this property is structural. It is the end-to-end check that a
 /// fork rendering first leaves the live node moved; the fork reading the
 /// shared cell is what `a_placement_sent_after_the_insert_reaches_a_fork`
 /// pins. The pool's

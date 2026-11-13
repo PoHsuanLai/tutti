@@ -576,8 +576,7 @@ fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
     );
 }
 
-/// The unit depth-by amount is `(raw + 1) / 2` in `f64`, to the bit (the
-/// figure before `DepthBy` had an amount): the scale itself, and the
+/// The unit depth-by amount is `(raw + 1) / 2` in `f64`, to the bit: the scale itself, and the
 /// scaled offset through a drawn depth wave holding each raw value.
 #[test]
 fn the_unit_depth_by_is_half_raw_plus_one_in_f64() {

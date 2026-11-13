@@ -532,8 +532,8 @@ mod tests {
     /// handles the drop, not before it. The reader is dropped first, so the
     /// streamer's writer is the ring's last holder.
     ///
-    /// This is B1 restated for the handle: the region goes with the stream,
-    /// and nothing but the `Drop` sends the close.
+    /// The region goes with the stream, and nothing but the `Drop` sends the
+    /// close.
     #[test]
     fn a_dropped_stream_is_freed() {
         let dir = tempfile::tempdir().unwrap();

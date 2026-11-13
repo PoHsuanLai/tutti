@@ -797,9 +797,7 @@ fn sine_bound() -> f32 {
 /// a sine, under crossfaded loops of lengths that are not whole periods (so
 /// each loop is continuous at its own wrap, but moving between two jumps the
 /// phase, as the memory tier's cut does), no step exceeds the sine's own plus
-/// what a fade between two sines adds per frame. (Before: the record fade read the *current* map's record, so a
-/// second edit swapped its old side mid-fade — a step of 1.06 against the
-/// sine's 0.063 — and a jump dropped the fade.) Nothing goes unread.
+/// what a fade between two sines adds per frame. Nothing goes unread.
 #[test]
 fn fades_chain_without_a_step() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -1062,10 +1060,7 @@ fn a_loop_set_on_one_pool_voice_leaves_the_other_voices_stream_alone() {
 }
 
 /// **Per knob, one writer: two voices opened in sequence on one file share no
-/// cell** (doc 025 §2.7, review S3). Before a stream's cells were its own, a
-/// restart handed the old voice's cell to the new one, so a host write of gain,
-/// speed, direction or stretch to the new voice also reached the old voice
-/// that was still fading out. Here the second voice is opened after the first
+/// cell**. Here the second voice is opened after the first
 /// and the first is written, knob by knob; the second reads nothing of it, and
 /// the first does hold the write (so the test is not vacuous). The direction
 /// is the stream's, published with its ring's control: the first stream's

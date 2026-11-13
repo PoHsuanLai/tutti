@@ -1,4 +1,4 @@
-//! How the streamer is woken (doc 025 §7): one [`Bell`] the thread sleeps on,
+//! How the streamer is woken: one [`Bell`] the thread sleeps on,
 //! and the [`StreamerSender`] that rings it after every command.
 //!
 //! The streamer has nothing to do until one of these happens, and each one
@@ -18,8 +18,7 @@
 //! doorbell's protocol asks (publish, then ring), so a ring that lands between
 //! the streamer's last look and its park is not lost. The backstop bounds how
 //! long a *missed* ring (a bug, not a design) can delay a refill, and is the
-//! control-side tick a cell that goes quiet still gets its `reclaim()` on
-//! (CLAUDE.md, "Publishing to the audio thread").
+//! control-side tick a cell that goes quiet still gets its `reclaim()` on.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -149,13 +149,6 @@
 //! it. A convenience constructor or wrapper belongs in the crate that owns the
 //! thing it wires — device bootstrap in `tutti-cpal`, graph logic in
 //! `tutti-graph` or `tutti-engine` — where it is available to every consumer.
-// Every item here is a re-export, which inherits the source item's docs, so
-// the only way to trip this is to add something that is not a re-export —
-// which `tests/no_logic.rs` forbids anyway. Two gates on the same rule.
-//
-// This file holds only `pub use`, `pub mod` and docs: a convenience
-// constructor belongs in the crate that owns what it wires, or, when it
-// composes several crates, in `tutti-session`. `tests/no_logic.rs` enforces this.
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -179,10 +172,7 @@ pub use tutti_session::Error;
 //
 // Whole-crate re-exports, ALIASED. Flattening would collide at once —
 // `Error`/`Result` exist in about eight of these crates, `Unit` in two,
-// `Source` in two — and aliasing away the `tutti_` prefix is also what keeps
-// `cargo xtask check-paths` honest: with no `tutti_x::` spelling
-// reachable through this crate, the redundant path it exists to catch cannot
-// be written in the first place.
+// `Source` in two.
 
 /// The engine (`tutti-engine`): `Engine`, the per-block graph render.
 pub use tutti_engine as engine;
@@ -306,7 +296,7 @@ pub use tutti_midi_runtime as midi_runtime;
 #[cfg(feature = "midi")]
 pub use tutti_midi_file as midi_file;
 
-/// The names of the common MIDI path in one place (design 030, convention 3):
+/// The names of the common MIDI path in one place:
 /// a file (`MidiFile`, `Track`, `Tick`), a message (`Message`, `Ump`,
 /// `MidiChannel`, `MidiGroup`, `NoteNumber`, `NoteVelocity`), a timed event, the keys
 /// that play an instrument or a live input (`MidiKeys`, sent with a `Stamp`) and a take read with (`TapEvent`, `EventTapReader`),

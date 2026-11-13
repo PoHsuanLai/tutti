@@ -1,5 +1,4 @@
-//! [`compile`]: declarations in, one [`ControlProgram`] per target out
-//! (design doc 014 §7).
+//! [`compile`]: declarations in, one [`ControlProgram`] per target out.
 //!
 //! A modulation matrix is what a host *says*: sources, routes from a source
 //! to a target param (or to another route's depth), and per target a range
@@ -79,8 +78,7 @@ pub enum TargetKey {
     },
     /// The gain of an edge, by the host's key for the edge.
     Edge(u64),
-    /// The mix of a node, by the host's key for the node (doc 013, "Bypass
-    /// and mute are graph state"): the node's blend with its aligned input,
+    /// The mix of a node, by the host's key for the node: the node's blend with its aligned input,
     /// whose range is `0..=1`.
     Mix(u64),
 }
@@ -319,14 +317,13 @@ pub struct Compiled {
     pub nodes: BTreeMap<SourceKey, SignalSource>,
     /// Event edges, a source's node → a target's lane.
     pub edges: BTreeSet<(SourceKey, TargetKey)>,
-    /// Each LFO's dated clock (its rate anchor, doc 014 §4.3), routed or
+    /// Each LFO's dated clock (its rate anchor), routed or
     /// not: every layer and depth scaler it drives uses this one clock, so
     /// one LFO stays phase-coherent across its targets, and the next
     /// compile dates its rate edits from it.
     pub clocks: BTreeMap<SourceKey, Clock>,
     /// The id the next new signal source takes: one past every id this
-    /// lineage of compiles has given, so no id is ever given twice (doc 014
-    /// §7). It wraps after `2^32` sources, skipping the ids still held.
+    /// lineage of compiles has given, so no id is ever given twice. It wraps after `2^32` sources, skipping the ids still held.
     pub next_source: SourceId,
 }
 
@@ -493,8 +490,7 @@ pub fn layer_id(route: RouteKey, depth_by: Option<RouteKey>) -> LayerId {
 ///
 /// `prev` (the last compile) and `now` (the executor's next play reading,
 /// `Editor::play_reading`) and `rate` (the graph's sample rate) are read
-/// only to keep signal sources' ids and to date rate-edit anchors (doc 014
-/// §4.3); the function is pure. With equal inputs it returns equal
+/// only to keep signal sources' ids and to date rate-edit anchors; the function is pure. With equal inputs it returns equal
 /// results, whatever order the declarations come in.
 ///
 /// # Errors

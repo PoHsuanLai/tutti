@@ -157,7 +157,6 @@ fn progress_is_clamped() {
     }
 }
 
-// Moved from `tutti-graph`'s `event.rs` tests, unchanged but for the name.
 /// Every law runs from 0 to 1, monotonically, at its analytic figures
 /// (closed forms in `f64`, within a tolerance: `Exp` and a non-integer
 /// power go through libm).

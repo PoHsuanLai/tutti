@@ -118,7 +118,7 @@ pub(crate) struct TransportClock {
     /// ([`FrameClock::mark_play_start`]).
     rolling: bool,
     /// Where the playhead is on the published map, for a map that changes
-    /// tempo (doc 020 stage 3). Used only when a block hands the clock the map
+    /// tempo. Used only when a block hands the clock the map
     /// (`Some`): a constant map never does, and the clock then runs its own
     /// closed form, untouched.
     walk: TempoWalk,
@@ -172,10 +172,7 @@ impl TransportClock {
     //
     // They are deliberately **static**: a derived stream snapshots its
     // configuration and shares nothing with the live transport, so ticking it
-    // on a worker thread cannot disturb playback. The live transport stays
-    // authoritative for the timeline, because its loop/tempo atomics are the
-    // audio-thread mirror of persisted document state that the host reconciles
-    // every frame — not incidental state a stream transform could absorb.
+    // on a worker thread cannot disturb playback.
 
     /// Derive an independent stream starting at `beat`.
     ///
@@ -257,7 +254,7 @@ impl TransportClock {
         if let Some(target) = self.links.seek.take() {
             match map {
                 // Seats at the exact beat; the map frame is its
-                // `frame_at_or_after` (doc 020, section 4).
+                // `frame_at_or_after`.
                 Some(map) => {
                     self.walk.seat(map, &mut self.clock, target);
                     self.publish_tempo();
@@ -449,8 +446,7 @@ impl TransportClock {
     /// publish.
     ///
     /// Under a `map` that changes tempo the playhead is re-seated at the
-    /// current beat on the map's timeline at the new rate (doc 020, section
-    /// 10), and the tempo in force there is taken.
+    /// current beat on the map's timeline at the new rate, and the tempo in force there is taken.
     pub fn set_sample_rate(
         &mut self,
         sample_rate: tutti_types::SampleRate,

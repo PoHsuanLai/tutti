@@ -57,7 +57,7 @@ impl From<PlayGrid> for NonZeroU32 {
 }
 
 /// The control grid: 32 play frames, the step every control lane and the
-/// envelope follower send on (doc 014 §5.3).
+/// envelope follower send on.
 pub const CONTROL_GRID: PlayGrid = PlayGrid(NonZeroU32::new(32).expect("32 is not zero"));
 
 /// One piece a source sends: its values and law, and its length in frames,

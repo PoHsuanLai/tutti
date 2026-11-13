@@ -199,10 +199,6 @@ pub mod stretch;
 // outside this crate constructs them. `DiskSource` in particular is
 // `DiskVoice`'s `inner` — one capability, and only the outer type is a doorway.
 //
-// `voice` itself stays PUBLIC, unlike most modules in the engine: its submodules
-// (`interp`, `types`, `command`, `pool`, `node`, `memory_source`) cross-link
-// heavily in their own docs, and privatizing it turns 31 of those into dangling
-// references. It is a real internal namespace, not a redundant path.
 pub use voice::{
     Direction, DiskVoice, DiskVoiceControls, Loop, LoopError, MemorySource, MemorySourceConfig,
     Playback, PoolDrops, PoolTooWide, SendError, SlotId, StreamingAddError, Voice, VoiceNode,
@@ -231,9 +227,7 @@ pub use streamer::{ByHand, StepOutcome};
 //
 // Codec-gated because it *is* the codec layer: `Wave::read_metadata` and
 // `WaveMetadata` are themselves gated in `tutti-codec`, so with no format feature
-// there is no header to read. Absent rather than always-`false` — a host that
-// compiled out every codec cannot open files at all, and a probe that silently
-// answered "not streamable" would look like a property of the file.
+// there is no header to read.
 #[cfg(codec)]
 mod probe;
 #[cfg(codec)]

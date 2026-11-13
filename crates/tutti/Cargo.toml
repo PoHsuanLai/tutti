@@ -16,9 +16,7 @@ workspace = true
 
 [dependencies]
 # Always present: the vocabulary, the runtime, the node contract, the DSP.
-# Everything else is a feature, because a headless consumer that only bounces
-# a file should not link ALSA, and one that only reads a .mid should not link
-# CoreMIDI.
+# Everything else is a feature.
 tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
 tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
 tutti-metering = { version = "0.0.1", path = "../tutti-metering" }
@@ -68,11 +66,8 @@ tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 [features]
-# `default = ["session"]`: the API layer is what this umbrella is for. It is
-# the one member whose default is not empty, and it costs nothing a feature
-# did not already ask for: `tutti-session` itself has `default = []`, so the
-# default build adds the session's own code and nothing else (no device, so no
-# ALSA). Set `default-features = false` for the raw crates alone.
+# `default = ["session"]`: the API layer is what this umbrella is for. Set
+# `default-features = false` for the raw crates alone.
 default = ["session"]
 session = ["dep:tutti-session"]
 
@@ -98,8 +93,7 @@ full = [
     "modulation",
 ]
 
-# The sound card. NOT default: an offline render, a CI job and a server build all want this crate without
-# ALSA or CoreAudio headers on the box.
+# The sound card. NOT default.
 device = ["dep:tutti-cpal", "tutti-session?/device"]
 
 # JACK, through `tutti-cpal`. Linux/BSD only in effect, and it hard-links
@@ -150,8 +144,7 @@ sampler = ["decode-wav", "dep:tutti-sampler", "tutti-session?/sampler"]
 audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
 # Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
 # AIFF are pure Rust and opt-in (`encode-flac`, `encode-aiff`), and `encode-vorbis` is the one path to C (the
-# Vorbis library, `ogg_next_sys`). `cargo xtask check-layout` holds that a build
-# with `export` alone reaches no C.
+# Vorbis library, `ogg_next_sys`).
 export = ["dep:tutti-export", "encode-wav", "tutti-session?/export"]
 modulation = ["dep:tutti-modulation", "tutti-session?/modulation"]
 
@@ -160,10 +153,7 @@ dsp = ["dep:tutti-dsp", "dep:tutti-measure"]
 
 # --- plugin hosting ---------------------------------------------------------
 #
-# No `tutti-plugin-server`: that is a BINARY the host spawns, and depending on
-# it here would put a `tutti-plugin -> tutti-plugin-server -> tutti-plugin`
-# cycle one edit away — the cycle `tutti-plugin`'s build script and the CI
-# workflow both warn about. Build it with
+# No `tutti-plugin-server`: that is a BINARY the host spawns. Build it with
 # `cargo build -p tutti-plugin-server`.
 plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "midi", "tutti-session?/plugin"]
 vst2 = ["plugin", "tutti-plugin/vst2", "tutti-session?/vst2"]
@@ -180,9 +170,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 name = "headless_export"
 required-features = ["session", "export", "dsp", "decode-wav"]
 
-# Cannot RUN in CI — it opens a sound card — but `cargo clippy --all-targets`
-# compiles it, which is the gate that matters for an example whose job is to
-# be read.
+# Cannot RUN in CI: it opens a sound card.
 [[example]]
 name = "headless_engine"
 required-features = ["session", "device"]

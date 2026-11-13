@@ -1,9 +1,6 @@
 //! One open stream on the streamer's side: a [`Record`] in a [`Streams`]
-//! table, and the pure [`step`] that decides what a command does to the table
-//! (doc 025 §2.5).
+//! table, and the pure [`step`] that decides what a command does to the table.
 //!
-//! A stream's state used to be six places that had to agree (a plan entry, a
-//! link, a region, a taken reader, a record, a pin). It is one value now, and
 //! `Drop for Record` is the one place a stream ends: the region (the ring's
 //! writer and decoder), the pin on the cache and the fork's record all go in
 //! the step that removes the record, so "link gone but region kept" cannot be
@@ -13,7 +10,7 @@
 //! by the drop.
 //!
 //! Work on one record runs under [`Record::contained`]: a panic faults that
-//! stream and no other (doc 025 decision 20, B5).
+//! stream and no other.
 //!
 //! [`step`] is the Voicing mould: no thread, no clock, no file, no channel. A
 //! command arrives as a [`Cmd`], the table changes, and what the driver has to
@@ -279,7 +276,7 @@ impl Streams {
 ///
 /// A command for a stream the table no longer holds changes nothing and asks
 /// for nothing: commands race the streams they name, and an id is minted once
-/// and never reused, so a late command cannot reach another stream (B4).
+/// and never reused, so a late command cannot reach another stream.
 pub(super) fn step(streams: &mut Streams, cmd: Cmd) -> &[Effect] {
     streams.effects.clear();
     match cmd {

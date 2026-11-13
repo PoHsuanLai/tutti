@@ -182,7 +182,7 @@ fn a_wav_order_seven_one_is_permuted_to_the_engines_order() {
 
 /// A file with a channel no speaker names (bit 25 is a second LFE) is refused
 /// when the stream is opened, at any width: the open fails with the placement's
-/// refusal, where it used to open and fail at the voice.
+/// refusal.
 #[test]
 fn a_file_with_a_second_lfe_is_refused() {
     let dir = tempfile::tempdir().expect("a temp dir");

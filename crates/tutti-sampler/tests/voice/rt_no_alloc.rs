@@ -129,7 +129,7 @@ fn process_stereo(node: &mut TimeStretchUnit, input: &[[f32; 64]; 2], output: &m
 
 #[test]
 fn time_stretch_process_is_allocation_free() {
-    // The stretcher is now a pure filter: it owns no source and reads the stereo
+    // The stretcher is a pure filter: it owns no source and reads the stereo
     // frames the caller feeds in. Feed a 2-channel input (matching its two
     // vocoders) primed with a constant source signal.
     let mut node = TimeStretchUnit::new(SampleRate::SR_48K);

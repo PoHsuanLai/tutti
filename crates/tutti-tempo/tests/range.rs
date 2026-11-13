@@ -1,5 +1,4 @@
-//! `CellGrid` keeps the range-checked contract (`CLAUDE.md`, "Range-checked
-//! values").
+//! `CellGrid` keeps the range-checked contract.
 #![cfg(feature = "serde")]
 
 use tutti_fixtures::{RangeContract, check_range_contract};

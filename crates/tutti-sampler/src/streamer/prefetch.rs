@@ -229,7 +229,7 @@ pub(crate) struct RegionOut {
     /// only in the LRU cache, so a file too large to cache still streams.
     resident: Option<Arc<Wave>>,
     /// Test seam: runs where the stream reads its file, and may block or
-    /// panic (a decode that panics, B5).
+    /// panic (a decode that panics).
     #[cfg(test)]
     read_hook: Option<super::decode::ReadHook>,
 }

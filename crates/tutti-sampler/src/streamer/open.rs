@@ -9,8 +9,7 @@
 //! and [`Opening::poll`] reads once, consuming the `Opening`. There is nothing
 //! to look a reader up by, so a reader cannot be taken twice (`poll` takes
 //! `self`), cannot be taken before the stream exists (`Pending` carries the
-//! `Opening` back), and cannot be another open's (the reply is this open's;
-//! doc 025 §1.3, B3).
+//! `Opening` back), and cannot be another open's (the reply is this open's).
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -93,7 +92,7 @@ impl From<Placement> for f64 {
     }
 }
 
-/// Why an open failed: what each used to leave as a stream that never started.
+/// Why an open failed.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum OpenError {

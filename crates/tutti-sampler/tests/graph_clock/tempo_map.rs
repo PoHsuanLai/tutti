@@ -1,5 +1,4 @@
-//! A beat-locked sampler voice follows the project's tempo map (doc 020,
-//! stage 5): a real render of a `VoicePool` through the live engine over a
+//! A beat-locked sampler voice follows the project's tempo map: a real render of a `VoicePool` through the live engine over a
 //! published `TempoMap`, the voice's output read back as the source position
 //! it played.
 //!
@@ -19,7 +18,7 @@
 //! output says which source frame it is, and a re-seat, a jump or a fade at a
 //! tempo change shows as a source frame that is not where the map puts it.
 //!
-//! **The bound for a ramp** (doc 020 section 4): the engine runs a ramp as
+//! **The bound for a ramp**: the engine runs a ramp as
 //! constant-tempo cells of 128 frames whose beats are the chord of the curve
 //! between the cell's ends, so the playhead is within `|a| h^2 / 8` beats of
 //! the curve inside a cell (`h` = 128 / rate): 8.3e-7 beats for 60 to 240 BPM
@@ -206,7 +205,7 @@ fn a_step_map_puts_a_clips_frames_where_the_map_says() {
     }
 }
 
-/// **A ramp: the clip is within the doc 020 section 4 bound of the map's
+/// **A ramp: the clip is within the bound of the map's
 /// frames, and a cell edge is no seam.** A clip from beat 0 and one from
 /// beat 2 (mid-ramp, so it enters at a fractional frame: its first frame is
 /// the fraction past the start) over the 60 to 240 ramp: at every frame the
@@ -252,9 +251,8 @@ fn a_ramp_puts_a_clips_frames_within_the_grid_bound_of_the_maps() {
 /// **A constant map is what it was.** A clip from beat 1 at 120 BPM through a
 /// pool bound to a constant map is at source frame `f - 24 000` exactly from
 /// frame 24 000, at every block size: the voice reads a constant map the way
-/// it reads no map (the beats over the tempo, not the map's seconds). That
-/// the bits are the old render's is held by the golden digests and
-/// `block_length_invariance`, which this change leaves untouched; this case
+/// it reads no map (the beats over the tempo, not the map's seconds). The bits
+/// are held by the golden digests and `block_length_invariance`; this case
 /// pins the figure through a bound reader.
 #[test]
 fn a_constant_map_keeps_the_clip_where_it_was() {

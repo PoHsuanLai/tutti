@@ -93,14 +93,8 @@ fn the_facade_contains_no_code() {
 /// **Every whole-crate re-export must be aliased.**
 ///
 /// A bare `pub use tutti_engine;` would let a consumer write
-/// `tutti::tutti_engine::Engine` — the redundant path
-/// `cargo xtask check-paths` exists to prevent, in a shape its
-/// chained-path regex cannot see: that regex requires an underscore-bearing
-/// crate segment on both sides, and `tutti::` has none. Aliasing removes the
-/// spelling from the language rather than asking anyone to avoid it.
-///
-/// (The script carries its own copy of this check, for a reader who looks at
-/// the gates rather than the tests.)
+/// `tutti::tutti_engine::Engine`. Aliasing removes the spelling from the
+/// language rather than asking anyone to avoid it.
 #[test]
 fn every_crate_reexport_is_aliased() {
     let bare: Vec<_> = code_lines()

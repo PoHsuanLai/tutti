@@ -1,6 +1,5 @@
 //! The streamer's drivers, as a typestate: a streamer is [`Built`], then
-//! either [`Running`] on its own thread or `ByHand`, stepped on the caller's
-//! (doc 025 §2.5; the `Lifecycle` shape of design 016).
+//! either [`Running`] on its own thread or `ByHand`, stepped on the caller's.
 //!
 //! The two drivers own the same streamer-local state (`Local`: the stream
 //! table and the scratch), so a streamer is one or the other for its whole
@@ -134,8 +133,7 @@ impl Built {
             // compete with the audio threads (Ardour's streamer sets no CPU
             // priority, LinuxSampler's disk thread runs at nice -10): a
             // raised, never real-time priority, nice -10 on Linux and
-            // ABOVE_NORMAL on Windows. This replaced the highest the OS
-            // grants (nice -20, HIGHEST) on purpose. A refusal is
+            // ABOVE_NORMAL on Windows. A refusal is
             // harmless, so the outcome is only logged.
             tracing::debug!("streamer: {}", request_priority(PriorityRequest::Raised));
             streamer_loop(&queue, shared, cycle, backstop);

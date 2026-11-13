@@ -156,8 +156,7 @@ impl Amount {
     ///
     /// Not reported: `Stepped`'s jump at `|x| = 1` (at `raw = 1` when
     /// unipolar), a single point no piece can carry, and `Bounce`'s three
-    /// slope breaks inside the range. Doc 014 §5.3 lists both among the
-    /// curves with no error bound.
+    /// slope breaks inside the range.
     #[inline]
     pub fn kinks_at_zero(&self) -> bool {
         self.polarity == Polarity::Bipolar && self.curve != Law::Linear

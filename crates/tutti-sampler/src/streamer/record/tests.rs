@@ -93,7 +93,7 @@ fn an_open_is_opening_until_its_reader_is_delivered() {
 /// A close frees the stream's region in the step that handles it: the ring
 /// (its writer, decoder and resident wave with it) is dead when the step
 /// returns, the stream's status says it is closed (what a fork of its voice
-/// asks), and the table no longer holds it. B1 restated: the region goes with the record, in one place.
+/// asks), and the table no longer holds it.
 #[test]
 fn a_close_frees_the_region_in_that_step() {
     let mut streams = Streams::new();
@@ -117,7 +117,7 @@ fn a_close_frees_the_region_in_that_step() {
 }
 
 /// A command for an id the table does not hold changes nothing and asks for
-/// nothing, and never reaches another stream: B4. Ids are minted once, so the
+/// nothing, and never reaches another stream. Ids are minted once, so the
 /// stream that took a closed one's place has a new id, and what was sent to
 /// the old one finds nobody.
 #[test]

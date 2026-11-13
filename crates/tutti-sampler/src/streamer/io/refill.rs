@@ -133,7 +133,7 @@ pub(crate) fn refill_all_parallel(
 }
 
 /// What a ring's window says about where its reader plays: the one decision the
-/// streamer's refill and a voice's ring both make (doc 025 §7), so they never
+/// streamer's refill and a voice's ring both make, so they never
 /// disagree about "below threshold".
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Refill {

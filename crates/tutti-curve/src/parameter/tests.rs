@@ -1,4 +1,4 @@
-//! The range contract of `CLAUDE.md` ("Range-checked values") for the two
+//! The range contract for the two
 //! parameters, written out by hand: `tutti_fixtures::check_range_contract`
 //! needs serde on the type, and `tutti-curve` has none (nothing persists a
 //! curve).

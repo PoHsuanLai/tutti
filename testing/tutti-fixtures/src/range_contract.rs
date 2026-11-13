@@ -1,5 +1,5 @@
-//! One check that a range-checked type keeps the contract in `CLAUDE.md`
-//! ("Range-checked values"). It names none of tutti's types.
+//! One check that a range-checked type keeps the contract.
+//! It names none of tutti's types.
 
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;

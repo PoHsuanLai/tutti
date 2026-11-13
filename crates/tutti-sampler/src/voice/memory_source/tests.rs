@@ -135,7 +135,7 @@ fn one_block_matches_single_frames_at_non_unity_speed() {
 
 #[test]
 fn one_block_matches_single_frames_when_placed() {
-    // The case that was actually broken: a placed voice at non-unity speed.
+    // A placed voice at non-unity speed.
     let wave = ramp_wave(4096, 44100.0);
     // Beat 0.1: 2 205 frames in, read at 0.5x, inside the wave.
     let transport = MockTransport::rolling(Beat::new(0.1), Bpm::of(120.0));

@@ -38,18 +38,8 @@ struct Inner {
     /// Monotonic access counter — the source of every `last_access` stamp.
     ///
     /// "Least recently used" is a statement about access *order*, so the stamp
-    /// is a sequence number rather than a reading of a clock. A millisecond
-    /// `SystemTime::now()` would get the order wrong two ways:
-    ///
-    /// - Resolution. Cache accesses are memory-speed; several land in the
-    ///   same millisecond routinely, and every one of those would be a *tie*.
-    ///   `min_by_key` breaks a tie by iteration order, which for a hash map is
-    ///   arbitrary, so the victim would change between runs. A tick increments
-    ///   per touch, so no two accesses can tie.
-    /// - Monotonicity. `SystemTime` is a wall clock: NTP correction, a
-    ///   manual set, or a DST-adjacent jump moves it *backwards*, which makes a
-    ///   just-touched entry look like the oldest one in the cache and evicts it
-    ///   next. A counter has no such failure mode.
+    /// is a sequence number rather than a reading of a clock. A tick increments
+    /// per touch, so no two accesses can tie.
     ///
     /// `u64` cannot realistically wrap: at one touch per nanosecond it takes
     /// ~584 years.
@@ -297,13 +287,6 @@ mod tests {
 
     /// Two accesses with no delay between them still order — the property a
     /// wall clock could not give.
-    ///
-    /// Both inserts land in the same millisecond (they are memory writes), so
-    /// under `SystemTime::now().as_millis()` they would carry the *identical*
-    /// stamp, and `min_by_key` would break the tie by hash map iteration
-    /// order, i.e. arbitrary order: an arbitrary eviction that could differ run to
-    /// run. No sleep here on purpose: a sleep would paper over
-    /// exactly the defect being asserted.
     #[test]
     fn same_instant_accesses_still_order_deterministically() {
         // Budget for two of three waves, forcing one eviction on the third.

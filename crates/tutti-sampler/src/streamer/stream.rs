@@ -3,7 +3,7 @@
 //!
 //! A stream is addressed by its [`StreamId`], which every command carries; the
 //! streamer ignores an id it no longer holds, so a command can never reach
-//! another stream (doc 025, B4). Nothing outside this crate names a command:
+//! another stream. Nothing outside this crate names a command:
 //! the control side is the [`Stream`] methods.
 
 use std::sync::Arc;
@@ -307,7 +307,7 @@ mod tests {
 
     /// Every command a stream sends names that stream, and only it: two streams
     /// on one queue each send their own id, for a loop, a clear and the close
-    /// their drop sends (B4: a command meant for one cannot name another).
+    /// their drop sends.
     #[test]
     fn a_stream_names_itself_in_every_command() {
         let (tx, queue) = crossbeam_channel::bounded(16);

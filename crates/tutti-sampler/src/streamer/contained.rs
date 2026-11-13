@@ -1,4 +1,4 @@
-//! Doc 025 cut 5, end to end: what a stream reports ([`StreamStatus`]), a
+//! End to end: what a stream reports ([`StreamStatus`]), a
 //! panic contained to its stream, a fallible construction, and the decode
 //! lane. The status cell's own table is `status.rs`'s and the step's is
 //! `record/tests.rs`'s; these drive a streamer, hand-stepped and threaded.
@@ -271,11 +271,11 @@ fn a_dropped_streamer_publishes_streamer_gone() {
 }
 
 // ---------------------------------------------------------------------------
-// Containment (B5).
+// Containment.
 // ---------------------------------------------------------------------------
 
 /// **A panicking decode faults only its stream, and the others keep filling**
-/// (B5), on the hand-stepped and the threaded driver, with two streams (the
+/// on the hand-stepped and the threaded driver, with two streams (the
 /// serial refill) and three (the parallel one). The hook on `RegionOut` panics
 /// where stream 1 reads its file once armed; every stream's reader then plays
 /// near the end of a file longer than its ring, so each one's refill has

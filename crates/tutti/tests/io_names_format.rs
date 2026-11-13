@@ -2,8 +2,7 @@
 //! with `io` (or `audio-io`) and no format feature must still name one, and
 //! build a WAV sink from it.
 //!
-//! Compiled only with `io`; `cargo xtask check-features` and CI's `dark features` job
-//! run it with `audio-io`.
+//! Compiled only with `io`.
 #![cfg(feature = "io")]
 
 use tutti::codec::{FileOut, Format, Pcm, Spec};

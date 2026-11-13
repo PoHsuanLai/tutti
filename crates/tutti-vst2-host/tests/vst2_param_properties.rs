@@ -880,6 +880,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
 ///   catches a host handing back one shared buffer for every index — the
 ///   failure the probe's non-uniform labels exist to expose.
 /// - The two are **joined**, not one silently dropped.
+///
 /// Spec: vst2.eff.GetParamDisplay, vst2.eff.GetParamLabel
 #[test]
 fn a_parameter_display_carries_the_current_value_and_its_unit() {

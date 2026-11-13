@@ -317,31 +317,6 @@ impl UnisonEngine {
     pub fn config(&self) -> &UnisonConfig {
         &self.config
     }
-
-    #[cfg(test)]
-    pub fn set_voice_count(&mut self, count: UnisonVoices) {
-        self.config.voice_count = count;
-        self.recompute_params();
-    }
-
-    #[cfg(test)]
-    pub fn set_detune(&mut self, cents: impl Into<Cents>) {
-        self.config.detune_cents = Cents(Self::clamp_detune(cents.into().get()));
-        self.detune.store(self.config.detune_cents);
-        self.recompute_params();
-    }
-
-    #[cfg(test)]
-    pub fn set_stereo_spread(&mut self, spread: Spread) {
-        self.config.stereo_spread = spread;
-        self.spread.store(self.config.stereo_spread);
-        self.recompute_params();
-    }
-
-    #[cfg(test)]
-    pub fn seed_rng(&mut self, seed: u32) {
-        self.rng_state = if seed == 0 { 1 } else { seed };
-    }
 }
 
 #[cfg(test)]

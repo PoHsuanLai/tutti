@@ -212,8 +212,15 @@ until it is un-parked. `vendor/` is third-party and never restyled.
   table (`CLAUDE.md`'s "one bundle walk"). A second copy is a finding even if
   both are tested.
 - **C3. `unsafe` only where `CLAUDE.md` puts it** (`check-ffi`; `M-UNSAFE`, `M-UNSOUND`, `M-FFI-TRANSLATES`), every block
-  with a `// SAFETY:` comment (`clippy::undocumented_unsafe_blocks` denied in
-  each crate that has `unsafe`).
+  with a `// SAFETY:` comment that states why the precondition holds here, not
+  what the code does (`clippy::undocumented_unsafe_blocks` denied in each
+  crate that has `unsafe`). It is concentrated: one wrapper carries the
+  `unsafe impl` and everything around it is safe. A safety argument that rests
+  on a property is checked where the property lives, in every build (a check
+  that justifies a `Sync` is never debug-only). New non-FFI `unsafe` is a design
+  question for `tutti-rt`, with a loom model, after the safe construct was
+  measured; FFI `unsafe` is exempt from that, not from the `SAFETY` comment
+  (pointer lifetime, who frees).
 - **C4. Lint exceptions are scoped and reasoned** (`M-LINT-OVERRIDE-EXPECT`): `#[expect(lint, reason =
   "...")]` on the smallest item, never a crate-wide `allow` for a local need;
   an `allow` that suppresses nothing (an `expect` would fail) is a finding.

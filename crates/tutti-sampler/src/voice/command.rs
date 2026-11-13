@@ -1072,7 +1072,9 @@ impl VoicePoolHandle {
             .map_err(|e| match e {
                 TrySendError::Full(_) => SendError::Full,
                 TrySendError::Disconnected(_) => SendError::Disconnected,
-            })
+            })?;
+        self.counters.note_queued();
+        Ok(())
     }
 
     /// Move control-thread work out of the drain. Runs on the caller's thread.

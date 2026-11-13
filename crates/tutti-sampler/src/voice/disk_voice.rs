@@ -830,10 +830,12 @@ impl DiskVoice {
 }
 
 impl Node for DiskVoice {
-    /// No inputs, the file's width out; a generator, never skipped.
+    /// No inputs, the file's width out; a source, never skipped. It plays its
+    /// window of the transport, as a placed memory voice does, so it has no
+    /// ring-out.
     fn shape(&self) -> Shape {
         Shape::source_unassigned(self.inner.channels())
-            .with_tail(Tail::Unbounded)
+            .with_tail(Tail::None)
             // A `DiskSource`'s read, placed on the transport as a memory
             // voice is: `Moderate` for the same reason.
             .with_cost(tutti_graph::Cost::Moderate)

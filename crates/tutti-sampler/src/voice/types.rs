@@ -11,7 +11,7 @@ use super::fault::FaultLatch;
 use super::loop_span::Loop;
 use super::memory_source::{MemorySource, VoiceWindow};
 use tutti_graph::{ForkCause, ForkMode, Node};
-use tutti_types::{Amplitude, Cents, PlaybackRate, SampleRate, StretchFactor};
+use tutti_types::{Amplitude, Cents, PlaybackRate, SampleRate, StretchFactor, Tail};
 
 /// Opaque identifier for one voice slot in a [`VoicePool`](super::VoicePool).
 ///
@@ -262,6 +262,23 @@ impl Voice {
             source,
             play: self.play,
         })
+    }
+
+    /// The ring-out of a node that plays this voice ([`Shape::tail`](tutti_graph::Shape::tail)).
+    ///
+    /// A placed voice, either tier, is the programme: it plays its window of
+    /// the transport, so it has none. A free-running memory voice sounds to
+    /// the end of its wave. Where `steerable` (a handle can still loop,
+    /// slow or stretch it) the ceiling it can promise is
+    /// [`Tail::Unbounded`]; otherwise it is the figure of
+    /// [`MemorySource::ring_out`].
+    pub(crate) fn ring_out(&self, steerable: bool) -> Tail {
+        match &self.source {
+            VoiceSource::Disk(_) => Tail::None,
+            VoiceSource::Memory(source) if source.is_placed() => Tail::None,
+            VoiceSource::Memory(_) if steerable => Tail::Unbounded,
+            VoiceSource::Memory(source) => source.ring_out(self.play.stretch),
+        }
     }
 
     /// A forked disk voice's failure latch, `None` for a memory voice (which

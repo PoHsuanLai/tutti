@@ -948,7 +948,7 @@ impl Node for ControlLaneNode {
             .with_events(1, 1)
             .with_event_capacity(SOURCE_EVENT_CAPACITY)
             .with_cost(Cost::Moderate)
-            .with_tail(Tail::Unbounded)
+            .with_tail(Tail::None)
             .with_no_note_events()
     }
 

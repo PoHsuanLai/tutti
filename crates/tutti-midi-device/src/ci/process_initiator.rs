@@ -50,19 +50,18 @@
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
+use super::TimeoutWait;
+use super::link::Link;
+
 use super::{
-    Ack, CI_VERSION, CiDeviceId, CiHeader, CiMessage, DataControl, Decoded, Destination, Muid, Nak,
-    ProcessFeatures, ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY,
-    SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
+    CiDeviceId, CiHeader, CiMessage, DataControl, Decoded, Muid, Nak, ProcessFeatures, ReportScope,
+    SUB_ID2_MESSAGE_REPORT_INQUIRY, SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
 };
 
 /// How long an Inquiry: Process Inquiry Capabilities waits for its reply, and a
 /// MIDI Message Report for its Reply and then for its End: 3 seconds. See the
 /// module docs: tutti's figure, from §5.5.5.
 pub const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// The unit of a Timeout Wait's Status Data (§5.10, Table 14).
-const WAIT_STEP: Duration = Duration::from_millis(100);
 
 /// What a MIDI Message Report asks (§9.5): how much, and of what.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -140,8 +139,7 @@ struct Report {
 /// The Initiator of Process Inquiry with one peer.
 #[derive(Clone, Debug)]
 pub struct ProcessInitiator {
-    own: Muid,
-    peer: Muid,
+    link: Link,
     features: Option<ProcessFeatures>,
     capabilities_deadline: Option<Instant>,
     report: Option<Report>,
@@ -153,8 +151,7 @@ impl ProcessInitiator {
     #[must_use]
     pub fn new(own: Muid, peer: Muid, now: Instant) -> (Self, Vec<ProcessAction>) {
         let mut initiator = Self {
-            own,
-            peer,
+            link: Link { own, peer },
             features: None,
             capabilities_deadline: None,
             report: None,
@@ -166,7 +163,7 @@ impl ProcessInitiator {
     /// The peer's MUID.
     #[must_use]
     pub fn peer(&self) -> Muid {
-        self.peer
+        self.link.peer
     }
 
     /// The features the peer's last reply declared, `None` before one arrived.
@@ -260,9 +257,7 @@ impl ProcessInitiator {
         let Decoded::Message(message) = decoded else {
             return actions;
         };
-        if message.header().source != self.peer
-            || message.destination() != Destination::Muid(self.own)
-        {
+        if !self.link.is_from_peer(message) || !self.link.is_to_us(message) {
             return actions;
         }
         let address = message.header().device_id;
@@ -295,8 +290,10 @@ impl ProcessInitiator {
                     actions.push(ProcessAction::ReportEnded);
                 }
             }
-            CiMessage::Ack { ack, .. } if ack.status_code == Ack::STATUS_TIMEOUT_WAIT => {
-                self.on_wait(address, ack, now);
+            CiMessage::Ack { ack, .. } => {
+                if let Some(wait) = TimeoutWait::from_ack(ack) {
+                    self.on_wait(address, ack.ack_sub_id2.get(), wait, now);
+                }
             }
             CiMessage::Nak { nak, .. } => self.on_nak(address, nak, &mut actions),
             _ => {}
@@ -306,12 +303,11 @@ impl ProcessInitiator {
 
     /// A Timeout Wait: the transaction it names waits until `now` plus the time
     /// asked, when that is later than it already would.
-    fn on_wait(&mut self, address: CiDeviceId, ack: &Ack, now: Instant) {
-        let until = now + WAIT_STEP * u32::from(ack.status_data.get());
-        match ack.ack_sub_id2.get() {
+    fn on_wait(&mut self, address: CiDeviceId, original: u8, wait: TimeoutWait, now: Instant) {
+        match original {
             SUB_ID2_PROCESS_CAPABILITIES_INQUIRY if address == CiDeviceId::FunctionBlock => {
                 if let Some(deadline) = self.capabilities_deadline.as_mut() {
-                    *deadline = (*deadline).max(until);
+                    wait.extend(deadline, now);
                 }
             }
             SUB_ID2_MESSAGE_REPORT_INQUIRY => {
@@ -320,7 +316,7 @@ impl ProcessInitiator {
                     .as_mut()
                     .filter(|report| report.request.scope.address() == address)
                 {
-                    report.deadline = report.deadline.max(until);
+                    wait.extend(&mut report.deadline, now);
                 }
             }
             _ => {}
@@ -352,14 +348,7 @@ impl ProcessInitiator {
         address: CiDeviceId,
         message: impl FnOnce(CiHeader, Muid) -> CiMessage,
     ) -> ProcessAction {
-        ProcessAction::Send(message(
-            CiHeader {
-                device_id: address,
-                ci_version: CI_VERSION,
-                source: self.own,
-            },
-            self.peer,
-        ))
+        ProcessAction::Send(self.link.message(address, message))
     }
 }
 

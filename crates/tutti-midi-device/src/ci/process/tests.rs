@@ -1,51 +1,7 @@
 use tutti_ump::MidiChannel;
 
+use super::super::testing::{DST, channel, decoded, header_on, preamble, to_dst, unread};
 use super::super::*;
-
-const SRC: u32 = 0x0123_4567;
-const DST: u32 = 0x0007_7777;
-
-fn muid(raw: u32) -> Muid {
-    Muid::new(raw).unwrap()
-}
-
-fn header(device_id: CiDeviceId) -> CiHeader {
-    CiHeader {
-        device_id,
-        ci_version: CI_VERSION,
-        source: muid(SRC),
-    }
-}
-
-/// `7E <id> 0D <sub> 02 src dst`, the preamble of a Version 2 message.
-fn preamble(device_id: u8, sub: u8, destination: [u8; 4]) -> Vec<u8> {
-    let mut bytes = vec![0x7E, device_id, 0x0D, sub, 0x02];
-    bytes.extend(muid(SRC).to_bytes());
-    bytes.extend(destination);
-    bytes
-}
-
-fn to_dst() -> [u8; 4] {
-    muid(DST).to_bytes()
-}
-
-fn decoded(bytes: &[u8]) -> CiMessage {
-    match CiMessage::decode(bytes) {
-        Decoded::Message(message) => message,
-        other => panic!("a message, got {other:?}"),
-    }
-}
-
-fn unread(bytes: &[u8]) -> Unread {
-    match CiMessage::decode(bytes) {
-        Decoded::Unread(unread) => unread,
-        other => panic!("an Unread, got {other:?}"),
-    }
-}
-
-fn channel(n: u8) -> CiDeviceId {
-    CiDeviceId::Channel(MidiChannel::of(n))
-}
 
 /// Every flag of a set against the bit the table gives it.
 fn bits_of<F: bitflags::Flags<Bits = u8> + Copy + std::fmt::Debug>(table: &[(F, u8)]) {
@@ -185,8 +141,8 @@ fn a_reply_scope_within_a_request_keeps_only_what_was_asked() {
 #[test]
 fn the_capabilities_inquiry_is_table_40_on_the_function_block() {
     let message = CiMessage::ProcessCapabilitiesInquiry {
-        header: header(CiDeviceId::FunctionBlock),
-        to: muid(DST),
+        header: header_on(CiDeviceId::FunctionBlock),
+        to: Muid::of(DST),
     };
     let mut want = preamble(0x7F, 0x40, to_dst());
     assert_eq!(message.encode(), want);
@@ -194,8 +150,8 @@ fn the_capabilities_inquiry_is_table_40_on_the_function_block() {
     // Per-channel requests are not allowed: the Device ID is 0x7F whatever the
     // header says, and a message on another Device ID is not read.
     let channelized = CiMessage::ProcessCapabilitiesInquiry {
-        header: header(channel(4)),
-        to: muid(DST),
+        header: header_on(channel(4)),
+        to: Muid::of(DST),
     };
     assert_eq!(channelized.encode(), want);
     want[1] = 0x04;
@@ -207,8 +163,8 @@ fn the_capabilities_inquiry_is_table_40_on_the_function_block() {
 #[test]
 fn the_capabilities_reply_is_table_41_with_the_features_byte() {
     let message = CiMessage::ProcessCapabilitiesReply {
-        header: header(CiDeviceId::FunctionBlock),
-        to: muid(DST),
+        header: header_on(CiDeviceId::FunctionBlock),
+        to: Muid::of(DST),
         features: ProcessFeatures::MIDI_MESSAGE_REPORT,
     };
     let mut want = preamble(0x7F, 0x41, to_dst());
@@ -236,8 +192,8 @@ fn the_capabilities_reply_is_table_41_with_the_features_byte() {
 
 fn inquiry(control: DataControl, scope: ReportScope) -> CiMessage {
     CiMessage::MessageReportInquiry {
-        header: header(scope.address()),
-        to: muid(DST),
+        header: header_on(scope.address()),
+        to: Muid::of(DST),
         control,
         scope,
     }
@@ -301,7 +257,7 @@ fn a_message_report_inquiry_that_table_43_forbids_is_malformed() {
         want[13] = control;
         let got = unread(&want);
         assert_eq!(got.reason, UnreadReason::Malformed, "{control:#x}");
-        let Some(CiMessage::Nak { nak, .. }) = got.nak(muid(9)) else {
+        let Some(CiMessage::Nak { nak, .. }) = got.nak(Muid::of(9)) else {
             panic!("a NAK");
         };
         assert_eq!(nak.status_code, Nak::STATUS_MALFORMED);
@@ -336,8 +292,8 @@ fn the_message_report_reply_is_table_45_on_the_inquirys_device_id() {
         notes: NoteData::empty(),
     };
     let message = CiMessage::MessageReportReply {
-        header: header(CiDeviceId::Group),
-        to: muid(DST),
+        header: header_on(CiDeviceId::Group),
+        to: Muid::of(DST),
         scope,
     };
     let mut want = preamble(0x7E, 0x43, to_dst());
@@ -357,8 +313,8 @@ fn the_end_of_message_report_is_table_46_with_no_body() {
         (CiDeviceId::FunctionBlock, 0x7F),
     ] {
         let message = CiMessage::MessageReportEnd {
-            header: header(address),
-            to: muid(DST),
+            header: header_on(address),
+            to: Muid::of(DST),
         };
         let want = preamble(id, 0x44, to_dst());
         assert_eq!(message.encode(), want);

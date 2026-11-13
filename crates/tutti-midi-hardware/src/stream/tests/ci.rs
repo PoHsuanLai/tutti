@@ -30,11 +30,15 @@ fn say(wire: &Wire, group: MidiGroup, message: &CiMessage, ms: u64) {
 
 /// A peer of ours on the wire, and what it declares.
 fn peer() -> Muid {
-    Muid::new(0x0012_3456).unwrap()
+    Muid::of(0x0012_3456)
 }
 
 fn peer_data() -> DiscoveryData {
-    DiscoveryData::new(identity(), CiCategories::empty(), MaxSysexSize::of(256))
+    peer_data_of(CiCategories::empty())
+}
+
+fn peer_data_of(categories: CiCategories) -> DiscoveryData {
+    DiscoveryData::new(identity(), categories, MaxSysexSize::of(256))
 }
 
 fn polled(wire: &Wire, ms: u64) -> Vec<Polled> {
@@ -328,7 +332,7 @@ fn an_invalidate_muid_of_a_found_peer_removes_it_and_is_reported() {
         &wire,
         GROUP_0,
         &CiMessage::InvalidateMuid {
-            header: CiHeader::new(Muid::new(0x00AB_CDEF).unwrap()),
+            header: CiHeader::new(Muid::of(0x00AB_CDEF)),
             target: peer(),
         },
         60,
@@ -730,7 +734,7 @@ fn a_gap_in_the_stream_ring_never_joins_a_midi_ci_message() {
     assert!(wire.session.ci_peers(&wire.id).is_empty());
 
     // A whole message after it is read.
-    let other = Muid::new(0x0065_4321).unwrap();
+    let other = Muid::of(0x0065_4321);
     reply_at(&wire, reply(other), 80);
     let found = polled(&wire, 90);
     assert!(
@@ -771,6 +775,29 @@ fn discoveries_of(sent: Vec<(MidiGroup, CiMessage)>) -> Vec<(MidiGroup, Muid)> {
             _ => None,
         })
         .collect()
+}
+
+/// A MIDI 1.0 port whose peer declared `categories` and whose first inquiry
+/// went out; the wire's clock is at 50 ms. What was sent is read off.
+fn peer_declaring(categories: CiCategories) -> (Wire, Muid) {
+    let (wire, ours) = midi1_running();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data: peer_data_of(categories),
+        },
+        40,
+    );
+    let found = polled(&wire, 50);
+    assert!(
+        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(_))]),
+        "{found:?}"
+    );
+    let _ = received(&wire);
+    (wire, ours)
 }
 
 /// A peer found on `group` by the device whose MUID is `ours`.
@@ -984,14 +1011,6 @@ use tutti_midi_device::{
 };
 use tutti_ump::MidiChannel;
 
-fn profile_peer_data() -> DiscoveryData {
-    DiscoveryData::new(
-        identity(),
-        CiCategories::PROFILE_CONFIGURATION,
-        MaxSysexSize::of(256),
-    )
-}
-
 fn profile(number: u8) -> ProfileId {
     ProfileId::Standard(StandardProfile::new(
         U7::of(0x21),
@@ -999,14 +1018,6 @@ fn profile(number: u8) -> ProfileId {
         U7::of(1),
         U7::of(1),
     ))
-}
-
-fn at(device_id: CiDeviceId, source: Muid) -> CiHeader {
-    CiHeader {
-        device_id,
-        ci_version: CI_VERSION,
-        source,
-    }
 }
 
 fn channel(n: u8) -> CiDeviceId {
@@ -1026,35 +1037,15 @@ fn reply_at_address(
         wire,
         GROUP_0,
         &CiMessage::ProfileReply {
-            header: at(address, peer()),
+            header: CiHeader {
+                device_id: address,
+                ..CiHeader::new(peer())
+            },
             to: ours,
             profiles: ProfileLists::new(enabled, disabled).unwrap(),
         },
         ms,
     );
-}
-
-/// A MIDI 1.0 port whose peer declared Profile Configuration and whose Profile
-/// Inquiry went out; the wire's clock is at 50 ms. What was sent is read off.
-fn profile_peer() -> (Wire, Muid) {
-    let (wire, ours) = midi1_running();
-    say(
-        &wire,
-        GROUP_0,
-        &CiMessage::DiscoveryReply {
-            header: CiHeader::new(peer()),
-            to: ours,
-            data: profile_peer_data(),
-        },
-        40,
-    );
-    let found = polled(&wire, 50);
-    assert!(
-        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(_))]),
-        "{found:?}"
-    );
-    let _ = received(&wire);
-    (wire, ours)
 }
 
 /// Channel 1 lists `enabled` and `disabled`, the Group lists `group`, and the
@@ -1103,7 +1094,7 @@ fn a_peer_that_declares_profile_configuration_is_sent_a_profile_inquiry() {
         &CiMessage::DiscoveryReply {
             header: CiHeader::new(peer()),
             to: ours,
-            data: profile_peer_data(),
+            data: peer_data_of(CiCategories::PROFILE_CONFIGURATION),
         },
         40,
     );
@@ -1118,7 +1109,7 @@ fn a_peer_that_declares_profile_configuration_is_sent_a_profile_inquiry() {
     assert_eq!(payload[9..13], peer().to_bytes(), "to the peer's");
 
     // Another peer, which declares no category, is sent nothing.
-    let other = Muid::new(0x0023_4567).unwrap();
+    let other = Muid::of(0x0023_4567);
     say(
         &wire,
         GROUP_0,
@@ -1141,7 +1132,7 @@ fn a_peer_that_declares_profile_configuration_is_sent_a_profile_inquiry() {
 /// Channel's is a handle that asks for a Channel count where a Group's has none.
 #[test]
 fn the_replies_to_profile_inquiry_become_the_peers_profiles_once_the_final_one_arrives() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     reply_at_address(
         &wire,
         ours,
@@ -1201,7 +1192,7 @@ fn the_replies_to_profile_inquiry_become_the_peers_profiles_once_the_final_one_a
 /// peer reports and updating what the session holds.
 #[test]
 fn a_set_profile_on_names_the_channel_and_its_enabled_report_updates_the_table() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
     let [ListedProfile::Channel(c)] = listed.as_slice() else {
@@ -1230,7 +1221,10 @@ fn a_set_profile_on_names_the_channel_and_its_enabled_report_updates_the_table()
         &wire,
         GROUP_0,
         &CiMessage::ProfileEnabled {
-            header: at(channel(0), peer()),
+            header: CiHeader {
+                device_id: channel(0),
+                ..CiHeader::new(peer())
+            },
             profile: profile(2),
             channels: ProfileChannels::of(3),
         },
@@ -1273,7 +1267,7 @@ fn a_set_profile_on_names_the_channel_and_its_enabled_report_updates_the_table()
 /// Report of section 7.11 resolves it.
 #[test]
 fn a_set_profile_on_a_group_asks_for_no_channels_and_off_is_resolved_by_the_disabled_report() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     known_profiles(&wire, ours, vec![], vec![], vec![profile(3)]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
     let [ListedProfile::Whole(whole)] = listed.as_slice() else {
@@ -1293,7 +1287,10 @@ fn a_set_profile_on_a_group_asks_for_no_channels_and_off_is_resolved_by_the_disa
         &wire,
         GROUP_0,
         &CiMessage::ProfileEnabled {
-            header: at(CiDeviceId::Group, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::Group,
+                ..CiHeader::new(peer())
+            },
             profile: profile(3),
             channels: ProfileChannels::of(0),
         },
@@ -1315,7 +1312,10 @@ fn a_set_profile_on_a_group_asks_for_no_channels_and_off_is_resolved_by_the_disa
         &wire,
         GROUP_0,
         &CiMessage::ProfileDisabled {
-            header: at(CiDeviceId::Group, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::Group,
+                ..CiHeader::new(peer())
+            },
             profile: profile(3),
             channels: ProfileChannels::of(0),
         },
@@ -1351,14 +1351,17 @@ fn a_set_profile_on_a_group_asks_for_no_channels_and_off_is_resolved_by_the_disa
 /// removal is then refused, since the peer no longer lists what it names.
 #[test]
 fn added_and_removed_reports_change_the_list_and_a_stale_handle_is_refused() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let stale: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
     say(
         &wire,
         GROUP_0,
         &CiMessage::ProfileAdded {
-            header: at(channel(0), peer()),
+            header: CiHeader {
+                device_id: channel(0),
+                ..CiHeader::new(peer())
+            },
             profile: profile(4),
         },
         110,
@@ -1377,7 +1380,10 @@ fn added_and_removed_reports_change_the_list_and_a_stale_handle_is_refused() {
         &wire,
         GROUP_0,
         &CiMessage::ProfileRemoved {
-            header: at(channel(0), peer()),
+            header: CiHeader {
+                device_id: channel(0),
+                ..CiHeader::new(peer())
+            },
             profile: profile(2),
         },
         130,
@@ -1405,7 +1411,7 @@ fn added_and_removed_reports_change_the_list_and_a_stale_handle_is_refused() {
 /// queued before it that the next poll would have sent.
 #[test]
 fn an_invalidate_muid_drops_the_peers_profiles_and_refuses_its_handles() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
     let ListedProfile::Channel(c) = &listed[0] else {
@@ -1418,7 +1424,7 @@ fn an_invalidate_muid_drops_the_peers_profiles_and_refuses_its_handles() {
         &wire,
         GROUP_0,
         &CiMessage::InvalidateMuid {
-            header: CiHeader::new(Muid::new(0x00AB_CDEF).unwrap()),
+            header: CiHeader::new(Muid::of(0x00AB_CDEF)),
             target: peer(),
         },
         110,
@@ -1446,7 +1452,7 @@ fn an_invalidate_muid_drops_the_peers_profiles_and_refuses_its_handles() {
 /// dropped and reported with them.
 #[test]
 fn disabling_midi_ci_drops_the_profiles() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     wire.session.disable_ci();
     let changes = polled(&wire, 110);
@@ -1465,7 +1471,7 @@ fn disabling_midi_ci_drops_the_profiles() {
 /// has passed since it was sent and not before; the table is left as it was.
 #[test]
 fn a_set_profile_nothing_answers_times_out_after_the_profile_timeout() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
     let ListedProfile::Channel(c) = &listed[0] else {
@@ -1505,7 +1511,7 @@ fn a_set_profile_nothing_answers_times_out_after_the_profile_timeout() {
 /// what was heard, and it is not known to be whole.
 #[test]
 fn an_inquiry_without_a_final_reply_times_out_keeping_what_was_heard() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     reply_at_address(&wire, ours, channel(0), vec![profile(1)], vec![], 60);
     let _ = polled(&wire, 70);
     let wait = PROFILE_TIMEOUT.as_millis() as u64;
@@ -1526,7 +1532,7 @@ fn an_inquiry_without_a_final_reply_times_out_keeping_what_was_heard() {
 /// not sent: it is reported as not sent, and only one Set Profile On went out.
 #[test]
 fn a_request_while_one_for_that_profile_waits_is_not_sent() {
-    let (wire, ours) = profile_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
     let ListedProfile::Channel(c) = &listed[0] else {
@@ -1567,14 +1573,6 @@ use tutti_midi_device::{
     ReportRequest, ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY, SystemMessages,
 };
 
-fn process_peer_data() -> DiscoveryData {
-    DiscoveryData::new(
-        identity(),
-        CiCategories::PROCESS_INQUIRY,
-        MaxSysexSize::of(256),
-    )
-}
-
 fn process_events(polled: &[Polled]) -> Vec<&ProcessChange> {
     polled
         .iter()
@@ -1585,29 +1583,6 @@ fn process_events(polled: &[Polled]) -> Vec<&ProcessChange> {
         .collect()
 }
 
-/// A MIDI 1.0 port whose peer declared Process Inquiry and whose capabilities
-/// inquiry went out; the wire's clock is at 50 ms. What was sent is read off.
-fn process_peer() -> (Wire, Muid) {
-    let (wire, ours) = midi1_running();
-    say(
-        &wire,
-        GROUP_0,
-        &CiMessage::DiscoveryReply {
-            header: CiHeader::new(peer()),
-            to: ours,
-            data: process_peer_data(),
-        },
-        40,
-    );
-    let found = polled(&wire, 50);
-    assert!(
-        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(_))]),
-        "{found:?}"
-    );
-    let _ = received(&wire);
-    (wire, ours)
-}
-
 /// The peer answers the capabilities inquiry with `features`; the clock is at
 /// 70 ms.
 fn answer_capabilities(wire: &Wire, ours: Muid, features: ProcessFeatures) {
@@ -1615,7 +1590,10 @@ fn answer_capabilities(wire: &Wire, ours: Muid, features: ProcessFeatures) {
         wire,
         GROUP_0,
         &CiMessage::ProcessCapabilitiesReply {
-            header: at(CiDeviceId::FunctionBlock, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::FunctionBlock,
+                ..CiHeader::new(peer())
+            },
             to: ours,
             features,
         },
@@ -1656,7 +1634,7 @@ fn a_peer_that_declares_process_inquiry_is_sent_a_capabilities_inquiry() {
         &CiMessage::DiscoveryReply {
             header: CiHeader::new(peer()),
             to: ours,
-            data: process_peer_data(),
+            data: peer_data_of(CiCategories::PROCESS_INQUIRY),
         },
         40,
     );
@@ -1677,7 +1655,7 @@ fn a_peer_that_declares_process_inquiry_is_sent_a_capabilities_inquiry() {
     );
 
     // A peer that declares no category is sent nothing.
-    let other = Muid::new(0x0023_4567).unwrap();
+    let other = Muid::of(0x0023_4567);
     say(
         &wire,
         GROUP_0,
@@ -1696,7 +1674,7 @@ fn a_peer_that_declares_process_inquiry_is_sent_a_capabilities_inquiry() {
 /// cannot be asked of: it has no handle.
 #[test]
 fn a_peer_whose_capabilities_lack_midi_message_report_has_no_handle() {
-    let (wire, ours) = process_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROCESS_INQUIRY);
     answer_capabilities(&wire, ours, ProcessFeatures::empty());
     assert!(wire.session.report_peers(&wire.id).is_empty());
 }
@@ -1707,7 +1685,7 @@ fn a_peer_whose_capabilities_lack_midi_message_report_has_no_handle() {
 /// the transaction is over.
 #[test]
 fn a_report_asks_with_table_43_and_ends_with_the_peers_end() {
-    let (wire, ours) = process_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROCESS_INQUIRY);
     answer_capabilities(&wire, ours, ProcessFeatures::MIDI_MESSAGE_REPORT);
     let listed = wire.session.report_peers(&wire.id);
     let [handle] = &listed[..] else {
@@ -1742,7 +1720,10 @@ fn a_report_asks_with_table_43_and_ends_with_the_peers_end() {
         &wire,
         GROUP_0,
         &CiMessage::MessageReportReply {
-            header: at(CiDeviceId::FunctionBlock, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::FunctionBlock,
+                ..CiHeader::new(peer())
+            },
             to: ours,
             scope: declared,
         },
@@ -1761,7 +1742,10 @@ fn a_report_asks_with_table_43_and_ends_with_the_peers_end() {
         &wire,
         GROUP_0,
         &CiMessage::MessageReportEnd {
-            header: at(CiDeviceId::FunctionBlock, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::FunctionBlock,
+                ..CiHeader::new(peer())
+            },
             to: ours,
         },
         140,
@@ -1786,7 +1770,7 @@ fn a_report_asks_with_table_43_and_ends_with_the_peers_end() {
 /// M2-101 section 9.8.1: a NAK ends a report even with no End.
 #[test]
 fn a_nak_of_a_report_ends_it_and_is_reported() {
-    let (wire, ours) = process_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROCESS_INQUIRY);
     answer_capabilities(&wire, ours, ProcessFeatures::MIDI_MESSAGE_REPORT);
     let handle = wire.session.report_peers(&wire.id)[0].clone();
     wire.session
@@ -1801,7 +1785,10 @@ fn a_nak_of_a_report_ends_it_and_is_reported() {
         &wire,
         GROUP_0,
         &CiMessage::Nak {
-            header: at(CiDeviceId::FunctionBlock, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::FunctionBlock,
+                ..CiHeader::new(peer())
+            },
             to: ours,
             nak: nak.clone(),
         },
@@ -1822,7 +1809,7 @@ fn a_nak_of_a_report_ends_it_and_is_reported() {
 /// since it was sent, and not before.
 #[test]
 fn a_report_nothing_answers_times_out_after_the_process_timeout() {
-    let (wire, ours) = process_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROCESS_INQUIRY);
     answer_capabilities(&wire, ours, ProcessFeatures::MIDI_MESSAGE_REPORT);
     let handle = wire.session.report_peers(&wire.id)[0].clone();
     wire.session
@@ -1847,7 +1834,7 @@ fn a_report_nothing_answers_times_out_after_the_process_timeout() {
 /// Inquiry went out.
 #[test]
 fn a_report_while_one_waits_is_not_sent() {
-    let (wire, ours) = process_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROCESS_INQUIRY);
     answer_capabilities(&wire, ours, ProcessFeatures::MIDI_MESSAGE_REPORT);
     let handle = wire.session.report_peers(&wire.id)[0].clone();
     let _ = received(&wire);
@@ -1871,7 +1858,7 @@ fn a_report_while_one_waits_is_not_sent() {
 /// A lost peer's handle is refused, and the peer's Initiator is reported dropped.
 #[test]
 fn a_lost_peer_drops_its_process_inquiry_and_refuses_its_handles() {
-    let (wire, ours) = process_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROCESS_INQUIRY);
     answer_capabilities(&wire, ours, ProcessFeatures::MIDI_MESSAGE_REPORT);
     let handle = wire.session.report_peers(&wire.id)[0].clone();
     say(
@@ -1901,7 +1888,7 @@ fn a_lost_peer_drops_its_process_inquiry_and_refuses_its_handles() {
 /// Disabling MIDI-CI drops the peers' Process Inquiry.
 #[test]
 fn disabling_midi_ci_drops_process_inquiry() {
-    let (wire, ours) = process_peer();
+    let (wire, ours) = peer_declaring(CiCategories::PROCESS_INQUIRY);
     answer_capabilities(&wire, ours, ProcessFeatures::MIDI_MESSAGE_REPORT);
     wire.session.disable_ci();
     let changes = polled(&wire, 110);
@@ -1925,7 +1912,10 @@ fn the_session_answers_a_process_inquiry_as_a_device_with_nothing_to_report() {
         &wire,
         GROUP_0,
         &CiMessage::ProcessCapabilitiesInquiry {
-            header: at(CiDeviceId::FunctionBlock, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::FunctionBlock,
+                ..CiHeader::new(peer())
+            },
             to: ours,
         },
         40,
@@ -1934,7 +1924,10 @@ fn the_session_answers_a_process_inquiry_as_a_device_with_nothing_to_report() {
         &wire,
         GROUP_0,
         &CiMessage::MessageReportInquiry {
-            header: at(CiDeviceId::Group, peer()),
+            header: CiHeader {
+                device_id: CiDeviceId::Group,
+                ..CiHeader::new(peer())
+            },
             to: ours,
             control: DataControl::Full,
             scope: ReportScope::Group {

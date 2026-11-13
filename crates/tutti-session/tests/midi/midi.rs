@@ -1279,7 +1279,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     })
     .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    let peer = Muid::new(0x0012_3456).unwrap();
+    let peer = Muid::of(0x0012_3456);
     let data = DiscoveryData::new(
         tutti_ump::DeviceIdentity {
             manufacturer: tutti_ump::ManufacturerId::of(0x41),
@@ -1403,7 +1403,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     })
     .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    let peer = Muid::new(0x0012_3456).unwrap();
+    let peer = Muid::of(0x0012_3456);
     let profile = ProfileId::Standard(StandardProfile::new(
         U7::of(0x21),
         U7::of(2),
@@ -1589,7 +1589,7 @@ fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
     })
     .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    let peer = Muid::new(0x0012_3456).unwrap();
+    let peer = Muid::of(0x0012_3456);
     let at = |device_id| CiHeader {
         device_id,
         ci_version: CI_VERSION,

@@ -29,6 +29,7 @@ mod device;
 mod discovery;
 mod endpoint;
 mod initiator;
+mod link;
 mod pe;
 mod process;
 mod process_initiator;
@@ -36,6 +37,7 @@ mod profile;
 mod read;
 mod status;
 mod text;
+mod wait;
 
 pub use device::{CiAction, CiDevice, CiPeer, DISCOVERY_WINDOW};
 pub use discovery::{
@@ -56,7 +58,7 @@ pub use pe::{
     PeReassemblyError, PeReassemblyLimits, PeReceived, PeRefused, PeReply, PeRequest, PeRequestId,
     PeReservedProperty, PeSignal, PeStatus, PeStep, PeSubscription, PeTerminator, PeTransaction,
     PeUpdateCommand, PeValue, PropertyName, ResourceId, ResourceName, StreamLimit, SubscribeId,
-    TimeoutWait, decode_body, encode_body, mcoded7, split_message,
+    decode_body, encode_body, mcoded7, split_message,
 };
 pub use process::{
     ChannelControllers, DataControl, NotADataControl, NoteData, ProcessFeatures, ReportScope,
@@ -76,6 +78,7 @@ pub use profile::{
 };
 pub use status::{Ack, Nak};
 pub use text::MessageText;
+pub use wait::TimeoutWait;
 
 /// Universal SysEx non-real-time id, the first byte of every CI message: `0x7E`.
 pub const CI_UNIVERSAL_SYSEX: u8 = 0x7E;
@@ -240,6 +243,8 @@ impl From<CiDeviceId> for u8 {
 /// address is a [`Destination`], not a `Muid`. A MUID is drawn from an OS random
 /// source by whoever owns the device; this type only checks one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
 pub struct Muid(u32);
 
 impl Muid {
@@ -257,6 +262,21 @@ impl Muid {
             Some(Muid(raw))
         } else {
             None
+        }
+    }
+
+    /// The MUID of a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is no MUID [`Muid::new`] takes; in a `const` that is a compile
+    /// error.
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: u32) -> Self {
+        match Self::new(raw) {
+            Some(muid) => muid,
+            None => panic!("not a MUID a device can own"),
         }
     }
 
@@ -1207,5 +1227,7 @@ impl Unread {
     }
 }
 
+#[cfg(test)]
+mod testing;
 #[cfg(test)]
 mod tests;

@@ -1,71 +1,36 @@
 use std::time::{Duration, Instant};
 
-use tutti_ump::{MidiChannel, U7};
+use tutti_ump::MidiChannel;
 
+use super::super::testing::{OTHER, OURS, PEER, header_from, nak, sent, wait};
 use super::super::*;
-
-const OURS: u32 = 0x0100_0001;
-const PEER: u32 = 0x0200_0002;
-const OTHER: u32 = 0x0300_0003;
-
-fn muid(raw: u32) -> Muid {
-    Muid::new(raw).unwrap()
-}
 
 fn start() -> (ProcessInitiator, Vec<ProcessAction>, Instant) {
     let now = Instant::now();
-    let (initiator, actions) = ProcessInitiator::new(muid(OURS), muid(PEER), now);
+    let (initiator, actions) = ProcessInitiator::new(Muid::of(OURS), Muid::of(PEER), now);
     (initiator, actions, now)
 }
 
-fn header(source: u32, address: CiDeviceId) -> CiHeader {
-    CiHeader {
-        device_id: address,
-        ci_version: CI_VERSION,
-        source: muid(source),
-    }
-}
-
-fn message(message: CiMessage) -> Decoded {
-    Decoded::Message(message)
-}
-
 fn features_reply(features: ProcessFeatures) -> Decoded {
-    message(CiMessage::ProcessCapabilitiesReply {
-        header: header(PEER, CiDeviceId::FunctionBlock),
-        to: muid(OURS),
+    Decoded::Message(CiMessage::ProcessCapabilitiesReply {
+        header: header_from(PEER, CiDeviceId::FunctionBlock),
+        to: Muid::of(OURS),
         features,
     })
 }
 
 fn begin(scope: ReportScope) -> Decoded {
-    message(CiMessage::MessageReportReply {
-        header: header(PEER, scope.address()),
-        to: muid(OURS),
+    Decoded::Message(CiMessage::MessageReportReply {
+        header: header_from(PEER, scope.address()),
+        to: Muid::of(OURS),
         scope,
     })
 }
 
 fn end(address: CiDeviceId) -> Decoded {
-    message(CiMessage::MessageReportEnd {
-        header: header(PEER, address),
-        to: muid(OURS),
-    })
-}
-
-fn nak(original: u8, address: CiDeviceId, status: U7) -> Decoded {
-    message(CiMessage::Nak {
-        header: header(PEER, address),
-        to: muid(OURS),
-        nak: Nak::new(U7::of(original), status),
-    })
-}
-
-fn wait(original: u8, address: CiDeviceId, tenths: u8) -> Decoded {
-    message(CiMessage::Ack {
-        header: header(PEER, address),
-        to: muid(OURS),
-        ack: Ack::new(U7::of(original), Ack::STATUS_TIMEOUT_WAIT).with_status_data(U7::of(tenths)),
+    Decoded::Message(CiMessage::MessageReportEnd {
+        header: header_from(PEER, address),
+        to: Muid::of(OURS),
     })
 }
 
@@ -97,16 +62,6 @@ fn known(features: ProcessFeatures) -> (ProcessInitiator, Instant) {
     (initiator, now)
 }
 
-fn sent(actions: &[ProcessAction]) -> Vec<&CiMessage> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            ProcessAction::Send(message) => Some(message),
-            _ => None,
-        })
-        .collect()
-}
-
 #[test]
 fn it_starts_with_a_capabilities_inquiry_to_the_peer_on_the_function_block() {
     // §9.2: the Destination is the Function Block, never a Channel.
@@ -115,9 +70,9 @@ fn it_starts_with_a_capabilities_inquiry_to_the_peer_on_the_function_block() {
         panic!("one inquiry, got {actions:?}");
     };
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
-    assert_eq!(header.source, muid(OURS));
-    assert_eq!(*to, muid(PEER));
-    assert_eq!(initiator.peer(), muid(PEER));
+    assert_eq!(header.source, Muid::of(OURS));
+    assert_eq!(*to, Muid::of(PEER));
+    assert_eq!(initiator.peer(), Muid::of(PEER));
     assert_eq!(initiator.features(), None);
     assert_eq!(initiator.deadline(), Some(now + PROCESS_TIMEOUT));
 }
@@ -167,8 +122,8 @@ fn a_silent_peer_times_out_the_capabilities_after_the_process_timeout() {
 fn a_nak_of_the_capabilities_inquiry_ends_it_as_refused() {
     let (mut initiator, _, now) = start();
     let refusal = nak(
-        SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
         CiDeviceId::FunctionBlock,
+        SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
         Nak::STATUS_MESSAGE_NOT_SUPPORTED,
     );
     let actions = initiator.on_message(&refusal, now);
@@ -202,7 +157,7 @@ fn a_report_is_one_inquiry_a_reply_and_an_end_on_the_inquirys_device_id() {
             panic!("one inquiry, got {actions:?}");
         };
         assert_eq!(header.device_id, address);
-        assert_eq!(*to, muid(PEER));
+        assert_eq!(*to, Muid::of(PEER));
         assert_eq!(*control, DataControl::NonDefault);
         assert_eq!(*scope, request.scope);
         assert!(initiator.is_reporting());
@@ -278,8 +233,8 @@ fn a_nak_ends_the_report_without_an_end() {
         initiator.on_message(&begin(everything(CiDeviceId::FunctionBlock)), now);
         let actions = initiator.on_message(
             &nak(
-                SUB_ID2_MESSAGE_REPORT_INQUIRY,
                 CiDeviceId::FunctionBlock,
+                SUB_ID2_MESSAGE_REPORT_INQUIRY,
                 status,
             ),
             now,
@@ -301,8 +256,8 @@ fn a_nak_of_the_report_before_the_reply_ends_it_too() {
     initiator.report(request, now).unwrap();
     let actions = initiator.on_message(
         &nak(
-            SUB_ID2_MESSAGE_REPORT_INQUIRY,
             channel,
+            SUB_ID2_MESSAGE_REPORT_INQUIRY,
             Nak::STATUS_NOT_IN_USE,
         ),
         now,
@@ -316,8 +271,8 @@ fn a_nak_of_the_capabilities_does_not_end_a_report() {
     let (mut initiator, now) = known(ProcessFeatures::MIDI_MESSAGE_REPORT);
     initiator.report(function_block(), now).unwrap();
     let refusal = nak(
-        SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
         CiDeviceId::FunctionBlock,
+        SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
         Nak::STATUS_NAK,
     );
     assert!(initiator.on_message(&refusal, now).is_empty());
@@ -352,8 +307,8 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
     let (mut initiator, _, now) = start();
     initiator.on_message(
         &wait(
-            SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
             CiDeviceId::FunctionBlock,
+            SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
             100,
         ),
         now,
@@ -361,8 +316,8 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
     assert_eq!(initiator.deadline(), Some(now + Duration::from_secs(10)));
     initiator.on_message(
         &wait(
-            SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
             CiDeviceId::FunctionBlock,
+            SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
             0,
         ),
         now,
@@ -373,8 +328,8 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
     initiator.report(function_block(), now).unwrap();
     initiator.on_message(
         &wait(
-            SUB_ID2_MESSAGE_REPORT_INQUIRY,
             CiDeviceId::FunctionBlock,
+            SUB_ID2_MESSAGE_REPORT_INQUIRY,
             50,
         ),
         now,
@@ -382,13 +337,13 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
     assert_eq!(initiator.deadline(), Some(now + Duration::from_secs(5)));
     // On another Device ID, or naming another message, it is not this report's.
     initiator.on_message(
-        &wait(SUB_ID2_MESSAGE_REPORT_INQUIRY, CiDeviceId::Group, 120),
+        &wait(CiDeviceId::Group, SUB_ID2_MESSAGE_REPORT_INQUIRY, 120),
         now,
     );
     initiator.on_message(
         &wait(
-            SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
             CiDeviceId::FunctionBlock,
+            SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
             120,
         ),
         now,
@@ -432,14 +387,14 @@ fn a_message_from_another_source_or_to_another_muid_is_not_this_peers() {
     let (mut initiator, now) = known(ProcessFeatures::MIDI_MESSAGE_REPORT);
     initiator.report(function_block(), now).unwrap();
     let scope = everything(CiDeviceId::FunctionBlock);
-    let from_other = message(CiMessage::MessageReportReply {
-        header: header(OTHER, CiDeviceId::FunctionBlock),
-        to: muid(OURS),
+    let from_other = Decoded::Message(CiMessage::MessageReportReply {
+        header: header_from(OTHER, CiDeviceId::FunctionBlock),
+        to: Muid::of(OURS),
         scope,
     });
-    let to_other = message(CiMessage::MessageReportReply {
-        header: header(PEER, CiDeviceId::FunctionBlock),
-        to: muid(OTHER),
+    let to_other = Decoded::Message(CiMessage::MessageReportReply {
+        header: header_from(PEER, CiDeviceId::FunctionBlock),
+        to: Muid::of(OTHER),
         scope,
     });
     assert!(initiator.on_message(&from_other, now).is_empty());

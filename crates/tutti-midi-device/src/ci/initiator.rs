@@ -70,21 +70,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
+use super::TimeoutWait;
+use super::link::Link;
+
 use tutti_ump::{MidiChannel, U7};
 
 use super::{
-    Ack, CI_VERSION, CiDeviceId, CiHeader, CiMessage, Decoded, Destination, DetailsData,
-    InquiryTarget, Muid, Nak, ProfileChannels, ProfileId, ProfileLists, ProfileState,
-    SUB_ID2_PROFILE_DETAILS_INQUIRY, SUB_ID2_PROFILE_INQUIRY, SUB_ID2_SET_PROFILE_OFF,
-    SUB_ID2_SET_PROFILE_ON, SpecificData,
+    Ack, CiDeviceId, CiHeader, CiMessage, Decoded, Destination, DetailsData, InquiryTarget, Muid,
+    Nak, ProfileChannels, ProfileId, ProfileLists, ProfileState, SUB_ID2_PROFILE_DETAILS_INQUIRY,
+    SUB_ID2_PROFILE_INQUIRY, SUB_ID2_SET_PROFILE_OFF, SUB_ID2_SET_PROFILE_ON, SpecificData,
 };
 
 /// How long a Profile Inquiry, Set Profile On or Off, or Details Inquiry waits for
 /// its answer: 3 seconds. See the module docs: tutti's figure, from §5.5.5.
 pub const PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// The unit of a Timeout Wait's Status Data (§5.10, Table 14).
-const WAIT_STEP: Duration = Duration::from_millis(100);
 
 /// Whether the five detail bytes of an ACK or a NAK name `profile` (§5.10.3, §5.11.3), or
 /// are zeroes, which a peer with nothing to name sends.
@@ -404,8 +403,7 @@ struct Pending {
 /// The Initiator of Profile Configuration with one peer.
 #[derive(Clone, Debug)]
 pub struct ProfileInitiator {
-    own: Muid,
-    peer: Muid,
+    link: Link,
     table: ProfileTable,
     known: bool,
     inquiry: Option<Inquiry>,
@@ -418,8 +416,7 @@ impl ProfileInitiator {
     #[must_use]
     pub fn new(own: Muid, peer: Muid, now: Instant) -> (Self, Vec<ProfileAction>) {
         let mut initiator = Self {
-            own,
-            peer,
+            link: Link { own, peer },
             table: ProfileTable::default(),
             known: false,
             inquiry: None,
@@ -432,7 +429,7 @@ impl ProfileInitiator {
     /// The peer's MUID.
     #[must_use]
     pub fn peer(&self) -> Muid {
-        self.peer
+        self.link.peer
     }
 
     /// The Profiles the peer is known to support.
@@ -577,8 +574,8 @@ impl ProfileInitiator {
         let Decoded::Message(message) = decoded else {
             return actions;
         };
-        let from_peer = message.header().source == self.peer;
-        let to_us = message.destination() == Destination::Muid(self.own);
+        let from_peer = self.link.is_from_peer(message);
+        let to_us = self.link.is_to_us(message);
         let address = message.header().device_id;
         match message {
             CiMessage::ProfileReply { profiles, .. } if from_peer && to_us => {
@@ -664,10 +661,10 @@ impl ProfileInitiator {
                     data: data.clone(),
                 });
             }
-            CiMessage::Ack { ack, .. }
-                if from_peer && to_us && ack.status_code == Ack::STATUS_TIMEOUT_WAIT =>
-            {
-                self.on_wait(address, ack, now);
+            CiMessage::Ack { ack, .. } if from_peer && to_us => {
+                if let Some(wait) = TimeoutWait::from_ack(ack) {
+                    self.on_wait(address, ack, wait, now);
+                }
             }
             CiMessage::Nak { nak, .. } if from_peer && to_us => {
                 self.on_nak(address, nak, &mut actions);
@@ -737,14 +734,13 @@ impl ProfileInitiator {
 
     /// A Timeout Wait: the transaction it names waits until `now` plus the time asked,
     /// when that is later than it already would.
-    fn on_wait(&mut self, address: CiDeviceId, ack: &Ack, now: Instant) {
-        let until = now + WAIT_STEP * u32::from(ack.status_data.get());
+    fn on_wait(&mut self, address: CiDeviceId, ack: &Ack, wait: TimeoutWait, now: Instant) {
         let original = ack.ack_sub_id2.get();
         if original == SUB_ID2_PROFILE_INQUIRY {
             if address == CiDeviceId::FunctionBlock
                 && let Some(inquiry) = self.inquiry.as_mut()
             {
-                inquiry.deadline = inquiry.deadline.max(until);
+                wait.extend(&mut inquiry.deadline, now);
             }
             return;
         }
@@ -754,7 +750,7 @@ impl ProfileInitiator {
                 && p.request.address() == address
                 && details_name(details, p.request.profile())
         }) {
-            pending.deadline = pending.deadline.max(until);
+            wait.extend(&mut pending.deadline, now);
         }
     }
 
@@ -806,14 +802,7 @@ impl ProfileInitiator {
         address: CiDeviceId,
         message: impl FnOnce(CiHeader, Muid) -> CiMessage,
     ) -> ProfileAction {
-        ProfileAction::Send(message(
-            CiHeader {
-                device_id: address,
-                ci_version: CI_VERSION,
-                source: self.own,
-            },
-            self.peer,
-        ))
+        ProfileAction::Send(self.link.message(address, message))
     }
 }
 

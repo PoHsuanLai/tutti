@@ -19,7 +19,7 @@ workspace = true
 # The hooks a test uses to reach what the safe API hides: the raw
 # `AudioUnit` behind a `Unit`, and the raw packet-list walkers. Off in a
 # production build; the host crate's tests turn it on.
-test-support = []
+testing = []
 
 [dependencies]
 # The MIDI 2.0 widening of what a plugin emits.

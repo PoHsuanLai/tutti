@@ -74,7 +74,7 @@
 //! its frames last at 48 kHz; nothing drops out.
 //!
 //! ```text
-//! cargo bench -p tutti-session --bench render_load --features synth,sampler,convolution,midi
+//! cargo bench -p tutti-session --bench render_load --features synth,sampler,midi
 //! ```
 
 use std::sync::Arc;

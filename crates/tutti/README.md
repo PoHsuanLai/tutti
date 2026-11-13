@@ -11,7 +11,7 @@ instead: the same engine plus the ECS adapter.
 
 ```toml
 [dependencies]
-tutti = { version = "0.0.1", features = ["device", "wav"] }
+tutti = { version = "0.0.1", features = ["device", "decode-wav"] }
 ```
 
 ## Quick start
@@ -100,7 +100,7 @@ naming the crate each item lives in; the modules below hold the deeper API.
 | `tutti::graph` | `tutti-graph` | the audio graph: builder, compiler, `Editor` / `Executor` | always |
 | `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation, VBAP and HRTF panners | always |
 | `tutti::device` | `tutti-cpal` | the sound card: CPAL output stream, mic capture, driver lifecycle | `device` |
-| `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders, `FileOut`, the encoders | `codec` (implied by every format and by `export`) |
+| `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders, `FileOut`, the encoders | `codec` (implied by every decode and encode feature and by `export`) |
 | `tutti::io` | `tutti-session` | recording: `Recorder` and its `PumpLoop` (the sink is `tutti::codec::FileOut`; a graph tap is a `Source` as it is) | `io` |
 | `tutti::export` | `tutti-export` | the offline render pipeline a `Bounce` drives: one pass of a graph into files or buffers, with progress and cancel | `export` |
 | `tutti::sampler` | `tutti-sampler` | sample playback: in-memory and streamed voices, time stretch | `sampler` |
@@ -127,18 +127,19 @@ None are on by default.
 - `device` — `tutti::device`, the sound card. Off by default so an offline
   render, a CI job or a server builds without ALSA or CoreAudio headers.
 - `jack` — JACK output through `tutti-cpal` (links libjack; implies `device`).
-- `wav`, `flac`, `mp3`, `ogg` — audio file decoders (each implies `codec`, and
+- `decode-wav`, `decode-flac`, `decode-mp3`, `decode-ogg` — audio file decoders (each implies `codec`, and
   enables the same decoder in the sampler when `sampler` is on).
-- `codec` — `tutti::codec`. Implied by every format.
+- `encode-wav`, `encode-flac`, `encode-aiff`, `encode-vorbis` — the encoders `tutti::codec` writes
+  (each implies `codec`; none implies `export`, and `encode-vorbis` is the one path to a C library).
+- `codec` — `tutti::codec`. Implied by every decode and encode feature.
 - `io` — `tutti::io`. Implied by `audio-io`.
 - `audio-io` — mic capture and recording (implies `io`; the capture stream
   itself needs `device`).
-- `export` — `tutti::export`.
+- `export` — `tutti::export` (implies `encode-wav`).
 - `midi` — `tutti::midi`, `tutti::ump`, `tutti::midi_protocol`, `tutti::midi_runtime`, `tutti::midi_file`. `crates/tutti/examples/midi_all.rs` uses every piece together, offline.
 - `midi-hardware` — `tutti::midi_hardware` (implies `midi`).
 - `synth`, `soundfont`, `sampler`, `dsp`, `modulation` — the
-  matching module (`dsp` gives both `tutti::dsp` and `tutti::measure`). `soundfont` implies `midi`; `sampler` implies `wav`.
-- `convolution` — the convolution reverb nodes in `tutti::nodes`.
+  matching module (`dsp` gives both `tutti::dsp` and `tutti::measure`). `soundfont` implies `midi`; `sampler` implies `decode-wav`.
 - `plugin` — `tutti::plugin` (implies `midi`), with one or more formats:
   `vst2`, `vst3`, `clap`, `au`. Each format links its SDK, which is why none
   is in `full`. The out-of-process plugin server is a separate binary,

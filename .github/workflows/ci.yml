@@ -139,7 +139,7 @@ jobs:
       - run: cargo xtask check-paths tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
       - run: cargo xtask check-paths tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
       # And `tutti-sampler`: its modules are private but `stretch` (the vocoder's
-      # `stretch::Unit` is named by its module) and the test-support `testing`.
+      # `stretch::Unit` is named by its module) and `testing`.
       - run: cargo xtask check-paths tutti_sampler clip error lanes probe streamer voice
       # And `tutti-tempo`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_tempo error grid map point segment
@@ -350,10 +350,17 @@ jobs:
       #
       # What was dark until this job existed:
       #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
-      #   tutti-export/*      — no format is default (ogg links C), so the library
-      #                         is linted with none and each of wav, flac, aiff
-      #                         and ogg alone; its own tests have all four on
-      #                         through a dev-dependency on itself
+      #   tutti-export        — no feature of its own; its tests have every
+      #                         `tutti-codec` encoder on through a dev-dependency
+      #   tutti-session/encode-*, tutti/encode-*, tutti/decode-* — the codec's
+      #                         own names, forwarded; `device,soundfont` and every
+      #                         decode and encode feature of the umbrella are
+      #                         linted together, `vst3,au` of the session as a library
+      #   tutti-sampler/decode-*, bevy — the library with none, with every
+      #                         decoder (ogg is in no test's dev-dependency), and
+      #                         `bevy` checked only (the adapter is parked);
+      #                         likewise `tutti-modulation/bevy`
+      #   tutti-plugin/vst3,au,serde — linted with their tests
       #   tutti-codec/*       — a `Format` variant exists only with its encode
       #                         feature, so each of none, encode-wav, encode-aiff,
       #                         encode-flac and encode-vorbis is built and tested
@@ -394,7 +401,7 @@ jobs:
       #                         runner's Azure kernel does not ship (no
       #                         `linux-modules-extra` package either). It fails,
       #                         never skips, without `/dev/snd/seq`
-      #   tutti-plugin-types/test-support — the `FakePlugin` a consumer's tests
+      #   tutti-plugin-types/testing — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/behaviour/unit_tests.rs's 5 extension tests
       #                         and the extension code they cover
@@ -432,11 +439,14 @@ jobs:
           cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings
           cargo clippy --locked -p tutti-export --lib -- -D warnings
-          cargo clippy --locked -p tutti-export --lib --features wav -- -D warnings
-          cargo clippy --locked -p tutti-export --lib --features flac -- -D warnings
-          cargo clippy --locked -p tutti-export --lib --features aiff -- -D warnings
-          cargo clippy --locked -p tutti-export --lib --features ogg -- -D warnings
-          cargo clippy --locked -p tutti-session --lib --features export-flac,export-aiff,export-ogg -- -D warnings
+          cargo clippy --locked -p tutti-session --lib --features export,encode-flac,encode-aiff,encode-vorbis -- -D warnings
+          cargo clippy --locked -p tutti-session --lib --features vst3,au -- -D warnings
+          cargo clippy --locked -p tutti --features device,soundfont,decode-wav,decode-flac,decode-mp3,decode-ogg,export,encode-flac,encode-aiff,encode-vorbis --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-sampler --lib -- -D warnings
+          cargo clippy --locked -p tutti-sampler --lib --features decode-wav,decode-flac,decode-mp3,decode-ogg -- -D warnings
+          cargo check --locked -p tutti-sampler --lib --features bevy
+          cargo check --locked -p tutti-modulation --features bevy
+          cargo clippy --locked -p tutti-plugin --features vst3,au,serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --features encode-wav --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --features encode-aiff --all-targets -- -D warnings
@@ -479,7 +489,7 @@ jobs:
           cargo nextest run --locked -p tutti --features clap,export,modulation,sampler,dsp,midi-hardware,synth
           cargo nextest run --locked -p tutti --features audio-io
           cargo nextest run --locked -p tutti --no-default-features --features io
-          cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg
+          cargo nextest run --locked -p tutti-session --features export,encode-flac,encode-aiff,encode-vorbis
           cargo nextest run --locked -p tutti-codec
           cargo nextest run --locked -p tutti-codec --features encode-wav
           cargo nextest run --locked -p tutti-codec --features encode-aiff
@@ -493,7 +503,7 @@ jobs:
           cargo nextest run --locked -p tutti-midi-device --features serde
           cargo nextest run --locked -p tutti-tempo --features serde
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
-          cargo nextest run --locked -p tutti-plugin-types --features test-support
+          cargo nextest run --locked -p tutti-plugin-types --features testing
           cargo nextest run --locked -p tutti-plugin-db --features json
           cargo nextest run --locked -p tutti-plugin-contract --features server
 
@@ -821,7 +831,7 @@ jobs:
       # each feature of the umbrellas alone (`xtask/src/gates/doc_features.rs`).
       # A workspace build turns on only what some member's edge enables, so an
       # item behind a feature nothing enables (a `contract` harness,
-      # `test-support`, a codec) and its links are documented by no line above;
+      # `testing`, a codec) and its links are documented by no line above;
       # broken links reached main from five crates that way. The member list and
       # the features are read from the manifests, so a new crate is covered.
       - run: cargo xtask check-doc-features

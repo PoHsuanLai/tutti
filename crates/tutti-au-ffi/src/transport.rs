@@ -321,7 +321,7 @@ impl TransportState {
     /// Returns a tuple rather than [`HostCallbackInfo`] because that struct is
     /// `pub(crate)` — its layout is an ABI contract with AudioToolbox, not
     /// something a caller should be able to construct.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub fn test_callback_info(
         &self,
@@ -347,7 +347,7 @@ impl TransportState {
     /// A safe door for a test above this crate, which forbids `unsafe`: the
     /// procs and the user data are this state's own, so the call is sound by
     /// construction.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub fn test_pull(&self) -> TestPull {
         let user = self as *const Self as *mut c_void;
@@ -715,7 +715,7 @@ impl Drop for HostCallbacks {
 
 /// What [`TransportState::test_pull`] read: the beat-and-tempo status, beat,
 /// tempo, musical-time fields, and the v1 transport's `changed` and `playing`.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub struct TestPull {

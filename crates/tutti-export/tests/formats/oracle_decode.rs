@@ -40,8 +40,6 @@
 //! failure) and 1 dB of level (Vorbis at default quality holds a pure tone to
 //! well under that).
 
-#![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use symphonia::core::audio::SampleBuffer;

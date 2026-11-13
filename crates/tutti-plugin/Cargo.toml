@@ -97,16 +97,17 @@ postcard = { version = "1.1.3", default-features = false, features = ["use-std"]
 # The catalog tests' scan hand-off.
 crossbeam-channel = "0.5"
 # The client's test-only knobs (`set_rate_timeout`, `settled_replies`).
-tutti-plugin-ipc = { path = "../tutti-plugin-ipc", features = ["test-support"] }
+tutti-plugin-ipc = { path = "../tutti-plugin-ipc", features = ["testing"] }
 tutti-engine = { path = "../tutti-engine" }
 # `contract::{drive_input, Direct}`: the in-process VST2 node driven by hand, as
 # a graph drives it, in its tests, allocation gate and bench.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 # `clap_fork.rs` exports through a forked plugin, to pin that a fork failing
 # mid-render fails the export by name. Acyclic: tutti-export does not depend on
-# tutti-plugin. WAV only, the one format the render's file targets need on; the test
-# renders to buffers.
-tutti-export = { path = "../tutti-export", default-features = false, features = ["wav"] }
+# tutti-plugin. WAV only (`encode-wav`), the one format the render's file targets
+# need on; the test renders to buffers.
+tutti-export = { path = "../tutti-export", default-features = false }
+tutti-codec = { path = "../tutti-codec", features = ["encode-wav"] }
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests, and
 # the control lane (`ControlLaneNode::for_foreign`) that drives a plugin's
 # parameters through its event input: what replaced the crate's own

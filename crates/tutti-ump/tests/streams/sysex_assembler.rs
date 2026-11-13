@@ -4,11 +4,8 @@
 //! The assembler holds no `Vec`: it cannot allocate by construction, and the
 //! two tests that push through `assert_no_alloc` pin it.
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_ump::{Message, MidiGroup, Sysex7Packet, SysexAssembler, SysexStatus, SysexStep, Ump};
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 /// The plugin layer's sizes: a longest message of 64 KiB of payload and two
 /// delimiters, and a block of 256 packets.

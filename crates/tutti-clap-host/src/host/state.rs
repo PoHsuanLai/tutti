@@ -8,10 +8,10 @@
 //! extension a request came from.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tutti_clap_ffi::{AudioClaim, ThreadRoles};
-use tutti_plugin_types::{MainThread, RequestWord};
+use tutti_plugin_types::{MainThread, ProcessWake, RequestWord};
 
 pub(crate) struct TimerEntry {
     pub id: u32,
@@ -44,25 +44,6 @@ pub struct PosixFdEntry {
     pub fd: i32,
     /// Raw `clap_posix_fd_flags` bits naming which events to watch for.
     pub flags: u32,
-}
-
-/// Plugin requests to change its own lifecycle, from `clap_host`'s core
-/// callbacks. Latched until the matching `take_*` drains it. (A restart, a
-/// main-thread callback, a latency or tail change and a rescan are not here:
-/// they are bits of [`HostState::requests`].)
-#[derive(Debug)]
-pub struct LifecycleFlags {
-    /// The plugin asked the host to resume calling `process`, having gone
-    /// idle earlier.
-    pub process_requested: AtomicBool,
-}
-
-impl LifecycleFlags {
-    fn new() -> Self {
-        Self {
-            process_requested: AtomicBool::new(false),
-        }
-    }
 }
 
 /// Notifications about values the host caches but the plugin owns. Each is
@@ -344,8 +325,10 @@ pub struct HostState {
     /// audio-ports or parameter rescan. The main thread takes it once per
     /// pass ([`Control::take_requests`](tutti_plugin_types::Control::take_requests)).
     pub requests: RequestWord,
-    /// Resume-processing requests.
-    pub lifecycle: LifecycleFlags,
+    /// What `request_process` raises: the host's wake for a plugin it parked.
+    /// Set once, by [`Control::bind_wake`](tutti_plugin_types::Control::bind_wake);
+    /// a request before then has nobody to wake.
+    pub process_wake: OnceLock<ProcessWake>,
     /// State-dirty notification.
     pub processing: ProcessingState,
     /// Editor close and resize requests.
@@ -373,7 +356,7 @@ impl HostState {
         Self {
             roles: Arc::new(ThreadRoles::new(main)),
             requests: RequestWord::new(),
-            lifecycle: LifecycleFlags::new(),
+            process_wake: OnceLock::new(),
             processing: ProcessingState::new(),
             gui: GuiState::new(),
             params: ParamState::new(),

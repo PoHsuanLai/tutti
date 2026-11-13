@@ -10,6 +10,9 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    commit-message:
+      prefix: build
+      include: scope
     open-pull-requests-limit: 1
   - package-ecosystem: github-actions
     directory: /
@@ -18,4 +21,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    commit-message:
+      prefix: build
+      include: scope
     open-pull-requests-limit: 1

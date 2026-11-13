@@ -473,6 +473,7 @@ fn measure_tail(unit: &support::corpus::AuRef) -> (f32, f32) {
 /// builds on `f32::max`, which returns the non-NaN operand — so a NaN-filled
 /// buffer reports a *small* peak and would pass. `measure_tail` asserts
 /// finiteness on every block it measures.
+/// Spec: au.select.AudioUnitReset
 #[test]
 fn reset_clears_a_reverb_tail() {
     let _g = lock();

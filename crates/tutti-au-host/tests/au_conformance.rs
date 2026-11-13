@@ -68,6 +68,7 @@ const BLOCK: u32 = 512;
 /// The typestate must agree with reality: rendering is refused until
 /// `AudioUnitInitialize` has run, because the AU has no render resources
 /// allocated before that and `AudioUnitRender` would fail inside the plugin.
+/// Spec: au.select.AudioUnitRender
 #[test]
 fn render_before_initialize_is_refused() {
     let _g = lock();
@@ -101,6 +102,7 @@ fn render_before_initialize_is_refused() {
 /// in the target state. A host that toggles bypass or changes rate leans on
 /// that; a double-initialize that reached `AudioUnitInitialize` twice would
 /// leak the AU's render resources.
+/// Spec: au.select.AudioUnitInitialize, au.select.AudioUnitUninitialize
 #[test]
 fn initialize_and_uninitialize_are_idempotent() {
     let _g = lock();
@@ -309,6 +311,7 @@ fn unknown_parameter_id_is_an_error() {
 /// `ClassInfo` save/restore is what a project file stores. The test mutates
 /// *away* from the saved value before restoring, so a no-op `set_state` — the
 /// failure mode where the blob is accepted and ignored — cannot pass.
+/// Spec: au.prop.ClassInfo
 #[test]
 fn state_save_restore_round_trips() {
     let _g = lock();
@@ -544,6 +547,7 @@ fn input_reaches_the_plugin() {
 /// AUDynamicsProcessor has a genuine 256-sample lookahead, so the conversion
 /// has something real to land on — and because the AU scales its own seconds
 /// value with the rate, the sample count is rate-invariant.
+/// Spec: au.prop.Latency
 #[test]
 fn reported_latency_is_the_plugins_own_in_samples() {
     let _g = lock();

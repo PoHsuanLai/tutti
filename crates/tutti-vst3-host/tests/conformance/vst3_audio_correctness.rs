@@ -1253,6 +1253,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
 /// never drains the output list silently drops everything an arpeggiator or
 /// MIDI-effect plugin produces. A block without a gain point emits nothing, so
 /// a host that invented events fails too.
+/// Spec: vst3.IEventList.addEvent
 #[test]
 fn midi_emitted_by_the_plugin_reaches_the_host() {
     const GAIN: u32 = 102;
@@ -1308,6 +1309,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 /// the getter and `dataexchange` in its constructor, so both answer identically
 /// however early they are asked. The probe answers `0` before `initialize` and
 /// `kNeedTempo` after, which is the only way to tell the two orderings apart.
+/// Spec: vst3.IProcessContextRequirements.getProcessContextRequirements
 #[test]
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
@@ -1415,6 +1417,7 @@ fn a_sysex_open_across_a_stop_is_dropped() {
 /// index, in the plugin's own order. The probe's ids are `100..=106`, none of
 /// them its position, so a host that listed positions, or stopped short of the
 /// count, fails here.
+/// Spec: vst3.IEditController.getParameterCount, vst3.IEditController.getParameterInfo
 #[test]
 fn the_listed_parameter_ids_are_the_plugins_own_in_order() {
     let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())

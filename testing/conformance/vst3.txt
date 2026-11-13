@@ -1,0 +1,246 @@
+# VST3 spec inventory. The spec is the SDK under `vendor/vst3-sdk/pluginterfaces`
+# (base, vst, gui headers). `cargo xtask conformance-inventory vst3` regenerates
+# the id, side, maturity and section columns from the headers; the others are
+# edited by hand. `cargo xtask check-conformance` holds (id, side, maturity) to
+# the headers.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids, one per pure virtual method of an interface (a class the header gives a
+# DECLARE_CLASS_IID): vst3.<Interface>.<method>, e.g. vst3.IComponent.setActive.
+# side: plugin for an interface the doc comment marks [plug imp], host for
+# [host imp], core for both marks or none (an unmarked interface takes the side
+# of the SDK interface it derives from). maturity: stable. section: the header's
+# path under pluginterfaces/, with the [released: x.y.z] mark when it has one.
+vst3.FUnknown.addRef | core | stable |  | base/funknown.h | take a reference and return the new count; a new object starts at one |  |  |
+vst3.FUnknown.queryInterface | core | stable |  | base/funknown.h | ask an object for a pointer to another interface by id, adding a reference on success |  |  |
+vst3.FUnknown.release | core | stable |  | base/funknown.h | drop a reference and return the new count; the object frees itself at zero |  |  |
+vst3.IAttributeList.getBinary | host | stable |  | vst/ivstattributes.h [released 3.0.0] | read a named binary value out of a message's attribute list |  |  |
+vst3.IAttributeList.getFloat | host | stable |  | vst/ivstattributes.h [released 3.0.0] | read a named floating-point value out of an attribute list |  |  |
+vst3.IAttributeList.getInt | host | stable |  | vst/ivstattributes.h [released 3.0.0] | read a named integer value out of an attribute list |  |  |
+vst3.IAttributeList.getString | host | stable |  | vst/ivstattributes.h [released 3.0.0] | read a named UTF-16 string out of an attribute list, its size counted in bytes |  |  |
+vst3.IAttributeList.setBinary | host | stable |  | vst/ivstattributes.h [released 3.0.0] | store a named binary value in an attribute list |  |  |
+vst3.IAttributeList.setFloat | host | stable |  | vst/ivstattributes.h [released 3.0.0] | store a named floating-point value in an attribute list |  |  |
+vst3.IAttributeList.setInt | host | stable |  | vst/ivstattributes.h [released 3.0.0] | store a named integer value in an attribute list |  |  |
+vst3.IAttributeList.setString | host | stable |  | vst/ivstattributes.h [released 3.0.0] | store a named, null-terminated UTF-16 string in an attribute list |  |  |
+vst3.IAttributes.get | host | stable |  | base/ipersistent.h | read back a value stored in an archive under an id |  |  |
+vst3.IAttributes.getBinaryData | host | stable |  | base/ipersistent.h | copy a stored binary value into a buffer of the stored size |  |  |
+vst3.IAttributes.getBinaryDataSize | host | stable |  | base/ipersistent.h | size in bytes of a stored binary value |  |  |
+vst3.IAttributes.getQueueItemCount | host | stable |  | base/ipersistent.h | number of items left in a named queue of the archive |  |  |
+vst3.IAttributes.queue | host | stable |  | base/ipersistent.h | store a list of same-typed values under an id |  |  |
+vst3.IAttributes.resetAllQueues | host | stable |  | base/ipersistent.h | rewind every queue of the archive |  |  |
+vst3.IAttributes.resetQueue | host | stable |  | base/ipersistent.h | rewind one queue so it can be read again from the start |  |  |
+vst3.IAttributes.set | host | stable |  | base/ipersistent.h | store any value, even a nested archive, under an id |  |  |
+vst3.IAttributes.setBinaryData | host | stable |  | base/ipersistent.h | store a binary value, optionally copying the bytes |  |  |
+vst3.IAttributes.unqueue | host | stable |  | base/ipersistent.h | read the next item of a stored list, until the queue runs empty |  |  |
+vst3.IAttributes2.countAttributes | host | stable |  | base/ipersistent.h | number of attributes in the archive |  |  |
+vst3.IAttributes2.getAttributeID | host | stable |  | base/ipersistent.h | id of the attribute at an index |  |  |
+vst3.IAudioPresentationLatency.setAudioPresentationLatencySamples | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.1.0] | host tells the plug-in the presentation latency of a bus in samples, for a direction and bus index |  |  |
+vst3.IAudioProcessor.canProcessSampleSize | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | host asks whether the plug-in handles 32-bit or 64-bit samples |  |  |
+vst3.IAudioProcessor.getBusArrangement | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | host reads the speaker arrangement of one bus |  |  |
+vst3.IAudioProcessor.getLatencySamples | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | plug-in reports its processing latency in samples |  |  |
+vst3.IAudioProcessor.getTailSamples | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | plug-in reports how many samples it keeps sounding after input stops, or the no-tail and infinite-tail markers |  |  |
+vst3.IAudioProcessor.process | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | one audio block, carrying parameter changes, events, buffers and the process context |  |  |
+vst3.IAudioProcessor.setBusArrangements | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | host proposes speaker arrangements for the inputs and outputs, the plug-in accepts or answers with its own |  |  |
+vst3.IAudioProcessor.setProcessing | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | host tells the plug-in whether processing is on, before any process call and after the last |  |  |
+vst3.IAudioProcessor.setupProcessing | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.0.0] | host passes sample rate, block size and sample size while the component is inactive |  |  |
+vst3.IAutomationState.setAutomationState | plugin | stable |  | vst/ivstautomationstate.h [released 3.6.5] | host tells the plug-in the track's automation state (off, read, write) |  |  |
+vst3.IBStream.read | core | stable |  | base/ibstream.h | read bytes from a stream, reporting how many were read |  |  |
+vst3.IBStream.seek | core | stable |  | base/ibstream.h | move a stream's position, absolute, relative or from the end |  |  |
+vst3.IBStream.tell | core | stable |  | base/ibstream.h | current position of a stream |  |  |
+vst3.IBStream.write | core | stable |  | base/ibstream.h | write bytes to a stream, reporting how many were written |  |  |
+vst3.ICloneable.clone | core | stable |  | base/icloneable.h [released N4.12] | make an exact copy of the object |  |  |
+vst3.IComponent.activateBus | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | host switches one bus on or off |  |  |
+vst3.IComponent.getBusCount | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | number of buses of a media type and direction |  |  |
+vst3.IComponent.getBusInfo | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | description of one bus: name, channel count, type, flags |  |  |
+vst3.IComponent.getControllerClassId | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | class id of the edit controller that goes with this component |  |  |
+vst3.IComponent.getRoutingInfo | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | which output bus an input bus or event channel feeds |  |  |
+vst3.IComponent.getState | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | write the component's whole state to a stream |  |  |
+vst3.IComponent.setActive | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | host activates or deactivates the component |  |  |
+vst3.IComponent.setIoMode | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | host sets the usage mode (simple, advanced, offline) before initialization |  |  |
+vst3.IComponent.setState | plugin | stable |  | vst/ivstcomponent.h [released 3.0.0] | restore the component's whole state from a stream |  |  |
+vst3.IComponentHandler.beginEdit | host | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | plug-in opens an edit gesture on a parameter |  |  |
+vst3.IComponentHandler.endEdit | host | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | plug-in closes an edit gesture on a parameter |  |  |
+vst3.IComponentHandler.performEdit | host | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | plug-in reports a new normalized value for a parameter inside a gesture |  |  |
+vst3.IComponentHandler.restartComponent | host | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | plug-in asks the host to re-read what changed, by restart flags |  |  |
+vst3.IComponentHandler2.finishGroupEdit | host | stable |  | vst/ivsteditcontroller.h [released 3.1.0] | ends a group of edits started by startGroupEdit |  |  |
+vst3.IComponentHandler2.requestOpenEditor | host | stable |  | vst/ivsteditcontroller.h [released 3.1.0] | plug-in asks the host to open its editor |  |  |
+vst3.IComponentHandler2.setDirty | host | stable |  | vst/ivsteditcontroller.h [released 3.1.0] | plug-in says its non-parameter state changed since the last save |  |  |
+vst3.IComponentHandler2.startGroupEdit | host | stable |  | vst/ivsteditcontroller.h [released 3.1.0] | begins a group of edits the host treats as one |  |  |
+vst3.IComponentHandler3.createContextMenu | host | stable |  | vst/ivstcontextmenu.h [released 3.5.0] | plug-in asks the host for a context menu for a parameter or the plug-in |  |  |
+vst3.IComponentHandlerBusActivation.requestBusActivation | host | stable |  | vst/ivsteditcontroller.h [released 3.6.8] | plug-in asks the host to switch a bus on or off |  |  |
+vst3.IComponentHandlerSystemTime.getSystemTime | core | stable |  | vst/ivsteditcontroller.h | host's current system time, the clock the process context uses |  |  |
+vst3.IConnectionPoint.connect | core | stable |  | vst/ivstmessage.h [released 3.0.0] | link this connection point to another |  |  |
+vst3.IConnectionPoint.disconnect | core | stable |  | vst/ivstmessage.h [released 3.0.0] | unlink a connection point |  |  |
+vst3.IConnectionPoint.notify | core | stable |  | vst/ivstmessage.h [released 3.0.0] | deliver a message from the linked connection point |  |  |
+vst3.IContextMenu.addItem | host | stable |  | vst/ivstcontextmenu.h [released 3.5.0] | add an entry and its target to a host context menu |  |  |
+vst3.IContextMenu.getItem | host | stable |  | vst/ivstcontextmenu.h [released 3.5.0] | read one entry of a context menu and its target |  |  |
+vst3.IContextMenu.getItemCount | host | stable |  | vst/ivstcontextmenu.h [released 3.5.0] | number of entries in a context menu |  |  |
+vst3.IContextMenu.popup | host | stable |  | vst/ivstcontextmenu.h [released 3.5.0] | show the menu at a position in the plug-in's view |  |  |
+vst3.IContextMenu.removeItem | host | stable |  | vst/ivstcontextmenu.h [released 3.5.0] | remove an entry from a context menu |  |  |
+vst3.IContextMenuTarget.executeMenuItem | core | stable |  | vst/ivstcontextmenu.h [released 3.5.0] | the chosen entry's tag is run |  |  |
+vst3.IDataExchangeHandler.closeQueue | host | stable |  | vst/ivstdataexchange.h [released 3.7.9] | close a data-exchange queue and free its blocks |  |  |
+vst3.IDataExchangeHandler.freeBlock | host | stable |  | vst/ivstdataexchange.h [released 3.7.9] | give a locked block back, from inside the process call |  |  |
+vst3.IDataExchangeHandler.lockBlock | host | stable |  | vst/ivstdataexchange.h [released 3.7.9] | take a free block for writing, from inside the process call |  |  |
+vst3.IDataExchangeHandler.openQueue | host | stable |  | vst/ivstdataexchange.h [released 3.7.9] | open a queue of blocks from the processor to the controller, from the main thread |  |  |
+vst3.IDataExchangeReceiver.onDataExchangeBlocksReceived | plugin | stable |  | vst/ivstdataexchange.h [released 3.7.9] | blocks arrived from the processor |  |  |
+vst3.IDataExchangeReceiver.queueClosed | plugin | stable |  | vst/ivstdataexchange.h [released 3.7.9] | the processor closed a queue |  |  |
+vst3.IDataExchangeReceiver.queueOpened | plugin | stable |  | vst/ivstdataexchange.h [released 3.7.9] | the processor opened a queue |  |  |
+vst3.IDependent.update | plugin | stable |  | base/iupdatehandler.h | a watched object changed |  |  |
+vst3.IEditController.createView | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | build the editor view by name |  |  |
+vst3.IEditController.getParamNormalized | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | current normalized value of a parameter |  |  |
+vst3.IEditController.getParamStringByValue | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | text for a normalized value of a parameter |  |  |
+vst3.IEditController.getParamValueByString | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | normalized value for a typed text of a parameter |  |  |
+vst3.IEditController.getParameterCount | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | number of parameters the controller exports |  |  |
+vst3.IEditController.getParameterInfo | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | description of the parameter at an index: id, title, units, step count, flags |  |  |
+vst3.IEditController.getState | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | write the controller's own state to a stream |  |  |
+vst3.IEditController.normalizedParamToPlain | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | convert a normalized value to the parameter's plain value |  |  |
+vst3.IEditController.plainParamToNormalized | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | convert a plain value to the parameter's normalized value |  |  |
+vst3.IEditController.setComponentHandler | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | host hands the controller its callback to the host |  |  |
+vst3.IEditController.setComponentState | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | host passes the component's saved state to the controller |  |  |
+vst3.IEditController.setParamNormalized | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | set a parameter's normalized value from the host |  |  |
+vst3.IEditController.setState | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.0] | restore the controller's own state from a stream |  |  |
+vst3.IEditController2.openAboutBox | plugin | stable |  | vst/ivsteditcontroller.h [released 3.1.0] | host asks the plug-in to show, or just report it can show, its about box |  |  |
+vst3.IEditController2.openHelp | plugin | stable |  | vst/ivsteditcontroller.h [released 3.1.0] | host asks the plug-in to open its help |  |  |
+vst3.IEditController2.setKnobMode | plugin | stable |  | vst/ivsteditcontroller.h [released 3.1.0] | host sets how knobs respond to the mouse |  |  |
+vst3.IEditControllerHostEditing.beginEditFromHost | plugin | stable |  | vst/ivsteditcontroller.h [released 3.5.0] | host opens a gesture it drives on a parameter |  |  |
+vst3.IEditControllerHostEditing.endEditFromHost | plugin | stable |  | vst/ivsteditcontroller.h [released 3.5.0] | host closes a gesture it drives on a parameter |  |  |
+vst3.IErrorContext.disableErrorUI | plugin | stable |  | base/ierrorcontext.h [released Sequel 2] | ask the plug-in not to show error dialogs |  |  |
+vst3.IErrorContext.errorMessageShown | plugin | stable |  | base/ierrorcontext.h [released Sequel 2] | plug-in says whether it showed the error itself |  |  |
+vst3.IErrorContext.getErrorMessage | plugin | stable |  | base/ierrorcontext.h [released Sequel 2] | the error text the host may show |  |  |
+vst3.IEventHandler.onFDIsSet | plugin | stable |  | gui/iplugview.h [released 3.6.8] | a registered file descriptor is ready |  |  |
+vst3.IEventList.addEvent | host | stable |  | vst/ivstevents.h [released 3.0.0] | append an event to a list |  |  |
+vst3.IEventList.getEvent | host | stable |  | vst/ivstevents.h [released 3.0.0] | read the event at an index |  |  |
+vst3.IEventList.getEventCount | host | stable |  | vst/ivstevents.h [released 3.0.0] | number of events in a list |  |  |
+vst3.IHostApplication.createInstance | host | stable |  | vst/ivsthostapplication.h [released 3.0.0] | host builds one of its own objects (a message, an attribute list) by class id |  |  |
+vst3.IHostApplication.getName | host | stable |  | vst/ivsthostapplication.h [released 3.0.0] | host's name as text |  |  |
+vst3.IInfoListener.setChannelContextInfos | plugin | stable |  | vst/ivstchannelcontextinfo.h [released 3.6.5] | host passes the channel's name, colour and position to the plug-in |  |  |
+vst3.IInterAppAudioConnectionNotification.onInterAppAudioConnectionStateChange | plugin | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | an inter-app audio connection came or went |  |  |
+vst3.IInterAppAudioHost.connectedToHost | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | whether an inter-app audio connection exists |  |  |
+vst3.IInterAppAudioHost.createPresetManager | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | build the host's preset manager for a class |  |  |
+vst3.IInterAppAudioHost.getHostIcon | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | the host's icon image |  |  |
+vst3.IInterAppAudioHost.getScreenSize | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | size and scale of the screen |  |  |
+vst3.IInterAppAudioHost.scheduleEventFromUI | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | queue an event from the UI thread |  |  |
+vst3.IInterAppAudioHost.sendRemoteControlEvent | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | send a remote-control event to the host |  |  |
+vst3.IInterAppAudioHost.showSettingsView | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | show the host's MIDI and tempo settings |  |  |
+vst3.IInterAppAudioHost.switchToHost | host | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | bring the host app to the front |  |  |
+vst3.IInterAppAudioPresetManager.loadNextPreset | plugin | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | load the next preset |  |  |
+vst3.IInterAppAudioPresetManager.loadPreviousPreset | plugin | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | load the previous preset |  |  |
+vst3.IInterAppAudioPresetManager.runLoadPresetBrowser | plugin | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | open the browser to load a preset |  |  |
+vst3.IInterAppAudioPresetManager.runSavePresetBrowser | plugin | stable |  | vst/ivstinterappaudio.h [released 3.6.0] | open the browser to save a preset |  |  |
+vst3.IKeyswitchController.getKeyswitchCount | plugin | stable |  | vst/ivstnoteexpression.h [released 3.5.0] | number of key switches for an event bus and channel |  |  |
+vst3.IKeyswitchController.getKeyswitchInfo | plugin | stable |  | vst/ivstnoteexpression.h [released 3.5.0] | description of one key switch |  |  |
+vst3.IMessage.getAttributes | host | stable |  | vst/ivstmessage.h [released 3.0.0] | the message's attribute list |  |  |
+vst3.IMessage.getMessageID | host | stable |  | vst/ivstmessage.h [released 3.0.0] | the message's id string |  |  |
+vst3.IMessage.setMessageID | host | stable |  | vst/ivstmessage.h [released 3.0.0] | set the message's id string |  |  |
+vst3.IMidiLearn.onLiveMIDIControllerInput | plugin | stable |  | vst/ivstmidilearn.h [released 3.6.12] | host reports a live MIDI controller change on a bus and channel |  |  |
+vst3.IMidiLearn2.onLiveMidi1ControllerInput | plugin | stable |  | vst/ivstmidimapping2.h [released 3.8.0] | host reports a live MIDI 1.0 controller change for learning |  |  |
+vst3.IMidiLearn2.onLiveMidi2ControllerInput | plugin | stable |  | vst/ivstmidimapping2.h [released 3.8.0] | host reports a live MIDI 2.0 controller change for learning |  |  |
+vst3.IMidiMapping.getMidiControllerAssignment | plugin | stable |  | vst/ivsteditcontroller.h [released 3.0.1] | the parameter a MIDI controller on a bus and channel maps to |  |  |
+vst3.IMidiMapping2.getMidi1ControllerAssignments | plugin | stable |  | vst/ivstmidimapping2.h [released 3.8.0] | fill the list of MIDI 1.0 controller to parameter assignments |  |  |
+vst3.IMidiMapping2.getMidi2ControllerAssignments | plugin | stable |  | vst/ivstmidimapping2.h [released 3.8.0] | fill the list of MIDI 2.0 controller to parameter assignments |  |  |
+vst3.IMidiMapping2.getNumMidi1ControllerAssignments | plugin | stable |  | vst/ivstmidimapping2.h [released 3.8.0] | number of MIDI 1.0 controller assignments for a direction |  |  |
+vst3.IMidiMapping2.getNumMidi2ControllerAssignments | plugin | stable |  | vst/ivstmidimapping2.h [released 3.8.0] | number of MIDI 2.0 controller assignments for a direction |  |  |
+vst3.INoteExpressionController.getNoteExpressionCount | plugin | stable |  | vst/ivstnoteexpression.h [released 3.5.0] | number of note expression types on a bus and channel |  |  |
+vst3.INoteExpressionController.getNoteExpressionInfo | plugin | stable |  | vst/ivstnoteexpression.h [released 3.5.0] | description of one note expression type |  |  |
+vst3.INoteExpressionController.getNoteExpressionStringByValue | plugin | stable |  | vst/ivstnoteexpression.h [released 3.5.0] | text for a normalized note expression value |  |  |
+vst3.INoteExpressionController.getNoteExpressionValueByString | plugin | stable |  | vst/ivstnoteexpression.h [released 3.5.0] | normalized note expression value for a typed text |  |  |
+vst3.INoteExpressionPhysicalUIMapping.getPhysicalUIMapping | plugin | stable |  | vst/ivstphysicalui.h [released 3.6.11] | fill the list mapping physical controls to note expressions |  |  |
+vst3.IParamValueQueue.addPoint | host | stable |  | vst/ivstparameterchanges.h [released 3.0.0] | append a (sample offset, value) point to a parameter's queue |  |  |
+vst3.IParamValueQueue.getParameterId | host | stable |  | vst/ivstparameterchanges.h [released 3.0.0] | the parameter the queue belongs to |  |  |
+vst3.IParamValueQueue.getPoint | host | stable |  | vst/ivstparameterchanges.h [released 3.0.0] | read a point's offset and value |  |  |
+vst3.IParamValueQueue.getPointCount | host | stable |  | vst/ivstparameterchanges.h [released 3.0.0] | number of points in the queue |  |  |
+vst3.IParameterChanges.addParameterData | host | stable |  | vst/ivstparameterchanges.h [released 3.0.0] | add a queue for a parameter id and return it |  |  |
+vst3.IParameterChanges.getParameterCount | host | stable |  | vst/ivstparameterchanges.h [released 3.0.0] | number of parameter queues in the block |  |  |
+vst3.IParameterChanges.getParameterData | host | stable |  | vst/ivstparameterchanges.h [released 3.0.0] | the queue at an index |  |  |
+vst3.IParameterFinder.findParameter | plugin | stable |  | vst/ivstplugview.h [released 3.0.2] | which parameter sits at a position in the view |  |  |
+vst3.IParameterFunctionName.getParameterIDFromFunctionName | plugin | stable |  | vst/ivstparameterfunctionname.h [released 3.7.0] | the parameter a unit assigns to a named function |  |  |
+vst3.IPersistent.getClassID | plugin | stable |  | base/ipersistent.h | unique class id the object is recreated from |  |  |
+vst3.IPersistent.loadAttributes | plugin | stable |  | base/ipersistent.h | restore the object from an archive |  |  |
+vst3.IPersistent.saveAttributes | plugin | stable |  | base/ipersistent.h | store the object in an archive |  |  |
+vst3.IPlugFrame.resizeView | host | stable |  | gui/iplugview.h [released 3.0.0] | plug-in asks the host to resize its view to a rect |  |  |
+vst3.IPlugInterfaceSupport.isPlugInterfaceSupported | host | stable |  | vst/ivstpluginterfacesupport.h [released 3.6.12] | whether the host supports an interface, by id |  |  |
+vst3.IPlugView.attached | plugin | stable |  | gui/iplugview.h [released 3.0.0] | the parent window exists, so the view creates its platform view inside it |  |  |
+vst3.IPlugView.canResize | plugin | stable |  | gui/iplugview.h [released 3.0.0] | whether the user may resize the view |  |  |
+vst3.IPlugView.checkSizeConstraint | plugin | stable |  | gui/iplugview.h [released 3.0.0] | host asks, during live resize, what size the view accepts |  |  |
+vst3.IPlugView.getSize | plugin | stable |  | gui/iplugview.h [released 3.0.0] | the view's current size |  |  |
+vst3.IPlugView.isPlatformTypeSupported | plugin | stable |  | gui/iplugview.h [released 3.0.0] | whether the view can attach to a platform window type |  |  |
+vst3.IPlugView.onFocus | plugin | stable |  | gui/iplugview.h [released 3.0.0] | focus gained or lost |  |  |
+vst3.IPlugView.onKeyDown | plugin | stable |  | gui/iplugview.h [released 3.0.0] | a key went down |  |  |
+vst3.IPlugView.onKeyUp | plugin | stable |  | gui/iplugview.h [released 3.0.0] | a key went up |  |  |
+vst3.IPlugView.onSize | plugin | stable |  | gui/iplugview.h [released 3.0.0] | host resizes the view to a rect |  |  |
+vst3.IPlugView.onWheel | plugin | stable |  | gui/iplugview.h [released 3.0.0] | the mouse wheel moved over the view |  |  |
+vst3.IPlugView.removed | plugin | stable |  | gui/iplugview.h [released 3.0.0] | the parent window is about to go, the view drops its platform view |  |  |
+vst3.IPlugView.setFrame | plugin | stable |  | gui/iplugview.h [released 3.0.0] | host hands the view its frame for resize requests |  |  |
+vst3.IPlugViewContentScaleSupport.setContentScaleFactor | core | stable |  | gui/iplugviewcontentscalesupport.h [released 3.6.6] | host tells the view its display scale factor |  |  |
+vst3.IPluginBase.initialize | plugin | stable |  | base/ipluginbase.h | host initializes the class with its context |  |  |
+vst3.IPluginBase.terminate | plugin | stable |  | base/ipluginbase.h | host tells the class to clean up before unload |  |  |
+vst3.IPluginCompatibility.getCompatibilityJSON | plugin | stable |  | base/iplugincompatibility.h | plug-in writes the list of older class ids it replaces, as JSON |  |  |
+vst3.IPluginFactory.countClasses | plugin | stable |  | base/ipluginbase.h | number of classes the factory exports |  |  |
+vst3.IPluginFactory.createInstance | plugin | stable |  | base/ipluginbase.h | build an instance of a class by class id and interface id |  |  |
+vst3.IPluginFactory.getClassInfo | plugin | stable |  | base/ipluginbase.h | description of the class at an index |  |  |
+vst3.IPluginFactory.getFactoryInfo | plugin | stable |  | base/ipluginbase.h | vendor, url, email and flags of the factory |  |  |
+vst3.IPluginFactory2.getClassInfo2 | plugin | stable |  | base/ipluginbase.h | class description at an index, with sub-categories, vendor and version |  |  |
+vst3.IPluginFactory3.getClassInfoUnicode | plugin | stable |  | base/ipluginbase.h | class description at an index in UTF-16 |  |  |
+vst3.IPluginFactory3.setHostContext | plugin | stable |  | base/ipluginbase.h | host passes its context to the factory |  |  |
+vst3.IPrefetchableSupport.getPrefetchableSupport | plugin | stable |  | vst/ivstprefetchablesupport.h [released 3.6.5] | plug-in's prefetch capability, changed through a restart request |  |  |
+vst3.IProcessContextRequirements.getProcessContextRequirements | plugin | stable |  | vst/ivstaudioprocessor.h [released 3.7.0] | which process-context fields the plug-in needs, as flags |  |  |
+vst3.IProgramListData.getProgramData | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | read a program's data from a list |  |  |
+vst3.IProgramListData.programDataSupported | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | whether a program list supports program data |  |  |
+vst3.IProgramListData.setProgramData | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | write a program's data into a list |  |  |
+vst3.IProgress.finish | host | stable |  | vst/ivsteditcontroller.h [released 3.7.0] | end a progress by id |  |  |
+vst3.IProgress.start | host | stable |  | vst/ivsteditcontroller.h [released 3.7.0] | begin a progress of a type and get its id |  |  |
+vst3.IProgress.update | host | stable |  | vst/ivsteditcontroller.h [released 3.7.0] | set a progress's normalized value |  |  |
+vst3.IRemapParamID.getCompatibleParamID | plugin | stable |  | vst/ivstremapparamid.h [released 3.7.11] | the current parameter id for an older plug-in's parameter id |  |  |
+vst3.IRunLoop.registerEventHandler | host | stable |  | gui/iplugview.h [released 3.6.8] | plug-in asks the host to watch a file descriptor |  |  |
+vst3.IRunLoop.registerTimer | host | stable |  | gui/iplugview.h [released 3.6.8] | plug-in asks the host for a timer |  |  |
+vst3.IRunLoop.unregisterEventHandler | host | stable |  | gui/iplugview.h [released 3.6.8] | stop watching a file descriptor |  |  |
+vst3.IRunLoop.unregisterTimer | host | stable |  | gui/iplugview.h [released 3.6.8] | stop a timer |  |  |
+vst3.ISizeableStream.getStreamSize | core | stable |  | base/ibstream.h | size of the stream |  |  |
+vst3.ISizeableStream.setStreamSize | core | stable |  | base/ibstream.h | resize the stream |  |  |
+vst3.IStreamAttributes.getAttributes | host | stable |  | vst/ivstattributes.h [released 3.6.0] | the stream's meta information list |  |  |
+vst3.IStreamAttributes.getFileName | host | stable |  | vst/ivstattributes.h [released 3.6.0] | the stream's file name without extension |  |  |
+vst3.IString.getText16 | core | stable |  | base/istringresult.h | the string as UTF-16 |  |  |
+vst3.IString.getText8 | core | stable |  | base/istringresult.h | the string as ASCII |  |  |
+vst3.IString.isWideString | core | stable |  | base/istringresult.h | whether the string is held as UTF-16 |  |  |
+vst3.IString.setText16 | core | stable |  | base/istringresult.h | assign a UTF-16 string |  |  |
+vst3.IString.setText8 | core | stable |  | base/istringresult.h | assign an ASCII string |  |  |
+vst3.IString.take | core | stable |  | base/istringresult.h | assign a string by taking its buffer; marked do not use |  |  |
+vst3.IStringResult.setText | core | stable |  | base/istringresult.h [released SX 4] | the plug-in hands back a text result |  |  |
+vst3.ITestPlugProvider.getComponent | core | stable |  | vst/ivsttestplugprovider.h | the plug-in's component for a test host |  |  |
+vst3.ITestPlugProvider.getComponentUID | core | stable |  | vst/ivsttestplugprovider.h | the plug-in's component class id |  |  |
+vst3.ITestPlugProvider.getController | core | stable |  | vst/ivsttestplugprovider.h | the plug-in's controller for a test host |  |  |
+vst3.ITestPlugProvider.getSubCategories | core | stable |  | vst/ivsttestplugprovider.h | the plug-in's sub-categories |  |  |
+vst3.ITestPlugProvider.releasePlugIn | core | stable |  | vst/ivsttestplugprovider.h | release the component and controller |  |  |
+vst3.ITestPlugProvider2.getPluginFactory | core | stable |  | vst/ivsttestplugprovider.h | the plug-in's factory |  |  |
+vst3.ITimerHandler.onTimer | plugin | stable |  | gui/iplugview.h [released 3.6.8] | a registered timer fired |  |  |
+vst3.IUnitData.getUnitData | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | read a unit's preset data into a stream |  |  |
+vst3.IUnitData.setUnitData | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | write a unit's preset data from a stream |  |  |
+vst3.IUnitData.unitDataSupported | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | whether a unit can import and export preset data |  |  |
+vst3.IUnitHandler.notifyProgramListChange | host | stable |  | vst/ivstunits.h [released 3.0.0] | plug-in says a program list changed |  |  |
+vst3.IUnitHandler.notifyUnitSelection | host | stable |  | vst/ivstunits.h [released 3.0.0] | plug-in says the selected unit changed |  |  |
+vst3.IUnitHandler2.notifyUnitByBusChange | host | stable |  | vst/ivstunits.h [released 3.6.5] | plug-in says the unit to bus assignment changed |  |  |
+vst3.IUnitInfo.getProgramInfo | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | an attribute of a program, by list, index and attribute id |  |  |
+vst3.IUnitInfo.getProgramListCount | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | number of program lists |  |  |
+vst3.IUnitInfo.getProgramListInfo | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | description of the program list at an index |  |  |
+vst3.IUnitInfo.getProgramName | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | name of a program in a list |  |  |
+vst3.IUnitInfo.getProgramPitchName | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | name of a pitch for a program |  |  |
+vst3.IUnitInfo.getSelectedUnit | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | the selected unit |  |  |
+vst3.IUnitInfo.getUnitByBus | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | the unit tied to a bus and channel |  |  |
+vst3.IUnitInfo.getUnitCount | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | number of units in the flat list |  |  |
+vst3.IUnitInfo.getUnitInfo | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | description of the unit at an index |  |  |
+vst3.IUnitInfo.hasProgramPitchNames | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | whether a program has pitch names |  |  |
+vst3.IUnitInfo.selectUnit | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | select a unit |  |  |
+vst3.IUnitInfo.setUnitProgramData | plugin | stable |  | vst/ivstunits.h [released 3.0.0] | load a preset stream into a unit's program |  |  |
+vst3.IUpdateHandler.addDependent | host | stable |  | base/iupdatehandler.h | register an object to be told when another changes |  |  |
+vst3.IUpdateHandler.deferUpdates | host | stable |  | base/iupdatehandler.h | deliver pending change notices later, at idle |  |  |
+vst3.IUpdateHandler.removeDependent | host | stable |  | base/iupdatehandler.h | drop a registered dependency |  |  |
+vst3.IUpdateHandler.triggerUpdates | host | stable |  | base/iupdatehandler.h | tell every dependent an object changed |  |  |
+vst3.IVst3WrapperMPESupport.enableMPEInputProcessing | host | stable |  | vst/ivsthostapplication.h [released 3.6.12] | switch MPE input processing on or off |  |  |
+vst3.IVst3WrapperMPESupport.setMPEInputDeviceSettings | host | stable |  | vst/ivsthostapplication.h [released 3.6.12] | set the MPE master channel and member channel range |  |  |
+vst3.IWaylandFrame.getParentSurface | host | stable |  | gui/iwaylandframe.h [released 3.8.0] | the parent XDG surface for popup windows |  |  |
+vst3.IWaylandFrame.getParentToplevel | host | stable |  | gui/iwaylandframe.h [released 3.8.0] | the XDG toplevel that holds the plug-in frame |  |  |
+vst3.IWaylandFrame.getWaylandSurface | host | stable |  | gui/iwaylandframe.h [released 3.8.0] | the parent Wayland surface |  |  |
+vst3.IWaylandHost.closeWaylandConnection | host | stable |  | gui/iwaylandframe.h [released 3.8.0] | close a Wayland connection made for the plug-in |  |  |
+vst3.IWaylandHost.openWaylandConnection | host | stable |  | gui/iwaylandframe.h [released 3.8.0] | open a Wayland connection for the plug-in |  |  |
+vst3.IXmlRepresentationController.getXmlRepresentationStream | plugin | stable |  | vst/ivstrepresentation.h [released 3.5.0] | the plug-in's XML description of its parameter layout, as a stream |  |  |

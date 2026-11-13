@@ -22,6 +22,7 @@ use conformance_support::*;
 /// transport state and the chord, and `audio-probe` requests the tempo alone. A
 /// host that hardcoded either answer, or that failed to query the interface and
 /// fell back to `u32::MAX`, fails on one of the two.
+/// Spec: vst3.IProcessContextRequirements.getProcessContextRequirements
 #[test]
 fn context_requirements_are_read_from_the_plugin() {
     let twin = require_twin();
@@ -70,6 +71,7 @@ fn context_requirements_are_read_from_the_plugin() {
 /// The twin publishes three types on bus 0 channel 0 (volume, tuning and a
 /// custom one, in that order), so a hardcoded count or an ignored `index`
 /// argument cannot produce the exact id sequence.
+/// Spec: vst3.INoteExpressionController.getNoteExpressionCount, vst3.INoteExpressionController.getNoteExpressionInfo
 #[test]
 fn note_expression_types_enumerate_per_plugin() {
     let twin = require_twin();
@@ -108,6 +110,7 @@ fn note_expression_types_enumerate_per_plugin() {
 }
 
 /// `IKeyswitchController`: the articulation map a sample library advertises.
+/// Spec: vst3.IKeyswitchController.getKeyswitchCount, vst3.IKeyswitchController.getKeyswitchInfo
 #[test]
 fn keyswitches_enumerate_and_bound_check() {
     let twin = require_twin();
@@ -155,6 +158,7 @@ fn keyswitches_enumerate_and_bound_check() {
 /// `addUnit` for its own, attaching the first to `kRootUnitId`. So id 0 is a
 /// valid parent whether or not any unit enumerates under it, and a host that
 /// demanded an explicit root entry would reject the SDK's own base class.
+/// Spec: vst3.IUnitInfo.getUnitCount, vst3.IUnitInfo.getUnitInfo
 #[test]
 fn units_enumerate_with_resolvable_parents() {
     let twin = require_twin();
@@ -381,6 +385,7 @@ fn inline_uid_uses_this_platforms_byte_order() {
 /// other UID and id (`remapparamidcontroller.cpp:76`). So the expected value is
 /// fixed by the sample's source, not by observation, and a host that passed the
 /// wrong UID through would get `None`.
+/// Spec: vst3.IRemapParamID.getCompatibleParamID
 #[test]
 fn remap_param_id_migrates_a_known_parameter() {
     /// `kMyGainParamTag` in `remapparamidcids.h`.
@@ -414,6 +419,7 @@ fn remap_param_id_migrates_a_known_parameter() {
 ///
 /// The twin maps x movement to tuning (id 2) and pressure to volume (id 0), and
 /// leaves y movement unmapped.
+/// Spec: vst3.INoteExpressionPhysicalUIMapping.getPhysicalUIMapping
 #[test]
 fn physical_ui_mapping_is_read_per_plugin() {
     let main = main_thread();
@@ -444,6 +450,7 @@ fn physical_ui_mapping_is_read_per_plugin() {
 /// returns nothing for anything else. So a host that dropped the caller's `name`
 /// on the floor gets `None` for the supported case, and a host that ignored it
 /// entirely would wrongly answer for the unsupported one.
+/// Spec: vst3.IXmlRepresentationController.getXmlRepresentationStream
 #[test]
 fn xml_representation_is_fetched_for_a_supported_layout() {
     let twin = require_twin();
@@ -502,6 +509,7 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
 /// The twin maps `DryWetMix` to `level` (id 0) and `Randomize` to `tone` (id 3),
 /// and nothing else. A host that ignored the name would return the same id for
 /// both, or something for an unknown one.
+/// Spec: vst3.IParameterFunctionName.getParameterIDFromFunctionName
 #[test]
 fn param_id_for_function_name_resolves_known_functions() {
     let twin = require_twin();
@@ -542,6 +550,7 @@ fn param_id_for_function_name_resolves_known_functions() {
 /// `kClassesDiscardable` is set by none of them — which is also why the drop
 /// was invisible from the outside, and why the decode itself is pinned by unit
 /// tests rather than here.
+/// Spec: vst3.IPluginFactory.getFactoryInfo
 #[test]
 fn the_factory_flag_word_is_read_not_discarded() {
     require_harness();

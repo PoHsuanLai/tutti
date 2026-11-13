@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tutti_types::MaxBlock;
 
-mod common;
+use crate::common;
 use tutti_graph::{Stamp, UmpAt};
 
 use tutti_fixtures::midi::{

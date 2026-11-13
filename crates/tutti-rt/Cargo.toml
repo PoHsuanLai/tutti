@@ -21,8 +21,8 @@ workspace = true
 thread-priority = "3.1"
 # `ArcLend`/`Loan`/`Reader`, re-exported at the root: the cell non-scalar state
 # reaches the audio thread through. A general-purpose crate that names no tutti
-# crate.
-arc-lend = { version = "0.0.1", path = "../arc-lend" }
+# crate; it comes from crates.io.
+arc-lend = "0.1"
 # The fixed inline storage behind `RtVec` (`vec.rs`): a run of `N` slots that
 # cannot grow, so the cap is the type's, not a check beside it.
 arrayvec = "0.7"

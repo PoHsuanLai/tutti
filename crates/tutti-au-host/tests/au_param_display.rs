@@ -1,8 +1,7 @@
 //! Parameter *display* metadata: value strings, clumps, display curves, and the
 //! string↔value conversions.
 //!
-//! Everything here was verified absent from the host before this suite. The
-//! user-visible consequences, in the order the tests below cover them:
+//! The user-visible consequences, in the order the tests below cover them:
 //!
 //! - **Value strings.** An enum parameter showed as `0.000 / 1.000 / 2.000` in
 //!   automation lanes instead of `Parametric / Butterworth Low Pass / …`.
@@ -294,9 +293,8 @@ fn an_unclumped_unit_reports_no_groups() {
 /// The display-curve flags are read, and the specific parameters measured to
 /// carry a logarithmic taper report one.
 ///
-/// Before this change every parameter reported linear, because only `IsWritable`
-/// and `HasCFNameString` were examined. The named parameters are frequency and
-/// time controls — exactly the ones where a linear taper is unusable.
+/// The named parameters are frequency and time controls — exactly the ones where
+/// a linear taper is unusable.
 #[test]
 fn a_log_taper_parameter_reports_a_logarithmic_curve() {
     let _g = lock();

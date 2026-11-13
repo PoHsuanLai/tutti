@@ -85,8 +85,6 @@ fn config_at(layout: ChannelLayout, has_input: bool) -> StreamConfig {
 ///
 /// Measured on macOS 15.6 — 12 of the 15 Apple units probed accept a 1-channel
 /// format and initialize at it. `ACCEPTS_MONO` names the corpus members that do.
-/// Before this change every one of them reported 2, because `apply` rewrote the
-/// requested width to `max(2)`.
 #[test]
 fn an_au_opened_in_mono_reports_one_output_channel() {
     let _g = lock();

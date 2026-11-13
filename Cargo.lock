@@ -3475,6 +3475,7 @@ name = "tutti-alsa-ffi"
 version = "0.0.1"
 dependencies = [
  "libc",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3594,6 +3595,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-core-midi",
  "objc2-foundation 0.3.2",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3744,6 +3746,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "tutti-fixtures",
  "tutti-ump",
  "unicode-normalization",
@@ -3794,6 +3797,7 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "tutti-midi-protocol",
  "tutti-types",
  "tutti-ump",
@@ -3809,6 +3813,7 @@ dependencies = [
  "criterion",
  "crossbeam-queue",
  "serde",
+ "thiserror 2.0.21",
  "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",
@@ -4285,6 +4290,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4292,6 +4298,7 @@ name = "tutti-voicing"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
+ "thiserror 2.0.21",
  "tutti-midi-protocol",
  "tutti-types",
  "tutti-ump",

@@ -47,20 +47,9 @@ use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexMessage, SysexSt
 pub struct SysexDeviceId(U7);
 
 /// A `7F`, which is the all-call and no device's own id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#04x} is the all-call, not a device's own id", .0.get())]
 pub struct NotSysexDeviceId(pub U7);
-
-impl core::fmt::Display for NotSysexDeviceId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{:#04x} is the all-call, not a device's own id",
-            self.0.get()
-        )
-    }
-}
-
-impl std::error::Error for NotSysexDeviceId {}
 
 impl SysexDeviceId {
     /// The id a device that has none set takes: `00`.
@@ -132,7 +121,7 @@ impl Recipient {
 }
 
 /// General MIDI System On or Off (M1 p.52).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GeneralMidi {
     /// `09 01`: the device goes to General MIDI System Level 1's initial status.
     On,
@@ -242,7 +231,7 @@ pub fn read(message: SysexMessage<'_>) -> Read {
 }
 
 /// Who a message was addressed to, as the receiver sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Addressee {
     /// The all-call (`7F`).
     All,

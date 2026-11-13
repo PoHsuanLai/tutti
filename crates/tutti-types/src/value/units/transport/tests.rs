@@ -25,10 +25,10 @@ use super::*;
 ///   quantity it was. Build with `new`, read with `get` (generic code: the
 ///   `Unit` trait's `from_raw` / `to_raw`).
 ///
-/// And a beat-synced rate is a [`BeatDuration`] (beats per cycle), never an
+/// And a beat-synced rate is a [`BeatsPerCycle`] (beats per cycle), never an
 /// [`Hz`]: the two are *inverse*. Doubling
 /// the span halves the rate, so the substitution is a silent reciprocal.
-/// [`Beat::cycles_of`] is the only interpreter.
+/// [`Beat::cycles_in`] is the only interpreter.
 ///
 /// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
 #[test]
@@ -130,31 +130,27 @@ fn beat_splits_into_floor_and_fraction() {
 }
 
 #[test]
-fn cycles_of_reads_the_divisor_as_a_span_not_a_frequency() {
+fn cycles_in_reads_the_divisor_as_a_span_not_a_frequency() {
     // The reciprocal that shipped twice: a *longer* span is a *slower*
     // source. Under the Hz reading, 2.0 would be twice as fast and land on
     // cycle 8 here.
-    assert_eq!(Beat(4.0).cycles_of(BeatDuration(2.0)), Some(2.0));
-    assert_eq!(Beat(4.0).cycles_of(BeatDuration(0.5)), Some(8.0));
+    assert_eq!(Beat(4.0).cycles_in(BeatsPerCycle::of(2.0)), 2.0);
+    assert_eq!(Beat(4.0).cycles_in(BeatsPerCycle::of(0.5)), 8.0);
 
     // Un-wrapped: the integer part is the cycle index a stepped shape
     // addresses itself by, the fraction is the phase.
-    let c = Beat(5.0).cycles_of(BeatDuration(2.0)).unwrap();
+    let c = Beat(5.0).cycles_in(BeatsPerCycle::of(2.0));
     assert_eq!(c.floor(), 2.0);
     assert_eq!(c.fract(), 0.5);
-
-    // One guard: a non-positive span has no cycle count.
-    assert_eq!(Beat(4.0).cycles_of(BeatDuration(0.0)), None);
-    assert_eq!(Beat(4.0).cycles_of(BeatDuration(-2.0)), None);
 }
 
 #[test]
-fn cycles_of_is_computed_in_f64() {
+fn cycles_in_is_computed_in_f64() {
     // Dividing `beat as f32` by an f32 span is exact for power-of-two spans
     // and drifts on everything else.
     let beat = Beat(1_000_000.0);
-    let span = BeatDuration(3.0);
-    let wide = beat.cycles_of(span).unwrap();
+    let span = BeatsPerCycle::of(3.0);
+    let wide = beat.cycles_in(span);
     let narrowed = ((beat.get() as f32) / (span.get() as f32)) as f64;
     assert!(
         (wide.fract() - narrowed.fract()).abs() > 0.01,

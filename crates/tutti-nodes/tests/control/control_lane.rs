@@ -24,7 +24,7 @@ use tutti_modulation::{
 };
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_types::{
-    AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamKey,
+    AtomicF32, Beat, BeatsPerCycle, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamKey,
     Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
 };
 
@@ -295,7 +295,7 @@ fn amount(depth: f32) -> Amount {
 
 fn beats(per_cycle: f64) -> Clock {
     Clock::Beats {
-        per_cycle: BeatDuration(per_cycle),
+        per_cycle: BeatsPerCycle::of(per_cycle),
         phase: PhaseIncrement(0.0),
     }
 }

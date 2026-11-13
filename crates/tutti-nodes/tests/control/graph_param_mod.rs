@@ -37,7 +37,7 @@ use tutti_nodes::{
     PhaserControls, PhaserNode, ShapeKind, Stages, Stagger, SvfFilterNode, SvfType, SweepRange,
 };
 use tutti_types::{
-    Amplitude, AtomicF32, BeatDuration, BusTopology, ChannelLayout, CompressionRatio, Db, Depth,
+    Amplitude, AtomicF32, BeatsPerCycle, BusTopology, ChannelLayout, CompressionRatio, Db, Depth,
     Drive, Feedback, Hz, Mix, PhaseIncrement, Q, Resonance, SampleRate, Samples, Seconds,
     UnitParam,
 };
@@ -87,7 +87,7 @@ fn konst(depth: f32) -> Layer {
     Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),

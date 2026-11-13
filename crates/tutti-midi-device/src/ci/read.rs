@@ -1,5 +1,5 @@
 //! The MIDI-CI grammar: the preamble of a message (M2-101 §3.3, Table 1) and the
-//! bodies of Discovery, its reply, ACK and NAK (§5.5, §5.6, §5.10, §5.11), built
+//! bodies of Discovery, its reply, Inquiry: Endpoint and its reply, ACK and NAK (§5.5 to §5.8, §5.10, §5.11), built
 //! from `winnow` combinators. This is the one module of the crate that names
 //! `winnow`, and no `winnow` type leaves it: a body is read through
 //! [`discovery_body`] and [`status_body`], which answer `Option`.
@@ -14,6 +14,8 @@
 //! revision  := u7 u7 u7 u7
 //! max_size  := u7 u7 u7 u7                                        -- 28 bits, 128 or more
 //! function_block := 7F | 00..=1F
+//! endpoint_inquiry := status                                     -- Table 9
+//! endpoint_reply   := status len u14 data{len}                    -- Table 11
 //! status    := sub_id2? code? data? details{5} [ len u14 text{len} ]
 //!                                                                 -- ACK and NAK, Tables 13 and 15
 //! ```
@@ -206,6 +208,24 @@ fn status(input: &mut &[u8]) -> Res<Status> {
 /// The body of an ACK or a NAK, or `None` when it is malformed.
 pub(super) fn status_body(mut body: &[u8]) -> Option<Status> {
     status(&mut body).ok()
+}
+
+/// The raw Status byte of an Inquiry: Endpoint (Table 9), which may be a reserved
+/// value: `None` when it is missing or has its top bit set.
+pub(super) fn endpoint_inquiry_body(mut body: &[u8]) -> Option<u8> {
+    u7.map(U7::get).parse_next(&mut body).ok()
+}
+
+/// The Status and Information Data of a Reply to Endpoint (Table 11): the
+/// status byte, then a 14-bit length and that many bytes. Bytes after the data are
+/// ignored, as after every body.
+pub(super) fn endpoint_reply_body(mut body: &[u8]) -> Option<(u8, &[u8])> {
+    (
+        u7.map(U7::get),
+        u14.flat_map(|len| take(usize::from(len.get()))),
+    )
+        .parse_next(&mut body)
+        .ok()
 }
 
 /// A Muid, four 7-bit bytes, or `None` (Invalidate MUID's target).

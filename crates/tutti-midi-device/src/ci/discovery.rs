@@ -16,6 +16,10 @@ pub const SUB_ID2_DISCOVERY: u8 = 0x70;
 pub const SUB_ID2_DISCOVERY_REPLY: u8 = 0x71;
 /// Sub-ID#2: Invalidate MUID message (M2-101 §5.9).
 pub const SUB_ID2_INVALIDATE_MUID: u8 = 0x7E;
+/// Sub-ID#2: Inquiry: Endpoint message (M2-101 §5.7).
+pub const SUB_ID2_ENDPOINT_INQUIRY: u8 = 0x72;
+/// Sub-ID#2: Reply to Endpoint message (M2-101 §5.8).
+pub const SUB_ID2_ENDPOINT_REPLY: u8 = 0x73;
 /// Sub-ID#2: ACK message (M2-101 §5.10).
 pub const SUB_ID2_ACK: u8 = 0x7D;
 /// Sub-ID#2: NAK message (M2-101 §5.11).

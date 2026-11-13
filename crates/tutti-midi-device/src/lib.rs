@@ -1,8 +1,10 @@
 //! The pure core of MIDI device detection (design 017 §5), and the MIDI-CI codec.
 //!
 //! Detection first. The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])
-//! turns Discovery, Invalidate MUID, ACK and NAK into SysEx payload bytes and back;
-//! it holds no state and no transport.
+//! turns Discovery, Invalidate MUID, Inquiry: Endpoint, ACK and NAK into SysEx payload bytes and back;
+//! it holds no state and no transport. [`CiDevice`] is the Management state
+//! machine over it (Discovery, MUID collisions, Invalidate MUID, NAK, Endpoint
+//! Inquiry), shaped as [`Connection`] is.
 //!
 //! A backend reports what the OS says as an [`OsChange`]; [`DeviceTable::apply`]
 //! returns the [`DeviceEvent`] that change causes, or `None` when it alters
@@ -65,10 +67,12 @@ mod name;
 mod table;
 
 pub use ci::{
-    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, CiCategories, CiDeviceId, CiHeader,
-    CiMessage, CiVersion, Decoded, Destination, DiscoveryData, MaxSysexSize, MessageText, Muid,
-    Nak, NotADeviceId, NotAMuid, NotASysexSize, NotAVersion, SUB_ID2_ACK, SUB_ID2_DISCOVERY,
-    SUB_ID2_DISCOVERY_REPLY, SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, Unread, UnreadReason,
+    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, CiAction, CiCategories, CiDevice, CiDeviceId,
+    CiHeader, CiInstanceId, CiMessage, CiPeer, CiVersion, DISCOVERY_WINDOW, Decoded, Destination,
+    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, MessageText, Muid, Nak,
+    NotADeviceId, NotAMuid, NotASysexSize, NotAVersion, SUB_ID2_ACK, SUB_ID2_DISCOVERY,
+    SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY, SUB_ID2_ENDPOINT_REPLY,
+    SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, Unread, UnreadReason,
 };
 
 pub use connection::{Action, Connection, Ending, MAX_ATTEMPTS, NAME_GRACE, STEP_TIMEOUT};

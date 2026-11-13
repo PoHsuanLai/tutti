@@ -3484,6 +3484,50 @@ What the decoded messages are consumed by, one item each.
   under serde, and the binding rules (`Exact` / `SameName`) a decision about whether a manufacturer,
   family and model can promote a `SameName` device. Not decided here.
 
+### L8 part 2: the MIDI-CI core: as built
+
+- **The codec grew Inquiry: Endpoint (`0x72`, M2-101 §5.7) and Reply to Endpoint (`0x73`, §5.8).**
+  `CiMessage::{EndpointInquiry, EndpointReply}`, read by two new combinators in `ci/read.rs`. The
+  status is typed so a reply's data cannot disagree with it: `EndpointStatus` (`0x00`, the Product
+  Instance Id; `0x01..=0x7F` reserved, Table 10) for the inquiry and `EndpointInfo::ProductInstanceId`
+  for the reply. A reserved status in either decodes to an `Unread` with the new
+  `UnreadReason::ReservedStatus` (NAK status `0x00`, §5.8's "not able to provide the requested
+  information"), and a reply whose data is not a valid id to `Malformed` (`0x41`), so a NAK can be
+  addressed either way. **The id's limit is 16 bytes on the CI wire** (§5.8.3.1) and 42 in
+  M2-104's UMP Stream notification (`ProductInstanceId`, unchanged): `CiInstanceId` is the checked
+  16-byte form, and an id of 17 to 42 bytes is refused on decode and cannot be built for encode.
+  `Muid::from_entropy(u32) -> Option<Muid>` takes the low 28 bits and answers `None` in the
+  reserved range or on the broadcast value; the crate names no random source.
+- **`CiDevice` is the Management core** (`ci/device.rs`): one MIDI-CI Device on one Group,
+  pure, shaped as `Connection` (`new(identity, categories, max_sysex_size, entropy, now) ->
+  (Self, Vec<CiAction>)`, `on_message(&Decoded, now)`, `on_timeout`, `deadline`; `CiAction::{Send,
+  Found, Updated, Lost, MuidChanged, WindowClosed}`). tutti has no Function Block, so its Device
+  ID is `7F`, its replies say Function Block `7F` and no Function Block Info Change Alert is owed
+  on a MUID change (§3.3.1); the caller routes by Group.
+- **Decisions.** (1) *Option B always* (§5.9.1): the device's MUID has been used by its own
+  Discovery, so Option A is never open; it sends the Invalidate MUID **from the new MUID** (a source
+  equal to the target would not tell the two devices apart), then starts a new round. *An echo is not a collision* (Appendix A.1.1): a
+  Thru or merge loops our messages back, and treating that as a collision would change the MUID on
+  every round for ever. The v1.2 Discovery carries no Product Instance Id, so the body is the test:
+  a Discovery under our MUID with the body we sent is our echo and ignored, any other is a
+  collision; a Reply from our MUID is a collision only when addressed to us (a device that drew our
+  MUID answering our Discovery; we never answer ourselves), and one to another MUID is our own Reply
+  looped back. A same-model device that drew our MUID sends our Discovery body, but its Reply to
+  our Discovery reveals it. (2) *The window* is `DISCOVERY_WINDOW`, 3 s
+  (§5.5.5), signalled once; replies are counted per round beyond it, so a late duplicate is still
+  the §5.9.2 collision. (3) *A new MUID* (any reason) drops every peer as `Lost`, since the
+  Transactions under the old one have ended, and the new round finds them again. (4) *Endpoint
+  Inquiry as Initiator*: once per found peer that declared a Function Block, no retry and no
+  timeout (the spec gives none and the id is a convenience); a NAK ends it with the id `None`.
+  (5) *As Responder* it NAKs the inquiry, status `0x00`: tutti declares no UMP Endpoint Product
+  Instance Id. (6) *NAK*: only for a message addressed to the device's own MUID that the codec could
+  not read or does not model (Profile and Property Exchange sub-IDs are `0x01`, a malformed body
+  `0x41`, a version `0x02`), never for another MUID, the Broadcast MUID, an ACK or a NAK.
+- **Open.** Wiring into `tutti-midi-hardware`'s negotiation (a SysEx7 assembler per Group feeding
+  `on_message`, `CiAction::Send` onto the output, the `Found` peers in the device's `Endpoint`) is
+  part 3. The device advertises no category, so Profile Configuration and Property Exchange are
+  later parts.
+
 ### L7b: the MIDI Tuning Standard: as built (part 2)
 
 The spec is "MIDI Tuning Updated Specification" (the original messages, CA-020 bank and dump

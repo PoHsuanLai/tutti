@@ -16,8 +16,8 @@ const LIMIT: u64 = 15_840;
 #[test]
 fn a_cable_that_never_sent_active_sensing_is_never_judged() {
     let mut w = watch();
-    w.heard(G0, Frame(0), false);
-    assert_eq!(w.next_lapse(Frame(10 * LIMIT)), None);
+    w.heard(G0, Frame::new(0), false);
+    assert_eq!(w.next_lapse(Frame::new(10 * LIMIT)), None);
     assert!(!w.is_watched(G0));
 }
 
@@ -28,15 +28,19 @@ fn a_cable_that_never_sent_active_sensing_is_never_judged() {
 #[test]
 fn a_watched_cable_lapses_over_the_limit_once() {
     let mut w = watch();
-    w.heard(G0, Frame(1_000), true);
+    w.heard(G0, Frame::new(1_000), true);
     assert!(w.is_watched(G0));
-    assert_eq!(w.next_lapse(Frame(1_000 + LIMIT)), None, "at the limit");
     assert_eq!(
-        w.next_lapse(Frame(1_000 + LIMIT + 1)),
-        Some((G0, Frame(1_000 + LIMIT)))
+        w.next_lapse(Frame::new(1_000 + LIMIT)),
+        None,
+        "at the limit"
+    );
+    assert_eq!(
+        w.next_lapse(Frame::new(1_000 + LIMIT + 1)),
+        Some((G0, Frame::new(1_000 + LIMIT)))
     );
     assert!(!w.is_watched(G0), "the flag is reset");
-    assert_eq!(w.next_lapse(Frame(100 * LIMIT)), None, "once");
+    assert_eq!(w.next_lapse(Frame::new(100 * LIMIT)), None, "once");
 }
 
 /// **Any message restarts the timer** (the flowchart's "Receive Data: Clear
@@ -45,12 +49,12 @@ fn a_watched_cable_lapses_over_the_limit_once() {
 #[test]
 fn any_message_clears_the_timer() {
     let mut w = watch();
-    w.heard(G0, Frame(0), true);
-    w.heard(G0, Frame(LIMIT - 10), false);
-    assert_eq!(w.next_lapse(Frame(LIMIT + 1_000)), None);
+    w.heard(G0, Frame::new(0), true);
+    w.heard(G0, Frame::new(LIMIT - 10), false);
+    assert_eq!(w.next_lapse(Frame::new(LIMIT + 1_000)), None);
     assert_eq!(
-        w.next_lapse(Frame(2 * LIMIT)),
-        Some((G0, Frame(LIMIT - 10 + LIMIT)))
+        w.next_lapse(Frame::new(2 * LIMIT)),
+        Some((G0, Frame::new(LIMIT - 10 + LIMIT)))
     );
 }
 
@@ -60,24 +64,24 @@ fn any_message_clears_the_timer() {
 #[test]
 fn each_group_is_judged_alone() {
     let mut w = watch();
-    w.heard(G0, Frame(0), true);
-    w.heard(G1, Frame(5_000), true);
-    w.heard(G0, Frame(LIMIT), false);
+    w.heard(G0, Frame::new(0), true);
+    w.heard(G1, Frame::new(5_000), true);
+    w.heard(G0, Frame::new(LIMIT), false);
     assert_eq!(
-        w.next_lapse(Frame(5_000 + LIMIT + 1)),
-        Some((G1, Frame(5_000 + LIMIT)))
+        w.next_lapse(Frame::new(5_000 + LIMIT + 1)),
+        Some((G1, Frame::new(5_000 + LIMIT)))
     );
-    assert_eq!(w.next_lapse(Frame(5_000 + LIMIT + 1)), None);
+    assert_eq!(w.next_lapse(Frame::new(5_000 + LIMIT + 1)), None);
     assert!(w.is_watched(G0));
-    w.heard(G1, Frame(1_000_000), true);
+    w.heard(G1, Frame::new(1_000_000), true);
     assert_eq!(
-        w.next_lapse(Frame(1_000_000 + 3 * LIMIT)),
-        Some((G0, Frame(2 * LIMIT))),
+        w.next_lapse(Frame::new(1_000_000 + 3 * LIMIT)),
+        Some((G0, Frame::new(2 * LIMIT))),
         "the earlier deadline first"
     );
     assert_eq!(
-        w.next_lapse(Frame(1_000_000 + 3 * LIMIT)),
-        Some((G1, Frame(1_000_000 + LIMIT)))
+        w.next_lapse(Frame::new(1_000_000 + 3 * LIMIT)),
+        Some((G1, Frame::new(1_000_000 + LIMIT)))
     );
 }
 

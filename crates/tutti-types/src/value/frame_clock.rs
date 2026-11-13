@@ -304,7 +304,7 @@ impl FrameClock {
             beat: self.segment.origin_beat,
             // `at` never falls behind the origin: every restart puts the
             // origin on `at`, and `at` only moves forward.
-            frame: Frame(self.at.get() - self.segment.origin_frame.get()),
+            frame: Frame::new(self.at.get() - self.segment.origin_frame.get()),
             sample_rate: self.segment.sample_rate,
         }
     }
@@ -480,9 +480,9 @@ impl FrameClock {
         let fpb = self.segment.frames_per_beat()?;
         let ahead = ((end - self.beat()).get() * fpb).ceil();
         // Saturating: a far end is past `limit` anyway.
-        let mut f = Frame(self.at.get().saturating_add(ahead.max(1.0) as u64)).max(next);
-        while f > next && self.segment.beat_at(Frame(f.get() - 1)) >= end {
-            f = Frame(f.get() - 1);
+        let mut f = Frame::new(self.at.get().saturating_add(ahead.max(1.0) as u64)).max(next);
+        while f > next && self.segment.beat_at(Frame::new(f.get() - 1)) >= end {
+            f = Frame::new(f.get() - 1);
         }
         while f <= limit && self.segment.beat_at(f) < end {
             f += Samples(1);
@@ -848,11 +848,11 @@ mod tests {
                 continue;
             }
             let f = c
-                .wrap_frame(end, Frame(u64::MAX))
+                .wrap_frame(end, Frame::new(u64::MAX))
                 .expect("a rolling clock reaches it");
             assert!(c.segment.beat_at(f) >= end, "{tempo} {rate}: {f} short");
             assert!(
-                f == c.at + Samples(1) || c.segment.beat_at(Frame(f.get() - 1)) < end,
+                f == c.at + Samples(1) || c.segment.beat_at(Frame::new(f.get() - 1)) < end,
                 "{tempo} BPM at {rate} Hz: frame {f} is not the first to reach {end:?}"
             );
         }

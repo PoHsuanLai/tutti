@@ -468,7 +468,7 @@ fn the_park_switch_is_off_unless_armed() {
 fn dump_and_note() -> (Vec<tutti_graph::EventKind>, tutti_graph::EventKind) {
     use tutti_ump::{MidiChannel, MidiGroup};
     let payload: Vec<u8> = (0..30).collect();
-    let dump: Vec<_> = tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+    let dump: Vec<_> = tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
         .expect("a 7-bit payload")
         .collect();
     assert_eq!(dump.len(), 5);

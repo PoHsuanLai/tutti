@@ -13,3 +13,4 @@ mod reserved;
 mod serde;
 mod spec_tables;
 mod spec_words;
+mod value_types;

@@ -32,7 +32,7 @@ fn queries_do_not_allocate() {
         let mut view = map.view(R);
         for i in 0..4000u64 {
             let beat = Beat((i % 130) as f64 * 0.97);
-            let frame = Frame(i * 977);
+            let frame = Frame::new(i * 977);
             let secs = Seconds(i as f64 * 0.01);
             acc += map.seconds_at(beat).get() + view.seconds_at(beat).get();
             acc += map.beat_at_seconds(secs).get() + view.beat_at_seconds(secs).get();

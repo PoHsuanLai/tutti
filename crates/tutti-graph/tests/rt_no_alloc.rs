@@ -212,7 +212,7 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
             ))
         };
         ed.schedule(
-            At::Frame(Frame(2_000 + k * 700)),
+            At::Frame(Frame::new(2_000 + k * 700)),
             consumer((k % 2) as u16),
             kind,
         )
@@ -230,7 +230,7 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
     }
     // After the warm-up, so frame 0 is past: it lands late, inside the gate.
     ed.schedule(
-        At::Frame(Frame(0)),
+        At::Frame(Frame::new(0)),
         consumer(0),
         EventKind::Midi(Ump([0; 4])),
     )
@@ -954,7 +954,7 @@ fn direct_driving_events_does_not_allocate() {
         NoteNumber::of(60),
         U7::of(100),
     ));
-    let mut emitter = Direct::new(Emitter::new(Frame(70), note), rate, 64);
+    let mut emitter = Direct::new(Emitter::new(Frame::new(70), note), rate, 64);
     emitter.set_transport(rolling);
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..4 {

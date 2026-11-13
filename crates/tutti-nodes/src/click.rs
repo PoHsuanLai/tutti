@@ -709,7 +709,7 @@ mod tests {
     /// A block of `len` frames at `rate` under `transport`, no changes.
     fn env(rate: f64, len: usize, transport: tutti_graph::TransportPosition) -> Env {
         Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: tutti_types::SampleRate::of(rate),
             block_len: Samples(len),
             transport,

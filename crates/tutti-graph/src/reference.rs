@@ -115,6 +115,7 @@ use crate::play::PlayClock;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
 use tutti_types::PlayReading;
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump, Voice1,
     Voice2,
@@ -321,7 +322,7 @@ impl Reference {
         self.play = match starts.last() {
             Some(&at) => PlayReading {
                 epoch: (clock.next_epoch + starts.len() as u32 - 1) % PlayReading::EPOCHS,
-                play: Frame((frames - at) as u64),
+                play: Frame::new((frames - at) as u64),
             },
             None => PlayReading {
                 epoch: self.play.epoch,
@@ -433,14 +434,14 @@ impl Reference {
         if old != new {
             self.history.clear();
             let ratio = new / old;
-            self.frame = Frame((self.frame.get() as f64 * ratio).round() as u64);
-            self.play.play = Frame((self.play.play.get() as f64 * ratio).round() as u64);
+            self.frame = Frame::new((self.frame.get() as f64 * ratio).round() as u64);
+            self.play.play = Frame::new((self.play.play.get() as f64 * ratio).round() as u64);
             for c in &mut self.scheduled {
                 if let At::Frame(_) = c.at {
                     // Rounded for landing; the unrounded position keeps the
                     // order of two frames that round to one.
                     c.pos *= ratio;
-                    c.at = At::Frame(Frame(c.pos.round() as u64));
+                    c.at = At::Frame(Frame::new(c.pos.round() as u64));
                 }
             }
         }
@@ -2237,7 +2238,7 @@ fn ref_key(e: &Event) -> Option<RefKey> {
                 Voice2::NoteOn { note, .. } => Some(RefKey::On((true, g, c, note))),
                 Voice2::NoteOff { note, .. } => Some(RefKey::Off((true, g, c, note))),
                 Voice2::ControlChange { controller, value } if controller == CCNumber::SUSTAIN => {
-                    Some(RefKey::Pedal(true, g, c, value >= 0x8000_0000))
+                    Some(RefKey::Pedal(true, g, c, value >= ControlValue::CENTER))
                 }
                 _ => None,
             }
@@ -2282,7 +2283,7 @@ impl RefHeld {
                     addr(g, c),
                     Voice2::ControlChange {
                         controller: cc,
-                        value: 0,
+                        value: ControlValue::new(0),
                     },
                 )
             } else {
@@ -2600,7 +2601,7 @@ impl Reference {
                 match reached {
                     Some(k) => {
                         let f = start + k as u64;
-                        cmd.at = At::Frame(Frame(f));
+                        cmd.at = At::Frame(Frame::new(f));
                         cmd.pos = f as f64;
                         at_frame(f)
                     }

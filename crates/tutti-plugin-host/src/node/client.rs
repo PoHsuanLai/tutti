@@ -785,7 +785,7 @@ mod transport_tests {
     /// apart from the "nothing" answer.
     fn env() -> Env {
         Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: SampleRate::SR_48K,
             block_len: Samples(64),
             transport: TransportPosition::new(true, Bpm::of(132.0), Beat(4.0), None),

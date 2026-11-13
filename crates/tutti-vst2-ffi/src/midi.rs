@@ -594,6 +594,7 @@ mod tests {
     use super::*;
     use tutti_fixtures::midi;
     use tutti_plugin_types::Samples;
+    use tutti_ump::ControlValue;
     use tutti_ump::Ump;
 
     /// A plugin-side event at a raw frame (`WireMidi` is unchecked, as `from_midi` reads it).
@@ -881,7 +882,10 @@ mod tests {
                 assert_eq!(address.channel, MidiChannel::of(1));
                 assert_eq!(controller, CCNumber::of(74));
                 // Widened to 32-bit, not left as 7-bit.
-                assert_eq!(value, tutti_fixtures::midi::wide_value(100));
+                assert_eq!(
+                    value,
+                    ControlValue::new(tutti_fixtures::midi::wide_value(100))
+                );
             }
             other => panic!("expected CV2 ControlChange, got {other:?}"),
         }

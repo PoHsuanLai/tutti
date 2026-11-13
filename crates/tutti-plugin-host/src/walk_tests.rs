@@ -39,7 +39,7 @@ fn block(len: usize, transport: TransportPosition, changes: &[(usize, TransportP
             .expect("a change");
     }
     Env {
-        frame: Frame(0),
+        frame: Frame::new(0),
         sample_rate: SampleRate::of(RATE),
         block_len: Samples(len),
         transport,

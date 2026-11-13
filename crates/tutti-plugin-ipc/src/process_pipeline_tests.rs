@@ -1767,7 +1767,7 @@ fn sysex_fragments(len: usize) -> Vec<tutti_plugin_types::WireMidi> {
     let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
     let mut out = Vec::new();
     out.extend(
-        tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, &payload)
+        tutti_ump::Sysex7Packets::from_payload(tutti_ump::MidiGroup::FIRST, &payload)
             .expect("a 7-bit payload"),
     );
     out.into_iter()

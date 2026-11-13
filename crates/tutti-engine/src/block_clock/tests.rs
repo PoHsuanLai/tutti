@@ -10,17 +10,20 @@ fn a_reader_sees_the_call_last_written() {
     let reader = clock.reader();
     assert_eq!(reader.read(), None, "nothing before the first call");
 
-    clock.write(-5, Frame(4_800), SampleRate::SR_48K, pose());
+    clock.write(-5, Frame::new(4_800), SampleRate::SR_48K, pose());
     assert_eq!(
         reader.read(),
         Some(BlockReading {
             os_ns: -5,
-            frame: Frame(4_800),
+            frame: Frame::new(4_800),
             rate: SampleRate::SR_48K
         })
     );
-    clock.write(10_000_000, Frame(5_280), SampleRate::SR_48K, pose());
-    assert_eq!(reader.clone().read().map(|r| r.frame), Some(Frame(5_280)));
+    clock.write(10_000_000, Frame::new(5_280), SampleRate::SR_48K, pose());
+    assert_eq!(
+        reader.clone().read().map(|r| r.frame),
+        Some(Frame::new(5_280))
+    );
 }
 
 fn pose() -> Pose {
@@ -51,11 +54,17 @@ fn a_playhead_read_is_the_call_last_written() {
         playing: true,
         ..pose()
     };
-    clock.write(1_000, Frame(48_000), SampleRate::SR_48K, rolling);
+    clock.write(1_000, Frame::new(48_000), SampleRate::SR_48K, rolling);
     let a = reader.playhead();
     assert_eq!(
         (a.beat(), a.frame(), a.seconds(), a.playing(), a.at()),
-        (Beat(3.0), Frame(48_000), Seconds(1.5), true, Some(1_000))
+        (
+            Beat(3.0),
+            Frame::new(48_000),
+            Seconds(1.5),
+            true,
+            Some(1_000)
+        )
     );
     let stopped = Pose {
         beat: Beat(7.0),
@@ -63,11 +72,17 @@ fn a_playhead_read_is_the_call_last_written() {
         playing: false,
         ..pose()
     };
-    clock.write(2_000, Frame(48_512), SampleRate::SR_48K, stopped);
+    clock.write(2_000, Frame::new(48_512), SampleRate::SR_48K, stopped);
     let b = reader.playhead();
     assert_eq!(
         (b.beat(), b.frame(), b.seconds(), b.playing(), b.at()),
-        (Beat(7.0), Frame(48_512), Seconds(3.5), false, Some(2_000))
+        (
+            Beat(7.0),
+            Frame::new(48_512),
+            Seconds(3.5),
+            false,
+            Some(2_000)
+        )
     );
 }
 
@@ -86,7 +101,7 @@ fn beat_now_interpolates_within_one_block() {
         ..pose()
     };
     let at = 1_000_000_000;
-    clock.write(at, Frame(0), SampleRate::SR_48K, playing);
+    clock.write(at, Frame::new(0), SampleRate::SR_48K, playing);
     let p = reader.playhead();
     assert_eq!(p.beat_now(at), Beat(4.0), "at its own time");
     assert!(
@@ -112,7 +127,7 @@ fn beat_now_interpolates_within_one_block() {
         playing: false,
         ..playing
     };
-    clock.write(at, Frame(0), SampleRate::SR_48K, stopped);
+    clock.write(at, Frame::new(0), SampleRate::SR_48K, stopped);
     assert_eq!(
         reader.playhead().beat_now(at + 5_000_000),
         Beat(4.0),

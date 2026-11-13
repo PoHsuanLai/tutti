@@ -103,7 +103,7 @@ fn beat_notes_after_a_timed_start_leave_both_paths_on_one_frame() {
         }
         transport
             .motion()
-            .schedule(At::Frame(Frame(start)), MotionEvent::Play)
+            .schedule(At::Frame(Frame::new(start)), MotionEvent::Play)
             .expect("room");
         let mut blocks = vec![256usize; 4];
         blocks.extend([1, 63, 64, 65, 200, 7].iter().cycle().take(300));

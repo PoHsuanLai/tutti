@@ -103,7 +103,7 @@ fn the_helpers_send_on_the_keys_group() {
         NoteVelocity::new(5),
     )
     .unwrap();
-    keys.note_off(Frame(0), MidiChannel::FIRST, NoteNumber::of(60))
+    keys.note_off(Frame::new(0), MidiChannel::FIRST, NoteNumber::of(60))
         .unwrap();
     d.block();
     assert_eq!(
@@ -113,4 +113,29 @@ fn the_helpers_send_on_the_keys_group() {
             midi::note_off(group, MidiChannel::FIRST, 60, 0),
         ]
     );
+}
+
+/// A MIDI 1.0 velocity is widened by M2-115 (7 to 16 bits: 100 is `51492`,
+/// 64 is `0x8000`, 127 is `0xFFFF`), not sent as the raw 16-bit field.
+#[test]
+fn a_midi1_velocity_is_widened_not_copied() {
+    let (mut d, mut keys) = rig();
+    for v in [100u8, 64, 127] {
+        keys.note_on_midi1(
+            Stamp::NextBlock,
+            MidiChannel::FIRST,
+            NoteNumber::of(60),
+            tutti_ump::U7::of(v),
+        )
+        .unwrap();
+    }
+    d.block();
+    let velocities: Vec<u16> = sent(&d)
+        .iter()
+        .map(|u| match u.decode() {
+            Ok(Message::Midi2(_, Voice2::NoteOn { velocity, .. })) => velocity.get(),
+            other => panic!("a MIDI 2.0 Note On, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(velocities, [51492, 0x8000, 0xFFFF]);
 }

@@ -1,6 +1,7 @@
 use super::*;
 use tutti_fixtures::midi::{m1_cc, m1_note_on, note_on};
 use tutti_types::Beat;
+use tutti_ump::ControlValue;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7};
 
 /// **A clip a block still held when `set` replaced it is freed by
@@ -95,7 +96,7 @@ fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
                         index: tutti_ump::U7::of(0),
                         // Pitch bend sensitivity 12 semitones 50 cents,
                         // zero-extended (M2-115 section 4.1).
-                        value: ((12 << 7) | 50) << 18,
+                        value: ControlValue::new(((12 << 7) | 50) << 18),
                     }
                 )
             ),

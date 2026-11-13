@@ -204,7 +204,7 @@ fn phase_survives_a_depth_edit() {
 fn a_rate_anchor_continues_the_phase() {
     let anchor = RateAnchor {
         epoch: 9,
-        at: Frame(48_000),
+        at: Frame::new(48_000),
         phase: 10.25,
         prev_rate: Hz(2.0),
     };

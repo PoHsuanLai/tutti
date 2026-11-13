@@ -14,7 +14,7 @@
 //! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
 //! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
 //! reassembler (a stream per Group), over a buffer the caller owns; [`SysexMessage::packets`] is its inverse,
-//! the one writer of a payload as SysEx7 packets ([`Sysex7Packets::checked`] for plain bytes), as [`flex_text_packets`] is of a text as Flex
+//! the one writer of a payload as SysEx7 packets ([`Sysex7Packets::from_payload`] for plain bytes), as [`flex_text_packets`] is of a text as Flex
 //! Data packets. [`split_stream`] cuts a buffer
 //! of concatenated packets (a native-UMP transport's) into [`Ump`]s.
 //!
@@ -45,7 +45,9 @@
 
 #![forbid(unsafe_code)]
 
+mod bend_value;
 mod cc_number;
+mod control_value;
 mod decode;
 mod encode;
 mod field;
@@ -61,7 +63,9 @@ mod rpn;
 mod sysex;
 mod ump;
 
+pub use bend_value::BendValue;
 pub use cc_number::CCNumber;
+pub use control_value::ControlValue;
 pub use field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, OutOfRange, Pitch, SharpsFlats,
     U4, U7, U14,
@@ -85,6 +89,7 @@ pub use note_id::NoteId;
 pub use note_velocity::NoteVelocity;
 pub use rpn::Rpn;
 pub use sysex::{
-    NotSysex, SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep,
+    SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler, SysexError, SysexMessage, SysexRef,
+    SysexStep,
 };
 pub use ump::{Key, KeyEvent, Ump, split_stream};

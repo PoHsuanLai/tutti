@@ -62,7 +62,6 @@ impl Job {
     ///
     /// # Errors
     ///
-    /// - [`JobError::InvalidRate`]: `rate` is NaN, infinite, zero or negative.
     /// - [`JobError::ZeroLength`]: `length` is no frames.
     /// - [`JobError::TooLong`]: `latency + length + tail` overflows, or is more
     ///   than [`MAX_FRAMES`].
@@ -72,9 +71,6 @@ impl Job {
         latency: Samples,
         tail: Samples,
     ) -> Result<Self, JobError> {
-        if !is_rate(rate) {
-            return Err(JobError::InvalidRate { rate });
-        }
         if length == Samples(0) {
             return Err(JobError::ZeroLength);
         }
@@ -140,21 +136,10 @@ impl Job {
     }
 }
 
-/// Whether `rate` is one a render can run at: finite and positive.
-pub(crate) fn is_rate(rate: SampleRate) -> bool {
-    rate.get().is_finite() && rate.get() > 0.0
-}
-
 /// Why [`Job::new`] refused.
 #[derive(thiserror::Error, Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum JobError {
-    /// The rate is NaN, infinite, zero or negative.
-    #[error("the render rate must be finite and positive, not {rate:?}")]
-    InvalidRate {
-        /// What was given.
-        rate: SampleRate,
-    },
     /// The audible span is no frames.
     #[error("the render's length is zero frames")]
     ZeroLength,

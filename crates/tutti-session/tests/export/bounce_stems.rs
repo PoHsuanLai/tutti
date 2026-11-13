@@ -313,7 +313,7 @@ fn every_target_has_the_same_length_and_a_stem_its_own_format() {
         .bounce(
             base(0.25)
                 .master(&master, Format::Wav(Pcm::Int16))
-                .resample(Resample::to(44_100_u32))
+                .resample(Resample::to(tutti_types::SampleRate::SR_44K1))
                 .stem_with(Stem::new(node.erase(), &stem, float_wav())),
         )
         .expect("renders");

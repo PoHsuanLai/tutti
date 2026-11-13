@@ -44,7 +44,7 @@ macro_rules! served {
                 main: &MainThread,
                 path: &Path,
                 load: &Load,
-                sample_rate: f64,
+                sample_rate: tutti_plugin_types::SampleRate,
                 block_size: usize,
                 prefer_f64: bool,
                 state: Option<&[u8]>,

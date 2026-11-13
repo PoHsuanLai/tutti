@@ -24,7 +24,7 @@ fn a_vst2_path_is_refused_with_a_typed_error_before_a_server_starts() {
         match PluginClient::new(
             BridgeConfig::default(),
             &tutti_plugin::catalog::PluginRef::file(path.clone()).expect("a plugin file"),
-            48_000u32,
+            tutti_types::SampleRate::SR_48K,
         ) {
             Err(BridgeError::NotOutOfProcess {
                 path: refused,

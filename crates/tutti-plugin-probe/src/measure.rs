@@ -391,9 +391,7 @@ pub fn measure<L: InProcess>(
     let instrument = wiring.total_inputs() == 0;
     let mut record: Option<Measured> = None;
     for (rate, block) in CONFIGS {
-        let Some(prepare) = Prepare::new(rate, block) else {
-            return Ok(None);
-        };
+        let prepare = Prepare::new(rate, block);
         let Ok((mut processor, controller)) = loaded.activate(main, prepare) else {
             return Ok(None);
         };

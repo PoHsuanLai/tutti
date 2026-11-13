@@ -100,23 +100,6 @@ pub enum Observed {
     Rejected,
 }
 
-/// A rate that is not finite and positive: what [`ClockMap::set_rate`] refuses,
-/// carrying the rate it was given.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct InvalidRate(pub SampleRate);
-
-impl std::fmt::Display for InvalidRate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} Hz is not a finite, positive sample rate",
-            self.0.get()
-        )
-    }
-}
-
-impl std::error::Error for InvalidRate {}
-
 /// OS time to graph frame and back. The rule and its bound are in the module docs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClockMap {
@@ -125,11 +108,10 @@ pub struct ClockMap {
 }
 
 impl ClockMap {
-    /// A map at `rate` from one reading; `None` if `rate` is not finite and
-    /// positive.
+    /// A map at `rate` from one reading.
     #[must_use]
-    pub fn new(rate: SampleRate, at: ClockReading) -> Option<Self> {
-        valid(rate).then_some(Self { rate, anchor: at })
+    pub fn new(rate: SampleRate, at: ClockReading) -> Self {
+        Self { rate, anchor: at }
     }
 
     /// The rate frames are counted at.
@@ -214,23 +196,10 @@ impl ClockMap {
 
     /// Counts frames at `rate` from now on, the anchor moved to the same
     /// instant at the new rate (a re-prepare at another rate).
-    ///
-    /// # Errors
-    ///
-    /// [`InvalidRate`] carrying `rate`, changing nothing, if it is not finite
-    /// and positive.
-    pub fn set_rate(&mut self, rate: SampleRate) -> Result<(), InvalidRate> {
-        if !valid(rate) {
-            return Err(InvalidRate(rate));
-        }
+    pub fn set_rate(&mut self, rate: SampleRate) {
         self.anchor.frame = self.anchor.frame.rescaled(self.rate, rate);
         self.rate = rate;
-        Ok(())
     }
-}
-
-fn valid(rate: SampleRate) -> bool {
-    rate.get().is_finite() && rate.get() > 0.0
 }
 
 #[cfg(test)]

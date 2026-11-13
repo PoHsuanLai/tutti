@@ -507,7 +507,7 @@ thread and hands `Done` back to the session on the control thread.
 let mut s = Session::builder()
     .outputs_floor(2)                                  // TuttiPlugin::outputs today
     .render_workers(0)                                 // one per core
-    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
+    .build_offline(SampleRate::SR_48K, ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
 
 // With the sound card (`device`): two halves.
 let (mut s, mut device) = Session::builder()
@@ -922,7 +922,7 @@ loop { for e in s.update() { log(e) } sleep(frame) }
 use tutti::prelude::*;
 
 let mut s = Session::builder()
-    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
+    .build_offline(SampleRate::SR_48K, ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
 
 let job = s.plugin_load(PluginLoadRequest::new(PluginRef::file("Synth.clap").ok_or("not a plugin")?));
 let synth = s.add_plugin(job.run())?;
@@ -934,7 +934,7 @@ s.midi().play_clip(synth, file.iter().map(TimedMidiEvent::from))?;
 s.transport().set_tempo(tempo);
 
 let mut config = ExportConfig::default();
-config.render.sample_rate = SampleRate(48_000.0);
+config.render.sample_rate = SampleRate::SR_48K;
 // `end_beat()` is a `Beat`. One tempo is right only for a file that never changes
 // it: in general the length integrates over `file.tempo_map()`. A converter
 // that does (`BeatDuration::to_seconds` is `Seconds` at one tempo) does not
@@ -944,7 +944,7 @@ let job = s.export(
     ExportRequest::file("song.wav", config)
         .on_timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             tempo,
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             ..Default::default()
         })))
         .trim_reported_latency()                         // RenderConfig::latency, from the plan

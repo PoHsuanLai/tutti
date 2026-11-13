@@ -208,7 +208,7 @@ fn the_cut_discards_only_what_is_below_the_floor() {
         let tail = tail_of(c);
         let mut tuned = FreeverbFamily.realized();
         tuned.prepare(
-            &FreeverbFamily.reach(&Reach::at(SR).unwrap()),
+            &FreeverbFamily.reach(&Reach::at(SR)),
             &Setup {
                 rate: SR,
                 max_block: MaxBlock::of(Samples(BLOCK)),

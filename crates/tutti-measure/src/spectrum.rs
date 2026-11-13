@@ -1391,24 +1391,11 @@ mod tests {
         assert!(bad(new(65_536, 1)));
         assert!(bad(new(4096, 63)));
         assert!(new(64, 1).is_ok() && new(65_536, 65_536).is_ok() && new(4096, 64).is_ok());
-        for rate in [f64::INFINITY, 0.5, 1e9] {
+        for rate in [0.5, 1e9] {
             assert!(bad(SpectrumConfig::new(
-                StftGeometry::new(
-                    <SampleRate as tutti_types::Unit>::from_raw(rate),
-                    Samples(256),
-                    Samples(64)
-                )
-                .unwrap()
+                StftGeometry::new(SampleRate::of(rate), Samples(256), Samples(64)).unwrap()
             )));
         }
-        assert!(
-            StftGeometry::new(
-                <SampleRate as tutti_types::Unit>::from_raw(f64::NAN),
-                Samples(256),
-                Samples(64)
-            )
-            .is_err()
-        );
 
         let cfg = config(1024, 256);
         for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 3601.0] {

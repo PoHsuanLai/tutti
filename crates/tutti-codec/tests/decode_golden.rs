@@ -36,10 +36,10 @@ fn eat_sample(h: &mut Fnv, v: f32) {
 fn wave_digest(w: &Wave) -> u64 {
     let mut h = Fnv::new();
     h.u64(w.channels() as u64);
-    h.u64(w.len() as u64);
+    h.u64(w.len().get() as u64);
     h.u64(w.sample_rate().get().to_bits());
     for c in 0..w.channels() {
-        for i in 0..w.len() {
+        for i in 0..w.len().get() {
             eat_sample(&mut h, w.at(c, i));
         }
     }
@@ -207,7 +207,7 @@ fn decoded_levels_match_on_every_platform() {
     for &(name, channels, frames, levels) in LEVELS {
         let w = Wave::read(asset(name)).expect("load");
         assert_eq!(w.channels(), channels, "{name}: channels");
-        assert_eq!(w.len(), frames, "{name}: frames");
+        assert_eq!(w.len().get(), frames, "{name}: frames");
         for (c, &(rms, peak)) in levels.iter().enumerate() {
             let ch = w.channel(c);
             let got_rms = (ch.iter().map(|&s| f64::from(s) * f64::from(s)).sum::<f64>()
@@ -260,7 +260,7 @@ fn the_stream_reads_every_frame_the_load_does() {
             }
             at += n;
         }
-        assert_eq!(at, w.len(), "{name}: streamed frame count");
+        assert_eq!(at, w.len().get(), "{name}: streamed frame count");
     }
 }
 
@@ -276,14 +276,10 @@ fn the_probe_agrees_with_the_full_load() {
         let meta = Wave::read_metadata(asset(name)).expect("probe");
         assert_eq!(meta.channels(), w.channels(), "{name}: probed width");
         assert_eq!(meta.topology, *w.topology(), "{name}: probed topology");
-        assert_eq!(
-            meta.sample_rate as f64,
-            w.sample_rate().get(),
-            "{name}: probed rate"
-        );
+        assert_eq!(meta.sample_rate, w.sample_rate(), "{name}: probed rate");
         assert_eq!(
             meta.total_frames,
-            Some(w.len() as u64),
+            Some(w.len().get() as u64),
             "{name}: probed frame count"
         );
     }
@@ -299,7 +295,7 @@ fn lag_of(w: &Wave, start: usize, out: &[f32]) -> Option<i64> {
     (-4096i64..=4096).find(|&d| {
         let s = start as i64 + d;
         s >= 0
-            && (s as usize + n) <= w.len()
+            && (s as usize + n) <= w.len().get()
             && (0..n).all(|f| {
                 (0..ch).all(|c| out[f * ch + c].to_bits() == w.at(c, s as usize + f).to_bits())
             })
@@ -327,7 +323,7 @@ fn seek_lands_on_the_whole_file_load_frames() {
     for &(name, _, _) in GOLDEN {
         let w = Wave::read(asset(name)).expect("load");
         let ch = w.channels();
-        let len = w.len();
+        let len = w.len().get();
         let starts = [1, 700, len / 3, len - 100];
 
         let check = |dec: &mut FileIn, start: usize, how: &str| {

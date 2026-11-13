@@ -728,7 +728,7 @@ mod owed_tests {
     fn recall(inner: &parking_lot::Mutex<crate::node::instance::Instance<Vst2Loaded>>) {
         inner
             .lock()
-            .set_sample_rate(&main_thread(), 44_100.0, None)
+            .set_sample_rate(&main_thread(), SampleRate::SR_44K1, None)
             .expect("the change starts");
     }
 

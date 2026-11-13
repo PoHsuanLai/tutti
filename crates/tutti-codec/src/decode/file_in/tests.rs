@@ -20,7 +20,7 @@ fn save_wav16(wave: &Wave, name: &str) -> std::path::PathBuf {
         sample_format: hound::SampleFormat::Int,
     };
     let mut w = hound::WavWriter::create(&path, spec).expect("create wav");
-    for i in 0..wave.len() {
+    for i in 0..wave.len().get() {
         for c in 0..wave.channels() {
             let s = (wave.at(c, i).clamp(-1.0, 1.0) * 32767.0).round() as i16;
             w.write_sample(s).expect("write sample");
@@ -47,7 +47,9 @@ fn write_test_wav(frames: usize, tag: &str) -> std::path::PathBuf {
 
 fn loaded_stereo(path: &std::path::Path) -> Vec<[f32; 2]> {
     let w = Wave::read(path).expect("load");
-    (0..w.len()).map(|i| [w.at(0, i), w.at(1, i)]).collect()
+    (0..w.len().get())
+        .map(|i| [w.at(0, i), w.at(1, i)])
+        .collect()
 }
 
 #[test]

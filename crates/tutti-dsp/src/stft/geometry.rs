@@ -17,7 +17,7 @@ use crate::stft::window::{CosineWindow, Window};
 ///
 /// Fields are private and there is no literal constructor, so invalid
 /// instances cannot exist: a zero hop, a
-/// hop wider than its window, a non-positive sample rate, or a stored bin
+/// hop wider than its window, or a stored bin
 /// count contradicting the window it came from.
 ///
 /// **`window` and `window_fn` are different nouns**, and the names are chosen
@@ -43,9 +43,7 @@ impl StftGeometry {
     ///
     /// # Errors
     ///
-    /// [`Error::ZeroWindow`] or [`Error::ZeroHop`] for a zero length, and
-    /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
-    /// NaN.
+    /// [`Error::ZeroWindow`] or [`Error::ZeroHop`] for a zero length.
     pub fn new(
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
@@ -58,13 +56,6 @@ impl StftGeometry {
         }
         if hop.is_zero() {
             return Err(Error::ZeroHop);
-        }
-        #[allow(
-            clippy::neg_cmp_op_on_partial_ord,
-            reason = "the negation is the NaN guard: every comparison against NaN is false, so `x <= 0.0` would accept a NaN rate and let it reach the FFT geometry"
-        )]
-        if !(sample_rate.get() > 0.0) {
-            return Err(Error::NonPositiveSampleRate);
         }
 
         Ok(Self {

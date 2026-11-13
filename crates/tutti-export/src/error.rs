@@ -235,13 +235,6 @@ pub enum ConfigError {
     /// The graph's editor does not feed its executor.
     #[error("the graph's editor does not feed its executor; pass the pair built together")]
     UnpairedGraph,
-    /// The graph was prepared at a rate that is not finite and positive
-    /// ([`RenderGraph::assemble`](crate::RenderGraph::assemble)).
-    #[error("the graph is prepared at {prepared} Hz, which is not a sample rate")]
-    InvalidRate {
-        /// The rate the graph was prepared at, in Hz.
-        prepared: f64,
-    },
     /// The graph is prepared at another rate than the render.
     #[error(
         "the graph is prepared at {prepared} Hz and the render is at {render} Hz; \

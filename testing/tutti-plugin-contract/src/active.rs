@@ -19,9 +19,7 @@ const UNWRITTEN: f64 = 9.0;
 #[must_use]
 pub fn prepare(rate: f64, block: usize, format: SampleFormat) -> Prepare {
     let block = MaxBlock::new(Samples(block)).expect("a case renders at least one frame");
-    Prepare::new(SampleRate::of(rate), block)
-        .expect("a case runs at a positive finite rate")
-        .with_format(format)
+    Prepare::new(SampleRate::of(rate), block).with_format(format)
 }
 
 /// A sample width a case can render at.

@@ -32,7 +32,7 @@ use tutti_graph::{Bus, Buses, Cx, Offset, Shape};
 use tutti_plugin_types::{LoadedPlugin, PluginBus};
 use tutti_tempo::TempoView;
 use tutti_transport::TempoReader;
-use tutti_types::{BusTopology, ChannelLayout, Samples};
+use tutti_types::{BusTopology, ChannelLayout, SampleRate, Samples};
 
 use super::instance::Instance;
 use crate::{BlockTransport, TransportSource, TransportWalk};
@@ -393,8 +393,8 @@ pub(super) const NO_PENDING_RATE: u64 = u64::MAX;
 /// Last write wins. A rate superseded before anyone drained it never reached
 /// the plugin, so dropping it loses nothing — the plugin only needs to hear the
 /// rate it is about to run at.
-pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: f64) {
-    cell.store(rate.to_bits(), Ordering::Relaxed);
+pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: SampleRate) {
+    cell.store(rate.get().to_bits(), Ordering::Relaxed);
 }
 
 /// Dispatch a parked rate, if any, and report whether one reached the plugin.
@@ -409,15 +409,15 @@ pub(super) fn drain_sample_rate<F: Loaded>(
     cell: &AtomicU64,
     inner: &Mutex<Instance<F>>,
 ) -> bool {
+    // The sentinel is a NaN, which is no rate: a cell with nothing waiting
+    // reads as `None`, and the only other thing it holds is a queued rate.
     let bits = cell.swap(NO_PENDING_RATE, Ordering::Relaxed);
-    if bits == NO_PENDING_RATE {
+    let Some(rate) = SampleRate::new(f64::from_bits(bits)) else {
         return false;
-    }
+    };
     // A refusal is kept in the instance and reported by the control side's next
     // pump (`take_rate_report`), so the result is not read here.
-    let _ = inner
-        .lock()
-        .set_sample_rate(main, f64::from_bits(bits), None);
+    let _ = inner.lock().set_sample_rate(main, rate, None);
     true
 }
 
@@ -602,7 +602,8 @@ impl<F: Loaded> InProcClient<F> {
     /// node's `prepare` does with its rate. (The transport snapshot's rate is
     /// the block's own, from its `Env`.)
     pub(super) fn set_rate(&mut self, sample_rate: tutti_types::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
+        let rate = sample_rate;
+        let sample_rate: f64 = rate.get();
         let changed = sample_rate != self.sample_rate;
         self.sample_rate = sample_rate;
         // Only on a change: a redundant bracket makes a plugin reallocate its
@@ -619,7 +620,7 @@ impl<F: Loaded> InProcClient<F> {
             let outcome = self
                 .inner
                 .lock()
-                .set_sample_rate(&main, sample_rate, Some(&mut self.rt));
+                .set_sample_rate(&main, rate, Some(&mut self.rt));
             // A refusal renders silence (no Processor is lent) and is reported
             // through the handle (`take_rate_report`).
             self.rate_refused = outcome.is_err();
@@ -631,7 +632,7 @@ impl<F: Loaded> InProcClient<F> {
         match self.rate_delivery {
             // Off the main thread the bracket cannot run: parked for the main
             // thread's pump.
-            RateDelivery::Parked => queue_sample_rate(&self.pending_sample_rate, sample_rate),
+            RateDelivery::Parked => queue_sample_rate(&self.pending_sample_rate, rate),
             // A fork has no pump: the refusal is recorded (`rate_refused`), the
             // node renders silence rather than audio at the wrong rate, and the
             // next `prepare` on the main thread clears it.

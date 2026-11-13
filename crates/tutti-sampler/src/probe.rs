@@ -132,7 +132,7 @@ pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     })?;
     Ok(SampleFacts {
         frames: meta.total_frames.map(|f| Samples(f as usize)),
-        sample_rate: SampleRate::from(meta.sample_rate),
+        sample_rate: meta.sample_rate,
         layout: meta.topology.layout(),
         streamable: streamable(path, &meta),
         topology: meta.topology,
@@ -203,7 +203,7 @@ mod tests {
         let path = write_wav(&dir, "probe_ok.wav", 4800);
         let facts = probe(&path).expect("readable");
         assert_eq!(facts.frames, Some(Samples(4800)));
-        assert_eq!(facts.sample_rate, SampleRate::from(48_000u32));
+        assert_eq!(facts.sample_rate, SampleRate::SR_48K);
         assert_eq!(facts.layout.count(), 2);
         assert!(
             facts.streamable,
@@ -227,7 +227,7 @@ mod tests {
         // display, the other for decisions.
         let unknown = SampleFacts {
             frames: None,
-            sample_rate: SampleRate::from(48_000u32),
+            sample_rate: SampleRate::SR_48K,
             layout: ChannelLayout::STEREO,
             topology: ChannelTopology::smpte(ChannelLayout::STEREO).unwrap(),
             streamable: false,

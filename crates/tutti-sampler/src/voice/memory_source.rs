@@ -461,7 +461,7 @@ impl MemorySource {
     /// Length of the loaded wave in frames — one per output sample at unity
     /// read rate, regardless of the wave's channel count.
     pub fn duration_samples(&self) -> usize {
-        self.wave.len()
+        self.wave.len().get()
     }
 
     /// Length of the loaded wave in seconds at the *file's* own sample rate,
@@ -615,7 +615,7 @@ impl MemorySource {
     /// `read_frame` owns that policy.
     #[inline]
     pub fn sample_raw_into(&self, position: f64, out: &mut [f32]) {
-        let len = self.wave.len() as f64;
+        let len = self.wave.len().get() as f64;
         if position >= len {
             out.fill(0.0);
             return;
@@ -648,7 +648,7 @@ impl MemorySource {
         direction: Direction,
         out: &mut [f32],
     ) {
-        let len = self.wave.len() as f64;
+        let len = self.wave.len().get() as f64;
         match direction {
             Direction::Reverse => {
                 if pos.get() >= len {
@@ -657,7 +657,7 @@ impl MemorySource {
                 }
                 self.sample_raw_into((len - 1.0 - pos.get()).max(0.0), out);
             }
-            Direction::Forward => match LoopSpan::from_setting(self.loop_, self.wave.len()) {
+            Direction::Forward => match LoopSpan::from_setting(self.loop_, self.wave.len().get()) {
                 Some(span) => {
                     let (p, looped) = span.place(pos.get());
                     self.read_looped_raw_into(&span, p, looped, out);
@@ -671,7 +671,7 @@ impl MemorySource {
     /// at and past the file's end, as an unlooped read is.
     #[inline]
     fn read_looped_raw_into(&self, span: &LoopSpan, p: f64, looped: bool, out: &mut [f32]) {
-        if p >= self.wave.len() as f64 {
+        if p >= self.wave.len().get() as f64 {
             out.fill(0.0);
             return;
         }
@@ -784,7 +784,7 @@ impl MemorySource {
         if frames == 0 {
             return;
         }
-        let len = self.wave.len();
+        let len = self.wave.len().get();
         let src_ch = self.wave.channels();
         // (A wave past `u32::MAX` frames, 24 hours at 48 kHz, reads a frame
         // at a time: the gather keeps each frame's whole index as a `u32`.)
@@ -1046,8 +1046,8 @@ impl MemorySource {
         }
 
         let pos = self.position.load().get();
-        let wave_len = self.wave.len() as f64;
-        let span = LoopSpan::from_setting(self.loop_, self.wave.len());
+        let wave_len = self.wave.len().get() as f64;
+        let span = LoopSpan::from_setting(self.loop_, self.wave.len().get());
         match &span {
             Some(span) => {
                 let looped = self.looped.load(Ordering::Relaxed);

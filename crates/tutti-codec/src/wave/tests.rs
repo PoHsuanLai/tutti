@@ -1,13 +1,13 @@
 use super::*;
 use tutti_types::SampleRate;
-use tutti_types::Seconds;
+use tutti_types::{Samples, Seconds};
 
 /// `push_frame` appends to every channel and advances the length once.
 #[test]
 fn push_frame_appends_one_frame_across_channels() {
     let mut w = Wave::new(2, SampleRate::SR_48K);
     w.push_frame(&[0.25, -0.5]);
-    assert_eq!(w.len(), 1);
+    assert_eq!(w.len(), Samples(1));
     assert_eq!((w.at(0, 0), w.at(1, 0)), (0.25, -0.5));
 }
 
@@ -20,7 +20,7 @@ fn push_frame_rejects_a_frame_of_the_wrong_width() {
 #[test]
 fn zero_rounds_the_duration_to_the_nearest_frame() {
     let w = Wave::zero(1, SampleRate::of(2.0), Seconds::new(0.75));
-    assert_eq!(w.len(), 2);
+    assert_eq!(w.len(), Samples(2));
     assert!(w.channel(0).iter().all(|&s| s == 0.0));
 }
 

@@ -48,7 +48,7 @@ fn refusal(error: PluginError) -> AuError {
 }
 
 fn prepare_of(rate: SampleRate, block: u32) -> Prepare {
-    Prepare::new(rate, MaxBlock::of(Samples(block as usize))).expect("a usable rate")
+    Prepare::new(rate, MaxBlock::of(Samples(block as usize)))
 }
 
 impl Au {
@@ -160,7 +160,6 @@ impl Au {
         let result = self.reconfigure_stream(rate, block);
         if result.is_ok() {
             self.prepare = Prepare::new(rate, MaxBlock::of(Samples(block as usize)))
-                .expect("a usable rate")
                 .with_mode(self.prepare.mode());
         }
         if was_active {

@@ -63,7 +63,6 @@ fn cc(group: u8, value: u32) -> tutti_graph::UmpAt {
 
 /// **A unit that takes no MIDI 2.0 is the legacy path.** The installed Apple
 /// instruments answer no protocol.
-/// Spec: au.prop.AudioUnitMIDIProtocol
 #[test]
 fn an_installed_instrument_reports_no_protocol_and_is_legacy() {
     let _g = AU_LOCK.lock().unwrap_or_else(|e| e.into_inner());

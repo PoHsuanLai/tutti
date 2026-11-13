@@ -168,7 +168,7 @@ fn render_f64(instance: &mut Active, input_value: f64) -> Vec<Vec<f64>> {
 ///
 /// A host that built an `AudioBuffer<f32>` for both public entry points would
 /// read `Replacing` here.
-/// Spec: vst2.field.processDoubleReplacing, vst2.eff.SetProcessPrecision, vst2.flag.effFlagsCanDoubleReplacing
+/// Spec: vst2.field.processDoubleReplacing, vst2.flag.effFlagsCanDoubleReplacing
 #[test]
 fn f64_capable_plugin_is_entered_through_the_f64_slot() {
     let _guard = lock_probe();

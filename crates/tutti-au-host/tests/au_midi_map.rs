@@ -211,7 +211,6 @@ fn exactly_two_installed_components_implement_the_mapping_family() {
 /// fallback can finally be written against a real implementer instead of guessed.
 /// Probed at all three scopes and in both lifecycle phases, because a property
 /// can appear in only one of six combinations.
-/// Spec: au.prop.MIDIControlMapping
 #[test]
 fn nothing_implements_the_deprecated_midi_control_mapping_property() {
     let _g = lock();

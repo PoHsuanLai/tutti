@@ -417,7 +417,7 @@ fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
 
 /// `getEvent` must reject out-of-range and negative indices rather than
 /// panic on the cast.
-/// Spec: vst3.IEventList.getEvent, vst3.IEventList.getEventCount
+/// Spec: vst3.IEventList.getEvent
 #[test]
 fn get_event_rejects_bad_indices() {
     let list = EventList::input();

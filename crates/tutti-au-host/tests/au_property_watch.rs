@@ -153,7 +153,7 @@ impl Watched {
 /// The consequence if it does not: a plugin that changes latency on a mode
 /// switch leaves PDC compensating the load-time figure permanently, and nothing
 /// anywhere reports it.
-/// Spec: au.select.AudioUnitAddPropertyListener, au.prop.Latency
+/// Spec: au.select.AUEventListenerCreateWithDispatchQueue, au.select.AUEventListenerAddEventType, au.prop.Latency
 #[test]
 fn a_latency_change_reaches_a_watching_host() {
     let w = Watched::new();
@@ -187,7 +187,7 @@ fn a_latency_change_reaches_a_watching_host() {
 /// The two are separate properties with separate consequences — latency
 /// re-plans PDC, tail resizes a bounce — so a host that mapped both onto one
 /// signal would re-plan the graph every time a reverb's decay moved.
-/// Spec: au.select.AudioUnitAddPropertyListener, au.prop.TailTime
+/// Spec: au.select.AUEventListenerCreateWithDispatchQueue, au.select.AUEventListenerAddEventType, au.prop.TailTime
 #[test]
 fn a_tail_change_reaches_a_watching_host_under_its_own_id() {
     let w = Watched::new();
@@ -222,7 +222,7 @@ fn a_tail_change_reaches_a_watching_host_under_its_own_id() {
 /// list in response, and if the AU still reports the old one the re-pull is
 /// wasted work that looks like it succeeded. The count assertion is what makes
 /// the notification mean something.
-/// Spec: au.select.AudioUnitAddPropertyListener, au.prop.ParameterList
+/// Spec: au.select.AUEventListenerCreateWithDispatchQueue, au.select.AUEventListenerAddEventType, au.prop.ParameterList
 #[test]
 fn a_parameter_list_change_reaches_a_watching_host() {
     let w = Watched::new();
@@ -302,7 +302,7 @@ fn a_watcher_is_not_woken_by_an_unrelated_property() {
 /// instance's whole life. A registration that outlived its `Drop` would be a
 /// use-after-free on the next property change the plugin made — at any time,
 /// from its own editor.
-/// Spec: au.select.AudioUnitRemovePropertyListener
+/// Spec: au.select.AUListenerDispose
 #[test]
 fn a_dropped_listener_stops_receiving() {
     let mut w = Watched::new();

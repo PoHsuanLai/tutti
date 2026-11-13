@@ -504,7 +504,7 @@ mod tests {
     /// Each variant must lower into its own union arm with the tag that names
     /// it. A crossed wire here is the exact bug the typed enum exists to make
     /// unrepresentable, so assert the lowering rather than trusting the match.
-    /// Spec: au.param.event.Immediate, au.param.event.Ramped, au.select.AudioUnitScheduleParameters
+    /// Spec: au.param.event.Immediate, au.param.event.Ramped
     #[test]
     fn each_variant_lowers_into_its_own_union_arm() {
         let addr = ScheduleAddress {

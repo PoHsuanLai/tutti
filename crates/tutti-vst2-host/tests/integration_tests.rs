@@ -1077,7 +1077,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
 /// plugin in a bundled suite. Reading only the product string collapses a
 /// suite to a single label, so a host that asks for one must ask for the
 /// other first.
-/// Spec: vst2.eff.GetEffectName, vst2.eff.GetProductString
+/// Spec: vst2.eff.GetEffectName
 #[test]
 fn the_effect_name_is_preferred_over_the_product_string() {
     let _guard = lock_probe();

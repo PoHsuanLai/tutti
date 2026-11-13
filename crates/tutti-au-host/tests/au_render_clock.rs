@@ -109,7 +109,6 @@ fn the_render_clock_starts_at_zero_and_advances_by_one_block() {
 /// The pre-reset renders are not decoration: they move the cursor off zero, so
 /// the post-reset `0.0` is a value the reset produced rather than one the clock
 /// never left.
-/// Spec: au.select.AudioUnitReset
 #[test]
 fn reset_sends_the_render_clock_back_to_zero() {
     let mut au = Misbehaviour::None.open_initialized(RATE, BLOCK);

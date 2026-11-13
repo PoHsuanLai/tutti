@@ -287,7 +287,6 @@ fn a_refused_initialize_leaves_the_instance_usable() {
     }
 }
 
-/// Spec: au.prop.SampleRate
 #[test]
 fn test_set_sample_rate() {
     let comp = find_apple_delay().unwrap();

@@ -621,6 +621,7 @@ pub(super) fn handle(
             reply.send(recv_state(stream, inbox, owed, channels, &progress)?);
         }
         Command::LoadState {
+            state_use,
             data,
             progress,
             reply,
@@ -649,6 +650,7 @@ pub(super) fn handle(
                 ipc::send(
                     stream,
                     &HostMessage::LoadStateChunk {
+                        state_use,
                         seq,
                         last,
                         bytes: bytes.to_vec(),

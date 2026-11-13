@@ -719,7 +719,21 @@ impl PluginBridge {
         main: &MainThread,
         data: &[u8],
     ) -> std::result::Result<(), StateError> {
-        let audio = self.audio.load_state(data);
+        self.load_state_for(main, data, tutti_plugin_types::StateUse::Project)
+    }
+
+    /// As [`load_state`](Self::load_state), for a state saved for `state_use`.
+    ///
+    /// # Errors
+    ///
+    /// As [`AudioBridge::load_state`].
+    pub fn load_state_for(
+        &self,
+        main: &MainThread,
+        data: &[u8],
+        state_use: tutti_plugin_types::StateUse,
+    ) -> std::result::Result<(), StateError> {
+        let audio = self.audio.load_state_for(data, state_use);
         // Also load into GUI instance so its display stays in sync.
         if let Ok(mut guard) = self.gui.lock()
             && let Some(gui) = guard.as_mut()

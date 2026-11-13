@@ -157,7 +157,12 @@ pub(crate) trait ServedPlugin: Render {
     /// # Errors
     ///
     /// The plugin rejects the bytes, or is lost.
-    fn load_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()>;
+    fn load_state(
+        &mut self,
+        main: &MainThread,
+        data: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()>;
 }
 
 /// A plugin of format `F` that the server runs: its [`Lifecycle`], the
@@ -865,10 +870,15 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
             .save_state_for(main, state_use)
     }
 
-    fn load_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
+    fn load_state(
+        &mut self,
+        main: &MainThread,
+        data: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()> {
         self.lifecycle
             .control()
             .ok_or_else(lost)?
-            .load_state(main, data)
+            .load_state_for(main, data, state_use)
     }
 }

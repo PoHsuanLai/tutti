@@ -808,6 +808,7 @@ mod tests {
             let mut host =
                 connect_within(&connect_path, Duration::from_millis(200)).expect("connect");
             let chunk = HostMessage::LoadStateChunk {
+                state_use: tutti_plugin_types::StateUse::Project,
                 seq: 0,
                 last: false,
                 bytes: vec![0u8; 1 << 20],

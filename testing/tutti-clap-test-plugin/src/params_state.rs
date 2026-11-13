@@ -159,6 +159,17 @@ static PARAMS: &[ProbeParam] = &[
         default: 0.0,
         flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE,
     },
+    // The one parameter the host must not tell about automation: it cannot be
+    // automated.
+    ProbeParam {
+        id: 31,
+        name: b"Manual",
+        module: b"",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        flags: CLAP_PARAM_IS_STEPPED,
+    },
 ];
 
 /// Parameter id of the applied `Gain` control (see the private `PARAMS` table).
@@ -265,7 +276,9 @@ pub unsafe fn apply_extra_param_events(list: *const clap_input_events) {
 /// patterns so the table can be a `static` without a lock on the audio thread.
 /// Initialised lazily from `default` on first read — 0 is not a legal sentinel,
 /// since 0.0 is a legal value for `Drive`.
-static VALUES: [AtomicU32; 8] = [
+static VALUES: [AtomicU32; 10] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
@@ -341,7 +354,7 @@ pub struct CapturedParamEvent {
 pub const MAX_CAPTURED_PARAM_EVENTS: usize = 32;
 
 /// Maximum state payload bytes recorded per save/load.
-pub const MAX_CAPTURED_STATE: usize = 64;
+pub const MAX_CAPTURED_STATE: usize = 96;
 
 /// Maximum `param-indication.set_automation` calls recorded.
 pub const MAX_CAPTURED_INDICATIONS: usize = 16;

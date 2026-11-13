@@ -328,8 +328,8 @@ fn host_derives_step_count_from_the_stepped_flag() {
 }
 
 /// `CLAP_PARAM_IS_AUTOMATABLE` must reach `ParamFlags::AUTOMATABLE`.
-/// Every probe param sets it, so a host that drops the bit fails on all three;
-/// a host that hardcodes `true` is caught by the `READ_ONLY`/`BYPASS`/`HIDDEN`
+/// Every probe param but `Manual` sets it, so a host that drops the bit fails
+/// on all the others, and one that hardcodes `true` fails on `Manual`; a host that hardcodes `true` is caught by the `READ_ONLY`/`BYPASS`/`HIDDEN`
 /// half, which no probe param sets.
 ///
 /// Each assertion is `Some(_)`, not a bare bool: CLAP reports every capability
@@ -341,10 +341,17 @@ fn host_projects_parameter_flags() {
     let loaded = probe.load();
 
     for p in loaded.parameter_list(&main_thread()) {
+        let declared = probe_params()
+            .iter()
+            .find(|d| d.id == p.id().get())
+            .expect("a declared parameter")
+            .flags
+            & clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE
+            != 0;
         assert_eq!(
             p.flag(ParamFlags::AUTOMATABLE),
-            Some(true),
-            "param {} is AUTOMATABLE in the plugin's info",
+            Some(declared),
+            "param {} is AUTOMATABLE exactly as the plugin's info declares",
             p.id()
         );
         assert_eq!(
@@ -1143,8 +1150,8 @@ fn host_loads_state_with_the_requested_context() {
 }
 
 /// The host's automation mode reaches the plugin as `param-indication`'s raw
-/// states, per `clap_param_indication` (NONE 0, PLAYING 2, RECORDING 3,
-/// OVERRIDING 4): once for every automatable parameter.
+/// states, per `clap_param_indication` (NONE 0, PLAYING 2, RECORDING 3):
+/// once for every automatable parameter, and never for one that is not.
 #[test]
 fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
     let probe = Probe::acquire();
@@ -1154,12 +1161,15 @@ fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
         .filter(|p| p.flags & clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE != 0)
         .map(|p| p.id)
         .collect();
-    assert!(!automatable.is_empty());
+    assert!(
+        automatable.len() < probe_params().len(),
+        "the table holds a parameter that cannot be automated"
+    );
 
     let cases = [
         (AutomationMode::Reading, 2u32),
         (AutomationMode::Writing, 3),
-        (AutomationMode::ReadWriting, 4),
+        (AutomationMode::ReadWriting, 3),
         (AutomationMode::Off, 0),
     ];
     for (mode, raw) in cases {

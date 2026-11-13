@@ -1677,7 +1677,7 @@ fn test_clap_state_save_load_roundtrip() {
 
     // Restore state
     instance
-        .load_state(&main_thread(), &saved)
+        .load_state(&main_thread(), &saved, StateUse::Project)
         .expect("restore should succeed");
 
     let restored_value = instance.normalized(&main_thread(), param_id);
@@ -1935,7 +1935,7 @@ fn test_surge_state_save_load() {
     instance.set_parameter(&main_thread(), param_id, Normalized::clamped(new_value));
 
     instance
-        .load_state(&main_thread(), &saved)
+        .load_state(&main_thread(), &saved, StateUse::Project)
         .expect("restore should succeed");
 
     let restored = instance.normalized(&main_thread(), param_id);

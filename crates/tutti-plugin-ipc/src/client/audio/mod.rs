@@ -535,6 +535,20 @@ impl AudioBridge {
     ///
     /// The plugin is dead, refused it, or the transfer stalled.
     pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
+        self.load_state_for(data, StateUse::Project)
+    }
+
+    /// Restores a state saved for `state_use` in the plugin. Blocks while it
+    /// travels.
+    ///
+    /// # Errors
+    ///
+    /// As [`load_state`](Self::load_state).
+    pub fn load_state_for(
+        &self,
+        data: &[u8],
+        state_use: StateUse,
+    ) -> std::result::Result<(), StateError> {
         if self.lifecycle.is_crashed() {
             return Err(StateError::PluginCrashed);
         }
@@ -551,6 +565,7 @@ impl AudioBridge {
         let (ask_resp, reply) = ask::<std::result::Result<(), StateError>>();
         let progress = StateProgress::new(self.state_progress_timeout);
         if !self.channels.push_command(Command::LoadState {
+            state_use,
             data: data.to_vec(),
             progress: progress.clone(),
             reply,

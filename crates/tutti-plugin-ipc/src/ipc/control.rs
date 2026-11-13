@@ -230,6 +230,18 @@ macro_rules! served_control {
                     .map_err(PluginError::StateFailed)
             }
 
+            fn load_state_for(
+                &mut self,
+                main: &MainThread,
+                bytes: &[u8],
+                state_use: StateUse,
+            ) -> PluginResult<()> {
+                self.link
+                    .bridge
+                    .load_state_for(main, bytes, state_use)
+                    .map_err(PluginError::StateFailed)
+            }
+
             fn presets(&mut self, _main: &MainThread) -> Vec<Preset> {
                 self.link.bridge.presets().unwrap_or_default()
             }

@@ -94,6 +94,7 @@ pub(super) enum Command {
     /// [`SaveState`](Self::SaveState) — bytes handed to the socket rather than
     /// bytes received.
     LoadState {
+        state_use: StateUse,
         data: Vec<u8>,
         progress: super::progress::StateProgress,
         reply: Reply<std::result::Result<(), StateError>>,

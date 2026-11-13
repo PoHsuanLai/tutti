@@ -419,9 +419,12 @@ impl Session {
             }
 
             M::SaveState { state_use } => Ok(self.handle_save_state(main, state_use)),
-            M::LoadStateChunk { seq, last, bytes } => {
-                Ok(self.handle_load_state_chunk(main, seq, last, &bytes))
-            }
+            M::LoadStateChunk {
+                state_use,
+                seq,
+                last,
+                bytes,
+            } => Ok(self.handle_load_state_chunk(main, state_use, seq, last, &bytes)),
             M::StageStateChunk { seq, last, bytes } => {
                 Ok(self.handle_stage_state_chunk(seq, last, &bytes))
             }
@@ -806,6 +809,7 @@ impl Session {
     fn handle_load_state_chunk(
         &mut self,
         main: &MainThread,
+        state_use: StateUse,
         seq: u32,
         last: bool,
         bytes: &[u8],
@@ -852,7 +856,7 @@ impl Session {
             }
             .into();
         };
-        let error = match plugin.plugin_mut().load_state(main, &data) {
+        let error = match plugin.plugin_mut().load_state(main, &data, state_use) {
             Ok(()) => None,
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
@@ -1353,6 +1357,7 @@ mod tests {
             .handle(
                 &main_thread(),
                 HostMessage::LoadStateChunk {
+                    state_use: StateUse::Project,
                     seq: 0,
                     last: true,
                     bytes: vec![1, 2, 3],
@@ -1379,6 +1384,7 @@ mod tests {
             s.handle(
                 &main_thread(),
                 HostMessage::LoadStateChunk {
+                    state_use: StateUse::Project,
                     seq,
                     last,
                     bytes: vec![1, 2, 3],
@@ -2167,6 +2173,7 @@ mod tests {
                 .handle(
                     &main_thread(),
                     HostMessage::LoadStateChunk {
+                        state_use: StateUse::Project,
                         seq,
                         last,
                         bytes: bytes.to_vec(),

@@ -1,6 +1,6 @@
 # tutti-midi-protocol
 
-MIDI 1.0 to MIDI 2.0 translation for the Tutti engine (design 017 §4 and §6).
+MIDI 1.0 to MIDI 2.0 translation for the Tutti engine.
 
 - `widen`: a MIDI 1.0 channel voice message as the MIDI 2.0 message that means
   the same, per M2-104 Appendix D.3 and the Min-Center-Max scaling of M2-115.

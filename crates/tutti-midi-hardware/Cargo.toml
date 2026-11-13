@@ -10,26 +10,11 @@ documentation = "https://docs.rs/tutti-midi-hardware"
 readme = "README.md"
 keywords = ["midi", "ump", "audio", "real-time"]
 categories = ["multimedia::audio", "hardware-support"]
-# One feature, and it adds no capability. This crate IS the OS MIDI edge — with
-# the file codecs in `tutti-midi-file`, there is nothing here that is not a port.
-#
-# The per-platform deps below are gated by `cfg(target_os)` alone, which is what
-# actually decides whether CoreMIDI exists.
 
 [features]
-# Export `test_support::FakeBackend` — a device list with no OS behind it, for
-# `MidiSession::open_over`. Off by default: a host has no use for a fake
-# device list, and shipping one invites it into production wiring by accident.
-#
-# It exists because the fixture is the only thing standing between a session
-# test and a real MIDI port, and a headless CI box has none. `bevy-tutti` wires a
-# session into the ECS and could otherwise test that wiring only against "no
-# device found".
+# Exports `test_support::FakeBackend`, a device list with no OS behind it.
 test-support = []
-# The suites that need a real ALSA sequencer (`/dev/snd/seq`, kernel module
-# `snd-seq`) and run Linux only: user-space clients stand in for devices, so
-# `Devices` watches the real announce port. Off by default, because a machine
-# without the module has none; a missing sequencer fails these, never skips.
+# The suites that need a real ALSA sequencer (`/dev/snd/seq`); Linux only.
 sequencer-tests = []
 
 [lints]
@@ -39,54 +24,31 @@ workspace = true
 thiserror = "2"
 tracing = "0.1"
 
-# Core types
 tutti-midi-device = { path = "../tutti-midi-device" }
-# `Offset`: an event in a block is `(Offset, Ump)`.
 tutti-graph = { path = "../tutti-graph" }
-# NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
-# port edge. Consumers depend on `tutti-midi-file` directly.
-# The MIDI runtime: the graph's MIDI nodes and the ring they cross threads on.
-# Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-# `Narrower`: the output edge's MIDI 2.0 to MIDI 1.0 translation. (The tests also
-# read packets back as MIDI 2.0 with `channel_voice`.)
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
-# Lock-free: each input port's SPSC ring, split into an owned producer and
-# consumer.
 ringbuf = "0.6"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# The sequencer, behind safe handles. Its build script probes alsa-lib; this
-# crate's own build.rs turns that into `cfg(alsa_ump)`.
 tutti-alsa-ffi = { path = "../tutti-alsa-ffi" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The native-UMP virtual source and the host clock, behind safe handles.
 tutti-coremidi-ffi = { path = "../tutti-coremidi-ffi" }
 coremidi = { workspace = true }
-# The device watch's run loop.
 core-foundation = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# The tests stand in for devices: a client that renames itself and changes a
-# port's capabilities.
 tutti-alsa-ffi = { path = "../tutti-alsa-ffi", features = ["test-support"] }
 
 [dev-dependencies]
-# The crate's own `test-support` surface. A dev-dependency on self is how a
-# feature reaches the crate's `#[cfg(test)]` code and its `tests/` unconditionally
-# — `required-features` would instead *skip* the tests when the feature is off,
-# reporting green for a run that did not execute them.
 tutti-midi-hardware = { path = ".", features = ["test-support"] }
 
-# The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
-# `HardwareMidiInputs` through a `MidiInputNode` in a graph, under a disabled
-# allocator.
 assert_no_alloc = { version = "1", default-features = false }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 

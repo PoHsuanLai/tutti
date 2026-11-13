@@ -132,7 +132,7 @@ impl Session {
         let graph = self.graph();
         let (chorus, _) = graph.add(ModDelayNode::general_midi_chorus(BusTopology::STEREO));
         let (reverb, _) = graph.add(FreeverbNode::general_midi());
-        let (strip, strip_params) = graph.add(BusStripNode::new());
+        let (strip, strip_params) = graph.add(BusStripNode::stereo());
         // The unit's outputs: dry L/R, chorus send L/R, reverb send.
         graph.connect(OutPort::new(unit, 2), chorus.input(0))?;
         graph.connect(OutPort::new(unit, 3), chorus.input(1))?;

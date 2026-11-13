@@ -64,7 +64,7 @@ fn a_bypassed_band_is_its_input_bit_for_bit() {
 /// fader again, exactly: the mute never touched the fader's cell.
 #[test]
 fn a_muted_strip_is_silence_and_un_muted_is_its_fader() {
-    let mut s = solo(BusStripNode::new());
+    let mut s = solo(BusStripNode::stereo());
     assert!(s.controls().set(UnitParam::Volume, 0.75));
     // No denormal: the node multiplies under flush-to-zero, this test does not.
     let mut x = input();

@@ -90,7 +90,9 @@ fn strip(c: &mut Criterion) {
         g.throughput(Throughput::Elements((BLOCK * width as usize) as u64));
 
         let mut d = Direct::new(
-            BusStripNode::with_channels(ChannelLayout::from(width)),
+            BusStripNode::new(
+                BusTopology::assumed(ChannelLayout::from(width)).expect("a bench width fits a bus"),
+            ),
             SR,
             BLOCK,
         );

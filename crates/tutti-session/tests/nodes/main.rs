@@ -1,5 +1,6 @@
 //! Nodes through the session: mix, mode, multiband params, reverbs and the sampler.
 
+mod bus_strip;
 mod multiband_params;
 mod node_mix;
 mod node_mode;

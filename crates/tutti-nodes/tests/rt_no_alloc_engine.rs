@@ -47,11 +47,7 @@ fn build_engine_with_chain() -> Engine {
         "eq",
         EqBandNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(1.0), Db(6.0)),
     );
-    ed.insert(
-        strip,
-        "strip",
-        BusStripNode::with_channels(ChannelLayout::STEREO),
-    );
+    ed.insert(strip, "strip", BusStripNode::stereo());
     // The limiter's lookahead ring is sized at the prepared rate, on the
     // control thread, when the commit prepares it: outside the gate.
     ed.insert(

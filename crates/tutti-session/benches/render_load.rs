@@ -305,10 +305,10 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     let tracks: Vec<_> = strips
         .into_iter()
         .map(|src| {
-            let (strip, _) = s.graph().add(BusStripNode::new());
+            let (strip, _) = s.graph().add(BusStripNode::stereo());
             connect_stereo(&mut s, strip, 0, src);
             if reverb {
-                let send = BusStripNode::new();
+                let send = BusStripNode::stereo();
                 send.volume().store(
                     Db(-12.0).to_amplitude().get(),
                     std::sync::atomic::Ordering::Relaxed,
@@ -328,12 +328,12 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
         for send in &sends {
             add_stereo(&mut s, conv, *send);
         }
-        let (ret, _) = s.graph().add(BusStripNode::new());
+        let (ret, _) = s.graph().add(BusStripNode::stereo());
         connect_stereo(&mut s, ret, 0, conv);
         sums.push(ret);
     }
 
-    let (master, _) = s.graph().add(BusStripNode::new());
+    let (master, _) = s.graph().add(BusStripNode::stereo());
     for strip in &sums {
         add_stereo(&mut s, master, *strip);
     }

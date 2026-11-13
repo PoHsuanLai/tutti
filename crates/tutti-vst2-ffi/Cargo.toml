@@ -5,11 +5,10 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 resolver = "2"
-description = "VST 2.4 host FFI: the ABI types, the plugin loader and the audioMaster callback (all VST2 unsafe)"
+description = "Low-level VST 2.4 hosting bindings for tutti"
 readme = "README.md"
 keywords = ["vst", "vst2", "plugin"]
 license = "MIT"
-homepage = "https://github.com/PoHsuanLai/tutti"
 repository = "https://github.com/PoHsuanLai/tutti"
 authors = [
     "Marko Mijalkovic <marko.mijalkovic97@gmail.com>",
@@ -29,6 +28,7 @@ authors = [
     "Charles Saracco",
     "Frederik Halkjær",
 ]
+categories = ["multimedia::audio", "external-ffi-bindings"]
 
 [features]
 # `PluginEvents::for_test`: a view of a crafted event list, for the host crate's tests. Off in

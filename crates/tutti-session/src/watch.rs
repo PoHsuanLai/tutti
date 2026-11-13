@@ -3,7 +3,7 @@
 //! [`Follow`] is the decision, a pure step: the time and the roster's view
 //! are values. [`DeviceWatch`] is what the session runs on `Phase::Poll`: a
 //! [`SnapshotSource`], a [`DeviceRoster`] and a `Follow`. Enumeration is
-//! [`DevicePoller`]'s thread, and the diff of two listings is the
+//! [`DevicePoller`](tutti_cpal::DevicePoller)'s thread, and the diff of two listings is the
 //! [`DeviceRoster`]'s; neither runs here.
 //!
 //! # The policy
@@ -36,13 +36,13 @@
 //!
 //! None of this has run against real hardware, and the cost of enumeration on
 //! WASAPI, CoreAudio and JACK is unmeasured, which is why the poll interval is
-//! a policy value.
+//! the host's to choose ([`DevicePoller::spawn`](tutti_cpal::DevicePoller::spawn)).
 
 use std::time::{Duration, Instant};
 
 use tutti_cpal::{
-    AudioHost, DeviceChange, DeviceId, DeviceListing, DevicePoller, DeviceRoster, DeviceSelector,
-    Listed, Snapshot, SnapshotSource,
+    DeviceChange, DeviceId, DeviceListing, DeviceRoster, DeviceSelector, Listed, Snapshot,
+    SnapshotSource,
 };
 
 use crate::{DeviceEvent, DeviceRestart, SessionEvent};
@@ -83,7 +83,7 @@ impl Backoff {
 /// What the session may do on its own when devices change. Everything that
 /// moves the stream is off by default; the session never replaces an explicit
 /// choice with another device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DevicePolicy {
     /// A stream whose selector is `Default` moves when the default output
     /// changes, or when it was lost (a disconnect fault).
@@ -93,8 +93,7 @@ pub struct DevicePolicy {
     /// the list while it plays. Only a fault ends a stream. On bare ALSA the
     /// default's name is constant (`default`), so the default never
     /// "changes" and only a fault can move the stream. Opening every PCM
-    /// every [`poll_interval`](Self::poll_interval) is a cost the host opts
-    /// into, and a restart can meet `EBUSY` from that probe: a counted
+    /// every poll is a cost the host opts into, and a restart can meet `EBUSY` from that probe: a counted
     /// strike, then the backoff. A host that is recording should leave this
     /// off, or hold restarts ([`Session::hold_device_restarts`](crate::Session::hold_device_restarts)):
     /// a restart can change the rate mid-take.
@@ -102,36 +101,10 @@ pub struct DevicePolicy {
     /// The device the host chose explicitly is reopened when it returns.
     pub reconnect: bool,
     /// A start that failed is retried when its device is listed
-    /// (a [`DeviceWatch`] with no session).
+    /// (a [`Follow::not_started`] policy).
     pub retry_startup: bool,
-    /// How often [`spawn_poller`](Self::spawn_poller) enumerates (at least
-    /// [`MIN_POLL_INTERVAL`](tutti_cpal::MIN_POLL_INTERVAL)).
-    pub poll_interval: Duration,
     /// How retries are spaced.
     pub backoff: Backoff,
-}
-
-impl Default for DevicePolicy {
-    fn default() -> Self {
-        Self {
-            follow_default: false,
-            reconnect: false,
-            retry_startup: false,
-            poll_interval: Duration::from_secs(2),
-            backoff: Backoff::default(),
-        }
-    }
-}
-
-impl DevicePolicy {
-    /// A poller on `host` at [`poll_interval`](Self::poll_interval).
-    ///
-    /// # Errors
-    ///
-    /// What [`DevicePoller::spawn`] reports.
-    pub fn spawn_poller(&self, host: AudioHost) -> crate::Result<DevicePoller> {
-        Ok(DevicePoller::spawn(host, self.poll_interval)?)
-    }
 }
 
 /// What [`Follow::step`] is told.
@@ -291,9 +264,7 @@ impl Follow {
 }
 
 /// A source, its roster and the policy: what a session runs on `Phase::Poll`
-/// ([`LiveSession::watch_devices`](crate::LiveSession::watch_devices)), or, with no
-/// session yet, what an app polls until a device appears
-/// ([`without_stream`](Self::without_stream)).
+/// ([`LiveSession::watch_devices`](crate::LiveSession::watch_devices)).
 pub struct DeviceWatch {
     source: Box<dyn SnapshotSource + Send>,
     roster: DeviceRoster,
@@ -325,22 +296,6 @@ impl DeviceWatch {
         }
     }
 
-    /// Watches for a stream that never started: [`poll`](Self::poll) says
-    /// ([`DeviceEvent::RestartWanted`]) when `want` is worth another try
-    /// (with `retry_startup` on).
-    pub fn without_stream(
-        source: impl SnapshotSource + Send + 'static,
-        policy: DevicePolicy,
-        want: DeviceSelector,
-    ) -> Self {
-        Self {
-            source: Box::new(source),
-            roster: DeviceRoster::new(),
-            follow: Follow::not_started(policy, want),
-            looked: false,
-        }
-    }
-
     /// Tells the policy something happened without deciding, for a decision
     /// that waits for the next [`poll`](Self::poll)'s fresh look.
     pub fn observe(&mut self, event: FollowEvent) {
@@ -350,42 +305,6 @@ impl DeviceWatch {
     /// While held, no restart is asked for ([`Follow::hold`]).
     pub fn hold(&mut self, held: bool) {
         self.follow.hold(held);
-    }
-
-    /// The devices as last seen, `None` before the first look.
-    #[must_use]
-    pub fn snapshot(&self) -> Option<&Snapshot> {
-        self.looked.then(|| self.roster.snapshot())
-    }
-
-    /// The source, to hand to the session that takes over (a start retried).
-    #[must_use]
-    pub fn into_source(self) -> Box<dyn SnapshotSource + Send> {
-        self.source
-    }
-
-    /// For a watch with no stream: polls at the current time, and when the
-    /// policy asks for a start, runs `start` with the selector. A failure
-    /// is told to the policy, which waits out its backoff. `events` gets the
-    /// device events the poll found (for a list). `None`: nothing was due.
-    pub fn retry_start<T, E>(
-        &mut self,
-        events: &mut Vec<SessionEvent>,
-        start: impl FnOnce(DeviceSelector) -> std::result::Result<T, E>,
-    ) -> Option<std::result::Result<T, E>> {
-        let now = Instant::now();
-        self.poll(now, events);
-        let at = events
-            .iter()
-            .position(|e| matches!(e, SessionEvent::Device(DeviceEvent::RestartWanted(_))))?;
-        let SessionEvent::Device(DeviceEvent::RestartWanted(request)) = events.remove(at) else {
-            return None;
-        };
-        let result = start(request.device);
-        if result.is_err() {
-            self.note(FollowEvent::RestartFailed { running: false }, now);
-        }
-        Some(result)
     }
 
     /// The devices as last seen.

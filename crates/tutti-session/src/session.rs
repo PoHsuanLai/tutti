@@ -1258,8 +1258,7 @@ impl Session {
     }
 
     /// Takes the disk streamer the builder made, for a host that holds it
-    /// itself: a restart then re-rates it only through the host's `follow`
-    /// hook.
+    /// itself: a restart does not re-rate it.
     #[cfg(feature = "sampler")]
     pub fn take_disk_streamer(&mut self) -> Option<tutti_sampler::DiskStreamer> {
         self.disk_streamer.take()

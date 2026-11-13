@@ -1,109 +1,15 @@
 # tutti-plugin-server
 
-The `plugin-server` subprocess behind Tutti's out-of-process plugin hosting.
+The helper program that tutti starts to run one VST3, CLAP or Audio Unit plugin in its own process.
 
-## What this is
+If the plugin crashes, only this process goes down and the application can report the error and carry on. You normally do not run it yourself; `tutti-plugin` starts it when a plugin is loaded.
 
-[`tutti-plugin`](https://docs.rs/tutti-plugin) spawns one `plugin-server`
-process per loaded plugin. This crate is that process: it hosts one VST3, CLAP
-or AU plugin in isolation, speaks [`tutti_plugin_ipc`]'s wire protocol over a
-Unix socket (a named pipe on Windows), and moves audio through a shared-memory
-slab. A plugin that crashes takes down this process and nothing else.
-
-It is one generic shell, `Served<F: OutOfProcess>`, over what each served
-format's host crate implements (`Loaded`, `Processor`, `Controller`, `Control`):
-a format is a row of the `served!` table, which calls `F::load_served`, so a row
-for a format that cannot be served from another process does not compile. VST2
-is not one: its `AEffect` fuses editor and audio, so it runs in the host's
-process (design 021 §4); a VST2 file is refused by the client and, if one
-arrives, by the table.
-
-Most users never call this library. They build the binary and let
-`tutti-plugin` find it:
-
-```text
-cargo build -p tutti-plugin-server
-```
-
-`tutti-plugin` looks for `plugin-server` in the `TUTTI_PLUGIN_SERVER`
-environment variable, next to the running executable, in its parent directory,
-and on `PATH`.
-
-## Running a server yourself
-
-The library has one entry point, [`PluginServer`]. The host chooses the socket
-path and passes it in; [`run`][`PluginServer::run`] binds it, serves one host
-and returns when the host disconnects or asks for shutdown.
-
-```rust,no_run
-use tutti_plugin_server::{BridgeConfig, PluginServer};
-
-// `max_buffer_size` is in frames and sizes the shared-memory slab, so a later
-// block may not exceed it. The other fields keep their defaults.
-let config = BridgeConfig {
-    socket_path: std::env::args().nth(1).expect("socket path").into(),
-    ..Default::default()
-};
-
-PluginServer::new(config)
-    .expect("record parent pid")
-    .run()
-    .expect("session");
-```
-
-Always set `socket_path` to the path the host chose: `BridgeConfig::default`
-derives a unique path per call, which could never meet the host that spawned
-this process.
-
-[`BridgeConfig`] is re-exported from
-`tutti-plugin-ipc`, and `BridgeError` is `tutti-plugin-types`'; the wire protocol
-and its version are defined in `tutti-plugin-ipc`. A load carries which plugin
-of a file that exports several to load (`LoadPlugin::load`).
-
-## How a session runs
-
-The host connects twice. The first connection is the handshake: plugin load,
-format negotiation and shared-memory setup. The second carries per-block audio
-traffic for the rest of the session; the server raises that thread to realtime
-priority (best effort; failure is logged) and sends plugin events to the host
-after each block. Each connection opens with a `Ready` message carrying the
-protocol version, and the host refuses a version it does not know.
-
-Values crossing this boundary are plain numbers (a raw `f64` sample rate, for
-example), as they are at the plugin formats' C ABIs.
-
-If the host dies before connecting, the server notices on its own and exits.
-It compares its current parent with the host PID recorded at startup (which
-the host passes in `TUTTI_PLUGIN_HOST_PID`) on Unix, and checks whether the
-parent process is still alive on Windows.
-
-## Features
-
-| Feature | Enables |
-|---|---|
-| `vst3` | VST3 plugins, through `tutti-vst3-host` |
-| `clap` | CLAP plugins, through `tutti-clap-host` |
-| `au` | Audio Unit plugins, through `tutti-au-host` (macOS only; elsewhere it compiles to no AU support) |
-| `all` | All three formats |
-
-All four formats are on by default.
-
-## Related crates
-
-- [`tutti-plugin`](https://docs.rs/tutti-plugin): the host side, which spawns
-  and talks to this process.
-- [`tutti-plugin-types`](https://docs.rs/tutti-plugin-types): the plugin
-  capability traits the format adapters here implement.
-- The format hosts: [`tutti-vst2-host`](https://docs.rs/tutti-vst2-host),
-  [`tutti-vst3-host`](https://docs.rs/tutti-vst3-host),
-  [`tutti-clap-host`](https://docs.rs/tutti-clap-host) and
-  [`tutti-au-host`](https://docs.rs/tutti-au-host).
+This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
 
-[`PluginServer`]: crate::PluginServer
-[`PluginServer::run`]: crate::PluginServer::run
-[`BridgeConfig`]: crate::BridgeConfig
-[`tutti_plugin_ipc`]: tutti_plugin_ipc
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

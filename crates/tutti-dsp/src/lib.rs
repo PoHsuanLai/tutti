@@ -1,4 +1,84 @@
 #![doc = include_str!("../README.md")]
+//! Pure DSP algorithms over `&[f32]` for the Tutti audio engine: a CPU-independent
+//! real FFT and the algorithms behind the built-in effect nodes: filters, dynamics,
+//! the partitioned convolver, delay lines, reverb, waveshapers and the export
+//! resampler. The analyzers (loudness, pitch, onsets, spectra, ...) are `tutti-measure`,
+//! built on this crate's FFT, windows and `StftGeometry` (whose refusals are `Error`).
+//!
+//! ## Effect algorithms
+//!
+//! `tutti-nodes` wraps each of these in a graph node that owns the params, the
+//! ramps and the graph shape. Here they take plain typed values per call.
+//!
+//! - **Filters** — `SvfCoeffs` and `SvfFamily<F>` (Simper's trapezoidal
+//!   state-variable filter, eight responses by `SvfType`);
+//!   `LadderCoeffs` and `LadderFamily<F>` (the Moog
+//!   ladder, `tanh` feedback); `CrossoverFamily`, a 2 to 6 band Linkwitz-Riley 4th-order
+//!   split (the design on a 16-frame grid, landing whole). The three
+//!   designs are one `Filter<R>` over a `ChannelRecurrence`, run by `Realized<PerChannel<R>>`. `Real` is the `f32` or `f64` the state
+//!   runs in; its transcendentals call `libm`, so results do not depend on the
+//!   platform's C math library.
+//! - **Dynamics** — the curves
+//!   `compute_compressor_gain_reduction`, `compute_limiter_gain` and
+//!   `LimiterCurve`; the compressor and the noise gate as families (`CompressorFamily` and
+//!   `GateFamily`, each on a typed `KeySource`, a side-chain bus or the signal itself, run by
+//!   `CompressorRecurrence` and `GateRecurrence`; the threshold a per-frame lane, the makeup
+//!   and the range gliding over `GAIN_GLIDE`); the lookahead limiter (`LimiterFamily`, run by
+//!   `LimiterRecurrence`: threshold and ceiling per-frame lanes, every coefficient landing
+//!   whole, the lookahead its member's latency); the brickwall clipper (`BrickwallFamily`); and
+//!   the multiband compressor (`MultibandFamily`, run by `MultibandRecurrence`: a crossover tree
+//!   per channel and the compressor's one frame step per band, each band's makeup, bypass and
+//!   solo gliding over `GAIN_GLIDE`).
+//! - **Convolution** — `Convolver`, a uniform or non-uniform partitioned FFT
+//!   convolution over an IR's shared, read-only `IrSpectra`.
+//! - **Delay** — `DelayLine`, a fractional-read ring with an `InterpolationMode`;
+//!   `DelayFamily`, the feedback delay (a checked `MaxDelay`, `Routing` and
+//!   `ChannelTimes`, its time and feedback per-frame lanes); and `ModDelayFamily`, the chorus and flanger (a checked `Sweep` and `Stagger`, a `Grows`
+//!   family over a `MaxDelay`; the LFO's phase is state of its recurrence on the stream's clock,
+//!   its sine solved every `COEFF_INTERVAL` frames of the stream and interpolated between); and
+//!   `PhaserFamily`, the phaser (a checked `Stages`, `SweepRange` and `Stagger`; a swept all-pass chain
+//!   on the same stream grid and clock, its member `Lti` frozen at a sweep position, its tail
+//!   `Ring::Unbounded`).
+//! - **Waveshaping** — `ShapeKind`, six memoryless curves with block kernels.
+//! - **Reverb** — the reverb model, a `Network` with analytic queries
+//!   (RT60, tail, stability, densities), and two families over it: `FreeverbFamily` and
+//!   `FdnFamily`, the feedback delay network.
+//! - **Spatial** — vector base amplitude panning (`SpeakerLayout`, `VbapKernel`) and the
+//!   HRTF binaural convolver (`HrtfBinaural`).
+//! - **Resampling and dither** — `FftResampler` and `StreamingResampler` for export, and
+//!   `DitherNoise` with `DitherSink`, the dither path export and recording share.
+//!
+//! A family samples its slow controls on a `Cadence`: `Block` (once per block, so the render depends
+//! on how audio is split), or `Stream` (a period on the stream's clock, which makes it block
+//! independent; every family but the block-sampled ones is on `Cadence::stream(16)`).
+//!
+//! Each family is laid out as its design (controls to a model), its model (a `System`, and
+//! an `Lti` where it is linear and time-invariant) and its kernel (the per-frame math that
+//! `Realized` runs).
+//!
+//! FFT is `RealFft`, the engine's one real-input FFT: rustfft's
+//! *scalar* planner under realfft's even-length real passes (an odd size runs a
+//! full-length complex transform). Its arithmetic does not depend on the CPU, so
+//! a spectrum, a pitch or an onset is bit-identical on every CPU on the same OS,
+//! libm and rustfft version (the twiddles call the C library's `sin` and `cos`, so not across
+//! libms). `tutti-sampler`'s vocoder and `tutti-nodes`' convolver use the same
+//! transform, so values cross freely as `num_complex::Complex<f32>`. This crate
+//! plans lazily, per scratch, on the cold path.
+//!
+//! ## Scope
+//!
+//! - **No graph, no framework, no ECS.** Nothing here is a graph node or knows
+//!   about one.
+//! - **No threading and no scheduling.** A host that wants these results on a
+//!   background thread owns that plumbing itself.
+//!
+//! ## Features
+//!
+//! - `contract` (off by default): the `contract` module, the cases a `Family` and its
+//!   `Realized` runner are held to. Test support.
+//!
+//! The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler` and
+//! `tutti-export` use it.
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 //!

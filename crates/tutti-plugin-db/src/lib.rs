@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! Plugin discovery and persistence.
 //!
 //! The pieces, from pure to stateful:

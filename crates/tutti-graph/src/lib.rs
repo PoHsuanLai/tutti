@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The audio graph of the Tutti engine: a graph described as a value, a pure
 //! compiler from that value to an immutable [`Plan`], and a real-time
 //! [`Executor`] that runs the plan block by block, serially or spread over

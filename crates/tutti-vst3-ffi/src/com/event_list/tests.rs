@@ -258,6 +258,7 @@ fn the_plugin_sysex_path_is_allocation_free() {
     assert!(list.dropped() > 0);
 }
 
+/// Spec: vst3.IEventList.getEvent
 #[test]
 fn test_get_event_valid() {
     let list = EventList::input();
@@ -416,6 +417,7 @@ fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
 
 /// `getEvent` must reject out-of-range and negative indices rather than
 /// panic on the cast.
+/// Spec: vst3.IEventList.getEvent, vst3.IEventList.getEventCount
 #[test]
 fn get_event_rejects_bad_indices() {
     let list = EventList::input();
@@ -515,6 +517,7 @@ fn past_the_room_a_note_off_evicts_and_the_rest_are_counted() {
 /// next, without growing.
 ///
 /// A refused chord spends none of the text arena.
+/// Spec: vst3.IEventList.addEvent
 #[test]
 fn add_event_refuses_past_the_room() {
     let list = EventList::input();

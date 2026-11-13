@@ -72,6 +72,7 @@ fn registered(plugin: &Plugin) -> (usize, usize) {
 /// **A tidy view's registrations are the run loop's while the editor is open,
 /// and gone after.** The control: the plugin registers through the module's
 /// host context, and the host sees them.
+/// Spec: vst3.IRunLoop.registerEventHandler, vst3.IRunLoop.registerTimer, vst3.IRunLoop.unregisterEventHandler, vst3.IRunLoop.unregisterTimer
 #[test]
 fn a_tidy_editor_registers_and_unregisters() {
     let main = MainThread::claim().unwrap();
@@ -273,6 +274,7 @@ fn a_plugin_dropped_off_the_main_thread_is_torn_down_on_it_later() {
 /// **`activate_bus` reports the plugin's refusal.** The shared plugin has the
 /// one bus of each kind, at index 0, and refuses any other index; the result
 /// used to be dropped and `Ok(())` returned.
+/// Spec: vst3.IComponent.activateBus
 #[test]
 fn activate_bus_reports_a_refusal() {
     let main = MainThread::claim().unwrap();

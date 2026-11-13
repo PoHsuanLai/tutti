@@ -69,9 +69,9 @@ pub use probe::{ClapProbe, ClapSwitch};
 pub mod threading;
 
 pub use threading::{
-    CMD_LOG_ALL_SEVERITIES, CMD_NONE, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
-    CMD_UNREGISTER_TIMER, CMD_UNREGISTER_TIMER_IN_DEACTIVATE, SITE_COUNT, Site, ThreadAnswer,
-    ThreadCapture,
+    CMD_LOG_ALL_SEVERITIES, CMD_NONE, CMD_REGISTER_FD, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS,
+    CMD_REQUEST_RESTART, CMD_UNREGISTER_FD, CMD_UNREGISTER_TIMER,
+    CMD_UNREGISTER_TIMER_IN_DEACTIVATE, SITE_COUNT, Site, ThreadAnswer, ThreadCapture,
 };
 
 /// PARAMS + STATE probe: `clap.params`, `clap.state`, `clap.state-context/2`,

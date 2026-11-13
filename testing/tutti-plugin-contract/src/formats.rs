@@ -103,10 +103,10 @@ impl Format for Au {
     const SURFACE: spec::Surface = spec::AU;
     type L = tutti_au_host::AuLoaded;
     /// The host schedules each point as an immediate event at its offset
-    /// (`AudioUnitScheduleParameters`, from the pre-render notify), then
-    /// writes the block's last value of each parameter back through
-    /// `AUParameterSet`.
-    const PARAM_TIMING: ParamTiming = ParamTiming::Echoed;
+    /// (`AudioUnitScheduleParameters`, from the pre-render notify). The unit's
+    /// listeners are told at the control tick by `AUParameterListenerNotify`,
+    /// which writes nothing, so the unit sees no further `SetParameter`.
+    const PARAM_TIMING: ParamTiming = ParamTiming::SampleAccurate;
     /// An AU holds a parameter as an `f32`.
     const PARAM_VALUE_TOLERANCE: f64 = f32::EPSILON as f64;
     const GAPS: &'static [(&'static str, Gap)] = &[

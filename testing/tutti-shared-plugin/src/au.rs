@@ -833,10 +833,9 @@ unsafe extern "C" fn set_parameter(
         let i = unsafe { inst(self_) };
         // Recorded at offset 0 like any write the host makes outside the block's
         // event list (VST2's `setParameter`), then applied. The host makes one
-        // after each block that scheduled points: `AUParameterSet`, which
-        // `AudioUnitUtilities.h` names as the way to change a parameter so that
-        // listeners are told, and which reaches the unit as this call. The
-        // contract's `ParamTiming::Echoed` is that write, stated.
+        // for a restored or non-real-time value. It makes none to tell the
+        // listeners of automation: that is `AUParameterListenerNotify` at the
+        // control tick, which writes nothing and never reaches this call.
         let normalized = to_normalized(id, value);
         i.core.log_set_param(id, normalized);
         i.core.set_param(id, normalized);

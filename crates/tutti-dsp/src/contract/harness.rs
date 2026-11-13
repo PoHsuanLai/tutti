@@ -1,7 +1,7 @@
 //! The measuring helpers the cases share: a realization built at a model, a
 //! render in blocks, seeded noise, a tone burst and the energy of a span.
 //!
-//! Public so a plugin probe (design 023) can measure a hosted plugin with the
+//! Public so a plugin probe can measure a hosted plugin with the
 //! same ones.
 
 use rand::rngs::StdRng;

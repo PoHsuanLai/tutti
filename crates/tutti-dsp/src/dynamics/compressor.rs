@@ -1,5 +1,4 @@
-//! [`CompressorFamily`]: the feed-forward compressor as a [`Family`] (design 024
-//! section 3, row 5).
+//! [`CompressorFamily`]: the feed-forward compressor as a [`Family`].
 //!
 //! A compressor reads a **key**: the side-chain as wide as the signal (an unwired one is
 //! silence and compresses nothing) or the signal itself, as the family's [`KeySource`] says. It
@@ -10,7 +9,7 @@
 //! stereo image does not move when one side is louder.
 //!
 //! The threshold is the one control read **per frame** when the graph drives it (lane 0
-//! of the [`Feed`]; design 024 section 4.5, "Where cadence stops"): it is a level to
+//! of the [`Feed`]): it is a level to
 //! compare against, not a coefficient. Every other control lands on the stream grid
 //! ([`Family::CADENCE`]), the detector's whole and the makeup over [`GAIN_GLIDE`]: a
 //! makeup multiplies the output directly, so a step in it is a click; the knee, the

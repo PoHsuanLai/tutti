@@ -619,9 +619,8 @@ impl<'de> Deserialize<'de> for MaxDelay {
     }
 }
 
-/// `MaxDelay` keeps the range-checked shape of CLAUDE.md: `new` refuses what is not a
-/// longest delay (not finite, not above zero, past the cap: a finite 1e30 s among them,
-/// which used to ask for an allocation that aborts) and never clamps.
+/// `MaxDelay` keeps the range-checked shape: `new` refuses what is not a longest delay (not
+/// finite, not above zero, past the cap: a finite 1e30 s among them) and never clamps.
 #[test]
 fn a_max_delay_keeps_the_range_checked_shape() {
     tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {

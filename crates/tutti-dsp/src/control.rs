@@ -20,7 +20,7 @@ use crate::Cadence;
 /// after it was sampled, wherever the blocks fall.)
 pub const COEFF_INTERVAL: usize = 16;
 
-/// [`COEFF_INTERVAL`] as a stream-anchored [`Cadence`] (doc 024 Q27): the grid the
+/// [`COEFF_INTERVAL`] as a stream-anchored [`Cadence`]: the grid the
 /// SVF, the ladder and the crossover are solved on, counted from the last reset.
 pub(crate) const COEFF_STREAM: Cadence =
     Cadence::stream(NonZeroU32::new(COEFF_INTERVAL as u32).expect("the interval is positive"));

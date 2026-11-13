@@ -858,8 +858,7 @@ fn a_sweep_with_no_feedback_ignores_the_control_and_is_a_pure_delay() {
 
 /// A [`Sweep`] refuses what its line could not hold, and never clamps: a base or depth that
 /// is not finite or is negative, a least depth above the greatest, a sweep that reaches
-/// past the line (`base + depth_max > max_delay`, the transposition `ModDelayConfig` used to
-/// clamp silently), and feedback outside `0..=MAX_STABLE`.
+/// past the line (`base + depth_max > max_delay`), and feedback outside `0..=MAX_STABLE`.
 #[test]
 fn a_sweep_refuses_what_its_line_cannot_hold() {
     let line = MaxDelay::of(Seconds(0.05));

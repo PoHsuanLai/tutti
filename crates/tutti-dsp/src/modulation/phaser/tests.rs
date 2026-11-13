@@ -766,8 +766,8 @@ impl<'de> Deserialize<'de> for Stages {
     }
 }
 
-/// `Stages` keeps the range-checked shape of CLAUDE.md: `new` refuses a count outside
-/// `2..=12` (a node used to clamp it into range silently) and never clamps.
+/// `Stages` keeps the range-checked shape: `new` refuses a count outside
+/// `2..=12` and never clamps.
 #[test]
 fn stages_keep_the_range_checked_shape() {
     tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {

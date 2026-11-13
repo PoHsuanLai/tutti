@@ -145,7 +145,7 @@ fn test_config_update() {
     assert!((unison.config().stereo_spread.get() - 0.5).abs() < 0.001);
 }
 
-/// `UnisonVoices` keeps the range-checked shape of CLAUDE.md: `new` refuses 0
+/// `UnisonVoices` keeps the range-checked shape: `new` refuses 0
 /// and anything past 16 and never clamps, `TryFrom` agrees and carries the
 /// refused raw, `of` panics. The checked shape is serde's, which the type has
 /// none of in the library: the check runs on the same `try_from` shape

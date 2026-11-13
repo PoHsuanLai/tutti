@@ -354,8 +354,7 @@ mod tests {
         }
     }
 
-    /// The controls given to a constructor are the cells' values, the range too (which the
-    /// old positional constructors fixed at -80 dB and left to a builder).
+    /// The controls given to a constructor are the cells' values, the range too.
     #[test]
     fn the_constructor_controls_reach_the_cells() {
         let c = GateControls {

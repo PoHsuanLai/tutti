@@ -1,4 +1,4 @@
-//! [`PhaserFamily`]: the phaser as a [`Family`] (design 024 section 3, row 13).
+//! [`PhaserFamily`]: the phaser as a [`Family`].
 //!
 //! A swept all-pass chain of any width: `stages` first-order all-passes per channel, whose
 //! centre frequency an LFO moves across a [`SweepRange`], with the chain's output fed back
@@ -52,9 +52,8 @@ pub const MAX_PHASER_CHANNELS: usize = MAX_BUS_CHANNELS;
 /// Stages come in pairs, each pair making one notch: 4 gives the classic two-notch phaser
 /// and higher counts thicken the effect.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): [`new`](Self::new) refuses a
-/// count the chain is not defined for and never clamps. A node used to clamp a count into
-/// `2..=12` silently.
+/// A range-checked value: [`new`](Self::new) refuses a
+/// count the chain is not defined for and never clamps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Stages(u8);
 

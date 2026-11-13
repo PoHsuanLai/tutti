@@ -1053,7 +1053,7 @@ mod tests {
 
     /// A window much wider than the hop still puts beats within one hop of the
     /// clicks: at 4096/512 flux peaks `3 * 4096 / 4 - 256 = 2816` samples after
-    /// a frame starts, where the old `window / 2` was 768 samples off. The
+    /// a frame starts. The
     /// bound is one hop: half for placing the peak on the frame grid, half for
     /// the click's own width (its energy is within the first 300 samples, and
     /// an onset's rise can peak a few hundred samples late at a window this

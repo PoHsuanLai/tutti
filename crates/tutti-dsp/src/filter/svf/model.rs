@@ -1,4 +1,4 @@
-//! The state-variable filter as a model (design 024 step 2a): [`SvfModel`] is the
+//! The state-variable filter as a model: [`SvfModel`] is the
 //! system [`SvfControls`] describe, an [`Lti`] with one input and one output.
 //!
 //! The model is a transfer function and nothing else: its response is read from

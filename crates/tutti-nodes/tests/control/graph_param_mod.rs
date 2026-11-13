@@ -82,7 +82,7 @@ fn delay_of(w: usize) -> DelayNode {
 /// The key a test's lane goes in at: no builder key reaches it.
 const LANE: NodeKey = NodeKey(9_000);
 
-/// A constant offset of `depth` × the port's span (doc 014 §4.1).
+/// A constant offset of `depth` × the port's span.
 fn konst(depth: f32) -> Layer {
     Layer {
         id: LayerId(1),
@@ -522,13 +522,11 @@ fn cases() -> Vec<Case> {
             input: noise,
         },
     ];
-    // The block-rate params doc 014 §12.6 made ports: a route onto any of
-    // these was refused (`NoSuchParam`) once the frame-rate driver went.
     cases.extend(block_rate_cases());
     cases
 }
 
-/// Every param a node reads once per block, now a port read the same way
+/// Every param a node reads once per block, as a port read the same way
 /// (its last frame per block).
 fn block_rate_cases() -> Vec<Case> {
     fn comp(w: usize) -> CompressorNode {
@@ -826,8 +824,7 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// The port of `param_ports.rs`' "the advertised port is the one the DSP
 /// reads at every width".
 ///
-/// The block-rate cases (`block_rate_cases`, the params doc 014 §12.6 made
-/// ports) each read the driven port, never the node's own cell:
+/// The block-rate cases (`block_rate_cases`) each read the driven port, never the node's own cell:
 /// the LFO rate (chorus and phaser), the
 /// chorus depth and feedback, the phaser depth, the compressor's
 /// ratio and makeup, its attack and release swapped, the gate's attack and
@@ -982,11 +979,7 @@ fn plain_distortion(d: f32) -> Vec<f32> {
 /// The lane's knob is the node's own control: a write to that cell (through
 /// the node's own handle, or `ParamSet::set`) moves the driven param, and
 /// the lane's offset keeps riding on it. There is no second base cell to
-/// lose (doc 014 §4.2: one writer per knob).
-///
-/// Changed in doc 014 §12.6: the offset was an audio source added to the
-/// node's base by the port; it is now the lane's constant layer (`Waveform::Const`,
-/// a twentieth of the port's 0..10 span), added to the knob by the lane.
+/// lose.
 #[test]
 fn an_authored_write_moves_the_base_under_modulation() {
     let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
@@ -1090,7 +1083,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
     r.editor_mut().spec_mut().connect_param(at, from);
     r.editor_mut().commit().expect("connects");
     // The lane has sent its knob already, into nothing: a re-wired lane
-    // re-sends on request (doc 014 §5.2).
+    // re-sends on request.
     controls.resync();
     out.extend(r.render_input(&[&tone]).remove(0));
     assert!(r.editor_mut().spec_mut().disconnect_param(at, from));
@@ -1121,12 +1114,11 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
     assert_eq!(back, base, "back on the base");
 }
 
-/// A fork (an export) drives as the live graph does: the port's source is
-/// part of the graph value it copies, the lane is upstream of the node it
-/// drives (so it is forked too, even when no output reaches it), and the
-/// fork's lane is fresh, so it sends its value on its first block (doc 014
-/// §10's fork requirement). From the fork's first frame: a forked unit's
-/// first block is not a change of sources, so nothing fades in.
+/// A fork (an export) drives as the live graph does: the port's source is part of the graph
+/// value it copies, the lane is upstream of the node it drives (so it is forked too, even when
+/// no output reaches it), and the fork's lane is fresh, so it sends its value on its first
+/// block. From the fork's first frame: a forked unit's first block is not a change of sources,
+/// so nothing fades in.
 #[test]
 fn a_fork_modulates_as_the_live_graph_does() {
     let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));

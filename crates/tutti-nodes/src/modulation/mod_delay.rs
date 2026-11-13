@@ -277,9 +277,7 @@ mod tests {
 
     /// The rate is **floored at 0.01 Hz, a lane's value and a cell's alike**: a rate of
     /// -3 Hz, written to the cell or fed on the port, is the 0.01 Hz sweep, which has raised
-    /// the 10 ms base by `5 ms * sin(2 pi 0.01 * 0.1 s)`, 1.508 frames, after 0.1 s. A
-    /// negative cell used to run the LFO backwards (the delay would be 1.508 frames
-    /// shorter).
+    /// the 10 ms base by `5 ms * sin(2 pi 0.01 * 0.1 s)`, 1.508 frames, after 0.1 s.
     #[test]
     fn a_rate_below_the_floor_is_the_floor_in_a_cell_and_on_a_lane() {
         let figure = 0.005 * 48_000.0 * (std::f64::consts::TAU * 0.01 * 0.1).sin();

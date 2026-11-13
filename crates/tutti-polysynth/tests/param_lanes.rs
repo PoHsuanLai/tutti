@@ -1,7 +1,6 @@
-//! The synth's params under a control lane, as an engine wires one (doc 014
-//! §4.2): a `ControlLaneNode` whose knob is the synth's own cell, sending
-//! into the synth's param port. The master volume, unison detune and
-//! stereo spread are ports.
+//! The synth's params under a control lane, as an engine wires one: a `ControlLaneNode` whose
+//! knob is the synth's own cell, sending into the synth's param port. The master volume, unison
+//! detune and stereo spread are ports.
 //!
 //! A note at frame 0 into a saw synth, 120 BPM at 48 kHz.
 

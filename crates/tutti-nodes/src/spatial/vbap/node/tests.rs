@@ -258,8 +258,7 @@ fn vbap_clone_shares_atomics() {
         panner.spread.load().get()
     );
 
-    // -- width: its own cell too, and previously uncovered in either
-    //    direction.
+    // -- width: its own cell too.
     panner.width.store(StereoWidth(1.5));
     assert!(
         (cloned.width.load().get() - 1.5).abs() < 0.001,

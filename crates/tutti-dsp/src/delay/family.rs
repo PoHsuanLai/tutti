@@ -1,4 +1,4 @@
-//! [`DelayFamily`]: the feedback delay as a [`Family`] (design 024 section 3, row 11).
+//! [`DelayFamily`]: the feedback delay as a [`Family`].
 //!
 //! A delay of any width: one [`DelayLine`] per channel, each recirculating its own tap
 //! (the feedback) and, when the family has a [`Routing`], the taps of the others (the
@@ -14,8 +14,8 @@
 //! **Time** is channel 0's control (and the one a lane drives: lane 0 of the [`Feed`],
 //! in seconds, drives every channel); the channels past the first follow it
 //! ([`ChannelTimes::linked`]) or hold a time of their own ([`ChannelTimes::each`]).
-//! **Feedback** is lane 1. Both are read **per frame** when the graph drives them
-//! (design 024 section 4.5, "Where cadence stops"): a delay time moved at audio rate is a
+//! **Feedback** is lane 1. Both are read **per frame** when the graph drives them:
+//! a delay time moved at audio rate is a
 //! flanger, and a lane frame that is not finite falls back to the member's. A value that
 //! is a cell lands whole on the stream grid ([`Family::CADENCE`]) and the recurrence
 //! glides it: the **time** at most [`DELAY_SLEW`] frames of delay per frame (a moving

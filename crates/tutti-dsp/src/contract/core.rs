@@ -46,7 +46,7 @@ pub(super) mod design {
     use super::*;
 
     /// The family's `reach` covers `need` of every member: `need(φ(c)) ≤ reach(D)`
-    /// for every control, in every figure (design 024 section 2.7.2). Only a
+    /// for every control, in every figure. Only a
     /// [`Grows`] family has a `need`.
     pub fn reach_covers_need<F>(f: &F) -> Result<(), String>
     where
@@ -126,7 +126,7 @@ pub(super) mod realization {
         Ok(())
     }
 
-    /// Latency has one home per cause (design 024 section 2.7.2): the member's own (a
+    /// Latency has one home per cause: the member's own (a
     /// limiter's lookahead) is the member's, and the realization adds only what the
     /// member does not have (a convolver's block). The node declares the sum **once**,
     /// from the family's blank member, so a member's latency must be the blank's whatever
@@ -234,7 +234,7 @@ pub(super) mod realization {
     }
 
     /// The design's [`Cadence`](crate::Cadence) and the `BlockIndependent` group
-    /// agree (design 024 section 4.5): the group (`block_independent` and
+    /// agree: the group (`block_independent` and
     /// `stream_clock`) is named iff `CADENCE.block_independent()`, so a
     /// block-anchored design skips the two cases by saying so, and a stream
     /// grid cannot leave them out. `listed` is whether the macro was given the

@@ -17,7 +17,7 @@ use tutti_dsp::{SvfControls, SvfType};
 /// inserted with. Stack several to build a parametric EQ, one band
 /// per [`SvfType`]. A band's bypass is not here: it is `NodeMode::Bypassed`
 /// (`Graph::set_mode`), the graph's for every node, bit-exact once its
-/// declick is over (doc 013, "Bypass and mute are graph state").
+/// declick is over.
 ///
 /// `F` is the internal state precision; defaults to `f64`.
 #[derive(Clone, Debug)]

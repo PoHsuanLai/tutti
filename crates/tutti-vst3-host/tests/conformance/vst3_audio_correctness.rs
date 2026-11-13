@@ -1557,6 +1557,24 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");
 }
 
+/// Every index below `parameter_count` lists the id the plugin declared at that
+/// index, in the plugin's own order. The probe's ids are `100..=106`, none of
+/// them its position, so a host that listed positions, or stopped short of the
+/// count, fails here.
+#[test]
+fn the_listed_parameter_ids_are_the_plugins_own_in_order() {
+    let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
+
+    assert_eq!(loaded.parameter_count(&main_thread()), 7);
+    assert_eq!(
+        loaded.parameter_ids(&main_thread()),
+        (100..=106).map(ParamId::new).collect::<Vec<_>>(),
+        "the probe declares Mode, Ramp, Gain, RequestIoChanged, UiState, DelayMs and \
+         ObservedProcessMode, in that order"
+    );
+}
+
 /// An id the plugin never listed has no descriptor and reads as `None` (as the
 /// `Control::parameter` contract says, and as CLAP and VST2 answer), and a write
 /// to it changes no listed parameter and does not stick.
@@ -1564,9 +1582,6 @@ fn a_sysex_open_across_a_stop_is_dropped() {
 /// `getParamNormalized` answers 0 for an unknown id; the host used to pass that
 /// through as `Some(0.0)`. The owner decided on `None`, so the two reads below
 /// assert it.
-///
-/// This covers what the `#[ignore]`d `test_set_parameter` (which needs an
-/// installed third-party plugin) also checks, on the repo's own probe.
 #[test]
 fn an_unlisted_parameter_id_is_reported_not_written() {
     use tutti_plugin_types::{Control, Normalized};

@@ -25,7 +25,7 @@ use crate::{PlaceError, Wave};
 /// # Errors
 ///
 /// [`PlaceError`] when the wave cannot be placed into `width` channels: a file
-/// with a channel no speaker names (a second LFE, a wide or high speaker) is
+/// with a channel no speaker names (a `Speaker::Unknown` in its topology) is
 /// refused here rather than played with a channel in the wrong place or
 /// dropped.
 pub fn memory_voice(

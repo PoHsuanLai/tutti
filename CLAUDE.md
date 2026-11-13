@@ -123,7 +123,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `Trim`) and `SessionEvent::Take` reports it started and ended once. A gap the
   tap lost is silence in place, counted; a plain `Recorder` closes up over it. A restart is one `DeviceRestart` value through the `LiveSession` (the
   pair), and device events are `SessionEvent::Device(DeviceEvent)` with typed
-  errors; `Device::latency` is what the streams' callback timestamps report, per
+  errors (a panic in the output or capture callback is caught there, never unwound into the device's C frame: the block writes silence and renders no more, reported as `StreamFaultKind::CallbackPanicked` and cleared by a restart); `Device::latency` is what the streams' callback timestamps report, per
   direction, `None` until reported.
 - Copying events into the graph is the **event inlet**: `EventInletNode`
   (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with

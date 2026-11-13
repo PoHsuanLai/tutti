@@ -548,12 +548,27 @@ where
     f32: cpal::FromSample<T>,
 {
     let delivering = Arc::clone(&faults);
+    // Set by a panic in `capture.block`, whose state may be torn: the capture
+    // then does nothing, and its source answers `Failed` (the faults' latch).
+    let mut failed = false;
     let stream = device.build_input_stream(
         config,
         move |data: &[T], info: &cpal::InputCallbackInfo| {
+            if failed {
+                return;
+            }
             delivering.delivered();
             latency.record(crate::latency::input_delay(&info.timestamp()));
-            capture.block(data);
+            // A panic must not unwind out of the device's C frame.
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                capture.block(data);
+            }));
+            if let Err(payload) = ran {
+                failed = true;
+                delivering.record_panic("the capture callback panicked");
+                // Dropping the payload would free on the audio thread.
+                std::mem::forget(payload);
+            }
         },
         // Not exercised without a device: what it calls, `StreamFaults::record`
         // and `MicIn::pull`'s verdict, is tested on its own.

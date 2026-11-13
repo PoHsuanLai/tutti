@@ -22,10 +22,12 @@
 //! what lets a debug-build test observe the clamp instead of panicking before
 //! it.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
 use tutti_types::{ChannelLayout, InterleavedMut};
 
+use crate::faults::StreamFaults;
 use crate::latency::StreamLatency;
 use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};
 
@@ -50,6 +52,11 @@ pub struct OutputBlock {
     last_rendered_frames: usize,
     /// Where each callback's reported delay goes ([`render_delayed`](Self::render_delayed)).
     latency: Arc<StreamLatency>,
+    /// Where a panic of the render is recorded.
+    faults: Arc<StreamFaults>,
+    /// Set by a panic in the render and never cleared: the engine's state may
+    /// be torn mid-block, so this block writes silence from then on.
+    failed: bool,
 }
 
 impl std::fmt::Debug for OutputBlock {
@@ -88,7 +95,17 @@ impl OutputBlock {
             buffer: vec![0.0f32; MAX_FRAMES * channels],
             last_rendered_frames: 0,
             latency: Arc::new(StreamLatency::new()),
+            faults: Arc::new(StreamFaults::new()),
+            failed: false,
         }
+    }
+
+    /// This block recording a panic of its render into `faults`, the stream's
+    /// record, instead of one of its own.
+    #[must_use]
+    pub(crate) fn with_faults(mut self, faults: Arc<StreamFaults>) -> Self {
+        self.faults = faults;
+        self
     }
 
     /// This block reporting each callback's delay into `latency` instead of a
@@ -137,12 +154,45 @@ impl OutputBlock {
     /// the backend handed over; a manual driver calls it with a buffer of the
     /// caller's choosing.
     ///
+    /// # Panics in the render
+    ///
+    /// None escapes: this runs in a device callback that a C frame called, and
+    /// unwinding through one aborts or is undefined behaviour. A panic in a
+    /// node, the executor or the engine is caught here, `data` is filled with
+    /// silence, and the block is latched: every later call writes silence and
+    /// never calls the engine again, because the panic may have left its state
+    /// half-written. The stream's [`StreamFaults`] records it as
+    /// [`StreamFaultKind::CallbackPanicked`](crate::StreamFaultKind::CallbackPanicked)
+    /// and reads as no longer running; a new stream (a restart) builds a new
+    /// block, which renders again. The panic hook still runs first and may
+    /// allocate; nothing the guard itself does does.
+    ///
     /// # Real-time
     ///
     /// Runs on the audio thread. Must not allocate, lock, or block — see
     /// `tests/rt_no_alloc.rs`.
     #[inline]
     pub fn render<T>(&mut self, data: &mut [T])
+    where
+        T: cpal::SizedSample + cpal::FromSample<f32>,
+    {
+        let silence = T::from_sample(0.0);
+        if self.failed {
+            data.fill(silence);
+            return;
+        }
+        let rendered = catch_unwind(AssertUnwindSafe(|| self.render_unguarded(data)));
+        if let Err(payload) = rendered {
+            self.failed = true;
+            data.fill(silence);
+            self.faults.record_panic("the output callback panicked");
+            // Dropping the payload would free on the audio thread, and a
+            // payload's own drop may panic: leak it, once per stream.
+            std::mem::forget(payload);
+        }
+    }
+
+    fn render_unguarded<T>(&mut self, data: &mut [T])
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {

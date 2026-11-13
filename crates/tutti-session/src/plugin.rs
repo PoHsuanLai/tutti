@@ -1150,22 +1150,6 @@ impl<'a> Plugin<'a> {
         &self.hosted.handle
     }
 
-    /// An out-of-process plugin's controls (its latency, tail and meter cells,
-    /// shared with its node); `None` for a plugin hosted in process (feature
-    /// `testing`: a host reads [`diagnostics`](Self::diagnostics)).
-    #[cfg(feature = "testing")]
-    pub fn controls(&self) -> Option<&'a PluginControls> {
-        self.hosted.controls.as_ref()
-    }
-
-    /// The node's project-meter cell, either hosting's; `None` for a plugin the
-    /// host inserted itself (feature `testing`: a host reads
-    /// [`diagnostics`](Self::diagnostics)).
-    #[cfg(feature = "testing")]
-    pub fn meter(&self) -> Option<tutti_plugin_host::PluginMeter> {
-        self.hosted.node.as_ref().map(NodeControls::meter)
-    }
-
     /// The plugin's parameters: what it declares, read at load and again when
     /// it announces a rescan, and the value of each, kept current from what the
     /// plugin reports and the host sets (design 029 section 2.3).
@@ -2505,6 +2489,60 @@ mod tests {
                 .map(PluginState::bytes),
             Some(&[4u8, 2][..]),
             "a declined save must keep the last good snapshot"
+        );
+    }
+
+    /// **The update frees a hosted plugin's project-meter cell cleared while a
+    /// block held it**: once cleared the node's meter slot follows no project
+    /// meter, so only the session's sweep of its plugins' meters reaches what the
+    /// clear retired, on the next update with nothing published again.
+    #[test]
+    fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
+        let mut rig = rig(None);
+        let controls = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(48_000.0));
+        let project = rig.session.click_settings().project_meter();
+        controls.set_meter(project);
+        let meter = controls.meter();
+        rig.session
+            .graph
+            .plugins
+            .get_mut(&rig.node)
+            .expect("hosted")
+            .node = Some((*controls).clone());
+        assert!(meter.has_meter(), "the project's meter is followed");
+
+        let mut block = meter.probe_reader();
+        {
+            let _held = block.lend();
+            meter.clear_meter();
+            let _ = rig.session.update();
+            assert_eq!(meter.retired_len(), 1, "held across the clear");
+        }
+        let _ = rig.session.update();
+        assert_eq!(meter.retired_len(), 0, "the update freed it");
+    }
+
+    /// **A latency past what PDC compensates is clamped, not refused**: a plugin
+    /// that reports more than `MAX_NODE_LATENCY` (the reference plugin cannot: its
+    /// delay line is short) reaches the graph as that figure at the next
+    /// `Phase::Plugins`.
+    #[test]
+    fn a_reported_latency_past_what_pdc_compensates_is_clamped() {
+        let mut rig = rig(None);
+        rig.session
+            .graph
+            .plugins
+            .get_mut(&rig.node)
+            .expect("hosted")
+            .controls = Some(PluginControls::new(
+            Samples(10_000_000),
+            PluginTail::default(),
+            SampleRate(48_000.0),
+        ));
+        rig.plugins_at(0);
+        assert_eq!(
+            rig.session.graph_ref().node_latency(rig.node).unwrap(),
+            tutti_graph::MAX_NODE_LATENCY
         );
     }
 

@@ -117,7 +117,7 @@ of this design's crates; §5 Q3 asks whether it is a crate of its own.
 | `controls()` `None` in process; `meter()` `None` for a hand-inserted plugin | The hosting shows through | one accessor for latency, tail and meter, either hosting |
 | bypass and mute: `Graph::set_mode(node, NodeMode)` | **Good**: one path, as for a native node. Kept | unchanged |
 | `handle.set_render_mode(mode) -> bool` beside the session's `render_mode()` | A second path that can disagree with the session (a bounce drives the session's) | the session's only |
-| `input_buses()`, `output_buses()`, `layout_support()` | A second vocabulary beside the graph's `BusRef` and `connect_bus` | `plugin.buses()` hands out the graph's bus handles (`main_input()`, `sidechain()`, `output(n)`); layout negotiation is 023 step 6 |
+| `input_buses()`, `output_buses()`, `layout_support()` | A second vocabulary beside the graph's `BusRef` and `connect_bus` | `plugin.buses()` hands out the graph's bus handles (`main_input()`, `input(i)`, `output(n)`; no loader marks a sidechain, so an app wires a key input by index); layout negotiation is 023 step 6 |
 
 ### 2.8 Missing
 
@@ -246,8 +246,9 @@ doing each thing:
   gives, so a modulation route or an automation lane targets a plugin
   parameter and a native one through one type. Values, text, gestures and
   units go through the view, which holds the plugin's descriptors.
-- **Buses.** `plugin.buses()` hands out the graph's bus handles; a plugin whose loader marks a sidechain wires it with
-  `connect(kick.bus_out(0), comp.buses().sidechain().unwrap())`.
+- **Buses.** `plugin.buses()` hands out the graph's bus handles; no loader marks a
+  sidechain, so an app wires a key input by index:
+  `connect(kick.bus_out(0), comp.buses().input(1).unwrap())`.
 - **MIDI.** A route targets the plugin node and the Group picks the port (Group
   N to CLAP note port or VST3 event bus N); there is no plugin port index on a
   route. Per-note control is MIDI 2.0's own messages (no note-expression type);
@@ -533,31 +534,29 @@ hand-inserted plugin) are gone from the view; their one accessor is
 session's `Phase::RenderMode` calls the backend's `AnyThread::set_render_mode`,
 and a host asks the session (`Session::render_mode`). *Buses:*
 `Plugin::buses() -> PluginBuses<'_>` hands out the graph's handles from the
-plugin's own bus order (which is the node's: `main_input()`, `sidechain()`,
-`input(i)`, `output(i)`, `input_count()`, `output_count()`), as `BusRef` and
-`BusSource`, the ones `key.bus_in(i)` and `key.bus_out(i)` name:
-`connect(kick.bus_out(0), comp.buses().sidechain().unwrap())` wires a plugin whose loader marks one. No loader maps a
-bus to `BusRole::Sidechain` today (CLAP, VST3 and AU say main or aux, VST2 has
-one bus), so `sidechain()`, the first input whose role is `Sidechain`, is `None`
-for every hosted format until a loader maps one; an aux input is not a
-sidechain and is reached by `input(i)`. The graph tracks `MAX_BUSES`
+plugin's own bus order (which is the node's: `main_input()`, `input(i)`,
+`output(i)`, `input_count()`, `output_count()`), as `BusRef` and `BusSource`,
+the ones `key.bus_in(i)` and `key.bus_out(i)` name. There is no `sidechain()`:
+no loader marks a bus `BusRole::Sidechain` (CLAP and AU have no marker, VST3
+says aux, VST2 has one bus), and calling the first non-main input a sidechain is
+a guess the types refuse, so an app wires a key input by index,
+`connect(kick.bus_out(0), comp.buses().input(1).unwrap())`. The graph tracks `MAX_BUSES`
 per side, and a handle past it is `None`. *`Plugin::handle()`* is not on the
-read view of a host any more: it, `controls()` and `meter()` are behind
-`tutti-session`'s `testing` feature, kept for what has no public read: the plugin's own
-reported values (a modulation lane's delivered value, which the session's mirror
-does not show), the plugin-reported latency cell and the pipeline's
-`chunk_in_flight_answered` and its write seams (`set_latency`), the project-meter
-cell's reclaim, a VST2 plugin's idle tick outside an opened editor, and an owned
-handle on a pool thread. Descriptor, state, parameters sets, health and counts
-have public views, since the views now cover what a host used it for (parameters, state,
-presets, health, diagnostics, the editor); `PluginHandle` stays the layer the
-views are built on. The reference CLAP plugin gained
+read view of a host any more: it is behind `tutti-session`'s `testing` feature,
+kept for the plugin's own reported parameter values (a modulation lane's
+delivered value, which the session's mirror does not show), a VST2 plugin's idle
+tick outside an opened editor and an owned handle on a pool thread. `controls()`
+and `meter()` are deleted: `Diagnostics` has `reported_latency()` (the plugin's
+own figure, before the graph takes it and without the pipeline's chunk) and
+`chunk_in_flight_answered()` (for a host driving blocks by hand), `missed_chunks()`
+and `follows_project_meter()`; the project-meter cell is internal (its reclaim
+test is in the crate). The reference CLAP plugin gained
 `TUTTI_CLAP_PROBE_PORT_LAYOUT` (every server's port layout, as the existing
 `..._RESTART_PORT_LAYOUT` is a replacement's), which the aux-bus test uses
 (stereo main and a mono aux input). Tests: `plugin_diagnostics.rs` (lost MIDI
 as `Losses` in process, the server named and ended, the latency and tail as the
-graph holds them, an aux input wired through the handle, an aux input not read as a sidechain and a bus past the
-plugin's own refused). Not done in this step: a VST3 aux bus's activation
+graph holds them, an aux input wired through the handle and a bus past the
+plugin's own refused). Not built in this step: a sidechain marker (no loader marks one; an app wires a key input by index), a VST3 aux bus's activation
 follows what the graph wires (the node does not learn which ports are wired, so
 it stays a `kDefaultActive` wish), VST3 `tresult` and AU `OSStatus` typed into
 the diagnostics, and §6.3's transport items.
@@ -778,7 +777,7 @@ The latent violations (no known plugin breaks on them) go into the same PRs as t
 | AU's 20 contract gaps are one missing AU shared plugin, not AU limits; the two `f32` round trips want a per-format tolerance, not a gap | AU completeness (the fixture is an in-process registered `AUAudioUnit` subclass) |
 | AU input as UMP (`MusicDeviceMIDIEventList`, `HostMIDIProtocol` / `AudioUnitMIDIProtocol`, the Group in each packet); the legacy path keeps the `Narrower`; v2 has no cable routing | AU MIDI input parity (done: `initialize` reads `AudioUnitMIDIProtocol` before `AudioUnitInitialize`; `HostMIDIProtocol` is not written, since writing it breaks withdrawing the legacy output callback (macOS 26.6) and is the output lane's, with the event-list callback; a unit that says MIDI 2.0 gets UMP unchanged, one list per protocol, timestamps are frame offsets, the list built in a buffer reserved at activation (`tutti_au_ffi::EventList`); MIDI 1.0 or no answer keeps `midi1` and `MusicDeviceMIDIEvent`, Group 0 only, other Groups and unnarrowable messages counted. Not covered: no installed Apple unit answers the protocol property, so the UMP path is tested over a sink and the call on AUSampler, not end to end through a unit that takes MIDI 2.0; waits for the AU shared plugin) |
 | Project time computed from beats at one tempo (`transport_source.rs`), not from the `TempoMap`; VST2 extrapolates a split block's transport at the block's first tempo | a transport PR beside step 4 |
-| A VST3 aux bus without `kDefaultActive` stays inactive though the graph wires it | step 4 (buses as graph handles activate what is wired): the handles are built (4b), the activation is not: the node does not learn which ports are wired |
+| A VST3 aux bus without `kDefaultActive` stays inactive though the graph wires it | step 4 (buses as graph handles activate what is wired): the handles are built (4b), the activation is not: the node does not learn which ports are wired. No loader marks a sidechain (CLAP and AU have no marker, VST3 says aux): an app wires a key input by index |
 | VST3 editor: the served editor's run loop not pumped on Linux, in-process resize stubbed, no content-scale update after open | step 2 (`update()` services every editor) |
 | AUv3 | after AU completeness (§6.4) |
 | A note is `(Group, NoteId)` at the port edge (Group N is port or bus N), so `NoteId` keeps `channel * 128 + note` and gains no Group; the legacy note-expression route lacks port, channel and key | plugin MIDI out by Group |

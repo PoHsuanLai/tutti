@@ -105,6 +105,33 @@ impl<'a> Diagnostics<'a> {
         self.figures.latency
     }
 
+    /// The latency the plugin itself reports, before the graph takes it and
+    /// without the pipeline's chunk: what [`latency`](Self::latency) is made of.
+    /// Out of process it is the figure the bridge last heard from the plugin,
+    /// so it moves the moment the plugin says so (the graph's moves at the next
+    /// update); in process there is no pipeline and the node declares the
+    /// plugin's figure, so it is [`latency`](Self::latency).
+    pub fn reported_latency(&self) -> Samples {
+        self.hosted.controls.as_ref().map_or(
+            self.figures.latency,
+            tutti_plugin_host::PluginControls::latency,
+        )
+    }
+
+    /// Whether the chunk the node submitted last, and has not played yet, has
+    /// been answered (`true` with none in flight, and always in process).
+    ///
+    /// For a host driving the graph by hand, block by block, with no device
+    /// clock: it waits on this before the next block, so that block plays the
+    /// answer and not a dropout ([`missed_chunks`](Self::missed_chunks)). A
+    /// live host does not wait: the device's callback period is the deadline.
+    pub fn chunk_in_flight_answered(&self) -> bool {
+        self.hosted
+            .controls
+            .as_ref()
+            .is_none_or(tutti_plugin_host::PluginControls::chunk_in_flight_answered)
+    }
+
     /// The tail the graph holds for the node, as of the last update: what the
     /// plugin reports, which may be unbounded or not yet reported.
     pub fn tail(&self) -> Tail {
@@ -136,8 +163,9 @@ impl<'a> Diagnostics<'a> {
 /// [`Plugin::buses`](crate::Plugin::buses): what to wire with
 /// `Graph::connect` ([`BusSource`] into [`BusRef`]).
 ///
-/// `connect(kick.bus_out(0), comp.buses().sidechain().unwrap())` wires a
-/// plugin whose loader marks a sidechain. A bus index here is the graph's bus index, the plugin's own bus
+/// `connect(kick.bus_out(0), comp.buses().input(1).unwrap())` feeds a plugin's
+/// second input bus: no loader marks a sidechain (CLAP and AU have no marker and
+/// VST3 says aux), so an app wires a key input by index. A bus index here is the graph's bus index, the plugin's own bus
 /// order, so each handle is the one `key.bus_in(i)` and `key.bus_out(i)` name.
 /// The graph tracks [`MAX_BUSES`] of a side: a plugin with more has its later
 /// buses reached by port.
@@ -179,21 +207,6 @@ impl<'a> PluginBuses<'a> {
         self.input(index)
     }
 
-    /// The plugin's sidechain: its first input bus whose role is
-    /// [`BusRole::Sidechain`], or `None`.
-    ///
-    /// A bus is a sidechain only when the format's loader says so. Today none
-    /// does (CLAP, VST3 and AU mark a bus main or aux, and VST2 has one), so
-    /// this is `None` for every hosted format until a loader maps one; an aux
-    /// input is not a sidechain, and is reached by [`input`](Self::input).
-    pub fn sidechain(&self) -> Option<BusRef> {
-        let index = self
-            .inputs
-            .iter()
-            .position(|bus| bus.role == BusRole::Sidechain)?;
-        self.input(index)
-    }
-
     /// Input bus `index`, in the plugin's bus order.
     pub fn input(&self, index: usize) -> Option<BusRef> {
         (index < self.inputs.len().min(MAX_BUSES)).then(|| self.bus(index))
@@ -213,36 +226,5 @@ impl<'a> PluginBuses<'a> {
     /// How many output buses the graph tracks.
     pub fn output_count(&self) -> usize {
         self.outputs.len().min(MAX_BUSES)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tutti_types::ChannelLayout;
-
-    fn bus(role: BusRole) -> PluginBus {
-        PluginBus::new(ChannelLayout::STEREO, role)
-    }
-
-    /// **A sidechain is the bus the loader marks `Sidechain`, not any bus past
-    /// the main one.** An aux input first, then a sidechain: the sidechain is
-    /// bus 2 and the aux stays reachable as bus 1; with no `Sidechain` bus there
-    /// is none, whatever aux inputs exist.
-    #[test]
-    fn only_a_bus_marked_sidechain_is_the_sidechain() {
-        let node = tutti_graph::NodeKey::fresh();
-        let ins = [
-            bus(BusRole::Main),
-            bus(BusRole::Aux),
-            bus(BusRole::Sidechain),
-        ];
-        let buses = PluginBuses::over(node, &ins, &[]);
-        assert_eq!(buses.main_input(), Some(BusRef::new(node, 0)));
-        assert_eq!(buses.sidechain(), Some(BusRef::new(node, 2)));
-        assert_eq!(buses.input(1), Some(BusRef::new(node, 1)));
-
-        let aux_only = [bus(BusRole::Main), bus(BusRole::Aux)];
-        assert_eq!(PluginBuses::over(node, &aux_only, &[]).sidechain(), None);
     }
 }

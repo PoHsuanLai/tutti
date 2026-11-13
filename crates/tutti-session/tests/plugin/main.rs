@@ -28,7 +28,7 @@ mod plugin_health;
 // A hosted plugin's latency is the session's, across a crossfade and a
 // restart (the session halves of `bevy-tutti`'s `plugin_capture` and restart
 // tests): the reference CLAP plugin in a real `plugin-server`.
-#[cfg(all(feature = "clap", feature = "device"))]
+#[cfg(all(feature = "clap", feature = "device", feature = "export"))]
 mod plugin_latency;
 // Modulation lanes on a hosted plugin's parameters: across a recovery and a
 // crossfade, and an export equal to the live render (the session halves of
@@ -68,7 +68,7 @@ mod vst2_params;
 #[cfg(any(feature = "clap", feature = "vst2"))]
 mod plugin_presets;
 // Diagnostics and buses (design 029 step 4): the counts either hosting reads the
-// same way, a sidechain wired through the plugin's bus handles, a server named
+// same way, an aux input wired through the plugin's bus handles, a server named
 // and ended.
 #[cfg(any(feature = "clap", feature = "vst2"))]
 mod plugin_diagnostics;

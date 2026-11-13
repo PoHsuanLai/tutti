@@ -26,7 +26,8 @@ use tutti_cpal::{ManualStreamDriver, OutputSpec};
 use tutti_plugin::catalog::PluginRef;
 use tutti_plugin::handles::PluginClient;
 use tutti_session::{
-    Crossfade, OutPort, PHASES, Phase, PhaseCx, PluginLoadRequest, Root, Session, SessionEvent,
+    Bounce, BounceLatency, BounceTail, BufferMaster, Crossfade, ExportClock, OutPort, PHASES,
+    Phase, PhaseCx, PluginLoadRequest, Range, Root, Session, SessionEvent,
 };
 use tutti_session::{PluginChange, PluginEvent};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -119,35 +120,70 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
             "{out:?}"
         );
     }
+}
 
-    let controls = s
-        .plugin(node)
-        .expect("hosted")
-        .controls()
-        .expect("out of process")
-        .clone();
-    controls.set_latency(Samples(300));
+/// A short offline bounce into memory: the render mode a plugin is told
+/// Offline for as long as it is in flight.
+fn request() -> Bounce<tutti_graph::NodeKey, BufferMaster> {
+    Bounce::project()
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Seconds(
+            tutti_types::Seconds(0.0),
+            tutti_types::Seconds(0.05),
+        ))
+        .sample_rate(RATE)
+        .clock(ExportClock::frozen())
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None)
+}
+
+/// **A latency the plugin reports reaches the graph through the session's
+/// phase.** The reference plugin adds `TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY`
+/// frames to its latency while it renders offline and says so (`latency.changed`):
+/// a bounce in flight is that report. It is `diagnostics().reported_latency()` at
+/// once, and the graph's (`latency()`, the report plus the pipeline's chunk) at
+/// the next update, with a `LatencyChanged`.
+#[test]
+fn a_latency_the_plugin_reports_reaches_the_graph() {
+    // SAFETY: as `set_server`: before the first server, from the test's thread.
+    unsafe { std::env::set_var("TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY", "300") };
+    let mut s = offline();
+    let node = add_probe_on_outputs(&mut s);
+    let own = tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize;
+    assert_eq!(diagnostics_of(&s, node).reported_latency(), Samples(own));
+    assert_eq!(diagnostics_of(&s, node).latency(), Samples(own + BLOCK));
+
+    let _job = s.bounce_start(request()).expect("the bounce starts");
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while diagnostics_of(&s, node).reported_latency() != Samples(own + 300) {
+        assert!(Instant::now() < deadline, "the report never arrived");
+        round_trip(&s, node);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        diagnostics_of(&s, node).latency(),
+        Samples(own + BLOCK),
+        "the graph has not taken it yet"
+    );
+
     let events = s.update();
     assert_eq!(
         s.graph_ref().node_latency(node).unwrap(),
-        Samples(300 + BLOCK),
+        Samples(own + 300 + BLOCK),
         "a changed plugin latency reaches the graph"
+    );
+    assert_eq!(
+        diagnostics_of(&s, node).latency(),
+        Samples(own + 300 + BLOCK)
     );
     assert!(
         events.iter().any(|e| matches!(
             e,
             SessionEvent::Plugin(PluginEvent { node: n, change: PluginChange::LatencyChanged { latency }, .. })
-                if *n == node && *latency == Samples(300 + BLOCK)
+                if *n == node && *latency == Samples(own + 300 + BLOCK)
         )),
         "{events:?}"
-    );
-
-    controls.set_latency(Samples(10_000_000));
-    let _ = s.update();
-    assert_eq!(
-        s.graph_ref().node_latency(node).unwrap(),
-        tutti_graph::MAX_NODE_LATENCY,
-        "clamped to what PDC compensates"
     );
 }
 
@@ -262,4 +298,15 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
         Samples(137 + 256),
         "PDC follows before the first block"
     );
+}
+
+fn diagnostics_of(s: &Session, node: tutti_graph::NodeKey) -> tutti_session::Diagnostics<'_> {
+    s.plugin(node).expect("hosted").diagnostics()
+}
+
+/// One control round trip to the probe's server: the server sends the
+/// `latency.changed` of a render mode after that call's reply, and the bridge
+/// thread reads it off the socket only while it waits for the next reply.
+fn round_trip(s: &Session, node: tutti_graph::NodeKey) {
+    let _ = s.plugin(node).expect("hosted").state().save();
 }

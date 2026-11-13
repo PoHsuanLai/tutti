@@ -161,15 +161,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    Diagnostics are the corner of the plugin's panel: its server (none in
     //    process), its dropouts, what it lost, and the latency the graph
     //    compensates for it, the same whichever hosting runs it. `buses()` hands
-    //    out the graph's bus handles: a sidechain is
-    //    `session.graph().connect(kick.bus_out(0), sidechain)`.
+    //    out the graph's bus handles: a key input is wired by
+    //    index (no format marks a sidechain): `connect(kick.bus_out(0),
+    //    hosted.buses().input(1).unwrap())`.
     let diagnostics = hosted.diagnostics();
     eprintln!(
-        "server {:?}, latency {:?}, lost MIDI {:?}, sidechain: {}",
+        "server {:?}, latency {:?}, lost MIDI {:?}, input buses: {}",
         diagnostics.server_pid(),
         diagnostics.latency(),
         diagnostics.midi_in(),
-        hosted.buses().sidechain().is_some()
+        hosted.buses().input_count()
     );
     {
         let mut ui = session.main(main);

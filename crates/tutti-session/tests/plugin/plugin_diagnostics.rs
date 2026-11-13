@@ -60,21 +60,19 @@ mod clap {
         (s, node)
     }
 
-    /// **A plugin's buses are the graph's bus handles, and an aux input is not
-    /// a sidechain.** The probe with a mono aux input beside its stereo main (CLAP
-    /// marks it aux, and no loader marks a sidechain): `main_input` is bus 0,
-    /// `sidechain()` is `None`, and the aux input is bus 1 through `input(1)`,
+    /// **A plugin's buses are the graph's bus handles.** The probe with a mono aux
+    /// input beside its stereo main: `main_input` is bus 0 and the aux input is
+    /// bus 1 through `input(1)`,
     /// the same handle `key.bus_in(1)` names; the output buses likewise; a
     /// source's bus connects into it and the graph says what feeds it; a bus
     /// the plugin lacks is not a handle and the graph refuses it as a bus the
     /// node does not declare.
     #[test]
-    fn an_aux_input_wires_through_the_buses_handle_and_is_no_sidechain() {
+    fn an_aux_input_wires_through_the_buses_handle() {
         let (mut s, node) = loaded(Some("1"));
         let key = node;
         let buses = s.plugin(node).unwrap().buses();
         assert_eq!(buses.main_input(), Some(key.bus_in(0)));
-        assert_eq!(buses.sidechain(), None, "an aux input is not a sidechain");
         assert_eq!(buses.input(1), Some(key.bus_in(1)));
         assert_eq!(buses.output(0), Some(key.bus_out(0)));
         assert_eq!(buses.output(1), Some(key.bus_out(1)));
@@ -98,12 +96,12 @@ mod clap {
         );
     }
 
-    /// A plugin with one bus per side has no sidechain, and its main bus is 0.
+    /// A plugin with one bus per side has no second input, and its main bus is 0.
     #[test]
-    fn a_plugin_with_one_input_bus_has_no_sidechain() {
+    fn a_plugin_with_one_input_bus_has_no_second_input() {
         let (s, node) = loaded(None);
         let buses = s.plugin(node).unwrap().buses();
-        assert!(buses.sidechain().is_none());
+        assert!(buses.input(1).is_none());
         assert!(buses.main_input().is_some());
         assert_eq!(buses.input_count(), 1);
     }
@@ -159,27 +157,21 @@ mod clap {
         );
     }
 
-    /// **The latency is the one the graph compensates, and moves with the
-    /// plugin's.** The plugin's reported figure plus one chunk of the pipeline
-    /// that carries its audio: 0 reported is one block; a changed report reaches
-    /// the diagnostics at the update that hands it to the graph.
+    /// **The latency is the one the graph compensates: the plugin's report plus
+    /// the pipeline's chunk.** `reported_latency` is the probe's own figure and
+    /// `latency` adds one block; the tail is the probe's `clap.tail`. (A report
+    /// that moves is `plugin_latency.rs`'s.)
     #[test]
-    fn the_diagnostics_latency_follows_the_plugins_report() {
+    fn the_diagnostics_latency_is_the_report_plus_the_pipeline() {
         let (mut s, node) = loaded(None);
         s.graph().connect(node, Root).unwrap();
         let _ = s.update();
-        let before = s.plugin(node).unwrap().diagnostics().latency();
-        s.plugin(node)
-            .unwrap()
-            .controls()
-            .expect("out of process")
-            .clone()
-            .set_latency(Samples(300));
-        let _ = s.update();
-        let after = s.plugin(node).unwrap().diagnostics().latency();
-        assert_eq!(after, Samples(300 + BLOCK), "was {before:?}");
+        let diag = s.plugin(node).unwrap().diagnostics();
+        let own = tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize;
+        assert_eq!(diag.reported_latency(), Samples(own));
+        assert_eq!(diag.latency(), Samples(own + BLOCK));
         assert_eq!(
-            s.plugin(node).unwrap().diagnostics().tail(),
+            diag.tail(),
             tutti_types::Tail::Finite(Samples(8191)),
             "the tail the probe's `clap.tail` reports, as the graph holds it"
         );

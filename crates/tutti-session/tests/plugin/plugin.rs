@@ -91,9 +91,8 @@ fn add_probe(s: &mut Session) -> NodeKey {
 fn latency(s: &Session, node: NodeKey) -> Samples {
     s.plugin(node)
         .expect("hosted")
-        .controls()
-        .expect("out of process")
-        .latency()
+        .diagnostics()
+        .reported_latency()
 }
 
 /// One control round trip to the probe's server. The server sends the
@@ -406,34 +405,6 @@ fn export_leftovers_drop_on_the_main_thread() {
         drops.iter().all(|&t| t == main),
         "a copy was dropped off the main thread: {drops:?} (main {main:?})"
     );
-}
-
-/// **The update frees a hosted plugin's meter cleared while a block held
-/// it**: once cleared the node's meter slot follows no project meter, so
-/// only the session's sweep of its plugins' meters reaches what the clear
-/// retired, on the next update with nothing published again.
-#[test]
-fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
-    let mut s = session(&[]);
-    let probe = add_probe(&mut s);
-    let _ = s.update();
-    let meter = s
-        .plugin(probe)
-        .expect("hosted")
-        .meter()
-        .expect("a CLAP node has a meter")
-        .clone();
-    assert!(meter.has_meter(), "the session installed the project's");
-
-    let mut block = meter.probe_reader();
-    {
-        let _held = block.lend();
-        meter.clear_meter();
-        let _ = s.update();
-        assert_eq!(meter.retired_len(), 1, "held across the clear");
-    }
-    let _ = s.update();
-    assert_eq!(meter.retired_len(), 0, "the update freed it");
 }
 
 // --- Recovery ---------------------------------------------------------------

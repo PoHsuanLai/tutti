@@ -88,9 +88,9 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_ump::{MidiChannel, NoteNumber, U7};
 
     let sample_rate = 48_000.0;
-    let transport = Transport::new(SampleRate::new(sample_rate));
+    let transport = Transport::new(SampleRate::of(sample_rate));
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(sample_rate),
+        SampleRate::of(sample_rate),
         tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
@@ -178,9 +178,9 @@ fn a_published_tempo_map_is_taken_without_allocating() {
     use tutti_graph::{OutPort, Source};
     use tutti_types::Bpm;
 
-    let transport = Transport::new(SampleRate::new(48_000.0));
+    let transport = Transport::new(SampleRate::SR_48K);
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
@@ -245,9 +245,9 @@ fn a_step_map_is_followed_without_allocating() {
         });
         Arc::new(TempoMap::new(points).expect("a map"))
     };
-    let transport = Transport::new(SampleRate::new(48_000.0));
+    let transport = Transport::new(SampleRate::SR_48K);
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
@@ -309,9 +309,9 @@ fn a_step_map_is_followed_without_allocating() {
             .expect("a map"),
         )
     };
-    let transport = Transport::new(SampleRate::new(48_000.0));
+    let transport = Transport::new(SampleRate::SR_48K);
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         tutti_types::MaxBlock::of(tutti_types::Samples(4_096)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
@@ -379,9 +379,9 @@ fn the_heard_tap_is_allocation_free() {
     use tutti_graph::{OutPort, Source};
     use tutti_transport::MotionEvent;
 
-    let transport = Transport::new(SampleRate::new(48_000.0));
+    let transport = Transport::new(SampleRate::SR_48K);
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
@@ -480,14 +480,14 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     }
 
     let sample_rate = 48_000.0;
-    let transport = Transport::new(SampleRate::new(sample_rate));
+    let transport = Transport::new(SampleRate::of(sample_rate));
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(Amplitude::new(1.0)).unwrap();
     let click = ClickNode::new(&transport, Arc::clone(&settings));
 
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(sample_rate),
+        SampleRate::of(sample_rate),
         tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     let (clock, sink) = (NodeKey(1), NodeKey(2));
@@ -572,9 +572,9 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
     use tutti_graph::{Editor, ForkByClone, Prepare};
 
     let sample_rate = 48_000.0;
-    let transport = Transport::new(SampleRate::new(sample_rate));
+    let transport = Transport::new(SampleRate::of(sample_rate));
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(sample_rate),
+        SampleRate::of(sample_rate),
         tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     // Parks quickly, so the gated blocks below wake parked helpers.

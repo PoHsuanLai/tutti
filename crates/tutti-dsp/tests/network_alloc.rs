@@ -37,10 +37,10 @@ fn freeverb_design_allocates_nothing() {
         })
         .collect();
     for rate in [44_100.0, 48_000.0, 192_000.0] {
-        design_allocates_nothing(&FreeverbFamily, &controls, SampleRate(rate));
+        design_allocates_nothing(&FreeverbFamily, &controls, SampleRate::of(rate));
         let bounds = allocations(|| {
             std::hint::black_box(
-                FreeverbFamily.reach(&tutti_dsp::Reach::at(SampleRate(rate)).unwrap()),
+                FreeverbFamily.reach(&tutti_dsp::Reach::at(SampleRate::of(rate)).unwrap()),
             );
         });
         assert_eq!(bounds, 0, "bounds allocated");
@@ -56,7 +56,7 @@ fn freeverb_retargets_and_renders_without_allocating() {
     use tutti_dsp::{FreeverbRecurrence, Network, Reach, Realized, Setup};
     use tutti_types::{MaxBlock, Samples};
 
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let design = FreeverbFamily;
     let mut realization = design.realized();
     realization.prepare(
@@ -93,7 +93,7 @@ fn freeverb_retargets_and_renders_without_allocating() {
 /// copies a network about three times, so building one needs well over that.
 #[test]
 fn member_into_needs_no_network_sized_stack() {
-    let rate = SampleRate(44_100.0);
+    let rate = SampleRate::SR_44K1;
     let mut network = Box::new(tutti_dsp::Network::new(rate));
     let handle = std::thread::Builder::new()
         .stack_size(96 * 1024)
@@ -115,7 +115,7 @@ fn the_fdn_retargets_and_renders_without_allocating() {
     use tutti_dsp::{FdnControls, FdnFamily, Network, Reach, Setup};
     use tutti_types::{Db, Depth, Hz, MaxBlock, Samples, Seconds, StereoWidth};
 
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let design = FdnFamily::new(8, Seconds(8.0), true).unwrap();
     let mut realization = design.realized();
     realization.prepare(
@@ -162,7 +162,7 @@ fn the_fdn_retargets_and_renders_without_allocating() {
 #[test]
 fn the_fdns_member_into_needs_no_network_sized_stack() {
     use tutti_dsp::{FdnControls, FdnFamily};
-    let rate = SampleRate(44_100.0);
+    let rate = SampleRate::SR_44K1;
     let mut network = Box::new(tutti_dsp::Network::new(rate));
     let handle = std::thread::Builder::new()
         .stack_size(96 * 1024)

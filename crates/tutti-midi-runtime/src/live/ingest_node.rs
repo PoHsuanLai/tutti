@@ -227,7 +227,7 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiIngestNode;
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
 /// // Four device slots, none wired yet.
 /// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(4));
 /// assert_eq!(controls.pending_mpe_mode(), None);
@@ -284,7 +284,7 @@ impl Device {
             present: true,
             held: HeldState::new(),
             // Built again for the real rate in `prepare`.
-            sensing: ActiveSensing::at_rate(SampleRate(48_000.0)),
+            sensing: ActiveSensing::at_rate(SampleRate::SR_48K),
             owing: 0,
         }
     }

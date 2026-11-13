@@ -29,7 +29,7 @@ const STRETCHED: u64 = 2;
 
 /// A stereo tone, `secs` long, every sample distinct.
 fn tone(secs: f64) -> Arc<Wave> {
-    let mut w = Wave::new(2, SampleRate::new(SR));
+    let mut w = Wave::new(2, SampleRate::of(SR));
     for i in 0..(secs * SR) as usize {
         let t = i as f32 / SR as f32;
         w.push_frame(&[(t * 2_765.0).sin() * 0.4, (t * 4_148.0).sin() * 0.3]);
@@ -75,7 +75,7 @@ impl<N: Node> Node for Undeclared<N> {
 /// each on two global outputs of its own (a track wired straight out).
 fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     if workers > 1 {

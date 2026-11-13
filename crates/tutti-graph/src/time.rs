@@ -696,7 +696,7 @@ mod tests {
     fn env(frame: u64, len: usize, transport: TransportPosition) -> Env {
         Env {
             frame: Frame(frame),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             block_len: Samples(len),
             transport,
             changes: crate::node::TransportChanges::NONE,
@@ -957,7 +957,7 @@ mod tests {
     /// 0.010 666 beat at 120 BPM, 0.013 333 at 150.
     #[test]
     fn continuity_tells_a_tempo_change_and_a_wrap_from_a_seek() {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let n = Samples(256);
         let from = TransportPosition::new(true, Bpm::of(120.0), Beat(100.0), None);
         // Stepped to 150 BPM at frame 128: 128 frames at each tempo.
@@ -1006,7 +1006,7 @@ mod tests {
     /// read rolled there.
     #[test]
     fn a_stopped_transport_is_held() {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let n = Samples(256);
         let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(8.0), None);
         assert_eq!(stopped.continuity(n, rate, &stopped), Continuity::Held);
@@ -1222,7 +1222,7 @@ mod tests {
     /// block.
     #[test]
     fn transport_at_is_the_host_clock() {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         for (tempo, looping) in [
             (97.0, None),
             (133.3, None),

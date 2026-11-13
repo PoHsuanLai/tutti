@@ -78,7 +78,7 @@ impl Clock {
     fn block(&self, node: &mut dyn Node) -> Vec<Vec<f32>> {
         let env = Env {
             frame: Frame(0),
-            sample_rate: SampleRate(SR),
+            sample_rate: SampleRate::of(SR),
             block_len: Samples(BLOCK),
             transport: tutti_graph::TransportPosition::new(
                 true,
@@ -95,7 +95,7 @@ impl Clock {
 
 /// A constant-valued source, long enough not to run dry.
 fn dc_wave(len: usize) -> Arc<Wave> {
-    let mut w = Wave::new(2, SampleRate::new(SR));
+    let mut w = Wave::new(2, SampleRate::of(SR));
     for _ in 0..len {
         w.push_frame(&[LEVEL, LEVEL]);
     }
@@ -115,7 +115,7 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
     )
     .expect("a placeable wave");
 
-    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate::of(SR), BLOCK);
     pool.insert(
         SlotId(1),
         source,
@@ -194,7 +194,7 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
     )
     .expect("a placeable wave");
 
-    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate::of(SR), BLOCK);
     pool.insert(
         SlotId(1),
         source,
@@ -283,7 +283,7 @@ fn gain_scales_every_channel_equally() {
         },
     )
     .expect("a placeable wave");
-    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate::of(SR), BLOCK);
     pool.insert(
         SlotId(1),
         source,
@@ -352,7 +352,7 @@ fn a_bare_memory_source_applies_its_own_gain() {
 #[test]
 fn two_half_gain_voices_sum_to_one_full_gain_voice() {
     let clock = Clock::new();
-    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate::of(SR), BLOCK);
 
     for id in [1u128, 2] {
         let source = MemorySource::with_config(

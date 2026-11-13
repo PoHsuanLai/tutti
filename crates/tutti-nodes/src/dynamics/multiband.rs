@@ -1113,7 +1113,7 @@ mod tests {
         unity(&c);
         c.band(0).set_solo(true);
         c.set_crossover(2, Hz(15_000.0));
-        let mut n = tutti_graph::contract::prepared(n, SampleRate(22_050.0), 1024);
+        let mut n = tutti_graph::contract::prepared(n, SampleRate::SR_22K05, 1024);
         c.set_crossover(0, Hz(150.0));
         // 150 Hz at 22.05 kHz is 147 samples a period.
         let x = sine(150.0, 22_050.0, 12_000 + 5_880);

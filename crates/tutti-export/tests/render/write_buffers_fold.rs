@@ -12,7 +12,7 @@ use tutti_export::{ConfigError, Error, Rendered};
 use tutti_types::ChannelLayout;
 use tutti_types::{ChannelTopology, M3DB, SampleRate, Speaker};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const FRAMES: usize = 256;
 
 /// One constant per channel, so a channel that goes missing shows in the sum.

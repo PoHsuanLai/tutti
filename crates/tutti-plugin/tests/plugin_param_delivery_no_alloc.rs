@@ -52,7 +52,7 @@ fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
     let _lock = machine_lock();
     let (client, handle) = load_param_probe(PARAMS, SAMPLE_RATE);
     let (knobs, lanes) = knobs(PARAMS, |_| 0.5);
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
+    let prepare = Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
         .with_quantum(MaxBlock::of(Samples(QUANTUM)));
     let mut rig = Rig::prepared_with(
         client.bind(

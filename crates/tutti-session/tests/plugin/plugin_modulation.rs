@@ -35,7 +35,7 @@ use tutti_session::{
 };
 use tutti_types::{ChannelLayout, Depth, Hz, SampleRate, Seconds};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 /// The plugin's pipeline chunk in a detached session: its `MaxBlock`
 /// (`LIVE_MAX_BLOCK`).
 const CHUNK: usize = 1_024;

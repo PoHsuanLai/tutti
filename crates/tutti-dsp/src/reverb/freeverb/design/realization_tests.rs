@@ -41,7 +41,7 @@ crate::recurrence_contract!(FreeverbFamily, Lti, reverb, BlockIndependent);
 /// another render.)
 #[test]
 fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
-    let rate = SampleRate(44_100.0);
+    let rate = SampleRate::SR_44K1;
     let fresh = Freeverb::new(rate);
     // Start from other figures so the retarget is seen to set them.
     let mut realization = FreeverbFamily.realized();
@@ -60,7 +60,7 @@ fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
 /// not a stable loop.
 #[test]
 fn a_network_it_does_not_understand_is_ignored() {
-    let rate = SampleRate(44_100.0);
+    let rate = SampleRate::SR_44K1;
     let mut realization = FreeverbFamily.realized();
     let before = realization.figures().comb;
     realization.retarget(&Network::new(rate));
@@ -83,7 +83,7 @@ fn prepare_retunes_the_lines_and_keeps_the_coefficients() {
     let mut realization = FreeverbFamily.realized();
     realization.retarget(&FreeverbFamily.member(&controls(0.9, 0.2), SampleRate::DEFAULT));
     let want = realization.figures().comb;
-    let rate = SampleRate(96_000.0);
+    let rate = SampleRate::SR_96K;
     let reach = Reach::at(rate).unwrap();
     realization.prepare(
         &FreeverbFamily.reach(&reach),

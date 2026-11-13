@@ -14,7 +14,7 @@ use tutti_export::{EventLossPolicy, FileTarget, Rendered, write_buffers};
 use tutti_session::{DitherShape, DitherSink, DitherSpec, Recorder};
 use tutti_types::{ChannelLayout, FiniteSource, Pull, SampleRate, Samples, Source};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const FRAMES: usize = 5_000;
 
 fn tone(k: usize, channel: usize) -> f32 {

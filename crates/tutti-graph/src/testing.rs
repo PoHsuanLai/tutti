@@ -30,7 +30,7 @@ use crate::{
 use tutti_types::{ChannelLayout, Frame, Latency, SampleRate, Samples, Tail};
 use tutti_ump::Ump;
 
-pub const RATE: SampleRate = SampleRate(48_000.0);
+pub const RATE: SampleRate = SampleRate::SR_48K;
 
 /// How many times an `EventLag` forwards one event.
 pub const MAX_HOPS: u32 = 2;

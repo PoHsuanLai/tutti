@@ -105,7 +105,7 @@ impl Rig {
     pub(crate) fn over(inlets: &Arc<DeviceInlets>, origin: Instant) -> Self {
         let slots = inlets.slots();
         let (mut editor, exec) = Editor::new(Prepare::new(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             MaxBlock::of(Samples(Self::BLOCK)),
         ));
         let seen = Seen::default();
@@ -178,7 +178,7 @@ impl Rig {
             self.clock.write(
                 self.time_of(self.frames),
                 Frame(self.frames),
-                SampleRate(RATE),
+                SampleRate::of(RATE),
             );
             let mut out = vec![0.0f32; Self::BLOCK];
             self.exec.process(

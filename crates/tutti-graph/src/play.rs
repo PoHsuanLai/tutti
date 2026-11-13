@@ -217,7 +217,7 @@ mod tests {
         }
         Env {
             frame: Frame(1_000),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             block_len: Samples(64),
             transport: t(first),
             changes: ch,

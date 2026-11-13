@@ -30,7 +30,7 @@ use tutti_types::MaxBlock;
 use tutti_types::UnitParam;
 use tutti_types::{Db, Hz, Q, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn band(gain: f32) -> EqBandNode<f32> {
     EqBandNode::<f32>::new(SvfType::Bell, Hz(1_000.0), Q(1.0), Db(gain))

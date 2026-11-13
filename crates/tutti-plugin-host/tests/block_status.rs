@@ -25,7 +25,7 @@ use tutti_transport::TempoReader;
 use tutti_types::{Bpm, Frame, MaxBlock, SampleRate, Samples, Tail};
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 64;
 
 /// The fake's node: a voice of `ring` frames declaring `tail` as its ceiling.

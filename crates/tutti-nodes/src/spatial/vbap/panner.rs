@@ -22,7 +22,7 @@ pub(crate) struct VbapPanner {
 
 impl VbapPanner {
     pub(crate) fn new(layout: SpeakerLayout) -> Self {
-        let sample_rate = SampleRate(48000.0);
+        let sample_rate = SampleRate::SR_48K;
         Self {
             kernel: VbapKernel::new(layout),
             smoother: AngleSmoother::new(sample_rate, Samples(1)),

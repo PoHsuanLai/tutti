@@ -38,7 +38,7 @@ use tutti_types::{
     Beat, BeatDuration, Bpm, Cents, ChannelLayout, PlaybackRate, SampleRate, Seconds, StretchFactor,
 };
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// `node` driven by hand in blocks of `frames`, under a transport rolling
 /// from beat 0 at 120 BPM and moved after each block. Built outside every
@@ -74,7 +74,7 @@ static A: AllocDisabler = AllocDisabler;
 
 /// Build a stereo `Wave` of `duration_secs` filled with a 440 Hz sine.
 fn sine_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
-    let mut wave = Wave::zero(2, SampleRate::new(sample_rate), Seconds::new(duration_secs));
+    let mut wave = Wave::zero(2, SampleRate::of(sample_rate), Seconds::new(duration_secs));
     let len = wave.len();
     for i in 0..len {
         let t = i as f64 / sample_rate;
@@ -136,8 +136,8 @@ fn time_stretch_process_is_allocation_free() {
     // The stretcher is now a pure filter: it owns no source and reads the stereo
     // frames the caller feeds in. Feed a 2-channel input (matching its two
     // vocoders) primed with a constant source signal.
-    let mut node = TimeStretchUnit::new(SampleRate::new(48_000.0));
-    node.set_sample_rate(SampleRate(48_000.0));
+    let mut node = TimeStretchUnit::new(SampleRate::SR_48K);
+    node.set_sample_rate(SampleRate::SR_48K);
     node.set_stretch_factor(StretchFactor::new(1.5));
     assert!(node.is_processing());
 
@@ -163,8 +163,8 @@ fn time_stretch_process_is_allocation_free() {
 #[test]
 fn time_stretch_process_past_the_scratch_is_allocation_free() {
     const FRAMES: usize = 8192 + 300;
-    let mut node = TimeStretchUnit::new(SampleRate::new(48_000.0));
-    node.set_sample_rate(SampleRate(48_000.0));
+    let mut node = TimeStretchUnit::new(SampleRate::SR_48K);
+    node.set_sample_rate(SampleRate::SR_48K);
     node.set_stretch_factor(StretchFactor::new(1.5));
     assert!(
         node.is_processing(),
@@ -201,8 +201,8 @@ fn time_stretch_process_past_the_scratch_is_allocation_free() {
 /// clone arrives sized.
 #[test]
 fn cloned_time_stretch_process_is_allocation_free() {
-    let mut original = TimeStretchUnit::new(SampleRate::new(48_000.0));
-    original.set_sample_rate(SampleRate(48_000.0));
+    let mut original = TimeStretchUnit::new(SampleRate::SR_48K);
+    original.set_sample_rate(SampleRate::SR_48K);
     original.set_stretch_factor(StretchFactor::new(1.5));
 
     let mut node = original.clone();
@@ -629,7 +629,7 @@ fn run_stretch_drain_under_guard() {
 /// A 6-channel wave whose channel `c` carries a distinct amplitude, so a
 /// wrong-channel read is a wrong value rather than a plausible one.
 fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
-    let mut wave = Wave::zero(6, SampleRate::new(sample_rate), Seconds::new(duration_secs));
+    let mut wave = Wave::zero(6, SampleRate::of(sample_rate), Seconds::new(duration_secs));
     let len = wave.len();
     for i in 0..len {
         let t = i as f64 / sample_rate;

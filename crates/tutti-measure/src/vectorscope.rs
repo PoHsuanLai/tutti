@@ -95,7 +95,7 @@ mod tests {
         tutti_fixtures::signal::sine(
             tutti_types::Hz(440.0),
             tutti_types::Amplitude(1.0),
-            tutti_types::SampleRate(48_000.0),
+            tutti_types::SampleRate::SR_48K,
             tutti_types::Samples(len),
         )
     }

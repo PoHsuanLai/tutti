@@ -48,7 +48,10 @@ impl Node for Sink {
 }
 
 fn rig(node: HarmonyNode, max: usize) -> (Editor, Executor, HarmonyControls, Seen) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(max)),
+    ));
     let controls = ed.insert(NodeKey(1), "harmony", node);
     let seen = Seen::default();
     ed.insert(

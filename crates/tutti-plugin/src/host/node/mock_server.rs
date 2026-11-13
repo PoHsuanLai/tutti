@@ -22,7 +22,7 @@ use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
-pub(super) const SR: SampleRate = SampleRate(48_000.0);
+pub(super) const SR: SampleRate = SampleRate::SR_48K;
 /// The slab's chunk ceiling, and the block the graph is prepared for: the
 /// pipeline's chunk is this, as no quantum is given.
 pub(super) const CHUNK: usize = 128;

@@ -63,10 +63,10 @@ fn rolling_state_with(
     MeterReader,
     Option<TapReader>,
 ) {
-    let transport = Transport::new(SampleRate::new(SAMPLE_RATE));
+    let transport = Transport::new(SampleRate::of(SAMPLE_RATE));
 
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
         MaxBlock::of(Samples(512)),
     ));
     let (source, filter) = (NodeKey(1), NodeKey(2));

@@ -18,37 +18,29 @@ fn omitted_conversions_are_documented() {}
 fn seconds_to_samples_names_its_rounding() {
     // 0.5 s at 44100 is exactly 22050 frames — every variant agrees.
     assert_eq!(
-        Seconds(0.5).to_samples(SampleRate::new(44_100.0)),
+        Seconds(0.5).to_samples(SampleRate::SR_44K1),
         Samples(22_050)
     );
     assert_eq!(
-        Seconds(0.5).to_samples_floor(SampleRate::new(44_100.0)),
+        Seconds(0.5).to_samples_floor(SampleRate::SR_44K1),
         Samples(22_050)
     );
     assert_eq!(
-        Seconds(0.5).to_samples_ceil(SampleRate::new(44_100.0)),
+        Seconds(0.5).to_samples_ceil(SampleRate::SR_44K1),
         Samples(22_050)
     );
 
     // 10 ms at 44100 is 441.0; nudge it so the three diverge.
     let odd = Seconds(0.010_5);
-    assert_eq!(
-        odd.to_samples_floor(SampleRate::new(44_100.0)),
-        Samples(463)
-    );
-    assert_eq!(odd.to_samples_ceil(SampleRate::new(44_100.0)), Samples(464));
-    assert_eq!(odd.to_samples(SampleRate::new(44_100.0)), Samples(463));
+    assert_eq!(odd.to_samples_floor(SampleRate::SR_44K1), Samples(463));
+    assert_eq!(odd.to_samples_ceil(SampleRate::SR_44K1), Samples(464));
+    assert_eq!(odd.to_samples(SampleRate::SR_44K1), Samples(463));
 
     // Allocation must never under-size: ceil is >= nearest, always.
     for ms in 1..200 {
         let s = Seconds(ms as f64 * 0.001);
-        assert!(
-            s.to_samples_ceil(SampleRate::new(48_000.0)) >= s.to_samples(SampleRate::new(48_000.0))
-        );
-        assert!(
-            s.to_samples(SampleRate::new(48_000.0))
-                >= s.to_samples_floor(SampleRate::new(48_000.0))
-        );
+        assert!(s.to_samples_ceil(SampleRate::SR_48K) >= s.to_samples(SampleRate::SR_48K));
+        assert!(s.to_samples(SampleRate::SR_48K) >= s.to_samples_floor(SampleRate::SR_48K));
     }
 }
 
@@ -57,18 +49,15 @@ fn seconds_to_samples_collapses_nonsense_to_zero() {
     // `NaN as usize` is already 0 and a negative cast already saturates —
     // this pins the behaviour so it is stated rather than inherited.
     assert_eq!(
-        Seconds(f64::NAN).to_samples(SampleRate::new(48_000.0)),
+        Seconds(f64::NAN).to_samples(SampleRate::SR_48K),
         Samples::ZERO
     );
     assert_eq!(
-        Seconds(f64::INFINITY).to_samples(SampleRate::new(48_000.0)),
+        Seconds(f64::INFINITY).to_samples(SampleRate::SR_48K),
         Samples::ZERO
     );
-    assert_eq!(
-        Seconds(-1.0).to_samples(SampleRate::new(48_000.0)),
-        Samples::ZERO
-    );
-    assert_eq!(Seconds(1.0).to_samples(SampleRate::new(0.0)), Samples::ZERO);
+    assert_eq!(Seconds(-1.0).to_samples(SampleRate::SR_48K), Samples::ZERO);
+    assert_eq!(Seconds(1.0).to_samples(SampleRate(0.0)), Samples::ZERO);
 }
 
 #[test]
@@ -76,10 +65,7 @@ fn seconds_to_samples_computes_wide_enough_for_a_long_render() {
     // f32 cannot represent frame counts past 2^24 (~6 min at 48k), which
     // is why the arithmetic widens to f64 before rounding.
     let hour = Seconds(3600.0);
-    assert_eq!(
-        hour.to_samples(SampleRate::new(48_000.0)),
-        Samples(172_800_000)
-    );
+    assert_eq!(hour.to_samples(SampleRate::SR_48K), Samples(172_800_000));
 }
 
 #[test]
@@ -88,7 +74,7 @@ fn sample_rate_carries_rates_f32_would_round() {
     // integer value is not the hazard — the reciprocal is: a per-sample
     // step computed in f32 carries ~6e-8 of relative error, which a phase
     // accumulator integrates into audible drift over a long render.
-    let sr = SampleRate(192_000.0);
+    let sr = SampleRate::SR_192K;
     let step_f64 = 1.0_f64 / sr.get();
     let step_f32 = (1.0_f32 / sr.get() as f32) as f64;
     assert!(
@@ -103,9 +89,9 @@ fn sample_rate_accepts_every_shape_a_caller_holds() {
     // arithmetic is f64. Both widen exactly, which is what lets the
     // migrated signatures take `impl Into<SampleRate>` without churning
     // their call sites.
-    assert_eq!(SampleRate::new(48_000.0_f64), SampleRate::SR_48K);
+    assert_eq!(SampleRate::SR_48K, SampleRate::SR_48K);
     assert_eq!(SampleRate::from(48_000_u32), SampleRate::SR_48K);
-    assert_eq!(SampleRate::SR_44K1, SampleRate(44_100.0));
+    assert_eq!(SampleRate::SR_44K1, SampleRate::SR_44K1);
 }
 
 #[test]
@@ -116,7 +102,7 @@ fn sample_rate_orders_and_bounds_but_does_not_compose() {
         SampleRate::SR_48K
     );
     assert_eq!(
-        SampleRate(192_000.0).clamp(SampleRate::SR_44K1, SampleRate::SR_48K),
+        SampleRate::SR_192K.clamp(SampleRate::SR_44K1, SampleRate::SR_48K),
         SampleRate::SR_48K
     );
     // Deliberately absent, per the omission ledger beside the definition:
@@ -132,8 +118,8 @@ fn sample_rate_orders_and_bounds_but_does_not_compose() {
 fn one_pole_step_response_reaches_one_minus_inverse_e_after_tau() {
     let want = 1.0 - (-1.0f64).exp();
     for (tau, rate) in [(0.01, 48_000.0), (0.5, 44_100.0), (2.0, 96_000.0)] {
-        let c = Seconds(tau).one_pole_coeff(SampleRate(rate));
-        let n = Seconds(tau).to_samples(SampleRate(rate)).get();
+        let c = Seconds(tau).one_pole_coeff(SampleRate::of(rate));
+        let n = Seconds(tau).to_samples(SampleRate::of(rate)).get();
         let mut y = 0.0f64;
         for _ in 0..n {
             y += f64::from(c) * (1.0 - y);
@@ -184,13 +170,16 @@ fn seconds_to_samples_takes_the_typed_rate() {
     // untyped rate in a node field has to justify itself at the call.
     assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
     // Raw floats still infer through `impl Into`.
-    assert_eq!(
-        Seconds(1.0).to_samples(SampleRate::new(48_000.0)),
-        Samples(48_000)
-    );
+    assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
     // And the rounding split holds through the typed form.
-    assert_eq!(Seconds(0.5).to_samples_floor(SampleRate(3.0)), Samples(1));
-    assert_eq!(Seconds(0.5).to_samples_ceil(SampleRate(3.0)), Samples(2));
+    assert_eq!(
+        Seconds(0.5).to_samples_floor(SampleRate::of(3.0)),
+        Samples(1)
+    );
+    assert_eq!(
+        Seconds(0.5).to_samples_ceil(SampleRate::of(3.0)),
+        Samples(2)
+    );
 }
 
 #[test]
@@ -222,11 +211,7 @@ fn nyquist_scaled_refuses_to_exceed_nyquist() {
 /// at that point) stopped being able to, and out to a day at 192 kHz.
 #[test]
 fn a_seconds_round_trip_is_exact_for_every_frame_a_project_holds() {
-    for rate in [
-        SampleRate::SR_48K,
-        SampleRate(96_000.0),
-        SampleRate(192_000.0),
-    ] {
+    for rate in [SampleRate::SR_48K, SampleRate::SR_96K, SampleRate::SR_192K] {
         let round_trips = |n: usize| Samples(n).to_seconds(rate).to_samples(rate) == Samples(n);
         let day = (86_400.0 * rate.get()) as usize;
         for n in (0..=day).step_by(9_973) {
@@ -236,5 +221,50 @@ fn a_seconds_round_trip_is_exact_for_every_frame_a_project_holds() {
         for n in 12_288_000..12_288_400 {
             assert!(round_trips(n), "{n} frames at {rate:?}");
         }
+    }
+}
+
+/// A rate is finite and above zero: `new` refuses every other raw, and keeps
+/// the smallest positive and the largest finite ones.
+#[test]
+fn sample_rate_new_refuses_what_is_not_a_finite_positive_rate() {
+    for bad in [
+        0.0,
+        -0.0,
+        -1.0,
+        -48_000.0,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ] {
+        assert_eq!(SampleRate::new(bad), None, "{bad}");
+    }
+    for good in [f64::MIN_POSITIVE, 1e-300, 44_100.0, f64::MAX] {
+        assert_eq!(SampleRate::new(good).map(SampleRate::get), Some(good));
+    }
+}
+
+/// `of` is `new` that panics, so a literal that is no rate cannot compile into
+/// a constant.
+#[test]
+#[should_panic(expected = "a sample rate is finite and above zero")]
+fn sample_rate_of_panics_on_zero() {
+    let _ = SampleRate::of(0.0);
+}
+
+/// The named rates are the figures they are named for.
+#[test]
+fn the_named_sample_rates_are_their_figures() {
+    let named = [
+        (SampleRate::SR_8K, 8_000.0),
+        (SampleRate::SR_22K05, 22_050.0),
+        (SampleRate::SR_44K1, 44_100.0),
+        (SampleRate::SR_48K, 48_000.0),
+        (SampleRate::SR_88K2, 88_200.0),
+        (SampleRate::SR_96K, 96_000.0),
+        (SampleRate::SR_192K, 192_000.0),
+    ];
+    for (rate, hz) in named {
+        assert_eq!(rate.get(), hz);
     }
 }

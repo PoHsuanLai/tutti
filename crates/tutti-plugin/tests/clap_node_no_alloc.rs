@@ -108,7 +108,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let program = ControlProgram::new(None, vec![lfo], vec![]).expect("a valid program");
     let lfo = ControlLaneNode::for_foreign(77, program, Some(0.5), (0.0, 1.0));
     let prepare = tutti_graph::Prepare::new(
-        tutti_types::SampleRate(SAMPLE_RATE),
+        tutti_types::SampleRate::of(SAMPLE_RATE),
         MaxBlock::of(Samples(BLOCK)),
     )
     .with_quantum(MaxBlock::of(Samples(QUANTUM)));

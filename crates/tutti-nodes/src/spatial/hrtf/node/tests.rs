@@ -5,7 +5,7 @@ use tutti_graph::contract::{drive, prepared};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, UnitParam};
 
-const RATE: SampleRate = SampleRate(44_100.0);
+const RATE: SampleRate = SampleRate::SR_44K1;
 const BLOCK: usize = 64;
 
 /// One block of one frame.
@@ -164,7 +164,7 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
 
 #[test]
 fn rejects_garbage_bytes() {
-    let err = HrtfBinauralNode::new(&[0u8; 16], SampleRate::new(44_100.0));
+    let err = HrtfBinauralNode::new(&[0u8; 16], SampleRate::SR_44K1);
     assert!(err.is_err(), "non-HRIR bytes must fail to construct");
 }
 
@@ -395,11 +395,13 @@ fn clone_shares_the_position_atomics() {
 #[test]
 fn a_prepare_above_the_ceiling_retunes_the_glide() {
     assert_eq!(HRTF_STEP, 128, "the rates below assume 128-sample steps");
-    let mut node =
-        HrtfBinauralNode::new(&synthetic_hrir_sphere(48_000, 4), SampleRate(1_536_000.0))
-            .expect("parses");
+    let mut node = HrtfBinauralNode::new(
+        &synthetic_hrir_sphere(48_000, 4),
+        SampleRate::of(1_536_000.0),
+    )
+    .expect("parses");
     node.prepare(&Prepare::new(
-        SampleRate(1_024_000.0),
+        SampleRate::of(1_024_000.0),
         MaxBlock::of(Samples(64)),
     ));
 
@@ -430,14 +432,14 @@ fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
     assert_eq!(HRTF_STEP, 128, "the rates below assume 128-sample steps");
     let e_inv = (-1.0f32).exp();
 
-    let mut aim = AngleSmoother::new(SampleRate(51_200.0), Samples(HRTF_STEP));
+    let mut aim = AngleSmoother::new(SampleRate::of(51_200.0), Samples(HRTF_STEP));
     let left = remaining_after(&mut aim, 20);
     assert!(
         (left - e_inv).abs() < 1e-4,
         "after 50 ms at 51.2 kHz {left} of the move is left, expected e^-1 = {e_inv}"
     );
 
-    aim.set_sample_rate(SampleRate(102_400.0));
+    aim.set_sample_rate(SampleRate::of(102_400.0));
     let left = remaining_after(&mut aim, 40);
     assert!(
         (left - e_inv).abs() < 1e-4,

@@ -36,7 +36,7 @@ fn wav(path: &std::path::Path) -> FileOut {
         &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ),
         path,
     )

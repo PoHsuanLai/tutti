@@ -40,7 +40,7 @@ use tutti_session::{
 use tutti_session::{RecoveryFailure, ReloadCause};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
 /// What the probe adds to its latency while it renders offline.
 const OFFLINE_EXTRA: usize = 24;

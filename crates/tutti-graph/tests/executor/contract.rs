@@ -422,7 +422,7 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
     use tutti_graph::contract::{BlockRig, Direct, drive_input, prepared};
     use tutti_graph::{Env, Offset, TransportChanges};
     use tutti_types::{Beat, Bpm, SampleRate};
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let per_frame = 1.0 / 24_000.0;
 
     let mut node = prepared(BeatEcho, rate, 4);

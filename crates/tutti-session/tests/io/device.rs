@@ -20,7 +20,7 @@ use tutti_types::{ChannelLayout, Db, Hz, MaxBlock, SampleRate, Samples};
 
 fn spec_at(rate: f64) -> OutputSpec {
     OutputSpec::new(
-        SampleRate(rate),
+        SampleRate::of(rate),
         ChannelLayout::STEREO,
         tutti_cpal::cpal::SampleFormat::F32,
     )
@@ -145,9 +145,9 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     assert!(!old.is_open() && new.is_open(), "on the new device");
     assert_eq!(
         s.graph_ref().testing().prepared().sample_rate(),
-        SampleRate(96_000.0)
+        SampleRate::SR_96K
     );
-    assert_eq!(s.transport().sample_rate(), SampleRate(96_000.0));
+    assert_eq!(s.transport().sample_rate(), SampleRate::SR_96K);
     let at96 = in_step(&s, "96 kHz, before the first block");
     assert_eq!(at96, Samples(2 * at48.0), "the lookahead is a time");
 
@@ -316,7 +316,7 @@ fn following_the_default_restarts_and_reports_the_rate() {
     assert!(r.rate_changed());
     assert_eq!(
         (r.previous_rate, r.rate),
-        (SampleRate(44_100.0), SampleRate(48_000.0))
+        (SampleRate::SR_44K1, SampleRate::SR_48K)
     );
 
     // Another restart at the same rate is not a rate change.
@@ -461,10 +461,10 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
     assert!(err.is_err());
     assert_eq!(
         device.spec().sample_rate,
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         "old spec kept"
     );
-    assert_eq!(device.graph_rate(), SampleRate(48_000.0));
+    assert_eq!(device.graph_rate(), SampleRate::SR_48K);
     let events = poll(&mut session, base, 150);
     assert!(
         events
@@ -506,10 +506,10 @@ fn a_restart_that_stopped_the_stream_is_retried() {
     assert!(!live.device().is_running(), "stopped");
     assert_eq!(
         live.device().spec().sample_rate,
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         "old spec kept"
     );
-    assert_eq!(live.device().graph_rate(), SampleRate(48_000.0));
+    assert_eq!(live.device().graph_rate(), SampleRate::SR_48K);
     let events = poll(live.session_mut(), base, 150);
     assert!(
         events
@@ -748,7 +748,7 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
     assert_eq!(across.width(), 2);
 
     let six = OutputSpec::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         ChannelLayout::from(6u16),
         tutti_cpal::cpal::SampleFormat::F32,
     );
@@ -808,7 +808,7 @@ fn the_session_lists_the_outputs_once_and_retries_a_failed_start() {
 fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
     let wide = |rate| {
         OutputSpec::new(
-            SampleRate(rate),
+            SampleRate::of(rate),
             ChannelLayout::from(6u16),
             tutti_cpal::cpal::SampleFormat::F32,
         )
@@ -862,7 +862,7 @@ fn a_refused_declaration_is_retried_on_a_restart() {
     assert_eq!(session.graph_ref().outputs(), 2);
 
     let wide = OutputSpec::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         ChannelLayout::from(6u16),
         tutti_cpal::cpal::SampleFormat::F32,
     );

@@ -86,7 +86,8 @@ fn open(
     DiskStreamer<ByHand>,
     Result<(Stream, StreamReader), OpenError>,
 ) {
-    let mut streamer = DiskStreamer::manual(SampleRate(SR), Default::default()).expect("builds");
+    let mut streamer =
+        DiskStreamer::manual(SampleRate::of(SR), Default::default()).expect("builds");
     let opening = match width {
         Some(width) => streamer.open_into(path, Placement::HEAD, width),
         None => streamer.open(path, Placement::HEAD),
@@ -126,13 +127,13 @@ fn voice_of(reader: StreamReader) -> DiskVoice {
 /// The last block of a few rendered from `voice`, planar: the ring is full and
 /// the start-up is over.
 fn settled_block(voice: DiskVoice) -> Vec<Vec<f32>> {
-    let mut voice = contract::prepared(voice, SampleRate(SR), BLOCK);
+    let mut voice = contract::prepared(voice, SampleRate::of(SR), BLOCK);
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut last = Vec::new();
     for _ in 0..8 {
-        let env = clock.env(BLOCK, SampleRate::new(SR));
+        let env = clock.env(BLOCK, SampleRate::of(SR));
         last = contract::drive_input(&mut voice, &env, &[], &[], &[]).audio;
-        clock.advance(BLOCK as i64, SampleRate::new(SR));
+        clock.advance(BLOCK as i64, SampleRate::of(SR));
     }
     last
 }
@@ -268,9 +269,12 @@ fn a_fork_places_the_file_as_the_live_voice_does() {
         .fork(ForkMode::Offline)
         .expect("forks");
     let mut node = forked.node;
-    node.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+    node.prepare(&Prepare::new(
+        SampleRate::of(SR),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let env = clock.env(BLOCK, SampleRate::new(SR));
+    let env = clock.env(BLOCK, SampleRate::of(SR));
     let out = contract::drive_input(&mut *node, &env, &[], &[], &[]).audio;
     // Engine order: FL FR FC LFE SL SR BL BR from the file's FL FR FC LFE BL BR SL SR.
     let want: Vec<f32> = [0, 1, 2, 3, 6, 7, 4, 5].map(value).to_vec();
@@ -419,7 +423,7 @@ fn a_file_wider_than_a_frame_folds_into_it() {
 fn render(node: &mut dyn tutti_graph::Node, clock: &MockTransport, n: usize) -> Vec<Vec<f32>> {
     let mut out: Vec<Vec<f32>> = Vec::new();
     for _ in 0..n {
-        let env = clock.env(BLOCK, SampleRate::new(SR));
+        let env = clock.env(BLOCK, SampleRate::of(SR));
         let b = contract::drive_input(node, &env, &[], &[], &[]).audio;
         if out.is_empty() {
             out = vec![Vec::new(); b.len()];
@@ -427,7 +431,7 @@ fn render(node: &mut dyn tutti_graph::Node, clock: &MockTransport, n: usize) -> 
         for (o, c) in out.iter_mut().zip(b) {
             o.extend(c);
         }
-        clock.advance(BLOCK as i64, SampleRate::new(SR));
+        clock.advance(BLOCK as i64, SampleRate::of(SR));
     }
     out
 }
@@ -471,7 +475,7 @@ impl tutti_graph::Node for Boxed {
 fn fork(voice: &DiskVoice) -> Box<dyn tutti_graph::Node> {
     let mut node = fork_unprepared(voice);
     node.prepare(&tutti_graph::Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK)),
     ));
     node
@@ -535,15 +539,15 @@ fn a_fork_placed_read_is_allocation_free() {
             }
             let voice = voice_of(reader);
             let mut direct =
-                contract::Direct::new(Boxed(fork_unprepared(&voice)), SampleRate(SR), BLOCK);
+                contract::Direct::new(Boxed(fork_unprepared(&voice)), SampleRate::of(SR), BLOCK);
             let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
             // The first block opens the file and pages it in.
-            direct.block_in(&clock.env(BLOCK, SampleRate::new(SR)));
-            clock.advance(BLOCK as i64, SampleRate::new(SR));
+            direct.block_in(&clock.env(BLOCK, SampleRate::of(SR)));
+            clock.advance(BLOCK as i64, SampleRate::of(SR));
             assert_no_alloc::assert_no_alloc(|| {
                 for _ in 0..80 {
-                    direct.block_in(&clock.env(BLOCK, SampleRate::new(SR)));
-                    clock.advance(BLOCK as i64, SampleRate::new(SR));
+                    direct.block_in(&clock.env(BLOCK, SampleRate::of(SR)));
+                    clock.advance(BLOCK as i64, SampleRate::of(SR));
                 }
             });
             assert_near(
@@ -563,7 +567,7 @@ fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
     for f in fixtures() {
         let (_dir, mut rig, reader) = stream_fixture(&f);
         let voice = voice_of(reader);
-        let mut direct = contract::Direct::new(voice, SampleRate(SR), BLOCK);
+        let mut direct = contract::Direct::new(voice, SampleRate::of(SR), BLOCK);
         let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         for b in 0..90 {
             // Frame 2 816: the loop's end (3 000) is within the 256 frames a
@@ -573,9 +577,9 @@ fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
                 rig.stream.set_loop(loop_1000_3000()).expect("alive");
             }
             assert_no_alloc::assert_no_alloc(|| {
-                direct.block_in(&clock.env(BLOCK, SampleRate::new(SR)))
+                direct.block_in(&clock.env(BLOCK, SampleRate::of(SR)))
             });
-            clock.advance(BLOCK as i64, SampleRate::new(SR));
+            clock.advance(BLOCK as i64, SampleRate::of(SR));
             let _ = rig.streamer.step_once();
             if b >= 4 {
                 assert_near(

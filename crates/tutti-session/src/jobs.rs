@@ -379,7 +379,7 @@ mod tests {
     use tutti_types::SampleRate;
 
     fn session(builder: crate::SessionBuilder) -> Session {
-        builder.build_detached(SampleRate(48_000.0)).unwrap()
+        builder.build_detached(SampleRate::SR_48K).unwrap()
     }
 
     /// Updates until `done` holds, or panics after a generous wait.

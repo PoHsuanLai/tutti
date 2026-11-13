@@ -1091,13 +1091,13 @@ mod tests {
                 beat: Beat(0.0),
                 frame: Frame(0),
                 map,
-                rate: SampleRate(48_000.0),
+                rate: SampleRate::SR_48K,
             },
             shared: Arc::default(),
             stop: Arc::default(),
         };
         let mut session = Session::builder()
-            .build_detached(SampleRate(48_000.0))
+            .build_detached(SampleRate::SR_48K)
             .unwrap();
         let ended = Arc::new(Mutex::new(None));
         let into = Arc::clone(&ended);

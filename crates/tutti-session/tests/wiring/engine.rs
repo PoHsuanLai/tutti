@@ -27,7 +27,7 @@ const RATE: f64 = 48_000.0;
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -137,7 +137,7 @@ fn the_graph_runs_at_the_rate_it_was_built_at() {
 #[test]
 fn the_transport_converts_at_the_sessions_rate() {
     let s = offline();
-    assert_eq!(s.transport().sample_rate(), SampleRate(RATE));
+    assert_eq!(s.transport().sample_rate(), SampleRate::of(RATE));
     let beat = (s.transport().settings().tempo_map())
         .view(s.transport().sample_rate())
         .frame_at_or_after(Beat(1.0));
@@ -155,7 +155,7 @@ fn tone_at(i: usize) -> f32 {
 /// by `cents`. It reads the transport from its blocks' `Env`.
 fn voice(cents: f32) -> tutti_sampler::VoicePool {
     use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
-    let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
+    let mut wave = tutti_codec::Wave::new(1, SampleRate::of(RATE));
     for i in 0..RATE as usize {
         wave.push_frame(&[tone_at(i)]);
     }
@@ -286,7 +286,7 @@ fn an_offline_render_feeds_the_load_meter() {
     assert_eq!(r.blocks, 4);
     assert!(r.mean > 0.0, "a render takes some time");
     let detached = Session::builder()
-        .build_detached(SampleRate(RATE))
+        .build_detached(SampleRate::of(RATE))
         .expect("builds");
     assert!(detached.load_meter().is_none());
 }
@@ -316,7 +316,7 @@ fn an_offline_render_feeds_the_master_meter() {
 
     let mut detached = Session::builder()
         .outputs_floor(ChannelLayout::MONO)
-        .build_detached(SampleRate(RATE))
+        .build_detached(SampleRate::of(RATE))
         .expect("builds");
     let mut meter = detached.take_master_meter().expect("declared at the build");
     let (dc, _) = detached.graph().add(ForkByClone(Const::mono(0.5)));
@@ -524,7 +524,7 @@ fn closing_the_heard_tap_names_one_that_is_not_open() {
     );
     drop(tap);
     let detached = Session::builder()
-        .build_detached(SampleRate(RATE))
+        .build_detached(SampleRate::of(RATE))
         .expect("builds");
     assert_eq!(
         detached.close_heard_tap(),
@@ -634,7 +634,7 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
 fn a_detached_render_feeds_a_tap() {
     let mut s = Session::builder()
         .outputs_floor(ChannelLayout::MONO)
-        .build_detached(SampleRate(RATE))
+        .build_detached(SampleRate::of(RATE))
         .expect("builds");
     let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
     s.graph()
@@ -854,7 +854,7 @@ fn render_feeds_the_heard_tap_and_a_fork_does_not() {
     assert_eq!(out, [0.5, 0.5]);
     tap.take_lost();
     let detached = Session::builder()
-        .build_detached(SampleRate(RATE))
+        .build_detached(SampleRate::of(RATE))
         .expect("builds");
     assert_eq!(
         detached.open_heard_tap(Samples(8)).err(),
@@ -892,7 +892,7 @@ fn a_project_the_device_cannot_take_is_refused_at_build() {
         Session::builder()
             .outputs_floor(ChannelLayout::clamped(floor))
             .build_offline(
-                SampleRate(RATE),
+                SampleRate::of(RATE),
                 ChannelLayout::from(device),
                 MaxBlock::of(Samples(256)),
             )

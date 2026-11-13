@@ -28,7 +28,7 @@ use tutti_plugin::catalog::PluginRef;
 use tutti_session::{InPort, NodeMode, OutPort, PluginLoadRequest, Root, Session};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 1_024;
 /// The click's frame: inside the first block, not on its edge.
 const FIRE: usize = 100;
@@ -165,7 +165,7 @@ fn a_bypassed_plugin_is_not_called_and_comes_back() {
     let mut r = rig(NodeMode::Bypassed);
     // Paced at the device's rate, so a server that was called has had time to
     // answer: the count not moving is the node not calling it, not a late reply.
-    let block_time = Duration::from_secs_f64(BLOCK as f64 / RATE.0);
+    let block_time = Duration::from_secs_f64(BLOCK as f64 / RATE.get());
     let before = r.replies();
     for _ in 0..8 {
         std::thread::sleep(block_time);

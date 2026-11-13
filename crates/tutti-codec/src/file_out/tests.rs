@@ -12,7 +12,7 @@ fn wav(
     pcm: Pcm,
 ) -> std::io::Result<FileOut> {
     Ok(FileOut::create(
-        &Spec::of_width(Format::Wav(pcm), channels.into(), SampleRate(rate)),
+        &Spec::of_width(Format::Wav(pcm), channels.into(), SampleRate::of(rate)),
         path,
     )?)
 }
@@ -26,7 +26,7 @@ fn wav_with_topology(
     pcm: Pcm,
 ) -> std::io::Result<FileOut> {
     Ok(FileOut::create(
-        &Spec::new(Format::Wav(pcm), topology, SampleRate(rate)),
+        &Spec::new(Format::Wav(pcm), topology, SampleRate::of(rate)),
         path,
     )?)
 }
@@ -392,7 +392,7 @@ fn a_flac_take_round_trips_through_the_decoder() {
             level: FlacLevel::Standard,
         },
         ChannelLayout::STEREO,
-        SampleRate(44_100.0),
+        SampleRate::SR_44K1,
     );
     let frames = 2_000;
     let signal: Vec<f32> = (0..frames)
@@ -403,7 +403,7 @@ fn a_flac_take_round_trips_through_the_decoder() {
         .collect();
 
     let mut sink = FileOut::create(&spec, &path).unwrap();
-    assert_eq!(sink.sample_rate(), SampleRate(44_100.0));
+    assert_eq!(sink.sample_rate(), SampleRate::SR_44K1);
     // In blocks of 300 frames, the last one short: the sink is incremental.
     for block in signal.chunks(300 * 2) {
         sink.write(block).unwrap();
@@ -416,7 +416,7 @@ fn a_flac_take_round_trips_through_the_decoder() {
 
     let wave = Wave::read(&path).expect("the codec's own decoder reads the take");
     assert_eq!(wave.channels(), 2);
-    assert_eq!(wave.sample_rate(), SampleRate(44_100.0));
+    assert_eq!(wave.sample_rate(), SampleRate::SR_44K1);
     assert_eq!(wave.len(), frames);
     for i in 0..frames {
         for c in 0..2 {

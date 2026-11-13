@@ -124,7 +124,7 @@ impl Family for FreeverbFamily {
     fn member_into(&self, controls: &FreeverbControls, rate: SampleRate, out: &mut Network) {
         // `Freeverb::new` rounds the rate to whole hertz and scales the tunings
         // from it, so the lines are those of a reverb built at `rate`.
-        let rate = SampleRate(rate.get().round());
+        let rate = SampleRate::new(rate.get().round()).unwrap_or(rate);
         let room = position(controls.room, FreeverbControls::GENERAL_MIDI.room.get());
         let damp = position(controls.damp, FreeverbControls::GENERAL_MIDI.damp.get());
         // The same operations, in the same order, as `Freeverb::ROOM_FEEDBACK`

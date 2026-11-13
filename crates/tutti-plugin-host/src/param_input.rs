@@ -185,7 +185,7 @@ mod tests {
     fn env(len: usize, play: u64) -> Env {
         Env {
             frame: Frame(0),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             block_len: Samples(len),
             transport: TransportPosition::new(false, Bpm::of(120.0), Beat(0.0), None),
             changes: TransportChanges::NONE,

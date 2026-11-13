@@ -480,7 +480,7 @@ mod tests {
 
     fn config() -> ProbeConfig {
         ProbeConfig {
-            rate: SampleRate(48_000.0),
+            rate: SampleRate::SR_48K,
             block: MaxBlock::new(Samples(512)).unwrap(),
             floor: PROBE_FLOOR,
             state: StateHash::of(&[]),

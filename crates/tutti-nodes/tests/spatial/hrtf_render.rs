@@ -158,7 +158,7 @@ fn bearing_of(p: [f32; 3]) -> Direction {
 }
 
 fn node(bytes: &[u8], rate: u32) -> HrtfBinauralNode {
-    let rate = SampleRate(f64::from(rate));
+    let rate = SampleRate::of(f64::from(rate));
     prepared(
         HrtfBinauralNode::new(bytes, rate).expect("the sphere parses"),
         rate,
@@ -188,7 +188,7 @@ fn ir_of(
     input[lead] = 1.0;
     let (mut left, mut right) = (Vec::new(), Vec::new());
     for chunk in input.chunks(64) {
-        let out = drive(node, SampleRate(f64::from(rate)), &[chunk, chunk], &[]);
+        let out = drive(node, SampleRate::of(f64::from(rate)), &[chunk, chunk], &[]);
         left.extend_from_slice(&out[0]);
         right.extend_from_slice(&out[1]);
     }
@@ -366,7 +366,12 @@ fn resampling_the_sphere_keeps_its_dc_gain() {
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
     for _ in 0..64 {
-        let out = drive(&mut node, SampleRate(f64::from(TO)), &[&ones, &ones], &[]);
+        let out = drive(
+            &mut node,
+            SampleRate::of(f64::from(TO)),
+            &[&ones, &ones],
+            &[],
+        );
         last = [out[0][63], out[1][63]];
     }
     for (ear, dc) in last.into_iter().enumerate() {
@@ -423,7 +428,12 @@ fn downsampling_low_passes_below_the_new_nyquist() {
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
     for _ in 0..64 {
-        let out = drive(&mut node, SampleRate(f64::from(TO)), &[&ones, &ones], &[]);
+        let out = drive(
+            &mut node,
+            SampleRate::of(f64::from(TO)),
+            &[&ones, &ones],
+            &[],
+        );
         last = [out[0][63], out[1][63]];
     }
     for (ear, dc) in last.into_iter().enumerate() {
@@ -492,7 +502,12 @@ fn the_tail_is_the_ring_out_after_the_latency() {
         let mut last = None;
         let mut at = 0;
         for chunk in input.chunks(64) {
-            let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
+            let out = drive(
+                &mut node,
+                SampleRate::of(f64::from(RATE)),
+                &[chunk, chunk],
+                &[],
+            );
             for (i, (l, r)) in out[0].iter().zip(&out[1]).enumerate() {
                 if l.abs() > 1e-4 || r.abs() > 1e-4 {
                     last = Some(at + i);
@@ -535,7 +550,7 @@ fn the_spheres_rate_and_response_length_are_bounded() {
             r
         })
     };
-    let build = |bytes: &[u8]| HrtfBinauralNode::new(bytes, SampleRate(48_000.0));
+    let build = |bytes: &[u8]| HrtfBinauralNode::new(bytes, SampleRate::SR_48K);
 
     for rate in [1, MIN_SPHERE_RATE - 1, MAX_SPHERE_RATE + 1] {
         assert!(
@@ -554,11 +569,11 @@ fn the_spheres_rate_and_response_length_are_bounded() {
         Some(HrtfBinauralError::ResponseTooLong { len, max: m }) if len == max + 1 && m == max
     ));
     let longest = sphere(MIN_SPHERE_RATE, max);
-    let mut node = HrtfBinauralNode::new(&longest, SampleRate(f64::from(MIN_SPHERE_RATE)))
+    let mut node = HrtfBinauralNode::new(&longest, SampleRate::of(f64::from(MIN_SPHERE_RATE)))
         .expect("the longest response allowed builds");
     let to = 2 * MIN_SPHERE_RATE;
     node.prepare(&Prepare::new(
-        SampleRate(f64::from(to)),
+        SampleRate::of(f64::from(to)),
         MaxBlock::of(Samples(64)),
     ));
     let fifty_ms = to as usize / 20;
@@ -586,26 +601,33 @@ fn the_prepared_rate_is_held_to_its_ceiling() {
     });
     let at_ceiling = Tail::Finite(Samples(512 - 1));
 
-    let mut node = HrtfBinauralNode::new(&bytes, SampleRate(2.0 * f64::from(MAX_PREPARED_RATE)))
-        .expect("builds");
+    let mut node =
+        HrtfBinauralNode::new(&bytes, SampleRate::of(2.0 * f64::from(MAX_PREPARED_RATE)))
+            .expect("builds");
     assert_eq!(node.shape().tail, at_ceiling, "built above the ceiling");
 
-    let mut node2 = HrtfBinauralNode::new(&bytes, SampleRate(1e10)).expect("builds");
+    let mut node2 = HrtfBinauralNode::new(&bytes, SampleRate::of(1e10)).expect("builds");
     assert_eq!(node2.shape().tail, at_ceiling, "built at 1e10 Hz");
 
     node.prepare(&Prepare::new(
-        SampleRate(f64::from(RATE)),
+        SampleRate::of(f64::from(RATE)),
         MaxBlock::of(Samples(64)),
     ));
     assert_eq!(node.shape().tail, Tail::Finite(Samples(32 - 1)));
-    node.prepare(&Prepare::new(SampleRate(1e10), MaxBlock::of(Samples(64))));
+    node.prepare(&Prepare::new(
+        SampleRate::of(1e10),
+        MaxBlock::of(Samples(64)),
+    ));
     assert_eq!(node.shape().tail, at_ceiling, "prepared at 1e10 Hz");
 
     // The set prepared at the ceiling renders: an impulse comes out.
-    node2.prepare(&Prepare::new(SampleRate(1e10), MaxBlock::of(Samples(1024))));
+    node2.prepare(&Prepare::new(
+        SampleRate::of(1e10),
+        MaxBlock::of(Samples(1024)),
+    ));
     let mut impulse = vec![0.0f32; 1024];
     impulse[0] = 1.0;
-    let out = drive(&mut node2, SampleRate(1e10), &[&impulse, &impulse], &[]);
+    let out = drive(&mut node2, SampleRate::of(1e10), &[&impulse, &impulse], &[]);
     assert!(out[0].iter().all(|s| s.is_finite()));
     assert!(
         out[0].iter().any(|s| s.abs() > 1e-3),
@@ -624,9 +646,9 @@ fn a_malformed_sphere_is_refused_at_construction() {
         r
     };
     let good = sphere_bytes(RATE, 8, &verts, &faces, delta);
-    assert!(HrtfBinauralNode::new(&good, SampleRate(48_000.0)).is_ok());
+    assert!(HrtfBinauralNode::new(&good, SampleRate::SR_48K).is_ok());
 
-    let build = |bytes: &[u8]| HrtfBinauralNode::new(bytes, SampleRate(48_000.0)).err();
+    let build = |bytes: &[u8]| HrtfBinauralNode::new(bytes, SampleRate::SR_48K).err();
 
     let mut bad_faces = faces.clone();
     bad_faces[3] = [0, 7, 12];
@@ -809,7 +831,12 @@ fn render_in_blocks(
                 aim(&node.param_set(), to.azimuth, to.elevation);
             }
         }
-        let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
+        let out = drive(
+            &mut node,
+            SampleRate::of(f64::from(RATE)),
+            &[chunk, chunk],
+            &[],
+        );
         left.extend_from_slice(&out[0]);
         right.extend_from_slice(&out[1]);
     }
@@ -883,7 +910,7 @@ fn the_panner_takes_the_mean_of_a_stereo_pair() {
     const LEN: usize = 100;
     let (verts, faces) = icosahedron();
     let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
-    let rate = SampleRate(f64::from(RATE));
+    let rate = SampleRate::of(f64::from(RATE));
     let x = noise(1536);
     let silence = vec![0.0f32; x.len()];
     let negated: Vec<f32> = x.iter().map(|v| -v).collect();

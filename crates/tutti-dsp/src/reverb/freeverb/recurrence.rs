@@ -86,7 +86,7 @@ impl Freeverb {
     /// A reverb at `rate`, rounded to whole hertz. Allocates the filter lines.
     #[must_use]
     pub fn new(rate: SampleRate) -> Self {
-        let sample_rate = SampleRate(rate.get().round());
+        let sample_rate = SampleRate::new(rate.get().round()).unwrap_or(rate);
         let mut cfs_l: Vec<CombFilter> = vec![
             CombFilter::new(Freeverb::scale_tuning(sample_rate, Freeverb::CF_TUNING_L1)),
             CombFilter::new(Freeverb::scale_tuning(sample_rate, Freeverb::CF_TUNING_L2)),

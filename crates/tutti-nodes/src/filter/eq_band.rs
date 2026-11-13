@@ -116,7 +116,7 @@ mod tests {
 
     /// `eq`, prepared at 44.1 kHz, over `input` in one block.
     fn render<F: Real + 'static>(eq: EqBandNode<F>, input: &[f32]) -> Vec<f32> {
-        let rate = SampleRate(44_100.0);
+        let rate = SampleRate::SR_44K1;
         let mut eq = prepared(eq, rate, input.len());
         drive(&mut eq, rate, &[input], &[]).remove(0)
     }

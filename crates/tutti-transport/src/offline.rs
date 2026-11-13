@@ -37,7 +37,7 @@ impl Default for OfflineTimelineConfig {
         Self {
             start_beat: Beat(0.0),
             tempo_map: Arc::new(TempoMap::constant(Bpm::default()).expect("120 BPM is a map")),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: None,
         }
     }
@@ -59,7 +59,7 @@ impl Default for OfflineTimelineConfig {
 /// let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
 ///     start_beat: Beat(0.0),
 ///     tempo_map: Arc::new(TempoMap::constant(Bpm::of(120.0))?),
-///     sample_rate: SampleRate(44100.0),
+///     sample_rate: SampleRate::SR_44K1,
 ///     loop_range: None,
 /// });
 ///
@@ -458,7 +458,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo_map: constant(120.0),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: LoopRange::new(Beat::new(8.0), Beat::new(4.0)),
         });
 
@@ -485,7 +485,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo_map: constant(120.0),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: LoopRange::new(Beat::new(4.0), Beat::new(4.0)),
         });
         assert_eq!(timeline.loop_range(), None);
@@ -503,7 +503,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo_map: constant(120.0),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: LoopRange::new(Beat::new(0.0), Beat::new(1.0)),
         });
 
@@ -522,7 +522,7 @@ mod tests {
         let config = OfflineTimelineConfig {
             start_beat: Beat(0.1),
             tempo_map: constant(97.0),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: LoopRange::new(Beat::new(0.1), Beat::new(0.43)),
         };
         let (block, frames) = (OfflineTimeline::new(&config), OfflineTimeline::new(&config));
@@ -555,7 +555,7 @@ mod tests {
 
         let mut clock = TransportClock::new(
             crate::state::ClockLinks::bare(Arc::new(AtomicBool::new(false))),
-            SampleRate::new(sample_rate),
+            SampleRate::of(sample_rate),
             Bpm::of(tempo),
         )
         .starting_at(start_beat);
@@ -563,7 +563,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat,
             tempo_map: constant(tempo),
-            sample_rate: SampleRate(sample_rate),
+            sample_rate: SampleRate::of(sample_rate),
             loop_range: None,
         });
 
@@ -586,7 +586,7 @@ mod tests {
         timeline.advance(Samples(block));
 
         let expected_lag =
-            tutti_types::beats_per_sample(Bpm::of(tempo), SampleRate::new(sample_rate));
+            tutti_types::beats_per_sample(Bpm::of(tempo), SampleRate::of(sample_rate));
         // After the block the timeline sits one sample ahead of the last
         // EMITTED sample, because emit-then-advance means sample N-1 carried
         // the beat before the final increment.
@@ -607,7 +607,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo_map: constant(90.0),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             loop_range: None,
         });
         for _ in 0..500 {
@@ -644,12 +644,12 @@ mod tests {
             let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
                 start_beat: Beat(start),
                 tempo_map: constant(tempo),
-                sample_rate: SampleRate(rate),
+                sample_rate: SampleRate::of(rate),
                 loop_range: None,
             });
             let mut clock = TransportClock::new(
                 crate::state::ClockLinks::bare(Arc::new(AtomicBool::new(false))),
-                SampleRate::new(rate),
+                SampleRate::of(rate),
                 Bpm::of(tempo),
             )
             .starting_at(Beat::new(start));
@@ -682,7 +682,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo_map: constant(120.0),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: None,
         });
 
@@ -700,7 +700,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo_map: constant(120.0),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: LoopRange::new(Beat::new(0.0), Beat::new(8.0)),
         });
 
@@ -720,7 +720,7 @@ mod tests {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo_map: constant(120.0),
-            sample_rate: SampleRate(44100.0),
+            sample_rate: SampleRate::SR_44K1,
             loop_range: None,
         });
 
@@ -749,7 +749,7 @@ mod tests {
         OfflineTimelineConfig {
             start_beat: Beat(start),
             tempo_map: constant(120.0),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             loop_range: None,
         }
     }

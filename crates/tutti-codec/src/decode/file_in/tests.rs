@@ -35,7 +35,7 @@ fn save_wav16(wave: &Wave, name: &str) -> std::path::PathBuf {
 /// file while another is still writing it.
 fn write_test_wav(frames: usize, tag: &str) -> std::path::PathBuf {
     let sample_rate = 44100.0;
-    let mut wave = Wave::new(2, SampleRate::new(sample_rate));
+    let mut wave = Wave::new(2, SampleRate::of(sample_rate));
     for i in 0..frames {
         // Distinct per-frame values so slice comparisons are meaningful.
         let l = (i as f32 / frames as f32) - 0.5;
@@ -394,7 +394,7 @@ fn write_indexed_wav(channels: usize, frames: usize, tag: &str) -> std::path::Pa
     let sample_rate = 44100.0;
     let mut wave = Wave::zero(
         channels,
-        SampleRate::new(sample_rate),
+        SampleRate::of(sample_rate),
         Seconds::new(frames as f64) / sample_rate,
     );
     for i in 0..frames {
@@ -487,7 +487,7 @@ fn pull_delivers_the_files_own_width() {
     // 5.1 order L R C LFE Ls Rs — centre only.
     let mut wave = Wave::zero(
         6,
-        SampleRate::new(sample_rate),
+        SampleRate::of(sample_rate),
         Seconds::new(frames as f64) / sample_rate,
     );
     for i in 0..frames {
@@ -525,7 +525,7 @@ fn a_mono_file_is_not_widened() {
     let sample_rate = 44100.0;
     let mut wave = Wave::zero(
         1,
-        SampleRate::new(sample_rate),
+        SampleRate::of(sample_rate),
         Seconds::new(frames as f64) / sample_rate,
     );
     // A ramp, not a constant: a constant cannot distinguish "one frame
@@ -559,7 +559,7 @@ fn a_caller_can_still_fold_to_stereo_itself() {
     let sample_rate = 44100.0;
     let mut wave = Wave::zero(
         6,
-        SampleRate::new(sample_rate),
+        SampleRate::of(sample_rate),
         Seconds::new(frames as f64) / sample_rate,
     );
     for i in 0..frames {

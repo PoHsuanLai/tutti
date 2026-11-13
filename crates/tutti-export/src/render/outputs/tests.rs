@@ -7,7 +7,7 @@ use tutti_graph::GraphBuilder;
 use tutti_transport::FrozenClock;
 use tutti_types::Samples;
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const FRAMES: usize = 24_000;
 
 /// Stereo constants, a different one per channel.

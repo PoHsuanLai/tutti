@@ -40,7 +40,7 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, Buf
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
-        .sample_rate(SampleRate(rate))
+        .sample_rate(SampleRate::of(rate))
         .clock(clock)
         .latency(BounceLatency::Keep)
         .tail(BounceTail::None)
@@ -80,7 +80,7 @@ fn session() -> Session {
         .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
-    session.graph().set_sample_rate(SampleRate(RATE));
+    session.graph().set_sample_rate(SampleRate::of(RATE));
     session
 }
 
@@ -89,7 +89,7 @@ fn timeline(tempo: f64) -> Arc<OfflineTimeline> {
     Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(tempo)).expect("a tempo")),
-        sample_rate: SampleRate(RATE),
+        sample_rate: SampleRate::of(RATE),
         loop_range: None,
     }))
 }
@@ -112,7 +112,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let tone = |i: usize| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
 
     let mut session = session();
-    let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
+    let mut wave = tutti_codec::Wave::new(1, SampleRate::of(RATE));
     for i in 0..RATE as usize {
         wave.push_frame(&[tone(i)]);
     }
@@ -124,7 +124,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         node
     };
     let zero = {
-        let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
+        let mut wave = tutti_codec::Wave::new(1, SampleRate::of(RATE));
         for i in 0..RATE as usize {
             wave.push_frame(&[tone(i)]);
         }
@@ -206,7 +206,8 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
 /// test: a fork reads the file through the streamer's cache while the stream
 /// lives, and dropping the handle ends it.
 fn streamer_on(path: &Path) -> ((DiskStreamer<ByHand>, Stream), StreamReader) {
-    let mut streamer = DiskStreamer::manual(SampleRate(RATE), Default::default()).expect("builds");
+    let mut streamer =
+        DiskStreamer::manual(SampleRate::of(RATE), Default::default()).expect("builds");
     let opening = streamer.open(path, Placement::HEAD);
     let (stream, reader) = settle(&mut streamer, opening).expect("the file opens");
     assert!(
@@ -253,7 +254,7 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
     let (disk_node, memory_node): (NodeKey, NodeKey) = {
         let bare = disk_voice(reader, 3.0);
         let wrapped = node_of(VoiceSource::Disk(disk_voice(other_reader, 3.0)));
-        let mut wave = tutti_codec::Wave::new(2, SampleRate::new(RATE));
+        let mut wave = tutti_codec::Wave::new(2, SampleRate::of(RATE));
         for i in 0..LEN {
             wave.push_frame(&[value(i), -value(i)]);
         }

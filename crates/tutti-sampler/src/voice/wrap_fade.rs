@@ -42,7 +42,7 @@ fn tone(freq: f64, i: usize) -> f32 {
 
 /// A wave of `channels` tones (437.3 Hz, then 311.7 Hz), `len` frames.
 fn wave(channels: usize, len: usize, tone_at: impl Fn(f64, usize) -> f32) -> Arc<Wave> {
-    let mut w = Wave::new(channels, SampleRate::new(SR));
+    let mut w = Wave::new(channels, SampleRate::of(SR));
     for i in 0..len {
         let frame: Vec<f32> = [437.3, 311.7][..channels]
             .iter()
@@ -106,7 +106,7 @@ impl Rig {
             Host::Pool => {
                 let mut pool = VoicePool::with_channels(ChannelLayout::STEREO).expect("stereo");
                 pool.prepare(&Prepare::new(
-                    SampleRate(SR),
+                    SampleRate::of(SR),
                     MaxBlock::of(Samples(max_block)),
                 ));
                 Hosted::Pool(pool)
@@ -114,14 +114,14 @@ impl Rig {
             // Placed by `place`.
             Host::Voice => Hosted::Voice(None),
             Host::Node => Hosted::Node(
-                MemorySource::new(Arc::new(Wave::new(2, SampleRate::new(SR))))
+                MemorySource::new(Arc::new(Wave::new(2, SampleRate::of(SR))))
                     .expect("a placeable wave"),
             ),
         };
         Self {
             host,
             max_block,
-            clock: FrameClock::new(Beat::new(0.0), Bpm::of(120.0), SampleRate(SR)),
+            clock: FrameClock::new(Beat::new(0.0), Bpm::of(120.0), SampleRate::of(SR)),
             looping,
             frame: 0,
         }
@@ -151,7 +151,7 @@ impl Rig {
         .expect("a placeable wave");
         match &mut self.host {
             Hosted::Pool(pool) => {
-                source.set_render_rate(SampleRate(SR));
+                source.set_render_rate(SampleRate::of(SR));
                 pool.insert_voice(
                     SlotId(id),
                     Voice {
@@ -166,7 +166,7 @@ impl Rig {
                     play,
                 });
                 node.prepare(&Prepare::new(
-                    SampleRate(SR),
+                    SampleRate::of(SR),
                     MaxBlock::of(Samples(self.max_block)),
                 ));
                 *slot = Some(node);
@@ -175,7 +175,7 @@ impl Rig {
                 source.set_gain(play.gain);
                 source.set_loop(play.loop_);
                 source.prepare(&Prepare::new(
-                    SampleRate(SR),
+                    SampleRate::of(SR),
                     MaxBlock::of(Samples(self.max_block)),
                 ));
                 *node = source;
@@ -213,7 +213,7 @@ impl Rig {
         }
         let env = Env {
             frame: Frame(self.frame),
-            sample_rate: SampleRate(SR),
+            sample_rate: SampleRate::of(SR),
             block_len: Samples(len),
             transport: self.transport(true),
             changes,
@@ -246,7 +246,7 @@ impl Rig {
             }),
         );
         let out = self.block(len, Some((at, to)));
-        self.clock = to.clock(SampleRate(SR));
+        self.clock = to.clock(SampleRate::of(SR));
         self.looping = looping;
         self.clock.advance(Samples(len - at), looping);
         out
@@ -292,9 +292,9 @@ fn step_bound(freq: f64, fade: usize) -> f32 {
 /// The fade in frames at 48 kHz.
 #[test]
 fn the_fade_is_five_milliseconds() {
-    assert_eq!(WRAP_FADE.to_samples(SampleRate(SR)), Samples(FADE));
+    assert_eq!(WRAP_FADE.to_samples(SampleRate::of(SR)), Samples(FADE));
     assert_eq!(
-        WRAP_FADE.to_samples(SampleRate(96_000.0)),
+        WRAP_FADE.to_samples(SampleRate::SR_96K),
         Samples(2 * FADE),
         "a time, not a frame count"
     );
@@ -480,7 +480,7 @@ fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     let restart = TransportPosition::new(true, Bpm::of(120.0), at, None);
     let env = Env {
         frame: Frame(rig.frame),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         block_len: Samples(64),
         transport: restart,
         changes: TransportChanges::NONE,
@@ -520,7 +520,7 @@ fn steps(channels: usize, before: f32, after: f32) -> Arc<Wave> {
 
 /// [`steps`] with the step at frame `split`.
 fn steps_at(channels: usize, before: f32, after: f32, split: usize) -> Arc<Wave> {
-    let mut w = Wave::new(channels, SampleRate::new(SR));
+    let mut w = Wave::new(channels, SampleRate::of(SR));
     for i in 0..4 * FPB {
         let v = if i < split { before } else { after };
         let frame: Vec<f32> = (0..channels).map(|c| v + 0.1 * c as f32).collect();

@@ -57,7 +57,7 @@ impl Wire {
 
 fn spec() -> OutputSpec {
     OutputSpec::new(
-        SampleRate(RATE),
+        SampleRate::of(RATE),
         ChannelLayout::STEREO,
         tutti_cpal::cpal::SampleFormat::F32,
     )
@@ -72,8 +72,10 @@ fn rig(wire: &Wire) -> (Session, ManualStream, tutti_session::Device) {
         .expect("builds with no device")
         .into_parts();
     let _ = s.update();
-    s.midi()
-        .set_hardware_out(Some(UmpOut::new(Box::new(wire.clone()), SampleRate(RATE))));
+    s.midi().set_hardware_out(Some(UmpOut::new(
+        Box::new(wire.clone()),
+        SampleRate::of(RATE),
+    )));
     s.midi_nodes().unwrap().clock_master.set_enabled(true);
     s.transport()
         .motion()

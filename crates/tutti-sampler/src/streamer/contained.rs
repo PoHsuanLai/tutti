@@ -69,7 +69,7 @@ enum Driver {
 
 impl Driver {
     fn start(rate: f64, threaded: bool, seams: Seams) -> Self {
-        let rate = tutti_types::SampleRate(rate);
+        let rate = tutti_types::SampleRate::of(rate);
         let config = DiskStreamerConfig::default();
         if threaded {
             Self::Threaded(DiskStreamer::build(rate, config, seams).expect("the thread starts"))
@@ -166,7 +166,7 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
     let total = meta.total_frames.expect("flac reports a length") as usize;
 
     let mut sampler =
-        DiskStreamer::manual(SampleRate::new(rate), Default::default()).expect("builds");
+        DiskStreamer::manual(SampleRate::of(rate), Default::default()).expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let (stream, reader) = settle(&mut sampler, opening).expect("a cut file opens");
     assert_eq!(
@@ -176,11 +176,11 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
 
     let mut voice = prepared(
         DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
-        SampleRate::new(rate),
+        SampleRate::of(rate),
         512,
     );
     let clock = MockTransport::rolling(Beat(0.0), Bpm::of(120.0));
-    let out = play(&mut voice, &clock, SampleRate::new(rate), total, 512);
+    let out = play(&mut voice, &clock, SampleRate::of(rate), total, 512);
     let kept = out[0].iter().rposition(|&s| s != 0.0).map_or(0, |i| i + 1);
     assert!(
         kept > 1_000 && kept < total,
@@ -198,8 +198,7 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
 fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = constant_file(dir.path(), "short.wav", 8_000, 1, 0.25);
-    let mut sampler =
-        DiskStreamer::manual(SampleRate::new(8_000.0), Default::default()).expect("builds");
+    let mut sampler = DiskStreamer::manual(SampleRate::SR_8K, Default::default()).expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let (mut stream, mut reader) = settle(&mut sampler, opening).expect("opens");
     assert_eq!(
@@ -231,8 +230,7 @@ fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
 fn underruns_are_read_from_the_status() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = constant_file(dir.path(), "a.wav", 8_000, 1, 0.25);
-    let mut sampler =
-        DiskStreamer::manual(SampleRate::new(8_000.0), Default::default()).expect("builds");
+    let mut sampler = DiskStreamer::manual(SampleRate::SR_8K, Default::default()).expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let (stream, reader) = settle(&mut sampler, opening).expect("opens");
     assert_eq!(stream.status().underruns, 0);
@@ -406,7 +404,7 @@ fn a_refused_spawn_is_an_error() {
         ..Seams::default()
     };
     let built = DiskStreamer::build(
-        tutti_types::SampleRate(48_000.0),
+        tutti_types::SampleRate::SR_48K,
         DiskStreamerConfig::default(),
         seams,
     );
@@ -529,7 +527,7 @@ fn a_refused_decode_thread_fails_the_open() {
         ..Seams::default()
     };
     let mut sampler =
-        DiskStreamer::manual_with(tutti_types::SampleRate(44_100.0), Default::default(), seams)
+        DiskStreamer::manual_with(tutti_types::SampleRate::SR_44K1, Default::default(), seams)
             .expect("builds");
     let dir = tempfile::tempdir().expect("a temp dir");
     let opening = sampler.open(&mp3(dir.path()), Placement::HEAD);
@@ -559,7 +557,7 @@ fn a_panicking_decode_fails_that_open_only() {
         ..Seams::default()
     };
     let mut sampler =
-        DiskStreamer::manual_with(tutti_types::SampleRate(44_100.0), Default::default(), seams)
+        DiskStreamer::manual_with(tutti_types::SampleRate::SR_44K1, Default::default(), seams)
             .expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let answer = settle(&mut sampler, opening);
@@ -589,7 +587,7 @@ fn a_fork_plays_the_loop_as_applied_not_as_asked() {
     let meta = tutti_codec::Wave::read_metadata(&path).expect("the cut file has a header");
     let total = meta.total_frames.expect("flac reports a length");
     let mut sampler = DiskStreamer::manual(
-        SampleRate::new(f64::from(meta.sample_rate)),
+        SampleRate::of(f64::from(meta.sample_rate)),
         Default::default(),
     )
     .expect("builds");
@@ -636,15 +634,14 @@ fn a_fork_plays_the_loop_as_applied_not_as_asked() {
 fn a_stream_names_its_file() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let wav = constant_file(dir.path(), "a.wav", 8_000, 1, 0.25);
-    let mut sampler =
-        DiskStreamer::manual(SampleRate::new(8_000.0), Default::default()).expect("builds");
+    let mut sampler = DiskStreamer::manual(SampleRate::SR_8K, Default::default()).expect("builds");
     let opening = sampler.open(&wav, Placement::HEAD);
     let (stream, reader) = settle(&mut sampler, opening).expect("opens");
     assert_eq!(stream.file().path(), wav);
-    assert_eq!(stream.file().file_rate(), SampleRate::new(8_000.0));
+    assert_eq!(stream.file().file_rate(), SampleRate::SR_8K);
     assert!(stream.file().resident().is_none(), "read a piece at a time");
     assert_eq!(reader.file().path(), stream.file().path());
-    assert_eq!(reader.file_rate(), SampleRate::new(8_000.0));
+    assert_eq!(reader.file_rate(), SampleRate::SR_8K);
 
     #[cfg(feature = "mp3")]
     {
@@ -674,7 +671,7 @@ fn a_fork_of_a_closed_stream_fails_even_after_a_decode_fault() {
     let path = cut_flac(dir.path());
     let meta = tutti_codec::Wave::read_metadata(&path).expect("the cut file has a header");
     let mut sampler = DiskStreamer::manual(
-        SampleRate::new(f64::from(meta.sample_rate)),
+        SampleRate::of(f64::from(meta.sample_rate)),
         Default::default(),
     )
     .expect("builds");

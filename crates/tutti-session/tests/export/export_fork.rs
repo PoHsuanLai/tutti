@@ -50,7 +50,7 @@ fn session_with_outputs(outputs: usize) -> Session {
         .outputs_floor(ChannelLayout::clamped(outputs))
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
-    session.graph().set_sample_rate(SampleRate(RATE));
+    session.graph().set_sample_rate(SampleRate::of(RATE));
     session
 }
 
@@ -61,7 +61,7 @@ fn bounce_at(seconds: f64, rate: f64) -> Bounce<NodeKey, BufferMaster> {
     Bounce::project()
         .master_buffers()
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
-        .sample_rate(SampleRate(rate))
+        .sample_rate(SampleRate::of(rate))
         .channels(ChannelLayout::STEREO)
         .clock(ExportClock::frozen())
         .latency(BounceLatency::Keep)
@@ -167,11 +167,11 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
         g.connect(osc, 0, filter, 0).connect_output(filter, 0, 0);
         g.connect_output(if master { osc } else { filter }, 0, 1);
         let (editor, executor) = g
-            .build(RenderGraph::prepare(SampleRate(RATE)))
+            .build(RenderGraph::prepare(SampleRate::of(RATE)))
             .expect("builds");
         let mut graph =
             RenderGraph::assemble(editor, executor, Setup::new()).expect("built together");
-        let rate = SampleRate(RATE);
+        let rate = SampleRate::of(RATE);
         render_one(
             &mut graph,
             &Job::new(
@@ -289,7 +289,7 @@ fn latency_and_tail_come_from_the_graph() {
         buffers(seconds)
             .latency(BounceLatency::Graph)
             .tail(tutti_session::BounceTail::Graph {
-                cap: Samples(48_000).to_seconds(SampleRate(RATE)),
+                cap: Samples(48_000).to_seconds(SampleRate::of(RATE)),
             }),
     );
     assert_eq!(planes[0].len(), frames + TAIL, "the tail");
@@ -304,7 +304,7 @@ fn latency_and_tail_come_from_the_graph() {
     let planes = render(
         &mut session,
         buffers(seconds).tail(tutti_session::BounceTail::Graph {
-            cap: Samples(4_800).to_seconds(SampleRate(RATE)),
+            cap: Samples(4_800).to_seconds(SampleRate::of(RATE)),
         }),
     );
     assert_eq!(
@@ -355,7 +355,7 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
     session.graph().connect(dc, Root).unwrap().hard();
     let request = buffers(0.01).edit(Box::new(|prepared: PreparedGraph<'_>| {
         let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             tutti_export::GRAPH_MAX_BLOCK,
         ));
         drop(std::mem::replace(prepared.editor, other));
@@ -507,7 +507,7 @@ fn the_prepare_hook_sees_the_callers_timeline() {
         tempo_map: Arc::new(
             tutti_tempo::TempoMap::constant(tutti_types::Bpm::of(90.0)).expect("a tempo"),
         ),
-        sample_rate: SampleRate(44_100.0),
+        sample_rate: SampleRate::SR_44K1,
         loop_range: None,
     }));
     let seen: Arc<Mutex<Option<(usize, usize)>>> = Arc::default();
@@ -545,7 +545,7 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
         tempo_map: Arc::new(
             tutti_tempo::TempoMap::constant(tutti_types::Bpm::of(90.0)).expect("a tempo"),
         ),
-        sample_rate: SampleRate(44_100.0),
+        sample_rate: SampleRate::SR_44K1,
         loop_range: None,
     }));
     let seen: Arc<Mutex<Option<usize>>> = Arc::default();

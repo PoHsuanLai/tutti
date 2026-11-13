@@ -31,7 +31,7 @@ use tutti_transport::FrozenClock;
 use tutti_types::ChannelLayout;
 use tutti_types::{Amplitude, ChannelTopology, Db, Hz, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A stereo node that scales its input by a constant: the known gain.
 #[derive(Clone)]

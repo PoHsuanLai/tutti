@@ -22,12 +22,12 @@ fn one_import_renders_a_block() {
     g.pipe_output(tone);
     let (mut editor, executor) = g
         .build(tutti::graph::Prepare::new(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             MaxBlock::of(Samples(256)),
         ))
         .expect("builds");
 
-    let transport = tutti::transport::Transport::new(SampleRate::new(48_000.0));
+    let transport = tutti::transport::Transport::new(SampleRate::SR_48K);
     let engine =
         tutti::engine::Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
@@ -50,7 +50,7 @@ fn one_import_renders_a_block() {
 #[test]
 fn the_measurement_vocabulary_arrives_and_converts() {
     assert!((Db(-6.0).to_amplitude().get() - 0.501).abs() < 0.01);
-    assert_eq!(Seconds(1.0).to_samples(SampleRate(48_000.0)).get(), 48_000);
+    assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K).get(), 48_000);
     assert!((Cents(1200.0).to_semitones().get() - 12.0).abs() < 1e-6);
     assert_eq!(ChannelLayout::STEREO.count(), 2);
 }
@@ -72,7 +72,7 @@ fn the_dsp_library_and_the_node_contract_are_reachable() {
 #[cfg(feature = "export")]
 #[test]
 fn a_graph_bounces_to_buffers_through_the_facade() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let node = g.add(tutti::nodes::testing::Const::frame(&[0.5, 0.5]));
     g.pipe_output(node);
@@ -104,7 +104,7 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
 /// `TransportCommand`, and the time-signature trait with its `BarNumber`.
 #[test]
 fn a_timed_transport_program_needs_only_the_prelude() {
-    let transport = Transport::new(SampleRate::new(48_000.0));
+    let transport = Transport::new(SampleRate::SR_48K);
     transport
         .motion()
         .schedule(At::Frame(Frame(128)), MotionEvent::Play)
@@ -133,7 +133,7 @@ fn a_tempo_map_is_built_and_published_through_the_facade() {
         .ramp_time_to(Beat(4.0), Bpm::of(180.0))
         .build()
         .expect("a map");
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     assert_eq!(map.view(rate).frame_at_or_after(Beat(4.0)), Frame(76_800));
     let transport = tutti::transport::Transport::new(rate);
     transport.settings().set_tempo_map(map);

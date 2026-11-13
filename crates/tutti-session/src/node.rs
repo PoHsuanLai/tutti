@@ -310,10 +310,7 @@ mod tests {
         {
             use std::sync::Arc;
             let source = tutti_sampler::MemorySource::placed(
-                Arc::new(tutti_codec::Wave::new(
-                    1,
-                    tutti_types::SampleRate::new(48_000.0),
-                )),
+                Arc::new(tutti_codec::Wave::new(1, tutti_types::SampleRate::SR_48K)),
                 tutti_sampler::VoiceWindow::from(tutti_types::Beat(0.0)),
             )
             .expect("a placeable wave");

@@ -37,7 +37,7 @@ fn record_with_status(
     let record = Record::new(
         out,
         Arc::new(Cells::new()),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         Samples::new(1_000),
         pin,
         Arc::clone(&status),
@@ -245,7 +245,7 @@ fn a_rate_event_re_derives_each_streams_own_ratio() {
             let record = Record::new(
                 out,
                 Arc::clone(&cells),
-                SampleRate(file_rate),
+                SampleRate::of(file_rate),
                 Samples::new(1_000),
                 cache.pin(&PathBuf::new()),
                 Arc::new(StatusCell::new()),
@@ -254,11 +254,11 @@ fn a_rate_event_re_derives_each_streams_own_ratio() {
             cells
         })
         .collect();
-    streams.rerate(SampleRate(48_000.0));
+    streams.rerate(SampleRate::SR_48K);
     for (cells, file_rate) in cells.iter().zip([44_100.0, 48_000.0]) {
         assert_eq!(
             cells.src_ratio(),
-            SrcRatio::for_rates(SampleRate(file_rate), SampleRate(48_000.0))
+            SrcRatio::for_rates(SampleRate::of(file_rate), SampleRate::SR_48K)
         );
     }
     assert_eq!(cells[1].src_ratio(), SrcRatio::UNITY);

@@ -16,7 +16,7 @@ use tutti_nodes::{BusStripNode, EqBandNode, SvfType};
 use tutti_types::MaxBlock;
 use tutti_types::{Amplitude, Db, Hz, Q, SampleRate, Samples, UnitParam};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const FRAMES: usize = 1024;
 
 fn solo<N: IntoNode>(node: N) -> Solo<N::Controls> {

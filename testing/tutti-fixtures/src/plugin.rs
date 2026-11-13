@@ -278,7 +278,7 @@ mod tests {
             _: Plugin,
             prepare: Prepare,
         ) -> Result<(Half, Other), (Option<Plugin>, PluginError)> {
-            let rate = prepare.rate().0;
+            let rate = prepare.rate().get();
             if rate > 50_000.0 {
                 return Err((Some(Plugin), PluginError::Process(format!("no {rate} Hz"))));
             }
@@ -292,7 +292,7 @@ mod tests {
 
     fn at(rate: f64) -> Prepare {
         let block = MaxBlock::new(Samples(64)).expect("a block");
-        Prepare::new(SampleRate(rate), block).expect("a rate")
+        Prepare::new(SampleRate::of(rate), block).expect("a rate")
     }
 
     /// A refused `reconfigure` reports the refusal and leaves the activation
@@ -301,12 +301,12 @@ mod tests {
     fn a_refused_reconfigure_keeps_the_previous_activation() {
         let mut active = Active::<Fake>::activate(Plugin, at(48_000.0)).expect("activates");
         assert!(active.reconfigure(at(96_000.0)).is_err());
-        assert_eq!(active.prepare().rate().0, 48_000.0);
+        assert_eq!(active.prepare().rate().get(), 48_000.0);
         assert_eq!(active.processor().0, 48_000.0);
         assert_eq!(active.controller().0, 48_000.0);
 
         active.reconfigure(at(44_100.0)).expect("accepted");
-        assert_eq!(active.prepare().rate().0, 44_100.0);
+        assert_eq!(active.prepare().rate().get(), 44_100.0);
         assert_eq!(active.processor().0, 44_100.0);
         assert_eq!(active.deactivate(), Plugin);
     }

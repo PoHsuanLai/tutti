@@ -19,7 +19,7 @@ const UNWRITTEN: f64 = 9.0;
 #[must_use]
 pub fn prepare(rate: f64, block: usize, format: SampleFormat) -> Prepare {
     let block = MaxBlock::new(Samples(block)).expect("a case renders at least one frame");
-    Prepare::new(SampleRate(rate), block)
+    Prepare::new(SampleRate::of(rate), block)
         .expect("a case runs at a positive finite rate")
         .with_format(format)
 }
@@ -81,7 +81,11 @@ impl<L: Loaded> Render for Active<L> {
         let mut refs: Vec<&mut [S]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut out = ProcessOutput::default();
         let mut io = PluginIo {
-            buffer: S::wrap(AudioBuffer::new(&ins, &mut refs, self.prepare().rate().0)),
+            buffer: S::wrap(AudioBuffer::new(
+                &ins,
+                &mut refs,
+                self.prepare().rate().get(),
+            )),
             ctx,
             out: &mut out,
         };

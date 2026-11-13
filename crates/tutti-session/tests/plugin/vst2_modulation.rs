@@ -23,7 +23,7 @@ use tutti_session::{
 };
 use tutti_types::{ChannelLayout, Depth, SampleRate};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn vst2_probe() -> std::path::PathBuf {
     tutti_fixtures::vst2_probe().to_path_buf()

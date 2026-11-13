@@ -4,7 +4,7 @@
 use crate::{EventLossPolicy, Job, JobError, MAX_FRAMES};
 use tutti_types::{SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn job(length: usize, latency: usize, tail: usize) -> Result<Job, JobError> {
     Job::new(RATE, Samples(length), Samples(latency), Samples(tail))
@@ -14,7 +14,13 @@ fn job(length: usize, latency: usize, tail: usize) -> Result<Job, JobError> {
 #[test]
 fn a_non_finite_rate_is_refused() {
     for rate in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let err = Job::new(SampleRate(rate), Samples(1), Samples(0), Samples(0)).unwrap_err();
+        let err = Job::new(
+            <SampleRate as tutti_types::Unit>::from_raw(rate),
+            Samples(1),
+            Samples(0),
+            Samples(0),
+        )
+        .unwrap_err();
         assert!(
             matches!(err, JobError::InvalidRate { .. }),
             "{rate}: {err:?}"
@@ -26,7 +32,13 @@ fn a_non_finite_rate_is_refused() {
 #[test]
 fn a_non_positive_rate_is_refused() {
     for rate in [0.0, -0.0, -1.0, -48_000.0] {
-        let err = Job::new(SampleRate(rate), Samples(1), Samples(0), Samples(0)).unwrap_err();
+        let err = Job::new(
+            <SampleRate as tutti_types::Unit>::from_raw(rate),
+            Samples(1),
+            Samples(0),
+            Samples(0),
+        )
+        .unwrap_err();
         assert!(
             matches!(err, JobError::InvalidRate { .. }),
             "{rate}: {err:?}"

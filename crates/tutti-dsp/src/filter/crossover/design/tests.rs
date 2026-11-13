@@ -14,7 +14,7 @@ fn design() -> CrossoverFamily {
 /// below the one before, whatever the controls say.
 #[test]
 fn member_into_orders_and_caps_the_splits() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let mut model = design().blank(rate);
     for set in [[5_000.0, 4_000.0], [30_000.0, 25_000.0], [-1.0, f32::NAN]] {
         design().member_into(&controls(set[0], set[1]), rate, &mut model);
@@ -64,7 +64,7 @@ impl FamilyCase for CrossoverFamily {
 /// and is 1 at Nyquist.
 impl LtiCase for CrossoverFamily {
     fn figures(&self) -> Vec<Figure<CrossoverControls>> {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let c = controls(500.0, 4_000.0);
         let at = |output, freq, gain| Figure {
             controls: c,
@@ -141,7 +141,7 @@ crate::recurrence_contract!(design(), BlockIndependent, Lti);
 #[test]
 fn a_retarget_lands_whole() {
     let d = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let first = d.member(&controls(300.0, 3_000.0), rate);
     let second = d.member(&controls(900.0, 5_000.0), rate);
     let mut r = d.realized();
@@ -164,7 +164,7 @@ fn a_retarget_lands_whole() {
 /// crossover cannot run, and nothing else.
 #[test]
 fn controls_refuse_what_a_crossover_cannot_run() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     assert!(CrossoverControls::new(&[Hz(100.0), Hz(1_000.0)], rate).is_ok());
     assert!(CrossoverControls::new(&[Hz(1_000.0), Hz(100.0)], rate).is_err());
     assert!(CrossoverControls::new(&[Hz(f32::NAN)], rate).is_err());

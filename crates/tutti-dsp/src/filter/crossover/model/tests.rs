@@ -2,7 +2,7 @@ use super::*;
 use crate::filter::crossover::CrossoverState;
 use crate::{Complex32, RealFft};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn model(freqs: &[f32]) -> CrossoverModel {
     let f: Vec<Hz> = freqs.iter().map(|&f| Hz(f)).collect();

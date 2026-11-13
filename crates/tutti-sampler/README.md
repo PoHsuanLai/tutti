@@ -59,7 +59,7 @@ use tutti_graph::{Prepare, Solo};
 use tutti_sampler::{MemorySource, Wave};
 
 // 100 stereo frames; `push_frame` takes one frame, not one sample.
-let mut wave = Wave::new(2, SampleRate::new(44_100.0));
+let mut wave = Wave::new(2, SampleRate::SR_44K1);
 for _ in 0..100 {
     wave.push_frame(&[0.5, 0.5]);
 }
@@ -69,7 +69,7 @@ let source = MemorySource::new(Arc::new(wave)).expect("a stereo wave places");
 source.play();
 
 // No audio input: the voice is the source. Stereo out.
-let mut graph = Solo::new(source, Prepare::new(SampleRate(44_100.0), MaxBlock::of(Samples(64))));
+let mut graph = Solo::new(source, Prepare::new(SampleRate::SR_44K1, MaxBlock::of(Samples(64))));
 let out = graph.render(64);
 assert_eq!(out.len(), 2);
 assert!(out[0].iter().all(|&s| s != 0.0));

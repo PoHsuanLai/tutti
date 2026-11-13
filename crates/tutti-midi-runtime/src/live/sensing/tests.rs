@@ -5,7 +5,7 @@ const G1: MidiGroup = MidiGroup::of(1);
 
 /// 48 kHz: the limit is 330 ms, 15,840 frames.
 fn watch() -> ActiveSensing {
-    ActiveSensing::at_rate(SampleRate(48_000.0))
+    ActiveSensing::at_rate(SampleRate::SR_48K)
 }
 
 const LIMIT: u64 = 15_840;
@@ -86,7 +86,7 @@ fn each_group_is_judged_alone() {
 fn the_limit_is_330_ms_at_the_rate() {
     assert_eq!(watch().limit(), Samples(15_840));
     assert_eq!(
-        ActiveSensing::at_rate(SampleRate(44_100.0)).limit(),
+        ActiveSensing::at_rate(SampleRate::SR_44K1).limit(),
         Samples(14_553)
     );
 }

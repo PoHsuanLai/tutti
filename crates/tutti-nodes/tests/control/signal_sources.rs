@@ -281,7 +281,10 @@ fn out(node: u64, port: u16) -> Source {
 }
 
 fn editor(max: usize) -> (Editor, Executor) {
-    Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))))
+    Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(max)),
+    ))
 }
 
 /// Audio output `port` of `from` into input `port` of `to`, for each port.
@@ -441,7 +444,7 @@ struct Host {
 impl Host {
     fn new() -> Self {
         Self {
-            clock: FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE)),
+            clock: FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE)),
         }
     }
 
@@ -937,7 +940,7 @@ fn an_export_is_the_live_render_for_signal_sources() {
         .fork(
             ForkTarget::Master,
             ForkMode::Offline,
-            Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(1024))),
+            Prepare::new(SampleRate::of(RATE), MaxBlock::of(Samples(1024))),
         )
         .expect("forks");
     let total = 60_000;

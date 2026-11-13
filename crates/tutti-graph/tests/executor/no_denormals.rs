@@ -71,7 +71,7 @@ enum Entry {
 
 fn render_probes(workers: usize, entry: Entry) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     if workers > 1 {

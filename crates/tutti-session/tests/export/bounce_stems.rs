@@ -24,7 +24,7 @@ use tutti_session::{Bounced, BufferMaster, Master};
 use tutti_types::ChannelLayout;
 use tutti_types::{Db, SampleRate, Samples, Seconds};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A detached stereo session at the render's rate.
 fn session() -> Session {

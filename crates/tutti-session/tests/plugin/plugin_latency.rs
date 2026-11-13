@@ -32,7 +32,7 @@ use tutti_session::{
 use tutti_session::{PluginChange, PluginEvent};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 1_024;
 
 /// SAFETY: nextest runs each test in its own process, and the server's path

@@ -59,7 +59,7 @@ fn expected(hz: f64, g0: f64, g1: f64) -> f64 {
 fn rig() -> (Session, Key<MultibandCompressorNode>, MultibandControls) {
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

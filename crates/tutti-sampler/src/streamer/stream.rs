@@ -266,7 +266,7 @@ impl Stream {
             Arc::new(Cells::new()),
             Arc::new(StreamFile::new(
                 std::path::PathBuf::new(),
-                tutti_types::SampleRate(48_000.0),
+                tutti_types::SampleRate::SR_48K,
                 None,
             )),
             Arc::new(ArcLend::new(RingControl::new(

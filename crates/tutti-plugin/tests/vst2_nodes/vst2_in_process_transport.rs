@@ -104,7 +104,7 @@ fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
         &main_thread(),
         path,
         &Load::new(),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
     (client.bind(scene_tempo()), handle)
@@ -152,7 +152,7 @@ fn rig<N: IntoNode>(node: N, arrival: usize) -> (Renderer, N::Controls) {
     g.pipe_output(key);
     let r = g
         .renderer(Prepare::new(
-            SampleRate(SAMPLE_RATE),
+            SampleRate::of(SAMPLE_RATE),
             MaxBlock::of(Samples(BLOCK)),
         ))
         .expect("the graph compiles");
@@ -242,7 +242,7 @@ fn render_scenes(r: &mut Renderer, blocks: usize) -> Vec<(Env, Told)> {
         let (transport, changes) = scene(b);
         let env = Env {
             frame: r.executor().frame(),
-            sample_rate: SampleRate(SAMPLE_RATE),
+            sample_rate: SampleRate::of(SAMPLE_RATE),
             block_len: Samples(BLOCK),
             transport,
             changes,
@@ -371,7 +371,7 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
         Some(&main_thread()),
         &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
             .expect("a plugin file"),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     )
     .expect("the probe opens");
     let handle = plugin.handle().clone();

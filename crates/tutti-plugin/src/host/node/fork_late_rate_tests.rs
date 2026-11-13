@@ -51,7 +51,7 @@ fn a_late_rate_answer_does_not_silence_an_offline_fork() {
     let live = PluginClient::new(
         BridgeConfig::default(),
         &crate::catalog::PluginRef::file(tutti_fixtures::clap_probe()).expect("a plugin file"),
-        SampleRate::new(LOAD_RATE),
+        SampleRate::of(LOAD_RATE),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");
     // Armed after the live server started: only the fork's server is slow.
@@ -75,7 +75,7 @@ fn a_late_rate_answer_does_not_silence_an_offline_fork() {
     g.pipe_input(key).pipe_output(key);
     let mut renderer: Renderer = g
         .renderer(Prepare::new(
-            SampleRate(SLOW_RATE),
+            SampleRate::of(SLOW_RATE),
             MaxBlock::of(Samples(BLOCK)),
         ))
         .expect("a one-plugin graph compiles");

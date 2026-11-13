@@ -28,11 +28,11 @@ use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceNode, VoicePool, VoiceSource};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(44_100.0);
+const RATE: SampleRate = SampleRate::SR_44K1;
 
 fn ramp_wave() -> Arc<Wave> {
     Arc::new(Wave::from_samples(
-        SampleRate::new(44_100.0),
+        SampleRate::SR_44K1,
         &(0..4_096)
             .map(|i| (i as f32 + 1.0) / 4_096.0)
             .collect::<Vec<_>>(),

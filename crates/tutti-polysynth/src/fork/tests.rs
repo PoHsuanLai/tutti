@@ -6,7 +6,7 @@ use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 use crate::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A saw with an instant attack, so a note sounds from its own frame.
 fn saw() -> PolySynth {

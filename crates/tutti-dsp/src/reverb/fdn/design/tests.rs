@@ -334,7 +334,7 @@ fn no_hook_of_the_fdn_is_vacuous() {
 }
 
 fn design_of(d: &FdnFamily, c: &FdnControls) -> Network {
-    d.member(c, SampleRate(48_000.0))
+    d.member(c, SampleRate::SR_48K)
 }
 
 fn fdn_of(n: &Network) -> &Fdn {
@@ -412,7 +412,7 @@ fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
         assert!(lengths.iter().zip(&last).all(|(a, b)| a > b));
         last = lengths;
     }
-    let at = |hz| d.member(&base(), SampleRate(hz));
+    let at = |hz| d.member(&base(), SampleRate::of(hz));
     let (a, b) = (at(44_100.0), at(88_200.0));
     for (x, y) in fdn_of(&a).lines.iter().zip(fdn_of(&b).lines.iter()) {
         assert!((y.length - 2.0 * x.length).abs() <= 1.0);
@@ -444,7 +444,7 @@ fn a_configuration_refuses_what_it_cannot_hold() {
 #[test]
 fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
     use crate::Setup;
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
@@ -504,7 +504,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
 #[test]
 fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
     use crate::Setup;
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
@@ -559,7 +559,7 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
 #[test]
 fn the_bounds_dominate_where_rounding_matters() {
     let d = FdnFamily::default();
-    let rate = SampleRate(192_000.0);
+    let rate = SampleRate::SR_192K;
     let reach = Reach::at(rate).unwrap();
     let bound = d.reach(&reach);
     for k in 1..100 {

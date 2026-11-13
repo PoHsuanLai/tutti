@@ -20,7 +20,7 @@ use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 fn session() -> Session {
     Session::builder()
         .outputs_floor(ChannelLayout::MONO)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds")
 }
 

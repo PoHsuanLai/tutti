@@ -12,7 +12,7 @@ fn sink(path: &std::path::Path, channels: u16, pcm: Pcm) -> FileOut {
         &Spec::of_width(
             Format::Wav(pcm),
             ChannelLayout::from(channels),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ),
         path,
     )

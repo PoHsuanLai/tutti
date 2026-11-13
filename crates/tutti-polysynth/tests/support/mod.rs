@@ -41,7 +41,7 @@ impl Hand {
     /// `synth`, prepared at 48 kHz (the rate every test here builds it
     /// at) for [`BLOCK`]-frame blocks.
     pub fn new(synth: PolySynth) -> Self {
-        Self::at(synth, SampleRate(48_000.0))
+        Self::at(synth, SampleRate::SR_48K)
     }
 
     /// `synth`, prepared at `rate` for [`BLOCK`]-frame blocks.

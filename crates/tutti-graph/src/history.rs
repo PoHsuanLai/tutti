@@ -24,7 +24,7 @@ struct Piece {
 /// An unused slot.
 const EMPTY: Piece = Piece {
     frame: Frame::ZERO,
-    rate: SampleRate(0.0),
+    rate: SampleRate::DEFAULT,
     transport: TransportPosition::new(
         false,
         tutti_types::Bpm::of(120.0),
@@ -361,7 +361,7 @@ mod tests {
     use crate::node::{LoopRange, TransportChanges};
     use tutti_types::{Beat, Bpm, SegmentOrigin};
 
-    const SR: SampleRate = SampleRate(48_000.0);
+    const SR: SampleRate = SampleRate::SR_48K;
     /// Frames per beat at 120 BPM and 48 kHz.
     const FPB: f64 = 24_000.0;
 

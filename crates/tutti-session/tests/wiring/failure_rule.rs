@@ -11,7 +11,7 @@ use tutti_session::{
 };
 use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitParam};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const GHOST: NodeKey = NodeKey(u64::MAX);
 
 fn detached() -> Session {
@@ -169,7 +169,7 @@ fn a_crossfade_of_a_missing_node_is_refused_during_a_re_prepare() {
     let _side = s.graph().take_audio_side();
     let (knob, _) = s.graph().add(ForkByClone(Const::frame(&[1.0])));
     let _ = s.update();
-    s.graph().set_sample_rate(SampleRate(44_100.0));
+    s.graph().set_sample_rate(SampleRate::SR_44K1);
     assert!(s.graph_ref().testing().is_repreparing(), "mid re-prepare");
 
     let refused = s

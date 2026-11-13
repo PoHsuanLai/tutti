@@ -240,7 +240,7 @@ fn plugin_alone(plugin: PluginClient<Bound>) -> Rig {
 fn finish(g: GraphBuilder, plugin: NodeKey, controls: PluginControls) -> Rig {
     let graph = g
         .renderer(Prepare::new(
-            SampleRate(SAMPLE_RATE),
+            SampleRate::of(SAMPLE_RATE),
             MaxBlock::of(Samples(BLOCK)),
         ))
         .expect("the rig compiles");

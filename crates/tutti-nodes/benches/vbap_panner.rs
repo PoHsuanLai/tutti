@@ -52,7 +52,7 @@ fn bench(c: &mut Criterion) {
             .unwrap();
             let params = node.param_set();
             aim(&params, Azimuth(20.0), Elevation::LEVEL);
-            let mut d = Direct::new(node, SampleRate(48_000.0), block);
+            let mut d = Direct::new(node, SampleRate::SR_48K, block);
             fill_noise(d.inputs_mut());
             for _ in 0..WARMUP_FRAMES / block {
                 d.block();

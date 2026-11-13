@@ -21,7 +21,7 @@ use tutti_types::{SampleRate, Samples};
 /// ```
 /// # use tutti_export::Rendered;
 /// # use tutti_types::SampleRate;
-/// let rendered = Rendered::new(vec![vec![0.0; 4], vec![0.0; 4]], SampleRate(48_000.0), 0)?;
+/// let rendered = Rendered::new(vec![vec![0.0; 4], vec![0.0; 4]], SampleRate::SR_48K, 0)?;
 /// assert_eq!(rendered.channels(), 2);
 /// assert_eq!(rendered.planes()[1].len(), 4);
 /// # Ok::<(), tutti_export::RenderedError>(())
@@ -37,7 +37,7 @@ use tutti_types::{SampleRate, Samples};
 /// # use tutti_types::SampleRate;
 /// let _ = Rendered {
 ///     planes: vec![vec![0.0; 4]],
-///     sample_rate: SampleRate(48_000.0),
+///     sample_rate: SampleRate::SR_48K,
 ///     dropped_events: 0,
 /// };
 /// ```
@@ -45,7 +45,7 @@ use tutti_types::{SampleRate, Samples};
 /// ```compile_fail,E0616
 /// # use tutti_export::Rendered;
 /// # use tutti_types::SampleRate;
-/// let mut rendered = Rendered::new(vec![vec![0.0; 4]], SampleRate(48_000.0), 0).unwrap();
+/// let mut rendered = Rendered::new(vec![vec![0.0; 4]], SampleRate::SR_48K, 0).unwrap();
 /// rendered.planes = vec![vec![0.0; 4], vec![0.0; 9]];
 /// ```
 #[derive(Clone, PartialEq)]

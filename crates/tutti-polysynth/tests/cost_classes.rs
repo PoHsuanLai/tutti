@@ -85,7 +85,7 @@ fn notes(k: u64) -> Vec<TimedMidiEvent> {
 /// synths as shipped, or wrapped to declare nothing.
 fn graph(workers: usize, declared: bool) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     if workers > 1 {

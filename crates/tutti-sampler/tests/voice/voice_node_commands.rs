@@ -43,15 +43,12 @@ use tutti_sampler::testing::{MockTransport, block};
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource, VoiceWindow};
 use tutti_types::{Beat, BeatDuration, Bpm, ChannelLayout, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A wave whose every frame is 1.0, so "is it inside its window" reads as
 /// audible-or-silent with no waveform to reason about.
 fn flat_wave(len: usize) -> Arc<Wave> {
-    Arc::new(Wave::from_samples(
-        SampleRate::new(48_000.0),
-        &vec![1.0; len],
-    ))
+    Arc::new(Wave::from_samples(SampleRate::SR_48K, &vec![1.0; len]))
 }
 
 /// A voice placed on the transport at `[start, start + 1)`.
@@ -169,7 +166,7 @@ fn a_command_reaches_a_node_across_a_commit() {
     ed.collect();
     // A re-prepare at another rate: the units go out and come back.
     ed.reprepare(Prepare::new(
-        SampleRate(44_100.0),
+        SampleRate::SR_44K1,
         MaxBlock::of(Samples(256)),
     ))
     .expect("reprepares");

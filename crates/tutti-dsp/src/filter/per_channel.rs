@@ -274,7 +274,7 @@ pub(crate) mod tests {
     {
         const FRAMES: usize = 150_000;
         const WINDOW: usize = 1_000;
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let all = d.reachable();
         let mut rng = StdRng::seed_from_u64(11);
         for _ in 0..300 {

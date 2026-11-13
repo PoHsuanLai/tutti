@@ -41,7 +41,7 @@ fn a_max_decay_keeps_the_range_checked_shape() {
 /// A reach refuses what it cannot hold and never clamps.
 #[test]
 fn a_reach_refuses_what_it_cannot_hold() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let (decay, floor) = (MaxDecay::DEFAULT, Db(-60.0));
     let c = Reach::new(rate, decay, floor).unwrap();
     assert_eq!(
@@ -51,7 +51,7 @@ fn a_reach_refuses_what_it_cannot_hold() {
     assert_eq!(Reach::at(rate), Some(c));
     for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert!(
-            Reach::<MaxDecay>::at(SampleRate(bad)).is_none(),
+            Reach::<MaxDecay>::at(<SampleRate as tutti_types::Unit>::from_raw(bad)).is_none(),
             "rate {bad}"
         );
     }

@@ -34,7 +34,7 @@ const WRITE_CHUNK: usize = 8192;
 /// ```
 /// use tutti_codec::Wave;
 ///
-/// let mut wave = Wave::new(2, tutti_types::SampleRate::new(48_000.0));
+/// let mut wave = Wave::new(2, tutti_types::SampleRate::SR_48K);
 /// wave.push_frame(&[0.5, -0.5]);
 /// wave.push_frame(&[0.25, -0.25]);
 /// assert_eq!(wave.len(), 2);

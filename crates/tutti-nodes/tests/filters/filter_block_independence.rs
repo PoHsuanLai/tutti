@@ -16,7 +16,7 @@ use tutti_types::{
     ChannelLayout, Db, Frame, Hz, Q, Resonance, SampleRate, Samples, UnitAddr, UnitParam,
 };
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const FRAMES: usize = 2_048;
 const BLOCKS: [usize; 4] = [1, 17, 64, 512];
 

@@ -22,7 +22,7 @@ use tutti_session::{
 use tutti_types::{ChannelLayout, Drive, Hz, InterleavedMut, SampleRate, Samples, Seconds};
 use tutti_types::{Latency, Param, UnitParam};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A detached session `outputs` wide at 48 kHz: the executor on this side.
 fn detached(outputs: usize) -> Session {
@@ -455,7 +455,7 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
 
     // The rate changes on the running graph: the first half is sent, and
     // the executor has not run it yet.
-    s.graph().set_sample_rate(SampleRate(44_100.0));
+    s.graph().set_sample_rate(SampleRate::SR_44K1);
     let fade = Seconds(0.005);
     let waiting = match s.graph().crossfade(
         knob,
@@ -517,7 +517,7 @@ fn a_crossfade_on_a_poisoned_graph_is_refused() {
     let _ = s.update();
     // Both halves run here (the executor is local); the second panics in
     // the grenade's `prepare` and poisons the editor.
-    s.graph().set_sample_rate(SampleRate(96_000.0));
+    s.graph().set_sample_rate(SampleRate::SR_96K);
     let refused = s.graph().crossfade(
         knob,
         Params(Knob::at(3.0)),

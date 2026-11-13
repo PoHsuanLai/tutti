@@ -24,7 +24,7 @@ use tutti::prelude::Root;
 use tutti::prelude::*;
 
 /// The rate every render below runs at.
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A detached session whose outputs hear `node`, one second of a project.
 fn session_with(node: impl tutti::graph::Node + Clone + 'static) -> Session {

@@ -75,7 +75,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
 
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::QUAD,
             MaxBlock::of(Samples(1_024)),
         )
@@ -125,7 +125,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             (s.graph().add(voice).0.erase(), Some(stream))
         }
         Tier::Memory => {
-            let mut wave = tutti_codec::Wave::new(2, tutti_nodes::SampleRate::new(RATE));
+            let mut wave = tutti_codec::Wave::new(2, tutti_nodes::SampleRate::of(RATE));
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);
             }

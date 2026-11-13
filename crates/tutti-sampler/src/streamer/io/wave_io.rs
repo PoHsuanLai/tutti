@@ -61,7 +61,7 @@ mod tests {
     use tutti_types::{SampleRate, Seconds};
 
     fn test_wave(samples: &[(f32, f32)]) -> Wave {
-        let mut wave = Wave::new(2, SampleRate::new(48000.0));
+        let mut wave = Wave::new(2, SampleRate::SR_48K);
         for &(l, r) in samples {
             wave.push_frame(&[l, r]);
         }
@@ -81,7 +81,7 @@ mod tests {
     fn indexed_wave(channels: usize, len: usize) -> Wave {
         let mut w = Wave::zero(
             channels,
-            SampleRate::new(48000.0),
+            SampleRate::SR_48K,
             Seconds::new(len as f64) / 48000.0,
         );
         for i in 0..w.len() {
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn wave_frame_duplicates_left_for_mono() {
-        let mut wave = Wave::new(1, SampleRate::new(48000.0));
+        let mut wave = Wave::new(1, SampleRate::SR_48K);
         wave.push_frame(&[0.7]);
         let mut f = [0.0f32; 2];
         frame_into(&wave, 0, &mut f);
@@ -126,7 +126,7 @@ mod tests {
     fn wave_frame_matches_the_rt_readers_channel_policy() {
         // Mono goes to the centre of a 5.1 frame and nowhere else (the lone
         // centre rule of `Fold`; the memory tier's pinned in `interp`).
-        let mut mono = Wave::new(1, SampleRate::new(48000.0));
+        let mut mono = Wave::new(1, SampleRate::SR_48K);
         mono.push_frame(&[0.4]);
         let mut f = [9.0f32; 6];
         frame_into(&mono, 0, &mut f);

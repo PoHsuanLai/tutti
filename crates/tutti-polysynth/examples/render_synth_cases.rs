@@ -44,7 +44,7 @@ fn flat_envelope() -> Adsr {
 }
 
 fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
-    let rate = tutti_types::SampleRate::new(SR);
+    let rate = tutti_types::SampleRate::of(SR);
     // Driven as a graph drives it: `Node::process`, the notes on its event
     // input in the first block.
     let mut synth = Direct::new(PolySynth::new(cfg), rate, BLOCK);

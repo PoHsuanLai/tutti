@@ -125,7 +125,7 @@ pub(super) struct Fork<F: InProcess> {
     /// The live node's rate when this source was taken: what the second
     /// instance is loaded at. The fork's own `prepare` then tells it the
     /// fork's rate.
-    sample_rate: f64,
+    sample_rate: tutti_types::SampleRate,
     /// What the live handle reports the plugin can do: whether it has presets
     /// to carry across.
     features: Features,
@@ -152,7 +152,7 @@ where
             live: Arc::downgrade(&client.inner),
             origin: client.origin.clone()?,
             id: client.descriptor.id.clone(),
-            sample_rate: client.sample_rate,
+            sample_rate: tutti_types::SampleRate::new(client.sample_rate)?,
             features: client.features,
             transport: client.transport.clone(),
             delivery: client.params.counters(),
@@ -208,7 +208,7 @@ where
             main,
             self.origin.path(),
             self.origin.load(),
-            tutti_types::SampleRate(self.sample_rate),
+            self.sample_rate,
             Some(&mut restore),
         )
         .map_err(|source| PluginForkError::Load {

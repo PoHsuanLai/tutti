@@ -52,7 +52,7 @@ fn sample(c: usize, i: usize) -> f32 {
 }
 
 fn wave(channels: usize, rate: f64) -> Arc<Wave> {
-    let mut w = Wave::new(channels, SampleRate::new(rate));
+    let mut w = Wave::new(channels, SampleRate::of(rate));
     for i in 0..LEN {
         let frame: Vec<f32> = (0..channels).map(|c| sample(c % 2, i + 7 * c)).collect();
         w.push_frame(&frame);
@@ -64,13 +64,13 @@ fn write_wav(path: &Path) {
     let interleaved: Vec<f32> = (0..LEN)
         .flat_map(|i| [sample(0, i), sample(1, i + 7)])
         .collect();
-    tutti_fixtures::signal::write_wav_f32(path, SampleRate(SR), 2, &interleaved);
+    tutti_fixtures::signal::write_wav_f32(path, SampleRate::of(SR), 2, &interleaved);
 }
 
 fn memory(w: &Arc<Wave>, start: f64) -> VoiceSource {
     let mut s = MemorySource::placed(Arc::clone(w), VoiceWindow::from(Beat::new(start)))
         .expect("a placeable wave");
-    s.set_render_rate(SampleRate(SR));
+    s.set_render_rate(SampleRate::of(SR));
     VoiceSource::Memory(s)
 }
 
@@ -113,7 +113,7 @@ fn apply(host: &mut Host, event: Event) {
 fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
     Env {
         frame: Frame(frame),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         block_len: Samples(len),
         transport,
         changes,
@@ -158,7 +158,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
 
     // Disk streams: 0..4 for the long-block pool, 4..8 for the
     // short-block one.
-    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+    let mut streamer = DiskStreamer::manual(SampleRate::of(SR), DiskStreamerConfig::default())
         .expect("streamer builds");
     let openings: Vec<_> = (0..8)
         .map(|_| streamer.open(&path, crate::Placement::HEAD))
@@ -182,16 +182,19 @@ fn the_block_read_is_the_same_at_any_block_length() {
             .take()
             .expect("each stream builds one voice");
         let mut v = crate::DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)));
-        v.set_render_rate(SampleRate(SR));
+        v.set_render_rate(SampleRate::of(SR));
         v
     };
 
     let mut build = |first_disk: usize| {
         let mut pool =
             VoicePool::with_channels(ChannelLayout::STEREO).expect("a width the sampler reads");
-        pool.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(256))));
+        pool.prepare(&Prepare::new(
+            SampleRate::of(SR),
+            MaxBlock::of(Samples(256)),
+        ));
         let mut forked = disk(first_disk + 3).fork_copy();
-        forked.set_render_rate(SampleRate(SR));
+        forked.set_render_rate(SampleRate::of(SR));
         let voices: Vec<(VoiceSource, Playback)> = vec![
             (memory(&stereo, 0.0), Playback::default()),
             (
@@ -264,7 +267,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
         _ => None,
     };
     let mut host = Host {
-        clock: FrameClock::new(Beat::new(0.0), Bpm::of(120.0), SampleRate(SR)),
+        clock: FrameClock::new(Beat::new(0.0), Bpm::of(120.0), SampleRate::of(SR)),
         playing: true,
     };
     let mut heard = [false; 2];

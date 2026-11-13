@@ -355,7 +355,7 @@ fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     tutti_graph::Node::prepare(
         &mut *interrupted,
         &tutti_graph::Prepare::new(
-            tutti_types::SampleRate(44_100.0),
+            tutti_types::SampleRate::SR_44K1,
             tutti_types::MaxBlock::of(tutti_types::Samples(128)),
         ),
     );

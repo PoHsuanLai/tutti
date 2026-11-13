@@ -4,7 +4,7 @@ const RATE: f64 = 48_000.0;
 
 fn check(freqs: &[f32]) -> Result<(), CrossoverError> {
     let f: Vec<Hz> = freqs.iter().map(|&f| Hz(f)).collect();
-    validate(&f, SampleRate::new(RATE))
+    validate(&f, SampleRate::of(RATE))
 }
 
 /// The band count is 2 to 6.
@@ -64,7 +64,11 @@ fn frequencies_are_validated() {
     assert!(check(&[23_999.0]).is_ok());
     for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert_eq!(
-            validate(&[Hz(100.0)], SampleRate::new(rate)).unwrap_err(),
+            validate(
+                &[Hz(100.0)],
+                <SampleRate as tutti_types::Unit>::from_raw(rate)
+            )
+            .unwrap_err(),
             CrossoverError::SampleRate
         );
     }
@@ -81,7 +85,7 @@ fn errors_name_what_is_wrong() {
 /// still: a frequency out of range costs only itself.
 #[test]
 fn a_set_is_fitted_under_the_rate_and_stays_increasing() {
-    let rate = SampleRate::new(RATE);
+    let rate = SampleRate::of(RATE);
     let mut set = [Hz(30_000.0), Hz(25_000.0)];
     fit_to_rate(&mut set, rate);
     assert!(set[0] < set[1], "{set:?}");

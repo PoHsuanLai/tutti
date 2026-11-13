@@ -27,7 +27,7 @@ use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, ChannelLayout, SampleRate};
 
 const BLOCK: usize = 128;
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 
 /// Broadband input from a cheap LCG, so the bench needs no `rand`.
 fn fill_noise<N: Node>(d: &mut Direct<N>) {

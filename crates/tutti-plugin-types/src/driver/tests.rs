@@ -21,7 +21,7 @@ fn main() -> MainThread {
 }
 
 fn prepare(rate: f64) -> Prepare {
-    Prepare::new(SampleRate(rate), MaxBlock::of(Samples(64)))
+    Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(64)))
         .expect("the tests use real rates")
         .with_format(SampleFormat::Float32)
         .with_mode(RenderMode::Realtime)
@@ -86,7 +86,7 @@ impl Rig {
 
     /// Renders one block of `frames` through the held Processor.
     fn render(&mut self, frames: usize) -> PluginResult<()> {
-        let rate = self.state.prepare().map_or(48_000.0, |p| p.rate().0);
+        let rate = self.state.prepare().map_or(48_000.0, |p| p.rate().get());
         let input = vec![0.0f32; frames];
         let mut left = vec![1.0f32; frames];
         let mut right = vec![1.0f32; frames];
@@ -127,7 +127,7 @@ fn activation_splits_the_plugin_and_reads_its_figures() {
     assert_eq!(
         rig.plugin.calls(),
         [
-            Call::Activate(SampleRate(48_000.0), Samples(64)),
+            Call::Activate(SampleRate::SR_48K, Samples(64)),
             Call::Latency,
             Call::Tail,
             Call::Wiring,
@@ -142,19 +142,19 @@ fn activation_splits_the_plugin_and_reads_its_figures() {
 #[test]
 fn a_refused_rate_leaves_the_plugin_loaded_and_a_later_rate_revives_it() {
     let mut rig = Rig::new();
-    rig.plugin.refuse_rate(Some(SampleRate(22_050.0)));
+    rig.plugin.refuse_rate(Some(SampleRate::SR_22K05));
     rig.op(HostOp::Activate(prepare(22_050.0)));
 
     assert!(matches!(
         rig.state.stage(),
-        Stage::Refused { rate } if rate == SampleRate(22_050.0)
+        Stage::Refused { rate } if rate == SampleRate::SR_22K05
     ));
     assert!(matches!(rig.lifecycle, Lifecycle::Refused { .. }));
     assert!(rig.lifecycle.processor().is_none(), "no half pair");
     assert!(rig.lifecycle.control().is_some(), "the plugin is intact");
     let notices = rig.take_notices();
     assert!(
-        matches!(notices.as_slice(), [Notice::Refused { rate, .. }] if *rate == SampleRate(22_050.0)),
+        matches!(notices.as_slice(), [Notice::Refused { rate, .. }] if *rate == SampleRate::SR_22K05),
         "{notices:?}"
     );
 
@@ -167,7 +167,7 @@ fn a_refused_rate_leaves_the_plugin_loaded_and_a_later_rate_revives_it() {
 #[test]
 fn a_lost_plugin_poisons_and_the_refusal_is_still_told() {
     let mut rig = Rig::new();
-    rig.plugin.refuse_rate(Some(SampleRate(8_000.0)));
+    rig.plugin.refuse_rate(Some(SampleRate::SR_8K));
     rig.plugin.lose_plugin_on_refusal(true);
     rig.op(HostOp::Activate(prepare(8_000.0)));
 
@@ -255,7 +255,7 @@ fn a_reconfigure_is_one_deactivate_and_one_activate() {
         calls,
         [
             Call::Deactivate,
-            Call::Activate(SampleRate(96_000.0), Samples(64)),
+            Call::Activate(SampleRate::SR_96K, Samples(64)),
             Call::Latency,
             Call::Tail,
             Call::Wiring,
@@ -412,7 +412,7 @@ fn control_is_reachable_loaded_active_and_refused() {
             .map(|c| c.wiring(&main()))
             .is_some()
     );
-    rig.plugin.refuse_rate(Some(SampleRate(1_000.0)));
+    rig.plugin.refuse_rate(Some(SampleRate::of(1_000.0)));
     rig.op(HostOp::Reconfigure(prepare(1_000.0)));
     assert!(matches!(rig.lifecycle, Lifecycle::Refused { .. }));
     assert!(rig.lifecycle.control().is_some());
@@ -546,13 +546,13 @@ fn stuck_then_reconfigure_settles_at_the_new_rate() {
     assert_eq!(rig.state.stage(), Stage::Active);
     assert_eq!(
         rig.state.prepare().map(|p| p.rate()),
-        Some(SampleRate(48_000.0))
+        Some(SampleRate::SR_48K)
     );
     rig.op(HostOp::Reconfigure(prepare(96_000.0)));
     assert_eq!(rig.state.stage(), Stage::Active);
     assert_eq!(
         rig.state.prepare().map(|p| p.rate()),
-        Some(SampleRate(96_000.0))
+        Some(SampleRate::SR_96K)
     );
     rig.render(64).unwrap();
 }
@@ -704,7 +704,7 @@ fn a_rate_change_recalls_the_lent_processor_and_lends_the_new_one() {
     assert!(!rig.state.is_parked());
     let calls = rig.plugin.calls();
     assert!(calls.contains(&Call::Deactivate));
-    assert!(calls.contains(&Call::Activate(SampleRate(44_100.0), Samples(64))));
+    assert!(calls.contains(&Call::Activate(SampleRate::SR_44K1, Samples(64))));
     assert_eq!(activations(&calls), 2);
     assert!(poll(&mut rt), "the new Processor reaches the realtime end");
 }

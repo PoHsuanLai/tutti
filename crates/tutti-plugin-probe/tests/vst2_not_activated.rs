@@ -65,7 +65,7 @@ fn a_probe_does_not_activate() {
     reset(&path);
     let loaded = Vst2Loaded::load(&main, &path).expect("loads");
     let prepare = tutti_plugin_types::Prepare::new(
-        tutti_types::SampleRate(48_000.0),
+        tutti_types::SampleRate::SR_48K,
         tutti_plugin_types::MaxBlock::new(tutti_types::Samples(64)).unwrap(),
     )
     .unwrap();

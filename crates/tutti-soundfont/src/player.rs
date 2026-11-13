@@ -549,7 +549,7 @@ impl Player {
 
     /// The rate the player renders at, in whole hertz.
     pub(crate) fn sample_rate(&self) -> SampleRate {
-        SampleRate(f64::from(self.render.hz()))
+        self.render.rate()
     }
 
     /// A copy of this player that renders at `sample_rate`: the same

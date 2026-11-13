@@ -20,7 +20,7 @@ use tutti_sampler::{
 use tutti_types::{Beat, Bpm, PlaybackRate, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
-const RATE: SampleRate = SampleRate(SR);
+const RATE: SampleRate = SampleRate::of(SR);
 /// Frames in the file: more than every figure below reads.
 const LEN: usize = 4_096;
 /// Frames each case renders.
@@ -43,7 +43,7 @@ fn looped_frame(n: usize, start: usize, end: usize) -> usize {
 }
 
 fn ramp() -> Arc<Wave> {
-    let mut w = Wave::new(1, SampleRate::new(SR));
+    let mut w = Wave::new(1, SampleRate::of(SR));
     for i in 0..LEN {
         w.push_frame(&[value(i)]);
     }
@@ -65,7 +65,7 @@ fn rolling() -> Arc<MockTransport> {
 fn streaming(dir: &Path) -> (DiskStreamer<ByHand>, Stream, tutti_sampler::StreamReader) {
     let path = dir.join("ramp.wav");
     write_ramp(&path);
-    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+    let mut streamer = DiskStreamer::manual(SampleRate::of(SR), DiskStreamerConfig::default())
         .expect("streamer builds");
     let opening = streamer.open(&path, Placement::HEAD);
     let (stream, reader) = settle(&mut streamer, opening).expect("the file opens");

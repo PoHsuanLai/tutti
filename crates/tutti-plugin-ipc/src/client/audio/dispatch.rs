@@ -1044,7 +1044,7 @@ mod tests {
     /// the answer.
     #[test]
     fn owed_frames_are_taken_in_order_before_the_answer() {
-        let channels = Channels::new(SampleRate(48_000.0));
+        let channels = Channels::new(SampleRate::SR_48K);
         let mut owed = Owed::default();
         owed.owe(Late::Block);
         owed.owe(Late::Answer(is_value));
@@ -1079,7 +1079,7 @@ mod tests {
     /// against the next; the server's `Error` answers any request.
     #[test]
     fn a_frame_of_another_kind_lets_an_owed_answer_go() {
-        let channels = Channels::new(SampleRate(48_000.0));
+        let channels = Channels::new(SampleRate::SR_48K);
         let list = || BridgeMessage::ParameterList {
             parameters: Vec::new(),
         };
@@ -1233,10 +1233,10 @@ mod tests {
     /// A chunk is one device callback (`MAX_CHUNK` at most), so the timeout
     /// must hold at every size.
     const RATES: [SampleRate; 4] = [
-        SampleRate(44_100.0),
-        SampleRate(48_000.0),
-        SampleRate(96_000.0),
-        SampleRate(192_000.0),
+        SampleRate::SR_44K1,
+        SampleRate::SR_48K,
+        SampleRate::SR_96K,
+        SampleRate::SR_192K,
     ];
     const BLOCKS: [usize; 4] = [64, 128, 256, 512];
 
@@ -1294,7 +1294,7 @@ mod tests {
     #[test]
     fn non_finite_rate_falls_back() {
         for bad in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
-            let t = process_timeout(64, SampleRate(bad));
+            let t = process_timeout(64, <SampleRate as tutti_types::Unit>::from_raw(bad));
             assert!(
                 t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT,
                 "rate={bad}: {t:?}"

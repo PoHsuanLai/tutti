@@ -2,7 +2,7 @@
 use tutti_tempo::{TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, SampleRate};
 
-pub const R: SampleRate = SampleRate(48_000.0);
+pub const R: SampleRate = SampleRate::SR_48K;
 
 pub fn pt(beat: f64, tempo: f64, shape: Transition) -> TempoPoint {
     TempoPoint {

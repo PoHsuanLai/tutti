@@ -12,7 +12,7 @@ fn at_beat(beat: f64) -> ProgramTime {
         beat: Beat(beat),
         play: SamplePosition(0.0),
         play_epoch: 1,
-        rate: SampleRate(SR),
+        rate: SampleRate::of(SR),
     }
 }
 
@@ -21,7 +21,7 @@ fn at_play(play: f64, epoch: u32) -> ProgramTime {
         beat: Beat(0.0),
         play: SamplePosition(play),
         play_epoch: epoch,
-        rate: SampleRate(SR),
+        rate: SampleRate::of(SR),
     }
 }
 

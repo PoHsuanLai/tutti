@@ -154,7 +154,7 @@ fn served_id(plugin: &PluginRef) -> String {
         IpcConfig::default(),
         plugin.path().to_path_buf(),
         plugin.load(),
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
         None,
         Some(no_editor),
     )
@@ -362,7 +362,7 @@ macro_rules! measured_cases {
                 assert_eq!(m.verdict.latency, LatencyVerdict::Honest, "{m:?}");
                 assert_eq!(m.tail, Some(spec::RING));
                 assert_eq!(m.latency, Some(Samples(0)));
-                assert_eq!(m.config.rate, SampleRate::new(48_000.0));
+                assert_eq!(m.config.rate, SampleRate::SR_48K);
                 assert_eq!(m.config.block, MaxBlock::new(Samples(512)).unwrap());
                 assert_eq!(m.config.floor, PROBE_FLOOR);
                 assert_eq!(m.config.state, StateHash::of(&state));

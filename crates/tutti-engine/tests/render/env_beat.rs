@@ -142,7 +142,7 @@ fn graph_engine(
     sink: impl IntoNode<Controls = ()>,
     width: u16,
 ) -> (Engine, Editor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(512))));
     wire_clock(&mut ed, sink, width);
     let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
     (engine, ed)
@@ -177,7 +177,7 @@ fn beat(p: (f32, f32)) -> f64 {
 /// pin each event.
 #[test]
 fn the_env_walk_is_the_env_beat() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Log::default();
     let sink = GraphBeats::new(&log);
     let env_beats = Arc::clone(&sink.1);
@@ -321,12 +321,12 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 /// they are `sin` of a phase, which is libm), so they are not pinned here.
 #[test]
 fn click_clicks_on_the_model_beats() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(Amplitude::new(1.0)).unwrap();
     let click = ClickNode::new(&transport, settings);
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(512))));
     const CLICK: NodeKey = NodeKey(1);
     ed.insert(CLICK, "click", click);
     ed.spec_mut()
@@ -405,7 +405,7 @@ impl Node for EnvLog {
 /// An `EnvLog` at key 1, on the global output.
 fn env_graph(max_block: usize, log: &Arc<Mutex<Vec<Env>>>) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(max_block)),
     ));
     ed.insert(NodeKey(1), "env", Unforkable(EnvLog(Arc::clone(log))));
@@ -439,7 +439,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     let blocks = blocks(96_000);
 
     // Live.
-    let live_t = Transport::new(SampleRate::new(SR));
+    let live_t = Transport::new(SampleRate::of(SR));
     let live_log = Arc::new(Mutex::new(Vec::new()));
     let (mut ed, exec) = env_graph(512, &live_log);
     let live = Engine::new(&live_t, &mut ed, exec).expect("within the limits");
@@ -464,7 +464,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(BAR_2),
         tempo_map: step_map(&[(0.0, 100.0)]),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         loop_range: LoopRange::new(Beat::new(6.0), Beat::new(7.0)),
     }));
     let off_log = Arc::new(Mutex::new(Vec::new()));
@@ -515,11 +515,12 @@ fn the_offline_env_walk_starts_each_block_on_the_timeline() {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(4.0),
         tempo_map: step_map(&[(0.0, 128.0)]),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         loop_range: None,
     });
     let log = Log::default();
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(512))));
     wire_clock(&mut ed, Unforkable(GraphBeats::new(&log)), 1);
     let mut out = vec![0.0f32; 512];
     let mut at = 0;
@@ -531,7 +532,8 @@ fn the_offline_env_walk_starts_each_block_on_the_timeline() {
         assert_eq!(log[at], split, "block starting at frame {at}");
         let last = beat(log[at + n - 1]);
         let expect = start.get()
-            + (n - 1) as f64 * tutti_types::beats_per_sample(Bpm::of(128.0), SampleRate(SR)).get();
+            + (n - 1) as f64
+                * tutti_types::beats_per_sample(Bpm::of(128.0), SampleRate::of(SR)).get();
         assert!((last - expect).abs() < 1e-6, "frame {}", at + n - 1);
         at += n;
     }

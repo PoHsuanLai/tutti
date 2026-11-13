@@ -8,7 +8,7 @@ use tutti_dsp::Freeverb;
 use tutti_fixtures::signal::{impulse as impulse_signal, peak};
 use tutti_types::{Db, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(44_100.0);
+const RATE: SampleRate = SampleRate::SR_44K1;
 
 /// The wet response to a unit impulse, `frames` long.
 fn impulse(reverb: &mut Freeverb, frames: usize) -> (Vec<f32>, Vec<f32>) {
@@ -46,7 +46,7 @@ fn the_first_echo_is_the_input_at_the_fixed_gain_after_the_shortest_comb() {
 /// twice the frames.
 #[test]
 fn the_lines_scale_with_the_rate() {
-    let mut reverb = Freeverb::new(SampleRate(88_200.0));
+    let mut reverb = Freeverb::new(SampleRate::SR_88K2);
     let (left, _) = impulse(&mut reverb, 3_000);
     assert!(left[..2232].iter().all(|&s| s == 0.0));
     assert!(left[2232].abs() > 0.01);

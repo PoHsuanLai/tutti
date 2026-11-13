@@ -77,8 +77,8 @@ fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey, out: u16) {
 /// as allocation-free, on `outputs` global outputs (the strip's pair,
 /// repeated).
 fn chain_engine(outputs: usize) -> Engine {
-    let transport = Transport::new(SampleRate::new(SR));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
+    let transport = Transport::new(SampleRate::of(SR));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(512))));
     let [osc, eq, strip] = [1, 2, 3].map(NodeKey);
     ed.insert(osc, "osc", Osc::sine(Hz(440.0)));
     ed.insert(
@@ -322,7 +322,7 @@ fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
     use tutti_graph::NodeKey;
     use tutti_graph::{Edge, InPort, OutPort, Source};
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     let src: Box<dyn tutti_graph::Node> = if ours {
@@ -366,8 +366,8 @@ fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
             port: 0,
         })]);
     ed.commit().expect("commits");
-    let engine = Engine::new(&Transport::new(SampleRate::new(SR)), &mut ed, exec)
-        .expect("within the limits");
+    let engine =
+        Engine::new(&Transport::new(SampleRate::of(SR)), &mut ed, exec).expect("within the limits");
     // Install the plan outside the timed loop; the editor may go.
     let mut warm = vec![0.0f32; 512 * 2];
     render(&engine, &mut warm, ChannelLayout::STEREO);

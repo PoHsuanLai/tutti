@@ -8,7 +8,7 @@ use super::*;
 use crate::ClockReading;
 use tutti_types::SampleRate;
 
-const R48: SampleRate = SampleRate(48_000.0);
+const R48: SampleRate = SampleRate::SR_48K;
 
 fn base() -> Instant {
     Instant::now() + Duration::from_secs(3600)
@@ -108,7 +108,7 @@ fn a_frame_the_clock_cannot_place_is_sent_now() {
         plan.place(Frame(4_800), None, t0),
         Placement::Send(SendAt::Now)
     );
-    let tiny = SampleRate(1e-9);
+    let tiny = SampleRate::of(1e-9);
     let slow = ClockMap::new(tiny, ClockReading::new(t0, Frame(0))).unwrap();
     assert_eq!(
         plan.place(Frame(u64::MAX), Some(&slow), t0),

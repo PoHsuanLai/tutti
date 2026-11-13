@@ -311,7 +311,7 @@ mod tests {
         let load = postcard::to_allocvec(&HostMessage::LoadPlugin {
             path: PathBuf::new(),
             load: Load::new(),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             block_size: 64,
             preferred_format: SampleFormat::Float32,
             shm_name: String::new(),
@@ -400,11 +400,11 @@ mod tests {
             },
             BridgeMessage::ParameterValueFromText { value: None },
             BridgeMessage::SampleRateSet {
-                rate: SampleRate(96_000.0),
+                rate: SampleRate::SR_96K,
                 error: None,
             },
             BridgeMessage::SampleRateSet {
-                rate: SampleRate(96_000.0),
+                rate: SampleRate::SR_96K,
                 error: Some("refused".to_string()),
             },
         ];
@@ -793,7 +793,7 @@ mod tests {
         let msg = HostMessage::LoadPlugin {
             path: PathBuf::from("/test/reverb.vst3"),
             load: Load::new().plugin("vst3.00112233-44556677-8899AABB-CCDDEEFF"),
-            sample_rate: SampleRate(96000.0),
+            sample_rate: SampleRate::SR_96K,
             block_size: 1024,
             preferred_format: SampleFormat::Float64,
             shm_name: "test_shm".to_string(),
@@ -818,7 +818,7 @@ mod tests {
                     Some("vst3.00112233-44556677-8899AABB-CCDDEEFF"),
                     "the choice crosses the wire"
                 );
-                assert_eq!(sample_rate, SampleRate(96000.0));
+                assert_eq!(sample_rate, SampleRate::SR_96K);
                 assert_eq!(block_size, 1024);
                 assert_eq!(preferred_format, SampleFormat::Float64);
             }

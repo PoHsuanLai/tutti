@@ -10,7 +10,7 @@ use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::{DelayControls, DelayFamily, DelayNode, InterpolationMode, MaxDelay, Routing};
 use tutti_types::{Amplitude, BusTopology, Feedback, Hz, SampleRate, Samples, Seconds};
 
-const SR: SampleRate = SampleRate(1_024.0);
+const SR: SampleRate = SampleRate::of(1_024.0);
 /// A second of line: every time here is a few frames of it.
 const MAX: MaxDelay = MaxDelay::of(Seconds(1.0));
 

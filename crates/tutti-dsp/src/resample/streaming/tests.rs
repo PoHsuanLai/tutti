@@ -264,7 +264,7 @@ fn tone(hz: f64, rate: f64, n: usize, amp: f32) -> Vec<f32> {
     sine(
         Hz::new(hz as f32),
         Amplitude::new(amp),
-        SampleRate::new(rate),
+        SampleRate::of(rate),
         Samples(n),
     )
 }
@@ -436,7 +436,12 @@ fn upsampling_cuts_at_the_input_band_edge() {
 #[test]
 fn an_unusable_rate_is_an_error() {
     let new = |from: f64, to: f64| {
-        StreamingResampler::new(1, SampleRate(from), SampleRate(to), ChunkSize::N1024)
+        StreamingResampler::new(
+            1,
+            <SampleRate as tutti_types::Unit>::from_raw(from),
+            <SampleRate as tutti_types::Unit>::from_raw(to),
+            ChunkSize::N1024,
+        )
     };
     for bad in [
         f64::NAN,
@@ -573,7 +578,7 @@ fn the_passband_is_flat_to_the_band_edge() {
 /// not an identity, so `new` is the one to say so.
 #[test]
 fn rates_of_one_whole_hz_are_no_conversion() {
-    let hz = |r: f64| SampleRate::new(r);
+    let hz = |r: f64| <SampleRate as tutti_types::Unit>::from_raw(r);
     assert!(!StreamingResampler::converts(hz(44_100.0), hz(44_100.2)));
     assert!(StreamingResampler::converts(hz(44_100.0), hz(48_000.0)));
     assert!(StreamingResampler::converts(hz(f64::NAN), hz(f64::NAN)));

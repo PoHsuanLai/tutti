@@ -36,7 +36,10 @@ fn unit() -> SoundFontUnit {
 /// A clip playing middle C at `frame` into the unit, both at key 1 and 2,
 /// the unit on the outputs; prepared at `rate`.
 fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK))));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(rate),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     let beat = Beat(frame as f64 / (rate / 2.0));
     let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
     let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity);

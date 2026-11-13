@@ -23,7 +23,7 @@ static A: AllocDisabler = AllocDisabler;
 /// A node through `BlockRig`: 16 warm-up blocks, then 2 000 blocks
 /// under `assert_no_alloc`, `between` run before each (a control move).
 fn gate<N: IntoNode>(node: N, mut between: impl FnMut(&N::Controls, usize)) {
-    let (mut rig, controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    let (mut rig, controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
     // A 32-frame square: low enough that every filter here passes some of
     // it (a Nyquist square through a low-pass is silence, and the silence
     // check below would fail for the wrong reason).

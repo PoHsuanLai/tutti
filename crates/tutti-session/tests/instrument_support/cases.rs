@@ -296,7 +296,7 @@ pub fn a_rate_change_keeps_the_note_on_its_frame<S: Subject>() {
     rig.render_to(2 * BLOCK);
     rig.session
         .graph()
-        .set_sample_rate(tutti_types::SampleRate(44_100.0));
+        .set_sample_rate(tutti_types::SampleRate::SR_44K1);
     rig.settle();
     rig.render_to(rig.frame() + 4 * BLOCK);
     // An absolute frame, measured from the engine's clock. The clock is not
@@ -356,16 +356,16 @@ fn rate_change_instant<S: Subject>(send_after_the_change: bool) {
     }
     rig.session
         .graph()
-        .set_sample_rate(tutti_types::SampleRate(44_100.0));
+        .set_sample_rate(tutti_types::SampleRate::SR_44K1);
     rig.settle();
     if send_after_the_change {
         send(&mut rig);
     }
     // The instant, at the new rate: the executor's own arithmetic.
     let target = Frame(read.frame().get() + AHEAD as u64)
-        .rescaled(super::rig::RATE, tutti_types::SampleRate(44_100.0));
+        .rescaled(super::rig::RATE, tutti_types::SampleRate::SR_44K1);
     let now = rig.handle.keys().clock().expect("the queue is prepared");
-    assert_eq!(now.rate(), tutti_types::SampleRate(44_100.0));
+    assert_eq!(now.rate(), tutti_types::SampleRate::SR_44K1);
     let ahead = target
         .since(now.frame())
         .expect("the instant is still ahead")

@@ -7,7 +7,7 @@ use super::super::{
 use super::*;
 use crate::{Capacity as _, Lti as _};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn line(length: f32, absorption: Absorption) -> Line {
     Line {
@@ -267,7 +267,7 @@ fn a_lossless_loop_is_marginally_stable_with_an_unbounded_tail() {
 /// capped at the rate.
 #[test]
 fn the_densities_are_the_modes_per_hertz_and_the_echoes_per_second() {
-    let slow = SampleRate(1_000.0);
+    let slow = SampleRate::of(1_000.0);
     let ls = [
         line(10.0, Absorption::Gain(Amplitude(0.5))),
         line(20.0, Absorption::Gain(Amplitude(0.5))),
@@ -581,7 +581,7 @@ fn the_orthogonality_tolerance_cannot_let_a_growing_loop_through() {
 /// the tail. For a diagonal matrix the bound equals the exact RT60.
 #[test]
 fn the_tail_covers_a_mixing_network_whose_lines_decay_differently() {
-    let rate = SampleRate(1_000.0);
+    let rate = SampleRate::of(1_000.0);
     let lines = [(40.0f32, 3.0f32), (70.0, 1.0)].map(|(m, t)| {
         line(
             m,

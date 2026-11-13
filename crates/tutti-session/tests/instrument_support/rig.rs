@@ -8,7 +8,7 @@ use tutti_types::Moment;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::Ump;
 
-pub const RATE: SampleRate = SampleRate(48_000.0);
+pub const RATE: SampleRate = SampleRate::SR_48K;
 /// The frames a render call hands over; also the session's largest block.
 pub const BLOCK: usize = 128;
 

@@ -6,7 +6,7 @@ use super::*;
 use crate::contract::{FamilyCase, Figure, Hook, LtiCase, RecurrenceCase, built, setup};
 use crate::{Realized, SweepError, TAIL_FLOOR};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn controls(rate: f32, depth: f64, feedback: f32) -> ModDelayControls {
     ModDelayControls {
@@ -188,7 +188,7 @@ impl LtiCase for ModDelayFamily {
         let g = 0.5f32.min(self.sweep().feedback_max().get());
         let c = controls(1.0, 0.0, g);
         let mut all = Vec::new();
-        for rate in [SampleRate(48_000.0), SampleRate(96_000.0)] {
+        for rate in [SampleRate::SR_48K, SampleRate::SR_96K] {
             let d = self.member(&c, rate).centre_frames().round() as u64;
             let q = f64::from(g);
             for (freq, sign) in [
@@ -354,12 +354,12 @@ fn delay_trace(
 /// `rate * n / sr` over a long render. `rates` are `(frame, hz)`: the rate in force from
 /// that frame on.
 fn exact_delays(len: usize, depth: f32, rate: f32, rates: &[(usize, f32)]) -> Vec<f64> {
-    let mut inc = PhaseIncrement::per_sample(Hz(rate), SampleRate(SR));
+    let mut inc = PhaseIncrement::per_sample(Hz(rate), SampleRate::of(SR));
     let mut phase = Phase::START;
     (0..len)
         .map(|n| {
             if let Some(&(_, hz)) = rates.iter().find(|r| r.0 == n) {
-                inc = PhaseIncrement::per_sample(Hz(hz), SampleRate(SR));
+                inc = PhaseIncrement::per_sample(Hz(hz), SampleRate::of(SR));
             }
             let turns = f64::from(phase.get());
             phase = phase.advance(inc);
@@ -384,7 +384,7 @@ fn a_sweep_reaches_base_plus_and_minus_the_depth_floored_at_a_frame() {
     let chorus = ModDelayFamily::chorus(BusTopology::MONO);
     let m = chorus.member(&controls(1.0, 0.005, 0.0), RATE);
     assert_eq!(m.delay_range(), 240.0..=720.0);
-    let m = chorus.member(&controls(1.0, 0.005, 0.0), SampleRate(96_000.0));
+    let m = chorus.member(&controls(1.0, 0.005, 0.0), SampleRate::SR_96K);
     assert_eq!(m.delay_range(), 480.0..=1_440.0);
     // A depth past the base: 1 ms base, 10 ms deep: from one frame to 11 ms.
     let flanger = family(1, short_base(), step(0.0));
@@ -726,7 +726,7 @@ fn a_frozen_flanger_has_notches_at_odd_multiples_of_half_over_the_delay() {
         Feedback::MAX_STABLE,
     );
     let f = family(1, sweep, step(0.0));
-    let rate = SampleRate(49_152.0);
+    let rate = SampleRate::of(49_152.0);
     let m = f.member(&controls(0.5, 0.0, 0.0), rate);
     let d = m.centre_frames().round();
     assert_eq!(d, 48.0);
@@ -765,7 +765,7 @@ fn a_frozen_flanger_has_notches_at_odd_multiples_of_half_over_the_delay() {
 /// and `g f^2` at `2d + 2`, the first at `d` and `d + 1` of `1 - f` and `f`.
 #[test]
 fn the_feedback_loops_period_is_the_delay() {
-    let rate = SampleRate(49_152.0);
+    let rate = SampleRate::of(49_152.0);
     let g = 0.5f32;
     let sweep = |frames: f64| {
         Sweep::of(

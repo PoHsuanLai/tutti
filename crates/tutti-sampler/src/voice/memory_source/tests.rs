@@ -9,13 +9,13 @@ use tutti_types::UnitParam;
 
 fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
     let samples: Vec<f32> = (0..len).map(|i| (i + 1) as f32).collect();
-    Arc::new(Wave::from_samples(SampleRate::new(sample_rate), &samples))
+    Arc::new(Wave::from_samples(SampleRate::of(sample_rate), &samples))
 }
 
 fn stereo_ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
     let mut wave = Wave::zero(
         2,
-        SampleRate::new(sample_rate),
+        SampleRate::of(sample_rate),
         Seconds::new(len as f64) / sample_rate,
     );
     for i in 0..len {
@@ -33,7 +33,7 @@ const SR: f64 = 44_100.0;
 /// is not moved. Every output channel, planar.
 fn planes(unit: &mut MemorySource, t: Option<&MockTransport>, n: usize) -> Vec<Vec<f32>> {
     let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
-    crate::testing::block(unit, t.unwrap_or(&stopped), SampleRate::new(SR), n)
+    crate::testing::block(unit, t.unwrap_or(&stopped), SampleRate::of(SR), n)
 }
 
 /// [`planes`]' first two channels, as `(left, right)` frames (a mono
@@ -88,7 +88,7 @@ fn assert_blocks_match_frames(
         .map(|_| {
             let f = block(&mut a, transport.map(|t| &**t), 1)[0];
             if let Some(t) = transport {
-                t.advance(1, SampleRate::new(SR));
+                t.advance(1, SampleRate::of(SR));
             }
             f
         })
@@ -96,7 +96,7 @@ fn assert_blocks_match_frames(
 
     // Rewind so the block sees the same span the frames just walked.
     if let Some(t) = transport {
-        t.advance(-(n as i64), SampleRate::new(SR));
+        t.advance(-(n as i64), SampleRate::of(SR));
     }
     let whole = block(&mut b, transport.map(|t| &**t), n);
 
@@ -292,8 +292,8 @@ fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
     for len in [64usize, 1] {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         let mut u = placed_unit(&wave, 1.0);
-        u.set_render_rate(SampleRate::new(48_000.0));
-        let out = crate::testing::play(&mut u, &transport, SampleRate::new(48_000.0), 512, len);
+        u.set_render_rate(SampleRate::SR_48K);
+        let out = crate::testing::play(&mut u, &transport, SampleRate::SR_48K, 512, len);
         // From frame 4: the first frames' taps clamp at the file's start.
         for (n, &l) in out[0].iter().enumerate().skip(4) {
             let want = n as f32 / 2.0 + 1.0;
@@ -324,10 +324,10 @@ fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
     let wave = ramp_wave(4_096, 24_000.0);
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 1.0);
-    u.set_render_rate(SampleRate::new(48_000.0));
+    u.set_render_rate(SampleRate::SR_48K);
     let mut clock = Clock::new();
     for block in 0..4 {
-        let env = transport.env(64, SampleRate::new(48_000.0));
+        let env = transport.env(64, SampleRate::SR_48K);
         let bc = clock.observe(&env);
         let mut out = [None; 64];
         u.placed_positions(&bc, 0..64, ReadRate(0.5), &mut out);
@@ -340,7 +340,7 @@ fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
                 pos.get()
             );
         }
-        transport.advance(64, SampleRate::new(48_000.0));
+        transport.advance(64, SampleRate::SR_48K);
     }
 }
 
@@ -386,7 +386,7 @@ fn a_rate_change_lands_on_the_next_block() {
     let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 1.0);
     let first = block(&mut u, Some(&transport), 16);
-    transport.advance(16, SampleRate::new(SR));
+    transport.advance(16, SampleRate::of(SR));
     u.set_speed(PlaybackRate::new(2.0));
     let second = block(&mut u, Some(&transport), 16);
     for w in first.windows(2) {
@@ -478,7 +478,7 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     let wave = ramp_wave(16_384, 44_100.0);
     let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 1.0);
-    let mut env = transport.env(64, SampleRate::new(SR));
+    let mut env = transport.env(64, SampleRate::of(SR));
     let mut changes = TransportChanges::NONE;
     let stop_beat = Beat::new(0.25 + 40.0 * 2.0 / SR);
     changes
@@ -555,7 +555,7 @@ fn loop_wrap_survives_a_degenerate_region() {
 
 #[test]
 fn test_sampler_outputs_silence_when_stopped() {
-    let wave = Wave::with_capacity(1, SampleRate::new(44100.0), 100);
+    let wave = Wave::with_capacity(1, SampleRate::SR_44K1, 100);
     let mut sampler = MemorySource::new(Arc::new(wave)).expect("a placeable wave");
 
     sampler.stop();
@@ -570,7 +570,7 @@ fn test_sampler_outputs_silence_when_stopped() {
 #[test]
 fn test_loop_crossfade_integration() {
     let samples: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
-    let wave = Wave::from_samples(SampleRate::new(44100.0), &samples);
+    let wave = Wave::from_samples(SampleRate::SR_44K1, &samples);
     let mut sampler = MemorySource::new(Arc::new(wave)).expect("a placeable wave");
 
     sampler.set_loop(Some(loop_frames(10, 90, 10)));
@@ -699,7 +699,7 @@ fn placement_gate_applies_src_ratio_exactly_once() {
     let transport = MockTransport::rolling(Beat::new(4.0), Bpm::of(120.0));
     let mut sampler =
         MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
-    sampler.set_render_rate(SampleRate::new(44_100.0));
+    sampler.set_render_rate(SampleRate::SR_44K1);
     assert!(
         (sampler.src_ratio().get() - (48_000.0 / 44_100.0)).abs() < 1e-4,
         "setup: the session rate must produce a non-unity src_ratio, else \
@@ -751,7 +751,7 @@ fn window_rate_matches_the_gate_and_excludes_src_ratio() {
     let wave = ramp_wave(200_000, 48_000.0);
     let mut sampler = MemorySource::new(wave).expect("a placeable wave");
     sampler.set_speed(PlaybackRate::new(2.0));
-    sampler.set_render_rate(SampleRate::new(44_100.0));
+    sampler.set_render_rate(SampleRate::SR_44K1);
 
     // Varispeed alone: the gate already resolved the file rate.
     assert!((sampler.window_rate().get() - 2.0).abs() < 1e-6);
@@ -779,7 +779,7 @@ fn src_ratio_tracks_the_rate_mismatch() {
     ] {
         let wave = ramp_wave(100, wave_hz);
         let mut sampler = MemorySource::new(wave).expect("a placeable wave");
-        sampler.set_session_sample_rate(SampleRate::new(session_hz));
+        sampler.set_session_sample_rate(SampleRate::of(session_hz));
 
         let mut out = [0.0f32; 2];
         frame_into(&mut sampler, None, &mut out);
@@ -1048,7 +1048,7 @@ fn prepare_updates_src_ratio() {
     let mut sampler = MemorySource::new(wave).expect("a placeable wave");
 
     sampler.prepare(&Prepare::new(
-        SampleRate(24000.0),
+        SampleRate::of(24000.0),
         MaxBlock::of(Samples(64)),
     ));
 
@@ -1103,7 +1103,7 @@ fn looping_wraps_and_continues_producing_audio() {
 fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
     let mut w = Wave::zero(
         channels,
-        SampleRate::new(44_100.0),
+        SampleRate::SR_44K1,
         Seconds::new(len as f64) / 44_100.0,
     );
     for i in 0..w.len() {
@@ -1229,7 +1229,7 @@ fn a_gain_change_reaches_the_rendering_node() {
     let wave = ramp_wave(64, 44_100.0);
     let mut solo = Solo::new(
         MemorySource::with_channels(wave, 1u16).expect("a placeable wave"),
-        Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))),
+        Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))),
     );
     assert!(solo.controls().set(UnitParam::Volume, 0.25));
     let out = solo.render(1);
@@ -1325,7 +1325,7 @@ fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
         )
         .expect("a placeable wave")
         .placed_at(VoiceWindow::default());
-        lanes.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
+        lanes.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
         assert!(lanes.gather.frames() >= 8, "the lane path is reachable");
         let free = planes(&mut free, None, 8);
         let placed = planes(&mut placed, Some(&transport), 8);

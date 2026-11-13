@@ -12,7 +12,7 @@ use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 fn session() -> Session {
     Session::builder()
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds")
 }
 
@@ -101,7 +101,7 @@ fn two_loads_land_each_with_its_own_id_and_file() {
 fn a_dropped_job_lands_as_a_job_error() {
     let mut s = Session::builder()
         .spawn_with(drop)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds");
     let id = s.midi().load_file("never-read.mid");
     let (load, file) = land(&mut s, 1, files).pop().unwrap();

@@ -41,15 +41,17 @@ impl Wire {
 fn rig(wire: &Wire) -> Session {
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
         .expect("builds");
     let _ = s.update();
     s.midi_nodes().unwrap().clock_master.set_enabled(true);
-    s.midi()
-        .set_hardware_out(Some(UmpOut::new(Box::new(wire.clone()), SampleRate(RATE))));
+    s.midi().set_hardware_out(Some(UmpOut::new(
+        Box::new(wire.clone()),
+        SampleRate::of(RATE),
+    )));
     s.transport()
         .motion()
         .try_send(MotionEvent::Play)
@@ -154,10 +156,10 @@ fn a_full_tap_counts_what_it_drops() {
 fn a_re_rated_graph_reopens_the_hardware_tap_at_the_next_update() {
     let wire = Wire::default();
     let mut s = rig(&wire);
-    assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate(RATE)));
-    s.graph().set_sample_rate(SampleRate(44_100.0));
+    assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate::of(RATE)));
+    s.graph().set_sample_rate(SampleRate::SR_44K1);
     let _ = s.update();
-    assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate(44_100.0)));
+    assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate::SR_44K1));
 }
 
 /// **Reopening one tap supersedes that tap's reader and no other's.** Two taps
@@ -180,13 +182,13 @@ fn reopening_one_tap_leaves_the_others_fed() {
         .open_event(EventOutPort::new(clock, 0), TapAlign::Raw, 64)
         .unwrap();
     let _ = s.update();
-    s.graph().set_sample_rate(SampleRate(44_100.0));
+    s.graph().set_sample_rate(SampleRate::SR_44K1);
     let reopened = s
         .graph()
         .taps()
         .reopen_event(first.id())
         .expect("the tap is open");
-    assert_eq!(reopened.rate(), SampleRate(44_100.0));
+    assert_eq!(reopened.rate(), SampleRate::SR_44K1);
     assert_eq!(reopened.id(), first.id());
     first = reopened;
     // The re-prepare's second half lands on a render, then the commit.
@@ -200,5 +202,5 @@ fn reopening_one_tap_leaves_the_others_fed() {
     }; 64];
     assert!(first.pop_into(&mut chunk) > 0, "the reopened tap is fed");
     assert!(second.pop_into(&mut chunk) > 0, "the other is still fed");
-    assert_eq!(second.rate(), SampleRate(RATE), "and on its own rate");
+    assert_eq!(second.rate(), SampleRate::of(RATE), "and on its own rate");
 }

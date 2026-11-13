@@ -17,7 +17,7 @@ use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 fn spec_at(rate: f64) -> OutputSpec {
     OutputSpec::new(
-        SampleRate(rate),
+        SampleRate::of(rate),
         ChannelLayout::STEREO,
         tutti_cpal::cpal::SampleFormat::F32,
     )

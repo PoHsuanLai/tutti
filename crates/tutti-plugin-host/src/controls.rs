@@ -316,7 +316,7 @@ impl PluginControls {
 
     /// The sample rate a source installed now would be stamped with.
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(self.sample_rate.load(Ordering::Acquire))
+        SampleRate::new(self.sample_rate.load(Ordering::Acquire)).unwrap_or(SampleRate::DEFAULT)
     }
 
     /// Update the shared rate and re-stamp every installed source. Called from
@@ -385,7 +385,7 @@ mod tests {
     use tutti_types::MeterMap;
 
     fn controls() -> PluginControls {
-        PluginControls::new(Samples(0), PluginTail::default(), SampleRate(44_100.0))
+        PluginControls::new(Samples(0), PluginTail::default(), SampleRate::SR_44K1)
     }
 
     /// A handle taken *before* a rate change reads the new rate — the
@@ -397,8 +397,8 @@ mod tests {
     fn a_handle_taken_before_a_rate_change_reads_the_new_rate() {
         let node = controls();
         let held = node.clone();
-        node.restamp(SampleRate(48_000.0));
-        assert_eq!(held.sample_rate(), SampleRate(48_000.0));
+        node.restamp(SampleRate::SR_48K);
+        assert_eq!(held.sample_rate(), SampleRate::SR_48K);
     }
 
     /// A fork has the live node's meter as it was at the gather, the one
@@ -410,7 +410,7 @@ mod tests {
         let live = controls();
         let meter = ProjectMeter::new(MeterMap::default());
         live.set_meter(meter.clone());
-        let fork = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(96_000.0));
+        let fork = PluginControls::new(Samples(0), PluginTail::default(), SampleRate::SR_96K);
         let gathered = live.sources_now();
         live.set_meter(ProjectMeter::new(MeterMap::default()));
         gathered.install(&fork);

@@ -68,7 +68,7 @@ use super::Curve;
 ///
 /// // No inputs, one output (the curve's value).
 /// let lane = AutomationLaneNode::new(trajectory);
-/// let mut solo = Solo::new(lane, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
+/// let mut solo = Solo::new(lane, Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))));
 /// solo.renderer_mut()
 ///     .set_transport(TransportPosition::new(false, Bpm::of(120.0), Beat(2.0), None));
 /// let out = solo.render(1);
@@ -241,7 +241,7 @@ mod tests {
     fn render(lane: AutomationLaneNode, transport: TransportPosition, frames: usize) -> Vec<f32> {
         let mut solo = Solo::new(
             lane,
-            Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(frames))),
+            Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(frames))),
         );
         solo.renderer_mut().set_transport(transport);
         solo.render(frames).remove(0)
@@ -354,7 +354,7 @@ mod tests {
         flat.add_breakpoint(Breakpoint::new(Beat(8.0), 0.5));
         let mut d = tutti_graph::contract::Direct::new(
             AutomationLaneNode::new(flat),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             64,
         );
         assert_eq!(d.node.last_value(), 0.0);

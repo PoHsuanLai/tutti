@@ -47,7 +47,7 @@
 //! let lp = g.add(ForkByClone(Lowpass { a: 0.1, y: 0.0 }));
 //! g.pipe_input(lp).pipe_output(lp);
 //! let mut r = g
-//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))))
+//!     .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256))))
 //!     .expect("builds");
 //! let out = r.render_input(&[&[1.0; 1_000]]);
 //! assert!(out[0][999] > 0.9); // a lowpass passes DC
@@ -129,7 +129,7 @@
 //! let gain = g.add(ForkByClone(Gain(0.5)));
 //! g.pipe_input(gain).pipe_output(gain);
 //! let mut r = g
-//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))))
 //!     .expect("builds");
 //! assert_eq!(r.render_input(&[&[1.0; 8]])[0], [0.5; 8]);
 //! ```
@@ -271,7 +271,7 @@
 //! let (volume, controls) = g.add_with_controls(Params(Volume { level: Param::new(Amplitude(1.0)) }));
 //! g.pipe_input(volume).pipe_output(volume);
 //! let mut r = g
-//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))))
 //!     .expect("builds");
 //! assert_eq!(r.render_input(&[&[1.0; 4]])[0], [1.0; 4]);
 //! // A host sets it by address; the next block reads the cell.
@@ -343,7 +343,7 @@
 //! let gate = g.add(ForkByClone(Gate { open: false }));
 //! g.connect_events(pulse, 0, gate, 0).pipe_output(gate);
 //! let mut r = g
-//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))))
 //!     .expect("builds");
 //! assert_eq!(r.render(6)[0], [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
 //! # let _ = Offset::ZERO;
@@ -400,7 +400,7 @@
 //! let echo = g.add(ForkByClone(Echo { taps: 3, period: 4_800, on: false }));
 //! g.pipe_input(echo).pipe_output(echo);
 //! let mut r = g
-//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))))
 //!     .expect("builds");
 //! assert_eq!(r.render_input(&[&[0.5; 4]])[0], [0.5; 4]);
 //! ```

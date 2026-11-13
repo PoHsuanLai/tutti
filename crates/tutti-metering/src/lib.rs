@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! Load monitoring: how much of each block's time budget the render used.
 //!
 //! [`LoadMeter`] reports the render time against the budget (the audio thread

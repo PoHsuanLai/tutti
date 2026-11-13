@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The format-generic half of plugin hosting (design 021, step 4a).
 //!
 //! What a loaded plugin's host side needs whatever process the plugin runs in,

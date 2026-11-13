@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! Musical time: where the playhead is, how fast it moves, and what moves it.
 //!
 //! Split by *who decides*. [`TransportSettings`] holds the plain values (tempo,

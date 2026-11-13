@@ -39,7 +39,7 @@ use super::record::{Record, Streams};
 /// on *how long* to sleep (the loop sleeps until a source rings the bell, or
 /// the backstop passes), only on whether sleeping is safe, which is why this
 /// carries no duration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepOutcome {
     /// No stream is live: none is open, or each is still opening or faulted.
     /// Nothing to refill; sleep.

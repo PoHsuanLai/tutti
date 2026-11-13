@@ -4,7 +4,7 @@ use tutti_types::{Beat, Bpm};
 ///
 /// Named for the transition between two points (a segment of the map), not for
 /// a drawing: it is the law of the tempo across that segment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Transition {
     /// Hold this tempo until the next point.
     Step,

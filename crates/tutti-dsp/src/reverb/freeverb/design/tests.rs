@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{Db, Seconds};
 
 use super::*;
@@ -26,7 +26,9 @@ impl FamilyCase for FreeverbFamily {
             .flat_map(|&r| steps.iter().map(move |&d| controls(r, d)))
             .collect();
         let mut rng = StdRng::seed_from_u64(22);
-        all.extend((0..200).map(|_| controls(rng.gen_range(0.0..=1.0), rng.gen_range(0.0..=1.0))));
+        all.extend(
+            (0..200).map(|_| controls(rng.random_range(0.0..=1.0), rng.random_range(0.0..=1.0))),
+        );
         all
     }
 

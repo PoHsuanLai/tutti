@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tutti_types::{BusTopology, Db, Depth, Feedback, Hz, Phase, PhaseIncrement, SampleRate};
 
@@ -52,9 +52,9 @@ impl FamilyCase for PhaserFamily {
         let mut rng = StdRng::seed_from_u64(14);
         all.extend((0..32).map(|_| {
             controls(
-                rng.gen_range(0.01..30.0),
-                rng.gen_range(-1.0..=1.0),
-                rng.gen_range(0.0..=0.99),
+                rng.random_range(0.01..30.0),
+                rng.random_range(-1.0..=1.0),
+                rng.random_range(0.0..=0.99),
             )
         }));
         all

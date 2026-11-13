@@ -778,7 +778,7 @@ pub fn step_spectrum(
 mod tests {
     use super::*;
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use std::f64::consts::TAU;
     use tutti_types::SampleRate;
     use tutti_types::Samples;
@@ -982,7 +982,7 @@ mod tests {
             .with_spectrogram(FrameCount(6))
             .unwrap();
         let mut rng = StdRng::seed_from_u64(7);
-        let signal: Vec<f32> = (0..9_000).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let signal: Vec<f32> = (0..9_000).map(|_| rng.random_range(-1.0..1.0)).collect();
         let read = |block: usize| {
             let mut fft = FftScratch::new();
             let mut state = SpectrumState::new(&cfg, &mut fft);
@@ -1023,7 +1023,7 @@ mod tests {
         let sigma = 0.1f64;
         let mut rng = StdRng::seed_from_u64(0x5eed);
         let mut gauss = || {
-            let (u, v): (f64, f64) = (rng.gen_range(1e-12..1.0), rng.gen_range(0.0..1.0));
+            let (u, v): (f64, f64) = (rng.random_range(1e-12..1.0), rng.random_range(0.0..1.0));
             sigma * (-2.0 * u.ln()).sqrt() * (TAU * v).cos()
         };
         let frames = 600;

@@ -3,10 +3,9 @@ name = "tutti-vst3-host"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "VST3 plugin hosting library for Rust"
+description = "A host for VST3 plugins, with no C++ SDK needed in your project"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-vst3-host"
 readme = "README.md"
 keywords = ["vst3", "audio", "plugin", "dsp", "host"]
 categories = ["multimedia::audio"]
@@ -79,7 +78,7 @@ tempfile = "3"
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin", "vst3-cpp"] }
 tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
-# The README's editor example takes any `raw-window-handle` window.
+# The crate docs' editor example takes any `raw-window-handle` window.
 raw-window-handle = "0.6"
 
 [[test]]

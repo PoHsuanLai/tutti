@@ -111,8 +111,8 @@ use std::time::Instant;
 
 use tutti_graph::Offset;
 use tutti_midi_device::{
-    CiAction, CiCategories, CiDevice, CiHeader, CiMessage, CiPeer, Decoded, MaxSysexSize, Muid,
-    ProfileAction, ProfileInitiator,
+    CiAction, CiCategories, CiDevice, CiHeader, CiMessage, CiPeer, Decoded, DeviceId, MaxSysexSize,
+    Muid, ProfileAction, ProfileInitiator,
 };
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexStep, Ump};
 
@@ -273,8 +273,9 @@ struct Running {
 
 /// One input's MIDI-CI: the Groups it is to run on, once the negotiation or the
 /// inquiry has decided them, and the devices while they run.
-#[derive(Default)]
 pub(crate) struct Ci {
+    /// The device the input is, named in every Profile snapshot.
+    device: DeviceId,
     groups: Vec<MidiGroup>,
     running: Option<Box<Running>>,
     /// Every peer found, by Group then MUID: rebuilt when a step changes them,
@@ -313,6 +314,18 @@ pub(crate) fn groups_of_a_midi1_port() -> Vec<MidiGroup> {
 }
 
 impl Ci {
+    /// MIDI-CI for the input `device`, with nothing decided.
+    pub(crate) fn new(device: DeviceId) -> Self {
+        Self {
+            device,
+            groups: Vec::new(),
+            running: None,
+            peers: Arc::default(),
+            profiles: Arc::default(),
+            queue: Vec::new(),
+        }
+    }
+
     /// MIDI-CI is to run on `groups` when it is enabled.
     pub(crate) fn decide(&mut self, groups: Vec<MidiGroup>) {
         self.groups = groups;
@@ -424,6 +437,7 @@ impl Ci {
                     .initiators
                     .iter()
                     .map(|(&muid, initiator)| PeerProfiles {
+                        device: self.device.clone(),
                         group: member.group,
                         muid,
                         known: initiator.is_known(),

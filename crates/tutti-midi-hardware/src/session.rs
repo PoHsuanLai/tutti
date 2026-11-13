@@ -323,10 +323,11 @@ impl MidiSession {
         let os = self.inner.devices.capability(&id).unwrap_or_default();
         // A MIDI 1.0 port with an output is asked for its identity instead.
         let out = self.inner.devices.open_output(&id).ok();
+        let stream = Negotiation::new(id.clone(), os, out);
         open.inputs.insert(
             id,
             Held {
-                stream: Negotiation::new(os, out),
+                stream,
                 hearing: false,
                 lost_seen: 0,
                 input,
@@ -618,8 +619,8 @@ impl MidiSession {
             .map_or_else(Arc::default, |held| held.stream.profiles())
     }
 
-    /// Asks a peer on the open input `id` to enable or disable a Profile it
-    /// lists, as the Initiator (M2-101 §§7.8, 7.9): the request is sent at the
+    /// Asks a peer to enable or disable a Profile it lists, on the input the
+    /// [`ProfileSwitch`] was made from, as the Initiator (M2-101 §§7.8, 7.9): the request is sent at the
     /// next [`poll`](Self::poll), and its end is a [`ProfilesChange::Resolved`]
     /// (the peer's Enabled or Disabled Report, its NAK, or [`PROFILE_TIMEOUT`]
     /// with no answer). Make the [`ProfileSwitch`] from a handle in
@@ -627,20 +628,16 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`ProfileError::NotOpen`] when `id` is not an open input,
+    /// [`ProfileError::NotOpen`] when that input has since closed,
     /// [`ProfileError::NoSuchPeer`] when the peer is gone, and
     /// [`ProfileError::NotListed`] when it no longer lists the Profile there.
     ///
     /// [`PROFILE_TIMEOUT`]: tutti_midi_device::PROFILE_TIMEOUT
-    pub fn set_profile(
-        &self,
-        id: &DeviceId,
-        switch: ProfileSwitch,
-    ) -> std::result::Result<(), ProfileError> {
+    pub fn set_profile(&self, switch: ProfileSwitch) -> std::result::Result<(), ProfileError> {
         self.inner
             .open()
             .inputs
-            .get_mut(id)
+            .get_mut(&switch.device)
             .ok_or(ProfileError::NotOpen)?
             .stream
             .set_profile(switch)

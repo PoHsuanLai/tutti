@@ -76,6 +76,7 @@ use crate::ci::{
 };
 use crate::devices::OpenOutput;
 use crate::profiles::{ProfileError, ProfileSwitch, ProfilesChange, Snapshot};
+use tutti_midi_device::DeviceId;
 
 /// The configuration the session asks every Endpoint for (see the module).
 const WANTED: StreamConfig = StreamConfig {
@@ -253,7 +254,7 @@ impl Negotiation {
     /// The negotiation for a device the OS describes as `os`, on `out` when it
     /// has an output. It asks only a UMP Endpoint that has an output; any
     /// other is [`Basis::Described`] at once.
-    pub(crate) fn new(os: UmpCapability, out: Option<OpenOutput>) -> Self {
+    pub(crate) fn new(device: DeviceId, os: UmpCapability, out: Option<OpenOutput>) -> Self {
         let asks = os.is_ump_endpoint() && out.is_some();
         let inquire = if !os.is_ump_endpoint() && out.is_some() {
             Inquire::Idle
@@ -276,7 +277,7 @@ impl Negotiation {
             out,
             run,
             inquire,
-            ci: Ci::default(),
+            ci: Ci::new(device),
         }
     }
 

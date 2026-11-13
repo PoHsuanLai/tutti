@@ -1206,7 +1206,7 @@ fn a_set_profile_on_names_the_channel_and_its_enabled_report_updates_the_table()
     };
     let _ = received(&wire);
     wire.session
-        .set_profile(&wire.id, c.enable(ChannelCount::new(3).unwrap()))
+        .set_profile(c.enable(ChannelCount::new(3).unwrap()))
         .unwrap();
     assert!(received(&wire).is_empty(), "sent at the next poll");
     let none = polled(&wire, 110);
@@ -1277,7 +1277,7 @@ fn a_set_profile_on_a_group_asks_for_no_channels_and_off_is_resolved_by_the_disa
         panic!("one Group Profile: {listed:?}");
     };
     let _ = received(&wire);
-    wire.session.set_profile(&wire.id, whole.enable()).unwrap();
+    wire.session.set_profile(whole.enable()).unwrap();
     let _ = polled(&wire, 110);
     let sent = payloads(&received(&wire));
     let [(_, on)] = sent.as_slice() else {
@@ -1298,9 +1298,7 @@ fn a_set_profile_on_a_group_asks_for_no_channels_and_off_is_resolved_by_the_disa
     );
     let _ = polled(&wire, 130);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
-    wire.session
-        .set_profile(&wire.id, listed[0].disable())
-        .unwrap();
+    wire.session.set_profile(listed[0].disable()).unwrap();
     let _ = polled(&wire, 140);
     let sent = payloads(&received(&wire));
     let [(_, off)] = sent.as_slice() else {
@@ -1389,12 +1387,11 @@ fn added_and_removed_reports_change_the_list_and_a_stale_handle_is_refused() {
         ),
         "{changes:?}"
     );
-    let ListedProfile::Channel(old) = stale[0] else {
+    let ListedProfile::Channel(old) = &stale[0] else {
         panic!("a Channel Profile");
     };
     assert_eq!(
-        wire.session
-            .set_profile(&wire.id, old.enable(ChannelCount::ONE)),
+        wire.session.set_profile(old.enable(ChannelCount::ONE)),
         Err(ProfileError::NotListed)
     );
 }
@@ -1408,11 +1405,11 @@ fn an_invalidate_muid_drops_the_peers_profiles_and_refuses_its_handles() {
     let (wire, ours) = profile_peer();
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
-    let ListedProfile::Channel(c) = listed[0] else {
+    let ListedProfile::Channel(c) = &listed[0] else {
         panic!("a Channel Profile");
     };
     wire.session
-        .set_profile(&wire.id, c.enable(ChannelCount::ONE))
+        .set_profile(c.enable(ChannelCount::ONE))
         .unwrap();
     say(
         &wire,
@@ -1437,8 +1434,7 @@ fn an_invalidate_muid_drops_the_peers_profiles_and_refuses_its_handles() {
         "the queued switch was not sent to a peer that is gone"
     );
     assert_eq!(
-        wire.session
-            .set_profile(&wire.id, c.enable(ChannelCount::ONE)),
+        wire.session.set_profile(c.enable(ChannelCount::ONE)),
         Err(ProfileError::NoSuchPeer)
     );
 }
@@ -1469,11 +1465,11 @@ fn a_set_profile_nothing_answers_times_out_after_the_profile_timeout() {
     let (wire, ours) = profile_peer();
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
-    let ListedProfile::Channel(c) = listed[0] else {
+    let ListedProfile::Channel(c) = &listed[0] else {
         panic!("a Channel Profile");
     };
     wire.session
-        .set_profile(&wire.id, c.enable(ChannelCount::ONE))
+        .set_profile(c.enable(ChannelCount::ONE))
         .unwrap();
     let sent_at = 200;
     let _ = polled(&wire, sent_at);
@@ -1530,13 +1526,13 @@ fn a_request_while_one_for_that_profile_waits_is_not_sent() {
     let (wire, ours) = profile_peer();
     known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
     let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
-    let ListedProfile::Channel(c) = listed[0] else {
+    let ListedProfile::Channel(c) = &listed[0] else {
         panic!("a Channel Profile");
     };
     let _ = received(&wire);
     for _ in 0..2 {
         wire.session
-            .set_profile(&wire.id, c.enable(ChannelCount::ONE))
+            .set_profile(c.enable(ChannelCount::ONE))
             .unwrap();
     }
     let changes = polled(&wire, 110);

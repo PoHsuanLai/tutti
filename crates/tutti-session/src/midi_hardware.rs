@@ -130,8 +130,8 @@ impl Midi<'_> {
         self.io.map_or_else(Arc::default, |io| io.profiles(id))
     }
 
-    /// Asks a peer on the open input `id` to enable or disable a Profile it
-    /// lists. The request goes out at the next update, and its end (the peer's
+    /// Asks a peer to enable or disable a Profile it lists, on the input the
+    /// switch was made from. The request goes out at the next update, and its end (the peer's
     /// Enabled or Disabled Report, its NAK, or a timeout with no answer) is a
     /// [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles) with
     /// [`ProfilesChange::Resolved`](tutti_midi_hardware::ProfilesChange::Resolved).
@@ -139,10 +139,10 @@ impl Midi<'_> {
     /// # Errors
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
-    /// [`MidiError::Profile`] when `id` is not an open input, the peer is gone,
+    /// [`MidiError::Profile`] when the input the switch was made from has closed, the peer is gone,
     /// or it no longer lists the Profile there.
-    pub fn set_profile(&mut self, id: &DeviceId, switch: ProfileSwitch) -> Result<()> {
-        Ok(self.hardware()?.set_profile(id, switch)?)
+    pub fn set_profile(&mut self, switch: ProfileSwitch) -> Result<()> {
+        Ok(self.hardware()?.set_profile(switch)?)
     }
 
     /// Returns what the open input `id` has said about itself so far: its Device

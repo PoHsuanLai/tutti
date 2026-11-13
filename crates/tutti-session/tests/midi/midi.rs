@@ -1445,7 +1445,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
             };
             assert_eq!(listed[0].state(), ProfileState::Disabled);
             s.midi()
-                .set_profile(id, c.enable(ChannelCount::new(2).unwrap()))
+                .set_profile(c.enable(ChannelCount::new(2).unwrap()))
                 .expect("the peer lists it");
             switched = true;
         }

@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use tutti_midi_device::{
-    CiDeviceId, Muid, Outcome, ProfileChange, ProfileChannels, ProfileEntry, ProfileId,
+    CiDeviceId, DeviceId, Muid, Outcome, ProfileChange, ProfileChannels, ProfileEntry, ProfileId,
     ProfileState, ProfileTable, ProfileTarget, Request, RequestError,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -55,8 +55,9 @@ impl ChannelCount {
 }
 
 /// What a peer's Profiles are at one address, as of when it was read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Listed {
+    device: DeviceId,
     group: MidiGroup,
     muid: Muid,
     profile: ProfileId,
@@ -64,7 +65,7 @@ struct Listed {
 }
 
 /// A Profile the peer lists on one Channel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelProfile {
     listed: Listed,
     channel: MidiChannel,
@@ -80,7 +81,7 @@ pub enum Whole {
 }
 
 /// A Profile the peer lists on the whole Group or Function Block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WholeProfile {
     listed: Listed,
     whole: Whole,
@@ -88,7 +89,7 @@ pub struct WholeProfile {
 
 /// A Profile a peer lists, at the address it lists it: the handle a
 /// [`ProfileSwitch`] is made from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListedProfile {
     /// On one Channel: enabling it says how many Channels it is to use.
     Channel(ChannelProfile),
@@ -105,9 +106,11 @@ pub(crate) enum Switch {
 
 /// A request that a peer enable or disable one Profile it lists
 /// ([`MidiSession::set_profile`](crate::MidiSession::set_profile)). Made only
-/// from a [`ListedProfile`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// from a [`ListedProfile`], and it names the input device that handle was read
+/// from, so it cannot be sent to another.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileSwitch {
+    pub(crate) device: DeviceId,
     pub(crate) group: MidiGroup,
     pub(crate) muid: Muid,
     pub(crate) profile: ProfileId,
@@ -115,8 +118,9 @@ pub struct ProfileSwitch {
 }
 
 impl Listed {
-    const fn on(self, target: ProfileTarget) -> ProfileSwitch {
+    fn on(&self, target: ProfileTarget) -> ProfileSwitch {
         ProfileSwitch {
+            device: self.device.clone(),
             group: self.group,
             muid: self.muid,
             profile: self.profile,
@@ -124,8 +128,9 @@ impl Listed {
         }
     }
 
-    const fn off(self, address: CiDeviceId) -> ProfileSwitch {
+    fn off(&self, address: CiDeviceId) -> ProfileSwitch {
         ProfileSwitch {
+            device: self.device.clone(),
             group: self.group,
             muid: self.muid,
             profile: self.profile,
@@ -138,7 +143,7 @@ impl ChannelProfile {
     /// Asks the peer to enable the Profile on this Channel, as the Manager of
     /// `channels` Channels in all.
     #[must_use]
-    pub const fn enable(&self, channels: ChannelCount) -> ProfileSwitch {
+    pub fn enable(&self, channels: ChannelCount) -> ProfileSwitch {
         self.listed.on(ProfileTarget::Channel {
             channel: self.channel,
             channels: channels.0,
@@ -147,7 +152,7 @@ impl ChannelProfile {
 
     /// Asks the peer to disable the Profile on this Channel.
     #[must_use]
-    pub const fn disable(&self) -> ProfileSwitch {
+    pub fn disable(&self) -> ProfileSwitch {
         self.listed.off(CiDeviceId::Channel(self.channel))
     }
 
@@ -161,7 +166,7 @@ impl ChannelProfile {
 impl WholeProfile {
     /// Asks the peer to enable the Profile on the whole Group or Function Block.
     #[must_use]
-    pub const fn enable(&self) -> ProfileSwitch {
+    pub fn enable(&self) -> ProfileSwitch {
         self.listed.on(match self.whole {
             Whole::Group => ProfileTarget::Group,
             Whole::FunctionBlock => ProfileTarget::FunctionBlock,
@@ -170,7 +175,7 @@ impl WholeProfile {
 
     /// Asks the peer to disable the Profile on the whole Group or Function Block.
     #[must_use]
-    pub const fn disable(&self) -> ProfileSwitch {
+    pub fn disable(&self) -> ProfileSwitch {
         self.listed.off(match self.whole {
             Whole::Group => CiDeviceId::Group,
             Whole::FunctionBlock => CiDeviceId::FunctionBlock,
@@ -213,7 +218,7 @@ impl ListedProfile {
 
     /// Asks the peer to disable the Profile at its address.
     #[must_use]
-    pub const fn disable(&self) -> ProfileSwitch {
+    pub fn disable(&self) -> ProfileSwitch {
         match self {
             Self::Channel(p) => p.disable(),
             Self::Whole(p) => p.disable(),
@@ -225,6 +230,7 @@ impl ListedProfile {
 /// them. Shared by pointer, so a held one stays as it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerProfiles {
+    pub(crate) device: DeviceId,
     pub(crate) group: MidiGroup,
     pub(crate) muid: Muid,
     pub(crate) known: bool,
@@ -232,6 +238,12 @@ pub struct PeerProfiles {
 }
 
 impl PeerProfiles {
+    /// The input device the peer was found on.
+    #[must_use]
+    pub const fn device(&self) -> &DeviceId {
+        &self.device
+    }
+
     /// The Group of the connection the peer answered on.
     #[must_use]
     pub const fn group(&self) -> MidiGroup {
@@ -263,6 +275,7 @@ impl PeerProfiles {
         self.table.addresses().flat_map(move |address| {
             self.table.profiles(address).map(move |(profile, entry)| {
                 let listed = Listed {
+                    device: self.device.clone(),
                     group: self.group,
                     muid: self.muid,
                     profile,
@@ -369,7 +382,7 @@ pub enum ProfilesChange {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProfileError {
-    /// The device is not an open input.
+    /// The device the switch was made from is no longer an open input.
     #[error("the device is not an open input")]
     NotOpen,
     /// The peer is not one found on that input with Profile Configuration

@@ -1,18 +1,14 @@
-//! `check-session`: `tutti-session` is the Bevy-free API layer both umbrellas
-//! use, and not an umbrella itself (design 015 section 8).
+//! `check-session`: `tutti-session` is the API layer, and not an umbrella
+//! itself (design 015 section 8).
 //!
-//! Three assertions no compile can make:
+//! Two assertions no compile can make:
 //!
 //! 1. **No Bevy crate in its normal dependency closure, with every feature on.**
 //!    A `cargo tree`, not the workspace's metadata, which resolves features once
 //!    for the whole workspace; `--all-features` because a Bevy crate behind an
 //!    optional feature is absent from the default tree; `-e normal` keeps a
-//!    dev-dependency walk out. (`bevy-tutti` is parked, so no Bevy crate is in the
-//!    lock file at all; the guard still holds for an optional Bevy edge of an
-//!    engine crate, and for the day the adapter comes back.)
-//! 2. **No `bevy` feature** in the manifest of `tutti-session`, `tutti-graph`,
-//!    `tutti-ump` or `tutti-codec` (CLAUDE.md, "Setup": they must never grow one).
-//! 3. **No whole-crate re-export in `tutti-session`**: its source re-exports no
+//!    dev-dependency walk out.
+//! 2. **No whole-crate re-export in `tutti-session`**: its source re-exports no
 //!    crate or module whole (`pub use tutti_x as ..;`, `pub use tutti_x;`,
 //!    `pub use tutti_x::{self ..}`, or a glob anywhere under a `tutti_` path),
 //!    with or without attributes in front, across lines, in groups nested to any
@@ -20,20 +16,12 @@
 //!    signatures take. `pub(crate) use` is not a re-export. Each file is
 //!    lexed (comments and literals blanked) and each `pub use .. ;` read as a use
 //!    tree.
-//!
-//! The adapter's own rules (design 015 section 8, checks 3 and 5: it names no
-//! engine composition and holds no policy) are `scripts/parked/check-bevy-tutti.sh`,
-//! which nothing runs while `bevy-tutti` is parked.
 
 use super::lex::{blank, line_of};
-use super::toml::Toml;
 use super::{Cargo, Report, Tree};
 
 const SESSION: &str = "tutti-session";
 const SESSION_SRC: &str = "crates/tutti-session/src";
-/// The crates that never grow a `bevy` feature.
-const NO_BEVY_FEATURE: &[&str] = &["tutti-session", "tutti-graph", "tutti-ump", "tutti-codec"];
-
 fn skipped(dir: &str) -> bool {
     matches!(dir, "target" | ".git")
 }
@@ -182,33 +170,13 @@ pub(super) fn check(tree_: &dyn Tree, cargo: &dyn Cargo) -> Report {
             }
             if !bad.is_empty() {
                 bad.push(format!(
-                    "a Bevy crate is in {SESSION}'s normal dependency closure (with --all-features); \
-                     Bevy code goes in bevy-tutti, which depends on {SESSION}, never the reverse"
+                    "a Bevy crate is in {SESSION}'s normal dependency closure (with --all-features)"
                 ));
             }
         }
     }
 
-    // 2. The manifests' features.
-    for name in NO_BEVY_FEATURE {
-        let path = format!("crates/{name}/Cargo.toml");
-        let Some(text) = tree_.read(&path) else {
-            bad.push(format!("{path} does not exist; was {name} moved?"));
-            continue;
-        };
-        let has = Toml::parse(&text).section("features").is_some_and(|s| {
-            s.entries
-                .iter()
-                .any(|(k, _)| k == "bevy" || k == "\"bevy\"")
-        });
-        if has {
-            bad.push(format!(
-                "{path} declares a `bevy` feature; {name} has none and must never have one (the adapter is bevy-tutti)"
-            ));
-        }
-    }
-
-    // 3. Whole-crate re-exports.
+    // 2. Whole-crate re-exports.
     let files: Vec<String> = tree_
         .files(SESSION_SRC, &skipped)
         .into_iter()
@@ -246,7 +214,7 @@ pub(super) fn check(tree_: &dyn Tree, cargo: &dyn Cargo) -> Report {
 
     if bad.is_empty() {
         r.say(format!(
-            "check-session: ok ({SESSION} is Bevy-free and re-exports no crate whole; {} files)",
+            "check-session: ok ({SESSION} reaches no Bevy crate and re-exports no crate whole; {} files)",
             files.len()
         ));
     } else {
@@ -266,17 +234,10 @@ mod tests {
     const LIB: &str = "crates/tutti-session/src/lib.rs";
 
     fn clean() -> Mem {
-        let mut m = Mem::with(&[(
+        Mem::with(&[(
             LIB,
             "pub use tutti_graph::Editor;\npub(crate) use tutti_x;\n",
-        )]);
-        for c in NO_BEVY_FEATURE {
-            m.files.insert(
-                format!("crates/{c}/Cargo.toml"),
-                "[features]\ndefault = []\n".into(),
-            );
-        }
-        m
+        )])
     }
 
     fn lib(src: &str) -> Report {
@@ -294,7 +255,7 @@ mod tests {
         assert!(r.passed(), "{:?}", r.findings);
         assert_eq!(
             r.out[0],
-            "check-session: ok (tutti-session is Bevy-free and re-exports no crate whole; 1 files)"
+            "check-session: ok (tutti-session reaches no Bevy crate and re-exports no crate whole; 1 files)"
         );
     }
 
@@ -310,23 +271,6 @@ mod tests {
         assert!(check(&clean(), &TreeText("tutti-bevy v0\nbevytypo v0\n")).passed());
         let r = check(&clean(), &crate::gates::fake::NoCargo);
         assert!(r.findings[1].contains("cargo tree -p tutti-session did not run"));
-    }
-
-    #[test]
-    fn a_bevy_feature_fails_in_the_four_crates() {
-        let mut m = clean();
-        m.files.insert(
-            "crates/tutti-ump/Cargo.toml".into(),
-            "[features]\nbevy = [\"dep:bevy_reflect\"]\n".into(),
-        );
-        let r = check(&m, &TreeText(""));
-        assert!(r.findings[1].contains("crates/tutti-ump/Cargo.toml declares a `bevy` feature"));
-        // A dependency table entry named bevy is not a feature.
-        m.files.insert(
-            "crates/tutti-ump/Cargo.toml".into(),
-            "[dependencies]\nbevy = \"1\"\n".into(),
-        );
-        assert!(check(&m, &TreeText("")).passed());
     }
 
     #[test]

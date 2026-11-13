@@ -62,7 +62,7 @@ impl PortInfo {
 /// [`InputProducerHandle`] it returns from the driver's own thread; each port
 /// is an event inlet of the [`DeviceInlets`] the list was built over, which the
 /// graph's owner wires to the ingest node. When the connection closes,
-/// [`remove_input_port`](Self::remove_input_port) retires the port, and
+/// `remove_input_port` retires the port, and
 /// dropping the handle gave its slot back, so hot-plug cycles do not grow the
 /// set.
 ///
@@ -70,13 +70,18 @@ impl PortInfo {
 pub struct HardwareMidiInputs {
     inlets: Arc<DeviceInlets>,
     ports: Mutex<Ports>,
-    /// The losses of the ports removed so far, so a retired port's counts stay
-    /// in [`losses`](Self::losses).
-    retired: Mutex<Losses>,
 }
 
-/// The port list, keyed by the slot each port holds (in index order).
-type Ports = BTreeMap<DeviceSlot, Arc<HardwareMidiInput>>;
+/// The port list, keyed by the slot each port holds (in index order), and the
+/// losses of the ports removed so far. They share one lock so a port moves
+/// from the one to the other in one step, and a [`losses`](HardwareMidiInputs::losses)
+/// read never counts it twice or not at all.
+#[derive(Default)]
+struct Ports {
+    live: BTreeMap<DeviceSlot, Arc<HardwareMidiInput>>,
+    /// A retired port's counts stay in [`losses`](HardwareMidiInputs::losses).
+    retired: Losses,
+}
 
 impl HardwareMidiInputs {
     /// A list with no ports, each port an inlet of `inlets`.
@@ -84,8 +89,7 @@ impl HardwareMidiInputs {
     pub fn new(inlets: Arc<DeviceInlets>) -> Self {
         Self {
             inlets,
-            ports: Mutex::new(Ports::new()),
-            retired: Mutex::new(Losses::NONE),
+            ports: Mutex::new(Ports::default()),
         }
     }
 
@@ -107,8 +111,9 @@ impl HardwareMidiInputs {
     /// enough to fill it. Control side.
     #[must_use]
     pub fn losses(&self) -> Losses {
-        let live: Losses = self.ports().values().map(|p| p.losses()).sum();
-        live + *self.retired.lock().unwrap_or_else(PoisonError::into_inner)
+        let ports = self.ports();
+        let live: Losses = ports.live.values().map(|p| p.losses()).sum();
+        live + ports.retired
     }
 
     /// Creates an input port named `name` and returns the **only** producer
@@ -121,7 +126,7 @@ impl HardwareMidiInputs {
     /// There is no other way to reach a port's producer: give the handle to the
     /// one thread that pushes. **The slot is the handle's: dropping it frees
     /// the slot** (and queues the inlet's removal), but leaves the port's entry
-    /// in the list until [`remove_input_port`](Self::remove_input_port)
+    /// in the list until `remove_input_port`
     /// retires it, and the entry then reads as a port fed by nothing.
     ///
     /// # Errors
@@ -137,7 +142,7 @@ impl HardwareMidiInputs {
         let input = self.inlets.open()?;
         let slot = input.slot();
         let (port, handle) = HardwareMidiInput::new(name, input);
-        ports.insert(slot, Arc::new(port));
+        ports.live.insert(slot, Arc::new(port));
         Ok(handle)
     }
 
@@ -149,11 +154,11 @@ impl HardwareMidiInputs {
     /// connection first (drop its [`InputProducerHandle`], which frees the
     /// slot), so nothing is still pushing; a handle that outlives the port is
     /// harmless, and whatever it pushes is lost. Control side.
-    pub fn remove_input_port(&self, id: DeviceSlot) -> bool {
-        let removed = self.ports().remove(&id);
-        match removed {
+    pub(crate) fn remove_input_port(&self, id: DeviceSlot) -> bool {
+        let mut ports = self.ports();
+        match ports.live.remove(&id) {
             Some(port) => {
-                *self.retired.lock().unwrap_or_else(PoisonError::into_inner) += port.losses();
+                ports.retired += port.losses();
                 true
             }
             None => false,
@@ -163,12 +168,12 @@ impl HardwareMidiInputs {
     /// How many ports the list holds.
     #[cfg(test)]
     pub(crate) fn port_count(&self) -> usize {
-        self.ports().len()
+        self.ports().live.len()
     }
 
     /// The live port `id` names, if any: a stale id names none.
     fn port(&self, id: DeviceSlot) -> Option<Arc<HardwareMidiInput>> {
-        self.ports().get(&id).cloned()
+        self.ports().live.get(&id).cloned()
     }
 
     /// A snapshot of one port, or `None` when `id` names no live port.
@@ -179,6 +184,7 @@ impl HardwareMidiInputs {
     /// Every input port, in index order.
     pub fn list_input_ports(&self) -> Vec<PortInfo> {
         self.ports()
+            .live
             .iter()
             .map(|(id, port)| PortInfo::of(*id, port))
             .collect()
@@ -190,7 +196,7 @@ impl HardwareMidiInputs {
     /// Nothing for a stale id. **No lock is held between steps**, so the
     /// caller may do what it likes with each message. Control side, one reader
     /// at a time.
-    pub fn drain_stream(&self, id: DeviceSlot) -> StreamDrain {
+    pub(crate) fn drain_stream(&self, id: DeviceSlot) -> StreamDrain {
         StreamDrain::new(self.port(id))
     }
 
@@ -213,7 +219,7 @@ impl HardwareMidiInputs {
     /// SysEx7 packets the device sends (`drain_stream` then yields them beside
     /// the Stream messages), for a control side that is waiting for an Identity
     /// Reply. The packets still reach the graph. `false` for a stale id.
-    pub fn hear_sysex(&self, id: DeviceSlot, hear: bool) -> bool {
+    pub(crate) fn hear_sysex(&self, id: DeviceSlot, hear: bool) -> bool {
         match self.port(id) {
             Some(port) => {
                 port.set_hear_sysex(hear);
@@ -222,17 +228,12 @@ impl HardwareMidiInputs {
             None => false,
         }
     }
-
-    /// Whether the port `id` names delivers. `false` for a stale id.
-    pub fn is_port_active(&self, id: DeviceSlot) -> bool {
-        self.port(id).is_some_and(|port| port.is_active())
-    }
 }
 
 impl core::fmt::Debug for HardwareMidiInputs {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HardwareMidiInputs")
-            .field("num_input_ports", &self.ports().len())
+            .field("num_input_ports", &self.ports().live.len())
             .finish_non_exhaustive()
     }
 }

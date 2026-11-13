@@ -58,7 +58,6 @@
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 pub struct ChannelLayout(u16);
 
 /// Names the common widths, so a diagnostic reads `Stereo` rather than

@@ -126,9 +126,8 @@ fn halt<'a, T>(
 
 // ---- the gap ---------------------------------------------------------------
 
-/// The timing packets between two messages: "The Delta Clockstamp message
-/// declares the time of all following messages which occur before the next
-/// Delta Clockstamp message" (M2-116 section 3.2.2), and a DCS *replaces* the
+/// The timing packets between two messages: a Delta Clockstamp sets the time of
+/// all following messages up to the next one (M2-116 section 3.2.2), and a DCS *replaces* the
 /// count since the last event, so only a Null message, which restarts the
 /// count, carries what came before it forward.
 #[derive(Clone, Copy, Debug, Default)]
@@ -229,8 +228,8 @@ pub(crate) fn leading_profile_len(header: &[(u64, Ump)]) -> usize {
     packets.len() - input.len()
 }
 
-/// A Set Profile On message with no DCS before it: "Set Profile On messages
-/// shall not have a prepended Delta Clockstamp (DCS)" (M2-116 section 6).
+/// A Set Profile On message with no DCS before it (M2-116 section 6: a Set Profile On
+/// has none).
 fn preamble_item(input: &mut Input<'_>) -> Res<Vec<Ump>> {
     let before = gap.parse_next(input)?;
     peek(profile_first).parse_next(input)?;
@@ -274,9 +273,8 @@ fn dctpq_after_gap(input: &mut Input<'_>) -> Res<(Gap, u16)> {
         .parse_next(input)
 }
 
-/// The DCTPQ: "The DCTPQ shall have a preceding Delta Clockstamp (DCS) ...
-/// with Number of Ticks Since Last Event set to 0x00000" (M2-116 sections
-/// 3.2.1 and 6), after the Set Profile On messages and before any other, and
+/// The DCTPQ: it has a preceding Delta Clockstamp (DCS) of 0 ticks
+/// (M2-116 sections 3.2.1 and 6), after the Set Profile On messages and before any other, and
 /// declaring ticks.
 fn dctpq(input: &mut Input<'_>) -> Res<u16> {
     let fault = fault_before_dctpq(input);
@@ -301,10 +299,9 @@ fn is_set_time_signature(flex: &Flex) -> bool {
 }
 
 /// A Flex message of the kind `is`, at delta 0: M2-116 section 6.1.1 says the
-/// Set Tempo "shall" come first after the DCTPQ with the DCS before the DCTPQ
-/// or a DCS of 0, and section 6.1.2 says the Set Time Signature "shall use the
-/// Delta Clockstamp which precedes the DCTPQ message or shall have a preceding
-/// Delta Clockstamp with Number of Ticks Since Last Event set to 0x00000".
+/// Set Tempo comes first after the DCTPQ with the DCS before the DCTPQ
+/// or a DCS of 0, and section 6.1.2 says the Set Time Signature uses the
+/// Delta Clockstamp that precedes the DCTPQ or a preceding one of 0 ticks.
 fn flex_at_zero<'a>(
     is: fn(&Flex) -> bool,
 ) -> impl Parser<Input<'a>, Timed, winnow::error::ErrMode<ContextError<Fault>>> {
@@ -368,8 +365,8 @@ fn header_message<'a>(
 }
 
 /// The messages that configure a receiver (M2-116 section 6.1), each behind its
-/// own DCS ("The Clip Configuration Header shall not contain more than one Set
-/// Tempo message", and the same of the Set Time Signature): the Set Tempo first, the Set Time Signature right behind it (first,
+/// own DCS (the header holds at most one Set Tempo and one Set Time
+/// Signature): the Set Tempo first, the Set Time Signature right behind it (first,
 /// if there is no Set Tempo), each at most once and at delta 0, then any other.
 fn config(input: &mut Input<'_>) -> Res<Vec<Timed>> {
     let tempo = opt(flex_at_zero(is_set_tempo)).parse_next(input)?;
@@ -381,8 +378,7 @@ fn config(input: &mut Input<'_>) -> Res<Vec<Timed>> {
 
 /// The Delta Clockstamp and the message that bracket the clip: the gap before
 /// it, which for Start of Clip is the header's last (section 6.1: the DCSs
-/// "determine the total length of time allocated to the Clip Configuration
-/// Header").
+/// add up to the time allocated to the Clip Configuration Header).
 fn bracket<'a>(
     which: fn(&Kind) -> bool,
     missing: Fault,
@@ -395,8 +391,8 @@ fn bracket<'a>(
 
 // ---- the sequence ----------------------------------------------------------
 
-/// An event of the sequence (section 7.2: "any MIDI messages in UMP Format,
-/// except Property Exchange messages"), behind its DCS (section 3.2.2).
+/// An event of the sequence (section 7.2: any UMP message but Property Exchange),
+/// behind its DCS (section 3.2.2).
 fn event(input: &mut Input<'_>) -> Res<Timed> {
     alt((message.map(|(timed, _)| timed), second_start_of_clip)).parse_next(input)
 }
@@ -435,8 +431,7 @@ fn clip(input: &mut Input<'_>) -> Res<Clip> {
     let events: Vec<Timed> = repeat(0.., event).parse_next(input)?;
     let end_gap =
         bracket(|k| matches!(k, Kind::EndOfClip), Fault::MissingEndOfClip).parse_next(input)?;
-    // Section 7.3: "A MIDI Clip File shall not have any data following the End
-    // of Clip message."
+    // Section 7.3: no data follows the End of Clip message.
     eof.context(Fault::TrailingData).parse_next(input)?;
     Ok(Clip {
         ticks_per_quarter,

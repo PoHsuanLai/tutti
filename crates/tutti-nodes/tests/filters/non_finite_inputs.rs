@@ -41,8 +41,7 @@ fn renders_finite(node: &mut dyn Node, blocks: usize) -> bool {
 }
 
 /// A maximum delay that is NaN, infinite, negative, zero or past the cap is **refused**
-/// (`MaxDelay::new`), so no delay is built on it: it used to saturate to an empty line,
-/// and a finite 1e30 s asked `from_seconds` for an allocation that aborts. A delay at the
+/// (`MaxDelay::new`), so no delay is built on it. A delay at the
 /// longest the type holds builds, prepares and stays finite.
 #[test]
 fn a_delay_with_an_unusable_maximum_is_refused_and_the_longest_builds() {

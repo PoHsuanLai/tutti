@@ -40,13 +40,11 @@ fn steps_after_the_first_do_not_allocate() {
         step_chroma(&cfg, &mut state, &frame, &mut fft).unwrap();
     });
     assert_eq!(reset, 0, "reset and a step");
-    assert_eq!(state.frames_seen(), 1);
 
     let retuned = allocations(|| {
         step_chroma(&fixed, &mut state, &frame, &mut fft).unwrap();
     });
     assert_eq!(retuned, 0, "a tuning-only switch and a step");
-    assert_eq!(state.frames_seen(), 1, "the switch reset the carry");
 
     let wider = StftGeometry::new(SampleRate::SR_22K05, Samples(4096), Samples(512)).unwrap();
     let wide = ChromaConfig::new(wider).unwrap();

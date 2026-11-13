@@ -28,7 +28,10 @@ fn a_capability_is_the_active_protocol_and_the_blocks_of_an_endpoint() {
     assert_eq!(cap.protocol, Protocol::Midi1, "active, not offered");
     assert_eq!(cap.blocks, [block()]);
 
-    let cap = UmpCapability::midi2().with_blocks(vec![block()]);
+    let cap = UmpCapability {
+        blocks: vec![block()],
+        ..UmpCapability::midi2()
+    };
     let endpoint = cap.endpoint();
     assert_eq!(endpoint.active().protocol, Protocol::Midi2);
     assert!(!endpoint.active().rx_jr && !endpoint.active().tx_jr);
@@ -41,9 +44,11 @@ fn a_capability_is_the_active_protocol_and_the_blocks_of_an_endpoint() {
 fn only_a_ump_endpoint_is_asked() {
     assert!(UmpCapability::midi2().is_ump_endpoint());
     assert!(
-        UmpCapability::midi1()
-            .with_blocks(vec![block()])
-            .is_ump_endpoint()
+        UmpCapability {
+            blocks: vec![block()],
+            ..UmpCapability::midi1()
+        }
+        .is_ump_endpoint()
     );
     assert!(!UmpCapability::midi1().is_ump_endpoint());
 }

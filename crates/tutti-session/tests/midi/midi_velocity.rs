@@ -1,7 +1,6 @@
 //! A clip's velocity keeps its full 16-bit range to the event input.
 //!
-//! The session half of `bevy-tutti`'s `midi_sequence`
-//! `velocity_keeps_its_full_width`. Two velocities one LSB apart at 16 bits
+//! Two velocities one LSB apart at 16 bits
 //! are the same number at 7, so this fails the moment anything on the
 //! `Midi::play_clip` → clip node → event edge path narrows the field (it
 //! caught exactly that once: a `note_on_7bit` that crushed the value and
@@ -81,7 +80,9 @@ fn velocity_keeps_its_full_width() {
     let (tap, ()) = s.graph().add(Tap(Arc::clone(&seen)));
     let mut events = note(60, MF).to_vec();
     events.extend(note(64, MF + 1));
-    s.midi().play_clip(tap, events).expect("a tap takes a clip");
+    s.midi()
+        .play_clip(tap, Beat(0.0), events)
+        .expect("a tap takes a clip");
     let _ = s.update();
     s.transport()
         .motion()

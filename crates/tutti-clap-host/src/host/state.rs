@@ -7,7 +7,6 @@
 //! grouped into one struct per CLAP extension so a caller can see which
 //! extension a request came from.
 
-use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -74,15 +73,12 @@ pub struct ProcessingState {
     /// The plugin's saveable state changed, so a state blob written earlier no
     /// longer matches the instance.
     pub state_dirty: AtomicBool,
-    /// The plugin loaded a preset of its own accord.
-    pub preset_loaded: AtomicBool,
 }
 
 impl ProcessingState {
     fn new() -> Self {
         Self {
             state_dirty: AtomicBool::new(false),
-            preset_loaded: AtomicBool::new(false),
         }
     }
 }
@@ -184,38 +180,6 @@ impl NoteState {
             ports_changed: AtomicBool::new(false),
             names_changed: AtomicBool::new(false),
             voice_info_changed: AtomicBool::new(false),
-        }
-    }
-}
-
-/// Undo/redo traffic from `CLAP_EXT_UNDO`, in both directions: steps the
-/// plugin recorded, and requests it made of the host's undo stack.
-#[derive(Debug)]
-pub struct UndoState {
-    /// A change the plugin opened with `begin_change` has neither been
-    /// committed via `change_made` nor withdrawn via `cancel_change`. Not a
-    /// latch — it tracks a span, and both endpoints clear it.
-    pub in_progress: AtomicBool,
-    /// The plugin asked the host to undo one step of the *host's* stack.
-    pub requested: AtomicBool,
-    /// The plugin asked the host to redo one step of the *host's* stack.
-    pub redo_requested: AtomicBool,
-    /// The plugin subscribed to undo-context updates, so the host should keep
-    /// it informed about what the next undo/redo step would be.
-    pub wants_context: AtomicBool,
-    /// Steps the plugin has committed, oldest first. Unbounded — a host that
-    /// never drains it grows it without limit.
-    pub changes: Mutex<Vec<UndoChange>>,
-}
-
-impl UndoState {
-    fn new() -> Self {
-        Self {
-            in_progress: AtomicBool::new(false),
-            requested: AtomicBool::new(false),
-            redo_requested: AtomicBool::new(false),
-            wants_context: AtomicBool::new(false),
-            changes: Mutex::new(Vec::new()),
         }
     }
 }
@@ -352,147 +316,18 @@ impl TimerState {
     }
 }
 
-/// Transport requests the plugin issued via `CLAP_EXT_TRANSPORT_CONTROL`,
-/// queued in arrival order for the host to drain and act on (or ignore).
-///
-/// # Audio-thread reachable
-///
-/// `CLAP_EXT_TRANSPORT_CONTROL` carries no thread annotation, and a plugin is
-/// permitted to request a transport change from `process` — a step sequencer
-/// asking to roll on the bar it just reached does exactly that. So the push
-/// path is treated as RT: it neither blocks nor grows.
-///
-/// Both of those needed fixing, and neither was the poison handling, which was
-/// already correct:
-///
-/// - **Bounded.** The backing `Vec` grew without limit. Nothing obliges a host
-///   to drain — `drain_transport_requests` sits behind the speculative
-///   `clap-extras` feature, and these requests are explicitly the host's to
-///   *ignore* — so an undrained queue leaked for as long as the session ran.
-/// - **Non-blocking.** `lock()` blocks, and what it would block on is the
-///   host's main thread holding this guard across a `mem::take`. That is a
-///   priority inversion inside the audio callback, paid for a request the host
-///   may discard anyway.
-///
-/// The shape is [`LogState`]'s, for the same reason: a bounded ring plus a
-/// counter, so "the host dropped requests" stays distinguishable from "the
-/// plugin made none".
+/// File descriptors the plugin asked the host to watch
+/// (`CLAP_EXT_POSIX_FD_SUPPORT`).
 #[derive(Debug)]
-pub struct TransportState {
-    pub(crate) requests: Mutex<std::collections::VecDeque<TransportRequest>>,
-    pub(crate) dropped: AtomicU32,
-}
-
-/// How many transport requests the host queues before evicting the oldest.
-///
-/// A transport request is an unassigned sequencer- or user-scale intent — roll,
-/// stop, jump — not a per-block stream, so this is already far past what a
-/// well-behaved plugin emits between two host polls. The capacity exists to
-/// bound a plugin that is misbehaving, or a host that never drains at all.
-///
-/// 64, matching the engine's own UI→audio transport queue
-/// (`tutti_transport`'s `COMMAND_QUEUE_CAPACITY`) — same kind of traffic, same
-/// conclusion. Deliberately not [`LOG_CAPACITY`], which is sized for a
-/// diagnostic stream whose recent history has value in bulk.
-pub const TRANSPORT_REQUEST_CAPACITY: usize = 64;
-
-impl TransportState {
-    fn new() -> Self {
-        Self {
-            // Sized to capacity here, on the control thread, so a push from the
-            // audio thread never grows it. `drain` on the read side preserves
-            // this storage; `mem::take` would not.
-            requests: Mutex::new(std::collections::VecDeque::with_capacity(
-                TRANSPORT_REQUEST_CAPACITY,
-            )),
-            dropped: AtomicU32::new(0),
-        }
-    }
-
-    /// Queues one request, or drops it and counts that.
-    ///
-    /// **Audio-thread safe.** `try_lock`, never `lock`: a contended lock means
-    /// the host is mid-drain, and losing one transport request beats stalling
-    /// the audio callback until that finishes. The `VecDeque` reaches its
-    /// capacity once and reuses it, so a steady-state push does not allocate.
-    ///
-    /// **The oldest is evicted, not the newest.** Arrival order holds either
-    /// way, but a transport request is an *intent* and the newest is the
-    /// plugin's current one — refusing that to preserve a stale `Stop` inverts
-    /// what the queue is for.
-    ///
-    /// A poisoned lock is recovered rather than propagated: this is called
-    /// through a C ABI boundary, across which a panic is undefined behaviour.
-    pub(crate) fn push(&self, req: TransportRequest) {
-        let mut reqs = match self.requests.try_lock() {
-            Ok(reqs) => reqs,
-            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        };
-        if reqs.len() == TRANSPORT_REQUEST_CAPACITY {
-            reqs.pop_front();
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        }
-        reqs.push_back(req);
-    }
-
-    /// How many transport requests the host will never see — refused for a
-    /// contended lock, or evicted at capacity. Monotonic.
-    ///
-    /// One counter for both causes because no caller can act differently on
-    /// them: either way the plugin asked for something that did not arrive.
-    pub fn dropped(&self) -> u32 {
-        self.dropped.load(Ordering::Relaxed)
-    }
-}
-
-/// Remote-control page state from `CLAP_EXT_REMOTE_CONTROLS`.
-#[derive(Debug)]
-pub struct RemoteControlState {
-    /// The plugin's set of remote-control pages changed and must be
-    /// re-enumerated.
-    pub changed: AtomicBool,
-    pub(crate) suggested_page: AtomicU32,
-}
-
-impl RemoteControlState {
-    fn new() -> Self {
-        Self {
-            changed: AtomicBool::new(false),
-            suggested_page: AtomicU32::new(u32::MAX),
-        }
-    }
-}
-
-/// Host-owned resources a plugin can query: track metadata, tuning tables,
-/// storage directories and watched descriptors.
-///
-/// Unlike the latch groups above, most of this is state the *host* publishes
-/// for the plugin to read rather than a request the plugin made.
-#[derive(Debug)]
-pub struct ResourceState {
-    pub(crate) track_info: Mutex<Option<TrackInfo>>,
-    pub(crate) tuning_infos: Mutex<Vec<TuningInfo>>,
-    pub(crate) directory_shared: Mutex<Option<std::path::PathBuf>>,
-    pub(crate) directory_private: Mutex<Option<std::path::PathBuf>>,
-    /// The plugin's trigger list changed and must be re-enumerated.
-    pub triggers_rescan_requested: AtomicBool,
+pub struct PosixFdState {
     /// Descriptors the plugin asked the host to watch, in registration order.
-    pub posix_fds: Mutex<Vec<PosixFdEntry>>,
+    pub entries: Mutex<Vec<PosixFdEntry>>,
 }
 
-impl ResourceState {
+impl PosixFdState {
     fn new() -> Self {
         Self {
-            track_info: Mutex::new(None),
-            tuning_infos: Mutex::new(Vec::new()),
-            directory_shared: Mutex::new(None),
-            directory_private: Mutex::new(None),
-            triggers_rescan_requested: AtomicBool::new(false),
-            posix_fds: Mutex::new(Vec::new()),
+            entries: Mutex::new(Vec::new()),
         }
     }
 }
@@ -511,7 +346,7 @@ pub struct HostState {
     pub requests: RequestWord,
     /// Resume-processing requests.
     pub lifecycle: LifecycleFlags,
-    /// Latency, tail, state-dirty and preset-loaded notifications.
+    /// State-dirty notification.
     pub processing: ProcessingState,
     /// Editor close and resize requests.
     pub gui: GuiState,
@@ -521,18 +356,12 @@ pub struct HostState {
     pub audio_ports: AudioPortState,
     /// Note-port, note-name and voice-info change notifications.
     pub notes: NoteState,
-    /// Undo steps the plugin recorded and undo/redo it requested.
-    pub undo: UndoState,
     /// The bounded ring of routed `clap.log` lines.
     pub log: LogState,
     /// Timers the plugin registered for the host to fire.
     pub timer: TimerState,
-    /// Queued transport requests awaiting a drain.
-    pub transport: TransportState,
-    /// Remote-control page change notification and suggested page.
-    pub remote_controls: RemoteControlState,
-    /// Host-published resources the plugin may read.
-    pub resources: ResourceState,
+    /// Descriptors the plugin registered for the host to watch.
+    pub posix_fds: PosixFdState,
 }
 
 impl HostState {
@@ -550,12 +379,9 @@ impl HostState {
             params: ParamState::new(),
             audio_ports: AudioPortState::new(),
             notes: NoteState::new(),
-            undo: UndoState::new(),
             log: LogState::new(),
             timer: TimerState::new(),
-            transport: TransportState::new(),
-            remote_controls: RemoteControlState::new(),
-            resources: ResourceState::new(),
+            posix_fds: PosixFdState::new(),
         }
     }
 
@@ -615,99 +441,5 @@ impl HostState {
     /// what `flush_params`' own docs already recommend.
     pub fn is_main_thread(&self) -> bool {
         self.roles.is_main_thread()
-    }
-}
-
-#[cfg(test)]
-mod transport_queue_tests {
-    use super::*;
-
-    /// The queue is bounded, and the bound is what the constant says.
-    ///
-    /// Nothing obliges a host to drain — the drain is behind `clap-extras`
-    /// while the push path is always compiled — so an unbounded `Vec` here
-    /// would grow for the lifetime of the session.
-    #[test]
-    fn the_queue_stops_growing_at_capacity() {
-        let state = TransportState::new();
-
-        for _ in 0..TRANSPORT_REQUEST_CAPACITY {
-            state.push(TransportRequest::Start);
-        }
-        assert_eq!(
-            state.dropped(),
-            0,
-            "filling exactly to capacity must not drop anything — otherwise \
-             the overflow assertion below would pass vacuously"
-        );
-
-        for _ in 0..1_000 {
-            state.push(TransportRequest::Stop);
-        }
-        let reqs = state.requests.lock().unwrap();
-        assert_eq!(reqs.len(), TRANSPORT_REQUEST_CAPACITY);
-        assert_eq!(state.dropped(), 1_000);
-    }
-
-    /// Overflow evicts the **oldest**, so the queue always holds the plugin's
-    /// most recent intent.
-    ///
-    /// A transport request is an intent, not a log line: keeping a stale
-    /// `Start` and refusing the `Stop` that followed it would leave the host
-    /// acting on the opposite of what the plugin last asked for.
-    #[test]
-    fn overflow_keeps_the_newest_intent_in_arrival_order() {
-        let state = TransportState::new();
-
-        // Fill with a marker the eviction should remove...
-        for _ in 0..TRANSPORT_REQUEST_CAPACITY {
-            state.push(TransportRequest::Start);
-        }
-        // ...then push one past, twice.
-        state.push(TransportRequest::Pause);
-        state.push(TransportRequest::Stop);
-
-        let reqs = state.requests.lock().unwrap();
-        assert_eq!(reqs.len(), TRANSPORT_REQUEST_CAPACITY);
-        assert_eq!(
-            reqs.back(),
-            Some(&TransportRequest::Stop),
-            "the newest request must survive"
-        );
-        assert_eq!(
-            reqs[TRANSPORT_REQUEST_CAPACITY - 2],
-            TransportRequest::Pause,
-            "arrival order must hold across an eviction"
-        );
-        assert_eq!(
-            reqs.front(),
-            Some(&TransportRequest::Start),
-            "eviction takes from the front, so the remaining Starts stay ahead \
-             of the two later requests"
-        );
-    }
-
-    /// A contended lock drops rather than blocking, and says so.
-    ///
-    /// This is the priority-inversion half. `push` is reachable from a
-    /// plugin's `process`; the guard it would have blocked on is held by the
-    /// host's main thread across a whole drain.
-    #[test]
-    fn a_contended_push_drops_instead_of_blocking() {
-        let state = TransportState::new();
-        let held = state.requests.lock().unwrap();
-
-        state.push(TransportRequest::Start);
-
-        assert_eq!(
-            state.dropped(),
-            1,
-            "a push that could not take the lock must be counted, not silently \
-             lost and not blocked on"
-        );
-        assert!(
-            held.is_empty(),
-            "nothing was queued while the lock was held"
-        );
     }
 }

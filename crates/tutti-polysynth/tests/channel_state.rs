@@ -128,9 +128,8 @@ fn assert_hz(x: &[f32], expected: f64) {
     );
 }
 
-/// Bug 1. A key struck again while it sounds replaces its voice (the
-/// allocator releases the old slot), but nothing gated the old voice off, so
-/// it sustained for ever: peak 0.55 a second after the note-off.
+/// A key struck again while it sounds replaces its voice (the
+/// allocator releases the old slot).
 #[test]
 fn a_retriggered_key_is_silent_after_its_release() {
     let mut h = hand(config());
@@ -143,7 +142,7 @@ fn a_retriggered_key_is_silent_after_its_release() {
 }
 
 /// Reset All Controllers (RP-015) puts the sustain pedal up, which lets go
-/// of the notes it held. Bug 2: CC 121 left the pedal down.
+/// of the notes it held.
 #[test]
 fn reset_all_controllers_lifts_the_sustain_pedal() {
     let mut h = hand(config());
@@ -174,7 +173,7 @@ fn reset_all_controllers_leaves_another_channels_pedal() {
 }
 
 /// All Notes Off (CC 123, MIDI 1.0 Channel Mode Messages) lets go of the keys
-/// and a pedal that is down still holds its notes. Bug 3: it released them.
+/// and a pedal that is down still holds its notes.
 #[test]
 fn all_notes_off_respects_the_sustain_pedal() {
     let mut h = hand(config());
@@ -224,8 +223,7 @@ fn sustain_is_down_from_64() {
 }
 
 /// Pitch Bend Sensitivity (RPN 0, MIDI 1.0 Registered Parameter Numbers)
-/// sets the range a full bend spans. Bug 4: it was ignored, and the range
-/// came from the config alone.
+/// sets the range a full bend spans.
 #[test]
 fn rpn_0_sets_the_bend_range_per_channel() {
     for semitones in [0u8, 2, 7, 12] {
@@ -257,8 +255,7 @@ fn the_configured_range_is_the_default() {
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(5.0));
 }
 
-/// Bug 5: a bend moved every note whatever its channel, while pedals were
-/// already per channel. A bend on channel 1 leaves channel 0's note alone, and
+/// A bend on channel 1 leaves channel 0's note alone, and
 /// channel 0's own bend moves it.
 #[test]
 fn a_bend_moves_its_own_channel() {

@@ -20,7 +20,7 @@
 /// minute so the timecode stays aligned with wall-clock time, non-drop counts
 /// every frame and drifts about 3.6 seconds an hour. Treating one as the other
 /// keeps playing at the right speed and reports the wrong position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 #[repr(u8)]
 pub enum SmpteFrameRate {
     /// 24 fps (film)
@@ -38,20 +38,9 @@ pub enum SmpteFrameRate {
 
 /// A byte that is none of [`SmpteFrameRate`]'s discriminants (0 to 4): what
 /// `SmpteFrameRate::try_from` refuses, carrying the byte.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{} is not an SMPTE frame rate discriminant (0 to 4)", .0)]
 pub struct UnknownFrameRate(pub u8);
-
-impl core::fmt::Display for UnknownFrameRate {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{} is not an SMPTE frame rate discriminant (0 to 4)",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for UnknownFrameRate {}
 
 impl TryFrom<u8> for SmpteFrameRate {
     type Error = UnknownFrameRate;
@@ -70,6 +59,15 @@ impl TryFrom<u8> for SmpteFrameRate {
 }
 
 impl SmpteFrameRate {
+    /// Every rate, in discriminant order.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Fps24,
+        Self::Fps25,
+        Self::Fps2997Df,
+        Self::Fps2997Ndf,
+        Self::Fps30,
+    ];
+
     /// Frames per second, as the exact rational the standard specifies.
     ///
     /// **`f64`, deliberately, and not a unit type.** The 29.97 rates are

@@ -6,7 +6,7 @@
 //! `value_to_unit_f32` loses low bits through f32's 24-bit mantissa. Consumers
 //! call these at their own boundary, not through a shared decode layer.
 //!
-//! **Where the types stop** (CLAUDE.md, "Unit types"): these return a bare
+//! **Where the types stop**: these return a bare
 //! `f32`, and the reason is that the number has no meaning of its own. A
 //! normalized `[0, 1]` controller value is a velocity, a pressure, a
 //! controller position or a plugin's normalized parameter, depending on who

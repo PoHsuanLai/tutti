@@ -17,7 +17,7 @@
 // `audio` (the processor's process path), `processor` and `controller` (the
 // two halves and their trait impls), `control` (the control surface both
 // implement), and per-extension `impl ClapLoaded` blocks (`params`, `ports`,
-// `state`, `polling`, `undo`, `resources`). Every call into the plugin is a
+// `state`, `polling`). Every call into the plugin is a
 // method of `tutti_clap_ffi`; this crate holds none of the `unsafe`.
 
 mod audio;
@@ -32,22 +32,14 @@ mod params;
 mod polling;
 mod ports;
 mod processor;
-// Plugin resource-directory extension — speculative, gated behind `clap-extras`.
-#[cfg(feature = "clap-extras")]
-mod resources;
 mod state;
 mod thread_pool;
-// Plugin undo/redo delta extension — speculative, gated behind `clap-extras`.
-#[cfg(feature = "clap-extras")]
-mod undo;
 
 pub use audio::{ClapProcessContext, ProcessOutput, ProcessOutputRef};
 pub use control::descriptor_of;
 pub use controller::ClapController;
 pub use editor_instance::ClapEditor;
 pub use load::LoadOptions;
-#[cfg(feature = "clap-extras")]
-pub use params::ParamMapping;
 pub use processor::ClapProcessor;
 
 use crate::host::HostState;

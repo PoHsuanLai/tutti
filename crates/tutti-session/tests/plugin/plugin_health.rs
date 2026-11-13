@@ -4,9 +4,6 @@
 //! record, a live plugin is never written off, and a graph with no hosted
 //! plugin is never marked edited by the phase.
 //!
-//! These are the session halves of `bevy-tutti`'s `plugin_host::health` tests
-//! (the component mirror, `PluginLiveness`, and the entity's `AudioNode`
-//! removal stayed with the adapter), moved here when the adapter was parked.
 //! The plugin is a fake backend (`PluginHandle::from_backend`) hosted at a
 //! node with `Graph::host_plugin`, so no `plugin-server` is needed; what the
 //! plugin reports (`SessionEvent::Plugin`'s `ParamChanged` and the rest) is driven through the same fake's listeners. The real

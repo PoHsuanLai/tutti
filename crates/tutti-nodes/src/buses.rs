@@ -1,5 +1,5 @@
 //! The buses a node declares, so the graph's dry path (a mix, a bypass) knows
-//! where its input goes (doc 013, "As built (B3)"): the graph refuses one it
+//! where its input goes: the graph refuses one it
 //! would have to guess.
 
 use tutti_graph::Buses;

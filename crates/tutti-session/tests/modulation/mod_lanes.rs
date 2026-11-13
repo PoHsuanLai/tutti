@@ -1,7 +1,6 @@
 //! Modulation on control lanes, through the session (doc 014 §8, §12.5).
 //!
-//! The session halves of `bevy-tutti`'s `mod_lanes` suite, which declared its
-//! modulation as ECS components and asserted on what the graph renders. Every
+//! Every
 //! test here declares through [`Session::mods`] (or a host's [`ModInput`]),
 //! runs the session's updates, and asserts on what the graph renders: the
 //! nodes are [`ProbeUnit`]s, which write the value their param port reads to
@@ -9,8 +8,7 @@
 //! side is taken (`Graph::take_audio_side`) and rendered between updates, as
 //! a device would.
 //!
-//! What stayed in `bevy-tutti` is the adapter's: a host-defined source kind
-//! (`ModSourceKind`), and the components that declare. Tests that exist in
+//! Tests that exist in
 //! `modulation.rs` (the §8.1 render, a lane built by a re-apply publishing
 //! its latency, a target placed an update late) are not repeated here.
 
@@ -789,8 +787,7 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
 /// **Two routes onto one param sum, and removing one takes only its share.**
 /// Two macros at 1 on a cutoff (knob 500 in `0..=1000`) at depths 0.1 and 0.2
 /// add 100 and 200: 800. Removing the second route leaves 600 (the session
-/// has no `enabled` flag: `bevy-tutti`'s disabled route declared nothing,
-/// which is this); declaring it again, 800.
+/// has no `enabled` flag: a disabled route declares nothing, which is this); declaring it again, 800.
 #[test]
 fn two_routes_on_one_param_sum_and_removing_one_takes_its_share() {
     let (mut s, mut side) = rig(1);
@@ -1174,8 +1171,7 @@ fn a_depth_slider_keeps_phase() {
 /// carries both. A macro at 1 by a fifth of `0..10` adds 2: the knob written
 /// to 6 reads 8, the one built at 1 reads 3, live and forked.
 ///
-/// The session half of `bevy-tutti`'s `every_param_write_path_reaches_a_fork`
-/// (its unmodulated paths are `graph.rs`' test of the same name).
+/// (The unmodulated paths are `graph.rs`' test of the same name).
 #[test]
 fn a_fork_renders_a_modulated_param_as_live_does() {
     let mut s = Session::builder()

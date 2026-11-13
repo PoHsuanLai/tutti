@@ -210,9 +210,7 @@ pub trait Host {
     /// Get the plugin ID of the currently loading plugin.
     ///
     /// This is only useful for shell plugins where this value will change the plugin returned.
-    /// `TODO: implement shell plugins`
     fn get_plugin_id(&self) -> i32 {
-        // TODO: Handle this properly
         0
     }
 
@@ -541,7 +539,7 @@ struct Core {
     /// the close, the last call that can reach the host.
     _host_ref: Option<HostRef>,
     /// Blocks a render entry refused because the plugin's pin counts grew past the
-    /// buffer (S7). Counted on the audio thread, read and reported by the control side
+    /// buffer. Counted on the audio thread, read and reported by the control side
     /// (`PluginInstance::pin_refusals`); `Relaxed`, nothing is published through it.
     pin_refusals: AtomicU64,
     /// Whether the control side has logged `pin_refusals` going nonzero.
@@ -559,7 +557,7 @@ struct Core {
     /// display, properties, `effCanBeAutomated`, `effString2Parameter`) take only this lock;
     /// the exclusive calls and the close take it and then the [`gate`](Self::gate), in that
     /// order. **The audio thread never takes it**, so a read of a parameter's text cannot
-    /// make a block refuse (doc 029 §6.2, V2-03). It is what JUCE's host does with its own
+    /// make a block refuse. It is what JUCE's host does with its own
     /// `lock`: dispatches are serialised among themselves and not with `process`.
     dispatcher: Mutex<()>,
     /// The thread the instance was made on: the one the plugin is closed on, and the one a
@@ -1269,10 +1267,8 @@ impl PluginInstance {
     /// Query `effGetParameterProperties` for one parameter.
     ///
     /// `None` when the plugin does not implement the opcode — which is the
-    /// common case, not an error. Measured against three shipping plugins
-    /// (TAL-NoiseMaker, TAL-Reverb-4, TDR Nova): all three answer `0` for every
-    /// parameter, so a host must treat absence as normal and fall back to the
-    /// name/label pair.
+    /// common case, not an error: a host must treat absence as normal and fall
+    /// back to the name/label pair.
     ///
     /// Absence is detected by the *return value*, never by inspecting the
     /// buffer. An unimplemented opcode falls through the plugin's dispatcher
@@ -1669,9 +1665,8 @@ impl Core {
 /// testable without a loaded plugin.
 ///
 /// `len == 0` is `Ok(empty)` — a normal state for an untouched chunk-capable
-/// plugin. The two failure shapes get an `Err` rather than the empty `Vec` they
-/// used to share with it, so a caller cannot read a failed save as "nothing
-/// saved".
+/// plugin. The two failure shapes get an `Err`, so a caller cannot read a failed
+/// save as "nothing saved".
 ///
 /// # Safety
 /// If `len > 0` and `ptr` is non-null, `ptr` must be valid for reads of `len`
@@ -2849,10 +2844,7 @@ mod tests {
 
     /// A real plugin's `effCanDo` returns whatever its dispatcher left in the
     /// return slot — commonly the length of the queried string, or an
-    /// uninitialised stack value. `Supported::from` used to return `None` for
-    /// anything outside 1/0/-1 and the sole caller `.expect()`ed it, so probing
-    /// such a plugin panicked *during load*, unwinding out of an `extern "C"`
-    /// frame. It is now total.
+    /// uninitialised stack value.
     #[test]
     fn can_do_answers_outside_the_documented_set_do_not_panic() {
         assert_eq!(Supported::from(1), Supported::Yes);
@@ -2872,8 +2864,7 @@ mod tests {
 
     /// The host must survive a plugin that sets bits VST2.4 does not define in
     /// `ChannelProperties::flags` — 29 of the 32 are unspecified, so any of
-    /// them appearing is a plugin quirk, not a host error. This used to
-    /// `.expect("Invalid bits in channel info")` and abort.
+    /// them appearing is a plugin quirk, not a host error.
     #[test]
     fn undefined_channel_flag_bits_do_not_panic() {
         use crate::channels::ChannelInfo;
@@ -2883,7 +2874,7 @@ mod tests {
         // ACTIVE plus a pile of bits the SDK says nothing about.
         props.flags = api::ChannelFlags::ACTIVE.bits() | 0x7FF0_0000;
 
-        // The conversion is what used to panic; reaching this line is the test.
+        // Reaching this line is the test.
         let _info = ChannelInfo::from(props);
     }
 
@@ -3193,8 +3184,6 @@ mod tests {
     }
 
     /// A *failed* save and an *empty* save must not produce the same value.
-    /// Both used to be `Vec::new()`, which let a host read a plugin's failure as
-    /// "no chunk state" and silently write a parameter snapshot instead.
     #[test]
     fn failed_chunk_save_is_distinguishable_from_an_empty_one() {
         // SAFETY: `copy_chunk` reads through `ptr` only when `len > 0` and `ptr` is non-null; here `len <= 0` so it returns before any read.
@@ -3547,7 +3536,7 @@ mod tests {
 
     /// **`effClose` is the instance's drop, on its thread, and no handle outlives it.**
     /// The plugin frees its `AEffect` in response to `effClose`, so a handle that reads it
-    /// afterwards is the audit's SIGSEGV (S1). The render handle shares the core but does not
+    /// afterwards reads freed memory. The render handle shares the core but does not
     /// own the plugin: it can neither close it (dropped last, it does nothing) nor reach it
     /// once closed (every entry takes the gate and finds it closed). The fake plugin poisons
     /// its slots on close, as freeing the `AEffect` does, so a call after the close is
@@ -3910,7 +3899,7 @@ mod tests {
     /// **The exclusive calls are serialised with the audio entries, both ways**: an
     /// `effSetSampleRate` waits for a render in flight, and a render that starts during one is
     /// refused (silence) without reaching the plugin. A plugin that cannot take the opcode
-    /// beside `process` (doc 016 §2.10) therefore never sees them together, whoever calls.
+    /// beside `process` therefore never sees them together, whoever calls.
     #[cfg(unix)]
     #[test]
     fn the_exclusive_calls_are_serialised_with_the_audio_entries() {
@@ -4039,7 +4028,7 @@ mod tests {
     /// `effString2Parameter`). The 2.4 headers state no exclusion between these opcodes and a
     /// render, so a UI read of a parameter's text must neither wait for a block nor make one
     /// refuse: a block rendered as silence, with its MIDI and automation dropped, because the
-    /// UI asked for a string is the defect (doc 029 §6.2, V2-03).
+    /// UI asked for a string is the defect.
     #[cfg(unix)]
     #[test]
     fn a_parameter_name_and_process_run_beside_each_other() {
@@ -4483,8 +4472,8 @@ mod tests {
 
     /// **A string sent to the plugin is a C string that fits the opcode's buffer.**
     /// A program name longer than `kVstMaxProgNameLen` (24 with the NUL) is cut to
-    /// 23 bytes at a char boundary, and an interior NUL cuts it (and no longer
-    /// panics through `expect`). The fake records the C string it is handed.
+    /// 23 bytes at a char boundary, and an interior NUL cuts it. The fake records the C string it
+    /// is handed.
     #[test]
     fn strings_to_the_plugin_are_short_and_c_strings() {
         use std::sync::Mutex;

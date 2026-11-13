@@ -129,7 +129,7 @@ fn a_full_discovery_is_answered_in_the_order_of_the_spec() {
     assert_eq!(order, [0x01, 0x02, 0x03, 0x03, 0x03, 0x04, 0x06]);
 }
 
-// §7.1.1: "Each bit set will result in an individual reply."
+// §7.1.1: each bit set in the filter yields its own reply.
 #[test]
 fn each_filter_bit_asks_for_its_own_reply() {
     let rows = [
@@ -180,8 +180,8 @@ fn each_filter_bit_asks_for_its_own_reply() {
     }
 }
 
-// A part the endpoint does not have is not answered (§7.1.3 to §7.1.5 say
-// "may").
+// A part the endpoint does not have is not answered (§7.1.3 to §7.1.5 make
+// the reply optional).
 #[test]
 fn a_part_an_endpoint_lacks_is_left_out() {
     let mut bare = Endpoint::new(FULL);
@@ -284,7 +284,7 @@ fn function_block_discovery_answers_one_block_or_all() {
     assert_eq!((three[0].0[0] >> 8) & 0x7F, 3);
 }
 
-// "i" and "n" are separate bits, and for 0xFF all infos come before the names.
+// The info and name filter bits are separate bits, and for 0xFF all infos come before the names.
 #[test]
 fn function_block_filter_bits_pick_info_and_name() {
     let both = ask(&mut device(), block_discovery(BlockSelect::All, true, true));
@@ -368,8 +368,8 @@ fn a_supported_request_is_honoured_and_reported() {
     assert_eq!(words(&out[0]), [0xF006_0200, 0, 0, 0]);
 }
 
-// §7.1.6.1 step 3: "If the Receiver is unable to change some or all parts of the
-// configuration, the Receiver replies with its current configuration."
+// §7.1.6.1 step 3: a receiver that cannot change some or all of the
+// configuration replies with its current one.
 #[test]
 fn what_an_endpoint_cannot_do_is_not_done() {
     let mut midi1_only = Endpoint::midi1_device(None);
@@ -414,7 +414,6 @@ fn a_message_that_is_not_a_request_is_not_answered() {
     assert!(out.is_empty());
 }
 
-// Design 017 §5: a MIDI 1.0 device is an Endpoint with one inferred block.
 #[test]
 fn a_midi1_device_has_one_inferred_block() {
     let e = Endpoint::midi1_device(EndpointName::new("Keystep"));

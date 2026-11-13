@@ -27,8 +27,8 @@ use tutti_plugin_types::{
     AudioBufferMut, BusRole, ChannelLayout, ChannelTopology, ContentScale, Control, Controller,
     EditorError, EditorSize, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin,
     MainThread, Normalized, Origin, ParamId, ParameterInfo, PluginBus, PluginDescriptor,
-    PluginError, PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RestartRules,
-    Samples, Speaker, Stuck, WindowHandle,
+    PluginError, PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused,
+    RenderModeSupport, RestartRules, Samples, Speaker, Stuck, WindowHandle,
 };
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
@@ -121,6 +121,9 @@ macro_rules! rec_control {
         impl Control for $ty {
             fn info(&self) -> &PluginDescriptor {
                 &self.descriptor
+            }
+            fn render_mode_support(&self, _: &MainThread) -> RenderModeSupport {
+                RenderModeSupport::OnActivation
             }
             fn wiring(&self, _: &MainThread) -> LoadedPlugin {
                 let stereo = ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontRight]);

@@ -54,7 +54,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Sink, Source};
-use crate::{EventTapId, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
+use crate::{
+    EventCapacity, EventTapId, EventTapSource, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign,
+    TapId, TapSpec,
+};
 use crate::{MAX_NODE_LATENCY, MAX_NODE_TAIL};
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::{Latency, Samples, Tail};
@@ -81,6 +84,7 @@ use crate::pass::Pass;
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 use crate::tap::{TapReader, TapWriter};
+use crate::wake::Wake;
 use tutti_types::{Amplitude, Mix, ParamCell};
 
 /// Why [`Editor::commit`] failed.
@@ -407,6 +411,15 @@ pub enum MissingSource {
         /// The graph's input width.
         width: usize,
     },
+    /// The node has no such event input port.
+    EventInPort {
+        /// The node.
+        node: NodeKey,
+        /// The port asked for.
+        port: u16,
+        /// The node's event input width.
+        width: usize,
+    },
     /// The node has no such event output port.
     EventPort {
         /// The node.
@@ -428,6 +441,11 @@ impl std::fmt::Display for MissingSource {
             Self::Global { channel, width } => {
                 write!(f, "no global input {channel} (the graph has {width})")
             }
+            Self::EventInPort { node, port, width } => write!(
+                f,
+                "node {} has no event input {port} (it has {width})",
+                node.0
+            ),
             Self::EventPort { node, port, width } => write!(
                 f,
                 "node {} has no event output {port} (it has {width})",
@@ -521,6 +539,11 @@ pub struct Editor {
     spec: GraphSpec,
     shapes: Shapes,
     pending: BTreeMap<NodeKey, Box<dyn Node>>,
+    /// The [`Wake`] each key's latest placed unit was prepared with. A commit
+    /// hands the executor a clone with the unit, and a re-prepare hands the
+    /// unit this same one again; the executor's clone is dropped with the
+    /// unit, on the control side.
+    wakes: BTreeMap<NodeKey, Wake>,
     /// Crossfades for the pending units [`replace`](Self::replace) placed,
     /// attached to the next commit's delta.
     fades: BTreeMap<NodeKey, Fade>,
@@ -813,13 +836,19 @@ impl Editor {
         gone.len()
     }
 
-    /// Declares a tap on one event output (`source`) and returns its reader.
+    /// Declares a tap on one event port (`source`: an [`EventOut`] or an
+    /// [`EventIn`], or an [`EventTapSource`]) and returns its reader.
     /// It takes effect at the next [`commit`](Self::commit), which compiles
     /// the tap's op and hands the executor its producer; until then the
     /// reader sees nothing. `capacity` is a count of events: a
     /// non-note-off is refused once that many are held, a note-off is kept up
     /// to [`note_off_room`](crate::note_off_room) of it, and each refusal is
     /// counted ([`EventTapReader::take_lost`]).
+    ///
+    /// A tap of an output copies what the port wrote. A tap of an input copies
+    /// what its node reads there: the node's sources merged in the order the
+    /// node is handed them, after their own latency delays. (An aligned tap reads an input whose only
+    /// source is a feedback edge undelayed.)
     ///
     /// What the reader gets is the MIDI events the port carries, each with the
     /// frame it was due on ([`TapEvent`](crate::TapEvent)); ramps, segments,
@@ -843,28 +872,35 @@ impl Editor {
     ///
     /// # Errors
     ///
-    /// [`MissingSource::Node`] or [`MissingSource::EventPort`].
+    /// [`MissingSource::Node`], [`MissingSource::EventPort`] or
+    /// [`MissingSource::EventInPort`].
     pub fn open_event_tap(
         &mut self,
         id: EventTapId,
-        source: EventOut,
+        source: impl Into<EventTapSource>,
         align: TapAlign,
-        capacity: usize,
+        capacity: EventCapacity,
     ) -> Result<EventTapReader, MissingSource> {
+        let source = source.into();
         let t = &self.spec.topology;
-        if !t.nodes.contains_key(&source.node) {
-            return Err(MissingSource::Node { node: source.node });
+        let node = source.node();
+        if !t.nodes.contains_key(&node) {
+            return Err(MissingSource::Node { node });
         }
-        let width = self
-            .shapes
-            .get(&source.node)
-            .map_or(0, |s| usize::from(s.event_out));
-        if usize::from(source.port) >= width {
-            return Err(MissingSource::EventPort {
-                node: source.node,
-                port: source.port,
-                width,
-            });
+        let shape = self.shapes.get(&node);
+        match source {
+            EventTapSource::Out(EventOut { port, .. }) => {
+                let width = shape.map_or(0, |s| usize::from(s.event_out));
+                if usize::from(port) >= width {
+                    return Err(MissingSource::EventPort { node, port, width });
+                }
+            }
+            EventTapSource::In(EventIn { port, .. }) => {
+                let width = shape.map_or(0, |s| usize::from(s.event_in));
+                if usize::from(port) >= width {
+                    return Err(MissingSource::EventInPort { node, port, width });
+                }
+            }
         }
         let (reader, writer) = EventTapReader::pair(id, capacity, self.prepare.sample_rate());
         self.pending_event_taps.retain(|(k, _)| *k != id);
@@ -1051,6 +1087,7 @@ impl Editor {
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
             pending: BTreeMap::new(),
+            wakes: BTreeMap::new(),
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
             pending_taps: Vec::new(),
@@ -1226,23 +1263,6 @@ impl Editor {
         Ok(())
     }
 
-    /// As [`connect_bus`](Self::connect_bus), channel by index
-    /// ([`BusFold::ByIndex`]): sink channel `c` is source channel `c`, a wider
-    /// sink zero-filled, whatever either bus names. For an edge whose author
-    /// knows the channels line up, never a fallback.
-    ///
-    /// # Errors
-    ///
-    /// As [`connect_bus`](Self::connect_bus); the fold refuses a sink
-    /// narrower than the source.
-    pub fn connect_bus_by_index(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
-        self.spec
-            .check_bus_edge(&self.shapes, from, to, BusFold::ByIndex)?;
-        self.touch();
-        self.spec.connect_bus_by_index(from, to);
-        Ok(())
-    }
-
     /// Removes the bus edge `from -> to`: its lanes and their weights go with
     /// it at the next commit, and the author's own edges and gains stay.
     /// Returns whether it was declared.
@@ -1268,20 +1288,6 @@ impl Editor {
             .check_root_bus_edge(&self.shapes, from, BusFold::Speakers)?;
         self.touch();
         self.spec.connect_bus_to_root(from);
-        Ok(())
-    }
-
-    /// As [`connect_bus_to_root`](Self::connect_bus_to_root), channel by
-    /// index ([`BusFold::ByIndex`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`connect_bus_to_root`](Self::connect_bus_to_root).
-    pub fn connect_bus_to_root_by_index(&mut self, from: BusSource) -> Result<(), BusError> {
-        self.spec
-            .check_root_bus_edge(&self.shapes, from, BusFold::ByIndex)?;
-        self.touch();
-        self.spec.connect_bus_to_root_by_index(from);
         Ok(())
     }
 
@@ -1370,9 +1376,11 @@ impl Editor {
             controls,
             fork,
         } = node.into_parts();
+        let wake = Wake::new();
+        unit.bind_wake(wake.clone());
         unit.prepare(&self.prepare);
         let shape = unit.shape();
-        self.place(key, kind, unit, shape, fork);
+        self.place(key, kind, unit, wake, shape, fork);
         controls
     }
 
@@ -1380,9 +1388,15 @@ impl Editor {
     /// preparing it again and without a fork source: a pinned unit of a
     /// fork ([`PendingFork::build`](crate::PendingFork::build)), whose
     /// `prepare` ran on the gathering thread.
-    pub(crate) fn insert_prepared(&mut self, key: NodeKey, kind: &str, unit: Box<dyn Node>) {
+    pub(crate) fn insert_prepared(
+        &mut self,
+        key: NodeKey,
+        kind: &str,
+        unit: Box<dyn Node>,
+        wake: Wake,
+    ) {
         let shape = unit.shape();
-        self.place(key, kind, unit, shape, None);
+        self.place(key, kind, unit, wake, shape, None);
     }
 
     /// Replaces the unit running at `key` with `node`, crossfading from one
@@ -1448,6 +1462,8 @@ impl Editor {
             controls,
             fork,
         } = node.into_parts();
+        let wake = Wake::new();
+        unit.bind_wake(wake.clone());
         unit.prepare(&self.prepare);
         let shape = unit.shape();
         // Everything the running plan was compiled from but the tail: the
@@ -1479,7 +1495,7 @@ impl Editor {
         // As `insert`: the new unit's fork source, or none — a replace with
         // an unforkable unit makes the key unforkable. Only past the checks,
         // so a refused replace changes nothing.
-        self.place(key, &kind, unit, shape, fork);
+        self.place(key, &kind, unit, wake, shape, fork);
         self.fades.insert(key, fade);
         Ok(controls)
     }
@@ -1531,6 +1547,8 @@ impl Editor {
             controls,
             fork,
         } = node.into_parts();
+        let wake = Wake::new();
+        unit.bind_wake(wake.clone());
         unit.prepare(&self.prepare);
         let shape = unit.shape();
         let fits = running.is_some_and(|r| {
@@ -1546,7 +1564,7 @@ impl Editor {
                 && shape.event_capacity == r.event_capacity
                 && shape.params == r.params
         });
-        self.place(key, &kind, unit, shape, fork);
+        self.place(key, &kind, unit, wake, shape, fork);
         if fits {
             self.fades.insert(key, fade);
         }
@@ -1560,6 +1578,7 @@ impl Editor {
         key: NodeKey,
         kind: &str,
         unit: Box<dyn Node>,
+        wake: Wake,
         shape: Shape,
         fork: Option<Box<dyn ForkSource>>,
     ) {
@@ -1589,6 +1608,7 @@ impl Editor {
         self.spec.generations.insert(key, generation);
         self.shapes.insert(key, shape);
         self.pending.insert(key, unit);
+        self.wakes.insert(key, wake);
         // The unit's fork source, or none: a unit that hands none over makes
         // the key unforkable, even if the one it supersedes was.
         match fork {
@@ -2500,7 +2520,7 @@ impl Editor {
             }
             // And an event tap, which then reads nothing.
             for spec in t.event_taps.values_mut() {
-                if spec.source.is_some_and(|s| s.node == key) {
+                if spec.source.is_some_and(|s| s.node() == key) {
                     spec.source = None;
                 }
             }
@@ -2555,6 +2575,7 @@ impl Editor {
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);
+        self.wakes.remove(&key);
         self.fades.remove(&key);
         self.latency_cuts.remove(&key);
         self.forks.remove(&key);
@@ -2738,6 +2759,9 @@ impl Editor {
         self.latency_cuts.clear();
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for (&key, unit) in &mut pending {
+                if let Some(wake) = self.wakes.get(&key) {
+                    unit.bind_wake(wake.clone());
+                }
                 unit.prepare(&prepare);
                 refresh(key, unit.shape(), &mut self.spec, &mut self.shapes);
             }
@@ -2827,6 +2851,9 @@ impl Editor {
                     .is_some_and(|u| u.generation == spec.generation(key));
             if !survives {
                 continue;
+            }
+            if let Some(wake) = self.wakes.get(&key) {
+                unit.bind_wake(wake.clone());
             }
             unit.prepare(&prepare);
             let shape = unit.shape();
@@ -3219,6 +3246,10 @@ impl Editor {
             let shape = &plan.unit(key).expect("a placed unit is in its plan").shape;
             ModeState::new(cell.clone(), shape, max_block)
         };
+        let wake_cells = &self.wakes;
+        // A unit handed in whole (`send`'s callers) was never bound: its flag
+        // is a fresh one nothing holds.
+        let wakes = |key: NodeKey| wake_cells.get(&key).cloned().unwrap_or_default();
         let taps = std::mem::take(&mut self.pending_taps);
         let event_taps = std::mem::take(&mut self.pending_event_taps);
         let meters = std::mem::take(&mut self.pending_meters);
@@ -3229,6 +3260,7 @@ impl Editor {
             units,
             params,
             modes,
+            wakes,
             Opened {
                 gains,
                 taps,

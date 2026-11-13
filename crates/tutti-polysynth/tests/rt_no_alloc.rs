@@ -17,7 +17,7 @@
 //! voice finishing in one block, which fills the list to the `max_voices`
 //! capacity it was sized with. `polysynth_all_voices_finishing_together_is_allocation_free`
 //! is the one that fills it, at 64 voices. The constructor puts no upper
-//! bound on `max_voices` (only 0 is refused).
+//! bound on `max_voices`; a count of zero cannot be written.
 
 use assert_no_alloc::AllocDisabler;
 use std::num::NonZeroUsize;
@@ -311,7 +311,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
 }
 
 /// The case the tests above never reached: **every** voice finishing in the
-/// same block, at a `max_voices` well past the old 16-voice cap.
+/// same block, at a `max_voices` well past 16.
 ///
 /// `finished_indices` collects one entry per voice that finished, so this
 /// fills it exactly to its capacity: every voice releasing in the same block,
@@ -439,13 +439,6 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 }
 
 /// **The first block on a *cold thread* is allocation-free.**
-///
-/// It used not to be, and was `#[ignore]`d as a recorded defect: the first
-/// `process` on a thread went through `MidiInPort::poll`, whose
-/// `ArcSwapOption::load` initialised arc-swap's per-thread slots lazily (128
-/// bytes), so the cost landed on the first callback of every new audio thread
-/// (`CpalDriver::restart` makes one on each device switch). The port is gone
-/// (MIDI arrives on the event input), and with it the allocation.
 ///
 /// The rest of the suite is blind to this: every other test warms the
 /// instance, and so the thread, before opening the gate.

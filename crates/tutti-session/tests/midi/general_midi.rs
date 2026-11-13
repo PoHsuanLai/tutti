@@ -44,7 +44,10 @@ fn the_setup_adds_a_chorus_a_reverb_and_a_fader_of_the_right_widths() {
     let mut session = offline_session();
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
     let graph = session.graph_ref();
-    assert_eq!(graph.node_outputs(gm.instrument().node()).unwrap(), 5);
+    assert_eq!(
+        graph.node_outputs(gm.instrument().node().erase()).unwrap(),
+        5
+    );
     assert_eq!(
         (
             graph.node_inputs(gm.chorus()).unwrap(),
@@ -78,7 +81,7 @@ fn the_setup_adds_a_chorus_a_reverb_and_a_fader_of_the_right_widths() {
 fn the_sends_feed_the_effects_and_the_effects_feed_the_fader() {
     let mut session = offline_session();
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
-    let unit = gm.instrument().node();
+    let unit = gm.instrument().node().erase();
     let strip = gm.instrument().out();
     assert_eq!(
         source(&session, gm.chorus().erase(), 0),
@@ -142,7 +145,7 @@ fn every_stage_declares_its_own_tail() {
     };
     let seconds = |node| frames(node) as f64 / RATE.get();
     assert!(
-        seconds(gm.instrument().node()) > 50.0,
+        seconds(gm.instrument().node().erase()) > 50.0,
         "the longest release in the font"
     );
     assert_eq!(frames(gm.chorus().erase()), 240);
@@ -202,9 +205,9 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
         Tail::Finite(n) => n.get(),
         other => panic!("{node:?}: {other:?}"),
     };
-    let summed =
-        tail(gm.instrument().node()) + tail(gm.chorus().erase()).max(tail(gm.reverb().erase()));
-    let release = tail(gm.instrument().node());
+    let summed = tail(gm.instrument().node().erase())
+        + tail(gm.chorus().erase()).max(tail(gm.reverb().erase()));
+    let release = tail(gm.instrument().node().erase());
     assert!(
         release > 11_000 && release < 13_000,
         "about 0.25 s: {release}"
@@ -392,7 +395,7 @@ fn removing_the_setup_leaves_nothing() {
     let before = session.graph_ref().node_count();
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
     let nodes = [
-        gm.instrument().node(),
+        gm.instrument().node().erase(),
         gm.instrument().queue().erase(),
         gm.instrument().out().erase(),
         gm.chorus().erase(),

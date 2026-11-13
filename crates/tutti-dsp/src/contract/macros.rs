@@ -113,7 +113,7 @@ macro_rules! __family_group {
 /// the cases of each group named after it (`Lti`, `reverb`, `BlockIndependent`), as
 /// [`family_contract!`] does.
 ///
-/// The cases state the three laws of design 024 section 2.7.4, each a diagram that
+/// The cases state the three laws, each a diagram that
 /// commutes, and the macro is laid out by them:
 ///
 /// 1. **The recurrence realizes the member**: what the render does is what the

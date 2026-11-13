@@ -3,6 +3,8 @@
 //! Scale/Octave Tuning, and what each says to a voice that sounds and one that
 //! starts. A key's tuning is its offset from equal temperament in semitones.
 
+use std::num::NonZeroUsize;
+
 use tutti_midi_protocol::{
     Addressee, ChannelMask, Heard, KeyChange, KeyChanges, KeyTable, OctaveOffsets, Timing,
     TuningFrequency, TuningMessage, TuningName, Universal,
@@ -137,9 +139,9 @@ fn cents(of: &[(usize, i8)]) -> OctaveOffsets {
     OctaveOffsets::Cents(bytes)
 }
 
-const SAMPLE: Rules = Rules::poly(8);
+const SAMPLE: Rules = Rules::poly(NonZeroUsize::new(8).unwrap());
 
-/// RP-020: "the initial tuning of the instrument is equal temperament": every
+/// RP-020: the initial tuning of the instrument is equal temperament: every
 /// key of every program starts at its own number, so a note is not retuned.
 #[test]
 fn every_program_starts_in_equal_temperament() {
@@ -186,8 +188,8 @@ fn the_fraction_of_a_word_is_a_fraction_of_a_semitone() {
     assert_eq!(start_tune(&on(&mut core, 0, 69)), 0.5);
 }
 
-/// MTS: "When a sounding note is affected by either real-time tuning message,
-/// the note should instantly be re-tuned [...] while it continues to sound": a
+/// MTS: a sounding note affected by a real-time tuning message is re-tuned
+/// instantly while it continues to sound: a
 /// real-time change tells the voice (`Tune`, no new attack, no cut), once, and
 /// only the voices of the key and of channels that play the program.
 #[test]
@@ -224,8 +226,8 @@ fn a_real_time_change_retunes_the_sounding_note_and_only_it() {
     );
 }
 
-/// CA-020: the non-real-time form "will NOT update the currently sounding
-/// notes": the sounding voice is left, the next Note On has the new tuning.
+/// CA-020: the non-real-time form does not update the currently sounding
+/// notes: the sounding voice is left, the next Note On has the new tuning.
 #[test]
 fn a_non_real_time_change_leaves_the_sounding_note() {
     let mut core = Voicing::new(SAMPLE);
@@ -241,11 +243,13 @@ fn a_non_real_time_change_leaves_the_sounding_note() {
 /// MTS, Changing Tuning Programs: RPN 3 and 4 select the "current" tuning
 /// "instantly", on the channel. A sounding note of the channel follows (`Tune`),
 /// a note of another channel does not, and a note struck after is by the new
-/// program. "The basic channel number" discriminates between active tunings.
+/// program. The basic channel number discriminates between active tunings.
 #[test]
 fn rpn_3_and_4_select_the_channels_tuning_and_retune_its_sounding_notes() {
-    let mut core =
-        Voicing::new(Rules::poly(8).with_tuning_capacity(TuningCapacity::new(2, 4).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(8).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(2, 4).unwrap()),
+    );
     // Program 2 of bank 1 raises key 60 by a semitone; program 2 of bank 0 by two.
     for (bank, up) in [(0, 62), (1, 61)] {
         say(
@@ -274,13 +278,15 @@ fn rpn_3_and_4_select_the_channels_tuning_and_retune_its_sounding_notes() {
     assert_eq!(core.channel(MidiChannel::of(0)).tuning_bank(), U7::of(1));
 }
 
-/// MTS: "If an instrument receives a Tuning Program or Bank number for which it
-/// has no Program or Bank, it should ignore that message." A core of one bank of
+/// MTS: an instrument ignores a Tuning Program or Bank number it has no Program
+/// or Bank for. A core of one bank of
 /// 4 programs ignores program 4 and bank 1, and counts each.
 #[test]
 fn a_program_or_bank_the_core_has_none_of_is_ignored_and_counted() {
-    let mut core =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()),
+    );
     on(&mut core, 0, 60);
     assert!(rpn(&mut core, 0, Rpn::TUNING_PROGRAM_SELECT, 4).is_empty());
     assert!(rpn(&mut core, 0, Rpn::TUNING_BANK_SELECT, 1).is_empty());
@@ -298,8 +304,10 @@ fn a_program_or_bank_the_core_has_none_of_is_ignored_and_counted() {
 /// `store_tuning` answers with the error instead.
 #[test]
 fn a_change_for_a_program_there_is_no_room_for_is_refused_and_counted() {
-    let mut core =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()),
+    );
     let refused = |core: &mut Voicing, bank: Option<u8>, program: u8| {
         let before = core.tuning_refused();
         say(
@@ -345,10 +353,10 @@ fn a_capacity_is_one_to_128_banks_and_programs() {
     );
 }
 
-/// CA-021: Scale/Octave Tuning "will offset the tuning from the currently
-/// selected preset"; the offsets repeat every octave (key 61 and key 73 are both
-/// C#), and "each message that is received will offset from the original preset,
-/// not from the modified tuning": a second message replaces the first.
+/// CA-021: Scale/Octave Tuning offsets the tuning from the currently
+/// selected preset; the offsets repeat every octave (key 61 and key 73 are both
+/// C#), and each message offsets from the original preset, not from the
+/// modified tuning: a second message replaces the first.
 #[test]
 fn scale_octave_offsets_repeat_every_octave_and_replace_the_last_message() {
     let mut core = Voicing::new(SAMPLE);
@@ -367,9 +375,9 @@ fn scale_octave_offsets_repeat_every_octave_and_replace_the_last_message() {
     assert!((start_tune(&on(&mut core, 0, 62)) + 0.64).abs() < 1e-6);
 }
 
-/// CA-021: a message "can update multiple MIDI channels simultaneously", one bit
-/// a channel; the others keep theirs. Real time: "notes that are already
-/// sounding should be updated", on the named channels only.
+/// CA-021: a message can update several MIDI channels at once, one bit
+/// a channel; the others keep theirs. Real time: notes already sounding are
+/// updated, on the named channels only.
 #[test]
 fn the_channel_mask_picks_the_channels_and_real_time_moves_their_sounding_notes() {
     let mut core = Voicing::new(SAMPLE);
@@ -494,7 +502,9 @@ fn a_dump_request_does_nothing_here() {
 /// no tuning of a key reaches it (as the master tuning does not).
 #[test]
 fn the_percussion_channel_takes_no_key_tuning() {
-    let mut core = Voicing::new(Rules::poly(4).with_percussion(MidiChannel::of(9)));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap()).with_percussion(MidiChannel::of(9)),
+    );
     say(
         &mut core,
         note_change(Timing::NonRealTime, None, 0, &[change(40, word(45, 0))]),
@@ -620,14 +630,18 @@ fn a_relative_registered_controller_steps_the_program() {
 /// 4 as Registered Controllers on the channel), the tables are not.
 #[test]
 fn the_chase_carries_the_selected_program_and_bank() {
-    let mut core =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()),
+    );
     rpn(&mut core, 5, Rpn::TUNING_PROGRAM_SELECT, 6);
     rpn(&mut core, 5, Rpn::TUNING_BANK_SELECT, 2);
     let mut sent = Vec::new();
     core.chase(tutti_ump::MidiGroup::FIRST, |ump| sent.push(ump));
-    let mut heir =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()));
+    let mut heir = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()),
+    );
     for ump in sent {
         let tutti_ump::Message::Midi2(address, message) = ump.decode().unwrap() else {
             continue;

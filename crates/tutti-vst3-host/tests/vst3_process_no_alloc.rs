@@ -1,16 +1,14 @@
 //! RT-safety regression: `Vst3Active::process` must not allocate on the
 //! audio thread in steady state.
 //!
-//! Requires a real VST3 plugin. `#[ignore]`'d because the global allocator is
-//! swapped for `AllocDisabler` binary-wide: an allocation anywhere in the
-//! guarded region **aborts the process**, so a skipped plugin or an unrelated
-//! panic takes the whole test binary with it rather than failing one case.
-//! Run with:
-//!
-//! ```bash
-//! VST3_SAMPLE_PLUGIN_DIR=/path/to/build/VST3/Release \
-//! cargo test -p tutti-vst3-host --test vst3_process_no_alloc -- --ignored
-//! ```
+//! The plugin is `audio-probe`, which allocates nothing in `process`, so an
+//! allocation in the guarded region is the host's. The global allocator is
+//! swapped for `AllocDisabler` binary-wide and an allocation in the guarded
+//! region **aborts the process**, so this is its own test binary and nextest
+//! (one process per test) reports an abort as the failure of that case.
+//! `audio-probe` is built by `build.rs` on the `conformance` feature, which
+//! this crate's dev-dependency on itself turns on; a missing plugin is a panic
+//! naming the build command, never a skip.
 //!
 //! Mirrors the pattern in `tutti-plugin-host/tests/vst2_in_process_no_alloc.rs`
 //! and `clap-host/tests/clap_process_no_alloc.rs`.
@@ -26,8 +24,7 @@
 //! [`process_with_automation_does_not_allocate`] is what covers that path, and
 //! it catches the same `vec![]`.
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::Path;
 use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
@@ -53,58 +50,22 @@ use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-const TAL_NOISEMAKER: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
-
-static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
-
-/// Resolve a VST3 bundle directory to its inner binary, across platforms.
-/// A path that is already a file (or not a bundle) is returned unchanged.
-fn resolve_bundle(path: &Path) -> PathBuf {
-    tutti_plugin_types::bundle::any_module_in_bundle(
-        path,
+/// Loads `audio-probe` from the directory `build.rs` builds it into, at 64
+/// frames per block.
+fn load() -> Active {
+    let bundle = Path::new(env!("VST3_PROBE_DIR")).join("audio-probe.vst3");
+    let module = tutti_plugin_types::bundle::any_module_in_bundle(
+        &bundle,
         tutti_plugin_types::bundle::ModuleKind::Vst3,
     )
-    .unwrap_or_else(|| path.to_path_buf())
-}
-
-/// Find a plugin to drive: any `.vst3` under `VST3_SAMPLE_PLUGIN_DIR` (the
-/// SDK sample plugins the conformance harness builds), else TAL-NoiseMaker at
-/// its stock macOS location.
-///
-/// The env-var path matters on Linux/CI, where no plugin is installed system
-/// wide — without it these tests silently skipped on every platform but a
-/// developer Mac with that one plugin installed.
-fn find_plugin() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("VST3_SAMPLE_PLUGIN_DIR") {
-        let dir = PathBuf::from(dir);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut candidates: Vec<PathBuf> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "vst3"))
-                .map(|p| resolve_bundle(&p))
-                .filter(|p| p.is_file())
-                .collect();
-            candidates.sort();
-            if let Some(first) = candidates.into_iter().next() {
-                return Some(first);
-            }
-        }
-    }
-    let bundle = Path::new(TAL_NOISEMAKER);
-    bundle.exists().then(|| resolve_bundle(bundle))
-}
-
-fn load_or_skip() -> Option<Active> {
-    let Some(library) = find_plugin() else {
-        eprintln!(
-            "no VST3 plugin found (set VST3_SAMPLE_PLUGIN_DIR, or install \
-             TAL-NoiseMaker at {TAL_NOISEMAKER}); skipping"
-        );
-        return None;
-    };
-    let inst = Active::<f32>::load(&library, 48_000.0, 64).expect("VST3 load failed");
-    Some(inst)
+    .unwrap_or_else(|| {
+        panic!(
+            "no audio-probe module in {}. `build.rs` builds it when the `conformance` \
+             feature is on:\n\n  cargo build -p tutti-vst3-host --features conformance --tests\n",
+            bundle.display()
+        )
+    });
+    Active::<f32>::load(&module, 48_000.0, 64).expect("audio-probe loads")
 }
 
 /// Run the plugin `iters` times with silent input. Buffer setup is done
@@ -149,12 +110,8 @@ fn unsorted_automation() -> ParameterChanges {
 }
 
 #[test]
-#[ignore]
 fn process_with_automation_does_not_allocate() {
-    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let Some(mut inst) = load_or_skip() else {
-        return;
-    };
+    let mut inst = load();
     let transport = TransportInfo::default()
         .with_tempo(120.0)
         .with_playing(true);
@@ -190,12 +147,8 @@ fn process_with_automation_does_not_allocate() {
 }
 
 #[test]
-#[ignore]
 fn process_steady_state_does_not_allocate() {
-    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let Some(mut inst) = load_or_skip() else {
-        return;
-    };
+    let mut inst = load();
     let transport = TransportInfo::default()
         .with_tempo(120.0)
         .with_playing(true);
@@ -210,12 +163,8 @@ fn process_steady_state_does_not_allocate() {
 }
 
 #[test]
-#[ignore]
 fn process_with_midi_does_not_allocate() {
-    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let Some(mut inst) = load_or_skip() else {
-        return;
-    };
+    let mut inst = load();
     let transport = TransportInfo::default()
         .with_tempo(120.0)
         .with_playing(true);
@@ -284,14 +233,10 @@ fn process_with_midi_does_not_allocate() {
 /// the expressions' budget: the rest is dropped and counted, still without
 /// allocating.
 #[test]
-#[ignore]
 fn process_with_hundreds_of_events_does_not_allocate() {
     use tutti_vst3_host::{NoteExpressionType, NoteExpressionValue};
 
-    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let Some(mut inst) = load_or_skip() else {
-        return;
-    };
+    let mut inst = load();
     let transport = TransportInfo::default()
         .with_tempo(120.0)
         .with_playing(true);

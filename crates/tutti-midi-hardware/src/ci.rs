@@ -8,8 +8,8 @@
 //! **It is off until the app gives an identity**
 //! ([`MidiSession::enable_ci`](crate::MidiSession::enable_ci)). A Discovery
 //! announces a System Exclusive manufacturer id, and tutti has none of its own:
-//! M1 reserves `7D` (non-commercial) for what "is not to be used on any product
-//! released to the public", and tutti is a library that apps ship. So no
+//! M1 reserves `7D` (non-commercial) for what is not to be used on any
+//! product released to the public, and tutti is a library that apps ship. So no
 //! device is started, and the port copies no SysEx for MIDI-CI, until the app
 //! says who it is, with the id it registered. Enabling reaches the inputs
 //! already open (they start at the next poll, after any Identity Request in
@@ -48,8 +48,8 @@
 //!   MIDI-CI gets none**: it said it does not speak it. An Endpoint that
 //!   declares no Function Block at all, and one that never answered the
 //!   negotiation, get one on Group 0: with no block to say otherwise the
-//!   Endpoint's Group 0 is "treated as a Function Block with only one member
-//!   Group" (§3.2.2).
+//!   Endpoint's Group 0 is treated as a Function Block with one member
+//!   Group (§3.2.2).
 //! - **A MIDI 1.0 port** gets one on Group 0, the port's own, once the
 //!   Identity Request ([`Negotiation`](crate::stream)) has ended, answered or
 //!   given up, so the two never read the SysEx stream at once.
@@ -93,7 +93,6 @@ use tutti_graph::Offset;
 use tutti_midi_device::{
     CiAction, CiCategories, CiDevice, CiHeader, CiMessage, CiPeer, Decoded, MaxSysexSize, Muid,
 };
-use tutti_midi_runtime::MidiOut;
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexStep, Ump};
 
 use crate::devices::OpenOutput;
@@ -274,7 +273,7 @@ impl Ci {
         now: Instant,
         heard: &Heard<'_>,
         enabled: Option<DeviceIdentity>,
-        out: &OpenOutput,
+        out: &mut OpenOutput,
     ) -> Vec<CiChange> {
         let mut changes = Vec::new();
         if self
@@ -309,7 +308,7 @@ impl Ci {
     /// The input is closing: each running device announces its MUID invalid
     /// on `out` (M2-101 §5.9), best effort. **Nothing is reported to the app**:
     /// it closed the input, so it knows the peers went with it.
-    pub(crate) fn close(&mut self, out: &OpenOutput) {
+    pub(crate) fn close(&mut self, out: &mut OpenOutput) {
         if let Some(running) = self.running.take() {
             running.stop(out, &mut Vec::new());
         }
@@ -345,7 +344,7 @@ impl Running {
         groups: &[MidiGroup],
         identity: DeviceIdentity,
         now: Instant,
-        out: &OpenOutput,
+        out: &mut OpenOutput,
     ) -> (Self, Vec<CiChange>) {
         let mut sends = Vec::new();
         let mut firsts = Vec::new();
@@ -377,7 +376,7 @@ impl Running {
     /// Ends the devices: each announces that its MUID is no longer valid (an
     /// Invalidate MUID from and for its own MUID, M2-101 §5.9), and its peers
     /// are lost.
-    fn stop(self, out: &OpenOutput, changes: &mut Vec<CiChange>) {
+    fn stop(self, out: &mut OpenOutput, changes: &mut Vec<CiChange>) {
         stop_members(&self.members, out, changes);
     }
 
@@ -389,7 +388,7 @@ impl Running {
         &mut self,
         groups: &[MidiGroup],
         now: Instant,
-        out: &OpenOutput,
+        out: &mut OpenOutput,
         changes: &mut Vec<CiChange>,
     ) {
         let same = self.members.len() == groups.len()
@@ -436,7 +435,7 @@ impl Running {
 
 /// Each of `members` announces that its MUID is no longer valid (an Invalidate
 /// MUID from and for its own MUID, M2-101 §5.9), and its peers are lost.
-fn stop_members(members: &[Member], out: &OpenOutput, changes: &mut Vec<CiChange>) {
+fn stop_members(members: &[Member], out: &mut OpenOutput, changes: &mut Vec<CiChange>) {
     let mut sends = Vec::new();
     for member in members {
         let muid = member.device.muid();
@@ -457,7 +456,7 @@ fn stop_members(members: &[Member], out: &OpenOutput, changes: &mut Vec<CiChange
 
 impl Running {
     /// Hands the devices what the port heard and the time (see [`Ci::poll`]).
-    fn step(&mut self, now: Instant, heard: &Heard<'_>, out: &OpenOutput) -> Vec<CiChange> {
+    fn step(&mut self, now: Instant, heard: &Heard<'_>, out: &mut OpenOutput) -> Vec<CiChange> {
         let mut sends = Vec::new();
         let mut changes = Vec::new();
         for &ump in heard.sysex() {
@@ -529,7 +528,7 @@ impl Member {
 /// Queues the messages as SysEx7 on `out`. A refusal is not retried: Discovery
 /// and its replies are repeated by their protocol, and a lost one is a peer
 /// found later or never.
-fn send(out: &OpenOutput, sends: &[(MidiGroup, CiMessage)]) {
+fn send(out: &mut OpenOutput, sends: &[(MidiGroup, CiMessage)]) {
     for (group, message) in sends {
         let packets: Vec<_> = message
             .packets(*group)

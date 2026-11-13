@@ -425,11 +425,11 @@ impl Source for MicIn {
     /// [`Ended`](Pull::Ended): a consumer that stopped there would end a
     /// recording within milliseconds of starting it.
     ///
-    /// [`Failed`](Pull::Failed) means the backend reported the device
-    /// disconnected (any other backend error may be transient and does not fail
-    /// the source) **and** the ring is empty. The fault flag is read before the
-    /// ring, so frames the callback pushed before the
-    /// disconnect are never hidden behind it.
+    /// [`Failed`](Pull::Failed) means the stream is gone (the backend reported
+    /// the device disconnected, or the capture callback panicked; any other
+    /// backend error may be transient and does not fail the source) **and** the
+    /// ring is empty. The fault flag is read before the ring, so frames the
+    /// callback pushed before the fault are never hidden behind it.
     fn pull(&mut self, out: &mut [f32]) -> Pull {
         let tap = &mut self.tap;
         match self.faults.drain(|| {
@@ -548,12 +548,27 @@ where
     f32: cpal::FromSample<T>,
 {
     let delivering = Arc::clone(&faults);
+    // Set by a panic in `capture.block`, whose state may be torn: the capture
+    // then does nothing, and its source answers `Failed` (the faults' latch).
+    let mut failed = false;
     let stream = device.build_input_stream(
         config,
         move |data: &[T], info: &cpal::InputCallbackInfo| {
+            if failed {
+                return;
+            }
             delivering.delivered();
             latency.record(crate::latency::input_delay(&info.timestamp()));
-            capture.block(data);
+            // A panic must not unwind out of the device's C frame.
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                capture.block(data);
+            }));
+            if let Err(payload) = ran {
+                failed = true;
+                delivering.record_panic("the capture callback panicked");
+                // Dropping the payload would free on the audio thread.
+                std::mem::forget(payload);
+            }
         },
         // Not exercised without a device: what it calls, `StreamFaults::record`
         // and `MicIn::pull`'s verdict, is tested on its own.

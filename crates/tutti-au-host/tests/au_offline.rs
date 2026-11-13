@@ -36,15 +36,23 @@
 //! corresponding test **fails** and says so — which is the only way a measured
 //! absence stays honest.
 //!
+//! ## The no-alloc tests
+//!
+//! The three no-alloc tests run against the shared test plugin
+//! (`testing/tutti-shared-plugin`) registered as an Audio Unit, because its
+//! render allocates nothing: an allocation under the guard is the host's. The
+//! global allocator is swapped for `AllocDisabler` binary-wide and an allocation
+//! in a guarded region **aborts the process**, so nextest (one process per test)
+//! reports an abort as the failure of that case. The unit is built by the same
+//! `cargo` invocation as the tests; a missing one is a panic, never a skip.
+//!
 //! ## Running
 //!
 //! ```bash
-//! cargo test -p tutti-au-host --test au_offline
-//! cargo test -p tutti-au-host --test au_offline -- --include-ignored
+//! cargo nextest run -p tutti-au-host --test au_offline
 //! ```
 //!
-//! The no-alloc tests are `#[ignore]`d to match `au_process_no_alloc.rs`. A
-//! missing corpus unit **fails** rather than skipping — see `support/corpus.rs`.
+//! A missing corpus unit **fails** rather than skipping — see `support/corpus.rs`.
 
 #![cfg(target_os = "macos")]
 
@@ -58,6 +66,7 @@ use support::corpus::{
     all_finite, peak, render, silence, sine,
 };
 
+use crate::support::au::Au;
 use tutti_au_host::AuError;
 use tutti_au_host::offline::{self, PushScratch, RENDER_QUALITY_MAX};
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_PROPERTY;
@@ -77,6 +86,13 @@ static AU_LOCK: Mutex<()> = Mutex::new(());
 /// left inconsistent.
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     AU_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The shared plugin's Audio Unit at [`RATE`] and [`RT_BLOCK`], initialized.
+fn open_shared() -> Au {
+    let mut au = Au::shared(RATE, RT_BLOCK);
+    au.initialize().expect("the shared AU initializes");
+    au
 }
 
 const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
@@ -1120,10 +1136,9 @@ impl RtBufs {
 /// is not a catchable panic — so a regression appears as the binary dying with
 /// `memory allocation of N bytes failed`, not as an assertion diff.
 #[test]
-#[ignore]
 fn the_push_path_does_not_allocate() {
     let _g = lock();
-    let mut au = DELAY.open(RATE, RT_BLOCK);
+    let mut au = open_shared();
     let mut scratch =
         PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], RT_BLOCK);
     let mut b = RtBufs::new();
@@ -1138,8 +1153,7 @@ fn the_push_path_does_not_allocate() {
     });
 }
 
-/// `AudioUnitProcessMultiple` must not allocate either, on the one unit that
-/// implements it.
+/// `AudioUnitProcessMultiple` must not allocate either.
 ///
 /// Driven separately from the single-list path because it takes a different route
 /// through `PushScratch`: it binds *both* the input and output lists and hands
@@ -1148,10 +1162,9 @@ fn the_push_path_does_not_allocate() {
 /// obvious implementation collects them at the call site — so this is the test
 /// that pins them as fields.
 #[test]
-#[ignore]
 fn process_multiple_does_not_allocate() {
     let _g = lock();
-    let mut au = IMPLEMENTS_PROCESS_MULTIPLE.open(RATE, RT_BLOCK);
+    let mut au = open_shared();
     let mut scratch =
         PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], RT_BLOCK);
     let mut b = RtBufs::new();
@@ -1174,17 +1187,14 @@ fn process_multiple_does_not_allocate() {
 /// back, so a per-block allocation introduced by the flag would be paid once per
 /// block for the whole export.
 ///
-/// AUSampler is the subject because it is one of only two units that implement
-/// the property at all, and it renders under MIDI rather than from an input bus —
-/// so this also covers the pull path with the flag set, which the push tests
-/// above cannot (AUSampler answers `unimpErr` to `AudioUnitProcess`).
+/// It renders through `AudioUnitRender` under MIDI, the pull path, which the push
+/// tests above do not reach.
 #[test]
-#[ignore]
 fn offline_flagged_render_does_not_allocate() {
     let _g = lock();
-    let mut au = support::corpus::SAMPLER.open_uninitialized(RATE, RT_BLOCK);
+    let mut au = Au::shared(RATE, RT_BLOCK);
     au.set_offline_render(true)
-        .expect("AUSampler implements OfflineRender");
+        .expect("the shared plugin implements OfflineRender");
     au.initialize()
         .expect("initialize with the offline flag set");
     assert!(au.is_offline_render().unwrap());

@@ -344,7 +344,7 @@ fn a_fork_of_a_dropped_plugin_is_live_gone() {
 }
 
 /// **`Plugin::into_client` hands an in-process VST2 plugin back whole**, and
-/// inserted through its own `IntoNode` (bevy-tutti's load path) it forks.
+/// inserted through its own `IntoNode` it forks.
 ///
 /// Not on macOS: there the probe builds as a `.dylib`, which `Plugin::open`
 /// does not read as VST2 (a macOS VST2 is a `.vst` bundle).

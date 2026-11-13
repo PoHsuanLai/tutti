@@ -1,5 +1,4 @@
-//! The Moog ladder as a **small-signal** model: [`LadderModel`] (design 024 step
-//! 2).
+//! The Moog ladder as a **small-signal** model: [`LadderModel`].
 //!
 //! The ladder is not linear: the resonance feedback runs through a `tanh`, and
 //! that saturation is its character. The model is its **linearisation at the

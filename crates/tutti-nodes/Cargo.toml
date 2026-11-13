@@ -16,32 +16,25 @@ workspace = true
 
 [features]
 default = []
-# No `bevy` feature: ECS bindings are host-side.
 # `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and
-# benches (`Const`, `Osc`, `Through`, `Split`, `Sink`). Off by default and
-# enabled only from `[dev-dependencies]`, so it is never production API: the
-# same pattern as `tutti-sampler`'s `testing`.
+# benches (`Const`, `Osc`, `Through`, `Split`, `Sink`).
 testing = []
 
 [dependencies]
 # Value vocabulary (the `Curve` trait), for `impl Curve for Trajectory`.
-# default-features = false so bevy does not re-leak.
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # The modulation compiler and its vocabulary (`ControlProgram`, `Curve`,
 # `LfoShape`, `compile`): the control lane evaluates its programs, and the
-# reconcile (`Modulation`) calls the compiler. `default-features = false`
-# keeps its `bevy` feature (Reflect) off this deliberately bevy-free crate.
+# reconcile (`Modulation`) calls the compiler.
 tutti-modulation = { path = "../tutti-modulation", default-features = false }
 
-# The algorithms every node adapts. tutti-dsp names no tutti crate but
-# `tutti-types`, so the edge adds no cycle.
+# The algorithms every node adapts.
 tutti-dsp = { path = "../tutti-dsp", default-features = false }
 
-# The node contract every node here implements. tutti-graph depends on no
-# tutti crate but tutti-types, tutti-rt and tutti-ump, so the edge adds no cycle.
+# The node contract every node here implements.
 tutti-graph = { path = "../tutti-graph" }
 
 # Trajectory primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
@@ -53,42 +46,23 @@ tutti-curve = { path = "../tutti-curve" }
 tutti-transport = { path = "../tutti-transport" }
 
 # `VbapError`.
-thiserror = { version = "2", default-features = false }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-# The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call
-# `libm`'s pure-Rust routines, as `tutti-dsp`'s filters do, so they do not
-# depend on the platform's C math library.
 libm = "0.2.15"
-# The crate's own `testing` module, for its integration tests and bench. A
-# self dev-dependency rather than `required-features`, which would *skip*
-# those targets when the feature is off — see `tutti-sampler`'s manifest.
 tutti-nodes = { path = ".", features = ["testing"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # `check_range_contract` for `TailCeiling`, and `Seconds`'s serde for it.
 serde = "1"
 tutti-types = { path = "../tutti-types", default-features = false, features = ["serde"] }
 approx = "0.5"
-# An independent RBJ-cookbook biquad, as a second opinion on the SVF's magnitude
-# response in `tests/filters/oracle_biquad.rs`. Adds no transitive crates — `num-traits`
-# is already in the tree.
 biquad = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
-# `sibling_batch`'s cross-member kernels (`f32x8` lanes). The polysynth's voice
-# bank already depends on it, so it adds no crate to the lock file.
 wide = { version = "1.6", default-features = false }
-# `engine_render`'s Graph backend rows: the graph behind `Engine`.
-# `contract`: the graph's sample-accuracy contract harness, which
-# `tests/node_contract/contract.rs` runs the latency-bearing nodes through.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
-# `Engine`, which the engine bench and `tests/rt_no_alloc_engine.rs` render the
-# nodes through.
 tutti-engine = { path = "../tutti-engine" }
 
-# The engine's graph-render bench. It measures `Engine::process`, which is
-# `tutti-engine`'s, but it lives here because the graph it renders is built from
-# this crate's nodes and `tutti-engine` has only a dev edge to them.
 [[bench]]
 name = "engine_render"
 harness = false
@@ -125,9 +99,6 @@ harness = false
 name = "hrtf_binaural"
 harness = false
 
-# docs.rs renders with every feature on. `default = []` keeps the engine
-# Bevy-free for consumers, but it would otherwise publish a page with the
-# feature-gated half of the public API missing.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

@@ -15,9 +15,6 @@
 //!    truth (§7.1.6.1 step 3: the peer may refuse any part).
 //! 3. **Function Blocks** (step 4): ask for every block's Info and Name.
 //!
-//! Step 5, MIDI-CI Discovery, is the CI codec's and has no state machine yet
-//! (design 017 §5, "MIDI-CI").
-//!
 //! A step that gets no answer within [`STEP_TIMEOUT`] is sent again, up to
 //! [`MAX_ATTEMPTS`] times in all. Then Discovery and Select Protocol give up
 //! and the peer is a MIDI 1.0 device ([`Ending::Midi1Fallback`]); Function
@@ -43,7 +40,7 @@ use crate::name::{Assembler, BlockName, EndpointName, ProductInstanceId};
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How long Function Block discovery waits for Names once every Info is in. A
-/// block with no name never sends one (§7.1.9: "may"), so a Name is not
+/// block with no name never sends one (§7.1.9 makes the name optional), so a Name is not
 /// something to wait for without end; when every block's Info and Name are in
 /// it settles at once. 100 ms is ours.
 pub const NAME_GRACE: Duration = Duration::from_millis(100);
@@ -54,7 +51,7 @@ pub const NAME_GRACE: Duration = Duration::from_millis(100);
 pub const MAX_ATTEMPTS: u8 = 3;
 
 /// How a connection ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Ending {
     /// The steps ran: the Endpoint's active configuration is what its last
     /// Stream Configuration Notification reported, whether or not that is what
@@ -193,11 +190,11 @@ impl Connection {
     /// change what it said, and the connection follows it, answering
     /// [`Action::Changed`]: a Stream Configuration Notification is the
     /// Protocol and JR Timestamps in use whenever it comes (§7.1.6.1 step 3:
-    /// the Sender starts "using the Protocol and JR Timestamps configuration
-    /// as declared in the Stream Configuration Notification"), but a Function
+    /// the Sender starts using the Protocol and JR Timestamps configuration
+    /// the Notification declares), but a Function
     /// Block Info or Name is read only when the Endpoint did not declare its
-    /// Function Blocks static (§6.1.1: such an Endpoint "will not change any of
-    /// the properties of its Function Blocks after initial discovery", and
+    /// Function Blocks static (§6.1.1: such an Endpoint changes none of
+    /// the properties of its Function Blocks after initial discovery, and
     /// §7.1.8 and §7.1.9 send the Notifications for a change only from one that
     /// has not). A Function Block outside the count Endpoint Info declared is
     /// never read. After a [`Midi1Fallback`](Ending::Midi1Fallback) settle
@@ -451,8 +448,8 @@ impl Connection {
 }
 
 /// A Notification's configuration as the connection keeps it: a reserved
-/// Protocol is one it cannot use, so it is MIDI 1.0 (ours; the spec says
-/// "reserved").
+/// Protocol is one it cannot use, so it is MIDI 1.0 (ours; the spec
+/// only calls it reserved).
 const fn settle_protocol(config: StreamConfig) -> StreamConfig {
     match config.protocol {
         Protocol::Reserved(_) => StreamConfig {

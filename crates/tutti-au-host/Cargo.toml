@@ -19,13 +19,6 @@ workspace = true
 # calls beside the safe API (the raw `AudioUnit` behind a `Unit`, the packet-list
 # walkers). Off in a production build.
 testing = ["tutti-au-ffi/testing"]
-# `tests/au_midi_map.rs`'s claim about third-party Audio Units that are
-# installed on the machine (TDR Nova, TAL-NoiseMaker, TAL Reverb 4). It fails,
-# never skips, where they are absent, so it is compiled out unless asked for:
-# CI lints it (`clippy (macos)`) and a developer with the units runs it with
-# `cargo xtask test-au-installed`. It gates one test and adds no code to the library.
-installed-units = []
-
 [dependencies]
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # Every raw AudioToolbox, CoreAudio and CoreFoundation call; this crate forbids
@@ -56,10 +49,11 @@ tutti-au-ffi = { path = "../tutti-au-ffi", features = ["testing"] }
 # `mapping_contract!`: the laws `ParamBounds` is held to.
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 tutti-graph = { path = "../tutti-graph" }
-tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin", "au"] }
 assert_no_alloc = { version = "1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
 # The probe AU and a few tests build CoreFoundation objects of their own.
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
@@ -68,7 +62,7 @@ core-foundation-sys = "0.8"
 # this target owns `main()` — the only way to reach the main thread under cargo,
 # and macOS requires it for AppKit, which `AuEditor` checks with the OS
 # (`pthread_main_np`). See the module docs; the test
-# bodies are shared with `tests/au_gui_lifecycle.rs`, not duplicated.
+# bodies live in `tests/support/gui_lifecycle.rs`.
 [[test]]
 name = "au_gui_lifecycle_main"
 path = "tests/au_gui_lifecycle_main.rs"

@@ -41,7 +41,7 @@ ramps and the graph shape. Here they take plain typed values per call.
   on the same stream grid and clock, its member `Lti` frozen at a sweep position, its tail
   `Ring::Unbounded`).
 - **Waveshaping** — `ShapeKind`, six memoryless curves with block kernels.
-- **Reverb** — the reverb model of design 022, a `Network` with analytic queries
+- **Reverb** — the reverb model, a `Network` with analytic queries
   (RT60, tail, stability, densities), and two families over it: `FreeverbFamily` and
   `FdnFamily`, the feedback delay network.
 - **Spatial** — vector base amplitude panning (`SpeakerLayout`, `VbapKernel`) and the
@@ -55,7 +55,7 @@ independent; every family but the block-sampled ones is on `Cadence::stream(16)`
 
 Each family is laid out as its design (controls to a model), its model (a `System`, and
 an `Lti` where it is linear and time-invariant) and its kernel (the per-frame math that
-`Realized` runs), the split of design 024.
+`Realized` runs).
 
 FFT is `RealFft`, the engine's one real-input FFT: rustfft's
 *scalar* planner under realfft's even-length real passes (an odd size runs a
@@ -69,14 +69,14 @@ plans lazily, per scratch, on the cold path.
 ## Scope
 
 - **No graph, no framework, no ECS.** Nothing here is a graph node or knows
-  about one, and there is no Bevy feature.
+  about one.
 - **No threading and no scheduling.** A host that wants these results on a
   background thread owns that plumbing itself.
 
 ## Features
 
 - `contract` (off by default): the `contract` module, the cases a `Family` and its
-  `Realized` runner are held to (design 024 section 6). Test support.
+  `Realized` runner are held to. Test support.
 
 The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler` and
 `tutti-export` use it.

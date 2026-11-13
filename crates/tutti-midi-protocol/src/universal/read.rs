@@ -67,8 +67,7 @@ fn device(input: &mut &[u8]) -> Res<Recipient> {
 }
 
 /// The manufacturer id of an Identity Reply: one byte, or `00` and two more
-/// (M1 p.40, "if the manufacturers id code (mm) begins with 00H then the above
-/// message is extended by two bytes").
+/// (M1 p.40: an id beginning with 00H extends the message by two bytes).
 fn manufacturer(input: &mut &[u8]) -> Res<ManufacturerId> {
     alt((
         preceded(literal(0x00_u8), (u7, u7))
@@ -115,8 +114,8 @@ fn general_midi(input: &mut &[u8]) -> Res<Universal> {
 }
 
 /// `04`, Device Control: Master Volume and Balance (M1 p.57), Master Fine and
-/// Coarse Tuning (CA-025). Coarse Tuning's data is `00 msb`: "the LSB is always
-/// 0", so only the MSB is read.
+/// Coarse Tuning (CA-025). Coarse Tuning's data is `00 msb`, the LSB always being
+/// 0, so only the MSB is read.
 fn device_control(input: &mut &[u8]) -> Res<Universal> {
     preceded(
         literal(0x04_u8),
@@ -138,7 +137,7 @@ fn u14_msb_first(input: &mut &[u8]) -> Res<U14> {
         .parse_next(input)
 }
 
-/// Frequency data: `xx yy zz` (MTS, "Frequency Data Format").
+/// Frequency data: `xx yy zz` (MTS, Frequency Data Format).
 fn frequency(input: &mut &[u8]) -> Res<TuningFrequency> {
     (u7, u14_msb_first)
         .map(|(semitone, fraction)| TuningFrequency::from_parts(semitone, fraction))
@@ -178,7 +177,7 @@ fn key_table(input: &mut &[u8]) -> Res<KeyTable> {
 }
 
 /// `ll` and then `ll` changes (`kk xx yy zz`): the count is the message's own
-/// length ("the total length of the message equals 8 + (ll x 4) bytes"), so a
+/// length (8 + (ll x 4) bytes in all), so a
 /// message whose count disagrees with its bytes does not match.
 fn key_changes(input: &mut &[u8]) -> Res<KeyChanges> {
     let count = u7.parse_next(input)?.get();
@@ -195,8 +194,7 @@ fn key_changes(input: &mut &[u8]) -> Res<KeyChanges> {
 
 /// The three channel bytes of Scale/Octave Tuning, `ff gg hh`: channels 15 and
 /// 16 in the low two bits of `ff`, 8 to 14 in `gg` and 1 to 7 in `hh`. The
-/// five other bits of `ff` are "reserved for future expansion [...] must be set
-/// to 0", so a message with one set does not match.
+/// five other bits of `ff` are reserved and must be 0, so a message with one set does not match.
 fn channel_mask(input: &mut &[u8]) -> Res<ChannelMask> {
     (any.verify(|&f| f <= 0b11), u7, u7)
         .map(|(f, g, h)| {
@@ -281,9 +279,8 @@ fn tuning(timing: Timing) -> impl FnMut(&mut &[u8]) -> Res<Tuned> {
                     program,
                 }))
             }
-            // "It is now recommended that receivers may ignore the checksum in
-            // that message": the original Bulk Tuning Dump carries none that is
-            // checked.
+            // The spec lets receivers ignore the checksum of that message: the
+            // original Bulk Tuning Dump carries none that is checked.
             (Timing::NonRealTime, 0x01) => {
                 let program = u7.parse_next(input)?;
                 let (name, table) = (name, key_table).parse_next(input)?;
@@ -373,8 +370,8 @@ pub(super) enum Parsed {
 /// The payload of a SysEx message (between `F0` and `F7`) as a Universal
 /// message and who it is for, or why not.
 ///
-/// MTS's checksum: "successively XOR'ing the bytes in the message, excluding the
-/// F0, F7, and the checksum field [...] AND'ed with 7F".
+/// MTS's checksum: the XOR of the bytes of the message, leaving out the F0, F7
+/// and the checksum field, masked with 7F.
 pub(super) fn parse(payload: &[u8]) -> Parsed {
     let mut input = payload;
     let Ok((to, message, checksum)) = addressed.parse_next(&mut input) else {

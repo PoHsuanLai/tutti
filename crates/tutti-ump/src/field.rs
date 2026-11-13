@@ -6,7 +6,8 @@
 
 /// A raw number above the largest the type holds, from `TryFrom` on an
 /// address type or a bit-width field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{} {} is above the largest, {}", .what, .value, .max)]
 pub struct OutOfRange {
     /// What was out of range: "channel", "group", "controller number", or a
     /// field's type name.
@@ -17,20 +18,7 @@ pub struct OutOfRange {
     pub max: u32,
 }
 
-impl core::fmt::Display for OutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{} {} is above the largest, {}",
-            self.what, self.value, self.max
-        )
-    }
-}
-
-impl std::error::Error for OutOfRange {}
-
-// A bit-width field, to the shape of a range-checked value (CLAUDE.md, "Range-
-// checked values"): `new` refuses above `MAX`, `of` panics, `masked` masks.
+// A bit-width field, to the shape of a range-checked value: `new` refuses above `MAX`, `of` panics, `masked` masks.
 macro_rules! bits {
     ($(#[$doc:meta])* $name:ident, $repr:ty, $repr_name:literal, $width:expr) => {
         $(#[$doc])*

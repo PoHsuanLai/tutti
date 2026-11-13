@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use tutti_rt::RequestWord;
 
@@ -22,8 +22,8 @@ use crate::{
     AudioBufferMut, ChannelLayout, ContentScale, Control, Controller, EditDrain, EditSink,
     EditorError, EditorSize, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThread,
     Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError,
-    PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, Request,
-    RescanScope, RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
+    PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, RenderModeSupport,
+    Request, RescanScope, RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
 };
 
 /// One call the fake received.
@@ -232,6 +232,12 @@ struct Shared {
     /// The size the plugin asked its window to take, packed `width << 32 | height`,
     /// until the host polls it; `0` when it has not asked.
     resize_request: AtomicU64,
+    /// How the fake takes a render mode (`FakePlugin::take_render_mode`):
+    /// `0` at activation, `1` live, `2` not at all.
+    render_mode_support: AtomicU8,
+    /// The mode the fake was last told live: `0` none, `1` realtime, `2`
+    /// offline.
+    told_mode: AtomicU8,
 }
 
 impl Shared {
@@ -296,6 +302,8 @@ impl FakePlugin {
             editor: AtomicBool::new(false),
             takes_scale: AtomicBool::new(false),
             resize_request: AtomicU64::new(0),
+            render_mode_support: AtomicU8::new(0),
+            told_mode: AtomicU8::new(0),
         });
         (
             Self(shared.clone()),
@@ -397,6 +405,28 @@ impl FakePlugin {
     /// that lies about being asleep.
     pub fn sleep_over_sound(&self, lie: bool) {
         self.0.sleeps_over_sound.store(lie, Ordering::Relaxed);
+    }
+
+    /// How the fake takes a change of render mode from now on. The default is
+    /// [`RenderModeSupport::OnActivation`], as VST3 takes it.
+    pub fn take_render_mode(&self, support: RenderModeSupport) {
+        let code = match support {
+            RenderModeSupport::OnActivation => 0,
+            RenderModeSupport::Live => 1,
+            RenderModeSupport::Unsupported => 2,
+        };
+        self.0.render_mode_support.store(code, Ordering::Relaxed);
+    }
+
+    /// The mode the fake was last told live, through
+    /// [`Control::set_render_mode`]; `None` before any.
+    #[must_use]
+    pub fn told_render_mode(&self) -> Option<RenderMode> {
+        match self.0.told_mode.load(Ordering::Relaxed) {
+            1 => Some(RenderMode::Realtime),
+            2 => Some(RenderMode::Offline),
+            _ => None,
+        }
     }
 
     /// The output channel count the plugin reports from now on.
@@ -561,9 +591,25 @@ macro_rules! fake_control {
             /// The fake never asks for anything.
             fn take_requests(&mut self, _main: &MainThread, _out: &mut Vec<Request>) {}
 
-            /// The fake cannot change mode live.
-            fn set_render_mode(&mut self, _main: &MainThread, _mode: RenderMode) -> bool {
-                false
+            /// As [`FakePlugin::take_render_mode`] set it; at activation by
+            /// default, as VST3 takes it.
+            fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+                match self.shared.render_mode_support.load(Ordering::Relaxed) {
+                    1 => RenderModeSupport::Live,
+                    2 => RenderModeSupport::Unsupported,
+                    _ => RenderModeSupport::OnActivation,
+                }
+            }
+
+            /// Takes the mode where the fake is [`RenderModeSupport::Live`],
+            /// recording it for [`FakePlugin::told_render_mode`].
+            fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+                if self.render_mode_support(main) != RenderModeSupport::Live {
+                    return false;
+                }
+                let code = if mode.is_offline() { 2 } else { 1 };
+                self.shared.told_mode.store(code, Ordering::Relaxed);
+                true
             }
 
             /// The fake reports no edits outside a block.

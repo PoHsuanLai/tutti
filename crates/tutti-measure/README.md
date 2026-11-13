@@ -48,7 +48,7 @@ where the results go:
 ## Scope
 
 - **No graph, no framework, no ECS.** Nothing here is a graph node or knows
-  about one, and there is no Bevy feature.
+  about one.
 - **No threading and no scheduling.** "Live" is a property of a call site, never
   of an algorithm, so nothing here is named for it. A host that wants these
   results on a background thread owns that plumbing itself.

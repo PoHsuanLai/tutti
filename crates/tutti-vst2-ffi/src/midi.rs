@@ -988,11 +988,6 @@ mod tests {
     /// **A SysEx message open at a block's end is completed by an `END` that
     /// falls in a later piece of the next, split block**: delivered once, at
     /// the rebased frame, with nothing counted dropped.
-    ///
-    /// Each piece used to run the whole block through the assembler: piece 0
-    /// completed the run and discarded it as out-of-piece, piece 1 then saw
-    /// the `END` with no run open, and a run still open at the block's end
-    /// was counted dropped once per extra piece.
     #[test]
     fn a_sysex_ending_in_a_later_piece_is_delivered_once() {
         let body: Vec<u8> = (0..20).map(|i| i as u8 + 1).collect();

@@ -39,7 +39,7 @@ use crate::{InstrumentHandle, Key, OutPort, RemoveError, Session};
 /// and the channel's (CC 91 and CC 93), not a gain's.
 #[derive(Debug)]
 pub struct GeneralMidi {
-    instrument: InstrumentHandle,
+    instrument: InstrumentHandle<SoundFontUnit>,
     chorus: Key<ModDelayNode>,
     reverb: Key<FreeverbNode>,
     strip: Key<BusStripNode>,
@@ -49,12 +49,12 @@ pub struct GeneralMidi {
 impl GeneralMidi {
     /// The unit, played through its handle.
     #[must_use]
-    pub fn instrument(&self) -> &InstrumentHandle {
+    pub fn instrument(&self) -> &InstrumentHandle<SoundFontUnit> {
         &self.instrument
     }
 
     /// The unit's handle, to send with ([`InstrumentHandle::keys_mut`]).
-    pub fn instrument_mut(&mut self) -> &mut InstrumentHandle {
+    pub fn instrument_mut(&mut self) -> &mut InstrumentHandle<SoundFontUnit> {
         &mut self.instrument
     }
 
@@ -92,7 +92,7 @@ impl GeneralMidi {
     /// [`RemoveError::NoSuchNode`] naming the first part that was not in the
     /// graph (a part was removed by hand).
     pub fn remove(self, session: &mut Session) -> Result<(), RemoveError> {
-        let node = self.instrument.node();
+        let node = self.instrument.node().erase();
         let mut first = session.remove_instrument(self.instrument);
         for node in [
             node,
@@ -128,7 +128,7 @@ impl Session {
         let AddedInstrument {
             handle: instrument, ..
         } = self.add_instrument_unwired(unit)?;
-        let unit = instrument.node();
+        let unit = instrument.node().erase();
         let graph = self.graph();
         let (chorus, _) = graph.add(ModDelayNode::general_midi_chorus(BusTopology::STEREO));
         let (reverb, _) = graph.add(FreeverbNode::general_midi());

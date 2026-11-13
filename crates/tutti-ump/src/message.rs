@@ -43,16 +43,9 @@ pub enum Message {
 /// with an undefined status, or a defined message with a reserved value in a
 /// field. The words are kept, so a later revision's message can be forwarded
 /// unchanged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no defined message in the packet {}", .0)]
 pub struct Unknown(pub Ump);
-
-impl core::fmt::Display for Unknown {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "no defined message in the packet {}", self.0)
-    }
-}
-
-impl core::error::Error for Unknown {}
 
 /// A Group and a Channel within it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,15 +139,20 @@ impl From<MidiChannel> for Address {
 /// ```
 /// use tutti_ump::{
 ///     BendValue, CCNumber, ControlValue, Message, MidiChannel, NoteNumber, NoteVelocity, U7,
+///     Voice2,
 /// };
 ///
 /// let ch = MidiChannel::FIRST;
 /// // MIDI 1.0: 7-bit data.
 /// let note = Message::note_on(ch, NoteNumber::of(60), U7::of(100));
 /// // MIDI 2.0: 16- and 32-bit data, each its own type.
-/// let note2 = Message::note_on2(ch, NoteNumber::of(60), NoteVelocity::new(0xC000));
-/// let cc = Message::control_change2(ch, CCNumber::VOLUME, ControlValue::CENTER);
-/// let bend = Message::pitch_bend2(ch, BendValue::CENTER);
+/// let velocity = NoteVelocity::new(0xC000);
+/// let note2 = Message::Midi2(ch.into(), Voice2::note_on(NoteNumber::of(60), velocity));
+/// let cc = Message::Midi2(
+///     ch.into(),
+///     Voice2::ControlChange { controller: CCNumber::VOLUME, value: ControlValue::CENTER },
+/// );
+/// let bend = Message::Midi2(ch.into(), Voice2::PitchBend(BendValue::CENTER));
 /// # let _ = (note, note2, cc, bend);
 /// ```
 impl Message {
@@ -193,56 +191,6 @@ impl Message {
     pub fn pitch_bend(address: impl Into<Address>, bend: U14) -> Self {
         Self::Midi1(address.into(), Voice1::PitchBend(bend))
     }
-
-    /// A MIDI 2.0 Note On with a 16-bit `velocity` (not a 7-bit one: see
-    /// [`NoteVelocity`]) and no attribute. Velocity 0 is a Note On (§7.4.2).
-    #[inline]
-    #[must_use]
-    pub fn note_on2(address: impl Into<Address>, note: NoteNumber, velocity: NoteVelocity) -> Self {
-        Self::Midi2(address.into(), Voice2::note_on(note, velocity))
-    }
-
-    /// A MIDI 2.0 Note Off with a 16-bit release `velocity` and no attribute.
-    #[inline]
-    #[must_use]
-    pub fn note_off2(
-        address: impl Into<Address>,
-        note: NoteNumber,
-        velocity: NoteVelocity,
-    ) -> Self {
-        Self::Midi2(address.into(), Voice2::note_off(note, velocity))
-    }
-
-    /// A MIDI 2.0 Control Change with a 32-bit `value` ([`ControlValue`]).
-    #[inline]
-    #[must_use]
-    pub fn control_change2(
-        address: impl Into<Address>,
-        controller: CCNumber,
-        value: ControlValue,
-    ) -> Self {
-        Self::Midi2(address.into(), Voice2::ControlChange { controller, value })
-    }
-
-    /// A MIDI 2.0 Program Change with no bank.
-    #[inline]
-    #[must_use]
-    pub fn program_change2(address: impl Into<Address>, program: U7) -> Self {
-        Self::Midi2(
-            address.into(),
-            Voice2::ProgramChange {
-                program,
-                bank: None,
-            },
-        )
-    }
-
-    /// A MIDI 2.0 Pitch Bend, [`BendValue::CENTER`] centred.
-    #[inline]
-    #[must_use]
-    pub fn pitch_bend2(address: impl Into<Address>, bend: BendValue) -> Self {
-        Self::Midi2(address.into(), Voice2::PitchBend(bend))
-    }
 }
 
 // ---- System ----------------------------------------------------------------
@@ -274,7 +222,7 @@ pub enum System {
 
 impl System {
     /// How many Timing Clock messages make a quarter note (MIDI 1.0
-    /// Detailed Specification, "System Real Time Messages").
+    /// Detailed Specification, System Real Time Messages).
     pub const TIMING_CLOCKS_PER_QUARTER: u32 = 24;
 }
 
@@ -327,7 +275,7 @@ pub enum Voice1 {
 
 /// The role of a packet in a System Exclusive message (Tables 18 and 19).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SysexStatus {
     /// The whole message.
     Complete,
@@ -1022,7 +970,7 @@ pub struct ChordName {
 
 /// The messages that use the Flex text format (Table 16).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FlexTextKind {
     /// Bank 1, status 0.
     UnknownMetadata,
@@ -1065,7 +1013,7 @@ pub enum FlexTextKind {
 // ---- UMP Stream ------------------------------------------------------------
 
 /// A packet's place in a multi-packet message (Stream and Flex Format).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Form {
     /// The whole message.
     Complete,
@@ -1194,7 +1142,7 @@ pub enum Direction {
 }
 
 /// The primary role a Function Block declares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiHint {
     /// Unknown or undeclared.
     Unknown,

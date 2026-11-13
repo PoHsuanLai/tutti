@@ -1,6 +1,6 @@
 use super::*;
 use crate::RateAnchor;
-use tutti_types::Amplitude;
+use tutti_types::{Amplitude, BeatDuration};
 
 /// The fields of an [`Source::Lfo`]: `(shape, seed, clock)`.
 fn lfo_parts(source: Source) -> (LfoShape, u64, Clock) {
@@ -47,7 +47,7 @@ fn each_lfo_constructor_is_its_shape_at_one_hertz() {
 fn an_lfos_clock_and_seed_are_pinned_field_by_field() {
     let beats = Lfo::saw()
         .rate(Hz(4.0))
-        .rate(BeatDuration(0.5))
+        .rate(BeatsPerCycle::of(0.5))
         .phase(PhaseIncrement(0.25))
         .seed(7);
     let (shape, seed, clock) = lfo_parts(beats.into());
@@ -62,7 +62,7 @@ fn an_lfos_clock_and_seed_are_pinned_field_by_field() {
     );
 
     let seconds = Lfo::sine()
-        .rate(BeatDuration(2.0))
+        .rate(BeatsPerCycle::of(2.0))
         .rate(Hz(3.0))
         .phase(PhaseIncrement(0.5));
     let (_, _, clock) = lfo_parts(seconds.into());

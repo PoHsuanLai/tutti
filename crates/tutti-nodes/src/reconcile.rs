@@ -1,4 +1,4 @@
-//! [`Modulation`]: the reconcile step (design doc 014 §8.2), Bevy-free.
+//! [`Modulation`]: the reconcile step.
 //!
 //! A host declares sources, routes and targets ([`Declarations`]); this
 //! compiles them ([`tutti_modulation::compile`]) and applies the difference to an
@@ -11,7 +11,6 @@
 //! which graph node a target key or a source's input names.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::sync::Arc;
 
 use tutti_graph::NodeKey;
@@ -57,7 +56,7 @@ pub enum Target {
     /// A native param port (`TargetKey::param` a `ParamAddr::Unit` or
     /// `ParamAddr::Indexed`; a host resolves both, `ParamAddr::as_unit`): the
     /// node, and its own `Param` cell for the param (`ParamSet::cell`), the
-    /// lane's knob (doc 014 §4.2). `None`: no knob, the base is automation
+    /// lane's knob. `None`: no knob, the base is automation
     /// alone.
     Native {
         /// The node the param is on.
@@ -95,7 +94,7 @@ pub enum Target {
         id: EdgeId,
     },
     /// The mix of a node (`TargetKey::Mix`): the node's blend with its aligned
-    /// input (doc 013, "Bypass and mute are graph state"). The lane drives it
+    /// input. The lane drives it
     /// through [`GraphSpec::connect_param`](tutti_graph::GraphSpec::connect_param)
     /// at [`NodeMix::ADDR`] and clamps to the port's range (narrowed to
     /// `0..=1`). Its knob is the node's own mix cell
@@ -122,13 +121,15 @@ pub enum Feed {
 
 /// Why [`Modulation::apply`] refused. A refusal changes nothing: neither
 /// the editor nor the reconciler's own state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReconcileError {
     /// The declarations do not compile.
-    Compile(CompileError),
+    #[error("modulation does not compile")]
+    Compile(#[from] CompileError),
     /// A route from a signal source whose input is downstream of the route's
-    /// own target (doc 014 §6): its edge would close a cycle.
+    /// own target: its edge would close a cycle.
+    #[error("route {}: its source's input is downstream of its target", route.0)]
     Cycle {
         /// The route.
         route: RouteKey,
@@ -136,17 +137,22 @@ pub enum ReconcileError {
     /// The host resolved a native (`Unit` or `Indexed`) target to a foreign parameter,
     /// or a `ParamAddr::Id` one to a native port, or an edge key to a node's
     /// param, or a mix key to anything but a mix (or the other way round).
+    #[error("target {0:?}: resolved to the other kind")]
     WrongTarget(TargetKey),
     /// A native target whose node does not declare the param.
+    #[error("target {0:?}: its node does not declare it")]
     NoSuchParam(TargetKey),
     /// A foreign target whose node has no event input at the port given.
+    #[error("target {0:?}: no such event input")]
     NoSuchEventInput(TargetKey),
     /// A native target whose param port already takes an event source that
     /// is not one of this reconciler's lanes: the graph allows one per port.
+    #[error("target {0:?}: its port has another event source")]
     PortTaken(TargetKey),
     /// Two native targets the host resolved to the same param port (or two
     /// edge targets to the same edge): one lane each would be two event
     /// sources on it.
+    #[error("targets {first:?} and {second:?} resolve to one param port")]
     SharedPort {
         /// The first, in key order.
         first: TargetKey,
@@ -157,50 +163,17 @@ pub enum ReconcileError {
     /// envelope fed from an event output its node does not have. (A feed
     /// naming a node not in the graph is no feed: the follower is
     /// unresolved, the envelope gets none.)
+    #[error("source {}: a feed it cannot take", .0.0)]
     WrongFeed(SourceKey),
     /// A mix target on a node with no pass ([`Editor::check_pass`]): the dry
     /// side of the mix would be a guess.
+    #[error("target {target:?}: no mix without a pass: {error}")]
     Unplaced {
         /// The target.
         target: TargetKey,
         /// What the node would need to declare.
         error: PassError,
     },
-}
-
-impl fmt::Display for ReconcileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Compile(e) => write!(f, "modulation does not compile: {e}"),
-            Self::Cycle { route } => write!(
-                f,
-                "route {}: its source's input is downstream of its target",
-                route.0
-            ),
-            Self::WrongTarget(t) => write!(f, "target {t:?}: resolved to the other kind"),
-            Self::NoSuchParam(t) => write!(f, "target {t:?}: its node does not declare it"),
-            Self::NoSuchEventInput(t) => write!(f, "target {t:?}: no such event input"),
-            Self::PortTaken(t) => write!(f, "target {t:?}: its port has another event source"),
-            Self::SharedPort { first, second } => {
-                write!(
-                    f,
-                    "targets {first:?} and {second:?} resolve to one param port"
-                )
-            }
-            Self::WrongFeed(s) => write!(f, "source {}: a feed it cannot take", s.0),
-            Self::Unplaced { target, error } => {
-                write!(f, "target {target:?}: no mix without a pass: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ReconcileError {}
-
-impl From<CompileError> for ReconcileError {
-    fn from(e: CompileError) -> Self {
-        Self::Compile(e)
-    }
 }
 
 /// What one [`Modulation::apply`] did.
@@ -366,8 +339,8 @@ struct SourcePlan {
     width: ChannelLayout,
 }
 
-/// The modulation reconciler (doc 014 §8.2): declarations in, lanes,
-/// signal-source nodes and event edges in an [`Editor`] out, Bevy-free.
+/// The modulation reconciler: declarations in, lanes,
+/// signal-source nodes and event edges in an [`Editor`] out.
 ///
 /// Each [`apply`](Self::apply) compiles against the previous compile (so
 /// sources keep their ids and rate edits are dated), then **diffs per
@@ -663,11 +636,6 @@ impl Modulation {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// The last compile applied.
-    pub fn compiled(&self) -> Option<&Compiled> {
-        self.prev.as_ref()
     }
 
     /// `target`'s lane: its node key and its controls (a plugin lane's knob
@@ -1318,7 +1286,7 @@ impl Modulation {
                 // The port's range cell is the one a commit handed out for
                 // the unit the last plan has at the node. The next commit
                 // keeps the key's cells for a unit declaring the same params
-                // and gives fresh ones for another list (doc 014 §4.2). So a
+                // and gives fresh ones for another list. So a
                 // node not in that plan yet, or replaced since by a unit
                 // with another list, waits for the commit: a lane built on
                 // the cell now would read one nothing writes. A replace
@@ -1404,7 +1372,7 @@ impl Modulation {
     }
 
     /// Refuses, by route, an edge from a signal source to a target whose
-    /// node reaches the source's input (doc 014 §6). The graph is the spec
+    /// node reaches the source's input. The graph is the spec
     /// as it stands without this reconciler's own lanes and source wiring,
     /// plus what this apply would wire: each source's feed, and each edge as
     /// source → target node.

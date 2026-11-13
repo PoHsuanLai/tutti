@@ -2,9 +2,7 @@
 //!
 //! `src/lib.rs` must contain nothing but `pub use` and documentation. Logic
 //! that wires subsystems belongs in the crate that owns them, where
-//! `bevy-tutti` gets it too: two stacked umbrellas where the lower one owns
-//! what the upper one needs is one too many. Re-exporting other crates is
-//! fine.
+//! every consumer gets it. Re-exporting other crates is fine.
 //!
 //! So the failure mode is specific and it is one `fn build()` away: someone
 //! adds a small convenience constructor here because it is the crate that can

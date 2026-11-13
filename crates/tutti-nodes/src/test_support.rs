@@ -6,19 +6,6 @@ use tutti_types::SampleRate;
 
 pub(crate) use tutti_fixtures::noise;
 
-/// The "control changed between two blocks" experiment.
-///
-/// Three nodes from `make` render `block1` identically. Then `change` is
-/// applied to two of them: the render `r` is of `block2` through `process` (the
-/// per-block read, which ramps), `j` through `tick` (a block of one per
-/// sample, so the change lands whole on the first sample, as a per-sample read
-/// would). `h`, of the third, never sees the change.
-pub(crate) struct ChangeRun {
-    pub r: Vec<Vec<f32>>,
-    pub j: Vec<Vec<f32>>,
-    pub h: Vec<Vec<f32>>,
-}
-
 /// The rate the node helpers below prepare and drive nodes at.
 pub(crate) const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -31,66 +18,6 @@ pub(crate) fn prepared<N: Node>(node: N) -> N {
 /// port), its params at their bases.
 pub(crate) fn drive_block(node: &mut dyn Node, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
     drive(node, RATE, inputs, &[])
-}
-
-/// A node over `inputs`, one frame per call: a change lands whole on
-/// the first frame.
-pub(crate) fn drive_frames(node: &mut dyn Node, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
-    let n = inputs[0].len();
-    let mut out: Vec<Vec<f32>> = Vec::new();
-    for i in 0..n {
-        let frame: Vec<&[f32]> = inputs.iter().map(|s| &s[i..=i]).collect();
-        let o = drive(node, RATE, &frame, &[]);
-        out.resize(o.len(), Vec::with_capacity(n));
-        for (c, v) in o.into_iter().enumerate() {
-            out[c].push(v[0]);
-        }
-    }
-    out
-}
-
-/// [`change_between_blocks`] for a graph node: `make` builds it unprepared,
-/// and each copy is [`prepared`]. `jumped` renders `block2` one frame per
-/// call ([`drive_frames`]).
-pub(crate) fn change_between_node_blocks<N: Node>(
-    make: impl Fn() -> N,
-    change: impl Fn(&N),
-    block1: &[&[f32]],
-    block2: &[&[f32]],
-) -> ChangeRun {
-    let (mut ramped, mut jumped, mut held) = (prepared(make()), prepared(make()), prepared(make()));
-    for n in [&mut ramped, &mut jumped, &mut held] {
-        drive_block(n, block1);
-    }
-    change(&ramped);
-    change(&jumped);
-    let r = drive_block(&mut ramped, block2);
-    let j = drive_frames(&mut jumped, block2);
-    let h = drive_block(&mut held, block2);
-    ChangeRun { r, j, h }
-}
-
-impl ChangeRun {
-    /// The change is ramped *into* the block: on the block's first sample the
-    /// ramped render is still near the unchanged one — at most half as far from
-    /// it as the render that took the change whole — on every channel, and the
-    /// change is audible there at all (or the comparison proves nothing).
-    #[track_caller]
-    pub fn assert_ramps_in(&self, what: &str) {
-        for c in 0..self.r.len() {
-            let (r, j, h) = (self.r[c][0], self.j[c][0], self.h[c][0]);
-            assert!(
-                (j - h).abs() > 1e-4,
-                "{what}: channel {c}: the change is inaudible on the first sample \
-                 ({j} vs {h}), so this run cannot tell a ramp from a jump"
-            );
-            assert!(
-                (r - h).abs() < 0.5 * (j - h).abs(),
-                "{what}: channel {c}: the first sample after the change is {r}; \
-                 unchanged it is {h}, jumped {j} — the change was not ramped in"
-            );
-        }
-    }
 }
 
 /// Returns a [`prepared`] node of `make`, driven over `before` in one block, then

@@ -591,6 +591,7 @@ mod tap;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod time;
+mod wake;
 
 pub use builder::{GraphBuilder, Renderer, Solo};
 pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
@@ -623,9 +624,9 @@ pub use bus::{Bus, BusRole, Buses, InBus, MAX_BUSES, OutBus};
 pub use bus_edge::{BusError, BusFeed, BusFold, BusRef, BusSide, BusSource, Lowering};
 pub use gain::{EDGE_DECLICK, EdgeFade, EdgeGain};
 pub use graph::{
-    Edge, EdgeId, EventTapId, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec,
-    NodeKey, NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology,
-    Valid,
+    Edge, EdgeId, EventTapId, EventTapSource, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId,
+    MeterSpec, NodeKey, NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec,
+    Topology, Valid,
 };
 pub use history::TransportHistory;
 pub use inlet::{InletNode, InletRing};
@@ -656,6 +657,7 @@ pub use play::PlayClock;
 pub use pool::{WorkerPool, WorkerPoolBuilder};
 pub use preroll::PrerollTable;
 pub use tail::{GraphTail, MAX_NODE_TAIL, TailGraph, graph_tail};
+pub use wake::Wake;
 // The reading is a value type, `tutti-types`' (the modulation compiler
 // carries one without naming the graph); the clock that keeps it is here.
 pub use meter::{Level, MeterReader, MeterWriter};

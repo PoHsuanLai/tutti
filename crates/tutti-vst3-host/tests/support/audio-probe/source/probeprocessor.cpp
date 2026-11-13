@@ -60,6 +60,7 @@ tresult PLUGIN_API AudioProbeProcessor::initialize (FUnknown* context)
 	addAudioOutput (STR16 ("Aux Out"), SpeakerArr::kMono, kAux, 0);
 
 	addEventInput (STR16 ("Event In"), 1);
+	addEventOutput (STR16 ("Event Out"), 1);
 
 	mInitialized = true;
 	return kResultOk;
@@ -613,6 +614,19 @@ tresult PLUGIN_API AudioProbeProcessor::process (ProcessData& data)
 	if (data.numSamples <= 0 || data.numOutputs <= 0 || !data.outputs)
 		return kResultOk;
 
+	// Report the process mode this block carried (see `kParamObservedProcessMode`).
+	// A realtime block reports nothing, so a host's ordinary playback reads no
+	// processor-driven parameter output from this plugin.
+	if (data.processMode != kRealtime && data.outputParameterChanges)
+	{
+		int32 queueIndex = 0, pointIndex = 0;
+		if (IParamValueQueue* queue =
+		        data.outputParameterChanges->addParameterData (kParamObservedProcessMode, queueIndex))
+			queue->addPoint (0, static_cast<ParamValue> (data.processMode) * 0.5, pointIndex);
+	}
+
+	emitGainController (data);
+
 	if (data.symbolicSampleSize == kSample64)
 		renderBlock<double> (data);
 	else
@@ -620,6 +634,32 @@ tresult PLUGIN_API AudioProbeProcessor::process (ProcessData& data)
 
 	++mBlockIndex;
 	return kResultOk;
+}
+
+//-----------------------------------------------------------------------------
+void AudioProbeProcessor::emitGainController (ProcessData& data)
+{
+	if (!data.inputParameterChanges || !data.outputEvents)
+		return;
+
+	const int32 numQueues = data.inputParameterChanges->getParameterCount ();
+	for (int32 q = 0; q < numQueues; ++q)
+	{
+		IParamValueQueue* queue = data.inputParameterChanges->getParameterData (q);
+		if (!queue || queue->getParameterId () != kParamGain || queue->getPointCount () <= 0)
+			continue;
+
+		Event event {};
+		event.busIndex = 0;
+		event.sampleOffset = 0;
+		event.type = Event::kLegacyMIDICCOutEvent;
+		event.midiCCOut.controlNumber = kGainControllerNumber;
+		event.midiCCOut.channel = 0;
+		event.midiCCOut.value =
+		    static_cast<int8> (std::clamp (mGain, 0.0, 1.0) * 127.0);
+		data.outputEvents->addEvent (event);
+		return;
+	}
 }
 
 //-----------------------------------------------------------------------------

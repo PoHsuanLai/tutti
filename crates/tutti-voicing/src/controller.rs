@@ -1,7 +1,7 @@
 use tutti_ump::{CCNumber, U7};
 
 /// How a panic ends the voices it reaches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stop {
     /// Into the envelope's release; a held pedal still holds the voice.
     Release,
@@ -31,7 +31,7 @@ pub struct Controller;
 
 impl Controller {
     /// A pedal controller's switch: down at 64 and above (MIDI 1.0 Detailed
-    /// Specification, "Damper Pedal").
+    /// Specification, Damper Pedal).
     #[must_use]
     pub const fn pedal(value: U7) -> bool {
         value.get() >= 64

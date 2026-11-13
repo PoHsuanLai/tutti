@@ -1,23 +1,21 @@
 use super::*;
+use std::num::NonZeroUsize;
 
-/// The controls report the mode last asked for, from the cell, and the
-/// node adopts it on its next block.
+/// The node adopts the mode last asked for on its next block.
 #[test]
-fn the_controls_report_the_mode_last_asked_for() {
-    let parts = MidiIngestNode::new(1).into_parts();
+fn the_node_adopts_the_mode_last_asked_for() {
+    let parts = MidiIngestNode::new(NonZeroUsize::MIN).into_parts();
     let controls = parts.controls;
-    assert_eq!(controls.pending_mpe_mode(), None);
     let lower = tutti_fixtures::midi::lower_zone(15);
     let upper = tutti_fixtures::midi::upper_zone(7);
     controls.set_mpe_mode(lower);
     controls.clone().set_mpe_mode(upper);
-    assert_eq!(controls.pending_mpe_mode(), Some(upper), "the last asked");
 
     // A node over the same request, reading it through a reader of its
     // own, as the inserted one is.
     let mut node = MidiIngestNode {
         mpe_request: controls.request.reader(),
-        ..MidiIngestNode::new(1)
+        ..MidiIngestNode::new(NonZeroUsize::MIN)
     };
     node.adopt_mpe_request();
     assert_eq!(node.mpe_mode, upper, "the node adopts it");
@@ -27,7 +25,7 @@ fn the_controls_report_the_mode_last_asked_for() {
 /// the next `reclaim`**, with no further publish.
 #[test]
 fn reclaim_frees_a_request_a_block_held_across_the_next() {
-    let mut node = MidiIngestNode::new(1);
+    let mut node = MidiIngestNode::new(NonZeroUsize::MIN);
     let controls = MidiIngestControls {
         request: Arc::clone(node.mpe_request.cell()),
         dropped: Arc::clone(&node.dropped),
@@ -73,8 +71,8 @@ fn events_leave_on_their_channels_port() {
 }
 
 /// **A Group is a channel space of its own** (M2-104 section 2.1.2: a Group
-/// is 16 Channels; Appendix B.1: what a message does in one Group "does not
-/// apply to Channels in any other Group"): channel 1 of Group 2 leaves from a
+/// is 16 Channels; Appendix B.1: what a message does in one Group does not
+/// apply to Channels in any other Group): channel 1 of Group 2 leaves from a
 /// port of its own, not channel 1 of Group 1's; a Group's System message
 /// leaves from that Group's channelless port; a message with no Group
 /// (Utility) from the first Group's; a Group the node was not built to hear

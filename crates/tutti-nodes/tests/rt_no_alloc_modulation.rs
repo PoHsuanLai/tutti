@@ -22,7 +22,7 @@ use tutti_nodes::{
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
-    BeatDuration, BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
+    BeatsPerCycle, BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
     UnitParam,
 };
 use tutti_ump::{MidiChannel, NoteNumber, U7};
@@ -59,7 +59,7 @@ fn gate<N: IntoNode>(node: N, amplitude: f32, blocks: usize, mut between: impl F
 #[test]
 fn lfo_node_process_is_allocation_free() {
     gate(
-        LfoNode::new(LfoShape::Sine).with_frequency(Hz::new(2.0_f32)),
+        LfoNode::new(LfoShape::Sine).with_rate(Hz::new(2.0_f32)),
         0.0,
         5_000,
         |_| {},
@@ -71,7 +71,7 @@ fn lfo_random_shape_process_is_allocation_free() {
     // RandomSmooth hashes its cycle index on its own path. Fast enough
     // to step inside the warm-up, so the node is audible there.
     gate(
-        LfoNode::new(LfoShape::RandomSmooth).with_frequency(Hz::new(200.0_f32)),
+        LfoNode::new(LfoShape::RandomSmooth).with_rate(Hz::new(200.0_f32)),
         0.0,
         5_000,
         |_| {},
@@ -85,7 +85,7 @@ fn lfo_random_shape_process_is_allocation_free() {
 fn beat_synced_lfo_process_is_allocation_free() {
     gate(
         LfoNode::new(LfoShape::Sine)
-            .with_beat_sync(BeatDuration::new(4.0))
+            .with_beat_sync(BeatsPerCycle::of(4.0))
             .with_phase_offset(PhaseIncrement::new(0.25)),
         0.0,
         5_000,
@@ -414,7 +414,7 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     clamped.add_breakpoint(Breakpoint::new(Beat(0.45), 1.0));
     let key = ParamKey::<Hz>::CUTOFF;
     let lane = |curve: Arc<dyn Curve>| {
-        ControlLaneNode::for_param(key, ControlProgram::from_curve(curve), None, None)
+        ControlLaneNode::for_unit(key.addr(), ControlProgram::from_curve(curve), None, None)
     };
     let lanes = [
         lane(Arc::new(shaped.clone())),
@@ -505,10 +505,6 @@ impl tutti_graph::Pool for GatedPool {
 /// segments at breakpoints, loop wraps inside blocks, the linear fallback
 /// for a range-clamped piece and for a curve with no pieces, ragged blocks;
 /// serial, and on a pool whose helpers run under the gate too.
-///
-/// Changed in doc 014 §12.2: the lanes are `ControlLaneNode`s, and the
-/// clamped and sine lanes send grid points of the play clock; the
-/// no-allocation property stands.
 #[test]
 fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
     use std::sync::Arc;
@@ -554,7 +550,7 @@ fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
 /// It does not test a property of the lane: a lane's state is
 /// its own (one node, one op), so nothing it does can differ between the
 /// two; this pins that the event path keeps it that way (a lane sharing
-/// state with another, which `CLAUDE.md` forbids, would diverge here).
+/// state with another would diverge here).
 #[test]
 fn event_lanes_render_the_same_serial_and_parallel() {
     use std::sync::Arc;
@@ -717,14 +713,14 @@ fn lane_for(
     let knob = Some(Arc::new(AtomicF32::new(400.0 + k as f32)).into());
     let r = Some(range);
     match k % 8 {
-        0 => L::for_param(ParamKey::<Hz>::CUTOFF, p, knob, r),
-        1 => L::for_param(ParamKey::<Q>::Q, p, knob, r),
-        2 => L::for_param(ParamKey::<Db>::GAIN_DB, p, knob, r),
-        3 => L::for_param(ParamKey::<Mix>::WET, p, knob, r),
-        4 => L::for_param(ParamKey::<Feedback>::FEEDBACK, p, knob, r),
-        5 => L::for_param(ParamKey::<Depth>::DEPTH, p, knob, r),
-        6 => L::for_param(ParamKey::<Hz>::RATE, p, knob, r),
-        _ => L::for_param(ParamKey::<Db>::THRESHOLD, p, knob, r),
+        0 => L::for_unit(ParamKey::<Hz>::CUTOFF.addr(), p, knob, r),
+        1 => L::for_unit(ParamKey::<Q>::Q.addr(), p, knob, r),
+        2 => L::for_unit(ParamKey::<Db>::GAIN_DB.addr(), p, knob, r),
+        3 => L::for_unit(ParamKey::<Mix>::WET.addr(), p, knob, r),
+        4 => L::for_unit(ParamKey::<Feedback>::FEEDBACK.addr(), p, knob, r),
+        5 => L::for_unit(ParamKey::<Depth>::DEPTH.addr(), p, knob, r),
+        6 => L::for_unit(ParamKey::<Hz>::RATE.addr(), p, knob, r),
+        _ => L::for_unit(ParamKey::<Db>::THRESHOLD.addr(), p, knob, r),
     }
 }
 
@@ -826,7 +822,7 @@ fn lanes_loop() -> Option<tutti_types::LoopRange> {
     tutti_types::LoopRange::new(tutti_types::Beat(0.5), tutti_types::Beat(1.7))
 }
 
-/// 200 control lanes (doc 014 §12) render bit for bit the same serial and
+/// 200 control lanes render bit for bit the same serial and
 /// on pools of 2, 3, 4 and 8 participants, under ragged blocks with loop
 /// wraps inside them, republishes of every program, knob writes and range
 /// edits between blocks.
@@ -834,7 +830,7 @@ fn lanes_loop() -> Option<tutti_types::LoopRange> {
 /// It does not test a property of the lane: each lane's state
 /// is its own (one node, one op, its cells read once per block), so nothing
 /// it does can differ between schedules. This pins that it stays so: two
-/// lanes sharing mutable state outside the graph (`CLAUDE.md` forbids it)
+/// lanes sharing mutable state outside the graph
 /// would diverge here.
 #[test]
 fn two_hundred_lanes_render_the_same_serial_and_parallel() {
@@ -931,7 +927,7 @@ fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
     }
 }
 
-// ---- signal sources into lanes (doc 014 §6) -------------------------------
+// ---- signal sources into lanes -------------------------------
 
 /// Stereo bursts on the executor's clock: 1.0 (the right channel at half)
 /// on the first `width` frames of every `period`, allocation-free.
@@ -1098,8 +1094,8 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
                 curve: Law::Linear,
             },
         };
-        let lane = ControlLaneNode::for_param(
-            ParamKey::<Hz>::CUTOFF,
+        let lane = ControlLaneNode::for_unit(
+            ParamKey::<Hz>::CUTOFF.addr(),
             ControlProgram::new(None, vec![], vec![input]).expect("valid"),
             Some(Arc::new(AtomicF32::new(0.5)).into()),
             Some(ed.param_range_cell(cutoff(k)).expect("committed")),
@@ -1285,7 +1281,7 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 /// republishes the LFO's lane and sends no plan, and the blocks after each
 /// one read the new program inside the gate. (That the lane adopts it, the
 /// render moving with the depth, is `modulation_reconcile.rs`' depth test;
-/// a single-threaded gate pins only the reader's path, per CLAUDE.md.)
+/// a single-threaded gate pins only the reader's path.)
 #[test]
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use tutti_graph::NodeKey;

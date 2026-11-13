@@ -8,6 +8,7 @@ use crate::MidiSession;
 use crate::session::Polled;
 use crate::test_support::{FakeBackend, FakeCounters, endpoint};
 use crate::{HardwareMidiInputs, Pushed};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use tutti_midi_device::{
@@ -45,7 +46,7 @@ fn streams(polled: impl IntoIterator<Item = Polled>) -> Vec<(DeviceId, DeviceStr
 fn session_over(os: UmpCapability, direction: PortDirection, device: Endpoint) -> Wire {
     let (backend, counters) = FakeBackend::build_with(vec![], vec![], usize::MAX);
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        4,
+        NonZeroUsize::new(4).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );
@@ -556,7 +557,7 @@ fn sysex_is_copied_to_the_stream_ring_while_asked_and_always_reaches_the_graph()
     use crate::testing::Rig;
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        2,
+        NonZeroUsize::new(2).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );
@@ -610,7 +611,7 @@ fn stream_messages_never_reach_the_graph() {
     use tutti_ump::{MidiChannel, MidiGroup};
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        2,
+        NonZeroUsize::new(2).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );
@@ -708,8 +709,8 @@ fn rpn_ump(value: u32) -> Ump {
     ))
 }
 
-/// M2-104 §3.2: a MIDI 1.0 endpoint "shall not use any messages from Message
-/// Type 0x4". A device the OS describes as a MIDI 1.0 port (no UMP Stream is
+/// M2-104 §3.2: a MIDI 1.0 endpoint uses no message of Message
+/// Type 0x4. A device the OS describes as a MIDI 1.0 port (no UMP Stream is
 /// asked of it) is sent only type 2 whatever the graph carries, and a
 /// Registered Controller arrives as the Control Changes 101, 100, 6 and 38 of
 /// Appendix D.2.3.
@@ -792,8 +793,8 @@ fn the_output_follows_the_negotiated_protocol() {
     );
 }
 
-/// M2-104 §7.1.6.2: JR Timestamps are sent "until after a Stream Configuration
-/// Notification ... has been received". The session asks for none, so a JR
+/// M2-104 §7.1.6.2: JR Timestamps are sent only after a Stream Configuration
+/// Notification has been received. The session asks for none, so a JR
 /// Clock the output is handed does not reach the device; after the device
 /// notifies that it receives them, it does.
 #[test]
@@ -876,7 +877,7 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     use tutti_ump::{MidiChannel, MidiGroup, Utility};
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        2,
+        NonZeroUsize::new(2).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );

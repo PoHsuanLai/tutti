@@ -14,6 +14,7 @@ mod vst3_conformance_blocks;
 mod vst3_conformance_controller;
 mod vst3_conformance_interfaces;
 mod vst3_conformance_modes;
+mod vst3_editor;
 mod vst3_misbehaving_plugin;
 mod vst3_run_loop;
 mod vst3_view_input;

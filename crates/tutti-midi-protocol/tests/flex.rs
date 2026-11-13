@@ -31,8 +31,8 @@ fn the_field_has_a_slowest_tempo_and_zero_is_none() {
     assert_eq!(flex_tempo(1), Bpm::new(6.0e9));
 }
 
-/// Section 7.5.4: the denominator is a negative power of 2, "2 represents a
-/// quarter note, 3 represents an eighth note".
+/// Section 7.5.4: the denominator is a negative power of 2 (2 is a
+/// quarter note, 3 an eighth note).
 #[test]
 fn the_denominator_is_a_power_of_two_exponent() {
     assert_eq!(
@@ -54,7 +54,7 @@ fn the_denominator_is_a_power_of_two_exponent() {
 }
 
 /// What the meter cannot hold is refused, never clamped: a zero denominator is
-/// "non-standard" (7.5.4), a numerator of 0 is not "1 to 256", and the meter's
+/// non-standard (7.5.4), a numerator of 0 is outside 1 to 256, and the meter's
 /// own ceilings (64 beats, a 64th note) apply.
 #[test]
 fn what_the_meter_cannot_hold_is_refused() {

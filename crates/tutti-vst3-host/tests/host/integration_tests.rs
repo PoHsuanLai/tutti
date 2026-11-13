@@ -1,41 +1,11 @@
-//! Integration tests for VST3 host with real plugins.
-//!
-//! These tests require actual VST3 plugins to be installed and are marked
-//! with #[ignore] by default. Run with:
-//!
-//! ```bash
-//! cargo test -p tutti-vst3-host --test integration_tests -- --ignored
-//! ```
+//! The VST3 host's plugin-info reads against the in-repo `audio-probe`: bus
+//! widths, version, subcategories and plain parameter ranges.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use tutti_fixtures::main_thread;
-use tutti_graph::UmpAt;
-
-use tutti_fixtures::midi;
-use tutti_graph::Offset;
-use tutti_plugin_types::{Control, Normalized, ParamId};
-use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst3_host::{AudioBuffer, InputEvents, TransportInfo};
 
 use crate::active;
-#[allow(unused_imports)]
-use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
-
-/// Serialises every test that constructs an `Active`, which load real
-/// third-party plugins (macOS only; they skip elsewhere). `Module::open` and
-/// a module's teardown serialise themselves, and a plugin's own instance
-/// creation is not known to need this. Third-party code has process globals
-/// we cannot see, so the guard stays until measured against those plugins.
-///
-/// Per-file: each test binary is its own process.
-static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
-
-/// Acquire [`PLUGIN_LOCK`], ignoring poisoning so one failing test does not
-/// cascade into spurious failures in every test after it.
-fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
-    PLUGIN_LOCK.lock().unwrap_or_else(|p| p.into_inner())
-}
+use active::{Active, ActiveExt};
 
 /// Resolve a macOS `.vst3` bundle directory to its inner binary so
 /// `Vst3Active::load` can `dlopen` it. Mirrors the helper in
@@ -55,40 +25,10 @@ fn resolve_bundle(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-// Common VST3 plugin paths on macOS
-const TAL_NOISEMAKER: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
-const SURGE_XT: &str = "/Library/Audio/Plug-Ins/VST3/Surge XT.vst3";
-const VITAL: &str = "/Library/Audio/Plug-Ins/VST3/Vital.vst3";
-const DEXED: &str = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3";
-/// Steinberg's own SDK sample plugins, installed under the user domain. They
-/// implement `normalizedParamToPlain` properly (adelay's "Delay" is seconds,
-/// mda's parameters carry real units), which the commercial plugins above
-/// mostly do not.
-const SDK_SAMPLES: &[&str] = &["adelay.vst3", "mda-vst3.vst3", "note-expression-synth.vst3"];
-
-/// Every VST3 bundle available here — the in-repo probe first, then whatever
-/// this machine happens to have installed.
-///
-/// The absolute paths below are macOS-only and name third-party installs, so on
-/// any other machine they contribute nothing. The in-repo `audio-probe` is
-/// what makes the corpus non-empty everywhere; the rest only widen coverage:
-///
-/// - `built_binaries()` — `audio-probe`, compiled by this crate's build script
-///   from the SDK submodules. Always present.
-/// - `TUTTI_TEST_VST3_PLUGIN` — an explicit path to any VST3 binary, for
-///   running these against a real third-party plugin.
+/// Every VST3 bundle these tests load: the in-repo `audio-probe`, which the
+/// build script compiles from the SDK submodules.
 fn corpus() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    if let Some(p) = std::env::var_os("TUTTI_TEST_VST3_PLUGIN") {
-        out.push(PathBuf::from(p));
-    }
-    out.extend(built_binaries());
-    if let Some(user) = dirs_home().map(|h| h.join("Library/Audio/Plug-Ins/VST3")) {
-        out.extend(SDK_SAMPLES.iter().map(|n| user.join(n)));
-    }
-    out.extend([TAL_NOISEMAKER, SURGE_XT, VITAL, DEXED].map(PathBuf::from));
-    out.retain(|p| p.exists());
-    out
+    built_binaries()
 }
 
 /// The corpus, which is never empty.
@@ -136,73 +76,6 @@ fn binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
     )
 }
 
-/// The user's home directory, or `None` where the platform does not say.
-///
-/// Was `env::var("HOME").expect("HOME is set")`, which panics on Windows —
-/// `HOME` is a Unix convention and Windows sets `USERPROFILE` instead. Every
-/// test that builds a corpus goes through here, so one missing variable took
-/// out the whole file the first time this ran on Windows.
-///
-/// `Option` rather than a fallback guess: the only thing this is used for is
-/// the *macOS* user-domain plugin directory, so on a platform without a home
-/// there is nothing to look for and skipping is the honest answer.
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-}
-
-fn find_available_plugin() -> Option<&'static str> {
-    [TAL_NOISEMAKER, SURGE_XT, VITAL, DEXED]
-        .into_iter()
-        .find(|path| Path::new(path).exists())
-}
-
-#[test]
-#[ignore]
-fn test_load_tal_noisemaker() {
-    let _plugins = plugin_guard();
-    if !Path::new(TAL_NOISEMAKER).exists() {
-        eprintln!("TAL-NoiseMaker not installed, skipping");
-        return;
-    }
-
-    let plugin = Active::<f32>::load(Path::new(TAL_NOISEMAKER), 44100.0, 512);
-    match plugin {
-        Ok(p) => {
-            println!("Loaded: {}", p.loaded().plugin_info().name);
-            println!("Vendor: {}", p.loaded().plugin_info().vendor);
-            println!("Version: {}", p.loaded().plugin_info().version);
-            println!("Audio inputs: {}", p.loaded().plugin_info().num_inputs);
-            println!("Audio outputs: {}", p.loaded().plugin_info().num_outputs);
-            println!("Supports f64: {}", p.loaded().plugin_info().supports_f64);
-        }
-        Err(e) => {
-            panic!("Failed to load TAL-NoiseMaker: {:?}", e);
-        }
-    }
-}
-
-#[test]
-#[ignore]
-fn test_load_any_available_plugin() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    println!("Testing with: {}", path);
-    let plugin = Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    let info = plugin.loaded().plugin_info();
-    assert!(!info.name.is_empty(), "Plugin name should not be empty");
-    println!("Successfully loaded: {} by {}", info.name, info.vendor);
-}
-
 /// The flat `num_inputs`/`num_outputs` counts must equal bus 0 of the
 /// corresponding per-bus vec — no rounding up, in either direction.
 ///
@@ -211,14 +84,11 @@ fn test_load_any_available_plugin() {
 /// reporting a 0-channel output bus as 1, and `build_plugin_info` defaulting a
 /// *missing* output bus to 2 on top of that. This fails if either comes back.
 ///
-/// Swept over the whole corpus rather than `find_available_plugin`, which
-/// returns the first *existing* path — on this machine that is a bundle that
-/// fails to `dlopen`, so the assertion below never executed. A plugin that
-/// cannot load is skipped with a note; a corpus with nothing loadable fails,
-/// because a silent pass here is indistinguishable from a real one.
+/// Swept over the whole corpus. A plugin that cannot load is skipped with a
+/// note; a corpus with nothing loadable fails, because a silent pass here is
+/// indistinguishable from a real one.
 #[test]
 fn a_plugins_flat_channel_counts_match_its_bus_zero() {
-    let _plugins = plugin_guard();
     let mut checked = 0;
     for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
@@ -278,7 +148,6 @@ fn a_plugins_flat_channel_counts_match_its_bus_zero() {
 /// plugin agreeing with the placeholder, which a hardcoded version guarantees.
 #[test]
 fn a_plugins_version_is_read_from_it_rather_than_assumed() {
-    let _plugins = plugin_guard();
     let mut loaded = 0;
     let mut non_placeholder = 0;
 
@@ -328,7 +197,6 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
 /// which is what never reading the field guarantees.
 #[test]
 fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
-    let _plugins = plugin_guard();
     let mut loaded = 0;
     let mut declared = 0;
 
@@ -371,7 +239,6 @@ fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
 fn corpus_subcategories_parse_into_named_facets() {
     use tutti_plugin_types::{Vst3PlugType, Vst3SubCategories};
 
-    let _plugins = plugin_guard();
     let mut parsed = 0;
 
     for path in corpus_or_fail() {
@@ -415,333 +282,7 @@ fn corpus_subcategories_parse_into_named_facets() {
     );
 }
 
-#[test]
-#[ignore]
-fn test_process_silence() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    let mut plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    // Create stereo buffers
-    let input_left = vec![0.0f32; 512];
-    let input_right = vec![0.0f32; 512];
-    let mut output_left = vec![0.0f32; 512];
-    let mut output_right = vec![0.0f32; 512];
-
-    let inputs: [&[f32]; 2] = [&input_left, &input_right];
-    let mut out_l = output_left.as_mut_slice();
-    let mut out_r = output_right.as_mut_slice();
-    let mut outputs: [&mut [f32]; 2] = [&mut out_l, &mut out_r];
-
-    let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
-    let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
-    let midi: [UmpAt; 0] = [];
-
-    let _output_events = plugin.process(
-        &mut buffer,
-        &InputEvents {
-            midi: &midi,
-            ..Default::default()
-        },
-        None,
-        &transport,
-    );
-    println!("Processing completed successfully");
-}
-
-#[test]
-#[ignore]
-fn test_process_with_midi() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    let mut plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    // Create stereo buffers
-    let input_left = vec![0.0f32; 512];
-    let input_right = vec![0.0f32; 512];
-    let mut output_left = vec![0.0f32; 512];
-    let mut output_right = vec![0.0f32; 512];
-
-    let inputs: [&[f32]; 2] = [&input_left, &input_right];
-    let mut out_l = output_left.as_mut_slice();
-    let mut out_r = output_right.as_mut_slice();
-    let mut outputs: [&mut [f32]; 2] = [&mut out_l, &mut out_r];
-
-    let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
-    let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
-
-    let midi = [(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x9999),
-    )];
-
-    let _output_events = plugin.process(
-        &mut buffer,
-        &InputEvents {
-            midi: &midi,
-            ..Default::default()
-        },
-        None,
-        &transport,
-    );
-
-    // buffer goes out of scope here, releasing borrow on output slices
-    let has_output = output_left.iter().any(|&s| s.abs() > 0.0001);
-    println!("Plugin produced audio: {}", has_output);
-}
-
-#[test]
-#[ignore]
-fn test_process_multiple_buffers() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    let mut plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    for i in 0..10 {
-        let input_left = vec![0.0f32; 256];
-        let input_right = vec![0.0f32; 256];
-        let mut output_left = vec![0.0f32; 256];
-        let mut output_right = vec![0.0f32; 256];
-
-        let inputs: [&[f32]; 2] = [&input_left, &input_right];
-        let mut out_l = output_left.as_mut_slice();
-        let mut out_r = output_right.as_mut_slice();
-        let mut outputs: [&mut [f32]; 2] = [&mut out_l, &mut out_r];
-
-        let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
-        let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
-
-        let midi: Vec<UmpAt> = if i == 0 {
-            vec![(
-                Offset::ZERO,
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x9999),
-            )]
-        } else if i == 9 {
-            vec![(
-                Offset::ZERO,
-                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-            )]
-        } else {
-            vec![]
-        };
-
-        plugin.process(
-            &mut buffer,
-            &InputEvents {
-                midi: &midi,
-                ..Default::default()
-            },
-            None,
-            &transport,
-        );
-    }
-    println!("Processed 10 buffers successfully");
-}
-
-#[test]
-#[ignore]
-fn test_state_save_load() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    let mut plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    let state = plugin.get_state();
-    match state {
-        Ok(data) => {
-            println!("Saved state: {} bytes", data.len());
-            assert!(!data.is_empty(), "State should not be empty");
-
-            let result = plugin.set_state(&data);
-            assert!(result.is_ok(), "Loading state should succeed");
-        }
-        Err(e) => {
-            eprintln!("Save state not supported or failed: {:?}", e);
-        }
-    }
-}
-
-#[test]
-#[ignore]
-fn test_get_parameters() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    let plugin = Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    let param_count = plugin.loaded().parameter_count(&main_thread());
-    println!("Plugin has {} parameters", param_count);
-
-    // The ids are the plugin's own, not list positions: read each through the
-    // id it reported.
-    let ids = plugin.loaded().parameter_ids(&main_thread());
-    assert_eq!(
-        ids.len(),
-        param_count as usize,
-        "every index below parameter_count must yield a ParameterInfo"
-    );
-    for id in ids.into_iter().take(10) {
-        let value = Control::parameter(&*plugin, &main_thread(), id)
-            .expect("a listed parameter has a value")
-            .get();
-        assert_eq!(
-            value,
-            plugin.get_parameter(id.get()),
-            "typed and raw reads must agree for id {id:?}"
-        );
-        println!("  id {id:?} value: {value}");
-    }
-}
-
-#[test]
-#[ignore]
-fn test_set_parameter() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    let mut plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    if plugin.loaded().parameter_count(&main_thread()) > 0 {
-        // The first listed parameter, by the id it reported: ParamID 0 need
-        // not be the first parameter (or exist at all).
-        let id = *plugin
-            .loaded()
-            .parameter_ids(&main_thread())
-            .first()
-            .expect("a nonzero count lists a parameter");
-        println!("Setting ParamID {id:?} to 0.5");
-        Control::set_parameter(&mut *plugin, &main_thread(), id, Normalized::of(0.5));
-        let value = Control::parameter(&*plugin, &main_thread(), id)
-            .expect("a listed parameter reads back")
-            .get();
-        assert_eq!(value, plugin.get_parameter(id.get()));
-        println!("Read back value: {value}");
-
-        // An id the plugin never listed has no descriptor.
-        let listed = plugin.loaded().parameter_ids(&main_thread());
-        let unlisted = (0..=u32::MAX)
-            .map(ParamId::new)
-            .find(|c| !listed.contains(c))
-            .expect("some id is unlisted");
-        assert!(
-            plugin
-                .loaded()
-                .parameter_info(&main_thread(), unlisted)
-                .is_none()
-        );
-        // Not silently written: it reads as `None` (`getParamNormalized`
-        // answers 0 for an unknown id), and a write to it must leave every
-        // listed parameter and that read unchanged.
-        assert_eq!(Control::parameter(&*plugin, &main_thread(), unlisted), None);
-        let before: Vec<_> = listed
-            .iter()
-            .map(|i| plugin.get_parameter(i.get()))
-            .collect();
-        Control::set_parameter(&mut *plugin, &main_thread(), unlisted, Normalized::of(0.25));
-        assert_eq!(Control::parameter(&*plugin, &main_thread(), unlisted), None);
-        let after: Vec<_> = listed
-            .iter()
-            .map(|i| plugin.get_parameter(i.get()))
-            .collect();
-        assert_eq!(before, after);
-    }
-}
-
-#[test]
-#[ignore]
-fn test_rapid_process_calls() {
-    let _plugins = plugin_guard();
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
-
-    let mut plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
-
-    let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
-    let midi: [UmpAt; 0] = [];
-
-    let start = std::time::Instant::now();
-    for _ in 0..689 {
-        let input_left = vec![0.0f32; 64];
-        let input_right = vec![0.0f32; 64];
-        let mut output_left = vec![0.0f32; 64];
-        let mut output_right = vec![0.0f32; 64];
-
-        let inputs: [&[f32]; 2] = [&input_left, &input_right];
-        let mut out_l = output_left.as_mut_slice();
-        let mut out_r = output_right.as_mut_slice();
-        let mut outputs: [&mut [f32]; 2] = [&mut out_l, &mut out_r];
-
-        let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
-        plugin.process(
-            &mut buffer,
-            &InputEvents {
-                midi: &midi,
-                ..Default::default()
-            },
-            None,
-            &transport,
-        );
-    }
-    let elapsed = start.elapsed();
-
-    println!("Processed 1 second of audio in {:?}", elapsed);
-    assert!(
-        elapsed.as_millis() < 1000,
-        "Should process faster than real-time"
-    );
-}
-
-/// `parameter_plain_range` recovers real ranges from the installed corpus.
+/// `parameter_plain_range` recovers real ranges from the built corpus.
 ///
 /// VST3's `ParameterInfo` carries no bounds — every value it exchanges is
 /// normalized. `IEditController::normalizedParamToPlain` is the same map the
@@ -757,15 +298,9 @@ fn test_rapid_process_calls() {
 ///   plain range really is `0..1`.
 /// - **Across the corpus**: at least one range is *not* `0..1`. Without this the
 ///   whole test would pass against a probe hardwired to return `Some((0.0,
-///   1.0))`, which is the failure it exists to catch. TAL-NoiseMaker alone
-///   returns identity for all 64 of its parameters, so a single plugin cannot
-///   tell the two apart.
-///
-/// Not `#[ignore]`d, unlike its neighbours: it skips only when the corpus is
-/// empty. An ignored test exercising new FFI is indistinguishable from no test.
+///   1.0))`, which is the failure it exists to catch.
 #[test]
 fn plain_range_probe_recovers_real_ranges() {
-    let _plugins = plugin_guard();
     let corpus = corpus_or_fail();
 
     let mut total_probed = 0usize;
@@ -832,9 +367,7 @@ fn plain_range_probe_recovers_real_ranges() {
     // The load-bearing half. Without a single non-unit range, a working probe
     // and the hardcoded `0..1` it replaced produce identical output and this
     // test proves nothing. `audio-probe` guarantees one: `kParamDelayMs` is a
-    // `RangeParameter` over 5..750 ms, added for exactly this reason, so the
-    // assertion holds on a bare checkout rather than depending on which
-    // third-party plugins a machine happens to have.
+    // `RangeParameter` over 5..750 ms.
     assert!(
         total_non_unit > 0,
         "all {total_probed} probed ranges across {} plugin(s) were exactly \

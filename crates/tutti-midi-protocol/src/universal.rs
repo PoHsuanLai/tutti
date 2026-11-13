@@ -27,12 +27,12 @@
 //!
 //! # The device id
 //!
-//! `7F` is the all-call: "if `<device ID>` = 7FH then the device should respond
-//! regardless of what `<device ID>` it is set to" (M1 p.40). Any other id is for
+//! `7F` is the all-call: every device responds whatever id it is set to
+//! (M1 p.40). Any other id is for
 //! the device that has it. A device with no id of its own to say is
 //! [`SysexDeviceId::DEFAULT`]; an instrument takes the messages addressed to it or to
 //! all ([`Addressee`]). Master Volume and Balance keep the two apart, as M1
-//! p.57 requires: "received on its own ID", "received on the 'All Call' ID".
+//! p.57 requires (a message on its own id and one on the All Call id are distinct).
 
 mod read;
 
@@ -47,20 +47,9 @@ use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexMessage, SysexSt
 pub struct SysexDeviceId(U7);
 
 /// A `7F`, which is the all-call and no device's own id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#04x} is the all-call, not a device's own id", .0.get())]
 pub struct NotSysexDeviceId(pub U7);
-
-impl core::fmt::Display for NotSysexDeviceId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{:#04x} is the all-call, not a device's own id",
-            self.0.get()
-        )
-    }
-}
-
-impl std::error::Error for NotSysexDeviceId {}
 
 impl SysexDeviceId {
     /// The id a device that has none set takes: `00`.
@@ -132,7 +121,7 @@ impl Recipient {
 }
 
 /// General MIDI System On or Off (M1 p.52).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GeneralMidi {
     /// `09 01`: the device goes to General MIDI System Level 1's initial status.
     On,
@@ -197,7 +186,7 @@ pub enum Read {
     /// A Universal message this crate reads.
     Universal(Addressed),
     /// A tuning dump whose checksum field is not the XOR of the bytes before it
-    /// (MTS, "Checksum Calculation"). The spec says nothing of what a receiver
+    /// (MTS, Checksum Calculation). The spec says nothing of what a receiver
     /// does with one; an instrument does not apply it ([`UniversalReader`]
     /// counts it, [`corrupt`](UniversalReader::corrupt)).
     BadChecksum(BadChecksum),
@@ -242,7 +231,7 @@ pub fn read(message: SysexMessage<'_>) -> Read {
 }
 
 /// Who a message was addressed to, as the receiver sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Addressee {
     /// The all-call (`7F`).
     All,

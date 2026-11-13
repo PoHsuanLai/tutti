@@ -11,9 +11,9 @@
 /// # Examples
 ///
 /// ```
-/// use tutti_ump::{BendValue, Message, MidiChannel};
+/// use tutti_ump::{BendValue, Message, MidiChannel, Voice2};
 ///
-/// let bend = Message::pitch_bend2(MidiChannel::FIRST, BendValue::CENTER);
+/// let bend = Message::Midi2(MidiChannel::FIRST.into(), Voice2::PitchBend(BendValue::CENTER));
 /// assert!(matches!(bend, Message::Midi2(..)));
 /// assert_eq!(BendValue::CENTER.get(), 0x8000_0000);
 /// ```

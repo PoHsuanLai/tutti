@@ -35,7 +35,7 @@
 //!   [`SweepRange`] checked); [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
 //!   [`Modulator`] (an LFO's is `tutti-modulation`'s [`Waveform`]).
-//! - Signal-driven modulation sources (design doc 014 §6), feeding a
+//! - Signal-driven modulation sources, feeding a
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
 //! - Spatial: [`VbapPannerNode`] ([`VbapError`]) and [`HrtfBinauralNode`],
@@ -72,11 +72,10 @@ pub use tutti_types::{
 };
 
 // The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /
-// controls surface a host drives them through, and the Bevy-free modulation
-// reconciler (`Modulation`) that builds this crate's lanes and signal nodes
-// from `tutti_modulation` declarations. DAW-param ECS policy — the shared param
-// pool, node authoring markers, spawners, ECS reconcilers, deferred
-// convolver load — is the host's, and deliberately outside this workspace.
+// controls surface a host drives them through, and the modulation reconciler
+// (`Modulation`) that builds this crate's lanes and signal nodes from
+// `tutti_modulation` declarations. DAW-param policy is the host's, and
+// deliberately outside this workspace.
 
 mod click;
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode, VolumeOutOfRange};
@@ -88,7 +87,7 @@ mod modulator;
 // `LfoNode` is `ModulatorNode<Waveform>` — the graph node over a pure
 // `Modulator`. `LfoShape` and `Waveform` are re-exported from `tutti-modulation` through
 // `lfo`, so `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Waveform};
+pub use lfo::{LfoClock, LfoNode, LfoShape, ModulatorNode, Waveform};
 pub use modulator::Modulator;
 
 mod delay;
@@ -163,10 +162,8 @@ pub use signal::{
     EnvelopeFollowerNode, NoteEnvelopeNode, SOURCE_EVENT_CAPACITY, SourceNode, SourcePorts,
 };
 
-// The reconcile step (doc 014 §8.2): declarations compiled and applied to
-// an `Editor` as lanes, signal-source nodes and edges, with no Bevy. It
-// lives here because this crate owns the lane and the signal nodes and
-// already names `tutti-modulation` and `tutti-graph`.
+// Declarations compiled and applied to an `Editor` as lanes, signal-source
+// nodes and edges.
 mod reconcile;
 pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 mod convolution;
@@ -179,10 +176,7 @@ pub use convolution::{
 // test, example or bench wires a graph out of.
 //
 // Behind the `testing` feature, not `cfg(test)`: the consumers are *other*
-// crates' tests, which a `cfg(test)` module is invisible to. The feature keeps
-// it out of the production API — a crate turns it on from its
-// `[dev-dependencies]` only, the pattern `tutti-sampler`'s `testing`
-// set. This crate reaches its own through a self dev-dependency.
+// crates' tests, which a `cfg(test)` module is invisible to.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

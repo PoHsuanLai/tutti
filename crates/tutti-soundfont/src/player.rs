@@ -13,6 +13,7 @@
 //! pair and the reverb send. It holds no effect (see [`Plane`]).
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use tutti_midi_protocol::{Universal, UniversalReader, narrow_value};
@@ -132,7 +133,7 @@ const RATES: std::ops::RangeInclusive<i32> = 16_000..=192_000;
 ///   numbers a keyboard sends. The owner decided on 2026-11-08 that tutti
 ///   follows MIDI 1.0: 66 is the sostenuto and 67 the soft pedal (which is not
 ///   followed).
-fn rules(polyphony: usize) -> Rules {
+fn rules(polyphony: NonZeroUsize) -> Rules {
     // The bend ranges are General MIDI's 2 semitones until RPN 0 says
     // otherwise (`Rules::poly`'s). The percussion channel is key-based, so the
     // master tuning leaves it (CA-025, GM2 section 4.2).
@@ -192,7 +193,7 @@ impl Player {
 
     /// Builds a player over `font` on the grid `render`.
     fn at(font: &Arc<SoundFont>, settings: Settings, render: Render) -> Result<Self> {
-        let polyphony = settings.polyphony().get();
+        let polyphony = settings.polyphony();
 
         let mut presets: HashMap<i32, usize> = HashMap::new();
         let mut min_preset_id = i32::MAX;
@@ -237,8 +238,8 @@ impl Player {
             presets,
             default_preset,
             channels,
-            voicing: Voicing::new(rules(polyphony)),
-            voices: Voices::new(&render, polyphony),
+            voicing: Voicing::new(rules(polyphony.voices())),
+            voices: Voices::new(&render, polyphony.get()),
             universal: UniversalReader::new(settings.group(), settings.device()),
             master_applied: MasterGain::UNITY,
             block: std::array::from_fn(|_| vec![0_f32; render.block_len()]),
@@ -384,7 +385,7 @@ impl Player {
     /// reverb and chorus send. Modulation, volume, pan and expression, and Reset
     /// All Controllers (RP-015), are the core's `ChannelState`. RPN and NRPN arrive
     /// assembled, as Registered and Assignable Controllers (the input edge's
-    /// translator, design 017 §4), not as Data Entry. The pedals (64, 66), all sound off (120), all
+    /// translator), not as Data Entry. The pedals (64, 66), all sound off (120), all
     /// notes off (123) and the mode messages are the core's
     /// (`Voicing::step`), not the channel's. Any other controller is ignored.
     fn control(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {

@@ -56,20 +56,9 @@ impl Bank {
 }
 
 /// The refused `wBank`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{} is not a bank: 0 to 127, or 128 for percussion", .0)]
 pub struct BankError(pub u16);
-
-impl fmt::Display for BankError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} is not a bank: 0 to 127, or 128 for percussion",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for BankError {}
 
 impl TryFrom<u16> for Bank {
     type Error = BankError;

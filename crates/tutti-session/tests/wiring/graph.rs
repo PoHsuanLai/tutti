@@ -1,8 +1,7 @@
 //! The session's graph properties, with no host: the edit flag, the
 //! crossfade retry, the event feeds, compensation, and what a fork renders.
 //!
-//! The graph halves of what `bevy-tutti`'s `graph::runtime` tests pinned
-//! through an `App` (design 015 §9.4); the ECS halves stayed there.
+//! Design 015 §9.4.
 
 use std::sync::Arc;
 use tutti_types::MaxBlock;
@@ -178,8 +177,7 @@ impl<const IN: u16, const OUT: u16> Node for Events<IN, OUT> {
 
 /// Every [`OutPort`] kind survives a write and a read-back, on a node
 /// port and on a global output: the translation to the spec's spelling and
-/// back is total and lossless. (Moved from `bevy-tutti`'s
-/// `AudioGraphRes` tests, whose methods now delegate here.)
+/// back is total and lossless.
 #[test]
 fn every_source_reads_back_as_written() {
     let mut s = Session::builder()
@@ -294,7 +292,6 @@ fn removing_a_stranger_changes_nothing() {
 
 /// `root_width` is `max(project, device)` clamped to
 /// `1..=MAX_ROOT_CHANNELS`; each row is one way the rule is load-bearing.
-/// (Moved from `bevy-tutti`'s `engine::build`.)
 #[test]
 fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
     let cases: &[(ChannelLayout, ChannelLayout, usize, &str)] = &[
@@ -434,9 +431,7 @@ fn a_crossfade_on_a_removed_node_is_refused_naming_it() {
 /// **A crossfade refused `Busy` during a re-prepare lands on a later
 /// update**, and its controls come with the landing: the graph an engine
 /// runs (the audio side is taken) changing rate, and a crossfade before the
-/// executor has handed its units back. The graph half of `bevy-tutti`'s
-/// `a_crossfade_during_a_re_prepare_lands_after_it` (its entity half binds
-/// the controls this hands back).
+/// executor has handed its units back.
 ///
 /// `Editor::replace` refuses while re-preparing and consumes its unit, so
 /// without the wait the new unit would be lost.
@@ -506,9 +501,7 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
 }
 
 /// **On a poisoned graph a crossfade is refused**: nothing is parked (no
-/// update will ever take it). The graph half of `bevy-tutti`'s
-/// `a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls`
-/// (its entity half: the controls stay put).
+/// update will ever take it).
 #[test]
 fn a_crossfade_on_a_poisoned_graph_is_refused() {
     let mut s = detached(1);
@@ -539,8 +532,7 @@ fn a_crossfade_on_a_poisoned_graph_is_refused() {
 /// (the constraint export by `Editor::fork` rests on): `Graph::set_param`
 /// through the node's addressed `ParamSet`, and a write to the controls
 /// `Graph::add` handed back. A fork starts from the values its cells hold.
-/// The graph half of `bevy-tutti`'s `every_param_write_path_reaches_a_fork`
-/// (its half: `AudioParam`, and the modulated paths).
+/// (The modulated paths are `mod_lanes.rs`'.)
 #[test]
 fn every_param_write_path_reaches_a_fork() {
     let mut s = detached(2);

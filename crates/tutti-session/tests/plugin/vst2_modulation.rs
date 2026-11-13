@@ -2,13 +2,7 @@
 //! §12.5): a plugin target is a lane on the plugin's event input, its knob
 //! its own, started at the plugin's value and moved by the plugin's GUI.
 //!
-//! These are the session halves of `bevy-tutti`'s `mod_plugin` VST2 tests
-//! (`a_plugin_gui_edit_becomes_the_knob`,
-//! `a_plugins_midi_rewiring_keeps_its_lanes`,
-//! `a_plugin_echoing_the_lane_keeps_its_knob`), moved here when the adapter
-//! was parked: the `Session` and `Graph` calls stand for the adapter's
-//! `ModRoute` entities and `EventSources` component. The plugin is the
-//! reference VST2 probe, in process.
+//! The plugin is the reference VST2 probe, in process.
 
 use std::time::{Duration, Instant};
 use tutti_session::Root;

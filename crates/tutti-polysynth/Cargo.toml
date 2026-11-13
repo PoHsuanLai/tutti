@@ -10,7 +10,7 @@ documentation = "https://docs.rs/tutti-polysynth"
 readme = "README.md"
 keywords = ["audio", "synthesizer", "polyphony", "mpe", "dsp"]
 categories = ["multimedia::audio"]
-# `std` gates nothing yet. There is no `midi` feature: a voice is addressed by
+# There is no `midi` feature: a voice is addressed by
 # per-note identity, so MIDI is not optional. SoundFont playback is the
 # separate `tutti-soundfont` crate.
 
@@ -19,7 +19,6 @@ workspace = true
 
 [features]
 default = []
-std = []
 
 [dependencies]
 

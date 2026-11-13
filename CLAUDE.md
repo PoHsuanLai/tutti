@@ -368,7 +368,8 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   (`ProbeNotFound`), so a suite that must see a real probe uses the fixture.
 - **Feature-gated suites** run only where a feature is on. A workspace run
   enables just what some member's dependency edge turns on (for example
-  `tutti-nodes/convolution`), not a crate's own optional features. The rest
+  the `tutti-codec/encode-*` features `tutti-export`'s dev-dependency names), not a
+  crate's own optional features. The rest
   (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
   `dark features` job and `cargo xtask test-features`. Name the feature when testing
   one crate, and add a new gated suite to both lists, or it never runs.
@@ -1164,7 +1165,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the editor-only instance a `PluginBridge` opens is loaded by the host's
   `EditorLoader`, and no `tutti-*-host` depends on it
   (`cargo xtask check-layout`). Its test-only knobs (`set_rate_timeout`,
-  `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
+  `settled_replies`) are behind `testing`, which `tutti-plugin`'s
   dev-dependency turns on.
 - `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
   `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` and
@@ -1769,6 +1770,20 @@ read the `Cargo.toml`, grep for the type, run the probe.
   OutputsListSlow}` → `SessionEvent::Device(DeviceEvent::..)`; `render_workers(usize)`
   (0 for per core) → `Workers`; `inputs`/`outputs_floor` of a bare `usize` →
   `ChannelLayout`.
+- **Feature names** (one name per meaning): a codec is `decode-wav|flac|mp3|ogg` for reading and
+  `encode-wav|flac|aiff|vorbis` for writing, in every crate that spells them (`tutti-codec`,
+  `tutti-sampler` for decode, `tutti-session` and `tutti`); a seam other crates' tests use is
+  `testing`, a public conformance suite is `contract`; everything else is named for what it adds.
+  **Dead feature names:** `tutti-polysynth/std`, `tutti-plugin-server/all` and `tutti-sampler/files` → deleted
+  (they gated nothing); `export-wav` of `tutti` and `tutti-session` → `export` (it already writes WAV);
+  `tutti-export`'s `wav|flac|aiff|ogg` → deleted (name `tutti-codec/encode-*`: the crate has no features);
+  `export-flac|export-aiff|export-ogg` of `tutti` and `tutti-session` → `encode-flac|encode-aiff|encode-vorbis`
+  (which no longer imply `export`: name it beside them); `tutti`'s `wav|flac|mp3|ogg` and `tutti-sampler`'s
+  `wav|flac|mp3|ogg` → `decode-wav|decode-flac|decode-mp3|decode-ogg`; `tutti-sampler`'s default `wav` → none;
+  `tutti-nodes/convolution` and its forwards in `tutti-session` and `tutti` → deleted (the convolution reverb is
+  unconditional); `test-support` of every crate (`tutti-alsa-ffi`, `tutti-au-ffi`, `tutti-au-host`,
+  `tutti-clap-ffi`, `tutti-midi-hardware`, `tutti-plugin-ipc`, `tutti-plugin-types`, `tutti-sampler`,
+  `tutti-vst2-ffi`) → `testing`; `tutti-cpal/capture` now implies `tutti-codec/encode-wav`.
 - **Dead export names**: `tutti-export`'s `ExportConfig`, `RenderConfig`,
   `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,
   `render_to_buffers`, `render_normalized_to_file` and their `_with` twins → `render` /

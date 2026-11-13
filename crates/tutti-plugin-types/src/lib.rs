@@ -18,7 +18,7 @@ mod driver;
 mod editor;
 mod error;
 mod failure;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 pub mod fake;
 pub mod features;
 mod harmony;

@@ -22,11 +22,7 @@
 //! output *is* the dither, and the noise can be measured directly by subtracting
 //! the level rather than modelled.
 //!
-//! Gated on `wav`, matching `surround_export.rs`: every case writes a WAV and
-//! reads it back through `hound`, which this crate only links under that
-//! feature.
-
-#![cfg(feature = "wav")]
+//! Every case writes a WAV and reads it back through `hound`.
 
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 

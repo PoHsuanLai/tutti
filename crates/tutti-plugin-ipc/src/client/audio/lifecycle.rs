@@ -86,7 +86,7 @@ impl Lifecycle {
         std::time::Duration::from_millis(self.rate_timeout_ms.load(Ordering::Relaxed))
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn set_rate_timeout(&self, timeout: std::time::Duration) {
         self.rate_timeout_ms
             .store(timeout.as_millis() as u64, Ordering::Relaxed);

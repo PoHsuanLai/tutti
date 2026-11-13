@@ -246,7 +246,7 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
         .map(|p| p.id)
         .find(|id| *id == PresetId::Number(1))
         .expect("the probe declares two programs");
-    assert_eq!(handle.load_preset(&main_thread(), &program_1), Some(true));
+    assert_eq!(handle.load_preset(&main_thread(), &program_1), Ok(()));
     handle
         .any_thread()
         .set_parameter_value(ParamId::new(0), Normalized::of(0.75));
@@ -524,7 +524,7 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     let (client, handle) = load();
     assert_eq!(
         handle.load_preset(&main_thread(), &PresetId::Number(1)),
-        Some(true)
+        Ok(())
     );
     env.set("TUTTI_VST2_PROBE_PROGRAMS", "1");
     let err = client

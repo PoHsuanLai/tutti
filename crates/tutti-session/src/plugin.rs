@@ -114,7 +114,7 @@ use tutti_plugin::catalog::{
 use tutti_plugin::error::StateError;
 use tutti_plugin_host::{Liveness, Verdict};
 use tutti_plugin_host::{
-    Notice, PluginControls, PluginHandle, PluginMeter, PluginStatus, Subscription,
+    NodeControls, Notice, PluginControls, PluginHandle, PluginStatus, Subscription,
 };
 use tutti_plugin_types::{
     BridgeError, EditorSize, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation,
@@ -122,9 +122,10 @@ use tutti_plugin_types::{
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
+use crate::plugin_diagnostics::Figures;
 use crate::{
-    GiveUp, Key, Params, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure,
-    RecoveryPolicy, ReloadCause, Session, SessionEvent,
+    Diagnostics, GiveUp, Key, Params, PluginBuses, PortCounts, Recovery, RecoveryAction,
+    RecoveryEvent, RecoveryFailure, RecoveryPolicy, ReloadCause, Session, SessionEvent,
 };
 
 /// How often a healthy plugin's state is captured, by default: 8 s, the
@@ -447,17 +448,15 @@ impl PluginLoaded {
 }
 
 /// What the session believes about a plugin's liveness: the debounce
-/// between the engine's latched `PluginStatus` and a node removed.
+/// between the engine's latched `PluginStatus` and a node removed. The public
+/// reading is [`PluginHealth`] ([`Plugin::health`]).
 #[derive(Debug, Clone, Default)]
-pub enum PluginLiveness {
+pub(crate) enum PluginLiveness {
     /// Answering normally.
     #[default]
     Healthy,
     /// Recently unhealthy, not yet written off (`tutti_plugin_host::Liveness`).
-    Failing {
-        /// How many observations in a row found it unhealthy.
-        consecutive: u8,
-    },
+    Failing,
     /// Dead or hung, and being replaced at its node (recovery on): the node
     /// stays, silent, until [`PluginChange::Recovered`] or
     /// [`PluginChange::GaveUp`].
@@ -465,12 +464,47 @@ pub enum PluginLiveness {
         /// Why it needs a replacement.
         cause: ReloadCause,
     },
-    /// Written off: its node was removed (recovery off, or its budget
-    /// spent). Load a replacement restoring its last good state
-    /// ([`Plugin::state`]) to bring it back by hand.
+    /// Written off: its node is being removed (recovery off, or its budget
+    /// spent).
     Dead {
         /// The engine's latched reason.
         cause: PluginFailure,
+    },
+}
+
+/// How a hosted plugin is doing ([`Plugin::health`], design 029 section 2.6):
+/// one reading of what the engine latched, the session's debounce and its
+/// recovery.
+///
+/// The verdicts that remove the node (written off with recovery off, or
+/// recovery's budget spent) are not here: the node and its view are gone in the
+/// update that reaches them, and the events say so ([`PluginChange::Died`],
+/// [`PluginChange::GaveUp`]).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum PluginHealth {
+    /// Answering normally.
+    Running,
+    /// Alive, but its blocks go unanswered: the bridge is abandoning them and
+    /// has not yet declared a hang. With recovery off the session does not
+    /// watch for this, and it is never read.
+    Stalled,
+    /// The engine reports it dead, and the session has not yet written it off
+    /// (it waits out a debounce first). It then becomes
+    /// [`Reloading`](Self::Reloading), or, with recovery off, its node is
+    /// removed.
+    Died {
+        /// The engine's latched reason.
+        cause: PluginFailure,
+    },
+    /// Dead or hung, and a replacement is on its way to the same node: the node
+    /// stays, silent.
+    Reloading {
+        /// Failures within the recovery budget's window so far, this one
+        /// included.
+        attempt: u32,
+        /// Why it needs a replacement.
+        cause: ReloadCause,
     },
 }
 
@@ -702,8 +736,10 @@ pub(crate) struct HostedPlugin {
     /// reports.
     plugin: PluginRef,
     pub(crate) handle: PluginHandle,
-    controls: Option<PluginControls>,
-    meter: Option<PluginMeter>,
+    pub(crate) controls: Option<PluginControls>,
+    /// What the node counts and holds (its meter cell and delivery counters):
+    /// every plugin the session added; `None` for one the host inserted itself.
+    pub(crate) node: Option<NodeControls>,
     liveness: Liveness,
     status: PluginLiveness,
     /// Told a render mode since it was added (or crossfaded in).
@@ -816,7 +852,7 @@ impl std::fmt::Debug for HostedPlugin {
         d.field("plugin", &self.plugin)
             .field("handle", &self.handle)
             .field("controls", &self.controls)
-            .field("meter", &self.meter)
+            .field("node", &self.node)
             .field("liveness", &self.liveness)
             .field("status", &self.status)
             .field("told", &self.told)
@@ -841,7 +877,7 @@ impl HostedPlugin {
             plugin,
             handle,
             controls: None,
-            meter: None,
+            node: None,
             liveness: Liveness::new(),
             status: PluginLiveness::Healthy,
             told: false,
@@ -864,7 +900,7 @@ impl HostedPlugin {
     }
 
     pub(crate) fn with_controls(mut self, controls: PluginControls) -> Self {
-        self.meter = Some(controls.meter());
+        self.node = Some((*controls).clone());
         self.controls = Some(controls);
         self
     }
@@ -896,7 +932,7 @@ impl HostedPlugin {
     ) -> PluginHandle {
         self.plugin = plugin;
         let outgoing = self.adopt(handle);
-        self.meter = Some(controls.meter());
+        self.node = Some((*controls).clone());
         self.controls = Some(controls);
         outgoing
     }
@@ -970,12 +1006,6 @@ impl HostedPlugin {
         ));
     }
 
-    /// The node's meter cell, either backend's; `None` for a plugin the
-    /// host inserted itself ([`Graph::host_plugin`](crate::Graph::host_plugin)).
-    pub(crate) fn meter(&self) -> Option<&PluginMeter> {
-        self.meter.as_ref()
-    }
-
     /// Parameter `id`'s value, as a modulation lane's knob starts at it:
     /// `None` while not read, `Some(None)` for one it does not list.
     #[cfg(any(test, feature = "modulation"))]
@@ -1039,11 +1069,16 @@ impl Key<PluginNode> {
 pub struct Plugin<'a> {
     node: NodeKey,
     hosted: &'a HostedPlugin,
+    figures: Figures,
 }
 
 impl<'a> Plugin<'a> {
-    pub(crate) fn new(node: NodeKey, hosted: &'a HostedPlugin) -> Self {
-        Self { node, hosted }
+    pub(crate) fn new(node: NodeKey, hosted: &'a HostedPlugin, figures: Figures) -> Self {
+        Self {
+            node,
+            hosted,
+            figures,
+        }
     }
 
     /// The plugin's node.
@@ -1074,28 +1109,45 @@ impl<'a> Plugin<'a> {
         }
     }
 
-    /// What the session believes about its liveness.
-    pub fn liveness(&self) -> &'a PluginLiveness {
-        &self.hosted.status
+    /// How the plugin is doing: running, stalled, dead and about to be
+    /// written off, or being reloaded (design 029 section 2.6).
+    pub fn health(&self) -> PluginHealth {
+        let hosted = self.hosted;
+        match &hosted.status {
+            PluginLiveness::Recovering { cause } => PluginHealth::Reloading {
+                attempt: hosted.recovery.as_ref().map_or(1, Recovery::failures),
+                cause: cause.clone(),
+            },
+            PluginLiveness::Dead { cause } => PluginHealth::Died {
+                cause: cause.clone(),
+            },
+            PluginLiveness::Healthy | PluginLiveness::Failing => match hosted.handle.status() {
+                PluginStatus::Dead { cause } => PluginHealth::Died { cause },
+                _ if hosted.recovery.as_ref().is_some_and(Recovery::is_stalled) => {
+                    PluginHealth::Stalled
+                }
+                _ => PluginHealth::Running,
+            },
+        }
     }
 
-    /// The plugin's control surface: editor, parameters, presets. Design 029
-    /// steps 2 to 4 replace it with the views of this one; until then it is
-    /// the low layer, as it was.
+    /// The plugin's diagnostics: its server, its dropouts and losses, and the
+    /// latency and tail the graph holds for it (design 029 section 2.7).
+    pub fn diagnostics(&self) -> Diagnostics<'a> {
+        Diagnostics::new(self.hosted, self.figures)
+    }
+
+    /// The plugin's buses as the graph's bus handles, to wire with
+    /// `Graph::connect` (design 029 section 3.5).
+    pub fn buses(&self) -> PluginBuses<'a> {
+        PluginBuses::new(self.node, self.hosted)
+    }
+
+    /// The plugin's control handle, the low layer the views are built on
+    /// (feature `testing`: a host uses the views).
+    #[cfg(feature = "testing")]
     pub fn handle(&self) -> &'a PluginHandle {
         &self.hosted.handle
-    }
-
-    /// An out-of-process plugin's controls (its latency, tail and meter cells,
-    /// shared with its node); `None` for a plugin hosted in process.
-    pub fn controls(&self) -> Option<&'a PluginControls> {
-        self.hosted.controls.as_ref()
-    }
-
-    /// The node's meter cell, either backend's; `None` for a plugin the host
-    /// inserted itself ([`Graph::host_plugin`](crate::Graph::host_plugin)).
-    pub fn meter(&self) -> Option<&'a PluginMeter> {
-        self.hosted.meter.as_ref()
     }
 
     /// The plugin's parameters: what it declares, read at load and again when
@@ -1437,11 +1489,11 @@ impl Session {
                 key
             }
             Err(plugin) => {
-                let plugin_meter = plugin.meter();
-                plugin_meter.set_meter(meter);
+                let node_controls = plugin.node_controls();
+                node_controls.set_meter(meter);
                 let (node, _) = self.graph.place((*plugin).bind(self.graph.tempo.clone()));
                 let mut hosted = HostedPlugin::new(handle, loaded_ref);
-                hosted.meter = Some(plugin_meter);
+                hosted.node = Some(node_controls);
                 self.graph.plugins.insert(node.erase(), hosted);
                 Key::new(node.erase())
             }
@@ -1468,7 +1520,7 @@ impl Session {
         self.graph
             .plugins
             .get(&node)
-            .map(|hosted| Plugin { node, hosted })
+            .map(|hosted| Plugin::new(node, hosted, self.graph.plugin_figures(node)))
             .ok_or_else(|| crate::NoSuchNode::new(node))
     }
 
@@ -1485,7 +1537,7 @@ impl Session {
         self.graph
             .plugins
             .iter()
-            .map(|(&node, hosted)| Plugin { node, hosted })
+            .map(|(&node, hosted)| Plugin::new(node, hosted, self.graph.plugin_figures(node)))
     }
 
     /// Lands a finished snapshot: the plugin's last snapshot becomes it. A
@@ -2011,9 +2063,7 @@ impl Session {
             }
             match hosted.liveness.observe(cause.is_none(), now) {
                 Verdict::Healthy => hosted.status = PluginLiveness::Healthy,
-                Verdict::Failing { consecutive } => {
-                    hosted.status = PluginLiveness::Failing { consecutive };
-                }
+                Verdict::Failing { .. } => hosted.status = PluginLiveness::Failing,
                 Verdict::Dead => {
                     // `Liveness` declares a death only on an unhealthy
                     // observation, and every unhealthy one carries the
@@ -2178,7 +2228,7 @@ impl Session {
                 // `false` means the plugin declined (a CLAP plugin without
                 // `clap.render`): it renders the same either way, so there is
                 // nothing to retry.
-                let _ = hosted.handle.set_render_mode(wanted);
+                let _ = hosted.handle.any_thread().set_render_mode(wanted);
                 hosted.told = true;
             }
             self.render_mode.announced = wanted;
@@ -2442,6 +2492,60 @@ mod tests {
         );
     }
 
+    /// **The update frees a hosted plugin's project-meter cell cleared while a
+    /// block held it**: once cleared the node's meter slot follows no project
+    /// meter, so only the session's sweep of its plugins' meters reaches what the
+    /// clear retired, on the next update with nothing published again.
+    #[test]
+    fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
+        let mut rig = rig(None);
+        let controls = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(48_000.0));
+        let project = rig.session.click_settings().project_meter();
+        controls.set_meter(project);
+        let meter = controls.meter();
+        rig.session
+            .graph
+            .plugins
+            .get_mut(&rig.node)
+            .expect("hosted")
+            .node = Some((*controls).clone());
+        assert!(meter.has_meter(), "the project's meter is followed");
+
+        let mut block = meter.probe_reader();
+        {
+            let _held = block.lend();
+            meter.clear_meter();
+            let _ = rig.session.update();
+            assert_eq!(meter.retired_len(), 1, "held across the clear");
+        }
+        let _ = rig.session.update();
+        assert_eq!(meter.retired_len(), 0, "the update freed it");
+    }
+
+    /// **A latency past what PDC compensates is clamped, not refused**: a plugin
+    /// that reports more than `MAX_NODE_LATENCY` (the reference plugin cannot: its
+    /// delay line is short) reaches the graph as that figure at the next
+    /// `Phase::Plugins`.
+    #[test]
+    fn a_reported_latency_past_what_pdc_compensates_is_clamped() {
+        let mut rig = rig(None);
+        rig.session
+            .graph
+            .plugins
+            .get_mut(&rig.node)
+            .expect("hosted")
+            .controls = Some(PluginControls::new(
+            Samples(10_000_000),
+            PluginTail::default(),
+            SampleRate(48_000.0),
+        ));
+        rig.plugins_at(0);
+        assert_eq!(
+            rig.session.graph_ref().node_latency(rig.node).unwrap(),
+            tutti_graph::MAX_NODE_LATENCY
+        );
+    }
+
     /// **A failing plugin is not asked for its state**: the call would
     /// block against a peer that is not answering, and return nothing.
     #[test]
@@ -2451,8 +2555,8 @@ mod tests {
         rig.dead.store(true, Ordering::SeqCst);
         assert!(rig.plugins_at(1_000).is_empty(), "failing: no snapshot");
         assert!(matches!(
-            rig.session.plugin(rig.node).unwrap().liveness(),
-            PluginLiveness::Failing { consecutive: 1 }
+            rig.session.plugin(rig.node).unwrap().health(),
+            PluginHealth::Died { .. }
         ));
     }
 

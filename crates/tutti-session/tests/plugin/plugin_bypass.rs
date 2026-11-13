@@ -125,7 +125,7 @@ impl Rig {
         self.s
             .plugin(self.plugin)
             .expect("hosted")
-            .handle()
+            .diagnostics()
             .block_counts()
             .replies
     }

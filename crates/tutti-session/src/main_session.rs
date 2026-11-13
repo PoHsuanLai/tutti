@@ -13,6 +13,7 @@
 //!   graveyard), runs the work other threads handed to the main thread
 //!   (`tutti_plugin_types::run_deferred`) and services every open editor.
 //! - [`MainPlugin::editor`] is the editor: `open`, `resize`, `rescale`, `close`.
+//! - [`MainPlugin::presets`] lists and loads presets.
 //!
 //! The session's own freeing paths (`update`, `commit`, `remove`, `replace`)
 //! stay on [`Session`], whatever feature is on: a plugin they retire is parked
@@ -60,10 +61,11 @@
 use raw_window_handle::HasWindowHandle;
 use tutti_graph::NodeKey;
 use tutti_plugin_types::{
-    ContentScale, EditorError, EditorSize, Features, MainThread, WindowHandle,
+    ContentScale, EditorError, EditorSize, Features, MainThread, PresetError, WindowHandle,
 };
 
 use crate::plugin::HostedPlugin;
+use crate::plugin_diagnostics::Figures;
 use crate::{NoSuchNode, PluginChange, PluginEvent, Session, SessionEvent};
 
 /// A session and the proof that the caller is on the main thread. Made by
@@ -149,11 +151,17 @@ impl MainSession<'_> {
     pub fn plugin(&mut self, node: impl Into<NodeKey>) -> Result<MainPlugin<'_>, NoSuchNode> {
         let node = node.into();
         let main = self.main;
+        let figures = self.session.graph.plugin_figures(node);
         self.session
             .graph
             .plugins
             .get_mut(&node)
-            .map(|hosted| MainPlugin { node, hosted, main })
+            .map(|hosted| MainPlugin {
+                node,
+                hosted,
+                main,
+                figures,
+            })
             .ok_or_else(|| NoSuchNode::new(node))
     }
 }
@@ -165,6 +173,7 @@ pub struct MainPlugin<'a> {
     node: NodeKey,
     hosted: &'a mut HostedPlugin,
     main: MainThread,
+    figures: Figures,
 }
 
 impl MainPlugin<'_> {
@@ -175,7 +184,18 @@ impl MainPlugin<'_> {
 
     /// The read-only view of the same plugin.
     pub fn view(&self) -> crate::Plugin<'_> {
-        crate::Plugin::new(self.node, self.hosted)
+        crate::Plugin::new(self.node, self.hosted, self.figures)
+    }
+
+    /// The plugin's presets: a list to load from, or a file to load
+    /// (design 029 section 2.4).
+    ///
+    /// # Errors
+    ///
+    /// [`PresetError::Unsupported`] when the plugin has no preset surface;
+    /// [`PresetError::Lost`] when it is gone.
+    pub fn presets(&self) -> Result<crate::Presets<'_>, PresetError> {
+        crate::Presets::of(&self.hosted.handle, self.main)
     }
 
     /// The plugin's editor.

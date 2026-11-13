@@ -25,7 +25,7 @@ use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_host::load_client;
-use tutti_plugin_types::{FeatureReport, Features, PresetId};
+use tutti_plugin_types::{FeatureReport, Features, PresetError, PresetId};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -93,7 +93,7 @@ fn a_listed_preset_loads_the_program_it_names() {
     let wanted = presets[2].id.clone();
     assert_eq!(
         handle.load_preset(&main_thread(), &wanted),
-        Some(true),
+        Ok(()),
         "loading a preset the plugin listed must be accepted"
     );
     assert_eq!(
@@ -114,8 +114,8 @@ fn an_id_from_another_format_is_refused() {
     let _guard = lock_probe();
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    // `Some(false)`, not "not true": a lost preset route answers `None`, which
-    // would otherwise read as a refusal and pass this test rather than fail it.
+    // `Refused`, not "not Ok": a lost route answers another error, which would
+    // otherwise read as a refusal and pass this test rather than fail it.
     let before = handle.current_preset(&main_thread());
 
     assert_eq!(
@@ -126,7 +126,7 @@ fn an_id_from_another_format_is_refused() {
                 index: 1
             }
         ),
-        Some(false),
+        Err(PresetError::Refused),
         "a VST3 program id addresses no VST2 program"
     );
     assert_eq!(
@@ -134,7 +134,7 @@ fn an_id_from_another_format_is_refused() {
             &main_thread(),
             &PresetId::Location(PathBuf::from("/x.clap-preset"))
         ),
-        Some(false),
+        Err(PresetError::Refused),
         "a CLAP preset path addresses no VST2 program"
     );
 
@@ -170,12 +170,12 @@ fn a_plugin_with_no_programs_declines_rather_than_going_silent() {
     );
 
     // The route existing and the listing being empty are two separate facts,
-    // and the distinction is the whole point: `None` would mean this host
+    // and the distinction is the whole point: `Unsupported` would mean this host
     // cannot ask, which a browser must not confuse with a plugin that was asked
     // and has nothing. The capability handle splits them, so assert both.
     assert_eq!(
         handle.presets(&main_thread()),
-        Some(Vec::new()),
+        Ok(Vec::new()),
         "the plugin was asked and listed nothing"
     );
 }

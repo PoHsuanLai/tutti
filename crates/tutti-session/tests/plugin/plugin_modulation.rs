@@ -408,13 +408,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     // loaded machine), and after it, require that none was played
     // unanswered: a late block is waited for, a missed one fails here, by
     // name.
-    let controls = s
-        .plugin(node)
-        .expect("hosted")
-        .controls()
-        .expect("an out-of-process plugin has controls")
-        .clone();
-    let missed_before = controls.missed_chunks();
+    let missed_before = diagnostics_of(&s, node.into()).missed_chunks();
     let mut side = s.graph().take_audio_side();
     let mut live = [Vec::new(), Vec::new()];
     let mut out = vec![Vec::new(), Vec::new()];
@@ -427,7 +421,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
             None,
         ));
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !controls.chunk_in_flight_answered() {
+        while !diagnostics_of(&s, node.into()).chunk_in_flight_answered() {
             assert!(
                 Instant::now() < deadline,
                 "live block {b}: the chunk before it was never answered (10 s)"
@@ -436,7 +430,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
         }
         side.render(BLOCK, BLOCK, &mut out);
         assert_eq!(
-            controls.missed_chunks(),
+            diagnostics_of(&s, node.into()).missed_chunks(),
             missed_before,
             "live block {b} late or missed: the plugin's chunk was played unanswered"
         );
@@ -465,4 +459,8 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
             );
         }
     }
+}
+
+fn diagnostics_of(s: &Session, node: NodeKey) -> tutti_session::Diagnostics<'_> {
+    s.plugin(node).expect("hosted").diagnostics()
 }

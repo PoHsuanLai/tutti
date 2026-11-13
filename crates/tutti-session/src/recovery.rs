@@ -365,6 +365,20 @@ impl Recovery {
         matches!(self.phase, State::Reloading { .. })
     }
 
+    /// Whether the running plugin is being watched go quiet: blocks keep being
+    /// abandoned with no reply, and the verdict (a hang) is not yet declared.
+    #[must_use]
+    pub fn is_stalled(&self) -> bool {
+        matches!(
+            self.phase,
+            State::Running {
+                since: Some(_),
+                terminating: false,
+                ..
+            }
+        )
+    }
+
     /// Whether recovery has stopped for good.
     #[must_use]
     pub fn has_given_up(&self) -> bool {
@@ -715,6 +729,26 @@ mod tests {
         );
         // Its death then follows the ordinary path.
         assert_action!(r.step(died(), t0 + 8 * S), reload(250, 1));
+    }
+
+    /// **A plugin is stalled while its blocks go unanswered, before the hang is
+    /// declared**: not at the baseline, true once blocks are abandoned with no
+    /// reply, false when it answers, and false again once its server is being
+    /// ended (the hang is then declared).
+    #[test]
+    fn a_plugin_is_stalled_between_the_first_abandoned_block_and_the_verdict() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(policy());
+        let _ = starved(&mut r, t0, 100, 5);
+        assert!(!r.is_stalled(), "the baseline watches nothing");
+        let _ = starved(&mut r, t0 + S, 200, 5);
+        assert!(r.is_stalled(), "blocks abandoned, no reply");
+        let _ = starved(&mut r, t0 + 2 * S, 210, 6);
+        assert!(!r.is_stalled(), "a reply ends the suspicion");
+        let _ = starved(&mut r, t0 + 3 * S, 300, 6);
+        assert!(r.is_stalled());
+        assert!(terminates(starved(&mut r, t0 + 9 * S, 500, 6)));
+        assert!(!r.is_stalled(), "the hang is declared: its server is ended");
     }
 
     /// Few blocks over a long time is not a hang, and neither is a long run

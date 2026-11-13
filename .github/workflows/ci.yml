@@ -180,6 +180,9 @@ jobs:
       - run: cargo xtask check-hosting
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
+      # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are
+      # exempt and the temporary rows in the gate are a ratchet.
+      - run: cargo xtask check-platform-seam
 
   clippy:
     name: clippy

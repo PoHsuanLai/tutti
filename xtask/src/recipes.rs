@@ -174,6 +174,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-platform-seam",
+        "",
+        "a platform cfg stands only on a mod declaration, bar the temporary rows",
+    ),
+    (
         "check-range-types",
         "",
         "no plain derived Deserialize on a private tuple field",
@@ -387,6 +392,7 @@ impl Planner<'_> {
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
             "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
@@ -437,6 +443,7 @@ impl Planner<'_> {
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
                     "check-submodule-pins", "check-doc-refs", "check-pointers",
+                    "check-platform-seam",
                     "check-features",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

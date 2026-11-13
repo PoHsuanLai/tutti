@@ -10,6 +10,31 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use crate::error::{Error, Result};
 use crate::roster::{DeviceId, Direction, Snapshot};
 
+// JACK is reachable only on Linux and the BSDs with the `jack` feature: one
+// module per case, one chosen.
+#[cfg(all(
+    feature = "jack",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    )
+))]
+#[path = "host/jack_reachable.rs"]
+mod jack;
+#[cfg(not(all(
+    feature = "jack",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    )
+)))]
+#[path = "host/jack_unreachable.rs"]
+mod jack;
+
 /// Which platform audio host to open devices through.
 ///
 /// Every variant exists on every platform, so a configuration struct holding
@@ -103,45 +128,8 @@ impl DeviceHost {
                 inner: cpal::default_host(),
                 id: which,
             }),
-            AudioHost::Jack => Self::open_jack(),
+            AudioHost::Jack => jack::open(),
         }
-    }
-
-    #[cfg(all(
-        feature = "jack",
-        any(
-            target_os = "linux",
-            target_os = "dragonfly",
-            target_os = "freebsd",
-            target_os = "netbsd"
-        )
-    ))]
-    fn open_jack() -> Result<Self> {
-        cpal::host_from_id(cpal::HostId::Jack)
-            .map(|inner| Self {
-                inner,
-                id: AudioHost::Jack,
-            })
-            .map_err(|e| Error::HostUnavailable {
-                host: AudioHost::Jack,
-                reason: e.to_string(),
-            })
-    }
-
-    #[cfg(not(all(
-        feature = "jack",
-        any(
-            target_os = "linux",
-            target_os = "dragonfly",
-            target_os = "freebsd",
-            target_os = "netbsd"
-        )
-    )))]
-    fn open_jack() -> Result<Self> {
-        Err(Error::HostUnavailable {
-            host: AudioHost::Jack,
-            reason: "built without the `jack` feature, or not a JACK platform".into(),
-        })
     }
 
     /// Returns which host this is.

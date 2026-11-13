@@ -128,9 +128,8 @@ mod tests {
         assert!(std::panic::catch_unwind(|| MaxBlock::of(Samples(0))).is_err());
         assert_eq!(MaxBlock::MAX.get_u32(), u32::MAX);
         assert_eq!(MaxBlock::of(Samples(64)).get_u32(), 64);
-        #[cfg(target_pointer_width = "64")]
-        {
-            let over = Samples(u32::MAX as usize + 1);
+        // `usize` holds `u32::MAX + 1` only where it is wider than 32 bits.
+        if let Some(over) = (u32::MAX as usize).checked_add(1).map(Samples) {
             assert_eq!(MaxBlock::new(over), None);
             assert_eq!(MaxBlock::try_from(over), Err(InvalidMaxBlock(over)));
             assert!(std::panic::catch_unwind(|| MaxBlock::of(over)).is_err());

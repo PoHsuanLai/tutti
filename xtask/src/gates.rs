@@ -17,6 +17,7 @@ mod guards;
 mod hosting;
 mod layout;
 mod lex;
+mod platform_seam;
 mod pointers;
 mod prose;
 mod range_types;
@@ -101,6 +102,8 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// A platform cfg stands only on a `mod` declaration.
+    PlatformSeam,
 }
 
 impl Gate {
@@ -117,6 +120,7 @@ impl Gate {
             Gate::Session => "gate check-session".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
         }
     }
 
@@ -137,6 +141,7 @@ impl Gate {
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
         }
     }
 }

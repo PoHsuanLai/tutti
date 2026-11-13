@@ -136,7 +136,7 @@ pub fn spectral_features(transform: &StftMagnitude, rolloff: f32) -> Vec<Spectra
 mod tests {
     use super::*;
     use crate::{StftRequest, stft_magnitude};
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
     use tutti_dsp::FftScratch;
     use tutti_types::SampleRate;
     use tutti_types::Samples;
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(spectral_flatness(&[3.0; 100]), 1.0);
 
         let mut rng = StdRng::seed_from_u64(42);
-        let noise: Vec<f32> = (0..65_536).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let noise: Vec<f32> = (0..65_536).map(|_| rng.random_range(-1.0..1.0)).collect();
         let flat = spectral_features(&magnitudes_of(&noise), 0.85);
         let mean: f32 = flat.iter().map(|f| f.flatness).sum::<f32>() / flat.len() as f32;
         // The geometric mean of an exponential power distribution sits at
@@ -232,7 +232,10 @@ mod tests {
         let edge_bin = 1000usize; // 5859 Hz at 48 kHz / 16384
         let mut bins = vec![tutti_dsp::Complex32::default(); size / 2 + 1];
         for b in bins.iter_mut().take(edge_bin).skip(1) {
-            *b = tutti_dsp::Complex32::from_polar(1.0, rng.gen_range(0.0..core::f32::consts::TAU));
+            *b = tutti_dsp::Complex32::from_polar(
+                1.0,
+                rng.random_range(0.0..core::f32::consts::TAU),
+            );
         }
         let mut x = vec![0.0f32; size];
         fft.inverse(&bins, &mut x);
@@ -252,7 +255,7 @@ mod tests {
     #[test]
     fn flatness_is_level_independent_and_a_zero_bin_tonal_frame_is_near_zero() {
         let mut rng = StdRng::seed_from_u64(1);
-        let row: Vec<f32> = (0..1025).map(|_| rng.gen_range(0.2..1.0)).collect();
+        let row: Vec<f32> = (0..1025).map(|_| rng.random_range(0.2..1.0)).collect();
         let quiet: Vec<f32> = row.iter().map(|m| m * 1e-12).collect();
         let (loud, soft) = (spectral_flatness(&row), spectral_flatness(&quiet));
         assert!(loud > 0.5 && (loud - soft).abs() < 1e-4, "{loud} vs {soft}");

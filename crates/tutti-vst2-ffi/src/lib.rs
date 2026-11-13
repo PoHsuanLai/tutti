@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 // Forked from vst-rs 0.3.0. This is *owned* code, not a read-only vendor drop:
 // the fork already diverges deliberately (host-side audioMaster callbacks, plus
 // the host-safety fixes documented in `host.rs`), so its lints are chased like

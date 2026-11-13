@@ -999,6 +999,31 @@ mod tests {
         );
     }
 
+    /// **A version-31 server, whose `AudioProcessed` reply has no `status`, is
+    /// refused at the handshake** (version 32 added it): the reply would
+    /// otherwise decode a byte short and misread the block. Pins that the
+    /// block-status wire change bumped the version.
+    #[test]
+    fn a_server_from_before_the_block_status_is_refused() {
+        use crate::protocol::PROTOCOL_VERSION;
+
+        const BEFORE_STATUS: u32 = 31;
+        let err = handshake_against(
+            postcard::to_allocvec(&BridgeMessage::Ready {
+                protocol_version: BEFORE_STATUS,
+            })
+            .unwrap(),
+        );
+        assert!(
+            matches!(
+                err,
+                BridgeError::ProtocolMismatch { expected, got }
+                    if expected == PROTOCOL_VERSION && got == BEFORE_STATUS
+            ),
+            "expected a ProtocolMismatch naming 32 and 31, got: {err}"
+        );
+    }
+
     /// **A server from the bincode wire (protocol 26 and older) is refused at
     /// the handshake, and the error says to rebuild it.** Its `Ready` is a
     /// four-byte little-endian variant tag then the version as a four-byte

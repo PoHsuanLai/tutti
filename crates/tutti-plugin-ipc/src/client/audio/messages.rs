@@ -7,7 +7,7 @@ use crate::protocol::{
     NoteExpressionTextChanges, ParamEdit, ParamId, ParameterChanges, ParameterInfo, PluginTail,
     Preset, PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
-use tutti_plugin_types::{PluginFailure, ResyncKind, StateError};
+use tutti_plugin_types::{BlockStatus, PluginFailure, ResyncKind, StateError};
 use tutti_types::SampleRate;
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
@@ -161,6 +161,8 @@ pub(super) enum AudioResponse {
         /// establishes the audio's validity.
         seq: u64,
         midi_out: MidiEventVec,
+        /// What the plugin said of itself at the end of the block.
+        status: BlockStatus,
     },
     /// A block failed. `seq` is `Some` when the failure is attributable to one
     /// request (the server replied `Error` to it) and `None` for a

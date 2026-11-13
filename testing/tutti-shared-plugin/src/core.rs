@@ -27,7 +27,9 @@
 //! | 3 | Notes | `key + 1000 * c` while a note is held, else 0 |
 //! | 4 | Silent | writes nothing |
 //!
-//! Tail 8191 in every mode. A parameter event moves `level` or `aux` at its
+//! Tail 8191 in every mode, unless the state's tail byte (the fourth byte of the
+//! mode word, `mode | editor << 8 | notice << 16 | tail << 24`) selects the
+//! infinite marker (`TAIL_INFINITE`) or a finite 61 s (`TAIL_PAST_CAP`). A parameter event moves `level` or `aux` at its
 //! sample offset.
 //!
 //! # Editor
@@ -195,8 +197,21 @@ pub const GESTURE_VALUES: [f64; 2] = [0.375, 0.625];
 pub const NOTICES: u32 = 3;
 /// Latency of the Delay mode, in frames.
 pub const LATENCY: u32 = 137;
-/// Reported tail, in frames.
+/// Reported tail, in frames, by default ([`TAIL_DEFAULT`]).
 pub const TAIL: u32 = 8191;
+/// The tail behaviour (fourth byte of the mode word) that reports [`TAIL`].
+pub const TAIL_DEFAULT: u32 = 0;
+/// The tail behaviour that reports the formats' infinite marker, `u32::MAX`
+/// (VST3's `kInfiniteTail`; CLAP reads every count from `INT32_MAX` up as
+/// infinite). VST2 and AU cannot say it.
+pub const TAIL_INFINITE: u32 = 1;
+/// The tail behaviour that reports a finite tail of [`TAIL_PAST_CAP_FRAMES`].
+pub const TAIL_PAST_CAP: u32 = 2;
+/// Number of tail behaviours.
+pub const TAILS: u32 = 3;
+/// 61 s at 48 kHz: a finite tail past what the graph's `MAX_NODE_TAIL` (60 s)
+/// bounds.
+pub const TAIL_PAST_CAP_FRAMES: u32 = 48_000 * 61;
 /// Most channels on the main bus.
 pub const MAX_CHANNELS: usize = 8;
 /// Events kept per block.
@@ -353,6 +368,7 @@ pub struct Core {
     mode: AtomicU32,
     editor: AtomicU32,
     notice: AtomicU32,
+    tail: AtomicU32,
     gesture_due: AtomicU32,
     calls: AtomicU64,
     frames: AtomicU64,
@@ -403,6 +419,7 @@ impl Core {
             mode: z(),
             editor: z(),
             notice: z(),
+            tail: z(),
             gesture_due: z(),
             calls: AtomicU64::new(0),
             frames: AtomicU64::new(0),
@@ -422,6 +439,17 @@ impl Core {
     /// The editor behaviour a state load selected (`EDITOR_*`).
     pub fn editor(&self) -> u32 {
         self.editor.load(Relaxed)
+    }
+
+    /// The tail the plugin reports, in the formats' raw frames: [`TAIL`], the
+    /// infinite marker or [`TAIL_PAST_CAP_FRAMES`], as the state's tail byte
+    /// selected (`TAIL_*`).
+    pub fn tail_samples(&self) -> u32 {
+        match self.tail.load(Relaxed) {
+            TAIL_INFINITE => u32::MAX,
+            TAIL_PAST_CAP => TAIL_PAST_CAP_FRAMES,
+            _ => TAIL,
+        }
     }
 
     /// The notice behaviour a state load selected (`NOTICE_*`).
@@ -701,7 +729,8 @@ impl Core {
         b.extend_from_slice(&MAGIC.to_le_bytes());
         let word = self.mode.load(Relaxed)
             | self.editor.load(Relaxed) << 8
-            | self.notice.load(Relaxed) << 16;
+            | self.notice.load(Relaxed) << 16
+            | self.tail.load(Relaxed) << 24;
         b.extend_from_slice(&word.to_le_bytes());
         b.extend_from_slice(&self.level.load(Relaxed).to_le_bytes());
         b.extend_from_slice(&self.aux.load(Relaxed).to_le_bytes());
@@ -761,11 +790,17 @@ impl Core {
         if word(0) != MAGIC {
             return Err(BadState);
         }
-        let (mode, editor, notice) = (word(4) & 0xFF, (word(4) >> 8) & 0xFF, word(4) >> 16);
+        let (mode, editor, notice, tail) = (
+            word(4) & 0xFF,
+            (word(4) >> 8) & 0xFF,
+            (word(4) >> 16) & 0xFF,
+            word(4) >> 24,
+        );
         let (level, aux) = (float(8), float(16));
         if mode >= MODES
             || editor >= EDITORS
             || notice >= NOTICES
+            || tail >= TAILS
             || !level.is_finite()
             || !aux.is_finite()
         {
@@ -774,6 +809,7 @@ impl Core {
         self.mode.store(mode, Relaxed);
         self.editor.store(editor, Relaxed);
         self.notice.store(notice, Relaxed);
+        self.tail.store(tail, Relaxed);
         self.gesture_due
             .store(u32::from(notice == NOTICE_GESTURE_ON_LOAD), Relaxed);
         self.set_param(LEVEL, level);
@@ -898,5 +934,28 @@ mod tests {
         }
         core.prepare(&mut dsp, 48_000.0, 4);
         assert_eq!(overflow(&core), 0);
+    }
+
+    /// **The tail byte selects what the plugin reports, round-trips through the
+    /// state, and is refused out of range**: the default 8191, the infinite
+    /// marker, a finite tail past the graph's cap.
+    #[test]
+    fn the_tail_byte_selects_the_reported_tail() {
+        let core = Core::new();
+        assert_eq!(core.tail_samples(), TAIL);
+        for (byte, want) in [
+            (TAIL_INFINITE, u32::MAX),
+            (TAIL_PAST_CAP, TAIL_PAST_CAP_FRAMES),
+            (TAIL_DEFAULT, TAIL),
+        ] {
+            let mut blob = core.save();
+            blob[4..8].copy_from_slice(&(byte << 24).to_le_bytes());
+            core.load(&blob).expect("loads");
+            assert_eq!(core.tail_samples(), want, "byte {byte}");
+            assert_eq!(&core.save()[4..8], &(byte << 24).to_le_bytes());
+        }
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&(TAILS << 24).to_le_bytes());
+        assert!(core.load(&blob).is_err(), "out of range");
     }
 }

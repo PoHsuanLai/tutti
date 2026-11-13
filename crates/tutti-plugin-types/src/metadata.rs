@@ -137,6 +137,8 @@ pub struct Layout {
     pub outputs: PluginBuses,
 }
 
+use tutti_graph::MAX_NODE_TAIL;
+
 /// How long a plugin keeps producing audio after its input goes silent.
 ///
 /// An alias of the engine-wide [`Tail`](tutti_types::Tail), so a hosted
@@ -144,6 +146,81 @@ pub struct Layout {
 /// (AU's seconds, the `u32::MAX` sentinel CLAP and VST3 share) is documented on
 /// the constructor that performs it.
 pub use tutti_types::Tail as PluginTail;
+
+/// What a probe measured of a plugin (doc 023 section 6): the figures a
+/// plugin's own claim is checked against. **Empty until the probe exists**
+/// (doc 023 step 3): nothing produces one yet, so every field is `None` and a
+/// [`Processing`] holding one behaves as its claim alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Measured {
+    /// The last frame above the probe's floor after an impulse, counted from
+    /// the impulse: what the plugin was measured to keep sounding.
+    pub tail: Option<Samples>,
+    /// The first frame above the floor: the processing latency measured.
+    pub latency: Option<Samples>,
+}
+
+/// How a plugin processes: the tail it claims, and what a probe measured of
+/// it ([`Measured`]). The one place the tail ceiling the graph parks a plugin
+/// node on is decided ([`ceiling`](Self::ceiling)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Processing {
+    tail: PluginTail,
+    measured: Option<Measured>,
+}
+
+impl Processing {
+    /// A plugin that claims `tail` and has not been measured.
+    pub const fn new(tail: PluginTail) -> Self {
+        Self {
+            tail,
+            measured: None,
+        }
+    }
+
+    /// This claim with a probe's measurement beside it.
+    #[must_use]
+    pub const fn with_measured(mut self, measured: Measured) -> Self {
+        self.measured = Some(measured);
+        self
+    }
+
+    /// The tail the plugin claims, as it reported it.
+    pub const fn claim(&self) -> PluginTail {
+        self.tail
+    }
+
+    /// What was measured, if anything was.
+    pub const fn measured(&self) -> Option<&Measured> {
+        self.measured.as_ref()
+    }
+
+    /// The ceiling `Shape::with_tail` gets. **A measurement raises a finite
+    /// claim and never lowers or invents one**: `None`, `Unknown` and
+    /// `Unbounded` stand whatever was measured (one impulse at default
+    /// settings proves nothing about another patch), and a finite claim is
+    /// never cut below what the plugin said.
+    ///
+    /// **A finite figure past [`MAX_NODE_TAIL`] is `Unbounded`**, never that
+    /// figure clamped: the graph bounds a node's finite tail there (it sizes a
+    /// bounce's file from it), and a ceiling cut to 60 s would end a two-minute
+    /// reverb early and park its node while it still rings. `Unbounded` claims
+    /// nothing false: nothing parks on it and an export runs to its own silence
+    /// or range rule.
+    pub fn ceiling(&self) -> PluginTail {
+        let raised = match (self.tail, self.measured.and_then(|m| m.tail)) {
+            (PluginTail::Finite(claimed), Some(measured)) if measured > claimed => {
+                PluginTail::Finite(measured)
+            }
+            (tail, _) => tail,
+        };
+        match raised {
+            PluginTail::Finite(frames) if frames > MAX_NODE_TAIL => PluginTail::Unbounded,
+            other => other,
+        }
+    }
+}
 
 /// The wiring data a plugin reports when it is instantiated.
 ///
@@ -409,5 +486,76 @@ mod tests {
             let bytes = postcard::to_allocvec(&tail).unwrap();
             assert_eq!(postcard::from_bytes::<PluginTail>(&bytes).unwrap(), tail);
         }
+    }
+
+    fn measured(tail: usize) -> Measured {
+        Measured {
+            tail: Some(Samples(tail)),
+            latency: None,
+        }
+    }
+
+    /// **A measured tail above a finite claim raises the ceiling to it**: a
+    /// plugin that under-reports is not parked before it stops ringing.
+    #[test]
+    fn a_longer_measurement_raises_a_finite_claim() {
+        let p = Processing::new(PluginTail::Finite(Samples(100))).with_measured(measured(250));
+        assert_eq!(p.ceiling(), PluginTail::Finite(Samples(250)));
+    }
+
+    /// **A shorter measurement never lowers the claim**, and an equal one
+    /// leaves it: the ceiling is the plugin's word at least.
+    #[test]
+    fn a_shorter_measurement_does_not_lower_the_claim() {
+        for m in [40, 100] {
+            let p = Processing::new(PluginTail::Finite(Samples(100))).with_measured(measured(m));
+            assert_eq!(
+                p.ceiling(),
+                PluginTail::Finite(Samples(100)),
+                "measured {m}"
+            );
+        }
+    }
+
+    /// **`None`, `Unknown` and `Unbounded` stand whatever was measured**: a
+    /// measurement invents no tail for a plugin that claims none, and bounds
+    /// none that is unbounded or unasked.
+    #[test]
+    fn a_measurement_does_not_invent_or_bound_a_tail() {
+        for claim in [PluginTail::None, PluginTail::Unknown, PluginTail::Unbounded] {
+            let p = Processing::new(claim).with_measured(measured(250));
+            assert_eq!(p.ceiling(), claim);
+        }
+    }
+
+    /// Unmeasured, the ceiling is the claim: what every plugin is until the
+    /// probe (doc 023 step 3) has a producer.
+    #[test]
+    fn an_unmeasured_plugin_is_its_claim() {
+        for claim in [
+            PluginTail::None,
+            PluginTail::Unknown,
+            PluginTail::Unbounded,
+            PluginTail::Finite(Samples(7)),
+        ] {
+            assert_eq!(Processing::new(claim).ceiling(), claim);
+            let empty = Processing::new(claim).with_measured(Measured::default());
+            assert_eq!(empty.ceiling(), claim);
+        }
+    }
+
+    /// **A finite tail past the graph's bound is `Unbounded`, not clamped**: a
+    /// clamp would declare a ceiling shorter than the plugin rings; the bound
+    /// itself still fits.
+    #[test]
+    fn a_finite_tail_past_the_graphs_bound_is_unbounded() {
+        let at = PluginTail::Finite(MAX_NODE_TAIL);
+        assert_eq!(Processing::new(at).ceiling(), at);
+        let past = PluginTail::Finite(Samples(MAX_NODE_TAIL.get() + 1));
+        assert_eq!(Processing::new(past).ceiling(), PluginTail::Unbounded);
+        // A measurement that raises a claim past the bound goes the same way.
+        let raised = Processing::new(PluginTail::Finite(Samples(10)))
+            .with_measured(measured(MAX_NODE_TAIL.get() + 1));
+        assert_eq!(raised.ceiling(), PluginTail::Unbounded);
     }
 }

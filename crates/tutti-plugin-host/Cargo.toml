@@ -35,6 +35,9 @@ parking_lot = "0.12"
 tracing = "0.1"
 
 [dev-dependencies]
+# `fake`: the plugin that implements `Loaded` with no format behind it, which
+# the block-status tests drive through `client_over`.
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["test-support"] }
 # The in-process node's tests and the integration suites load the reference
 # VST2 plugin through the format host: the first `InProcess` format, and the one
 # whose test plugin the workspace test run always builds.

@@ -65,7 +65,7 @@ What is typed, what is a string, and what stops at a format host.
 | Capability flags | One `Features` bitset plus a `probed` mask (`FeatureReport`); a clear bit with a clear `probed` bit means "not asked" | `tutti-plugin-types` `features.rs`, `LoadedPlugin` |
 | Parameter unit | `ParameterInfo.unit: String` stays as the display text (VST3 the `units` string, VST2 the label, AU its own `ParameterUnit` print with 9 of the 27 codes decoded, CLAP `""`), and `ParameterInfo.measures: Option<ParamUnit>` types it where the format declared it exactly and the range fits (step 1, built) | `tutti-plugin-types` `param_unit.rs`, `tutti-vst3-host` `loaded/parameters.rs`, `tutti-vst2-host` `parameters.rs`, `tutti-clap-host` `instance/params.rs`, `tutti-au-host` `unit_code.rs` |
 | Parameter kind | `ParameterInfo.role: Option<UnitParam>`: `Bypass` from the CLAP and VST3 flag, `Wet` from VST3's `DryWetMix`, `Pan` from AU's pan code; never from a name (step 1, built) | same |
-| Tail | `PluginTail` (an alias of `tutti_types::Tail`) stored in `PluginControls` and handed to `Shape::with_tail` in `declared_shape`. The figure is the **plugin's claim**, and the executor parks the node on it; nothing measures it, and nothing calls `Io::report_tail` | `tutti-plugin` `host/node/graph_node.rs` |
+| Tail | `PluginTail` (an alias of `tutti_types::Tail`) stored in `PluginControls`, passed through `Processing::ceiling` and handed to `Shape::with_tail` by the node's `shape`. The figure is the **plugin's claim** (nothing measures it until step 3), and a CLAP plugin's *sleep* narrows it live: the node reports `Tail::None` and is `Status::Idle`; a tail change re-declares the ceiling through `Editor::set_tail` (step 2, built) | `tutti-plugin-types` `metadata.rs`, `tutti-plugin-host` `node/graph.rs` |
 | Latency | `LoadedPlugin.latency_samples`; the node declares it plus the IPC chunk. Also a claim, unmeasured | same |
 | Voices | `VoiceInfo { voice_count, voice_capacity, supports_overlapping_notes }` in `tutti-clap-host`; no other format has a counterpart; `tutti-voicing` is not involved | `tutti-clap-host` `types.rs` |
 | Note expression | `NoteExpressionType` (volume, pan, tuning, vibrato, brightness, pressure, expression, custom) and the per-block value list; the *description* of an expression (range, bipolar, one-shot) is read by `tutti-vst3-host` and does not cross | `tutti-plugin-types` `note_expression.rs` |
@@ -160,7 +160,7 @@ Header citations are by file name.
 | C5 | factory draft: plugin-invalidation | the plugin tells the host its search paths or files changed | Host-only: a `PluginDb` rescan trigger; no call site | no |
 | C6 | factory draft: plugin-state-converter | converts a saved state from another format or id into this plugin's | Gap G16: `IdentityAlias` (with VST3 compat) | no |
 | C7 | lifecycle: init, activate(min, max frames, rate), start/stop processing, reset | when the plugin is allowed to allocate and the block bounds | Covered: `Loaded` typestate, `Prepare`, `MaxBlock`, `Node::reset` (the min frame count has no use) | types |
-| C8 | process status: continue, continue-if-not-quiet, tail, sleep, error | what the plugin tells the host after each block, including that it is asleep | Partial: `Status::Idle` and `Status::Silent` are the matching claims; the host reads `is_sleeping` and `is_tailing` and never turns them into a `Status` (§5.3) | host |
+| C8 | process status: continue, continue-if-not-quiet, tail, sleep, error | what the plugin tells the host after each block, including that it is asleep | Covered: `ProcessOutput::status` (`BlockStatus`), the node turns *sleep* into `report_tail(Tail::None)` and `Status::Idle` (step 2, built); *error* is the failed block as before | host |
 | C9 | audio buffers: constant mask, steady time | which channels are one value; a monotonic counter | Covered: `ConstantMask`, `SilenceMask`; steady time has no reader | host |
 | C10 | `clap.params`: info, value, text conversion | id, name, module path, min, max, default, value-to-text and text-to-value | Covered: `ParameterInfo`, `ParamRange`; text conversion is `host` only | types |
 | C11 | params flags: stepped, periodic, hidden, readonly, bypass, automatable | what the host may do | Covered: `ParamSteps`, `ParamFlags` (`WRAP`, `HIDDEN`, `READ_ONLY`, `BYPASS`, `AUTOMATABLE`) | types |
@@ -189,7 +189,7 @@ Header citations are by file name.
 | C34 | `clap.surround` | which speaker each channel feeds | Covered: `ChannelTopology`, `Fold` | types |
 | C35 | `clap.ambisonic` | ordering (FuMa, ACN) and normalization (MaxN, SN3D, N3D, SN2D, N2D) | Gap G11: `Ambisonic` | host |
 | C36 | `clap.latency` | processing latency, and a "changed" callback | Covered: `Shape::with_latency`, `Latency`, `Effect` re-read | types |
-| C37 | `clap.tail` | ring-out in samples (u32 max is infinite), and a "changed" callback | Partial: `PluginTail`, in `Shape::tail`; never narrowed live, never checked (§5.3, §6) | types |
+| C37 | `clap.tail` | ring-out in samples (u32 max is infinite), and a "changed" callback | Partial: `PluginTail`, in `Shape::tail` through `Processing::ceiling`; narrowed live by *sleep* and re-declared by the changed callback through `Editor::set_tail` (step 2, built); never checked until the probe (§6) | types |
 | C38 | `clap.render`: realtime or offline; hard-realtime requirement | quality mode, and "do not run me off the audio thread" | Partial: `RenderMode`; the hard-realtime flag has no home (§5.6) | types |
 | C39 | `clap.state` | save and load a blob | Covered: the required state save and restore (`StateError`) | types |
 | C40 | `clap.state-context` | the blob is for a preset, a duplicate or a project | Partial: `StateContext` in `tutti-clap-host`; the other formats cannot say | host |
@@ -690,6 +690,92 @@ impl Processing {
 node in the test process. A hosted plugin needs the probe (section 6), which runs
 the same experiment out of process.
 
+**As built, step 2 (the tail into the graph).**
+
+- **Types** are `tutti-plugin-types`'s, in `metadata.rs` beside `PluginTail`
+  (`Capabilities` is step 5): `Measured { tail, latency }` (both `Option<Samples>`,
+  `Default`, empty: nothing produces one until step 3) and `Processing`
+  (`new(claim)`, `with_measured`, `claim`, `measured`, `ceiling`). `ceiling` is as
+  sketched above: a measurement raises a finite claim and never lowers or invents
+  one. The plugin node's `shape` hands `Processing::new(tail).ceiling()` to
+  `Shape::with_tail`, and the session's plugin phase hands the same figure to
+  `Editor::set_tail`.
+- **The per-block status** is `BlockStatus { Continue, Tail, Sleep }`
+  (`tutti-plugin-types`, `process.rs`), carried by `ProcessOutput::{set_status,
+  status}` and reset by `clear`, so it reaches the node without changing
+  `Processor::process`. CLAP's `process_shared` sets it from the status it
+  stored (*continue if not quiet* is `Continue`); VST2, VST3 and AU never set
+  it. The node (`slept_status`, `node/graph.rs`) turns a block that slept into
+  `io.report_tail(Tail::None)` and `Status::Idle`; `Tail` and `Continue` report
+  nothing (a call that reports nothing restores the ceiling, which is what
+  reporting it would do, and reading `Processing::ceiling` on the audio thread
+  would take the controls' lock).
+- **A plugin that sleeps over sound is not believed**: the node idles only when
+  the plugin's output for the block is exactly silent and it emitted no MIDI
+  (the executor writes silence for a parked node, so a wrong *sleep* would cut
+  audio). A node with an event input (every instrument) is parked only on its
+  own `Idle`, and the executor calls it again the moment any event, scheduled
+  command or non-silent input arrives, at that block, so a note reaches a woken
+  plugin on its frame (`tests/block_status.rs`,
+  `a_parked_plugin_is_woken_by_a_note_on_its_frame`).
+- **Served.** `AudioProcessed` carries `status: BlockStatus` after `midi_out`
+  (`PROTOCOL_VERSION` 31 to **32**, a server of version 31 is refused at the
+  handshake). The server reports *sleep* only over a block whose output is
+  exactly silent and has no MIDI-out. The batcher hands the host the status of
+  the chunk it collects (`Chunks::status`), from block `seq`'s own reply only:
+  a late reply is the next collect's "earlier block" and its status is dropped,
+  so a status that has not arrived is `Continue` and the node errs long.
+  **The pipelined path applies a sleep only to a piece that gave the plugin
+  nothing.** The status is about the chunk collected at the piece's start, whose
+  input is a chunk behind; the piece's own input and events are in the chunk it
+  begins, which is not shipped yet, so idling the node would park that chunk and
+  a note with it. `IpcProcessor` sets *sleep* on `ProcessOutput` only if the
+  piece carries no MIDI, parameter change, note expression, sequencer context
+  or non-silent input frame, and the node idles a block only if every piece of
+  it did. Only the block that collects a chunk can be idle: the blocks between
+  report nothing, and the executor parks the node on the next quiet one.
+- **A changed tail** is already carried to `PluginControls` (CLAP's
+  `tail.changed`, through `Notice::TailChanged`, over the wire as
+  `BridgeMessage::TailChanged`); the session's plugin phase now compares the
+  controls' ceiling with the graph's, as it does the latency
+  (`Graph::refresh_node_tail`, `Editor::set_tail`). AU's `TailTime` property
+  listener raises the same `Request::TailChanged` and takes the same route; VST3
+  (its restart flags have no tail flag; the host reads `getTailSamples` at load)
+  and VST2 (no changed callback) have no source of a tail change and are left as
+  they were. **A finite figure past
+  `MAX_NODE_TAIL` is `Unbounded`, never clamped** (`Processing::ceiling`, which both
+  the node's `shape` and the session go through): a clamp would declare a ceiling
+  shorter than the plugin rings, ending a bounce of a two-minute reverb at 60 s and
+  parking its node early, where `Unbounded` claims nothing false and is never
+  refused. CLAP's infinite marker (`INT32_MAX` and above), VST3's `kInfiniteTail`
+  and AU's `+inf` `TailTime` already map to `Unbounded` in `PluginTail::from_*`;
+  the shared plugin's tail byte tests the two format hosts through the contract
+  (`tail_markers_reported`). `MAX_NODE_TAIL` stays: it bounds the length a bounce is
+  sized from (`graph_tail`), not any arithmetic (sums saturate).
+- **`Editor::set_tail(key, Tail)`** (`tutti-graph`) mirrors `set_latency`: the
+  same guards (`collect`, poisoned, refused while re-preparing, `NoSuchNode`),
+  writes the spec and the shape, and `touch`es. It takes the shape's `Tail`, so
+  `Unbounded` can be declared; a finite tail past `MAX_NODE_TAIL` is refused
+  (`CommitError::TailTooLong`), not clamped. It does **not** cut a crossfade (the
+  ceiling feeds no PDC). The ceiling moves at a commit, as a latency does: on a
+  shrink while the old ring-out still sounds, the plan, an export and the
+  silence skip read the new ceiling only from the next commit.
+- **Tests.** `Processing::ceiling` (the four cases, in `metadata.rs`);
+  `tests/block_status.rs` in `tutti-plugin-host` (a fake that rings out and says
+  what CLAP would, through `client_over`: sleep is `Tail::None` and `Idle`,
+  `assert_honest_tail` passes for the node, a plugin asleep over sound is not
+  idled, a parked plugin is woken by a note at a block's first frame and inside a
+  block); CLAP's status to `BlockStatus` through the real `render` over the
+  reference plugin; the wire (the pinned `AudioProcessed` bytes, the batcher's
+  pairing of a status with its chunk, the server's sleep only over silence, the
+  piece rule); `tests/topology/set_tail.rs`. Mutations checked once: reporting
+  `Tail::None` on a block that sounds fails `assert_honest_tail` and the
+  report test; a node that parks itself on *sleep* never hears the note; dropping
+  the silence check idles a plugin over sound; dropping the server's silence
+  check sends *sleep* over sound; a `set_tail` that cuts a fade fails its test.
+  The status of a reply that arrives after its chunk was collected is not
+  covered by an end-to-end test with a real server.
+
 ### 5.4 Note dialect
 
 ```rust
@@ -996,7 +1082,7 @@ dependency: step 3 needs only 021's step 4c (the probe binary), step 2 needs
 | # | Step | Needs | Test and mutation |
 |---|---|---|---|
 | 1 | **Parameter unit and kind.** `ParamUnit`, `ParameterInfo::measures` and `role` (`serde(default)`), the pure mapping per format host, the plausibility check, `typed::<U>`; the AU host decodes all 27 codes | nothing | every code, every accepted string, every near-miss (`kHz`, `Db`, empty), a range that does not fit. Mutation: break one table row, its test fails |
-| 2 | **The tail into the graph.** `Processing::ceiling`, `Measured` (empty until step 3), CLAP's process status to `report_tail` and `Status::Idle` in the plugin node, a tail setter on the editor if none exists | PR #359 | a fake CLAP processor that sleeps. Mutation: report `Sleep` while sounding, the honest-tail contract fails |
+| 2 | **The tail into the graph (built).** `Processing::ceiling`, `Measured` (empty until step 3), CLAP's process status to `report_tail` and `Status::Idle` in the plugin node, a tail setter on the editor if none exists | PR #359 | a fake CLAP processor that sleeps. Mutation: report `Sleep` while sounding, the honest-tail contract fails |
 | 3 | **Tail and latency probes.** `--measure` in `tutti-plugin-probe`, `Measured` in `PluginDescriptor`, the verdict; the shared test plugin's mode word sets its tail | 021 step 4c | the plugin reports N and rings M: `Honest` when N = M, `TailLonger` when N < M; a plugin that adds noise above the floor with silence in is `NeverSettles`, not `TailLonger`. Mutations: report M - 1, the verdict changes; skip the silence-in render, the noisy plugin reads `TailLonger` |
 | 4 | **The voice description.** `DeclaredVoices`, `rules`, the CLAP fill, `NoteTracker` over `OneVoice`, the note-end event, hanging-note cleanup on stop and seek | step 2 | the tracker is tested against `tutti-voicing`'s own spec tests, no other implementation; a hanging-note case per format. Mutation: drop the note-end handler, a voice stays |
 | 5 | **`Capabilities` and `Reported`.** Assemble it in `Loaded`, carry it with `LoadedPlugin`, replace it on a restart notice; `Dialects` | step 4 | a re-read test through the 016 `step` core. Mutation: clear the flag-to-field mapping, the test fails |

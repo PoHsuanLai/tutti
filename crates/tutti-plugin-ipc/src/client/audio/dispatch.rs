@@ -266,9 +266,18 @@ impl Owed {
             let error = matches!(msg, BridgeMessage::Error { .. });
             match late {
                 Late::Block => {
-                    if let BridgeMessage::AudioProcessed { seq, midi_out, .. } = msg {
-                        channels
-                            .push_audio_response(AudioResponse::AudioProcessed { seq, midi_out });
+                    if let BridgeMessage::AudioProcessed {
+                        seq,
+                        midi_out,
+                        status,
+                        ..
+                    } = msg
+                    {
+                        channels.push_audio_response(AudioResponse::AudioProcessed {
+                            seq,
+                            midi_out,
+                            status,
+                        });
                         channels.note_settled(1);
                         self.late.pop_front();
                         return None;
@@ -475,10 +484,16 @@ pub(super) fn handle(
                         // there is settled by the slab's sequence numbers,
                         // which the server published before sending this; the
                         // echoed `seq` is for diagnostics and ordering.
-                        BridgeMessage::AudioProcessed { seq, midi_out, .. } => {
+                        BridgeMessage::AudioProcessed {
+                            seq,
+                            midi_out,
+                            status,
+                            ..
+                        } => {
                             channels.push_audio_response(AudioResponse::AudioProcessed {
                                 seq,
                                 midi_out,
+                                status,
                             });
                         }
                         // Attributable to this request: the server answered it
@@ -914,6 +929,7 @@ mod tests {
             latency_us: 0,
             seq,
             midi_out: Default::default(),
+            status: Default::default(),
         }
     }
 

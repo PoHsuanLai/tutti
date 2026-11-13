@@ -74,8 +74,9 @@ unsafe extern "C" fn latency_get(p: *const clap_plugin) -> u32 {
     // SAFETY, for this function's `unsafe` blocks: the host passes the plugin this file created (`plugin_data` is its `Inst`), valid until `destroy`.
     unsafe { inst(p) }.core.latency()
 }
-unsafe extern "C" fn tail_get(_p: *const clap_plugin) -> u32 {
-    core::TAIL
+unsafe extern "C" fn tail_get(p: *const clap_plugin) -> u32 {
+    // SAFETY: as `latency_get`.
+    unsafe { inst(p) }.core.tail_samples()
 }
 unsafe extern "C" fn params_count(_p: *const clap_plugin) -> u32 {
     core::PARAMS

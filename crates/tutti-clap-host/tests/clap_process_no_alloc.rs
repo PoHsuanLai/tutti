@@ -495,6 +495,46 @@ fn alternating_continue_sleep_does_not_allocate() {
     );
 }
 
+/// **The host turns the plugin's `clap_process_status` into the shared
+/// per-block status the graph node reads** (doc 023 step 2): *sleep* and
+/// *tail* as themselves, *continue* and *continue if not quiet* as
+/// `Continue` (neither narrows anything), checked through the real
+/// `Processor::process` path, not the raw status the tests above read.
+#[test]
+fn the_plugins_status_becomes_the_blocks_status() {
+    use tutti_plugin_types::{
+        AudioBuffer, AudioBufferMut, BlockStatus, ProcessContext, ProcessOutput,
+    };
+    let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    reset_probe();
+    let mut inst = load_probe();
+    let ctx = ProcessContext::new();
+    let (in_l, in_r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+    for (mode, want) in [
+        (StatusMode::Sleep, BlockStatus::Sleep),
+        (StatusMode::Tail, BlockStatus::Tail),
+        (StatusMode::ContinueIfNotQuiet, BlockStatus::Continue),
+        (StatusMode::Sleep, BlockStatus::Sleep),
+        (StatusMode::Continue, BlockStatus::Continue),
+    ] {
+        set_status_mode(mode);
+        let (mut out_l, mut out_r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+        let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
+        let ins: &[&[f32]] = &[&in_l[..], &in_r[..]];
+        let mut out = ProcessOutput::default();
+        let mut buffer = AudioBufferMut::F32(AudioBuffer {
+            inputs: ins,
+            outputs: outs,
+            num_samples: FRAMES,
+            sample_rate: SAMPLE_RATE,
+        });
+        inst.processor()
+            .render(&mut buffer, &ctx, &mut out)
+            .expect("render");
+        assert_eq!(out.status(), want, "{mode:?}");
+    }
+}
+
 /// TAIL and SLEEP must be reachable by a caller at all.
 ///
 /// Not a no-alloc test — a correctness one. `last_process_status` was written

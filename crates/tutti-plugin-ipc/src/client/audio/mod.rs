@@ -26,7 +26,7 @@ use crate::protocol::{
     ScaleChanges, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
-use tutti_plugin_types::{BridgeResult, Delivered, PluginFailure, StateError};
+use tutti_plugin_types::{BlockStatus, BridgeResult, Delivered, PluginFailure, StateError};
 use tutti_types::SampleRate;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
@@ -362,15 +362,28 @@ impl AudioBridge {
     /// still be sitting here, and leaving it would put the queue one behind
     /// forever. Lock-free; `midi_out` is inline and capped (a full one drops
     /// the rest).
-    pub fn take_replies(&self, seq: u64, midi_out: &mut MidiEventVec) -> bool {
+    ///
+    /// `status` is set to what the plugin said of itself at the end of block
+    /// `seq` when its reply was among them, and left as it was otherwise: an
+    /// earlier block's status is about an earlier block, and is dropped.
+    pub fn take_replies(
+        &self,
+        seq: u64,
+        midi_out: &mut MidiEventVec,
+        status: &mut BlockStatus,
+    ) -> bool {
         let mut answered = false;
         while let Some(resp) = self.channels.pop_audio_response() {
             match resp {
                 AudioResponse::AudioProcessed {
                     seq: s,
                     midi_out: events,
+                    status: said,
                 } => {
                     answered |= s == seq;
+                    if s == seq {
+                        *status = said;
+                    }
                     for mut e in events {
                         if s != seq {
                             e.offset = 0;

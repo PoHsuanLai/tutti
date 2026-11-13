@@ -15,10 +15,10 @@ use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_plugin_ipc::SlabWriter;
 use tutti_plugin_types::{
-    AudioBufferMut, BridgeResult, ChordChanges, ExpressiveContext, Features, MAX_BLOCK_CHANNELS,
-    MIDI_STACK_CAPACITY, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParameterChanges, ProcessContext, ProcessOutput, SampleFormat,
-    Samples, ScaleChanges, TransportChange, TransportInfo, WireMidi,
+    AudioBufferMut, BlockStatus, BridgeResult, ChordChanges, ExpressiveContext, Features,
+    MAX_BLOCK_CHANNELS, MIDI_STACK_CAPACITY, MidiEventVec, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges, ProcessContext,
+    ProcessOutput, SampleFormat, Samples, ScaleChanges, TransportChange, TransportInfo, WireMidi,
 };
 use tutti_ump::Ump;
 
@@ -215,6 +215,9 @@ pub(crate) struct AudioPipeline {
     /// Read back through [`midi_out`](Self::midi_out) after each
     /// [`process`](Self::process); it is cleared at the top of the next one.
     plugin_output: ProcessOutput,
+    /// What the plugin said of itself at the end of the last block, as the
+    /// reply carries it ([`status`](Self::status)).
+    status: BlockStatus,
     /// The point room `plugin_output`'s parameter queues were reserved with
     /// ([`reserve_params`](Self::reserve_params)).
     param_room: usize,
@@ -230,6 +233,7 @@ impl AudioPipeline {
         Self {
             buffers: AudioBuffers::new(format),
             plugin_output: ProcessOutput::default(),
+            status: BlockStatus::Continue,
             param_room: 0,
             failed_blocks: 0,
         }
@@ -248,6 +252,12 @@ impl AudioPipeline {
     /// `process`, which clears it.
     pub(crate) fn midi_out(&self) -> &MidiEventVec {
         &self.plugin_output.midi_events
+    }
+
+    /// What the plugin said of itself at the end of the most recent
+    /// [`process`](Self::process): a sleep only over a silent block.
+    pub(crate) fn status(&self) -> BlockStatus {
+        self.status
     }
 
     /// The MIDI events the most recent [`process`](Self::process) dropped
@@ -429,6 +439,10 @@ impl AudioPipeline {
             // mutably while also handing `plugin_output` to the plugin. Cleared
             // once, here: `process` fills it and every early return below leaves it
             // empty rather than carrying the previous block's events.
+            // Whether every output sample of the block is exactly zero: a
+            // plugin's *sleep* is believed only over silence.
+            let mut silent = true;
+            self.status = BlockStatus::Continue;
             let Self {
                 buffers,
                 plugin_output,
@@ -476,6 +490,7 @@ impl AudioPipeline {
                                 if !s.is_finite() {
                                     *s = 0.0;
                                 }
+                                silent &= *s == 0.0;
                             }
                             if shm.write::<f32>(seq, ch, &chan[..num_samples]).is_err() {
                                 all_channels_written = false;
@@ -512,6 +527,7 @@ impl AudioPipeline {
                                 if !s.is_finite() {
                                     *s = 0.0;
                                 }
+                                silent &= *s == 0.0;
                             }
                             if shm.write::<f64>(seq, ch, &chan[..num_samples]).is_err() {
                                 all_channels_written = false;
@@ -520,6 +536,23 @@ impl AudioPipeline {
                     }
                 }
             }
+
+            // What the plugin said of itself at the end of the block, for the
+            // reply (doc 023 section 5.3). A sleep is sent only over a silent
+            // block with no MIDI-out, because the host parks its node on it
+            // and the executor writes silence for a parked node. A block the
+            // plugin failed said nothing (`plugin_output` was cleared).
+            self.status = match self.plugin_output.status() {
+                BlockStatus::Sleep
+                    if silent
+                        && self.plugin_output.midi_events.is_empty()
+                        && all_channels_written =>
+                {
+                    BlockStatus::Sleep
+                }
+                BlockStatus::Tail => BlockStatus::Tail,
+                _ => BlockStatus::Continue,
+            };
 
             // Publish exactly once, after every output channel is in place. Until
             // this store the host's sequence check fails and it emits silence — so a
@@ -748,6 +781,82 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    /// A stand-in plugin that fills its output with `fill` and says `status`.
+    struct SaysPlugin {
+        meta: LoadedPlugin,
+        fill: f32,
+        status: BlockStatus,
+    }
+
+    impl Render for SaysPlugin {
+        fn features(&self) -> Features {
+            self.meta.features
+        }
+
+        fn render(
+            &mut self,
+            buffer: AudioBufferMut<'_, '_>,
+            _ctx: &ProcessContext,
+            out: &mut ProcessOutput,
+        ) -> PluginResult<()> {
+            if let AudioBufferMut::F32(b) = buffer {
+                for chan in b.outputs.iter_mut() {
+                    chan.fill(self.fill);
+                }
+            }
+            out.set_status(self.status);
+            Ok(())
+        }
+    }
+
+    /// The status the pipeline reports for a plugin that fills `fill` and says
+    /// `status`.
+    fn reported(fill: f32, status: BlockStatus) -> BlockStatus {
+        const N: usize = 64;
+        let layout = test_layout(
+            N,
+            SampleFormat::Float32,
+            &[ChannelLayout::STEREO],
+            &[ChannelLayout::STEREO],
+        );
+        let name = format!("tutti_status_test_{}_{status:?}", fill.to_bits());
+        let _guard =
+            AudioSlab::create(format!("{name}_{}", std::process::id()), layout.clone()).unwrap();
+        let mut shm = AudioSlab::open(format!("{name}_{}", std::process::id()), layout).unwrap();
+        let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
+        let mut plugin = SaysPlugin {
+            meta: meta(&[2], &[2]),
+            fill,
+            status,
+        };
+        let clock = Clock {
+            sample_rate: 48000.0,
+            format: SampleFormat::Float32,
+        };
+        let block = AudioBlock {
+            seq: 1,
+            num_samples: N,
+            midi: &[],
+            extras: None,
+        };
+        pipeline
+            .process(&mut plugin, &mut shm, &clock, block)
+            .unwrap();
+        pipeline.status()
+    }
+
+    /// **The pipeline reports the plugin's status, and believes a sleep only
+    /// over silence** (doc 023 step 2): the host parks its node on a sleep and
+    /// the executor writes silence for a parked node, so a plugin asleep over
+    /// sound is reported as continuing. A tail passes through.
+    #[test]
+    fn a_sleep_is_reported_only_over_silence() {
+        assert_eq!(reported(0.0, BlockStatus::Sleep), BlockStatus::Sleep);
+        assert_eq!(reported(0.5, BlockStatus::Sleep), BlockStatus::Continue);
+        assert_eq!(reported(0.5, BlockStatus::Tail), BlockStatus::Tail);
+        assert_eq!(reported(0.5, BlockStatus::Continue), BlockStatus::Continue);
     }
 
     /// A stand-in plugin that records the first sample of every input channel

@@ -66,7 +66,14 @@ pub(crate) mod wire;
 ///   with the shared `ParamEdit` (the id, the value, the gesture it falls in
 ///   and whether to record it), so the server forwards a plugin's edits, a
 ///   gesture's begin and end among them.
-pub const PROTOCOL_VERSION: u32 = 31;
+///
+/// - **Version 32** adds `status` to `AudioProcessed`: what the plugin said of
+///   itself at the end of the block (`BlockStatus`: CLAP's process status as
+///   *continue*, *tail* or *sleep*), so the node can report no tail and park
+///   when the plugin sleeps (doc 023 step 2). It is a field of every block's
+///   reply, so a version-31 server's replies read differently from the first
+///   byte after the MIDI.
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -604,6 +611,7 @@ mod tests {
             latency_us: 42,
             seq: 7,
             midi_out,
+            status: tutti_plugin_types::BlockStatus::Sleep,
         };
         let bytes = postcard::to_allocvec(&msg).unwrap();
         let back: BridgeMessage = postcard::from_bytes(&bytes).unwrap();
@@ -612,8 +620,10 @@ mod tests {
                 latency_us,
                 seq,
                 midi_out,
+                status,
             } => {
                 assert_eq!(latency_us, 42);
+                assert_eq!(status, tutti_plugin_types::BlockStatus::Sleep);
                 // The block-identity echo. Not load-bearing for audio
                 // validity — the slab's per-slot sequence answers that — but it
                 // must survive the wire trip for diagnostics to mean anything.
@@ -663,19 +673,21 @@ mod tests {
     /// **`AudioProcessed` encodes its MIDI-out as a sequence**: the variant
     /// index, `latency_us`, `seq`, then a length and each event as
     /// `offset` and four data words, each integer a postcard varint (seven
-    /// bits a byte, low group first). The bytes are
+    /// bits a byte, low group first), then the block's `status` (the
+    /// `BlockStatus` variant index: 2 is *sleep*). The bytes are
     /// written out, so a layout change fails here instead of as a desync
     /// between two binaries built apart.
     #[test]
     fn audio_processed_midi_out_has_pinned_bytes() {
         #[rustfmt::skip]
-        const BYTES: [u8; 25] = [
+        const BYTES: [u8; 26] = [
             2, // variant
             42, // latency_us
             7, // seq
             2, // two events
             5, 0xC0, 0xF8, 0xC0, 0x84, 0x02, 0, 0, 0, // offset 5, 0x2090_3C40, 0, 0, 0
             0x84, 0x86, 0x88, 0x08, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, // 0x0102_0304; 1, 2, 3, u32::MAX
+            2, // status: sleep
         ];
         let midi_out: MidiEventVec = [
             WireMidi {
@@ -693,6 +705,7 @@ mod tests {
             latency_us: 42,
             seq: 7,
             midi_out,
+            status: tutti_plugin_types::BlockStatus::Sleep,
         };
         assert_eq!(postcard::to_allocvec(&msg).unwrap(), BYTES);
         let back: BridgeMessage = postcard::from_bytes(&BYTES).unwrap();

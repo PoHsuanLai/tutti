@@ -50,7 +50,7 @@ public:
 		return (s == kSample32 || s == kSample64) ? kResultTrue : kResultFalse;
 	}
 	uint32 PLUGIN_API getLatencySamples () SMTG_OVERRIDE { return core.latency (); }
-	uint32 PLUGIN_API getTailSamples () SMTG_OVERRIDE { return shared::kTail; }
+	uint32 PLUGIN_API getTailSamples () SMTG_OVERRIDE { return core.tailSamples (); }
 	tresult PLUGIN_API setupProcessing (ProcessSetup& s) SMTG_OVERRIDE
 	{
 		core.prepare (s.sampleRate, size_t (s.maxSamplesPerBlock));

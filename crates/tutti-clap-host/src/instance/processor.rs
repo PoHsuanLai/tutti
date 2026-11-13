@@ -250,6 +250,16 @@ impl ClapProcessor {
         self.scratch.in_note_expressions = expressions;
         if result.is_ok() {
             self.report_edits();
+            // The plugin's own word on the block (doc 023 section 5.3). CLAP's
+            // *continue* and *continue if not quiet* say nothing the graph can
+            // use; *tail* and *sleep* are the two it narrows on.
+            out.set_status(if self.is_sleeping() {
+                tutti_plugin_types::BlockStatus::Sleep
+            } else if self.is_tailing() {
+                tutti_plugin_types::BlockStatus::Tail
+            } else {
+                tutti_plugin_types::BlockStatus::Continue
+            });
         }
         result
     }

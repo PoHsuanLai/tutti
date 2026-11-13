@@ -466,7 +466,7 @@ impl IAudioProcessorTrait for Plugin {
         kResultOk
     }
     unsafe fn getTailSamples(&self) -> u32 {
-        core::TAIL
+        self.core.tail_samples()
     }
 }
 

@@ -156,6 +156,14 @@ pub const NOTICE_ON_LOAD: u32 = 1;
 /// The notice behaviour that reports one gesture on `aux` per state load
 /// (`NOTICE_GESTURE_ON_LOAD`, third byte).
 pub const NOTICE_GESTURE_ON_LOAD: u32 = 2;
+/// The tail behaviour that reports the formats' infinite marker (`TAIL_INFINITE`,
+/// fourth byte).
+pub const TAIL_INFINITE: u32 = 1;
+/// The tail behaviour that reports a finite tail past what the graph bounds
+/// (`TAIL_PAST_CAP`, fourth byte).
+pub const TAIL_PAST_CAP: u32 = 2;
+/// What `TAIL_PAST_CAP` reports: 61 s at 48 kHz.
+pub const TAIL_PAST_CAP_FRAMES: Samples = Samples(48_000 * 61);
 
 /// One edit a host must read from a plugin, as the spec states it: the figures
 /// are written here, not taken from the host's own type.
@@ -233,6 +241,14 @@ pub struct Surface {
     pub edits: &'static [Edit],
     /// What the format's conversion answers for [`Param::Tone`].
     pub tone: Tone,
+    /// Whether the shell reads the state's tail byte (fourth byte of the mode
+    /// word): every shell of ours but the AU, which is not our plugin.
+    pub selects_tail: bool,
+    /// What the format reports when the plugin states its infinite marker
+    /// (`TAIL_INFINITE`): `Unbounded` where the format has one (CLAP's
+    /// `u32::MAX`, VST3's `kInfiniteTail`), nothing where the plugin cannot say
+    /// it (VST2's tail size is a count).
+    pub infinite_tail: Option<tutti_plugin_types::PluginTail>,
 }
 
 /// CLAP: no editor in the plugin, no `clap.render`, a callback request.
@@ -244,6 +260,8 @@ pub const CLAP: Surface = Surface {
     request: Some(tutti_plugin_types::Request::Callback),
     edits: &[],
     tone: TONE_LINEAR,
+    selects_tail: true,
+    infinite_tail: Some(tutti_plugin_types::PluginTail::Unbounded),
 };
 
 /// VST2: no editor in the plugin, a live render mode, an automate report.
@@ -255,6 +273,8 @@ pub const VST2: Surface = Surface {
     request: None,
     edits: &[Edit::Change(Param::Level, 0.5)],
     tone: TONE_NORMALIZED,
+    selects_tail: true,
+    infinite_tail: None,
 };
 
 /// VST3 from the Rust plugin: an editor once selected (where its X11 view can
@@ -268,6 +288,8 @@ pub const VST3: Surface = Surface {
     request: None,
     edits: &AUX_EDITED,
     tone: TONE_CURVED,
+    selects_tail: true,
+    infinite_tail: Some(tutti_plugin_types::PluginTail::Unbounded),
 };
 
 /// VST3 from the C++ plugin: no editor, an edit of `aux` to 0.75 on each state
@@ -280,6 +302,8 @@ pub const VST3_CPP: Surface = Surface {
     request: None,
     edits: &AUX_EDITED,
     tone: TONE_CURVED,
+    selects_tail: true,
+    infinite_tail: Some(tutti_plugin_types::PluginTail::Unbounded),
 };
 
 /// AU, from an Apple built-in unit (AUDelay): it has a Cocoa view; no plugin of
@@ -293,4 +317,6 @@ pub const AU: Surface = Surface {
     request: None,
     edits: &[],
     tone: TONE_NORMALIZED,
+    selects_tail: false,
+    infinite_tail: None,
 };

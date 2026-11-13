@@ -220,6 +220,11 @@ struct Shared {
     outputs: AtomicU32,
     requests: RequestWord,
     state: Mutex<Vec<u8>>,
+    /// Frames the fake sounds after each trigger, or `0` for a silent fake
+    /// (`FakePlugin::ring_out`).
+    ring: AtomicUsize,
+    /// Whether the fake says it is asleep over sound (`FakePlugin::sleep_over_sound`).
+    sleeps_over_sound: AtomicBool,
     /// Whether the fake has an editor (`FakePlugin::with_editor`).
     editor: AtomicBool,
     /// Whether the editor takes a new scale live (`FakePlugin::with_editor_scale`).
@@ -286,6 +291,8 @@ impl FakePlugin {
             outputs: AtomicU32::new(2),
             requests: RequestWord::new(),
             state: Mutex::new(Vec::new()),
+            ring: AtomicUsize::new(0),
+            sleeps_over_sound: AtomicBool::new(false),
             editor: AtomicBool::new(false),
             takes_scale: AtomicBool::new(false),
             resize_request: AtomicU64::new(0),
@@ -377,6 +384,21 @@ impl FakePlugin {
         self.0.tail.store(tail.0, Ordering::Relaxed);
     }
 
+    /// Makes the fake sound for `frames` after each trigger (a non-silent input
+    /// frame or a MIDI event), at 0.5 on every output channel from the
+    /// trigger's frame on, and say what CLAP's process status would: *sleep*
+    /// in a block that gave it nothing and sounded nothing, *continue*
+    /// otherwise. `0`, the default, is a silent fake that says nothing.
+    pub fn ring_out(&self, frames: usize) {
+        self.0.ring.store(frames, Ordering::Relaxed);
+    }
+
+    /// Makes the fake say *sleep* every block, sounding or not: a plugin
+    /// that lies about being asleep.
+    pub fn sleep_over_sound(&self, lie: bool) {
+        self.0.sleeps_over_sound.store(lie, Ordering::Relaxed);
+    }
+
     /// The output channel count the plugin reports from now on.
     pub fn set_outputs(&self, channels: u16) {
         self.0.outputs.store(u32::from(channels), Ordering::Relaxed);
@@ -425,6 +447,8 @@ pub struct FakeProcessor {
     shell: Arc<ActivationShell>,
     shared: Arc<Shared>,
     drain: EditDrain,
+    /// Frames of the voice still to sound (`FakePlugin::ring_out`).
+    sounding: usize,
 }
 
 /// The main-thread half of an active fake.
@@ -694,6 +718,7 @@ impl Loaded for FakeLoaded {
                 shell: shell.clone(),
                 shared: shared.clone(),
                 drain,
+                sounding: 0,
             },
             FakeController {
                 shell,
@@ -785,9 +810,41 @@ impl Processor for FakeProcessor {
                 log.push(Call::Edit(id, value));
             }
         });
+        let ring = self.shared.ring.load(Ordering::Relaxed);
         let frames = match &mut io.buffer {
             AudioBufferMut::F32(buffer) => {
                 buffer.clear_outputs();
+                if ring > 0 {
+                    // A voice: every trigger (a non-silent input frame, a MIDI
+                    // event at the frame) starts `ring` frames of 0.5.
+                    let mut triggered = false;
+                    for i in 0..buffer.num_samples {
+                        let hit = io
+                            .ctx
+                            .midi_events
+                            .iter()
+                            .any(|(at, _)| at.get() as usize == i)
+                            || buffer.inputs.iter().any(|c| c[i] != 0.0);
+                        if hit {
+                            self.sounding = ring;
+                            triggered = true;
+                        }
+                        if self.sounding > 0 {
+                            for out in buffer.outputs.iter_mut() {
+                                out[i] = 0.5;
+                            }
+                            self.sounding -= 1;
+                            triggered = true;
+                        }
+                    }
+                    io.out.set_status(
+                        if triggered && !self.shared.sleeps_over_sound.load(Ordering::Relaxed) {
+                            crate::BlockStatus::Continue
+                        } else {
+                            crate::BlockStatus::Sleep
+                        },
+                    );
+                }
                 buffer.num_samples
             }
             AudioBufferMut::F64(buffer) => {

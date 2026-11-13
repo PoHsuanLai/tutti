@@ -12,7 +12,8 @@ use tutti_plugin_ipc::{
     AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, SlabWriter, StagedState,
 };
 use tutti_plugin_types::{
-    BridgeResult, Load, MainThread, MidiEventVec, ParameterQueue, PluginError, SampleFormat,
+    BlockStatus, BridgeResult, Load, MainThread, MidiEventVec, ParameterQueue, PluginError,
+    SampleFormat,
 };
 
 /// A block's plugin MIDI-out for the wire. Already capped at
@@ -568,6 +569,7 @@ impl Session {
                 latency_us: 0,
                 seq,
                 midi_out: MidiEventVec::new(),
+                status: BlockStatus::Continue,
             }
             .into());
         }
@@ -595,6 +597,7 @@ impl Session {
                 latency_us: 0,
                 seq,
                 midi_out: MidiEventVec::new(),
+                status: BlockStatus::Continue,
             }
             .into());
         };
@@ -610,6 +613,7 @@ impl Session {
             // capacity with it and put the reallocation back on the audio
             // thread. See [`AudioOutput`](crate::audio_pipeline::AudioOutput).
             midi_out: encode_midi_out(self.pipeline.midi_out(), self.pipeline.midi_dropped()),
+            status: self.pipeline.status(),
         }
         .into())
     }

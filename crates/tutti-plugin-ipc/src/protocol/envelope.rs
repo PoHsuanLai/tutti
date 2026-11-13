@@ -17,7 +17,7 @@ use super::Samples;
 use super::process::ProcessAudioData;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
-use tutti_plugin_types::Load;
+use tutti_plugin_types::{BlockStatus, Load};
 use tutti_types::SampleRate;
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
@@ -294,6 +294,11 @@ pub enum BridgeMessage {
         /// MIDI the plugin emitted during the block.
         #[serde(default, with = "super::wire::midi")]
         midi_out: MidiEventVec,
+        /// What the plugin said of itself at the end of the block (CLAP's
+        /// process status, doc 023 section 5.3). `Sleep` is sent only when the
+        /// block's output was silent, so the host may park on it.
+        #[serde(default)]
+        status: BlockStatus,
     },
     /// One parameter's normalized value, or `None` if the plugin declined.
     ParameterValue {

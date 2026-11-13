@@ -977,7 +977,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
   `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
-  pairs and triplets, selected from the published method, doc 028 section 4; `VbapKernel`, the
+  pairs and triplets, selected from the published method; `VbapKernel`, the
   block's gains with the mono fold and the last-solve cache, and `VbapGains`, a ramp's end point,
   whose `render_channel` ramps one output channel), the HRTF
   convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`

@@ -37,7 +37,7 @@ fn every_recipe_plans_with_no_arguments() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 37);
+    assert_eq!(RECIPES.len(), 36);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.

@@ -1,17 +1,11 @@
-//! The `au_gui_lifecycle` tests, run on the **main thread**.
-//!
-//! ## Why this exists
+//! The AU Cocoa editor-lifecycle tests, run on the **main thread**.
 //!
 //! `AuEditor::open`/`close`/`editor_size` are Cocoa/AppKit calls, and macOS
 //! requires AppKit on the process main thread. Cargo's harness runs every
-//! `#[test]` on a worker thread with no way to request the main one, so under
-//! that harness these tests are `#[ignore]`d — driving an AU editor there would
-//! be undefined behaviour, not a test.
-//!
-//! This target sets `harness = false`: it owns `main()`, which *is* the main
-//! thread, and calls the test functions directly. The bodies live in
-//! `support/gui_lifecycle.rs`, shared with `au_gui_lifecycle.rs`, so the two
-//! cannot drift.
+//! `#[test]` on a worker thread with no way to request the main one, so this
+//! target sets `harness = false`: it owns `main()`, which *is* the main thread,
+//! and calls the test functions directly. The bodies live in
+//! `support/gui_lifecycle.rs`.
 //!
 //! ## The protocol
 //!
@@ -47,7 +41,7 @@
 // missing platform. `main` is unconditional and lists and runs no case there.
 
 /// The main-thread build of each shared test: a plain function, so `main` can
-/// call it. `au_gui_lifecycle.rs` defines the same macro with `#[test]`.
+/// call it.
 ///
 /// The macro has to wrap the *whole* function rather than emit attributes
 /// beside it: rustc strips `#[test]`/`#[ignore]` out of a `harness = false`
@@ -63,8 +57,7 @@ macro_rules! gui_test {
 #[cfg(target_os = "macos")]
 mod support;
 
-// The tests themselves, plus their helpers — the same file the default-harness
-// target includes, so the two can never drift.
+// The tests themselves, plus their helpers.
 #[cfg(target_os = "macos")]
 include!("support/gui_lifecycle.rs");
 

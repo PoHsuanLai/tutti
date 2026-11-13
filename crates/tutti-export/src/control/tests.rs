@@ -11,7 +11,7 @@ fn delivered(weights: Weights, run: impl FnOnce(&mut Control<'_>)) -> Vec<Progre
     seen
 }
 
-/// Doc 019 section 6.1's tables tile `[0, 1]`: each band starts where the
+/// The band tables tile `[0, 1]`: each band starts where the
 /// last ended, the first at 0 and the last at exactly 1, so the fraction is
 /// monotonic across stages and reaches 1.0 only in the last.
 #[test]

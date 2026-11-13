@@ -1,4 +1,4 @@
-//! Stems (doc 019 section 7): a node's own output written beside the master
+//! Stems: a node's own output written beside the master
 //! in the same pass, through a plan tap on the master's fork.
 //!
 //! What is pinned here is what only a stem has: it is the node's output and

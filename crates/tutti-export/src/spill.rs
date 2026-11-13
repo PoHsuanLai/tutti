@@ -1,4 +1,4 @@
-//! Where a normalized output's audio waits for its gain (doc 019 section 7.5).
+//! Where a normalized output's audio waits for its gain.
 //!
 //! A gain needs the whole signal measured, so a normalizing output keeps what
 //! the graph rendered for it and is read back twice (measured, then written)
@@ -17,7 +17,8 @@ use tutti_types::{ChannelLayout, InterleavedMut, Samples};
 use crate::render::Replay;
 
 /// The most the spills of one render hold in memory before they move to
-/// files: 512 MiB (doc 019, question 3).
+/// files: 512 MiB, so a long bounce is never rendered twice nor held whole in
+/// memory.
 pub(crate) const SPILL_MEMORY_BYTES: usize = 512 * 1024 * 1024;
 
 /// The memory the spills of one render may hold between them.

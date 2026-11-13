@@ -62,6 +62,7 @@ fn insert_first(mut file: Vec<u8>, kind: &[u8; 4], chunk: &[u8]) -> Vec<u8> {
 
 /// Section 4: a reader ignores a sub-chunk it does not know, in each of the
 /// three lists, whatever its size.
+/// Spec: sf2.riff.info.unknown.ignored
 #[test]
 fn an_unknown_sub_chunk_is_ignored_in_every_list() {
     for kind in [b"INFO", b"sdta", b"pdta"] {
@@ -76,6 +77,7 @@ fn an_unknown_sub_chunk_is_ignored_in_every_list() {
 /// chunk's size. An odd-sized chunk (an unknown one, and a known string one)
 /// before the rest leaves the rest where it was: the comment reads whole and
 /// the file still parses.
+/// Spec: sf2.riff.chunk.pad
 #[test]
 fn an_odd_sized_chunk_is_padded_to_even() {
     for kind in [b"INFO", b"sdta", b"pdta"] {
@@ -89,6 +91,7 @@ fn an_odd_sized_chunk_is_padded_to_even() {
 
 /// The RIFF size bounds the file: bytes after it are not read, and a list that
 /// reaches past it is a short read, an error and not a panic or an over-read.
+/// Spec: sf2.riff.size.bounds, sf2.riff.damage.rejected
 #[test]
 fn the_riff_size_is_honoured() {
     let mut trailing = base();
@@ -104,6 +107,7 @@ fn the_riff_size_is_honoured() {
 
 /// A size that reaches past its list is refused by name; one that claims
 /// gigabytes is too, without reading or allocating them.
+/// Spec: sf2.riff.damage.rejected
 #[test]
 fn a_size_that_reaches_past_its_list_is_refused() {
     let mut file = base();
@@ -147,6 +151,7 @@ fn a_version_chunk_of_the_wrong_size_is_refused() {
 }
 
 /// A file cut anywhere is an error and never a panic.
+/// Spec: sf2.riff.damage.rejected
 #[test]
 fn a_file_cut_at_any_length_is_an_error() {
     let file = base();

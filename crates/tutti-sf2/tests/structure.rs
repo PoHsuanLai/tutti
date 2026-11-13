@@ -49,6 +49,7 @@ const SHDR_RECORD: usize = 46;
 /// 7.2: the preset bag indices only grow, and the terminal one is the number
 /// of zones. A file where they do not is structurally defective: an `Err`,
 /// where reading it would slice past the zone list.
+/// Spec: sf2.pdta.phdr.bag-index.monotonic, sf2.pdta.phdr.bag-index.terminal
 #[test]
 fn a_preset_bag_index_that_is_wrong_is_a_clean_error() {
     let file = bytes(&[preset("a", 0, 1), preset("b", 1, 1)], &[inst(1)]);
@@ -73,6 +74,7 @@ fn a_preset_bag_index_that_is_wrong_is_a_clean_error() {
 }
 
 /// 7.6: the same for the instrument bag indices.
+/// Spec: sf2.pdta.inst.bag-index.monotonic, sf2.pdta.inst.bag-index.terminal
 #[test]
 fn an_instrument_bag_index_that_is_wrong_is_a_clean_error() {
     let file = bytes(&[preset("a", 0, 1)], &[inst(1), inst(1)]);
@@ -92,6 +94,7 @@ fn an_instrument_bag_index_that_is_wrong_is_a_clean_error() {
 
 /// 7.3: the generator indices of the bags only grow and end at the number of
 /// generators.
+/// Spec: sf2.pdta.ibag.index.terminal
 #[test]
 fn a_generator_index_past_the_generators_is_a_clean_error() {
     let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -104,6 +107,7 @@ fn a_generator_index_past_the_generators_is_a_clean_error() {
 
 /// 7.2: a preset with no zones is ignored. It is not in the font and
 /// not an error; the presets after it keep their own.
+/// Spec: sf2.pdta.phdr.zoneless.ignored
 #[test]
 fn a_preset_with_no_zone_is_ignored() {
     let file = bytes(
@@ -121,6 +125,7 @@ fn a_preset_with_no_zone_is_ignored() {
 
 /// An instrument with no zone stays in the list (so the indices presets name
 /// keep their meaning) and plays nothing.
+/// Spec: sf2.pdta.inst.zoneless
 #[test]
 fn an_instrument_with_no_zone_plays_nothing() {
     let file = bytes(
@@ -141,6 +146,7 @@ fn an_instrument_with_no_zone_plays_nothing() {
 /// 7.10: a header's `dwStart`, `dwEnd`, `dwStartloop`, `dwEndloop` and
 /// `dwSampleRate` are DWORDs. An address of 2^31 or more is past the sample
 /// data and refused cleanly, and a rate of 2^31 or more reads as positive.
+/// Spec: sf2.pdta.shdr.dwords.unsigned, sf2.pdta.shdr.addresses.in-range
 #[test]
 fn the_dwords_of_a_header_are_unsigned() {
     let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -175,6 +181,7 @@ fn the_dwords_of_a_header_are_unsigned() {
 }
 
 /// 7.2: `dwLibrary`, `dwGenre` and `dwMorphology` are DWORDs kept as read.
+/// Spec: sf2.pdta.phdr.library-genre-morphology
 #[test]
 fn the_reserved_dwords_of_a_preset_are_preserved_as_read() {
     let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -195,6 +202,7 @@ fn the_reserved_dwords_of_a_preset_are_preserved_as_read() {
 /// The one zone here is `pan 4, sampleID 0`, then number 14: it is local and plays,
 /// where reading the raw last record would make it a global zone and leave the
 /// instrument with no region.
+/// Spec: sf2.pdta.igen.after-sampleid.ignored, sf2.gen.unused1
 #[test]
 fn an_unused_number_after_the_sample_id_leaves_the_zone_local() {
     let mut file = bytes(

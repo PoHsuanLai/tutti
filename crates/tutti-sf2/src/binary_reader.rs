@@ -94,6 +94,8 @@ mod tests {
 
     use super::*;
 
+    /// Sample points are signed 16-bit little-endian words.
+    /// Spec: sf2.sdta.smpl.pcm16
     #[test]
     fn wave_data_is_little_endian_pairs() {
         let mut bytes = Cursor::new([0x01, 0x02, 0xFF, 0xFF]);
@@ -107,6 +109,8 @@ mod tests {
         assert_eq!(bytes.position(), 5, "the odd byte is consumed");
     }
 
+    /// Every 16-bit point of a long sample run is kept.
+    /// Spec: sf2.sdta.smpl.pcm16
     #[test]
     fn wave_data_longer_than_one_read_chunk_keeps_every_sample() {
         let count = 8192 + 100;
@@ -127,6 +131,8 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
     }
 
+    /// A 20-byte name field is read up to its first zero byte.
+    /// Spec: sf2.pdta.phdr.name.zero-padded, sf2.pdta.inst.name.zero-padded, sf2.pdta.shdr.name.zero-padded
     #[test]
     fn a_fixed_length_string_stops_at_the_nul_and_masks_control_bytes() {
         let mut bytes = Cursor::new([b'a', 0x01, b'b', 0, b'x']);

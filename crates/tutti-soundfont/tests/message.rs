@@ -224,6 +224,7 @@ fn period(x: &[f32], lo: usize, hi: usize) -> f64 {
 /// 14 bits are `b`. The pitch is measured to about 0.001% and held to 0.005%
 /// (0.09 cent), so the bend's low 7 bits (at most 3.1 cents) are seen: `b` includes values that
 /// differ from a centre or an edge only there.
+/// Spec: sf2.mod.default.10
 #[test]
 fn a_bend_reaches_the_synth_at_its_value() {
     let sustained = |events: &[Ump]| {
@@ -274,6 +275,7 @@ fn a_bend_reaches_the_synth_at_its_value() {
 /// cents field is hundredths of a semitone (7 semitones 50 cents is +750,
 /// 0 and 64 cents is +64, not the 50 a binary fraction would give). The bend is
 /// the note logic's alone (`Voicing::step`).
+/// Spec: sf2.mod.default.10, sf2.mod.src.pitchWheelSensitivity
 #[test]
 fn a_full_bend_spans_the_registered_sensitivity() {
     let sustained = |events: &[Ump]| {

@@ -60,7 +60,7 @@ fn at(k: usize, block: usize) -> Offset {
 #[test]
 fn drive_in_plays_events_under_the_env() {
     let env = Env {
-        frame: Frame(1_000),
+        frame: Frame::new(1_000),
         sample_rate: RATE,
         block_len: Samples(64),
         transport: TransportPosition::new(true, Bpm::of(120.0), Beat(4.0), None),
@@ -110,7 +110,7 @@ fn direct_plays_events_once_advances_and_rolls() {
 
     // The emitter writes at absolute frame 70: block 1 of 64-frame blocks,
     // offset 6.
-    let mut emitter = Direct::new(Emitter::new(Frame(70), note()), RATE, 64);
+    let mut emitter = Direct::new(Emitter::new(Frame::new(70), note()), RATE, 64);
     emitter.block();
     assert!(emitter.events_out(0).is_empty());
     emitter.block();

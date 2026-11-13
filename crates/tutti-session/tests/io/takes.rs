@@ -242,7 +242,7 @@ fn a_punch_in_the_past_starts_at_once_and_reports_the_real_frame() {
         .session
         .record(
             &rig.input,
-            Punch::at(Frame(10)).until(Frame(5_000)).unwrap(),
+            Punch::at(Frame::new(10)).until(Frame::new(5_000)).unwrap(),
             TakeTarget::wav(wav(&dir, "past.wav")),
         )
         .expect("armed");
@@ -286,7 +286,9 @@ fn placement_is_the_formula_with_each_term_stated() {
         .session
         .record(
             &rig.input,
-            Punch::at(Frame(10_000)).until(Frame(10_100)).unwrap(),
+            Punch::at(Frame::new(10_000))
+                .until(Frame::new(10_100))
+                .unwrap(),
             TakeTarget::wav(wav(&dir, "p.wav")),
         )
         .expect("armed");
@@ -298,8 +300,8 @@ fn placement_is_the_formula_with_each_term_stated() {
     assert_eq!(terms.inlet_lead, Samples(7));
     assert_eq!(terms.offset, Trim::Earlier(Samples(3)));
     assert!(terms.is_complete());
-    assert_eq!(done.placement().first_frame(), Frame(10_000));
-    assert_eq!(done.start(), Start::At(Frame(10_000 - 727 - 3)));
+    assert_eq!(done.placement().first_frame(), Frame::new(10_000));
+    assert_eq!(done.start(), Start::At(Frame::new(10_000 - 727 - 3)));
     drop(take);
 }
 
@@ -315,7 +317,9 @@ fn an_unreported_latency_is_stated_unknown_not_zero() {
         .session
         .record(
             &rig.input,
-            Punch::at(Frame(2_000)).until(Frame(2_050)).unwrap(),
+            Punch::at(Frame::new(2_000))
+                .until(Frame::new(2_050))
+                .unwrap(),
             TakeTarget::wav(wav(&dir, "u.wav")),
         )
         .expect("armed");
@@ -326,7 +330,7 @@ fn an_unreported_latency_is_stated_unknown_not_zero() {
     assert!(!terms.is_complete());
     assert_eq!(
         done.start(),
-        Start::At(Frame(2_000 - 7)),
+        Start::At(Frame::new(2_000 - 7)),
         "only the lead is known"
     );
     drop(take);
@@ -344,7 +348,9 @@ fn started_then_finished_once() {
         .session
         .record(
             &rig.input,
-            Punch::at(Frame(3_000)).until(Frame(3_500)).unwrap(),
+            Punch::at(Frame::new(3_000))
+                .until(Frame::new(3_500))
+                .unwrap(),
             TakeTarget::wav(wav(&dir, "e.wav")),
         )
         .expect("armed");
@@ -471,7 +477,7 @@ fn what_cannot_be_armed_is_refused_where_it_is_made() {
         Punch::at(Beat(4.0)).until(Beat(4.0)).is_err(),
         "a punch of no length"
     );
-    assert!(Punch::at(Frame(9)).until(Frame(3)).is_err());
+    assert!(Punch::at(Frame::new(9)).until(Frame::new(3)).is_err());
     assert!(Punch::at(Beat(4.0)).until(At::NextBlock).is_err());
 
     let mut rig = rig(InputConfig::default(), Samples(0));
@@ -494,7 +500,7 @@ fn what_cannot_be_armed_is_refused_where_it_is_made() {
         .session
         .record(
             &rig.input,
-            Punch::at(Frame(500_000)).until(Beat(1.0)).unwrap(),
+            Punch::at(Frame::new(500_000)).until(Beat(1.0)).unwrap(),
             TakeTarget::wav(wav(&dir, "b.wav")),
         )
         .unwrap_err();
@@ -531,7 +537,9 @@ fn a_take_makes_a_clip_only_from_a_file() {
         .session
         .record(
             &rig.input,
-            Punch::at(Frame(1_000)).until(Frame(1_200)).unwrap(),
+            Punch::at(Frame::new(1_000))
+                .until(Frame::new(1_200))
+                .unwrap(),
             TakeTarget::wav(wav(&dir, "c.wav")),
         )
         .expect("armed");
@@ -557,8 +565,8 @@ fn a_take_makes_a_clip_only_from_a_file() {
         .session
         .record(
             &rig.input,
-            Punch::at(Frame(from + 1_000))
-                .until(Frame(from + 1_100))
+            Punch::at(Frame::new(from + 1_000))
+                .until(Frame::new(from + 1_100))
                 .unwrap(),
             TakeTarget::sink(Clean),
         )

@@ -170,7 +170,7 @@ fn render_gain(
     for &(frame, kind) in schedule {
         fork_ed
             .schedule(
-                At::Frame(Frame(frame)),
+                At::Frame(Frame::new(frame)),
                 EventIn {
                     node: PLUGIN,
                     port: 0,

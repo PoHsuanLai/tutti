@@ -50,7 +50,8 @@ use crate::MidiEvent;
 /// How many events the follower's tap holds between two polls. Set Tempo and
 /// Set Time Signature are rare; a source that floods them loses the oldest
 /// beyond this, counted and logged.
-pub(crate) const FOLLOW_TAP_CAPACITY: usize = 256;
+pub(crate) const FOLLOW_TAP_CAPACITY: tutti_graph::EventCapacity =
+    tutti_graph::EventCapacity::of(256);
 
 /// What [`Midi::follow_tempo`](crate::Midi::follow_tempo) follows.
 ///
@@ -220,7 +221,7 @@ pub(crate) fn next_block_beat(playhead: &Playhead, map: &TempoMap) -> Beat {
     if playhead.playing() {
         at += playhead.span().to_seconds(rate);
     }
-    let frame = Frame(at.to_samples(rate).get() as u64);
+    let frame = Frame::new(at.to_samples(rate).get() as u64);
     map.view(rate).beat_at_frame(frame)
 }
 

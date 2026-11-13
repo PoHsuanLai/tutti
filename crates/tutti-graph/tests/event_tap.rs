@@ -126,7 +126,7 @@ impl Node for Script {
                 let _ = out.push(Event::resync(Offset::ZERO));
             }
             for &(f, ump) in &self.events {
-                if let Some(at) = cx.env.offset_of(Frame(f)) {
+                if let Some(at) = cx.env.offset_of(Frame::new(f)) {
                     let _ = out.push(Event::midi(at, on_port(ump, p)));
                 }
             }
@@ -227,7 +227,7 @@ fn render(r: &mut Rig, sizes: &[usize], total: usize) {
 fn drain(tap: &mut EventTapReader) -> Vec<TapEvent> {
     let mut all = Vec::new();
     let mut buf = [TapEvent {
-        frame: Frame(0),
+        frame: Frame::new(0),
         ump: Ump::default(),
     }; 64];
     loop {
@@ -241,7 +241,7 @@ fn drain(tap: &mut EventTapReader) -> Vec<TapEvent> {
 
 fn at(frame: u64, ump: Ump) -> TapEvent {
     TapEvent {
-        frame: Frame(frame),
+        frame: Frame::new(frame),
         ump,
     }
 }

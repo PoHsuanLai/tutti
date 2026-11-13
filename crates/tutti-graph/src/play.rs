@@ -216,7 +216,7 @@ mod tests {
             ch.push(Offset::raw(at as u32), t(p)).expect("fits");
         }
         Env {
-            frame: Frame(1_000),
+            frame: Frame::new(1_000),
             sample_rate: SampleRate::SR_48K,
             block_len: Samples(64),
             transport: t(first),
@@ -230,7 +230,7 @@ mod tests {
     fn a_reading_packs_into_one_word() {
         let r = PlayReading {
             epoch: PlayReading::EPOCHS - 1,
-            play: Frame(123_456_789_012),
+            play: Frame::new(123_456_789_012),
         };
         assert_eq!(PlayReading::unpack(r.pack()), r);
         let z = PlayReading::default();
@@ -245,7 +245,7 @@ mod tests {
         let clock = PlayClock {
             start: PlayReading {
                 epoch: 7,
-                play: Frame(500),
+                play: Frame::new(500),
             },
             next_epoch: 30,
         };
@@ -261,49 +261,49 @@ mod tests {
             at(0),
             PlayReading {
                 epoch: 7,
-                play: Frame(500)
+                play: Frame::new(500)
             }
         );
         assert_eq!(
             at(19),
             PlayReading {
                 epoch: 7,
-                play: Frame(519)
+                play: Frame::new(519)
             }
         );
         assert_eq!(
             at(20),
             PlayReading {
                 epoch: 30,
-                play: Frame(0)
+                play: Frame::new(0)
             }
         );
         assert_eq!(
             at(45),
             PlayReading {
                 epoch: 30,
-                play: Frame(25)
+                play: Frame::new(25)
             }
         );
         assert_eq!(
             at(55),
             PlayReading {
                 epoch: 30,
-                play: Frame(35)
+                play: Frame::new(35)
             }
         );
         assert_eq!(
             at(60),
             PlayReading {
                 epoch: 31,
-                play: Frame(0)
+                play: Frame::new(0)
             }
         );
         assert_eq!(
             at(63),
             PlayReading {
                 epoch: 31,
-                play: Frame(3)
+                play: Frame::new(3)
             }
         );
         assert_eq!(e.play_starts(), 2);
@@ -320,11 +320,11 @@ mod tests {
         let mut s = PlayState::new(Arc::clone(&published));
         let reader = PlayReader(Arc::clone(&published));
         let e1 = env(false, &[], s.begin(false, 0));
-        assert_eq!(e1.play.start.play, Frame(0));
+        assert_eq!(e1.play.start.play, Frame::new(0));
         s.end(&e1);
-        assert_eq!(reader.read().play, Frame(64));
+        assert_eq!(reader.read().play, Frame::new(64));
         let e2 = env(true, &[], s.begin(true, 0));
-        assert_eq!(e2.play.start.play, Frame(0), "a start restarts it");
+        assert_eq!(e2.play.start.play, Frame::new(0), "a start restarts it");
         assert_ne!(e2.play.start.epoch, e1.play.start.epoch, "in a new epoch");
         s.end(&e2);
         let e3 = env(true, &[], s.begin(true, 0));

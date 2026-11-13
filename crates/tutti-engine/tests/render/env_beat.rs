@@ -190,7 +190,7 @@ fn the_env_walk_is_the_env_beat() {
     };
     let m = &transport.motion();
     m.try_send(MotionEvent::Play).expect("room");
-    let at = |f: u64| At::Frame(Frame(f));
+    let at = |f: u64| At::Frame(Frame::new(f));
     // Armed with the playhead inside it (~0.03): wraps from ~1 600.
     m.schedule(
         at(1_000),
@@ -342,7 +342,7 @@ fn click_clicks_on_the_model_beats() {
         (beat_of_frame(20_111, 120.0, SR), 151.0),
     ]));
     m.schedule(
-        At::Frame(Frame(30_000)),
+        At::Frame(Frame::new(30_000)),
         MotionEvent::Locate {
             beat: Beat(6.9),
             fade: FadeOut::Immediate,
@@ -351,7 +351,7 @@ fn click_clicks_on_the_model_beats() {
     )
     .expect("room");
     m.schedule(
-        At::Frame(Frame(30_001)),
+        At::Frame(Frame::new(30_001)),
         TransportCommand::Loop(LoopEdit::over(
             LoopRange::new(Beat::new(6.5), Beat::new(8.25)).expect("ordered"),
         )),

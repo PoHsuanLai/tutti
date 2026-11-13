@@ -12,7 +12,7 @@ const SR: SampleRate = SampleRate::SR_48K;
 fn now(epoch: u32, play: u64) -> PlayReading {
     PlayReading {
         epoch,
-        play: Frame(play),
+        play: Frame::new(play),
     }
 }
 
@@ -734,7 +734,7 @@ fn each_refusal_fires_by_name() {
             phase: PhaseIncrement(0.0),
             anchor: Some(RateAnchor {
                 epoch: 1,
-                at: Frame(0),
+                at: Frame::new(0),
                 phase: 0.0,
                 prev_rate: Hz(1.0),
             }),

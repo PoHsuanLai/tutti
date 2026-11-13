@@ -11,7 +11,8 @@
 use std::ops::{Deref, DerefMut};
 
 use tutti_graph::{EventCapacity, EventInletWriter, Losses, Refused, Stamp};
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Voice2};
+use tutti_midi_protocol::widen_velocity;
+use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Voice2};
 
 /// The ring a live input's inlet is opened with, in events (it is also the
 /// waiting list's size and the port's declared capacity).
@@ -54,12 +55,35 @@ impl MidiKeys {
         self.group
     }
 
-    /// A MIDI 2.0 Note On at `velocity` on the keys' Group, for
-    /// `at`. A velocity of 0 is a Note On (M2-104 §7.4.2).
+    /// A MIDI 2.0 Note On at `velocity` on the keys' Group, for `at`.
+    ///
+    /// The velocity is the 16-bit field of M2-104 §7.4.2, `0` to `0xFFFF`, and
+    /// not a MIDI 1.0 velocity: `NoteVelocity::new(100)` is nearly silent. A
+    /// 7-bit velocity goes through [`note_on_midi1`](Self::note_on_midi1). A
+    /// velocity of 0 is a Note On.
     ///
     /// # Errors
     ///
     /// As [`EventInletWriter::push`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tutti_graph::{EventCapacity, EventInletNode, Stamp};
+    /// use tutti_midi_runtime::MidiKeys;
+    /// use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
+    ///
+    /// let (_node, writer) = EventInletNode::pair(EventCapacity::of(16));
+    /// let mut keys = MidiKeys::new(writer, MidiGroup::FIRST);
+    /// // Three quarters of the 16-bit range.
+    /// keys.note_on(
+    ///     Stamp::NextBlock,
+    ///     MidiChannel::FIRST,
+    ///     NoteNumber::of(60),
+    ///     NoteVelocity::new(0xC000),
+    /// )
+    /// .unwrap();
+    /// ```
     pub fn note_on(
         &mut self,
         at: impl Into<Stamp>,
@@ -68,6 +92,37 @@ impl MidiKeys {
         velocity: NoteVelocity,
     ) -> Result<(), Refused> {
         self.voice(at, channel, Voice2::note_on(note, velocity))
+    }
+
+    /// A MIDI 2.0 Note On at a MIDI 1.0 `velocity` (0 to 127), widened by
+    /// M2-115's scaling ([`widen_velocity`]): 64 is the middle of the 16-bit
+    /// range and 127 the top. The packet is MIDI 2.0 as for
+    /// [`note_on`](Self::note_on), and a velocity of 0 stays a Note On here.
+    ///
+    /// # Errors
+    ///
+    /// As [`EventInletWriter::push`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tutti_graph::{EventCapacity, EventInletNode, Stamp};
+    /// use tutti_midi_runtime::MidiKeys;
+    /// use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
+    ///
+    /// let (_node, writer) = EventInletNode::pair(EventCapacity::of(16));
+    /// let mut keys = MidiKeys::new(writer, MidiGroup::FIRST);
+    /// keys.note_on_midi1(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), U7::of(100))
+    ///     .unwrap();
+    /// ```
+    pub fn note_on_midi1(
+        &mut self,
+        at: impl Into<Stamp>,
+        channel: MidiChannel,
+        note: NoteNumber,
+        velocity: U7,
+    ) -> Result<(), Refused> {
+        self.note_on(at, channel, note, widen_velocity(velocity))
     }
 
     /// A MIDI 2.0 Note Off at release velocity 0 on the keys' Group, for `at`. A full

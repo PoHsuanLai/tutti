@@ -5,9 +5,10 @@
 use std::f32::consts;
 
 use tutti_dsp::{Biquad, DirectForm1, SOLVE_CEILING, SvfControls, SvfModel, SvfType};
-use tutti_midi_protocol::u32_to_unit_f32;
+use tutti_midi_protocol::value_to_unit_f32;
 use tutti_sf2::Side;
 use tutti_types::{Db, Hz, Q, SampleRate, Semitones};
+use tutti_ump::ControlValue;
 use tutti_ump::{MidiChannel, NoteNumber, RegisteredPerNoteController};
 use tutti_voicing::{ChannelState, Glide, NoteControl};
 
@@ -351,10 +352,11 @@ impl Voice {
         match control {
             NoteControl::Pitch(pitch) => self.note.pitch = Some(pitch.note_number()),
             NoteControl::Registered(RegisteredPerNoteController::Volume, value) => {
-                self.note.volume = u32_to_unit_f32(value);
+                self.note.volume = value_to_unit_f32(ControlValue::new(value));
             }
             NoteControl::Registered(RegisteredPerNoteController::Pan, value) => {
-                self.note.pan = Some(100_f32 * u32_to_unit_f32(value) - 50_f32);
+                self.note.pan =
+                    Some(100_f32 * value_to_unit_f32(ControlValue::new(value)) - 50_f32);
             }
             NoteControl::Pressure(_)
             | NoteControl::Registered(..)

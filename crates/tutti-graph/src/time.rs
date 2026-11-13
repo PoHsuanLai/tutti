@@ -261,7 +261,7 @@ impl TransportPosition {
             return Continuity::Jumped;
         }
         let span = Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: rate,
             block_len: frames,
             transport: *self,
@@ -695,7 +695,7 @@ mod tests {
 
     fn env(frame: u64, len: usize, transport: TransportPosition) -> Env {
         Env {
-            frame: Frame(frame),
+            frame: Frame::new(frame),
             sample_rate: SampleRate::SR_48K,
             block_len: Samples(len),
             transport,
@@ -738,24 +738,24 @@ mod tests {
     #[test]
     fn frames_and_offsets_convert_only_through_the_block() {
         let e = env(1000, 64, TransportPosition::default());
-        assert_eq!(e.offset_of(Frame(999)), None);
-        assert_eq!(e.offset_of(Frame(1000)), Some(Offset::ZERO));
-        assert_eq!(e.offset_of(Frame(1063)).map(Offset::get), Some(63));
-        assert_eq!(e.offset_of(Frame(1064)), None);
+        assert_eq!(e.offset_of(Frame::new(999)), None);
+        assert_eq!(e.offset_of(Frame::new(1000)), Some(Offset::ZERO));
+        assert_eq!(e.offset_of(Frame::new(1063)).map(Offset::get), Some(63));
+        assert_eq!(e.offset_of(Frame::new(1064)), None);
         for o in e.offsets() {
             assert_eq!(e.offset_of(e.frame_at(o)), Some(o));
         }
         assert_eq!(e.offsets().count(), 64);
-        assert_eq!(e.end(), Frame(1064));
+        assert_eq!(e.end(), Frame::new(1064));
     }
 
     /// Frame times: inside, before and after the block.
     #[test]
     fn a_frame_is_due_exactly_late_or_not_yet() {
         let e = env(1000, 64, TransportPosition::default());
-        assert_eq!(e.due(At::Frame(Frame(1010))), Due::In(Offset::raw(10)));
-        assert_eq!(e.due(At::Frame(Frame(999))), Due::Late);
-        assert_eq!(e.due(At::Frame(Frame(1064))), Due::NotYet);
+        assert_eq!(e.due(At::Frame(Frame::new(1010))), Due::In(Offset::raw(10)));
+        assert_eq!(e.due(At::Frame(Frame::new(999))), Due::Late);
+        assert_eq!(e.due(At::Frame(Frame::new(1064))), Due::NotYet);
         assert_eq!(e.due(At::NextBlock), Due::In(Offset::ZERO));
     }
 
@@ -791,7 +791,7 @@ mod tests {
         let a = Latency::new(Samples(60));
         let ph = Playhead::new();
         let e = env(1000, 64, TransportPosition::default());
-        let mut at = At::Frame(Frame(1000));
+        let mut at = At::Frame(Frame::new(1000));
         assert_eq!(e.due_at_arrival(&mut at, a, &ph), Due::In(Offset::raw(60)));
         let mut next = At::NextBlock;
         assert_eq!(e.due_at_arrival(&mut next, a, &ph), Due::In(Offset::ZERO));
@@ -805,7 +805,7 @@ mod tests {
         );
         assert_eq!(
             beat,
-            At::Frame(Frame(1010)),
+            At::Frame(Frame::new(1010)),
             "resolved while it fell in this block"
         );
         let next_block = env(1064, 64, t);
@@ -848,8 +848,8 @@ mod tests {
     #[test]
     fn a_far_frame_is_not_late() {
         let e = env(1000, 64, TransportPosition::default());
-        assert_eq!(e.due(At::Frame(Frame(u64::MAX))), Due::NotYet);
-        assert_eq!(e.due(At::Frame(Frame(999))), Due::Late);
+        assert_eq!(e.due(At::Frame(Frame::new(u64::MAX))), Due::NotYet);
+        assert_eq!(e.due(At::Frame(Frame::new(999))), Due::Late);
     }
 
     /// Blocks at 120 BPM, 48 kHz, each `len` frames, starting at `beat`.
@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(pieces[0].0, Offset::ZERO);
         assert_eq!(pieces[0].1.block_len, Samples(100));
         assert_eq!(pieces[1].0, at(100));
-        assert_eq!(pieces[1].1.frame, Frame(1_100));
+        assert_eq!(pieces[1].1.frame, Frame::new(1_100));
         assert_eq!(pieces[1].1.block_len, Samples(412));
 
         assert!(!e.transport_at(at(99)).playing);
@@ -1242,7 +1242,7 @@ mod tests {
                 end: l.end(),
             });
             let e = Env {
-                frame: Frame(0),
+                frame: Frame::new(0),
                 sample_rate: rate,
                 block_len: Samples(512),
                 transport: TransportPosition::counted(

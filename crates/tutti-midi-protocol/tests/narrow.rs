@@ -3,6 +3,7 @@
 //! and the round trip through `widen` for every 7-bit and 14-bit value.
 
 use tutti_midi_protocol::{narrow_bend, narrow_value, narrow_velocity, widen};
+use tutti_ump::{BendValue, ControlValue};
 use tutti_ump::{CCNumber, NoteNumber, NoteVelocity, U7, U14, Voice1, Voice2};
 
 /// Table 8, downscale 16 to 7 bits. `0x15FF` is not in the table: it is the
@@ -30,11 +31,11 @@ fn the_extremes_and_the_centre_keep_their_places() {
         [0, 64, 127]
     );
     assert_eq!(
-        [0, 0x8000_0000, u32::MAX].map(|v| narrow_value(v).get()),
+        [0, 0x8000_0000, u32::MAX].map(|v| narrow_value(ControlValue::new(v)).get()),
         [0, 64, 127]
     );
     assert_eq!(
-        [0, 0x8000_0000, u32::MAX].map(|v| narrow_bend(v).get()),
+        [0, 0x8000_0000, u32::MAX].map(|v| narrow_bend(BendValue::new(v)).get()),
         [0, 8192, 16383]
     );
 }
@@ -54,13 +55,19 @@ fn the_top_bits_are_kept() {
             v as u8
         );
         let step = 1u32 << 25;
-        assert_eq!(narrow_value(v * step).get(), v as u8);
-        assert_eq!(narrow_value(v * step + (step - 1)).get(), v as u8);
+        assert_eq!(narrow_value(ControlValue::new(v * step)).get(), v as u8);
+        assert_eq!(
+            narrow_value(ControlValue::new(v * step + (step - 1))).get(),
+            v as u8
+        );
     }
     for v in 0..=16383u32 {
         let step = 1u32 << 18;
-        assert_eq!(narrow_bend(v * step).get(), v as u16);
-        assert_eq!(narrow_bend(v * step + (step - 1)).get(), v as u16);
+        assert_eq!(narrow_bend(BendValue::new(v * step)).get(), v as u16);
+        assert_eq!(
+            narrow_bend(BendValue::new(v * step + (step - 1))).get(),
+            v as u16
+        );
     }
 }
 

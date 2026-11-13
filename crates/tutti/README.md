@@ -23,7 +23,7 @@ does once per buffer.
 ```rust
 use tutti::graph::{GraphBuilder, Prepare};
 use tutti::nodes::{LfoNode, LfoShape};
-use tutti::prelude::*;
+use tutti::{ChannelLayout, Engine, Hz, InterleavedMut, MaxBlock, SampleRate, Samples, Transport};
 
 // A graph with no inputs and a stereo output: a 440 Hz sine on both channels.
 let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -60,7 +60,7 @@ instead, turn on `export` (it brings the `codec` module with it) and bounce the
 session: a `Bounce` names a range and a master, and optionally stems, and
 `Session::bounce` renders it (`examples/headless_export.rs`).
 `examples/song_bounce.rs` is the whole common path, from one
-`use tutti::prelude::*;`: a sampler `Clip` into a filter into a reverb, an LFO
+`use tutti::{..}`: a sampler `Clip` into a filter into a reverb, an LFO
 on the cutoff, `Session::play`, and eight beats bounced to a WAV, with `?`
 through the one `tutti::Error`.
 
@@ -85,7 +85,9 @@ through the one `tutti::Error`.
   the graph as `tutti::graph::Node`s; the edges (`device`, `io`, `export`)
   move samples between the graph and the outside world.
 
-Most of what a host names is in [`prelude`](crate::prelude).
+What an application names is re-exported at the crate's root, so one
+`use tutti::{Session, SessionEvent, Root, Samples};` covers a program without
+naming the crate each item lives in; the modules below hold the deeper API.
 
 ## The crates, by module
 

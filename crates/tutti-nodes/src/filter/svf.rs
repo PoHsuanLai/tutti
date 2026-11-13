@@ -562,36 +562,38 @@ mod tests {
 
     // ── Per-block reads ──────────────────────────────────────────────────────
 
-    /// A cutoff change made between blocks is read by the next block and
-    /// ramped across it, and that block ends solved exactly at the new cutoff.
+    /// A cutoff written between blocks glides on the stream clock: the render is the
+    /// same at every block length, the glide is still under way one 64-frame block in
+    /// (a design between the two cutoffs), and it has arrived [`GAIN_GLIDE`] after the
+    /// block it was first seen in (5 ms, 240 frames at 48 kHz; 512 frames are rendered).
     ///
     /// (A write *during* a block cannot be staged in a single-threaded test —
     /// the control thread writes between callbacks — so "between blocks" is the
     /// observable form of "not before the next block".)
+    ///
+    /// [`GAIN_GLIDE`]: tutti_dsp::GAIN_GLIDE
     #[test]
-    fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
-        use crate::test_support::{change_between_node_blocks, noise};
-        let x = noise(3, 128);
-        let run = change_between_node_blocks(
-            || {
-                SvfFilterNode::<f64>::with_channels(
-                    ChannelLayout::STEREO,
-                    SvfType::LowPass,
-                    Hz::new(400.0),
-                    Q::new(0.707),
-                )
-            },
-            |n| {
-                assert!(n.param_set().set(UnitParam::Cutoff, 6_000.0));
-            },
-            &[&x[..64], &x[..64]],
-            &[&x[64..], &x[64..]],
-        );
-        run.assert_ramps_in("svf cutoff");
-        assert!(
-            run.ramped.applied() == run.jumped.applied(),
-            "the block must end solved at the new cutoff"
-        );
+    fn a_cutoff_written_between_blocks_glides_on_the_stream() {
+        use crate::test_support::{assert_cell_glides, noise, render_change};
+        let x = noise(3, 64 + 512);
+        let make = || {
+            SvfFilterNode::<f64>::with_channels(
+                ChannelLayout::STEREO,
+                SvfType::LowPass,
+                Hz::new(400.0),
+                Q::new(0.707),
+            )
+        };
+        let change = |n: &SvfFilterNode<f64>| {
+            assert!(n.param_set().set(UnitParam::Cutoff, 6_000.0));
+        };
+        let (before, after) = ([&x[..64], &x[..64]], [&x[64..], &x[64..]]);
+        let node = assert_cell_glides(make, change, &before, &after, "svf cutoff");
+        assert_eq!(node.applied().map(|c| c.freq), Some(Hz(6_000.0)), "arrived");
+        let one = [&x[64..128], &x[64..128]];
+        let (mid, _) = render_change(make, change, &before, &one, 64);
+        let f = mid.applied().unwrap().freq.get();
+        assert!(400.0 < f && f < 6_000.0, "under way after 64 frames: {f}");
     }
 
     /// A NaN Q at construction is read as the Butterworth Q, not as 0, which
@@ -657,7 +659,10 @@ mod tests {
             "held at the last good cutoff"
         );
         assert!(f.param_set().set(UnitParam::Cutoff, 2_000.0));
-        drive_block(&mut f, &[&x]);
+        // The write glides over `GAIN_GLIDE` (240 frames at 48 kHz): four blocks of 64.
+        for _ in 0..4 {
+            drive_block(&mut f, &[&x]);
+        }
         assert_eq!(
             f.applied().unwrap().freq,
             Hz(2_000.0),

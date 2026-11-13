@@ -22,7 +22,7 @@ use tutti_modulation::{
     Amount, Clock, ControlProgram, Curve, DepthBy, InputLayer, Layer, LayerId, LfoShape,
     PeriodPoint, Polarity, RateAnchor, SourceId, Waveform,
 };
-use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode, LaneControls};
+use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_types::{
     AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamKey,
     Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
@@ -32,7 +32,7 @@ const RATE: f64 = 48_000.0;
 /// 24 000 frames a beat: beat figures land on whole frames.
 const TEMPO: Bpm = Bpm::of(120.0);
 const FPB: f64 = 24_000.0;
-const STEP: usize = CONTROL_STEP as usize;
+const STEP: usize = tutti_modulation::CONTROL_GRID.stride() as usize;
 
 // ---------------------------------------------------------------- nodes --
 
@@ -678,7 +678,7 @@ fn a_rate_anchor_holds_two_lanes_in_phase() {
             phase: PhaseIncrement(0.0),
             anchor: Some(RateAnchor {
                 epoch,
-                at: Frame(AT),
+                at: Frame::new(AT),
                 phase: 3.0 * AT as f64 / RATE,
                 prev_rate: Hz(3.0),
             }),
@@ -1316,7 +1316,7 @@ fn lane_controls_reach_their_own_cells() {
 /// walk it), and stopped beside a beat-clocked sine (which holds while
 /// stopped, at 0 on beat 0), also when that sine's `depth_by` is a
 /// constant on a seconds clock: a macro costs the lane one held value, not
-/// a piece every `CONTROL_STEP` frames.
+/// a piece every the control grid (`tutti_modulation::CONTROL_GRID`) frames.
 #[test]
 fn a_constant_layer_is_one_held_value() {
     let konst = |clock| layer(1, clock, Waveform::Const(1.0), amount(0.5));

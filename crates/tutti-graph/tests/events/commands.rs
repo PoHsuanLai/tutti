@@ -163,7 +163,7 @@ fn a_command_lands_on_its_exact_frame_across_ragged_blocks() {
         0, 5, 63, 64, 70, 71, 72, 104, 105, 150, 168, 169, 173, 174, 238,
     ];
     for (i, &f) in targets.iter().enumerate() {
-        rig.schedule(At::Frame(Frame(f)), tag(i as u32));
+        rig.schedule(At::Frame(Frame::new(f)), tag(i as u32));
     }
     let transport = TransportPosition::default();
     for &n in &blocks {
@@ -191,7 +191,7 @@ fn a_command_lands_on_its_exact_frame_across_ragged_blocks() {
 fn a_scheduled_ramp_steps_the_output_on_its_frame() {
     let mut rig = rig();
     rig.schedule(
-        At::Frame(Frame(90)),
+        At::Frame(Frame::new(90)),
         EventKind::Ramp(ParamRamp::foreign(0, 0.5, Samples(0))),
     );
     let (mut a, mut b) = (Vec::new(), Vec::new());
@@ -213,7 +213,7 @@ fn a_late_command_lands_at_the_next_block_and_is_counted() {
     let t = TransportPosition::default();
     rig.block(64, &t);
     rig.block(64, &t);
-    rig.schedule(At::Frame(Frame(10)), tag(1)); // 118 frames ago
+    rig.schedule(At::Frame(Frame::new(10)), tag(1)); // 118 frames ago
     rig.schedule(At::NextBlock, tag(2));
     rig.block(32, &t);
     for log in [&rig.exec_log, &rig.ref_log] {
@@ -287,7 +287,7 @@ fn scheduling_back_pressures_at_capacity() {
     let mut rig = rig();
     for i in 0..COMMAND_CAPACITY {
         rig.ed
-            .schedule(At::Frame(Frame(100 + i as u64)), to(), tag(i as u32))
+            .schedule(At::Frame(Frame::new(100 + i as u64)), to(), tag(i as u32))
             .expect("under capacity");
     }
     assert_eq!(
@@ -326,10 +326,10 @@ fn a_command_needs_a_port_and_an_orphan_is_counted() {
         })
     );
     rig.ed
-        .schedule(At::Frame(Frame(1000)), to(), tag(9))
+        .schedule(At::Frame(Frame::new(1000)), to(), tag(9))
         .expect("the port exists now");
     rig.ed
-        .schedule(At::Frame(Frame(3000)), to(), tag(10))
+        .schedule(At::Frame(Frame::new(3000)), to(), tag(10))
         .expect("the port exists now");
     // Same key, a unit with no event inputs at all.
     rig.ed.insert(
@@ -351,7 +351,7 @@ fn a_command_needs_a_port_and_an_orphan_is_counted() {
         "the port went with the unit"
     );
     rig.ed
-        .schedule(At::Frame(Frame(2000)), to(), tag(9))
+        .schedule(At::Frame(Frame::new(2000)), to(), tag(9))
         .expect_err("and the editor knows it");
     rig.ed.remove(PROBE);
     rig.ed.spec_mut().topology.outputs.clear();
@@ -465,9 +465,9 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
     );
     for (k, t) in [(A, 1), (B, 2)] {
         let to = EventIn { node: k, port: 0 };
-        ed.schedule(At::Frame(Frame(100)), to, tag(t))
+        ed.schedule(At::Frame(Frame::new(100)), to, tag(t))
             .expect("room");
-        reference.schedule(At::Frame(Frame(100)), to, tag(t));
+        reference.schedule(At::Frame(Frame::new(100)), to, tag(t));
     }
     let silence = [0.0f32; 64];
     let (mut outs, mut routs) = (vec![Vec::new(); 2], vec![Vec::new(); 2]);
@@ -604,7 +604,7 @@ fn cancel_takes_commands_back_and_frees_their_credit() {
     // A targeted cancel, sent before the executor has seen its command.
     let id = rig
         .ed
-        .schedule(At::Frame(Frame(10)), to(), tag(7))
+        .schedule(At::Frame(Frame::new(10)), to(), tag(7))
         .expect("room");
     rig.ed.cancel(id).expect("room");
     rig.block(64, &stopped);
@@ -1058,9 +1058,9 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
         node: sink,
         port: 0,
     };
-    ed.schedule(At::Frame(Frame(100)), to, tag(1))
+    ed.schedule(At::Frame(Frame::new(100)), to, tag(1))
         .expect("room");
-    reference.schedule(At::Frame(Frame(100)), to, tag(1));
+    reference.schedule(At::Frame(Frame::new(100)), to, tag(1));
     // Same key, a unit with no event inputs.
     let gain = || {
         common::TestNode::new(common::Kind::Gain {
@@ -1117,7 +1117,7 @@ fn cancels_are_never_lost_across_threads() {
     });
     for round in 0..ROUNDS {
         let id = loop {
-            match ed.schedule(At::Frame(Frame(u64::MAX / 2)), to(), tag(round)) {
+            match ed.schedule(At::Frame(Frame::new(u64::MAX / 2)), to(), tag(round)) {
                 Ok(id) => break id,
                 Err(ScheduleError::Backpressure) => std::thread::yield_now(),
                 Err(e) => panic!("{e}"),
@@ -1151,14 +1151,14 @@ fn a_command_id_from_another_pair_is_refused() {
     let mut old = rig();
     let stale = old
         .ed
-        .schedule(At::Frame(Frame(10_000)), to(), tag(1))
+        .schedule(At::Frame(Frame::new(10_000)), to(), tag(1))
         .expect("room");
     drop(old);
 
     let mut new = rig();
     let own = new
         .ed
-        .schedule(At::Frame(Frame(100)), to(), tag(2))
+        .schedule(At::Frame(Frame::new(100)), to(), tag(2))
         .expect("room");
     assert_ne!(own, stale, "same number, different pair");
     assert_eq!(
@@ -1170,7 +1170,7 @@ fn a_command_id_from_another_pair_is_refused() {
     }
     let later = new
         .ed
-        .schedule(At::Frame(Frame(50_000)), to(), tag(3))
+        .schedule(At::Frame(Frame::new(50_000)), to(), tag(3))
         .expect("room");
     new.ed
         .cancel(later)

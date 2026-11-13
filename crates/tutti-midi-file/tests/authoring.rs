@@ -94,13 +94,13 @@ fn notes_in_any_order_leave_the_events_in_tick_order() {
     MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![track]).unwrap();
 }
 
-/// `tempo` is a Set Tempo of that figure at that tick (`Meta::tempo`), `meta`
-/// any meta event, both placed by tick.
+/// `meta(tick, Meta::tempo(bpm))` is the one way to place a Set Tempo, and
+/// like any meta event it is placed by tick.
 #[test]
-fn tempo_and_meta_are_events_at_their_ticks() {
+fn a_tempo_is_a_meta_event_at_its_tick() {
     let track = Track::new()
         .meta(Tick(960), Meta::text(TextKind::Marker, "B"))
-        .tempo(Tick(0), Bpm::of(90.0));
+        .meta(Tick(0), Meta::tempo(Bpm::of(90.0)));
     assert_eq!(
         track.events,
         [
@@ -168,7 +168,7 @@ fn collecting_events_sorts_them_by_tick_keeping_ties_in_order() {
 #[test]
 fn the_timeline_is_the_messages_at_their_beats_and_not_the_meta_events() {
     let tempo_track = Track::new()
-        .tempo(Tick(0), Bpm::of(60.0))
+        .meta(Tick(0), Meta::tempo(Bpm::of(60.0)))
         .meta(Tick(0), Meta::text(TextKind::TrackName, "tempo"));
     let notes = Track::new()
         .note(
@@ -285,7 +285,7 @@ fn a_clip_files_timeline_is_its_packets_as_stored_without_the_header() {
 /// for the one timeline's track hand out the one map.
 #[test]
 fn the_tempo_map_is_one_shared_value() {
-    let f = file(vec![Track::new().tempo(Tick(0), Bpm::of(75.0))]);
+    let f = file(vec![Track::new().meta(Tick(0), Meta::tempo(Bpm::of(75.0)))]);
     let again = f.clone();
     assert!(Arc::ptr_eq(f.tempo_map(), again.tempo_map()));
     assert!(Arc::ptr_eq(f.tempo_map(), f.tempo_map_of(0).unwrap()));
@@ -360,13 +360,17 @@ fn a_refused_track_list_names_the_rule_and_where() {
 /// byte slice reads back the same file.
 #[test]
 fn a_file_round_trips_through_a_stream_and_a_slice() {
-    let f = file(vec![Track::new().tempo(Tick(0), Bpm::of(100.0)).note(
-        Tick(0),
-        480,
-        MidiChannel::FIRST,
-        NoteNumber::of(60),
-        U7::of(100),
-    )]);
+    let f = file(vec![
+        Track::new()
+            .meta(Tick(0), Meta::tempo(Bpm::of(100.0)))
+            .note(
+                Tick(0),
+                480,
+                MidiChannel::FIRST,
+                NoteNumber::of(60),
+                U7::of(100),
+            ),
+    ]);
     let mut out = Vec::new();
     f.write_to(&mut out).unwrap();
     assert_eq!(out, f.to_bytes().unwrap());
@@ -390,4 +394,23 @@ fn text_str_is_the_utf8_text_of_a_text_event() {
     };
     assert_eq!(latin1.text_str(), None);
     assert_eq!(Meta::tempo(Bpm::of(120.0)).text_str(), None);
+}
+
+/// Two Set Tempos at one tick are both kept, in the order added, and neither is
+/// refused: an SMF may hold any number of them, and the later one governs the
+/// tempo map (the reader's rule, so a file written and read back agrees).
+#[test]
+fn two_tempos_on_one_tick_are_kept_and_the_later_governs() {
+    let track = Track::new()
+        .meta(Tick(0), Meta::tempo(Bpm::of(90.0)))
+        .meta(Tick(0), Meta::tempo(Bpm::of(60.0)));
+    assert_eq!(
+        track.events,
+        [
+            (Tick(0), FileEvent::Meta(Meta::tempo(Bpm::of(90.0)))),
+            (Tick(0), FileEvent::Meta(Meta::tempo(Bpm::of(60.0)))),
+        ]
+    );
+    let file = MidiFile::smf(SmfFormat::SingleTrack, 480, vec![track]).unwrap();
+    assert_eq!(file.tempo_map().tempo_at(Beat(0.0)), Bpm::of(60.0));
 }

@@ -655,8 +655,8 @@ proptest! {
                         let Some(to) = rng.pick(&ports) else { break };
                         let at = match rng.below(10) {
                             0 => tutti_types::At::NextBlock,
-                            1 => tutti_types::At::Frame(tutti_types::Frame(rng.below(frame + 1))),
-                            2 => tutti_types::At::Frame(tutti_types::Frame(frame + 3 * rng.below(100))),
+                            1 => tutti_types::At::Frame(tutti_types::Frame::new(rng.below(frame + 1))),
+                            2 => tutti_types::At::Frame(tutti_types::Frame::new(frame + 3 * rng.below(100))),
                             3 if script.looping.is_some() => {
                                 let (a, b) = script.looping.expect("looping");
                                 tutti_types::At::Beat(tutti_types::Beat(a + (b - a) * rng.below(1000) as f64 / 1000.0))
@@ -758,7 +758,7 @@ fn transport_case(seed: u64, which: usize) -> Result<(), TestCaseError> {
                     let Some(to) = rng.pick(&ports) else { break };
                     let at = match rng.below(6) {
                         0 => tutti_types::At::NextBlock,
-                        1 => tutti_types::At::Frame(tutti_types::Frame(
+                        1 => tutti_types::At::Frame(tutti_types::Frame::new(
                             frame + rng.below(2 * n as u64),
                         )),
                         // Near a piece's start beat, before or after it.
@@ -1879,7 +1879,7 @@ proptest! {
             let mut rng = Rng::new(seed ^ 0xFA11);
             for _ in 0..rng.below(12) {
                 let Some(to) = rng.pick(&ports) else { break };
-                let at = tutti_types::At::Frame(tutti_types::Frame(frame + rng.below(300)));
+                let at = tutti_types::At::Frame(tutti_types::Frame::new(frame + rng.below(300)));
                 let kind = tutti_graph::EventKind::Midi(tutti_ump::Ump([rng.below(1000) as u32, 0, 0, 0]));
                 pair.schedule(at, to, kind);
             }

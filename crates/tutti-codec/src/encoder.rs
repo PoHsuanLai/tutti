@@ -12,9 +12,9 @@ use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 use tutti_types::{ChannelLayout, Interleaved, Samples};
 
-/// Writes blocks of audio as one file of a [`Format`](crate::Format): the
-/// [`FormatWriter`](crate::FormatWriter) of
-/// whichever format the [`Spec`] names, behind one type.
+/// Writes blocks of audio as one file of a [format](crate::Format): the
+/// [writer](crate::FormatWriter) of whichever format the [`Spec`] names,
+/// behind one type.
 ///
 /// An encoder takes blocks already at the [`Spec`]'s rate and width: it does not
 /// pull, resample or dither, and nothing here stops a caller from handing it

@@ -22,8 +22,9 @@ use crate::{UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
 use tutti_midi_protocol::{MpeMode, MpeZones, UniversalReader};
 use tutti_midi_protocol::{channel_voice, narrow_value};
-use tutti_midi_protocol::{u16_to_unit_f32, u32_to_unit_f32};
+use tutti_midi_protocol::{value_to_unit_f32, velocity_to_unit_f32};
 use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Spread, Tail};
+use tutti_ump::ControlValue;
 use tutti_ump::NoteId;
 use tutti_ump::{
     Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, Ump, Voice2,
@@ -375,7 +376,7 @@ impl PolySynth {
                 velocity,
                 attribute,
             } => {
-                self.handle_note_on(note, u16_to_unit_f32(velocity.get()), channel, attribute);
+                self.handle_note_on(note, velocity_to_unit_f32(velocity), channel, attribute);
             }
             // Release velocity is not used: the release is the envelope's.
             Voice2::NoteOff { note, .. } => self.handle_note_off(note, channel),
@@ -390,7 +391,7 @@ impl PolySynth {
                     // controllers are this synth's own.
                     None => {
                         self.bend_message(channel, &voice);
-                        self.handle_cc(controller, u32_to_unit_f32(value));
+                        self.handle_cc(controller, value_to_unit_f32(value));
                     }
                 }
             }
@@ -481,19 +482,21 @@ impl PolySynth {
                 self.voices[slot].set_pitch(freq * glide * ratio);
                 return;
             }
-            NoteControl::Pressure(value) => MpeControl::Pressure(u32_to_unit_f32(value)),
+            NoteControl::Pressure(value) => {
+                MpeControl::Pressure(value_to_unit_f32(ControlValue::new(value)))
+            }
             NoteControl::Registered(RegisteredPerNoteController::Volume, value) => {
-                MpeControl::Gain(u32_to_unit_f32(value))
+                MpeControl::Gain(value_to_unit_f32(ControlValue::new(value)))
             }
             NoteControl::Registered(RegisteredPerNoteController::Brightness, value) => {
-                MpeControl::Slide(u32_to_unit_f32(value))
+                MpeControl::Slide(value_to_unit_f32(ControlValue::new(value)))
             }
             // The index is a wire byte, not a 7-bit value: 0xCA is not CC74.
             NoteControl::Assignable(index, value) if index == CCNumber::BRIGHTNESS.get() => {
-                MpeControl::Slide(u32_to_unit_f32(value))
+                MpeControl::Slide(value_to_unit_f32(ControlValue::new(value)))
             }
             NoteControl::Assignable(index, value) if index == CCNumber::VOLUME.get() => {
-                MpeControl::Gain(u32_to_unit_f32(value))
+                MpeControl::Gain(value_to_unit_f32(ControlValue::new(value)))
             }
             NoteControl::Registered(..) | NoteControl::Assignable(..) => return,
         };

@@ -45,7 +45,7 @@ use common::probe::{ProbeUnit, Pulse};
 
 const RATE: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm::of(120.0);
-/// A lane's control step (`tutti_nodes::automation::CONTROL_STEP`).
+/// A lane's control step (`tutti_modulation::CONTROL_GRID`).
 const STEP: usize = 32;
 /// A port's connect crossfade (`PARAM_DECLICK`).
 const DECLICK: usize = 256;
@@ -217,8 +217,8 @@ fn an_export_is_the_live_render_on_a_native_param() {
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Frames(
-            tutti_types::Frame(0),
-            tutti_types::Frame(total as u64),
+            tutti_types::Frame::new(0),
+            tutti_types::Frame::new(total as u64),
         ))
         .sample_rate(SampleRate::of(RATE))
         .clock(ExportClock::timeline(timeline))

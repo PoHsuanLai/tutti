@@ -178,21 +178,21 @@ impl<'a> TempoView<'a> {
             .saturating_add(grid.get())
             .min(next_cut.unwrap_or(u64::MAX));
         let (transition, bpm0) = (seg.transition, seg.bpm0);
-        let b0 = self.beat_at_frame(Frame(start)).get();
+        let b0 = self.beat_at_frame(Frame::new(start)).get();
         let tempo = match transition {
             Transition::Step => bpm0,
             // The map's beat at both ends, not this segment's closed form: a
             // segment shorter than a frame ends inside its last cell, and its
             // form past that point is not the map's.
             Transition::RampTime | Transition::RampBeats => {
-                let chord = (self.beat_at_frame(Frame(end)).get() - b0) * 60.0 * rate.get()
+                let chord = (self.beat_at_frame(Frame::new(end)).get() - b0) * 60.0 * rate.get()
                     / (end - start).max(1) as f64;
                 Bpm::new(chord).unwrap_or(bpm0)
             }
         };
         Cell {
-            start: Frame(start),
-            end: Frame(end),
+            start: Frame::new(start),
+            end: Frame::new(end),
             beat: Beat(b0),
             tempo,
         }

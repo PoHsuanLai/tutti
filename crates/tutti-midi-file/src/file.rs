@@ -334,18 +334,18 @@ pub struct Track {
 
 impl Track {
     /// An empty track, ending at tick 0. Events are added with the builder
-    /// ([`note`](Self::note), [`tempo`](Self::tempo), [`meta`](Self::meta),
+    /// ([`note`](Self::note), [`meta`](Self::meta),
     /// [`push`](Self::push)), by [`collect`](Iterator::collect)ing or
     /// [`extend`](Extend::extend)ing `(Tick, FileEvent)` pairs, or by filling
     /// the public fields of a track a file layer reads.
     ///
     /// ```
-    /// use tutti_midi_file::{Tick, Track};
+    /// use tutti_midi_file::{Meta, Tick, Track};
     /// use tutti_types::Bpm;
     /// use tutti_ump::{MidiChannel, NoteNumber, U7};
     ///
     /// let track = Track::new()
-    ///     .tempo(Tick(0), Bpm::of(90.0))
+    ///     .meta(Tick(0), Meta::tempo(Bpm::of(90.0)))
     ///     .note(Tick(0), 480, MidiChannel::FIRST, NoteNumber::of(60), U7::of(100))
     ///     .note(Tick(480), 480, MidiChannel::FIRST, NoteNumber::of(64), U7::of(100));
     /// assert_eq!(track.end, Tick(960));
@@ -391,15 +391,23 @@ impl Track {
         self
     }
 
-    /// A Set Tempo of `bpm` at `tick` ([`Meta::tempo`]), placed in tick order
-    /// as [`note`](Self::note) is.
-    #[must_use]
-    pub fn tempo(mut self, tick: Tick, bpm: Bpm) -> Self {
-        self.place(tick, Meta::tempo(bpm).into());
-        self
-    }
-
     /// A meta event at `tick`, placed in tick order as [`note`](Self::note) is.
+    /// This is the one way to add a tempo: `.meta(tick, Meta::tempo(bpm))`.
+    ///
+    /// A second Set Tempo at the same tick is kept, after the first, and not
+    /// refused (an SMF may hold any number): the later one governs the file's
+    /// [`tempo_map`](MidiFile::tempo_map), as a sequencer applying them in order
+    /// would.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tutti_midi_file::{Meta, Tick, Track};
+    /// use tutti_types::Bpm;
+    ///
+    /// let track = Track::new().meta(Tick(0), Meta::tempo(Bpm::of(90.0)));
+    /// assert_eq!(track.events.len(), 1);
+    /// ```
     #[must_use]
     pub fn meta(mut self, tick: Tick, meta: Meta) -> Self {
         self.place(tick, meta.into());
@@ -578,12 +586,12 @@ enum Container {
 /// ([`tempo_map_of`](Self::tempo_map_of) is each one's own).
 ///
 /// ```
-/// use tutti_midi_file::{MidiFile, SmfFormat, Tick, Track};
+/// use tutti_midi_file::{Meta, MidiFile, SmfFormat, Tick, Track};
 /// use tutti_types::{Beat, Bpm, Seconds};
 /// use tutti_ump::{MidiChannel, NoteNumber, U7};
 ///
 /// let track = Track::new()
-///     .tempo(Tick(0), Bpm::of(120.0))
+///     .meta(Tick(0), Meta::tempo(Bpm::of(120.0)))
 ///     .note(Tick(0), 480, MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
 /// let file = MidiFile::smf(SmfFormat::SingleTrack, 480, vec![track])?;
 ///
@@ -1097,7 +1105,7 @@ fn packets(event: &FileEvent) -> EventPackets<'_> {
     match event {
         FileEvent::Message(message) => EventPackets::One(Some(Ump::from(*message))),
         FileEvent::SysEx(data) => match data.split_last() {
-            Some((0xF7, payload)) => Sysex7Packets::checked(MidiGroup::FIRST, payload)
+            Some((0xF7, payload)) => Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
                 .map_or(EventPackets::None, EventPackets::Sysex),
             _ => EventPackets::None,
         },

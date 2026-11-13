@@ -233,7 +233,8 @@ fn convert(
                 return Err(DropReason::PropertyExchange);
             }
             let whole: Vec<u8> = std::iter::once(0xF0).chain(body.iter().copied()).collect();
-            let message = SysexMessage::new(&whole).ok_or(DropReason::SysexNotCompleteSevenBit)?;
+            let message = SysexMessage::from_framed(&whole)
+                .map_err(|_| DropReason::SysexNotCompleteSevenBit)?;
             other(message.packets(MidiGroup::FIRST).map(event).collect())
         }
         FileEvent::Escape(_) => Err(DropReason::NoSuccessor),

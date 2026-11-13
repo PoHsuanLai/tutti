@@ -53,7 +53,7 @@ fn device(ed: &mut Editor, inlet: u64) -> EventInletWriter {
 
 /// The first frame of block `block` (blocks of 512).
 fn frame_of(block: u64, offset: u64) -> Stamp {
-    Stamp::Frame(Frame(512 * block + offset))
+    Stamp::Frame(Frame::new(512 * block + offset))
 }
 
 /// A fresh note on four channels for block `block`.
@@ -61,7 +61,7 @@ fn busy(device: &mut EventInletWriter, block: u64) {
     for i in 0..4u64 {
         device
             .push(
-                Moment::new(Frame(512 * block + 40 - 10 * i), SampleRate::SR_48K),
+                Moment::new(Frame::new(512 * block + 40 - 10 * i), SampleRate::SR_48K),
                 note_on(i as u8 * 3, 60),
             )
             .unwrap();
@@ -514,8 +514,9 @@ fn the_event_inlet_processes_without_allocating() {
     for b in 1..200u64 {
         // Control side, outside the gate: one for this block's middle, one
         // already late, one for the next block.
-        tx.push(Stamp::Frame(Frame(b * 512 + 200)), msg).unwrap();
-        tx.push(Stamp::Frame(Frame(3)), msg).unwrap();
+        tx.push(Stamp::Frame(Frame::new(b * 512 + 200)), msg)
+            .unwrap();
+        tx.push(Stamp::Frame(Frame::new(3)), msg).unwrap();
         tx.push(Stamp::NextBlock, msg).unwrap();
         // The audio thread's part, inside the gate.
         assert_no_alloc::assert_no_alloc(|| {
@@ -546,7 +547,8 @@ fn the_event_inlet_with_a_full_list_processes_without_allocating() {
     let off = midi::m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0));
     // Outside the gate: fill the list with events for frames far ahead.
     for k in 0..256u64 {
-        tx.push(Stamp::Frame(Frame(10_000_000 + k)), on).unwrap();
+        tx.push(Stamp::Frame(Frame::new(10_000_000 + k)), on)
+            .unwrap();
     }
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
@@ -554,8 +556,10 @@ fn the_event_inlet_with_a_full_list_processes_without_allocating() {
     for b in 1..100u64 {
         // Control side, outside the gate.
         tx.push(Stamp::NextBlock, on).unwrap();
-        tx.push(Stamp::Frame(Frame(20_000_000 + b)), off).unwrap();
-        tx.push(Stamp::Frame(Frame(30_000_000 + b)), on).unwrap();
+        tx.push(Stamp::Frame(Frame::new(20_000_000 + b)), off)
+            .unwrap();
+        tx.push(Stamp::Frame(Frame::new(30_000_000 + b)), on)
+            .unwrap();
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
             let _ = out.poll_into(&mut drain);

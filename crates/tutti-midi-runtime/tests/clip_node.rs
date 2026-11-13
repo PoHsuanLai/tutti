@@ -731,7 +731,7 @@ fn a_clip_ending_on_a_lone_cc_6_flushes_its_rpn_at_the_cc_6() {
     else {
         panic!("a Registered Controller, got {:?}", seen[0].1.decode());
     };
-    assert_eq!((bank.get(), index.get(), value), (0, 0, 12 << 25));
+    assert_eq!((bank.get(), index.get(), value.get()), (0, 0, 12 << 25));
 }
 
 // ---------------------------------------------------------------------------

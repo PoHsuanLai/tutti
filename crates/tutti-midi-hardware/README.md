@@ -81,8 +81,7 @@ which gives its slot back, so hot-plug cycles do not accumulate inlets.
 
 ```rust,no_run
 use std::sync::Arc;
-use tutti_midi_hardware::prelude::*;
-use tutti_midi_hardware::DeviceInlets;
+use tutti_midi_hardware::{DeviceInlets, MidiSession};
 use tutti_fixtures::midi::note_on;
 use tutti_graph::Offset;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -133,8 +132,6 @@ assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 - [`MidiEndpoints`]: the backend trait; [`MidiSession::open`] picks this
   platform's implementation.
 - [`Error`]: what opening, connecting and sending can fail with.
-- [`prelude`]: the common types in one import, including the graph's MIDI nodes
-  and mailbox re-exported from `tutti-midi-runtime`.
 
 ## Matching by name picks a device you did not choose
 

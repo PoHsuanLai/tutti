@@ -61,8 +61,7 @@ use serde::{Deserialize, Serialize};
 /// plugin's figure already excludes latency and is taken as reported.
 ///
 /// [`Unbounded`](Self::Unbounded) exists because a real plugin uses it and a
-/// number cannot carry it. TAL Reverb 4 answers `f64::INFINITY` for its tail
-/// (measured; no Apple unit exceeds ~21 s), and
+/// number cannot carry it. A plugin may answer `f64::INFINITY` for its tail, and
 /// [`Seconds::to_samples`](crate::Seconds::to_samples) maps every non-finite
 /// input to `Samples::ZERO` — deliberately, since that is the right answer for
 /// NaN and negatives. The consequence is that an *infinite* tail arrives
@@ -157,7 +156,7 @@ impl Tail {
     /// at `sample_rate`, rounding up so a render does not clip its last
     /// partial frame.
     ///
-    /// `+∞` is [`Unbounded`](Self::Unbounded) (TAL Reverb 4 answers it); a
+    /// `+∞` is [`Unbounded`](Self::Unbounded) (a plugin may answer it); a
     /// span that rounds to zero frames is [`None`](Self::None). NaN, a
     /// negative span and `-∞` are not a tail at all, so they are
     /// [`Unknown`](Self::Unknown): read as "unbounded" (the `!is_finite`
@@ -235,7 +234,7 @@ mod tests {
 
     /// An unbounded tail must stay distinguishable from no tail at all.
     ///
-    /// This is the whole reason [`Tail`] is a sum type. TAL Reverb 4 answers
+    /// This is the whole reason [`Tail`] is a sum type. A plugin may answer
     /// `f64::INFINITY` for `kAudioUnitProperty_TailTime`, and
     /// `Seconds::to_samples` maps every non-finite input to `Samples::ZERO` —
     /// correct for NaN and negatives, exactly backwards for `+∞`. Carried as a

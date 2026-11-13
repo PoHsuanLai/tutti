@@ -45,7 +45,7 @@ fn layer(id: u64, clock: Clock, shape: LfoShape, amount: Amount) -> Layer {
 
 fn beats(per_cycle: f64) -> Clock {
     Clock::Beats {
-        per_cycle: BeatDuration(per_cycle),
+        per_cycle: BeatsPerCycle::of(per_cycle),
         phase: PhaseIncrement(0.0),
     }
 }
@@ -611,14 +611,15 @@ fn the_unit_depth_by_is_half_raw_plus_one_in_f64() {
 }
 
 /// A constant wave is its value at every time on any clock, even one that
-/// gives no position (a beat span of 0, which silences a moving wave), and
+/// gives no position (a rate that is not finite, which silences a moving wave), and
 /// has no corner; `is_constant` holds only while its depth-by is constant
 /// too.
 #[test]
 fn a_constant_wave_needs_no_clock() {
-    let dead = Clock::Beats {
-        per_cycle: BeatDuration(0.0),
+    let dead = Clock::Seconds {
+        rate: Hz(f32::INFINITY),
         phase: PhaseIncrement(0.0),
+        anchor: None,
     };
     let c = Layer {
         wave: Waveform::Const(-1.0),

@@ -3,6 +3,7 @@
 
 use crate::support::{clap_probe, plugin_server};
 use tutti_plugin::catalog::{Catalog, CatalogConfig, Hosting, PluginRef};
+use tutti_plugin_db::PluginDb;
 use tutti_plugin_types::BridgeError;
 use tutti_session::{PluginLoadRequest, Session};
 use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
@@ -22,10 +23,11 @@ fn session() -> Session {
 }
 
 fn catalog() -> Catalog {
-    Catalog::empty(CatalogConfig::new(
-        "/nonexistent/db.json",
-        tutti_plugin::catalog::NO_SCAN_DIRS,
-    ))
+    Catalog::new(
+        PluginDb::new(),
+        CatalogConfig::new("/nonexistent", tutti_plugin::catalog::NO_SCAN_DIRS),
+        |_| Ok(()),
+    )
 }
 
 fn set_server(path: impl AsRef<std::ffi::OsStr>) {

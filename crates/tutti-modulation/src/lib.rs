@@ -50,7 +50,7 @@
 //!     RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey, Waveform,
 //! };
 //! use tutti_types::{
-//!     Beat, BeatDuration, Depth, Frame, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
+//!     Beat, BeatsPerCycle, Depth, Frame, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
 //!     SampleRate, UnitParam,
 //! };
 //!
@@ -59,7 +59,7 @@
 //!     SourceKey(1),
 //!     Source::Lfo {
 //!         wave: Waveform::Shape { shape: LfoShape::Square, seed: 0 },
-//!         clock: Clock::Beats { per_cycle: BeatDuration(4.0), phase: PhaseIncrement(0.0) },
+//!         clock: Clock::Beats { per_cycle: BeatsPerCycle::of(4.0), phase: PhaseIncrement(0.0) },
 //!     },
 //! )];
 //! let routes = [(

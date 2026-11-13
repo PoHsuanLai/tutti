@@ -149,14 +149,12 @@ it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
 
 ## Features
 
-`default = []`.
+`default = []`. The FFT convolution reverb is not a feature: `ConvolverNode` at any width, with
+`IrChannelConfig`, over `tutti_dsp::Convolver`, whose FFT is
+`tutti_dsp::RealFft` (scalar, so the output is CPU-independent). An IR's
+spectra are stored once (`tutti_dsp::IrSpectra`, behind an `Arc`) and shared
+by every channel and every fork of the graph.
 
-- `convolution` — FFT convolution reverb over a partitioned IR
-  (`ConvolverNode` at any width, with `IrChannelConfig`, over
-  `tutti_dsp::Convolver`, whose FFT is `tutti_dsp::RealFft`: scalar, so the
-  output is CPU-independent). An IR's spectra are stored once
-  (`tutti_dsp::IrSpectra`, behind an `Arc`) and shared by every channel and
-  every fork of the graph.
 - `testing` — stimulus and plumbing nodes for tests, examples and benches
   (`Const`, `Osc`, `Through`, `Split`, `Sink`). Enable it from
   `[dev-dependencies]` only.

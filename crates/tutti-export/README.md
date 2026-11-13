@@ -38,11 +38,11 @@ that is handed a `Progress`, a `Stage` and one fraction of the whole render.
 `Control::none()` is a render nobody watches or stops. A cancelled render is
 `Outcome::Cancelled`, with every temporary removed and every target as it was.
 Encoding is WAV, FLAC, AIFF or OGG Vorbis, each
-behind its own feature (`wav`, `flac`, `aiff`, `ogg`). **None is on by default**:
-`ogg` links the C Vorbis library, so a consumer names the formats it writes. The
-umbrellas (`tutti`, `tutti-session`) forward them as `export-wav`,
-`export-flac`, `export-aiff` and `export-ogg`; their `export` feature implies
-`export-wav` only, so `export-ogg` is the one path to C.
+behind its own `tutti-codec` feature (`encode-wav`, `encode-flac`, `encode-aiff`,
+`encode-vorbis`). **None is on by default**: `encode-vorbis` links the C Vorbis
+library, so a consumer names the formats it writes. The umbrellas (`tutti`,
+`tutti-session`) forward them under the same names; their `export` feature
+implies `encode-wav` only, so `encode-vorbis` is the one path to C.
 
 This crate re-exports no other crate's type: a `Format` or `Pcm` is
 `tutti_codec`'s, a `ChannelLayout` is `tutti_types`', and the clocks (`RenderClock`,
@@ -171,13 +171,9 @@ apply it with `Rendered::apply_gain`, and write with `write_buffers`.
 
 ## Features
 
-- `wav` — WAV, `tutti-codec`'s own writer.
-- `flac` — FLAC, via flacenc.
-- `aiff` — AIFF / AIFF-C, via aifc.
-- `ogg` — Ogg Vorbis, via vorbis_rs.
-
-Each turns on the `tutti-codec` feature of the same name (`ogg` is its
-`vorbis`), and a `Format` variant exists only with its feature.
+None. The formats are `tutti-codec`'s `encode-wav`, `encode-flac`,
+`encode-aiff` and `encode-vorbis` (a consumer turns them on beside this
+crate), and a `Format` variant exists only with its feature.
 
 Resampling (`tutti_dsp::StreamingResampler`, an FFT resampler on
 `tutti_dsp::RealFft`) and dither (`tutti_dsp::DitherNoise`) are algorithms

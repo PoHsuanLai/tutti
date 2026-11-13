@@ -15,7 +15,7 @@
 //! real device, and it is small, so exporting it is cheaper than each consumer
 //! writing its own subtly different one.
 //!
-//! Behind the `test-support` feature, off by default: a host has no use for a
+//! Behind the `testing` feature, off by default: a host has no use for a
 //! fake device list, and shipping one in a release build invites it into
 //! production wiring by accident.
 

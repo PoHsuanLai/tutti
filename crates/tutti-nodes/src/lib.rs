@@ -168,10 +168,7 @@ pub use signal::{
 // already names `tutti-modulation` and `tutti-graph`.
 mod reconcile;
 pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
-
-#[cfg(feature = "convolution")]
 mod convolution;
-#[cfg(feature = "convolution")]
 pub use convolution::{
     ConvolverNode, IrChannelConfig, generate_room_ir, generate_room_ir_into, generate_test_ir,
     generate_test_ir_into,
@@ -183,7 +180,7 @@ pub use convolution::{
 // Behind the `testing` feature, not `cfg(test)`: the consumers are *other*
 // crates' tests, which a `cfg(test)` module is invisible to. The feature keeps
 // it out of the production API — a crate turns it on from its
-// `[dev-dependencies]` only, the pattern `tutti-sampler`'s `test-support`
+// `[dev-dependencies]` only, the pattern `tutti-sampler`'s `testing`
 // set. This crate reaches its own through a self dev-dependency.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

@@ -38,7 +38,7 @@ mod wire;
 
 // A backend with no OS behind it, for testing the session layer. See the
 // module's own docs for why it is exported rather than `#[cfg(test)]`.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};

@@ -26,7 +26,7 @@
 //! `decode-*` feature enables no encoder library and an `encode-*` feature no
 //! `symphonia`. `export` alone on `tutti-session` and `tutti`
 //! reaches no C library: `cargo tree -i ogg_next_sys`
-//! finds nothing, and with `export-ogg` it still does, so the check cannot pass
+//! finds nothing, and with `encode-vorbis` it still does, so the check cannot pass
 //! by looking at nothing.
 //!
 //! A rule the layers already state is not stated twice: `tutti-types`,
@@ -209,7 +209,7 @@ pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// The crates that can reach a C library through `export-ogg`.
+/// The crates that can reach a C library through `encode-vorbis`.
 const OGG_PACKAGES: &[&str] = &["tutti-session", "tutti"];
 
 struct Pkg {
@@ -463,18 +463,18 @@ pub(super) fn check(tree: &dyn Tree, cargo: &dyn Cargo) -> Report {
         };
         if reaches("export").is_ok_and(|o| o.contains("ogg_next_sys")) {
             bad.push(format!(
-                "{pkg} with `export` alone reaches ogg_next_sys; only `export-ogg` may"
+                "{pkg} with `export` alone reaches ogg_next_sys; only `encode-vorbis` may"
             ));
         }
-        match reaches("export,export-ogg") {
+        match reaches("export,encode-vorbis") {
             Ok(o) if o.contains("ogg_next_sys") => {}
             Ok(_) => bad.push(format!(
-                "{pkg} with `export,export-ogg` no longer reaches ogg_next_sys; the check sees nothing ()"
+                "{pkg} with `export,encode-vorbis` no longer reaches ogg_next_sys; the check sees nothing ()"
             )),
             Err(e) => {
                 let e: String = e.trim().chars().take(200).collect();
                 bad.push(format!(
-                    "{pkg} with `export,export-ogg` no longer reaches ogg_next_sys; the check sees nothing ({e})"
+                    "{pkg} with `export,encode-vorbis` no longer reaches ogg_next_sys; the check sees nothing ({e})"
                 ));
             }
         }
@@ -917,7 +917,7 @@ mod tests {
         let mut v = base();
         v.push(("crates/tutti-session", "tutti-session", ""));
         let m = ws(&v);
-        // The tree the check expects: ogg only through `export-ogg`.
+        // The tree the check expects: ogg only through `encode-vorbis`.
         let r = check(
             &m,
             &OggCargo {

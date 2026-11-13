@@ -146,7 +146,7 @@ impl Channels {
     }
 
     /// How many owed replies the drain has taken, over the life of the bridge.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn settled(&self) -> u64 {
         self.settled.load(Ordering::Acquire)
     }
@@ -175,7 +175,7 @@ impl Channels {
     }
 
     /// How many blocks' replies were abandoned, over the life of the bridge.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn abandoned(&self) -> u64 {
         self.abandoned.load(Ordering::Relaxed)
     }

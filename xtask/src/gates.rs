@@ -269,7 +269,7 @@ pub(crate) mod fake {
         }
     }
 
-    /// `cargo tree -i ogg_next_sys` for `export` alone and for `export,export-ogg`.
+    /// `cargo tree -i ogg_next_sys` for `export` alone and for `export,encode-vorbis`.
     pub(crate) struct OggCargo {
         pub(crate) export_reaches: bool,
         pub(crate) ogg_reaches: bool,

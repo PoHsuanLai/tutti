@@ -26,7 +26,7 @@ use super::decode::Seams;
 use super::handlers::{Handles, SessionRate};
 use super::loop_body::{BACKSTOP, streamer_loop};
 use super::metrics::Metrics;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 use super::step::StepOutcome;
 use super::step::StreamerCycle;
 use crate::Error;
@@ -149,7 +149,7 @@ impl Built {
     }
 
     /// The caller drives: its cycle is stepped by `ByHand::step_once`.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn by_hand(self) -> ByHand {
         ByHand {
             rx: Some(self.rx),
@@ -203,25 +203,25 @@ impl Drop for Running {
 
 /// The streamer driven by the caller, a cycle at a time: what
 /// `DiskStreamer::manual` builds. Requires the
-/// `test-support` feature.
+/// `testing` feature.
 ///
 /// There is no thread to race, so a test can say "after this many cycles the
 /// ring holds audio"; it is the same `StreamerCycle::step` the thread runs.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 pub struct ByHand {
     rx: Option<Receiver<StreamerCommand>>,
     cycle: StreamerCycle,
     shared: Handles,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 impl std::fmt::Debug for ByHand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ByHand").finish_non_exhaustive()
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 impl ByHand {
     /// One cycle on the calling thread: drain every queued command, then apply
     /// directions and refills. Returns once that work is done, reporting what

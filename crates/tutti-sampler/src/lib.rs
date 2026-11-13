@@ -71,9 +71,9 @@ pub(crate) fn nonempty(layout: tutti_types::ChannelLayout) -> tutti_types::Chann
 }
 
 // One mock transport and block driver for every test of the crate, in-crate
-// and in `tests/` (through `test-support`): a node reads the transport from
+// and in `tests/` (through `testing`): a node reads the transport from
 // its block's `Env`, and this is what hands it one.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,
@@ -122,7 +122,7 @@ pub use streamer::{
 
 // The hand-driven streamer cycle, alongside `DiskStreamer::manual`: its driver
 // type and its verdict.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 pub use streamer::{ByHand, StepOutcome};
 
 // Header-only probe: what a file is, and whether *this build's* streamer can

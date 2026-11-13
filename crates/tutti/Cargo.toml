@@ -78,10 +78,10 @@ session = ["dep:tutti-session"]
 # links an SDK.
 full = [
     "device",
-    "wav",
-    "flac",
-    "mp3",
-    "ogg",
+    "decode-wav",
+    "decode-flac",
+    "decode-mp3",
+    "decode-ogg",
     "midi",
     "midi-hardware",
     "synth",
@@ -89,12 +89,11 @@ full = [
     "sampler",
     "audio-io",
     "export",
-    "export-flac",
-    "export-aiff",
-    "export-ogg",
+    "encode-flac",
+    "encode-aiff",
+    "encode-vorbis",
     "dsp",
     "modulation",
-    "convolution",
 ]
 
 # The sound card. NOT default: an offline render, a CI job and a server build all want this crate without
@@ -109,10 +108,16 @@ jack = ["device", "tutti-cpal/jack"]
 #
 # The decoder is `tutti-codec`'s, so a format turns on `codec` (below):
 # `Wave::read` and `FileIn` are reached as `tutti::codec::…`.
-wav = ["codec", "tutti-codec/decode-wav", "tutti-sampler?/wav"]
-flac = ["codec", "tutti-codec/decode-flac", "tutti-sampler?/flac"]
-mp3 = ["codec", "tutti-codec/decode-mp3", "tutti-sampler?/mp3"]
-ogg = ["codec", "tutti-codec/decode-ogg", "tutti-sampler?/ogg"]
+decode-wav = ["codec", "tutti-codec/decode-wav", "tutti-sampler?/decode-wav"]
+decode-flac = ["codec", "tutti-codec/decode-flac", "tutti-sampler?/decode-flac"]
+decode-mp3 = ["codec", "tutti-codec/decode-mp3", "tutti-sampler?/decode-mp3"]
+decode-ogg = ["codec", "tutti-codec/decode-ogg", "tutti-sampler?/decode-ogg"]
+# The encoders `tutti-codec` writes (the codec's own names). None implies
+# `export`: a recording writes through them too.
+encode-wav = ["codec", "tutti-codec/encode-wav"]
+encode-flac = ["codec", "tutti-codec/encode-flac"]
+encode-aiff = ["codec", "tutti-codec/encode-aiff"]
+encode-vorbis = ["codec", "tutti-codec/encode-vorbis"]
 
 # `tutti::codec` — `tutti-codec`: `Wave`, the decoder and the encoders `export`
 # writes through. Implied by every format, so it is rarely named directly.
@@ -122,7 +127,7 @@ codec = ["dep:tutti-codec"]
 # `session` and `codec` with the WAV writer: the sink is `tutti::codec::FileOut`,
 # which writes a `tutti::codec::Format`, and a `Format` has a value only with an
 # `encode-*` feature. Implied by `audio-io`, so it is rarely named directly.
-io = ["session", "tutti-session/record", "codec", "tutti-codec/encode-wav"]
+io = ["session", "tutti-session/record", "encode-wav"]
 
 # --- MIDI, two axes --------------------------------------------------------
 midi = [
@@ -139,19 +144,14 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session?/midi-hardwar
 # `session` is optional.
 synth = ["dep:tutti-polysynth", "tutti-session?/synth"]
 soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2", "tutti-session?/soundfont"]
-sampler = ["wav", "dep:tutti-sampler", "tutti-session?/sampler"]
+sampler = ["decode-wav", "dep:tutti-sampler", "tutti-session?/sampler"]
 audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
 # Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
-# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# AIFF are pure Rust and opt-in (`encode-flac`, `encode-aiff`), and `encode-vorbis` is the one path to C (the
 # Vorbis library, `ogg_next_sys`). `cargo xtask check-layout` holds that a build
 # with `export` alone reaches no C.
-export = ["dep:tutti-export", "codec", "tutti-export/wav", "tutti-session?/export"]
-export-wav = ["export"]
-export-flac = ["export", "tutti-export/flac", "tutti-session?/export-flac"]
-export-aiff = ["export", "tutti-export/aiff", "tutti-session?/export-aiff"]
-export-ogg = ["export", "tutti-export/ogg", "tutti-session?/export-ogg"]
+export = ["dep:tutti-export", "encode-wav", "tutti-session?/export"]
 modulation = ["dep:tutti-modulation", "tutti-session?/modulation"]
-convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 
 # `tutti::dsp` and `tutti::measure` are both.
 dsp = ["dep:tutti-dsp", "dep:tutti-measure"]
@@ -176,7 +176,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "headless_export"
-required-features = ["session", "export", "dsp", "wav"]
+required-features = ["session", "export", "dsp", "decode-wav"]
 
 # Cannot RUN in CI — it opens a sound card — but `cargo clippy --all-targets`
 # compiles it, which is the gate that matters for an example whose job is to

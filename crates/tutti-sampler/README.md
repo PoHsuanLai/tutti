@@ -90,11 +90,11 @@ here instead (`VoicePool::with_channels` returns `PoolTooWide`).
 
 ## Features
 
-`default = ["wav"]`.
+`default = []`.
 
-- `wav`, `flac`, `mp3`, `ogg`: decoder support for that format, forwarded to
-  `tutti-codec`, which owns the decoder. `files` turns on all four. With none of
+- `decode-wav`, `decode-flac`, `decode-mp3`, `decode-ogg`: decoder support for
+  that format, forwarded to `tutti-codec`, which owns the decoder. With none of
   them, `probe` and `SampleFacts` are absent: no header can be read.
-- `test-support`: `DiskStreamer::manual` and `step_once`, which run the
+- `testing`: `DiskStreamer::manual` and `step_once`, which run the
   streamer's cycle by hand instead of on its thread, and the `testing` module (a
   mock transport and block driver). For tests; a host has no use for it.

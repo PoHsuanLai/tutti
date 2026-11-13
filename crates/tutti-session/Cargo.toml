@@ -74,7 +74,7 @@ device = ["dep:tutti-cpal"]
 # taps without a microphone takes it alone.
 record = ["dep:tutti-dsp"]
 # The live I/O edge: `record`, and with `device`, the mic capture too.
-audio-io = ["record", "tutti-cpal?/capture", "tutti-codec/encode-wav"]
+audio-io = ["record", "tutti-cpal?/capture", "encode-wav"]
 modulation = ["dep:tutti-modulation"]
 midi = [
     "dep:tutti-midi-protocol",
@@ -85,19 +85,19 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 # `serde` for `MidiRouteRule<T>` (keyed by the app's own stable id, not a
 # `NodeKey`): its Group and channel are `tutti-ump`'s, with its `serde`.
 serde = ["midi", "dep:serde", "tutti-ump/serde"]
-sampler = ["dep:tutti-sampler", "tutti-sampler/wav", "tutti-codec/decode-wav"]
+sampler = ["dep:tutti-sampler", "tutti-sampler/decode-wav"]
 soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2"]
 synth = ["dep:tutti-polysynth"]
-convolution = ["tutti-nodes/convolution"]
 # Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
-# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# AIFF are pure Rust and opt-in (`encode-flac`, `encode-aiff`), and `encode-vorbis` is the one path to C (the
 # Vorbis library, `ogg_next_sys`). `cargo xtask check-layout` holds that a build
 # with `export` alone reaches no C.
-export = ["dep:tutti-export", "dep:tutti-dsp", "tutti-export/wav"]
-export-wav = ["export"]
-export-flac = ["export", "tutti-export/flac"]
-export-aiff = ["export", "tutti-export/aiff"]
-export-ogg = ["export", "tutti-export/ogg"]
+export = ["dep:tutti-export", "dep:tutti-dsp", "encode-wav"]
+# The encoders `tutti-codec` writes, under the codec's own names; none implies `export`.
+encode-wav = ["tutti-codec/encode-wav"]
+encode-flac = ["tutti-codec/encode-flac"]
+encode-aiff = ["tutti-codec/encode-aiff"]
+encode-vorbis = ["tutti-codec/encode-vorbis"]
 plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "dep:tutti-plugin-types", "dep:raw-window-handle", "midi"]
 vst2 = ["plugin", "tutti-plugin/vst2"]
 vst3 = ["plugin", "tutti-plugin/vst3"]
@@ -113,7 +113,7 @@ testing = []
 tutti-session = { path = ".", features = ["testing"] }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
-tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
+tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["testing"] }
 # The MIDI-CI messages a fake device answers the session's Discovery with
 # (`tests/midi/midi.rs`).
 tutti-midi-device = { path = "../tutti-midi-device" }
@@ -125,9 +125,9 @@ tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "decode-wav",
 hound = "3.5"
 # `MidiRouteRule`'s serde round trip (`tests/midi/midi_front.rs`).
 serde_json = "1"
-# `test-support`'s hand-stepped streamer, and the WAV reader the disk voice's
+# `testing`'s hand-stepped streamer, and the WAV reader the disk voice's
 # fork reads its file with (`export_fork_sampler`).
-tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support", "wav"] }
+tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["testing", "decode-wav"] }
 # `ManualStreamDriver`, `OutputSpec`: the device-free device tests.
 tutti-cpal = { path = "../tutti-cpal", default-features = false }
 # The reference CLAP plugin `tests/plugin/plugin.rs` loads, in a
@@ -146,7 +146,7 @@ libloading = "0.8"
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 # `FakePlugin` and its `FakeLoaded` control: a hosted plugin whose editor a test
 # scripts (`tests/plugin/main_view.rs`).
-tutti-plugin-types = { path = "../tutti-plugin-types", features = ["test-support"] }
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["testing"] }
 # The shared test plugin the instrument contract hosts in `Notes` mode, and
 # the font its SoundFont subject plays.
 tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
@@ -186,7 +186,7 @@ required-features = ["synth", "soundfont", "clap"]
 [[bench]]
 name = "render_load"
 harness = false
-required-features = ["synth", "sampler", "convolution", "midi"]
+required-features = ["synth", "sampler", "midi"]
 
 # The §5.1 and §5.2 examples are the umbrella's (`crates/tutti/examples`):
 # they import from `tutti`'s root, which this crate cannot name.

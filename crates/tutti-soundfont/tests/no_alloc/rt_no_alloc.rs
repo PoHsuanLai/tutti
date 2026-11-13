@@ -25,11 +25,7 @@
 use std::sync::Arc;
 use tutti_graph::UmpAt;
 
-use assert_no_alloc::AllocDisabler;
-use tutti_ump::{BendValue, ControlValue};
-mod support;
-
-use support::Hand;
+use crate::support::Hand;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_sf2::SoundFont;
@@ -40,9 +36,7 @@ use tutti_ump::{
     NoteVelocity, RegisteredPerNoteController, Stream, Sysex7Packet, SysexStatus, System, U7, U14,
     Ump, Utility, Voice1, Voice2,
 };
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
+use tutti_ump::{BendValue, ControlValue};
 
 /// Load the committed test SoundFont, failing loudly if the checkout lacks it.
 fn load_test_soundfont() -> Arc<SoundFont> {

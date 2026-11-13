@@ -5,12 +5,9 @@
 //! per thread, so the harness's other threads do not show up in a count.
 
 use tutti_dsp::{FftScratch, StftGeometry};
-use tutti_fixtures::{ThreadCounting, allocations};
+use tutti_fixtures::allocations;
 use tutti_measure::{ChromaConfig, ChromaState, Tuning, step_chroma};
 use tutti_types::{Cents, SampleRate, Samples};
-
-#[global_allocator]
-static A: ThreadCounting = ThreadCounting;
 
 /// After one step has built the buffers and planned the FFT, further steps, a
 /// `reset` and a step, and a step under a config that differs only in tuning

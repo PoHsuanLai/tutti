@@ -29,10 +29,6 @@ use tutti_sampler::{
 };
 use tutti_types::{Beat, Bpm, ChannelLayout, ChannelTopology, FoldEnd, FoldError, SampleRate};
 
-/// Only inside an `assert_no_alloc` region does this abort.
-#[global_allocator]
-static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
-
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 const FRAMES: u32 = 8_192;

@@ -180,6 +180,7 @@ jobs:
       - run: cargo xtask check-hosting
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
+      - run: cargo xtask check-alloc-binaries
 
   clippy:
     name: clippy

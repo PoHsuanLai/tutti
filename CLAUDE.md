@@ -52,9 +52,10 @@ std only. A rule the compiler already enforces is not a gate.
 - **Golden digests** go through `tutti_fixtures::assert_golden`: asserted on the recorded
   libm (x86_64, glibc 2.39), skipped elsewhere, required in CI (`TUTTI_GOLDEN=require`).
   Re-record only for an argued libm move, with the owner.
-- **One integration binary per area**: `tests/<area>/main.rs`, one `mod` per file. A file
-  is its own binary only when it must be (a `#[global_allocator]`, `harness = false`,
-  `cfg(loom)`).
+- **One integration binary per area**: `tests/<area>/main.rs`, one `mod` per file. An area
+  binary installs `assert_no_alloc::AllocDisabler` once and its allocation tests are
+  modules in it; a file is its own binary only for a different allocator (counting,
+  no-free), `harness = false`, or `cfg(loom)`.
 - **A test must be able to fail.** It asserts a spec property, an analytic figure or an
   invariant, and its name says which. Delete a test that cannot fail: one that is always
   true, asserts only that nothing panicked, or compares a value with the function that

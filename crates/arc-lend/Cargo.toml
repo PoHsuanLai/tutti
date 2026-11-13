@@ -29,7 +29,7 @@ loom = "0.7"
 # `ArcSwap` `load()`, the read it most often stands in for. Nothing in `src/`
 # uses it.
 arc-swap = "1.7"
-# `tests/no_alloc.rs`: the reader's code path runs inside an allocation gate.
+# `tests/no_alloc/no_alloc.rs`: the reader's code path runs inside an allocation gate.
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 

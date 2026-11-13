@@ -174,6 +174,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-alloc-binaries",
+        "",
+        "no top-level test file installs AllocDisabler: allocation tests are modules of the area binary",
+    ),
+    (
         "check-range-types",
         "",
         "no plain derived Deserialize on a private tuple field",
@@ -384,6 +389,7 @@ impl Planner<'_> {
             "check-guards" => self.out.push(Step::Gate(Gate::Guards)),
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
+            "check-alloc-binaries" => self.out.push(Step::Gate(Gate::AllocBinaries)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
@@ -436,7 +442,7 @@ impl Planner<'_> {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-alloc-binaries",
                     "check-features",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

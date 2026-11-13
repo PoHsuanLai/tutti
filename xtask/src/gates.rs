@@ -8,6 +8,7 @@
 //! `grep -E` or a Python regex is plain string code, written to the same
 //! language the pattern accepted (each gate's docs say how).
 
+mod alloc_binaries;
 mod canonical_paths;
 mod decode_boundary;
 mod doc_features;
@@ -101,6 +102,8 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// An allocation test is a module of its area binary, not a binary of its own.
+    AllocBinaries,
 }
 
 impl Gate {
@@ -117,6 +120,7 @@ impl Gate {
             Gate::Session => "gate check-session".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
         }
     }
 
@@ -137,6 +141,7 @@ impl Gate {
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
         }
     }
 }

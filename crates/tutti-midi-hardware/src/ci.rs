@@ -17,6 +17,24 @@
 //! sending each an Invalidate MUID (M2-101 §5.9 lists a shutdown among its
 //! reasons) and reporting its peers as lost.
 //!
+//! # When it ends
+//!
+//! Besides a disable or another identity, a device ends when its Group is no
+//! longer called for: a settled Endpoint whose Function Block changes (the
+//! Connection keeps hearing them unless the Endpoint declared them static)
+//! is read again, and the Groups recomputed. A Group that stays keeps its
+//! device and peers; one that goes ends its device (Invalidate MUID, peers
+//! lost: M2-101 §3.3.2, a block that changes its Group location or number of
+//! Groups invalidates its MUID); a new one starts a device (Discovery). **A
+//! block that moves is by Group an end and a start**: the old Group's device
+//! ends and the new Group's begins under a fresh MUID.
+//!
+//! Closing an input ([`MidiSession::disconnect_input`](crate::MidiSession::disconnect_input),
+//! `disconnect_all_inputs`, a dead input reopened) sends each running device's
+//! Invalidate MUID, best effort, and reports **no** `Lost` (the app closed it;
+//! the entry is gone at the next poll). Dropping the session sends nothing: a
+//! drop runs where no output may be reachable.
+//!
 //! # Where it runs
 //!
 //! One [`CiDevice`] is one MIDI-CI Device on one Group, with its own MUID.
@@ -268,7 +286,10 @@ impl Ci {
             running.stop(out, &mut changes);
         }
         match (&mut self.running, enabled) {
-            (Some(running), _) => changes.extend(running.step(now, heard, out)),
+            (Some(running), _) => {
+                running.reconcile(&self.groups, now, out, &mut changes);
+                changes.extend(running.step(now, heard, out));
+            }
             (None, Some(identity)) if !self.groups.is_empty() => {
                 let (running, started) = Running::start(&self.groups, identity, now, out);
                 self.running = Some(Box::new(running));
@@ -276,10 +297,23 @@ impl Ci {
             }
             _ => {}
         }
+        if self.running.as_ref().is_some_and(|r| r.members.is_empty()) {
+            self.running = None;
+        }
         if !changes.is_empty() {
             self.peers = self.collect_peers();
         }
         changes
+    }
+
+    /// The input is closing: each running device announces its MUID invalid
+    /// on `out` (M2-101 §5.9), best effort. **Nothing is reported to the app**:
+    /// it closed the input, so it knows the peers went with it.
+    pub(crate) fn close(&mut self, out: &OpenOutput) {
+        if let Some(running) = self.running.take() {
+            running.stop(out, &mut Vec::new());
+        }
+        self.peers = Arc::default();
     }
 
     /// Every peer found, by Group then MUID.
@@ -344,24 +378,84 @@ impl Running {
     /// Invalidate MUID from and for its own MUID, M2-101 §5.9), and its peers
     /// are lost.
     fn stop(self, out: &OpenOutput, changes: &mut Vec<CiChange>) {
-        let mut sends = Vec::new();
-        for member in &self.members {
-            let muid = member.device.muid();
-            sends.push((
-                member.group,
-                CiMessage::InvalidateMuid {
-                    header: CiHeader::new(muid),
-                    target: muid,
-                },
-            ));
-            changes.extend(member.device.peers().map(|(peer, _)| CiChange::Lost {
-                group: member.group,
-                muid: peer,
-            }));
-        }
-        send(out, &sends);
+        stop_members(&self.members, out, changes);
     }
 
+    /// Brings the devices to `groups` (the Groups MIDI-CI is now called for,
+    /// sorted): a Group no longer called for ends its device (as
+    /// [`stop`](Self::stop)), a new one starts a device with its first
+    /// Discovery, and a Group that stays keeps its device and peers.
+    fn reconcile(
+        &mut self,
+        groups: &[MidiGroup],
+        now: Instant,
+        out: &OpenOutput,
+        changes: &mut Vec<CiChange>,
+    ) {
+        let same = self.members.len() == groups.len()
+            && self.members.iter().zip(groups).all(|(m, g)| m.group == *g);
+        if same {
+            return;
+        }
+        let (kept, gone): (Vec<Member>, Vec<Member>) = std::mem::take(&mut self.members)
+            .into_iter()
+            .partition(|m| groups.contains(&m.group));
+        stop_members(&gone, out, changes);
+        self.members = kept;
+        let mut sends = Vec::new();
+        let mut started = Vec::new();
+        for &group in groups {
+            if self.members.iter().any(|m| m.group == group) {
+                continue;
+            }
+            let (device, first) = CiDevice::new(
+                self.identity,
+                CiCategories::empty(),
+                MAX_SYSEX,
+                entropy(),
+                now,
+            );
+            started.push((group, first));
+            self.members.push(Member { group, device });
+        }
+        self.members.sort_by_key(|m| m.group);
+        for (group, actions) in started {
+            if let Some(member) = self.members.iter().find(|m| m.group == group) {
+                member.apply(actions, &mut sends, changes);
+            }
+        }
+        // The reader is sized by its Groups; a message open across the change
+        // is not finished.
+        let max = MAX_SYSEX.get() as usize;
+        let lanes = self.members.len().max(1);
+        let room = SysexAssembler::room_for(max, 1, lanes);
+        self.assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), max, lanes);
+        send(out, &sends);
+    }
+}
+
+/// Each of `members` announces that its MUID is no longer valid (an Invalidate
+/// MUID from and for its own MUID, M2-101 §5.9), and its peers are lost.
+fn stop_members(members: &[Member], out: &OpenOutput, changes: &mut Vec<CiChange>) {
+    let mut sends = Vec::new();
+    for member in members {
+        let muid = member.device.muid();
+        sends.push((
+            member.group,
+            CiMessage::InvalidateMuid {
+                header: CiHeader::new(muid),
+                target: muid,
+            },
+        ));
+        changes.extend(member.device.peers().map(|(peer, _)| CiChange::Lost {
+            group: member.group,
+            muid: peer,
+        }));
+    }
+    send(out, &sends);
+}
+
+impl Running {
     /// Hands the devices what the port heard and the time (see [`Ci::poll`]).
     fn step(&mut self, now: Instant, heard: &Heard<'_>, out: &OpenOutput) -> Vec<CiChange> {
         let mut sends = Vec::new();

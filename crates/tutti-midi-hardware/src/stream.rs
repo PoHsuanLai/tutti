@@ -269,6 +269,14 @@ impl Negotiation {
         matches!(self.inquire, Inquire::Idle | Inquire::Asking(_)) || self.ci.hears_sysex(ci)
     }
 
+    /// The input is closing: MIDI-CI ends on the device's output (see
+    /// [`Ci::close`]).
+    pub(crate) fn close(&mut self) {
+        if let Some(out) = &self.out {
+            self.ci.close(out);
+        }
+    }
+
     /// The MIDI-CI peers found on this device.
     pub(crate) fn ci_peers(&self) -> std::sync::Arc<[CiPeerInfo]> {
         self.ci.peers()
@@ -382,6 +390,9 @@ impl Negotiation {
                     return None;
                 }
                 stream.endpoint = *connection.endpoint();
+                // MIDI-CI follows: its Groups are the blocks' now, taken up
+                // by the next poll (`Ci::poll`).
+                self.ci.decide(groups_after_settle(stream));
                 return Some(**stream);
             }
         }

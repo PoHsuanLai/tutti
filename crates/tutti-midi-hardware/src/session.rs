@@ -308,7 +308,9 @@ impl MidiSession {
         {
             return Ok(());
         }
-        open.inputs.remove(&id);
+        if let Some(mut held) = open.inputs.remove(&id) {
+            held.stream.close();
+        }
 
         // One ring per connection, retired with it.
         let input = self.inner.devices.open_input(&id, &self.inner.ports)?;
@@ -339,7 +341,10 @@ impl MidiSession {
     /// one closed (at most one: use [`disconnect_all_inputs`](Self::disconnect_all_inputs)
     /// to close every one).
     ///
-    /// Events still queued in that port are discarded with it.
+    /// Events still queued in that port are discarded with it. MIDI-CI devices
+    /// running on it send an Invalidate MUID for their own MUID first (best
+    /// effort), and no [`CiChange::Lost`] is reported: the caller closed it.
+    /// Dropping the session sends nothing.
     pub fn disconnect_input(&self, device: impl Into<DeviceQuery>) -> bool {
         let mut open = self.inner.open();
         let id = match device.into().0 {
@@ -359,12 +364,20 @@ impl MidiSession {
                 id
             }
         };
-        open.inputs.remove(&id).is_some()
+        match open.inputs.remove(&id) {
+            Some(mut held) => {
+                held.stream.close();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Closes every open input, retiring each one's port.
     pub fn disconnect_all_inputs(&self) {
-        self.inner.open().inputs.clear();
+        for (_, mut held) in self.inner.open().inputs.drain() {
+            held.stream.close();
+        }
     }
 
     /// Whether any input is open.

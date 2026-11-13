@@ -5,7 +5,7 @@
 //!
 //! - [`Const`] and [`Osc`] are sources: a constant, or a naive sine, saw,
 //!   square or triangle ([`Waveform`]).
-//! - [`vbap_mix`] and [`bass_send`] wire a panner per source onto the output
+//! - [`vbap_mix()`] and [`bass_send`] wire a panner per source onto the output
 //!   channels (and the LFE's low-passed send, found from the topology).
 //! - [`Through`], [`Split`] and [`Sink`] are plumbing: pass-through, fan-out
 //!   from one input, and a sink with no outputs.

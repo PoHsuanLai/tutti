@@ -1255,7 +1255,10 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     );
     assert_eq!(info.muid(), peer);
     assert_eq!(info.peer().discovery(), &data);
-    assert_eq!(s.midi().ci_peers(device_id), std::slice::from_ref(info));
+    assert_eq!(
+        &s.midi().ci_peers(device_id)[..],
+        std::slice::from_ref(info)
+    );
 }
 
 /// **The hardware out JR-stamps only as its device's configuration says**

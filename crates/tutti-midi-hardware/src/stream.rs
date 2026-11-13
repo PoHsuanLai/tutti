@@ -270,7 +270,7 @@ impl Negotiation {
     }
 
     /// The MIDI-CI peers found on this device.
-    pub(crate) fn ci_peers(&self) -> Vec<CiPeerInfo> {
+    pub(crate) fn ci_peers(&self) -> std::sync::Arc<[CiPeerInfo]> {
         self.ci.peers()
     }
 

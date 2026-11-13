@@ -569,14 +569,16 @@ impl MidiSession {
     /// The MIDI-CI peers found on the open input `id`, by Group then MUID:
     /// empty when it is not open or nothing was found (the first
     /// [`poll`](Self::poll) after its negotiation settled starts Discovery,
-    /// and a peer is found when its Reply arrives).
+    /// and a peer is found when its Reply arrives). The list is shared, not
+    /// copied: it is rebuilt when a [`poll`](Self::poll) reports a change, and a
+    /// read clones the pointer, so holding one keeps the peers as they were.
     #[must_use]
-    pub fn ci_peers(&self, id: &DeviceId) -> Vec<CiPeerInfo> {
+    pub fn ci_peers(&self, id: &DeviceId) -> Arc<[CiPeerInfo]> {
         self.inner
             .open()
             .inputs
             .get(id)
-            .map_or_else(Vec::new, |held| held.stream.ci_peers())
+            .map_or_else(Arc::default, |held| held.stream.ci_peers())
     }
 
     /// What is known of the UMP Stream state of the open input `id`: `None`

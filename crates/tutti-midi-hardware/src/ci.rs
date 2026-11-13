@@ -68,6 +68,7 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
+use std::sync::Arc;
 use std::time::Instant;
 
 use tutti_graph::Offset;
@@ -202,6 +203,9 @@ struct Running {
 pub(crate) struct Ci {
     groups: Vec<MidiGroup>,
     running: Option<Box<Running>>,
+    /// Every peer found, by Group then MUID: rebuilt when a step changes them,
+    /// so a read is a pointer clone, not a copy.
+    peers: Arc<[CiPeerInfo]>,
 }
 
 /// Group 0, the Group of a MIDI 1.0 port and of an Endpoint that says nothing
@@ -272,13 +276,20 @@ impl Ci {
             }
             _ => {}
         }
+        if !changes.is_empty() {
+            self.peers = self.collect_peers();
+        }
         changes
     }
 
     /// Every peer found, by Group then MUID.
-    pub(crate) fn peers(&self) -> Vec<CiPeerInfo> {
+    pub(crate) fn peers(&self) -> Arc<[CiPeerInfo]> {
+        Arc::clone(&self.peers)
+    }
+
+    fn collect_peers(&self) -> Arc<[CiPeerInfo]> {
         let Some(running) = &self.running else {
-            return Vec::new();
+            return Arc::default();
         };
         running
             .members

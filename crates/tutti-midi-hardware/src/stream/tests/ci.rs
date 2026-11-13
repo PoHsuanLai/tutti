@@ -262,7 +262,10 @@ fn a_reply_to_discovery_makes_the_peer_appear_and_is_reported_once() {
     assert_eq!(*id, wire.id);
     assert_eq!((info.group(), info.muid()), (GROUP_0, peer()));
     assert_eq!(info.peer().discovery(), &peer_data());
-    assert_eq!(wire.session.ci_peers(&wire.id), std::slice::from_ref(info));
+    assert_eq!(
+        &wire.session.ci_peers(&wire.id)[..],
+        std::slice::from_ref(info)
+    );
     assert!(polled(&wire, 60).is_empty(), "reported once");
 }
 
@@ -628,6 +631,45 @@ fn enabling_again_with_another_identity_restarts_midi_ci_under_a_new_muid() {
     assert_eq!((header.source, *target), (ours, ours));
     assert_ne!(dh.source, ours, "a new MUID");
     assert_eq!(data.identity, other);
+    assert!(wire.session.ci_peers(&wire.id).is_empty());
+}
+
+/// The peers read are a snapshot: a list held across a change keeps what it
+/// read, a list read after it shows the change, and two reads with no change
+/// between them share one list (a read copies nothing).
+#[test]
+fn the_peers_read_are_a_snapshot_shared_until_they_change() {
+    let (wire, ours) = midi1_running();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data: peer_data(),
+        },
+        40,
+    );
+    let _ = polled(&wire, 50);
+    let held = wire.session.ci_peers(&wire.id);
+    assert_eq!(held.len(), 1);
+    assert!(std::sync::Arc::ptr_eq(
+        &held,
+        &wire.session.ci_peers(&wire.id)
+    ));
+
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::InvalidateMuid {
+            header: CiHeader::new(peer()),
+            target: peer(),
+        },
+        60,
+    );
+    let _ = polled(&wire, 70);
+    assert_eq!(held.len(), 1, "a held list keeps what it read");
+    assert_eq!(held[0].muid(), peer());
     assert!(wire.session.ci_peers(&wire.id).is_empty());
 }
 

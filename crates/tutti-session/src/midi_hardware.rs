@@ -5,6 +5,8 @@
 //! negotiation come back as [`MidiEvent`](crate::MidiEvent)s from
 //! `Session::update`.
 
+use std::sync::Arc;
+
 use tutti_midi_hardware::{CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Resolved};
 use tutti_ump::DeviceIdentity;
 
@@ -103,9 +105,11 @@ impl Midi<'_> {
     /// categories, receivable SysEx size, Function Block). Empty when the
     /// input is not open, the device has no output to talk on, or nothing
     /// answered; a change is a [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer).
+    /// The list is shared, not copied (a read clones a pointer), and stays as it
+    /// was when read: read it again after a `CiPeer` event.
     #[must_use]
-    pub fn ci_peers(&self, id: &DeviceId) -> Vec<CiPeerInfo> {
-        self.io.map_or_else(Vec::new, |io| io.ci_peers(id))
+    pub fn ci_peers(&self, id: &DeviceId) -> Arc<[CiPeerInfo]> {
+        self.io.map_or_else(Arc::default, |io| io.ci_peers(id))
     }
 
     /// Closes an input, by id or name. Whether one was open.

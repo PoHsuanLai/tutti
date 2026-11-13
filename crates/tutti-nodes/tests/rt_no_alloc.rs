@@ -3,7 +3,6 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_types::Drive;
-#[cfg(feature = "convolution")]
 use tutti_types::{SampleRate, Seconds};
 
 #[global_allocator]
@@ -13,13 +12,11 @@ static A: AllocDisabler = AllocDisabler;
 /// the first FFT partition, so `process` takes the hot path), then 1 000
 /// blocks under `assert_no_alloc`. Its `prepare` (which sizes the fold's
 /// scratch) runs when the rig is built, outside the gate.
-#[cfg(feature = "convolution")]
 fn gate<N: tutti_graph::IntoNode>(node: N) {
     gate_at(node, 64);
 }
 
 /// [`gate`] at a host block of `block` frames.
-#[cfg(feature = "convolution")]
 fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
     let (mut rig, _controls) =
         tutti_graph::contract::BlockRig::new(node, tutti_types::SampleRate::SR_48K, block);
@@ -32,8 +29,6 @@ fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
         }
     });
 }
-
-#[cfg(feature = "convolution")]
 #[test]
 fn convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
@@ -41,8 +36,6 @@ fn convolver_process_is_allocation_free() {
     let ir = generate_test_ir(2048, Seconds::new(0.3), SampleRate::SR_48K);
     gate(ConvolverNode::new(&ir, 512));
 }
-
-#[cfg(feature = "convolution")]
 #[test]
 fn stereo_convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
@@ -55,7 +48,6 @@ fn stereo_convolver_process_is_allocation_free() {
 /// The incremental accumulation runs in every block between two partition
 /// boundaries, so it is gated at host blocks that divide the partition, ones
 /// that do not (37, 100) and one longer than a partition (1000 against 256).
-#[cfg(feature = "convolution")]
 #[test]
 fn convolver_mid_cycle_blocks_are_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
@@ -69,7 +61,6 @@ fn convolver_mid_cycle_blocks_are_allocation_free() {
 /// The bare convolver with call lengths from 1 to past two partitions, in an
 /// order that lands calls mid-cycle, across the boundary and exactly on it,
 /// over a signal that is not silent.
-#[cfg(feature = "convolution")]
 #[test]
 fn convolver_ragged_calls_are_allocation_free() {
     use tutti_dsp::Convolver;
@@ -97,7 +88,6 @@ fn convolver_ragged_calls_are_allocation_free() {
 /// the longest tail partition, over a signal that is not silent. The run is
 /// long enough for every level to complete many blocks, and it lands calls on
 /// and across each level's forward and inverse frames.
-#[cfg(feature = "convolution")]
 #[test]
 fn convolver_tail_levels_are_allocation_free() {
     use tutti_dsp::Convolver;
@@ -124,7 +114,6 @@ fn convolver_tail_levels_are_allocation_free() {
 /// block-long mono buffer, both sized before the first block (the frame at
 /// construction, the mono block at `prepare`), never grown in `process`. Six
 /// channels, so the fold does real work rather than the stereo average.
-#[cfg(feature = "convolution")]
 #[test]
 fn folded_six_channel_convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};

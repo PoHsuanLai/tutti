@@ -270,8 +270,6 @@ fn bus_strip() {
         .control("pan", |s| s.set_pan(Pan::new_clamped(-0.7)))
         .check();
 }
-
-#[cfg(feature = "convolution")]
 #[test]
 fn convolver() {
     use tutti_nodes::ConvolverNode;

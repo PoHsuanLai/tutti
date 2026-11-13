@@ -4,7 +4,7 @@
 //! The nodes here are the waveshaper, the brickwall clip,
 //! the width adapter, the dynamics (the lookahead limiter, the gate and the
 //! compressor) and the ring-buffer family (the feedback delay, the lookahead
-//! limiter's ring and, with `--features convolution`, the convolver's dry
+//! limiter's ring and the convolver's dry
 //! alignment), and one graph, the fan-in sum (the op, through the graph). Each case
 //! drives one node through `process` with whole blocks
 //! (`tutti_graph::contract::Direct`) over broadband noise, after a few
@@ -16,8 +16,7 @@
 //!
 //! ```text
 //! cargo bench -p tutti-nodes --bench node_kernels
-//! cargo bench -p tutti-nodes --bench node_kernels --features convolution
-//! ```
+//! //! ```
 
 use std::hint::black_box;
 use tutti_types::MaxBlock;
@@ -431,26 +430,11 @@ fn reverb(c: &mut Criterion) {
         None,
     );
 }
-
-#[cfg(feature = "convolution")]
 fn convolver(c: &mut Criterion) {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
     let ir = generate_test_ir(256, Seconds::new(0.05), SR);
     run(c, "convolver", "1", || ConvolverNode::new(&ir, 64), None);
 }
-
-#[cfg(not(feature = "convolution"))]
-criterion_group!(
-    benches,
-    channel_sum,
-    distortion,
-    brickwall,
-    delay,
-    limiter,
-    dynamics,
-    reverb
-);
-#[cfg(feature = "convolution")]
 criterion_group!(
     benches,
     channel_sum,

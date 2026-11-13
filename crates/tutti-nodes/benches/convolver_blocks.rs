@@ -11,7 +11,7 @@
 //! are what meet an audio deadline.
 //!
 //! ```text
-//! cargo bench -p tutti-nodes --bench convolver_blocks --features convolution
+//! cargo bench -p tutti-nodes --bench convolver_blocks
 //! ```
 //!
 //! One timed call is a few microseconds to a few milliseconds, so the
@@ -19,11 +19,7 @@
 //! matter. The machine's scheduler adds spikes, so the maximum column is the
 //! minimum over the 21 passes of each pass's maximum; compare it, and the
 //! percentiles, only across interleaved runs.
-
-#[cfg(feature = "convolution")]
 use tutti_types::Seconds;
-
-#[cfg(feature = "convolution")]
 fn main() {
     use std::hint::black_box;
     use std::time::Instant;
@@ -118,9 +114,4 @@ fn main() {
         "64x3+500",
         max / mean
     );
-}
-
-#[cfg(not(feature = "convolution"))]
-fn main() {
-    eprintln!("run with --features convolution");
 }

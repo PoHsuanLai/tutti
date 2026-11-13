@@ -171,7 +171,7 @@ impl Gate {
 /// that cannot seek is handed to the lane, the streamer goes back to sleep with
 /// the decode held, and the lane's reply (a command on the streamer's own
 /// queue) rings it.
-#[cfg(feature = "mp3")]
+#[cfg(feature = "decode-mp3")]
 #[test]
 fn a_decode_reply_wakes_a_sleeping_streamer() {
     let dir = tempfile::tempdir().expect("a temp dir");

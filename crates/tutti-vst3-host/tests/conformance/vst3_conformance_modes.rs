@@ -155,19 +155,18 @@ fn prefetch_mode_is_spec_clean() {
 /// the negotiated `ProcessSetup::processMode` — and `kLogIdInvalidProcessMode`
 /// must still not fire. A host that re-ran setup on the toggle, or one that
 /// refused the toggle outright, would both fail to reach this state.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn live_realtime_prefetch_toggle_is_spec_clean() {
     if !harness_ready() {
         return;
     }
     let _plugins = plugin_guard();
-    let path = require_host_checker();
+    let path = probe_path();
 
     let n = unsafe { hc_num_log_events() } as usize;
     let mut inst = match Active::<f32>::load(&path, 48_000.0, 512) {
         Ok(i) => i,
-        Err(e) => panic!("host-checker failed to load: {e:?}"),
+        Err(e) => panic!("audio-probe failed to load: {e:?}"),
     };
     let info = inst.loaded().plugin_info().clone();
 
@@ -298,17 +297,16 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
 /// cover, and `kLogIdInvalidProcessMode` would fire. The host therefore
 /// declines rather than producing an invalid block — and must keep rendering
 /// offline, which is what a bounce asked for.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn offline_instance_refuses_the_live_toggle() {
     if !harness_ready() {
         return;
     }
     let _plugins = plugin_guard();
-    let path = require_host_checker();
+    let path = probe_path();
     let Ok(mut inst) = Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
     else {
-        panic!("host-checker failed to load offline");
+        panic!("audio-probe failed to load offline");
     };
 
     assert_eq!(inst.process_mode(), ProcessMode::Offline);
@@ -328,33 +326,27 @@ fn offline_instance_refuses_the_live_toggle() {
     );
 }
 
-/// The plugin's own view: `host-checker` must report back that it saw offline.
+/// The plugin's own view: `audio-probe` must report back that it saw offline.
 ///
-/// An independent check on the linked-in `HostCheck`. `HostCheckerProcessor`
-/// publishes the mode it observed through `outputParameterChanges` as
-/// `kParamProcessModeTag` carrying `processMode * 0.5`, so decoding it proves
-/// `kOffline` crossed the FFI and arrived inside the plugin — not merely that
-/// our own struct held the right integer. If the host regressed to a hardcoded
-/// `kRealtime`, this reads 0.0 instead of 1.0 and fails.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// An independent check on the linked-in `HostCheck`. The probe publishes the
+/// mode it observed in `ProcessData::processMode` through
+/// `outputParameterChanges` as `kParamObservedProcessMode` carrying
+/// `processMode * 0.5`, so decoding it proves `kOffline` crossed the FFI and
+/// arrived inside the plugin, not merely that our own struct held the right
+/// integer. If the host regressed to a hardcoded `kRealtime`, the probe
+/// publishes nothing and the test fails.
 #[test]
 fn plugin_observes_the_offline_mode_we_requested() {
-    if !harness_ready() {
-        return;
-    }
     let _plugins = plugin_guard();
-    let path = require_host_checker();
+    let path = probe_path();
     let Ok(mut inst) = Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
     else {
-        panic!("host-checker failed to load offline");
+        panic!("audio-probe failed to load offline");
     };
     let info = inst.loaded().plugin_info().clone();
     let transport = TransportInfo::default();
 
-    // The plugin emits the tag only when the mode *changed* since the last
-    // block (`mLastProcessMode`), and it initialises that field to -1 — so the
-    // first block reports, and later ones stay silent. Scan every block rather
-    // than only the last.
+    // The probe writes the point on every non-realtime block; the last is read.
     let mut reported: Option<f64> = None;
     for _ in 0..4 {
         let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
@@ -374,7 +366,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
         let out = inst.process(&mut buffer, &InputEvents::default(), None, &transport);
         if let Some(queue) = out
             .parameter_changes
-            .queue(param_address(K_PARAM_PROCESS_MODE_TAG))
+            .queue(param_address(K_PARAM_OBSERVED_PROCESS_MODE))
             && let Some(point) = queue.points.last()
         {
             reported = Some(point.value.get());
@@ -383,17 +375,16 @@ fn plugin_observes_the_offline_mode_we_requested() {
 
     let Some(value) = reported else {
         panic!(
-            "host-checker never published kParamProcessModeTag; either the host emitted no \
+            "audio-probe never published kParamObservedProcessMode; either the host emitted no \
              ProcessData or output parameter changes are not being read back"
         );
     };
-    // The plugin sends `processMode * 0.5` (hostcheckerprocessor.cpp), so
-    // kOffline == 2 arrives as 1.0.
+    // The probe sends `processMode * 0.5`, so kOffline == 2 arrives as 1.0.
     let observed = (value * 2.0).round() as c_int;
     assert_eq!(
         observed, K_OFFLINE,
         "plugin observed process mode {observed}, but the host was asked for kOffline \
-         ({K_OFFLINE}) — the requested mode did not reach ProcessData"
+         ({K_OFFLINE}): the requested mode did not reach ProcessData"
     );
 }
 

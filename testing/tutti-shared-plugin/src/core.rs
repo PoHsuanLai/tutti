@@ -66,14 +66,17 @@
 //!
 //! # Editor
 //!
-//! Only the VST3 Rust shell has an editor, and its behaviour is the second
+//! Only the VST3 Rust shell has an editor, on every platform (it draws nothing
+//! and ignores its parent; only the run-loop registrations are Linux's), and its behaviour is the second
 //! byte of the state's mode word (`mode | editor << 8`; 0 when a blob leaves it
 //! out): `EDITOR_NONE` offers no view; `EDITOR_TIDY` registers one run-loop
 //! timer and one file descriptor when the view is attached, as VSTGUI does on
 //! Linux, and unregisters both when it is removed; `EDITOR_LEAKY` registers the
 //! same and never unregisters them. The host's run-loop bookkeeping is the
 //! witness, so the behaviour needs no transcript. `EDITOR_FAILING` registers and
-//! then fails `attached`; `EDITOR_LATE` registers (and leaks) from `onSize`. The view also aborts the
+//! then fails `attached`; `EDITOR_LATE` registers (and leaks) from `onSize`;
+//! `EDITOR_LIVE` registers as `EDITOR_TIDY` does and is interactive (see its
+//! constant). The view also aborts the
 //! process if `removed` runs on a thread other than the one `attached` did.
 //!
 //! # Notice
@@ -211,8 +214,15 @@ pub const EDITOR_FAILING: u32 = 3;
 /// The view registers nothing in `attached` and a timer and a file descriptor in
 /// `onSize`, and never unregisters them.
 pub const EDITOR_LATE: u32 = 4;
+/// The view registers as [`EDITOR_TIDY`]'s does and is interactive. It opens at
+/// 200x100 and, when attached, asks its frame to resize it to 300x150. It
+/// resizes: `canResize` is true and `checkSizeConstraint` clamps a rect to
+/// 100x50 at least and 800x600 at most. It consumes the key `a`, the left
+/// arrow and a wheel step forward (distance above 0), and declines every other
+/// key and wheel step.
+pub const EDITOR_LIVE: u32 = 5;
 /// Number of editor behaviours.
-pub const EDITORS: u32 = 5;
+pub const EDITORS: u32 = 6;
 /// The plugin raises nothing of its own accord.
 pub const NOTICE_NONE: u32 = 0;
 /// Every state load raises one notice to the host, from the control thread:

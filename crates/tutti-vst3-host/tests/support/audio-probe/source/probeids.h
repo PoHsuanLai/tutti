@@ -206,6 +206,17 @@ enum ProbeParams : ParamID
     /// still using base `Parameter`, so its plain range really is `0..1` and it
     /// proves nothing here.
     kParamDelayMs = 105,
+
+    /// Read-only output: `processMode * 0.5`, written through
+    /// `outputParameterChanges` at offset 0 of every block whose mode is not
+    /// `kRealtime`, where `ProcessModes::kOffline` (2) arrives as 1.0.
+    ///
+    /// The process mode a host *asks for* is a number it holds; this is the one
+    /// the plugin *saw* in `ProcessData::processMode`, which is what crossed
+    /// the ABI. A host that regressed to a hardcoded `kRealtime` publishes
+    /// nothing, and a realtime block publishes nothing by design, so playback
+    /// reads no processor-driven parameter output from the probe.
+    kParamObservedProcessMode = 106,
 };
 
 /// Plain-value bounds for [`kParamDelayMs`], in milliseconds.
@@ -214,6 +225,11 @@ enum ProbeParams : ParamID
 /// conversion cannot coincide with the right answer at either end.
 static const double kDelayMsMin = 5.0;
 static const double kDelayMsMax = 750.0;
+
+/// The controller number of the legacy MIDI CC the plugin emits on its event
+/// output bus, at offset 0 of any block that carried a point for `kParamGain`,
+/// with the gain as its value (`gain * 127`).
+static const uint8 kGainControllerNumber = 7;
 
 /// Latency the plugin reports and applies in `kModeLatency`. A prime number so
 /// an accidentally-correct result is unlikely.

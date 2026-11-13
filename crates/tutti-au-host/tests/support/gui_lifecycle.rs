@@ -1,24 +1,13 @@
-// The AU Cocoa editor-lifecycle tests and their helpers, shared verbatim by two
-// targets:
-//
-// - `tests/au_gui_lifecycle.rs` — the default cargo harness, where every test
-//   is `#[ignore]`d. Cargo runs `#[test]`s on worker threads, and AppKit
-//   requires the process main thread, so running them there would be undefined
-//   behaviour rather than a test.
-// - `tests/au_gui_lifecycle_main.rs` — a `harness = false` binary that owns
-//   `main()`, and so runs these on the main thread. That is the only
-//   configuration macOS accepts, and it matches how a real host drives an
-//   editor.
+// The AU Cocoa editor-lifecycle tests and their helpers, included by
+// `tests/au_gui_lifecycle_main.rs`, a `harness = false` binary that owns
+// `main()` and so runs them on the process main thread, the only configuration
+// macOS accepts for AppKit.
 //
 // It lives under `tests/support/` because cargo compiles every top-level file
-// in `tests/` as its own target; a shared module must sit in a subdirectory or
-// it would be built a third time on its own.
+// in `tests/` as its own target.
 //
-// Each test below is wrapped in `gui_test!`, which the two roots define
-// differently: the harness one attaches `#[test]`/`#[ignore]`, the main-thread
-// one emits a plain function. The attributes cannot be written here directly —
-// rustc strips an `#[ignore]` function out of a `harness = false` binary, so
-// the runner would have nothing left to call.
+// Each test below is wrapped in `gui_test!`, which the runner defines to emit a
+// plain function for `main` to call.
 
 use std::sync::Mutex;
 

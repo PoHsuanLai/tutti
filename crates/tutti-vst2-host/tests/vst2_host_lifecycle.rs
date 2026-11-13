@@ -22,11 +22,12 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
+use keyboard_types::{Code, Key, KeyState, Modifiers, NamedKey};
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
-    ContentScale, Control, Controller, EditorWindow, KeyCode, KeyEvent, KeyModifiers, KeyPhase,
-    KeyUse, ModifierConvention, NamedKey, Normalized, ParamEdit, ParamId, Request,
+    ContentScale, Control, Controller, EditorWindow, KeyEvent, KeyUse, ModifierConvention,
+    Normalized, ParamEdit, ParamId, Request,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
@@ -597,18 +598,22 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
         let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
         f(true);
     });
-    let key = |phase, key, modifiers| KeyEvent {
-        phase,
+    let key = |state, key, code, modifiers| KeyEvent {
+        state,
         key,
+        code,
         modifiers,
     };
     let down_a = key(
-        KeyPhase::Down,
-        KeyCode::Both('a', NamedKey::Left),
-        KeyModifiers::SHIFT,
+        KeyState::Down,
+        Key::Character("7".into()),
+        Code::Numpad7,
+        Modifiers::SHIFT,
     );
 
-    let closed = instance.loaded_mut().editor_key(&main_thread(), down_a);
+    let closed = instance
+        .loaded_mut()
+        .editor_key(&main_thread(), down_a.clone());
     assert_eq!(closed.ok(), Some(KeyUse::Ignored), "no editor is open");
     assert_eq!(read_capture().key_events, 0, "and the plugin heard nothing");
 
@@ -624,15 +629,16 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
     let cap = read_capture();
     assert_eq!(cap.key_events, 1);
     assert!(cap.last_key.down);
-    assert_eq!(cap.last_key.character, i32::from(b'a'));
-    assert_eq!(cap.last_key.key, 11, "VKEY_LEFT");
+    assert_eq!(cap.last_key.character, i32::from(b'7'));
+    assert_eq!(cap.last_key.key, 31, "VKEY_NUMPAD7");
     assert_eq!(cap.last_key.modifier_bits, 1, "the shift bit");
 
     set_key_consumed(false);
     let up_control = key(
-        KeyPhase::Up,
-        KeyCode::Named(NamedKey::F1),
-        KeyModifiers::CONTROL,
+        KeyState::Up,
+        Key::Named(NamedKey::F1),
+        Code::F1,
+        Modifiers::CONTROL,
     );
     let ignored = instance.loaded_mut().editor_key(&main_thread(), up_control);
     assert_eq!(ignored.ok(), Some(KeyUse::Ignored), "the plugin returned 0");
@@ -649,10 +655,28 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
     assert_eq!(cap.last_key.modifier_bits, control_bit);
 
     set_key_consumed(true);
-    let accented = key(KeyPhase::Down, KeyCode::Char('é'), KeyModifiers::empty());
+    let accented = key(
+        KeyState::Down,
+        Key::Character("é".into()),
+        Code::KeyE,
+        Modifiers::empty(),
+    );
     let unwritable = instance.loaded_mut().editor_key(&main_thread(), accented);
     assert_eq!(unwritable.ok(), Some(KeyUse::Ignored), "ASCII only");
     assert_eq!(read_capture().key_events, 2, "and it was not sent");
+
+    let left = key(
+        KeyState::Down,
+        Key::Named(NamedKey::ArrowLeft),
+        Code::ArrowLeft,
+        Modifiers::empty(),
+    );
+    let used = instance.loaded_mut().editor_key(&main_thread(), left);
+    assert_eq!(used.ok(), Some(KeyUse::Used), "the plugin returned 1");
+    let cap = read_capture();
+    assert_eq!(cap.key_events, 3);
+    assert_eq!(cap.last_key.character, 0, "a named key types no character");
+    assert_eq!(cap.last_key.key, 11, "VKEY_LEFT");
 
     instance.loaded_mut().close_editor(&main_thread());
     set_key_consumed(false);

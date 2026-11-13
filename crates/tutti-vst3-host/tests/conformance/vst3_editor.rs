@@ -10,11 +10,9 @@
 
 #![cfg(feature = "conformance")]
 
+use keyboard_types::{Code, Key as KeyboardKey, KeyState, Modifiers, NamedKey};
 use tutti_fixtures::{StandInWindow, main_thread};
-use tutti_plugin_types::{
-    Control, EditorWindow, KeyCode, KeyEvent, KeyModifiers, KeyPhase, KeyUse, ModifierConvention,
-    NamedKey,
-};
+use tutti_plugin_types::{Control, EditorWindow, KeyEvent, KeyUse, ModifierConvention};
 use tutti_shared_plugin::transcript::{Kind, Transcript, find_blob};
 use tutti_vst3_host::{ContentScale, EditorSize, LoadOptions, Vst3Loaded};
 
@@ -281,12 +279,14 @@ fn keys_received(plugin: &mut Vst3Loaded) -> Vec<(Kind, u32, u32, i16)> {
 fn editor_accepts_keyboard_wheel_and_focus() {
     let mut plugin = plugin_with_editor(LIVE);
     let main = main_thread();
-    let key = |phase, key, modifiers| KeyEvent {
-        phase,
+    let key = |state, key, code, modifiers| KeyEvent {
+        state,
         key,
+        code,
         modifiers,
     };
-    let a = |phase| key(phase, KeyCode::Char('a'), KeyModifiers::empty());
+    let typed = |c: &str| KeyboardKey::Character(c.into());
+    let a = |state| key(state, typed("a"), Code::KeyA, Modifiers::empty());
     let key_use = |plugin: &mut Vst3Loaded, event| {
         plugin
             .editor_key(&main, event)
@@ -295,38 +295,40 @@ fn editor_accepts_keyboard_wheel_and_focus() {
 
     // Before the editor exists every forwarder declines rather than reaching
     // through a missing view.
-    assert_eq!(key_use(&mut plugin, a(KeyPhase::Down)), KeyUse::Ignored);
+    assert_eq!(key_use(&mut plugin, a(KeyState::Down)), KeyUse::Ignored);
     assert!(!plugin.send_wheel(&main, 1.0));
     plugin.set_editor_focus(&main, true);
 
     open(&mut plugin).expect("the view opens");
     plugin.set_editor_focus(&main, true);
 
-    assert_eq!(key_use(&mut plugin, a(KeyPhase::Down)), KeyUse::Used, "a");
+    assert_eq!(key_use(&mut plugin, a(KeyState::Down)), KeyUse::Used, "a");
     assert_eq!(
-        key_use(&mut plugin, a(KeyPhase::Up)),
+        key_use(&mut plugin, a(KeyState::Up)),
         KeyUse::Used,
         "a, released"
     );
     assert_eq!(
         key_use(
             &mut plugin,
-            key(KeyPhase::Down, KeyCode::Char('b'), KeyModifiers::empty())
+            key(KeyState::Down, typed("b"), Code::KeyB, Modifiers::empty())
         ),
         KeyUse::Ignored,
         "b is declined"
     );
     let left = key(
-        KeyPhase::Down,
-        KeyCode::Both('x', NamedKey::Left),
-        KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+        KeyState::Down,
+        KeyboardKey::Named(NamedKey::ArrowLeft),
+        Code::ArrowLeft,
+        Modifiers::SHIFT | Modifiers::CONTROL,
     );
     assert_eq!(key_use(&mut plugin, left), KeyUse::Used, "the left arrow");
     // A character outside the Basic Multilingual Plane has no `char16`: not sent.
     let clef = key(
-        KeyPhase::Down,
-        KeyCode::Char('\u{1D11E}'),
-        KeyModifiers::empty(),
+        KeyState::Down,
+        typed("\u{1D11E}"),
+        Code::Unidentified,
+        Modifiers::empty(),
     );
     assert_eq!(key_use(&mut plugin, clef), KeyUse::Ignored);
 
@@ -341,7 +343,7 @@ fn editor_accepts_keyboard_wheel_and_focus() {
             (Kind::KeyDown, 'a'.into(), 0, 0),
             (Kind::KeyUp, 'a'.into(), 0, 0),
             (Kind::KeyDown, 'b'.into(), 0, 0),
-            (Kind::KeyDown, 'x'.into(), 11, 1 | control),
+            (Kind::KeyDown, 0, 11, 1 | control),
         ],
         "the view received the translated keys, and the unwritable one not at all"
     );
@@ -356,6 +358,6 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     plugin.close_editor(&main);
 
     // And the forwarders decline again once it is gone.
-    assert_eq!(key_use(&mut plugin, a(KeyPhase::Down)), KeyUse::Ignored);
+    assert_eq!(key_use(&mut plugin, a(KeyState::Down)), KeyUse::Ignored);
     assert!(!plugin.send_wheel(&main, 1.0));
 }

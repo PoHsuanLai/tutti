@@ -38,6 +38,8 @@ thiserror = "2"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 crossbeam-queue = "0.3"
+# The editor key vocabulary a `KeyEvent` is written in.
+keyboard-types.workspace = true
 tutti-graph = { path = "../tutti-graph" }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }

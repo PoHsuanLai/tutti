@@ -25,6 +25,8 @@ bytemuck = { version = "1.16", features = ["derive"] }
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 parking_lot = "0.12"
 thiserror = "2"
+# The editor key vocabulary a `KeyEvent` is written in.
+keyboard-types.workspace = true
 tutti-graph = { path = "../tutti-graph" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # `SeqWriter` / `SeqReader`, the sequence lock the transport snapshot lives in.

@@ -1,48 +1,20 @@
 //! Editor (plugin GUI) primitives shared across host crates.
 
+use keyboard_types::{Code, Key, KeyState, Modifiers};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
-
-/// Whether a key went down or came up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum KeyPhase {
-    /// The key was pressed.
-    Down,
-    /// The key was released.
-    Up,
-}
-
-bitflags::bitflags! {
-    /// The modifier keys held with a key.
-    ///
-    /// Each flag is the physical key. A format that numbers its modifier bits by role
-    /// (VST2 and VST3 swap the Control and Command bits on macOS) maps them in its host.
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    pub struct KeyModifiers: u8 {
-        /// Shift.
-        const SHIFT = 1;
-        /// Alt, Option on macOS.
-        const ALT = 1 << 1;
-        /// Control.
-        const CONTROL = 1 << 2;
-        /// Command on macOS, the Windows key elsewhere.
-        const COMMAND = 1 << 3;
-    }
-}
 
 /// Which physical key carries the "command" role, the one a plugin's shortcuts (copy,
 /// paste, undo) use.
 ///
-/// A format that numbers its modifier bits by role maps [`KeyModifiers`] through this.
+/// A format that numbers its modifier bits by role maps [`Modifiers`] through this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModifierConvention {
     /// The Apple convention: the command role is the Command key
-    /// ([`KeyModifiers::COMMAND`]), and the Control key is the separate control role.
+    /// ([`Modifiers::META`]), and the Control key is the separate control role.
     Mac,
     /// The PC convention: the command role is the Control key
-    /// ([`KeyModifiers::CONTROL`]), and the Windows key has no role.
+    /// ([`Modifiers::CONTROL`]), and the Windows key has no role.
     Pc,
 }
 
@@ -60,175 +32,25 @@ impl ModifierConvention {
     pub const HOST: Self = platform::HOST;
 }
 
-/// A key with no character of its own, or named apart from the character it types.
+/// A key press or release the host forwards to a plugin's editor.
 ///
-/// The names follow the VST2 `VKEY_*` set, which the other formats' key codes map onto.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum NamedKey {
-    /// Backspace.
-    Backspace,
-    /// Tab.
-    Tab,
-    /// Clear.
-    Clear,
-    /// Return.
-    Return,
-    /// Pause.
-    Pause,
-    /// Escape.
-    Escape,
-    /// Space bar.
-    Space,
-    /// Next, the key after Previous on a media keyboard (VST2 `VKEY_NEXT`); not Page Down, which is [`PageDown`](Self::PageDown).
-    Next,
-    /// End.
-    End,
-    /// Home.
-    Home,
-    /// Left arrow.
-    Left,
-    /// Up arrow.
-    Up,
-    /// Right arrow.
-    Right,
-    /// Down arrow.
-    Down,
-    /// Page Up.
-    PageUp,
-    /// Page Down.
-    PageDown,
-    /// Select.
-    Select,
-    /// Print.
-    Print,
-    /// Enter on the numeric keypad.
-    Enter,
-    /// Print Screen.
-    Snapshot,
-    /// Insert.
-    Insert,
-    /// Delete.
-    Delete,
-    /// Help.
-    Help,
-    /// Numeric keypad 0.
-    Numpad0,
-    /// Numeric keypad 1.
-    Numpad1,
-    /// Numeric keypad 2.
-    Numpad2,
-    /// Numeric keypad 3.
-    Numpad3,
-    /// Numeric keypad 4.
-    Numpad4,
-    /// Numeric keypad 5.
-    Numpad5,
-    /// Numeric keypad 6.
-    Numpad6,
-    /// Numeric keypad 7.
-    Numpad7,
-    /// Numeric keypad 8.
-    Numpad8,
-    /// Numeric keypad 9.
-    Numpad9,
-    /// Numeric keypad `*`.
-    Multiply,
-    /// Numeric keypad `+`.
-    Add,
-    /// Numeric keypad separator.
-    Separator,
-    /// Numeric keypad `-`.
-    Subtract,
-    /// Numeric keypad decimal point.
-    Decimal,
-    /// Numeric keypad `/`.
-    Divide,
-    /// Function key F1.
-    F1,
-    /// Function key F2.
-    F2,
-    /// Function key F3.
-    F3,
-    /// Function key F4.
-    F4,
-    /// Function key F5.
-    F5,
-    /// Function key F6.
-    F6,
-    /// Function key F7.
-    F7,
-    /// Function key F8.
-    F8,
-    /// Function key F9.
-    F9,
-    /// Function key F10.
-    F10,
-    /// Function key F11.
-    F11,
-    /// Function key F12.
-    F12,
-    /// Num Lock.
-    NumLock,
-    /// Scroll Lock.
-    ScrollLock,
-    /// Shift, pressed alone.
-    Shift,
-    /// Control, pressed alone.
-    Control,
-    /// Alt, pressed alone.
-    Alt,
-    /// The `=` key.
-    Equals,
-}
-
-/// The key an event names: the character it typed, the named key, or both. An event
-/// naming no key is not writable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum KeyCode {
-    /// A key that typed a character and has no name of its own.
-    Char(char),
-    /// A named key that typed no character.
-    Named(NamedKey),
-    /// A named key and the character it typed.
-    Both(char, NamedKey),
-}
-
-impl KeyCode {
-    /// The character the key typed, if it typed one.
-    #[must_use]
-    pub const fn character(self) -> Option<char> {
-        match self {
-            Self::Char(c) | Self::Both(c, _) => Some(c),
-            Self::Named(_) => None,
-        }
-    }
-
-    /// The named key, if it has a name.
-    #[must_use]
-    pub const fn named(self) -> Option<NamedKey> {
-        match self {
-            Self::Named(k) | Self::Both(_, k) => Some(k),
-            Self::Char(_) => None,
-        }
-    }
-}
-
-/// A key press or release the host forwards to a plugin's editor: the key and the
-/// modifiers held.
-///
-/// The key carries a character, a named key, or both, as the formats that take a key take
-/// both (VST2's `effEditKeyDown`, VST3's `onKeyDown`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The vocabulary is the W3C UI Events one, as [`keyboard_types`] spells it, so a windowing
+/// frontend converts its key events name for name. A format carries the typed character
+/// and a virtual key code beside each other (VST2's `effEditKeyDown`, VST3's `onKeyDown`);
+/// a host reads the character from [`key`](Self::key) and the virtual key from
+/// [`key`](Self::key) and [`code`](Self::code) together, as its format defines them. A key
+/// the format has no code or character for is [`KeyUse::Ignored`], not an error.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeyEvent {
     /// Down or up.
-    pub phase: KeyPhase,
-    /// The key pressed or released.
-    pub key: KeyCode,
+    pub state: KeyState,
+    /// The key's value: the character it typed, or its name.
+    pub key: Key,
+    /// The physical key, which tells a numeric keypad key from the main block's.
+    pub code: Code,
     /// The modifiers held.
-    pub modifiers: KeyModifiers,
+    pub modifiers: Modifiers,
 }
 
 /// What an editor did with a forwarded [`KeyEvent`].

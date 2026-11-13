@@ -1,27 +1,15 @@
 # tutti-metering
 
-Load metering for the Tutti audio engine.
+Measures how busy the audio thread is: how much of the time it has for each piece of audio it actually spends producing it.
 
-## What this is
+It is useful for showing a CPU load meter in an audio application. It depends only on `tutti-types` (units such as hertz and decibels), so it can be used on its own.
 
-- `LoadRecorder` / `LoadMeter` / `LoadReading`: how much of each block's time budget the render
-  used, and the blocks over budget. The audio thread holds the recorder; any
-  thread reads through `LoadMeter`.
-
-`tutti-engine`'s `Engine` feeds it on every block it renders, a device
-callback's or an offline session's. It is in the engine because it times the
-block; it is not audio.
-
-Level metering is not here. A level meter is an op in the compiled plan, on the
-graph's outputs or on any node's output port: `tutti-graph`'s
-`Editor::open_meter` and `MeterReader`. Copying audio out of the graph is
-`tutti-graph`'s taps (`Editor::open_tap`, `TapReader`).
-
-## Dependencies
-
-`tutti-types` alone (plus `thiserror`).
-`#![forbid(unsafe_code)]`.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

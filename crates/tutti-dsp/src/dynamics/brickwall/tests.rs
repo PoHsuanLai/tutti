@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{BusTopology, Db, MaxBlock, SampleRate, Samples};
 
 use super::*;
@@ -23,7 +23,7 @@ impl FamilyCase for BrickwallFamily {
             .map(controls)
             .collect();
         let mut rng = StdRng::seed_from_u64(24);
-        all.extend((0..64).map(|_| controls(rng.gen_range(-80.0..20.0))));
+        all.extend((0..64).map(|_| controls(rng.random_range(-80.0..20.0))));
         all
     }
 
@@ -116,7 +116,7 @@ fn the_member_is_the_clamp_and_its_four_consequences() {
     let rate = SampleRate::SR_48K;
     let mut rng = StdRng::seed_from_u64(8);
     let mut xs: Vec<f32> = vec![0.0, -0.0, 1.0, -1.0, 0.5, 1e-30, 1e30, f32::MAX, f32::MIN];
-    xs.extend((0..200).map(|_| rng.gen_range(-4.0..4.0)));
+    xs.extend((0..200).map(|_| rng.random_range(-4.0..4.0)));
     for c in family.reachable() {
         let m = family.member(&c, rate);
         let ceiling = m.ceiling();

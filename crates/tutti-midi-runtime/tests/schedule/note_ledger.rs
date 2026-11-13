@@ -11,43 +11,22 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use crate::common::{FRAMES_PER_BEAT, at, beat_of, connect, off, on, rolling};
 use tutti_fixtures::midi::{cc, note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{
-    Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode,
-    ForkSource, ForkTarget, Forked, IntoNode, Io, LoopRange, Node, NodeParts, Offset, Prepare,
-    Shape, Status, TransportPosition, Unforkable,
+    Cx, Editor, Event, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
+    ForkTarget, Forked, IntoNode, Io, LoopRange, Node, NodeParts, Offset, Prepare, Shape, Status,
+    TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, ChannelLayout, Latency, SampleRate, Samples};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteId, NoteNumber, Ump};
 
-const FPB: f64 = 24_000.0;
-
-fn beat_of(frame: u64) -> Beat {
-    Beat(frame as f64 / FPB)
-}
-
-fn rolling(frame: u64) -> TransportPosition {
-    TransportPosition::new(true, Bpm::of(120.0), beat_of(frame), None)
-}
-
 fn stopped(frame: u64) -> TransportPosition {
     TransportPosition::new(false, Bpm::of(120.0), beat_of(frame), None)
-}
-
-fn on(n: u8) -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
-}
-
-fn off(n: u8) -> Ump {
-    note_off(MidiGroup::FIRST, MidiChannel::FIRST, n, 0)
-}
-
-fn at(frame: u64, e: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(beat_of(frame), e).unwrap()
 }
 
 /// What a sink heard: the keys it holds, offs for keys it does not hold
@@ -172,19 +151,6 @@ impl Node for Latent {
         Status::Modified
     }
     fn reset(&mut self) {}
-}
-
-fn connect(ed: &mut Editor, from: u64, to: u64) {
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(to),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(from),
-            port: 0,
-        }),
-    );
 }
 
 fn disconnect(ed: &mut Editor, from: u64, to: u64) {
@@ -998,7 +964,7 @@ fn spread_clip(r: &mut Rng, overlap: bool) -> (Vec<TimedMidiEvent>, usize, usize
 fn span(events: &[TimedMidiEvent]) -> u64 {
     let last = events
         .iter()
-        .map(|e| (e.beat().0 * FPB).round() as u64)
+        .map(|e| (e.beat().0 * FRAMES_PER_BEAT).round() as u64)
         .max()
         .unwrap_or(0);
     (last / 64 + 2) * 64

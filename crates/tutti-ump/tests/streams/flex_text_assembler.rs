@@ -99,6 +99,7 @@ fn an_all_zero_complete_packet_is_an_empty_text() {
 /// 7.5.9: zero may occur only in an End or Complete packet; the text of a
 /// Start (and, by the same sentence, a Continue) has none. The whole message
 /// is refused once, its End skipped, and the next message is fine.
+/// Spec: m2-104/7.5.9#3
 #[test]
 fn a_zero_in_a_start_or_continue_refuses_the_message() {
     for bad_form in [Form::Start, Form::Continue] {
@@ -118,6 +119,7 @@ fn a_zero_in_a_start_or_continue_refuses_the_message() {
 
 /// 7.5.9: the remaining data bytes are zero: a byte after the
 /// first zero of an End or Complete packet refuses it.
+/// Spec: m2-104/7.5.9#2
 #[test]
 fn a_byte_after_the_padding_began_refuses_the_message() {
     let mut a = assembler(1);
@@ -150,6 +152,7 @@ fn a_byte_after_the_padding_began_refuses_the_message() {
 
 /// 7.5.9: UTF-8 without a Byte Order Mark. A text that is not UTF-8, a
 /// truncated character, and a BOM, each refused and counted once.
+/// Spec: m2-104/7.5.9#1
 #[test]
 fn text_must_be_utf8_without_a_bom() {
     let mut a = assembler(1);
@@ -176,6 +179,7 @@ fn text_must_be_utf8_without_a_bom() {
 
 /// 7.5.2: only the message's own Continue packets, System Real Time messages
 /// and JR Clock messages may sit between Start and End. Those do not end it.
+/// Spec: m2-104/7.5.2#2, m2-104/7.5.2#3
 #[test]
 fn real_time_and_jr_clock_do_not_interrupt() {
     let mut a = assembler(1);
@@ -189,6 +193,7 @@ fn real_time_and_jr_clock_do_not_interrupt() {
 
 /// 7.5.2: anything else of the Group ends the open message, once, counted;
 /// its End is skipped. Another Group's traffic does not.
+/// Spec: m2-104/7.5.2#2
 #[test]
 fn another_message_of_the_group_drops_the_open_one() {
     for other in [

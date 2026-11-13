@@ -1,12 +1,11 @@
 [package]
 name = "tutti-vst3-ffi"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The unsafe half of the VST3 host: safe handles over the vst3 crate's COM bindings"
+description = "Safe bindings for hosting VST3 plugins, built on the vst3 crate, for tutti"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-vst3-ffi"
 readme = "README.md"
 keywords = ["vst3", "audio", "plugin", "ffi"]
 categories = ["multimedia::audio"]
@@ -21,18 +20,18 @@ workspace = true
 conformance = []
 
 [dependencies]
-libloading = "0.9"
+libloading.workspace = true
 parking_lot = "0.13"
 crossbeam-queue = "0.3"
 arrayvec = "0.7"
 bitflags = "2"
-tutti-plugin-types = { path = "../tutti-plugin-types" }
-tutti-types = { path = "../tutti-types" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 vst3 = "0.3"
 # `IRunLoop` (Linux): the look at the descriptors a plugin registered.
-tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
+tutti-plugin-ipc-ffi = { version = "0.0.1", path = "../tutti-plugin-ipc-ffi" }
 
 # The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
 # CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.

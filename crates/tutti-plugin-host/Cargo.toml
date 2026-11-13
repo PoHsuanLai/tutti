@@ -1,15 +1,14 @@
 [package]
 name = "tutti-plugin-host"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The format-generic half of plugin hosting for Tutti: the control handle, the node's controls, transport and parameter delivery, and the in-process node"
+description = "The format-independent part of plugin hosting in tutti"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-plugin-host"
 # Not published, like `tutti-plugin-ipc` and `tutti-plugin-db`: whether and when
 # the split goes to crates.io is the maintainer's call.
-publish = false
 keywords = ["audio", "plugin", "host"]
 categories = ["multimedia::audio"]
 
@@ -19,15 +18,15 @@ workspace = true
 [dependencies]
 # Design 021 section 6.1: the vocabulary, the graph, the transport and the
 # value types. No `tutti-plugin-ipc`, no format host, no `tutti-plugin`.
-tutti-plugin-types = { path = "../tutti-plugin-types" }
-tutti-graph = { path = "../tutti-graph" }
-tutti-transport = { path = "../tutti-transport" }
-tutti-tempo = { path = "../tutti-tempo" }
-tutti-types = { path = "../tutti-types" }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
+tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 # The one OS look at a plugin's descriptors (`service_now`).
-tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
+tutti-plugin-ipc-ffi = { version = "0.0.1", path = "../tutti-plugin-ipc-ffi" }
 
 # Lock-free f64 cursor for the node's controls.
 atomic_float = "1.1"
@@ -60,7 +59,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # linked rlib is a separate image with separate statics, so only the cdylib's
 # globals see the host's calls. The same pair, for the same reasons, as
 # `tutti-vst2-host`'s dev-dependencies.
-libloading = "0.8"
+libloading.workspace = true
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 
 [[bench]]

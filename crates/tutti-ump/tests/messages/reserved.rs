@@ -41,6 +41,7 @@ fn unknown(words: [u32; 4]) {
 
 const ALL: u32 = 0xFFFF_FFFF;
 
+/// Spec: m2-104/2.1.3#2, m2-104/2.1.3#3, m2-104/2.1.3#4, m2-104/2.1.3#5, m2-104/7.4.9#2
 #[test]
 fn reserved_bits_are_ignored() {
     // Utility: the group nibble and the data of a NOOP are reserved.

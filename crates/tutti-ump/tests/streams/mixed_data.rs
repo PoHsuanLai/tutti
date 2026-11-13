@@ -99,6 +99,7 @@ fn chunk_size_counts_the_header_and_whole_umps() {
 
 /// Section 7.9: zero chunks is unknown, zero for this chunk is the unverified
 /// end of 7.9.1, and every other count is a count.
+/// Spec: m2-104/7.9#5
 #[test]
 fn chunk_counts_and_numbers_keep_their_special_zero() {
     assert_eq!(MdsChunks::new(0), MdsChunks::Unknown);
@@ -116,6 +117,7 @@ fn chunk_counts_and_numbers_keep_their_special_zero() {
 /// number counting from 1 and the set's chunk count (the same in every
 /// chunk), the last chunk's number equals the count, its size matches the
 /// payload UMPs after it, and an empty set is one header-only chunk (7.9.1).
+/// Spec: m2-104/7.9#7
 #[test]
 fn headers_carry_numbers_counts_and_sizes() {
     let bytes = data(30);
@@ -225,6 +227,7 @@ fn other_messages_inside_a_set_end_nothing() {
 
 /// Section 7.9, Number of This Chunk: incrementing from 1. A header that is not
 /// the next number drops the set, counted once, and its payload is skipped.
+/// Spec: m2-104/7.9#7
 #[test]
 fn a_chunk_out_of_order_drops_the_set() {
     let mut a = assembler(1);
@@ -330,6 +333,7 @@ fn a_chunk_with_too_few_or_too_many_payload_umps_drops_the_set() {
 
 /// Section 7.9, Number of Chunks (zero is unknown): chunks go on until one
 /// declares a count equal to its own number, which ends the set.
+/// Spec: m2-104/7.9#6
 #[test]
 fn an_unknown_count_ends_at_the_chunk_that_declares_it() {
     let mut a = assembler(1);
@@ -354,6 +358,7 @@ fn an_unknown_count_ends_at_the_chunk_that_declares_it() {
 /// Section 7.9.1: a sender out of data sends one more header-only chunk
 /// (size 16) that declares the count equal to its number, which closes the
 /// set with the data sent valid.
+/// Spec: m2-104/7.9.1#2, m2-104/7.9.1#4
 #[test]
 fn a_header_only_chunk_that_declares_its_number_closes_the_set() {
     let mut a = assembler(1);
@@ -393,6 +398,7 @@ fn a_chunk_numbered_past_the_count_drops_the_set() {
 /// Section 7.9.1: a final chunk numbered zero ends the set with its data not
 /// vouched for: the set is dropped, counted. One that closes nothing counts
 /// nothing, and its payload is skipped.
+/// Spec: m2-104/7.9.1#3
 #[test]
 fn an_unverified_end_drops_the_set() {
     let mut a = assembler(1);

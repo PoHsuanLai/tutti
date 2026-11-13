@@ -1,20 +1,22 @@
 [package]
 name = "tutti-voicing"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "What a note-driven instrument decides before it makes sound, as one pure step"
+description = "Decides what a note-driven instrument does with each MIDI message: start, release, steal or bend a voice"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
-publish = false
+keywords = ["midi", "audio", "synthesizer", "polyphony", "mpe"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
 
 [dependencies]
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 thiserror = { workspace = true }
 
 [dev-dependencies]

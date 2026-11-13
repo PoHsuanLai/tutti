@@ -704,6 +704,7 @@ mod tests {
     /// `aeffectx.h`: IsSwitch `1<<0`, UsesIntegerMinMax `1<<1`, UsesFloatStep
     /// `1<<2`, UsesIntStep `1<<3`, SupportsDisplayIndex `1<<4`,
     /// SupportsDisplayCategory `1<<5`, CanRamp `1<<6`.
+    /// Spec: vst2.flag.kVstParameterIsSwitch, vst2.flag.kVstParameterUsesIntegerMinMax, vst2.flag.kVstParameterUsesFloatStep, vst2.flag.kVstParameterUsesIntStep, vst2.flag.kVstParameterSupportsDisplayIndex, vst2.flag.kVstParameterSupportsDisplayCategory, vst2.flag.kVstParameterCanRamp
     #[test]
     fn the_header_bit_values_gate_the_right_groups() {
         let mut raw = raw_properties(0);

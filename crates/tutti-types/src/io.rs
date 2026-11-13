@@ -90,7 +90,7 @@ pub enum Pull<V = Samples> {
 }
 
 /// Why a [`Pull`] produced no frames: [`Pull::ready`]'s error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stop {
     /// [`Pull::Starved`].
     Starved,

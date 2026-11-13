@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{BusTopology, Db, SampleRate, Seconds};
 
 use super::*;
@@ -45,11 +45,11 @@ impl FamilyCase for GateFamily {
         let mut rng = StdRng::seed_from_u64(24);
         all.extend((0..64).map(|_| {
             controls(
-                rng.gen_range(-70.0..6.0),
-                rng.gen_range(0.0..0.05),
-                rng.gen_range(0.0..0.3),
-                rng.gen_range(0.0..0.5),
-                rng.gen_range(-90.0..0.0),
+                rng.random_range(-70.0..6.0),
+                rng.random_range(0.0..0.05),
+                rng.random_range(0.0..0.3),
+                rng.random_range(0.0..0.5),
+                rng.random_range(-90.0..0.0),
             )
         }));
         all

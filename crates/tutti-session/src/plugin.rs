@@ -136,7 +136,7 @@ use crate::{
 pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(8);
 
 /// Which plugin to load, and the state to restore into it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PluginLoadRequest {
     plugin: PluginRef,
     state: Option<PluginState>,

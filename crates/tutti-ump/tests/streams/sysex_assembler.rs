@@ -4,6 +4,7 @@
 //! The assembler holds no `Vec`: it cannot allocate by construction, and the
 //! two tests that push through `assert_no_alloc` pin it.
 
+use crate::support::payload;
 use assert_no_alloc::assert_no_alloc;
 use tutti_ump::{Message, MidiGroup, Sysex7Packet, SysexAssembler, SysexStatus, SysexStep, Ump};
 
@@ -73,10 +74,6 @@ fn feed(asm: &mut SysexAssembler<Vec<u8>>, events: &[Ump]) -> Vec<Vec<u8>> {
         }
     }
     done
-}
-
-fn payload(len: usize) -> Vec<u8> {
-    (0..len).map(|i| (i % 0x7F) as u8).collect()
 }
 
 /// **A multi-packet message completes as one framed message on its
@@ -173,6 +170,7 @@ fn a_single_beside_an_open_run() {
 /// **A UMP of the open message's Group ends it (M2-104 §7.7.1)**, dropped and
 /// counted once, whatever kind it is that is not a Continue or a System Real
 /// Time message: the packets left over are an orphan and are skipped.
+/// Spec: m2-104/7.7.1#4
 #[test]
 fn another_message_on_the_group_ends_the_run() {
     let body = payload(20);
@@ -207,6 +205,7 @@ fn another_message_on_the_group_ends_the_run() {
 /// **What the spec lets sit inside a message does not end it**: a System Real
 /// Time message on its Group, a Groupless Utility or UMP Stream message, and
 /// any message on another Group.
+/// Spec: m2-104/7.7.1#3, m2-104/7.7.1#5
 #[test]
 fn what_may_be_interspersed_does_not_end_the_run() {
     let body = payload(20);
@@ -233,6 +232,7 @@ fn what_may_be_interspersed_does_not_end_the_run() {
 
 /// **Two Groups' messages interleave** (M2-104 §2.1.2, §7.7.1), each
 /// assembled apart, even across a block boundary.
+/// Spec: m2-104/2.1.2#3, m2-104/7.7.1#5
 #[test]
 fn groups_interleave_their_messages() {
     let a = payload(40);

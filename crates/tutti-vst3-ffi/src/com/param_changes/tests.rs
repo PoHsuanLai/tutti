@@ -261,6 +261,7 @@ fn clear_in_place_on_empty_is_allocation_free() {
 /// vtable must therefore hand back a live queue *and* the index it was
 /// filed under — a null pointer or a stale index is a plugin crash, not a
 /// missed value.
+/// Spec: vst3.IParameterChanges.addParameterData
 #[test]
 fn add_parameter_data_hands_the_plugin_a_live_queue_and_its_index() {
     use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};

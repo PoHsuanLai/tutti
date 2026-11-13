@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! Plugin discovery and persistence.
 //!
 //! The pieces, from pure to stateful:
@@ -12,7 +13,8 @@
 //!   [`Delta`] replaces or drops one row, and [`PluginDb::apply`] is the only
 //!   code that changes the table. With feature `serde` it is `Serialize` and
 //!   `Deserialize` as a versioned record: the app picks the file format and where
-//!   it lives, and a database of another version does not deserialize.
+//!   it lives, and a database of another version, or a path listed twice, does
+//!   not deserialize.
 //! - [`Scanner`] probes the files that are new or changed since their row was
 //!   stamped, through the probe it is given (the host supplies an out-of-process
 //!   one). A scan runs on a worker over a snapshot of the table and sends

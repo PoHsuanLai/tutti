@@ -20,6 +20,8 @@ mod guards;
 mod hosting;
 mod layout;
 mod lex;
+mod lints;
+mod midi_spec;
 mod pointers;
 mod prose;
 mod range_types;
@@ -27,6 +29,8 @@ mod session;
 mod submodule_pins;
 mod test_paths;
 mod toml;
+mod value_traits;
+mod vst3_sdk;
 
 pub(crate) use doc_features::doc_runs;
 
@@ -100,6 +104,10 @@ pub(crate) enum Gate {
     Hosting,
     /// `tutti-session` reaches no Bevy crate and re-exports no crate whole.
     Session,
+    /// Every crate takes the workspace lints, and `missing_debug_implementations` denies.
+    Lints,
+    /// A fieldless public `Eq` enum is `Hash`.
+    ValueTraits,
     /// Prose names crate paths and design-doc sections that exist.
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
@@ -122,6 +130,8 @@ impl Gate {
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
+            Gate::Lints => "gate check-lints".to_owned(),
+            Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
             Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
@@ -144,15 +154,21 @@ impl Gate {
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
+            Gate::Lints => lints::check(&tree, lints::UNLINTED),
+            Gate::ValueTraits => {
+                value_traits::check(&tree, value_traits::ALLOW, value_traits::MIN_FILES)
+            }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
             Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
-                let require = std::env::var("TUTTI_CONFORMANCE").is_ok_and(|v| v == "require");
+                let require =
+                    conformance::Require::parse(std::env::var("TUTTI_CONFORMANCE").ok().as_deref());
                 conformance::check(
                     &tree,
                     sys.as_ref().map(|t| t as &dyn Tree).map_err(Clone::clone),
+                    &midi_spec_text,
                     require,
                 )
             }
@@ -185,14 +201,124 @@ fn clap_sys_tree(repo: &RealTree) -> Result<RealTree, String> {
     })
 }
 
+/// The text of the spec `doc` names: the `.txt` of it in the
+/// `TUTTI_MIDI_SPECS` directory (searched recursively), or else what
+/// `pdftotext -layout` makes of the PDF there. The error names what is
+/// missing.
+fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
+    let dir = std::env::var_os("TUTTI_MIDI_SPECS")
+        .map(PathBuf::from)
+        .ok_or("TUTTI_MIDI_SPECS is not set")?;
+    let all = RealTree { root: dir.clone() }.files(".", &|_| false);
+    let find = |ext: &str| {
+        all.iter()
+            .find(|p| {
+                let name = p.rsplit('/').next().unwrap_or(p);
+                name.starts_with(doc.source) && name.ends_with(ext)
+            })
+            .cloned()
+    };
+    if let Some(txt) = find(".txt") {
+        let bytes = fs::read(dir.join(&txt)).map_err(|e| format!("cannot read {txt}: {e}"))?;
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let pdf = find(".pdf").ok_or_else(|| {
+        format!(
+            "no {}* .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
+            doc.source,
+            dir.display()
+        )
+    })?;
+    let out = process::Command::new("pdftotext")
+        .args(["-layout"])
+        .arg(dir.join(&pdf))
+        .arg("-")
+        .output()
+        .map_err(|e| format!("cannot run pdftotext on {pdf}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("pdftotext failed on {pdf}"));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// `conformance-inventory <format>`: rewrite the format's inventory file from
 /// its spec source, keeping the hand-written columns.
 pub(crate) fn conformance_inventory(root: &Path, format: &str) -> Result<(), String> {
-    if format != "clap" {
-        return Err(format!(
-            "no inventory extractor for `{format}` (only `clap`)"
-        ));
+    match format {
+        "clap" => clap_inventory(root),
+        "midi" => midi_inventory(root),
+        "vst3" => vst3_inventory(root),
+        _ => Err(format!(
+            "no inventory extractor for `{format}` (`clap`, `vst3` or `midi`)"
+        )),
     }
+}
+
+fn vst3_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    let items = vst3_sdk::extract(&repo)?;
+    let path = "testing/conformance/vst3.txt";
+    let (text, added, removed) = conformance::regenerate_vst3(repo.read(path).as_deref(), &items)?;
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} rows", items.len());
+    for id in &added {
+        println!("added {id} (no paraphrase: the gate refuses it until one is written)");
+    }
+    for id in &removed {
+        println!("removed {id}: its row is gone from the file; check its tests' tags");
+    }
+    Ok(())
+}
+
+fn midi_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    for doc in midi_spec::DOCS {
+        midi_doc_inventory(root, &repo, doc)?;
+    }
+    Ok(())
+}
+
+fn midi_doc_inventory(root: &Path, repo: &RealTree, doc: &midi_spec::Doc) -> Result<(), String> {
+    let items = midi_spec::extract(doc, &midi_spec_text(doc)?)?;
+    let path = format!("testing/conformance/{}", doc.file);
+    let (text, added, removed) =
+        conformance::regenerate_midi(doc, repo.read(&path).as_deref(), &items)?;
+    let file = root.join(&path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} rows", items.len());
+    let text_of: std::collections::BTreeMap<&str, &str> = items
+        .iter()
+        .map(|i| (i.id.as_str(), i.text.as_str()))
+        .collect();
+    for id in &added {
+        println!(
+            "added {id} (side todo, no paraphrase): {}",
+            text_of[id.as_str()]
+        );
+    }
+    for id in &removed {
+        println!("removed {id}: its row is gone from the file; check its tests' tags");
+    }
+    if !added.is_empty() || !removed.is_empty() {
+        println!(
+            "{} added, {} removed: a sentence inserted or dropped shifts the numbers after it, so check the paraphrases of the neighbours",
+            added.len(),
+            removed.len()
+        );
+    }
+    Ok(())
+}
+
+fn clap_inventory(root: &Path) -> Result<(), String> {
     let repo = RealTree {
         root: root.to_path_buf(),
     };

@@ -398,7 +398,7 @@ pub trait ForkHealth: Send + Sync {
 }
 
 /// How a forked unit failed while rendering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ForkFaultKind {
     /// Its process died.
@@ -498,7 +498,7 @@ impl fmt::Display for ForkCause {
 ///
 /// Neither mode carries a timeline: a forked node reads musical time from
 /// its block's `Env`, which the fork's executor hands it like the live one's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ForkMode {
     /// A live duplicate: isolated and reset.
     Live,

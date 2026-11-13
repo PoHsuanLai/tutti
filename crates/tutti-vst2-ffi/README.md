@@ -1,13 +1,15 @@
 # tutti-vst2-ffi
 
-The host half of Tutti's fork of [`vst-rs`](https://github.com/RustAudio/vst-rs) 0.3.0, and
-the one crate that holds every VST2 `unsafe` (`cargo xtask check-ffi`).
+The low-level code for hosting VST2 plugins: the VST 2.4 data types, the plugin loader, and the callback a plugin uses to talk to its host.
 
-It holds the `AEffect` and the ABI types, `PluginLoader` and `PluginInstance`, the
-`audioMaster` callback, `HostBuffer`, `RenderHandle`, the MIDI event buffers and the render
-scratch. `tutti-vst2-host` drives it and forbids `unsafe`.
+It holds all the `unsafe` code needed to host VST2 so that `tutti-vst2-host` does not have to. Most people will use it through `tutti-vst2-host`, `tutti-plugin` or `tutti` rather than directly.
 
-The plugin-authoring half of the old `vst-tutti` crate (`plugin_main!` and the plugin-side
-dispatcher) is `testing/tutti-vst2-author`, which only the VST2 test plugins use.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
-Derived from vst-rs (MIT); see `LICENSE` and `CHANGELOG.md` for the upstream history.
+## License
+
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

@@ -1,12 +1,11 @@
 [package]
 name = "tutti-polysynth"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Polyphonic subtractive synthesizer as a Tutti graph node: voice allocation, unison, portamento, tuning, MPE"
+description = "A polyphonic synthesizer with unison, portamento, alternative tunings and per-note expression"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-polysynth"
 readme = "README.md"
 keywords = ["audio", "synthesizer", "polyphony", "mpe", "dsp"]
 categories = ["multimedia::audio"]
@@ -20,27 +19,27 @@ default = []
 [dependencies]
 thiserror = { workspace = true }
 
-tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
+tutti-midi-runtime = { version = "0.0.1", path = "../tutti-midi-runtime", default-features = false }
 
 # `Node`, `ForkSource`: the synth as a graph node, and its own way into a
 # fork of the graph (an export), as `tutti-plugin`'s `PluginClient` has
 # one.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # The SVF and ladder coefficient functions. The voice bank runs those two
 # filters' topologies across SIMD lanes and derives its coefficients from the
 # same functions `SvfFilterNode`/`LadderFilterNode` use, rather than a copy.
-tutti-dsp = { path = "../tutti-dsp", default-features = false }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false }
 
 # `f32x8` lanes for the voice bank.
 wide = { version = "1.6", default-features = false }
 
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 # `Law`, the shape of the portamento glide.
-tutti-curve = { path = "../tutti-curve" }
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-voicing = { path = "../tutti-voicing" }
+tutti-curve = { version = "0.0.1", path = "../tutti-curve" }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-voicing = { version = "0.0.1", path = "../tutti-voicing" }
 
 [dev-dependencies]
 # The filter nodes the bank is compared against (`bank.rs`), and the mixing and

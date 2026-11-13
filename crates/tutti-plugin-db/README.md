@@ -1,34 +1,15 @@
 # tutti-plugin-db
 
-Plugin discovery for the Tutti engine.
+Finds audio plugins installed on a machine and remembers what it found in a database file.
 
-- `discover` walks directories and returns plugin paths with their format. Each
-  directory and each plugin is visited once by its canonical path, so a symlink
-  cycle ends the walk, and a plugin is reported under its canonical path (with
-  the format of the name it was found under), so every route to it is one row.
-- `PluginDb` is a plain table, `path -> FileRow`: the file's modification time,
-  then either the plugins it holds or a blacklist reason. The file is the unit
-  because a crash blacklists a file before any plugin id is known. A `Delta`
-  replaces or drops one row, and `PluginDb::apply` is the only code that
-  changes the table. With feature `serde` it is `Serialize`
-  and `Deserialize` as a versioned record: the app picks the file format and
-  where it lives, and a record of another version, or a path listed twice, does
-  not deserialize.
-- `Scanner` probes the files that are new or changed since their row was
-  stamped, and blacklists one that fails to load, hangs or crashes its probe.
-  A scan runs on a worker over a snapshot and sends deltas; the owner applies
-  them with `Scan::poll`, so the table stays readable for the whole scan. A
-  sentinel file (the pedal) blacklists the file a scan was probing when the
-  host itself died. One pedal serves one scan at a time: a second scan or
-  recovery on the same pedal is refused with `ScanBusy` until the first
-  worker thread has exited. Dropping a `Scan` stops its worker after the file
-  in flight.
-- The probe is a parameter: a function from a path and a format to a
-  `PluginDescriptor` or a `ProbeFailure`. The crate never loads a plugin.
-  `tutti-plugin` supplies the out-of-process one.
+It walks plugin folders, records each plugin file's details, and notes files that crashed while being scanned so they are skipped next time. It only depends on tutti's plugin type definitions, so it can be used on its own to build a plugin list; saving to a file needs the `json` feature.
 
-The table belongs to one thread. Nothing here runs on, or reaches, the audio
-thread.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
-Depends on `tutti-plugin-types` among the workspace crates. Licensed under MIT
-or Apache-2.0.
+## License
+
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

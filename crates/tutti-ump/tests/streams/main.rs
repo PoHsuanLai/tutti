@@ -11,6 +11,7 @@ mod flex_text_assembler;
 mod midi1_stream;
 mod mixed_data;
 mod split_stream;
+mod support;
 mod sysex;
 mod sysex8;
 mod sysex_assembler;

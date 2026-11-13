@@ -509,25 +509,18 @@ mod tests {
     const PITCH_60: u32 = 60 << 25;
 
     fn at(group: u8, channel: u8) -> Address {
-        Address {
-            group: MidiGroup::new(group).unwrap(),
-            channel: MidiChannel::of(channel),
-        }
+        Address::new(MidiGroup::of(group), MidiChannel::of(channel))
     }
 
     fn state() -> PerNoteState {
         PerNoteState::new(2, Semitones(48.0))
     }
 
-    fn key(n: u8) -> NoteNumber {
-        NoteNumber::of(n)
-    }
-
     fn pitch_of(s: &mut PerNoteState, a: Address, n: u8, value: u32) -> Vec<NoteEvent> {
         s.step(
             a,
             Voice2::RegisteredPerNote {
-                note: key(n),
+                note: NoteNumber::of(n),
                 controller: RegisteredPerNoteController::Pitch,
                 value: ControlValue::new(value),
             },
@@ -539,7 +532,7 @@ mod tests {
         s.step(
             a,
             Voice2::PerNotePitchBend {
-                note: key(n),
+                note: NoteNumber::of(n),
                 value: BendValue::new(value),
             },
         )
@@ -556,7 +549,7 @@ mod tests {
         s.step(
             a,
             Voice2::PerNoteManagement {
-                note: key(n),
+                note: NoteNumber::of(n),
                 detach,
                 reset,
             },
@@ -577,7 +570,7 @@ mod tests {
     }
 
     fn start(s: &mut PerNoteState, a: Address, n: u8) -> Vec<NoteEvent> {
-        s.start(a, key(n), Attribute::None).to_vec()
+        s.start(a, NoteNumber::of(n), Attribute::None).to_vec()
     }
 
     fn started(events: &[NoteEvent]) -> NoteId {
@@ -590,7 +583,7 @@ mod tests {
     fn pitch_event(id: NoteId, note: u8, hcu: u32) -> NoteEvent {
         NoteEvent::Control {
             id,
-            note: key(note),
+            note: NoteNumber::of(note),
             control: NoteControl::Pitch(Pitch::from_q7_25(hcu << 25)),
         }
     }
@@ -622,6 +615,7 @@ mod tests {
     /// M2-104 section 7.4.5, Detach: the current note stops taking per-note
     /// values, and later ones are for future notes: the Pitch told after the
     /// Detach reaches the next note, under another id.
+    /// Spec: m2-104/7.4.5#1, m2-104/7.4.5#5
     #[test]
     fn a_detach_ends_the_notes_values_and_the_next_note_has_its_own() {
         let mut s = state();
@@ -648,6 +642,7 @@ mod tests {
     /// M2-104 section 7.4.5: only a Detach makes previous notes on the
     /// referenced Note Number stop responding. A Note On on a number whose
     /// earlier note has not been detached leaves both responding.
+    /// Spec: m2-104/7.4.5#1
     #[test]
     fn a_number_moves_every_live_note_until_a_detach() {
         let mut s = state();
@@ -687,7 +682,7 @@ mod tests {
         s.step(
             a,
             Voice2::NoteOff {
-                note: key(5),
+                note: NoteNumber::of(5),
                 velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
@@ -720,6 +715,7 @@ mod tests {
 
     /// M2-104 section 7.4.5: with D and S the Detach is first, so the current
     /// note is not reset (it keeps its values) and the next starts at defaults.
+    /// Spec: m2-104/7.4.5#2, m2-104/7.4.5#4, m2-104/7.4.5#5
     #[test]
     fn detach_and_reset_together_leave_the_note_and_default_the_next() {
         let mut s = state();
@@ -732,6 +728,7 @@ mod tests {
 
     /// M2-104 section 7.4.5, Reset alone: the current note is reset, and the
     /// next note starts at defaults.
+    /// Spec: m2-104/7.4.5#3, m2-104/7.4.5#5
     #[test]
     fn a_reset_resets_the_note_and_defaults_the_next() {
         let mut s = state();
@@ -781,7 +778,9 @@ mod tests {
     fn an_attribute_pitch_is_for_that_note_alone() {
         let mut s = state();
         let a = at(0, 0);
-        let e = s.start(a, key(0), Attribute::Pitch(60 << 9)).to_vec();
+        let e = s
+            .start(a, NoteNumber::of(0), Attribute::Pitch(60 << 9))
+            .to_vec();
         let id = started(&e);
         assert_eq!(e.last(), Some(&pitch_event(id, 0, 60)));
         assert_eq!(start(&mut s, a, 0).len(), 1, "the key's");
@@ -805,6 +804,7 @@ mod tests {
 
     /// M2-104 section 2.1.2: each Group's channels are separate. A value, a
     /// Detach and a sensitivity told in Group 1 are not Group 0's.
+    /// Spec: m2-104/2.1.2#2
     #[test]
     fn two_groups_are_independent() {
         let mut s = state();
@@ -863,7 +863,7 @@ mod tests {
                 value: ControlValue::new(0),
             },
             Voice2::NoteOff {
-                note: key(5),
+                note: NoteNumber::of(5),
                 velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
@@ -933,7 +933,9 @@ mod tests {
         let mut s = state();
         let a = at(0, 0);
         pitch_of(&mut s, a, 5, PITCH_60);
-        let e = s.start(a, key(5), Attribute::Pitch(70 << 9)).to_vec();
+        let e = s
+            .start(a, NoteNumber::of(5), Attribute::Pitch(70 << 9))
+            .to_vec();
         assert!((sounding(e.last().unwrap()) - 70.0).abs() < 1e-4, "{e:?}");
         let e = bend(&mut s, a, 5, 0xC000_0000);
         assert!((sounding(&e[0]) - 94.0).abs() < 1e-4, "{e:?}");
@@ -960,6 +962,7 @@ mod tests {
     /// defaults, so its pitch is its key's: the next note and the one reset
     /// (by the consumer, on the `Reset` event) are at the key; a bend told after
     /// the Reset is an offset from the key.
+    /// Spec: m2-104/7.4.5#3
     #[test]
     fn a_reset_returns_the_sounding_pitch_to_the_key() {
         let mut s = state();
@@ -980,6 +983,7 @@ mod tests {
 
     /// M2-104 section 7.4.5, Detach: the note keeps what it has, so a pitch, a
     /// bend and a sensitivity after it send that note nothing.
+    /// Spec: m2-104/7.4.5#1
     #[test]
     fn a_detached_note_hears_no_pitch_bend_or_sensitivity() {
         let mut s = state();

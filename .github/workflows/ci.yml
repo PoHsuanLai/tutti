@@ -16,15 +16,21 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 # No job writes to the repository, issues or checks.
 permissions:
   contents: read
 
+# Only a pull request cancels its own stale run. A push to main and a merge
+# group never cancel one another: each merge's run on main completes. A merge
+# group's ref (`gh-readonly-queue/...`) is unique to it, so the key never
+# collides across groups.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -178,6 +184,11 @@ jobs:
       # Every InProcess/OutOfProcess impl is listed in the plugin contract's
       # `hostings` (`xtask` over the source, no build).
       - run: cargo xtask check-hosting
+      # Every crate takes `[lints] workspace = true` and the workspace denies
+      # `missing_debug_implementations` (manifest scan, no build).
+      - run: cargo xtask check-lints
+      # A fieldless public enum that is `Eq` is `Hash` (source scan, no build).
+      - run: cargo xtask check-value-traits
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
       - run: cargo xtask check-alloc-binaries
@@ -188,6 +199,9 @@ jobs:
       - run: cargo xtask check-conformance
         env:
           TUTTI_CONFORMANCE: require
+      # Every crate under `crates/` packages as crates.io takes it: a version on
+      # each dependency, its files inside its own directory. No build.
+      - run: cargo xtask package
 
   clippy:
     name: clippy
@@ -535,10 +549,11 @@ jobs:
   # ordinary test job: allocation counts are machine-independent, so a budget
   # on them survives a noisy vCPU.
   #
-  # Not on `pull_request`: this is a full release build of the workspace.
+  # Not on `pull_request` or `merge_group`: this is a full release build of the
+  # workspace. It runs on the push to main.
   bench-smoke:
     name: bench smoke
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -864,9 +879,12 @@ jobs:
   # (about a minute), and every recorded mutation fails at a bound of 3. That
   # model at 5 (about 6 minutes) is `cargo xtask loom-full`, for a change to `arc-lend`'s
   # protocol code itself; at 6 it did not finish in 25 minutes.
-  # What a pull request changed, read once for the jobs that can skip it. A
-  # skipped job reports success; no check is required by branch protection.
-  # A push to main and a manual run always run everything.
+  # What a pull request or a merge group changed, read once for the jobs that
+  # can skip it. A skipped job counts as passing in `CI result`. A pull request
+  # is diffed against its base; a merge group against the base of its queue
+  # entry, so its diff is the pull request's change plus the entries ahead of
+  # it and it runs the same jobs or more. A push to main and a manual run
+  # always run everything.
   #
   # `code`: false when every changed file is prose that nothing compiles: under
   # top-level `docs/`, or a `*.md` at the repository root. A crate's README
@@ -902,15 +920,16 @@ jobs:
       - id: diff
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
-          if [ "$EVENT" != "pull_request" ]; then
+          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "loom=true" >> "$GITHUB_OUTPUT"
             echo "macos=true" >> "$GITHUB_OUTPUT"
             echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # HEAD is the pull request's merge commit, or the merge group's head.
           changed=$(git diff --name-only "$BASE"...HEAD)
           echo "$changed"
           if echo "$changed" | grep -qvE '^(docs/.*|[^/]+\.md)$'; then
@@ -1053,3 +1072,35 @@ jobs:
       # `WakeFlag` (a raise racing a take is seen by that take or the next,
       # never lost, never invented), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test wake_flag_loom
+
+  # The one check the merge queue's ruleset requires. It waits for every other
+  # job and passes when each succeeded or was skipped; a failed or cancelled
+  # job fails it. A job added to this file is added to `needs` here.
+  result:
+    name: CI result
+    if: always()
+    needs:
+      - fmt
+      - deny
+      - paths
+      - clippy
+      - clippy-windows
+      - clippy-macos
+      - contract-windows
+      - features
+      - bench-smoke
+      - test
+      - test-more
+      - doc
+      - doc-macos
+      - miri
+      - changes
+      - loom
+      - loom-parallel
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

@@ -661,6 +661,7 @@ mod tests {
 
     use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
+    /// Spec: vst2.event.kVstMidiType
     #[test]
     fn note_on_off_roundtrip() {
         let event = wire(
@@ -1141,6 +1142,7 @@ mod tests {
     /// **A multi-packet SysEx reaches the plugin as one `SysExEvent`**, in
     /// order beside the block's MIDI, `0xF0 … 0xF7`; one spanning two blocks
     /// arrives in the second.
+    /// Spec: vst2.event.kVstSysExType
     #[test]
     fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         let body: Vec<u8> = (0..40).collect();

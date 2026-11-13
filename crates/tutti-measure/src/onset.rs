@@ -248,12 +248,6 @@ impl OnsetState {
         self.novelty.clear();
     }
 
-    /// How many frames have been pushed.
-    #[inline]
-    pub fn frames_seen(&self) -> usize {
-        self.novelty.len()
-    }
-
     /// The detection curve so far: one `(position, novelty)` pair per pushed
     /// frame, in analysis order.
     ///
@@ -480,7 +474,6 @@ mod tests {
             state
         };
         let (one, three) = (run(1.0), run(3.0));
-        assert_eq!(one.novelty().len(), one.frames_seen());
         for (i, &(position, _)) in one.novelty().iter().enumerate() {
             assert_eq!(position, Samples(i * 512));
         }
@@ -605,7 +598,7 @@ mod tests {
 
         run(&cfg, &mut state, &samples, &mut fft);
 
-        assert!(state.frames_seen() > 8, "the run must cover many frames");
+        assert!(state.novelty().len() > 8, "the run must cover many frames");
         assert_eq!(
             state.spectrum.len(),
             bins,

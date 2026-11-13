@@ -215,11 +215,6 @@ impl Stft {
         }
     }
 
-    /// Resynthesizes to audio.
-    pub fn resynthesize(&self, fft: &mut FftScratch) -> Vec<f32> {
-        istft(self, fft)
-    }
-
     /// Applies a complex mask and resynthesizes — the edit path's whole operation
     /// in one call, so no caller hand-writes the zip plus the inverse.
     ///
@@ -284,12 +279,6 @@ impl StftPolar {
             bins: self.phases.same_shape(bins),
             geometry: self.geometry,
         }
-    }
-
-    /// Resynthesizes to audio, converting back to rectangular first. Lossless
-    /// against the transform this came from.
-    pub fn resynthesize(&self, fft: &mut FftScratch) -> Vec<f32> {
-        istft(&self.to_rectangular(), fft)
     }
 }
 
@@ -659,7 +648,7 @@ mod tests {
             &mut fft,
         )
         .unwrap();
-        let resynth = transform.resynthesize(&mut fft);
+        let resynth = istft(&transform, &mut fft);
 
         // Compare the steady-state interior: the edges ramp in and out because
         // fewer windows overlap there.
@@ -717,7 +706,11 @@ mod tests {
 
         // The display path accepts it and yields a type with no inverse.
         let display = stft_magnitude(&samples, request, &mut fft).unwrap();
-        assert!(display.frames().get() > 0);
+        let frames = display.frames().get();
+        assert!(
+            (32..=128).contains(&frames),
+            "{frames} frames for a target of 64"
+        );
     }
 
     /// **The request's window shape reaches the resolved geometry**, on both
@@ -882,7 +875,7 @@ mod tests {
             transform.bins().bins(),
         );
         let masked = transform.resynthesize_masked(&neutral, &mut fft).unwrap();
-        let plain = transform.resynthesize(&mut fft);
+        let plain = istft(&transform, &mut fft);
         for (a, b) in masked.iter().zip(&plain) {
             assert!((a - b).abs() < 1e-6);
         }
@@ -930,6 +923,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.frames(), FrameCount(0));
-        assert!(result.resynthesize(&mut fft).is_empty());
+        assert!(istft(&result, &mut fft).is_empty());
     }
 }

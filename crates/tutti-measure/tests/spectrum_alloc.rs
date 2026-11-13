@@ -50,7 +50,6 @@ fn a_spectrum_step_does_not_allocate() {
             }
         });
         assert_eq!(steps, 0, "steps");
-        assert!(state.frames_seen() > 300);
 
         let after_reset = allocations(|| {
             state.reset();

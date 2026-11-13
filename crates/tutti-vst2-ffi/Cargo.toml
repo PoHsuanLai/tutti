@@ -8,7 +8,7 @@ description = "Low-level VST 2.4 hosting bindings for tutti"
 readme = "README.md"
 keywords = ["vst", "vst2", "plugin"]
 license = "MIT"
-repository = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/tutti-audio/tutti"
 authors = [
     "Marko Mijalkovic <marko.mijalkovic97@gmail.com>",
     "Boscop",

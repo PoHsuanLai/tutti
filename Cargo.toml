@@ -115,7 +115,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/tutti-audio/tutti"
 
 # Lints every member inherits with `[lints] workspace = true`.
 #

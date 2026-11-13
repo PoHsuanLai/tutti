@@ -17,8 +17,6 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# The vocabulary crate every other engine crate names, so the engine-wide rule
-# — Bevy is opt-in, never a default — is stated here rather than inherited.
 default = []
 # Enables `Serialize`/`Deserialize` on wire-carried value types: `ChannelLayout`
 # (which rides the plugin-load IPC reply via `BusChannels`), `ChannelTopology`
@@ -26,11 +24,6 @@ default = []
 # vocabulary (which round-trips through the host's document), and the unit
 # newtypes the latter is built from.
 serde = ["dep:serde"]
-# Enables `Reflect` on the unit newtypes and the param vocabulary, so a Bevy
-# component built from them can be inspected and scene-serialized. Reflection
-# only — no `Component`/`Resource` derives: an app stores a `Volume`, never a
-# bare `Db`.
-bevy = ["dep:bevy_reflect"]
 
 [dependencies]
 # `Param<U>` wraps an `Arc<AtomicF32>` (an `f32` unit) or an `Arc<AtomicF64>`
@@ -40,9 +33,6 @@ atomic_float = { version = "1.1", default-features = false, features = ["atomic_
 # coefficient does not depend on the platform's C math library.
 libm = "0.2.15"
 serde = { version = "1", optional = true, features = ["derive"] }
-# Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
-# defines vocabulary, not ECS surface.
-bevy_reflect = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The meter `Deserialize` impls are the untrusted-document edge, so they are

@@ -1,6 +1,5 @@
-//! The Bevy-free modulation reconciler (`tutti_nodes::Modulation`): declarations applied to a
-//! plain `Editor`, rendered by its executor, against analytic figures and invariants of the
-//! render.
+//! The modulation reconciler (`tutti_nodes::Modulation`): declarations applied to a plain
+//! `Editor`, rendered by its executor, against analytic figures and invariants of the render.
 //!
 //! The no-allocation
 //! gate across an `apply` that republishes is in `rt_no_alloc_modulation.rs`,
@@ -23,11 +22,10 @@ use tutti_modulation::{
     Adsr, Clock, Declarations, Law, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
     Source as ModSource, SourceKey, TargetDecl, TargetKey, Waveform,
 };
-use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::testing::Through;
 use tutti_nodes::{Feed, ModHost, Modulation, ReconcileError, Target};
 use tutti_types::{
-    Amplitude, At, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, ParamAddr, ParamKey,
+    Amplitude, At, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, ParamAddr,
     PhaseIncrement, SampleRate, Samples, Seconds, UnitParam,
 };
 
@@ -980,8 +978,8 @@ fn a_foreign_target_takes_a_lane_on_its_event_input() {
 /// **A rebind to a node with another param list waits for its commit.**
 /// Probe 1 declares `[Cutoff]`; a macro of 1 at depth 0.25 over `0..=1000`
 /// reads 250. The host replaces it at its key with a probe declaring
-/// `[Cutoff, Q]` (the same knob cell), then applies and commits, as a Bevy
-/// frame does (spawn, then commit). Until that commit the port's range
+/// `[Cutoff, Q]` (the same knob cell), then applies and commits (spawn, then
+/// commit). Until that commit the port's range
 /// cell is the old unit's, which the commit replaces (another list), so
 /// the target is unresolved and its lane goes; the host re-applies after
 /// the commit, and the lane is rebuilt on the new cell. A range edit to
@@ -1309,9 +1307,8 @@ fn a_taken_lanes_unwiring_keeps_the_hosts_edges() {
 /// Snapshot of everything a refused `apply` must leave alone.
 fn state(ed: &Editor, m: &Modulation, targets: &[TargetKey], sources: &[SourceKey]) -> String {
     format!(
-        "{:?}\n{:?}\n{:?}\n{:?}\n{}",
+        "{:?}\n{:?}\n{:?}\n{}",
         ed.spec(),
-        m.compiled(),
         targets
             .iter()
             .map(|t| m.lane(*t).map(|l| l.0))
@@ -1393,7 +1390,7 @@ impl Playhead {
 /// 1024-frame blocks. Bit for bit from the play start.
 ///
 /// The reference CLAP plugin's gain at a pinned chunk size is
-/// `bevy-tutti`'s `mod_plugin.rs`: a plugin is `tutti-plugin`'s, which `tutti-nodes` cannot name.
+/// A plugin is `tutti-plugin`'s, which `tutti-nodes` cannot name.
 #[test]
 fn an_export_is_the_live_render_on_a_native_param() {
     let (mut ed, mut exec) = editor(128);
@@ -1457,58 +1454,10 @@ fn an_export_is_the_live_render_on_a_native_param() {
     }
 }
 
-/// **`for_param::<Hz>` and `for_unit(Cutoff)` send the same segments**, bit
-/// for bit: the typed constructor is a spelling of the erased one. And a
-/// lane on a param with no typed key (`Pan`) reaches its port.
+/// A lane on a param with no typed key (`Pan`) reaches its port.
 #[test]
-fn for_param_and_for_unit_send_the_same_segments() {
+fn a_lane_on_a_param_with_no_typed_key_reaches_its_port() {
     let (mut ed, mut exec) = editor(128);
-    let program = || {
-        let mut decl = Decl::default();
-        decl.target(cutoff_of(1), 0.0, 1000.0);
-        let s = decl.source(1, sine(7.0));
-        decl.route(1, s, cutoff_of(1), 0.4);
-        let c = tutti_modulation::compile(
-            &decl.get(),
-            None,
-            tutti_graph::PlayReading::default(),
-            SampleRate::of(RATE),
-        )
-        .expect("compiles");
-        c.programs[&cutoff_of(1)].clone()
-    };
-    let logs: Vec<Arc<Mutex<Vec<(u64, ParamSegment)>>>> =
-        (0..2).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
-    let knob = || Some(Arc::new(AtomicF32::new(500.0)).into());
-    // No range cell: the lanes send the knob plus the offset unscaled,
-    // which is all a segment's bits need.
-    let lanes: [ControlLaneNode; 2] = [
-        ControlLaneNode::for_param(ParamKey::<Hz>::CUTOFF, program(), knob(), None),
-        ControlLaneNode::for_unit(UnitParam::Cutoff, program(), knob(), None),
-    ];
-    for (i, lane) in lanes.into_iter().enumerate() {
-        let (l, c) = (key(30 + i as u64), key(40 + i as u64));
-        ed.insert(l, "lane", lane);
-        ed.insert(c, "capture", ForkByClone(Capture(Arc::clone(&logs[i]))));
-        ed.spec_mut().connect_events(
-            EventIn { node: c, port: 0 },
-            EventEdge::Direct(EventOut { node: l, port: 0 }),
-        );
-    }
-    ed.commit().expect("commits");
-    render(&mut ed, &mut exec, 128, 4_096);
-    let bits = |log: &Arc<Mutex<Vec<(u64, ParamSegment)>>>| -> Vec<String> {
-        log.lock()
-            .expect("unpoisoned")
-            .iter()
-            .map(|(f, s)| format!("{f} {:?} {s:?}", s.addr()))
-            .collect()
-    };
-    let (a, b) = (bits(&logs[0]), bits(&logs[1]));
-    assert!(a.len() > 100, "a grid's worth: {}", a.len());
-    assert_eq!(a, b);
-
-    // A param with no `ParamKey`: the lane reaches its port all the same.
     let mut host = Host::default();
     probe_of(
         &mut ed,

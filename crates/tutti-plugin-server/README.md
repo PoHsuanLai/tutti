@@ -27,8 +27,7 @@ cargo build -p tutti-plugin-server
 
 `tutti-plugin` looks for `plugin-server` in the `TUTTI_PLUGIN_SERVER`
 environment variable, next to the running executable, in its parent directory,
-and on `PATH`. `bevy-tutti`'s plugin features depend on this crate so the binary
-is built alongside the app.
+and on `PATH`.
 
 ## Running a server yourself
 

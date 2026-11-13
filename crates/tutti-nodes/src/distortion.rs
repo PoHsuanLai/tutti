@@ -95,14 +95,6 @@ impl DistortionNode {
         self.drive.as_atomic()
     }
 
-    /// Sets the [`Drive`] into the shaping curve, floored at 0.
-    ///
-    /// Read once per block; the shaper is rebuilt only when drive moves
-    /// meaningfully, which is cheap because it carries no state.
-    pub fn set_drive(&self, drive: impl Into<Drive>) {
-        self.drive.store(Drive(drive.into().get().max(0.0)));
-    }
-
     /// Rebuild the (stateless) shaper if drive has moved meaningfully. Cheap:
     /// the shapers carry no z-state, so reconstruction is just a field swap.
     #[inline]

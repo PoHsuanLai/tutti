@@ -7,7 +7,7 @@ use crate::read_counter::ReadCounter;
 use crate::soundfont_version::SoundFontVersion;
 
 /// The information of a SoundFont.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SoundFontInfo {
     pub(crate) version: SoundFontVersion,

@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::NodeKey;
 use ringbuf::{HeapProd, traits::Producer};
 
-use crate::plan::{DelayKey, FeedbackKey, Plan};
+use crate::plan::{FeedbackKey, Plan};
 use crate::spec::EventOut;
 
 /// Entries one block's log holds (and, per worker, one parallel block's).
@@ -141,13 +141,13 @@ impl Dropped {
     /// `count` events lost in the FIFO of the plan's delay `delay`, charged
     /// to the output port that feeds it.
     pub(crate) fn charge_delay(&mut self, plan: &Plan, delay: u32, count: u64) {
-        let from = match plan.delays.get(delay as usize).map(|d| d.key) {
-            Some(
-                DelayKey::Event { from, .. }
-                | DelayKey::ParamEvent { from, .. }
-                | DelayKey::EdgeGain { from, .. }
-                | DelayKey::EventTap { from, .. },
-            ) => Some(from),
+        // A tap of an input merges several sources, so its loss is nobody's.
+        let from = match plan
+            .delays
+            .get(delay as usize)
+            .and_then(|d| d.key.event_origin())
+        {
+            Some(crate::EventTapSource::Out(from)) => Some(from),
             _ => None,
         };
         self.charge(from, count);

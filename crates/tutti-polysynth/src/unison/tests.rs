@@ -1,11 +1,9 @@
 use super::*;
 use crate::UnisonVoices;
 
-/// **A driven detune gets `set_detune`'s floor**: driven to −10 cents
-/// the engine detunes by 0, as `set_detune(-10)` leaves it, and does not
-/// recompute again for the same drive.
+/// **A driven detune below zero is floored at 0 cents.**
 #[test]
-fn a_driven_detune_is_floored_as_the_setter_floors_it() {
+fn a_driven_detune_is_floored_at_zero() {
     let mut engine = UnisonEngine::new(UnisonConfig {
         voice_count: UnisonVoices::of(3),
         detune_cents: Cents(12.0),
@@ -13,15 +11,6 @@ fn a_driven_detune_is_floored_as_the_setter_floors_it() {
     });
     engine.sync_from_atomics([Some(-10.0), None]);
     assert_eq!(engine.config().detune_cents, Cents(0.0));
-    let mut by_setter = UnisonEngine::new(UnisonConfig {
-        voice_count: UnisonVoices::of(3),
-        ..UnisonConfig::default()
-    });
-    by_setter.set_detune(Cents(-10.0));
-    assert_eq!(
-        engine.config().detune_cents,
-        by_setter.config().detune_cents
-    );
 }
 
 #[test]
@@ -123,8 +112,6 @@ fn test_phase_randomization() {
     };
     let mut unison = UnisonEngine::new(config);
 
-    // Seed for reproducibility
-    unison.seed_rng(42);
     unison.randomize_phases();
 
     // Phases should be different
@@ -147,17 +134,14 @@ fn test_phase_randomization() {
 
 #[test]
 fn test_config_update() {
-    let mut unison = UnisonEngine::new(UnisonConfig::default());
-
-    assert_eq!(unison.voice_count(), 1);
-
-    unison.set_voice_count(UnisonVoices::of(5));
+    let mut unison = UnisonEngine::new(UnisonConfig {
+        voice_count: UnisonVoices::of(5),
+        ..Default::default()
+    });
     assert_eq!(unison.voice_count(), 5);
 
-    unison.set_detune(Cents::new(20.0));
+    unison.sync_from_atomics([Some(20.0), Some(0.5)]);
     assert!((unison.config().detune_cents.get() - 20.0).abs() < 0.001);
-
-    unison.set_stereo_spread(tutti_types::Spread::new_clamped(0.5));
     assert!((unison.config().stereo_spread.get() - 0.5).abs() < 0.001);
 }
 
@@ -217,13 +201,12 @@ fn recompute_keeps_the_drawn_phases() {
         phase_randomize: true,
         ..Default::default()
     });
-    unison.seed_rng(7);
     let drawn: Vec<f32> = unison
         .randomize_phases()
         .iter()
         .map(|p| p.phase_offset.get())
         .collect();
-    unison.set_detune(Cents(25.0));
+    unison.sync_from_atomics([Some(25.0), None]);
     let kept: Vec<f32> = unison
         .all_params()
         .iter()

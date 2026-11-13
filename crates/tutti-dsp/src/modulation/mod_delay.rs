@@ -206,12 +206,6 @@ impl ModDelayMember {
         Feedback(self.feedback)
     }
 
-    /// The LFO's step per frame, in cycles.
-    #[must_use]
-    pub fn increment(&self) -> PhaseIncrement {
-        self.inc
-    }
-
     /// The delays the sweep reaches, in frames: from the shortest, `base - depth` floored
     /// at one frame (a `depth` past the base flat-bottoms the sweep), to the longest,
     /// `base + depth`, which is inside the line.

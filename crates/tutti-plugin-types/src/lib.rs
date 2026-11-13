@@ -142,7 +142,7 @@ pub use probe_wire::{
     write_result,
 };
 pub use process::{BlockStatus, ExpressiveContext, ProcessContext, ProcessOutput};
-pub use render_mode::RenderMode;
+pub use render_mode::{RenderMode, RenderModeSupport};
 pub use sample_format::{SampleFormat, negotiate};
 pub use sysex::{
     SYSEX_MESSAGE_CAPACITY, push_sysex, push_sysex_stack, sysex_assembler, sysex_packets,

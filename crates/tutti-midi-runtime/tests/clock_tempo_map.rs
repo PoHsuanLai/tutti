@@ -1,4 +1,4 @@
-//! The MIDI clock follows the published `TempoMap` (doc 020, stage 5): a real
+//! The MIDI clock follows the published `TempoMap`: a real
 //! render of a `ClockNode` under an event tap through the live engine, the
 //! events read out of the tap's ring with their frame on the graph's
 //! clock.
@@ -11,7 +11,7 @@
 //! `s = (sqrt(r0^2 + 2 a b) - r0) / a`. Timing Clock `k` is due at beat
 //! `k / 24`, so on the first frame at or after `seconds(k / 24) x rate`.
 //!
-//! **The bound for a ramp** (doc 020 section 4): the engine runs a ramp as
+//! **The bound for a ramp**: the engine runs a ramp as
 //! constant-tempo cells of 128 frames whose beats are the chord of the curve
 //! between the cell's ends, so the playhead is on the curve at every cell
 //! start and within `|a| h^2 / 8` beats of it inside a cell (`h` = 128 /
@@ -247,7 +247,7 @@ fn a_step_map_puts_every_tick_on_the_maps_frame() {
     assert_eq!(ticks[400] - ticks[399], 800);
 }
 
-/// **A ramp: every tick within the doc 020 section 4 bound** (the module
+/// **A ramp: every tick within the bound** (the module
 /// docs: within one frame of `ceil(x)`, equal to it unless `ceil(x) - x` is
 /// within 0.04 of 0 or 1), tick 0 and the ticks of the step after the ramp
 /// exact. The ticks are not all exactly `ceil(x)` (the bound is reached), so

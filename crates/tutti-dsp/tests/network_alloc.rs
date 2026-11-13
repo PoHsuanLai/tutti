@@ -1,4 +1,5 @@
-//! A `Family::member` call allocates nothing.
+//! A `Family::member` call allocates nothing: a design is pure, and building
+//! a member must not touch the allocator.
 //!
 //! The crate carries no `assert_no_alloc` dev-dependency,
 //! so this binary counts allocations with its own global allocator, per thread.

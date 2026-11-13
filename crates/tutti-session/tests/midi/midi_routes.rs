@@ -1,9 +1,7 @@
 //! Route rules through the session: what a rule wires from the hardware
 //! input's ports, a union of rules, and a disabled rule.
 //!
-//! The session half of `bevy-tutti`'s `midi_routes` suite (its ECS half, the
-//! rule components, the keyboard entity and the despawn observer, stayed
-//! there). The rest of it is in `midi.rs`
+//! The rest of it is in `midi.rs`
 //! (`route_rules_wire_the_hardware_input`: one channel's ports and the
 //! channelless one, an any-channel rule, the fallback, unrouting) and in
 //! `tutti-midi-runtime`'s `compile_routes` tests; what neither had is the

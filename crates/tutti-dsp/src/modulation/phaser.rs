@@ -330,12 +330,6 @@ impl PhaserMember {
         Feedback(self.feedback)
     }
 
-    /// The LFO's step per frame, in cycles.
-    #[must_use]
-    pub fn increment(&self) -> PhaseIncrement {
-        self.inc
-    }
-
     /// The all-pass centre at the sweep's centre (LFO position 0), in [`Hz`]:
     /// [`sweep_hz`] there. With a depth of zero it is the bottom of the range.
     #[must_use]

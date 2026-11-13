@@ -155,8 +155,8 @@ pub enum DelayKey {
     EventTap {
         /// The event tap.
         tap: crate::EventTapId,
-        /// The event output copied.
-        from: EventOut,
+        /// The event port copied.
+        from: crate::EventTapSource,
     },
     /// One lane of an aligned tap, delayed like an output channel.
     Tap {
@@ -167,6 +167,20 @@ pub enum DelayKey {
         /// What feeds it.
         from: Source,
     },
+}
+
+impl DelayKey {
+    /// The event port whose stream this delay carries; `None` for an audio
+    /// delay.
+    pub(crate) fn event_origin(self) -> Option<crate::EventTapSource> {
+        match self {
+            Self::Event { from, .. }
+            | Self::ParamEvent { from, .. }
+            | Self::EdgeGain { from, .. } => Some(crate::EventTapSource::Out(from)),
+            Self::EventTap { from, .. } => Some(from),
+            _ => None,
+        }
+    }
 }
 
 /// One PDC delay in a plan.
@@ -295,6 +309,18 @@ impl EventSlotCapacity {
                 }
             }
         }
+    }
+
+    /// The FIFO of a stream merged from ports declaring `caps`: each one's
+    /// [`fifo`](Self::fifo) bound, added.
+    pub(crate) fn fifo_sum(
+        caps: impl IntoIterator<Item = Option<NonZeroU32>>,
+        len: Samples,
+        max_block: usize,
+    ) -> Self {
+        caps.into_iter().fold(Self::NONE, |acc, cap| {
+            acc.plus(Self::fifo(cap, len, max_block))
+        })
     }
 
     /// Room for both: a merge of the two.
@@ -464,7 +490,8 @@ pub enum Op {
         srcs: Span,
     },
     /// Push every MIDI event of an event slot into an event tap's ring, each
-    /// stamped with its frame.
+    /// stamped with its frame. The slot is an output port's, or the merge a
+    /// node reads at an input.
     EventTap {
         /// Index into `Plan::event_taps`.
         tap: u32,
@@ -967,7 +994,10 @@ pub struct Plan {
     pub(crate) event_list: Vec<u32>,
     /// Every event edge, `(source port, sink port)`, direct and feedback,
     /// sorted: what the executor compares across a commit to close the held
-    /// keys of an edge that ended (`held.rs`).
+    /// keys of an edge that ended (`held.rs`), and the sources an input tap's
+    /// FIFO is sized for. Built from the same `Graph::events` the compiler
+    /// sizes that FIFO from, so the two agree; verify re-derives the size
+    /// from this list and refuses a plan where they do not.
     pub(crate) event_edges: Vec<(EventOut, EventIn)>,
     pub(crate) op_succ: Csr,
     pub(crate) tasks: Vec<Span>,
@@ -1093,11 +1123,6 @@ impl Plan {
         &self.task_ops
     }
 
-    /// Successors of each task.
-    pub fn task_successors(&self) -> &Csr {
-        &self.task_succ
-    }
-
     /// Distinct predecessor tasks of each task — the initial activation count
     /// a parallel executor's per-task counter starts from.
     pub fn task_activation(&self) -> &[u32] {
@@ -1108,14 +1133,6 @@ impl Plan {
     /// (see [`Work`] and [`Shape::cost`](crate::Shape::cost)).
     pub fn work(&self) -> Work {
         self.work
-    }
-
-    /// The cost model's estimate of the costliest path through the task
-    /// DAG, each hand-over to a successor charged by its place in the
-    /// queue: no number of participants renders a block faster than this.
-    /// Coarsening never makes it longer than chain fusion alone would.
-    pub fn critical_path(&self) -> Work {
-        self.critical
     }
 
     /// The most tasks on one level of the task DAG (a task's level is its
@@ -1131,10 +1148,9 @@ impl Plan {
 
     /// How this plan's blocks run on a pool of `participants` (the caller
     /// included): serially, or spread from some block length up over some
-    /// number of participants. Pure arithmetic on [`work`](Self::work),
-    /// [`critical_path`](Self::critical_path) and the task count, the cost
-    /// model of doc 013 ("The cost model and coarsening"); the executor asks it when a
-    /// plan meets a pool, never per block.
+    /// number of participants. Pure arithmetic on [`work`](Self::work), the
+    /// costliest path through the task DAG and the task count; the executor
+    /// asks it when a plan meets a pool, never per block.
     ///
     /// A speed decision only: the parallel render is bit for bit the
     /// serial one.
@@ -1171,6 +1187,41 @@ impl Plan {
         self.unit(port.node)
             .filter(|u| port.port < u.shape.event_out)
             .and_then(|u| u.shape.event_capacity)
+    }
+
+    /// The declared capacity of each output port that writes what an event
+    /// tap's source carries: the port itself, or, for an input, every port
+    /// with an edge into it (what the node can receive there, summed).
+    pub(crate) fn event_tap_ports(&self, source: crate::EventTapSource) -> Vec<Option<NonZeroU32>> {
+        match source {
+            crate::EventTapSource::Out(port) => vec![self.event_port_capacity(port)],
+            crate::EventTapSource::In(at) => self
+                .event_edges
+                .iter()
+                .filter(|&&(_, to)| to == at)
+                .map(|&(from, _)| self.event_port_capacity(from))
+                .collect(),
+        }
+    }
+
+    /// What the delay FIFO of an event tap's source holds: the `fifo` bound of
+    /// each writing port, added.
+    pub(crate) fn event_tap_fifo(
+        &self,
+        source: crate::EventTapSource,
+        len: Samples,
+        block: usize,
+    ) -> EventSlotCapacity {
+        EventSlotCapacity::fifo_sum(self.event_tap_ports(source), len, block)
+    }
+
+    /// The rate an event tap's delay ring is sized from: the note-off room of
+    /// each writing port's capacity (or `default`), added.
+    pub(crate) fn event_tap_rate(&self, source: crate::EventTapSource, default: usize) -> usize {
+        self.event_tap_ports(source)
+            .into_iter()
+            .map(|c| crate::event::note_off_room(c.map_or(default, |n| n.get() as usize)))
+            .sum()
     }
 
     /// Feedback slots of `kind`.

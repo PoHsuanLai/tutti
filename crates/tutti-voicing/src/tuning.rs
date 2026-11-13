@@ -13,27 +13,23 @@
 //!
 //! # What is held
 //!
-//! MTS asks for "128 tuning memory locations (programs)" and says "this is a
-//! maximum value": "an instrument supporting MIDI Tuning may have any lesser
-//! number of tuning programs", and "if an instrument receives a Tuning Program
-//! or Bank number for which it has no Program or Bank, it should ignore that
-//! message". So the capacity is a [`TuningCapacity`], banks and programs a
+//! MTS asks for 128 tuning programs as a maximum: an instrument may have
+//! fewer, and ignores a Tuning Program or Bank number it has none for. So the capacity is a [`TuningCapacity`], banks and programs a
 //! bank, chosen with the [`Rules`](crate::Rules) (default one bank of 128
-//! programs, 64 KiB of tables: the spec's "RAM required for temporary copies of
-//! tuning tables" is one 512-byte table a program here), allocated once in
+//! programs, 64 KiB of tables: the spec's temporary copies of tuning tables are one
+//! 512-byte table a program here), allocated once in
 //! [`Voicing::new`](crate::Voicing::new). A message
 //! for a bank or program beyond it changes nothing and is counted
 //! ([`Voicing::tuning_refused`](crate::Voicing::tuning_refused)).
 //!
-//! Every program starts as equal temperament (RP-020: "the initial tuning of
-//! the instrument is equal temperament", "Bank 0H and Preset 0H"). A message
+//! Every program starts as equal temperament (RP-020: the initial tuning is equal temperament, in Bank 0H
+//! and Preset 0H). A message
 //! with no bank byte (the original Bulk Tuning Dump and Single Note Tuning
 //! Change) is for bank 0: the spec gives it no bank to name.
 //!
-//! The Scale/Octave offsets are per channel, not per program: "this message will
-//! offset the tuning from the currently selected preset" and "each message that
-//! is received will offset from the original preset, not from the modified
-//! tuning", so a message replaces the channel's twelve offsets.
+//! The Scale/Octave offsets are per channel, not per program: the message offsets the tuning
+//! from the currently selected preset, and each message offsets from the
+//! original preset, not from the modified tuning, so a message replaces the channel's twelve offsets.
 
 use tutti_midi_protocol::{KeyTable, OctaveOffsets, TuningFrequency};
 use tutti_types::Semitones;
@@ -86,26 +82,14 @@ impl Default for TuningCapacity {
 
 /// A tuning bank or program the core has no room for
 /// ([`TuningCapacity`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no tuning program {} in bank {}", .program.get(), .bank.get())]
 pub struct NoSuchTuning {
     /// The bank asked for.
     pub bank: U7,
     /// The program asked for.
     pub program: U7,
 }
-
-impl core::fmt::Display for NoSuchTuning {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "no tuning program {} in bank {}",
-            self.program.get(),
-            self.bank.get()
-        )
-    }
-}
-
-impl core::error::Error for NoSuchTuning {}
 
 /// The tuning programs and the channels' Scale/Octave offsets. See the module
 /// docs.
@@ -129,10 +113,6 @@ impl Tunings {
             octave: [[Semitones(0.0); 12]; 16],
             refused: 0,
         }
-    }
-
-    pub(crate) fn capacity(&self) -> TuningCapacity {
-        self.capacity
     }
 
     pub(crate) fn refused(&self) -> u64 {

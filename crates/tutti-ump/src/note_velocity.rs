@@ -17,13 +17,12 @@
 /// # Examples
 ///
 /// ```
-/// use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity};
+/// use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Voice2};
 ///
 /// // Half of the 16-bit range, which is a MIDI 1.0 velocity of 64.
-/// let on = Message::note_on2(
-///     MidiChannel::FIRST,
-///     NoteNumber::of(60),
-///     NoteVelocity::new(0x8000),
+/// let on = Message::Midi2(
+///     MidiChannel::FIRST.into(),
+///     Voice2::note_on(NoteNumber::of(60), NoteVelocity::new(0x8000)),
 /// );
 /// assert!(matches!(on, Message::Midi2(..)));
 /// ```

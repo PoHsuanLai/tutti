@@ -1,9 +1,8 @@
 //! The hardware input path from the driver callback to the drain: what a
 //! device's thread pays to push an event, and what the graph pays to take the
 //! block's events out of the inlet, translate them and send them out of their
-//! channels' ports (doc 017 section 1.3 states the receive path at about 0.3%
-//! of a 64-frame block at 48 kHz for 40 events a block; this is where to
-//! reproduce it).
+//! channels' ports (the receive path is about 0.3% of a 64-frame block at 48 kHz
+//! for 40 events a block).
 //!
 //! - `push`: the callback's side alone, 40 events pushed into a device's inlet
 //!   (`DeviceInput::push`, ring write and the stamp).
@@ -17,6 +16,7 @@
 //! region.
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi::{m1_cc, m1_note_off, m1_note_on};
 use tutti_graph::{
@@ -48,7 +48,7 @@ fn wire() -> Vec<Ump> {
 /// An executor over an ingest node that follows a one-slot set of inlets, and
 /// the device's end of its inlet.
 fn rig() -> (Executor, DeviceInput) {
-    let inlets = DeviceInlets::new(1, EventCapacity::of(4_096), Duration::ZERO);
+    let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(4_096), Duration::ZERO);
     let device = inlets.open().expect("a free slot");
     let (mut editor, exec) = Editor::new(Prepare::new(
         SampleRate::SR_48K,
@@ -57,7 +57,9 @@ fn rig() -> (Executor, DeviceInput) {
     editor.insert(
         NodeKey(1),
         "ingest",
-        MidiIngestNode::new(1).following(&inlets).expect("one slot"),
+        MidiIngestNode::new(NonZeroUsize::MIN)
+            .following(&inlets)
+            .expect("one slot"),
     );
     for change in inlets.take_changes() {
         if let InletChange::Attach { node, .. } = change {

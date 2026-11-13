@@ -5,12 +5,12 @@
 //! *is* is learned after it is opened: its Device Identity (manufacturer,
 //! family, model, revision: M2-104 §7.1.3, the MIDI 1.0 Identity Reply, MIDI-CI
 //! Discovery) and its Product Instance Id (M2-104 §7.1.5; M2-101 §5.8.3.1:
-//! "should be the same as the Serial Number", unique per
-//! Manufacturer/Family/Model, persistent across power cycles).
+//! it should match the Serial Number, be unique per
+//! Manufacturer/Family/Model and persistent across power cycles).
 //!
 //! A Device Identity never names a unit: two keyboards of one model share
 //! it, so it can refute a saved device (a different model answers) but never
-//! confirm one. Only a Product Instance Id can, so [`Learned::compare`] says
+//! confirm one. Only a Product Instance Id can, so `Learned::compare` says
 //! [`Match::SameUnit`] only when both sides have one and they are equal.
 //! [`DeviceTable::resolve`](crate::DeviceTable::resolve) is unchanged: it works
 //! over the listing, before anything is opened, and this check runs after.
@@ -104,7 +104,7 @@ impl Learned {
     ///   another unit of the model answers alike.
     /// - Else nothing was comparable: [`Match::Unknown`].
     #[must_use]
-    pub fn compare(&self, now: &Self) -> Match {
+    pub(crate) fn compare(&self, now: &Self) -> Match {
         let instance = both(self.instance_id, now.instance_id);
         let identity = both(self.identity, now.identity);
         match (instance, identity) {
@@ -122,7 +122,7 @@ fn both<T: PartialEq>(a: Option<T>, b: Option<T>) -> Option<bool> {
     Some(a? == b?)
 }
 
-/// Names what [`Learned::compare`] concluded.
+/// Names what `Learned::compare` concluded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Match {
@@ -173,7 +173,7 @@ impl SavedDevice {
         &self.learned
     }
 
-    /// Compares what the device now says with what was saved, as [`Learned::compare`] does.
+    /// Compares what the device now says with what was saved, as `Learned::compare` does.
     #[must_use]
     pub fn confirm(&self, now: &Learned) -> Match {
         self.learned.compare(now)

@@ -39,7 +39,8 @@ node without a lock.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
   adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Waveform`, the wave a
   control lane evaluates): an audio generator, whose output feeds a node's
-  audio input.
+  audio input. Its `LfoClock` is free (a rate in `Hz`, a param) or synced to the
+  transport beat (a span fixed at build); its depth and rate are read per frame.
 - **Dry/wet** — the convolver, delay, chorus/flanger, phaser and the two reverbs output their wet signal only; blend with the input through the graph's `set_mix`.
 - **Mixing** — `BusStripNode` (volume / balance; a mute or bypass is the graph's `NodeMode`).
   Summing is the graph's: a port or an output channel sums its sources; so is
@@ -76,7 +77,6 @@ to insert the moment it is built.
 
 - **No room simulation and no HRIR data.** The panners place a source; the
   HRIR dataset is supplied by the caller as bytes.
-- **No Bevy.** ECS bindings are the host's; `bevy-tutti` drives the graph.
 - **No sample playback and no synthesis.** Those are `tutti-sampler`,
   `tutti-polysynth` and `tutti-soundfont`.
 
@@ -143,7 +143,7 @@ unchanged, so it never reaches their state.
 
 ## Where it sits
 
-The `tutti` crate re-exports this one as `tutti::nodes`; `bevy-tutti`,
+The `tutti` crate re-exports this one as `tutti::nodes`;
 `tutti-polysynth`, `tutti-export` and `tutti-plugin` build on
 it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
 `tutti-types`.

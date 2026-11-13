@@ -1229,7 +1229,7 @@ fn a_redundant_stretch_filter_is_retired_not_freed_on_the_audio_thread() {
 
 /// `VoiceNode` MUST be a graph node in its own right: a spectral resynth
 /// adds a standalone voice node to its graph, and a single timeline clip
-/// is one (`bevy-tutti`'s `SpawnVoice`). This guards that contract: a
+/// is one. This guards that contract: a
 /// standalone `VoiceNode` produces the same audio one mixer slot does.
 #[test]
 fn voice_node_is_a_standalone_graph_node() {

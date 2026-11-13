@@ -1,6 +1,6 @@
-//! The pure core of MIDI device detection (design 017 §5), and the MIDI-CI codec.
+//! The pure core of MIDI device detection and the MIDI-CI codec.
 //!
-//! Detection first. The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])
+//! The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])
 //! turns Discovery, Invalidate MUID, Inquiry: Endpoint, ACK, NAK and the Profile Configuration messages
 //! into SysEx payload bytes and back;
 //! it holds no state and no transport. [`CiDevice`] is the Management state

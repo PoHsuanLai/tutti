@@ -17,11 +17,10 @@ fn the_pre_delay_is_rounded_to_whole_frames() {
     assert_eq!(pre_delay_frames(Seconds(f64::NAN), rate), Samples::ZERO);
 }
 
-/// A `Network` lives on the stack of the audio thread: the whole value stays
-/// under 64 KiB (about 55 KB: `MAX_STAGES` of the
-/// largest stage).
+/// A `Network` is a plain value built on the control side: the whole value
+/// stays under 64 KiB (it is about 55 KB: `MAX_STAGES` of the largest stage).
 #[test]
-fn a_network_fits_the_audio_thread_stack() {
+fn a_network_stays_under_64_kib() {
     let bytes = std::mem::size_of::<Network>();
     println!("size_of::<Network>() = {bytes}");
     assert!(bytes < 64 * 1024, "{bytes}");

@@ -66,7 +66,7 @@ pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
 }
 
 /// How the reader takes a control from its cell and its port.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Eq)]
 pub enum ControlRead {
     /// A moved cell glides on the stream clock over [`GAIN_GLIDE`], from where the
     /// control stood on the first frame of the block that first sees the write, or its
@@ -84,7 +84,7 @@ pub enum ControlRead {
 
 /// The values a control accepts: what it does not is read as the last value it
 /// accepted (`LastGood`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Eq)]
 pub enum ControlValid {
     /// Finite values.
     Finite,

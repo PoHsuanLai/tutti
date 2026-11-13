@@ -139,9 +139,8 @@ fn magnitude_gain_tracks_the_window_shape() {
 }
 
 #[test]
-fn bin_counts_differ_by_one_and_both_derive_from_the_window() {
+fn bins_per_frame_counts_dc_through_nyquist() {
     let g = geo(2048, 512);
-    assert_eq!(g.freq_bins(), BinCount(1024));
     assert_eq!(g.bins_per_frame(), BinCount(1025));
 }
 

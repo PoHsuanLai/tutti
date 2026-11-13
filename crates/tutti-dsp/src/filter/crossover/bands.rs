@@ -2,8 +2,6 @@
 //! [`CrossoverError`], the band count and the frequency checks, and the fit of a set
 //! under the rate.
 
-use std::fmt;
-
 use tutti_types::{Hz, SampleRate};
 
 /// Most splits a crossover holds: one fewer than the most bands.
@@ -21,10 +19,11 @@ pub(super) const MAX_BANDS: usize = MAX_SPLITS + 1;
 pub const SOLVE_CEILING: f64 = 0.499;
 
 /// Why a crossover or a crossover-based node refused its settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CrossoverError {
     /// The band count is outside the supported range.
+    #[error("{bands} bands: {min} to {max} are supported")]
     Bands {
         /// The count asked for.
         bands: usize,
@@ -35,11 +34,13 @@ pub enum CrossoverError {
     },
     /// The channel count is zero, or more channels than the graph has ports
     /// for.
+    #[error("{channels} channels is not supported")]
     Channels {
         /// The count asked for.
         channels: usize,
     },
     /// A frequency is not finite, or not above 0 Hz.
+    #[error("crossover {index} is {} Hz: it must be finite and above 0", hz.get())]
     Frequency {
         /// Which crossover.
         index: usize,
@@ -47,11 +48,13 @@ pub enum CrossoverError {
         hz: Hz,
     },
     /// A frequency is not above the one before it.
+    #[error("crossover {index} is not above crossover {}: they must strictly increase", index.saturating_sub(1))]
     Order {
         /// Which crossover.
         index: usize,
     },
     /// A frequency is not below Nyquist.
+    #[error("crossover {index} is not below Nyquist ({} Hz)", nyquist.get())]
     Nyquist {
         /// Which crossover.
         index: usize,
@@ -59,34 +62,6 @@ pub enum CrossoverError {
         nyquist: Hz,
     },
 }
-
-impl fmt::Display for CrossoverError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Bands { bands, min, max } => {
-                write!(f, "{bands} bands: {min} to {max} are supported")
-            }
-            Self::Channels { channels } => write!(f, "{channels} channels is not supported"),
-            Self::Frequency { index, hz } => write!(
-                f,
-                "crossover {index} is {} Hz: it must be finite and above 0",
-                hz.get()
-            ),
-            Self::Order { index } => write!(
-                f,
-                "crossover {index} is not above crossover {}: they must strictly increase",
-                index.saturating_sub(1)
-            ),
-            Self::Nyquist { index, nyquist } => write!(
-                f,
-                "crossover {index} is not below Nyquist ({} Hz)",
-                nyquist.get()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CrossoverError {}
 
 /// Checks the band count against what a crossover supports.
 pub(super) fn check_bands(bands: usize) -> Result<(), CrossoverError> {

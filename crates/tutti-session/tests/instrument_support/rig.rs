@@ -43,18 +43,19 @@ impl Rig {
 
     /// A rig over a handle the session already made, its strip wired to the
     /// outputs here.
-    pub fn wired(mut session: Session, handle: InstrumentHandle) -> Self {
+    pub fn wired<N: ?Sized>(mut session: Session, handle: InstrumentHandle<N>) -> Self {
         session.graph().connect(handle.out(), Root).unwrap();
         Self::played(session, handle)
     }
 
     /// A rig over a handle whose strip is wired to the outputs already
     /// (`add_instrument` does it).
-    pub fn played(mut session: Session, handle: InstrumentHandle) -> Self {
+    pub fn played<N: ?Sized>(mut session: Session, handle: InstrumentHandle<N>) -> Self {
+        let handle = handle.erase();
         let _ = session.update();
         Self {
             session,
-            node: handle.node(),
+            node: handle.node().erase(),
             handle,
             left: Vec::new(),
             right: Vec::new(),

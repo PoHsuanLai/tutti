@@ -71,48 +71,68 @@ fn sweep() {
         for pos in 0..4 {
             let v = |i: usize, ok: f32| if i == pos { b } else { ok };
             add(probe(&format!("compressor arg{pos}"), b, || {
-                Box::new(CompressorNode::stereo(CompressorControls {
-                    threshold: d(v(0, -12.0)),
-                    ratio: tutti_types::CompressionRatio::new_clamped(if pos == 1 {
-                        b
-                    } else {
-                        4.0
-                    }),
-                    attack: s(v(2, 0.01)),
-                    release: s(v(3, 0.1)),
-                    ..CompressorControls::DEFAULT
-                }))
+                Box::new(CompressorNode::new(
+                    BusTopology::STEREO,
+                    KeySource::Sidechain,
+                    CompressorControls {
+                        threshold: d(v(0, -12.0)),
+                        ratio: tutti_types::CompressionRatio::new_clamped(if pos == 1 {
+                            b
+                        } else {
+                            4.0
+                        }),
+                        attack: s(v(2, 0.01)),
+                        release: s(v(3, 0.1)),
+                        ..CompressorControls::DEFAULT
+                    },
+                ))
             }));
             add(probe(&format!("gate arg{pos}"), b, || {
-                Box::new(GateNode::stereo(GateControls {
-                    threshold: d(v(0, -40.0)),
-                    attack: s(v(1, 0.01)),
-                    hold: s(v(2, 0.05)),
-                    release: s(v(3, 0.1)),
-                    range: d(-80.0),
-                }))
+                Box::new(GateNode::new(
+                    BusTopology::STEREO,
+                    KeySource::Sidechain,
+                    GateControls {
+                        threshold: d(v(0, -40.0)),
+                        attack: s(v(1, 0.01)),
+                        hold: s(v(2, 0.05)),
+                        release: s(v(3, 0.1)),
+                        range: d(-80.0),
+                    },
+                ))
             }));
         }
         add(probe("compressor knee", b, || {
-            Box::new(CompressorNode::stereo(CompressorControls {
-                knee: d(b),
-                ..compressor_at_twelve()
-            }))
+            Box::new(CompressorNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                CompressorControls {
+                    knee: d(b),
+                    ..compressor_at_twelve()
+                },
+            ))
         }));
         add(probe("compressor makeup", b, || {
-            Box::new(CompressorNode::stereo(CompressorControls {
-                makeup: d(b),
-                ..compressor_at_twelve()
-            }))
+            Box::new(CompressorNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                CompressorControls {
+                    makeup: d(b),
+                    ..compressor_at_twelve()
+                },
+            ))
         }));
         add(probe("gate range", b, || {
-            Box::new(GateNode::stereo(GateControls {
-                threshold: d(-40.0),
-                attack: s(0.01),
-                hold: s(0.05),
-                release: s(0.1),
-                range: d(b),
-            }))
+            Box::new(GateNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                GateControls {
+                    threshold: d(-40.0),
+                    attack: s(0.01),
+                    hold: s(0.05),
+                    release: s(0.1),
+                    range: d(b),
+                },
+            ))
         }));
         add(probe("limiter thr", b, || {
             Box::new(LimiterNode::stereo(LimiterControls {

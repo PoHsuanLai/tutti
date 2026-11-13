@@ -358,8 +358,8 @@ fn lane_to_probe(
         },
     };
     let program = ControlProgram::new(None, vec![], vec![input]).expect("valid");
-    let node = ControlLaneNode::for_param(
-        ParamKey::<Hz>::CUTOFF,
+    let node = ControlLaneNode::for_unit(
+        ParamKey::<Hz>::CUTOFF.addr(),
         program,
         Some(Arc::new(AtomicF32::new(knob)).into()),
         Some(ed.param_range_cell(cutoff(probe)).expect("committed")),

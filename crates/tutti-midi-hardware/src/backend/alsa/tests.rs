@@ -2,6 +2,7 @@
 //! readable and writable port is a device to every other client, so creating
 //! and dropping one is a hot-plug the kernel announces: nothing here is faked.
 
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use crate::{Devices, HardwareMidiInputs};
@@ -196,8 +197,6 @@ fn a_client_that_appears_is_added_and_listed() {
     assert_eq!(device.id.ordinal(), 0);
 }
 
-/// The audit's defect (#4): a device that vanished stayed listed and nothing
-/// fired.
 #[test]
 fn a_client_that_exits_is_removed_and_unlisted() {
     let devices = Watched::open();
@@ -258,7 +257,7 @@ fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
-            4,
+            NonZeroUsize::new(4).unwrap(),
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
@@ -355,7 +354,7 @@ fn the_engines_own_clients_are_not_listed() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
-            4,
+            NonZeroUsize::new(4).unwrap(),
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
@@ -611,8 +610,11 @@ impl Pumped {
 
     /// A pump on `device`'s port 0.
     fn over(device: Virtual, lead: Duration) -> Self {
-        let inlets =
-            tutti_midi_runtime::DeviceInlets::new(4, tutti_graph::EventCapacity::of(64), lead);
+        let inlets = tutti_midi_runtime::DeviceInlets::new(
+            NonZeroUsize::new(4).unwrap(),
+            tutti_graph::EventCapacity::of(64),
+            lead,
+        );
         let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::clone(&inlets)));
         let id = super::enumerate::pack_id(device.0.id(), 0);
         let producer = ports.open_input_port("pump").expect("a slot");
@@ -673,8 +675,8 @@ fn arrive(pumped: &mut Pumped, count: usize) -> Vec<tutti_ump::Ump> {
 }
 
 /// A MIDI 1.0 source reaches the graph as MIDI 1.0 UMP (type 2), not converted
-/// to MIDI 2.0 by the kernel: tutti's own `Translator` is the one conversion
-/// (design 017 L6d). A legacy client's Note On and control change, both.
+/// to MIDI 2.0 by the kernel: tutti's own `Translator` is the one conversion.
+/// A legacy client's Note On and control change, both.
 #[test]
 fn a_legacy_source_arrives_as_midi1_ump_not_converted_by_the_kernel() {
     use tutti_alsa_ffi::LegacyEvent;
@@ -807,7 +809,7 @@ fn an_input_whose_pump_fails_reads_as_gone() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
-            4,
+            NonZeroUsize::new(4).unwrap(),
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
@@ -1106,7 +1108,7 @@ fn a_device_on_the_sequencer_is_negotiated_through_the_pump_and_the_output() {
     let device = plug_ump(&name, tutti_alsa_ffi::PROTO_MIDI1);
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        4,
+        NonZeroUsize::new(4).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );

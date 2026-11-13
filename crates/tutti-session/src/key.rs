@@ -353,6 +353,41 @@ impl EventInPort {
     }
 }
 
+/// One event port an event tap copies: an output (what the port wrote) or an
+/// input (what its node hears there, every source merged). An
+/// [`EventOutPort`] and an [`EventInPort`] both convert into it, so
+/// [`Taps::open_event`](crate::Taps::open_event) takes either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EventTapPort {
+    /// An event output.
+    Out(EventOutPort),
+    /// An event input.
+    In(EventInPort),
+}
+
+impl EventTapPort {
+    /// The node whose port this is.
+    #[must_use]
+    pub const fn node(self) -> NodeKey {
+        match self {
+            Self::Out(p) => p.node(),
+            Self::In(p) => p.node(),
+        }
+    }
+}
+
+impl From<EventOutPort> for EventTapPort {
+    fn from(port: EventOutPort) -> Self {
+        Self::Out(port)
+    }
+}
+
+impl From<EventInPort> for EventTapPort {
+    fn from(port: EventInPort) -> Self {
+        Self::In(port)
+    }
+}
+
 /// One audio edge, named: what feeds which channel. What
 /// [`Graph::connect`] adds and a modulation route onto its gain
 /// (`ModTarget`, feature `modulation`) drives: the
@@ -615,7 +650,7 @@ impl Wire for Bus {
         from: BusSource,
         to: BusSink,
     ) -> Result<Vec<(Edge, bool)>, ConnectError> {
-        graph.add_bus_edge(from, to, false)?;
+        graph.add_bus_edge(from, to)?;
         Ok(Vec::new())
     }
     fn disconnect(

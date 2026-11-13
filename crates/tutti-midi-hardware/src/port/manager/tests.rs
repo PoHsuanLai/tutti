@@ -1,6 +1,7 @@
 use super::*;
 use crate::Pushed;
 use crate::testing::{RATE, Rig, ports};
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_midi_runtime::DeviceInlets;
@@ -17,7 +18,11 @@ fn note(n: u8) -> Ump {
 /// A rig over `slots` inlets with `lead`, whose clock has read once (frame 0 at
 /// `origin`), so an arrival can be placed.
 fn rig(slots: usize, capacity: u32, lead: Duration) -> (Arc<HardwareMidiInputs>, Rig) {
-    let inlets = DeviceInlets::new(slots, tutti_graph::EventCapacity::of(capacity), lead);
+    let inlets = DeviceInlets::new(
+        NonZeroUsize::new(slots).expect("a slot"),
+        tutti_graph::EventCapacity::of(capacity),
+        lead,
+    );
     let manager = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let mut rig = Rig::over(&inlets, now());
     rig.run(1);
@@ -56,13 +61,13 @@ fn test_port_active_state() {
     let manager = ports(4);
 
     let port_id = manager.open_input_port("Test").unwrap().slot();
-    assert!(manager.is_port_active(port_id));
+    assert!(manager.port_info(port_id).unwrap().active);
 
     manager.set_port_active(port_id, false);
-    assert!(!manager.is_port_active(port_id));
+    assert!(!manager.port_info(port_id).unwrap().active);
 
     manager.set_port_active(port_id, true);
-    assert!(manager.is_port_active(port_id));
+    assert!(manager.port_info(port_id).unwrap().active);
 }
 
 /// **A port is a slot of the inlets: when every slot is held, the next open
@@ -112,8 +117,8 @@ fn a_ports_events_reach_the_graph_on_their_frames_and_slots() {
     assert_eq!(rig.take(), vec![(0, 130, note(60)), (1, 200, note(64))]);
 }
 
-/// **The spacing of a device's events is the spacing of their arrivals**
-/// (doc 017 section 5, "Timing at the edge"), whatever the block boundaries:
+/// **The spacing of a device's events is the spacing of their arrivals**,
+/// whatever the block boundaries:
 /// arrivals at 130, 200 and 333 frames after the reading sound at those
 /// frames plus the lead, the lead being the same for every event.
 #[test]
@@ -326,7 +331,6 @@ fn a_stale_slot_cannot_reach_the_port_that_reused_its_slot() {
     assert_ne!(b_id, a);
 
     assert!(!manager.set_port_active(a, false));
-    assert!(!manager.is_port_active(a));
     assert!(manager.port_info(a).is_none());
     assert!(!manager.remove_input_port(a), "a stale id removes nothing");
 

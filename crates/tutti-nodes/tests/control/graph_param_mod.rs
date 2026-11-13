@@ -407,7 +407,7 @@ fn cases() -> Vec<Case> {
                     Drive::new(1.0),
                 );
                 if let Some(v) = v {
-                    n.set_drive(Drive::new(v));
+                    assert!(n.param_set().set(UnitParam::Drive, v));
                 }
                 parts_of(n)
             },
@@ -513,7 +513,7 @@ fn cases() -> Vec<Case> {
                     ChannelLayout::try_from(w).expect("a test width is small"),
                 );
                 if let Some(v) = v {
-                    n.set_pan(tutti_types::Pan(v));
+                    assert!(n.param_set().set(UnitParam::Pan, v));
                 }
                 parts_of(n)
             },

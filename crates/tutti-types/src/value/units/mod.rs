@@ -47,7 +47,7 @@
 //! # Defining a unit
 //!
 //! Every unit is one `unit!` call (`macros.rs`). The raw type decides the
-//! derives, serde and reflection; the ability list decides the algebra, with
+//! derives and serde; the ability list decides the algebra, with
 //! one arm per ability name in `macros.rs`.
 //!
 //! # Measurements are not controls
@@ -79,8 +79,8 @@ pub use measures::{Confidence, Correlation, Pan, Velocity};
 pub use ratios::{Cents, CompressionRatio, Q, Resonance, Semitones};
 pub use time::{AtomicSampleRate, Hz, SampleRate, SampleRateOutOfRange, Seconds};
 pub use transport::{
-    Beat, BeatDuration, Bpm, BpmOutOfRange, PlaybackRate, ReadRate, SamplePosition, SrcRatio,
-    StretchFactor,
+    Beat, BeatDuration, BeatsPerCycle, BeatsPerCycleOutOfRange, Bpm, BpmOutOfRange, PlaybackRate,
+    ReadRate, SamplePosition, SrcRatio, StretchFactor,
 };
 
 /// Marker trait implemented by every unit newtype.

@@ -12,7 +12,7 @@ publish = false
 # so cargo builds its cdylib in the same invocation.
 [dependencies]
 tutti-plugin-types = { path = "../../crates/tutti-plugin-types" }
-tutti-fixtures = { path = "../tutti-fixtures", features = ["plugin"] }
+tutti-fixtures = { path = "../tutti-fixtures", features = ["plugin", "vst3-cpp", "au"] }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-graph = { path = "../../crates/tutti-graph" }
 tutti-clap-host = { path = "../../crates/tutti-clap-host" }
@@ -20,7 +20,6 @@ tutti-vst2-host = { path = "../../crates/tutti-vst2-host" }
 tutti-vst3-host = { path = "../../crates/tutti-vst3-host" }
 assert_no_alloc = { version = "1", default-features = false }
 tutti-shared-plugin = { path = "../tutti-shared-plugin" }
-tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp" }
 
 # Needs `cargo build -p tutti-plugin-server --no-default-features --features
 # clap,vst3` and `cargo build -p tutti-plugin-probe` first: the server

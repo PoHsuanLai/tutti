@@ -15,23 +15,17 @@ categories = ["multimedia::audio", "parser-implementations"]
 workspace = true
 
 [dependencies]
-thiserror = "2"
+thiserror = { workspace = true }
 
-# `channel_voice`, the note-on width read by `Track::notes`.
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 tutti-tempo = { path = "../tutti-tempo" }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-# The two readers (`src/smf/read.rs`, `src/clip_file/read.rs`) alone name it; no
-# signature does.
 winnow = { workspace = true }
 unicode-normalization = { workspace = true }
 
 [dev-dependencies]
-# The path-based clip tests need a private directory. nextest runs each test in
-# its own process, so a fixed name under `std::env::temp_dir()` is a shared
-# mutable path that two concurrent runs of the same binary race on.
 tempfile = "3.8"
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 

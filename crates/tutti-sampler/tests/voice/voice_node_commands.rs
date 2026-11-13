@@ -149,7 +149,7 @@ fn a_queued_placement_moves_a_live_voice() {
 /// leaves it in place, and a re-prepare (a rate change) checks the unit out,
 /// prepares it and sends it back — moved, never cloned. So the cell is the
 /// node's own, and what this pins is that the node inserted through its
-/// `IntoNode` (as `bevy-tutti` inserts it) hears a placement set after both,
+/// `IntoNode` hears a placement set after both,
 /// through the handle the insert handed back.
 #[test]
 fn a_command_reaches_a_node_across_a_commit() {

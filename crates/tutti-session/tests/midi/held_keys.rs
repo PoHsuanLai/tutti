@@ -118,10 +118,10 @@ fn retarget_with_a_held_clip_note() {
     let mut s = offline();
     let (a, a_seen) = tap(&mut s);
     let (b, b_seen) = tap(&mut s);
-    let clip = s
-        .midi()
+    s.midi()
         .play_clip(
             a,
+            Beat(0.0),
             [
                 TimedMidiEvent::new(
                     Beat(1.0 / 3.0),
@@ -136,6 +136,7 @@ fn retarget_with_a_held_clip_note() {
             ],
         )
         .unwrap();
+    let clip = s.midi().clip(a).expect("the clip a target has");
     let _ = s.update();
     s.transport().motion().try_send(MotionEvent::Play).unwrap();
     blocks(&s, 20); // the note starts at about frame 2,400

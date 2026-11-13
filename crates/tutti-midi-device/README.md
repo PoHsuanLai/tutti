@@ -1,6 +1,6 @@
 # tutti-midi-device
 
-The pure core of MIDI device detection for the Tutti engine (design 017 §5), and the
+The pure core of MIDI device detection for the Tutti engine and the
 MIDI-CI codec.
 
 - `DeviceTable`: takes an `OsChange` from a backend and returns the
@@ -26,7 +26,7 @@ MIDI-CI codec.
   the bytes between `F0` and `F7`; frame them with `tutti_ump::frame`, and decode the
   bytes a `tutti_ump::SysexAssembler` completes. `decode` returns a `Decoded`: a message
   it cannot read keeps its header, so the NAK the spec requires can be addressed
-  (`Unread::nak`). There is no state machine yet (design 017 §5, "MIDI-CI").
+  (`Unread::nak`).
 
 - `Endpoint`: what one UMP endpoint declares (M2-104 §7.1): UMP version, protocols
   and JR timestamps supported and active, identity, name, Product Instance Id and up

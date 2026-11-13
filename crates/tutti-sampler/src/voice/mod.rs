@@ -21,8 +21,7 @@ pub(crate) mod clock;
 // Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
 pub mod interp;
 pub mod memory_source;
-// Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) streamer
-// engine, which a non-Bevy host drives via `DiskStreamer`.
+// Disk streaming: the unit is fed by the streamer engine (`DiskStreamer`).
 pub mod disk_voice;
 // The first error an offline voice hit, for its fork's health probe.
 mod fault;
@@ -30,8 +29,7 @@ mod fault;
 mod live_read;
 // A forked disk voice reads its file here instead of the streamer's ring.
 mod offline_read;
-// The voice pool, one file per duty. Each holds Bevy-free DSP; the ECS pieces
-// are gated inside `pool`.
+// The voice pool, one file per duty.
 pub mod command;
 pub mod node;
 pub mod pool;
@@ -70,14 +68,6 @@ pub use memory_source::{MemorySource, MemorySourceConfig, VoiceWindow};
 pub use node::VoiceNode;
 /// The per-track multi-voice mixer. Documented on `pool`.
 pub use pool::{PoolDrops, PoolTooWide, VoicePool};
-/// ECS components that seat a pool on a track entity. Documented on [`pool`].
-#[cfg(feature = "bevy")]
-pub use pool::{VoicePoolNode, VoicePoolRef};
 /// The voice vocabulary: what a voice is, which tier it reads from, and the
 /// control intent recorded for it. Documented on `types`.
 pub use types::{Direction, Playback, SlotId, Voice, VoiceSource};
-
-// The asset loader and `TuttiPlaybackPlugin` live in bevy-tutti: an engine
-// crate may derive Component/Resource on its own value types, but does not
-// define a Plugin. `VoicePoolNode` / `VoicePoolRef` above are plain derives on
-// this crate's own types.

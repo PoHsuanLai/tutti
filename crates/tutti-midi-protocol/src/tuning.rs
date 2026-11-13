@@ -1,4 +1,4 @@
-//! The MIDI Tuning Standard's values (MTS, "MIDI Tuning Updated Specification":
+//! The MIDI Tuning Standard's values (MTS, the MIDI Tuning Updated Specification:
 //! CA-020, CA-021, RP-020): the frequency data word, the key table and the
 //! messages that carry them, as typed values.
 //!
@@ -8,12 +8,12 @@
 //!
 //! # The frequency data word
 //!
-//! "A 3-byte (21-bit) frequency data word": the first byte is "the nearest
-//! equal-tempered semitone below the frequency", the next two bytes (14 bits,
-//! most significant first) "the fraction of 100 cents above the semitone". So a
+//! A frequency data word is three bytes (21 bits): the first is the nearest
+//! equal-tempered semitone below the frequency, the next two (14 bits, most
+//! significant first) the fraction of 100 cents above that semitone. So a
 //! word is a pitch in units of `1/16384` semitone above MIDI note 0, and
-//! [`TuningFrequency::pitch`] reads it as that many [`Semitones`]. `7F 7F 7F` "is
-//! reserved to indicate not frequency data but a 'no change' condition": it is
+//! [`TuningFrequency::pitch`] reads it as that many [`Semitones`]. `7F 7F 7F` is
+//! reserved to mean no change rather than a frequency: it is
 //! [`TuningFrequency::NO_CHANGE`], a value of the same type, and has no pitch.
 
 use tutti_types::{Cents, Semitones};
@@ -32,21 +32,14 @@ const FRACTION_STEPS: u32 = 1 << 14;
 pub struct TuningFrequency(u32);
 
 /// A raw refused by [`TuningFrequency::try_from`]: it has a bit above the 21st.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#x} is more than 21 bits", .0)]
 pub struct NotFrequencyData(pub u32);
 
-impl core::fmt::Display for NotFrequencyData {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:#x} is more than 21 bits", self.0)
-    }
-}
-
-impl core::error::Error for NotFrequencyData {}
-
 impl TuningFrequency {
-    /// `7F 7F 7F`: "no change" (the instrument keeps what it has for the key).
+    /// `7F 7F 7F`: no change (the instrument keeps what it has for the key).
     pub const NO_CHANGE: Self = Self(0x1F_FFFF);
-    /// `7F 7F 7E`: "top of range", the highest frequency a word names.
+    /// `7F 7F 7E`: the top of the range, the highest frequency a word names.
     pub const TOP: Self = Self(0x1F_FFFE);
 
     /// The word with raw `raw`, or `None` above 21 bits.
@@ -91,7 +84,7 @@ impl TuningFrequency {
     }
 
     /// The fraction of a semitone above it, in `1/16384`ths (the other two
-    /// bytes, "0.0061 cents" each).
+    /// bytes, 0.0061 cents each).
     #[must_use]
     pub const fn fraction(self) -> U14 {
         U14::masked((self.0 & 0x3FFF) as u16)
@@ -110,7 +103,7 @@ impl TuningFrequency {
     }
 
     /// The pitch the word names, in semitones above MIDI note 0 (note 69, `45
-    /// 00 00`, is 69, A440 at master tuning's centre); `None` for "no change".
+    /// 00 00`, is 69, A440 at master tuning's centre); `None` for no change.
     #[must_use]
     pub fn pitch(self) -> Option<Semitones> {
         (!self.is_no_change()).then(|| Semitones(self.0 as f32 / FRACTION_STEPS as f32))
@@ -146,14 +139,14 @@ impl From<TuningFrequency> for u32 {
     }
 }
 
-/// A tuning's frequency data for all 128 keys, "in order from note 0 [...] to
-/// note 127": what a Bulk Tuning Dump holds and what a tuning program stores.
+/// A tuning's frequency data for all 128 keys, in order from note 0 to
+/// note 127: what a Bulk Tuning Dump holds and what a tuning program stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyTable([TuningFrequency; 128]);
 
 impl KeyTable {
     /// Twelve-tone equal temperament: every key at its own number (RP-020:
-    /// "the initial tuning of the instrument is equal temperament").
+    /// an instrument starts in equal temperament).
     #[must_use]
     pub const fn equal_temperament() -> Self {
         let mut words = [TuningFrequency(0); 128];
@@ -177,9 +170,8 @@ impl KeyTable {
         self.0[key.get() as usize]
     }
 
-    /// Sets the word of `key`. "No change" leaves what is stored (the spec:
-    /// "it should make no change to its stored frequency data for that MIDI key
-    /// number").
+    /// Sets the word of `key`. No change leaves what is stored (the spec
+    /// has the instrument keep its stored frequency data for that key).
     pub fn set(&mut self, key: NoteNumber, word: TuningFrequency) {
         if !word.is_no_change() {
             self.0[usize::from(key.get())] = word;
@@ -193,7 +185,7 @@ impl KeyTable {
     }
 }
 
-/// A tuning's name: "16 ASCII characters". A data byte is 7-bit before it gets
+/// A tuning's name: 16 ASCII characters. A data byte is 7-bit before it gets
 /// here, so every byte is ASCII.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TuningName([U7; 16]);
@@ -210,18 +202,12 @@ impl TuningName {
     pub const fn bytes(&self) -> &[U7; 16] {
         &self.0
     }
-
-    /// The name's byte at `i` (`None` past 15).
-    #[must_use]
-    pub fn byte(&self, i: usize) -> Option<u8> {
-        self.0.get(i).map(|b| b.get())
-    }
 }
 
 /// When a tuning change takes hold of a note that sounds: the real-time
-/// messages "WILL affect currently sounding notes", the non-real-time ones
-/// "will NOT update the currently sounding notes" (CA-020).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// messages affect currently sounding notes, the non-real-time ones
+/// do not update them (CA-020).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Timing {
     /// Universal Real Time (`7F`): sounding notes follow at once.
     RealTime,
@@ -236,15 +222,14 @@ pub enum Timing {
 pub struct KeyChange {
     /// The key.
     pub key: NoteNumber,
-    /// What it is tuned to (or "no change").
+    /// What it is tuned to (or no change).
     pub frequency: TuningFrequency,
 }
 
 /// The most changes one message holds: `ll` is a data byte.
 pub const MAX_KEY_CHANGES: usize = 127;
 
-/// The changes of one Single Note Tuning Change, in message order ("the number
-/// of changes following is indicated by the byte `ll`", at most 127). Fixed
+/// The changes of one Single Note Tuning Change, in message order (the count is the byte `ll`, at most 127). Fixed
 /// size, so reading one allocates nothing.
 #[derive(Clone, Copy, Debug)]
 pub struct KeyChanges {
@@ -298,8 +283,7 @@ impl PartialEq for KeyChanges {
 
 impl Eq for KeyChanges {}
 
-/// The channels a Scale/Octave Tuning message names: "a 3 byte channel field
-/// [...] with 1 bit representing each MIDI channel". Its range is the whole of
+/// The channels a Scale/Octave Tuning message names, a 3-byte channel field with one bit per MIDI channel. Its range is the whole of
 /// `u16`, so it has no refusing constructor; bit `n` is channel `n` (0-based).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChannelMask(u16);
@@ -337,16 +321,15 @@ impl ChannelMask {
 }
 
 /// The twelve offsets of a Scale/Octave Tuning message, C to B, in the form the
-/// wire gave them (CA-021: "calibrating a single octave of notes in small
-/// fractions of an equal-tempered half-step").
+/// wire gave them (CA-021: a single octave calibrated in small fractions of an
+/// equal-tempered half-step).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OctaveOffsets {
     /// The 1-byte form: `00` is -64 cents, `40` is 0 and `7F` is +63, a cent a
     /// step.
     Cents([U7; 12]),
     /// The 2-byte form (the first byte the most significant): `00 00` is -100
-    /// cents, `40 00` is 0, `7F 7F` is +100 ("200 cents divided by 16,384 =
-    /// .012207 cents").
+    /// cents, `40 00` is 0, `7F 7F` is +100 (200 cents divided by 16,384, 0.012207 cents a step).
     Fine([U14; 12]),
 }
 
@@ -374,8 +357,8 @@ impl OctaveOffsets {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TuningMessage {
-    /// Bulk Tuning Dump Request (`08 00`) or its bank form (`08 03`): "the
-    /// receiving instrument shall respond by sending the bulk tuning dump".
+    /// Bulk Tuning Dump Request (`08 00`) or its bank form (`08 03`): the
+    /// receiving instrument answers with the bulk tuning dump.
     DumpRequest {
         /// The bank, if the message names one.
         bank: Option<U7>,
@@ -446,7 +429,7 @@ mod tests {
         assert!((step * 100.0 - 100.0 / 16384.0).abs() < 1e-4, "{step}");
     }
 
-    /// `7F 7F 7F` is "no change" and has no pitch; `7F 7F 7E` is the top.
+    /// `7F 7F 7F` is no change and has no pitch; `7F 7F 7E` is the top.
     #[test]
     fn no_change_has_no_pitch() {
         assert!(TuningFrequency::NO_CHANGE.pitch().is_none());
@@ -455,7 +438,7 @@ mod tests {
         assert_eq!(TuningFrequency::NO_CHANGE.fraction(), U14::MAX);
     }
 
-    /// A "no change" word stored in a table leaves the key as it was.
+    /// A no-change word stored in a table leaves the key as it was.
     #[test]
     fn setting_no_change_keeps_the_stored_word() {
         let mut table = KeyTable::equal_temperament();
@@ -466,7 +449,7 @@ mod tests {
         assert_eq!(table.get(key).get(), 0x10_0001);
     }
 
-    /// `nearest` never answers "no change" and a NaN is note 0.
+    /// `nearest` never answers no change and a NaN is note 0.
     #[test]
     fn nearest_saturates_and_never_says_no_change() {
         assert_eq!(

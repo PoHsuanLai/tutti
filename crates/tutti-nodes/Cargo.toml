@@ -16,22 +16,19 @@ workspace = true
 
 [features]
 default = []
-# No `bevy` feature: ECS bindings are host-side.
 # `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and
 # benches (`Const`, `Osc`, `Through`, `Split`, `Sink`).
 testing = []
 
 [dependencies]
 # Value vocabulary (the `Curve` trait), for `impl Curve for Trajectory`.
-# default-features = false so bevy does not re-leak.
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # The modulation compiler and its vocabulary (`ControlProgram`, `Curve`,
 # `LfoShape`, `compile`): the control lane evaluates its programs, and the
-# reconcile (`Modulation`) calls the compiler. `default-features = false`
-# keeps its `bevy` feature (Reflect) off this deliberately bevy-free crate.
+# reconcile (`Modulation`) calls the compiler.
 tutti-modulation = { path = "../tutti-modulation", default-features = false }
 
 # The algorithms every node adapts.
@@ -49,7 +46,7 @@ tutti-curve = { path = "../tutti-curve" }
 tutti-transport = { path = "../tutti-transport" }
 
 # `VbapError`.
-thiserror = { version = "2", default-features = false }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 libm = "0.2.15"

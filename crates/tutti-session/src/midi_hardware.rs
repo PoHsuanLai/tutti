@@ -153,9 +153,21 @@ impl Midi<'_> {
         saved.confirm(&self.learned(id))
     }
 
-    /// Closes an input, by id or name. Whether one was open.
-    pub fn disconnect_input(&mut self, device: impl Into<DeviceQuery>) -> bool {
-        self.io.is_some_and(|io| io.disconnect_input(device))
+    /// Closes an input, by id or name.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
+    /// [`MidiError::InputNotOpen`] when no open input answers to `device`.
+    /// Nothing changes.
+    #[must_use = "a device that was not open is an error"]
+    pub fn disconnect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
+        let device = device.into();
+        if self.hardware()?.disconnect_input(device.clone()) {
+            Ok(())
+        } else {
+            Err(MidiError::InputNotOpen(device))
+        }
     }
 
     /// Opens an output device, by id or name, closing the one open (a session
@@ -182,11 +194,20 @@ impl Midi<'_> {
         Ok(())
     }
 
-    /// Closes the output. Whether one was open. What the hardware out sends is
-    /// counted as dropped until another is connected.
-    pub fn disconnect_output(&mut self) -> bool {
-        self.io
-            .is_some_and(tutti_midi_hardware::MidiSession::disconnect_output)
+    /// Closes the output. What the hardware out sends is counted as dropped
+    /// until another is connected.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
+    /// [`MidiError::OutputNotOpen`] when no output is open.
+    #[must_use = "an output that was not open is an error"]
+    pub fn disconnect_output(&mut self) -> Result<()> {
+        if self.hardware()?.disconnect_output() {
+            Ok(())
+        } else {
+            Err(MidiError::OutputNotOpen)
+        }
     }
 
     /// Brings back a device an app saved (a [`DeviceInfo`], kept with `serde`

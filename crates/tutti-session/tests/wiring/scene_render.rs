@@ -1,13 +1,9 @@
 //! One scene, rendered through the session and pinned to independent
 //! reference renders.
 //!
-//! The graph half of `bevy-tutti`'s `scene_render` suite, which built the
-//! scene through the ECS (`spawn_audio_node`, `PortSources`, `MasterSources`,
-//! `AudioParam`, `crossfade_audio_node`). The adapter declared exactly the
-//! sources written here (each node's input 0 from the previous node, output
-//! channels 0 and 1 from the named nodes) and nothing else is spliced into
-//! the wiring, so this is the same graph: the same nodes added in the same
-//! order, a detached session two outputs wide, the rate set to 48 kHz before
+//! The wiring is each node's input 0 from the previous node, output
+//! channels 0 and 1 from the named nodes, and nothing else is spliced into
+//! it: the nodes are added in order, a detached session two outputs wide, the rate set to 48 kHz before
 //! the audio side is taken, and the audio side played in device-sized blocks.
 //!
 //! # The oracles

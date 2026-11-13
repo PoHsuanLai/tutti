@@ -16,26 +16,18 @@ use coremidi_sys::{
     MIDIEventList, MIDIEventListAdd, MIDIEventListInit, MIDIProtocolID, MIDIReceivedEventList,
     MIDISourceCreateWithProtocol, MIDITimeStamp, kMIDIProtocol_2_0,
 };
-use std::fmt;
 use std::mem::MaybeUninit;
 use std::sync::Mutex;
 
 /// A CoreMIDI call that failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("CoreMIDI error: {} ({})", .operation, .status)]
 pub struct Error {
     /// What was being done, as a static label.
     pub operation: &'static str,
     /// The `OSStatus` CoreMIDI returned (`-1` where no call returned one).
     pub status: i32,
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CoreMIDI error: {} ({})", self.operation, self.status)
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// The process-wide raw client every source's endpoint belongs to.
 ///

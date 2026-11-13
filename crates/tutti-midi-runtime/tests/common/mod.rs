@@ -1,6 +1,4 @@
-//! A test sink for MIDI leaving a graph: one event tap per source port,
-//! read like the ring of the node it replaces (doc 017, stage E3:
-//! the hardware out is a tap, so a node that only copied events out is gone).
+//! A test sink for MIDI leaving a graph: one event tap per source port.
 
 #![allow(dead_code)]
 
@@ -8,7 +6,7 @@ use tutti_graph::{Editor, EventOut, EventTapId, EventTapReader, NodeKey, TapAlig
 use tutti_ump::Ump;
 
 /// The ring's capacity the deleted node had, in events.
-pub const SINK_CAPACITY: usize = 1024;
+pub const SINK_CAPACITY: tutti_graph::EventCapacity = tutti_graph::EventCapacity::of(1024);
 
 /// The readers of the taps [`sink`] opened.
 pub struct Sink {

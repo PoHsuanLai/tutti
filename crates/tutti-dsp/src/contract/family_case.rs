@@ -236,7 +236,7 @@ pub trait ReverbCase:
     }
 
     /// The relative error the realization's measured RT60 may have against the
-    /// network's `rt60`.
+    /// network's `rt60` (the realization declares it).
     fn tolerance(&self) -> f32 {
         0.1
     }

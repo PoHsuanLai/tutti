@@ -2834,9 +2834,6 @@ FFI crate follows as its own change.
   `AuProcessor` / `AuController` split. The server's and the GUI's `au.rs` keep
   one `WindowHandle::from_raw` each (step 5) and are not in the `check-plugin-ffi`
   scan yet.
-- `no_installed_third_party_unit_implements_the_mapping_family` is behind
-  `tutti-au-host`'s `installed-units` feature (as `tutti-midi-hardware`'s
-  `sequencer-tests`): CI lints it and `cargo xtask test-au-installed` runs it.
 - CI lints both AU crates on `macos-latest` (`clippy (macos)`).
 - **Known gap: one thread at a time is a convention.** `Unit` is `Clone` and its
   clones share one instance, so nothing in the types stops two clones from

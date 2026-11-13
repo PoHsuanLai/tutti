@@ -22,8 +22,8 @@ use tutti_graph::contract::drive;
 use tutti_graph::{IntoNode, Prepare, Solo};
 use tutti_nodes::{
     ChannelTimes, CompressorControls, CompressorNode, CrossoverNode, DelayControls, DelayFamily,
-    DelayNode, FamilyNode, GateControls, GateNode, InterpolationMode, MaxDelay, ModDelayNode,
-    PhaserControls, PhaserNode, Stages,
+    DelayNode, FamilyNode, GateControls, GateNode, InterpolationMode, KeySource, MaxDelay,
+    ModDelayNode, PhaserControls, PhaserNode, Stages,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
@@ -176,7 +176,7 @@ fn the_convolver_is_blended_by_the_graph() {
     );
     check(
         "convolver (folded, stereo)",
-        &|| ConvolverNode::mono_to_stereo(&ir, &ir2, 32),
+        &|| ConvolverNode::folded(&[&ir, &ir2], 32),
         2,
         32,
     );
@@ -335,13 +335,17 @@ fn a_keyed_node_and_a_split_are_blended_on_their_main_bus() {
     check_io(
         "gate (stereo, keyed)",
         &|| {
-            GateNode::stereo(GateControls {
-                threshold: Db(-20.0),
-                attack: s(0.001),
-                hold: s(0.01),
-                release: s(0.05),
-                range: Db(-80.0),
-            })
+            GateNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                GateControls {
+                    threshold: Db(-20.0),
+                    attack: s(0.001),
+                    hold: s(0.01),
+                    release: s(0.05),
+                    range: Db(-80.0),
+                },
+            )
         },
         4,
         2,
@@ -350,13 +354,17 @@ fn a_keyed_node_and_a_split_are_blended_on_their_main_bus() {
     check_io(
         "compressor (stereo, keyed)",
         &|| {
-            CompressorNode::stereo(CompressorControls {
-                threshold: Db(-20.0),
-                ratio: CompressionRatio::new(4.0),
-                attack: s(0.005),
-                release: s(0.05),
-                ..CompressorControls::DEFAULT
-            })
+            CompressorNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                CompressorControls {
+                    threshold: Db(-20.0),
+                    ratio: CompressionRatio::new(4.0),
+                    attack: s(0.005),
+                    release: s(0.05),
+                    ..CompressorControls::DEFAULT
+                },
+            )
         },
         4,
         2,

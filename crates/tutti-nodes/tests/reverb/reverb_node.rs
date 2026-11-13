@@ -396,7 +396,7 @@ fn the_node_is_the_room_alone() {
 
 /// A fork of the node starts from silence with the values set, and shares nothing
 /// with it: the harness's fork checks, and a fork taken while the room rings
-/// does not carry the ring.
+/// does not carry the ring (a fork is `fresh()` plus the graph's preroll).
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
     assert_param_fork(FamilyNode::live(FreeverbFamily, gm()));

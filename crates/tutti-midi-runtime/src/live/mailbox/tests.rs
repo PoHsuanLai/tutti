@@ -1,4 +1,5 @@
 use super::*;
+use std::num::NonZeroUsize;
 use tutti_graph::{Offset, UmpAt};
 use tutti_ump::MidiGroup;
 
@@ -35,11 +36,9 @@ fn note_off(note: u8) -> UmpAt {
 fn sender_pushes_to_receiver() {
     let (sender, receiver) = MidiMailbox::pair();
     sender.queue(&[note_on(60, 100), note_off(60)]);
-    assert!(receiver.has_events());
     let mut buf = [(0, Ump([0; 4])); 16];
     assert_eq!(receiver.poll_into(&mut buf), 2);
     assert_eq!(buf[..2], [raw(note_on(60, 100)), raw(note_off(60))]);
-    assert!(!receiver.has_events());
 }
 
 #[test]
@@ -65,7 +64,7 @@ fn dropped_receiver_keeps_sender_pushable() {
 /// A partial accept reports the prefix that landed, not the count offered.
 #[test]
 fn a_partial_accept_reports_how_many_landed() {
-    let (sender, _receiver) = MidiMailbox::with_capacity(5);
+    let (sender, _receiver) = MidiMailbox::with_capacity(NonZeroUsize::new(5).unwrap());
     assert_eq!(sender.queue(&[note_on(1, 1), note_on(2, 1)]), 2);
     let batch = [
         note_on(60, 100),

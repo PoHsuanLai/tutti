@@ -1,5 +1,5 @@
 //! [`ClockMap`]: the pure core that converts an OS time to a graph frame, and
-//! back (design 017, §5 "Timing at the edge").
+//! back.
 //!
 //! The OS stamps a MIDI event with its own clock (an ALSA queue time, a CoreMIDI
 //! host time); the graph counts frames. A `ClockMap` holds one **reading** of
@@ -87,7 +87,7 @@ impl ClockReading {
 }
 
 /// What [`ClockMap::observe`] did with a reading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[must_use]
 pub enum Observed {
     /// The reading was within [`RESYNC`] of the prediction and moved the map
@@ -141,7 +141,7 @@ impl ClockMap {
     /// [`frame_at`](Self::frame_at) with the rate it is counted at: what the
     /// event inlet's `push` takes.
     #[must_use]
-    pub fn moment_at(&self, os: Instant) -> Option<Moment> {
+    pub(crate) fn moment_at(&self, os: Instant) -> Option<Moment> {
         self.frame_at(os).map(|f| Moment::new(f, self.rate))
     }
 

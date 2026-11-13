@@ -27,7 +27,7 @@ tutti-dsp = { path = "../tutti-dsp" }
 tutti-sf2 = { path = "../tutti-sf2" }
 tutti-voicing = { path = "../tutti-voicing" }
 
-thiserror = "2"
+thiserror = { workspace = true }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 

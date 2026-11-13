@@ -83,8 +83,13 @@ impl Band {
 ///
 /// The stages run in series, input to output, after the pre-delay. The network
 /// is wet-only: it has no direct path from input to output (a network that has
-/// one says so, [`has_direct_path`](Self::has_direct_path)); the node owns the
-/// dry mix.
+/// one says so, [`has_direct_path`](Self::has_direct_path)); the dry mix is the
+/// graph's, so "wet-only means no dry leak" is a property of the model that a
+/// realization is held to.
+///
+/// Freeze is a property of the network, not a flag: every absorption gain at
+/// unity with an orthogonal matrix is a lossless loop ([`is_lossless`](Self::is_lossless)),
+/// marginally stable, and its [`tail`](crate::System::tail) is [`Ring::Unbounded`](crate::Ring::Unbounded).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Network {
     /// The rate the frame counts are in.
@@ -174,7 +179,7 @@ pub struct Tap {
 
 /// The two all-pass filters a network describes, which differ in their
 /// transfer function.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Hash, Eq)]
 pub enum AllPassForm {
     /// The Schroeder (lattice) all-pass `H(z) = (z^-D - g) / (1 - g z^-D)`:
     /// `|H| = 1` at every frequency, with a direct term `-g`.

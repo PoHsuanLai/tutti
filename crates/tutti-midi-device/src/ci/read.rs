@@ -30,7 +30,7 @@
 //! ```
 //!
 //! A field a Version 1 peer does not send (`?`, `[ .. ]`) reads as its default,
-//! §5.3's "the fields defined in the received version", and a field that is
+//! §5.3's rule to read the fields of the received version, and a field that is
 //! there is read in full: a byte with its top bit set, or a text that runs past
 //! the message, is malformed. Bytes after the last field are ignored.
 
@@ -49,7 +49,7 @@ use super::{
 
 type Res<T> = winnow::ModalResult<T, ContextError>;
 
-/// The wire value of "no Function Block" (M2-101 §5.6.2).
+/// The wire value of no Function Block (M2-101 §5.6.2).
 const NO_FUNCTION_BLOCK_WIRE: u8 = 0x7F;
 
 /// The fixed fields of a message as the wire gives them, before any is checked:

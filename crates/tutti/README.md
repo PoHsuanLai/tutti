@@ -1,13 +1,12 @@
 # tutti
 
-The Tutti real-time audio engine behind one dependency, with no Bevy.
+The Tutti real-time audio engine behind one dependency.
 
 Tutti is a set of focused crates: a graph compiler and executor, a transport,
 a device layer, DSP nodes, samplers and synths, MIDI, plugin hosting, offline
 export. This crate re-exports each of them as a module, so a headless consumer
 — a CLI, an offline renderer, a server, a test — names one dependency and
-turns subsystems on with features. Writing a Bevy app? Take `bevy-tutti`
-instead: the same engine plus the ECS adapter.
+turns subsystems on with features.
 
 ```toml
 [dependencies]
@@ -29,7 +28,7 @@ use tutti::{ChannelLayout, Engine, Hz, InterleavedMut, MaxBlock, SampleRate, Sam
 let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
 // A node with parameters also hands back its controls (a `ParamSet`), which
 // set those parameters live from the control thread.
-let sine = LfoNode::new(LfoShape::Sine).with_frequency(Hz(440.0));
+let sine = LfoNode::new(LfoShape::Sine).with_rate(Hz(440.0));
 let (tone, _controls) = g.add_with_controls(sine);
 g.pipe_output(tone);
 
@@ -150,7 +149,7 @@ None are on by default.
 Every item is a `pub use` of another crate, and the crate's own test enforces
 it. A convenience constructor or wrapper belongs in the crate that owns the
 thing it wires — device bootstrap in `tutti-cpal`, graph logic in
-`tutti-graph` or `tutti-engine` — where both `tutti` and `bevy-tutti` get it.
+`tutti-graph` or `tutti-engine` — where it is available to every consumer.
 
 ## License
 

@@ -45,8 +45,8 @@ fn another_group_is_ignored() {
     assert_eq!(f.step(meter_in(1, 3, 2)), None);
 }
 
-/// **What the unit values refuse is not followed**: a tempo field of `0` ("no
-/// valid tempo"), a numerator of `0` or above `BeatsPerBar`'s 64, a denominator
+/// **What the unit values refuse is not followed**: a tempo field of `0` (no
+/// valid tempo), a numerator of `0` or above `BeatsPerBar`'s 64, a denominator
 /// field of `0` (non-standard) and one past `NoteValue`'s 64th note.
 #[test]
 fn what_the_unit_values_refuse_is_not_followed() {

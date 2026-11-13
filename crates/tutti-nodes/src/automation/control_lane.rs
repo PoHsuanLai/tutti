@@ -15,8 +15,7 @@ use tutti_modulation::{
 };
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
 use tutti_types::{
-    AtomicF32, Beat, Frame, ParamAddr, ParamCell, ParamKey, SamplePosition, Samples, Tail, Unit,
-    UnitAddr,
+    AtomicF32, Beat, Frame, ParamAddr, ParamCell, SamplePosition, Samples, Tail, UnitAddr,
 };
 
 use crate::SOURCE_EVENT_CAPACITY;
@@ -379,9 +378,10 @@ impl ControlLaneNode {
         }
     }
 
-    /// A lane for built-in parameter `key`, wired to its param port with
-    /// `GraphSpec::connect_param`: `program`'s values are `key`'s raw
-    /// values.
+    /// A lane for built-in parameter `param` (a `UnitParam`, which is its
+    /// index-0 address, a [`UnitAddr`], or a `ParamKey::addr()`), wired to its
+    /// param port with `GraphSpec::connect_param`: `program`'s values are the
+    /// param's raw `f32`s ([`ParamSegment::unit`]).
     ///
     /// `knob` is the target node's own `Param` cell (`ParamSet::cell`), the
     /// base where the program has no automation value; `None` sends nothing
@@ -389,25 +389,6 @@ impl ControlLaneNode {
     /// (`Editor::param_range_cell`), read once per block for the span the
     /// program's offsets scale by; `None` is unranged, which sends the base
     /// alone.
-    ///
-    /// The typed spelling of [`for_unit`](Self::for_unit), which it calls:
-    /// the lane is erased over the unit, so the key only
-    /// names the param.
-    pub fn for_param<U: Unit>(
-        key: ParamKey<U>,
-        program: ControlProgram,
-        knob: Option<ParamCell>,
-        range: Option<ParamRangeReader>,
-    ) -> Self {
-        Self::for_unit(key.addr(), program, knob, range)
-    }
-
-    /// A lane for built-in parameter `param` (a `UnitParam`, which is its
-    /// index-0 address, or a [`UnitAddr`]), its values the param's raw
-    /// `f32`s ([`ParamSegment::unit`]), as [`for_param`](Self::for_param)
-    /// otherwise. For a caller that holds a `ParamAddr` rather than a typed
-    /// key (the [`Modulation`](crate::Modulation) reconciler), and for a
-    /// param with no `ParamKey` yet (`RoomSize`, `Pan`, …).
     pub fn for_unit(
         param: impl Into<UnitAddr>,
         program: ControlProgram,

@@ -10,37 +10,26 @@ use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 /// Why a text is not a name ([`Name::parse`], [`ProductInstanceId`] and
 /// [`MessageText`](crate::MessageText)'s `TryFrom<&str>`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum NameError {
     /// The text is longer than `max` bytes (for a name, composed to NFC; for a
     /// [`MessageText`](crate::MessageText), escaped as it goes on the wire).
+    #[error("the text is longer than {max} bytes")]
     TooLong {
         /// The most bytes the type holds.
         max: usize,
     },
     /// A name holds a NUL, which ends one on the wire.
+    #[error("the text holds a NUL, which ends a name on the wire")]
     Nul,
     /// A name starts with a Byte Order Mark (M2-104 §1.8).
+    #[error("the text starts with a Byte Order Mark")]
     Bom,
     /// A [`ProductInstanceId`] holds a byte outside ASCII `32..=126` (other
     /// than the NUL that [`Nul`](Self::Nul) names).
+    #[error("the text holds a byte outside printable ASCII (32 to 126)")]
     NotPrintableAscii,
 }
-
-impl fmt::Display for NameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooLong { max } => write!(f, "the text is longer than {max} bytes"),
-            Self::Nul => f.write_str("the text holds a NUL, which ends a name on the wire"),
-            Self::Bom => f.write_str("the text starts with a Byte Order Mark"),
-            Self::NotPrintableAscii => {
-                f.write_str("the text holds a byte outside printable ASCII (32 to 126)")
-            }
-        }
-    }
-}
-
-impl std::error::Error for NameError {}
 
 /// A UTF-8 name of at most `N` bytes with no NUL, held inline.
 ///
@@ -48,10 +37,8 @@ impl std::error::Error for NameError {}
 /// packet are `0x00`), so a name cannot contain one. [`EndpointName`] and
 /// [`BlockName`] are the two sizes.
 ///
-/// M2-104 §1.8, "Unicode in Message Fields": "MIDI messages only use normalized
-/// UTF-8 encoded Unicode characters, following the NFC (Normalization Form C)
-/// standard" and "Unicode text in MIDI messages shall not include a Byte Order
-/// Mark." So a name is always held in NFC and never starts with U+FEFF:
+/// M2-104 §1.8 (Unicode in Message Fields) has MIDI messages carry only
+/// NFC-normalized UTF-8 text, with no Byte Order Mark. So a name is always held in NFC and never starts with U+FEFF:
 /// [`new`](Self::new) composes the text it is given and refuses a BOM, and a
 /// name a peer sent is read the same way (a BOM is refused, text that is not
 /// NFC is composed: §1.8 states a rule for what is sent and none for a
@@ -70,9 +57,8 @@ pub type EndpointName = Name<98>;
 
 /// A Function Block Name: at most 91 bytes.
 ///
-/// M2-104 §7.1.9: "The name shall not be any longer than 91 bytes in size,
-/// either in a Complete message (if less than 14 bytes) ... or comprised of a
-/// Start, up to five optional Continue messages and an End message." A Function
+/// M2-104 §7.1.9 bounds the name at 91 bytes, whether it is one Complete
+/// message or a Start, up to five Continue messages and an End. A Function
 /// Block Name packet carries 13 bytes, and 7 x 13 = 91, one less than an
 /// Endpoint Name's 98 (7 x 14).
 pub type BlockName = Name<91>;

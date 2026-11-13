@@ -72,11 +72,10 @@ pub use tutti_types::{
 };
 
 // The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /
-// controls surface a host drives them through, and the Bevy-free modulation
-// reconciler (`Modulation`) that builds this crate's lanes and signal nodes
-// from `tutti_modulation` declarations. DAW-param ECS policy — the shared param
-// pool, node authoring markers, spawners, ECS reconcilers, deferred
-// convolver load — is the host's, and deliberately outside this workspace.
+// controls surface a host drives them through, and the modulation reconciler
+// (`Modulation`) that builds this crate's lanes and signal nodes from
+// `tutti_modulation` declarations. DAW-param policy is the host's, and
+// deliberately outside this workspace.
 
 mod click;
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode, VolumeOutOfRange};
@@ -88,7 +87,7 @@ mod modulator;
 // `LfoNode` is `ModulatorNode<Waveform>` — the graph node over a pure
 // `Modulator`. `LfoShape` and `Waveform` are re-exported from `tutti-modulation` through
 // `lfo`, so `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Waveform};
+pub use lfo::{LfoClock, LfoNode, LfoShape, ModulatorNode, Waveform};
 pub use modulator::Modulator;
 
 mod delay;
@@ -164,7 +163,7 @@ pub use signal::{
 };
 
 // Declarations compiled and applied to an `Editor` as lanes, signal-source
-// nodes and edges, with no Bevy.
+// nodes and edges.
 mod reconcile;
 pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 mod convolution;

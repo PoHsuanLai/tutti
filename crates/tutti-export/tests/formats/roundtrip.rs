@@ -346,9 +346,7 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
 
         // Skip the filter's edges: an FFT resampler's first and last frames are
         // the window ramping, which is expected and not what this asserts.
-        // `Ord::max` explicitly: the `tutti_types::dsp` glob also brings a
-        // `Num::max` into scope, and a bare `.max` is ambiguous between them.
-        let skip = std::cmp::Ord::max(spec.sample_rate as usize / 20, 1);
+        let skip = (spec.sample_rate as usize / 20).max(1);
         assert!(
             samples.len() > skip * 4,
             "too few frames to measure past the filter edges"

@@ -13,27 +13,12 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use clap_sys::ext::ambisonic::{
-    CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT, CLAP_PORT_AMBISONIC, clap_host_ambisonic,
+    CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT, clap_host_ambisonic,
 };
-use clap_sys::ext::audio_ports::{
-    CLAP_EXT_AUDIO_PORTS, CLAP_PORT_MONO, CLAP_PORT_STEREO, clap_host_audio_ports,
-};
+use clap_sys::ext::audio_ports::{CLAP_EXT_AUDIO_PORTS, clap_host_audio_ports};
 use clap_sys::ext::audio_ports_config::{
     CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
 };
-use clap_sys::ext::context_menu::{
-    CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT, clap_context_menu_builder,
-    clap_context_menu_target, clap_host_context_menu,
-};
-use clap_sys::ext::draft::resource_directory::{
-    CLAP_EXT_RESOURCE_DIRECTORY, clap_host_resource_directory,
-};
-use clap_sys::ext::draft::transport_control::{
-    CLAP_EXT_TRANSPORT_CONTROL, clap_host_transport_control,
-};
-use clap_sys::ext::draft::triggers::{CLAP_EXT_TRIGGERS, clap_host_triggers};
-use clap_sys::ext::draft::tuning::{CLAP_EXT_TUNING, clap_host_tuning, clap_tuning_info};
-use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
 use clap_sys::ext::event_registry::{CLAP_EXT_EVENT_REGISTRY, clap_host_event_registry};
 use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency};
@@ -48,159 +33,18 @@ use clap_sys::ext::posix_fd_support::{CLAP_EXT_POSIX_FD_SUPPORT, clap_host_posix
 use clap_sys::ext::preset_load::{
     CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_host_preset_load,
 };
-use clap_sys::ext::remote_controls::{
-    CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT, clap_host_remote_controls,
-};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_host_state};
-use clap_sys::ext::surround::{
-    CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT, CLAP_PORT_SURROUND, clap_host_surround,
-};
+use clap_sys::ext::surround::{CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT, clap_host_surround};
 use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_host_tail};
 use clap_sys::ext::thread_check::{CLAP_EXT_THREAD_CHECK, clap_host_thread_check};
 use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
-use clap_sys::ext::track_info::{
-    CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT, CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL,
-    CLAP_TRACK_INFO_HAS_TRACK_COLOR, CLAP_TRACK_INFO_HAS_TRACK_NAME, CLAP_TRACK_INFO_IS_FOR_BUS,
-    CLAP_TRACK_INFO_IS_FOR_MASTER, CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK, clap_host_track_info,
-    clap_track_info,
-};
 use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_host_voice_info};
-use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, clap_beattime};
 use clap_sys::host::clap_host;
 use clap_sys::version::CLAP_VERSION;
 
 use crate::guard::{guard, lossy, or_abort};
 use crate::types::{AudioPortsRescanFlags, LogSeverity, ParamsRescanFlags};
-
-/// A track-info answer the host fills in for a plugin that asked
-/// (`clap.track-info`).
-#[derive(Debug)]
-pub struct TrackInfoWriter<'a> {
-    out: &'a mut clap_track_info,
-}
-
-/// The port type of a track's audio channels, as `clap.track-info` names them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrackPortKind {
-    /// One channel.
-    Mono,
-    /// Two channels.
-    Stereo,
-    /// A surround layout.
-    Surround,
-    /// An ambisonic layout.
-    Ambisonic,
-}
-
-impl TrackInfoWriter<'_> {
-    /// Sets the track name, cut to what the C field holds.
-    pub fn set_name(&mut self, name: &str) {
-        self.out.flags |= CLAP_TRACK_INFO_HAS_TRACK_NAME;
-        write_chars(&mut self.out.name, name);
-    }
-
-    /// Sets the track colour.
-    pub fn set_color(&mut self, alpha: u8, red: u8, green: u8, blue: u8) {
-        self.out.flags |= CLAP_TRACK_INFO_HAS_TRACK_COLOR;
-        self.out.color.alpha = alpha;
-        self.out.color.red = red;
-        self.out.color.green = green;
-        self.out.color.blue = blue;
-    }
-
-    /// Sets the track's audio channel count and, if known, its port type.
-    pub fn set_audio(&mut self, channel_count: i32, port_type: Option<TrackPortKind>) {
-        self.out.flags |= CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL;
-        self.out.audio_channel_count = channel_count;
-        self.out.audio_port_type = match port_type {
-            Some(TrackPortKind::Mono) => CLAP_PORT_MONO.as_ptr(),
-            Some(TrackPortKind::Stereo) => CLAP_PORT_STEREO.as_ptr(),
-            Some(TrackPortKind::Surround) => CLAP_PORT_SURROUND.as_ptr(),
-            Some(TrackPortKind::Ambisonic) => CLAP_PORT_AMBISONIC.as_ptr(),
-            None => std::ptr::null(),
-        };
-    }
-
-    /// Marks the track as a return track.
-    pub fn set_return_track(&mut self) {
-        self.out.flags |= CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK;
-    }
-
-    /// Marks the track as a bus.
-    pub fn set_bus(&mut self) {
-        self.out.flags |= CLAP_TRACK_INFO_IS_FOR_BUS;
-    }
-
-    /// Marks the track as the master.
-    pub fn set_master(&mut self) {
-        self.out.flags |= CLAP_TRACK_INFO_IS_FOR_MASTER;
-    }
-}
-
-/// A tuning-info answer the host fills in (`clap.tuning`).
-#[derive(Debug)]
-pub struct TuningInfoWriter<'a> {
-    out: &'a mut clap_tuning_info,
-}
-
-impl TuningInfoWriter<'_> {
-    /// Sets the tuning's id, name (cut to what the C field holds) and whether
-    /// it changes over time.
-    pub fn set(&mut self, tuning_id: u32, name: &str, is_dynamic: bool) {
-        self.out.tuning_id = tuning_id;
-        self.out.is_dynamic = is_dynamic;
-        write_chars(&mut self.out.name, name);
-    }
-}
-
-/// Copies `text` into a fixed C char field, cut to leave room for the nul.
-fn write_chars(field: &mut [c_char], text: &str) {
-    let Some(room) = field.len().checked_sub(1) else {
-        return;
-    };
-    let bytes = text.as_bytes();
-    let len = bytes.len().min(room);
-    for (dst, &b) in field.iter_mut().zip(&bytes[..len]) {
-        *dst = b as c_char;
-    }
-    field[len] = 0;
-}
-
-/// A transport request a plugin made through `clap.transport-control`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TransportCommand {
-    /// Start playing.
-    Start,
-    /// Stop.
-    Stop,
-    /// Continue from the pause.
-    Continue,
-    /// Pause.
-    Pause,
-    /// Toggle play.
-    TogglePlay,
-    /// Jump to a position.
-    Jump {
-        /// The position in beats.
-        position_beats: f64,
-    },
-    /// Set the loop region.
-    LoopRegion {
-        /// Region start in beats.
-        start_beats: f64,
-        /// Region length in beats.
-        duration_beats: f64,
-    },
-    /// Toggle looping.
-    ToggleLoop,
-    /// Enable or disable looping.
-    EnableLoop(bool),
-    /// Enable or disable recording.
-    Record(bool),
-    /// Toggle recording.
-    ToggleRecord,
-}
 
 /// What a plugin's calls into the host reach.
 ///
@@ -282,66 +126,12 @@ pub trait HostCallbacks: Send + Sync + 'static {
     fn note_names_changed(&self) {}
     /// `clap.voice-info` `changed`.
     fn voice_info_changed(&self) {}
-    /// `clap.preset-load` `loaded`.
-    fn preset_loaded(&self) {}
     /// `clap.audio-ports-config` `rescan`.
     fn audio_ports_config_rescan(&self) {}
-    /// `clap.remote-controls` `changed`.
-    fn remote_controls_changed(&self) {}
-    /// `clap.remote-controls` `suggest_page`.
-    fn remote_controls_suggest_page(&self, page_id: u32) {
-        let _ = page_id;
-    }
-    /// `clap.track-info` `get`: fill `out`; `false` when there is no track.
-    fn track_info(&self, out: &mut TrackInfoWriter<'_>) -> bool {
-        let _ = out;
-        false
-    }
-    /// `clap.transport-control`: a request.
-    fn transport_request(&self, command: TransportCommand) {
-        let _ = command;
-    }
     /// `clap.ambisonic` `changed`.
     fn ambisonic_changed(&self) {}
     /// `clap.surround` `changed`.
     fn surround_changed(&self) {}
-    /// `clap.triggers` `rescan`.
-    fn triggers_rescan(&self) {}
-    /// `clap.tuning`: how many tunings the host has.
-    fn tuning_count(&self) -> u32 {
-        0
-    }
-    /// `clap.tuning`: fill `out` with tuning `index`; `false` when absent.
-    fn tuning_info(&self, index: u32, out: &mut TuningInfoWriter<'_>) -> bool {
-        let _ = (index, out);
-        false
-    }
-    /// `clap.resource-directory` `request_directory`: whether the host has
-    /// one.
-    fn resource_directory_request(&self, is_shared: bool) -> bool {
-        let _ = is_shared;
-        false
-    }
-    /// `clap.resource-directory` `release_directory`.
-    fn resource_directory_release(&self, is_shared: bool) {
-        let _ = is_shared;
-    }
-    /// `clap.undo` `begin_change`.
-    fn undo_begin_change(&self) {}
-    /// `clap.undo` `cancel_change`.
-    fn undo_cancel_change(&self) {}
-    /// `clap.undo` `change_made`; `delta` is empty when the plugin gave none.
-    fn undo_change_made(&self, name: &str, delta: &[u8], delta_can_undo: bool) {
-        let _ = (name, delta, delta_can_undo);
-    }
-    /// `clap.undo` `request_undo`.
-    fn undo_request_undo(&self) {}
-    /// `clap.undo` `request_redo`.
-    fn undo_request_redo(&self) {}
-    /// `clap.undo` `set_wants_context_updates`.
-    fn undo_wants_context_updates(&self, wanted: bool) {
-        let _ = wanted;
-    }
     /// `clap.posix-fd-support` `register_fd`.
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {
         let _ = (fd, flags);
@@ -558,25 +348,14 @@ extern "C" fn host_get_extension(
             CLAP_EXT_VOICE_INFO         => HOST_VOICE_INFO,
             CLAP_EXT_PRESET_LOAD        => HOST_PRESET_LOAD,
             CLAP_EXT_AUDIO_PORTS_CONFIG => HOST_AUDIO_PORTS_CONFIG,
-            CLAP_EXT_REMOTE_CONTROLS    => HOST_REMOTE_CONTROLS,
-            CLAP_EXT_TRACK_INFO         => HOST_TRACK_INFO,
             CLAP_EXT_EVENT_REGISTRY     => HOST_EVENT_REGISTRY,
-            CLAP_EXT_TRANSPORT_CONTROL  => HOST_TRANSPORT_CONTROL,
-            CLAP_EXT_CONTEXT_MENU       => HOST_CONTEXT_MENU,
             CLAP_EXT_THREAD_POOL        => HOST_THREAD_POOL,
             CLAP_EXT_AMBISONIC          => HOST_AMBISONIC,
             CLAP_EXT_SURROUND           => HOST_SURROUND,
-            CLAP_EXT_TRIGGERS           => HOST_TRIGGERS,
-            CLAP_EXT_TUNING             => HOST_TUNING,
-            CLAP_EXT_RESOURCE_DIRECTORY => HOST_RESOURCE_DIRECTORY,
-            CLAP_EXT_UNDO               => HOST_UNDO,
             // The draft ids the stable ones replaced: each header says "the
             // latest draft is 100% compatible", so an older plugin asking
             // for the compat id gets the same vtable.
             CLAP_EXT_PRESET_LOAD_COMPAT     => HOST_PRESET_LOAD,
-            CLAP_EXT_REMOTE_CONTROLS_COMPAT => HOST_REMOTE_CONTROLS,
-            CLAP_EXT_TRACK_INFO_COMPAT      => HOST_TRACK_INFO,
-            CLAP_EXT_CONTEXT_MENU_COMPAT    => HOST_CONTEXT_MENU,
             CLAP_EXT_AMBISONIC_COMPAT       => HOST_AMBISONIC,
             CLAP_EXT_SURROUND_COMPAT        => HOST_SURROUND,
         );
@@ -807,16 +586,13 @@ extern "C" fn host_preset_load_on_error(
 ) {
 }
 
-trampoline!(
-    host_preset_load_loaded(
-        _location_kind: u32,
-        _location: *const c_char,
-        _load_key: *const c_char,
-    ),
-    main_only,
-    (),
-    |cb| cb.preset_loaded()
-);
+extern "C" fn host_preset_load_loaded(
+    _host: *const clap_host,
+    _location_kind: u32,
+    _location: *const c_char,
+    _load_key: *const c_char,
+) {
+}
 
 static HOST_AUDIO_PORTS_CONFIG: clap_host_audio_ports_config = clap_host_audio_ports_config {
     rescan: Some(host_audio_ports_config_rescan),
@@ -824,44 +600,6 @@ static HOST_AUDIO_PORTS_CONFIG: clap_host_audio_ports_config = clap_host_audio_p
 
 trampoline!(host_audio_ports_config_rescan(), main_only, (), |cb| cb
     .audio_ports_config_rescan());
-
-static HOST_REMOTE_CONTROLS: clap_host_remote_controls = clap_host_remote_controls {
-    changed: Some(host_remote_controls_changed),
-    suggest_page: Some(host_remote_controls_suggest_page),
-};
-
-trampoline!(host_remote_controls_changed(), main_only, (), |cb| cb
-    .remote_controls_changed());
-
-trampoline!(
-    host_remote_controls_suggest_page(page_id: u32),
-    main_only,
-    (),
-    |cb| cb.remote_controls_suggest_page(page_id)
-);
-
-static HOST_TRACK_INFO: clap_host_track_info = clap_host_track_info {
-    get: Some(host_track_info_get),
-};
-
-extern "C" fn host_track_info_get(host: *const clap_host, info: *mut clap_track_info) -> bool {
-    if info.is_null() {
-        return false;
-    }
-    // SAFETY: the plugin passes a writable `clap_track_info` valid for the
-    // call (`track-info.h`); checked non-null. Cleared before the guard so a
-    // panic in the callback still leaves a defined `flags`.
-    unsafe { (*info).flags = 0 };
-    main_only(host, false, |cb| {
-        // SAFETY: as above; `out` is the only reference to the struct for the
-        // callback's duration.
-        let mut writer = TrackInfoWriter {
-            // SAFETY: `info` is the writable struct checked above, and this is its only reference for the callback.
-            out: unsafe { &mut *info },
-        };
-        cb.track_info(&mut writer)
-    })
-}
 
 static HOST_EVENT_REGISTRY: clap_host_event_registry = clap_host_event_registry {
     query: Some(host_event_registry_query),
@@ -880,126 +618,6 @@ extern "C" fn host_event_registry_query(
         }
         false
     })
-}
-
-static HOST_TRANSPORT_CONTROL: clap_host_transport_control = clap_host_transport_control {
-    request_start: Some(host_transport_request_start),
-    request_stop: Some(host_transport_request_stop),
-    request_continue: Some(host_transport_request_continue),
-    request_pause: Some(host_transport_request_pause),
-    request_toggle_play: Some(host_transport_request_toggle_play),
-    request_jump: Some(host_transport_request_jump),
-    request_loop_region: Some(host_transport_request_loop_region),
-    request_toggle_loop: Some(host_transport_request_toggle_loop),
-    request_enable_loop: Some(host_transport_request_enable_loop),
-    request_record: Some(host_transport_request_record),
-    request_toggle_record: Some(host_transport_request_toggle_record),
-};
-
-fn beats(time: clap_beattime) -> f64 {
-    time as f64 / CLAP_BEATTIME_FACTOR as f64
-}
-
-trampoline!(host_transport_request_start(), main_only, (), |cb| cb
-    .transport_request(TransportCommand::Start));
-
-trampoline!(host_transport_request_stop(), main_only, (), |cb| cb
-    .transport_request(TransportCommand::Stop));
-
-trampoline!(host_transport_request_continue(), main_only, (), |cb| {
-    cb.transport_request(TransportCommand::Continue)
-});
-
-trampoline!(host_transport_request_pause(), main_only, (), |cb| cb
-    .transport_request(TransportCommand::Pause));
-
-trampoline!(host_transport_request_toggle_play(), main_only, (), |cb| {
-    cb.transport_request(TransportCommand::TogglePlay)
-});
-
-trampoline!(
-    host_transport_request_jump(position: clap_beattime),
-    main_only,
-    (),
-    |cb| {
-        cb.transport_request(TransportCommand::Jump {
-            position_beats: beats(position),
-        })
-    }
-);
-
-trampoline!(
-    host_transport_request_loop_region(start: clap_beattime, duration: clap_beattime),
-    main_only,
-    (),
-    |cb| {
-        cb.transport_request(TransportCommand::LoopRegion {
-            start_beats: beats(start),
-            duration_beats: beats(duration),
-        })
-    }
-);
-
-trampoline!(host_transport_request_toggle_loop(), main_only, (), |cb| {
-    cb.transport_request(TransportCommand::ToggleLoop)
-});
-
-trampoline!(
-    host_transport_request_enable_loop(is_enabled: bool),
-    main_only,
-    (),
-    |cb| { cb.transport_request(TransportCommand::EnableLoop(is_enabled)) }
-);
-
-trampoline!(
-    host_transport_request_record(is_recording: bool),
-    main_only,
-    (),
-    |cb| { cb.transport_request(TransportCommand::Record(is_recording)) }
-);
-
-trampoline!(
-    host_transport_request_toggle_record(),
-    main_only,
-    (),
-    |cb| { cb.transport_request(TransportCommand::ToggleRecord) }
-);
-
-static HOST_CONTEXT_MENU: clap_host_context_menu = clap_host_context_menu {
-    populate: Some(host_context_menu_populate),
-    perform: Some(host_context_menu_perform),
-    can_popup: Some(host_context_menu_can_popup),
-    popup: Some(host_context_menu_popup),
-};
-
-extern "C" fn host_context_menu_populate(
-    _host: *const clap_host,
-    _target: *const clap_context_menu_target,
-    _builder: *const clap_context_menu_builder,
-) -> bool {
-    true
-}
-
-extern "C" fn host_context_menu_perform(
-    _host: *const clap_host,
-    _target: *const clap_context_menu_target,
-    _action_id: u32,
-) -> bool {
-    false
-}
-
-extern "C" fn host_context_menu_can_popup(_host: *const clap_host) -> bool {
-    false
-}
-
-extern "C" fn host_context_menu_popup(
-    _host: *const clap_host,
-    _target: *const clap_context_menu_target,
-    _screen_index: i32,
-    _x: i32,
-    _y: i32,
-) -> bool {
-    false
 }
 
 static HOST_AMBISONIC: clap_host_ambisonic = clap_host_ambisonic {
@@ -1031,148 +649,6 @@ extern "C" fn host_thread_pool_request_exec(host: *const clap_host, num_tasks: u
         crate::pool::request_exec(data as usize, num_tasks)
     })
 }
-
-static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {
-    rescan: Some(host_triggers_rescan),
-    clear: Some(host_triggers_clear),
-};
-
-trampoline!(host_triggers_rescan(_flags: u32), main_only, (), |cb| cb
-    .triggers_rescan());
-
-extern "C" fn host_triggers_clear(_host: *const clap_host, _trigger_id: u32, _flags: u32) {}
-
-static HOST_TUNING: clap_host_tuning = clap_host_tuning {
-    get_relative: Some(host_tuning_get_relative),
-    should_play: Some(host_tuning_should_play),
-    get_tuning_count: Some(host_tuning_get_count),
-    get_info: Some(host_tuning_get_info),
-};
-
-extern "C" fn host_tuning_get_relative(
-    _host: *const clap_host,
-    _tuning_id: u32,
-    _channel: i32,
-    _key: i32,
-    _sample_offset: u32,
-) -> f64 {
-    0.0
-}
-
-extern "C" fn host_tuning_should_play(
-    _host: *const clap_host,
-    _tuning_id: u32,
-    _channel: i32,
-    _key: i32,
-) -> bool {
-    true
-}
-
-trampoline!(host_tuning_get_count() -> u32, main_only, 0, |cb| cb.tuning_count());
-
-extern "C" fn host_tuning_get_info(
-    host: *const clap_host,
-    tuning_index: u32,
-    info: *mut clap_tuning_info,
-) -> bool {
-    if info.is_null() {
-        return false;
-    }
-    // SAFETY: a writable `clap_tuning_info` valid for the call
-    // (`tuning.h`); checked non-null. Cleared first so a failed or panicking
-    // lookup leaves an empty name.
-    unsafe {
-        (*info).name[0] = 0;
-        (*info).is_dynamic = false;
-    }
-    main_only(host, false, |cb| {
-        // SAFETY: as above; the only reference to the struct for this call.
-        let mut writer = TuningInfoWriter {
-            // SAFETY: as above for the tuning struct.
-            out: unsafe { &mut *info },
-        };
-        cb.tuning_info(tuning_index, &mut writer)
-    })
-}
-
-static HOST_RESOURCE_DIRECTORY: clap_host_resource_directory = clap_host_resource_directory {
-    request_directory: Some(host_resource_request_directory),
-    release_directory: Some(host_resource_release_directory),
-};
-
-trampoline!(
-    host_resource_request_directory(is_shared: bool) -> bool,
-    main_only,
-    false,
-    |cb| cb.resource_directory_request(is_shared)
-);
-
-trampoline!(
-    host_resource_release_directory(is_shared: bool),
-    main_only,
-    (),
-    |cb| cb.resource_directory_release(is_shared)
-);
-
-static HOST_UNDO: clap_host_undo = clap_host_undo {
-    begin_change: Some(host_undo_begin_change),
-    cancel_change: Some(host_undo_cancel_change),
-    change_made: Some(host_undo_change_made),
-    request_undo: Some(host_undo_request_undo),
-    request_redo: Some(host_undo_request_redo),
-    set_wants_context_updates: Some(host_undo_set_wants_context),
-};
-
-trampoline!(host_undo_begin_change(), main_only, (), |cb| cb
-    .undo_begin_change());
-
-trampoline!(host_undo_cancel_change(), main_only, (), |cb| cb
-    .undo_cancel_change());
-
-/// The largest undo delta a plugin may record in one change.
-const MAX_UNDO_DELTA_BYTES: usize = 64 << 20;
-
-trampoline!(
-    host_undo_change_made(
-        name: *const c_char,
-        delta: *const c_void,
-        delta_size: usize,
-        delta_can_undo: bool,
-    ),
-    main_only,
-    (),
-    |cb| {
-        // SAFETY: a nul-terminated string valid for the call (`undo.h`), or null.
-        let name = unsafe { lossy(name) };
-        // A size no slice can have, or past the cap, is a plugin that broke
-        // `undo.h`: the change is refused, not read.
-        if delta_size > MAX_UNDO_DELTA_BYTES {
-            return;
-        }
-        let delta: &[u8] = if delta.is_null() || delta_size == 0 {
-            &[]
-        } else {
-            // SAFETY: the plugin guarantees `delta` addresses `delta_size`
-            // readable bytes for the call (`undo.h`); checked non-null, and
-            // at most `MAX_UNDO_DELTA_BYTES`, below `isize::MAX`.
-            unsafe { std::slice::from_raw_parts(delta.cast::<u8>(), delta_size) }
-        };
-        cb.undo_change_made(&name, delta, delta_can_undo)
-    }
-);
-
-trampoline!(host_undo_request_undo(), main_only, (), |cb| cb
-    .undo_request_undo());
-
-trampoline!(host_undo_request_redo(), main_only, (), |cb| cb
-    .undo_request_redo());
-
-trampoline!(
-    host_undo_set_wants_context(is_subscribed: bool),
-    main_only,
-    (),
-    |cb| cb.undo_wants_context_updates(is_subscribed)
-);
 
 #[cfg(unix)]
 static HOST_POSIX_FD_SUPPORT: clap_host_posix_fd_support = clap_host_posix_fd_support {
@@ -1344,11 +820,6 @@ mod tests {
             Some(1)
         }
 
-        fn undo_change_made(&self, _name: &str, delta: &[u8], _delta_can_undo: bool) {
-            self.reached
-                .fetch_add(1 + delta.len() as u32, Ordering::SeqCst);
-        }
-
         fn posix_fd_register(&self, _fd: i32, _flags: u32) -> bool {
             self.reached.fetch_add(1, Ordering::SeqCst);
             true
@@ -1403,40 +874,6 @@ mod tests {
             (state.mark_dirty.unwrap())(raw);
             assert!((fds.register_fd.unwrap())(raw, 3, 1));
             assert_eq!(spy.reached.load(Ordering::SeqCst), 4);
-        }
-    }
-
-    /// An undo delta past the cap is refused unread: a plugin that claims a
-    /// size no allocation has gets no slice made of it. The delta pointer here
-    /// is dangling, so the refusal must come before it is used.
-    #[test]
-    fn an_undo_delta_past_the_cap_is_refused_unread() {
-        use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
-
-        let spy = Arc::new(Spy::default());
-        spy.main.store(true, Ordering::SeqCst);
-        let host = Host::new(spy.clone());
-        let raw = host.as_raw();
-        let dangling = std::ptr::NonNull::<u8>::dangling()
-            .as_ptr()
-            .cast::<c_void>();
-        // SAFETY: `raw` is the live vtable `host` built; the undo table is the
-        // static `get_extension` answers for its id. The delta is only read
-        // when its size is within the cap, and then is empty.
-        unsafe {
-            let get_ext = (*raw).get_extension.unwrap();
-            let undo = &*get_ext(raw, CLAP_EXT_UNDO.as_ptr()).cast::<clap_host_undo>();
-            let change_made = undo.change_made.unwrap();
-            change_made(
-                raw,
-                c"edit".as_ptr(),
-                dangling,
-                MAX_UNDO_DELTA_BYTES + 1,
-                true,
-            );
-            assert_eq!(spy.reached.load(Ordering::SeqCst), 0);
-            change_made(raw, c"edit".as_ptr(), std::ptr::null(), 0, true);
-            assert_eq!(spy.reached.load(Ordering::SeqCst), 1);
         }
     }
 }

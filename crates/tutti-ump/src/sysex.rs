@@ -35,7 +35,7 @@ const BYTES_PER_PACKET: usize = 8;
 ///
 /// It borrows its bytes, framed as they appear on a MIDI 1.0 wire. A host that
 /// sends one builds it at the edge, and the check is the type's, so no function
-/// below it accepts "a message with or without its delimiters". Bytes without
+/// below it accepts a message with or without its delimiters. Bytes without
 /// the delimiters are a payload, which [`Sysex7Packets::from_payload`] takes.
 ///
 /// # Examples
@@ -52,37 +52,23 @@ pub struct SysexMessage<'a>(&'a [u8]);
 
 /// Why bytes are not a System Exclusive message ([`SysexMessage::from_framed`])
 /// or a SysEx7 payload ([`Sysex7Packets::from_payload`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum SysexError {
     /// The first byte is not `0xF0` (or there are no bytes).
+    #[error("a SysEx message starts with 0xF0")]
     MissingStart,
     /// The last byte is not `0xF7`, or the only byte is the `0xF0`.
+    #[error("a SysEx message ends with 0xF7")]
     MissingEnd,
     /// A data byte is 128 or more. `index` counts from the first byte given:
     /// the `0xF0` of a framed message, the first payload byte of a payload.
+    #[error("the byte at {index} is 128 or more, so it is not SysEx data")]
     NotSevenBit {
         /// The position of the first byte above `0x7F`.
         index: usize,
     },
 }
-
-impl core::fmt::Display for SysexError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::MissingStart => f.write_str("a SysEx message starts with 0xF0"),
-            Self::MissingEnd => f.write_str("a SysEx message ends with 0xF7"),
-            Self::NotSevenBit { index } => {
-                write!(
-                    f,
-                    "the byte at {index} is 128 or more, so it is not SysEx data"
-                )
-            }
-        }
-    }
-}
-
-impl core::error::Error for SysexError {}
 
 impl<'a> SysexMessage<'a> {
     /// The message in `bytes`, framed as `0xF0`, any number of 7-bit bytes,
@@ -325,12 +311,10 @@ enum Run {
 /// # The rule (M2-104 §7.7.1)
 ///
 /// A System Exclusive stream belongs to its Group, so two Groups' messages
-/// interleave freely. On a Group, "if any Message or UMP on the same Group,
-/// other than a System Exclusive Continue UMP or a System Real Time Message,
-/// is sent after a System Exclusive Start UMP and before the associated System
-/// Exclusive End UMP, then that UMP shall terminate the System Exclusive
-/// Message", and "Messages which are Groupless (MT = 0x0 and 0xF) and those
-/// which are sent to a different Group may be interspersed". So a message is
+/// interleave freely. On a Group, any other message or UMP of that Group
+/// (but a Continue or a System Real Time message) sent between a Start and its
+/// End terminates the message, while Groupless messages (MT = 0x0 and 0xF) and
+/// those of a different Group may be interspersed. So a message is
 /// ended, dropped and counted, by the next UMP of its Group that is not a
 /// Continue or a System Real Time message (status `0xF8` to `0xFF` of type
 /// `0x1`): a channel voice message, a System Common message, a Flex Data

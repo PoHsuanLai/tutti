@@ -190,9 +190,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// **`copy_string` writes the string, a NUL, and nothing past it.** It used to
-    /// clear `max` bytes first (a destination that holds the string but not `max`
-    /// bytes was overrun) and to leave a string of `max` bytes or more with no NUL.
+    /// **`copy_string` writes the string, a NUL, and nothing past it.**
     #[test]
     fn copy_string_stops_at_its_nul_and_always_has_one() {
         let mut dst = [0xAAu8; 16];

@@ -28,7 +28,6 @@ use core::num::NonZeroU8;
 /// assert_eq!(UnitParam::try_from(id), Ok(UnitParam::Cutoff));
 /// assert!(UnitParam::try_from(9_999).is_err());
 /// ```
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum UnitParam {
@@ -243,7 +242,6 @@ impl From<UnitParam> for u16 {
 /// // Index 0 is the plain id.
 /// assert_eq!(u16::from(UnitAddr::from(UnitParam::Threshold)), 10);
 /// ```
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitAddr {
     /// The kind of param.
@@ -353,7 +351,6 @@ impl PartialEq<UnitAddr> for UnitParam {
 /// assert_eq!(band2.as_unit(), Some(UnitAddr::new(UnitParam::Threshold, 2)));
 /// assert_eq!(ParamAddr::Id(7).as_unit(), None);
 /// ```
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ParamAddr {
     /// A param from tutti's known vocabulary, at index 0.

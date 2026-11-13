@@ -302,7 +302,9 @@ mod tests {
         {
             assert!(keeps_one(tutti_midi_runtime::MidiClipNode::new([])));
             assert!(keeps_one(tutti_midi_runtime::HarmonyNode::new([])));
-            assert!(keeps_one(tutti_midi_runtime::MidiIngestNode::new(1)));
+            assert!(keeps_one(tutti_midi_runtime::MidiIngestNode::new(
+                std::num::NonZeroUsize::MIN
+            )));
         }
         #[cfg(feature = "sampler")]
         {

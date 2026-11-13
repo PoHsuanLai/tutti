@@ -2,7 +2,7 @@
 //! exclusive cut, mono and legato takeover, the return to a held key, the
 //! pedals, the panics, the bends and the per-note controllers.
 
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroUsize};
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_midi_protocol::{
@@ -38,7 +38,7 @@ impl Patch for Grouped {
 }
 
 fn rules(mode: Mode) -> Rules {
-    Rules::poly(6)
+    Rules::poly(NonZeroUsize::new(6).unwrap())
         .with_mode(mode)
         .with_steal(Steal::By(Order::Quietest))
         .with_exclusive_groups(true)
@@ -233,7 +233,9 @@ fn per_note_state_is_allocation_free() {
 /// MIDI reset that cuts every voice, allocate nothing.
 #[test]
 fn universal_is_allocation_free() {
-    let mut core = Voicing::new(Rules::poly(6).with_percussion(MidiChannel::of(9)));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(6).unwrap()).with_percussion(MidiChannel::of(9)),
+    );
     let on = |k: u8| Voice2::NoteOn {
         note: NoteNumber::of(k),
         velocity: NoteVelocity::new(0x8000),
@@ -277,7 +279,7 @@ fn universal_is_allocation_free() {
 fn mts_is_allocation_free() {
     for mode in [Mode::Poly, Mode::Mono, Mode::Legato] {
         let mut core = Voicing::new(
-            Rules::poly(6)
+            Rules::poly(NonZeroUsize::new(6).unwrap())
                 .with_mode(mode)
                 .with_percussion(MidiChannel::of(9))
                 .with_tuning_capacity(TuningCapacity::new(2, 8).unwrap()),

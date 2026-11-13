@@ -2411,7 +2411,7 @@ mod tests {
     /// flight, so the next leaked bounce is warned about too.
     ///
     /// The clock also restarts when a bounce starts: a host handing one
-    /// bounce's slot to the next within a frame (Bevy) never lets a collect
+    /// bounce's slot to the next within a frame never lets a collect
     /// see nothing in flight, and two back-to-back bounces, each inside the
     /// bound, are not one long stall.
     #[test]

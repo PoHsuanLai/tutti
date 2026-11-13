@@ -195,13 +195,6 @@ fn frame_count_inverts_from_frame_count_and_to_seconds_follows_it() {
 }
 
 #[test]
-fn test_to_beats() {
-    let tc = SmpteTimecode::new(0, 1, 0, 0, SmpteFrameRate::Fps30).unwrap();
-    // 60 seconds at 120 BPM = 120 beats
-    assert!((tc.to_beats(Bpm::of(120.0)).get() - 120.0).abs() < 0.001);
-}
-
-#[test]
 fn test_reset() {
     let mut decoder = MtcDecoder::new();
     feed_timecode(&mut decoder, 1, 2, 3, 4, 3);

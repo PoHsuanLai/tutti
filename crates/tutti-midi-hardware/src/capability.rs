@@ -80,13 +80,6 @@ impl UmpCapability {
         }
     }
 
-    /// The capability with `blocks` declared.
-    #[must_use]
-    pub fn with_blocks(mut self, blocks: Vec<FunctionBlock>) -> Self {
-        self.blocks = blocks;
-        self
-    }
-
     /// Whether this endpoint carries MIDI-2-only messages — per-note
     /// controllers, per-note pitch bend, and JR Timestamps — intact.
     ///

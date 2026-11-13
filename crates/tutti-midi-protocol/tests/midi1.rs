@@ -294,7 +294,7 @@ fn narrow_message_keeps_the_address() {
     use tutti_midi_protocol::{narrow_message, widen_velocity};
     let to = Address::new(MidiGroup::of(2), MidiChannel::of(5));
     let note = NoteNumber::of(60);
-    let on2 = Message::note_on2(to, note, widen_velocity(U7::of(100)));
+    let on2 = Message::Midi2(to, Voice2::note_on(note, widen_velocity(U7::of(100))));
     assert_eq!(
         narrow_message(on2),
         Ok(Message::note_on(to, note, U7::of(100)))

@@ -687,7 +687,6 @@ fn a_requested_mpe_mode_is_adopted_once() {
     let (_ed, mut exec, controls, seen) = ingest(Ingest::new(wire), MIDI_INPUT_PORTS as u16, 512);
     let mode = tutti_fixtures::midi::lower_zone(6);
     controls.set_mpe_mode(mode);
-    assert_eq!(controls.pending_mpe_mode(), Some(mode));
     for _ in 0..3 {
         block(&mut exec, 512);
     }

@@ -311,7 +311,7 @@ fn an_unreadable_ack_or_nak_is_not_nakked() {
     for kind in [SUB_ID2_ACK, SUB_ID2_NAK] {
         let mut bytes = invalidate();
         bytes[3] = kind;
-        bytes.truncate(CiHeader::LEN); // a unicast body is missing: malformed
+        bytes.truncate(13); // a unicast body is missing: malformed
         bytes[9..13].copy_from_slice(&muid(7).to_bytes());
         bytes.extend_from_slice(&[0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0x05, 0x00]); // ml 5, no text
         let got = unread(&bytes);

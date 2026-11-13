@@ -203,12 +203,6 @@ impl TuningName {
     pub const fn bytes(&self) -> &[U7; 16] {
         &self.0
     }
-
-    /// The name's byte at `i` (`None` past 15).
-    #[must_use]
-    pub fn byte(&self, i: usize) -> Option<u8> {
-        self.0.get(i).map(|b| b.get())
-    }
 }
 
 /// When a tuning change takes hold of a note that sounds: the real-time

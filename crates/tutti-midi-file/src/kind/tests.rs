@@ -62,3 +62,12 @@ fn detect_path_reads_the_magic_not_the_extension() {
     // Missing file — an error, not `Ok(None)`.
     assert!(MidiFileKind::detect_path(dir.path().join("absent.midi2")).is_err());
 }
+
+/// M2-116 section 4.1: Clip Files "shall use the file extension `.midi2`"; the
+/// Standard MIDI File's are `.mid` and `.midi`.
+#[test]
+fn the_extensions_include_the_ones_the_specifications_name() {
+    for ext in ["mid", "midi", "midi2"] {
+        assert!(MidiFile::EXTENSIONS.contains(&ext), "{ext}");
+    }
+}

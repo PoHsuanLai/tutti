@@ -99,7 +99,7 @@ fn a_reserved_status_is_unread_in_both_messages_and_nakked_generic() {
     // Table 10: 0x01 to 0x7F are reserved.
     for message in [inquiry(), reply("A")] {
         let mut bytes = message.encode();
-        let at = CiHeader::LEN;
+        let at = 13;
         bytes[at] = 0x01;
         let Decoded::Unread(unread) = CiMessage::decode(&bytes) else {
             panic!("unread");

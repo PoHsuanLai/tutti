@@ -124,7 +124,7 @@ fn a_function_block_that_declares_midi_ci_is_sent_discovery_on_its_first_group()
     assert_eq!(payload[..4], [0x7E, 0x7F, 0x0D, 0x70]);
     assert_eq!(payload[4], CI_VERSION.get());
     assert_eq!(payload[9..13], [0x7F; 4], "the Broadcast MUID");
-    assert_eq!(payload.len(), CiHeader::LEN + DiscoveryData::DISCOVERY_LEN);
+    assert_eq!(payload.len(), 13 + 17);
     let Decoded::Message(CiMessage::Discovery { header, data }) = CiMessage::decode(payload) else {
         panic!("a Discovery");
     };

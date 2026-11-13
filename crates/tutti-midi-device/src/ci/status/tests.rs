@@ -124,7 +124,7 @@ fn an_ack_round_trips_with_its_sub_id_and_body() {
     };
     let bytes = msg.encode();
     assert_eq!(bytes[3], 0x7D);
-    assert_eq!(&bytes[CiHeader::LEN..CiHeader::LEN + 3], [0x34, 0x10, 25]);
+    assert_eq!(&bytes[13..13 + 3], [0x34, 0x10, 25]);
     assert_eq!(CiMessage::decode(&bytes), Decoded::Message(msg));
 }
 
@@ -206,13 +206,11 @@ fn a_text_is_held_to_103_escaped_bytes() {
     assert!(MessageText::new(&"♪".repeat(17)).is_some());
     assert!(MessageText::new(&"♪".repeat(18)).is_none());
     // A backslash is two.
-    assert_eq!(
-        MessageText::new(&"\\".repeat(51)).unwrap().encoded_len(),
-        102
-    );
+    assert!(MessageText::new(&"\\".repeat(51)).is_some());
     assert!(MessageText::new(&"\\".repeat(52)).is_none());
     // The surrogate pair is twelve.
-    assert_eq!(MessageText::new("\u{1F600}").unwrap().encoded_len(), 12);
+    assert!(MessageText::new(&"\u{1F600}".repeat(8)).is_some());
+    assert!(MessageText::new(&"\u{1F600}".repeat(9)).is_none());
 }
 
 // A text written is the text read, whatever it holds.

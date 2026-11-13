@@ -228,11 +228,6 @@ impl HardwareMidiInputs {
             None => false,
         }
     }
-
-    /// Whether the port `id` names delivers. `false` for a stale id.
-    pub fn is_port_active(&self, id: DeviceSlot) -> bool {
-        self.port(id).is_some_and(|port| port.is_active())
-    }
 }
 
 impl core::fmt::Debug for HardwareMidiInputs {

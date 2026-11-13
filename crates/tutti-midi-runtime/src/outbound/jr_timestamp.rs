@@ -264,22 +264,6 @@ impl JrStream {
         self
     }
 
-    /// Adds the JR Clock cadence with an explicit interval.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `interval` is above [`JR_CLOCK_MAX_INTERVAL`]; see
-    /// [`JrClockEmitter::with_interval`].
-    #[must_use]
-    pub fn with_clock_interval(
-        mut self,
-        sample_rate: impl Into<SampleRate>,
-        interval: Duration,
-    ) -> Self {
-        self.emitter = Some(JrClockEmitter::with_interval(sample_rate, interval));
-        self
-    }
-
     /// Stamps one block and advances the origin past it, so the next call
     /// continues monotonically.
     ///

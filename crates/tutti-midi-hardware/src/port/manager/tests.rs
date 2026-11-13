@@ -61,13 +61,13 @@ fn test_port_active_state() {
     let manager = ports(4);
 
     let port_id = manager.open_input_port("Test").unwrap().slot();
-    assert!(manager.is_port_active(port_id));
+    assert!(manager.port_info(port_id).unwrap().active);
 
     manager.set_port_active(port_id, false);
-    assert!(!manager.is_port_active(port_id));
+    assert!(!manager.port_info(port_id).unwrap().active);
 
     manager.set_port_active(port_id, true);
-    assert!(manager.is_port_active(port_id));
+    assert!(manager.port_info(port_id).unwrap().active);
 }
 
 /// **A port is a slot of the inlets: when every slot is held, the next open
@@ -331,7 +331,6 @@ fn a_stale_slot_cannot_reach_the_port_that_reused_its_slot() {
     assert_ne!(b_id, a);
 
     assert!(!manager.set_port_active(a, false));
-    assert!(!manager.is_port_active(a));
     assert!(manager.port_info(a).is_none());
     assert!(!manager.remove_input_port(a), "a stale id removes nothing");
 

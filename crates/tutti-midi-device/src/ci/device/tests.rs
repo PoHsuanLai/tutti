@@ -284,7 +284,7 @@ fn a_malformed_message_to_us_is_nakked_with_0x41() {
     let (mut device, _, now) = device([OURS]);
     // A Discovery reply cut short.
     let mut bytes = bytes_of(0x71, PEER, muid(OURS).to_bytes());
-    bytes.truncate(CiHeader::LEN + 3);
+    bytes.truncate(13 + 3);
     let actions = device.on_message(&CiMessage::decode(&bytes), now);
     let [CiMessage::Nak { nak, .. }] = sends(&actions)[..] else {
         panic!("a NAK, got {actions:?}");

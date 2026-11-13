@@ -59,12 +59,6 @@ impl MessageText {
         self.0.is_empty()
     }
 
-    /// The bytes the text takes on the wire, escapes included.
-    #[must_use]
-    pub fn encoded_len(&self) -> usize {
-        encoded_len(&self.0)
-    }
-
     /// Appends the escaped text to `out`.
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         let mut escaped = String::with_capacity(self.0.len());

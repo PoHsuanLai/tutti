@@ -15,7 +15,7 @@ use tutti_midi_file::{
 use tutti_types::{Beat, Bpm};
 use tutti_ump::{
     Address, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, SysexStatus, U7, Ump,
-    Voice1,
+    Voice1, Voice2,
 };
 
 const TPQ: u16 = 480;
@@ -142,9 +142,7 @@ fn push_refuses_an_event_before_the_last() {
     assert!(err.to_string().contains("tick 9"), "{err}");
     // The typed error crosses `?` into the crate's.
     let authored = || -> tutti_midi_file::Result<Track> {
-        Ok(track
-            .clone()
-            .push(Tick(9), Meta::tempo(Bpm::of(100.0)))?)
+        Ok(track.clone().push(Tick(9), Meta::tempo(Bpm::of(100.0)))?)
     };
     assert!(matches!(authored(), Err(Error::OutOfOrder(e)) if e == err));
 }
@@ -266,11 +264,16 @@ fn a_format_2_file_has_no_timeline_but_each_track_has() {
 /// stays MIDI 2.0), and its configuration header is not on it.
 #[test]
 fn a_clip_files_timeline_is_its_packets_as_stored_without_the_header() {
-    let program = Message::program_change2(MidiChannel::FIRST, U7::of(5));
-    let note = Message::note_on2(
-        MidiChannel::FIRST,
-        NoteNumber::of(60),
-        NoteVelocity::new(0xFFFF),
+    let program = Message::Midi2(
+        MidiChannel::FIRST.into(),
+        Voice2::ProgramChange {
+            program: U7::of(5),
+            bank: None,
+        },
+    );
+    let note = Message::Midi2(
+        MidiChannel::FIRST.into(),
+        Voice2::note_on(NoteNumber::of(60), NoteVelocity::new(0xFFFF)),
     );
     let track = Track {
         header: vec![(Tick(0), program.into())],

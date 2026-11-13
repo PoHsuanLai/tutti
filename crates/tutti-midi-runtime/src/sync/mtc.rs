@@ -9,7 +9,7 @@
 //! other, and which you decode is decided by the source, not by preference.
 
 use super::SmpteFrameRate;
-use tutti_types::{Beat, Bpm, Seconds};
+use tutti_types::Seconds;
 use tutti_ump::{Message, System, Ump};
 
 /// An assembled SMPTE position: `HH:MM:SS:FF` plus the rate that gives the frame
@@ -165,15 +165,6 @@ impl SmpteTimecode {
             frames: (labelled % per_sec) as u8,
             frame_rate,
         }
-    }
-
-    /// Position in beats at a constant `tempo`, from `00:00:00:00`.
-    ///
-    /// Assumes the tempo held for the whole span — there is no tempo map here, so
-    /// this is exact only for a fixed-tempo project.
-    ///
-    pub fn to_beats(&self, tempo: Bpm) -> Beat {
-        Beat::new(self.to_seconds().get() * tempo.get() / 60.0)
     }
 }
 

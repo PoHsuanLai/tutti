@@ -150,15 +150,6 @@ impl OutputLatency {
         (device.as_secs_f64() <= MAX_OUTPUT_LATENCY.get()).then_some(Self { device, offset })
     }
 
-    /// Only the user's offset.
-    #[must_use]
-    pub fn offset_only(offset: OutputOffset) -> Self {
-        Self {
-            device: Duration::ZERO,
-            offset,
-        }
-    }
-
     /// What the device takes to sound an event: it is sent that much earlier.
     #[must_use]
     pub const fn device(self) -> Duration {

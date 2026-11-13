@@ -162,18 +162,6 @@ pub struct DiscoveryData {
 }
 
 impl DiscoveryData {
-    /// Length of the fields common to both directions: 3 mfr + 2 family +
-    /// 2 model + 4 revision + 1 categories + 4 max-size.
-    pub const BODY_LEN: usize = 3 + 2 + 2 + 4 + 1 + 4;
-
-    /// Byte length of a Discovery body (Table 6): the common fields plus the
-    /// Output Path ID.
-    pub const DISCOVERY_LEN: usize = Self::BODY_LEN + 1;
-
-    /// Byte length of a Reply to Discovery body (Table 8): the common fields
-    /// plus Output Path Instance ID and Function Block.
-    pub const REPLY_LEN: usize = Self::BODY_LEN + 2;
-
     /// A body with the Message-Version-2 fields at their neutral values: path
     /// id 0 and no Function Block. Use the field setters for a device that
     /// has several MIDI Out connections or sits behind a Function Block.

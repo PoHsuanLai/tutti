@@ -65,13 +65,6 @@ impl ActiveSensing {
         self.limit
     }
 
-    /// Whether `group` is watched: it has sent an Active Sensing and not
-    /// lapsed since.
-    #[must_use]
-    pub fn is_watched(&self, group: MidiGroup) -> bool {
-        self.watched[group.index()].is_some()
-    }
-
     /// A message of `group` arrived at `at`: it clears the timer of a watched
     /// Group, and an Active Sensing (`sensing`) starts watching one. Calls
     /// are in time order; one at an earlier frame than the last is taken as

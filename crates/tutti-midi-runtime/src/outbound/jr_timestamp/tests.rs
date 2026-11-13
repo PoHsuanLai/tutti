@@ -92,8 +92,13 @@ fn the_cadence_keeps_running_through_silence() {
     // idle stream — which is exactly when a receiver most needs the clock.
     let sample_rate = 48_000.0;
     let block = Samples(512);
-    let mut stream = JrStream::new(SampleRate::of(sample_rate))
-        .with_clock_interval(SampleRate::of(sample_rate), Duration::from_millis(100));
+    let mut stream = JrStream {
+        emitter: Some(JrClockEmitter::with_interval(
+            SampleRate::of(sample_rate),
+            Duration::from_millis(100),
+        )),
+        ..JrStream::new(SampleRate::of(sample_rate))
+    };
 
     let mut clocks = 0;
     // 1 second of entirely silent blocks.

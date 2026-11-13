@@ -232,7 +232,7 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
 /// // Four device slots, none wired yet.
 /// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(NonZeroUsize::new(4).unwrap()));
-/// assert_eq!(controls.pending_mpe_mode(), None);
+/// controls.set_mpe_mode(tutti_midi_protocol::MpeMode::Disabled);
 /// ```
 pub struct MidiIngestNode {
     /// One translation state per device slot.
@@ -504,14 +504,6 @@ impl MidiIngestControls {
     /// ([`DeviceInlets`]).
     pub fn losses(&self) -> Losses {
         Losses::refused(self.dropped.load(Ordering::Relaxed))
-    }
-
-    /// The mode last asked for through [`set_mpe_mode`](Self::set_mpe_mode),
-    /// if any: what was asked, not what is in force (they differ for a block
-    /// after a change, and for good if the graph never runs). Control side:
-    /// the cell's own value ([`ArcLend::current`]), never a lend.
-    pub fn pending_mpe_mode(&self) -> Option<MpeMode> {
-        *self.request.current()
     }
 }
 

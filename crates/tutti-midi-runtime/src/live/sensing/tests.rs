@@ -18,7 +18,6 @@ fn a_cable_that_never_sent_active_sensing_is_never_judged() {
     let mut w = watch();
     w.heard(G0, Frame::new(0), false);
     assert_eq!(w.next_lapse(Frame::new(10 * LIMIT)), None);
-    assert!(!w.is_watched(G0));
 }
 
 /// **Once an FE is seen, a message is expected within the limit, and over it
@@ -29,7 +28,6 @@ fn a_cable_that_never_sent_active_sensing_is_never_judged() {
 fn a_watched_cable_lapses_over_the_limit_once() {
     let mut w = watch();
     w.heard(G0, Frame::new(1_000), true);
-    assert!(w.is_watched(G0));
     assert_eq!(
         w.next_lapse(Frame::new(1_000 + LIMIT)),
         None,
@@ -39,7 +37,6 @@ fn a_watched_cable_lapses_over_the_limit_once() {
         w.next_lapse(Frame::new(1_000 + LIMIT + 1)),
         Some((G0, Frame::new(1_000 + LIMIT)))
     );
-    assert!(!w.is_watched(G0), "the flag is reset");
     assert_eq!(w.next_lapse(Frame::new(100 * LIMIT)), None, "once");
 }
 
@@ -72,7 +69,6 @@ fn each_group_is_judged_alone() {
         Some((G1, Frame::new(5_000 + LIMIT)))
     );
     assert_eq!(w.next_lapse(Frame::new(5_000 + LIMIT + 1)), None);
-    assert!(w.is_watched(G0));
     w.heard(G1, Frame::new(1_000_000), true);
     assert_eq!(
         w.next_lapse(Frame::new(1_000_000 + 3 * LIMIT)),

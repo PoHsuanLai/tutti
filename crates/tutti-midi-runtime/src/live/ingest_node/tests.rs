@@ -1,18 +1,15 @@
 use super::*;
 use std::num::NonZeroUsize;
 
-/// The controls report the mode last asked for, from the cell, and the
-/// node adopts it on its next block.
+/// The node adopts the mode last asked for on its next block.
 #[test]
-fn the_controls_report_the_mode_last_asked_for() {
+fn the_node_adopts_the_mode_last_asked_for() {
     let parts = MidiIngestNode::new(NonZeroUsize::MIN).into_parts();
     let controls = parts.controls;
-    assert_eq!(controls.pending_mpe_mode(), None);
     let lower = tutti_fixtures::midi::lower_zone(15);
     let upper = tutti_fixtures::midi::upper_zone(7);
     controls.set_mpe_mode(lower);
     controls.clone().set_mpe_mode(upper);
-    assert_eq!(controls.pending_mpe_mode(), Some(upper), "the last asked");
 
     // A node over the same request, reading it through a reader of its
     // own, as the inserted one is.

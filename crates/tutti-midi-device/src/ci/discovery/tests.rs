@@ -49,7 +49,7 @@ fn discovery_round_trips() {
     };
     let bytes = msg.encode();
     assert_eq!(bytes[3], SUB_ID2_DISCOVERY);
-    assert_eq!(bytes.len(), CiHeader::LEN + DiscoveryData::DISCOVERY_LEN);
+    assert_eq!(bytes.len(), 13 + 17);
     assert_eq!(decoded(&bytes), msg);
 }
 
@@ -62,22 +62,17 @@ fn discovery_and_reply_have_the_version_2_trailers() {
 
     let mut discovery = Vec::new();
     d.encode_body(false, &mut discovery);
-    assert_eq!(discovery.len(), DiscoveryData::DISCOVERY_LEN);
+    assert_eq!(discovery.len(), 17);
     assert_eq!(
-        discovery[DiscoveryData::BODY_LEN],
-        0x05,
+        discovery[16], 0x05,
         "Output Path ID is the last Discovery byte"
     );
 
     let mut reply = Vec::new();
     d.encode_body(true, &mut reply);
-    assert_eq!(reply.len(), DiscoveryData::REPLY_LEN);
-    assert_eq!(reply[DiscoveryData::BODY_LEN], 0x05, "path id echoed");
-    assert_eq!(
-        reply[DiscoveryData::BODY_LEN + 1],
-        0x03,
-        "Function Block follows it"
-    );
+    assert_eq!(reply.len(), 18);
+    assert_eq!(reply[16], 0x05, "path id echoed");
+    assert_eq!(reply[16 + 1], 0x03, "Function Block follows it");
 
     // Both directions decode back to what they encoded.
     assert_eq!(
@@ -100,7 +95,7 @@ fn a_version_1_body_still_decodes() {
     let d = sample_discovery();
     let mut body = Vec::new();
     d.encode_body(true, &mut body);
-    body.truncate(DiscoveryData::BODY_LEN); // strip the v2 trailer
+    body.truncate(16); // strip the v2 trailer
 
     let back = DiscoveryData::decode_body(true, &body).expect("v1 body decodes");
     assert_eq!(back.identity, d.identity);
@@ -195,7 +190,7 @@ fn a_receivable_size_under_128_is_malformed() {
 fn the_function_block_of_a_reply_is_0_to_31_or_none() {
     let mut body = Vec::new();
     sample_discovery().encode_body(true, &mut body);
-    let at = DiscoveryData::BODY_LEN + 1;
+    let at = 16 + 1;
     for (raw, expected) in [(0, Some(0)), (31, Some(31)), (0x7F, None)] {
         body[at] = raw;
         let got = DiscoveryData::decode_body(true, &body).unwrap();

@@ -370,9 +370,6 @@ pub struct CiHeader {
 }
 
 impl CiHeader {
-    /// Length of the encoded preamble in bytes: `7E id 0D sub2 ver` + 2x4 MUID.
-    pub const LEN: usize = 5 + 4 + 4;
-
     /// A header from `source`, to the whole Function Block, at [`CI_VERSION`]:
     /// the default of an inquiry and its reply (§5.2.1).
     #[must_use]

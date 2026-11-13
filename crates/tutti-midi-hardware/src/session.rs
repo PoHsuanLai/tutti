@@ -553,7 +553,7 @@ impl MidiSession {
     /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off until
     /// this is called**: a Discovery carries a System Exclusive manufacturer
     /// id, tutti has none, and the one MIDI 1.0 sets aside for non-commercial use
-    /// (`7D`) is not to be used on any product released to the public. So
+    /// (`7D`) is not for a released product. So
     /// the app says who it is, with the id it registered. An identity under
     /// [`ManufacturerId::NON_COMMERCIAL`](tutti_ump::ManufacturerId::NON_COMMERCIAL)
     /// is for development and research only, never for a released product.

@@ -1,4 +1,4 @@
-//! A late publish (doc 020, "Following an outside tempo"): a map whose step is
+//! A late publish: a map whose step is
 //! behind the playhead moves no beat.
 
 use tutti_session::Session;

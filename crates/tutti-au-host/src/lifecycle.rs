@@ -211,7 +211,6 @@ impl AuLoaded {
             block_size: self.config().block_size,
             stage,
             deferred: deferred_in,
-            listener: self.listener(),
         });
         Ok((processor, AuController::new(self, ranges, deferred_out)))
     }

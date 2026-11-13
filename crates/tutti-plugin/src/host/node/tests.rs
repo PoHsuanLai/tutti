@@ -356,9 +356,8 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
         })));
     }
 
-    // First request: receives `ParameterList`. Trailing events sit in
-    // the socket buffer until the next `recv_reply` pulls them — which
-    // happens on the next request.
+    // First request: receives `ParameterList`; the events that follow it are
+    // read as they arrive.
     let params = handle.any_thread().parameter_descriptors().unwrap();
     assert_eq!(params.len(), 1);
     assert_eq!(params[0].name(), "Vol");

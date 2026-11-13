@@ -185,6 +185,76 @@ pub fn has_pending(stream: &ControlStream) -> bool {
     }
 }
 
+/// A second handle on a control stream that only *waits* for it to have
+/// something to read, from a thread of its own: it never reads, so the thread
+/// that does keeps every byte and its frame cursor.
+///
+/// Unix duplicates the descriptor and `poll`s it, so the wait ends the instant a
+/// byte (or a hang-up) arrives. Windows has no `poll` on a named pipe, so the
+/// duplicated handle is peeked with the [`back_off`] naps. Holding it keeps the
+/// socket open: drop it promptly when the stream's owner is done.
+pub struct Watch {
+    #[cfg(unix)]
+    fd: std::os::fd::OwnedFd,
+    #[cfg(windows)]
+    handle: std::os::windows::io::OwnedHandle,
+}
+
+impl Watch {
+    /// A watch on `stream`.
+    ///
+    /// # Errors
+    ///
+    /// The OS refuses to duplicate the descriptor.
+    pub fn of(stream: &ControlStream) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd;
+            let Stream::UdSocket(socket) = stream;
+            Ok(Self {
+                fd: socket.as_fd().try_clone_to_owned()?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsHandle;
+            let Stream::NamedPipe(pipe) = stream;
+            Ok(Self {
+                handle: pipe.as_handle().try_clone_to_owned()?,
+            })
+        }
+    }
+
+    /// Waits up to `timeout` for the stream to have something to read.
+    /// `true` when it has, or when asking fails (a read is the authority on a
+    /// closed or broken stream); `false` on a timeout.
+    pub fn wait_readable(&self, timeout: Duration) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd;
+            let ms = i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
+            tutti_plugin_ipc_ffi::wait_readable(self.fd.as_fd(), ms).unwrap_or(true)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsHandle;
+            let deadline = Instant::now() + timeout;
+            let mut empty = 0u32;
+            loop {
+                match tutti_plugin_ipc_ffi::pipe_bytes_available(self.handle.as_handle()) {
+                    Ok(0) => {}
+                    Ok(_) | Err(_) => return true,
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                back_off(&mut empty, left);
+            }
+        }
+    }
+}
+
 /// Wait longer each time a peeked stream comes back empty, never past `remaining`.
 ///
 /// **The first polls yield instead of sleeping, and that is not an optimisation.**

@@ -352,15 +352,6 @@ impl AudioBridge {
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::Reset)
     }
 
-    /// Queues a read of what the plugin said unprompted (a latency or tail
-    /// change, an edit, a request to be processed again), which the bridge
-    /// otherwise hears only while a command waits for its reply. The listener
-    /// hears it from the bridge thread. `false` when the queue was full or
-    /// the bridge is gone; the next call retries.
-    pub fn drain_unsolicited(&self) -> bool {
-        !self.lifecycle.is_crashed() && self.channels.push_command(Command::Drain)
-    }
-
     // --- RT submit (fire-and-forget) ---
 
     /// Drain every reply the bridge has queued into `midi_out` (appended):

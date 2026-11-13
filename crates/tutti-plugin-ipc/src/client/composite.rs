@@ -354,12 +354,6 @@ impl PluginBridge {
         self.audio.is_crashed()
     }
 
-    /// Queues a read of what the server said unprompted. See
-    /// [`AudioBridge::drain_unsolicited`](super::audio::AudioBridge::drain_unsolicited).
-    pub fn drain_unsolicited(&self) -> bool {
-        self.audio.drain_unsolicited()
-    }
-
     /// How many plugin parameter-change events the bridge dropped. See
     /// [`AudioBridge::dropped_parameter_events`](super::audio::AudioBridge::dropped_parameter_events).
     pub fn dropped_parameter_events(&self) -> u64 {

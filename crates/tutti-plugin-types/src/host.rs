@@ -232,16 +232,6 @@ pub trait Control: EditorWindow {
     /// [`ProcessOutput`] says `0` in its own impl.
     fn dropped_reported_edits(&self) -> u64;
 
-    /// Reads what the plugin said unprompted since the last call, so it reaches
-    /// the host now rather than with its next command: a served plugin's
-    /// request to be processed again, which wakes its parked node. The main
-    /// thread's tick, for every plugin whether or not its editor is open. The
-    /// default does nothing: an in-process plugin's calls into the host are
-    /// already the host's.
-    fn read_news(&mut self, main: &MainThread) {
-        let _ = main;
-    }
-
     /// Gives the plugin's host the [`ProcessWake`] to raise when the plugin
     /// asks to be processed again (CLAP's `request_process`, which a plugin
     /// that returned `CLAP_PROCESS_SLEEP` calls from any thread). Any thread;

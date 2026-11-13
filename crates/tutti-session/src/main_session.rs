@@ -129,9 +129,6 @@ impl MainSession<'_> {
         self.session.graph.graveyard.exhume(&main);
         tutti_plugin_types::run_deferred(&main);
         for (&node, hosted) in &self.session.graph.plugins {
-            // Every plugin, editor or not: a served plugin's request to be
-            // processed again wakes its parked node.
-            hosted.handle.read_news(&main);
             if !hosted.editor_open {
                 continue;
             }

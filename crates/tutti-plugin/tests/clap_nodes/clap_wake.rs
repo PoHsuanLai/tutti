@@ -16,7 +16,7 @@
 #![cfg(feature = "clap")]
 
 use crate::clap_probe;
-use clap_probe::{BLOCK, PACE, ProbeEnv, SAMPLE_RATE, load_probe, render};
+use clap_probe::{BLOCK, PERIOD, ProbeEnv, SAMPLE_RATE, load_probe, render};
 use tutti_fixtures::{machine_lock, main_thread};
 
 use std::time::{Duration, Instant};
@@ -104,13 +104,19 @@ fn in_process_the_next_block_after_a_request_from_another_thread_runs_the_plugin
     assert!(is_woken(&out), "and carries the plugin's sound");
 }
 
-/// **Served, a `request_process` the plugin-server's plugin makes while its
-/// node is parked reaches the node's wake.** The server sends `ProcessRequested`
-/// on its control connection; the client reads it on the control tick
-/// (`PluginHandle::read_news`) and raises the wake, so the node runs again and
-/// the plugin's sound arrives through the pipeline.
+/// How many blocks after the request is visible the woken sound may take to
+/// come back: the wake, the chunk's trip to the server and its answer's trip
+/// back. About 20 ms of audio, under the server's old 33 ms tick alone.
+const WOKEN_WITHIN_BLOCKS: usize = 15;
+
+/// **Served, a `request_process` the plugin makes on a thread of its own while
+/// its node is parked wakes the node within a few blocks.** No tick is driven:
+/// the server's main loop sends `ProcessRequested` the moment the plugin asks (the
+/// plugin's call rings the loop's bell), the bridge's watcher thread reads it the
+/// moment it arrives and raises the node's wake, and the plugin's sound comes
+/// back through the pipeline.
 #[test]
-fn served_a_request_while_parked_wakes_the_node() {
+fn served_a_request_while_parked_wakes_the_node_within_a_few_blocks() {
     let _lock = machine_lock();
     let dir = tempfile::tempdir().expect("a scratch directory");
     let request = dir.path().join("request_process");
@@ -119,7 +125,6 @@ fn served_a_request_while_parked_wakes_the_node() {
         .status_mode(StatusMode::Sleep as u32)
         .request_process_file(&request);
     let probe = load_probe(SAMPLE_RATE);
-    let handle = probe.handle.clone();
     let outputs = probe.client.outputs();
     let mut renderer = one_plugin_graph(
         probe.client.bind(
@@ -127,32 +132,39 @@ fn served_a_request_while_parked_wakes_the_node() {
         ),
         outputs,
     );
-    let main = main_thread();
     let step = |renderer: &mut Renderer| {
-        handle.read_news(&main);
         let out = renderer.render(BLOCK);
-        std::thread::sleep(PACE);
+        std::thread::sleep(PERIOD);
         out
     };
 
-    for _ in 0..50 {
+    for _ in 0..100 {
         assert!(!is_woken(&step(&mut renderer)), "silent until it asks");
     }
     std::fs::write(&request, b"").expect("the plugin's trigger");
 
+    // The plugin deletes the file after it has made the request.
     let deadline = Instant::now() + PATIENCE;
     while request.exists() {
         assert!(
             Instant::now() < deadline,
             "the plugin never made the request"
         );
-        step(&mut renderer);
+        if is_woken(&step(&mut renderer)) {
+            return;
+        }
     }
-    let deadline = Instant::now() + PATIENCE;
-    while !is_woken(&step(&mut renderer)) {
-        assert!(
-            Instant::now() < deadline,
-            "the plugin asked to be processed and the parked node never ran again"
-        );
+    let asked = Instant::now();
+    for blocks in 1..=WOKEN_WITHIN_BLOCKS {
+        if is_woken(&step(&mut renderer)) {
+            eprintln!(
+                "woken {blocks} blocks, {:?} after the request was visible",
+                asked.elapsed()
+            );
+            return;
+        }
     }
+    panic!(
+        "the plugin asked to be processed and the parked node did not run within {WOKEN_WITHIN_BLOCKS} blocks"
+    );
 }

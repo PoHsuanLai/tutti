@@ -33,12 +33,6 @@ pub trait MainThreadControl: Send + Sync {
     /// is lost.
     fn lend(&self, f: &mut dyn FnMut(&mut dyn Control));
 
-    /// Reads what the plugin said unprompted ([`Control::read_news`]): the
-    /// main thread's tick for every plugin, editor open or not.
-    fn read_news(&self, main: &MainThread) {
-        let _ = main;
-    }
-
     /// The editor's tick, which an in-process plugin pairs with the pump of
     /// what the plugin changed about itself.
     fn editor_idle(&self, main: &MainThread);
@@ -61,10 +55,6 @@ impl<C: Control + Clone + Send + Sync> MainThreadControl for C {
 
     fn editor_idle(&self, main: &MainThread) {
         self.lend(&mut |control| control.editor_idle(main));
-    }
-
-    fn read_news(&self, main: &MainThread) {
-        self.lend(&mut |control| control.read_news(main));
     }
 }
 
@@ -614,16 +604,6 @@ impl PluginHandle {
     pub fn close_editor(&self, main: &MainThread) -> &Self {
         if let Some(control) = self.control.as_deref() {
             let _ = lent(control, |c| c.close_editor(main));
-        }
-        self
-    }
-
-    /// Reads what the plugin said unprompted ([`Control::read_news`]): the
-    /// main thread's tick for every plugin, editor open or not. A no-op for an
-    /// in-process plugin.
-    pub fn read_news(&self, main: &MainThread) -> &Self {
-        if let Some(control) = self.control.as_deref() {
-            control.read_news(main);
         }
         self
     }

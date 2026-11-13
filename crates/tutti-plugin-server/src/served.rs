@@ -324,6 +324,7 @@ impl<F: ServerSide> Served<F> {
             let requested = Arc::clone(&this.process_requested);
             control.bind_wake(ProcessWake::new(move || {
                 requested.store(true, Ordering::Release);
+                crate::bell::bell().ring();
             }));
         }
         // Before the activation: see above.

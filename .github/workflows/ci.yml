@@ -571,7 +571,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.changes.outputs.test_os) }}
     # The golden digests are glibc libm's on 24.04; 26.04's libm moves them.
     # `require` makes a Linux runner whose glibc is not the recorded one fail
     # instead of skipping the digests (CLAUDE.md, Testing).
@@ -645,7 +645,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.changes.outputs.test_os) }}
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     env:
       TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
@@ -753,7 +753,7 @@ jobs:
   doc-macos:
     name: rustdoc (macos)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -874,12 +874,21 @@ jobs:
   # of the plugin slab header), so a PR that touches none of those, nor the
   # lock, the toolchain or this file, cannot change their result. `loom` is the
   # slowest job (about 12 minutes); it runs on the PRs that can change it.
+  #
+  # `macos`: whether the change touches code that differs on macOS: the crates
+  # with a macOS path (thread priority in `tutti-rt`, CoreAudio through
+  # `tutti-cpal`, CoreMIDI, the AU host and the plugin stack's process and
+  # bundle code), the test plugins, or the build. A pull request that touches
+  # none of those runs `clippy (macos)` only; its macOS tests and rustdoc run on
+  # the push to main.
   changes:
     name: what changed?
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.diff.outputs.code }}
       loom: ${{ steps.diff.outputs.loom }}
+      macos: ${{ steps.diff.outputs.macos }}
+      test_os: ${{ steps.diff.outputs.test_os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -892,6 +901,8 @@ jobs:
           if [ "$EVENT" != "pull_request" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "loom=true" >> "$GITHUB_OUTPUT"
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$BASE"...HEAD)
@@ -905,6 +916,13 @@ jobs:
             echo "loom=true" >> "$GITHUB_OUTPUT"
           else
             echo "loom=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(crates/(arc-lend|tutti-rt|tutti-cpal|tutti-midi-hardware|tutti-coremidi-ffi|tutti-au-[a-z]+|tutti-vst2-[a-z]+|tutti-vst3-[a-z]+|tutti-clap-[a-z]+|tutti-plugin[a-z-]*)/|crates/tutti-session/(src|tests)/plugin|testing/|vendor/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+            echo 'test_os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           fi
 
   loom:

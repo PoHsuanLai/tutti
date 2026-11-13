@@ -1,4 +1,4 @@
-//! The reverb: any [`Family`] as a graph node (design 022 section 5).
+//! The reverb: any [`Family`] as a graph node.
 //!
 //! [`FamilyNode<F>`] is the one node over every reverb algorithm. It is generic
 //! rather than boxed: a [`Family`] has a `Controls` type and a [`Recurrence`] of its
@@ -9,7 +9,7 @@
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
 //!
 //! The node is wet only: its blend with its input, for use as an insert, is the
-//! graph's mix (`Editor::set_mix`, doc 013 M4), which aligns the input by the
+//! graph's mix (`Editor::set_mix`), which aligns the input by the
 //! realization's latency (never its pre-delay, which is part of the wet sound).
 //! [`FreeverbNode`] is the General MIDI send of the SoundFont player.
 

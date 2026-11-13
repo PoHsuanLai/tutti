@@ -256,7 +256,7 @@ pub(crate) fn with_output<R>(
 /// # Safety
 /// `source` must stay alive and unmoved for as long as the returned list is
 /// used.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 #[doc(hidden)]
 #[must_use]
 pub unsafe fn input_raw_for_test(source: *const dyn EventSource) -> *const clap_input_events {
@@ -275,7 +275,7 @@ pub unsafe fn input_raw_for_test(source: *const dyn EventSource) -> *const clap_
 /// # Safety
 /// `sink` must stay alive and unmoved for as long as the returned list is
 /// used, and nothing else may use it meanwhile.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 #[doc(hidden)]
 #[must_use]
 pub unsafe fn output_raw_for_test(sink: *mut dyn EventSink) -> *const clap_output_events {

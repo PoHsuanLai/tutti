@@ -255,7 +255,7 @@ terms:
   unit tests in sibling files, shared helpers in one `support` module or
   `tutti-fixtures`, never copied between binaries.
 - **X4. No test-only seams in library code** (`M-TEST-UTIL`): an item that exists only for a
-  test is behind a `testing`/`test-support` feature or deleted (`CLAUDE.md`).
+  test is behind a `testing` feature or deleted (`CLAUDE.md`).
 - **X5. Determinism**: no sleep-based timing where a condition can be waited
   on; a test that has flaked is fixed at the cause or recorded in the flake
   list with its cause.
@@ -273,7 +273,7 @@ terms:
   `decode-flac`), never `use-*`/`with-*`; `default` minimal (empty for an
   engine crate); every feature has a comment in the manifest saying what it
   turns on and who needs it; test-only features say so in their name
-  (`test-support`, `testing`, `contract`).
+  (`testing` for a seam other crates' tests use, `contract` for a public conformance suite).
 - **P3. Dependencies**: from `[workspace.dependencies]` where shared; the
   fewest crates and the fewest default features that do the job; no C library
   where a pure-Rust one exists (owner rule); `cargo xtask deny` clean.

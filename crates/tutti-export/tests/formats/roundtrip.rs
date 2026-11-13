@@ -23,10 +23,7 @@
 //! cases turn it off explicitly. A config literal that forgets to is the most
 //! likely way to make these tests mysteriously flaky.
 //!
-//! Gated on `wav` + `flac`: the cases write both formats unconditionally, and
-//! `hound` (which reads the WAVs back) is only linked under `wav`.
-
-#![cfg(all(feature = "wav", feature = "flac"))]
+//! The cases write WAV and FLAC, and `hound` reads the WAVs back.
 
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 

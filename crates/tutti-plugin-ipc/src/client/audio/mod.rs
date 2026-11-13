@@ -216,7 +216,7 @@ impl AudioBridge {
 
     /// Shorten the wait for a rate change's answer, for a test that would
     /// otherwise wait out the production budget.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_rate_timeout(&self, timeout: Duration) {
         self.lifecycle.set_rate_timeout(timeout);
     }
@@ -255,14 +255,14 @@ impl AudioBridge {
     /// depend on. The counter itself is unconditional — it is two atomic ops
     /// on a path that already blocks on a socket — so what the tests observe
     /// is the production code path, not a test-only variant of it.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn settled_replies(&self) -> u64 {
         self.channels.settled()
     }
 
     /// How many blocks' replies the bridge thread abandoned on a missed budget.
     /// `cfg(test)` for the reason [`settled_replies`](Self::settled_replies) is.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn abandoned_replies(&self) -> u64 {
         self.channels.abandoned()
     }

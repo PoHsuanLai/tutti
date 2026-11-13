@@ -3,7 +3,7 @@
 //!
 //! `cargo doc --workspace` builds every crate with the features some member's
 //! edge turns on, so an item behind a feature nothing in the workspace enables
-//! (a `contract` harness, `test-support`, a codec, a plugin format) and the
+//! (a `contract` harness, `testing`, a codec, a plugin format) and the
 //! links in its docs are never documented there. A doc comment under
 //! `#[cfg(feature = "x")]` is compiled by rustdoc only when `x` is on. Two kinds
 //! of run close that:

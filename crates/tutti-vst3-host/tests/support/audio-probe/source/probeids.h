@@ -226,6 +226,11 @@ enum ProbeParams : ParamID
 static const double kDelayMsMin = 5.0;
 static const double kDelayMsMax = 750.0;
 
+/// The controller number of the legacy MIDI CC the plugin emits on its event
+/// output bus, at offset 0 of any block that carried a point for `kParamGain`,
+/// with the gain as its value (`gain * 127`).
+static const uint8 kGainControllerNumber = 7;
+
 /// Latency the plugin reports and applies in `kModeLatency`. A prime number so
 /// an accidentally-correct result is unlikely.
 static const int32 kReportedLatencySamples = 137;

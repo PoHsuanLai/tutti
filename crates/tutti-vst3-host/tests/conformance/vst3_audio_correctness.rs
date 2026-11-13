@@ -1362,62 +1362,33 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
 
 /// MIDI the plugin *emits* must reach the host.
 ///
-/// The reverse direction of every other MIDI test here. `legacy-midicc-out`
-/// emits a legacy MIDI CC from its `process` when its controller parameter
-/// changes; the host has to decode that from `outputEvents` and surface it as a
-/// `(Offset, Ump)`. A host that never drains the output list silently drops
-/// everything an arpeggiator or MIDI-effect plugin produces.
+/// The reverse direction of every other MIDI test here. `audio-probe` emits a
+/// legacy MIDI CC 7 on its event output bus, at offset 0, in a block that carried
+/// a point for its `Gain` parameter, with the gain as the value (`gain * 127`);
+/// the host has to decode that from `outputEvents` and surface it. A host that
+/// never drains the output list silently drops everything an arpeggiator or
+/// MIDI-effect plugin produces. A block without a gain point emits nothing, so
+/// a host that invented events fails too.
 #[test]
 fn midi_emitted_by_the_plugin_reaches_the_host() {
-    if !harness_ready() {
-        return;
-    }
+    const GAIN: u32 = 102;
+    const FRAMES: usize = 512;
     let _guard = plugin_guard();
+    let mut inst = Active::<f32>::load(&probe_path(), 48_000.0, FRAMES).expect("audio-probe loads");
 
-    let dir = sample_plugin_dir();
-    let bundle = Path::new(&dir).join("legacy-midicc-out.vst3");
-    let path = tutti_plugin_types::bundle::any_module_in_bundle(
-        &bundle,
-        tutti_plugin_types::bundle::ModuleKind::Vst3,
-    );
-    let Some(path) = path else {
-        eprintln!("legacy-midicc-out not built; skipping MIDI-output test");
-        return;
-    };
-    let Ok(mut inst) = Active::<f32>::load(&path, 48_000.0, 512) else {
-        eprintln!("legacy-midicc-out load failed; skipping");
-        return;
-    };
-
-    // Drive blocks while sweeping the plugin's parameters: it emits CC when a
-    // parameter changes, so a static value produces nothing.
-    let info = inst.loaded().plugin_info().clone();
-    let param_ids: Vec<u32> = inst
-        .loaded()
-        .parameter_ids(&main_thread())
-        .into_iter()
-        .map(|id| id.get())
-        .collect();
-
-    let mut emitted = 0usize;
-    for step in 0..16 {
-        let mut params = ParameterChanges::reserved(param_ids.len(), 1);
-        for &id in &param_ids {
-            params.add_change(param_address(id), 0, (step as f64 * 0.0625).min(1.0));
+    let mut block = |gain: Option<f64>| {
+        let mut params = ParameterChanges::reserved(1, 1);
+        if let Some(gain) = gain {
+            params.add_change(param_address(GAIN), 0, gain);
         }
-
-        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
-            .map(|_| vec![0.0; 512])
-            .collect();
-        let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
-            .map(|_| vec![0.0; 512])
-            .collect();
+        let ins: Vec<Vec<f32>> = vec![vec![0.0; FRAMES]; 2];
+        let mut outs: Vec<Vec<f32>> = vec![vec![0.0; FRAMES]; 2];
         let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
         let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer {
             inputs: &in_refs,
             outputs: &mut out_refs,
-            num_samples: 512,
+            num_samples: FRAMES,
             sample_rate: 48_000.0,
         };
         let out = inst.process(
@@ -1426,15 +1397,16 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
             Some(&params),
             &TransportInfo::default(),
         );
-        emitted += out.midi_events.len();
-    }
+        out.midi_events.len()
+    };
 
-    assert!(
-        emitted > 0,
-        "legacy-midicc-out emits MIDI CC on parameter change, but the host \
-         surfaced none across 16 blocks — plugin-emitted MIDI is being dropped"
+    assert_eq!(block(None), 0, "a block with no gain point emits nothing");
+    assert_eq!(
+        block(Some(0.5)),
+        1,
+        "the probe emits one CC for a gain point, but the host surfaced a different count: \
+         plugin-emitted MIDI is being dropped or invented"
     );
-    eprintln!("plugin-emitted MIDI events surfaced: {emitted}");
 }
 
 /// The host asks for the plugin's `ProcessContext` requirements only after

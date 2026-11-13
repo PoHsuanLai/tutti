@@ -38,7 +38,13 @@ raw-window-handle = { version = "0.6", optional = true }
 # invocation; its `links` key hands the bundle directory to `build.rs`.
 tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp", optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# `au`: the shared plugin's Audio Unit, registered in this process.
+tutti-shared-plugin = { path = "../tutti-shared-plugin", optional = true }
+
 [features]
+# `au_bundle`: the bundle that declares the shared plugin's Audio Unit (macOS).
+au = ["plugin", "dep:tutti-shared-plugin"]
 plugin = ["dep:tutti-plugin-types", "dep:raw-window-handle"]
 # `vst3_cpp_module` and `bundle_of`: where the C++ twin is.
 vst3-cpp = ["plugin", "dep:tutti-shared-plugin-vst3-cpp"]

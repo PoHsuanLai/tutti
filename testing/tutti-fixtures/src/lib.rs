@@ -43,6 +43,8 @@
 #![deny(unsafe_code)]
 
 mod alloc_count;
+#[cfg(all(feature = "au", target_os = "macos"))]
+mod au;
 mod digest;
 mod env;
 mod glibc;
@@ -58,6 +60,8 @@ pub mod signal;
 mod vst3_cpp;
 
 pub use alloc_count::{ThreadCounting, allocations};
+#[cfg(all(feature = "au", target_os = "macos"))]
+pub use au::au_bundle;
 pub use digest::{Fnv, Noise, digest, digest_planes, noise};
 pub use env::{ScopedEnv, cases};
 pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};

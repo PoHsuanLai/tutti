@@ -3390,6 +3390,7 @@ dependencies = [
  "tempfile",
  "tutti-midi-protocol",
  "tutti-plugin-types",
+ "tutti-shared-plugin",
  "tutti-shared-plugin-vst3-cpp",
  "tutti-types",
  "tutti-ump",

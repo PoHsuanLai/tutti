@@ -491,6 +491,25 @@ impl AuParameterListener {
         .map_err(Error::from)
     }
 
+    /// Tells every listener **but this one** that parameter `id` changed,
+    /// writing nothing (`AUParameterListenerNotify` with this listener as the
+    /// sender, which the header excludes). The listeners read the unit's own
+    /// current value; use this for a change the unit has already applied (a
+    /// scheduled automation point), where [`set_parameter`](Self::set_parameter)
+    /// would write a value back over a newer one.
+    ///
+    /// # Errors
+    /// Returns the AU's own `OSStatus` for an id or address it does not have.
+    pub fn notify_parameter(&self, id: AudioUnitParameterID, address: EventAddress) -> Result<()> {
+        let parameter = self.parameter(id, address);
+        // SAFETY: `parameter` is live for the call, `self.listener` is live for
+        // `&self`, and a null sending object is the documented "none".
+        check("AUParameterListenerNotify", unsafe {
+            AUParameterListenerNotify(self.listener, std::ptr::null_mut(), &parameter)
+        })
+        .map_err(Error::from)
+    }
+
     /// Delivers [`AuEvent::BeginGesture`] and [`AuEvent::EndGesture`] for
     /// parameter `id`.
     ///
@@ -583,6 +602,32 @@ pub fn set_parameter_notifying(
             value,
             buffer_offset_in_frames,
         )
+    })
+    .map_err(Error::from)
+}
+
+/// Tells every listener on `unit` that parameter `id` changed, writing nothing:
+/// `AUParameterListenerNotify`, whose listeners read the unit's current value.
+/// For a change the unit has already applied; see
+/// [`AuParameterListener::notify_parameter`] to leave the host's own listener out.
+///
+/// # Errors
+/// Returns the AU's own `OSStatus` for an id or address it does not have.
+pub fn notify_parameter(
+    unit: &Unit,
+    id: AudioUnitParameterID,
+    address: EventAddress,
+) -> Result<()> {
+    let parameter = AudioUnitParameter {
+        mAudioUnit: unit.raw(),
+        mParameterID: id,
+        mScope: address.scope.raw(),
+        mElement: address.element.0,
+    };
+    // SAFETY: `parameter` is live for the call, `unit` is a live instance, and
+    // null sending listener/object are the documented "no exclusion" values.
+    check("AUParameterListenerNotify", unsafe {
+        AUParameterListenerNotify(std::ptr::null_mut(), std::ptr::null_mut(), &parameter)
     })
     .map_err(Error::from)
 }

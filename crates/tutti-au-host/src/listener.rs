@@ -8,5 +8,5 @@
 
 pub use tutti_au_ffi::{
     AuEvent, AuParameterListener, EventAddress, emit_gesture, notify_all_parameters,
-    set_parameter_notifying,
+    notify_parameter, set_parameter_notifying,
 };

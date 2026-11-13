@@ -124,6 +124,85 @@ fn a_non_realtime_parameter_is_written_between_blocks_not_by_the_render() {
     );
 }
 
+/// A block's automation does not reach the unit's other listeners (the plugin's
+/// editor) by itself: only `AUParameterSet` and `AUParameterListenerNotify`
+/// notify them (`AudioUnitUtilities.h`), and their listener machinery takes
+/// locks and dispatches, so the render calls neither. The control side's tick
+/// tells them, notifying with no write: they read the unit's value. A listener of our own
+/// (not the host's, which `AUParameterSet` leaves out) hears nothing while the
+/// block has only rendered, and then the block's last value after the tick.
+#[test]
+fn the_blocks_last_value_reaches_other_listeners_at_the_tick_not_the_render() {
+    use std::sync::{Arc, Mutex};
+    use tutti_au_ffi::{AuEvent, AuParameterListener, EventAddress};
+    use tutti_plugin_types::Control;
+
+    let main = MainThread::claim().unwrap();
+    let (mut processor, mut controller) = activate(delay_loaded());
+    let heard: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
+    let sink = Arc::clone(&heard);
+    let editor = AuParameterListener::new(controller.unit(), move |event| {
+        if let AuEvent::ParameterChanged { id, value, .. } = event {
+            sink.lock().unwrap().push((id, value));
+        }
+    })
+    .expect("a listener registers");
+    editor
+        .watch_parameter(DRY_WET, EventAddress::GLOBAL)
+        .unwrap();
+
+    let mut changes = ParameterChanges::reserved(1, 4);
+    assert!(changes.add_change(ParamId::from(DRY_WET), 100, 0.75));
+    render_block(&mut processor, 0.0, &changes);
+    assert_eq!(plain(&controller, DRY_WET), 75.0, "the automation landed");
+
+    // Past the listener's notification interval.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(
+        heard.lock().unwrap().is_empty(),
+        "the render notified a listener: {:?}",
+        heard.lock().unwrap()
+    );
+
+    Control::flush_edits(&mut controller, &main);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while heard.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let heard = heard.lock().unwrap();
+    assert_eq!(
+        heard.last().copied(),
+        Some((DRY_WET, 75.0)),
+        "the tick tells the listener the block's last value: {heard:?}"
+    );
+}
+
+/// The tick tells the listeners of an automated value the unit already
+/// applied; it never writes one. A block that ran after the one being told
+/// about may have moved the parameter on, and a write of the older end value
+/// would undo it. So the unit still holds the later value after the tick.
+#[test]
+fn the_tick_does_not_write_the_value_back_over_a_later_one() {
+    use tutti_plugin_types::Control;
+
+    let main = MainThread::claim().unwrap();
+    let (mut processor, mut controller) = activate(delay_loaded());
+
+    let mut changes = ParameterChanges::reserved(1, 4);
+    assert!(changes.add_change(ParamId::from(DRY_WET), 100, 0.75));
+    render_block(&mut processor, 0.0, &changes);
+    assert_eq!(plain(&controller, DRY_WET), 75.0, "the automation landed");
+
+    // As if a later block had moved the parameter on.
+    tutti_au_host::parameters::set(controller.unit(), DRY_WET, 10.0).unwrap();
+    Control::flush_edits(&mut controller, &main);
+    assert_eq!(
+        plain(&controller, DRY_WET),
+        10.0,
+        "the tick wrote the earlier block's end over the later value"
+    );
+}
+
 /// What a listener on another queue is given a moment to deliver.
 fn wait_for_edits(controller: &mut AuController, want: usize) -> Vec<ParamEdit> {
     use tutti_plugin_types::Control;

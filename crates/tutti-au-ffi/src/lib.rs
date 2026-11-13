@@ -35,7 +35,7 @@ pub use error::{Error, OsError, Result, check};
 pub use event_list::{EventList, Pushed, Wire, event_list_available};
 pub use listener::{
     AuEvent, AuParameterListener, EventAddress, emit_gesture, notify_all_parameters,
-    set_parameter_notifying,
+    notify_parameter, set_parameter_notifying,
 };
 pub use midi_out::{
     AuMidiOutput, MidiOutSink, MidiOutputInfo, install as install_midi_output, midi_output_info,

@@ -11,13 +11,16 @@
 mod canonical_paths;
 mod decode_boundary;
 mod doc_features;
+mod doc_refs;
 mod ffi;
 mod guards;
 mod hosting;
 mod layout;
 mod lex;
+mod prose;
 mod range_types;
 mod session;
+mod stale_pointers;
 mod submodule_pins;
 mod test_paths;
 mod toml;
@@ -94,6 +97,10 @@ pub(crate) enum Gate {
     Hosting,
     /// `tutti-session` reaches no Bevy crate and re-exports no crate whole.
     Session,
+    /// Prose names crate paths and design-doc sections that exist.
+    DocRefs,
+    /// A `file.rs:N` pointer in prose names a line that exists.
+    StalePointers,
 }
 
 impl Gate {
@@ -108,6 +115,8 @@ impl Gate {
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
+            Gate::DocRefs => "gate check-doc-refs".to_owned(),
+            Gate::StalePointers => "gate check-stale-pointers".to_owned(),
         }
     }
 
@@ -126,6 +135,8 @@ impl Gate {
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
+            Gate::DocRefs => doc_refs::check(&tree),
+            Gate::StalePointers => stale_pointers::check(&tree),
         }
     }
 }

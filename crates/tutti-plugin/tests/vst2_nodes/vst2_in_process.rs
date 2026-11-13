@@ -203,14 +203,6 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     // the in-process backend (with the `vst2` feature on, which the
     // integration-test gate requires). Confirm by checking has_editor reports
     // true and no crash.
-    //
-    // This replaces `vst2_builder_routes_to_in_process`, which asserted the
-    // same routing through `tutti_plugin::vst2(..).build()`. That builder is
-    // gone; it matched only `Some("vst") | Some("VST")` while
-    // `format_from_path` — which `open` uses — also maps `.dll` and `.so` to
-    // VST2, so the two disagreed on every Windows and Linux VST2. Routing had
-    // to keep a test either way, so it moved here rather than being deleted
-    // with the builder.
     let _lock = lock_probe();
 
     // `open` routes on the *extension*, and the probe is built as a plain

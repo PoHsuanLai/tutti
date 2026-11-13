@@ -91,8 +91,8 @@ use tutti_ump::{DeviceIdentity, U7};
 
 use super::{
     CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiInstanceId, CiMessage, Decoded, Destination,
-    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, Muid, Nak, ProcessFeatures,
-    ProfileLists, ReportScope, SUB_ID2_ENDPOINT_INQUIRY,
+    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, Muid, Nak, PeCiMessage,
+    PeMessageKind, ProcessFeatures, ProfileLists, ReportScope, SUB_ID2_ENDPOINT_INQUIRY,
 };
 use tutti_ump::FunctionBlockId;
 
@@ -278,7 +278,10 @@ impl<R: FnMut() -> u32> CiDevice<R> {
                     }
                 } else {
                     let mut reply = self.own;
-                    reply.output_path_id = data.output_path_id;
+                    // §5.6.1: the Reply returns the Output Path ID of the Discovery;
+                    // a Version 1 Discovery has none, which an initiator with a
+                    // single output sets to 0 (§5.5.4).
+                    reply.output_path_id = Some(data.output_path_id.unwrap_or_default());
                     reply.function_block = None;
                     actions.push(CiAction::Send(CiMessage::DiscoveryReply {
                         header: self.header(),
@@ -386,6 +389,30 @@ impl<R: FnMut() -> u32> CiDevice<R> {
             | CiMessage::MessageReportInquiry { header, to, .. } => {
                 if *to == self.muid {
                     self.answer_process(message, header, actions);
+                }
+            }
+            // A Property Exchange Responder is not the Management core's: the
+            // inquiries it would answer are refused, the rest is the Initiator's.
+            CiMessage::PropertyExchange {
+                header,
+                to,
+                message,
+            } => {
+                if *to == self.muid
+                    && matches!(
+                        message,
+                        PeCiMessage::CapabilitiesInquiry(_)
+                            | PeCiMessage::Chunk {
+                                kind: PeMessageKind::GET_INQUIRY | PeMessageKind::SET_INQUIRY,
+                                ..
+                            }
+                    )
+                {
+                    actions.push(self.nak(
+                        header.source,
+                        message.sub_id2(),
+                        Nak::STATUS_MESSAGE_NOT_SUPPORTED,
+                    ));
                 }
             }
             // The Initiator's to read, not the Management core's.
@@ -518,7 +545,7 @@ impl<R: FnMut() -> u32> CiDevice<R> {
     /// The body of the Discovery this device sends: Output Path 0, no Function Block.
     fn sent_discovery(&self) -> DiscoveryData {
         let mut data = self.own;
-        data.output_path_id = U7::default();
+        data.output_path_id = Some(U7::default());
         data.function_block = None;
         data
     }

@@ -16,8 +16,8 @@ fn raw(words: &[u32]) -> UmpAt {
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::of(usize::try_from(k).unwrap(), Samples(TEST_BLOCK))
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
         }
         host
     };
-    let cc = |frame: u32, value: u32| {
+    let cc = |frame: usize, value: u32| {
         (
             at(frame),
             midi::cc(
@@ -630,7 +630,7 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
     for (offset, value) in [(0, 0.0), (100, 0.25), (200, 0.5), (300, 0.625), (400, 0.75)] {
         assert!(host.add_change(MAPPED.into(), offset, value));
     }
-    let cc = |frame: u32, value: u32| {
+    let cc = |frame: usize, value: u32| {
         (
             at(frame),
             midi::cc(
@@ -677,7 +677,7 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
     for k in 0..full - CCS {
         assert!(host.add_change(MAPPED.into(), 8 * k as i32, 0.25));
     }
-    let cc = |frame: u32, value: u32| {
+    let cc = |frame: usize, value: u32| {
         (
             at(frame),
             midi::cc(
@@ -689,7 +689,7 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
         )
     };
     // On host frames (multiples of 8) and between them.
-    let events: Vec<UmpAt> = (0..CCS as u32)
+    let events: Vec<UmpAt> = (0..CCS)
         .map(|k| cc(100 * k + if k % 2 == 0 { 0 } else { 3 }, 0xFFFF_FFFF))
         .collect();
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);

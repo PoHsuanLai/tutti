@@ -25,7 +25,7 @@ use tutti_modulation::{
 use tutti_nodes::testing::Through;
 use tutti_nodes::{Feed, ModHost, Modulation, ReconcileError, Target};
 use tutti_types::{
-    Amplitude, At, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, ParamAddr,
+    Amplitude, At, AtomicF32, Beat, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamAddr,
     PhaseIncrement, SampleRate, Samples, Seconds, UnitParam,
 };
 
@@ -135,7 +135,9 @@ impl Node for Kick {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         for i in 0..io.frames() {
-            let t = cx.env.transport_at(Offset::of(i, cx.env.block_len));
+            let t = cx
+                .env
+                .transport_at(Offset::of(Samples(i), cx.env.block_len));
             let v = if t.playing {
                 let frac = t.beat().get().rem_euclid(1.0);
                 if frac < 0.1 {
@@ -166,12 +168,7 @@ impl Node for Held {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let (base, n) = (cx.env.frame.get(), cx.env.block_len);
-        if let Some(o) = self
-            .on
-            .checked_sub(base)
-            .and_then(|o| Offset::new(o as usize, n))
-        {
+        if let Some(o) = cx.env.offset_of(Frame::new(self.on)) {
             io.event_out(0)
                 .push(Event::midi(
                     o,
@@ -1424,7 +1421,8 @@ fn an_export_is_the_live_render_on_a_native_param() {
     let mut head = Playhead::new();
     let mut ch = TransportChanges::NONE;
     let start = TransportPosition::counted(true, TEMPO, head.0.origin(), None);
-    ch.push(Offset::of(37, Samples(128)), start).expect("room");
+    ch.push(Offset::of(Samples(37), Samples(128)), start)
+        .expect("room");
     let mut live = block(&mut ed, &mut exec, &stopped(), &ch, 128);
     for c in &mut live {
         c.drain(..37);
@@ -1705,7 +1703,8 @@ fn a_play_start_after_a_steady_state_republishes_an_anchored_program() {
     steady(&mut r);
     let mut ch = TransportChanges::NONE;
     let start = TransportPosition::new(true, TEMPO, Beat(0.0), None);
-    ch.push(Offset::of(37, Samples(128)), start).expect("room");
+    ch.push(Offset::of(Samples(37), Samples(128)), start)
+        .expect("room");
     block(&mut r.ed, &mut r.exec, &stopped(), &ch, 128);
     assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
 }

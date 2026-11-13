@@ -431,7 +431,7 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
     let mut changes = TransportChanges::NONE;
     changes
         .push(
-            Offset::of(2, Samples(4)),
+            Offset::of(Samples(2), Samples(4)),
             tutti_graph::TransportPosition::new(true, Bpm::of(120.0), Beat(10.0), None),
         )
         .unwrap();

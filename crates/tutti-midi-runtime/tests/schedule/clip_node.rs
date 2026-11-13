@@ -107,7 +107,7 @@ fn a_seek_inside_a_block_plays_from_the_seek() {
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     let mut changes = TransportChanges::NONE;
     changes
-        .push(Offset::of(200, Samples(512)), rolling(48_000))
+        .push(Offset::of(Samples(200), Samples(512)), rolling(48_000))
         .unwrap();
     exec.process_with_changes(512, &rolling(0), &changes, &[], &mut []);
     assert_eq!(
@@ -520,7 +520,7 @@ fn a_tempo_change_inside_a_block_re_times_the_passes() {
     let mut changes = TransportChanges::NONE;
     changes
         .push(
-            Offset::of(250, Samples(512)),
+            Offset::of(Samples(250), Samples(512)),
             looping_at(240.0, beat_of(50), Beat(0.0), beat_of(100)),
         )
         .unwrap();
@@ -838,7 +838,7 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     let mut changes = TransportChanges::NONE;
     changes
-        .push(Offset::of(200, Samples(512)), rolling(96_000))
+        .push(Offset::of(Samples(200), Samples(512)), rolling(96_000))
         .unwrap();
     exec.process_with_changes(512, &rolling(0), &changes, &[], &mut []);
     exec.process(512, &rolling(96_312), &[], &mut []);

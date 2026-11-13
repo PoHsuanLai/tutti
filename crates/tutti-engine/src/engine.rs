@@ -768,7 +768,7 @@ impl Engine {
                     pieces.ran();
                     cursor += s;
                     t = transport.restate();
-                    if let Some(o) = Offset::new(cursor, Samples(frames)) {
+                    if let Some(o) = Offset::new(Samples(cursor), Samples(frames)) {
                         pieces.change(o, t);
                     }
                     continue;
@@ -796,7 +796,7 @@ impl Engine {
                 aim = None;
             }
             t = now;
-            match Offset::new(cursor, Samples(frames)) {
+            match Offset::new(Samples(cursor), Samples(frames)) {
                 Some(o) if cursor > 0 => pieces.change(o, t),
                 _ => walk.start = t,
             }

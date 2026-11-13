@@ -742,7 +742,7 @@ mod tests {
     }
 
     fn at(i: usize, len: usize) -> Offset {
-        Offset::of(i, Samples(len))
+        Offset::of(Samples(i), Samples(len))
     }
 
     /// A node's context in `e` with no arrival latency.

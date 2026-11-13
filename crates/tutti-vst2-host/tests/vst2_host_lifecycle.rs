@@ -770,7 +770,7 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
 
     let at = |frame: usize, note: u8| {
         (
-            Offset::of(frame, Samples(200)),
+            Offset::of(Samples(frame), Samples(200)),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x4000),
         )
     };
@@ -797,7 +797,7 @@ fn the_realtime_flag_is_set_live_and_clear_offline() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
     let note = [(
-        Offset::of(10, Samples(64)),
+        Offset::of(Samples(10), Samples(64)),
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
     )];
     let flags = |instance: &mut Active| {

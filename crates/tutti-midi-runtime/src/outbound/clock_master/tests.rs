@@ -108,7 +108,11 @@ fn drain_all(receiver: &crate::MidiReceiver) -> Vec<UmpAt> {
     loop {
         let n = receiver.poll_into(&mut buf);
         // The ring's stamps here are block offsets (the rig queues them so).
-        out.extend(buf[..n].iter().map(|&(stamp, ump)| at(stamp, ump)));
+        out.extend(
+            buf[..n]
+                .iter()
+                .map(|&(stamp, ump)| at(usize::try_from(stamp).unwrap(), ump)),
+        );
         if n < buf.len() {
             break;
         }

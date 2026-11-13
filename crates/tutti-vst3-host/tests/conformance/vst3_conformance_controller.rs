@@ -18,8 +18,8 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, PrefetchSupport, TransportInfo};
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::of(usize::try_from(k).unwrap(), Samples(TEST_BLOCK))
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 use conformance_support::*;

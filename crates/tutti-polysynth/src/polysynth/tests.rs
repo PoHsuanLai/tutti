@@ -96,7 +96,7 @@ impl Hand {
         let events: Vec<tutti_graph::Event> = inside
             .iter()
             .map(|&(index, ump)| {
-                let at = tutti_graph::Offset::of(index, block);
+                let at = tutti_graph::Offset::of(tutti_types::Samples(index), block);
                 tutti_graph::Event::midi(at, ump)
             })
             .collect();

@@ -226,7 +226,7 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
     // A seek, then a tempo change, then a stop, each at offset 50 of a
     // 128-frame block.
     let (mut ed, mut exec) = graph(automation(curve.clone()));
-    let at50 = Offset::of(50, Samples(MAX));
+    let at50 = Offset::of(Samples(50), Samples(MAX));
     let cases: [(TransportPosition, TransportPosition); 3] = [
         (
             TransportPosition::new(true, TEMPO, Beat(0.05), None),

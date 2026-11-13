@@ -1142,7 +1142,7 @@ mod tests {
         // Rolling on beat 3 (its click sounding), stopped at frame 30.
         let mut changes = TransportChanges::NONE;
         changes
-            .push(Offset::of(30, Samples(64)), held(STOPPED, 3.0))
+            .push(Offset::of(Samples(30), Samples(64)), held(STOPPED, 3.0))
             .expect("fits");
         let mut rolling = env(SR, 64, held(ROLLING, 3.0));
         rolling.changes = changes;
@@ -1153,7 +1153,7 @@ mod tests {
         // Stopped, then started at frame 10 on beat 5.
         let mut changes = TransportChanges::NONE;
         changes
-            .push(Offset::of(10, Samples(64)), held(ROLLING, 5.0))
+            .push(Offset::of(Samples(10), Samples(64)), held(ROLLING, 5.0))
             .expect("fits");
         let mut starting = env(SR, 64, held(STOPPED, 4.0));
         starting.changes = changes;

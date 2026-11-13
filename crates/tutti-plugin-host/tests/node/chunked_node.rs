@@ -427,7 +427,7 @@ fn run_block_with(
 }
 
 fn at(frame: usize, len: usize) -> Offset {
-    Offset::of(frame, Samples(len))
+    Offset::of(Samples(frame), Samples(len))
 }
 
 fn note_on(frame: usize, len: usize) -> Event {

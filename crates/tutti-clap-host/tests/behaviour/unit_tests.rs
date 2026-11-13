@@ -23,8 +23,8 @@ use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber,
 const BLOCK: usize = 1_000;
 
 /// The offset `k` frames into the block.
-fn at(k: u32) -> Offset {
-    Offset::of(k as usize, Samples(BLOCK))
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(BLOCK))
 }
 
 /// The first event `event` adds to a fresh list.

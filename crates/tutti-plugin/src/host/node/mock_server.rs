@@ -313,5 +313,5 @@ pub(super) fn new_node(
 }
 
 pub(super) fn at(frame: usize, len: usize) -> Offset {
-    Offset::of(frame, Samples(len))
+    Offset::of(Samples(frame), Samples(len))
 }

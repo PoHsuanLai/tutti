@@ -249,7 +249,8 @@ where
                     let (meter, steady, project, block_ns) = block.parts();
                     if phase == 0 {
                         // `at < size` here: the piece has frames.
-                        let offset = Offset::new(at, Samples(size)).expect("inside the block");
+                        let offset =
+                            Offset::new(Samples(at), Samples(size)).expect("inside the block");
                         let mut s = Snapshot::at(cx, offset, steady.at(at), project, block_ns);
                         let settled = s.settle(&mut view);
                         this.walk.begin(&s, settled);
@@ -362,9 +363,7 @@ where
                 let writer = io.event_out(0);
                 let block = Samples(size);
                 for e in this.out_events.iter() {
-                    if let Some(at) = Offset::new(e.offset as usize, block) {
-                        let _ = writer.push(Event::midi(at, e.ump));
-                    }
+                    let _ = writer.push(Event::midi(Offset::clamped(e.offset, block), e.ump));
                 }
             }
             // A block that follows an Idle one reads the answers of chunks
@@ -498,7 +497,7 @@ where
             let block = Samples(size);
             for e in out_events.iter() {
                 let at = (e.offset as usize).min(size - 1);
-                if let Some(at) = Offset::new(at, block) {
+                if let Some(at) = Offset::new(Samples(at), block) {
                     let _ = writer.push(Event::midi(at, e.ump));
                 }
             }
@@ -786,7 +785,7 @@ mod owed_tests {
         unit.events(
             0,
             &[Event::ramp(
-                Offset::of(0, tutti_types::Samples(BLOCK)),
+                Offset::of(tutti_types::Samples(0), tutti_types::Samples(BLOCK)),
                 ParamRamp::foreign(1, 0.75, tutti_types::Samples(0)),
             )],
         );
@@ -821,7 +820,7 @@ mod owed_tests {
                 tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
                     .expect("a 7-bit payload"),
             );
-            let at = Offset::of(0, tutti_types::Samples(BLOCK));
+            let at = Offset::of(tutti_types::Samples(0), tutti_types::Samples(BLOCK));
             out.iter().map(|e| Event::midi(at, *e)).collect::<Vec<_>>()
         };
         (packets(60), packets(12))

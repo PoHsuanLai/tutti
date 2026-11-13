@@ -1338,7 +1338,7 @@ mod tests {
     ) -> Env {
         let mut c = TransportChanges::NONE;
         for &(at, to) in changes {
-            c.push(Offset::of(at, Samples(len)), to).unwrap();
+            c.push(Offset::of(Samples(at), Samples(len)), to).unwrap();
         }
         Env {
             frame: Frame::new(0),

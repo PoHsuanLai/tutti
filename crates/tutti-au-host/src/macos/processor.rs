@@ -717,8 +717,8 @@ mod ump_staging {
     use tutti_plugin_types::Samples;
     use tutti_ump::{Message, MidiChannel, MidiGroup, Ump};
 
-    fn at(frame: u32, ump: Ump) -> UmpAt {
-        (Offset::of(frame as usize, Samples(4096)), ump)
+    fn at(frame: usize, ump: Ump) -> UmpAt {
+        (Offset::of(Samples(frame), Samples(4096)), ump)
     }
 
     fn note_on(group: u8, key: u8) -> Ump {

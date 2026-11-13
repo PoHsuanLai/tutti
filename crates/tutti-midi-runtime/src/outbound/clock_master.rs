@@ -654,7 +654,7 @@ impl ClockMaster {
 /// node did to a stray offset) is unreachable.
 fn frame_offset(frames: usize, block_size: usize) -> Offset {
     Offset::new(
-        frames.min(block_size.saturating_sub(1)),
+        Samples(frames.min(block_size.saturating_sub(1))),
         Samples(block_size),
     )
     .unwrap_or(Offset::ZERO)

@@ -19,7 +19,7 @@ use tutti_ump::{
 const BLOCK: usize = 1_000;
 
 fn at(k: usize) -> Offset {
-    Offset::of(k, Samples(BLOCK))
+    Offset::of(Samples(k), Samples(BLOCK))
 }
 
 fn group(n: u8) -> MidiGroup {

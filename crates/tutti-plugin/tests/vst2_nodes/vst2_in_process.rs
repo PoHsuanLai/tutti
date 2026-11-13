@@ -448,7 +448,7 @@ fn midi_past_the_blocks_capacity_is_counted() {
                     (i % 128) as u8,
                     0xFFFF,
                 );
-                Event::midi(Offset::of(i, Samples(512)), on)
+                Event::midi(Offset::of(Samples(i), Samples(512)), on)
             })
             .collect()
     };

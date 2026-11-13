@@ -72,37 +72,61 @@ impl Offset {
     /// least one frame.
     pub const ZERO: Offset = Offset(0);
 
-    /// Frame `index` of a block `block_len` long, or `None` when it is past
-    /// the end.
-    pub fn new(index: usize, block_len: Samples) -> Option<Offset> {
-        if index < block_len.get() {
-            u32::try_from(index).ok().map(Offset)
+    /// The offset `frames` after the start of a block `block_len` long, or
+    /// `None` when it is at or past the end.
+    pub fn new(frames: Samples, block_len: Samples) -> Option<Offset> {
+        if frames < block_len {
+            u32::try_from(frames.get()).ok().map(Offset)
         } else {
             None
         }
     }
 
-    /// Frame `index` of a block `block_len` long, for a position known to be
-    /// inside the block: a literal, or a loop over the block's frames.
+    /// The offset `frames` after the start of a block `block_len` long, for a
+    /// position known to be inside the block: a literal, or a loop over the
+    /// block's frames.
     ///
     /// ```
     /// use tutti_graph::Offset;
     /// use tutti_types::Samples;
-    /// const AT: Offset = Offset::of(37, Samples(128));
+    /// const AT: Offset = Offset::of(Samples(37), Samples(128));
     /// assert_eq!(AT.get(), 37);
     /// ```
     ///
     /// # Panics
     ///
-    /// When `index` is past the end of the block, where [`new`](Self::new)
-    /// returns `None`. In a `const` that is a compile error.
+    /// When `frames` is at or past the end of the block, where
+    /// [`new`](Self::new) returns `None`. In a `const` that is a compile
+    /// error.
     #[must_use]
-    pub const fn of(index: usize, block_len: Samples) -> Offset {
+    pub const fn of(frames: Samples, block_len: Samples) -> Offset {
         assert!(
-            index < block_len.get() && index <= u32::MAX as usize,
+            frames.get() < block_len.get() && frames.get() <= u32::MAX as usize,
             "the offset is past the end of the block"
         );
-        Offset(index as u32)
+        Offset(frames.get() as u32)
+    }
+
+    /// The offset of a frame stamp carried as a raw count across a wire or a
+    /// mailbox, in a block `block_len` long: `stamp` frames after its start,
+    /// or the block's last frame when the stamp is at or past the end.
+    ///
+    /// ```
+    /// use tutti_graph::Offset;
+    /// use tutti_types::Samples;
+    /// assert_eq!(Offset::clamped(37, Samples(128)).get(), 37);
+    /// assert_eq!(Offset::clamped(500, Samples(128)).get(), 127);
+    /// ```
+    #[must_use]
+    pub fn clamped(stamp: u32, block_len: Samples) -> Offset {
+        Offset(stamp.min(Offset::last(block_len).0))
+    }
+
+    /// The last frame of a block `block_len` long ([`ZERO`](Self::ZERO) for
+    /// an empty one).
+    #[must_use]
+    pub fn last(block_len: Samples) -> Offset {
+        Offset(u32::try_from(block_len.get().saturating_sub(1)).unwrap_or(u32::MAX))
     }
 
     /// The offset as a count of frames from the block's start.
@@ -310,7 +334,7 @@ impl Env {
 
     /// Frame `index` of this block, when it is inside it.
     pub fn offset(&self, index: usize) -> Option<Offset> {
-        Offset::new(index, self.block_len)
+        Offset::new(Samples(index), self.block_len)
     }
 
     /// Every offset of this block, in order — for a node that walks its block
@@ -326,7 +350,7 @@ impl Env {
     /// Where absolute frame `frame` falls in this block, or `None` when it is
     /// before the block's first frame or at or after its end.
     pub fn offset_of(&self, frame: Frame) -> Option<Offset> {
-        Offset::new(frame.since(self.frame)?.get(), self.block_len)
+        Offset::new(frame.since(self.frame)?, self.block_len)
     }
 
     /// The absolute frame at `offset` of this block.
@@ -696,8 +720,8 @@ mod tests {
     fn of_agrees_with_new_inside_the_block() {
         for (index, len) in [(0, 1), (0, 64), (37, 128), (63, 64)] {
             assert_eq!(
-                Some(Offset::of(index, Samples(len))),
-                Offset::new(index, Samples(len)),
+                Some(Offset::of(Samples(index), Samples(len))),
+                Offset::new(Samples(index), Samples(len)),
                 "frame {index} of {len}"
             );
         }
@@ -707,8 +731,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "past the end of the block")]
     fn of_panics_past_the_end() {
-        assert_eq!(Offset::new(64, Samples(64)), None);
-        let _ = Offset::of(64, Samples(64));
+        assert_eq!(Offset::new(Samples(64), Samples(64)), None);
+        let _ = Offset::of(Samples(64), Samples(64));
     }
 
     #[test]
@@ -769,9 +793,12 @@ mod tests {
     /// An offset exists only inside its block.
     #[test]
     fn offsets_are_checked_against_the_block() {
-        assert_eq!(Offset::new(0, Samples(1)), Some(Offset::ZERO));
-        assert_eq!(Offset::new(63, Samples(64)).map(Offset::get), Some(63));
-        assert_eq!(Offset::new(64, Samples(64)), None);
+        assert_eq!(Offset::new(Samples(0), Samples(1)), Some(Offset::ZERO));
+        assert_eq!(
+            Offset::new(Samples(63), Samples(64)).map(Offset::get),
+            Some(63)
+        );
+        assert_eq!(Offset::new(Samples(64), Samples(64)), None);
         assert_eq!(Offset::raw(90).clamp_to(64), Offset::raw(63));
         assert_eq!(Offset::raw(9).clamp_to(64), Offset::raw(9));
     }
@@ -1148,7 +1175,7 @@ mod tests {
     }
 
     fn at(k: usize) -> Offset {
-        Offset::of(k, Samples(usize::MAX))
+        Offset::of(Samples(k), Samples(usize::MAX))
     }
 
     /// A change list is ordered and distinct; one at the block start or past

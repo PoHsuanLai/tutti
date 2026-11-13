@@ -11,7 +11,7 @@ use tutti_types::ChannelLayout;
 
 /// Anything that can go wrong rendering or writing an export.
 ///
-/// `#[non_exhaustive]`: the codecs behind the format features each bring their
+/// `#[non_exhaustive]`: the codecs behind the `encode-*` features each bring their
 /// own failure modes, so a caller must keep a wildcard arm.
 #[derive(Error, Debug)]
 #[non_exhaustive]

@@ -423,7 +423,7 @@ fn a_refused_spawn_is_an_error() {
 /// frame) overwritten, so the container reports no frame count: a file that
 /// cannot seek, which a stream decodes whole. Pinned as such, or the lane
 /// tests prove nothing.
-#[cfg(feature = "mp3")]
+#[cfg(feature = "decode-mp3")]
 pub(super) fn mp3(dir: &Path) -> PathBuf {
     let mut bytes = std::fs::read(tutti_fixtures::asset("audio/stereo.mp3")).expect("fixture");
     let at = bytes
@@ -443,7 +443,7 @@ pub(super) fn mp3(dir: &Path) -> PathBuf {
 /// **A file that cannot seek opens through the decode lane and plays what
 /// the file holds**, hand-stepped and threaded: the first frames of its ring
 /// are the decoded file's.
-#[cfg(feature = "mp3")]
+#[cfg(feature = "decode-mp3")]
 #[test]
 fn a_file_that_cannot_seek_opens_through_the_decode_lane() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -474,7 +474,7 @@ fn a_file_that_cannot_seek_opens_through_the_decode_lane() {
 /// decode is held open at a gate on the decode thread, and a stream on the
 /// shared thread is still refilled meanwhile; the open then completes when the
 /// gate does.
-#[cfg(feature = "mp3")]
+#[cfg(feature = "decode-mp3")]
 #[test]
 fn a_decode_held_open_does_not_stop_another_stream() {
     const RATE: u32 = 4_000;
@@ -519,7 +519,7 @@ fn a_decode_held_open_does_not_stop_another_stream() {
 /// **A decode thread that cannot start fails the open with `Io`**, where the
 /// open would wait for good: the lane's spawn is refused through the seam
 /// (the streamer's own thread is not started: hand-stepped).
-#[cfg(feature = "mp3")]
+#[cfg(feature = "decode-mp3")]
 #[test]
 fn a_refused_decode_thread_fails_the_open() {
     let seams = Seams {
@@ -542,7 +542,7 @@ fn a_refused_decode_thread_fails_the_open() {
 /// **A panic in the decode is that open's failure, not the lane's**: the
 /// first open of a file whose decode panics fails with `Format`, and the next
 /// open through the same lane succeeds.
-#[cfg(feature = "mp3")]
+#[cfg(feature = "decode-mp3")]
 #[test]
 fn a_panicking_decode_fails_that_open_only() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -643,7 +643,7 @@ fn a_stream_names_its_file() {
     assert_eq!(reader.file().path(), stream.file().path());
     assert_eq!(reader.file_rate(), SampleRate::SR_8K);
 
-    #[cfg(feature = "mp3")]
+    #[cfg(feature = "decode-mp3")]
     {
         let mp3 = mp3(dir.path());
         let wave = tutti_codec::Wave::read(&mp3).expect("the fixture decodes");

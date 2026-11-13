@@ -466,25 +466,14 @@ impl MidiIngestNode {
 
 /// A [`MidiIngestNode`] and the [`DeviceInlets`] it was to follow have
 /// different numbers of slots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the ingest node has {} device slots and the inlets {}", .node, .inlets)]
 pub struct SlotCountMismatch {
     /// The node's event inputs.
     pub node: NonZeroUsize,
     /// The inlets' slots.
     pub inlets: NonZeroUsize,
 }
-
-impl std::fmt::Display for SlotCountMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "the ingest node has {} device slots and the inlets {}",
-            self.node, self.inlets
-        )
-    }
-}
-
-impl std::error::Error for SlotCountMismatch {}
 
 /// The host's handle on a [`MidiIngestNode`]: its MPE mode. Cheap to clone.
 #[derive(Clone, Debug)]

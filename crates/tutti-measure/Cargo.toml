@@ -32,9 +32,7 @@ ebur128 = "0.1"
 thiserror.workspace = true
 
 [features]
-# No `bevy` feature, and no default features. This crate is a library of
-# measurements over `&[f32]`; a host that wants these results in an ECS wires
-# them up on its own side.
+# No default features. This crate is a library of measurements over `&[f32]`.
 default = []
 
 [dev-dependencies]

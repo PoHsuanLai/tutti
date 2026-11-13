@@ -1,6 +1,5 @@
 //! A sampler voice exported through a fork: a memory voice on a 90 BPM
-//! timeline, and a disk-streamed clip. The session halves of what
-//! `bevy-tutti`'s export suite pinned before that crate was parked.
+//! timeline, and a disk-streamed clip.
 //!
 //! The live voice plays what the streamer streams into its ring; the fork
 //! cannot (the ring's one consumer is the live audio thread, and a seek

@@ -153,7 +153,7 @@ impl InputProducerHandle {
 }
 
 /// What [`InputProducerHandle::push`] did with an event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[must_use = "`Full` is a lost event: a caller counts or logs it"]
 pub enum Pushed {
     /// The event went into the device's inlet, for the graph.

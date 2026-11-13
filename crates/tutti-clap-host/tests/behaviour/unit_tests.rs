@@ -863,12 +863,6 @@ fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
     use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;
     use clap_sys::ext::audio_ports_config::CLAP_EXT_AUDIO_PORTS_CONFIG;
-    use clap_sys::ext::context_menu::CLAP_EXT_CONTEXT_MENU;
-    use clap_sys::ext::draft::resource_directory::CLAP_EXT_RESOURCE_DIRECTORY;
-    use clap_sys::ext::draft::transport_control::CLAP_EXT_TRANSPORT_CONTROL;
-    use clap_sys::ext::draft::triggers::CLAP_EXT_TRIGGERS;
-    use clap_sys::ext::draft::tuning::CLAP_EXT_TUNING;
-    use clap_sys::ext::draft::undo::CLAP_EXT_UNDO;
     use clap_sys::ext::event_registry::CLAP_EXT_EVENT_REGISTRY;
     use clap_sys::ext::gui::CLAP_EXT_GUI;
     use clap_sys::ext::latency::CLAP_EXT_LATENCY;
@@ -877,14 +871,12 @@ fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::note_ports::CLAP_EXT_NOTE_PORTS;
     use clap_sys::ext::params::CLAP_EXT_PARAMS;
     use clap_sys::ext::preset_load::CLAP_EXT_PRESET_LOAD;
-    use clap_sys::ext::remote_controls::CLAP_EXT_REMOTE_CONTROLS;
     use clap_sys::ext::state::CLAP_EXT_STATE;
     use clap_sys::ext::surround::CLAP_EXT_SURROUND;
     use clap_sys::ext::tail::CLAP_EXT_TAIL;
     use clap_sys::ext::thread_check::CLAP_EXT_THREAD_CHECK;
     use clap_sys::ext::thread_pool::CLAP_EXT_THREAD_POOL;
     use clap_sys::ext::timer_support::CLAP_EXT_TIMER_SUPPORT;
-    use clap_sys::ext::track_info::CLAP_EXT_TRACK_INFO;
     use clap_sys::ext::voice_info::CLAP_EXT_VOICE_INFO;
 
     let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
@@ -906,18 +898,10 @@ fn test_host_get_extension_returns_non_null_for_supported() {
         CLAP_EXT_VOICE_INFO,
         CLAP_EXT_PRESET_LOAD,
         CLAP_EXT_AUDIO_PORTS_CONFIG,
-        CLAP_EXT_REMOTE_CONTROLS,
-        CLAP_EXT_TRACK_INFO,
         CLAP_EXT_EVENT_REGISTRY,
-        CLAP_EXT_TRANSPORT_CONTROL,
-        CLAP_EXT_CONTEXT_MENU,
         CLAP_EXT_THREAD_POOL,
         CLAP_EXT_AMBISONIC,
         CLAP_EXT_SURROUND,
-        CLAP_EXT_TRIGGERS,
-        CLAP_EXT_TUNING,
-        CLAP_EXT_RESOURCE_DIRECTORY,
-        CLAP_EXT_UNDO,
     ];
 
     for ext_id in &supported {
@@ -946,13 +930,8 @@ fn test_host_get_extension_returns_non_null_for_supported() {
 #[test]
 fn test_host_get_extension_answers_the_compat_ids_with_the_stable_vtable() {
     use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT};
-    use clap_sys::ext::context_menu::{CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT};
     use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT};
-    use clap_sys::ext::remote_controls::{
-        CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT,
-    };
     use clap_sys::ext::surround::{CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT};
-    use clap_sys::ext::track_info::{CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT};
 
     let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
     let raw = host.as_raw();
@@ -960,9 +939,6 @@ fn test_host_get_extension_answers_the_compat_ids_with_the_stable_vtable() {
 
     for (stable, compat) in [
         (CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT),
-        (CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT),
-        (CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT),
-        (CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT),
         (CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT),
         (CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT),
     ] {
@@ -981,6 +957,30 @@ fn test_host_get_extension_returns_null_for_unknown() {
 
     let ptr = unsafe { get_ext(raw, c"clap.nonexistent".as_ptr()) };
     assert!(ptr.is_null());
+}
+
+/// An extension the host serves nothing for is not advertised: the plugin
+/// then does not call it (`host.h`: `get_extension` returns null for one the
+/// host does not implement).
+#[test]
+fn test_host_does_not_advertise_extensions_it_does_not_serve() {
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+
+    for id in [
+        c"clap.remote-controls/2",
+        c"clap.track-info/1",
+        c"clap.context-menu/1",
+        c"clap.transport-control/1",
+        c"clap.triggers/1",
+        c"clap.tuning/2",
+        c"clap.resource-directory/1",
+        c"clap.undo/4",
+    ] {
+        let ptr = unsafe { get_ext(raw, id.as_ptr()) };
+        assert!(ptr.is_null(), "{id:?} must not be advertised");
+    }
 }
 
 #[test]
@@ -1369,65 +1369,6 @@ fn test_host_timer_register_unregister() {
     assert!(!ok);
 }
 
-// ── Extension types ──
-
-/// A track's advertised channel count is the layout's, so the count and the port
-/// tag cannot disagree.
-///
-/// A pair of `Option<i32>` + `Option<String>` would make `Some(6)` alongside
-/// `Some("stereo")` representable with nothing to catch it. Reading the count
-/// *through* the layout is what makes that unconstructable.
-#[test]
-#[cfg(feature = "clap-extras")]
-fn track_audio_count_comes_from_the_layout() {
-    use tutti_clap_host::{ChannelLayout, TrackAudio, TrackPortType};
-
-    let surround = TrackAudio {
-        layout: ChannelLayout::from(6u16),
-        port_type: Some(TrackPortType::Surround),
-    };
-    assert_eq!(surround.layout.count(), 6);
-
-    // `from_layout` tags mono/stereo (where the count IS the topology) and
-    // leaves anything wider untagged rather than guessing surround vs ambisonic.
-    assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::MONO).port_type,
-        Some(TrackPortType::Mono)
-    );
-    assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::STEREO).port_type,
-        Some(TrackPortType::Stereo)
-    );
-    assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::from(6u16)).port_type,
-        None,
-        "a bare count cannot distinguish 5.1 from ambisonic, so it must not claim either"
-    );
-    // Canonicalization still applies: a 2-count is Stereo, so it tags as stereo.
-    assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::from(2u16)).port_type,
-        Some(TrackPortType::Stereo)
-    );
-}
-
-// ── New host extension vtable tests ──
-
-#[test]
-fn test_host_track_info_get_returns_false_when_empty() {
-    use clap_sys::ext::track_info::{CLAP_EXT_TRACK_INFO, clap_host_track_info, clap_track_info};
-
-    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let ti_ptr = unsafe { get_ext(raw, CLAP_EXT_TRACK_INFO.as_ptr()) };
-    let ti = unsafe { &*(ti_ptr as *const clap_host_track_info) };
-
-    // No track info set yet — should return false
-    let mut info: clap_track_info = unsafe { std::mem::zeroed() };
-    let ok = unsafe { ti.get.unwrap()(raw, &mut info) };
-    assert!(!ok);
-}
-
 /// The host sends and takes core events only, so it claims no other event
 /// space: every name is unknown (`false`, `UINT16_MAX`).
 #[test]
@@ -1446,32 +1387,6 @@ fn test_host_event_registry_claims_no_space() {
     let ok = unsafe { er.query.unwrap()(raw, c"com.example.my-events".as_ptr(), &mut space_id) };
     assert!(!ok);
     assert_eq!(space_id, u16::MAX);
-}
-
-#[test]
-fn test_host_transport_control_callbacks_exist() {
-    use clap_sys::ext::draft::transport_control::{
-        CLAP_EXT_TRANSPORT_CONTROL, clap_host_transport_control,
-    };
-
-    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let tc_ptr = unsafe { get_ext(raw, CLAP_EXT_TRANSPORT_CONTROL.as_ptr()) };
-    let tc = unsafe { &*(tc_ptr as *const clap_host_transport_control) };
-
-    // All 11 callbacks should be present
-    assert!(tc.request_start.is_some());
-    assert!(tc.request_stop.is_some());
-    assert!(tc.request_continue.is_some());
-    assert!(tc.request_pause.is_some());
-    assert!(tc.request_toggle_play.is_some());
-    assert!(tc.request_jump.is_some());
-    assert!(tc.request_loop_region.is_some());
-    assert!(tc.request_toggle_loop.is_some());
-    assert!(tc.request_enable_loop.is_some());
-    assert!(tc.request_record.is_some());
-    assert!(tc.request_toggle_record.is_some());
 }
 
 #[test]
@@ -1494,28 +1409,7 @@ fn test_host_audio_ports_config_rescan() {
     assert!(state.audio_ports.config_changed.load(Ordering::Acquire));
 }
 
-#[test]
-fn test_host_remote_controls_changed_and_suggest() {
-    use clap_sys::ext::remote_controls::{CLAP_EXT_REMOTE_CONTROLS, clap_host_remote_controls};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let rc_ptr = unsafe { get_ext(raw, CLAP_EXT_REMOTE_CONTROLS.as_ptr()) };
-    let rc = unsafe { &*(rc_ptr as *const clap_host_remote_controls) };
-
-    assert!(!state.remote_controls.changed.load(Ordering::Acquire));
-    unsafe { rc.changed.unwrap()(raw) };
-    assert!(state.remote_controls.changed.load(Ordering::Acquire));
-
-    unsafe { rc.suggest_page.unwrap()(raw, 42) };
-    // suggest_page stores internally — verified by the fact the callback didn't crash
-}
-
-// ── thread_pool, audio_ports_activation, extensible_audio_ports ──
+// ── thread_pool ──
 
 /// `ext/thread-pool.h`: `true` means the host *did execute* all the tasks,
 /// and a call from outside the plugin's `process` must be rejected. No
@@ -1658,7 +1552,7 @@ fn test_host_posix_fd_register_and_unregister() {
 
     // Verify it was stored
     {
-        let fds = state.resources.posix_fds.lock().unwrap();
+        let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds.len(), 1);
         assert_eq!(fds[0].fd, 42);
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ);
@@ -1669,7 +1563,7 @@ fn test_host_posix_fd_register_and_unregister() {
 
     // Verify removed
     {
-        let fds = state.resources.posix_fds.lock().unwrap();
+        let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds.len(), 0);
     }
 
@@ -1703,248 +1597,9 @@ fn test_host_posix_fd_modify() {
     });
 
     {
-        let fds = state.resources.posix_fds.lock().unwrap();
+        let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE);
     }
-}
-
-// ── Triggers extension tests ──
-
-#[test]
-#[cfg(feature = "clap-extras")]
-fn test_trigger_info_type() {
-    use tutti_clap_host::TriggerInfo;
-
-    let info = TriggerInfo {
-        id: 1,
-        flags: 0x03,
-        name: "My Trigger".to_string(),
-        module: "triggers/main".to_string(),
-    };
-    assert_eq!(info.id, 1);
-    assert_eq!(info.flags, 0x03);
-    assert_eq!(info.name, "My Trigger");
-    assert_eq!(info.module, "triggers/main");
-}
-
-#[test]
-fn test_host_triggers_rescan_callback() {
-    use clap_sys::ext::draft::triggers::{CLAP_EXT_TRIGGERS, clap_host_triggers};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let trig_ptr = unsafe { get_ext(raw, CLAP_EXT_TRIGGERS.as_ptr()) };
-    let trig = unsafe { &*(trig_ptr as *const clap_host_triggers) };
-
-    assert!(
-        !state
-            .resources
-            .triggers_rescan_requested
-            .load(Ordering::Acquire)
-    );
-    unsafe { trig.rescan.unwrap()(raw, 0) };
-    assert!(
-        state
-            .resources
-            .triggers_rescan_requested
-            .load(Ordering::Acquire)
-    );
-}
-
-// ── Tuning extension tests ──
-
-#[test]
-#[cfg(feature = "clap-extras")]
-fn test_tuning_info_type() {
-    use tutti_clap_host::TuningInfo;
-
-    let info = TuningInfo {
-        tuning_id: 42,
-        name: "Just Intonation".to_string(),
-        is_dynamic: false,
-    };
-    assert_eq!(info.tuning_id, 42);
-    assert_eq!(info.name, "Just Intonation");
-    assert!(!info.is_dynamic);
-}
-
-#[test]
-fn test_host_tuning_callbacks() {
-    use clap_sys::ext::draft::tuning::{CLAP_EXT_TUNING, clap_host_tuning};
-
-    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let tuning_ptr = unsafe { get_ext(raw, CLAP_EXT_TUNING.as_ptr()) };
-    let tuning = unsafe { &*(tuning_ptr as *const clap_host_tuning) };
-
-    // get_relative returns 0.0 (equal temperament)
-    let rel = unsafe { tuning.get_relative.unwrap()(raw, 0, 0, 60, 0) };
-    assert!((rel - 0.0).abs() < f64::EPSILON);
-
-    // should_play returns true
-    assert!(unsafe { tuning.should_play.unwrap()(raw, 0, 0, 60) });
-
-    // get_tuning_count returns 0 (no tunings configured)
-    assert_eq!(unsafe { tuning.get_tuning_count.unwrap()(raw) }, 0);
-}
-
-// ── Resource directory extension tests ──
-
-#[test]
-fn test_host_resource_directory_callbacks() {
-    use clap_sys::ext::draft::resource_directory::{
-        CLAP_EXT_RESOURCE_DIRECTORY, clap_host_resource_directory,
-    };
-
-    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let res_ptr = unsafe { get_ext(raw, CLAP_EXT_RESOURCE_DIRECTORY.as_ptr()) };
-    let res = unsafe { &*(res_ptr as *const clap_host_resource_directory) };
-
-    // No directory configured, request should return false
-    assert!(!unsafe { res.request_directory.unwrap()(raw, true) });
-    assert!(!unsafe { res.request_directory.unwrap()(raw, false) });
-
-    // Release should not panic even when nothing is configured
-    unsafe { res.release_directory.unwrap()(raw, true) };
-    unsafe { res.release_directory.unwrap()(raw, false) };
-}
-
-// ── Undo extension tests ──
-
-#[test]
-#[cfg(feature = "clap-extras")]
-fn test_undo_delta_properties_type() {
-    use tutti_clap_host::UndoDeltaProperties;
-
-    let props = UndoDeltaProperties {
-        has_delta: true,
-        are_deltas_persistent: false,
-        format_version: 1,
-    };
-    assert!(props.has_delta);
-    assert!(!props.are_deltas_persistent);
-    assert_eq!(props.format_version, 1);
-}
-
-#[test]
-#[cfg(feature = "clap-extras")]
-fn test_undo_change_type() {
-    use tutti_clap_host::UndoChange;
-
-    let change = UndoChange {
-        name: "Set volume".to_string(),
-        delta: vec![1, 2, 3, 4],
-        delta_can_undo: true,
-    };
-    assert_eq!(change.name, "Set volume");
-    assert_eq!(change.delta.len(), 4);
-    assert!(change.delta_can_undo);
-}
-
-#[test]
-fn test_host_undo_begin_cancel_change() {
-    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
-    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
-
-    assert!(!state.undo.in_progress.load(Ordering::Acquire));
-
-    unsafe { undo.begin_change.unwrap()(raw) };
-    assert!(state.undo.in_progress.load(Ordering::Acquire));
-
-    unsafe { undo.cancel_change.unwrap()(raw) };
-    assert!(!state.undo.in_progress.load(Ordering::Acquire));
-}
-
-#[test]
-fn test_host_undo_change_made() {
-    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
-    use std::sync::Arc;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
-    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
-
-    let name = c"Set volume";
-    let delta = [1u8, 2, 3, 4];
-    unsafe {
-        undo.begin_change.unwrap()(raw);
-        undo.change_made.unwrap()(
-            raw,
-            name.as_ptr(),
-            delta.as_ptr() as *const _,
-            delta.len(),
-            true,
-        );
-    }
-
-    let changes = state.undo.changes.lock().unwrap();
-    assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].name, "Set volume");
-    assert_eq!(changes[0].delta, vec![1, 2, 3, 4]);
-    assert!(changes[0].delta_can_undo);
-}
-
-#[test]
-fn test_host_undo_request_undo_redo() {
-    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
-    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
-
-    assert!(!state.undo.requested.load(Ordering::Acquire));
-    assert!(!state.undo.redo_requested.load(Ordering::Acquire));
-
-    unsafe { undo.request_undo.unwrap()(raw) };
-    assert!(state.undo.requested.load(Ordering::Acquire));
-
-    unsafe { undo.request_redo.unwrap()(raw) };
-    assert!(state.undo.redo_requested.load(Ordering::Acquire));
-}
-
-#[test]
-fn test_host_undo_wants_context_updates() {
-    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
-    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
-
-    assert!(!state.undo.wants_context.load(Ordering::Acquire));
-
-    unsafe { undo.set_wants_context_updates.unwrap()(raw, true) };
-    assert!(state.undo.wants_context.load(Ordering::Acquire));
-
-    unsafe { undo.set_wants_context_updates.unwrap()(raw, false) };
-    assert!(!state.undo.wants_context.load(Ordering::Acquire));
 }
 
 // ── Note name host extension tests ──
@@ -1985,54 +1640,6 @@ fn test_host_voice_info_changed_callback() {
     assert!(!state.notes.voice_info_changed.load(Ordering::Acquire));
     unsafe { vi.changed.unwrap()(raw) };
     assert!(state.notes.voice_info_changed.load(Ordering::Acquire));
-}
-
-// ── Preset load host extension tests ──
-
-#[test]
-fn test_host_preset_load_loaded_callback() {
-    use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let pl_ptr = unsafe { get_ext(raw, CLAP_EXT_PRESET_LOAD.as_ptr()) };
-    let pl = unsafe { &*(pl_ptr as *const clap_host_preset_load) };
-
-    assert!(!state.processing.preset_loaded.load(Ordering::Acquire));
-
-    let location = c"/path/to/preset.clap";
-    unsafe {
-        pl.loaded.unwrap()(raw, 0, location.as_ptr(), std::ptr::null());
-    }
-    assert!(state.processing.preset_loaded.load(Ordering::Acquire));
-}
-
-#[test]
-fn test_host_preset_load_on_error_doesnt_panic() {
-    use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
-
-    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let pl_ptr = unsafe { get_ext(raw, CLAP_EXT_PRESET_LOAD.as_ptr()) };
-    let pl = unsafe { &*(pl_ptr as *const clap_host_preset_load) };
-
-    let location = c"/path/to/preset.clap";
-    let msg = c"File not found";
-    unsafe {
-        pl.on_error.unwrap()(
-            raw,
-            0,
-            location.as_ptr(),
-            std::ptr::null(),
-            -1,
-            msg.as_ptr(),
-        );
-    }
 }
 
 // ── ParamMod event FFI ──

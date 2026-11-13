@@ -1,4 +1,4 @@
-//! [`FdnFamily`]: a feedback delay network as a [`Family`] (design 022 step 1c).
+//! [`FdnFamily`]: a feedback delay network as a [`Family`].
 //!
 //! `N` delay lines of mutually unrelated lengths (a table of values near primes,
 //! scaled by the room size), each with a three-band absorption set from the
@@ -231,8 +231,8 @@ impl Family for FdnFamily {
     // The grid the render is a function of: the recurrence ramps in whole chunks
     // counted from the last reset (doc 024 section 4.4). The *design* is still
     // sampled once per block; a grid finer than that would redesign per chunk
-    // for nothing the recurrence needs (doc 022), so this names the render's clock
-    // and not a schedule for `member_into` (doc 024 Q27).
+    // for nothing the recurrence needs, so this names the render's clock
+    // and not a schedule for `member_into`.
     const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(CHUNK as u32) {
         Some(n) => n,
         None => unreachable!(),

@@ -21,18 +21,15 @@ mod plugin_identity;
 #[cfg(feature = "clap")]
 mod plugin_hosting;
 // What `Phase::Plugins` does with a hosted plugin's health, over a fake
-// backend (no `plugin-server`): the session half of `bevy-tutti`'s
-// `plugin_host::health` tests.
+// backend (no `plugin-server`).
 #[cfg(feature = "plugin")]
 mod plugin_health;
 // A hosted plugin's latency is the session's, across a crossfade and a
-// restart (the session halves of `bevy-tutti`'s `plugin_capture` and restart
-// tests): the reference CLAP plugin in a real `plugin-server`.
+// restart: the reference CLAP plugin in a real `plugin-server`.
 #[cfg(all(feature = "clap", feature = "device", feature = "export"))]
 mod plugin_latency;
 // Modulation lanes on a hosted plugin's parameters: across a recovery and a
-// crossfade, and an export equal to the live render (the session halves of
-// `bevy-tutti`'s `plugin_recovery`, `plugin_capture` and `mod_plugin`).
+// crossfade, and an export equal to the live render.
 #[cfg(all(feature = "clap", feature = "modulation", feature = "export"))]
 mod plugin_modulation;
 // A hosted plugin exported through a fork of its own server: fails without
@@ -59,8 +56,7 @@ mod vst2_meter;
 #[cfg(all(feature = "vst2", feature = "modulation"))]
 mod vst2_modulation;
 // The reference VST2 plugin, in process: the project meter it is given, and
-// modulation lanes on its parameters (the session halves of `bevy-tutti`'s
-// `plugin_vst2_meter` and `mod_plugin` VST2 tests).
+// modulation lanes on its parameters.
 #[cfg(feature = "vst2")]
 mod vst2_off_main_handle;
 // `typed` over a real format's own value map: the reference VST2 plugin's

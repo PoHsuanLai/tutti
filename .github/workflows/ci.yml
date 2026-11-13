@@ -7,12 +7,8 @@
 # 679a8433. A workflow that names crates which no longer exist does not fail —
 # it just stops testing anything, which is why nothing reported it.
 #
-# Four things here are load-bearing and are documented at their step:
-# the plugin-server prebuild, doctests, the Bevy-free floor, and the path gate.
-#
-# `bevy-tutti` is parked: it is not a workspace member, so nothing here builds,
-# lints, tests or documents it. `.github/workflows/parked-bevy.yml` measures its
-# drift weekly and gates nothing.
+# Three things here are load-bearing and are documented at their step:
+# the plugin-server prebuild, doctests, and the path gate.
 
 name: CI
 
@@ -46,8 +42,7 @@ env:
 # PR that bumps the file. Every cargo command that resolves dependencies runs
 # `--locked` against the committed `Cargo.lock`: a lock that drifted from the
 # manifests fails loudly instead of resolving newer crates in silence (a
-# floating resolve once broke a build, through a deprecation in a new
-# `bevy_ecs`). Miri names its nightly (`cargo +nightly`), which overrides
+# floating resolve once broke a build). Miri names its nightly (`cargo +nightly`), which overrides
 # the file.
 
 jobs:
@@ -158,12 +153,9 @@ jobs:
       # the superproject actually records. It belongs in this job because it is
       # the other static gate: no build of the workspace, just a claim checked.
       - run: cargo xtask check-submodule-pins
-      # `tutti-session` is the Bevy-free API layer, not an umbrella (design 015
-      # §8): no Bevy crate in its normal closure with every feature on (`cargo
-      # tree`), no `bevy` feature in it or in `tutti-graph`, `tutti-ump` or
-      # `tutti-codec`, and no whole-crate re-export in its source. The adapter's
-      # own scans (checks 3 and 5) are `scripts/parked/check-bevy-tutti.sh`,
-      # which nothing runs while `bevy-tutti` is parked.
+      # `tutti-session` is the API layer, not an umbrella (design 015 §8): no
+      # Bevy crate in its normal closure with every feature on (`cargo tree`),
+      # and no whole-crate re-export in its source.
       - run: cargo xtask check-session
       # Every CLAP host callback, AU callback, VST3 host COM method and the VST2
       # audioMaster callback runs in the panic guard (source scan, no build).
@@ -249,15 +241,14 @@ jobs:
       - name: Workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The workspace run builds each crate with the features the workspace
-      # unifies to, which leaves tutti-plugin's format features and
-      # clap-extras dark. `au` is macOS-only and compiles to nothing here.
+      # unifies to, which leaves tutti-plugin's format features dark. `au` is macOS-only and
+      # compiles to nothing here.
       - name: Plugin formats
         shell: bash
         run: |
           cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
-          cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
       # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
@@ -356,10 +347,8 @@ jobs:
       #                         own names, forwarded; `device,soundfont` and every
       #                         decode and encode feature of the umbrella are
       #                         linted together, `vst3,au` of the session as a library
-      #   tutti-sampler/decode-*, bevy — the library with none, with every
-      #                         decoder (ogg is in no test's dev-dependency), and
-      #                         `bevy` checked only (the adapter is parked);
-      #                         likewise `tutti-modulation/bevy`
+      #   tutti-sampler/decode-* — the library with none, and with every
+      #                         decoder (ogg is in no test's dev-dependency)
       #   tutti-plugin/vst3,au,serde — linted with their tests
       #   tutti-codec/*       — a `Format` variant exists only with its encode
       #                         feature, so each of none, encode-wav, encode-aiff,
@@ -378,15 +367,12 @@ jobs:
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
-      #   tutti-session/sampler,vst2 — the suites ported from the parked
-      #                         `bevy-tutti`: the sampler voice's export fork
+      #   tutti-session/sampler,vst2 — the sampler voice's export fork
       #                         (`export_fork_sampler`) and the reference VST2
       #                         plugin in process (`vst2_meter`,
       #                         `vst2_modulation`).
       #   tutti-session/device — tests/io/device.rs (the device-free restart and
-      #                         watch tests over `ManualStreamDriver`). A
-      #                         workspace run turned it on only through the
-      #                         adapter that is now parked. With `audio-io`,
+      #                         watch tests over `ManualStreamDriver`). With `audio-io`,
       #                         tests/io/device_input.rs (the inputs a restart
       #                         reopens, over a test's own capture).
       #   tutti-au-host/installed-units — linted by the macOS clippy job (the
@@ -403,8 +389,6 @@ jobs:
       #                         never skips, without `/dev/snd/seq`
       #   tutti-plugin-types/testing — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
-      #   tutti-clap-host/clap-extras — tests/behaviour/unit_tests.rs's 5 extension tests
-      #                         and the extension code they cover
       #   tutti-plugin-db/json — `save`, `load` and their tests
       #   tutti-plugin/clap,vst2 — the CLAP tests (the `clap_*` and
       #                         `plugin_param_delivery*` suites, and the
@@ -444,8 +428,6 @@ jobs:
           cargo clippy --locked -p tutti --features device,soundfont,decode-wav,decode-flac,decode-mp3,decode-ogg,export,encode-flac,encode-aiff,encode-vorbis --all-targets -- -D warnings
           cargo clippy --locked -p tutti-sampler --lib -- -D warnings
           cargo clippy --locked -p tutti-sampler --lib --features decode-wav,decode-flac,decode-mp3,decode-ogg -- -D warnings
-          cargo check --locked -p tutti-sampler --lib --features bevy
-          cargo check --locked -p tutti-modulation --features bevy
           cargo clippy --locked -p tutti-plugin --features vst3,au,serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --features encode-wav --all-targets -- -D warnings
@@ -466,7 +448,6 @@ jobs:
           cargo clippy --locked -p tutti-plugin-types --lib --features contract -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
-          cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
@@ -502,7 +483,6 @@ jobs:
           cargo nextest run --locked -p tutti-midi-protocol --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
           cargo nextest run --locked -p tutti-tempo --features serde
-          cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features testing
           cargo nextest run --locked -p tutti-plugin-db --features json
           cargo nextest run --locked -p tutti-plugin-contract --features server
@@ -598,7 +578,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.changes.outputs.test_os) }}
     # The golden digests are glibc libm's on 24.04; 26.04's libm moves them.
     # `require` makes a Linux runner whose glibc is not the recorded one fail
     # instead of skipping the digests (CLAUDE.md, Testing).
@@ -641,22 +621,10 @@ jobs:
       # the audio suites need — they touch device and global state, and a panic
       # or abort in one no longer takes the whole binary's results with it.
       #
-      # The two GUI-lifecycle binaries are excluded because they are `harness =
-      # false` custom mains that drive a plugin editor on the real main thread.
-      # nextest enumerates a binary by running it with `--list --format terse`;
-      # these ignore the flag, run their whole suite, and exit non-zero, so
-      # nextest fails at *list* time having already executed them. They are run
-      # below under the libtest-free runner they were written for.
-      # Two exclusions, for opposite reasons.
-      #
-      # The GUI-lifecycle binaries are `harness = false` custom mains that drive
-      # a plugin editor on the real main thread. nextest enumerates a binary by
-      # running it with `--list --format terse`; these ignore the flag, execute
-      # their whole suite and exit non-zero, so nextest fails at *list* time
-      # having already run them. They are run below under the runner they were
-      # written for.
-      #
-      # The GUI-lifecycle binaries are `harness = false` custom mains; see above.
+      # `au_gui_lifecycle_main` is a `harness = false` main that drives a plugin
+      # editor on the process main thread; it answers nextest's
+      # `--list --format terse` and `<case> --exact`, so it runs here like any
+      # other binary.
       # `no_installed_third_party_unit_implements_the_mapping_family` is behind
       # `tutti-au-host`'s `installed-units` feature, which this run leaves off:
       # it asserts a claim about third-party Audio Units installed on the
@@ -664,8 +632,7 @@ jobs:
       - name: Test
         shell: bash
         run: |
-          cargo nextest run --locked --workspace --no-fail-fast \
-            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+          cargo nextest run --locked --workspace --no-fail-fast
 
       # tutti-session's `plugin` suite is feature-gated, and the dark-features
       # job that runs it is Linux-only. It drives the plugin-server and
@@ -689,7 +656,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.changes.outputs.test_os) }}
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     env:
       TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
@@ -708,23 +675,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
-      # The custom-harness editor tests. `cargo test` just execs the binary,
-      # which is exactly what a `harness = false` main wants.
-      # `has_editor_agrees_with_opening_one` is skipped for the same reason the
-      # AU mapping-family test is excluded above: it asserts agreement across a
-      # corpus that must contain both an editor-bearing and an editorless
-      # plugin, and deliberately panics rather than report a pass that a
-      # constant `true` would satisfy. A hosted runner has no third-party
-      # plugins, so it can only ever fail there. The skip is announced in the
-      # harness output, and naming a case that does not exist is an error.
-      - name: Editor-lifecycle tests (custom harness)
-        shell: bash
-        env:
-          TUTTI_GUI_SKIP: has_editor_agrees_with_opening_one
-        run: |
-          cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main
-          cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main
-
       # The RT primitives in release. Some of their properties only exist
       # with `debug_assertions` off: `AudioThreadCell`'s borrow check was
       # debug-only once (two `&mut T` from safe code in release), and nothing
@@ -742,51 +692,9 @@ jobs:
         run: cargo test --locked --doc --workspace
       # tutti-session's doctests behind its own features (`Device`'s
       # `compile_fail` proof under `device`, `PumpLoop`'s under `record`, ...):
-      # a workspace run does not turn them on (the adapter that once unified
-      # them in is parked), so every feature is named here.
+      # a workspace run does not turn them on, so every feature is named here.
       - name: Doctests (tutti-session, all features)
         run: cargo test --locked --doc -p tutti-session --all-features
-
-  bevy-free:
-    name: Bevy-free floor
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux audio deps
-        uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Restores the lint cache (a subset of it); clippy is the one writer.
-          shared-key: lint-linux
-          save-if: false
-      # The engine must stay usable without Bevy. `--no-default-features` does
-      # NOT test that — `bevy` is already off by default on every engine crate
-      # that has one, so that flag drops the codec and midi features instead and proves
-      # nothing. Naming the feature explicitly is what tests both sides.
-      - run: cargo check --locked -p tutti-transport -p tutti-metering -p tutti-engine
-      - run: cargo check --locked -p tutti-types
-      - run: cargo check --locked -p tutti-types --features bevy
-
-      # The Bevy-free facade, and the assertion a compile cannot make.
-      # `cargo check` proves the crate builds; it says nothing about what came
-      # in with it. This is a NEGATIVE dependency check: no bevy crate may
-      # appear anywhere under `tutti`, at any depth, with everything on. The
-      # repo has no other guarantee of that shape.
-      #
-      # `-e normal`, not `-e all`: a dev-dependency walk is not what the
-      # facade ships.
-      - run: cargo check --locked -p tutti
-      - run: cargo check --locked -p tutti --features full
-      - name: No bevy under the facade
-        run: |
-          if cargo tree --locked -p tutti --features full -e normal | grep -nE '\bbevy(_[a-z]+)?\b'; then
-            echo "FAIL: a bevy crate reached the Bevy-free facade."
-            exit 1
-          fi
 
   doc:
     name: rustdoc
@@ -856,7 +764,7 @@ jobs:
   doc-macos:
     name: rustdoc (macos)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -977,12 +885,21 @@ jobs:
   # of the plugin slab header), so a PR that touches none of those, nor the
   # lock, the toolchain or this file, cannot change their result. `loom` is the
   # slowest job (about 12 minutes); it runs on the PRs that can change it.
+  #
+  # `macos`: whether the change touches code that differs on macOS: the crates
+  # with a macOS path (thread priority in `tutti-rt`, CoreAudio through
+  # `tutti-cpal`, CoreMIDI, the AU host and the plugin stack's process and
+  # bundle code), the test plugins, or the build. A pull request that touches
+  # none of those runs `clippy (macos)` only; its macOS tests and rustdoc run on
+  # the push to main.
   changes:
     name: what changed?
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.diff.outputs.code }}
       loom: ${{ steps.diff.outputs.loom }}
+      macos: ${{ steps.diff.outputs.macos }}
+      test_os: ${{ steps.diff.outputs.test_os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -995,6 +912,8 @@ jobs:
           if [ "$EVENT" != "pull_request" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "loom=true" >> "$GITHUB_OUTPUT"
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$BASE"...HEAD)
@@ -1008,6 +927,13 @@ jobs:
             echo "loom=true" >> "$GITHUB_OUTPUT"
           else
             echo "loom=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(crates/(arc-lend|tutti-rt|tutti-cpal|tutti-midi-hardware|tutti-coremidi-ffi|tutti-au-[a-z]+|tutti-vst2-[a-z]+|tutti-vst3-[a-z]+|tutti-clap-[a-z]+|tutti-plugin[a-z-]*)/|crates/tutti-session/(src|tests)/plugin|testing/|vendor/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+            echo 'test_os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           fi
 
   loom:

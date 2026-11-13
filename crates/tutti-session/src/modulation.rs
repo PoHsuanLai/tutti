@@ -56,8 +56,7 @@ use crate::graph::Graph;
 /// is ever bound to).
 pub const UNRESOLVED_WARNING: Duration = Duration::from_secs(4);
 
-/// One modulatable parameter of a node in the session's graph: the session's
-/// own `ParamRef` (Bevy's names an entity).
+/// One modulatable parameter of a node in the session's graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParamRef {
     /// The node with the param.
@@ -299,8 +298,7 @@ pub enum RouteError {
 }
 
 /// Why the session refused modulation. What it names is in the keys the
-/// declarer used: a host's own (design 015 §4.7; Bevy decodes them to its
-/// route or target entity), or the reconciler's for the session's own
+/// declarer used: a host's own (design 015 §4.7), or the reconciler's for the session's own
 /// declarations, which a [`Problem`] puts in terms of nodes and params.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]

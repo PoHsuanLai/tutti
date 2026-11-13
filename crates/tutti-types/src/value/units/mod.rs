@@ -47,7 +47,7 @@
 //! # Defining a unit
 //!
 //! Every unit is one `unit!` call (`macros.rs`). The raw type decides the
-//! derives, serde and reflection; the ability list decides the algebra, with
+//! derives and serde; the ability list decides the algebra, with
 //! one arm per ability name in `macros.rs`.
 //!
 //! # Measurements are not controls

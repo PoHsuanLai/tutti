@@ -86,26 +86,14 @@ impl Default for TuningCapacity {
 
 /// A tuning bank or program the core has no room for
 /// ([`TuningCapacity`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no tuning program {} in bank {}", .program.get(), .bank.get())]
 pub struct NoSuchTuning {
     /// The bank asked for.
     pub bank: U7,
     /// The program asked for.
     pub program: U7,
 }
-
-impl core::fmt::Display for NoSuchTuning {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "no tuning program {} in bank {}",
-            self.program.get(),
-            self.bank.get()
-        )
-    }
-}
-
-impl core::error::Error for NoSuchTuning {}
 
 /// The tuning programs and the channels' Scale/Octave offsets. See the module
 /// docs.

@@ -27,8 +27,9 @@ use tutti_modulation::{
 };
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
-    CompressorControls, CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterControls,
-    LimiterNode, ModDelayNode, PhaserControls, PhaserNode, Stages, SvfFilterNode, SvfType,
+    CompressorControls, CompressorNode, KeySource, LadderFilterNode, LadderType, LfoNode,
+    LimiterControls, LimiterNode, ModDelayNode, PhaserControls, PhaserNode, Stages, SvfFilterNode,
+    SvfType,
 };
 use tutti_types::{BeatDuration, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples};
 use tutti_types::{BusTopology, ChannelLayout, UnitParam};
@@ -326,13 +327,17 @@ fn chorus_rate_write_moves_the_nodes_own_cell() {
 /// its set.
 #[test]
 fn compressor_makeup_is_addressed_as_gain_db() {
-    let node = CompressorNode::stereo(CompressorControls {
-        threshold: tutti_types::Db(-12.0),
-        ratio: tutti_types::CompressionRatio(4.0),
-        attack: tutti_types::Seconds(0.01),
-        release: tutti_types::Seconds(0.1),
-        ..CompressorControls::DEFAULT
-    });
+    let node = CompressorNode::new(
+        BusTopology::STEREO,
+        KeySource::Sidechain,
+        CompressorControls {
+            threshold: tutti_types::Db(-12.0),
+            ratio: tutti_types::CompressionRatio(4.0),
+            attack: tutti_types::Seconds(0.01),
+            release: tutti_types::Seconds(0.1),
+            ..CompressorControls::DEFAULT
+        },
+    );
     let makeup = node
         .param_set()
         .cell(UnitParam::GainDb)

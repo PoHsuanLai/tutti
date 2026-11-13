@@ -5,12 +5,8 @@
 //! graph that no longer compiles leaves the stream stopped but recoverable,
 //! and a crossfade asked for right after a restart lands at once.
 //!
-//! These are the session halves of `bevy-tutti`'s `engine::restart` tests,
-//! moved here when the adapter was parked. What stayed with the adapter is
-//! its glue: `AudioConfig` and `GraphLatency` republished after the hook, the
-//! disk streamer's `set_sample_rate` in the hook's follow-up, and the device
-//! going back into the world when a restart panics. The plugin half is
-//! `plugin_latency.rs`'s, the MIDI clock's is `device_midi_clock.rs`'s.
+//! The plugin half is `plugin_latency.rs`'s, the MIDI clock's is
+//! `device_midi_clock.rs`'s.
 
 use tutti_cpal::{ManualStream, ManualStreamDriver, OutputSpec};
 use tutti_graph::NodeKey;
@@ -116,8 +112,7 @@ fn period(x: &[f32]) -> f64 {
 ///   pre-rolls by the new figure.
 ///
 /// Not pinned: `Schedule::rescale`
-/// ignoring the `mark_rate_change` boundary, which `bevy-tutti`'s version of
-/// this test named. The engine adopts the rate (`follow_rate`, rescaling the
+/// ignoring the `mark_rate_change` boundary. The engine adopts the rate (`follow_rate`, rescaling the
 /// commands in flight) inside the restart's hook, before the host's thread can
 /// send anything, so a command sent "after the mark" cannot be in flight at
 /// the rescale on one thread: the play at 84 000 below is asserted to land

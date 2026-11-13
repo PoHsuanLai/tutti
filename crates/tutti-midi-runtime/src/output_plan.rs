@@ -97,21 +97,9 @@ impl Outgoing {
 pub struct OutputOffset(Seconds);
 
 /// The seconds [`OutputOffset::try_from`] refused.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("an output offset is finite and at most {} s either way, not {} s", MAX_OUTPUT_LATENCY.get(), .0.get())]
 pub struct OffsetOutOfRange(pub Seconds);
-
-impl core::fmt::Display for OffsetOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "an output offset is finite and at most {} s either way, not {} s",
-            MAX_OUTPUT_LATENCY.get(),
-            self.0.get()
-        )
-    }
-}
-
-impl std::error::Error for OffsetOutOfRange {}
 
 impl OutputOffset {
     /// No trim.

@@ -9,203 +9,171 @@ use crate::conformance_support;
 
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::ParamId;
-use tutti_vst3_host::{Library, LoadOptions, Vst3Loaded};
+use tutti_vst3_host::{
+    Library, LoadOptions, PhysicalUiType, ProcessContextRequirements, UnitId, Vst3Loaded,
+};
 
 use conformance_support::*;
 
 /// `IProcessContextRequirements` is read at load and drives whether the host
 /// bothers filling a transport snapshot each block.
 ///
-/// The contrast is the test: `host-checker` requests everything (`0x7ff`), and
-/// `note-expression-synth` implements the interface but requests nothing (`0`).
-/// A host that hardcoded either answer — or that failed to query the interface
-/// and fell back to `u32::MAX` — fails on one of the two.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// The contrast is the test: the twin requests tempo, musical position,
+/// transport state and the chord, and `audio-probe` requests the tempo alone. A
+/// host that hardcoded either answer, or that failed to query the interface and
+/// fell back to `u32::MAX`, fails on one of the two.
 #[test]
 fn context_requirements_are_read_from_the_plugin() {
-    let checker = require_sample("host-checker.vst3");
+    let twin = require_twin();
 
-    let req = checker.context_requirements();
-    let Some(req) = req else {
-        panic!(
-            "host-checker implements IProcessContextRequirements, so the host must \
-             have its real flags rather than the everything-fallback"
-        );
-    };
-    assert!(
-        checker.wants_transport(),
-        "host-checker requests tempo/playhead/bar fields ({req:#x}), so \
-         wants_transport must be true"
+    let req = twin.context_requirements().expect(
+        "the twin implements IProcessContextRequirements, so the host must \
+         have its real flags rather than the everything-fallback",
+    );
+    assert_eq!(
+        req.bits(),
+        (ProcessContextRequirements::NEED_TEMPO
+            | ProcessContextRequirements::NEED_PROJECT_TIME_MUSIC
+            | ProcessContextRequirements::NEED_TRANSPORT_STATE
+            | ProcessContextRequirements::NEED_CHORD)
+            .bits(),
+        "the host read flags other than the four the twin requests"
     );
     assert!(
-        checker.wants_sequencer_context(),
-        "host-checker requests kNeedChord ({req:#x}), so \
-         wants_sequencer_context must be true"
+        twin.wants_transport(),
+        "the twin requests tempo and position"
+    );
+    assert!(
+        twin.wants_sequencer_context(),
+        "the twin requests kNeedChord ({:#x})",
+        req.bits()
     );
 
-    // The discriminating half: a plugin that implements the interface and asks
-    // for nothing must come back false on both, or these accessors are
-    // constants rather than reads.
-    let nes = require_sample("note-expression-synth.vst3");
+    // The discriminating half: `audio-probe` asks for the tempo alone, so the
+    // flags differ and the chord request reads back false, or these accessors
+    // are constants rather than reads.
+    let probe = require_probe();
+    assert_eq!(
+        probe.context_requirements().map(|r| r.bits()),
+        Some(ProcessContextRequirements::NEED_TEMPO.bits()),
+        "audio-probe requests the tempo only"
+    );
+    assert!(probe.wants_transport(), "the tempo is a transport field");
     assert!(
-        !nes.wants_transport() && !nes.wants_sequencer_context(),
-        "note-expression-synth requests no context fields ({:#x}), but the host \
-         reports transport={} sequencer={} — these accessors are not reading \
-         the plugin's flags",
-        nes.context_requirements().map_or(u32::MAX, |r| r.bits()),
-        nes.wants_transport(),
-        nes.wants_sequencer_context()
+        !probe.wants_sequencer_context(),
+        "audio-probe does not request the chord, but the host reports it does"
     );
 }
 
 /// `INoteExpressionController` enumeration: count, then per-index descriptors.
 ///
-/// `note-expression-synth` exposes 12 types and `host-checker` exposes 1, so a
-/// hardcoded count satisfies neither. Reading every descriptor back and
-/// requiring the ids to be distinct is what proves `index` is actually being
-/// passed through rather than ignored.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// The twin publishes three types on bus 0 channel 0 (volume, tuning and a
+/// custom one, in that order), so a hardcoded count or an ignored `index`
+/// argument cannot produce the exact id sequence.
 #[test]
 fn note_expression_types_enumerate_per_plugin() {
-    let nes = require_sample("note-expression-synth.vst3");
+    let twin = require_twin();
+    let main = main_thread();
 
-    let count = nes.note_expression_count(&main_thread(), 0, 0);
-    assert!(
-        count > 1,
-        "note-expression-synth advertises several expression types, got {count}"
-    );
+    let count = twin.note_expression_count(&main, 0, 0);
+    assert_eq!(count, 3, "the twin advertises three note-expression types");
 
-    let mut ids = Vec::new();
-    for i in 0..count {
-        let info = nes
-            .note_expression_info(&main_thread(), 0, 0, i)
-            .unwrap_or_else(|| {
-                panic!(
-                    "type {i} of {count} has no descriptor — the count and the \
-                    per-index lookup disagree"
-                )
-            });
-        ids.push(info.type_id);
-    }
-    let mut sorted = ids.clone();
-    sorted.sort_unstable();
-    sorted.dedup();
-    assert_eq!(
-        sorted.len(),
-        ids.len(),
-        "every index returned the same descriptor(s) ({ids:?}) — the index \
-         argument is being ignored"
-    );
+    let ids: Vec<u32> = (0..count)
+        .map(|i| {
+            twin.note_expression_info(&main, 0, 0, i)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "type {i} of {count} has no descriptor: the count and the \
+                         per-index lookup disagree"
+                    )
+                })
+                .type_id
+        })
+        .collect();
+    // kVolumeTypeID = 0, kTuningTypeID = 2, then the twin's custom type.
+    assert_eq!(ids, [0, 2, 100], "the descriptors arrive in index order");
 
     // Out of range must be None, not a wrapped or clamped entry.
     assert!(
-        nes.note_expression_info(&main_thread(), 0, 0, count + 1000)
+        twin.note_expression_info(&main, 0, 0, count + 1000)
             .is_none(),
         "an out-of-range note-expression index returned a descriptor"
     );
+    // The negative half: a plugin without the interface has none.
+    assert_eq!(
+        require_probe().note_expression_count(&main, 0, 0),
+        0,
+        "audio-probe does not implement INoteExpressionController"
+    );
 }
 
-/// `IKeyswitchController` — the articulation map a sample library advertises.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// `IKeyswitchController`: the articulation map a sample library advertises.
 #[test]
 fn keyswitches_enumerate_and_bound_check() {
-    let checker = require_sample("host-checker.vst3");
+    let twin = require_twin();
+    let main = main_thread();
 
-    let count = checker.keyswitch_count(&main_thread(), 0, 0);
-    assert!(
-        count > 0,
-        "host-checker implements IKeyswitchController but the host read 0 \
-         entries"
+    let count = twin.keyswitch_count(&main, 0, 0);
+    assert_eq!(count, 2, "the twin advertises two keyswitches");
+    let ranges: Vec<(i32, i32)> = (0..count)
+        .map(|i| {
+            let info = twin
+                .keyswitch_info(&main, 0, 0, i)
+                .unwrap_or_else(|| panic!("keyswitch {i} of {count} has no descriptor"));
+            (info.keyswitch_min, info.keyswitch_max)
+        })
+        .collect();
+    assert_eq!(
+        ranges,
+        [(0, 1), (2, 3)],
+        "each keyswitch reports its own key range, in index order"
     );
-    for i in 0..count {
-        assert!(
-            checker.keyswitch_info(&main_thread(), 0, 0, i).is_some(),
-            "keyswitch {i} of {count} has no descriptor"
-        );
-    }
     assert!(
-        checker
-            .keyswitch_info(&main_thread(), 0, 0, count + 1000)
-            .is_none(),
+        twin.keyswitch_info(&main, 0, 0, count + 1000).is_none(),
         "an out-of-range keyswitch index returned a descriptor"
     );
 
     // A plugin without the interface must answer 0 rather than guessing.
-    if let Some(nes) = sample("note-expression-synth.vst3") {
-        assert_eq!(
-            nes.keyswitch_count(&main_thread(), 0, 0),
-            0,
-            "note-expression-synth does not implement IKeyswitchController, so \
-             the count must be 0"
-        );
-    }
+    assert_eq!(
+        require_probe().keyswitch_count(&main, 0, 0),
+        0,
+        "audio-probe does not implement IKeyswitchController, so the count must be 0"
+    );
 }
 
 /// `IUnitInfo` — the tree a plugin sorts its parameters and programs into.
 ///
-/// host-checker publishes a deliberately deep tree (three nested levels), so
-/// this asserts more than "some units came back": every unit's parent must
-/// resolve, and at least one unit must be nested. A host that decoded
-/// `parentUnitId` wrongly — treating the `-1` sentinel as an id, say — produces
-/// a parent nothing answers to, and that is what fails here.
+/// The twin publishes three nested levels (Voices under the root, Oscillator
+/// under Voices, Filter under Oscillator), so this asserts more than "some units
+/// came back": the parent of each unit is the one the twin declared. A host that
+/// decoded `parentUnitId` wrongly, treating the `-1` sentinel as an id, say,
+/// produces a parent nothing answers to, and that is what fails here.
 ///
 /// **The root is implicit.** The spec says `getUnitCount` "must return 1 at
-/// least" and that the root's id is 0 (`ivstunits.h:144-145`), but the SDK's
-/// own `EditControllerEx1` never adds a unit *for* the root, and host-checker
-/// only ever calls `addUnit` for its own — attaching them to `kRootUnitId`
-/// (`hostcheckercontroller.cpp:481,634`). So id 0 is a valid parent whether or
-/// not any unit enumerates under it, and a host that demanded an explicit root
-/// entry would reject the SDK's own reference plugin. That asymmetry is why
-/// this crate does not materialise a tree: there is no root node to hang one
-/// off without inventing it.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// least" and that the root's id is 0 (`ivstunits.h:144-145`), but the SDK's own
+/// `EditControllerEx1` never adds a unit *for* the root, and the twin only calls
+/// `addUnit` for its own, attaching the first to `kRootUnitId`. So id 0 is a
+/// valid parent whether or not any unit enumerates under it, and a host that
+/// demanded an explicit root entry would reject the SDK's own base class.
 #[test]
 fn units_enumerate_with_resolvable_parents() {
-    let checker = require_sample("host-checker.vst3");
+    let twin = require_twin();
 
-    let units = checker.units(&main_thread());
-    assert!(
-        !units.is_empty(),
-        "host-checker implements IUnitInfo but the host read no units"
-    );
-
-    let ids: Vec<_> = units.iter().map(|u| u.id).collect();
-    let mut orphans = Vec::new();
-    for unit in &units {
-        if let Some(parent) = unit.parent
-            && parent != tutti_vst3_host::UnitId::ROOT
-            && !ids.contains(&parent)
-        {
-            orphans.push(format!(
-                "unit {} names absent parent {}",
-                unit.id.get(),
-                parent.get()
-            ));
-        }
-    }
-    assert!(
-        orphans.is_empty(),
-        "every non-root unit must name the root or a unit that exists:\n  {}",
-        orphans.join("\n  ")
-    );
-
-    // host-checker nests three levels (`hostcheckercontroller.cpp:634-651`), so
-    // some unit must hang off another *enumerated* unit rather than off the
-    // root. Asserting merely "a parent exists" would pass on a flat tree, and
-    // decoding every parent as `None` would pass the orphan check vacuously.
-    let nested = units
+    let units = twin.units(&main_thread());
+    let tree: Vec<(i32, Option<i32>)> = units
         .iter()
-        .filter(|u| u.parent.is_some_and(|p| ids.contains(&p)))
-        .count();
-    assert!(
-        nested > 0,
-        "host-checker publishes a three-level tree, but no unit names another \
-         enumerated unit as its parent — every parent decoded as the root or \
-         as None"
+        .map(|u| (u.id.get(), u.parent.map(|p| p.get())))
+        .collect();
+    assert_eq!(
+        tree,
+        [(1, Some(0)), (2, Some(1)), (3, Some(2))],
+        "the twin nests Voices under the root, Oscillator under Voices and Filter under Oscillator"
     );
-    eprintln!(
-        "host-checker: {} units, {nested} of them nested",
-        units.len()
+
+    let probe = require_probe();
+    assert!(
+        probe.units(&main_thread()).is_empty() && probe.program_lists(&main_thread()).is_empty(),
+        "audio-probe publishes no unit tree and no program lists"
     );
 
     // The negative case is a corpus-wide invariant rather than a named
@@ -441,58 +409,61 @@ fn remap_param_id_migrates_a_known_parameter() {
     );
 }
 
-/// `INoteExpressionPhysicalUIMapping` — how physical controllers (x/y/pressure)
+/// `INoteExpressionPhysicalUIMapping`: how physical controllers (x/y/pressure)
 /// map onto note-expression ids.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+///
+/// The twin maps x movement to tuning (id 2) and pressure to volume (id 0), and
+/// leaves y movement unmapped.
 #[test]
 fn physical_ui_mapping_is_read_per_plugin() {
-    let nes = require_sample("note-expression-synth.vst3");
-    let mapping = nes.physical_ui_mapping(&main_thread(), 0, 0);
-    assert!(
-        !mapping.is_empty(),
-        "note-expression-synth implements INoteExpressionPhysicalUIMapping but \
-         the host read no entries"
+    let main = main_thread();
+    // `u32::MAX` is `kInvalidTypeID`: the twin leaves y movement unmapped.
+    assert_eq!(
+        require_twin().physical_ui_mapping(&main, 0, 0),
+        [
+            (PhysicalUiType::XMovement, 2),
+            (PhysicalUiType::YMovement, u32::MAX),
+            (PhysicalUiType::Pressure, 0)
+        ],
+        "the twin wires x movement to tuning and pressure to volume"
     );
 
     // A plugin without the interface must yield nothing rather than a default
-    // table — otherwise the host would invent controller routings.
-    if let Some(pn) = sample("pitch-names.vst3") {
-        assert!(
-            pn.physical_ui_mapping(&main_thread(), 0, 0).is_empty(),
-            "pitch-names does not implement the interface, so the mapping must \
-             be empty rather than a synthesised default"
-        );
-    }
+    // table, or the host would invent controller routings.
+    assert!(
+        require_probe().physical_ui_mapping(&main, 0, 0).is_empty(),
+        "audio-probe does not implement the interface, so the mapping must be \
+         empty rather than a synthesised default"
+    );
 }
 
-/// `IXmlRepresentationController` — the hardware-controller page layout a
-/// plugin ships for surfaces like Steinberg's CMC/Nuage.
+/// `IXmlRepresentationController`: the hardware-controller page layout a plugin
+/// ships for surfaces like Steinberg's CMC/Nuage.
 ///
-/// The name is load-bearing: `host-checker` only answers for the exact
-/// `GENERIC_8_CELLS` representation ("Generic 8 Cells",
-/// `ivstrepresentation.h:249`) and returns nothing for anything else
-/// (`hostcheckercontroller.cpp:1455`). So a host that dropped the caller's
-/// `name` on the floor gets `None` for the supported case, and a host that
-/// ignored it entirely would wrongly answer for the unsupported one.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// The name is load-bearing: the twin only answers for "Generic 8 Cells" and
+/// returns nothing for anything else. So a host that dropped the caller's `name`
+/// on the floor gets `None` for the supported case, and a host that ignored it
+/// entirely would wrongly answer for the unsupported one.
 #[test]
 fn xml_representation_is_fetched_for_a_supported_layout() {
-    let checker = require_sample("host-checker.vst3");
+    let twin = require_twin();
+    let main = main_thread();
 
-    let xml = checker.xml_representation(
-        &main_thread(),
-        "Steinberg Media Technologies",
-        "Generic 8 Cells",
-        "1.0",
-        "tutti",
-    );
-    let xml = xml.expect(
-        "host-checker implements IXmlRepresentationController for \
-         \"Generic 8 Cells\", so the host must return its stream",
-    );
+    let xml = twin
+        .xml_representation(
+            &main,
+            "Steinberg Media Technologies",
+            "Generic 8 Cells",
+            "1.0",
+            "tutti",
+        )
+        .expect(
+            "the twin implements IXmlRepresentationController for \"Generic 8 Cells\", \
+             so the host must return its stream",
+        );
     assert!(
-        xml.contains("<") && xml.len() > 100,
-        "the representation should be an XML document, got {} bytes: {:.80}",
+        xml.starts_with("<?xml") && xml.contains("<representation name=\"Generic 8 Cells\">"),
+        "the representation should be the twin's XML document, got {} bytes: {:.80}",
         xml.len(),
         xml
     );
@@ -500,51 +471,62 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
     // The discriminating half: an unknown layout must yield nothing rather
     // than the same document under a different name.
     assert!(
-        checker
+        twin.xml_representation(
+            &main,
+            "Steinberg Media Technologies",
+            "No Such Layout",
+            "1.0",
+            "tutti"
+        )
+        .is_none(),
+        "an unsupported representation name still returned a document: the \
+         `name` argument is not reaching the plugin"
+    );
+    assert!(
+        require_probe()
             .xml_representation(
-                &main_thread(),
+                &main,
                 "Steinberg Media Technologies",
-                "No Such Layout",
+                "Generic 8 Cells",
                 "1.0",
                 "tutti"
             )
             .is_none(),
-        "an unsupported representation name still returned a document — the \
-         `name` argument is not reaching the plugin"
+        "audio-probe does not implement the interface"
     );
 }
 
-/// `IParameterFunctionName` — "which parameter is the dry/wet mix?", so a host
+/// `IParameterFunctionName`: "which parameter is the dry/wet mix?", so a host
 /// can bind a generic control without knowing the plugin's parameter layout.
 ///
-/// Two known function names map to two *different* ids, and an unknown one maps
-/// to nothing (`hostcheckercontroller.cpp:1744`). A host that ignored the name
-/// would return the same id for both, or something for `Bogus`.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// The twin maps `DryWetMix` to `level` (id 0) and `Randomize` to `tone` (id 3),
+/// and nothing else. A host that ignored the name would return the same id for
+/// both, or something for an unknown one.
 #[test]
 fn param_id_for_function_name_resolves_known_functions() {
-    let checker = require_sample("host-checker.vst3");
+    let twin = require_twin();
+    let main = main_thread();
+    let root = UnitId::ROOT;
 
-    let dry_wet = checker
-        .param_id_for_function_name(&main_thread(), tutti_vst3_host::UnitId::ROOT, "DryWetMix")
-        .expect("host-checker maps the DryWetMix function name");
-    let randomize = checker
-        .param_id_for_function_name(&main_thread(), tutti_vst3_host::UnitId::ROOT, "Randomize")
-        .expect("host-checker maps the Randomize function name");
-
-    assert_ne!(
-        dry_wet, randomize,
-        "two different function names resolved to the same parameter id \
-         ({dry_wet:?}) — the name is being ignored"
+    assert_eq!(
+        twin.param_id_for_function_name(&main, root, "DryWetMix"),
+        Some(ParamId::new(0)),
+        "the twin maps the DryWetMix function name to `level`"
     );
     assert_eq!(
-        checker.param_id_for_function_name(
-            &main_thread(),
-            tutti_vst3_host::UnitId::ROOT,
-            "NotAFunctionName"
-        ),
+        twin.param_id_for_function_name(&main, root, "Randomize"),
+        Some(ParamId::new(3)),
+        "the twin maps the Randomize function name to `tone`"
+    );
+    assert_eq!(
+        twin.param_id_for_function_name(&main, root, "NotAFunctionName"),
         None,
         "an unknown function name resolved to a parameter id"
+    );
+    assert_eq!(
+        require_probe().param_id_for_function_name(&main, root, "DryWetMix"),
+        None,
+        "audio-probe does not implement IParameterFunctionName"
     );
 }
 

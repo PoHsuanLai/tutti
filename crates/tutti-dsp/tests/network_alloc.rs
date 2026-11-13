@@ -1,5 +1,5 @@
-//! A `Family::member` call allocates nothing (design 022 section 8.1, the
-//! "pure" case).
+//! A `Family::member` call allocates nothing: a design is pure,
+//! and building a member must not touch the allocator.
 //!
 //! The crate carries no `assert_no_alloc` dev-dependency (see its Cargo.toml),
 //! so this binary counts allocations with its own global allocator, per thread
@@ -46,7 +46,7 @@ fn freeverb_design_allocates_nothing() {
 }
 
 /// Freeverb's `member_into`, `retarget` and `process` allocate nothing, with a
-/// different network every block (design 022 section 8.2, "no allocation"): the
+/// different network every block: the
 /// node's audio-thread path, the network designed in place into one built
 /// beforehand.
 #[test]

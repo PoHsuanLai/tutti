@@ -23,9 +23,8 @@
 //! each member's `[features]` table, so a new crate or feature is covered with
 //! no edit here. Skipped: `default` (not a feature of its own), `jack` (its
 //! build script wants the JACK headers, as in `cargo xtask check-features`; the
-//! CI rustdoc job documents the umbrellas with `--all-features`, JACK included)
-//! and, in the union, `bevy` (it builds Bevy; `bevy-tutti` is parked and no
-//! workspace command builds it). `RUSTDOCFLAGS` is the caller's when set.
+//! CI rustdoc job documents the umbrellas with `--all-features`, JACK included).
+//! `RUSTDOCFLAGS` is the caller's when set.
 //!
 //! This one is a list of commands, not a verdict over files: [`doc_runs`]
 //! reads the manifests (pure, over a [`Tree`]) and the runner in `main.rs`
@@ -40,9 +39,6 @@ const ONE_AT_A_TIME: &[&str] = &["crates/tutti-session", "crates/tutti"];
 
 /// Features never documented, alone or together.
 const SKIPPED: &[&str] = &["default", "jack"];
-
-/// Features left out of a member's union.
-const NOT_IN_UNION: &[&str] = &["bevy"];
 
 /// One `cargo doc` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,10 +107,6 @@ pub(crate) fn doc_runs(tree: &dyn Tree) -> (Vec<DocRun>, Vec<String>) {
         let Some((package, features)) = manifest(tree, dir, &mut errors) else {
             continue;
         };
-        let features: Vec<String> = features
-            .into_iter()
-            .filter(|f| !NOT_IN_UNION.contains(&f.as_str()))
-            .collect();
         if !features.is_empty() {
             runs.push(DocRun {
                 package,
@@ -191,8 +183,7 @@ wasm = []
 "#;
     const FACADE: &str = "[package]\nname = \"tutti\"\n[features]\nfull = []\nio=[]\n";
     const PLAIN: &str = "[package]\nname = \"plain\"\n[dependencies]\nx = \"1\"\n";
-    const TYPES: &str =
-        "[package]\nname = \"tutti-types\"\n[features]\nbevy = [\"dep:bevy\"]\nserde = []\n";
+    const TYPES: &str = "[package]\nname = \"tutti-types\"\n[features]\nserde = []\n";
 
     fn tree() -> Mem {
         Mem::with(&[
@@ -231,14 +222,13 @@ wasm = []
         assert_eq!(runs[0].features, ["audio-io", "clap", "midi_2"]);
     }
 
-    /// `default` and `jack` are never documented, and `bevy` stays out of a
-    /// union (it would build Bevy).
+    /// `default` and `jack` are never documented.
     #[test]
-    fn default_jack_and_bevy_are_left_out() {
+    fn default_and_jack_are_left_out() {
         let (runs, _) = doc_runs(&tree());
         for r in &runs {
             for f in &r.features {
-                assert!(!["default", "jack", "bevy"].contains(&f.as_str()), "{r:?}");
+                assert!(!["default", "jack"].contains(&f.as_str()), "{r:?}");
             }
         }
         let types = runs.iter().find(|r| r.package == "tutti-types").unwrap();

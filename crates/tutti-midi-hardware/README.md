@@ -176,8 +176,7 @@ Builds on `tutti-ump` (the wire vocabulary and its decoded `Message`) and `tutti
 (the graph's MIDI nodes and mailbox), and re-exports the parts of both a
 hardware consumer needs. It does **not** include the file codecs: SMF and the
 path-level Clip File codec are in `tutti-midi-file`, so a consumer that only
-reads `.mid` files does not link CoreMIDI or ALSA. Re-exported by `tutti`; the
-Bevy systems that drive a session are in `bevy-tutti`.
+reads `.mid` files does not link CoreMIDI or ALSA. Re-exported by `tutti`.
 
 ## Examples
 

@@ -1043,7 +1043,7 @@ fn harmony_events_are_not_midi() {
     assert!(chord.to_midi().is_none());
 }
 
-// ── reading through `tutti_ump::Message` (design 017 stage 2) ─────────────
+// ── reading through `tutti_ump::Message` ─────────────────────────────────
 
 mod message {
     use super::*;

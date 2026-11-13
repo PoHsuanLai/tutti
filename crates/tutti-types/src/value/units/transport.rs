@@ -184,24 +184,13 @@ impl Beat {
         BeatDuration(if f >= 1.0 { 1.0_f64.next_down() } else { f })
     }
 
-    /// Un-wrapped cycle position of a beat-synced periodic source — the one
-    /// place beats-per-cycle is interpreted.
+    /// Returns where this beat falls on a beat-synced clock of `span`, in
+    /// unwrapped cycles: the beat divided by the span, in `f64`. The one place
+    /// a beat span is interpreted.
     ///
-    /// The divisor is a span, not a frequency: doubling it makes the source
-    /// *slower*. Substituting an `Hz` is a silent reciprocal — the whole reason
-    /// the interpretation lives here and not at each call site.
-    ///
-    /// Un-wrapped so a stepped shape can read its cycle index off the integer
-    /// part. `None` for a non-positive span — a frozen source holds its phase
-    /// offset instead.
-    #[inline]
-    #[must_use]
-    pub fn cycles_of(self, beats_per_cycle: BeatDuration) -> Option<f64> {
-        (beats_per_cycle.0 > 0.0).then(|| self.0 / beats_per_cycle.0)
-    }
-
-    /// Returns where this beat falls on a clock of `span`, in unwrapped cycles: the
-    /// beat divided by the span, in `f64`.
+    /// The divisor is a span, not a frequency: doubling it makes the clock
+    /// slower. Unwrapped, so a stepped shape reads its cycle index off the
+    /// integer part.
     #[inline]
     #[must_use]
     pub fn cycles_in(self, span: BeatsPerCycle) -> f64 {

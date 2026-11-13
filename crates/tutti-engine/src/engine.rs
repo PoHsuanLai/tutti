@@ -215,9 +215,8 @@ impl GraphRender {
     /// Publishes one render call's start: the OS time it began at
     /// (`os_ns`), the frame it renders first, and `first`, the transport at
     /// that frame (after the commands due on it), for producer threads that
-    /// hold an OS time (doc 017 section 5, "Timing at the edge") and for the
-    /// session's one-read playhead (doc 030, R2). `frames` is the whole
-    /// call's length.
+    /// hold an OS time and for the session's one-read playhead (doc 030, R2).
+    /// `frames` is the whole call's length.
     fn publish_call(
         &mut self,
         os_ns: i64,

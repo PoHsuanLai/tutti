@@ -9,8 +9,8 @@
 //! **It is off until the app gives an identity**
 //! ([`MidiSession::enable_ci`](crate::MidiSession::enable_ci)). A Discovery
 //! announces a System Exclusive manufacturer id, and tutti has none of its own:
-//! M1 reserves `7D` (non-commercial) for what is not to be used on any
-//! product released to the public, and tutti is a library that apps ship. So no
+//! M1 reserves `7D` for non-commercial use, never for a released product, and
+//! tutti is a library that apps ship. So no
 //! device is started, and the port copies no SysEx for MIDI-CI, until the app
 //! says who it is, with the id it registered. Enabling reaches the inputs
 //! already open (they start at the next poll, after any Identity Request in

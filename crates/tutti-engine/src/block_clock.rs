@@ -1,6 +1,6 @@
 //! The block clock: where the OS clock and the graph's frame clock stood at
 //! one render call's start, published by the engine to threads that hold an OS
-//! time and need a frame (doc 017 section 5, "Timing at the edge").
+//! time and need a frame.
 //!
 //! The engine writes one reading per render call and any number of producer
 //! threads read the latest ([`BlockClockReader::read`]). The cell is a

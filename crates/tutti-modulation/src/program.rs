@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use tutti_curve::{Law, Piece};
 use tutti_types::{
-    Beat, BeatDuration, Depth, Frame, Hz, Phase, PhaseIncrement, SamplePosition, SampleRate,
+    Beat, BeatsPerCycle, Depth, Frame, Hz, Phase, PhaseIncrement, SamplePosition, SampleRate,
 };
 
 use crate::curve::{Curve, CurveSegment};
@@ -49,11 +49,10 @@ pub struct SourceId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Clock {
     /// `cycles = beat / per_cycle + phase`: bar-locked; follows seeks and
-    /// loop wraps; holds while the transport is stopped. A `per_cycle` that
-    /// is not above zero leaves the layer silent.
+    /// loop wraps; holds while the transport is stopped.
     Beats {
         /// Beats per cycle: a span, so larger is slower.
-        per_cycle: BeatDuration,
+        per_cycle: BeatsPerCycle,
         /// Added to the cycle position.
         phase: PhaseIncrement,
     },
@@ -314,12 +313,12 @@ pub enum ProgramError {
 ///     Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity,
 ///     ProgramTime, Waveform,
 /// };
-/// use tutti_types::{Beat, BeatDuration, Depth, PhaseIncrement, SamplePosition, SampleRate};
+/// use tutti_types::{Beat, BeatsPerCycle, Depth, PhaseIncrement, SamplePosition, SampleRate};
 ///
 /// // A bar-locked square, a quarter of the range deep, on a knob of 1000.
 /// let square = Layer {
 ///     id: LayerId(1),
-///     clock: Clock::Beats { per_cycle: BeatDuration(4.0), phase: PhaseIncrement(0.0) },
+///     clock: Clock::Beats { per_cycle: BeatsPerCycle::of(4.0), phase: PhaseIncrement(0.0) },
 ///     wave: Waveform::Shape { shape: LfoShape::Square, seed: 0 },
 ///     amount: Amount { depth: Depth::of(0.25), polarity: Polarity::Bipolar, curve: Law::Linear },
 ///     depth_by: None,
@@ -656,7 +655,7 @@ impl Layer {
     /// Whether a NaN is anywhere in the layer.
     fn has_nan(&self) -> bool {
         let clock = |c: &Clock| match *c {
-            Clock::Beats { per_cycle, phase } => per_cycle.get().is_nan() || phase.get().is_nan(),
+            Clock::Beats { phase, .. } => phase.get().is_nan(),
             Clock::Seconds {
                 rate,
                 phase,
@@ -679,11 +678,11 @@ impl Layer {
 
 impl Clock {
     /// The position at `at`, in unwrapped cycles; `None` when the clock
-    /// gives none (a beat span not above zero, a rate that is not finite).
+    /// gives none (a rate that is not finite).
     pub fn cycles(&self, at: &ProgramTime) -> Option<f64> {
         let c = match *self {
             Self::Beats { per_cycle, phase } => {
-                at.beat.cycles_of(per_cycle)? + f64::from(phase.get())
+                at.beat.cycles_in(per_cycle) + f64::from(phase.get())
             }
             Self::Seconds {
                 rate,

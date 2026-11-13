@@ -19,7 +19,7 @@ mod midi_soundfont;
 // The General MIDI setup of a SoundFont unit (`Session::add_general_midi`).
 #[cfg(feature = "soundfont")]
 mod general_midi;
-// The hardware out as an event tap on the clock (doc 017, E3).
+// The hardware out as an event tap on the clock.
 #[cfg(feature = "midi")]
 mod midi_out_tap;
 // The session's MIDI front: hardware through the view, the session's MPE mode,
@@ -29,7 +29,7 @@ mod midi_front;
 // File loads as jobs: a MIDI file and a SoundFont land as events in `update()`.
 #[cfg(feature = "midi")]
 mod loads;
-// The session follows a live Flex Set Tempo and Set Time Signature (doc 020, doc 017 L7c).
+// The session follows a live Flex Set Tempo and Set Time Signature.
 #[cfg(feature = "midi-hardware")]
 mod midi_follow;
 // A map published with its step behind the playhead moves no beat.

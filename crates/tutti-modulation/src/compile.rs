@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use tutti_curve::Law;
 use tutti_types::{
-    Adsr, Beat, BeatDuration, Depth, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
+    Adsr, Beat, BeatsPerCycle, Depth, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
     SampleRate, Samples, Seconds,
 };
 
@@ -440,7 +440,7 @@ pub enum CompileError {
 /// The clock a macro's constant layer carries: it reads none, and a beat
 /// clock has no corners for a constant.
 const MACRO_CLOCK: Clock = Clock::Beats {
-    per_cycle: BeatDuration(1.0),
+    per_cycle: BeatsPerCycle::of(1.0),
     phase: PhaseIncrement(0.0),
 };
 
@@ -677,9 +677,7 @@ fn check_source(key: SourceKey, source: &Source) -> Result<(), CompileError> {
     match source {
         Source::Lfo { wave, clock } => {
             let ok_clock = match *clock {
-                Clock::Beats { per_cycle, phase } => {
-                    per_cycle.get().is_finite() && phase.get().is_finite()
-                }
+                Clock::Beats { phase, .. } => phase.get().is_finite(),
                 Clock::Seconds {
                     rate,
                     phase,

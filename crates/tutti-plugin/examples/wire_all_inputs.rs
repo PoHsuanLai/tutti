@@ -27,7 +27,7 @@ use tutti_plugin::catalog::{Plugin, PluginRef, PluginRole};
 use tutti_plugin_types::BridgeResult;
 
 use tutti_transport::ProjectMeter;
-use tutti_types::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, SampleRate};
+use tutti_types::{Beat, BeatsPerCycle, Depth, MeterMap, PhaseIncrement, SampleRate};
 
 const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;
 
@@ -88,7 +88,7 @@ fn main() -> BridgeResult<()> {
         let lfo = Layer {
             id: LayerId(1),
             clock: Clock::Beats {
-                per_cycle: BeatDuration(4.0),
+                per_cycle: BeatsPerCycle::of(4.0),
                 phase: PhaseIncrement(0.0),
             },
             wave: Waveform::Shape {

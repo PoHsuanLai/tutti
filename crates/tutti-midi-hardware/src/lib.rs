@@ -202,7 +202,7 @@ mod backend;
 // backends (ALSA, CoreMIDI) convert an OS block, so it is dead where the stub
 // is the backend.
 #[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    midi_backend = "none",
     allow(dead_code, reason = "only a native backend converts OS blocks")
 )]
 mod block;
@@ -213,13 +213,18 @@ mod endpoints;
 mod error;
 // Only a native backend's callback runs through it; the stub has none.
 #[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    midi_backend = "none",
     allow(dead_code, reason = "only a native backend has a driver callback")
 )]
 mod guard;
 mod port;
 mod profiles;
 mod session;
+// Only the native backends convert an OS timestamp.
+#[cfg_attr(
+    midi_backend = "none",
+    allow(dead_code, reason = "only the OS backends convert a stamp")
+)]
 mod stamp;
 mod stream;
 #[cfg(test)]
@@ -252,8 +257,13 @@ pub use tutti_midi_device::{
     SavedDevice,
 };
 
-#[cfg(target_os = "macos")]
-pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
+// What the platform's backend exports beyond the common surface (CoreMIDI's
+// virtual endpoints); the other platforms export nothing here.
+#[allow(
+    unused_imports,
+    reason = "only the CoreMIDI platform exports public types of its own"
+)]
+pub use backend::*;
 
 // --- Runtime delivery (the graph's MIDI border) ---
 //

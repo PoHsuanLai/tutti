@@ -93,7 +93,7 @@ pub(crate) struct Rig {
     pub(crate) origin: Instant,
     editor: Editor,
     exec: Executor,
-    frames: u64,
+    pub(crate) frames: u64,
     /// The sink's slot inputs, and the inlet node each is fed from.
     inlet_keys: Vec<Option<NodeKey>>,
 }
@@ -189,18 +189,6 @@ impl Rig {
                 &mut [&mut out[..]],
             );
             self.frames += Self::BLOCK as u64;
-        }
-    }
-
-    /// Renders blocks until the graph's clock reaches OS time `now`: the audio
-    /// thread of a test that runs on the wall clock. Only the ALSA backend's
-    /// sequencer tests use it, so it has their gate: without alsa-lib 1.2.10
-    /// (`alsa_ump`) there is no ALSA backend to test.
-    #[cfg(all(feature = "sequencer-tests", target_os = "linux", alsa_ump))]
-    pub(crate) fn run_to(&mut self, now: Instant) {
-        let due = (now.saturating_duration_since(self.origin).as_secs_f64() * RATE) as u64;
-        while self.frames + Self::BLOCK as u64 <= due {
-            self.run(1);
         }
     }
 

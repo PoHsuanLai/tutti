@@ -1,6 +1,13 @@
 //! A **control source**: a control value produced as pieces on the graph's play
-//! clock (doc 024 §4.5a, amendment B3). The source holds the math (a detector,
-//! a note envelope); `tutti-nodes`' `SourceNode` sends what it produces.
+//! clock. The source holds the math (a detector, a note envelope); `tutti-nodes`'
+//! `SourceNode` sends what it produces.
+//!
+//! Two clocks meet at a control. An effect solves on the **stream** clock (frames since
+//! its reset), because audio runs through it while the transport is stopped. A source
+//! produces on the **play** clock, which counts one per frame whether the transport is
+//! rolling or stopped and restarts at 0 on every play start. A control an effect samples
+//! is exact at any frame, so the two meet without loss; only the glide between two
+//! solves approximates, by at most one period.
 
 mod follower;
 mod note_adsr;

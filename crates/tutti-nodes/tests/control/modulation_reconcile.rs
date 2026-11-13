@@ -23,7 +23,7 @@ use tutti_modulation::{
     Adsr, Clock, Declarations, Law, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
     Source as ModSource, SourceKey, TargetDecl, TargetKey, Waveform,
 };
-use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
+use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::testing::Through;
 use tutti_nodes::{Feed, ModHost, Modulation, ReconcileError, Target};
 use tutti_types::{
@@ -33,7 +33,7 @@ use tutti_types::{
 
 const RATE: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm::of(120.0);
-const STEP: usize = CONTROL_STEP as usize;
+const STEP: usize = tutti_modulation::CONTROL_GRID.get().get() as usize;
 const DECLICK: usize = 256;
 
 /// Graph keys of the rig, far from `NodeKey::fresh`'s, which the reconciler

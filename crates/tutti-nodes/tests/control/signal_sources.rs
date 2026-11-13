@@ -23,7 +23,7 @@ use tutti_modulation::{
     Adsr, Amount, ControlProgram, InputLayer, Law, LayerId, Polarity, SignalKind, SignalSource,
     SourceId,
 };
-use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
+use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
 use tutti_types::{
     Amplitude, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, ParamKey, SampleRate,
@@ -34,7 +34,7 @@ const RATE: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm::of(120.0);
 /// 24 000 frames a beat.
 const FPB: f64 = 24_000.0;
-const STEP: usize = CONTROL_STEP as usize;
+const STEP: usize = tutti_modulation::CONTROL_GRID.get().get() as usize;
 
 // ---------------------------------------------------------------- nodes --
 

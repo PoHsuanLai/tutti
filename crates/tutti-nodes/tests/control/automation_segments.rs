@@ -29,7 +29,7 @@ use tutti_graph::{
 use tutti_graph::{OutPort, Source};
 use tutti_modulation::ControlProgram;
 use tutti_modulation::Curve;
-use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
+use tutti_nodes::automation::ControlLaneNode;
 use tutti_types::{
     Beat, Bpm, ChannelLayout, FrameClock, Hz, LoopRange, ParamKey, SampleRate, Samples, UnitParam,
 };
@@ -272,7 +272,7 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
 /// Renders `curve`'s lane rolling from beat 0 over `blocks` and checks it
 /// against the grid: the curve's value on every frame whose play count (the
 /// executor's frame count: it starts at 0 and the transport rolls from its
-/// first block) is a multiple of `CONTROL_STEP`, and a line between two
+/// first block) is a multiple of the control grid (`tutti_modulation::CONTROL_GRID`), and a line between two
 /// such frames. Returns the rendered values.
 fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f32) -> Vec<f32> {
     let (mut ed, mut exec) = graph(lane);
@@ -283,7 +283,7 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
         out.extend(block(&mut ed, &mut exec, &t, &TransportChanges::NONE, n));
         clock.advance(Samples(n), None);
     }
-    let step = CONTROL_STEP as usize;
+    let step = tutti_modulation::CONTROL_GRID.get().get() as usize;
     let at = |f: usize| {
         let mut c = FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE));
         c.advance(Samples(f), None);

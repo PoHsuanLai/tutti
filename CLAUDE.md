@@ -176,6 +176,13 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
   no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
+- **A platform difference sits behind one seam** (doc 029 §6.6): the `cfg` is only
+  where a platform module is chosen (the server's `main_loop/{unix,windows,fallback}.rs`,
+  `tutti-au-host`'s `src/macos/`, `tutti-plugin-types`' `wakeups`), never on each item of a
+  format host, the loop or the session; a one-platform test is one `cfg`'d submodule. A
+  plugin's own event sources (CLAP `posix-fd-support`/`timer-support`, VST3 `IRunLoop`)
+  are `EditorWindow::wakeups` / `wake`: the server's loop waits on them, an in-process host
+  services them in `editor_idle` (`service_now`).
 - Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
   `activate` splits a plugin into a realtime `Processor` and a main-thread
   `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are) per

@@ -906,3 +906,21 @@ About 1.5–2k lines, in three PRs:
 3. Windows: floating, then embedded.
 
 The step comes after AU completeness.
+
+### 6.6 The platform layer
+
+A platform difference lives behind one seam, and the `cfg` is only where a platform module is chosen. A format host, the server's loop and the session hold no per-item `#[cfg(unix)]`. This is the owner's rule (2026-11-13), and it is what keeps a Windows or macOS build from failing on code no Linux build compiles.
+
+**Built:**
+- **The server's main loop** (`tutti-plugin-server`'s `main_loop/`). `mod.rs` holds the loop's logic (`Ticker`, `serve`, the dispatch to `Session`), and there is one backend per OS: `unix.rs`, `windows.rs` and `fallback.rs`, chosen at their `mod` lines. A backend waits on the control socket and the plugin's own event sources until the earliest of the tick and the plugin's timer deadline, then pumps the window system (empty for now). The OS calls are `tutti-plugin-ipc-ffi`'s (`wait_readable`, `Poller`).
+- **A plugin's event sources** (`tutti-plugin-types`' `wakeups`). These are CLAP's `posix-fd-support` and `timer-support` and VST3's `IRunLoop`.
+  - They are one description, `EditorWindow::wakeups` (the descriptors, each with an `Interest`, and the earliest deadline), and one delivery, `EditorWindow::wake`.
+  - The server's loop waits on them. In process, `PluginHandle::editor_idle`, which `MainSession::update` calls, looks without waiting (`service_now`).
+  - The format hosts carry no platform `cfg`; `wakeups.rs` chooses `unix.rs` or `other.rs` at its `mod` line.
+- **The AU host** (`tutti-au-host`). Its implementation is `src/macos/`, behind one `#[path]` seam in `lib.rs` (`other.rs` off macOS), and the crate's cross-platform items hold no `cfg`.
+- **`tutti-plugin-db`'s path bytes** are one module (`os_path.rs`).
+- **Tests:** a test that runs on one platform only sits in one `cfg`'d submodule, never with a `cfg` on each item.
+
+**Next:**
+- **One IPC stream for both ends.** The client's wait (`tutti-plugin-ipc`'s `transport/control.rs`, which has its own Windows peek) and the socket naming become one cross-platform stream in `tutti-plugin-ipc-ffi`, which the server's backends use too.
+- **Native loops.** `MsgWaitForMultipleObjectsEx` with overlapped pipe reads on Windows (it also pumps the message queue a floating editor needs) and `CFRunLoop` with the socket as a source on macOS (AppKit editors, the served AU's main queue, AUv3's asynchronous load) each replace one backend file. They come with §6.4 and §6.5's PR 3.

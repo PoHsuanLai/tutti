@@ -594,6 +594,39 @@ impl PluginBridge {
         }
     }
 
+    /// What the editor instance in this process wants the host's main loop to
+    /// wait on (its descriptors and timers, added to `out`). A served editor
+    /// (`remote`) lives in the server, whose own loop waits on them: nothing
+    /// here.
+    pub fn wakeups(&self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+        if self.load_editor.is_none() {
+            return;
+        }
+        if let Ok(mut guard) = self.gui.lock()
+            && let Some(gui) = guard.as_mut()
+        {
+            gui.wakeups(main, out);
+        }
+    }
+
+    /// Hands the editor instance in this process what a wait on
+    /// [`wakeups`](Self::wakeups) found.
+    pub fn wake(
+        &self,
+        main: &MainThread,
+        ready: &[tutti_plugin_types::Ready],
+        now: std::time::Instant,
+    ) {
+        if self.load_editor.is_none() {
+            return;
+        }
+        if let Ok(mut guard) = self.gui.lock()
+            && let Some(gui) = guard.as_mut()
+        {
+            gui.wake(main, ready, now);
+        }
+    }
+
     /// The editor's main-thread tick: applies what the realtime setters queued
     /// for it and sends the audio instance the user's edits.
     pub fn editor_idle(&self, main: &MainThread) {

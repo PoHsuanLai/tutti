@@ -12,10 +12,11 @@
 //! is listed in the plugin contract's `hostings` (`cargo xtask check-hosting`).
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::{
     AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, Loaded, MainThread,
-    Normalized, ParamEdit, ParamId, PluginError, PluginResult, WindowHandle,
+    Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Wakeups, WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -235,6 +236,33 @@ pub trait EditorWindow {
     /// that has no such tick does nothing here. An [`Editor`] has no
     /// `Lifecycle` to feed, so its idle serves those requests itself.
     fn editor_idle(&mut self, main: &MainThread);
+
+    /// What the plugin wants the host's main loop to wait on, added to `out`
+    /// (the caller clears it first): the descriptors it asked to have watched
+    /// and the earliest deadline of its timers (CLAP's `posix-fd-support` and
+    /// `timer-support`, VST3's `Linux::IRunLoop`). The loop waits on them
+    /// together with its own sources, so a plugin's event sources are the
+    /// loop's, not a tick's scan. Reads only; a format with none leaves `out`
+    /// empty, which is the default.
+    ///
+    /// A deadline is when a wait should end, not a promise to fire: a format
+    /// floors a period it cannot serve at once so that a timer asking for zero
+    /// does not spin the loop.
+    fn wakeups(&mut self, main: &MainThread, out: &mut Wakeups) {
+        let _ = (main, out);
+    }
+
+    /// Hands the plugin what fired: the descriptors in `ready` and the timers
+    /// due at `now`. Called after a wait on [`wakeups`](Self::wakeups) ended
+    /// with something ready or due, on the main thread. A format either runs
+    /// the plugin's callbacks now (VST3's handlers) or latches what is due for
+    /// the pass that already serves its requests
+    /// ([`Control::take_requests`](crate::Control::take_requests): CLAP's
+    /// `on_fd` and `on_timer`, under the lifecycle's budget). The default does
+    /// nothing.
+    fn wake(&mut self, main: &MainThread, ready: &[Ready], now: Instant) {
+        let _ = (main, ready, now);
+    }
 
     /// The view's static resize capabilities.
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities;

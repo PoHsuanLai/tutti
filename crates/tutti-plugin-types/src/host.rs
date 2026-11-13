@@ -23,6 +23,7 @@
 //! one plugin instance at once.
 
 use std::num::NonZeroUsize;
+use std::time::Instant;
 
 use crate::ParamEdit;
 use crate::{
@@ -30,7 +31,10 @@ use crate::{
     LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
     PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, SampleRate, Samples, WindowHandle,
 };
-use crate::{FdId, MainThread, Prepare, RenderMode, Request, RescanScope, RestartRules, TimerId};
+use crate::{
+    FdId, MainThread, Prepare, Ready, RenderMode, Request, RescanScope, RestartRules, TimerId,
+    Wakeups,
+};
 
 /// What the main thread asks of a plugin, in any state that has one.
 ///
@@ -614,6 +618,14 @@ impl<W: Wraps> EditorWindow for W {
 
     fn editor_idle(&mut self, main: &MainThread) {
         self.plugin_mut().editor_idle(main);
+    }
+
+    fn wakeups(&mut self, main: &MainThread, out: &mut Wakeups) {
+        self.plugin_mut().wakeups(main, out);
+    }
+
+    fn wake(&mut self, main: &MainThread, ready: &[Ready], now: Instant) {
+        self.plugin_mut().wake(main, ready, now);
     }
 
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {

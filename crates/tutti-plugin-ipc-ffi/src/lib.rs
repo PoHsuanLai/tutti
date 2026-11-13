@@ -8,7 +8,9 @@
 //!   layout is the ABI between them), and the only copies in and out. A mapping
 //!   exists only with its one writer, which is what makes the copies safe to
 //!   call. What the data region holds, and where, is `tutti-plugin-ipc`'s.
-//! - **The OS calls** (`wait_readable` on unix, `process_exists`, and
+//! - **The OS calls** (`wait_readable` and `Poller` (the server's wait on its
+//!   socket and the descriptors a plugin asked to have watched, and an
+//!   in-process host's zero-timeout look at the same) on unix, `process_exists`, and
 //!   `parent_process_id` and `pipe_bytes_available` on Windows): the server's
 //!   wait for its host and its check that the host still runs, and the host's
 //!   peek at a named pipe.
@@ -23,7 +25,7 @@ pub use header::{Direction, RING_SLOTS, SLAB_HEADER_BYTES, SlabHeader, slot_for}
 pub use mapping::{MappingWriter, SharedMapping, remove};
 pub use os::process_exists;
 #[cfg(unix)]
-pub use os::wait_readable;
+pub use os::{ERROR, Poller, READ, WRITE, poll_now, wait_readable};
 #[cfg(windows)]
 pub use os::{parent_process_id, pipe_bytes_available};
 

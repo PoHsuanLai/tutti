@@ -53,6 +53,8 @@ tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
 cc = "1"
 
 [dev-dependencies]
+# `service_now`: the in-process pass over the run loop's descriptors and timers.
+tutti-plugin-host = { path = "../tutti-plugin-host" }
 # This crate, on itself, purely to turn `conformance` on for its own tests.
 # That feature is what makes `build.rs` compile `audio-probe`, the reference
 # plugin the suites here load — the VST3 counterpart to `tutti-clap-host`'s

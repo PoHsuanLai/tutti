@@ -922,3 +922,79 @@ fn an_output_connected_after_the_settle_starts_in_the_settled_protocol() {
 }
 
 mod ci;
+
+/// A device's SysEx identity is not its OS listing, which `learned` leaves out.
+fn model_identity(model: u8) -> tutti_ump::DeviceIdentity {
+    use tutti_ump::U7;
+    tutti_ump::DeviceIdentity {
+        model: [U7::of(model), U7::of(0)],
+        ..identity()
+    }
+}
+
+/// What a device says of itself is read back from the open input: nothing
+/// before it answers (the OS's description is not its word), its Identity
+/// Reply after (M1 p.40). Saved, it is compared with what answers later: a
+/// Device Identity can refute a saved device but never name the unit.
+#[test]
+fn a_midi1_device_that_answers_an_identity_request_is_learned_and_checked_against_a_saved_one() {
+    use tutti_midi_device::{Learned, Match};
+
+    let wire = midi1_wire();
+    assert!(wire.session.poll(wire.at(0)).next().is_none());
+    assert!(
+        wire.session.learned(&wire.id).is_empty(),
+        "a described device has said nothing"
+    );
+    reply_at(&wire, identity_reply(0x05), 10);
+    let _ = wire.session.poll(wire.at(20)).count();
+
+    let learned = wire.session.learned(&wire.id);
+    assert_eq!(learned, Learned::new().with_identity(identity()));
+    let saved = wire.session.saved(&wire.id).expect("an open, listed input");
+    assert_eq!(saved.info().id, wire.id);
+    assert_eq!(saved.learned(), &learned);
+
+    // Another model answers where this one was saved; the same model might be
+    // another unit of it.
+    assert_eq!(
+        saved.confirm(&Learned::new().with_identity(model_identity(9))),
+        Match::Different
+    );
+    assert_eq!(saved.confirm(&learned), Match::SameModel);
+
+    let closed = wire.id.clone();
+    wire.session.disconnect_input(&closed);
+    assert!(wire.session.learned(&closed).is_empty());
+    assert!(wire.session.saved(&closed).is_none());
+}
+
+/// A UMP Endpoint that answers declares its Device Identity and Product
+/// Instance Id (M2-104 §7.1.3, §7.1.5); both are what `learned` reports, and an
+/// equal Product Instance Id is what makes a saved device the same unit.
+#[test]
+fn an_endpoint_that_answers_declares_its_identity_and_product_instance_id() {
+    use tutti_midi_device::{Learned, Match, ProductInstanceId};
+
+    let device = offering_both()
+        .with_identity(identity())
+        .with_instance_id(ProductInstanceId::new("SN-0042").unwrap());
+    let mut wire = session_over(UmpCapability::midi2(), PortDirection::Duplex, device);
+    wire.session.connect_input(&wire.id.clone()).unwrap();
+    assert!(wire.session.learned(&wire.id).is_empty(), "not settled yet");
+    let stream = settle(&mut wire);
+    assert_eq!(stream.basis(), Basis::Negotiated);
+
+    let learned = wire.session.learned(&wire.id);
+    assert_eq!(learned.identity(), Some(&identity()));
+    assert_eq!(
+        learned.instance_id().map(ProductInstanceId::as_str),
+        Some("SN-0042")
+    );
+    let saved = wire.session.saved(&wire.id).unwrap();
+    assert_eq!(saved.confirm(&learned), Match::SameUnit);
+    let other_unit = Learned::new()
+        .with_identity(identity())
+        .with_instance_id(ProductInstanceId::new("SN-0043").unwrap());
+    assert_eq!(saved.confirm(&other_unit), Match::Different);
+}

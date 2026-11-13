@@ -29,6 +29,7 @@ mod render_mode;
 mod segment_points;
 mod transport_source;
 mod transport_walk;
+mod wakeups;
 #[cfg(test)]
 mod walk_tests;
 
@@ -49,3 +50,4 @@ pub use transport_source::{
     BlockTransport, ProjectTime, Snapshot, SteadyTime, TransportSource, transport_info,
 };
 pub use transport_walk::{Call, TransportWalk};
+pub use wakeups::service_now;

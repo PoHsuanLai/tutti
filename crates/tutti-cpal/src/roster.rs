@@ -1,4 +1,4 @@
-//! Which devices exist, and what changed between two looks (design 018 §2).
+//! Which devices exist, and what changed between two looks.
 //!
 //! No OS, thread or clock: a [`Snapshot`] goes in, [`DeviceChange`]s come out.
 //! Enumeration is [`DevicePoller`](crate::DevicePoller)'s.

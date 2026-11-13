@@ -42,6 +42,48 @@ shipped code:
 cargo test -p tutti-rt --release --test pos_ring_loom   # with the loom cfg flag set
 ```
 
+## Safety
+
+Outside the `-ffi` crates (the plugin formats, the OS MIDI APIs, the plugin
+process edge), this crate and `arc-lend` hold all of the engine's `unsafe`;
+every other library carries `#![forbid(unsafe_code)]`. Each site exists because the safe construct would
+have cost something on the audio thread:
+
+- `AudioThreadCell` (`cell.rs`): an `UnsafeCell` with `unsafe impl Sync`, made
+  true by one atomic word (a writer bit and a reader count) checked on every
+  borrow in every build. A conflicting borrow panics, or its `try_` form
+  returns `None`, instead of aliasing.
+- `edit_ring` (`edits.rs`): single-producer single-consumer slots of
+  `UnsafeCell<u64>`, each touched only on its side of the `Release`/`Acquire`
+  indices.
+- `SplitMut`, `SplitRw` and `ClaimTable` (`split.rs`): one slice borrowed by
+  several threads, each element or chunk claimed in an atomic table before a
+  reference to it is made, so a second claim is refused rather than aliased.
+  They are why `tutti-graph`'s executor can hand every node its buffers out of
+  one arena under `#![forbid(unsafe_code)]`.
+- `JobGate` (`job_gate.rs`): erases a borrowed job's lifetime for a pool's
+  helpers; `run` neither returns nor unwinds until no helper is inside the job
+  (a store-load pair with `SeqCst` fences).
+- `handoff` (`handoff.rs`): one `MaybeUninit` slot moved between the two ends
+  under a state word.
+- `with_no_denormals` (`denormals.rs`): saves, sets and restores the FPU
+  control register with `asm!`, which has no safe spelling; its `# Soundness`
+  docs say what it does and does not guarantee.
+- `monotonic_ns` (`clock.rs`): the OS clock calls.
+
+`arc-lend`'s `ArcLend` holds the rest: an `AtomicPtr` to an `Arc::into_raw`
+pointer that a `Loan` dereferences under a hazard-slot protocol, so the audio
+thread can never free a value (the reason it exists instead of `ArcSwap`).
+
+What checks it: a loom model per lock-free structure, run against the shipped
+code (`tests/*_loom.rs` here, `arc-lend/tests/loom.rs`), and miri over this
+crate's unit tests and `arc-lend`'s, in CI's `loom` and `miri` jobs (`cargo
+xtask loom`, `cargo xtask miri`). Miri executes no FFI and no x86 intrinsics,
+so the denormal register tests are skipped under it, and it perturbs libm
+results, so a green run says nothing about numerics. The plugin formats'
+`unsafe` is answered structurally instead: a plugin that corrupts memory
+takes down the out-of-process `plugin-server`, not the host.
+
 ## License
 
 MIT OR Apache-2.0

@@ -19,8 +19,8 @@ crossbeam-utils = "0.8"
 thiserror = "2"
 
 [target.'cfg(unix)'.dependencies]
-# `poll`, `kill(pid, 0)` and `O_NOFOLLOW`.
-libc = "0.2"
+# `poll`, `kill(pid, 0)` and `O_NOFOLLOW`, without a hand-written call.
+rustix = { version = "1", default-features = false, features = ["std", "event", "process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 # The process table walk and liveness probe, and the named-pipe peek.

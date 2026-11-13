@@ -509,7 +509,7 @@ fn test_au_state_roundtrip_via_trait() {
     let state = au.save_state(&main_thread()).expect("save should succeed");
     assert!(!state.is_empty(), "State should not be empty");
 
-    au.load_state(&main_thread(), &state)
+    au.load_state(&main_thread(), &state, StateUse::Project)
         .expect("restore should succeed");
 }
 

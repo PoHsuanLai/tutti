@@ -99,6 +99,7 @@ fn assert_status<T: std::fmt::Debug>(result: Result<T, AuError>, want: i32, what
 /// See `LAYOUT_TAG_UNITS` for what each row measured and why. Only 11 of the ~38
 /// units probed answer this property at all; the refusers are asserted separately
 /// by `units_without_layout_tags_report_an_empty_list`.
+/// Spec: au.prop.SupportedChannelLayoutTags
 #[test]
 fn published_layout_tags_are_exactly_what_was_measured() {
     let _g = lock();
@@ -231,6 +232,7 @@ fn the_description_sentinel_reports_no_channel_count() {
 
 /// Reading the current layout returns the tag the AU holds, on every unit
 /// measured to have one.
+/// Spec: au.prop.AudioChannelLayout
 #[test]
 fn the_current_layout_is_read_from_the_au() {
     let _g = lock();
@@ -524,6 +526,7 @@ fn a_tag_survives_the_round_trip_through_audio_toolbox() {
 /// DLSMusicDevice is the only Apple AU on this machine that publishes element
 /// names, and its second output is literally called "unused" — which is precisely
 /// the sort of thing a host should show the user rather than rendering as "Bus 2".
+/// Spec: au.prop.ElementName
 #[test]
 fn element_names_read_back_what_the_au_published() {
     let _g = lock();

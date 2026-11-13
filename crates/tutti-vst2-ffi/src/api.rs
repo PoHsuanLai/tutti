@@ -1308,6 +1308,7 @@ mod tests {
     /// `min_integer`/`max_integer` are the pair that matters most — reversing
     /// them yields an inverted range that renders as a working slider running
     /// backwards, the kind of bug no structural check reports.
+    /// Spec: vst2.struct.VstParameterProperties
     #[test]
     fn parameter_properties_field_offsets_match_the_header() {
         assert_eq!(mem::offset_of!(ParameterProperties, step_float), 0);
@@ -1333,6 +1334,7 @@ mod tests {
     /// The MIDI structs put a host-written index first and plugin-written data
     /// after it, so an offset slip means we hand the plugin the query in a
     /// field it does not read and then decode the answer from the wrong place.
+    /// Spec: vst2.struct.VstMidiProgramName, vst2.struct.VstMidiKeyName, vst2.struct.VstMidiProgramCategory
     #[test]
     fn midi_metadata_struct_offsets_match_the_header() {
         assert_eq!(mem::offset_of!(MidiProgramName, this_program_index), 0);
@@ -1359,6 +1361,7 @@ mod tests {
     /// each as the header's literal shift. These gate whether the integer-range
     /// and category fields are readable at all, so a wrong bit makes the host
     /// trust uninitialised plugin memory.
+    /// Spec: vst2.flag.kVstParameterIsSwitch, vst2.flag.kVstParameterUsesIntegerMinMax, vst2.flag.kVstParameterUsesFloatStep, vst2.flag.kVstParameterUsesIntStep, vst2.flag.kVstParameterSupportsDisplayIndex, vst2.flag.kVstParameterSupportsDisplayCategory, vst2.flag.kVstParameterCanRamp
     #[test]
     fn parameter_flag_bits_match_the_header() {
         assert_eq!(ParameterFlags::IS_SWITCH.bits(), 1 << 0);

@@ -5,7 +5,7 @@
 # `pub use tutti_x::*;`), only the single items its own signatures take.
 [package]
 name = "tutti-session"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "One object holding an audio graph, a playback clock and optionally a sound device: the entry point to tutti"
@@ -21,48 +21,48 @@ workspace = true
 [dependencies]
 # Always: the graph, the engine and transport, the vocabulary, and the nodes
 # the builder inserts (the click) and modulation applies (`Modulation`).
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-graph = { path = "../tutti-graph" }
-tutti-transport = { path = "../tutti-transport" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
 # The project's tempo map, which a bounce's range and clock are derived from.
-tutti-tempo = { path = "../tutti-tempo" }
-tutti-metering = { path = "../tutti-metering" }
-tutti-engine = { path = "../tutti-engine" }
+tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
+tutti-metering = { version = "0.0.1", path = "../tutti-metering" }
+tutti-engine = { version = "0.0.1", path = "../tutti-engine" }
 # `monotonic_ns`, the OS clock the engine's block clock is on (the MIDI inputs'
 # arrival stamps are related to it); `ArcLend` for the tests that publish.
-tutti-rt = { path = "../tutti-rt" }
-tutti-nodes = { path = "../tutti-nodes", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-nodes = { version = "0.0.1", path = "../tutti-nodes", default-features = false }
 tracing = "0.1"
 thiserror.workspace = true
 serde = { version = "1", optional = true, features = ["derive"] }
 
 # The sound card. Off: offline only, and no ALSA headers needed.
-tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
-tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
+tutti-cpal = { version = "0.0.1", path = "../tutti-cpal", default-features = false, optional = true }
+tutti-modulation = { version = "0.0.1", path = "../tutti-modulation", default-features = false, optional = true }
 # `MpeMode`, the session builder's one MPE setting.
-tutti-midi-protocol = { path = "../tutti-midi-protocol", optional = true }
-tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
-tutti-midi-file = { path = "../tutti-midi-file", optional = true }
-tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
-tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
-tutti-soundfont = { path = "../tutti-soundfont", optional = true }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol", optional = true }
+tutti-midi-runtime = { version = "0.0.1", path = "../tutti-midi-runtime", default-features = false, optional = true }
+tutti-midi-file = { version = "0.0.1", path = "../tutti-midi-file", optional = true }
+tutti-midi-hardware = { version = "0.0.1", path = "../tutti-midi-hardware", optional = true }
+tutti-sampler = { version = "0.0.1", path = "../tutti-sampler", default-features = false, optional = true }
+tutti-soundfont = { version = "0.0.1", path = "../tutti-soundfont", optional = true }
 # The font a `Midi::load_soundfont` job opens (`tutti-soundfont` does not re-export it).
-tutti-sf2 = { path = "../tutti-sf2", optional = true }
-tutti-polysynth = { path = "../tutti-polysynth", optional = true }
-tutti-export = { path = "../tutti-export", default-features = false, optional = true }
+tutti-sf2 = { version = "0.0.1", path = "../tutti-sf2", optional = true }
+tutti-polysynth = { version = "0.0.1", path = "../tutti-polysynth", optional = true }
+tutti-export = { version = "0.0.1", path = "../tutti-export", default-features = false, optional = true }
 # `DecodeError` (in `Error::Decode`, whatever decoders are on) and `Format`,
 # the file format a bounce names (`Bounce::format`). No codec feature.
-tutti-codec = { path = "../tutti-codec" }
+tutti-codec = { version = "0.0.1", path = "../tutti-codec" }
 # `DitherSink`, the dither a recording opts into (the one an export uses), and
 # the `DitherShape` a bounce names.
-tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
-tutti-plugin = { path = "../tutti-plugin", optional = true }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false, optional = true }
+tutti-plugin = { version = "0.0.1", path = "../tutti-plugin", optional = true }
 # The control handle, the node's controls and the host policy over a handle
 # (`Liveness`, `PluginParamValues`): what a hosted plugin is, whatever serves it.
-tutti-plugin-host = { path = "../tutti-plugin-host", optional = true }
+tutti-plugin-host = { version = "0.0.1", path = "../tutti-plugin-host", optional = true }
 # `MainThread`, the proof `MainSession` holds, and the editor vocabulary.
-tutti-plugin-types = { path = "../tutti-plugin-types", optional = true }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types", optional = true }
 # `HasWindowHandle`, the parent a view embeds an editor into (`EditorView::open`).
 raw-window-handle = { version = "0.6", optional = true }
 

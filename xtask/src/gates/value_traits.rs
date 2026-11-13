@@ -27,42 +27,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "Waveform",
         "temporary: the dsp session adds Hash",
     ),
-    // midi (7)
-    (
-        "crates/tutti-alsa-ffi/src/client.rs",
-        "UmpVersion",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-alsa-ffi/src/poll.rs",
-        "Wait",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-device/src/ci/initiator.rs",
-        "RequestError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-device/src/ci/profile.rs",
-        "ProfileDataError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-file/src/clip_file.rs",
-        "ClipFileError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-file/src/file/to_clip.rs",
-        "ToClipError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-protocol/src/midi1.rs",
-        "NoMidi1Form",
-        "temporary: the midi session adds Hash",
-    ),
     // plugins (39)
     (
         "crates/tutti-au-ffi/src/bundle.rs",

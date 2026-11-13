@@ -8,26 +8,17 @@
 //! tests in `clip_model.rs`, and here it checks that the Flex and SysEx7
 //! packets the conversion makes survive them.
 
+use crate::common::{note, track};
 use tutti_midi_file::{
     DropReason, Error, FileEvent, Meta, MidiFile, SmfFormat, TextKind, Tick, ToClipError, Track,
 };
 use tutti_types::{Beat, Seconds};
 use tutti_ump::{
-    Address, Flex, FlexAddress, FlexTextKind, Form, KeySignature, Letter, Message, Metronome,
-    MidiChannel, MidiGroup, NoteNumber, SharpsFlats, SysexStatus, TimeSignature, U7, Voice1,
+    Flex, FlexAddress, FlexTextKind, Form, KeySignature, Letter, Message, Metronome, MidiGroup,
+    SharpsFlats, SysexStatus, TimeSignature,
 };
 
 const TPQ: u16 = 480;
-
-fn note(channel: u8, key: u8) -> FileEvent {
-    FileEvent::Message(Message::Midi1(
-        Address::first(MidiChannel::new(channel).unwrap()),
-        Voice1::NoteOn {
-            note: NoteNumber::of(key),
-            velocity: U7::of(100),
-        },
-    ))
-}
 
 fn meta(m: Meta) -> FileEvent {
     FileEvent::Meta(m)
@@ -39,10 +30,6 @@ fn text(kind: TextKind, s: &str) -> FileEvent {
 
 fn flex(f: Flex) -> FileEvent {
     FileEvent::Message(Message::Flex(MidiGroup::FIRST, f))
-}
-
-fn track(events: Vec<(u64, FileEvent)>) -> Track {
-    unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
 }
 
 fn format0(events: Vec<(u64, FileEvent)>) -> MidiFile {
@@ -338,6 +325,7 @@ fn a_clip_is_not_converted_again() {
 
 /// M2-116 sections 7.1.1 and 7.1.2: the first Set Tempo, then the first Set
 /// Time Signature, lead the sequence at its start, whatever order the SMF had.
+/// Spec: m2-116/7.1.1#1, m2-116/7.1.2#1
 #[test]
 fn the_first_tempo_and_signature_lead_the_clip() {
     let smf = MidiFile::smf(
@@ -381,6 +369,7 @@ fn the_first_tempo_and_signature_lead_the_clip() {
 
 /// SMF 1.0 section 3.3: with no Set Tempo 120 bpm is assumed, and with no Time
 /// Signature 4/4 (24 clocks, 8 32nds). The clip says it (section 7.1.1).
+/// Spec: m2-116/7.1.1#1, m2-116/7.1.2#1
 #[test]
 fn a_file_with_no_tempo_or_signature_gets_the_smf_defaults() {
     let smf = format0(vec![
@@ -653,6 +642,7 @@ fn text_is_composed_to_nfc_without_a_byte_order_mark() {
 /// (MIDI-CI sub-ID#2 `0x30` to `0x3F`, M2-101 Table 4); another MIDI-CI
 /// message (Discovery, `0x70`) is not PE and is carried. M2-104 section
 /// 7.5.10.1: an empty Lyric would be a melisma, which SMF never said.
+/// Spec: m2-116/6.4#1, m2-116/7.2#1
 #[test]
 fn property_exchange_and_empty_text_are_reported() {
     // F0 7E 7F 0D <sub-ID#2> ... F7, the bytes after the F0.
@@ -728,14 +718,4 @@ fn the_clip_round_trips_through_its_bytes() {
     let clip = smf.to_clip().unwrap().clip;
     let again = MidiFile::from_bytes(&clip.to_bytes().unwrap()).unwrap();
     assert_eq!(again, clip);
-}
-
-/// A track of `events` exactly as given: not sorted, so a test can hand the
-/// constructor events out of order.
-fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
-    Track {
-        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
-        events,
-        ..Track::new()
-    }
 }

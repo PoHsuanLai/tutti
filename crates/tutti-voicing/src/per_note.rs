@@ -509,25 +509,18 @@ mod tests {
     const PITCH_60: u32 = 60 << 25;
 
     fn at(group: u8, channel: u8) -> Address {
-        Address {
-            group: MidiGroup::new(group).unwrap(),
-            channel: MidiChannel::of(channel),
-        }
+        Address::new(MidiGroup::of(group), MidiChannel::of(channel))
     }
 
     fn state() -> PerNoteState {
         PerNoteState::new(2, Semitones(48.0))
     }
 
-    fn key(n: u8) -> NoteNumber {
-        NoteNumber::of(n)
-    }
-
     fn pitch_of(s: &mut PerNoteState, a: Address, n: u8, value: u32) -> Vec<NoteEvent> {
         s.step(
             a,
             Voice2::RegisteredPerNote {
-                note: key(n),
+                note: NoteNumber::of(n),
                 controller: RegisteredPerNoteController::Pitch,
                 value: ControlValue::new(value),
             },
@@ -539,7 +532,7 @@ mod tests {
         s.step(
             a,
             Voice2::PerNotePitchBend {
-                note: key(n),
+                note: NoteNumber::of(n),
                 value: BendValue::new(value),
             },
         )
@@ -556,7 +549,7 @@ mod tests {
         s.step(
             a,
             Voice2::PerNoteManagement {
-                note: key(n),
+                note: NoteNumber::of(n),
                 detach,
                 reset,
             },
@@ -577,7 +570,7 @@ mod tests {
     }
 
     fn start(s: &mut PerNoteState, a: Address, n: u8) -> Vec<NoteEvent> {
-        s.start(a, key(n), Attribute::None).to_vec()
+        s.start(a, NoteNumber::of(n), Attribute::None).to_vec()
     }
 
     fn started(events: &[NoteEvent]) -> NoteId {
@@ -590,7 +583,7 @@ mod tests {
     fn pitch_event(id: NoteId, note: u8, hcu: u32) -> NoteEvent {
         NoteEvent::Control {
             id,
-            note: key(note),
+            note: NoteNumber::of(note),
             control: NoteControl::Pitch(Pitch::from_q7_25(hcu << 25)),
         }
     }
@@ -689,7 +682,7 @@ mod tests {
         s.step(
             a,
             Voice2::NoteOff {
-                note: key(5),
+                note: NoteNumber::of(5),
                 velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
@@ -785,7 +778,9 @@ mod tests {
     fn an_attribute_pitch_is_for_that_note_alone() {
         let mut s = state();
         let a = at(0, 0);
-        let e = s.start(a, key(0), Attribute::Pitch(60 << 9)).to_vec();
+        let e = s
+            .start(a, NoteNumber::of(0), Attribute::Pitch(60 << 9))
+            .to_vec();
         let id = started(&e);
         assert_eq!(e.last(), Some(&pitch_event(id, 0, 60)));
         assert_eq!(start(&mut s, a, 0).len(), 1, "the key's");
@@ -868,7 +863,7 @@ mod tests {
                 value: ControlValue::new(0),
             },
             Voice2::NoteOff {
-                note: key(5),
+                note: NoteNumber::of(5),
                 velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
@@ -938,7 +933,9 @@ mod tests {
         let mut s = state();
         let a = at(0, 0);
         pitch_of(&mut s, a, 5, PITCH_60);
-        let e = s.start(a, key(5), Attribute::Pitch(70 << 9)).to_vec();
+        let e = s
+            .start(a, NoteNumber::of(5), Attribute::Pitch(70 << 9))
+            .to_vec();
         assert!((sounding(e.last().unwrap()) - 70.0).abs() < 1e-4, "{e:?}");
         let e = bend(&mut s, a, 5, 0xC000_0000);
         assert!((sounding(&e[0]) - 94.0).abs() < 1e-4, "{e:?}");

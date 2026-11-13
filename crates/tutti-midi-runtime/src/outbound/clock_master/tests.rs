@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::at;
 use crate::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 use atomic_float::AtomicF64;
 use std::num::NonZeroUsize;
@@ -107,11 +108,7 @@ fn drain_all(receiver: &crate::MidiReceiver) -> Vec<UmpAt> {
     loop {
         let n = receiver.poll_into(&mut buf);
         // The ring's stamps here are block offsets (the rig queues them so).
-        out.extend(
-            buf[..n]
-                .iter()
-                .map(|&(stamp, ump)| (Offset::new(stamp as usize, Samples(1 << 20)).unwrap(), ump)),
-        );
+        out.extend(buf[..n].iter().map(|&(stamp, ump)| at(stamp, ump)));
         if n < buf.len() {
             break;
         }

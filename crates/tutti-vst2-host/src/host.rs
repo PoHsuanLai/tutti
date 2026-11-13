@@ -644,6 +644,7 @@ mod tests {
     /// `TimeInfo` rate: right after a rate change the two differ until the
     /// next block, and a plugin querying from inside `effSetSampleRate`
     /// allocates for whatever it reads.
+    /// Spec: vst2.audioMaster.GetSampleRate
     #[test]
     fn get_sample_rate_is_the_rate_the_plugin_was_told() {
         let mut time_info = TransportWriter::new();
@@ -662,6 +663,7 @@ mod tests {
     }
 
     /// `audioMasterGetBlockSize` follows `effSetBlockSize`.
+    /// Spec: vst2.audioMaster.GetBlockSize
     #[test]
     fn get_block_size_follows_the_announced_block() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -672,6 +674,7 @@ mod tests {
 
     /// `audioMasterIOChanged` is answered "handled" and raises the I/O,
     /// latency and tail requests, once each, for the main thread.
+    /// Spec: vst2.audioMaster.IOChanged
     #[test]
     fn io_changed_is_handled_and_raises_its_requests_once() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -702,6 +705,7 @@ mod tests {
     ///
     /// A host nobody called asks for nothing, and the request is consumed by
     /// taking it, so one call is one re-read.
+    /// Spec: vst2.audioMaster.UpdateDisplay
     #[test]
     fn update_display_asks_for_a_reread_of_names_and_values() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -729,6 +733,7 @@ mod tests {
     /// `audioMasterSizeWindow` (`[index]` width, `[value]` height) is answered 1 and kept for
     /// the main thread, the latest request winning; a size that is not positive is refused
     /// and kept nowhere.
+    /// Spec: vst2.audioMaster.SizeWindow
     #[test]
     fn size_window_keeps_the_latest_request_for_the_main_thread() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -782,6 +787,7 @@ mod tests {
 
     /// `audioMasterCurrentId` answers the sub-plugin the load chose, and `0` (a shell's
     /// "no particular id") when it chose none (`aeffect.h`, JUCE's `shellUIDToCreate`).
+    /// Spec: vst2.audioMaster.CurrentId
     #[test]
     fn current_id_is_the_chosen_sub_plugin_and_zero_when_none() {
         let none = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -800,6 +806,7 @@ mod tests {
     /// A plugin polls this callback to decide whether it may spend more per
     /// block. Reporting realtime during a bounce is what made an offline render
     /// silently produce the live-quality result.
+    /// Spec: vst2.audioMaster.GetCurrentProcessLevel, vst2.level.kVstProcessLevelOffline, vst2.level.kVstProcessLevelRealtime
     #[test]
     fn process_level_inside_process_follows_the_render_mode() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -869,6 +876,7 @@ mod tests {
 
     /// `audioMasterGetAutomationState` answers each mode with its `VstAutomationStates` value
     /// (`aeffectx.h`: off 1, read 2, write 3, read/write 4), 1 before any mode is set.
+    /// Spec: vst2.audioMaster.GetAutomationState, vst2.automation.kVstAutomationOff, vst2.automation.kVstAutomationRead, vst2.automation.kVstAutomationWrite, vst2.automation.kVstAutomationReadWrite
     #[test]
     fn automation_state_answers_each_mode_with_its_header_value() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);

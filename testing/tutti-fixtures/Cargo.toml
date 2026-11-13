@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Where the test suites find repo assets, the reference plugin cdylibs and the plugin-server binary, and a SoundFont built in memory"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/tutti-audio/tutti"
 publish = false
 
 # A dev-dependency of the crates whose tests read a repo asset or load a

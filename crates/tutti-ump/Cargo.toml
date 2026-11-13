@@ -1,13 +1,12 @@
 [package]
 name = "tutti-ump"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "MIDI 2.0's Universal MIDI Packet as Rust values, carrying both MIDI 1.0 and MIDI 2.0 messages"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 keywords = ["midi", "ump", "audio", "real-time"]
 categories = ["multimedia::audio"]
 

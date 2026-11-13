@@ -87,6 +87,7 @@ unsafe fn raw_query(unknown: *mut FUnknown, iid: &TUID) -> (tresult, *mut c_void
 
 /// The **first** interface in the tuple must be reachable. If this fails the
 /// harness itself is wrong, so it anchors the tests below.
+/// Spec: vst3.FUnknown.queryInterface
 #[test]
 fn first_interface_is_queryable() {
     let wrapper = ComWrapper::new(TwoInterfaceClass);
@@ -105,6 +106,7 @@ fn first_interface_is_queryable() {
 /// This is the exact call VSTGUI makes: it holds our `IPlugFrame*`, upcasts to
 /// `FUnknown`, and asks for `IRunLoop`. If the offset arithmetic for index 1 is
 /// wrong, this either fails or hands back a bogus pointer.
+/// Spec: vst3.FUnknown.queryInterface
 #[cfg(target_os = "linux")]
 #[test]
 fn second_interface_is_queryable_through_the_first() {
@@ -156,6 +158,7 @@ fn second_interface_pointer_dispatches_to_our_impl() {
 
 /// `FUnknown` itself must be queryable, and an unknown IID must be refused
 /// rather than matched by accident.
+/// Spec: vst3.FUnknown.queryInterface
 #[test]
 fn unknown_iid_is_refused() {
     let wrapper = ComWrapper::new(TwoInterfaceClass);

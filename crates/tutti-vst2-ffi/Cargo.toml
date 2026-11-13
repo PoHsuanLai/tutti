@@ -1,7 +1,6 @@
 [package]
 name = "tutti-vst2-ffi"
-version = "0.3.0"
-publish = false
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 resolver = "2"
@@ -9,7 +8,7 @@ description = "Low-level VST 2.4 hosting bindings for tutti"
 readme = "README.md"
 keywords = ["vst", "vst2", "plugin"]
 license = "MIT"
-repository = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/tutti-audio/tutti"
 authors = [
     "Marko Mijalkovic <marko.mijalkovic97@gmail.com>",
     "Boscop",
@@ -43,10 +42,10 @@ log = "0.4"
 num-traits = "0.2"
 num_enum = "0.7.6"
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
-tutti-graph = { path = "../tutti-graph" }
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
-tutti-plugin-types = { path = "../tutti-plugin-types" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
 # The test messages (`tutti_fixtures::midi`).

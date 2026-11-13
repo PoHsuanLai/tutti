@@ -1,0 +1,62 @@
+# A push to main that moves the workspace version to one with no
+# `v<version>` tag is a release: tag that commit and publish a GitHub Release whose notes are the
+# version's CHANGELOG.md section. `cargo xtask release <version>` writes the
+# version and the section in the release pull request. Nothing is published
+# to crates.io.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the workspace version
+        id: version
+        run: |
+          read_version() { sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p'; }
+          version=$(read_version < Cargo.toml)
+          before=$(git show "$GITHUB_SHA~1:Cargo.toml" | read_version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # A release is a version that moved from an earlier one and has no tag.
+          if [ -n "$version" ] && [ -n "$before" ] && [ "$version" != "$before" ] \
+            && ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Take the changelog section
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## " v "( |$)" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md has no section for $VERSION"; exit 1; }
+
+      - name: Tag and publish the release
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" --target "$GITHUB_SHA" \
+            --title "tutti $VERSION" --notes-file notes.md

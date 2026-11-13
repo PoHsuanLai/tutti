@@ -146,6 +146,7 @@ mod tests {
     /// right), so its layout is `repr(C)`. No test can fail on the missing
     /// attribute: `repr(Rust)` happens to keep field order for four equal
     /// fields. This pins the layout the attribute guarantees.
+    /// Spec: vst2.struct.ERect
     #[test]
     fn rect_has_the_erect_layout() {
         assert_eq!(std::mem::size_of::<Rect>(), 8);

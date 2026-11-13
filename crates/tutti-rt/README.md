@@ -4,11 +4,11 @@ Small data structures that are safe to touch from an audio callback, where code 
 
 It depends only on arc-lend, not on the rest of tutti, so it can be used on its own. It is mostly a building block for the other tutti crates.
 
-This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
 ### Contribution
 

@@ -10,6 +10,7 @@ fn drain(handler: &ComponentHandler) -> Vec<PluginNotification> {
 /// The plugin's edit gestures must reach the host in order and carry their
 /// operands: a DAW writes automation from `PerformEdit` and opens/closes an
 /// undo transaction on the surrounding `Begin`/`EndEdit`.
+/// Spec: vst3.IComponentHandler.beginEdit, vst3.IComponentHandler.performEdit, vst3.IComponentHandler.endEdit
 #[test]
 fn edit_gestures_forward_in_order_with_their_operands() {
     let handler = ComponentHandler::new();
@@ -44,6 +45,7 @@ fn edit_gestures_forward_in_order_with_their_operands() {
 /// host decodes it with [`RestartFlags::from_bits`], so swallowing or
 /// masking bits here would silently drop a latency or I/O change. It does
 /// not occupy the notification queue.
+/// Spec: vst3.IComponentHandler.restartComponent
 #[test]
 fn restart_component_forwards_the_raw_flag_word() {
     let handler = ComponentHandler::new();
@@ -230,6 +232,7 @@ fn restart_flags_decode_zero_is_empty() {
 /// `update`/`finish`, so the id must be returned through the out-param
 /// *and* carried on the event — a host that loses it cannot match a
 /// progress bar to its completion.
+/// Spec: vst3.IProgress.start, vst3.IProgress.update, vst3.IProgress.finish
 #[test]
 fn progress_start_mints_an_id_that_update_and_finish_quote_back() {
     let handler = ComponentHandler::new();
@@ -320,6 +323,7 @@ fn progress_start_accepts_a_null_description() {
     }
 }
 
+/// Spec: vst3.IUnitHandler.notifyUnitSelection, vst3.IUnitHandler.notifyProgramListChange
 #[test]
 fn unit_selection_and_program_list_changes_forward_their_ids() {
     let handler = ComponentHandler::new();
@@ -431,6 +435,7 @@ fn an_edit_value_is_clamped_to_the_unit_interval() {
 /// is refused and not forwarded.** The request is typed now (`MediaType`,
 /// `BusDirection`), so a value the SDK does not define has no bus to name:
 /// `kInvalidArgument`, nothing queued. A defined pair is forwarded typed.
+/// Spec: vst3.IComponentHandlerBusActivation.requestBusActivation
 #[test]
 fn an_undefined_bus_activation_is_refused_and_not_forwarded() {
     let handler = ComponentHandler::new();

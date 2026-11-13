@@ -183,6 +183,7 @@ fn load_with_env(block: usize, env: &[(&str, &str)]) -> Active {
 ///
 /// Before the fix `load` stopped at `effMainsChanged(1)`: the first
 /// `set_sample_rate` then sent `effStopProcess` for a process never started.
+/// Spec: vst2.eff.SetSampleRate, vst2.eff.SetBlockSize, vst2.eff.SetProcessPrecision, vst2.eff.MainsChanged, vst2.eff.StartProcess, vst2.eff.StopProcess
 #[test]
 fn activation_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
     let _guard = lock_probe();
@@ -385,6 +386,7 @@ fn the_host_answers_the_figure_being_set_from_inside_the_setter() {
 /// A plugin that finalises its pin and parameter counts inside `effOpen` is
 /// read after it: the counts the host sizes its scratch and parameter
 /// snapshot from are the settled ones.
+/// Spec: vst2.eff.Open, vst2.field.numInputs, vst2.field.numParams
 #[test]
 fn counts_finalised_in_eff_open_are_read() {
     let _guard = lock_probe();
@@ -410,6 +412,7 @@ fn counts_finalised_in_eff_open_are_read() {
 
 /// A plugin asking the host what it can do is told what it does: MIDI in and
 /// out and time info yes, window sizing no, anything else "don't know".
+/// Spec: vst2.audioMaster.CanDo, vst2.cando.host.sendVstEvents, vst2.cando.host.sendVstMidiEvent, vst2.cando.host.sendVstTimeInfo, vst2.cando.host.receiveVstEvents, vst2.cando.host.receiveVstMidiEvent, vst2.cando.host.sizeWindow, vst2.cando.host.acceptIOChanges, vst2.cando.host.startStopProcess, vst2.cando.host.receiveVstSysexEvent, vst2.cando.host.sendVstMidiEventFlagIsRealtime, vst2.cando.host.supplyIdle
 #[test]
 fn can_do_answers_reach_the_plugin() {
     let _guard = lock_probe();
@@ -475,6 +478,7 @@ fn ask_host_string(opcode: i32) -> (isize, String) {
 
 /// A plugin asking who the host is reads "Tutti" and "Tutti VST2 Host", version 1, and the
 /// strings are the ones the host wrote, not a placeholder of the bindings.
+/// Spec: vst2.audioMaster.GetVendorString, vst2.audioMaster.GetProductString, vst2.audioMaster.GetVendorVersion
 #[test]
 fn the_host_names_itself_to_a_plugin_that_asks() {
     let _guard = lock_probe();
@@ -505,6 +509,7 @@ fn the_host_reports_no_io_latency_of_its_own() {
 
 /// A knob turned in the plugin's own editor is reported as the gesture it is: begin, the
 /// value, end, in the order the plugin made the calls, for the parameter it named.
+/// Spec: vst2.audioMaster.BeginEdit, vst2.audioMaster.Automate, vst2.audioMaster.EndEdit
 #[test]
 fn an_editor_gesture_is_reported_in_order() {
     let _guard = lock_probe();
@@ -541,6 +546,7 @@ fn an_editor_gesture_is_reported_in_order() {
 
 /// `editor_idle` dispatches `effEditIdle` to an open editor, once per call, and
 /// to none that is closed.
+/// Spec: vst2.eff.EditIdle
 #[test]
 fn editor_idle_reaches_an_open_editor() {
     let _guard = lock_probe();
@@ -589,6 +595,7 @@ fn set_key_consumed(consumed: bool) {
 /// `effEditKeyUp` with the ASCII character in `index`, the SDK's virtual key in `value` and
 /// the modifier mask in the bits of `opt`; the plugin's answer is reported as used or
 /// ignored. None reaches a closed editor, or a character outside ASCII.
+/// Spec: vst2.eff.EditKeyDown
 #[test]
 fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
     let _guard = lock_probe();
@@ -783,6 +790,7 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
 /// `kVstMidiEventIsRealtime` (bit 0 of the event's flags) is set on a block rendered in
 /// realtime and clear on a block rendered offline, and set again when the host goes back to
 /// realtime.
+/// Spec: vst2.flag.kVstMidiEventIsRealtime, vst2.event.kVstMidiType
 #[test]
 fn the_realtime_flag_is_set_live_and_clear_offline() {
     const IS_REALTIME: i32 = 1;

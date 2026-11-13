@@ -4,11 +4,11 @@ A tempo map: it converts between beats, seconds and audio frames when the tempo 
 
 It depends only on `tutti-types` (units such as beats and seconds), so it can be used on its own, for example in a sequencer or a notation tool.
 
-This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
 ### Contribution
 

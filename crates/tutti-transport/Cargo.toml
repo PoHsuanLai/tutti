@@ -1,13 +1,12 @@
 [package]
 name = "tutti-transport"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Playback control for music software: musical time, tempo, looping, and play, stop and seek at an exact frame"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 keywords = ["audio", "transport", "real-time", "daw"]
 categories = ["multimedia::audio"]
 
@@ -18,7 +17,7 @@ workspace = true
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 # `RenderClock` hands a block's transport to the graph's executor.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
-tutti-rt = { path = "../tutti-rt" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 # The project's tempo is a `TempoMap`, published through `TransportSettings`.
 tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
 

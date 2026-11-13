@@ -6,18 +6,11 @@ use tutti_types::{Cents, SampleRate, Samples};
 use tutti_ump::{NoteNumber, U7};
 
 use crate::error::Error;
-use crate::generator::Generator;
 use crate::generator_range;
 use crate::generator_type::GeneratorType;
 use crate::loop_mode::LoopMode;
 use crate::sample_header::{SampleHeader, Side};
 use crate::zone::Zone;
-
-fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
-    if let Some(known) = GeneratorType::from_id(generator.generator_type) {
-        gs[known as usize] = generator.value as i16;
-    }
-}
 
 /// Contains all SoundFont generator parameters needed to synthesize a note.
 #[derive(Debug, Clone)]
@@ -37,8 +30,8 @@ pub struct InstrumentRegion {
 impl InstrumentRegion {
     fn new(
         instrument_id: usize,
-        global: &Zone,
-        local: &Zone,
+        global: &Zone<GeneratorType>,
+        local: &Zone<GeneratorType>,
         samples: &[SampleHeader],
     ) -> Result<Self, Error> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
@@ -62,12 +55,8 @@ impl InstrumentRegion {
         gs[GeneratorType::ScaleTuning as usize] = 100;
         gs[GeneratorType::OverridingRootKey as usize] = -1;
 
-        for generator in global.generators.iter() {
-            set_parameter(&mut gs, generator);
-        }
-
-        for generator in local.generators.iter() {
-            set_parameter(&mut gs, generator);
+        for &(kind, value) in global.generators.iter().chain(&local.generators) {
+            gs[kind as usize] = value;
         }
 
         // The generator is a 16-bit word holding an index; read as unsigned, so an
@@ -96,12 +85,12 @@ impl InstrumentRegion {
 
     pub(crate) fn create(
         instrument_id: usize,
-        zones: &[Zone],
+        zones: &[Zone<GeneratorType>],
         samples: &[SampleHeader],
     ) -> Result<Vec<InstrumentRegion>, Error> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
-            || zones[0].generators.last().unwrap().generator_type != GeneratorType::SampleId as u16
+            || zones[0].generators.last().unwrap().0 != GeneratorType::SampleId
         {
             // The first one is the global zone.
             let global = &zones[0];
@@ -317,38 +306,5 @@ impl InstrumentRegion {
     #[must_use]
     pub fn sample_id(&self) -> usize {
         usize::from(self.generator(GeneratorType::SampleId) as u16)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::set_parameter;
-    use crate::generator::Generator;
-    use crate::generator_type::GeneratorType;
-
-    /// A zone's generator whose number the spec leaves unused or reserved, `endOper`, or
-    /// a number past the last generator changes no slot of the region (section 8.1.2:
-    /// the reader ignores it); a named generator sets its own.
-    #[test]
-    fn an_unused_or_reserved_generator_is_ignored() {
-        let mut gs = [0i16; GeneratorType::COUNT];
-        for id in [14, 18, 19, 20, 42, 49, 55, 59, 60, 61, u16::MAX] {
-            set_parameter(
-                &mut gs,
-                &Generator {
-                    generator_type: id,
-                    value: 7,
-                },
-            );
-        }
-        assert_eq!(gs, [0; GeneratorType::COUNT]);
-        set_parameter(
-            &mut gs,
-            &Generator {
-                generator_type: GeneratorType::Pan as u16,
-                value: 7,
-            },
-        );
-        assert_eq!(gs[GeneratorType::Pan as usize], 7);
     }
 }

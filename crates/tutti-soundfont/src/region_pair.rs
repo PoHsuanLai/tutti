@@ -2,7 +2,7 @@
 // MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
 // LICENSE-RUSTYSYNTH.txt, at the root of this crate.
 
-use tutti_sf2::{GeneratorType, InstrumentRegion, LoopMode, PresetRegion};
+use tutti_sf2::{GeneratorType, InstrumentRegion, LoopMode, PresetGenerator, PresetRegion};
 
 use crate::soundfont_math::SoundFontMath;
 
@@ -17,8 +17,8 @@ pub(crate) struct RegionPair<'a> {
 /// into a voice's parameter: the address offsets (their range is the sample's),
 /// the ranges, the indexes, the sample modes and the instrument-only
 /// generators.
-fn limits(generator: GeneratorType) -> Option<(i32, i32)> {
-    use GeneratorType::*;
+fn limits(generator: PresetGenerator) -> Option<(i32, i32)> {
+    use PresetGenerator::*;
     Some(match generator {
         ModulationLfoToPitch
         | VibratoLfoToPitch
@@ -63,7 +63,7 @@ impl<'a> RegionPair<'a> {
     /// The generator's value in a voice: the preset's added to the instrument's
     /// (section 9.4), then replaced by the nearest value of its range when the
     /// sum is out of it (section 10.5; the ranges are section 8.1.3's).
-    fn gs(&self, generator: GeneratorType) -> i32 {
+    fn gs(&self, generator: PresetGenerator) -> i32 {
         let sum = self.sum(generator);
         match limits(generator) {
             Some((min, max)) => sum.clamp(min, max),
@@ -73,9 +73,9 @@ impl<'a> RegionPair<'a> {
 
     /// The preset's generator added to the instrument's, in the generator's own
     /// units, before any range.
-    fn sum(&self, generator: GeneratorType) -> i32 {
+    fn sum(&self, generator: PresetGenerator) -> i32 {
         i32::from(self.preset.generator(generator))
-            + i32::from(self.instrument.generator(generator))
+            + i32::from(self.instrument.generator(GeneratorType::from(generator)))
     }
 
     pub(crate) fn sample_start(&self) -> i32 {
@@ -95,35 +95,35 @@ impl<'a> RegionPair<'a> {
     }
 
     pub(crate) fn modulation_lfo_to_pitch(&self) -> i32 {
-        self.gs(GeneratorType::ModulationLfoToPitch)
+        self.gs(PresetGenerator::ModulationLfoToPitch)
     }
 
     pub(crate) fn vibrato_lfo_to_pitch(&self) -> i32 {
-        self.gs(GeneratorType::VibratoLfoToPitch)
+        self.gs(PresetGenerator::VibratoLfoToPitch)
     }
 
     pub(crate) fn modulation_envelope_to_pitch(&self) -> i32 {
-        self.gs(GeneratorType::ModulationEnvelopeToPitch)
+        self.gs(PresetGenerator::ModulationEnvelopeToPitch)
     }
 
     pub(crate) fn initial_filter_cutoff_frequency(&self) -> f32 {
-        SoundFontMath::cents_to_hertz(self.gs(GeneratorType::InitialFilterCutoffFrequency) as f32)
+        SoundFontMath::cents_to_hertz(self.gs(PresetGenerator::InitialFilterCutoffFrequency) as f32)
     }
 
     pub(crate) fn initial_filter_q(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::InitialFilterQ) as f32
+        0.1_f32 * self.gs(PresetGenerator::InitialFilterQ) as f32
     }
 
     pub(crate) fn modulation_lfo_to_filter_cutoff_frequency(&self) -> i32 {
-        self.gs(GeneratorType::ModulationLfoToFilterCutoffFrequency)
+        self.gs(PresetGenerator::ModulationLfoToFilterCutoffFrequency)
     }
 
     pub(crate) fn modulation_envelope_to_filter_cutoff_frequency(&self) -> i32 {
-        self.gs(GeneratorType::ModulationEnvelopeToFilterCutoffFrequency)
+        self.gs(PresetGenerator::ModulationEnvelopeToFilterCutoffFrequency)
     }
 
     pub(crate) fn modulation_lfo_to_volume(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::ModulationLfoToVolume) as f32
+        0.1_f32 * self.gs(PresetGenerator::ModulationLfoToVolume) as f32
     }
 
     /// The chorus send generator's sum over both zones, in tenths of a percent
@@ -131,89 +131,93 @@ impl<'a> RegionPair<'a> {
     /// added to this sum before the range is applied (section 8.4.9), which is
     /// the voice's to do.
     pub(crate) fn chorus_effects_send(&self) -> i32 {
-        self.sum(GeneratorType::ChorusEffectsSend)
+        self.sum(PresetGenerator::ChorusEffectsSend)
     }
 
     /// The reverb send generator's sum, as
     /// [`chorus_effects_send`](Self::chorus_effects_send) (section 8.4.8).
     pub(crate) fn reverb_effects_send(&self) -> i32 {
-        self.sum(GeneratorType::ReverbEffectsSend)
+        self.sum(PresetGenerator::ReverbEffectsSend)
     }
 
     pub(crate) fn pan(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::Pan) as f32
+        0.1_f32 * self.gs(PresetGenerator::Pan) as f32
     }
 
     pub(crate) fn delay_modulation_lfo(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::DelayModulationLfo) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::DelayModulationLfo) as f32)
     }
 
     pub(crate) fn frequency_modulation_lfo(&self) -> f32 {
-        SoundFontMath::cents_to_hertz(self.gs(GeneratorType::FrequencyModulationLfo) as f32)
+        SoundFontMath::cents_to_hertz(self.gs(PresetGenerator::FrequencyModulationLfo) as f32)
     }
 
     pub(crate) fn delay_vibrato_lfo(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::DelayVibratoLfo) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::DelayVibratoLfo) as f32)
     }
 
     pub(crate) fn frequency_vibrato_lfo(&self) -> f32 {
-        SoundFontMath::cents_to_hertz(self.gs(GeneratorType::FrequencyVibratoLfo) as f32)
+        SoundFontMath::cents_to_hertz(self.gs(PresetGenerator::FrequencyVibratoLfo) as f32)
     }
 
     pub(crate) fn delay_modulation_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::DelayModulationEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::DelayModulationEnvelope) as f32)
     }
 
     pub(crate) fn attack_modulation_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::AttackModulationEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(
+            self.gs(PresetGenerator::AttackModulationEnvelope) as f32
+        )
     }
 
     pub(crate) fn hold_modulation_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::HoldModulationEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::HoldModulationEnvelope) as f32)
     }
 
     pub(crate) fn decay_modulation_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::DecayModulationEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::DecayModulationEnvelope) as f32)
     }
 
     pub(crate) fn sustain_modulation_envelope(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::SustainModulationEnvelope) as f32
+        0.1_f32 * self.gs(PresetGenerator::SustainModulationEnvelope) as f32
     }
 
     pub(crate) fn release_modulation_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::ReleaseModulationEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(
+            self.gs(PresetGenerator::ReleaseModulationEnvelope) as f32
+        )
     }
 
     pub(crate) fn key_number_to_modulation_envelope_hold(&self) -> i32 {
-        self.gs(GeneratorType::KeyNumberToModulationEnvelopeHold)
+        self.gs(PresetGenerator::KeyNumberToModulationEnvelopeHold)
     }
 
     pub(crate) fn key_number_to_modulation_envelope_decay(&self) -> i32 {
-        self.gs(GeneratorType::KeyNumberToModulationEnvelopeDecay)
+        self.gs(PresetGenerator::KeyNumberToModulationEnvelopeDecay)
     }
 
     pub(crate) fn delay_volume_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::DelayVolumeEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::DelayVolumeEnvelope) as f32)
     }
 
     pub(crate) fn attack_volume_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::AttackVolumeEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::AttackVolumeEnvelope) as f32)
     }
 
     pub(crate) fn hold_volume_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::HoldVolumeEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::HoldVolumeEnvelope) as f32)
     }
 
     pub(crate) fn decay_volume_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::DecayVolumeEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::DecayVolumeEnvelope) as f32)
     }
 
     pub(crate) fn sustain_volume_envelope(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::SustainVolumeEnvelope) as f32
+        0.1_f32 * self.gs(PresetGenerator::SustainVolumeEnvelope) as f32
     }
 
     pub(crate) fn release_volume_envelope(&self) -> f32 {
-        SoundFontMath::timecents_to_seconds(self.gs(GeneratorType::ReleaseVolumeEnvelope) as f32)
+        SoundFontMath::timecents_to_seconds(self.gs(PresetGenerator::ReleaseVolumeEnvelope) as f32)
     }
 
     /// The volume envelope's release in seconds, as a voice starts it: never
@@ -223,23 +227,23 @@ impl<'a> RegionPair<'a> {
     }
 
     pub(crate) fn key_number_to_volume_envelope_hold(&self) -> i32 {
-        self.gs(GeneratorType::KeyNumberToVolumeEnvelopeHold)
+        self.gs(PresetGenerator::KeyNumberToVolumeEnvelopeHold)
     }
 
     pub(crate) fn key_number_to_volume_envelope_decay(&self) -> i32 {
-        self.gs(GeneratorType::KeyNumberToVolumeEnvelopeDecay)
+        self.gs(PresetGenerator::KeyNumberToVolumeEnvelopeDecay)
     }
 
     pub(crate) fn initial_attenuation(&self) -> f32 {
-        0.1_f32 * self.gs(GeneratorType::InitialAttenuation) as f32
+        0.1_f32 * self.gs(PresetGenerator::InitialAttenuation) as f32
     }
 
     pub(crate) fn coarse_tune(&self) -> i32 {
-        self.gs(GeneratorType::CoarseTune)
+        self.gs(PresetGenerator::CoarseTune)
     }
 
     pub(crate) fn fine_tune(&self) -> i32 {
-        self.gs(GeneratorType::FineTune) + self.instrument.sample_pitch_correction().get() as i32
+        self.gs(PresetGenerator::FineTune) + self.instrument.sample_pitch_correction().get() as i32
     }
 
     pub(crate) fn sample_modes(&self) -> LoopMode {
@@ -247,7 +251,7 @@ impl<'a> RegionPair<'a> {
     }
 
     pub(crate) fn scale_tuning(&self) -> i32 {
-        self.gs(GeneratorType::ScaleTuning)
+        self.gs(PresetGenerator::ScaleTuning)
     }
 
     pub(crate) fn root_key(&self) -> i32 {

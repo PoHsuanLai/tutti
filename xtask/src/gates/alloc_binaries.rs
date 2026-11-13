@@ -25,72 +25,7 @@ fn skipped(dir: &str) -> bool {
 }
 
 /// `(file, what removes the row)`.
-pub(super) const ALLOWED: &[(&str, &str)] = &[
-    (
-        "crates/tutti-au-host/tests/au_offline.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-au-host/tests/au_process_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-clap-host/tests/clap_audio_thread_claim_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-clap-host/tests/clap_ports_rescan.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-clap-host/tests/clap_process_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-clap-host/tests/clap_thread_pool.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-clap-host/tests/clap_traits.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-plugin-host/tests/chunked_node.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-plugin-host/tests/vst2_in_process_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-plugin-host/tests/vst2_in_process_retire.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-plugin/tests/clap_node_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-plugin/tests/plugin_param_delivery_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-vst2-host/tests/vst2_host_process_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-vst2-host/tests/vst2_traits.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-vst3-host/tests/vst3_process_no_alloc.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-    (
-        "crates/tutti-vst3-host/tests/vst3_traits.rs",
-        "temporary: tutti-plugins folds it into its area binary",
-    ),
-];
+pub(super) const ALLOWED: &[(&str, &str)] = &[];
 
 /// Whether `path` is `crates/<crate>/tests/<file>.rs`, a test binary of its own.
 fn is_top_level_test(path: &str) -> bool {

@@ -154,7 +154,7 @@ impl Taps<'_> {
     /// it; a copy of events, the event sibling of [`open`](Self::open).
     ///
     /// `capacity` is a count of events ([`EventCapacity`], as for
-    /// [`Midi::record`](crate::Midi::record)). A non-note-off is refused once that
+    /// `Midi::record`). A non-note-off is refused once that
     /// many are held, a note-off is kept up to
     /// [`note_off_room`](tutti_graph::note_off_room) of it, and each refusal is
     /// counted ([`EventTapReader::take_lost`]). `align` is as for a plan tap:

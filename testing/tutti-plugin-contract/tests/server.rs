@@ -183,11 +183,29 @@ fn a_served_value_keeps_its_f64_width<F: Format>(path: PathBuf) {
     );
     let (mut a, _) = served::<F>(path);
     let main = tutti_fixtures::main_thread();
+    let before = a.controller().parameter(&main, Param::Level.id());
+    assert_ne!(
+        before.map(Normalized::get),
+        Some(SENT),
+        "{}: a write to see",
+        F::NAME
+    );
     a.controller_mut()
         .set_parameter(&main, Param::Level.id(), Normalized::of(SENT));
-    // A write lands at the next block.
-    a.silent(BLOCK);
-    let got = a.controller().parameter(&main, Param::Level.id());
+    // A control-side write reaches the plugin at the head of a block after the
+    // server's main thread has read it, not in step with a particular block:
+    // it travels on the control connection and the blocks on the audio one
+    // (doc 029 section 6.5). So blocks run until the value has moved, and the
+    // value it moved to is the one checked.
+    let mut got = before;
+    for _ in 0..200 {
+        a.silent(BLOCK);
+        got = a.controller().parameter(&main, Param::Level.id());
+        if got != before {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     assert_eq!(
         got.map(Normalized::get),
         Some(SENT),

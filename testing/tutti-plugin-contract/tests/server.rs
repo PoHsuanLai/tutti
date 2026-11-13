@@ -121,7 +121,7 @@ fn served<F: Format>(
         Load::new(),
         SampleRate::of(RATE),
         None,
-        no_editor,
+        Some(no_editor),
     )
     .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));
     let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

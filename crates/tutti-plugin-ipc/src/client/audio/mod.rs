@@ -26,7 +26,10 @@ use crate::protocol::{
     ScaleChanges, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
-use tutti_plugin_types::{BlockStatus, BridgeResult, Delivered, PluginFailure, StateError};
+use tutti_plugin_types::{
+    BlockStatus, BridgeResult, ContentScale, Delivered, EditorError, EditorSize, PluginFailure,
+    StateError,
+};
 use tutti_types::SampleRate;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
@@ -559,6 +562,87 @@ impl AudioBridge {
         } else {
             StateError::Busy
         }
+    }
+
+    // --- The editor in the server (doc 029 section 6.5) ---
+
+    /// Opens the editor in the server: embedded in `parent` (the platform
+    /// number of the host's window), or the plugin's own floating window for
+    /// `None`. The size when it embedded, `None` for a floating one.
+    ///
+    /// # Errors
+    ///
+    /// The plugin is dead, the queue is full, the server did not answer, or the
+    /// server (the plugin) refused.
+    pub fn open_editor_in_server(
+        &self,
+        parent: Option<u64>,
+        scale: ContentScale,
+    ) -> std::result::Result<Option<EditorSize>, EditorError> {
+        if self.lifecycle.is_crashed() {
+            return Err(EditorError::PluginCrashed);
+        }
+        let (ask_resp, reply) = ask::<std::result::Result<Option<EditorSize>, String>>();
+        if !self.channels.push_command(Command::OpenEditor {
+            parent,
+            scale,
+            reply,
+        }) {
+            return Err(EditorError::Busy);
+        }
+        // The server may take as long as a plugin takes to build its window; the
+        // bridge thread answers with its own refusal at `EDITOR_TIMEOUT`, so this
+        // outlasts it by a margin and only ends sooner if that thread is gone.
+        match ask_resp.recv_timeout(dispatch::EDITOR_TIMEOUT + PARAM_TIMEOUT) {
+            Ok(result) => result.map_err(EditorError::PluginError),
+            Err(_) if self.lifecycle.is_crashed() => Err(EditorError::PluginCrashed),
+            Err(_) => Err(EditorError::Busy),
+        }
+    }
+
+    /// Closes the server's editor. No answer: `false` when the command could
+    /// not be queued.
+    pub fn close_editor_in_server(&self) -> bool {
+        !self.lifecycle.is_crashed() && self.channels.push_command(Command::CloseEditor)
+    }
+
+    /// Asks the server's editor to take `size`, and answers with the size it
+    /// took.
+    ///
+    /// # Errors
+    ///
+    /// As [`open_editor_in_server`](Self::open_editor_in_server).
+    pub fn set_editor_size_in_server(
+        &self,
+        size: EditorSize,
+    ) -> std::result::Result<EditorSize, EditorError> {
+        if self.lifecycle.is_crashed() {
+            return Err(EditorError::PluginCrashed);
+        }
+        let (ask_resp, reply) = ask::<std::result::Result<EditorSize, String>>();
+        if !self
+            .channels
+            .push_command(Command::SetEditorSize { size, reply })
+        {
+            return Err(EditorError::Busy);
+        }
+        match ask_resp.recv_timeout(dispatch::EDITOR_TIMEOUT + PARAM_TIMEOUT) {
+            Ok(result) => result.map_err(EditorError::PluginError),
+            Err(_) if self.lifecycle.is_crashed() => Err(EditorError::PluginCrashed),
+            Err(_) => Err(EditorError::Busy),
+        }
+    }
+
+    /// The size the server's editor asked its window to take since the last
+    /// call.
+    pub fn take_editor_wants_size(&self) -> Option<EditorSize> {
+        self.lifecycle.take_editor_wants()
+    }
+
+    /// Whether the server closed its editor on its own account since the last
+    /// call.
+    pub fn take_editor_closed(&self) -> bool {
+        self.lifecycle.take_editor_closed()
     }
 
     /// The plugin's parameters, or `None` when it cannot be asked.

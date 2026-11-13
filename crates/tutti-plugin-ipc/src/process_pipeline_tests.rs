@@ -203,7 +203,7 @@ fn bridge_with_server(
         path.clone(),
         Arc::clone(host_slab.slab()),
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        no_editor,
+        Some(no_editor),
         SampleRate::SR_48K,
     )
     .unwrap();
@@ -897,7 +897,7 @@ fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread, SlabWriter) {
         path,
         Arc::clone(host_slab.slab()),
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        no_editor,
+        Some(no_editor),
         SampleRate::SR_48K,
     )
     .unwrap();
@@ -1400,7 +1400,7 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
         path.clone(),
         Arc::clone(host_slab.slab()),
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        no_editor,
+        Some(no_editor),
         SampleRate::SR_48K,
     )
     .unwrap();
@@ -1649,7 +1649,7 @@ fn a_refused_chunk_reports_its_midi_lost() {
         path,
         Arc::clone(slab.slab()),
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        no_editor,
+        Some(no_editor),
         SampleRate::SR_48K,
     )
     .unwrap();
@@ -1780,7 +1780,7 @@ fn two_stale_blocks(
         path.clone(),
         Arc::clone(slab.slab()),
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        no_editor,
+        Some(no_editor),
         SampleRate::SR_48K,
     )
     .unwrap();

@@ -286,7 +286,7 @@ impl PluginClient<Unbound> {
             plugin.load(),
             sample_rate.into(),
             state,
-            crate::format::gui::load_gui_instance,
+            Some(crate::format::gui::load_gui_instance),
         )?;
         Self::over(ipc).map(|client| (client, restored))
     }

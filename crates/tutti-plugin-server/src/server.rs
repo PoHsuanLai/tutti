@@ -96,8 +96,9 @@ impl PluginServer {
     ///    Returns early if the host asks for shutdown before any audio flows.
     /// 2. **Audio** — per-block traffic for the rest of the session. The thread
     ///    asks for the highest priority on entry (`request_audio_priority`), and
-    ///    async plugin events are
-    ///    drained to the host after each block.
+    ///    runs the event loop (`event_loop`): async plugin events are
+    ///    drained to the host after each block, and the editor's idle ticks
+    ///    between them.
     ///
     /// Each phase opens with a [`BridgeMessage::Ready`] carrying
     /// `PROTOCOL_VERSION`; the host refuses a version it does not know.
@@ -160,25 +161,11 @@ impl PluginServer {
         }
     }
 
+    /// The audio phase: the main thread's [event loop](crate::event_loop),
+    /// serving the socket and the editor's idle tick until the host leaves.
     fn audio_phase(&mut self, transport: &mut dyn Transport) -> BridgeResult<()> {
         let main = self.main;
-        loop {
-            let msg = transport.recv()?;
-            match self.session.handle(&main, msg)? {
-                Reaction::Shutdown => break,
-                Reaction::Reply(m) => transport.send(&m)?,
-                Reaction::ReplyMany(ms) => {
-                    for m in &ms {
-                        transport.send(m)?;
-                    }
-                }
-                Reaction::None => {}
-            }
-            for event in self.session.drain_async_events(&main) {
-                transport.send(&event)?;
-            }
-        }
-        Ok(())
+        crate::event_loop::serve(&mut self.session, transport, &main)
     }
 }
 

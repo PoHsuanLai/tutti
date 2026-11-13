@@ -73,7 +73,12 @@ pub(crate) mod wire;
 ///   when the plugin sleeps (doc 023 step 2). It is a field of every block's
 ///   reply, so a version-31 server's replies read differently from the first
 ///   byte after the MIDI.
-pub const PROTOCOL_VERSION: u32 = 32;
+/// - **Version 33** appends the editor messages (doc 029 section 6.5): the
+///   host's `OpenEditor { parent, scale }`, `CloseEditor` and `SetEditorSize`,
+///   and the server's `EditorOpened`, `EditorSized`, `EditorWantsSize` and
+///   `EditorClosed`, so a served plugin's editor can live in the server. They
+///   follow every earlier variant, which keep their numbers.
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

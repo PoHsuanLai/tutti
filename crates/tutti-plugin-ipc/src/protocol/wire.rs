@@ -297,6 +297,87 @@ mod tests {
 
     /// A wire value in `0..=1` decodes; one outside it, or NaN, fails the
     /// message, in each width and in the optional forms.
+    /// **The editor messages are appended after every earlier variant, in the
+    /// widths the spec's rules give.** A variant tag is a varint over declaration
+    /// order, so the earlier variants keep their numbers (`SetSampleRate` is 8
+    /// above) and the new ones sit at the end (host: 23 to 25; server: 28 to 31);
+    /// a size is two varints, a scale an `f64`, a parent an `Option<u64>`.
+    #[test]
+    fn the_editor_messages_follow_every_earlier_variant() {
+        use crate::protocol::{BridgeMessage, HostMessage};
+        use tutti_plugin_types::{ContentScale, EditorSize};
+
+        let size = EditorSize {
+            width: 640,
+            height: 480,
+        };
+        // 640 = 0x280 and 480 = 0x1e0, seven bits a byte, low group first.
+        let size_bytes = [0x80, 0x05, 0xe0, 0x03];
+        let open = HostMessage::OpenEditor {
+            parent: None,
+            scale: ContentScale::IDENTITY,
+        };
+        assert_eq!(
+            postcard::to_allocvec(&open).unwrap(),
+            [23, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]
+        );
+        let embedded = HostMessage::OpenEditor {
+            parent: Some(300),
+            scale: ContentScale::IDENTITY,
+        };
+        assert_eq!(
+            postcard::to_allocvec(&embedded).unwrap(),
+            [23, 1, 0xac, 0x02, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&HostMessage::CloseEditor).unwrap(),
+            [24]
+        );
+        let mut resize = vec![25];
+        resize.extend(size_bytes);
+        assert_eq!(
+            postcard::to_allocvec(&HostMessage::SetEditorSize { size }).unwrap(),
+            resize
+        );
+
+        let mut opened = vec![28, 0, 1];
+        opened.extend(size_bytes);
+        assert_eq!(
+            postcard::to_allocvec(&BridgeMessage::EditorOpened {
+                result: Ok(Some(size))
+            })
+            .unwrap(),
+            opened
+        );
+        assert_eq!(
+            postcard::to_allocvec(&BridgeMessage::EditorOpened {
+                result: Err("x".into())
+            })
+            .unwrap(),
+            [28, 1, 1, b'x']
+        );
+        let mut sized = vec![29, 0];
+        sized.extend(size_bytes);
+        assert_eq!(
+            postcard::to_allocvec(&BridgeMessage::EditorSized { result: Ok(size) }).unwrap(),
+            sized
+        );
+        let mut wants = vec![30];
+        wants.extend(size_bytes);
+        assert_eq!(
+            postcard::to_allocvec(&BridgeMessage::EditorWantsSize { size }).unwrap(),
+            wants
+        );
+        assert_eq!(
+            postcard::to_allocvec(&BridgeMessage::EditorClosed).unwrap(),
+            [31]
+        );
+        // The scale is a checked value on the wire: a NaN is refused.
+        let mut nan = vec![23, 0];
+        nan.extend(f64::NAN.to_le_bytes());
+        assert!(postcard::from_bytes::<HostMessage>(&nan).is_err());
+    }
+
     #[test]
     fn a_normalized_outside_the_unit_range_is_refused() {
         use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};

@@ -348,7 +348,7 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
         tutti_plugin_types::Load::new(),
         SR,
         None,
-        crate::format::gui::load_gui_instance,
+        Some(crate::format::gui::load_gui_instance),
     )
     .expect("the reference plugin loads in a real server")
     .ipc;
@@ -395,7 +395,7 @@ fn a_chosen_plugin_is_the_one_a_reopen_loads() {
         Load::new().plugin(second),
         SR,
         None,
-        crate::format::gui::load_gui_instance,
+        Some(crate::format::gui::load_gui_instance),
     )
     .expect("the factory's second plugin loads in a real server")
     .ipc;

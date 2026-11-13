@@ -219,6 +219,34 @@ impl WindowHandle {
         Self(raw)
     }
 
+    /// Whether a handle's number names the same window in another process: an
+    /// X11 window id is an entry in the X server's table, so a server process
+    /// can embed into it, where an AppKit view is a pointer into the host's
+    /// address space and a Windows embedding across processes is not built yet
+    /// (doc 029 section 6.5).
+    #[must_use]
+    pub const fn embeds_across_processes() -> bool {
+        cfg!(all(unix, not(target_os = "macos")))
+    }
+
+    /// The window a number sent by another process names, or `None` on a
+    /// platform where [`embeds_across_processes`](Self::embeds_across_processes)
+    /// is `false`, since there the number is a pointer or a handle of a
+    /// process that is not this one.
+    ///
+    /// Safe because where it answers `Some` the number is an id the window
+    /// system checks (an X11 window id a plugin hands to the X server, which
+    /// refuses a stale or forged one), never an address this process
+    /// dereferences.
+    #[must_use]
+    pub const fn from_remote(raw: u64) -> Option<Self> {
+        if Self::embeds_across_processes() {
+            Some(Self(raw))
+        } else {
+            None
+        }
+    }
+
     /// The handle as the platform pointer a native embedding call takes.
     #[must_use]
     pub fn as_ptr(self) -> *mut c_void {
@@ -280,6 +308,22 @@ pub enum EditorError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A number another process sent is a window only where it means the
+    /// same in this one**: an X11 window id keeps its number, and an AppKit
+    /// view's pointer (or a Windows window, until that embedding is built) is
+    /// refused, never rebuilt into a handle this process would dereference.
+    #[test]
+    fn a_number_from_another_process_is_a_window_only_where_it_means_the_same() {
+        let rebuilt = WindowHandle::from_remote(0x40_0001);
+        if cfg!(all(unix, not(target_os = "macos"))) {
+            assert_eq!(rebuilt.map(WindowHandle::as_u64), Some(0x40_0001));
+            assert!(WindowHandle::embeds_across_processes());
+        } else {
+            assert_eq!(rebuilt, None);
+            assert!(!WindowHandle::embeds_across_processes());
+        }
+    }
 
     /// **A content scale is finite and positive**: anything else is refused,
     /// on construction and on the wire, since a plugin multiplies its

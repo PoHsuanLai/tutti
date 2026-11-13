@@ -188,6 +188,14 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `AEffect` fuses editor and audio, so it runs in the host's process and a VST2 path
   refuses out-of-process hosting (`BridgeError::NotOutOfProcess`). `LoadPlugin` carries
   the `Load` that chooses the plugin of a file that exports several.
+  The server's main thread is one **event loop** (`tutti-plugin-server`'s `event_loop`, doc
+  029 §6.5): the socket (`Transport::wait_readable`, ending the instant a byte arrives, so the
+  audio path pays one `poll` a request), and a 33 ms idle tick (`Session::tick`: the plugin's
+  asks, the open editor's `editor_idle`, a resize request). An editor can live in the server:
+  `Ipc::launch` takes an `Option<EditorLoader>`, and `None` opens it on the served instance
+  (`OpenEditor`, `CloseEditor`, `SetEditorSize` on the wire, `RemoteEditor` in the client). A
+  parent window crosses as a number and is rebuilt only by the safe
+  `WindowHandle::from_remote`, which refuses where the number is not a window id (macOS).
 
 ## The parallel executor (doc 013)
 

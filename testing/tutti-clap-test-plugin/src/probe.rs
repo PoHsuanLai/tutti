@@ -16,7 +16,7 @@ use std::path::Path;
 
 use libloading::Library;
 
-use crate::{ProcessCapture, ThreadCapture, ThreadPoolCapture};
+use crate::{GuiCapture, GuiMode, ProcessCapture, ThreadCapture, ThreadPoolCapture};
 
 /// The plugin's `#[no_mangle] unsafe extern "C" fn(u32)` switches: one
 /// signature, one name each.
@@ -242,6 +242,55 @@ impl ClapProbe {
             )(&mut cap)
         };
         assert!(ok, "the plugin recorded a process() call");
+        cap
+    }
+
+    /// Selects the `clap.gui` shape the plugin presents, in every image. Call
+    /// **before** the host loads the plugin: the extension pointer is cached
+    /// once during the load.
+    pub fn set_gui_mode(&self, mode: GuiMode) {
+        for lib in [&self.artifact, &self.dot_clap] {
+            call_u32(lib, b"tutti_test_plugin_set_gui_mode\0", mode as u32);
+        }
+    }
+
+    /// Zeroes [`gui_capture`](Self::gui_capture) and clears the latched
+    /// [`gui_command`](Self::gui_command). The selected [`GuiMode`] stays.
+    pub fn gui_reset(&self) {
+        call_unit(&self.artifact, b"tutti_test_plugin_gui_reset\0");
+    }
+
+    /// Latches a `GUI_CMD_*` for the plugin's next legal call site, in every
+    /// image ([`crate::GUI_CMD_NONE`] clears). The plugin's reply is not read.
+    pub fn gui_command(&self, cmd: u32) {
+        for lib in [&self.artifact, &self.dot_clap] {
+            // SAFETY: `tutti_test_plugin_gui_command` is `#[no_mangle] pub
+            // extern "C" fn(cmd: u32) -> u32` in `gui.rs`.
+            unsafe {
+                get::<extern "C" fn(u32) -> u32>(lib, b"tutti_test_plugin_gui_command\0")(cmd);
+            }
+        }
+    }
+
+    /// What the plugin recorded of the host's `clap.gui` calls since the last
+    /// [`gui_reset`](Self::gui_reset).
+    ///
+    /// # Panics
+    ///
+    /// If the plugin reports no capture.
+    pub fn gui_capture(&self) -> GuiCapture {
+        let mut cap = GuiCapture::default();
+        // SAFETY: `tutti_test_plugin_gui_capture` is `#[no_mangle] pub unsafe
+        // extern "C" fn(out: *mut GuiCapture) -> bool` in `gui.rs`, and `cap` is
+        // a valid, exclusive `GuiCapture` (`#[repr(C)]`, the same type as the
+        // rlib's).
+        let ok = unsafe {
+            get::<unsafe extern "C" fn(*mut GuiCapture) -> bool>(
+                &self.artifact,
+                b"tutti_test_plugin_gui_capture\0",
+            )(&mut cap)
+        };
+        assert!(ok, "the plugin reports its gui capture");
         cap
     }
 

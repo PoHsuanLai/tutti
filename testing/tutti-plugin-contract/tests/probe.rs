@@ -156,7 +156,7 @@ fn served_id(plugin: &PluginRef) -> String {
         plugin.load(),
         SampleRate::SR_48K,
         None,
-        no_editor,
+        Some(no_editor),
     )
     .unwrap_or_else(|e| panic!("{plugin:?}: the server loads it: {e:?}"));
     Control::info(&ipc).id.clone()

@@ -4474,7 +4474,8 @@ mod tests {
 
     /// **A string sent to the plugin is a C string that fits the opcode's buffer.**
     /// A program name longer than `kVstMaxProgNameLen` (24 with the NUL) is cut to
-    /// 23 bytes at a char boundary, and an interior NUL cuts it. The fake records the C string it is handed.
+    /// 23 bytes at a char boundary, and an interior NUL cuts it. The fake records the C string it
+    /// is handed.
     #[test]
     fn strings_to_the_plugin_are_short_and_c_strings() {
         use std::sync::Mutex;

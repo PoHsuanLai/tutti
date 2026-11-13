@@ -377,7 +377,11 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     let t = transcript::<F, _>(a.controller_mut());
     assert_eq!(t.blocks, [64, 1, 7, 33], "block sizes the host sent");
     for kind in [Kind::Param, Kind::NoteOn, Kind::NoteOff] {
-        let offsets: Vec<u32> = t.of(kind).map(|e| e.offset).collect();
+        let mut offsets: Vec<u32> = t.of(kind).map(|e| e.offset).collect();
+        if kind == Kind::Param && F::PARAM_TIMING == ParamTiming::Echoed {
+            // The echo follows the block's points, at the head.
+            offsets.truncate(offsets.len().saturating_sub(1));
+        }
         assert!(
             offsets.is_sorted(),
             "{kind:?} arrived out of order: {offsets:?}"
@@ -400,6 +404,8 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     let points: Vec<(u32, f64)> = t.of(Kind::Param).map(|e| (e.offset, e.value)).collect();
     match F::PARAM_TIMING {
         ParamTiming::SampleAccurate => assert_eq!(points, [(3, 0.5), (25, 0.75)]),
+        // The points, then `aux`'s last value written again at the head.
+        ParamTiming::Echoed => assert_eq!(points, [(3, 0.5), (25, 0.75), (0, 0.75)]),
         // One value per parameter at the head: the latest. This is stricter than
         // VST2 requires (two in-order `setParameter` calls would be legal), and it
         // cannot tell a host that keeps the last point on purpose from one that

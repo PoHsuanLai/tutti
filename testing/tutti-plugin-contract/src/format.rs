@@ -12,6 +12,13 @@ pub enum ParamTiming {
     SampleAccurate,
     /// At the head of the block, whatever the offset.
     BlockHead,
+    /// At the point's own sample offset, and then each parameter that had points
+    /// is written again at offset 0 with the value its block ended on: AU's
+    /// host tells the unit's listeners through `AUParameterSet`
+    /// (`AudioUnitUtilities.h`: a parameter is changed through it so that
+    /// listeners are notified), which reaches the unit as a plain
+    /// `SetParameter`. The shell records it, and the case states it.
+    Echoed,
 }
 
 /// A case a format cannot pass, and the text its failure must carry.

@@ -831,11 +831,15 @@ unsafe extern "C" fn set_parameter(
         }
         // SAFETY: AudioToolbox's own `self`.
         let i = unsafe { inst(self_) };
-        // A write outside any block: applied, and not a block's event. The host
-        // makes one after each block that scheduled points, to tell the unit's
-        // listeners the value the block ended on, so recording it would put a
-        // point at offset 0 in the transcript that the host never scheduled.
-        i.core.set_param(id, to_normalized(id, value));
+        // Recorded at offset 0 like any write the host makes outside the block's
+        // event list (VST2's `setParameter`), then applied. The host makes one
+        // after each block that scheduled points: `AUParameterSet`, which
+        // `AudioUnitUtilities.h` names as the way to change a parameter so that
+        // listeners are told, and which reaches the unit as this call. The
+        // contract's `ParamTiming::Echoed` is that write, stated.
+        let normalized = to_normalized(id, value);
+        i.core.log_set_param(id, normalized);
+        i.core.set_param(id, normalized);
         0
     })
 }

@@ -990,9 +990,9 @@ mod tests {
     /// does not rest on the seed.
     #[test]
     fn noise_has_a_low_confidence() {
-        use rand::{Rng, SeedableRng, rngs::StdRng};
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
         let mut rng = StdRng::seed_from_u64(7);
-        let x: Vec<f32> = (0..441_000).map(|_| rng.gen_range(-0.5..0.5)).collect();
+        let x: Vec<f32> = (0..441_000).map(|_| rng.random_range(-0.5..0.5)).collect();
         let tempo = tempo_of(&x);
         assert!(tempo.confidence.get() < 0.3, "{:?}", tempo.confidence);
     }

@@ -11,8 +11,7 @@ use tutti_ump::{Bank, CCNumber, U7, U14, Voice2};
 const SEND_AMOUNT: f32 = 0.2;
 
 /// A 14-bit controller with its most significant 7 bits replaced (CC 0 to 31).
-/// The least significant 7 bits go to zero: M1 p.12, "When an MSB is received,
-/// the receiver should set its concept of the LSB to zero."
+/// The least significant 7 bits go to zero (M1 p.12).
 fn with_msb(msb: U7) -> U14 {
     U14::masked(u16::from(msb.get()) << 7)
 }
@@ -28,10 +27,8 @@ pub(crate) struct Channel {
     pub(crate) is_percussion_channel: bool,
 
     bank_number: i32,
-    /// The Bank Select (CC 0 and 32) received and not yet applied: M1 p.13,
-    /// "the receiving device must remember that bank number in readiness for
-    /// the following Program Change". The next Program Change makes it the
-    /// `bank_number`.
+    /// The Bank Select (CC 0 and 32) received and not yet applied (M1 p.13). The
+    /// next Program Change makes it the `bank_number`.
     pending_bank: U14,
     patch_number: i32,
 

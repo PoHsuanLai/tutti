@@ -101,7 +101,7 @@ fn a_generator_index_past_the_generators_is_a_clean_error() {
     assert!(matches!(error, Error::InvalidGeneratorList), "{error:?}");
 }
 
-/// 7.2: "any preset with no zones should be ignored". It is not in the font and
+/// 7.2: a preset with no zones is ignored. It is not in the font and
 /// not an error; the presets after it keep their own.
 #[test]
 fn a_preset_with_no_zone_is_ignored() {
@@ -173,8 +173,7 @@ fn the_dwords_of_a_header_are_unsigned() {
     let _ = SHDR_RECORD;
 }
 
-/// 7.2: `dwLibrary`, `dwGenre` and `dwMorphology` are DWORDs "preserved as
-/// read".
+/// 7.2: `dwLibrary`, `dwGenre` and `dwMorphology` are DWORDs kept as read.
 #[test]
 fn the_reserved_dwords_of_a_preset_are_preserved_as_read() {
     let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);

@@ -3506,9 +3506,14 @@ What the decoded messages are consumed by, one item each.
   on a MUID change (§3.3.1); the caller routes by Group.
 - **Decisions.** (1) *Option B always* (§5.9.1): the device's MUID has been used by its own
   Discovery, so Option A is never open; it sends the Invalidate MUID **from the new MUID** (a source
-  equal to the target would not tell the two devices apart), then starts a new round. Our own
-  Discovery echoed by a Thru loop is the same case, since without a Product Instance Id of our own
-  the two cannot be told apart (Appendix A.1.1). (2) *The window* is `DISCOVERY_WINDOW`, 3 s
+  equal to the target would not tell the two devices apart), then starts a new round. *An echo is not a collision* (Appendix A.1.1): a
+  Thru or merge loops our messages back, and treating that as a collision would change the MUID on
+  every round for ever. The v1.2 Discovery carries no Product Instance Id, so the body is the test:
+  a Discovery under our MUID with the body we sent is our echo and ignored, any other is a
+  collision; a Reply from our MUID is a collision only when addressed to us (a device that drew our
+  MUID answering our Discovery; we never answer ourselves), and one to another MUID is our own Reply
+  looped back. A same-model device that drew our MUID sends our Discovery body, but its Reply to
+  our Discovery reveals it. (2) *The window* is `DISCOVERY_WINDOW`, 3 s
   (§5.5.5), signalled once; replies are counted per round beyond it, so a late duplicate is still
   the §5.9.2 collision. (3) *A new MUID* (any reason) drops every peer as `Lost`, since the
   Transactions under the old one have ended, and the new round finds them again. (4) *Endpoint

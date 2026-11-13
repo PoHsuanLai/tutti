@@ -210,10 +210,12 @@ fn a_discovery_with_our_muid_is_answered_by_option_b() {
     assert_eq!(device.deadline(), Some(later + DISCOVERY_WINDOW));
 }
 
+/// A Reply from our MUID to our MUID answers our Discovery from a device that
+/// drew our MUID (§5.9.1): this device never answers itself.
 #[test]
-fn a_reply_carrying_our_muid_is_a_collision_on_us() {
+fn a_reply_from_our_muid_to_us_is_a_collision_on_us() {
     let (mut device, _, now) = device([OURS]);
-    let actions = device.on_message(&reply(OURS, PEER, None), now);
+    let actions = device.on_message(&reply(OURS, OURS, None), now);
     assert!(matches!(actions[0], CiAction::MuidChanged { old, .. } if old == muid(OURS)));
     assert_ne!(device.muid(), muid(OURS));
     assert_eq!(device.peers().count(), 0);
@@ -437,4 +439,34 @@ fn a_new_muid_is_never_the_old_one_a_peer_or_reserved() {
     device.on_message(&reply(PEER, OURS, None), now);
     device.on_message(&invalidate(OTHER, OURS), now);
     assert_eq!(device.muid(), muid(0x0700_0007));
+}
+
+/// Appendix A.1.1: a Thru or merge loops this device's own Discovery back, under
+/// its MUID and with the body it sent. That is an echo, not a collision: nothing
+/// is sent, the MUID stays, and nothing is answered (it would answer itself).
+#[test]
+fn our_own_discovery_looped_back_is_an_echo_not_a_collision() {
+    let (mut device, started, now) = device([OURS]);
+    let [CiMessage::Discovery { .. }] = sends(&started)[..] else {
+        panic!("a Discovery at start, got {started:?}");
+    };
+    let echo = Decoded::Message(sends(&started)[0].clone());
+    let actions = device.on_message(&echo, now + Duration::from_millis(5));
+    assert!(actions.is_empty(), "an echo is ignored, got {actions:?}");
+    assert_eq!(device.muid(), muid(OURS));
+}
+
+/// The same echo of a Reply: this device's answer to a peer comes back addressed
+/// to the peer, which is not a collision on us.
+#[test]
+fn our_own_reply_looped_back_is_an_echo_not_a_collision() {
+    let (mut device, _, now) = device([OURS]);
+    let answered = device.on_message(&discovery(PEER, 3), now);
+    let [CiMessage::DiscoveryReply { .. }] = sends(&answered)[..] else {
+        panic!("a Reply to the peer, got {answered:?}");
+    };
+    let echo = Decoded::Message(sends(&answered)[0].clone());
+    let actions = device.on_message(&echo, now + Duration::from_millis(5));
+    assert!(actions.is_empty(), "an echo is ignored, got {actions:?}");
+    assert_eq!(device.muid(), muid(OURS));
 }

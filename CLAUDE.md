@@ -822,7 +822,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   -> (Self, Vec<CiAction>)`, `on_message(&Decoded, now)`, `on_timeout`, `deadline`; no clock, no OS,
   one Group, no Function Block so Device ID and Function Block `7F`): it discovers (a 3 s window,
   `DISCOVERY_WINDOW`), answers Discovery echoing the Output Path ID, resolves a MUID collision always
-  by §5.9.1 Option B and §5.9.2, honours Invalidate MUID, NAKs only what is addressed to its own MUID
+  by §5.9.1 Option B and §5.9.2 (its own Discovery or Reply looped back by a Thru is an echo, never a collision: Appendix A.1.1), honours Invalidate MUID, NAKs only what is addressed to its own MUID
   and is not an ACK or a NAK, asks a peer's Endpoint for its Product Instance Id once (no retry) and
   NAKs that inquiry itself; its MUIDs come from a caller's entropy (`Muid::from_entropy`). A
   Product Instance Id on the CI wire is a `CiInstanceId` (at most 16 bytes, §5.8.3.1, where

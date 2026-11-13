@@ -28,14 +28,20 @@
 //!   the whole round, not only inside the window.
 //! - **Discovery as Responder** (§4.1, §5.6): a Discovery from another MUID is answered
 //!   to it, echoing its Output Path ID (§5.6.1), with Function Block `0x7F`.
-//! - **Collision on the device's MUID** (§5.9.1): a Discovery or a Reply whose Source MUID
-//!   is the device's own. Option A needs a MUID not yet used in any Transaction, and the
+//! - **Collision on the device's MUID** (§5.9.1): a Discovery whose Source MUID is the
+//!   device's own and whose body is not the one it sent, or a Reply from the device's
+//!   MUID addressed to it (an answer to its Discovery from a device that drew the same
+//!   MUID). Option A needs a MUID not yet used in any Transaction, and the
 //!   device's is (its own Discovery), so it always takes **Option B**: change the MUID, send
 //!   an Invalidate MUID targeting the duplicated one, and start a new round. The Invalidate
 //!   goes *from the new MUID*, because a source equal to the target would not tell the
-//!   other device from this one. A Discovery of ours echoed back by a MIDI Thru loop is
-//!   also this case: without a Product Instance Id of our own the two cannot be told
-//!   apart (Appendix A.1.1).
+//!   other device from this one.
+//! - **Echo** (Appendix A.1.1): a MIDI Thru or merge loops the device's own messages back.
+//!   Its Discovery returns with its MUID and its own body, and is ignored; its Reply to
+//!   another device returns addressed to that device, and is ignored. A device of the
+//!   same model that drew the same MUID sends the same Discovery body and is not seen
+//!   there, but it answers this device's Discovery from that MUID to it, which is.
+//!   Treating an echo as a collision would change the MUID on every round, for ever.
 //! - **Invalidate MUID** (§5.9): its target the device's MUID ends every Transaction and
 //!   starts over under a new MUID; its target a peer's discards that peer
 //!   ([`CiAction::Lost`]). It is never answered.
@@ -242,7 +248,12 @@ impl<R: FnMut() -> u32> CiDevice<R> {
         match message {
             CiMessage::Discovery { header, data } => {
                 if header.source == self.muid {
-                    self.collide(now, actions);
+                    // Appendix A.1.1: our own Discovery, looped back by a Thru or a
+                    // merge, is the message we sent; anything else under our MUID is
+                    // another device that drew it.
+                    if *data != self.sent_discovery() {
+                        self.collide(now, actions);
+                    }
                 } else {
                     let mut reply = self.own;
                     reply.output_path_id = data.output_path_id;
@@ -256,7 +267,12 @@ impl<R: FnMut() -> u32> CiDevice<R> {
             }
             CiMessage::DiscoveryReply { header, to, data } => {
                 if header.source == self.muid {
-                    self.collide(now, actions);
+                    // A Reply from our MUID to our MUID answers our Discovery from a
+                    // device that drew our MUID (we never answer ourselves); one to
+                    // another MUID is our own Reply looped back.
+                    if *to == self.muid {
+                        self.collide(now, actions);
+                    }
                 } else if *to == self.muid {
                     self.on_reply(header.source, *data, actions);
                 }
@@ -366,13 +382,18 @@ impl<R: FnMut() -> u32> CiDevice<R> {
             closed: false,
             replied: BTreeSet::new(),
         };
+        actions.push(CiAction::Send(CiMessage::Discovery {
+            header: self.header(),
+            data: self.sent_discovery(),
+        }));
+    }
+
+    /// The body of the Discovery this device sends: Output Path 0, no Function Block.
+    fn sent_discovery(&self) -> DiscoveryData {
         let mut data = self.own;
         data.output_path_id = U7::default();
         data.function_block = None;
-        actions.push(CiAction::Send(CiMessage::Discovery {
-            header: self.header(),
-            data,
-        }));
+        data
     }
 
     fn header(&self) -> CiHeader {

@@ -1,6 +1,6 @@
 [package]
 name = "tutti-sampler"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Plays recorded audio from memory or disk, with looping, speed changes and pitch-keeping time stretch"
@@ -48,27 +48,27 @@ decode-ogg = ["tutti-codec/decode-ogg"]
 # feature the decoder the streamer loads and streams through (`Wave::read`,
 # `Wave::read_metadata`, `FileIn`). No cycle: `tutti-codec` does not depend on
 # this crate.
-tutti-codec = { path = "../tutti-codec" }
+tutti-codec = { version = "0.0.1", path = "../tutti-codec" }
 
 # The graph: every node here is a `tutti_graph::Node`, reads
 # the transport from its block's `Env`, and hands its controls and its fork
 # source over through `IntoNode`. No cycle: `tutti-graph` names only
 # `tutti-types`.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 
 # The project's tempo map, and the reader a placed voice lends it through
 # (doc 020, stage 5): over a map that changes, how long the playhead took
 # from a clip's start to now is the map's, not the current tempo's.
-tutti-tempo = { path = "../tutti-tempo" }
-tutti-transport = { path = "../tutti-transport" }
-tutti-rt = { path = "../tutti-rt" }
+tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
 # STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
 # checked) and `window::hann` rather than keeping a ninth copy of each.
-tutti-dsp = { path = "../tutti-dsp", default-features = false }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false }
 
 tracing = "0.1"
 thiserror = { workspace = true }

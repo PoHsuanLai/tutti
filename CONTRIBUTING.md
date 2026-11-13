@@ -6,7 +6,7 @@ Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 ## Setup
 
 ```bash
-git clone --recursive https://github.com/PoHsuanLai/tutti
+git clone --recursive https://github.com/tutti-audio/tutti
 ```
 
 The VST3 SDK is a submodule. In an existing clone, run

@@ -1,6 +1,6 @@
 [package]
 name = "tutti-au-host"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "A host for Audio Unit (AUv2) plugins on macOS"
@@ -19,23 +19,23 @@ workspace = true
 # walkers). Off in a production build.
 testing = ["tutti-au-ffi/testing"]
 [dependencies]
-tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 # Every raw AudioToolbox, CoreAudio and CoreFoundation call; this crate forbids
 # `unsafe`.
-tutti-au-ffi = { path = "../tutti-au-ffi" }
+tutti-au-ffi = { version = "0.0.1", path = "../tutti-au-ffi" }
 # Structured errors (`AuError`), matching the sibling format hosts.
 thiserror.workspace = true
 # `Offset`: where an event sits in the block `send_midi` is given; `Ump`: the packet.
-tutti-graph = { path = "../tutti-graph" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 # `midi1`: a channel voice message as the MIDI 1.0 bytes `MusicDeviceMIDIEvent`
 # takes (the narrowing and a banked Program Change's three messages).
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 # The engine's unit newtypes: `Bpm`/`Beat` on `TransportState` and `Seconds` on
 # `get_tail_time`. `default-features = false` drops this crate's codec/midi
 # defaults, which the unit vocabulary does not need.
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 coreaudio-sys = "0.2"

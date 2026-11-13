@@ -28,23 +28,48 @@ fn dry(name: &str, args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// The fewest arguments `name` plans with: none, except the version
+/// `release` needs.
+fn least_args(name: &str) -> &'static [&'static str] {
+    if name == "release" { &["0.1.0"] } else { &[] }
+}
+
 #[test]
-fn every_recipe_plans_with_no_arguments() {
+fn every_recipe_plans_with_its_least_arguments() {
     for (name, ..) in RECIPES {
-        assert!(!dry(name, &[]).is_empty(), "{name}");
+        assert!(!dry(name, least_args(name)).is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn release_takes_one_plain_version() {
+    assert_eq!(
+        dry("release", &["0.1.0"]),
+        ["release 0.1.0: set the workspace version and path pins, write the changelog section"]
+    );
+    for bad in [&[][..], &["v0.1.0"], &["0.1"], &["0.1.0", "x"]] {
+        assert!(
+            plan(
+                "release",
+                &bad.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+                &ctx()
+            )
+            .is_err(),
+            "{bad:?}"
+        );
     }
 }
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 43);
+    assert_eq!(RECIPES.len(), 45);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
 #[test]
 fn no_recipe_runs_a_shell_script() {
     for (name, ..) in RECIPES {
-        for line in dry(name, &[]) {
+        for line in dry(name, least_args(name)) {
             assert!(!line.contains("scripts/"), "{name}: {line}");
         }
     }
@@ -214,6 +239,19 @@ fn check_windows_stubs_under_the_target_dir() {
         ), "{l}");
         assert!(l.ends_with(" -- -D warnings"));
     }
+}
+
+#[test]
+fn package_packages_without_building_and_ci_runs_it() {
+    assert_eq!(
+        dry("package", &[]),
+        ["cargo package --locked --no-verify -p <each crate under crates/>"]
+    );
+    assert!(
+        dry("ci", &[])
+            .iter()
+            .any(|l| l.starts_with("cargo package --locked --no-verify"))
+    );
 }
 
 #[test]

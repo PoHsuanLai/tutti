@@ -162,13 +162,12 @@ impl Gate {
             Gate::Pointers => pointers::check(&tree),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
-                let midi = midi_spec_text();
                 let require =
                     conformance::Require::parse(std::env::var("TUTTI_CONFORMANCE").ok().as_deref());
                 conformance::check(
                     &tree,
                     sys.as_ref().map(|t| t as &dyn Tree).map_err(Clone::clone),
-                    midi.as_deref().map_err(Clone::clone),
+                    &midi_spec_text,
                     require,
                 )
             }
@@ -201,10 +200,11 @@ fn clap_sys_tree(repo: &RealTree) -> Result<RealTree, String> {
     })
 }
 
-/// The text of the M2-104 spec: the `.txt` of it in the `TUTTI_MIDI_SPECS`
-/// directory (searched recursively), or else what `pdftotext -layout` makes of
-/// the PDF there. The error names what is missing.
-fn midi_spec_text() -> Result<String, String> {
+/// The text of the spec `doc` names: the `.txt` of it in the
+/// `TUTTI_MIDI_SPECS` directory (searched recursively), or else what
+/// `pdftotext -layout` makes of the PDF there. The error names what is
+/// missing.
+fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
     let dir = std::env::var_os("TUTTI_MIDI_SPECS")
         .map(PathBuf::from)
         .ok_or("TUTTI_MIDI_SPECS is not set")?;
@@ -213,7 +213,7 @@ fn midi_spec_text() -> Result<String, String> {
         all.iter()
             .find(|p| {
                 let name = p.rsplit('/').next().unwrap_or(p);
-                name.starts_with("M2-104-UM") && name.ends_with(ext)
+                name.starts_with(doc.source) && name.ends_with(ext)
             })
             .cloned()
     };
@@ -223,7 +223,8 @@ fn midi_spec_text() -> Result<String, String> {
     }
     let pdf = find(".pdf").ok_or_else(|| {
         format!(
-            "no M2-104-UM .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
+            "no {}* .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
+            doc.source,
             dir.display()
         )
     })?;
@@ -255,10 +256,18 @@ fn midi_inventory(root: &Path) -> Result<(), String> {
     let repo = RealTree {
         root: root.to_path_buf(),
     };
-    let items = midi_spec::extract(&midi_spec_text()?)?;
-    let path = "testing/conformance/midi-m2-104.txt";
-    let (text, added, removed) = conformance::regenerate_midi(repo.read(path).as_deref(), &items)?;
-    let file = root.join(path);
+    for doc in midi_spec::DOCS {
+        midi_doc_inventory(root, &repo, doc)?;
+    }
+    Ok(())
+}
+
+fn midi_doc_inventory(root: &Path, repo: &RealTree, doc: &midi_spec::Doc) -> Result<(), String> {
+    let items = midi_spec::extract(doc, &midi_spec_text(doc)?)?;
+    let path = format!("testing/conformance/{}", doc.file);
+    let (text, added, removed) =
+        conformance::regenerate_midi(doc, repo.read(&path).as_deref(), &items)?;
+    let file = root.join(&path);
     fs::create_dir_all(file.parent().expect("a file path has a parent"))
         .and_then(|()| fs::write(&file, text))
         .map_err(|e| format!("cannot write {}: {e}", file.display()))?;

@@ -22,7 +22,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_nodes::testing::Const;
-use tutti_plugin::catalog::PluginRef;
+use tutti_plugin::catalog::{Hosting, PluginRef};
 use tutti_plugin_types::PluginForkError;
 use tutti_session::BufferMaster;
 use tutti_session::{
@@ -106,7 +106,11 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 
 /// A detached stereo session at the export's rate, with the reference plugin
 /// loaded from `path` in `mode` and routed to the outputs.
-fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeKey) {
+fn session_with_probe_at(
+    mode: u32,
+    path: std::path::PathBuf,
+    hosting: Hosting,
+) -> (Session, NodeKey) {
     probe_env("TUTTI_PLUGIN_SERVER", plugin_server().display());
     probe_env("TUTTI_CLAP_PROBE_RENDER_MODE", mode);
     let mut session = Session::builder()
@@ -118,7 +122,11 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
     let probe = session
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest::new(PluginRef::file(path).expect("a plugin file")),
+            PluginLoadRequest::new(
+                PluginRef::file(path)
+                    .expect("a plugin file")
+                    .with_hosting(hosting),
+            ),
         )
         .expect("the reference CLAP plugin loads");
     session.graph().connect(probe, Root).unwrap();
@@ -128,7 +136,12 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
 
 /// [`session_with_probe_at`] over the reference plugin.
 fn session_with_probe(mode: u32) -> (Session, NodeKey) {
-    session_with_probe_at(mode, clap_probe())
+    session_with_probe_hosted(mode, Hosting::OutOfProcess)
+}
+
+/// [`session_with_probe`], the plugin hosted as `hosting` says.
+fn session_with_probe_hosted(mode: u32, hosting: Hosting) -> (Session, NodeKey) {
+    session_with_probe_at(mode, clap_probe(), hosting)
 }
 
 /// Feed the probe's two main inputs `node`'s output.
@@ -210,7 +223,8 @@ fn a_plugin_fork_that_cannot_be_built_is_a_named_failure() {
     std::os::unix::fs::symlink(&real, &own).expect("link the plugin");
     #[cfg(windows)]
     std::fs::copy(&real, &own).expect("copy the plugin");
-    let (mut session, probe) = session_with_probe_at(TAG_PASSTHROUGH, own.clone());
+    let (mut session, probe) =
+        session_with_probe_at(TAG_PASSTHROUGH, own.clone(), Hosting::OutOfProcess);
     std::fs::remove_file(&own).expect("remove the plugin's file");
     match session.bounce(buffers(0.05)) {
         Err(BounceError::Fork(tutti_graph::ForkError::Source { key, cause })) => {
@@ -252,12 +266,31 @@ fn a_plugin_fork_that_cannot_be_built_is_a_named_failure() {
 #[test]
 fn an_exported_plugin_instrument_plays_its_clip() {
     for rate in [RATE, 2.0 * RATE] {
-        instrument_at(rate);
+        instrument_at(rate, Hosting::OutOfProcess);
     }
 }
 
-fn instrument_at(rate: f64) {
-    let (mut session, probe) = session_with_probe(NOTES);
+/// **An instrument hosted in this process bounces its clip the same way**, its
+/// note on time and none of the clip's events lost: the bounce fails a render
+/// that dropped one.
+#[test]
+fn an_exported_in_process_plugin_instrument_plays_its_clip() {
+    instrument_at(RATE, Hosting::InProcess);
+}
+
+/// **A plugin told its render mode only by reactivation still plays the
+/// fork's first block.** Without `clap.render` the fork is reactivated in
+/// offline mode when it is built; that reactivation finishes before the
+/// bounce renders, so the block with the note has a Processor and the note
+/// is not dropped (the bounce fails a render that dropped one).
+#[test]
+fn an_in_process_instrument_without_a_live_render_mode_plays_its_clip() {
+    probe_env("TUTTI_CLAP_PROBE_RENDER_EXTENSION", 0);
+    instrument_at(RATE, Hosting::InProcess);
+}
+
+fn instrument_at(rate: f64, hosting: Hosting) {
+    let (mut session, probe) = session_with_probe_hosted(NOTES, hosting);
     let note = |beat: f64, on: bool| {
         let event = if on {
             note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
@@ -292,16 +325,19 @@ fn instrument_at(rate: f64) {
         !open.is_empty(),
         "{rate} Hz: the instrument rendered no notes"
     );
-    // The plugin's batcher holds one chunk: what it is sent in chunk `k`
-    // it returns in chunk `k + 1`. A fork has no device, so its chunk is
-    // the export's block.
-    const PIPELINE: usize = tutti_export::GRAPH_MAX_BLOCK.get();
+    // A served plugin's batcher holds one chunk: what it is sent in chunk
+    // `k` it returns in chunk `k + 1`. A fork has no device, so its chunk is
+    // the export's block. A plugin in this process renders in the block.
+    let pipeline: usize = match hosting {
+        Hosting::InProcess => 0,
+        _ => tutti_export::GRAPH_MAX_BLOCK.get(),
+    };
     let beat = 32_000 * (rate / RATE) as usize;
     let (on, off) = (open[0], *open.last().unwrap() + 1);
     assert_eq!(
         (on, off),
-        (beat + PIPELINE, 2 * beat + PIPELINE),
-        "{rate} Hz: the gate is open from beat 1 to beat 2, {PIPELINE} frames late"
+        (beat + pipeline, 2 * beat + pipeline),
+        "{rate} Hz: the gate is open from beat 1 to beat 2, {pipeline} frames late"
     );
     assert_eq!(open.len(), off - on, "one unbroken note");
     assert!(planes[0][on] > 0.9, "the note's velocity");

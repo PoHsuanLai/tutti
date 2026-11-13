@@ -1,8 +1,8 @@
 # arc-lend
 
-arc-lend lets one thread replace a shared value while other threads read it without ever waiting or freeing memory.
+arc-lend is a shared-value cell built for threads that run against a deadline: one thread replaces the value while others read it without waiting or freeing memory.
 
-It is meant for code that runs against a deadline, such as an audio callback, a game's fixed update or a control loop. The writer keeps ownership of old values and frees them later, so readers only borrow.
+Such a thread might be an audio callback, a game's fixed update or a control loop. The writer keeps ownership of old values and frees them later, so readers only borrow.
 
 arc-lend was built for [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust, but does not depend on it.
 

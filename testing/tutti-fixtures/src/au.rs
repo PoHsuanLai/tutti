@@ -87,8 +87,11 @@ fn objc_nullary(obj: *mut std::ffi::c_void, sel: &std::ffi::CStr) -> usize {
 /// read without disturbing it, or `None` when the unit gives no name.
 ///
 /// The read takes one reference (Copy rule) and gives it back before returning,
-/// so sampling does not itself leak. `unit` must be a live `AudioUnit`: the
-/// raw unit behind the host's `Unit`, valid while its owner is.
+/// so sampling does not itself leak.
+///
+/// `unit` must be a live, initialized `AudioUnit` (the raw unit behind the
+/// host's `Unit`, valid while its owner is), and `element` must exist in the
+/// chosen scope.
 #[allow(
     unsafe_code,
     clippy::not_unsafe_ptr_arg_deref,

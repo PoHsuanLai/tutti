@@ -176,6 +176,15 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
   no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
+- **A platform difference sits behind one seam**: the `cfg` is only
+  where a platform module is chosen (the server's `main_loop/{unix,windows,fallback}.rs`,
+  `tutti-au-host`'s `src/macos/`, `tutti-plugin-host`'s `wakeups`), never on each item of a
+  format host, the loop or the session; a one-platform test is one `cfg`'d submodule. A
+  plugin's own event sources (CLAP `posix-fd-support`/`timer-support`, VST3 `IRunLoop`)
+  are `EditorWindow::wakeups` / `wake`: the server's loop waits on them, an in-process host
+  services them in `editor_idle` (`tutti_plugin_host::service_now`). `tutti-plugin-types` holds the
+  plain values and makes no OS call; the poll is the waiting crate's, through `tutti-plugin-ipc-ffi`'s
+  `Poller`/`poll_now`, which take a descriptor as a plain number and own the one `unsafe` borrow.
 - Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
   `activate` splits a plugin into a realtime `Processor` and a main-thread
   `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are) per
@@ -578,7 +587,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  and the minimal `Trajectory` / `Breakpoint` (breakpoints in
                  `Beat`, each with its `Law`, read at a beat). Layer 1, depends on
                  `tutti-types` alone; replaced the external `audio-automation`
-  tutti-modulation modulation compiler
+  tutti-modulation modulation compiler, and the control sources (`ControlSource`: a value
+                 produced as legs on the play clock, `PlayGrid`; `LevelFollower`, `NoteAdsr`), which
+                 `tutti-nodes`' one `SourceNode<S>` sends
   tutti-measure  the analyzers, measurements over slices that read audio and return
                  numbers: loudness (EBU R128, windowed momentary and short-term), peaks
                  and waveform blocks, pitch (`yin`), onsets, spectra, spectral shape,
@@ -646,11 +657,12 @@ crates/          everything shipped; directory name = package name; no nesting
                  process (`ProcessGuard`) and the served plugin as a `Loaded`
                  (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
                  design 021 §6.1; `#![forbid(unsafe_code)]`),
-  tutti-plugin-ipc-ffi (the process edge's `unsafe` behind safe calls: the
+  tutti-plugin-ipc-ffi (the plugin layer's OS edge, its `unsafe` behind safe calls: the
                  audio slab's file, mapping and header (`MappingWriter`, the
-                 mapping's one writer, `SharedMapping`, `SlabHeader`), and the
-                 OS calls of the host's pipe peek and the server's host
-                 watchdog; names no tutti crate),
+                 mapping's one writer, `SharedMapping`, `SlabHeader`), the
+                 pipe peek, the watchdog, and the readiness poll (`Poller`,
+                 `poll_now`) a host waits on a plugin's descriptors with, which
+                 takes each as a plain number and owns the borrow; names no tutti crate),
   tutti-plugin-host (the format-generic half of hosting, not a format host: the
                  `PluginHandle` control surface over a hosting's `AnyThread`,
                  `Health` and `MainThreadControl`,
@@ -1150,7 +1162,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
 - `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
-  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt` and `tutti-ump`
+  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` and
+  `tutti-plugin-ipc-ffi` (the descriptor poll of `service_now`)
   alone among workspace crates (`cargo xtask check-layout`): no `tutti-plugin-ipc`,
   no format host as a normal dependency, and not `tutti-plugin`. It keeps every
   module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
@@ -1723,7 +1736,12 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `TempoPoint::shape` → `TempoMap::view(rate)` and `TempoView`'s methods, and
   `TempoPoint::transition`; `tutti_graph::Transport` → `tutti_graph::TransportPosition`
   (`tutti_transport::Transport` is the handle); `tutti_modulation::Wave` → `Waveform`
-  (`tutti_codec::Wave` is the buffer); `LoopRange::new` as the only check →
+  (`tutti_codec::Wave` is the buffer); `tutti_modulation::SourceNode` (the declaration `{ id, kind }`) → `SignalSource`,
+  and the hand-written `EnvelopeFollowerNode` and `NoteEnvelopeNode` → `tutti_nodes::SourceNode<S:
+  ControlSource>` (`SourceNode<LevelFollower>`, `SourceNode<NoteAdsr>`: the sources' math is
+  `tutti_modulation`'s, the node walks the play clock and sends, doc 024 B3), their
+  `FOLLOWER_EVENT_CAPACITY` and `NOTE_ENVELOPE_EVENT_CAPACITY` → `SOURCE_EVENT_CAPACITY` (one overflow
+  rule: the grid thins, then what is dropped is re-sent); `LoopRange::new` as the only check →
   `LoopRange::try_from(a..b)` (a `LoopRangeError`; `new` is the same check as an `Option`);
   `Session::schedule -> Result<(), ScheduleFull>` → `Result<(), ScheduleError>`
   (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). A comment or doc that

@@ -9,9 +9,7 @@
 //! plugin that notifies the host from inside its own `process` from
 //! re-entering itself.
 
-#[cfg(unix)]
-use super::state::PosixFdEntry;
-use super::state::{HostState, TimerEntry};
+use super::state::{HostState, PosixFdEntry, TimerEntry};
 use crate::types::{AudioPortsRescan, ParamRescan, TrackPortType, TransportRequest, UndoChange};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -167,13 +165,13 @@ impl HostCallbacks for HostState {
         let id = self.timer.next_id.fetch_add(1, Ordering::Relaxed);
         let mut timers = self.timer.timers.lock().ok()?;
         let now = Instant::now();
-        timers.push(TimerEntry {
+        let entry = TimerEntry {
             id,
             period_ms,
             last_fire: now,
-        });
-        self.timer
-            .note_due(now + std::time::Duration::from_millis(u64::from(period_ms)));
+        };
+        self.timer.note_due(entry.wake_at());
+        timers.push(entry);
         Some(id)
     }
 
@@ -361,7 +359,6 @@ impl HostCallbacks for HostState {
         self.undo.wants_context.store(wanted, Ordering::Release);
     }
 
-    #[cfg(unix)]
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {
         let Ok(mut fds) = self.resources.posix_fds.lock() else {
             return false;
@@ -370,13 +367,9 @@ impl HostCallbacks for HostState {
             return false;
         }
         fds.push(PosixFdEntry { fd, flags });
-        self.resources
-            .posix_fd_count
-            .store(fds.len(), Ordering::Release);
         true
     }
 
-    #[cfg(unix)]
     fn posix_fd_modify(&self, fd: i32, flags: u32) -> bool {
         let Ok(mut fds) = self.resources.posix_fds.lock() else {
             return false;
@@ -390,16 +383,12 @@ impl HostCallbacks for HostState {
         }
     }
 
-    #[cfg(unix)]
     fn posix_fd_unregister(&self, fd: i32) -> bool {
         let Ok(mut fds) = self.resources.posix_fds.lock() else {
             return false;
         };
         let len_before = fds.len();
         fds.retain(|e| e.fd != fd);
-        self.resources
-            .posix_fd_count
-            .store(fds.len(), Ordering::Release);
         fds.len() < len_before
     }
 }

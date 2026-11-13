@@ -1001,7 +1001,8 @@ input's time and sends the target piecewise-linear segments on a grid of
 per-frame value for the node's param port, clamped to the port's `ParamRange`
 and ramped from the node's `Node::param_base` (the `Param<U>` cell). The node
 reads `io.param(k)`: `ParamInput::Base` (unmodulated, read your own cell) or
-`ParamInput::Frames(&[f32])`.
+`ParamInput::Frames { values, corners }` (the values per frame, and since doc 024's
+control-sources lane the corners where the delivered trajectory changes piece).
 
 ### 10.1 A tail that depends on a modulated param
 

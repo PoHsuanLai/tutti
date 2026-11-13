@@ -36,7 +36,6 @@
 //! the CLAP spec does not allow.
 
 use std::ffi::{CStr, c_char, c_void};
-use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap_sys::ext::log::{
@@ -45,6 +44,14 @@ use clap_sys::ext::log::{
 };
 use clap_sys::ext::thread_check::{CLAP_EXT_THREAD_CHECK, clap_host_thread_check};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_plugin_timer_support};
+
+// `clap.posix-fd-support` is POSIX's: the platform module is chosen here, once.
+#[cfg(unix)]
+#[path = "fds.rs"]
+mod fds;
+#[cfg(not(unix))]
+#[path = "fds_none.rs"]
+mod fds;
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 
@@ -120,6 +127,12 @@ pub struct ThreadCapture {
     pub log_ext_present: bool,
     /// How many log lines the plugin has emitted since the last reset.
     pub log_emitted: u32,
+    /// Whether the host accepted the plugin's `register_fd` (unix).
+    pub fd_registered: bool,
+    /// How many times the host called `on_fd` since the last reset.
+    pub fd_fires: u32,
+    /// The `clap_posix_fd_flags` of the last `on_fd`.
+    pub fd_last_events: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +239,13 @@ pub const CMD_REQUEST_PROCESS: u32 = 5;
 /// (`[main-thread]`): the host must accept it, and the timer must not fire
 /// after the call.
 pub const CMD_UNREGISTER_TIMER_IN_DEACTIVATE: u32 = 6;
+/// Make a pipe and register its read end with the host's `posix-fd-support`
+/// (read interest), from `on_main_thread`. Unix only: the test then makes it
+/// readable with `tutti_test_plugin_fd_poke`, and the host's `on_fd` call is
+/// counted in [`ThreadCapture::fd_fires`].
+pub const CMD_REGISTER_FD: u32 = 7;
+/// Unregister the pipe's read end, from `on_main_thread`.
+pub const CMD_UNREGISTER_FD: u32 = 8;
 
 /// Latch a command for the plugin to run at its next legal call site, and
 /// return the previous one. `CMD_NONE` clears.
@@ -257,6 +277,7 @@ pub unsafe extern "C" fn tutti_test_plugin_thread_capture(out: *mut ThreadCaptur
         log_emitted: THREADING.log_emitted.load(Ordering::Acquire),
         ..ThreadCapture::default()
     };
+    (cap.fd_registered, cap.fd_fires, cap.fd_last_events) = fds::snapshot();
     for (dst, src) in cap.sites.iter_mut().zip(THREADING.sites.iter()) {
         *dst = src.snapshot();
     }
@@ -280,6 +301,7 @@ pub extern "C" fn tutti_test_plugin_thread_reset() {
     THREADING.last_fired_timer_id.store(0, Ordering::Release);
     THREADING.log_emitted.store(0, Ordering::Release);
     THREADING.command.store(CMD_NONE, Ordering::Release);
+    fds::reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -334,9 +356,11 @@ pub unsafe fn run_pending_command(site: Site, host: *const clap_host) {
     // logging are `[main-thread]`; the two request_* calls are `[thread-safe]`
     // but driven from `process`, where a real plugin reaches the decision.
     let legal = match cmd {
-        CMD_REGISTER_TIMER | CMD_UNREGISTER_TIMER | CMD_LOG_ALL_SEVERITIES => {
-            site == Site::OnMainThread
-        }
+        CMD_REGISTER_TIMER
+        | CMD_UNREGISTER_TIMER
+        | CMD_LOG_ALL_SEVERITIES
+        | CMD_REGISTER_FD
+        | CMD_UNREGISTER_FD => site == Site::OnMainThread,
         CMD_REQUEST_RESTART | CMD_REQUEST_PROCESS => site == Site::Process,
         CMD_UNREGISTER_TIMER_IN_DEACTIVATE => site == Site::Deactivate,
         _ => false,
@@ -360,6 +384,8 @@ pub unsafe fn run_pending_command(site: Site, host: *const clap_host) {
             unregister_timer(host)
         },
         CMD_LOG_ALL_SEVERITIES => unsafe { log_all_severities(host) },
+        CMD_REGISTER_FD => unsafe { fds::register(host) },
+        CMD_UNREGISTER_FD => unsafe { fds::unregister(host) },
         CMD_REQUEST_RESTART => {
             if let Some(f) = unsafe { (*host).request_restart } {
                 unsafe { f(host) };
@@ -383,7 +409,7 @@ pub unsafe fn get_extension(id: &CStr) -> *const c_void {
     if id == CLAP_EXT_TIMER_SUPPORT {
         return &TIMER_SUPPORT as *const _ as *const c_void;
     }
-    ptr::null()
+    fds::get_extension(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +434,20 @@ static TIMER_STALL_MS: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_timer_stall_ms(millis: u32) {
     TIMER_STALL_MS.store(millis, Ordering::SeqCst);
+}
+
+/// The period the next registered timer asks for, in milliseconds. Zero by
+/// default: due on every host poll, so a test never waits on a clock.
+static TIMER_PERIOD_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Sets the period [`CMD_REGISTER_TIMER`]'s timer asks for (0 for the default),
+/// for the test that a timer fires at its period through the host's loop.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_set_timer_period_ms(millis: u32) {
+    TIMER_PERIOD_MS.store(millis, Ordering::SeqCst);
 }
 
 unsafe extern "C" fn plugin_on_timer(plugin: *const clap_plugin, timer_id: u32) {
@@ -440,8 +480,8 @@ unsafe fn register_timer(host: *const clap_host) {
         return;
     };
     let mut id: u32 = 0;
-    // Period 0: due on every host poll, so the test never waits on a clock.
-    let ok = unsafe { register(host, 0, &mut id) };
+    // Period 0 unless a test set one: due on every host poll.
+    let ok = unsafe { register(host, TIMER_PERIOD_MS.load(Ordering::SeqCst), &mut id) };
     THREADING.timer_id.store(id, Ordering::Release);
     THREADING.timer_registered.store(ok, Ordering::Release);
 }

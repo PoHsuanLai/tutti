@@ -1277,7 +1277,7 @@ impl Node for ParamEcho {
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         match io.param(0) {
             ParamInput::Base => io.output(0).fill(0.0),
-            ParamInput::Frames(v) => io.output(0).copy_from_slice(v),
+            ParamInput::Frames { values: v, .. } => io.output(0).copy_from_slice(v),
         }
         Status::Modified
     }
@@ -1817,7 +1817,12 @@ pub fn drive_input(
     let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
     let params: Vec<ParamInput<'_>> = params
         .iter()
-        .map(|p| p.map_or(ParamInput::Base, ParamInput::Frames))
+        .map(|p| {
+            p.map_or(ParamInput::Base, |values| ParamInput::Frames {
+                values,
+                corners: &[],
+            })
+        })
         .collect();
     let events_in: Vec<SortedEvents<'_>> = (0..usize::from(shape.event_in))
         .map(|p| {
@@ -2335,7 +2340,10 @@ impl<N: Node + ?Sized> Direct<N> {
         let mut params = [ParamInput::Base; crate::param::MAX_PARAM_PORTS];
         for (slot, p) in params.iter_mut().zip(&self.params) {
             if let Some(v) = p {
-                *slot = ParamInput::Frames(&v[..len]);
+                *slot = ParamInput::Frames {
+                    values: &v[..len],
+                    corners: &[],
+                };
             }
         }
         let mut sorted = [SortedEvents::EMPTY; crate::node::MAX_PORTS];

@@ -155,12 +155,26 @@ impl EditorWindow for Vst3Editor {
         EditorWindow::close_editor(&mut self.inner, main);
     }
 
-    /// On Linux the host owns the plugin's run loop (`IRunLoop`: its timers and
-    /// file descriptors), and this editor-only instance is the one a served
-    /// plugin's window lives in, so it is pumped here; Windows and macOS have
-    /// the OS's.
+    /// Nothing of its own: on Linux the host owns the plugin's run loop
+    /// (`IRunLoop`: its timers and file descriptors), and this editor-only
+    /// instance is the one a served plugin's window lives in, so the host waits
+    /// on and runs them through [`wakeups`](EditorWindow::wakeups) and
+    /// [`wake`](EditorWindow::wake). Windows and macOS have the OS's.
     fn editor_idle(&mut self, main: &MainThread) {
         EditorWindow::editor_idle(&mut self.inner, main);
+    }
+
+    fn wakeups(&mut self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+        EditorWindow::wakeups(&mut self.inner, main, out);
+    }
+
+    fn wake(
+        &mut self,
+        main: &MainThread,
+        ready: &[tutti_plugin_types::Ready],
+        now: std::time::Instant,
+    ) {
+        EditorWindow::wake(&mut self.inner, main, ready, now);
     }
 
     fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {

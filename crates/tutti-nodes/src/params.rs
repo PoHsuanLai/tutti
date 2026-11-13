@@ -436,6 +436,21 @@ impl<S: ControlSet> Params<S> {
             .any(|k| self.controls[k].read != ControlRead::Fast && io.param(k).frames().is_some())
     }
 
+    /// The first corner at or after block offset `from` among the ports that drive a
+    /// slow control ([`ParamInput::corners`](tutti_graph::ParamInput::corners): where
+    /// the trajectory a port delivers changes piece), if any. A fast control is read
+    /// every frame and needs none.
+    pub(crate) fn corner_from(&self, io: &Io<'_>, from: usize) -> Option<usize> {
+        (0..self.cells.len())
+            .filter(|&k| self.controls[k].read != ControlRead::Fast)
+            .filter_map(|k| {
+                let corners = io.param(k).corners();
+                let i = corners.partition_point(|&c| (c as usize) < from);
+                corners.get(i).map(|&c| c as usize)
+            })
+            .min()
+    }
+
     /// The per-frame lanes of the [`ControlRead::Fast`] controls, for the
     /// [`Feed`](tutti_dsp::Feed): the port's frames in the port's own unit, `None` where
     /// nothing drives it. They are the block's, so a caller slices them by the frames it

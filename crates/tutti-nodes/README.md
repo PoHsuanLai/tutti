@@ -54,7 +54,8 @@ node without a lock.
   frame from one event source each (read through `Io::param`).
 - **Modulation** — the `automation` module's `ControlLaneNode`, which
   evaluates a `tutti_modulation::ControlProgram` into a param port (design doc 014),
-  the signal sources that feed a lane (`EnvelopeFollowerNode`,
+  the signal sources that feed a lane (`SourceNode<S>`, the one sender of a
+  `tutti_modulation::ControlSource`: `EnvelopeFollowerNode`,
   `NoteEnvelopeNode`), and `Modulation`, the reconciler that builds them from
   `tutti_modulation` declarations.
 - **Automation / convolution** — the `automation` module's `AutomationLaneNode`

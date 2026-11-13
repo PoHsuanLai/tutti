@@ -157,6 +157,9 @@ struct RefRamp {
     /// Whether the source has sent an event yet: until it has, the port
     /// reads its base.
     started: bool,
+    /// The absolute frame it arrives on and holds its end from (`None`: not
+    /// within `u32::MAX` frames of its event).
+    arrives: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -1401,7 +1404,7 @@ impl Reference {
         let param_table: Vec<ParamInput<'_>> = param_values
             .iter()
             .map(|v| match v {
-                Some(v) => ParamInput::Frames(v),
+                Some((values, corners)) => ParamInput::Frames { values, corners },
                 None => ParamInput::Base,
             })
             .collect();
@@ -1683,6 +1686,7 @@ impl Reference {
                     frames,
                 },
             ) {
+                let (vals, _) = vals;
                 self.lane_prev.insert(id, Amplitude::new(vals[frames - 1]));
                 return Some(RefWeight::Frames(vals));
             }
@@ -1745,6 +1749,7 @@ impl Reference {
                 frames,
             },
         )
+        .map(|(vals, _)| vals)
     }
 
     /// Each declared param of `key` for this block: `Some` of its values
@@ -1756,7 +1761,7 @@ impl Reference {
         graph: &ValidGraph,
         frames: usize,
         events: &BTreeMap<EventOut, Vec<Event>>,
-    ) -> Vec<Option<Vec<f32>>> {
+    ) -> Vec<Option<(Vec<f32>, Vec<u32>)>> {
         let unit = &self.units[&key].1;
         let declared = unit.shape().params;
         let mut out = Vec::new();
@@ -1820,7 +1825,7 @@ struct RefPortIn<'a> {
 /// docs: `Some` of its values when modulated or declicking, `None` when it
 /// reads its base. `fresh` is the port's first block. Shared by a node's
 /// param ports and an edge gain's lane, which are one rule.
-fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>> {
+fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<(Vec<f32>, Vec<u32>)> {
     let RefPortIn {
         param,
         b1,
@@ -1862,8 +1867,19 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
     // The event source's value at every frame, the base before its
     // first event; it replaces the base, clamped.
     let mut vals = vec![0.0f32; frames];
+    // The corners: a frame where the delivered trajectory changes piece
+    // (`ParamInput::corners`), each once.
+    let mut corners: Vec<u32> = Vec::new();
+    let corner = |i: usize, corners: &mut Vec<u32>| {
+        if corners.last() != Some(&(i as u32)) {
+            corners.push(i as u32);
+        }
+    };
     let mut evs = evs.iter().peekable();
     for (i, v) in vals.iter_mut().enumerate() {
+        // A re-send of a piece already at rest: its arrival on this frame is
+        // no corner.
+        let mut at_rest = false;
         if source.is_none() {
             *v = base(i);
             continue;
@@ -1879,16 +1895,21 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
                     } else {
                         base(i)
                     };
+                    let len = r.duration().get() as u64;
                     st.ramp = RefRamp {
                         from: cur,
                         target: r.raw_target(),
                         at: now,
-                        len: r.duration().get() as u64,
+                        len,
                         shape: r.shape(),
                         curve: None,
                         value: cur,
                         started: true,
+                        // It reaches its target on its last frame, a step on
+                        // its own.
+                        arrives: Some(now + len.saturating_sub(1)),
                     };
+                    corner(i, &mut corners);
                 }
                 EventKind::Segment(s) if s.addr() == want => {
                     let piece = s.piece();
@@ -1901,6 +1922,22 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
                     } else {
                         base(i)
                     };
+                    let arrives =
+                        crate::event::arrival(position, length).map(|j| now + u64::from(j));
+                    // The piece in flight, sent again: the same values and
+                    // law, bit for bit, arriving on the same frame, or both
+                    // already at rest on their end. No corner.
+                    let old = &st.ramp;
+                    let bits = |f: f32, t: f32, l| (f.to_bits(), t.to_bits(), l);
+                    let rested = old.started && matches!(old.arrives, Some(a) if a < now);
+                    let continues = old.started
+                        && old.curve.is_some()
+                        && bits(old.from, old.target, old.shape)
+                            == bits(piece.from, piece.to, piece.law)
+                        && match old.arrives {
+                            Some(a) if a < now => arrives == Some(now),
+                            a => a == arrives,
+                        };
                     st.ramp = RefRamp {
                         from: piece.from,
                         target: piece.to,
@@ -1910,7 +1947,12 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
                         curve: Some((position, length)),
                         value: cur,
                         started: true,
+                        arrives,
                     };
+                    if !continues {
+                        corner(i, &mut corners);
+                    }
+                    at_rest = continues && rested;
                 }
                 // Another param's, MIDI, a chord, or a resync: a port re-sends
                 // nothing.
@@ -1941,6 +1983,10 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
             }
         };
         st.ramp.value = value;
+        if r_started_arrives(&st.ramp) == Some(now) && !at_rest {
+            // It arrives on this frame, and holds its end from here.
+            corner(i, &mut corners);
+        }
         *v = value.clamp(lo, hi);
     }
     for (i, v) in vals.iter_mut().enumerate() {
@@ -1954,7 +2000,12 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
     st.last = vals[frames - 1];
     st.last_base = b1;
     st.modulated = true;
-    Some(vals)
+    Some((vals, corners))
+}
+
+/// The frame a started move arrives on.
+fn r_started_arrives(r: &RefRamp) -> Option<u64> {
+    r.started.then_some(r.arrives).flatten()
 }
 
 /// One node's mode, as the reference walks it: the weights `(y, x)` of its

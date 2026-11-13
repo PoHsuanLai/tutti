@@ -1335,9 +1335,10 @@ pub enum Cadence {
     Block,                                                  // one design per block: the render depends on the block length
     Stream { period: NonZeroU32, offset: Samples },         // grid at offset + k * period on the stream clock
 }
-// After B4: a third form, `Play { period, offset }`, the play clock's grid (transport frames), which the
-// control sources run on (section 4.5a). **`every` is gone (2026-11-13): its last user, the phaser, is on
-// the stream grid** (`Cadence::stream(16)`, like every other family).
+// B4 planned a third form, `Play`, the play clock's grid. **Not built (the control-sources lane, PR 1,
+// 2026-11-13):** a control source's grid is its own type, `tutti_modulation::PlayGrid`, so a play stride
+// is never taken for an effect's stream period (section 4.5a). **`every` is gone (2026-11-13): its last
+// user, the phaser, is on the stream grid** (`Cadence::stream(16)`, like every other family).
 impl Cadence {
     pub const BLOCK: Self;                              // Cadence::Block: one design per block
     pub const fn stream(n: NonZeroU32) -> Self;         // Stream { period: n, offset: 0 }: the FDN's chunks, an STFT hop
@@ -1433,6 +1434,24 @@ changes.
 With corners so defined they are data on the stream, so the render stays a function of the stream:
 block independence holds.
 
+*As built (the control-sources lane, PR 4, 2026-11-13).* The port reports them:
+`ParamInput::Frames { values, corners }` and `ParamInput::corners() -> &[u32]`, block offsets in
+order, at most one per frame (so each port's buffer, the block's length, allocated with the port's
+state on the control side, never overflows, by construction). A corner is a ramp event's frame, a
+segment's frame unless it continues the piece in flight (the same `from`, `to` and law, bit for bit,
+and the same arrival frame, or both already at rest on their end), and the frame a ramp or segment in
+flight lands on. The port still takes a re-send (its values are rendered from the re-send's own
+position, as before); it only marks no corner. The arrival is one function, `arrival(position,
+length)`, which the port, the reference interpreter and `ParamSegment::arrives_after` share; a re-send
+whose arrival rounds to another frame (Q28, past 2^24 frames) is a different trajectory to the port and
+so a corner. The base's glide, a connection's declick and the range clamp make none (deliberately: each is caught by the grid within a period, and a clamp's kink is not a piece the source sent). The reference
+interpreter derives the same corners from its own absolute-frame state, and the param differential suite
+compares them through a probe's readout. `FamilyNode::render_steps` merges the grid's stops with the
+corners of every port that drives a slow control (`Params::corner_from`; a fast control is read every
+frame and needs none): a corner cuts and solves on its frame. Only a stream grid steps: a family that samples on the block (the reverbs) designs once per block, at its last frame, and takes no corner, its render depending on the block by its declaration. A control that lands whole (a compressor's
+ratio, the delay's cross-feedback) is then exact on its frame; a gliding one has its target read there
+and starts gliding at the runner's next step, so nothing jumps inside a step.
+
 **Two clocks, one rule.** An effect solves on the **stream** clock (frames since its reset), because
 audio runs through it while the transport is stopped. A control source produces on the clock it
 follows: the **play** clock (transport frames: automation, a beat-synced LFO, the note envelope) or the
@@ -1440,14 +1459,19 @@ stream (a free-running follower). A lane sampled by an effect is exact at any fr
 meet without loss; only the glide between solves approximates, by at most one period. Three things
 follow from the play clock:
 
-- **It is not monotone.** A seek or a loop wrap inside a block is in `Env::segments()`, never a split
-  block, so `SourceNode`'s walk iterates `Env::segments()`; a wrap is a corner and sends a fresh, not a
-  resumed, segment.
-- **Behind a latent path** a source reads `Cx::transport_at` (the transport its input was rendered
-  at), not `Env::transport_at`.
-- **While stopped** a play source emits nothing and its lane holds, while effects keep solving on the
-  stream. A play-anchored grid lands at transport multiples of its period, so it is deterministic
-  under preroll.
+*Corrected (the control-sources lane, PR 1, 2026-11-13).* The play clock (`tutti_graph`'s `play`
+module) is not the transport: it counts one per frame, rolling or stopped, restarts at 0 in a new
+epoch on every play start, and ignores seeks, loops and tempo. So:
+
+- **It is monotone within an epoch.** Its one discontinuity is a play start, which `SourceNode`'s walk
+  finds per block (`PlayWalk::starts`) and hands the source as `start`. A seek or a loop wrap does not
+  move it; a source that reads the transport (the control lane's beat-clocked layers) sees those as
+  points of the transport (`Env::changes`), which is that source's own business (lane PR 2).
+- **Behind a latent path** a source reads `Cx::play_at` and `Cx::transport_at` (its input's time),
+  not `Env`'s.
+- **While stopped** the play clock runs, so a follower keeps sending on its grid; a play-anchored grid
+  lands at play multiples of its stride, so it is deterministic under preroll and equal live and in
+  an export from the same play start.
 
 **Where cadence stops.** The compressor, gate and limiter nodes take a threshold
 (and the limiter a ceiling) as a **per-frame lane** (`io.param(0).frames()`;
@@ -1492,9 +1516,22 @@ pub trait ControlSource: Clone + Send + 'static {
     fn slew_bound(&self) -> Option<f64> { None }
 }
 /// The one sender: walks its clock, emits a piece at every grid point and corner, keeps the capacity
-/// and the owed re-send, the play-start epoch and resync, and forks. Today the follower, the note
-/// envelope and the control lane each hand-write this; they become `SourceNode<Follower>`,
+/// and the owed re-send, the play-start epoch and resync, and forks. The follower, the note
+/// envelope and the control lane each hand-wrote this; they become `SourceNode<Follower>`,
 /// `SourceNode<Adsr>` and `SourceNode<ControlProgram>`.
+// As built (the control-sources lane, PR 1, 2026-11-13): `ControlSource` is `tutti-modulation`'s,
+// beside `Adsr`, `Waveform` and `ControlProgram` (a source's inputs are MIDI and the play clock, which
+// `tutti-dsp` does not know; `Controlled` and `Settled` are still not built), and is a set of stops
+// rather than `piece(t, until)`: `start` (a play start), `corner(t)` at its `next_corner`, `grid(t,
+// frames)` on `GRID: Option<PlayGrid>`, `heard(t, level, Ump)` for MIDI, each answering an
+// `Option<Leg>` (a `Piece` and its length in frames, which may outrun the next stop: an ADSR stage).
+// Audio reaches a source through its node (`tutti_nodes::SourcePorts::hear`: the node reduces its
+// inputs, a peak over channels for the follower), so the trait names no audio. The sender is
+// `tutti_nodes::SourceNode<S>`; the declaration that was `tutti_modulation::SourceNode` is
+// `SignalSource`. The follower is `SourceNode<LevelFollower>`, the note envelope
+// `SourceNode<NoteAdsr>`; one overflow rule (the grid thins, never a corner; then what is dropped is
+// re-sent where it stands, resumed, at the next block); `replacing` is the sender's (an owed re-send
+// on the first frame). The control lane follows in PRs 2 and 3.
 pub struct SourceNode<S: ControlSource> { /* source, walk, capacity, owed, epoch */ }
 /// A detector in steady state: `theta` constant in `t` (doc 028 §3.4's `Controlled::at(level)`).
 pub struct Settled<D: SteadyState>(D);

@@ -31,11 +31,8 @@ tutti-types = { path = "../tutti-types" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 vst3 = "0.3"
-
-# `IRunLoop` (Linux-only, and mandatory there per the VST3 docs) polls the
-# plugin-registered file descriptors.
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+# `IRunLoop` (Linux): the look at the descriptors a plugin registered.
+tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 
 # The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
 # CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.

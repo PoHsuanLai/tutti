@@ -15,9 +15,9 @@ use tutti_plugin_types::{
     TimerId, WindowHandle, Wraps,
 };
 
+use super::ClapLoaded;
 use super::controller::ClapController;
 use super::lifecycle::plugin_error;
-use super::{ClapLoaded, polling::WorkRan};
 use crate::events::ParamBounds;
 use crate::types::{AudioPortFlags, PluginInfo};
 
@@ -204,15 +204,10 @@ impl ClapLoaded {
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
     }
 
-    /// [`Control::take_requests`] with the clock supplied, which it
-    /// reads at most once and only when a timer or a descriptor is registered.
-    /// Returns which scans it ran.
-    pub(crate) fn take_requests_with(
-        &mut self,
-        main: &MainThread,
-        clock: impl FnOnce() -> Instant,
-        out: &mut Vec<Request>,
-    ) -> WorkRan {
+    /// [`Control::take_requests`]: what the plugin raised from any thread, and
+    /// the timers and descriptors a [`wake`](EditorWindow::wake) latched since
+    /// the last take, as requests for the lifecycle to serve.
+    pub(crate) fn take_requests_now(&mut self, main: &MainThread, out: &mut Vec<Request>) {
         // `gui.closed` is `[thread-safe]` and the plugin may raise it from its
         // own window thread, while `gui.destroy` is the main thread's: this
         // pass is where it is acknowledged (`ext/gui.h`: "the host must call
@@ -222,18 +217,18 @@ impl ClapLoaded {
             self.destroy_editor(main);
         }
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
-        let (ran, due_timers) = self.due_work(clock);
-        out.extend(due_timers.into_iter().map(|id| Request::Timer(TimerId(id))));
-        #[cfg(unix)]
-        if ran.fds {
-            out.extend(
-                self.work
-                    .ready_fds()
-                    .iter()
-                    .map(|&(fd, _)| Request::Fd(FdId(fd))),
-            );
-        }
-        ran
+        out.extend(
+            self.woken
+                .timers
+                .drain(..)
+                .map(|id| Request::Timer(TimerId(id))),
+        );
+        out.extend(
+            self.woken
+                .announce
+                .drain(..)
+                .map(|fd| Request::Fd(FdId(fd))),
+        );
     }
 }
 
@@ -384,10 +379,7 @@ impl Control for ClapLoaded {
     }
 
     fn service_fd(&mut self, main: &MainThread, id: FdId) {
-        #[cfg(unix)]
         self.fire_fd(main, id.0);
-        #[cfg(not(unix))]
-        let _ = (main, id);
     }
 
     /// Everything one main-thread pass turns into the core's requests: what
@@ -406,7 +398,7 @@ impl Control for ClapLoaded {
     /// and feeding the requests to the core: a loop that blocks waiting for the
     /// next message serves none until one arrives.
     fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        self.take_requests_with(main, Instant::now, out);
+        self.take_requests_now(main, out);
     }
 
     /// Switches between real-time and offline rendering per `CLAP_EXT_RENDER`.
@@ -505,6 +497,19 @@ impl EditorWindow for ClapLoaded {
     /// `run_main_thread`, `service_fd`). A second pass here would take
     /// requests that belong to it.
     fn editor_idle(&mut self, _main: &MainThread) {}
+
+    /// The plugin's descriptors (`posix-fd-support`) and the earliest of its
+    /// timers (`timer-support`).
+    fn wakeups(&mut self, _main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+        self.describe_wakeups(out);
+    }
+
+    /// Latches what fired for [`take_requests`](Control::take_requests): the
+    /// lifecycle serves it within its budget, so the plugin's `on_fd` and
+    /// `on_timer` run where its other main-thread work does.
+    fn wake(&mut self, _main: &MainThread, ready: &[tutti_plugin_types::Ready], now: Instant) {
+        self.latch_wakeups(ready, now);
+    }
 
     /// What the open editor supports (the inherent [`ClapLoaded::editor_capabilities`]):
     /// the same answer the editor-only instance gives, whatever hosts the plugin.

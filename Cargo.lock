@@ -3384,6 +3384,7 @@ dependencies = [
 name = "tutti-fixtures"
 version = "0.0.1"
 dependencies = [
+ "coreaudio-sys",
  "hound",
  "raw-window-handle",
  "serde",

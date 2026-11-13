@@ -695,6 +695,85 @@ fn the_can_ramp_flag_is_a_claim_not_a_guarantee() {
     );
 }
 
+/// `AudioUnitScheduleParameters` does **not** validate the parameter id.
+///
+/// Measured on macOS 15.6: scheduling against id `999999` on AUDelay returns
+/// `noErr`, as does a `Ramped` event on a parameter whose `CanRamp` flag is
+/// clear. Pinned because it is a trap: a host cannot use the status to discover
+/// whether an event will do anything, so anything built on "the AU rejected it,
+/// therefore the id is bad" is built on sand.
+///
+/// If a future macOS starts validating, this fails and the host's docs — which
+/// currently promise the opposite — need updating.
+#[test]
+fn scheduling_does_not_validate_the_parameter_id() {
+    let _g = lock();
+    let au = DELAY.open(RATE, BLOCK);
+
+    let bogus = 999_999u32;
+    assert!(
+        !au.get_parameter_list().iter().any(|p| p.id == bogus),
+        "sanity: {bogus} must not be a real AUDelay parameter"
+    );
+
+    let result = au.schedule_parameters(
+        bogus,
+        ScheduleAddress::GLOBAL,
+        &[ParamEvent::Immediate {
+            buffer_offset: 0,
+            value: 0.5,
+        }],
+    );
+    assert!(
+        result.is_ok(),
+        "MEASURED BEHAVIOUR CHANGE: AudioUnitScheduleParameters was measured to \
+         accept a nonexistent parameter id ({bogus}) with noErr on macOS 15.6. It \
+         now returns {result:?}. That is arguably better, but `schedule`'s docs \
+         promise the opposite — update them."
+    );
+
+    // The same for a ramp on a parameter that does not advertise CanRamp.
+    let params = au.get_parameter_list();
+    let p = params.first().expect("AUDelay publishes parameters");
+    assert!(
+        !p.can_ramp,
+        "AUDelay's first parameter is the corpus's non-rampable subject"
+    );
+    let ramp_result = au.schedule_parameters(
+        p.id,
+        ScheduleAddress::GLOBAL,
+        &[ParamEvent::Ramped {
+            start_buffer_offset: 0,
+            duration_frames: BLOCK,
+            start_value: p.range.min,
+            end_value: p.range.max,
+        }],
+    );
+    assert!(
+        ramp_result.is_ok(),
+        "a ramp on a non-rampable parameter was measured to return noErr; got \
+         {ramp_result:?}"
+    );
+}
+
+/// An empty event slice must be a no-op that never reaches AudioToolbox.
+///
+/// A host draining an empty automation queue does this every block on the audio
+/// thread. Asserted through the public `Au` path as well as the module's
+/// own unit test, because this is the shape a caller actually uses.
+#[test]
+fn scheduling_an_empty_batch_is_a_no_op() {
+    let _g = lock();
+    let mut au = DELAY.open(RATE, BLOCK);
+    au.schedule_parameters(0, ScheduleAddress::GLOBAL, &[])
+        .expect("an empty schedule must succeed without an FFI call");
+
+    let input = silence(2, BLOCK as usize);
+    let mut output = silence(2, BLOCK as usize);
+    render(&mut au, &input, &mut output, BLOCK).expect("render");
+    assert!(all_finite(&output));
+}
+
 // ---------------------------------------------------------------- helpers
 
 /// Segments the envelope is measured in. 8 is enough to see a monotonic rise

@@ -41,10 +41,12 @@ tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp", optio
 [target.'cfg(target_os = "macos")'.dependencies]
 # `au`: the shared plugin's Audio Unit, registered in this process.
 tutti-shared-plugin = { path = "../tutti-shared-plugin", optional = true }
+coreaudio-sys = { version = "0.2", optional = true }
 
 [features]
-# `au_bundle`: the bundle that declares the shared plugin's Audio Unit (macOS).
-au = ["plugin", "dep:tutti-shared-plugin"]
+# `au_bundle`, the bundle that declares the shared plugin's Audio Unit, and
+# `element_name_retain_count` (macOS).
+au = ["plugin", "dep:tutti-shared-plugin", "dep:coreaudio-sys"]
 plugin = ["dep:tutti-plugin-types", "dep:raw-window-handle"]
 # `vst3_cpp_module` and `bundle_of`: where the C++ twin is.
 vst3-cpp = ["plugin", "dep:tutti-shared-plugin-vst3-cpp"]

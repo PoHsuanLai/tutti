@@ -59,3 +59,71 @@ pub fn au_bundle() -> PathBuf {
     std::fs::rename(&staging, contents.join("Info.plist")).expect("place the Info.plist");
     bundle
 }
+
+#[allow(
+    unsafe_code,
+    reason = "the Objective-C runtime and AudioToolbox are reached only through these C symbols"
+)]
+unsafe extern "C" {
+    fn objc_msgSend(receiver: *mut std::ffi::c_void, sel: *const std::ffi::c_void) -> usize;
+    fn sel_registerName(name: *const std::ffi::c_char) -> *const std::ffi::c_void;
+}
+
+/// Sends a nullary Objective-C selector and returns the word it produced: a bare
+/// send, without the argument marshalling `objc2`'s `msg_send!` adds.
+#[allow(unsafe_code, reason = "calls into the extern block above")]
+fn objc_nullary(obj: *mut std::ffi::c_void, sel: &std::ffi::CStr) -> usize {
+    if obj.is_null() {
+        return 0;
+    }
+    // SAFETY: the callers pass a live object that responds to `retainCount` and
+    // `release`; `sel_registerName` returns the registered selector for a
+    // NUL-terminated name.
+    unsafe { objc_msgSend(obj, sel_registerName(sel.as_ptr())) }
+}
+
+/// The retain count of the `CFString` the unit publishes as
+/// `kAudioUnitProperty_ElementName` for `element` of its input or output scope,
+/// read without disturbing it, or `None` when the unit gives no name.
+///
+/// The read takes one reference (Copy rule) and gives it back before returning,
+/// so sampling does not itself leak. `unit` must be a live `AudioUnit`: the
+/// raw unit behind the host's `Unit`, valid while its owner is.
+#[allow(
+    unsafe_code,
+    clippy::not_unsafe_ptr_arg_deref,
+    reason = "a test-only probe of a live unit; the caller holds the unit"
+)]
+#[must_use]
+pub fn element_name_retain_count(
+    unit: *mut std::ffi::c_void,
+    is_output: bool,
+    element: u32,
+) -> Option<usize> {
+    let mut raw: *const std::ffi::c_void = std::ptr::null();
+    let mut size = std::mem::size_of::<*const std::ffi::c_void>() as u32;
+    // SAFETY: `unit` is live (see above) and `raw` is a pointer-sized
+    // out-parameter whose size is passed in `size`.
+    let status = unsafe {
+        coreaudio_sys::AudioUnitGetProperty(
+            unit.cast(),
+            coreaudio_sys::kAudioUnitProperty_ElementName,
+            if is_output {
+                coreaudio_sys::kAudioUnitScope_Output
+            } else {
+                coreaudio_sys::kAudioUnitScope_Input
+            },
+            element,
+            (&mut raw as *mut *const std::ffi::c_void).cast(),
+            &mut size,
+        )
+    };
+    if status != 0 || raw.is_null() {
+        return None;
+    }
+    let object = raw.cast_mut();
+    let count = objc_nullary(object, c"retainCount");
+    // Gives back the +1 this read took.
+    objc_nullary(object, c"release");
+    Some(count)
+}

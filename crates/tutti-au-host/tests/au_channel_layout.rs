@@ -745,8 +745,7 @@ fn the_element_name_copy_rule_is_observed_by_retain_count() {
         // An immortal count cannot move, so the check below would pass against a
         // leaking host: the string must be mortal for the measurement to mean
         // anything.
-        // SAFETY: `raw_unit` is live for the lifetime of `au`.
-        let first = unsafe { raw_name_retain_count(au.raw_unit(), is_output, 0) }
+        let first = tutti_fixtures::element_name_retain_count(au.raw_unit().cast(), is_output, 0)
             .expect("the shared plugin publishes a name on element 0");
         assert!(
             first < 1_000,
@@ -755,8 +754,8 @@ fn the_element_name_copy_rule_is_observed_by_retain_count() {
         );
 
         const READS: usize = 10;
-        // SAFETY: as above.
-        let before = unsafe { raw_name_retain_count(au.raw_unit(), is_output, 0) }.unwrap();
+        let before =
+            tutti_fixtures::element_name_retain_count(au.raw_unit().cast(), is_output, 0).unwrap();
         for _ in 0..READS {
             let name = au.element_name(dir, 0).expect("element_name");
             assert!(
@@ -765,8 +764,8 @@ fn the_element_name_copy_rule_is_observed_by_retain_count() {
                  retain check below is vacuous"
             );
         }
-        // SAFETY: as above.
-        let after = unsafe { raw_name_retain_count(au.raw_unit(), is_output, 0) }.unwrap();
+        let after =
+            tutti_fixtures::element_name_retain_count(au.raw_unit().cast(), is_output, 0).unwrap();
         assert_eq!(
             after, before,
             "{READS} host reads of the {dir:?} element name moved its retain count \
@@ -774,67 +773,6 @@ fn the_element_name_copy_rule_is_observed_by_retain_count() {
              the host owns the +1 and must release it."
         );
     }
-}
-
-/// The AU's own `ElementName` retain count, read without disturbing it.
-///
-/// Reads the property directly rather than through `Au::element_name`, because
-/// the host's version releases and the count *after* that release is what this
-/// samples. The one reference this read acquires is given back before returning.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-unsafe fn raw_name_retain_count(
-    unit: coreaudio_sys::AudioUnit,
-    is_output: bool,
-    element: u32,
-) -> Option<usize> {
-    let mut raw: *const std::os::raw::c_void = std::ptr::null();
-    let mut size = std::mem::size_of::<*const std::os::raw::c_void>() as u32;
-    // SAFETY: `unit` is live and `raw` is a pointer-sized out-parameter.
-    let status = unsafe {
-        coreaudio_sys::AudioUnitGetProperty(
-            unit,
-            coreaudio_sys::kAudioUnitProperty_ElementName,
-            if is_output {
-                coreaudio_sys::kAudioUnitScope_Output
-            } else {
-                coreaudio_sys::kAudioUnitScope_Input
-            },
-            element,
-            (&mut raw as *mut *const std::os::raw::c_void).cast(),
-            &mut size,
-        )
-    };
-    if status != 0 || raw.is_null() {
-        return None;
-    }
-    // SAFETY: `raw` is the retained string the AU just handed over.
-    let count = unsafe { objc_nullary(raw.cast_mut(), c"retainCount") };
-    // Give back the +1 this read took.
-    // SAFETY: as above.
-    unsafe { objc_nullary(raw.cast_mut(), c"release") };
-    Some(count)
-}
-
-/// Sends a nullary Objective-C selector and returns the word it produced: a bare
-/// send, without the argument marshalling `objc2`'s `msg_send!` adds.
-///
-/// # Safety
-/// `obj` must be null or a live Objective-C object that responds to `sel`.
-unsafe fn objc_nullary(obj: *mut std::os::raw::c_void, sel: &std::ffi::CStr) -> usize {
-    if obj.is_null() {
-        return 0;
-    }
-    unsafe extern "C" {
-        fn objc_msgSend(
-            receiver: *mut std::os::raw::c_void,
-            sel: *const std::os::raw::c_void,
-        ) -> usize;
-        fn sel_registerName(name: *const std::os::raw::c_char) -> *const std::os::raw::c_void;
-    }
-    // SAFETY: the caller's contract; the selector is registered by name.
-    unsafe { objc_msgSend(obj, sel_registerName(sel.as_ptr())) }
 }
 
 /// Every layout / name read must work in the **Loaded** state.

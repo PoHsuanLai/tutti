@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_graph::{HasParam, IntoNode, NodeParts};
 use tutti_transport::TempoReader;
-use tutti_types::{Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate};
+use tutti_types::{Amplitude, Beat, ChannelLayout, PlaybackRate};
 
 use crate::streamer::{Stream, StreamReader};
 use crate::{
@@ -26,8 +26,7 @@ use crate::{
 /// ```
 ///
 /// It plays on the transport, from `at` (beat 0 until set) to the end of the
-/// sample or the [`lasting`](Self::lasting) length. A node over a clip reads
-/// the session's tempo map when the session's graph adds it
+/// sample. A node over a clip reads the session's tempo map when the session's graph adds it
 /// (`tutti-session`'s `SessionNode`).
 ///
 /// # Two tiers, one clip
@@ -142,13 +141,6 @@ impl Clip {
     /// Starts the clip at `start` on the timeline.
     pub fn at(mut self, start: Beat) -> Self {
         self.window.start = start;
-        self
-    }
-
-    /// Plays at most `length` beats of the sample from its start; the whole
-    /// sample without it.
-    pub fn lasting(mut self, length: BeatDuration) -> Self {
-        self.window.duration = Some(length);
         self
     }
 

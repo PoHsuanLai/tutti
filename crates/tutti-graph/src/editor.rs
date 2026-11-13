@@ -1263,23 +1263,6 @@ impl Editor {
         Ok(())
     }
 
-    /// As [`connect_bus`](Self::connect_bus), channel by index
-    /// ([`BusFold::ByIndex`]): sink channel `c` is source channel `c`, a wider
-    /// sink zero-filled, whatever either bus names. For an edge whose author
-    /// knows the channels line up, never a fallback.
-    ///
-    /// # Errors
-    ///
-    /// As [`connect_bus`](Self::connect_bus); the fold refuses a sink
-    /// narrower than the source.
-    pub fn connect_bus_by_index(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
-        self.spec
-            .check_bus_edge(&self.shapes, from, to, BusFold::ByIndex)?;
-        self.touch();
-        self.spec.connect_bus_by_index(from, to);
-        Ok(())
-    }
-
     /// Removes the bus edge `from -> to`: its lanes and their weights go with
     /// it at the next commit, and the author's own edges and gains stay.
     /// Returns whether it was declared.
@@ -1305,20 +1288,6 @@ impl Editor {
             .check_root_bus_edge(&self.shapes, from, BusFold::Speakers)?;
         self.touch();
         self.spec.connect_bus_to_root(from);
-        Ok(())
-    }
-
-    /// As [`connect_bus_to_root`](Self::connect_bus_to_root), channel by
-    /// index ([`BusFold::ByIndex`]).
-    ///
-    /// # Errors
-    ///
-    /// As [`connect_bus_to_root`](Self::connect_bus_to_root).
-    pub fn connect_bus_to_root_by_index(&mut self, from: BusSource) -> Result<(), BusError> {
-        self.spec
-            .check_root_bus_edge(&self.shapes, from, BusFold::ByIndex)?;
-        self.touch();
-        self.spec.connect_bus_to_root_by_index(from);
         Ok(())
     }
 

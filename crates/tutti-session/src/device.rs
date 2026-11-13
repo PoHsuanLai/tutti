@@ -23,9 +23,7 @@
 //!   session's disk streamer (every open stream's conversion ratio) and,
 //!   through the re-prepare, the MIDI clock node;
 //! - the compensation figures in samples ([`Session::compensation`],
-//!   [`Session::latency`]), published before the first block;
-//! - then the host's own hook ([`LiveSession::on_restart`]), for what it holds
-//!   itself.
+//!   [`Session::latency`]), published before the first block.
 //!
 //! After the stream plays again, every input the session added
 //! (`Session::add_input`, feature `audio-io`) is reopened at the new rate
@@ -89,8 +87,6 @@ use crate::{DevicePolicy, DeviceWatch, Error, FollowEvent, Result, Session, Sess
 pub struct LiveSession {
     session: Session,
     device: Device,
-    /// What the host runs at the end of every restart's hook.
-    follow: Option<Box<dyn FnMut(&OutputSpec)>>,
 }
 
 impl std::fmt::Debug for LiveSession {
@@ -104,11 +100,7 @@ impl std::fmt::Debug for LiveSession {
 
 impl LiveSession {
     pub(crate) fn new(session: Session, device: Device) -> Self {
-        Self {
-            session,
-            device,
-            follow: None,
-        }
+        Self { session, device }
     }
 
     /// The session.
@@ -183,20 +175,9 @@ impl LiveSession {
             self.device.chosen = request.device.clone();
             self.session.note_chosen(request.device.clone());
         }
-        let follow = self
-            .follow
-            .as_deref_mut()
-            .map(|f| f as &mut dyn FnMut(&OutputSpec));
         self.session
-            .run_restart(&mut self.device, request, follow)
+            .run_restart(&mut self.device, request)
             .map(RestartOutcome::Restarted)
-    }
-
-    /// Runs `hook` with the new spec at the end of every restart's hook, while
-    /// no callback runs: for what the host holds itself (a disk streamer it
-    /// took, a device config it publishes). Replaces the hook set before.
-    pub fn on_restart(&mut self, hook: impl FnMut(&OutputSpec) + 'static) {
-        self.follow = Some(Box::new(hook));
     }
 
     /// Starts watching the host's devices: `source` is polled on
@@ -307,11 +288,6 @@ impl Device {
     /// [`DeviceEvent::Fault`].
     pub fn faults(&self) -> Arc<StreamFaults> {
         self.driver.engine().faults()
-    }
-
-    /// Takes the most recent backend fault, clearing it.
-    pub fn take_fault(&self) -> Option<StreamFault> {
-        self.driver.engine().faults().take_last()
     }
 
     /// What the device adds in each direction, in frames at the graph's rate,
@@ -597,12 +573,11 @@ impl From<DeviceEvent> for SessionEvent {
 
 impl Session {
     /// Runs a restart on `device`, the one this session's [`LiveSession`]
-    /// pairs it with, `follow` running at the end of its hook.
+    /// pairs it with.
     pub(crate) fn run_restart(
         &mut self,
         device: &mut Device,
         request: DeviceRestart,
-        follow: Option<&mut dyn FnMut(&OutputSpec)>,
     ) -> std::result::Result<DeviceRestarted, RestartError> {
         let selector = request.device.clone();
         let max_block = request.max_block;
@@ -611,7 +586,7 @@ impl Session {
             device
                 .driver
                 .restart_with(request.device, |spec, stopped| {
-                    self.rerate(spec, stopped, max_block, follow)
+                    self.rerate(spec, stopped, max_block)
                 })
                 .map(|()| previous)
         });
@@ -642,7 +617,7 @@ impl Session {
             device
                 .driver
                 .restart_on(spec, driver, |spec, stopped| {
-                    self.rerate(spec, stopped, max_block, None)
+                    self.rerate(spec, stopped, max_block)
                 })
                 .map(|()| previous)
         });
@@ -664,13 +639,6 @@ impl Session {
         self.device_watch
             .as_ref()
             .map(|w| w.follow().want().clone())
-    }
-
-    /// The devices the watch last saw, `None` before its first look or
-    /// without a watch.
-    #[must_use]
-    pub fn watched_devices(&self) -> Option<&tutti_cpal::Snapshot> {
-        self.device_watch.as_ref().and_then(|w| w.snapshot())
     }
 
     /// Records a restart's outcome: the policy is told, and the next poll
@@ -839,7 +807,6 @@ impl Session {
         spec: &OutputSpec,
         stopped: &tutti_cpal::Stopped<'_>,
         max_block: Option<MaxBlock>,
-        follow: Option<&mut dyn FnMut(&OutputSpec)>,
     ) -> Result<()> {
         let rate = spec.sample_rate;
         // A declared root has to be placeable on the new device: refused
@@ -923,9 +890,6 @@ impl Session {
         // `Session::open_heard_tap`).
         if let Some((_, layout)) = &mut self.heard {
             *layout = spec.channels;
-        }
-        if let Some(follow) = follow {
-            follow(spec);
         }
         Ok(())
     }

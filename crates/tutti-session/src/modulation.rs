@@ -726,12 +726,6 @@ impl ModState {
         self.modulation.resyncs_owed()
     }
 
-    /// Applies that found their inputs unchanged and did nothing
-    /// (`tutti_nodes::Modulation::skipped`): a steady update's count moves.
-    pub fn skipped_applies(&self) -> u64 {
-        self.modulation.skipped()
-    }
-
     /// Resyncs refused for good (a full queue), counted.
     pub fn resyncs_dropped(&self) -> u64 {
         self.modulation.resyncs_dropped()

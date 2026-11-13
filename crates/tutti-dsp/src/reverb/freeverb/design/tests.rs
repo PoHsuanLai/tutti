@@ -61,8 +61,8 @@ impl ReverbCase for FreeverbFamily {
     /// 15%. The measured figure is the energy slope 40 to 65 dB down, where
     /// a bank of combs of 1116 to 1640 frames (a 1.47 ratio in rate) has
     /// not yet settled on the slowest: it lands 5 to 11% under the network's
-    /// `rt60`, which is the slowest comb's (design 022 asked for 10%; the
-    /// bank's own spread needs more).
+    /// `rt60`, which is the slowest comb's; the
+    /// bank's own spread needs more than the default 10%.
     fn tolerance(&self) -> f32 {
         0.15
     }

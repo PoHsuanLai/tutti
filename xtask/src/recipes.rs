@@ -183,8 +183,8 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     (
         "conformance-inventory",
-        "[clap]",
-        "regenerate an inventory's id, side and maturity columns from the spec source",
+        "[clap|midi]",
+        "regenerate an inventory's generated columns from the spec source (midi: TUTTI_MIDI_SPECS)",
     ),
     (
         "check-range-types",

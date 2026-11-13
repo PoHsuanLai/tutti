@@ -22,7 +22,7 @@ use tutti_graph::{
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
     CompileError, Compiled, ControlProgram, Declarations, RouteDecl, RouteKey, RouteTarget,
-    SignalKind, Source as ModSource, SourceId, SourceKey, SourceNode, TargetDecl, TargetKey,
+    SignalKind, SignalSource, Source as ModSource, SourceId, SourceKey, TargetDecl, TargetKey,
     compile,
 };
 use tutti_types::ChannelLayout;
@@ -352,7 +352,7 @@ struct SignalNode {
     key: NodeKey,
     /// As [`Lane::generation`].
     generation: u32,
-    decl: SourceNode,
+    decl: SignalSource,
     feed: Option<Feed>,
     /// A follower's input width.
     width: ChannelLayout,
@@ -361,7 +361,7 @@ struct SignalNode {
 /// A source resolved and checked: what its node is built from.
 struct SourcePlan {
     key: NodeKey,
-    decl: SourceNode,
+    decl: SignalSource,
     feed: Option<Feed>,
     width: ChannelLayout,
 }
@@ -980,6 +980,8 @@ impl Modulation {
                 }
                 continue;
             }
+            // A rebuilt source sends where it stands (0) on its first frame: a
+            // lane holds the old node's last value until it does.
             let replacing = rebuilt.contains(&source);
             match plan.decl.kind {
                 SignalKind::Follower { .. } => {
@@ -991,12 +993,12 @@ impl Modulation {
                     editor.insert(plan.key, "envelope-follower", ForkByClone(node));
                 }
                 SignalKind::NoteEnvelope { .. } => {
-                    let node = NoteEnvelopeNode::from_decl(&plan.decl).expect("a note envelope's");
-                    editor.insert(plan.key, "note-envelope", ForkByClone(node));
+                    let mut node =
+                        NoteEnvelopeNode::from_decl(&plan.decl).expect("a note envelope's");
                     if replacing {
-                        // Idle: its resync sends the 0 it stands at.
-                        self.resync.insert(source);
+                        node = node.replacing();
                     }
+                    editor.insert(plan.key, "note-envelope", ForkByClone(node));
                 }
             }
             wire_feed(editor, plan.key, plan.feed);
@@ -1358,7 +1360,7 @@ impl Modulation {
     fn resolve_source(
         &self,
         source: SourceKey,
-        decl: SourceNode,
+        decl: SignalSource,
         kept: bool,
         feed: Option<Feed>,
         editor: &Editor,

@@ -506,7 +506,7 @@ fn direct_parameter_path_is_normalized_end_to_end() {
 fn test_au_state_roundtrip_via_trait() {
     let mut au = delay();
 
-    let state = au.save_state(&main_thread()).expect("save should succeed");
+    let state = au.save_state(&main_thread(), StateUse::Project).expect("save should succeed");
     assert!(!state.is_empty(), "State should not be empty");
 
     au.load_state(&main_thread(), &state, StateUse::Project)

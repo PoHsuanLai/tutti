@@ -738,7 +738,7 @@ impl Drop for OpenInput {
     target_os = "macos",
     all(target_os = "linux", alsa_ump),
     test,
-    feature = "test-support"
+    feature = "testing"
 ))]
 pub(crate) fn os_devices(
     inputs: &[crate::capability::EndpointInfo],

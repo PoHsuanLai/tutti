@@ -68,7 +68,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         ("check-hosting", "gate check-hosting"),
         ("check-session", "gate check-session"),
         ("check-doc-refs", "gate check-doc-refs"),
-        ("check-stale-pointers", "gate check-stale-pointers"),
+        ("check-pointers", "gate check-pointers"),
     ] {
         assert_eq!(dry(recipe, &[]), [gate]);
     }
@@ -84,7 +84,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-hosting",
         "gate check-session",
         "gate check-doc-refs",
-        "gate check-stale-pointers",
+        "gate check-pointers",
     ] {
         assert!(ci.iter().any(|l| l == want), "{want}");
     }

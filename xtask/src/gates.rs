@@ -17,10 +17,10 @@ mod guards;
 mod hosting;
 mod layout;
 mod lex;
+mod pointers;
 mod prose;
 mod range_types;
 mod session;
-mod stale_pointers;
 mod submodule_pins;
 mod test_paths;
 mod toml;
@@ -99,8 +99,8 @@ pub(crate) enum Gate {
     Session,
     /// Prose names crate paths and design-doc sections that exist.
     DocRefs,
-    /// A `file.rs:N` pointer in prose names a line that exists.
-    StalePointers,
+    /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
+    Pointers,
 }
 
 impl Gate {
@@ -116,7 +116,7 @@ impl Gate {
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
-            Gate::StalePointers => "gate check-stale-pointers".to_owned(),
+            Gate::Pointers => "gate check-pointers".to_owned(),
         }
     }
 
@@ -136,7 +136,7 @@ impl Gate {
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::DocRefs => doc_refs::check(&tree),
-            Gate::StalePointers => stale_pointers::check(&tree),
+            Gate::Pointers => pointers::check(&tree),
         }
     }
 }

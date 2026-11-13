@@ -184,9 +184,9 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "prose names crate paths and design-doc sections that exist",
     ),
     (
-        "check-stale-pointers",
+        "check-pointers",
         "",
-        "a file:line pointer in prose names a line that exists",
+        "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
         "check-range-types",
@@ -418,7 +418,7 @@ impl Planner<'_> {
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
-            "check-stale-pointers" => self.out.push(Step::Gate(Gate::StalePointers)),
+            "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
             "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
@@ -468,7 +468,7 @@ impl Planner<'_> {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
-                    "check-submodule-pins", "check-doc-refs", "check-stale-pointers",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers",
                     "check-features",
                     "check-loom", "test", "test-features", "test-editor", "test-doc",
                     "test-release", "doc",

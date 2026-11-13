@@ -97,7 +97,7 @@ fn report_host_capability_score() {
     // with a bare default measured the fixture rather than the host.
     //
     // `kSystemTimeValid` / `kClockValid` / `kSmpteValid` / `kChordValid` stay
-    // unreachable on purpose — see `types/transport.rs:134-204`: no upstream
+    // unreachable on purpose: no upstream
     // producer exists, and advertising a field the host cannot fill would be
     // worse than saying nothing. They are a deliberate ceiling on this score.
     let info = inst.loaded().plugin_info().clone();

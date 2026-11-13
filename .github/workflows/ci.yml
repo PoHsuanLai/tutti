@@ -178,12 +178,8 @@ jobs:
       # Every InProcess/OutOfProcess impl is listed in the plugin contract's
       # `hostings` (`xtask` over the source, no build).
       - run: cargo xtask check-hosting
-      # Prose names what exists: a crate path in a comment or a `.md` file
-      # names identifiers its crate holds, a design-doc citation names a doc
-      # and a heading it has, and a `file.rs:N` pointer names a line that
-      # exists (`xtask` over the source, no build).
       - run: cargo xtask check-doc-refs
-      - run: cargo xtask check-stale-pointers
+      - run: cargo xtask check-pointers
 
   clippy:
     name: clippy

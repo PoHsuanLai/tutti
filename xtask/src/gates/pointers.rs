@@ -1,15 +1,15 @@
-//! `check-stale-pointers`: a `file.rs:N` pointer in prose names a line that
-//! exists.
+//! `check-pointers`: prose about the code states the code, never a line of it.
 //!
-//! In the [prose](super::prose) of the repo, a pointer `path.rs:N` or
-//! `path.md:N-M` names a file of the repo whose path ends with `path`
-//! (preferring the citing file's own crate when both have one), with at least
-//! `M` (or `N`) lines, or the pointer fails. A file under one of [`FOREIGN`]'s
-//! paths cites other projects' sources and is not read.
+//! In the [prose](super::prose) of the repo outside `docs/`, a pointer
+//! `path.rs:N` or `path.md:N` fails: a comment states the logic or the
+//! invariant itself, and a line number drifts with every edit above it. A
+//! file under one of [`FOREIGN`]'s paths cites other projects' sources and is
+//! not read. Under `docs/`, a pointer names a repo file whose path ends with
+//! `path` and that has at least `N` lines (the last line of a `N-M` range).
 //!
-//! Limits: a pointer is checked against a line count, not the line's content,
-//! so a pointer that drifts within its file passes. Header and other
-//! extensions (`.h:N`, `.cpp:N`) cite SDKs outside the repo and are not read.
+//! Limits: under `docs/`, a pointer is checked against a line count, not the
+//! line's content. Header and other extensions (`.h:N`, `.cpp:N`) cite SDKs
+//! outside the repo and are not read.
 
 use super::lex::line_of;
 use super::prose::prose;
@@ -74,16 +74,6 @@ fn pointers(text: &str) -> Vec<(usize, &str, usize)> {
     out
 }
 
-/// The crate directory (`crates/x/`) a path is under, or `""`.
-fn crate_of(path: &str) -> String {
-    let parts: Vec<&str> = path.split('/').collect();
-    if parts.len() > 2 && (parts[0] == "crates" || parts[0] == "testing") {
-        format!("{}/{}/", parts[0], parts[1])
-    } else {
-        String::new()
-    }
-}
-
 pub(super) fn check(tree: &dyn Tree) -> Report {
     let files: Vec<String> = ROOTS.iter().flat_map(|r| tree.files(r, &skipped)).collect();
     let mut bad = Vec::new();
@@ -91,46 +81,44 @@ pub(super) fn check(tree: &dyn Tree) -> Report {
         if FOREIGN.iter().any(|(d, _)| p.path.starts_with(d)) {
             continue;
         }
-        let home = crate_of(&p.path);
+        let docs = p.path.starts_with("docs/");
         for (at, path, last) in pointers(&p.text) {
-            let rel = path.trim_start_matches("./");
-            let tail = format!("/{rel}");
-            let all: Vec<&String> = files
-                .iter()
-                .filter(|f| *f == rel || f.ends_with(&tail))
-                .collect();
-            let own: Vec<&String> = all
-                .iter()
-                .copied()
-                .filter(|f| !home.is_empty() && f.starts_with(&home))
-                .collect();
-            let candidates = if own.is_empty() { all } else { own };
             let line = line_of(&p.text, at);
-            if candidates.is_empty() {
+            if !docs {
                 bad.push(format!(
-                    "{}:{line}: `{path}:{last}` names a file the repo does not hold",
+                    "{}:{line}: `{path}:{last}` points at a line; state what it holds instead",
                     p.path
                 ));
                 continue;
             }
+            let rel = path.trim_start_matches("./");
+            let tail = format!("/{rel}");
+            let candidates: Vec<&String> = files
+                .iter()
+                .filter(|f| *f == rel || f.ends_with(&tail))
+                .collect();
             let longest = candidates
                 .iter()
                 .map(|f| tree.read(f).map_or(0, |t| t.lines().count()))
-                .max()
-                .unwrap_or(0);
-            if last > longest {
-                bad.push(format!(
-                    "{}:{line}: `{path}:{last}` is past the end of {} ({longest} lines)",
+                .max();
+            match longest {
+                None => bad.push(format!(
+                    "{}:{line}: `{path}:{last}` names a file the repo does not hold",
+                    p.path
+                )),
+                Some(n) if last > n => bad.push(format!(
+                    "{}:{line}: `{path}:{last}` is past the end of {} ({n} lines)",
                     p.path, candidates[0]
-                ));
+                )),
+                Some(_) => {}
             }
         }
     }
     let mut r = Report::default();
     if bad.is_empty() {
-        r.say("check-stale-pointers: OK");
+        r.say("check-pointers: OK");
     } else {
-        r.fail("check-stale-pointers: FAIL (a file:line pointer names no such line):");
+        r.fail("check-pointers: FAIL (a file:line pointer in prose):");
         for line in bad {
             r.fail(format!("  {line}"));
         }
@@ -146,51 +134,42 @@ mod tests {
     const TEN: &str = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
 
     fn run(extra: &[(&str, &str)]) -> Vec<String> {
-        let mut files = vec![
-            ("crates/tutti-a/src/loaded.rs", TEN),
-            ("crates/tutti-b/src/loaded.rs", "1\n2\n"),
-            ("docs/reference/x.md", "1\n2\n3\n"),
-        ];
+        let mut files = vec![("crates/tutti-a/src/loaded.rs", TEN)];
         files.extend_from_slice(extra);
         check(&Mem::with(&files)).findings
     }
 
     #[test]
-    fn a_pointer_within_its_file_passes() {
-        assert!(
-            run(&[(
-                "crates/tutti-a/src/lib.rs",
-                "// `loaded.rs:10`, `src/loaded.rs:3-9`\n"
-            )])
-            .is_empty()
-        );
-        assert!(
-            run(&[(
-                "crates/tutti-c/src/lib.rs",
-                "// `tutti-a/src/loaded.rs:8`\n"
-            )])
-            .is_empty()
-        );
-        assert!(run(&[("crates/tutti-c/README.md", "see `docs/reference/x.md:3`\n")]).is_empty());
-    }
-
-    #[test]
-    fn a_pointer_past_the_end_or_to_no_file_fails() {
-        let bad = run(&[(
-            "crates/tutti-b/src/lib.rs",
-            "// `loaded.rs:9`\n// `gone.rs:1`\n// `src/loaded.rs:1-11`\n",
-        )]);
+    fn a_pointer_in_a_code_comment_or_a_readme_fails_even_when_it_resolves() {
         assert_eq!(
-            bad[1..],
+            run(&[("crates/tutti-a/src/lib.rs", "// see `loaded.rs:3`\n")]),
             [
-                "  crates/tutti-b/src/lib.rs:1: `loaded.rs:9` is past the end of crates/tutti-b/src/loaded.rs (2 lines)",
-                "  crates/tutti-b/src/lib.rs:2: `gone.rs:1` names a file the repo does not hold",
-                "  crates/tutti-b/src/lib.rs:3: `src/loaded.rs:11` is past the end of crates/tutti-b/src/loaded.rs (2 lines)",
+                "check-pointers: FAIL (a file:line pointer in prose):",
+                "  crates/tutti-a/src/lib.rs:1: `loaded.rs:3` points at a line; state what it holds instead",
             ]
         );
         assert_eq!(
-            run(&[("crates/tutti-c/src/lib.rs", "// `src/loaded.rs:11`\n")]).len(),
+            run(&[("crates/tutti-a/README.md", "`src/loaded.rs:2-4`\n")]).len(),
             2
+        );
+        assert_eq!(run(&[("xtask/src/x.rs", "/// `a/b.md:1`\n")]).len(), 2);
+    }
+
+    #[test]
+    fn a_pointer_under_docs_names_a_line_that_exists() {
+        assert!(
+            run(&[(
+                "docs/reference/x.md",
+                "`tutti-a/src/loaded.rs:3-10`, `loaded.rs:10`\n"
+            )])
+            .is_empty()
+        );
+        assert_eq!(
+            run(&[("docs/reference/x.md", "`loaded.rs:11`\n`gone.rs:1`\n")])[1..],
+            [
+                "  docs/reference/x.md:1: `loaded.rs:11` is past the end of crates/tutti-a/src/loaded.rs (10 lines)",
+                "  docs/reference/x.md:2: `gone.rs:1` names a file the repo does not hold",
+            ]
         );
     }
 
@@ -198,9 +177,10 @@ mod tests {
     fn foreign_sources_headers_and_code_are_not_read() {
         assert!(
             run(&[
+                ("crates/arc-lend/src/lib.rs", "// `src/cache.rs:159`\n"),
                 (
-                    "crates/arc-lend/src/lib.rs",
-                    "// `src/cache.rs:159`, `loaded.rs:99`\n"
+                    "crates/tutti-nodes/tests/filters/oracle_biquad.rs",
+                    "// `coefficients.rs:302`\n"
                 ),
                 (
                     "crates/tutti-a/src/x.rs",

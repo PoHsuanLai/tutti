@@ -22,7 +22,7 @@ use tutti_vst2_test_plugin::ProcessCapture;
 const RATE: SampleRate = SampleRate(48_000.0);
 
 fn vst2_probe() -> std::path::PathBuf {
-    tutti_fixtures::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
+    tutti_fixtures::vst2_probe().to_path_buf()
 }
 
 /// What `audioMasterGetTime` answered on the probe's last `process`: read from

@@ -22,7 +22,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 /// first read of the parameters sees the integer range (a default VST2 plugin,
 /// like every real one measured, declines the opcode).
 fn probe_answering_properties() -> (libloading::Library, std::path::PathBuf) {
-    let path = tutti_fixtures::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin");
+    let path = tutti_fixtures::vst2_probe();
     // SAFETY: the probe is our own test plugin, whose load runs no constructor.
     let lib = unsafe { libloading::Library::new(&path) }.expect("the probe image opens");
     // SAFETY: the probe exports this as `extern "C" fn(bool)`.
@@ -32,7 +32,7 @@ fn probe_answering_properties() -> (libloading::Library, std::path::PathBuf) {
             .expect("the probe exports its switch");
         switch(true);
     }
-    (lib, path)
+    (lib, path.to_path_buf())
 }
 
 fn session_with_probe() -> (Session, NodeKey, libloading::Library) {

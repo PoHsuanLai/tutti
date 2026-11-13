@@ -657,6 +657,17 @@ jobs:
           cargo nextest run --locked --workspace --no-fail-fast \
             -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
 
+      # tutti-session's `plugin` suite is feature-gated, and the dark-features
+      # job that runs it is Linux-only. It drives the plugin-server and
+      # in-process VST2, whose timing and file naming differ on macOS, so a
+      # macOS-only difference there went unnoticed (the replacement-ports race).
+      - name: tutti-session plugin suite (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo nextest run --locked -p tutti-session \
+            --features clap,export,modulation,device,midi,sampler,vst2 \
+            -E 'binary(plugin)'
+
   # What `test` used to run after the workspace suite, on its own runner so the
   # two overlap: the critical path was the macOS `test` job, which ran all of
   # this serially behind the 8-minute suite. The same checks, the same

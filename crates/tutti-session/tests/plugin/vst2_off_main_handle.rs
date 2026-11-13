@@ -33,11 +33,7 @@ fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
         .add_plugin_blocking(
             &main,
             PluginLoadRequest::new(
-                PluginRef::file(tutti_fixtures::cdylib(
-                    "tutti_vst2_test_plugin",
-                    "tutti-vst2-test-plugin",
-                ))
-                .expect("a plugin file"),
+                PluginRef::file(tutti_fixtures::vst2_probe()).expect("a plugin file"),
             ),
         )
         .expect("the in-process VST2 loads");

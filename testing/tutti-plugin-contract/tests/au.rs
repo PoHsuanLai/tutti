@@ -24,7 +24,7 @@ mod ramped {
             .unwrap_or_else(|(_, why)| panic!("activation refused: {why:?}"))
     }
 
-    fn ramp(a: &Active<<Au as Format>::L>, offset: i32, duration: usize, from: f32, to: f32) {
+    fn ramp(a: &Active<<Au as Format>::L>, offset: i32, duration: u32, from: f32, to: f32) {
         a.controller()
             .schedule_parameters(
                 Param::Level.id().get(),

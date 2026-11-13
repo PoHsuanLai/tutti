@@ -25,6 +25,7 @@ mod soundfont_info;
 mod soundfont_parameters;
 mod soundfont_sampledata;
 mod soundfont_version;
+mod summed_generator;
 mod zone;
 mod zone_info;
 
@@ -44,6 +45,7 @@ pub use sample_header::{SampleHeader, Side};
 pub use soundfont::SoundFont;
 pub use soundfont_info::SoundFontInfo;
 pub use soundfont_version::SoundFontVersion;
+pub use summed_generator::SummedGenerator;
 
 /// The inclusive range a range generator packs: the low byte is the first
 /// value, the high byte the last.

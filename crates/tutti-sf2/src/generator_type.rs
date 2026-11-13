@@ -110,12 +110,13 @@ pub enum GeneratorType {
     OverridingRootKey = 58,
 }
 
-/// The error of converting a [`GeneratorType`] to the generator type of a zone level
-/// that does not hold it: [`PresetGenerator`](crate::PresetGenerator) refuses the
+/// The error of converting a [`GeneratorType`] to a narrower generator type that does
+/// not hold it: [`PresetGenerator`](crate::PresetGenerator) refuses the
 /// instrument-only kinds, [`InstrumentGenerator`](crate::InstrumentGenerator) refuses
-/// `instrument`.
+/// `instrument`, [`SummedGenerator`](crate::SummedGenerator) refuses what is not
+/// added across levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("{0:?} is not a generator of this zone level")]
+#[error("{0:?} is not a generator of the requested type")]
 pub struct WrongLevelGenerator(GeneratorType);
 
 impl WrongLevelGenerator {

@@ -80,7 +80,8 @@ impl From<RequestBit> for u8 {
 }
 
 /// A bit index a [`RequestWord`] has no room for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("request bit {} is not below {}", .0, REQUEST_BITS)]
 pub struct RequestBitOutOfRange(u8);
 
 impl RequestBitOutOfRange {
@@ -90,14 +91,6 @@ impl RequestBitOutOfRange {
         self.0
     }
 }
-
-impl std::fmt::Display for RequestBitOutOfRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "request bit {} is not below {REQUEST_BITS}", self.0)
-    }
-}
-
-impl std::error::Error for RequestBitOutOfRange {}
 
 impl TryFrom<u8> for RequestBit {
     type Error = RequestBitOutOfRange;

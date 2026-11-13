@@ -201,34 +201,22 @@ impl ParamPorts {
 }
 
 /// Why a list cannot be a node's [`ParamPorts`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParamPortsError {
     /// More params than [`MAX_PARAM_PORTS`].
+    #[error("{count} modulatable params past a node's {}", MAX_PARAM_PORTS)]
     TooMany {
         /// How many were listed.
         count: usize,
     },
     /// An address (kind and index) listed twice.
+    #[error("{0:?} is declared modulatable twice")]
     Duplicate(UnitAddr),
     /// [`NodeMix::ADDR`]: the graph's own, which a node's mix is driven at.
+    #[error("{0:?} is reserved for a node's mix")]
     Reserved(UnitAddr),
 }
-
-impl std::fmt::Display for ParamPortsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooMany { count } => write!(
-                f,
-                "{count} modulatable params past a node's {MAX_PARAM_PORTS}"
-            ),
-            Self::Duplicate(p) => write!(f, "{p:?} is declared modulatable twice"),
-            Self::Reserved(p) => write!(f, "{p:?} is reserved for a node's mix"),
-        }
-    }
-}
-
-impl std::error::Error for ParamPortsError {}
 
 impl Default for ParamPorts {
     fn default() -> Self {

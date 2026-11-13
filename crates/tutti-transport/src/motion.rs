@@ -157,19 +157,12 @@ impl MotionEvent {
 /// rolling is a legitimate no-op): this means the event was not sent, which
 /// is a bug — the queue holds [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY)
 /// user-driven commands in flight.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("transport command queue full; {event:?} not sent")]
 pub struct QueueFull {
     /// The event that was refused, handed back so a caller can retry it.
     pub event: MotionEvent,
 }
-
-impl core::fmt::Display for QueueFull {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "transport command queue full; {:?} not sent", self.event)
-    }
-}
-
-impl std::error::Error for QueueFull {}
 
 /// The control handle of the transport's motion machine: send and schedule
 /// commands, read what the machine published.

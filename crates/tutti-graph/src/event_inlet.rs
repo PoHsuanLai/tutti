@@ -113,22 +113,13 @@ use crate::time::Due;
 /// One variant: a stamp cannot name a beat any more, so the ring being full is
 /// the only way left. It stays an enum so the reason reads at the call site
 /// (`Err(Refused::Full)`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Refused {
     /// The ring is full: the event was dropped and counted
     /// ([`Losses::lost`]).
+    #[error("the event inlet's ring is full")]
     Full,
 }
-
-impl std::fmt::Display for Refused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Full => f.write_str("the event inlet's ring is full"),
-        }
-    }
-}
-
-impl std::error::Error for Refused {}
 
 /// When a pushed event is due, as the producer names it.
 ///
@@ -329,16 +320,9 @@ impl EventInletWriter {
 pub struct EventCapacity(NonZeroU32);
 
 /// The count [`EventCapacity`] refused: 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("an event inlet holds at least one event, not {0}")]
 pub struct EventCapacityError(pub u32);
-
-impl std::fmt::Display for EventCapacityError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "an event inlet holds at least one event, not {}", self.0)
-    }
-}
-
-impl std::error::Error for EventCapacityError {}
 
 impl EventCapacity {
     /// The capacity of `events`; `None` for 0.

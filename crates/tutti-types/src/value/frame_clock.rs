@@ -46,9 +46,10 @@ pub struct LoopRange {
 }
 
 /// Why a [`LoopRange`] was refused. A beat is the raw the region was given.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 pub enum LoopRangeError {
     /// A bound is NaN or infinite.
+    #[error("a loop's bounds must be finite beats, not {}..{}", .start.get(), .end.get())]
     NotFinite {
         /// The start given.
         start: Beat,
@@ -56,11 +57,13 @@ pub enum LoopRangeError {
         end: Beat,
     },
     /// The end is the start: a loop of no length.
+    #[error("a loop cannot be empty (both bounds at beat {})", .at.get())]
     Empty {
         /// The beat both bounds are at.
         at: Beat,
     },
     /// The end is before the start.
+    #[error("a loop's end ({}) must come after its start ({})", .end.get(), .start.get())]
     Reversed {
         /// The start given.
         start: Beat,
@@ -68,32 +71,6 @@ pub enum LoopRangeError {
         end: Beat,
     },
 }
-
-impl std::fmt::Display for LoopRangeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFinite { start, end } => write!(
-                f,
-                "a loop's bounds must be finite beats, not {}..{}",
-                start.get(),
-                end.get()
-            ),
-            Self::Empty { at } => write!(
-                f,
-                "a loop cannot be empty (both bounds at beat {})",
-                at.get()
-            ),
-            Self::Reversed { start, end } => write!(
-                f,
-                "a loop's end ({}) must come after its start ({})",
-                end.get(),
-                start.get()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for LoopRangeError {}
 
 impl TryFrom<std::ops::Range<Beat>> for LoopRange {
     type Error = LoopRangeError;

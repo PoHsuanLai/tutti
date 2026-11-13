@@ -159,6 +159,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "unsafe lives only in the -ffi crates (plugin formats and MIDI), everything else forbids it",
     ),
     (
+        "check-errors",
+        "",
+        "every error type derives thiserror::Error, and a public one is an Error",
+    ),
+    (
         "check-layout",
         "",
         "the repo layout, the crate layering, the codec boundary and the depth-free test paths",
@@ -373,6 +378,7 @@ impl Planner<'_> {
             "check-session" => self.out.push(Step::Gate(Gate::Session)),
             "check-guards" => self.out.push(Step::Gate(Gate::Guards)),
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
+            "check-errors" => self.out.push(Step::Gate(Gate::Errors)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
@@ -423,7 +429,7 @@ impl Planner<'_> {
             "ci" => {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
-                    "check-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-ffi", "check-errors", "check-layout", "check-range-types", "check-hosting",
                     "check-submodule-pins",
                     "check-features",
                     "check-loom", "test", "test-features", "test-doc",

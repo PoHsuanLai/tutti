@@ -22,16 +22,9 @@ use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Seconds};
 /// [`Transport::audio`] refused: another [`TransportAudio`] over this
 /// transport (or a clone of it) is alive. Drop it (the engine that holds it)
 /// before building another.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the transport's audio side is held by another engine")]
 pub struct AudioTaken;
-
-impl std::fmt::Display for AudioTaken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the transport's audio side is held by another engine")
-    }
-}
-
-impl std::error::Error for AudioTaken {}
 
 /// What applying a command did to the output: the transport has moved at once
 /// either way, and a declicked stop or seek leaves the fade to the caller,

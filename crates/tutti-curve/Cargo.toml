@@ -20,6 +20,8 @@ workspace = true
 [dependencies]
 # `Beat`, the position of an automation point.
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

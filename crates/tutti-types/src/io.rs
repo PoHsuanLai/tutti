@@ -247,16 +247,9 @@ pub trait Sink {
 /// A marker, not the detail: a sink is synchronous on the caller's thread, so
 /// "write, then ask whether it failed" is a `Result`, and the first
 /// `io::Error` waits for [`Sink::finalize`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a write to the sink failed; finalize reports the first failure")]
 pub struct SinkFailed;
-
-impl std::fmt::Display for SinkFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a write to the sink failed; finalize reports the first failure")
-    }
-}
-
-impl std::error::Error for SinkFailed {}
 
 #[cfg(test)]
 mod tests {

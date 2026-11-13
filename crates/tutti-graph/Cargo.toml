@@ -47,6 +47,8 @@ bytemuck = { version = "1.16", features = ["derive"] }
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 # `testing` only: `TestPool::no_alloc` runs each participant under the gate.
 assert_no_alloc = { version = "1", default-features = false, optional = true }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # Turns `contract` and `testing` on for this crate's own tests (the pattern

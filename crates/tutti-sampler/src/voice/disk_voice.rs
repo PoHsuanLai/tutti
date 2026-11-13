@@ -279,43 +279,27 @@ struct Offline {
 
 /// Why a forked disk voice renders silence where its file should be, other
 /// than the file itself (`OfflineReadError`).
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum OfflineFault {
     /// Its stream ended (stopped, or its channel restarted on another file)
     /// before the copy was forked.
+    #[error(
+        "its disk stream had ended (stopped, or its channel restarted on another \
+                 file) when it was forked, so there was no file to play"
+    )]
     StreamGone,
     /// It was asked to render before it was prepared with a sample rate.
+    #[error("it was rendered before it was given a sample rate")]
     NoRenderRate,
 }
 
-impl std::fmt::Display for OfflineFault {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::StreamGone => {
-                "its disk stream had ended (stopped, or its channel restarted on another \
-                 file) when it was forked, so there was no file to play"
-            }
-            Self::NoRenderRate => "it was rendered before it was given a sample rate",
-        })
-    }
-}
-
-impl std::error::Error for OfflineFault {}
-
 /// Why a disk voice refused a fork.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "a disk voice forks only for an offline render: a live copy cannot read the \
+             stream's ring, and reading its file would block the audio thread"
+)]
 pub(crate) struct LiveDiskFork;
-
-impl std::fmt::Display for LiveDiskFork {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "a disk voice forks only for an offline render: a live copy cannot read the \
-             stream's ring, and reading its file would block the audio thread",
-        )
-    }
-}
-
-impl std::error::Error for LiveDiskFork {}
 
 /// A forked voice's failure latch, as the fork's health probe: a failure it
 /// latched is [`ForkFaultKind::Failed`].

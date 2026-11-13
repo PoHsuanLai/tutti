@@ -26,6 +26,8 @@ tutti-types = { version = "0.0.1", path = "../tutti-types" }
 # platform's C math library.
 libm = "0.2.15"
 serde = { version = "1", optional = true, features = ["derive"] }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

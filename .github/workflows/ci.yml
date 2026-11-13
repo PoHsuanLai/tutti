@@ -165,6 +165,10 @@ jobs:
       # `-ffi` crates carry the lints that make each block document itself
       # (source scan, no build).
       - run: cargo xtask check-ffi
+      # Every error type derives `thiserror::Error` (no hand `impl Error for`
+      # outside the gate's allow-list), and a `pub` type named `...Error`
+      # implements it (source scan, no build).
+      - run: cargo xtask check-errors
       # Every member sits directly in `crates/<package>` or `testing/<dir>`, no
       # shipped crate builds on a `testing/` crate, dependencies point down the
       # layers in CLAUDE.md, the codec libraries stay behind `tutti-codec`'s

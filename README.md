@@ -2,8 +2,8 @@
 
 A type-driven, real-time audio engine for building DAWs in Rust.
 
-[![CI](https://github.com/PoHsuanLai/tutti/actions/workflows/ci.yml/badge.svg)](https://github.com/PoHsuanLai/tutti/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue.svg)](#license)
+[![CI](https://img.shields.io/github/actions/workflow/status/PoHsuanLai/tutti/ci.yml?branch=main&style=flat&label=CI)](https://github.com/PoHsuanLai/tutti/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue?style=flat)](#license)
 
 Audio software has always felt a little chaotic to us: formats with their own
 rules, specs with their own corners, vendor quirks no document mentions, and

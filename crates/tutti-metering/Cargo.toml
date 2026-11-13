@@ -1,13 +1,12 @@
 [package]
 name = "tutti-metering"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Measures how busy an audio thread is, for a CPU load meter"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 keywords = ["audio", "metering", "real-time", "daw"]
 categories = ["multimedia::audio"]
 

@@ -124,6 +124,7 @@ fn requests(instance: &mut Active) -> Vec<Request> {
 /// The probe fires it from `resume`, which the activation dispatches, so a
 /// loaded instance has already seen one. Before the routing arm existed the
 /// opcode hit the `trace!` fall-through and nothing was asked.
+/// Spec: vst2.audioMaster.UpdateDisplay
 #[test]
 fn update_display_reaches_the_host() {
     let probe = Probe::acquire();

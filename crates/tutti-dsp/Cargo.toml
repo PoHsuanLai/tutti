@@ -1,6 +1,6 @@
 [package]
 name = "tutti-dsp"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Audio signal-processing algorithms over plain sample slices: filters, dynamics, delay, reverb, convolution, resampling and an FFT"
@@ -17,7 +17,7 @@ workspace = true
 # The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …),
 # `ChannelLayout`, `Interleaved` and the downmix helpers. Nothing here needs
 # the engine runtime, so this is the only tutti edge.
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 
 # `RealFft` (`fft/real.rs`), the one real-input FFT of the convolver, the
 # analyzers in `tutti-measure`, the time-stretch vocoder, the HRTF panner and the export

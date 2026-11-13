@@ -1,7 +1,7 @@
 # The umbrella. It holds no code: src/lib.rs is only re-exports.
 [package]
 name = "tutti"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "A type-driven, real-time audio engine for building DAWs in Rust"
@@ -19,39 +19,39 @@ workspace = true
 # Everything else is a feature, because a headless consumer that only bounces
 # a file should not link ALSA, and one that only reads a .mid should not link
 # CoreMIDI.
-tutti-transport = { path = "../tutti-transport" }
-tutti-tempo = { path = "../tutti-tempo" }
-tutti-metering = { path = "../tutti-metering" }
-tutti-engine = { path = "../tutti-engine" }
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-nodes = { path = "../tutti-nodes", default-features = false }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
+tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
+tutti-metering = { version = "0.0.1", path = "../tutti-metering" }
+tutti-engine = { version = "0.0.1", path = "../tutti-engine" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-nodes = { version = "0.0.1", path = "../tutti-nodes", default-features = false }
 # The audio graph: what an export renders, and what `Engine` runs.
 # `tutti-engine` already depends on it, so naming it here links nothing new.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
-tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
-tutti-codec = { path = "../tutti-codec", optional = true }
-tutti-export = { path = "../tutti-export", default-features = false, optional = true }
-tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
-tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
-tutti-polysynth = { path = "../tutti-polysynth", optional = true }
-tutti-soundfont = { path = "../tutti-soundfont", optional = true }
-tutti-sf2 = { path = "../tutti-sf2", optional = true }
-tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
-tutti-measure = { path = "../tutti-measure", optional = true }
-tutti-midi-protocol = { path = "../tutti-midi-protocol", optional = true }
-tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
-tutti-midi-file = { path = "../tutti-midi-file", optional = true }
-tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
-tutti-plugin = { path = "../tutti-plugin", optional = true }
-tutti-plugin-host = { path = "../tutti-plugin-host", optional = true }
+tutti-cpal = { version = "0.0.1", path = "../tutti-cpal", default-features = false, optional = true }
+tutti-codec = { version = "0.0.1", path = "../tutti-codec", optional = true }
+tutti-export = { version = "0.0.1", path = "../tutti-export", default-features = false, optional = true }
+tutti-modulation = { version = "0.0.1", path = "../tutti-modulation", default-features = false, optional = true }
+tutti-sampler = { version = "0.0.1", path = "../tutti-sampler", default-features = false, optional = true }
+tutti-polysynth = { version = "0.0.1", path = "../tutti-polysynth", optional = true }
+tutti-soundfont = { version = "0.0.1", path = "../tutti-soundfont", optional = true }
+tutti-sf2 = { version = "0.0.1", path = "../tutti-sf2", optional = true }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false, optional = true }
+tutti-measure = { version = "0.0.1", path = "../tutti-measure", optional = true }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol", optional = true }
+tutti-midi-runtime = { version = "0.0.1", path = "../tutti-midi-runtime", default-features = false, optional = true }
+tutti-midi-file = { version = "0.0.1", path = "../tutti-midi-file", optional = true }
+tutti-midi-hardware = { version = "0.0.1", path = "../tutti-midi-hardware", optional = true }
+tutti-plugin = { version = "0.0.1", path = "../tutti-plugin", optional = true }
+tutti-plugin-host = { version = "0.0.1", path = "../tutti-plugin-host", optional = true }
 # The API layer (design 015): a graph, its engine and its device behind one
 # `Session`. `default-features = false` (its default is empty anyway): each
 # feature below turns on the session's feature of the same name with `?`, so
 # a build without `session` gets no session edge from a feature.
-tutti-session = { path = "../tutti-session", default-features = false, optional = true }
+tutti-session = { version = "0.0.1", path = "../tutti-session", default-features = false, optional = true }
 
 [dev-dependencies]
 # `tutti::nodes::testing` for this crate's own test, examples and README

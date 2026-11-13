@@ -7,14 +7,13 @@
 //! differ, so equality is on the model and on the independent decoder's
 //! reading of the bytes, never on the bytes.
 
-use tutti_ump::ControlValue;
-mod support;
-
-use support::{Division, RawEvent, build_smf, decode_smf};
+use crate::common::track;
+use crate::support::{Division, RawEvent, build_smf, decode_smf};
 use tutti_midi_file::{
     Error, FileEvent, Meta, MidiFile, MidiFileKind, PairedNote, SmfFormat, TextKind, Tick, Track,
 };
 use tutti_types::{Beat, Bpm, Seconds};
+use tutti_ump::ControlValue;
 use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Voice1};
 
 const TPQ: u16 = 480;
@@ -32,23 +31,11 @@ fn voice(channel: u8, voice: Voice1) -> FileEvent {
 }
 
 fn on(channel: u8, key: u8, vel: u8) -> FileEvent {
-    voice(
-        channel,
-        Voice1::NoteOn {
-            note: NoteNumber::of(key),
-            velocity: U7::of(vel),
-        },
-    )
+    Message::note_on(MidiChannel::of(channel), NoteNumber::of(key), U7::of(vel)).into()
 }
 
 fn off(channel: u8, key: u8, vel: u8) -> FileEvent {
-    voice(
-        channel,
-        Voice1::NoteOff {
-            note: NoteNumber::of(key),
-            velocity: U7::of(vel),
-        },
-    )
+    Message::note_off(MidiChannel::of(channel), NoteNumber::of(key), U7::of(vel)).into()
 }
 
 fn read(bytes: &[u8]) -> MidiFile {
@@ -662,10 +649,6 @@ fn a_velocity_zero_note_on_stays_a_note_on_in_the_file() {
 
 // ---- building a file -----------------------------------------------------
 
-fn track(events: Vec<(u64, FileEvent)>) -> Track {
-    unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
-}
-
 /// The writer's own framing is read by the independent decoder: chunk
 /// lengths, VLQ deltas, the division, the mandatory End of Track.
 #[test]
@@ -815,14 +798,4 @@ fn bytes_of_neither_container_are_named_as_such() {
         MidiFile::from_bytes(b""),
         Err(Error::UnknownFormat)
     ));
-}
-
-/// A track of `events` exactly as given: not sorted, so a test can hand the
-/// constructor events out of order.
-fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
-    Track {
-        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
-        events,
-        ..Track::new()
-    }
 }

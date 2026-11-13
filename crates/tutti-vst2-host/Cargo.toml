@@ -1,6 +1,6 @@
 [package]
 name = "tutti-vst2-host"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "A host for VST2 plugins"
@@ -26,15 +26,15 @@ parking_lot = "0.13"
 thiserror = "2"
 # The editor key vocabulary a `KeyEvent` is written in.
 keyboard-types.workspace = true
-tutti-graph = { path = "../tutti-graph" }
-tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 # `SeqWriter` / `SeqReader`, the sequence lock the transport snapshot lives in.
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 # Tutti fork of the `vst` crate: adds the host-side audioMaster callbacks
 # (get_sample_rate / size_window / io_changed / latency / process_level /
 # automation_state) that upstream vst-rs's host_dispatch swallowed.
-tutti-vst2-ffi = { path = "../tutti-vst2-ffi" }
+tutti-vst2-ffi = { version = "0.0.1", path = "../tutti-vst2-ffi" }
 
 [dev-dependencies]
 # The README's editor example takes any `raw-window-handle` window.

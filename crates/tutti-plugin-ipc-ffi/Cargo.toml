@@ -1,13 +1,12 @@
 [package]
 name = "tutti-plugin-ipc-ffi"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "The operating-system calls behind tutti's plugin helper process, wrapped in safe functions"
 readme = "README.md"
 license.workspace = true
 repository.workspace = true
-publish = false
 keywords = ["audio", "plugin", "ipc", "shared-memory"]
 categories = ["multimedia::audio"]
 

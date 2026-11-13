@@ -1,8 +1,8 @@
 use super::*;
+use crate::test_support::at;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::MpeZoneConfig;
-use tutti_types::Samples;
 use tutti_ump::{Address, CCNumber, KeyEvent, Message, Voice2};
 
 /// What the ingest sends, collected: the tests read it as a list.
@@ -23,11 +23,6 @@ impl Collected for MpeIngest {
         self.zone_defaults(group, offset, |e| out.push(e));
         out.into_iter()
     }
-}
-
-/// `ump` at frame `offset` of a 64-frame block.
-fn at(offset: usize, ump: Ump) -> UmpAt {
-    (Offset::new(offset, Samples(64)).unwrap(), ump)
 }
 
 /// The channel nibble of a channel voice packet.

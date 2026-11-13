@@ -10,14 +10,15 @@
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use crate::common::{at, beat_of, connect, off, on, rolling};
 use tutti_fixtures::midi::{
-    cc, channel_pressure, from_midi1_bytes, key_of, m1_cc, note_off, note_on, per_note_controller,
+    cc, channel_pressure, from_midi1_bytes, key_of, m1_cc, note_on, per_note_controller,
     pitch_bend, program_change, registered_rpn, relative_registered_controller,
 };
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
-    Offset, Prepare, Shape, Status, TransportChanges, TransportPosition, Unforkable,
+    Cx, Editor, EventKind, Executor, IntoNode, Io, LoopRange, Node, Offset, Prepare, Shape, Status,
+    TransportChanges, TransportPosition, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
@@ -25,7 +26,6 @@ use tutti_ump::Ump;
 use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Rpn, U7, U14, Voice1, Voice2};
 
 const RATE: f64 = 48_000.0;
-const FRAMES_PER_BEAT: f64 = 24_000.0;
 
 /// `(absolute frame, packet)` of every event the sink received.
 type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
@@ -50,22 +50,6 @@ impl Node for Sink {
     fn reset(&mut self) {}
 }
 
-fn beat_of(frame: u64) -> Beat {
-    Beat(frame as f64 / FRAMES_PER_BEAT)
-}
-
-fn on(note: u8) -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xFFFF)
-}
-
-fn off(note: u8) -> Ump {
-    note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
-}
-
-fn at(frame: u64, event: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(beat_of(frame), event).unwrap()
-}
-
 /// A clip at key 1 feeding the sink at key 2, blocks of at most `max`.
 fn rig(clip: MidiClipNode, max: usize) -> (Editor, Executor, MidiClipControls, Seen) {
     rig_with(clip, max)
@@ -79,23 +63,9 @@ fn rig_with<N: IntoNode>(clip: N, max: usize) -> (Editor, Executor, N::Controls,
     let controls = ed.insert(NodeKey(1), "clip", clip);
     let seen = Seen::default();
     ed.insert(NodeKey(2), "sink", Unforkable(Sink(Arc::clone(&seen))));
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    connect(&mut ed, 1, 2);
     ed.commit().expect("commits");
     (ed, exec, controls, seen)
-}
-
-/// Rolling at 120 BPM from beat `frame / 24 000`.
-fn rolling(frame: u64) -> TransportPosition {
-    TransportPosition::new(true, Bpm::of(120.0), beat_of(frame), None)
 }
 
 /// Render `frames` in blocks of `block`, rolling from frame 0.

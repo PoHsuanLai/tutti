@@ -479,6 +479,7 @@ mod attach_tests {
     /// The frame is set before `attached`; on the failure path nothing used to
     /// withdraw it, so a plugin that kept the pointer held a frame nothing
     /// would ever pump.
+    /// Spec: vst3.IPlugView.attached, vst3.IPlugView.setFrame
     #[test]
     fn a_failed_attach_withdraws_the_frame() {
         let calls = Arc::new(Mutex::new(Vec::new()));

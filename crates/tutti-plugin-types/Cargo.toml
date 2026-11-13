@@ -34,7 +34,7 @@ contract = []
 
 # `FakePlugin`: a plugin that records every call, for testing what drives one. A
 # consumer's dev-dependency; nothing ships it.
-test-support = []
+testing = []
 
 [dependencies]
 # The capped per-block containers (`MidiEventVec`, the harmony changes): a

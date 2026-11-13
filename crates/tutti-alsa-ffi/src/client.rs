@@ -401,7 +401,7 @@ impl Client {
     /// # Errors
     ///
     /// The step that failed, with alsa-lib's code.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn open_legacy(name: &str, nonblock: bool) -> Result<Self> {
         Self::open_plain(name, nonblock)
     }
@@ -412,7 +412,7 @@ impl Client {
     ///
     /// `snd_seq_event_output_direct`'s code, or `-EINVAL` when this client's id
     /// is not an address byte.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn send_legacy_to_subscribers(&self, port: u8, event: LegacyEvent) -> Result<()> {
         let operation = "snd_seq_event_output_direct";
         let client = u8::try_from(self.id).map_err(|_| Error {
@@ -460,7 +460,7 @@ impl Client {
     }
 
     /// Renames this client; the sequencer announces the change.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn rename(&self, name: &str) {
         let cname = c_name(name);
         // SAFETY: `self.seq` is open; `cname` outlives the call.
@@ -473,7 +473,7 @@ impl Client {
     /// # Errors
     ///
     /// The code of the call that failed.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn set_port_caps(&self, port: i32, caps: u32) -> Result<()> {
         self.edit_port(port, |info| {
             // SAFETY: `info` is a live record, filled from this client's port.
@@ -483,7 +483,7 @@ impl Client {
 }
 
 /// A legacy (byte-oriented) channel event a [`Client::open_legacy`] client sends.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LegacyEvent {
     /// A Note On.

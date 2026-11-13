@@ -261,7 +261,7 @@ cargo fmt
 cargo xtask check-paths [<crate> <module>...]  # the import-path gate (also searches *.md)
 cargo xtask check-submodule-pins   # VST3 SDK pins, asserted by SHA
 cargo xtask check-session          # tutti-session reaches no Bevy, has no bevy feature, re-exports no crate whole
-cargo xtask check-doc-features     # rustdoc per feature for tutti-session, tutti
+cargo xtask check-doc-features     # rustdoc: each member with its features (private items), each umbrella feature alone
 cargo xtask check-guards           # every host callback runs under the panic guard
 cargo xtask check-ffi              # every crate root forbids unsafe but the -ffi crates (plugin formats, MIDI), rt and arc-lend; the -ffi lints
 cargo xtask check-layout           # flat crates/ and testing/, layering, codec boundary, depth-free test paths, no C library in `export`

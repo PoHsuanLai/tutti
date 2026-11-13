@@ -12,12 +12,12 @@
 //! since §7.12 allows the Broadcast MUID only where the Profile defines it. A
 //! message of the wrong kind decodes to an [`Unread`](super::Unread) with
 //! [`WrongDestination`](super::UnreadReason::WrongDestination). A Message Format
-//! Version 1 sender has no Number of Channels field; it reads as 0, which §5.3's
-//! "the fields defined in the received version" asks for.
+//! Version 1 sender has no Number of Channels field; it reads as 0, which §5.3's rule to
+//! read only the fields of the received version asks for.
 //!
 //! [`ProfileId::from_bytes`] refuses what [`ProfileId::to_bytes`] could not give
-//! back, a one-byte id followed by a non-zero byte (§7.3.1 has the rest "filled
-//! with zeroes"), and a manufacturer Profile cannot carry the id `7E`, which would
+//! back, a one-byte id followed by a non-zero byte (§7.3.1 fills the rest
+//! with zeroes), and a manufacturer Profile cannot carry the id `7E`, which would
 //! read back as a Standard Profile. [`ProfileLists`] holds at most 16383 Profiles
 //! per list, the most two 7-bit bytes can count, so a Reply it builds is always
 //! writable.
@@ -52,8 +52,8 @@ pub const SUB_ID2_PROFILE_SPECIFIC_DATA: u8 = 0x2F;
 /// The first Profile Id byte of a Standard Defined Profile (§7.3.1).
 const STANDARD_BYTE: u8 = 0x7E;
 
-/// A Standard Defined Profile's Id (M2-102 §2.2, Table 5): "Profile Number
-/// Bank", "Profile Number", "Profile Version" and "Profile Level".
+/// A Standard Defined Profile's Id (M2-102 §2.2, Table 5): the Profile Number
+/// Bank, Profile Number, Profile Version and Profile Level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StandardProfile {
     bank: U7,
@@ -102,7 +102,7 @@ impl StandardProfile {
 }
 
 /// A manufacturer's own Profile (M2-101 §7.3.1, Table 19): its System Exclusive
-/// id in bytes 1 to 3 and "Manufacturer Specific Info" in bytes 4 and 5.
+/// id in bytes 1 to 3 and `Manufacturer Specific Info` in bytes 4 and 5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ManufacturerProfile {
     manufacturer: ManufacturerId,
@@ -125,8 +125,8 @@ impl ManufacturerProfile {
         self.manufacturer
     }
 
-    /// The two bytes of Manufacturer Specific Info: "up to 16384 different
-    /// Manufacturer Profile numbers".
+    /// The two bytes of `Manufacturer Specific Info`: up to 16384 different
+    /// Manufacturer Profile numbers.
     #[must_use]
     pub const fn info(self) -> [U7; 2] {
         self.info
@@ -181,18 +181,18 @@ impl ProfileId {
 }
 
 /// The number of Channels a Profile uses or is asked to use (§7.8, §7.10,
-/// §7.11): "Manager + Member Channels", 14 bits.
+/// §7.11): the Manager plus Member Channels, 14 bits.
 ///
-/// Zero is a value the spec gives a meaning: "When the Profile Destination field
-/// is set to address 0x7E or 0x7F, the number of Channels is determined by the
-/// width of the Group or Function Block", and the field is then 0
+/// Zero is a value the spec gives a meaning: when the Profile Destination is
+/// address 0x7E or 0x7F, the number of Channels is the
+/// width of the Group or Function Block, and the field is then 0
 /// ([`BY_ADDRESS`](Self::BY_ADDRESS)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProfileChannels(U14);
 
 impl ProfileChannels {
     /// `0x0000`: the width of the Group or Function Block addressed.
-    pub const BY_ADDRESS: Self = Self(U14::of(0));
+    pub(crate) const BY_ADDRESS: Self = Self(U14::of(0));
     /// The most the field holds, 16383.
     pub const MAX: u16 = U14::MAX.get();
 
@@ -236,9 +236,9 @@ impl ProfileChannels {
 /// Whether a Profile is active (§7.3.2, §7.3.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProfileState {
-    /// "Supported and Currently Enabled".
+    /// Supported and currently enabled.
     Enabled,
-    /// "Supported but Currently Disabled".
+    /// Supported but currently disabled.
     Disabled,
 }
 
@@ -261,7 +261,7 @@ pub struct ProfileLists {
 
 impl ProfileLists {
     /// The longest list: the count is two 7-bit bytes.
-    pub const MAX_LEN: usize = 0x3FFF;
+    pub(crate) const MAX_LEN: usize = 0x3FFF;
 
     /// Two lists, or the length of the one that does not fit.
     ///
@@ -277,7 +277,7 @@ impl ProfileLists {
         Ok(Self { enabled, disabled })
     }
 
-    /// Both lists empty: "no Profiles reported" (§7.13).
+    /// Both lists empty: no Profiles reported (§7.13).
     #[must_use]
     pub fn none() -> Self {
         Self::default()
@@ -312,7 +312,7 @@ impl ProfileLists {
 pub struct InquiryTarget(U7);
 
 impl InquiryTarget {
-    /// "Number of MIDI Channels", the one Registered Target of M2-102 §2.5.1.
+    /// `Number of MIDI Channels`, the one Registered Target of M2-102 §2.5.1.
     pub const NUMBER_OF_CHANNELS: Self = Self(U7::of(0x00));
 
     /// A target: any 7-bit value is one.
@@ -402,13 +402,13 @@ seven_bit_data!(
     0x0FFF_FFFF
 );
 
-/// The Registered Target Data "Number of MIDI Channels" (M2-102 §2.5.1, Table 8).
+/// The Registered Target Data `Number of MIDI Channels` (M2-102 §2.5.1, Table 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelsDetail {
-    /// "The number of Channels currently in use by this Profile", 0 when it is
+    /// The number of Channels currently in use by this Profile, 0 when it is
     /// not enabled.
     pub in_use: ProfileChannels,
-    /// "Maximum Number of Channels (available for use by this Profile)".
+    /// The maximum number of Channels available for use by this Profile.
     pub max: ProfileChannels,
 }
 

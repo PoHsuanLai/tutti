@@ -17,14 +17,14 @@ use crate::name::ProductInstanceId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EndpointStatus {
-    /// `0x00`: "Product Instance ID of the UMP Endpoint to which the Responder
-    /// belongs".
+    /// `0x00`: the Product Instance ID of the UMP Endpoint the Responder
+    /// belongs to.
     ProductInstanceId,
 }
 
 impl EndpointStatus {
     /// The wire value of [`ProductInstanceId`](Self::ProductInstanceId).
-    pub const PRODUCT_INSTANCE_ID: u8 = 0x00;
+    pub(crate) const PRODUCT_INSTANCE_ID: u8 = 0x00;
 
     /// The status, or `None` for a reserved value (`0x01..=0x7F`) or one with the
     /// top bit set.
@@ -47,18 +47,18 @@ impl EndpointStatus {
 
 /// A Product Instance Id as MIDI-CI carries it: at most 16 bytes.
 ///
-/// M2-101 §5.8.3.1: "Product Instance Id shall be ASCII Text in the ordinal range
-/// 32-126. The Product Instance Id shall not be any longer than 16 bytes in size".
+/// M2-101 §5.8.3.1: a Product Instance Id is ASCII text in the range 32 to 126
+/// and at most 16 bytes long.
 /// M2-104's UMP Stream notification of the same Id allows 42 bytes, which is
 /// [`ProductInstanceId`]'s own limit; the CI message is the narrower, and the
-/// Id it carries "shall match" the Stream's, so only an Id that fits both is one
+/// Id it carries must match the Stream's, so only an Id that fits both is one
 /// MIDI-CI can carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CiInstanceId(ProductInstanceId);
 
 impl CiInstanceId {
     /// The most bytes MIDI-CI carries (§5.8.3.1).
-    pub const MAX_LEN: usize = 16;
+    pub(crate) const MAX_LEN: usize = 16;
 
     /// The Id, or `None` when it is longer than 16 bytes.
     #[must_use]

@@ -60,7 +60,7 @@ fn an_empty_and_a_sixteen_byte_id_round_trip() {
 
 #[test]
 fn an_id_over_sixteen_bytes_is_not_a_ci_id_and_is_refused_on_the_wire() {
-    // §5.8.3.1: "shall not be any longer than 16 bytes", where M2-104 allows 42.
+    // §5.8.3.1: at most 16 bytes, where M2-104 allows 42.
     let long = ProductInstanceId::new("0123456789abcdefg").unwrap();
     assert_eq!(CiInstanceId::new(long), None);
     let mut bytes = reply("").encode();

@@ -87,9 +87,8 @@ fn master_coarse_tuning_is_a_semitone_a_step() {
     }
 }
 
-/// CA-025: "the total displacement [...] is [the] summation of the displacement
-/// of this Master Fine Tuning and the displacement of Fine Tuning using RPN",
-/// and likewise coarse; the channel's wheel adds as it always did.
+/// CA-025: the total displacement is the sum of the displacement of Master Fine
+/// Tuning and that of Fine Tuning using RPN, and likewise coarse; the channel's wheel adds as it always did.
 #[test]
 fn the_master_tuning_sums_with_the_channels_own_tuning_and_wheel() {
     let mut core = Voicing::new(Rules::poly(NonZeroUsize::new(4).unwrap()));
@@ -131,7 +130,7 @@ fn gain(core: &Voicing) -> (f32, f32) {
     (g.left.0, g.right.0)
 }
 
-/// GM2 section 4.1: "the square of the value is proportional to the volume",
+/// GM2 section 4.1: the volume is proportional to the square of the value,
 /// default 7F/7F, and `00 00` is off (M1 p.57).
 #[test]
 fn master_volume_is_the_square_of_the_value() {
@@ -146,9 +145,8 @@ fn master_volume_is_the_square_of_the_value() {
     assert_eq!(gain(&core), (0.0, 0.0));
 }
 
-/// M1 p.57: the volume "received on its own ID" and the one "received on the
-/// 'All Call' ID" are tracked apart and multiply, "without forgetting their
-/// individual levels".
+/// M1 p.57: the volume received on the device's own ID and the one received on the
+/// All Call ID are tracked apart and multiply, so each level is kept.
 #[test]
 fn the_own_and_all_call_volumes_are_kept_apart_and_multiply() {
     let mut core = Voicing::new(Rules::poly(NonZeroUsize::new(4).unwrap()));
@@ -253,8 +251,8 @@ fn general_midi_on_mutes_and_returns_every_channel_to_its_defaults() {
     assert!(off.iter().any(|c| matches!(c, Command::Release { .. })));
 }
 
-/// GM2 section 4.9.3: General MIDI Off returns a device "to its initialized
-/// mode": here the bend range the instrument's rules were built with.
+/// GM2 section 4.9.3: General MIDI Off returns a device to its initialized
+/// mode: here the bend range the instrument's rules were built with.
 #[test]
 fn general_midi_off_returns_to_the_instruments_own_status() {
     let mut core =

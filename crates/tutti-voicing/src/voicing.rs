@@ -33,7 +33,7 @@
 //! and are the same for every instrument that does not say otherwise.
 //!
 //! **Mono and legato play the last note, with a stack of the held keys** (the
-//! usual "last-note priority"): releasing the sounding key while others are
+//! usual last-note priority): releasing the sounding key while others are
 //! held returns to the most recent of them (a legato instrument moves its voice
 //! there, a mono one restarts), and only when no key is held does a release
 //! happen, subject to the pedals. The stack of a channel holds [`HELD_KEYS`]
@@ -82,8 +82,8 @@ fn bend_sensitivity(value: u32) -> Semitones {
     Semitones(semitones + cents / 100.0)
 }
 
-/// What a pitch wheel spans after General MIDI System On: "Pitch Bend (default
-/// range = +-2 semitones)", RP-003.
+/// What a pitch wheel spans after General MIDI System On: the default
+/// Pitch Bend range is +-2 semitones (RP-003).
 const GENERAL_MIDI_BEND_RANGE: Semitones = Semitones(2.0);
 
 /// The most voices one note may start. A patch that asks for more is cut short.
@@ -197,9 +197,9 @@ pub struct Rules {
     pub per_note_bend_range: Semitones,
     /// The channel a key-based instrument plays percussion on, if it has one.
     /// The Master Fine and Coarse Tuning leave it as it is: CA-025 asks that
-    /// the message "NOT result in MIDI note-shifting" for key-based instruments
-    /// (each key a different sound), and GM2 section 4.2 recommends that it "will
-    /// not alter sounds assigned to Rhythm Channels".
+    /// the message not shift MIDI notes for key-based instruments (each key a
+    /// different sound), and GM2 section 4.2 recommends that it not alter sounds
+    /// assigned to Rhythm Channels.
     pub percussion: Option<MidiChannel>,
     /// How many tuning banks and programs the core holds for the MIDI Tuning
     /// Standard.
@@ -350,12 +350,12 @@ pub struct VoiceSpec {
 /// and reaches the note's own in `time`, at a constant rate in cents (a straight
 /// line in pitch), as the channel's Portamento Time says (General MIDI 2 section
 /// 3.3.3). It comes from Portamento On (CC 65) or a Portamento Control (CC 84,
-/// M1 p.16: the key "the subsequent note is gliding from").
+/// M1 p.16: the key the subsequent note glides from).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glide {
     /// The key the glide leaves. Its pitch is the key's, with the channel's
-    /// bend on it as on the note's own ("Pitch bend offsets the pitch used by
-    /// both the Portamento Control starting note and the target Note-On").
+    /// bend on it as on the note's own (pitch bend offsets the pitch used by
+    /// both the Portamento Control starting note and the target Note-On).
     pub from: NoteNumber,
     /// How far the key it leaves sounds from equal temperament on this channel
     /// (its [MIDI Tuning](crate::Command::Start::tune)).
@@ -451,8 +451,8 @@ pub enum Command {
     /// Silence a voice at once and free its slot.
     Cut(VoiceId),
     /// Let a voice go into a short release of the instrument's own choosing,
-    /// whatever its envelope's release is and whatever holds it: the "rapid
-    /// termination" of an exclusive class (SF2 2.04 section 8.1.2, generator
+    /// whatever its envelope's release is and whatever holds it: the rapid
+    /// termination of an exclusive class (SF2 2.04 section 8.1.2, generator
     /// 57). The voice still exists until it fades; the core counts it as
     /// released (so it is the first to give way), and a later note-off, pedal
     /// or panic has nothing left to release in it. Only a voice of an
@@ -475,8 +475,7 @@ pub enum Command {
     /// A sounding voice's tuning changed: its key now sounds `tune` from its
     /// equal-tempered pitch (see [`Command::Start`]'s `tune`), moving with no
     /// new attack. Sent when a real-time tuning message or a Tuning Program or
-    /// Bank Select reaches a note that sounds (MTS: "the note should instantly
-    /// be re-tuned to the new frequency while it continues to sound"), never
+    /// Bank Select reaches a note that sounds (MTS: the note is re-tuned instantly while it continues to sound), never
     /// for a non-real-time one.
     Tune {
         /// The voice.
@@ -860,8 +859,8 @@ impl Voicing {
     /// - **Master Fine and Coarse Tuning** (CA-025) move every channel's pitch:
     ///   a [`Command::Retune`] for each channel but the percussion one
     ///   ([`Rules::percussion`]).
-    /// - **General MIDI System On and Off** (M1 p.52, GM2 section 4.9): "all
-    ///   currently sounding Notes immediately mute" ([`Command::Cut`] for each),
+    /// - **General MIDI System On and Off** (M1 p.52, GM2 section 4.9): all
+    ///   currently sounding notes mute immediately ([`Command::Cut`] for each),
     ///   and the device returns to its initial status: each channel's
     ///   controllers back to their defaults ([`ChannelState::new`], which is
     ///   RP-015's reset and more: volume 100, pan centre, no registered
@@ -1026,7 +1025,7 @@ impl Voicing {
 
     /// Tuning messages for a bank or program the core has no room for, which
     /// changed nothing: a dump, a Single Note Tuning Change, or a Tuning Bank or
-    /// Program Select (MTS: "it should ignore that message").
+    /// Program Select (MTS: such a message is ignored).
     #[must_use]
     pub fn tuning_refused(&self) -> u64 {
         self.tuning.refused()
@@ -1118,8 +1117,7 @@ impl Voicing {
 
     /// A Control Change the instrument does not own: the channel's 14-bit
     /// controllers and Portamento Time ([`ChannelState`]), and the three that
-    /// change how notes are placed: Portamento On/Off (CC 65, "recognized as
-    /// OFF" below 64, GM2 section 3.3.8), the Legato Footswitch (CC 68, M1
+    /// change how notes are placed: Portamento On/Off (CC 65, OFF below 64, GM2 section 3.3.8), the Legato Footswitch (CC 68, M1
     /// p.14: 40 to 7F is Legato) and Portamento Control (CC 84, M1 p.16). Any
     /// other controller is the instrument's own.
     fn controller(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {
@@ -1135,10 +1133,9 @@ impl Voicing {
                     self.held[ch] = Held::NONE;
                 }
             }
-            // "A single Portamento Control message only affects the next Note-On
-            // received on the matching channel (i.e. it is reset after the
-            // Note-On). Receiving a Portamento Control message does not affect
-            // the pitch of any currently sustaining or releasing notes."
+            // A Portamento Control affects only the next Note-On on its
+            // channel and not the pitch of notes already sounding or
+            // releasing (M1 p.16).
             CCNumber::PORTAMENTO_CONTROL => {
                 self.channels[ch].glide_from = NoteNumber::new(value.get());
             }
@@ -1147,9 +1144,9 @@ impl Voicing {
     }
 
     /// How many voices sound for `channel`: the rules' mode, or Legato while
-    /// the Legato Footswitch is down ("turn monophonic legato response on and
-    /// off", M1 p.14; "When turned off the voice assignment mode [...] returns
-    /// to the state it was in").
+    /// the Legato Footswitch is down (M1 p.14: the footswitch turns monophonic legato response on and
+    /// off, and turning it off returns the voice assignment mode to what it
+    /// was).
     fn mode(&self, channel: MidiChannel) -> Mode {
         if self.channels[channel.index()].legato {
             Mode::Legato
@@ -1263,11 +1260,9 @@ impl Voicing {
             self.play_mono(channel, key, velocity, patch, levels, source, false);
             return;
         }
-        // A Portamento Control names a key that may sound: "If there is a
-        // currently sounding voice whose note number is coincident with the
-        // source note number, the voice's pitch will glide to the new Note-On's
-        // pitch according to the portamento time without re-attacking. Then, no
-        // new voice should be assigned." (M1 p.16)
+        // A Portamento Control names a key that may sound: a voice on that
+        // key glides to the new Note-On's pitch without re-attacking, and no
+        // new voice is assigned (M1 p.16).
         if let Some(from) = source.ptc
             && self.glide_voices(channel, from, key, velocity)
         {
@@ -1353,7 +1348,7 @@ impl Voicing {
 
     /// A voice of an exclusive class ends the sounding voices of that class in
     /// its scope (SF2 2.04 section 8.1.2, generator 57), on any channel, never
-    /// one of its own strike. The spec says "rapidly terminated", not cut: the
+    /// one of its own strike. The spec says rapidly terminated, not cut: the
     /// voices are told to [`Command::Damp`], once, and count as released from
     /// then on. `except` is a (channel, tag) taken over in place instead
     /// (mono), which is not damped.
@@ -1441,9 +1436,8 @@ impl Voicing {
             match at {
                 Some(i) if legato && !self.notes[i].released => {
                     let id = self.notes[i].id;
-                    // The voice leaves the Portamento Control's key (M1 p.16:
-                    // "an immediate pitch jump to the key specified by the
-                    // portamento Control message, and then a glide"), else, with
+                    // The voice leaves the Portamento Control's key (M1 p.16: an
+                    // immediate pitch jump to that key, then a glide), else, with
                     // Portamento on, the key it sounded.
                     let from = source.ptc.or(portamento.then_some(self.notes[i].key));
                     let glide = self.glide(channel, from, key);
@@ -1594,10 +1588,9 @@ impl Voicing {
     }
 
     /// A pedal or a panic on `channel`. On a zone's master it is the whole
-    /// zone's: M1-100 section 2.3.1, "certain MIDI messages (for example,
-    /// Damper Pedal) can be expected to affect all Sounding Notes across the
-    /// Manager Channel and all Member Channels", and they "should be sent only
-    /// on a Zone's Manager Channel". On a member, or on a channel outside any
+    /// zone's: M1-100 section 2.3.1, certain MIDI messages (for example,
+    /// Damper Pedal) affect all Sounding Notes across the Manager Channel and
+    /// all Member Channels, and are sent only on a Zone's Manager Channel. On a member, or on a channel outside any
     /// zone, it is that channel's alone.
     fn effect(&mut self, channel: MidiChannel, effect: Effect) {
         let zones = self.zones;
@@ -1647,8 +1640,8 @@ impl Voicing {
             }
             // Reset All Controllers (RP-015) puts the pedals up, centres the
             // wheel and returns the controllers it names ([`ChannelState`]); the
-            // sensitivity, the tuning and the parameters stay. "Reset
-            // polyphonic pressure for all notes to 0": the per-note state
+            // sensitivity, the tuning and the parameters stay. Polyphonic pressure
+            // for all notes resets to 0 (RP-015): the per-note state
             // sets each held Polyphonic Pressure of the channel to 0 (M2-104
             // Appendix B.2 leaves the new per-note controllers alone, and Poly
             // Pressure is not one of them). The parameter numbers go null in
@@ -2646,7 +2639,7 @@ mod tests {
         }
     }
 
-    /// The "rapid termination" of an exclusive class is a release of the
+    /// The rapid termination of an exclusive class is a release of the
     /// instrument's own choosing (SF2 2.04 section 8.1.2, generator 57), told
     /// once: a damped voice counts as released, so a later note-off, pedal or
     /// All Notes Off has nothing to release in it, a panic still cuts it, and
@@ -2952,10 +2945,9 @@ mod tests {
 
     // ---- zone-wide messages (M1-100 section 2.3.1) ---------------------------
 
-    /// M1-100 section 2.3.1: "certain MIDI messages (for example, Damper
-    /// Pedal) can be expected to affect all Sounding Notes across the Manager
-    /// Channel and all Member Channels", sent "only on a Zone's Manager
-    /// Channel". The pedal on the master holds the notes of every member, the
+    /// M1-100 section 2.3.1: certain MIDI messages (for example, Damper
+    /// Pedal) affect all Sounding Notes across the Manager Channel and all
+    /// Member Channels, and are sent only on a Zone's Manager Channel. The pedal on the master holds the notes of every member, the
     /// ones sounding and the ones that start after it, and its release lets
     /// them go.
     #[test]
@@ -3111,8 +3103,9 @@ mod tests {
         )
     }
 
-    /// M2-104 section 7.4.15.2 and Appendix C.3 (Method 1): "Per-Note
-    /// Management; PNCC#3 Set Pitch 60.0; Note On (Pitch sounds as 60.0)". A
+    /// M2-104 section 7.4.15.2 and Appendix C.3 (Method 1): Per-Note
+    /// Management, then PNCC#3 Set Pitch 60.0, then a Note On sounding at
+    /// pitch 60.0. A
     /// Pitch 7.25 that arrives before its Note On, with no voice to address,
     /// is the state the note starts with: the Note On is followed by the
     /// controller, for the voice it started.
@@ -3151,8 +3144,8 @@ mod tests {
         assert_eq!(told(&c), vec![id(1), id(2)], "{c:?}");
     }
 
-    /// M2-104 section 7.4.5: only a Detach makes "previous notes on the
-    /// referenced Note Number" stop responding, so until then the tail of the
+    /// M2-104 section 7.4.5: only a Detach makes previous notes on the
+    /// referenced Note Number stop responding, so until then the tail of the
     /// first strike (released by the second on the same key) follows a value
     /// with the second; after the Detach neither does.
     #[test]
@@ -3205,9 +3198,9 @@ mod tests {
         );
     }
 
-    /// M2-104 section 7.4.5, Detach: "all currently playing notes and previous
-    /// notes on the referenced Note Number shall no longer respond to any
-    /// Per-Note Controllers", and later changes "apply to future notes only".
+    /// M2-104 section 7.4.5, Detach: all currently playing notes and previous
+    /// notes on the referenced Note Number no longer respond to Per-Note
+    /// Controllers, and later changes apply to future notes only.
     /// Detach, then Pitch, then Note On on the same number: the Pitch reaches
     /// the new voice (2) and never the detached one (1).
     #[test]
@@ -3234,8 +3227,8 @@ mod tests {
         );
     }
 
-    /// M2-104 section 7.4.5: with D=1 and S=1 the device "first process the
-    /// Detach function, and then perform the Reset function": the playing note
+    /// M2-104 section 7.4.5: with D=1 and S=1 the device first processes the
+    /// Detach function, then performs the Reset function: the playing note
     /// keeps its values (it is told nothing), and the defaults apply to the
     /// next note, which starts with no per-note controller.
     #[test]
@@ -3252,8 +3245,8 @@ mod tests {
         );
     }
 
-    /// M2-104 section 7.4.5, Reset: "all Per-Note Controllers on the referenced
-    /// Note Number should be reset to their default values". Without Detach the
+    /// M2-104 section 7.4.5, Reset: all Per-Note Controllers on the referenced
+    /// Note Number are reset to their default values. Without Detach the
     /// playing note is reset too, and the next note starts at the defaults.
     #[test]
     fn a_reset_returns_the_playing_note_and_the_next_one_to_defaults() {
@@ -3299,11 +3292,11 @@ mod tests {
         }
     }
 
-    /// M1 p.14, Legato Footswitch: "40-7F Legato" turns "monophonic legato
-    /// response" on: "if a new Note-On is received before the Note-Off for the
-    /// currently sounding note, pitch is changed without re-attacking"; "When
-    /// turned off the voice assignment mode (polyphonic or monophonic) returns to
-    /// the state it was in", and it is per channel.
+    /// M1 p.14, Legato Footswitch: 40-7F turns monophonic legato
+    /// response on, so a new Note-On before the Note-Off of the sounding note
+    /// changes pitch without re-attacking, and turning it off returns the voice
+    /// assignment mode (polyphonic or monophonic) to what it was; it is per
+    /// channel.
     #[test]
     fn the_legato_footswitch_makes_a_channel_legato_until_it_is_up() {
         let mut s = Sim::new(POLY);
@@ -3323,10 +3316,9 @@ mod tests {
     }
 
     /// M1 p.16, Example 2: `B0 54 3C` (PTC from #60), `90 40 40` (Note-On #64)
-    /// is "#64 with glide from #60"; "A single Portamento Control message only
-    /// affects the next Note-On received on the matching channel (i.e. it is
-    /// reset after the Note-On)". The glide is at the portamento time's rate,
-    /// "ignoring portamento on/off".
+    /// is #64 with glide from #60, and a single Portamento Control message
+    /// affects only the next Note-On on its channel. The glide is at the
+    /// portamento time's rate, whatever portamento on/off says.
     #[test]
     fn a_portamento_control_glides_the_next_note_only() {
         let mut s = Sim::new(POLY);
@@ -3343,11 +3335,11 @@ mod tests {
         assert_eq!(glide_of(&s.on(1, 64)), None);
     }
 
-    /// M1 p.16, Example 1: #60 on; `B0 54 3C` "no change in current note";
-    /// `90 40 40` "re-tune from #60 to #64" (and "no new voice should be
-    /// assigned"); `80 3C 40` "no change"; `80 40 40` "#64 off". The note is
-    /// "turned off by a note that matches the Note-On key number; not the key
-    /// number stated in the Portamento Control message".
+    /// M1 p.16, Example 1: #60 on; `B0 54 3C` changes nothing in the
+    /// current note; `90 40 40` re-tunes from #60 to #64 and assigns no new
+    /// voice; `80 3C 40` changes nothing; `80 40 40` turns #64 off. The note is
+    /// turned off by a note matching the Note-On key number, not the key number
+    /// in the Portamento Control message.
     #[test]
     fn a_portamento_control_from_a_sounding_key_retunes_that_voice() {
         let mut s = Sim::new(POLY);
@@ -3363,9 +3355,9 @@ mod tests {
         assert_eq!(s.off(0, 64), [release(1)]);
     }
 
-    /// M1 p.16: "if in Mono mode or if Legato Footswitch is currently on, a new
-    /// overlapped note event would result in an immediate pitch jump to the key
-    /// specified by the portamento Control message, and then a glide": the move
+    /// M1 p.16: in Mono mode, or with the Legato Footswitch on, a new overlapped
+    /// note makes an immediate pitch jump to the key the Portamento Control
+    /// message names, then a glide: the move
     /// leaves the Portamento Control's key, not the sounding one.
     #[test]
     fn a_legato_move_with_a_portamento_control_leaves_that_key() {
@@ -3379,9 +3371,8 @@ mod tests {
         );
     }
 
-    /// GM2 section 3.3.8: Portamento On/Off "Default Value: 0 (OFF)", "values
-    /// between 0 and 63 are recognized as OFF; values between 64 and 127 are
-    /// recognized as ON". With it on a note glides from the key struck before it,
+    /// GM2 section 3.3.8: Portamento On/Off defaults to 0 (OFF), values
+    /// 0 to 63 are OFF and 64 to 127 are ON. With it on a note glides from the key struck before it,
     /// in the time GM2 section 3.3.3's rate gives the interval: at CC 5 = 127
     /// (0.01 cent/msec, the figure's slowest) a semitone takes 10 s; and the
     /// default (0) is the fastest, 1,000 cent/msec.
@@ -3425,11 +3416,11 @@ mod tests {
         assert!(s.core.channel_pitch(MidiChannel::of(3)).0 == 0.0);
     }
 
-    /// RP-015: "Set Expression (#11) to 127; Set Modulation (#1) to 0; Set
-    /// Pedals (#64, #65, #66, #67) to 0; [...] Reset channel pressure to 0.
-    /// [...] Do NOT reset Volume (#7); Do NOT reset Pan (#10); [...] Do NOT
-    /// reset registered or non-registered parameters" (the Modulation Depth
-    /// Range, the tuning and the sensitivity), and it is the channel's own.
+    /// RP-015: Expression (#11) goes to 127, Modulation (#1) to 0, the pedals
+    /// (#64, #65, #66, #67) to 0 and channel pressure to 0; Volume (#7), Pan
+    /// (#10) and the registered and non-registered parameters (the Modulation
+    /// Depth Range, the tuning and the sensitivity) are not reset; and it is
+    /// the channel's own.
     #[test]
     fn reset_all_controllers_follows_rp_015_on_its_channel() {
         let mut s = Sim::new(POLY);
@@ -3470,9 +3461,9 @@ mod tests {
         assert!(other.portamento());
     }
 
-    /// RP-015: "Reset polyphonic pressure for all notes to 0". The Registered
+    /// RP-015: polyphonic pressure for all notes resets to 0. The Registered
     /// and Assignable Per-Note Controllers and Per-Note Pitch Bend are the ones
-    /// M2-104 Appendix B.2 says are NOT reset.
+    /// M2-104 Appendix B.2 says are not reset.
     #[test]
     fn reset_all_controllers_zeroes_poly_pressure_and_leaves_the_other_per_note_values() {
         let mut s = Sim::new(POLY);
@@ -3509,10 +3500,9 @@ mod tests {
         );
     }
 
-    /// CA-026: RPN 5 scales Control Change 1; GM2 section 3.3.2 "The depth of
-    /// change at the maximum value conforms to the value that is set by
-    /// Modulation Depth Range", section 3.4.4: default "+/-50 cents", and "MSB =
-    /// 01H, LSB = 00H" is one semitone.
+    /// CA-026: RPN 5 scales Control Change 1; GM2 section 3.3.2 has the depth of
+    /// change at the maximum value be the Modulation Depth Range, section 3.4.4:
+    /// default +/-50 cents, and MSB 01H with LSB 00H is one semitone.
     #[test]
     fn the_modulation_depth_range_scales_the_wheel() {
         let mut s = Sim::new(POLY);

@@ -117,8 +117,8 @@ fn a_ports_events_reach_the_graph_on_their_frames_and_slots() {
     assert_eq!(rig.take(), vec![(0, 130, note(60)), (1, 200, note(64))]);
 }
 
-/// **The spacing of a device's events is the spacing of their arrivals**
-/// (doc 017 section 5, "Timing at the edge"), whatever the block boundaries:
+/// **The spacing of a device's events is the spacing of their arrivals**,
+/// whatever the block boundaries:
 /// arrivals at 130, 200 and 333 frames after the reading sound at those
 /// frames plus the lead, the lead being the same for every event.
 #[test]

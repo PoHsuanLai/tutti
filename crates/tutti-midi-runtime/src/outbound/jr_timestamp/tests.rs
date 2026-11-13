@@ -85,8 +85,8 @@ fn clocks_are_emitted_on_the_configured_cadence() {
 
 #[test]
 fn the_cadence_keeps_running_through_silence() {
-    // The load-bearing case. §7.2.2.1: JR Clocks are "independent … not
-    // related to any other message", and §7.2.2.3 makes a receiver discard
+    // The load-bearing case. §7.2.2.1: JR Clocks are independent of
+    // any other message, and §7.2.2.3 makes a receiver discard
     // every stamp until it sees one. A cadence driven by outgoing traffic
     // would satisfy a test that sends notes and still emit nothing on an
     // idle stream — which is exactly when a receiver most needs the clock.

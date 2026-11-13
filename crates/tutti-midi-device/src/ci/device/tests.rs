@@ -109,7 +109,7 @@ fn a_new_device_sends_a_discovery_from_its_muid_to_everyone_on_output_path_0() {
 
 #[test]
 fn the_discovery_window_is_three_seconds_and_closes_once() {
-    // §5.5.5: "at least 3 seconds".
+    // §5.5.5: at least 3 seconds.
     let (mut device, _, now) = device([OURS]);
     assert_eq!(DISCOVERY_WINDOW, Duration::from_secs(3));
     assert!(
@@ -406,7 +406,7 @@ fn a_nak_of_the_endpoint_inquiry_leaves_the_id_unknown() {
 
 #[test]
 fn an_endpoint_inquiry_to_us_is_nakked_for_we_have_no_id_to_give() {
-    // §5.8: "not able to provide the requested information ... NAK".
+    // §5.8: a device that cannot provide the requested information replies with a NAK.
     let (mut device, _, now) = device([OURS]);
     let inquiry = |to| {
         Decoded::Message(CiMessage::EndpointInquiry {
@@ -490,7 +490,7 @@ fn on(
 #[test]
 fn a_profile_inquiry_to_us_is_answered_on_its_address_with_both_lists_empty() {
     // §7.13: a device with no Profiles replies with 0 enabled and 0 disabled; M2-102
-    // §2.4: the Function Block's Reply "with no Profiles reported" ends the replies.
+    // §2.4: the Function Block's Reply reporting no Profiles ends the replies.
     for address in [
         CiDeviceId::FunctionBlock,
         CiDeviceId::Group,

@@ -1,5 +1,5 @@
 //! [`OutputPlan`]: when a hardware MIDI output should send an event, as a pure
-//! function (design 017, "OutputPlan").
+//! function.
 //!
 //! The graph's MIDI is on frames. A device wants it at a time, and the OS's
 //! sequencer or CoreMIDI will hold an event until a time it is given, so the

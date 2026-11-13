@@ -21,8 +21,8 @@ fn bytes(message: Message) -> Vec<Vec<u8>> {
     midi1(message).map(|b| b.as_slice().to_vec()).collect()
 }
 
-/// M2-104 section 7.4.2: "if the translated MIDI 1.0 value of the Velocity is
-/// zero, then the Translator shall replace the zero with a value of 1." Every
+/// M2-104 section 7.4.2: a translated velocity that would be
+/// zero is replaced by 1. Every
 /// 16-bit velocity that narrows to 0, and 0 itself.
 #[test]
 fn a_note_on_never_narrows_to_velocity_zero() {

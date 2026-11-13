@@ -13,7 +13,7 @@ use crate::U7;
 /// and bits 14 to 8 and 6 to 0 hold the two 7-bit bytes, and bit 7 is clear:
 /// [`new`](Self::new) refuses any other word and never masks.
 ///
-/// `00` and `00 00 00` ("are not to be used", MIDI 1.0 Detailed Specification,
+/// `00` and `00 00 00` (unusable per the MIDI 1.0 Detailed Specification,
 /// Manufacturer SysEx ID Numbers; `0x0000` is Reserved in Table 20) are no id:
 /// [`new`](Self::new) refuses `0x0000` and `0x8000`, and
 /// [`from_sysex_bytes`](Self::from_sysex_bytes) refuses three zero bytes.
@@ -86,8 +86,8 @@ impl ManufacturerId {
     /// The id of three System Exclusive id bytes as a Device Inquiry reply or a
     /// Device Identity carries them: a first byte of `00` selects the 21-bit id of
     /// the other two (`0x8000 | b2 << 8 | b3`), any other first byte is the one-byte
-    /// id and the other two are zero (M2-104 section 7.10, "Example Conversion
-    /// Code", and section 7.1.3: "the remaining 2 bytes are filled with zeroes").
+    /// id and the other two are zero (M2-104 section 7.10, Example Conversion
+    /// Code, and section 7.1.3: the remaining two bytes are zero).
     /// `None` for a one-byte id followed by a non-zero byte, which the code would
     /// read as the one-byte id alone and so not give back, and for `00 00 00`.
     #[inline]
@@ -154,7 +154,7 @@ mod tests {
         b.map(U7::of)
     }
 
-    /// M2-104 section 7.10, "7-Bit (1-byte) Manufacturer IDs" and Table 20:
+    /// M2-104 section 7.10, 7-Bit (1-byte) Manufacturer IDs, and Table 20:
     /// the high byte is `00` and the low byte is the MIDI 1.0 value.
     #[test]
     fn a_one_byte_id_is_the_byte_in_the_low_half() {
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(ManufacturerId::UNIVERSAL_REAL_TIME.get(), 0x007F);
     }
 
-    /// Section 7.10, "21-Bit (3-byte) Manufacturer IDs": the leading `00` is
+    /// Section 7.10, 21-Bit (3-byte) Manufacturer IDs: the leading `00` is
     /// replaced by the top bit of the word, bytes 2 and 3 go to the high and
     /// low bytes (`0x8000 | MFID_2 << 8 | MFID_3`).
     #[test]
@@ -205,7 +205,7 @@ mod tests {
         );
     }
 
-    /// MIDI 1.0: "00 and 00 00 00 are not to be used"; Table 20 lists `0x0000` as
+    /// MIDI 1.0: `00` and `00 00 00` are unusable; Table 20 lists `0x0000` as
     /// Reserved.
     #[test]
     fn the_zero_ids_are_refused() {

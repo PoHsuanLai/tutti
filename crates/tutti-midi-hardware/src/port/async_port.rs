@@ -100,9 +100,7 @@ impl InputProducerHandle {
     /// here too, and is `Diverted`. The session asks for JR Timestamps off, and
     /// a device that sends them anyway has them ignored: the placement of an
     /// event is its OS arrival stamp, and §7.2.2.1 leaves what a Receiver does
-    /// with JR to it ("the Receiver may use smoothing or averaging of time from
-    /// each JR Clock message ... to determine a steady JR Clock to render
-    /// against"). Reading them would need a `JrReceiver` per device, its delay
+    /// with JR to it (it may smooth or average the JR Clock messages). Reading them would need a `JrReceiver` per device, its delay
     /// applied to the arrival stamp, and a clock to reconstruct, to refine a
     /// time the OS has already stamped; and nothing downstream reads a
     /// timestamp utility message, so one that reached the graph would be noise.

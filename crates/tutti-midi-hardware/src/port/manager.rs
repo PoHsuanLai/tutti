@@ -154,7 +154,7 @@ impl HardwareMidiInputs {
     /// connection first (drop its [`InputProducerHandle`], which frees the
     /// slot), so nothing is still pushing; a handle that outlives the port is
     /// harmless, and whatever it pushes is lost. Control side.
-    pub fn remove_input_port(&self, id: DeviceSlot) -> bool {
+    pub(crate) fn remove_input_port(&self, id: DeviceSlot) -> bool {
         let mut ports = self.ports();
         match ports.live.remove(&id) {
             Some(port) => {
@@ -196,7 +196,7 @@ impl HardwareMidiInputs {
     /// Nothing for a stale id. **No lock is held between steps**, so the
     /// caller may do what it likes with each message. Control side, one reader
     /// at a time.
-    pub fn drain_stream(&self, id: DeviceSlot) -> StreamDrain {
+    pub(crate) fn drain_stream(&self, id: DeviceSlot) -> StreamDrain {
         StreamDrain::new(self.port(id))
     }
 
@@ -219,7 +219,7 @@ impl HardwareMidiInputs {
     /// SysEx7 packets the device sends (`drain_stream` then yields them beside
     /// the Stream messages), for a control side that is waiting for an Identity
     /// Reply. The packets still reach the graph. `false` for a stale id.
-    pub fn hear_sysex(&self, id: DeviceSlot, hear: bool) -> bool {
+    pub(crate) fn hear_sysex(&self, id: DeviceSlot, hear: bool) -> bool {
         match self.port(id) {
             Some(port) => {
                 port.set_hear_sysex(hear);

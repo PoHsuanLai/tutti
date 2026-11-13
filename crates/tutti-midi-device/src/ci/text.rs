@@ -10,24 +10,23 @@ use crate::name::NameError;
 /// The human-readable text of an ACK or NAK, held as the text it says and
 /// written as the pure ASCII the wire carries.
 ///
-/// M2-101 §5.10.4, "7-Bit Encoding of Message Text":
+/// M2-101 §5.10.4 (7-Bit Encoding of Message Text) has three rules:
 ///
-/// 1. "7-bit ASCII characters are supported, except that the "\" character has
-///    a special function as defined in the JSON standard".
-/// 2. "All characters which are not 7-bit ASCII characters shall be converted
-///    to UTF-16, and then escaped using "\u" as defined in the JSON standard".
-/// 3. "The Message should not use ASCII Characters below 0x20 (space), except
-///    for 0x0A (line feed). Other ASCII Characters below 0x20 such as 0x08
-///    (tab) and 0x0D (carriage return) should be ignored."
+/// 1. 7-bit ASCII is supported, with the backslash given the special meaning it
+///    has in JSON.
+/// 2. A character that is not 7-bit ASCII is converted to UTF-16 and escaped
+///    as `\u`, as in JSON.
+/// 3. A message should not use ASCII below 0x20 except 0x0A (line feed); other
+///    such characters, tab and carriage return among them, should be ignored.
 ///
 /// So the writer escapes `\` as `\\`, every character outside `0x20..=0x7E`
 /// other than a line feed as one `\uXXXX` per UTF-16 unit (a character past the
 /// Basic Multilingual Plane is a surrogate pair, as in JSON), and the reader
 /// undoes both, and drops a raw control character the rule says to ignore.
 ///
-/// The bound: "NAK messages shall not exceed the responder's Maximum
-/// Receivable SysEx Size as established by MIDI-CI Discovery. Therefore, it is
-/// generally safe to send up to 103 bytes of Message text." 103 is what the
+/// The bound: a NAK may not exceed the responder's Maximum Receivable SysEx
+/// Size from Discovery, so the spec calls up to 103 bytes of Message text safe
+/// to send (§5.10.4). 103 is what the
 /// smallest receivable size, 128 bytes, leaves after the 25 bytes the rest of
 /// the message takes (`F0`, the 13-byte preamble, 10 bytes of status fields,
 /// `F7`): [`MAX_ENCODED`](Self::MAX_ENCODED) counts the *escaped* bytes, the
@@ -37,8 +36,8 @@ use crate::name::NameError;
 pub struct MessageText(String);
 
 impl MessageText {
-    /// The most escaped bytes the spec calls "generally safe" to send, 103.
-    pub const MAX_ENCODED: usize = 103;
+    /// The most escaped bytes the spec calls safe to send, 103.
+    pub(crate) const MAX_ENCODED: usize = 103;
 
     /// The text, or `None` when its escaped form is longer than
     /// [`MAX_ENCODED`](Self::MAX_ENCODED) bytes.

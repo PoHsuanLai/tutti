@@ -415,8 +415,8 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     /// bend the port was told is off its normal position to it, in the
     /// protocol it was sent in; one already at rest sends nothing. MIDI 1.0
     /// Detailed Spec p. 31 (Stop) asks for the return; the pedals come after
-    /// the offs because "a Hold or Sustain pedal 'On' message takes priority
-    /// over Note Off and All Notes Off until it is released" (A-5). An off the port refuses stays owed. Once the port refuses
+    /// the offs because a Hold or Sustain pedal On takes priority over Note Off
+    /// and All Notes Off until it is released (A-5). An off the port refuses stays owed. Once the port refuses
     /// one the rest are not tried (it is full), but each is owed and counted:
     /// a note that gets no off is a lost event whether or not its push was
     /// attempted.

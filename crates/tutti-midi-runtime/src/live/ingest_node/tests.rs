@@ -71,8 +71,8 @@ fn events_leave_on_their_channels_port() {
 }
 
 /// **A Group is a channel space of its own** (M2-104 section 2.1.2: a Group
-/// is 16 Channels; Appendix B.1: what a message does in one Group "does not
-/// apply to Channels in any other Group"): channel 1 of Group 2 leaves from a
+/// is 16 Channels; Appendix B.1: what a message does in one Group does not
+/// apply to Channels in any other Group): channel 1 of Group 2 leaves from a
 /// port of its own, not channel 1 of Group 1's; a Group's System message
 /// leaves from that Group's channelless port; a message with no Group
 /// (Utility) from the first Group's; a Group the node was not built to hear

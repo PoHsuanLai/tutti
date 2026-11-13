@@ -1,6 +1,5 @@
 //! [`TempoFollower`]: what a transport that follows an outside tempo applies,
-//! as a pure value (design 017, "Layers": the `ClockFollower` row, scoped to
-//! Flex; design 020, "Following an outside tempo").
+//! as a pure value, scoped to Flex.
 //!
 //! It reads decoded UMPs and says **what** to apply, a tempo ([`Bpm`]) or a
 //! meter ([`TimeSignature`]); it does not say where. It holds no clock, no

@@ -89,8 +89,8 @@ fn discovery_and_reply_have_the_version_2_trailers() {
 
 #[test]
 fn a_version_1_body_still_decodes() {
-    // §5.3: a receiver must "process the fields, values, and bits defined in
-    // the received version" when it is lower than its own. A v1 peer sends
+    // §5.3: a receiver processes only the fields, values and bits of
+    // the received version when it is lower than its own. A v1 peer sends
     // the body with no Version-2 trailer at all.
     let d = sample_discovery();
     let mut body = Vec::new();
@@ -162,8 +162,7 @@ fn a_peers_category_bitmap_with_protocol_negotiation_set_round_trips() {
     assert_eq!(again, body);
 }
 
-// §5.5.3: "The allowed values in the Receivable Maximum SysEx Message Size are
-// 128 or greater."
+// §5.5.3: the Receivable Maximum SysEx Message Size is 128 or greater.
 #[test]
 fn a_receivable_size_under_128_is_malformed() {
     let mut body = Vec::new();
@@ -184,8 +183,8 @@ fn a_receivable_size_under_128_is_malformed() {
     assert!(is_malformed(&body, false));
 }
 
-// §5.6.2: the Function Block is "the number of the Function Block", 0 to 31, or
-// "0x7F (no Function Block)"; the numbers between are not a Function Block.
+// §5.6.2: the Function Block is the number of the Function Block, 0 to 31, or
+// 0x7F for none; the numbers between are not a Function Block.
 #[test]
 fn the_function_block_of_a_reply_is_0_to_31_or_none() {
     let mut body = Vec::new();

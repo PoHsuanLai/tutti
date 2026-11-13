@@ -5,8 +5,8 @@
 //! *is* is learned after it is opened: its Device Identity (manufacturer,
 //! family, model, revision: M2-104 §7.1.3, the MIDI 1.0 Identity Reply, MIDI-CI
 //! Discovery) and its Product Instance Id (M2-104 §7.1.5; M2-101 §5.8.3.1:
-//! "should be the same as the Serial Number", unique per
-//! Manufacturer/Family/Model, persistent across power cycles).
+//! it should match the Serial Number, be unique per
+//! Manufacturer/Family/Model and persistent across power cycles).
 //!
 //! A Device Identity never names a unit: two keyboards of one model share
 //! it, so it can refute a saved device (a different model answers) but never
@@ -104,7 +104,7 @@ impl Learned {
     ///   another unit of the model answers alike.
     /// - Else nothing was comparable: [`Match::Unknown`].
     #[must_use]
-    pub fn compare(&self, now: &Self) -> Match {
+    pub(crate) fn compare(&self, now: &Self) -> Match {
         let instance = both(self.instance_id, now.instance_id);
         let identity = both(self.identity, now.identity);
         match (instance, identity) {

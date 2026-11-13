@@ -547,7 +547,7 @@ fn a_cable_that_goes_quiet_after_active_sensing_has_its_notes_ended() {
 }
 
 /// **A device that never sends an Active Sensing is never judged** (p. 32:
-/// "If a device never receives Active Sensing it should operate normally"):
+/// a device that never receives Active Sensing operates normally):
 /// the same key and silence, no FE, and the key is still held after 40
 /// blocks.
 #[test]
@@ -565,7 +565,7 @@ fn a_cable_with_no_active_sensing_is_never_judged_gone() {
 
 /// **System Reset ends what the cable held, forgets its half-sent runs and is
 /// not echoed** (p. 33: turn voices off, reset all controllers, clear running
-/// status; "under no condition should this message be echoed"). A key, the
+/// status; the message is never echoed). A key, the
 /// sustain pedal and an RPN select on Group 1 and a key on Group 2, then an FF
 /// on Group 1 at frame 100: Group 1's key ends and its pedal lifts at frame
 /// 100, the FF is sent on to no one, the Data Entry after it completes no

@@ -13,7 +13,7 @@
 //!   derived from the event's sample-accurate [`Offset`]. Pure.
 //! - [`JrClockEmitter`] — outbound: the periodic JR *Clock* (§7.2.2.1), which
 //!   is what makes the stamps usable at all. §7.2.2.3: a receiver that has seen
-//!   no JR Clock renders messages "as soon as possible", ignoring every stamp.
+//!   no JR Clock renders messages as soon as possible, ignoring every stamp.
 //! - [`JrStream`] — a stamper plus the running sample origin one outbound wire
 //!   stamps against, and optionally the clock cadence. This is what a pump
 //!   holds; see its doc for why the origin is per-wire rather than per-caller.
@@ -56,7 +56,7 @@ impl JrClock {
     /// The 16-bit JR tick a frame maps to (wrapping at 0x1_0000). A whole
     /// stream is stamped from one origin, so pass frames counted from it.
     #[inline]
-    pub fn ticks_at(&self, frame: Frame) -> u16 {
+    pub(crate) fn ticks_at(&self, frame: Frame) -> u16 {
         // ticks = frames * (JR_ticks/sec) / (frames/sec)
         let ticks = (frame.get() as f64) * JR_TICKS_PER_SECOND as f64 / self.sample_rate.get();
         (ticks as u64 & 0xFFFF) as u16
@@ -101,7 +101,7 @@ impl JrStamper {
     /// per-block operation whose consumers hand the result straight to
     /// `MidiOut::queue` as a slice. Returning one allocated on every block for a
     /// value nobody keeps.
-    pub fn stamp_block(&self, events: &[UmpAt], origin: Frame, out: &mut Vec<UmpAt>) {
+    pub(crate) fn stamp_block(&self, events: &[UmpAt], origin: Frame, out: &mut Vec<UmpAt>) {
         out.reserve(events.len() * 2);
         for ev in events {
             let ticks = self.clock.ticks_at(origin + Samples(ev.0.get() as usize));
@@ -116,7 +116,7 @@ impl JrStamper {
     /// Split out from [`JrStream::stamp`] so the arithmetic that keeps stamps
     /// monotonic is stated once and testable on its own.
     #[inline]
-    pub fn block_span(events: &[UmpAt]) -> Samples {
+    pub(crate) fn block_span(events: &[UmpAt]) -> Samples {
         events
             .iter()
             .map(|e| e.0.get() as usize)
@@ -125,25 +125,22 @@ impl JrStamper {
     }
 }
 
-/// The spec's hard ceiling on the JR Clock interval: M2-104 §7.2.2.1 — "The
-/// Sender **shall** send a JR Clock message at least once every 250
-/// milliseconds."
+/// The spec's hard ceiling on the JR Clock interval: M2-104 §7.2.2.1: a Sender sends a JR Clock
+/// message at least once every 250 milliseconds.
 pub const JR_CLOCK_MAX_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The interval [`JrClockEmitter::new`] actually uses.
 ///
 /// Deliberately well inside the 250 ms ceiling. §7.2.2.1 ties the bound to the
-/// 16-bit wrap — "to avoid ambiguity of the 2.09712 seconds wrap, and to provide
-/// sufficient JR Clock messages for the Receiver" — and §7.2.2.1 also invites a
-/// shorter period: "A Sender may send additional JR Clock messages with a
-/// shorter period to help the Receiver analyze the jitter." Emitting at the
+/// 16-bit wrap (2.09712 seconds) and also allows a shorter period, which
+/// helps the Receiver analyze jitter. Emitting at the
 /// ceiling would leave no margin for a late block to push an interval past it.
 pub const JR_CLOCK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Emits JR Clock messages on a cadence (M2-104 §7.2.2.1).
 ///
 /// This is what makes JR Timestamps mean anything. §7.2.2.3: a receiver that has
-/// seen no JR Clock "shall render those messages as soon as possible" — i.e. it
+/// seen no JR Clock renders those messages as soon as possible, so it
 /// discards the sender's timestamps entirely. A stream that stamps but never
 /// clocks has done the work and gets none of the benefit.
 ///
@@ -174,7 +171,7 @@ impl JrClockEmitter {
     /// Panics if `interval` exceeds [`JR_CLOCK_MAX_INTERVAL`]: M2-104 §7.2.2.1 makes
     /// that bound a `shall`, so a longer interval is not a tuning choice, it is
     /// a non-conformant stream. Catching it here beats shipping one.
-    pub fn with_interval(sample_rate: impl Into<SampleRate>, interval: Duration) -> Self {
+    pub(crate) fn with_interval(sample_rate: impl Into<SampleRate>, interval: Duration) -> Self {
         assert!(
             interval <= JR_CLOCK_MAX_INTERVAL,
             "JR Clock interval {interval:?} exceeds the §7.2.2.1 maximum of {JR_CLOCK_MAX_INTERVAL:?}"
@@ -245,7 +242,7 @@ impl JrStream {
 
     /// A stream over an existing stamper.
     #[must_use]
-    pub fn with_stamper(stamper: JrStamper) -> Self {
+    pub(crate) fn with_stamper(stamper: JrStamper) -> Self {
         Self {
             stamper,
             origin: Frame::ZERO,
@@ -280,7 +277,7 @@ impl JrStream {
     /// rather than by the events within it.
     ///
     /// This is the entry point a pump wants. §7.2.2.1 makes JR Clocks
-    /// "independent … not related to any other message", so the cadence has to
+    /// independent of any other message, so the cadence has to
     /// keep running through silence — and it only can if time advances on empty
     /// blocks, which the true block length provides and `block_span` does not.
     /// `out` is cleared first, so it is a destination and not an accumulator.
@@ -302,11 +299,6 @@ impl JrStream {
     /// Exposed for tests and diagnostics.
     pub fn origin(&self) -> Frame {
         self.origin
-    }
-
-    /// The underlying stamper.
-    pub fn stamper(&self) -> &JrStamper {
-        &self.stamper
     }
 }
 

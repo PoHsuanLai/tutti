@@ -414,7 +414,11 @@ impl Devices {
     /// when it is not an input, [`Error::NoFreeSlot`] when every slot is held,
     /// or the platform error from opening it. A failed open leaves no port in
     /// `ports`.
-    pub fn open_input(&self, id: &DeviceId, ports: &Arc<HardwareMidiInputs>) -> Result<OpenInput> {
+    pub(crate) fn open_input(
+        &self,
+        id: &DeviceId,
+        ports: &Arc<HardwareMidiInputs>,
+    ) -> Result<OpenInput> {
         let (info, handle) = self.present(id, PortDirection::is_input)?;
         let producer = ports.open_input_port(info.name.as_str())?;
         let mut input = OpenInput {

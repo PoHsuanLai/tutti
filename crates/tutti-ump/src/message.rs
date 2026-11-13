@@ -222,7 +222,7 @@ pub enum System {
 
 impl System {
     /// How many Timing Clock messages make a quarter note (MIDI 1.0
-    /// Detailed Specification, "System Real Time Messages").
+    /// Detailed Specification, System Real Time Messages).
     pub const TIMING_CLOCKS_PER_QUARTER: u32 = 24;
 }
 

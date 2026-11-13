@@ -18,7 +18,7 @@ fn first_is_the_first_group_with_the_channel() {
 }
 
 /// M2-104 section 7.4.2: Note On and Note Off carry a 16-bit velocity and an
-/// attribute type, and "no attribute" is type 0.
+/// attribute type, and no attribute is type 0.
 #[test]
 fn note_constructors_are_the_no_attribute_messages() {
     let note = NoteNumber::of(60);

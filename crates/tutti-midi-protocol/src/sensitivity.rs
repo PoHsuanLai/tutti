@@ -4,7 +4,7 @@ use tutti_types::Semitones;
 use tutti_ump::Pitch;
 
 /// Per-note pitch bend range as the spec's 7.25 fixed-point semitone value
-/// (M2-104 §7.4.13, RPN #00/07 "Sensitivity of Per-Note Pitch Bend"): 7 integer
+/// (M2-104 §7.4.13, RPN #00/07, Sensitivity of Per-Note Pitch Bend): 7 integer
 /// bits of semitones in the high word, 25 fractional bits below. This is the wire
 /// form the MPE Configuration Message (RPN 0x0006) carries — modelling it as the
 /// fixed-point value, not a bare `u8`, is what lets it round-trip through UMP.
@@ -33,7 +33,7 @@ impl PitchBendSensitivity {
     pub const MPE_DEFAULT: Self = Self(48 << Self::FRAC_BITS);
 
     /// The widest whole-semitone sensitivity: 7 integer bits.
-    pub const MAX_SEMITONES: u8 = 127;
+    pub(crate) const MAX_SEMITONES: u8 = 127;
 
     /// Whole-semitone sensitivity (the common MPE case, e.g. 48), or `None`
     /// above [`MAX_SEMITONES`](Self::MAX_SEMITONES). A `u8` count, not

@@ -12,8 +12,8 @@ use tutti_ump::TimeSignature as FlexTimeSignature;
 const TEN_NS_UNITS_PER_MINUTE: f64 = 6_000_000_000.0;
 
 /// The tempo a Set Tempo field declares: the field is 10 ns units per quarter
-/// note (section 7.5.3), so `6e9 / field` beats per minute. `None` for `0`, "no
-/// valid tempo". The slowest the field holds is 1.39698 bpm.
+/// note (section 7.5.3), so `6e9 / field` beats per minute. `None` for `0`, no
+/// valid tempo. The slowest the field holds is 1.39698 bpm.
 ///
 /// ```
 /// use tutti_midi_protocol::flex_tempo;
@@ -34,7 +34,7 @@ pub fn flex_tempo(field: u32) -> Option<Bpm> {
 /// beats per bar, the denominator field a negative power of 2 (2 is a quarter
 /// note, 3 an eighth). `None` for what the project's meter cannot hold: a
 /// numerator of 0 or above 64 ([`BeatsPerBar`]'s ceiling),
-/// a denominator field of 0 ("a non-standard denominator", section 7.5.4) or
+/// a denominator field of 0 (non-standard, section 7.5.4) or
 /// one that names a note shorter than a 64th note ([`NoteValue`]'s ceiling).
 ///
 /// The message's third field, the number of 1/32 notes in 24 MIDI Clocks, is

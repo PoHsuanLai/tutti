@@ -253,9 +253,8 @@ impl MtcDecoder {
     fn assemble(&mut self) {
         let n = &self.nibbles;
 
-        // The bits the spec reserves are not read: "Undefined and reserved for
-        // future use. Transmitter must set these bits to 0 and receiver should
-        // ignore!" (MTC, Quarter Frame Messages): the top three bits of the
+        // The bits the spec reserves are not read: a transmitter sets them to 0
+        // and a receiver ignores them (MTC, Quarter Frame Messages): the top three bits of the
         // frame field, the top two of seconds and of minutes, and the top bit
         // of the hours nibble pair (bit 3 of piece 7, above the rate code).
         let frames = n[0] | ((n[1] & 0x01) << 4);
@@ -278,9 +277,8 @@ impl MtcDecoder {
         // a corrupt frame: it is dropped, and `timecode` keeps its last value.
         if let Some(timecode) = SmpteTimecode::new(hours, minutes, seconds, frames, frame_rate) {
             // The eight pieces took two frames to send, so the position they
-            // describe is two frames old when the last arrives: "A receiver of
-            // this time must keep an internal offset of +2 frames for
-            // displaying." The decoder keeps it, so `timecode` is the time of
+            // describe is two frames old when the last arrives, so the MTC spec has a
+            // receiver keep an internal offset of +2 frames. The decoder keeps it, so `timecode` is the time of
             // the last piece.
             self.timecode = Some(SmpteTimecode::from_frame_count(
                 timecode.frame_count() + CYCLE_FRAMES,
@@ -293,11 +291,10 @@ impl MtcDecoder {
     /// frame has been assembled.
     ///
     /// It is the time of the last quarter-frame that completed it: the eight
-    /// pieces name the frame piece 0 fell on, and the spec says "When the last
-    /// quarter frame message (F1 7X) arrives and the time can be fully
-    /// assembled, the information is now actually 2 frames old. A receiver of
-    /// this time must keep an internal offset of +2 frames for displaying."
-    /// The decoder applies it (hours wrap at 24), so what the sender's label
+    /// pieces name the frame piece 0 fell on, and by the time the last
+    /// quarter frame message (F1 7X) arrives the information is 2 frames old,
+    /// so a receiver keeps an internal offset of +2 frames (MTC, Quarter Frame
+    /// Messages). The decoder applies it (hours wrap at 24), so what the sender's label
     /// said plus two frames is reported here. It is for forward running time
     /// code, the only direction `feed` assembles. MTC transmits one full
     /// position per *two* frames, so this is current only at the instant the

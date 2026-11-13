@@ -139,7 +139,7 @@ fn a_message_that_is_not_read_keeps_its_header() {
         }
     );
     // The NAK is addressed to the sender, from `own`, on the same Device ID,
-    // naming the message and "MIDI-CI message not supported" (Table 16 0x01).
+    // naming the message, with the message-not-supported status (Table 16 0x01).
     let reply = got.nak(muid(0x77)).expect("the sender is known");
     assert_eq!(
         reply,
@@ -156,11 +156,9 @@ fn a_message_that_is_not_read_keeps_its_header() {
     assert_eq!(message(&reply.encode()), reply);
 }
 
-// §5.3: "If any of the reserved bits of the Message Format Version field are
-// set, the Device shall reply with a NAK message (error code 0x02)"; §5.4: "A
-// Receiver of a Discovery message (or any other message) with the reserved
-// version bits set, reply with a NAK message using the Receiver's Message Format
-// Version and NAK Status Code set to 0x02."
+// §5.3: a message whose Message Format Version has reserved bits set is
+// answered with a NAK (error code 0x02); §5.4: the NAK uses the receiver's own
+// Message Format Version and Status Code 0x02.
 #[test]
 fn reserved_version_bits_are_nakked_with_0x02_in_the_receivers_version() {
     for version in [0x20, 0x40, 0x80, 0xE2, 0x7F] {
@@ -181,7 +179,7 @@ fn reserved_version_bits_are_nakked_with_0x02_in_the_receivers_version() {
     }
 }
 
-// §5.4: "Message Format Version 0x00 is deprecated and shall not be used."
+// §5.4: Message Format Version 0x00 is deprecated.
 #[test]
 fn version_zero_is_refused() {
     let mut bytes = invalidate();
@@ -189,9 +187,8 @@ fn version_zero_is_refused() {
     assert_eq!(unread(&bytes).reason, UnreadReason::VersionZero);
 }
 
-// §5.3: "If the received version is higher than the Device's supported
-// version, the Device shall only process the fields defined for its supported
-// version and ignores any appended fields": a version the reserved bits do not
+// §5.3: a device that receives a version higher than its own processes only the
+// fields of its own version and ignores any appended ones: a version the reserved bits do not
 // forbid is read, with what it appended.
 #[test]
 fn a_higher_version_is_read_and_its_appended_fields_ignored() {
@@ -205,7 +202,7 @@ fn a_higher_version_is_read_and_its_appended_fields_ignored() {
     assert_eq!(target, muid(5));
 }
 
-// §3.2.1 Table 5: "10-7D: Reserved".
+// §3.2.1 Table 5: Device IDs 0x10 to 0x7D are reserved.
 #[test]
 fn a_reserved_device_id_is_refused() {
     for id in [0x10, 0x11, 0x40, 0x7D] {
@@ -253,8 +250,8 @@ fn a_source_no_device_can_own_is_unread_with_nobody_to_answer() {
     assert_eq!(unread(&bytes).reason, UnreadReason::BadDestination);
 }
 
-// §3.3.3: "The Broadcast MUID shall be used only for the following MIDI-CI
-// Messages: Discovery, Invalidate MUID, ..."; Tables 6 and 12 give those two the
+// §3.3.3: the Broadcast MUID is used only for a short list of messages,
+// Discovery and Invalidate MUID among them; Tables 6 and 12 give those two the
 // Broadcast MUID as destination. So the other three kinds refuse it, and those
 // two refuse a unicast one.
 #[test]

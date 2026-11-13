@@ -11,8 +11,8 @@ fn watch() -> ActiveSensing {
 const LIMIT: u64 = 15_840;
 
 /// **A receiver that never sees an Active Sensing never judges a cable gone**
-/// (p. 32: "If a device never receives Active Sensing it should operate
-/// normally"), however long it is silent.
+/// (p. 32: a device that never receives Active Sensing operates
+/// normally), however long it is silent.
 #[test]
 fn a_cable_that_never_sent_active_sensing_is_never_judged() {
     let mut w = watch();
@@ -40,8 +40,8 @@ fn a_watched_cable_lapses_over_the_limit_once() {
     assert_eq!(w.next_lapse(Frame::new(100 * LIMIT)), None, "once");
 }
 
-/// **Any message restarts the timer** (the flowchart's "Receive Data: Clear
-/// Timer", whatever the byte): a note just before the limit moves the lapse a
+/// **Any message restarts the timer** (the flowchart's receive-data step clears the
+/// timer, whatever the byte): a note just before the limit moves the lapse a
 /// limit on.
 #[test]
 fn any_message_clears_the_timer() {

@@ -1,4 +1,4 @@
-//! MIDI-CI on the wire (design 017 L8 part 3) against a fake device, through
+//! MIDI-CI on the wire against a fake device, through
 //! the session and the fake backend: what is sent is the fake's sink, what the
 //! device says is the input's producer.
 

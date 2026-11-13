@@ -37,8 +37,8 @@ pub const INQUIRY_TIMEOUT: Duration = Duration::from_secs(1);
 pub const INQUIRY_ATTEMPTS: u8 = 2;
 
 /// The payload of an Identity Request to every device, between `F0` and `F7`:
-/// Universal Non-Real Time, device id `7F` ("if `<device ID>` = 7FH then the
-/// device should respond regardless of what `<device ID>` it is set to"),
+/// Universal Non-Real Time, device id `7F` (every device should respond, whatever its own
+/// device ID is set to),
 /// General Information `06`, Identity Request `01`.
 const REQUEST: [u8; 4] = [0x7E, 0x7F, 0x06, 0x01];
 

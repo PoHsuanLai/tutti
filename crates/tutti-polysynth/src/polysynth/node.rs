@@ -36,7 +36,7 @@ tutti_graph::declare_params!([] PolySynth, n {
 ///
 /// The voice bank renders each SIMD group of lanes that holds a sounding
 /// voice, so at full polyphony the synth costs what its lane count does.
-/// Measured with a saw, every voice held (doc 013, "The cost model and coarsening"):
+/// Measured with a saw, every voice held:
 /// 18–21 ns per frame and channel at 8 lanes, 74 at 32 (65 at 8 voices ×
 /// 4 unison), about 2.2 more per lane, against `SvfFilterNode`'s 7.2
 /// (`Moderate`'s reference) and `Heavy`'s 256. 16 lanes come to about

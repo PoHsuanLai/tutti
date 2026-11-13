@@ -1,4 +1,4 @@
-//! `FamilyNode` over Freeverb, as the graph runs it (design 022 step 1b): its
+//! `FamilyNode` over Freeverb, as the graph runs it: its
 //! ports, its tail (a ceiling it narrows and honours), its controls (a cell, or
 //! a port the graph modulates), and its fork. Every figure is from the
 //! definition (the network's own analytic tail, an impulse's first echo, a
@@ -396,7 +396,7 @@ fn the_node_is_the_room_alone() {
 
 /// A fork of the node starts from silence with the values set, and shares nothing
 /// with it: the harness's fork checks, and a fork taken while the room rings
-/// does not carry the ring (doc 022's export-fork rule: `fresh()` plus preroll).
+/// does not carry the ring.
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
     assert_param_fork(FamilyNode::live(FreeverbFamily, gm()));

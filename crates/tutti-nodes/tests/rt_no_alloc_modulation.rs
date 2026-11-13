@@ -505,10 +505,6 @@ impl tutti_graph::Pool for GatedPool {
 /// segments at breakpoints, loop wraps inside blocks, the linear fallback
 /// for a range-clamped piece and for a curve with no pieces, ragged blocks;
 /// serial, and on a pool whose helpers run under the gate too.
-///
-/// Changed in doc 014 §12.2: the lanes are `ControlLaneNode`s, and the
-/// clamped and sine lanes send grid points of the play clock; the
-/// no-allocation property stands.
 #[test]
 fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
     use std::sync::Arc;
@@ -554,7 +550,7 @@ fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
 /// It does not test a property of the lane: a lane's state is
 /// its own (one node, one op), so nothing it does can differ between the
 /// two; this pins that the event path keeps it that way (a lane sharing
-/// state with another, which `CLAUDE.md` forbids, would diverge here).
+/// state with another would diverge here).
 #[test]
 fn event_lanes_render_the_same_serial_and_parallel() {
     use std::sync::Arc;
@@ -826,7 +822,7 @@ fn lanes_loop() -> Option<tutti_types::LoopRange> {
     tutti_types::LoopRange::new(tutti_types::Beat(0.5), tutti_types::Beat(1.7))
 }
 
-/// 200 control lanes (doc 014 §12) render bit for bit the same serial and
+/// 200 control lanes render bit for bit the same serial and
 /// on pools of 2, 3, 4 and 8 participants, under ragged blocks with loop
 /// wraps inside them, republishes of every program, knob writes and range
 /// edits between blocks.
@@ -834,7 +830,7 @@ fn lanes_loop() -> Option<tutti_types::LoopRange> {
 /// It does not test a property of the lane: each lane's state
 /// is its own (one node, one op, its cells read once per block), so nothing
 /// it does can differ between schedules. This pins that it stays so: two
-/// lanes sharing mutable state outside the graph (`CLAUDE.md` forbids it)
+/// lanes sharing mutable state outside the graph
 /// would diverge here.
 #[test]
 fn two_hundred_lanes_render_the_same_serial_and_parallel() {
@@ -931,7 +927,7 @@ fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
     }
 }
 
-// ---- signal sources into lanes (doc 014 §6) -------------------------------
+// ---- signal sources into lanes -------------------------------
 
 /// Stereo bursts on the executor's clock: 1.0 (the right channel at half)
 /// on the first `width` frames of every `period`, allocation-free.
@@ -1285,7 +1281,7 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 /// republishes the LFO's lane and sends no plan, and the blocks after each
 /// one read the new program inside the gate. (That the lane adopts it, the
 /// render moving with the depth, is `modulation_reconcile.rs`' depth test;
-/// a single-threaded gate pins only the reader's path, per CLAUDE.md.)
+/// a single-threaded gate pins only the reader's path.)
 #[test]
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use tutti_graph::NodeKey;

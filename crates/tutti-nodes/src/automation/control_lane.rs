@@ -63,7 +63,7 @@ struct Shared {
     /// racing publishes never share one (the lane compares generations for
     /// inequality only, so their order in the cell does not matter). The
     /// program itself is the cell's: the fork and `program()` read
-    /// `ArcLend::current` (a `Loan` must not leave the block, doc 014 §4.5).
+    /// `ArcLend::current` (a `Loan` must not leave the block).
     generation: AtomicU64,
     /// Set by [`LaneControls::resync`]: the next block sends at frame 0.
     resync: AtomicBool,
@@ -105,7 +105,7 @@ pub struct LaneControls(Arc<Shared>);
 
 impl LaneControls {
     /// Hands the lane `program`, from its next block's first frame, as a
-    /// glide from the value in flight (doc 014 §4.2). Control thread only.
+    /// glide from the value in flight. Control thread only.
     pub fn publish(&self, program: ControlProgram) {
         self.publish_arc(Arc::new(program));
     }
@@ -155,7 +155,7 @@ impl LaneControls {
     }
 
     /// Makes the lane send its value at its next block's first frame, even
-    /// while steady (doc 014 §5.2): what to call after the lane's output is
+    /// while steady: what to call after the lane's output is
     /// re-wired to another target, or its target replaced, since a lane
     /// sends nothing while nothing moves and a new target would otherwise
     /// hold its own base until something does. The send is a point, not a
@@ -215,7 +215,7 @@ impl LaneControls {
     }
 
     /// Blocks whose program had offsets while the range was not finite: the
-    /// lane sent the base alone (doc 014 §4.2).
+    /// lane sent the base alone.
     pub fn unranged(&self) -> u64 {
         self.0.unranged.load(Ordering::Relaxed)
     }
@@ -391,7 +391,7 @@ impl ControlLaneNode {
     /// alone.
     ///
     /// The typed spelling of [`for_unit`](Self::for_unit), which it calls:
-    /// the lane is erased over the unit (doc 014 §4.1), so the key only
+    /// the lane is erased over the unit, so the key only
     /// names the param.
     pub fn for_param<U: Unit>(
         key: ParamKey<U>,
@@ -450,7 +450,7 @@ impl ControlLaneNode {
 
     /// A fresh lane for a fork: the last published program, the knob and
     /// range as they are now in cells of its own, the same address, and no
-    /// piece in flight (doc 014 §5.6). Control thread.
+    /// piece in flight. Control thread.
     #[must_use]
     pub fn fork_fresh(&self) -> Self {
         Self::fresh_over(&self.shared, &self.make, self.native)
@@ -957,7 +957,7 @@ impl Node for ControlLaneNode {
     /// No audio; one event input (signal sources), one event output
     /// (segments to the target).
     ///
-    /// `Moderate`, from a measurement (doc 014 §5.3): 200 lanes of one
+    /// `Moderate`, from a measurement: 200 lanes of one
     /// moving layer each at 512-frame blocks spend about 3.7 µs per lane per
     /// block in `process` (a point's transport roll and the program's
     /// evaluation, sixteen grid points a block), about 7 ns a frame, where
@@ -1004,8 +1004,8 @@ impl Node for ControlLaneNode {
         let range_bits = (range.0.to_bits(), range.1.to_bits());
         if generation != self.seen.generation {
             // A new program: forget every input it does not read, so a
-            // source id a later program reuses starts from nothing (doc
-            // 014 §7), never from the segment a removed source left.
+            // source id a later program reuses starts from nothing, never from the
+            // segment a removed source left.
             for slot in &mut self.walk.inputs {
                 if slot.is_some_and(|i| !program.inputs().iter().any(|l| l.source.0 == i.source)) {
                     *slot = None;

@@ -1,5 +1,5 @@
 //! [`EnvelopeFollowerNode`]: an audio input's level, sent to control lanes
-//! on the play-clock grid (design doc 014 §6).
+//! on the play-clock grid.
 
 use tutti_graph::{Cost, Io};
 use tutti_modulation::{LevelFollower, SignalKind, SignalSource, SourceId};

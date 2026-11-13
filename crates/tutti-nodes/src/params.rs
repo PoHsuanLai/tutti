@@ -1,5 +1,4 @@
-//! One reader for the cells of every [`FamilyNode`](crate::FamilyNode) family
-//! (doc 024 section 2.6).
+//! One reader for the cells of every [`FamilyNode`](crate::FamilyNode) family.
 //!
 //! A family writes a [`ControlSet`]: its addresses, and the conversion between its
 //! `Controls` and the `f32`s the ports carry. [`Params`] is the one reader over it,

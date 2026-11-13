@@ -1,6 +1,5 @@
-//! The VBAP panner declares `Cost::Moderate` (doc 013, "The cost
-//! model and coarsening"); the HRTF renderer stays `Heavy`. Declaring a class changes only
-//! the parallel schedule: sibling panners pack into fewer tasks than
+//! The VBAP panner declares `Cost::Moderate`; the HRTF renderer stays `Heavy`. Declaring a
+//! class changes only the parallel schedule: sibling panners pack into fewer tasks than
 //! undeclared ones, and the render on a pool is bit for bit the serial one.
 
 use std::sync::Arc;

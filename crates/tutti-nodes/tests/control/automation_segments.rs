@@ -1,5 +1,5 @@
 //! A `ControlLaneNode` of automation alone (no knob, no range: exact mode): a curve sent to a param port as
-//! curve-segment events (doc 013, decision 7; doc 014 §5.4), rendered by the
+//! curve-segment events, rendered by the
 //! port per frame.
 //!
 //! What is pinned:
@@ -10,7 +10,7 @@
 //! - a loop wrap, a seek and a tempo change inside a block, and a stop,
 //!   keep the port on the curve;
 //! - a piece no segment shape carries goes as linear pieces exact at every
-//!   grid point of the play clock (doc 014 §5.4), whatever the blocks.
+//!   grid point of the play clock, whatever the blocks.
 //!
 //! The figures are the trajectory's own `value_at` at each frame's beat,
 //! within a tolerance (the curve's `powf`, `sqrt` and the port's `f32`
@@ -301,10 +301,6 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
 /// A piece no segment carries (a range clamping its middle, which a law does
 /// not say) goes as linear pieces on the play-clock grid: exact on every grid frame, a line
 /// between, and the same frames whatever the blocks.
-///
-/// Changed in doc 014 §12.2: this sampled the curve at block edges, which
-/// moved with block size (doc 014 §5.4); it is the grid now, and the two
-/// block schedules render the same bits.
 #[test]
 fn an_unrepresentable_piece_is_linear_on_the_grid() {
     let mut curve = Trajectory::new().with_range(0.0, 0.5);
@@ -327,9 +323,6 @@ fn an_unrepresentable_piece_is_linear_on_the_grid() {
 
 /// A curve that cannot say its pieces (`segment_at` is `None`: here a
 /// sine) takes the same grid: exact on every grid frame, a line between.
-///
-/// Changed in doc 014 §12.2: exact on each block's first and last frame
-/// before; on the grid now (doc 014 §5.4).
 #[test]
 fn a_curve_without_pieces_takes_the_grid() {
     struct Sine;

@@ -145,8 +145,7 @@ impl Node for DistortionNode {
     /// `channels` in and out, drive modulatable .
     /// The shapers carry no z-state, so the output stops with the input.
     ///
-    /// The cost is the curve's, measured by doc 013's fixed-plus-per-frame
-    /// fit against its two reference nodes (its cost table has the row):
+    /// The cost is the curve's:
     /// `Softsign` and `HardClip` are arithmetic, `Light`; `Crush` and
     /// `SoftCrush` (a rounding call) and `Atan` and `Tanh` (a libm call)
     /// are `Moderate`.

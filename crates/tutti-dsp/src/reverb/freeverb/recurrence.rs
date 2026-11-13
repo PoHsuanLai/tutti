@@ -6,16 +6,14 @@
 //! A Freeverb: eight parallel damped comb filters then four all-pass filters
 //! per channel, fed by one mono input and giving a stereo wet signal.
 //!
-//! [`Freeverb`] starts with the figures of the General MIDI reverb the SoundFont
-//! unit used to carry inside itself (room size 0.5, damping 0.5, width 1, wet 1).
-//! It is the state of [`FreeverbRecurrence`], the [`Recurrence`] of
-//! [`FreeverbFamily`](crate::FreeverbFamily): the two coefficients a network
-//! carries (the comb feedback and damping) are the only figures its
-//! [`retarget`](crate::Realized::retarget) moves, and they glide, 20 ms in
-//! whole `CHUNK`s (a size or a damping that jumped would click), while the lines
-//! and the processing loops are untouched by it. It allocates in
-//! [`new`](Freeverb::new) and in [`prepare`](Recurrence::prepare) at another rate,
-//! and nowhere after.
+//! [`Freeverb`] starts with the figures of the General MIDI reverb (room size 0.5, damping 0.5,
+//! width 1, wet 1). It is the state of [`FreeverbRecurrence`], the [`Recurrence`] of
+//! [`FreeverbFamily`](crate::FreeverbFamily): the two coefficients a network carries (the comb
+//! feedback and damping) are the only figures its [`retarget`](crate::Realized::retarget)
+//! moves, and they glide, 20 ms in whole `CHUNK`s (a size or a damping that jumped would
+//! click), while the lines and the processing loops are untouched by it. It allocates in
+//! [`new`](Freeverb::new) and in [`prepare`](Recurrence::prepare) at another rate, and nowhere
+//! after.
 
 use std::cmp;
 
@@ -392,8 +390,7 @@ impl Recurrence for FreeverbRecurrence {
 
     fn effort(&self) -> Effort {
         // Measured by `tutti-nodes`'s `benches/node_kernels.rs` (`reverb`): 18 ns
-        // a frame and output channel, the class for 2.8 to 45 (doc 013, "The cost
-        // model and coarsening").
+        // a frame and output channel.
         Effort::Moderate
     }
 }

@@ -10,11 +10,6 @@ documentation = "https://docs.rs/tutti-soundfont"
 readme = "README.md"
 keywords = ["soundfont", "sf2", "audio", "synthesizer", "midi"]
 categories = ["multimedia::audio"]
-# No features. The player and the MIDI event input are both essential: gating
-# either would leave a `SoundFontUnit` that cannot be built or cannot receive
-# notes. This is a separate crate from `tutti-polysynth` because a `.sf2`
-# player shares none of that crate's voice allocation, tuning, portamento or
-# unison.
 
 [lints]
 workspace = true
@@ -24,10 +19,10 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # `Node`, `ForkSource`: the player as a graph node, and its own way into a
 # fork of the graph (an export), as `tutti-plugin`'s `PluginClient`
-# has one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`, `tutti-rt` and `tutti-ump`.
+# has one.
 tutti-graph = { path = "../tutti-graph" }
 
-# The voice's low-pass is `tutti-dsp`'s `SvfModel` biquad (doc 024, consolidation 4).
+# The voice's low-pass is `tutti-dsp`'s `SvfModel` biquad.
 tutti-dsp = { path = "../tutti-dsp" }
 tutti-sf2 = { path = "../tutti-sf2" }
 tutti-voicing = { path = "../tutti-voicing" }

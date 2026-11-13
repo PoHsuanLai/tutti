@@ -1,4 +1,4 @@
-//! [`GateFamily`]: the noise gate as a [`Family`] (design 024 section 3, row 6).
+//! [`GateFamily`]: the noise gate as a [`Family`].
 //!
 //! A gate reads a **key**: the side-chain as wide as the signal (an unwired one is
 //! silence and holds the gate closed) or the signal itself, as the family's [`KeySource`] says.
@@ -10,7 +10,7 @@
 //! image does not move when one side is louder.
 //!
 //! The threshold is the one control read **per frame** when the graph drives it (lane 0 of
-//! the [`Feed`]; design 024 section 4.5, "Where cadence stops"): it is a level to compare
+//! the [`Feed`]): it is a level to compare
 //! against, not a coefficient. Every other control lands on the stream grid
 //! ([`Family::CADENCE`]), the range over [`GAIN_GLIDE`] (it multiplies the output
 //! directly, so a step in it is a click) and the rest whole: the times only move what the

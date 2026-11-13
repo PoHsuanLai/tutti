@@ -18,7 +18,7 @@ fn the_pre_delay_is_rounded_to_whole_frames() {
 }
 
 /// A `Network` lives on the stack of the audio thread: the whole value stays
-/// under 64 KiB (design 022 guessed "a few kilobytes"; it is about 55 KB: `MAX_STAGES` of the
+/// under 64 KiB (about 55 KB: `MAX_STAGES` of the
 /// largest stage).
 #[test]
 fn a_network_fits_the_audio_thread_stack() {

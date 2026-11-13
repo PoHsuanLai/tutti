@@ -82,7 +82,7 @@ fn run<N: Node>(
     g.finish();
 }
 
-/// The graph's fan-in (`Op::Sum`, doc 013 "Audio fan-in sums"), measured
+/// The graph's fan-in (`Op::Sum`), measured
 /// through the graph: `sources` groups of `width` global input channels, each
 /// output channel summing its channel of every group. No node runs, so the
 /// figure is the op's.

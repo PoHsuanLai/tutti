@@ -1,4 +1,4 @@
-//! The signal-driven modulation sources (doc 014 §6): `EnvelopeFollowerNode`
+//! The signal-driven modulation sources: `EnvelopeFollowerNode`
 //! and `NoteEnvelopeNode`, alone and through a `ControlLaneNode`, against
 //! analytic figures and invariants of the render (never another reference
 //! render).

@@ -1,5 +1,4 @@
-//! [`MultibandFamily`]: the multiband compressor as a [`Family`] (design 024 section 3,
-//! row 9).
+//! [`MultibandFamily`]: the multiband compressor as a [`Family`].
 //!
 //! A Linkwitz-Riley crossover (the tree of [`CrossoverFamily`], one
 //! per channel) splits the signal into 2 to 4 bands; each band is compressed by its own

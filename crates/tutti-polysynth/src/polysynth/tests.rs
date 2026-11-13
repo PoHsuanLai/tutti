@@ -314,10 +314,7 @@ fn test_unison_creates_subvoices() {
 
 /// `synth`'s param `p` set through its `ParamSet`, as a host writes a
 /// knob (`AudioParam`, `write_param`) and as a control lane's knob is
-/// the same cell: `false` for a param the set lacks. (These tests
-/// pinned the synth's `ModParams` impl and then an `AtomicTarget` over
-/// the set's cell; doc 014 §10 deleted both, and the `ParamSet` is the
-/// one address.)
+/// the same cell: `false` for a param the set lacks.
 fn set(synth: &PolySynth, p: tutti_types::UnitParam, value: f32) -> bool {
     tutti_graph::ParamNode::param_set(synth).set(p, value)
 }
@@ -970,19 +967,6 @@ fn test_mono_mode_retrigger() {
 
 /// One wheel position means one pitch, whether the note was already
 /// sounding or is struck after the bend.
-///
-/// It did not. `handle_note_on` multiplies the base frequency by
-/// `2^(semitones/12)`, while `apply_pitch_bend` fed `note + semitones` into
-/// a lookup (since removed: the note logic now says how far each key sounds from equal temperament) that interpolated between *table*
-/// entries. Under equal temperament the table is geometric and the two
-/// agree exactly, which is why every existing test passed. Under any
-/// unequal scale they do not: measured at **3.9 cents** on
-/// `Tuning::just_intonation` — a held note and a new note, same wheel,
-/// audibly different pitch.
-///
-/// Pinned in cents rather than Hz because the defect is a pitch error, and
-/// because a ratio comparison stays meaningful if the fixture's reference
-/// frequency ever changes.
 #[test]
 fn a_bend_lands_on_the_same_pitch_whether_the_note_was_already_sounding() {
     let config = || SynthConfig {
@@ -2902,7 +2886,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
 }
 
 /// An Assignable Per-Note Controller whose index byte has the high bit set is
-/// not CC74 or CC7: `CCNumber::new` used to mask 0xCA to 74.
+/// not CC74 or CC7.
 #[test]
 fn an_assignable_per_note_index_is_a_whole_byte() {
     let drive = |controller: u8| {

@@ -5,8 +5,7 @@
 //! the [`ParamSet`] it is inserted with, so a host sets it with the same
 //! generic machinery it uses for a filter cutoff and needs no downcast. A
 //! strip's mute is not here: muting is graph state, `NodeMode::Muted`
-//! (`Graph::set_mode`), the same for every node (doc 013, "Bypass and mute
-//! are graph state").
+//! (`Graph::set_mode`), the same for every node.
 //!
 //! Every scalar lives in a cell the node's [`ParamSet`] addresses by
 //! [`UnitParam`] — the same shape every other node in this crate uses — so a
@@ -376,8 +375,7 @@ impl Node for BusStripNode {
     /// with its input.
     fn shape(&self) -> Shape {
         Shape::through_unassigned(self.layout)
-            // Measured (doc 013, "The cost model and coarsening"): steady
-            // and ramping are far under the `Light`/`Moderate` boundary.
+            // Measured: steady and ramping are far under the `Light`/`Moderate` boundary.
             // With the volume fed per frame it is borderline: about 0.7 of
             // the way from a gain to `SvfFilterNode` on a log scale, the
             // boundary about 0.73. `Light`, as a wrong `Light` costs little.

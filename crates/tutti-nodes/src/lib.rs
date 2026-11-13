@@ -35,7 +35,7 @@
 //!   [`SweepRange`] checked); [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
 //!   [`Modulator`] (an LFO's is `tutti-modulation`'s [`Waveform`]).
-//! - Signal-driven modulation sources (design doc 014 §6), feeding a
+//! - Signal-driven modulation sources, feeding a
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
 //! - Spatial: [`VbapPannerNode`] ([`VbapError`]) and [`HrtfBinauralNode`],
@@ -163,10 +163,8 @@ pub use signal::{
     EnvelopeFollowerNode, NoteEnvelopeNode, SOURCE_EVENT_CAPACITY, SourceNode, SourcePorts,
 };
 
-// The reconcile step (doc 014 §8.2): declarations compiled and applied to
-// an `Editor` as lanes, signal-source nodes and edges, with no Bevy. It
-// lives here because this crate owns the lane and the signal nodes and
-// already names `tutti-modulation` and `tutti-graph`.
+// Declarations compiled and applied to an `Editor` as lanes, signal-source
+// nodes and edges, with no Bevy.
 mod reconcile;
 pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 
@@ -182,10 +180,7 @@ pub use convolution::{
 // test, example or bench wires a graph out of.
 //
 // Behind the `testing` feature, not `cfg(test)`: the consumers are *other*
-// crates' tests, which a `cfg(test)` module is invisible to. The feature keeps
-// it out of the production API — a crate turns it on from its
-// `[dev-dependencies]` only, the pattern `tutti-sampler`'s `test-support`
-// set. This crate reaches its own through a self dev-dependency.
+// crates' tests, which a `cfg(test)` module is invisible to.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

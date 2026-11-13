@@ -1,10 +1,8 @@
-//! A `Family::member` call allocates nothing (design 022 section 8.1, the
-//! "pure" case).
+//! A `Family::member` call allocates nothing.
 //!
-//! The crate carries no `assert_no_alloc` dev-dependency (see its Cargo.toml),
-//! so this binary counts allocations with its own global allocator, per thread
-//! as `chroma_alloc.rs` does. The check is generic over a [`Family`], so a later
-//! design runs it on its own controls.
+//! The crate carries no `assert_no_alloc` dev-dependency,
+//! so this binary counts allocations with its own global allocator, per thread.
+//! The check is generic over a [`Family`].
 
 use tutti_dsp::{Family, FreeverbControls, FreeverbFamily, Grows};
 use tutti_fixtures::{ThreadCounting, allocations};
@@ -46,7 +44,7 @@ fn freeverb_design_allocates_nothing() {
 }
 
 /// Freeverb's `member_into`, `retarget` and `process` allocate nothing, with a
-/// different network every block (design 022 section 8.2, "no allocation"): the
+/// different network every block: the
 /// node's audio-thread path, the network designed in place into one built
 /// beforehand.
 #[test]

@@ -1,9 +1,7 @@
 //! **A band's bypass and a strip's mute are the graph's `NodeMode`**, and
 //! once its declick is over they are exact: the band's output is its input
 //! bit for bit, the strip's is `+0.0`, and un-muted the strip is its fader
-//! again. The nodes hold no flag of their own (doc 013, "Bypass and mute are
-//! graph state", M3), so what is pinned here is the graph's mode through the
-//! nodes this change took the flags out of.
+//! again. The nodes hold no flag of their own.
 //!
 //! The figures are analytic (the input itself, zero, the fader's gain), never
 //! another render. The declick is 256 frames (`MODE_DECLICK`), counted from

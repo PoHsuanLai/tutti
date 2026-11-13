@@ -1,6 +1,5 @@
 //! [`Filter`]: the filters' one [`Family`], over a [`ChannelRecurrence`], and
-//! [`PerChannel`], the one [`Recurrence`] that runs such a recurrence's channels each alone
-//! (design 024 section 4.3a).
+//! [`PerChannel`], the one [`Recurrence`] that runs such a recurrence's channels each alone.
 //!
 //! The SVF, the ladder and the crossover differ in their coefficients, their few
 //! words of state per channel and the step that turns one sample into the next; a
@@ -38,7 +37,7 @@ pub trait ChannelRecurrence: Clone + core::fmt::Debug + Send + 'static {
     /// The steps a glide to a new model takes: 16 frames for the SVF and the ladder, 0
     /// for the crossover, which lands whole (a blend of a Linkwitz-Riley split's
     /// biquads is not one, so its bands would stop summing to an all-pass inside the
-    /// glide; doc 024 section 4.5).
+    /// glide).
     const STEPS: u32;
 
     /// How many outputs each input channel makes, at most `MAX_OUTPUTS` (6): the bands
@@ -63,7 +62,7 @@ pub trait ChannelRecurrence: Clone + core::fmt::Debug + Send + 'static {
 /// The [`Family`] of a filter over a [`ChannelRecurrence`], on one input bus.
 ///
 /// Solved every 16 frames on the stream clock, at the first frame of each segment
-/// (doc 024 Q27), so the render is a function of the stream and not of how it is cut
+/// so the render is a function of the stream and not of how it is cut
 /// into blocks. The member is only `Member::new(controls)`; a family's own checks stay
 /// in its constructor.
 #[derive(Clone, Copy, Debug)]

@@ -134,12 +134,12 @@ pub struct ModulatorNode<M: Modulator> {
 ///
 /// **The per-sample tier.** Reach for this when a control-rate value is too
 /// coarse (audio-rate modulation): an audio generator whose output feeds a
-/// node's own audio input (doc 014 §11). In `BeatSynced` mode it reads the
+/// node's own audio input. In `BeatSynced` mode it reads the
 /// beat of every frame from its block's `Env`, so it is sample-accurate and
 /// renders identically offline.
 ///
 /// The control-rate alternative is a `tutti_modulation::Source::Lfo` route, which a
-/// control lane evaluates into the param's port (doc 014 §5).
+/// control lane evaluates into the param's port.
 pub type LfoNode = ModulatorNode<Waveform>;
 
 impl ModulatorNode<Waveform> {

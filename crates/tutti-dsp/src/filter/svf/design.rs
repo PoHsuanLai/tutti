@@ -1,4 +1,4 @@
-//! [`SvfFamily`]: the state-variable filter as a [`Family`](crate::Family) (design 024 step 2b).
+//! [`SvfFamily`]: the state-variable filter as a [`Family`](crate::Family).
 //!
 //! The controls are [`SvfControls`], the model [`SvfModel`] and the kernel [`Svf`]:
 //! Simper's trapezoidal form, whose coefficients are read from the model's own

@@ -1,4 +1,4 @@
-//! The reverb model (design 022): a reverb as a plain value with analytic
+//! The reverb model: a reverb as a plain value with analytic
 //! queries.
 //!
 //! A [`Network`] describes what a reverb *is*, in the state-space form of a
@@ -79,7 +79,7 @@ impl Band {
     }
 }
 
-/// A reverb as a value (design 022 section 3).
+/// A reverb as a value.
 ///
 /// The stages run in series, input to output, after the pre-delay. The network
 /// is wet-only: it has no direct path from input to output (a network that has

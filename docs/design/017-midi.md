@@ -3592,101 +3592,27 @@ What the decoded messages are consumed by, one item each.
   from `Phase::Poll` and `Midi::ci_peers(&DeviceId)`; the `tutti::midi` module exports `CiChange` and
   `CiPeerInfo`. A change of the device's own MUID reaches the app as every peer `Lost`, and the new
   round finds them again.
-- **Open.** (1) Function Blocks that change after the settle (a Function Block Info Change) are not
-  followed: the devices are decided at the settle. (2) No Invalidate MUID is sent when an input
-  closes (only on `disable_ci`), so a peer learns of that by silence. (3) Profile Configuration and Property Exchange, and the answer to Endpoint Inquiry
+- **Open.** Profile Configuration and Property Exchange, and the answer to Endpoint Inquiry
   (tutti has no Product Instance Id), are later parts.
 
-### L8 part 4: Profile Configuration (core): as built
+#### L8 part 3b: following Function Blocks, and closing: as built
 
-`tutti-midi-device` gains the Profile Configuration messages (M2-101 §7), the values they carry, and
-`ProfileInitiator`, the Initiator's pure core over one peer. Nothing is wired: the hardware session
-that runs it is part 5.
-
-- **The codec.** Eleven `CiMessage` variants, each a table of §7 (`ProfileInquiry` 0x20,
-  `ProfileReply` 0x21, `SetProfileOn` 0x22, `SetProfileOff` 0x23, `ProfileEnabled` 0x24,
-  `ProfileDisabled` 0x25, `ProfileAdded` 0x26, `ProfileRemoved` 0x27, `ProfileDetailsInquiry` 0x28,
-  `ProfileDetailsReply` 0x29, `ProfileSpecificData` 0x2F) with `SUB_ID2_*` constants, its combinators
-  in `ci/read.rs`, and the Device ID of the header as the address (`CiDeviceId`). **Destinations are
-  by table**: the four reports "shall always" go to the Broadcast MUID and carry no `to`; the
-  Inquiry, Reply, Set On, Set Off and the two Details messages go to one MUID; Profile Specific Data
-  carries a `Destination` (§7.12: Broadcast only when the Profile defines it). The wrong kind is
-  `Unread` with `WrongDestination`, as for the Management messages. A Version 1 sender's missing
-  Number Channels field reads as 0 (§5.3, "the fields defined in the received version"), and a field
-  that is there is read in full; Set Off's two reserved bytes are written 0 and not read.
-- **Typed values** (`ci/profile.rs`). `ProfileId` is `Standard(StandardProfile)` (first byte 0x7E:
-  bank, number, version, level) or `Manufacturer(ManufacturerProfile)` (a `tutti_ump::ManufacturerId`
-  in bytes 1 to 3, two info bytes), per Table 19; `from_bytes` refuses what `to_bytes` cannot give
-  back (a one-byte id followed by a non-zero byte, which §7.3.1 forbids: "filled with zeroes"), and
-  `ManufacturerProfile::new` refuses the id `7E`, which would read back as a Standard Profile.
-  `ProfileChannels` is the 14-bit count (`BY_ADDRESS` is 0, §7.8's value for a Group or Function Block
-  address). `ProfileLists` holds the two lists of a Reply and at most 16383 each (the count is two
-  7-bit bytes): longer is `ListTooLong` at construction, so no Reply is unwritable.
-  `DetailsData` (14-bit length) and `SpecificData` (28-bit length) are 7-bit bytes checked on
-  construction (`ProfileDataError`). `InquiryTarget` is the target byte (`is_registered`, below 0x40)
-  and `ChannelsDetail` is the one Registered Target, "Number of MIDI Channels" (M2-102 §2.5.1,
-  Table 8), read and written from the data.
-- **NAK 0x04** was already a constant (`Nak::STATUS_PROFILE_NOT_SUPPORTED`); `Nak::with_details` takes
-  the five bytes, which M2-101 §5.11.3 says are the Profile Id for Profile Configuration. No new type.
-- **The Initiator** (`ci/initiator.rs`), shaped like `CiDevice`: `new(own, peer, now) -> (Self,
-  Vec<ProfileAction>)`, `on_message(&Decoded, now)`, `on_timeout(now)`, `deadline()`; the Group is the
-  caller's, since a CI message carries none. It sends a Profile Inquiry to the Function Block (0x7F).
-  **Complete = the final Reply on 0x7F.** M2-102 §2.4: the peer answers an Inquiry to 0x7F with
-  Replies for Channels, then Groups (0x7E), then "as a final reply" one on 0x7F, with no Profiles
-  "to indicate that no further replies will follow". The Initiator replaces each address by its Reply
-  and at the final one drops the addresses that did not reply (`ProfilesKnown`). A NAK of the
-  Inquiry ends it (`InquiryRefused`). **Neither spec gives a time limit for the inquiry**, so
-  `PROFILE_TIMEOUT` (3 s, tutti's figure, borrowed from the only wait M2-101 states, §5.5.5) ends a
-  peer that never sends the final Reply (`InquiryTimedOut`), and nothing is pruned then, as the set
-  is not known to be whole.
-- **The table** (`ProfileTable`): per address, per Profile, enabled or disabled and the last Number
-  Channels a Version 2 peer reported (`None` from a Reply, which carries none, and from a Version 1
-  Report). Added (§7.4) inserts disabled and leaves a listed Profile's state; Removed (§7.5) deletes;
-  Enabled and Disabled (§7.10, §7.11) set the state and insert a Profile the table lacks, since a
-  peer that reports it supports it. Each change is a `ProfileAction::Changed` and a Report that
-  changes nothing is not one. Only the peer's messages count (source MUID); a Reply, Details Reply
-  or NAK must also be to us.
-- **Requests.** `set_on(ProfileTarget, profile, now)`, `set_off(address, profile, now)`,
-  `details(address, profile, InquiryTarget, now)`; each ends in one `Resolved { request, outcome }`.
-  `ProfileTarget` is `Channel { channel, channels }`, `Group` or `FunctionBlock`, so a Group's or
-  Function Block's count is 0 by construction (§7.8's note) and cannot be asked wrong. A Set resolves
-  on the Enabled or Disabled Report of **that Profile at that address**, whichever state it
-  reports (`Outcome::Reported { state, channels }`: M2-102 §2.6 and §2.7 have a peer that cannot
-  comply report the state it kept, and §2.8's displaced Profile is a Report of another Profile, which
-  resolves nothing); a Details request on the Reply that echoes Profile, target and address (§7.7.1);
-  either on a NAK (`Outcome::Refused`, any status: 0x04 for an unsupported Profile, M2-102 §2.4,
-  §2.6, §2.7) whose original sub-ID#2, address and Profile Id details match (an older peer that sends
-  zero details matches on the first two), or on `PROFILE_TIMEOUT`. The same request, or a Set of the
-  same Profile and address, cannot be in flight twice (`RequestError::InFlight`).
-  Profile Specific Data from the peer, to us or to the Broadcast MUID, is handed out
-  uninterpreted (`ProfileAction::SpecificData`).
-- **Timeout Wait.** An ACK with Status Code 0x10 from the peer, to us (Table 14: Status Data in
-  multiples of 100 ms, 0 to 12.7 s), moves the deadline of the transaction it names to `now + wait`
-  when that is later. Matched by the Original Transaction Sub-ID#2, the address, and for a Set or a
-  Details request the Profile Id in the five details (§5.10.1, §5.10.3; zeroes match, as for a NAK);
-  a Profile Inquiry names no Profile, so it is matched on the Function Block address it went to. A
-  wait **only extends**: 0 leaves the deadline, and a later wait counts from its arrival. A **success
-  ACK (0x00) ends nothing**: a Set's answer is the Enabled or Disabled Report (§7.10, M2-102 §2.6,
-  §2.7), and §5.10 leaves the ACK to "new mechanisms" that other specifications define, which
-  M2-102 does not for Profiles. An ACK for nothing in flight is ignored. An end-to-end test drives
-  the Initiator against `CiDevice`: its inquiry of tutti's own Responder completes with an empty
-  table.
-- **`CiDevice` as Responder.** tutti has no Profiles. A Profile Inquiry to the device is answered with
-  both lists empty on the address it came on (§7.13; M2-102 §2.4's final Reply on 0x7F). A Set On, Set
-  Off or Details Inquiry is a Profile it does not have: a NAK 0x04 with the Profile Id as details, on
-  the same address. The rest of the Profile messages are the Initiator's and are ignored. The earlier
-  "every Profile message is NAKed 0x01" is gone with the codec: those tests moved to Property Exchange
-  (0x30), still unmodelled.
-- **Discovery categories stay empty.** §5.5.2 sets the Profile Configuration bit for "support for some
-  inquiry messages of that Category", and §7.13 has a device with no Profiles "declare that it does not
-  support Profile Configuration in the Discovery"; tutti answers an Inquiry with nothing and is not a
-  Responder of Profiles. The spec does not ask an Initiator for the bit. The Receivable Maximum SysEx Size is
-  already 512, the §5.5.3 floor of an Initiator of Profile Configuration.
-- **Open.** (1) Part 5 wires an Initiator per found peer into `tutti-midi-hardware`/`tutti-session`
-  and sends on the peer's Group. (2) (done) The peer's "Timeout Wait" ACK (§5.10) extends a wait; see the next bullet.
-  (3) M2-102 §2.5.1's "shall not request more than the declared maximum" is the caller's: the
-  Initiator does not read a Details Reply to bound a later Set On. (4) No Profile is defined here:
-  a Profile's own rules (levels, controllers) are its specification's.
+- **Function Block changes are followed** (M2-101 §3.3.2: a block that changes its Group location or
+  number of Groups invalidates its MUID and starts a new connection). The listening `Connection` of a
+  settled stream reports `Action::Changed`; `Negotiation` then recomputes the Groups
+  (`groups_after_settle`) and `Ci::poll` reconciles the running devices with them at its next step
+  (`Running::reconcile`): a Group still called for keeps its device and peers untouched; a Group no
+  longer called for ends its device (an Invalidate MUID from and for its own MUID, its peers
+  `Lost`); a new Group starts a device (a Discovery under a fresh MUID). **A block that moves is, by
+  Group, an end and a start**: the old Group's device ends and the new Group's begins. When no Group
+  is left the devices are dropped and the port stops copying SysEx. Only while enabled.
+- **Closing an input announces it** (§5.9 lists a shutdown): `disconnect_input`,
+  `disconnect_all_inputs` and the reopening of a dead input in `connect_input` end each running device
+  with its Invalidate MUID on the input's own output (`Ci::close`, the same `stop` as `disable_ci`),
+  best effort (a refused send is logged). **No `CiChange::Lost` is reported**: the app closed the
+  input, the entry is gone, and it already knows its peers went with it. **Dropping a
+  `MidiSession` sends nothing**: a drop runs where no output may be reachable.
+- **Open.** Profile Configuration and Property Exchange, and Endpoint Inquiry, as above.
 
 ### L7b: the MIDI Tuning Standard: as built (part 2)
 

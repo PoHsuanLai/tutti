@@ -5,7 +5,7 @@
 //! every step returns the [`CiAction`]s to carry out, time comes in as an
 //! [`Instant`] argument, and nothing here reads a clock, sends a byte, draws from
 //! an OS random source or runs a thread. The caller routes to it the CI messages
-//! of **one Group** of the connection (a [`Decoded`] from
+//! of one Group of the connection (a [`Decoded`] from
 //! [`CiMessage::decode`]), and sends every [`CiAction::Send`].
 //!
 //! tutti has no Function Block, so the device is one that "is not associated with a
@@ -16,57 +16,57 @@
 //!
 //! # The rules
 //!
-//! - **Discovery as Initiator** (§4.1, §5.5): [`CiDevice::new`] and every new MUID start a
+//! - Discovery as Initiator (§4.1, §5.5): [`CiDevice::new`] and every new MUID start a
 //!   round: a Discovery from the device's MUID to the Broadcast MUID, Output Path ID 0
 //!   (§5.5.4: one MIDI Out). The round's window is [`DISCOVERY_WINDOW`] (§5.5.5);
 //!   [`CiAction::WindowClosed`] is signalled once when it ends.
-//! - **Replies** (§5.6): a Reply to Discovery addressed to the device records its peer
+//! - Replies (§5.6): a Reply to Discovery addressed to the device records its peer
 //!   ([`CiAction::Found`]). Replies for another MUID are not the device's.
-//! - **Collision among replies** (§5.9.2): a second reply with the same source MUID in a
+//! - Collision among replies (§5.9.2): a second reply with the same source MUID in a
 //!   round means two Responders share a MUID; the device sends an Invalidate MUID for it
 //!   and forgets it ([`CiAction::Lost`] if it had been found). Replies are counted for
 //!   the whole round, not only inside the window.
-//! - **Discovery as Responder** (§4.1, §5.6): a Discovery from another MUID is answered
+//! - Discovery as Responder (§4.1, §5.6): a Discovery from another MUID is answered
 //!   to it, echoing its Output Path ID (§5.6.1), with Function Block `0x7F`.
-//! - **Collision on the device's MUID** (§5.9.1): a Discovery whose Source MUID is the
+//! - Collision on the device's MUID (§5.9.1): a Discovery whose Source MUID is the
 //!   device's own and whose body is not the one it sent, or a Reply from the device's
 //!   MUID addressed to it (an answer to its Discovery from a device that drew the same
 //!   MUID). Option A needs a MUID not yet used in any Transaction, and the
-//!   device's is (its own Discovery), so it always takes **Option B**: change the MUID, send
+//!   device's is (its own Discovery), so it always takes Option B: change the MUID, send
 //!   an Invalidate MUID targeting the duplicated one, and start a new round. The Invalidate
 //!   goes *from the new MUID*, because a source equal to the target would not tell the
 //!   other device from this one.
-//! - **Echo** (Appendix A.1.1): a MIDI Thru or merge loops the device's own messages back.
+//! - Echo (Appendix A.1.1): a MIDI Thru or merge loops the device's own messages back.
 //!   Its Discovery returns with its MUID and its own body, and is ignored; its Reply to
 //!   another device returns addressed to that device, and is ignored. A device of the
 //!   same model that drew the same MUID sends the same Discovery body and is not seen
 //!   there, but it answers this device's Discovery from that MUID to it, which is.
 //!   Treating an echo as a collision would change the MUID on every round, for ever.
-//! - **Invalidate MUID** (§5.9): its target the device's MUID ends every Transaction and
+//! - Invalidate MUID (§5.9): its target the device's MUID ends every Transaction and
 //!   starts over under a new MUID; its target a peer's discards that peer
 //!   ([`CiAction::Lost`]). It is never answered.
-//! - **NAK** (§5.3, §5.11, Appendix E): a message addressed to the device's MUID that it
+//! - NAK (§5.3, §5.11, Appendix E): a message addressed to the device's MUID that it
 //!   cannot handle (one the codec could not read, which includes every kind it does
 //!   not model, Property Exchange among them) is answered with a NAK carrying Table 16's status. A message for
 //!   another MUID, one to the Broadcast MUID, an ACK and a NAK are never NAK'd.
-//! - **Profile Configuration as Responder** (§7, M2-102 §2.4 to §2.7): tutti has no Profiles, and
-//!   its Discovery does not declare the category. A **Profile Inquiry** to the device is
+//! - Profile Configuration as Responder (§7, M2-102 §2.4 to §2.7): tutti has no Profiles, and
+//!   its Discovery does not declare the category. A Profile Inquiry to the device is
 //!   still answered, "may" for a device that declares no Profile Configuration (§7.13): a Reply
 //!   on the address the Inquiry used, with both lists empty, so an Initiator that asked the
 //!   Function Block gets the final Reply on `0x7F` "to indicate that no further replies will
-//!   follow" (M2-102 §2.4). A **Set Profile On**, **Set Profile Off** or **Profile Details
-//!   Inquiry** is a Profile the device does not support: a NAK with Status `0x04`, whose
+//!   follow" (M2-102 §2.4). A Set Profile On, Set Profile Off or Profile Details
+//!   Inquiry is a Profile the device does not support: a NAK with Status `0x04`, whose
 //!   details are the Profile Id (M2-101 §5.11.3, M2-102 §2.4, §2.6, §2.7: "should reply with
 //!   a MIDI-CI NAK"), on the address it came on. A Reply, Report, Details Reply or Profile
 //!   Specific Data is the Initiator's to read ([`ProfileInitiator`](super::ProfileInitiator))
 //!   and is ignored here; Profile Specific Data to a device with no Profiles is not answered,
 //!   as nothing requires it and a NAK of data would invite one back.
-//! - **Endpoint Inquiry as Initiator** (§5.7): once, for each found peer that declared
+//! - Endpoint Inquiry as Initiator (§5.7): once, for each found peer that declared
 //!   a Function Block, status `0x00`. The reply sets the peer's Product Instance Id
-//!   ([`CiAction::Updated`]); a NAK from it leaves it `None`. **No retry and no timeout**:
+//!   ([`CiAction::Updated`]); a NAK from it leaves it `None`. No retry and no timeout:
 //!   §5.7 and §5.8 give none, the id is a convenience (Appendix A.1.1), and a peer
 //!   that never answers is just one with no id.
-//! - **Endpoint Inquiry as Responder** (§5.8): tutti has no UMP Endpoint Product
+//! - Endpoint Inquiry as Responder (§5.8): tutti has no UMP Endpoint Product
 //!   Instance Id to report, so it NAKs ("If the Device is not able to provide the
 //!   requested information ... it should reply with a MIDI-CI NAK"), status `0x00`.
 //!

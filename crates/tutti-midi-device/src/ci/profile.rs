@@ -4,6 +4,23 @@
 //!
 //! The messages themselves are [`CiMessage`](super::CiMessage)'s variants; the
 //! Initiator's state over them is [`ProfileInitiator`](super::ProfileInitiator).
+//!
+//! Each message's destination follows its table in M2-101 §7. The four reports
+//! (Added, Removed, Enabled, Disabled) always go to the Broadcast MUID and carry
+//! no `to`; the Inquiry, the Reply, Set On, Set Off and the two Details messages
+//! go to one MUID; Profile Specific Data carries a [`Destination`](super::Destination),
+//! since §7.12 allows the Broadcast MUID only where the Profile defines it. A
+//! message of the wrong kind decodes to an [`Unread`](super::Unread) with
+//! [`WrongDestination`](super::UnreadReason::WrongDestination). A Message Format
+//! Version 1 sender has no Number of Channels field; it reads as 0, which §5.3's
+//! "the fields defined in the received version" asks for.
+//!
+//! [`ProfileId::from_bytes`] refuses what [`ProfileId::to_bytes`] could not give
+//! back, a one-byte id followed by a non-zero byte (§7.3.1 has the rest "filled
+//! with zeroes"), and a manufacturer Profile cannot carry the id `7E`, which would
+//! read back as a Standard Profile. [`ProfileLists`] holds at most 16383 Profiles
+//! per list, the most two 7-bit bytes can count, so a Reply it builds is always
+//! writable.
 
 use std::fmt;
 use std::vec::Vec;

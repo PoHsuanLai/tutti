@@ -12,11 +12,11 @@
 //!
 //! # The rules
 //!
-//! - **The inquiry** (M2-102 §2.4, "0x21 Reply to Profile Inquiry"): [`new`](ProfileInitiator::new)
+//! - The inquiry (M2-102 §2.4, "0x21 Reply to Profile Inquiry"): [`new`](ProfileInitiator::new)
 //!   sends a Profile Inquiry to the Function Block (`0x7F`), which asks for every Profile
 //!   "regardless of MIDI Channel structure". The peer answers with one Reply per address that
-//!   has Profiles, in the order Channels, then Groups (`0x7E`), and then **a final Reply on
-//!   `0x7F`**, "with no Profiles reported to indicate that no further replies will follow"
+//!   has Profiles, in the order Channels, then Groups (`0x7E`), and then a final Reply on
+//!   `0x7F`, "with no Profiles reported to indicate that no further replies will follow"
 //!   when it has none. That last Reply is the rule for the set being complete
 //!   ([`ProfileAction::ProfilesKnown`]); an address that replied is replaced by its Reply, and
 //!   an address that did not is dropped from the table then. Neither spec gives a time limit,
@@ -24,13 +24,13 @@
 //!   ([`ProfileAction::InquiryTimedOut`]): the table keeps what it heard, and nothing is
 //!   pruned, since the set is not known to be complete. A NAK of the Inquiry
 //!   ([`ProfileAction::InquiryRefused`]) ends it too: the peer has no Profile Configuration.
-//! - **The table** ([`ProfileTable`]): per address (a Channel, the Group, the Function Block),
+//! - The table ([`ProfileTable`]): per address (a Channel, the Group, the Function Block),
 //!   the Profiles the peer supports, each enabled or disabled, and the number of Channels it
 //!   reported while enabled. The reports update it at any time after, from the peer only:
 //!   Added (§7.4, disabled), Removed (§7.5), Enabled (§7.10) and Disabled (§7.11), each a
 //!   [`ProfileAction::Changed`] when it changed something. An Enabled or Disabled Report for a
 //!   Profile the table lacks adds it: the peer supports it, since it says so.
-//! - **Set On and Set Off** ([`set_on`](ProfileInitiator::set_on),
+//! - Set On and Set Off ([`set_on`](ProfileInitiator::set_on),
 //!   [`set_off`](ProfileInitiator::set_off)): "This is an acknowledgement upon receipt of a Set
 //!   Profile On message" (§7.10), so the request resolves on the Enabled or Disabled Report of
 //!   that Profile at that address, whichever state it reports (M2-102 §2.6 and §2.7: a peer that
@@ -39,21 +39,21 @@
 //!   or any other; the NAK's five detail bytes are the Profile Id, §5.11.3), or on
 //!   [`PROFILE_TIMEOUT`]. A Report of another Profile (M2-102 §2.8: a Profile Disabled
 //!   Report for the Profile it replaced) is a change and resolves nothing.
-//! - **Details** ([`details`](ProfileInitiator::details)): the Reply that echoes the Profile
+//! - Details ([`details`](ProfileInitiator::details)): the Reply that echoes the Profile
 //!   and Inquiry Target at that address resolves it; so does a NAK or the timeout.
-//! - **Profile Specific Data** from the peer, to this device or to the Broadcast MUID, is
+//! - Profile Specific Data from the peer, to this device or to the Broadcast MUID, is
 //!   handed out as it is ([`ProfileAction::SpecificData`]).
 //!
-//! - **Timeout Wait** (M2-101 §5.10, Table 14): an ACK with Status Code `0x10` from the peer, to
+//! - Timeout Wait (M2-101 §5.10, Table 14): an ACK with Status Code `0x10` from the peer, to
 //!   this device, says "wait" for Status Data times 100 ms (0 to 12.7 s). It names its transaction
 //!   by the Original Transaction Sub-ID#2 and the address it is on (§5.10.1, "along with other
 //!   fields"), and for a Set or a Details request by the Profile Id in its five detail bytes
 //!   (§5.10.3; zeroes from a peer with none to give, as for a NAK). A Profile Inquiry names no
 //!   Profile, so its details are not read; it is matched on the Function Block address it was sent
-//!   to. The deadline becomes `now + wait` **if that is later**: a wait asks for more time, never
+//!   to. The deadline becomes `now + wait` if that is later: a wait asks for more time, never
 //!   less, so a wait of 0 leaves the deadline where it is, and each new wait counts from when it
 //!   arrives. An ACK for nothing in flight, and an ACK with any other status, resolve and extend
-//!   nothing: **a success ACK (`0x00`) does not end a Set**, because the answer to a Set is the
+//!   nothing: a success ACK (`0x00`) does not end a Set, because the answer to a Set is the
 //!   Enabled or Disabled Report ("This is an acknowledgement upon receipt of a Set Profile On
 //!   message", §7.10; M2-102 §2.6, §2.7), and §5.10 reserves the ACK for "new mechanisms" that other
 //!   specifications describe, none of which M2-102 does for Profiles.

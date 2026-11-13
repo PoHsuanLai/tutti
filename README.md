@@ -1,110 +1,161 @@
-# Tutti
+# tutti
 
-A real-time audio engine for DAW applications in Rust: an audio graph runtime,
-MIDI 2.0 processing, sample playback, spatial audio, offline rendering, and
-plugin hosting for VST3, CLAP, Audio Units and VST2.
+A type-driven, real-time audio engine for building DAWs in Rust.
 
-The engine is a set of focused crates rather than one package. Depend on the
-ones you need, or take an umbrella:
+[![CI](https://github.com/PoHsuanLai/tutti/actions/workflows/ci.yml/badge.svg)](https://github.com/PoHsuanLai/tutti/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue.svg)](#license)
 
-- [`tutti`](crates/tutti) — the whole engine behind one dependency. For a CLI,
-  a renderer, a server, a test. It is a re-export crate, enforced to contain no
-  code at all.
+## Overview
 
-A Bevy adapter lives at https://github.com/PoHsuanLai/bevy-tutti.
+tutti is the audio side of a DAW without the application. A graph of audio
+processors is a value; tutti compiles it and runs it block by block, on a sound
+card or offline into a file. Quantities carry their units (`Hz`, `Db`, `Beat`,
+`Samples`), and a call that names a node or port that does not exist fails at
+the call. It provides:
 
-> **Status: pre-release.** Nothing here is published to crates.io yet, so every
-> dependency is a path dependency. Names and signatures still move between
-> commits.
+- An audio graph that is edited while it plays, with every processor written
+  against one `Node` trait, and built-in filters, delays, dynamics and reverbs.
+- A session that ties the graph to a transport, a tempo map, MIDI and a device.
+- The edges: a sound card, audio files, MIDI 2.0 and hardware MIDI, VST3, CLAP
+  and Audio Unit plugins in or out of process, VST2 plugins in process, and a
+  faster-than-real-time bounce.
 
-## The layering
+## Example
 
-Every crate sits in one of four tiers, and the arrows only ever point down.
+tutti is not on crates.io yet. Add it from git:
 
-```
-         tutti                         the umbrella
-                            │
-   ┌──────────┬─────────────┼──────────────┬─────────────┐
-  dsp/       midi/        plugin/         io            export
-   │          │             │              │              │
-   └──────────┴──────┬──────┴──────────────┴──────────────┘
-                 tutti-engine              the graph render
-                     │
-                 tutti-types               the shared vocabulary
+```toml
+[dependencies]
+tutti = { git = "https://github.com/PoHsuanLai/tutti", features = ["export", "sampler", "dsp", "modulation"] }
 ```
 
-**The floor.** `tutti-types` is the vocabulary every other crate speaks — the
-unit newtypes (`Hz`, `Db`, `Beat`, `Samples`, `SampleRate`), the channel
-layouts, the `Source`/`Sink` edge traits, and `ArcLend` (re-exported from
-the dependency-free `arc-lend` crate), the one sanctioned way to hand
-non-scalar state to the audio thread: the audio thread only borrows, so it
-never frees. `tutti-graph` is
-the graph: the `Node` contract, a compiler from a `Topology` to an immutable
-plan (latency compensation included), and the executor. `tutti-engine` builds the
-runtime on both: the `Engine` that renders the graph, over the `Transport` of
-`tutti-transport` and the load meter of `tutti-metering` (level meters are
-ops in the graph's plan).
+A sampled saw through a low-pass filter and a reverb, an LFO on the cutoff, and
+eight beats bounced to a 24-bit WAV:
 
-**The edges.** `tutti-cpal` is the only path to a sound card. The live edge is
-spread over the crates that own its parts: a tap (`TapReader`) is a `Source`
-and an inlet (`InletNode`) copies outside audio into the graph (`tutti-graph`),
-`FileOut` is the file sink (`tutti-codec`), and `Recorder` pumps one into the
-other (`tutti-session`). `tutti-export` is its
-deliberate opposite number: the *offline* edge, rendering a graph faster than
-real time (a project's bounce, `tutti-session`'s `Bounce`, drives it).
+<!-- excerpt: crates/tutti/examples/song_bounce.rs#readme -->
+```rust
+use tutti::export::Written;
+use tutti::{
+    Amplitude, Beat, Bounce, Bpm, ChannelLayout, Clip, Depth, Error, Format, FreeverbNode, Hz, Lfo,
+    MaxBlock, Pcm, Q, Root, RouteSpec, SampleRate, Samples, Session, SessionEvent, SvfFilterNode,
+    SvfType, Wave,
+};
 
-**The subsystems.**
+/// The song, bounced into `dir`.
+fn song(dir: &std::path::Path) -> Result<Written, Error> {
+    std::fs::create_dir_all(dir)?;
 
-| Crate | What it owns |
-|---|---|
-| [`tutti-nodes`](crates/tutti-nodes) | The DSP node library: filters, delays, dynamics, distortion, chorus, convolution, mix bus, automation |
-| [`tutti-sampler`](crates/tutti-sampler) | Clip playback — in-memory and disk-streamed voices, time-stretch, the prefetch streamer |
-| [`tutti-polysynth`](crates/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
-| [`tutti-soundfont`](crates/tutti-soundfont) | SoundFont (`.sf2`) playback |
-| [`tutti-dsp`](crates/tutti-dsp) | Waveform summaries, onset detection, pitch, correlation, loudness |
-| [`tutti-modulation`](crates/tutti-modulation) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free |
-| [`tutti-midi-runtime`](crates/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |
-| [`tutti-midi-file`](crates/tutti-midi-file) | SMF and MIDI 2.0 clip codecs — OS-free, so reading a `.mid` links no CoreMIDI |
-| [`tutti-midi-hardware`](crates/tutti-midi-hardware) | The OS MIDI edge: CoreMIDI and ALSA seq-UMP |
-| [`tutti-plugin`](crates/tutti-plugin) | Plugin hosting, **out of process** — a crashing plugin does not take the host with it |
+    let mut s = Session::builder().build_offline(
+        RATE,
+        ChannelLayout::STEREO,
+        MaxBlock::of(Samples(512)),
+    )?;
+    s.set_tempo(Bpm::of(120.0)).expect("not following");
 
-The four format hosts ([VST3](crates/tutti-vst3-host),
-[CLAP](crates/tutti-clap-host),
-[AU](crates/tutti-au-host),
-[VST2](crates/tutti-vst2-host)) are what `tutti-plugin` hosts; `tutti-plugin`
-is what you use, and each host speaks one plugin ABI.
+    // The sampler: the same mono wave on beats 0 and 4, each a node as it
+    // stands, placed at stereo to join the stereo chain.
+    let wave = std::sync::Arc::new(saw());
+    let (first, _) = s.graph().add(
+        Clip::new(wave.clone())?
+            .channels(ChannelLayout::STEREO)?
+            .at(Beat(0.0)),
+    );
+    let (second, _) = s.graph().add(
+        Clip::new(wave)?
+            .channels(ChannelLayout::STEREO)?
+            .at(Beat(4.0))
+            .gain(Amplitude::new(0.8)),
+    );
 
-## Quick start
+    // A stereo low-pass, then a reverb whose input is mono: that width change
+    // is a bus edge, never a truncation (`connect` would refuse it).
+    let (filter, _) = s.graph().add(SvfFilterNode::<f64>::with_channels(
+        ChannelLayout::STEREO,
+        SvfType::LowPass,
+        Hz(1_000.0),
+        Q(0.7),
+    ));
+    let (reverb, _) = s.graph().add(FreeverbNode::default());
+    s.graph().connect(first, filter)?;
+    s.graph().connect(second, filter)?; // adds: both clips sum into the filter
+    s.graph().connect(filter.bus_out(0), reverb.bus_in(0))?;
+    for c in 0..2 {
+        s.graph().connect(filter.out(c), Root::output(c))?;
+        s.graph().connect(reverb.out(c), Root::output(c))?;
+    }
 
-`crates/tutti/README.md` has the dependency line and the feature table. Every crate's own documentation carries a runnable example for that subsystem;
-those are doctests, so they are checked on every build.
+    // An LFO on the cutoff: 1 Hz across 200 Hz to 3 kHz.
+    let cutoff = filter.cutoff();
+    let mut m = s.mods_mut();
+    m.range(cutoff, Hz(200.0)..Hz(3_000.0))?;
+    let wobble = m.lfo(Lfo::sine().rate(Hz(1.0)));
+    m.route(RouteSpec::new(wobble, cutoff, Depth::of(0.5)))?;
 
-## Two rules worth knowing before you read further
+    // Commit the graph and the lanes, then roll the transport.
+    report(s.update());
+    report(s.update());
+    s.play()?;
 
-**Wiring is declared, not called.** A node is added unwired; a connection names
-what feeds each input port. The graph holds a set of sources per input and
-sums them (doc 013, "Audio fan-in sums").
-
-**Quantities carry their units.** `Hz`, `Db`, `Beat`, `Samples` and the rest are
-newtypes, not `f32` aliases, and the conversions between them are named methods
-(`Db::to_amplitude`, `Seconds::to_samples`). The types stop at C ABI boundaries,
-and where they stop, a comment says why.
-
-## Building
-
-```bash
-cargo check --workspace
-cargo nextest run --workspace     # nextest does NOT run doctests
-cargo test --workspace --doc      # so run these separately
+    // Eight beats, to a 24-bit WAV.
+    let path = dir.join("song.wav");
+    let written = s
+        .bounce(
+            Bounce::project()
+                .range(Beat(0.0)..Beat(8.0))
+                .master(&path, Format::Wav(Pcm::Int24)),
+        )?
+        .into_master();
+    Ok(written)
+}
 ```
 
-`cargo xtask help` lists the repo's development commands (the gates CI runs,
-the feature suites, benches); `cargo xtask ci` runs all of CI's checks.
+The whole program is
+[`song_bounce.rs`](crates/tutti/examples/song_bounce.rs). The sound card is the
+`device` feature; on Linux it needs the ALSA headers (`libasound2-dev
+pkg-config`).
 
-Cloning needs `--recursive`: `tutti-vst3-host` compiles a reference plugin
-against the vendored VST3 SDK, which is a submodule. Without it the build stops
-with instructions.
+## Documentation
+
+`cargo doc -p tutti --open` builds the API docs, and every crate's docs carry a
+runnable example for its subsystem. The programs in
+[`crates/tutti/examples`](crates/tutti/examples) cover whole tasks.
+
+## Crates
+
+- [`tutti`](crates/tutti): everything behind one dependency, chosen by features.
+- [`tutti-graph`](crates/tutti-graph): the audio graph, its compiler and its executor.
+- [`tutti-session`](crates/tutti-session): the graph, transport, MIDI and device in one `Session`.
+- [`tutti-nodes`](crates/tutti-nodes) and [`tutti-dsp`](crates/tutti-dsp): the built-in effects and the algorithms behind them.
+- [`tutti-measure`](crates/tutti-measure): loudness, pitch, onsets, tempo and spectra.
+- [`tutti-sampler`](crates/tutti-sampler), [`tutti-polysynth`](crates/tutti-polysynth) and [`tutti-soundfont`](crates/tutti-soundfont): sample playback, a synth and SoundFont 2.
+- [`tutti-ump`](crates/tutti-ump), [`tutti-midi-protocol`](crates/tutti-midi-protocol), [`tutti-midi-file`](crates/tutti-midi-file) and [`tutti-midi-hardware`](crates/tutti-midi-hardware): MIDI 2.0 messages, translation, files and devices.
+- [`tutti-codec`](crates/tutti-codec), [`tutti-export`](crates/tutti-export) and [`tutti-cpal`](crates/tutti-cpal): audio files, offline render and the sound card.
+- [`tutti-plugin`](crates/tutti-plugin): plugin hosting.
+- [`arc-lend`](crates/arc-lend): a cell that hands shared data to an audio thread, which never frees it.
+
+A Bevy adapter lives at [PoHsuanLai/bevy-tutti](https://github.com/PoHsuanLai/bevy-tutti).
+
+## Getting help
+
+Open an [issue](https://github.com/PoHsuanLai/tutti/issues).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Supported Rust versions
+
+tutti supports the stable Rust pinned in
+[`rust-toolchain.toml`](rust-toolchain.toml) (1.99.1), and CI tests only that
+toolchain.
 
 ## License
 
-MIT OR Apache-2.0.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

@@ -11,12 +11,14 @@
 //! needs are `tutti::session::` paths. Every fallible call returns the one
 //! `Error`, so `?` runs the whole program.
 
+// ANCHOR: readme
 use tutti::export::Written;
 use tutti::{
     Amplitude, Beat, Bounce, Bpm, ChannelLayout, Clip, Depth, Error, Format, FreeverbNode, Hz, Lfo,
     MaxBlock, Pcm, Q, Root, RouteSpec, SampleRate, Samples, Session, SessionEvent, SvfFilterNode,
     SvfType, Wave,
 };
+// ANCHOR_END: readme
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -48,6 +50,7 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
+// ANCHOR: readme
 /// The song, bounced into `dir`.
 fn song(dir: &std::path::Path) -> Result<Written, Error> {
     std::fs::create_dir_all(dir)?;
@@ -114,6 +117,7 @@ fn song(dir: &std::path::Path) -> Result<Written, Error> {
         .into_master();
     Ok(written)
 }
+// ANCHOR_END: readme
 
 #[cfg(test)]
 mod tests {

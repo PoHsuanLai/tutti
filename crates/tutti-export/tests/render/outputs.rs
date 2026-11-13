@@ -1,4 +1,4 @@
-//! One render pass feeding several outputs (doc 019 section 4, step 3): files
+//! One render pass feeding several outputs: files
 //! of different formats, plan taps, a gain shared between files, a rename
 //! that fails half way, and the outputs that contradict each other.
 //!

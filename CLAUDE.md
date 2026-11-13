@@ -473,7 +473,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
                  `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
                  recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`), and
-                 the bounce (feature `export`, doc 019): `Bounce` (the master's fork, a
+                 the bounce (feature `export`): `Bounce` (the master's fork, a
                  `Range`, `BounceLatency`, `BounceTail`, `stem`s, each a plan tap) through
                  `Session::{bounce, bounce_start, finish_bounce}`, `BounceJob`,
                  `BounceHandle` and `BounceError`; it derives the figures and
@@ -596,7 +596,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-cpal     device
-  tutti-export   the offline render pipeline, which a `Bounce` drives (doc 019): a `Job`
+  tutti-export   the offline render pipeline, which a `Bounce` drives: a `Job`
                  (rate, length, latency trim) and a list of `Output`s (a `Feed`, the
                  graph's outputs or a plan tap, into a `FileTarget` or `BufferTarget`),
                  `render` / `render_one` with a `Control` (`CancelToken`, `Progress`,
@@ -1748,7 +1748,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   OutputsListSlow}` → `SessionEvent::Device(DeviceEvent::..)`; `render_workers(usize)`
   (0 for per core) → `Workers`; `inputs`/`outputs_floor` of a bare `usize` →
   `ChannelLayout`.
-- **Dead export names** (doc 019): `tutti-export`'s `ExportConfig`, `RenderConfig`,
+- **Dead export names**: `tutti-export`'s `ExportConfig`, `RenderConfig`,
   `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,
   `render_to_buffers`, `render_normalized_to_file` and their `_with` twins → `render` /
   `render_one` with a `Control`; `Flow`, `Pass` → `Control` and `CancelToken`;

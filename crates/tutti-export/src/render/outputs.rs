@@ -1,4 +1,4 @@
-//! One render pass, N outputs (doc 019 section 4).
+//! One render pass, N outputs.
 //!
 //! The graph is rendered once. Every block goes to each [`Output`]'s lane: the
 //! lane reads its feed (the graph's planes, or a tap's lanes drained from its
@@ -10,8 +10,7 @@
 //!
 //! The stages after the render run over the outputs in order, and the files
 //! are put in place last: every output's encoder is finalized into its
-//! temporary first, then the token is checked once more, then the renames
-//! (doc 019 section 6.2).
+//! temporary first, then the token is checked once more, then the renames.
 
 use std::path::PathBuf;
 
@@ -561,8 +560,7 @@ pub(crate) struct PendingFile {
     pub(crate) chain: Chain,
 }
 
-/// Finalizes every file into its temporary, then puts them in place
-/// (doc 019 section 6.2): the token is checked before each output's finalize
+/// Finalizes every file into its temporary, then puts them in place: the token is checked before each output's finalize
 /// (between outputs) and once more after the last, before the first rename.
 /// The renames are the one step the token does not reach.
 ///

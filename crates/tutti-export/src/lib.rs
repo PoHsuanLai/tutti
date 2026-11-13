@@ -132,8 +132,8 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// `control` is how a host watches and stops the render: it is told the
 /// [`Stage`] and fraction as the render goes (`Rendering`, then with a
 /// normalizing output `Measuring` and `Writing`, then `Finalizing`), and a
-/// [`CancelToken`] it holds is checked at every point of doc 019 section 6.2
-/// that this render has: before each block, between the stages, in each chunk
+/// [`CancelToken`] it holds is checked at every point this render has:
+/// before each block, between the stages, in each chunk
 /// of the measurement and the write, before each output is finalized and once
 /// more before the first rename. A cancelled render is [`Outcome::Cancelled`],
 /// not an error. Pass [`Control::none`] for a render nobody watches.

@@ -3,8 +3,8 @@
 //! [`ExportConfig`] that describes it, each [`tutti_export::render_one`] under
 //! [`Control::none`] and its finished value.
 //!
-//! [`ExportConfig`] is this suite's own bundle (what the crate's public one,
-//! retired in doc 019 step 5, was): one render and one file, filled in by
+//! [`ExportConfig`] is this suite's own bundle (what the crate's public one
+//! was before the bounce replaced it): one render and one file, filled in by
 //! struct literal, and the [`Job`] and targets `render` takes built from it.
 //! A field a use has no need of is ignored. A cancel cannot happen under that
 //! control, so a `Cancelled` here is a bug in the pipeline and fails the

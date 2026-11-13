@@ -1,8 +1,8 @@
 //! An export's fork of the live graph, in the two halves it is made in and
 //! the third it is edited in.
 //!
-//! The mechanism lives here and not in `tutti-export` (doc 019 §5, "Fork
-//! gather/build, pool, root topology, edit hook"): `tutti-export` renders a
+//! The mechanism lives here and not in `tutti-export`, because it needs the
+//! live graph and the hosted plugins: `tutti-export` renders a
 //! [`RenderGraph`], which it can only be given
 //! sealed (`RenderGraph::assemble`), so a graph that is half edited, or whose
 //! editor feeds some other executor, is not one a render can be handed.

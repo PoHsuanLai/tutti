@@ -969,8 +969,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   from `clear`, so `prepare` restarts the sweep, and its sine is solved at control points every 16 frames and
   joined by chords; a rate lands whole at its grid point with the phase continuous (**floored at 0.01 Hz, a lane's
   value and a cell's alike**, `MIN_RATE`), the depth glides at most `DELAY_SLEW` frames of delay per frame, the
-  feedback over `GAIN_GLIDE`; the swept loop reads its feedback tap at the delay, so its period is the delay plus
-  one frame, which is not `delay_step`'s (a later, owner-gated change)), the cubic Hermite kernel, the phaser
+  feedback over `GAIN_GLIDE`; the swept loop is `delay_step`'s, so its period is the delay), the cubic Hermite
+  kernel, the phaser
   as a family (`PhaserFamily`, run by `PhaserRecurrence`: not `Grows`, its capacity `()`; its `Stages` (2 to 12,
   refused not clamped), `SweepRange` (finite, bottom at least 20 Hz and not above the top; the 0.90-of-Nyquist
   cap on the top is the member's and the authored top is kept, so a higher rate restores it) and `Stagger` (the

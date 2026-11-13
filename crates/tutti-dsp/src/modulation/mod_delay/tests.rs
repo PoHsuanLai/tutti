@@ -181,8 +181,8 @@ impl RecurrenceCase for ModDelayFamily {
 impl LtiCase for ModDelayFamily {
     /// The comb of a whole delay at its poles' angles: `z^-d` is `+-1` at DC and Nyquist, so
     /// `H = 1 / (1 - g)` at DC and `1 / (1 +- g)` at Nyquist, from the controls alone (the
-    /// loop is `g z^-(d + 1)`: a Nyquist of `(-1)^(d + 1)`). A delay of an even number of
-    /// frames is `1 / (1 + g)` there. The base is a whole number of frames at these rates
+    /// loop is `g z^-d`: a Nyquist of `(-1)^d`). A delay of an odd number of frames is
+    /// `1 / (1 + g)` there. The base is a whole number of frames at these rates
     /// to an `f32`'s rounding, which the tolerance covers.
     fn figures(&self) -> Vec<Figure<ModDelayControls>> {
         let g = 0.5f32.min(self.sweep().feedback_max().get());
@@ -195,7 +195,7 @@ impl LtiCase for ModDelayFamily {
                 (0.0, 1.0),
                 (
                     rate.get() / 2.0,
-                    if d.is_multiple_of(2) { -1.0 } else { 1.0 },
+                    if d.is_multiple_of(2) { 1.0 } else { -1.0 },
                 ),
             ] {
                 all.push(Figure {
@@ -713,8 +713,8 @@ fn a_re_prepare_restarts_the_sweep() {
 /// A flanger's notches from the definition: the dry and the wet at equal weight, with no
 /// feedback and a delay of `D` whole frames, are `1 + z^-D`, `|H| = 2 |cos(w D / 2)|`, with
 /// its zeros at `(2k + 1) / (2 D)` of the sample rate and spacing `1 / D`; with feedback
-/// `g` the wet's loop is `g z^-(D + 1)` and the comb **peaks** where `z^-(D+1)` is 1, every
-/// `1 / (D + 1)` of the rate. Read off the frozen member's response.
+/// `g` the wet's loop is `g z^-D` and the comb **peaks** where `z^-D` is 1, every `1 / D`
+/// of the rate. Read off the frozen member's response.
 #[test]
 fn a_frozen_flanger_has_notches_at_odd_multiples_of_half_over_the_delay() {
     // A base of 1/1024 s at 49,152 Hz is exactly 48 frames, in `f32` too.
@@ -745,14 +745,75 @@ fn a_frozen_flanger_has_notches_at_odd_multiples_of_half_over_the_delay() {
             "peak at {peak} Hz"
         );
     }
-    // Feedback: the wet's own loop peaks every `1 / (D + 1)`, at `1 / (1 - g)`.
+    // Feedback: the wet's own loop peaks every `1 / D`, at `1 / (1 - g)`.
     let g = 0.7f32;
     let m = f.member(&controls(0.5, 0.0, g), rate);
-    let loop_peak = rate.get() / (f64::from(d) + 1.0);
+    let loop_peak = rate.get() / f64::from(d);
     let mut out = [Complex64::new(0.0, 0.0)];
     m.frequency_response(0, &[Hz(loop_peak as f32)], &mut out);
     assert!((out[0].norm() - 1.0 / f64::from(1.0 - g)).abs() < 1e-3);
-    assert_eq!(m.loop_frames(), 49, "a loop of `D + 1` frames");
+    assert_eq!(m.loop_frames(), 48, "a loop of `D` frames");
+}
+
+/// The loop's period is the delay, as the delay family's and the spec's comb
+/// `1 / (1 - g z^-d)`: a frozen sweep (no depth) of a whole `d` frames and a feedback `g`
+/// answers an impulse with echoes at frames `d, 2d, 3d, ...` of amplitudes `1, g, g^2, ...`
+/// and nothing between. (Before the loop read its feedback tap one frame nearer they landed
+/// at `d, 2d + 1, 3d + 2, ...`: a period of `d + 1`.) At a fractional delay `d + f` the read
+/// is linear, so one trip is `(1 - f) z^-d + f z^-(d + 1)` and the echoes are its powers:
+/// the second, `g` times the square, is `g (1 - f)^2` at `2d`, `2 g f (1 - f)` at `2d + 1`
+/// and `g f^2` at `2d + 2`, the first at `d` and `d + 1` of `1 - f` and `f`.
+#[test]
+fn the_feedback_loops_period_is_the_delay() {
+    let rate = SampleRate(49_152.0);
+    let g = 0.5f32;
+    let sweep = |frames: f64| {
+        Sweep::of(
+            Seconds(frames / rate.get()),
+            MaxDelay::of(Seconds(0.02)),
+            Seconds(0.0),
+            Seconds(0.01),
+            Feedback::MAX_STABLE,
+        )
+    };
+    let impulse = |f: &ModDelayFamily| {
+        let c = controls(0.5, 0.0, g);
+        let (mut k, m) = built(f, &c, rate);
+        let mut x = vec![0.0f32; 400];
+        x[0] = 1.0;
+        (run(&mut k, &[x], 64).remove(0), m)
+    };
+
+    // A whole delay of 48 frames: exactly the comb.
+    let f = family(1, sweep(48.0), step(0.0));
+    let (y, m) = impulse(&f);
+    assert_eq!(m.centre_frames(), 48.0);
+    assert_eq!(m.loop_frames(), 48);
+    for (n, &got) in y.iter().enumerate() {
+        let want = if n >= 48 && n % 48 == 0 {
+            g.powi((n / 48 - 1) as i32)
+        } else {
+            0.0
+        };
+        assert_eq!(got, want, "frame {n}");
+    }
+
+    // A fractional delay of 48.5 frames, through the linear read.
+    let f = family(1, sweep(48.5), step(0.0));
+    let (y, m) = impulse(&f);
+    assert!((m.centre_frames() - 48.5).abs() < 1e-4);
+    let h = 0.5f32;
+    let want = [
+        (48, h),
+        (49, h),
+        (96, g * h * h),
+        (97, g * 2.0 * h * h),
+        (98, g * h * h),
+    ];
+    for (n, &got) in y.iter().enumerate().take(99) {
+        let w = want.iter().find(|t| t.0 == n).map_or(0.0, |t| t.1);
+        assert!((got - w).abs() < 1e-4, "frame {n}: {got} vs {w}");
+    }
 }
 
 /// `at` freezes the member at any position of the sweep: `base + lfo * depth`, floored at a

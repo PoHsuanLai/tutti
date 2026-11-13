@@ -17,17 +17,12 @@ workspace = true
 [features]
 # Nothing on by default. This is a library: persistence and format support are
 # the embedding app's choices, so every one of them is opt-in and the default
-# build pulls no `serde_json` and no format FFI.
+# build pulls no serde and no format FFI.
 default = []
 
-# Opt-in versioned JSON database file (`tutti-plugin-db`'s `save` and `load`)
-# behind `Catalog::open_db` and `Catalog::save`. Leave it off and build a
-# `PluginDb` from your own store.
-json = ["tutti-plugin-db/json"]
-
 # `PluginRef` and `PluginState` derive `Serialize` and `Deserialize`: a project
-# file keeps them.
-serde = ["dep:serde"]
+# file keeps them. So does the catalog's `PluginDb`: the app picks the format.
+serde = ["dep:serde", "tutti-plugin-db/serde"]
 
 # In-process GUI support (loads plugin library in host for editor only)
 vst3 = ["dep:tutti-vst3-host"]
@@ -72,6 +67,8 @@ tutti-plugin-db = { path = "../tutti-plugin-db" }
 
 # Logging
 tracing = "0.1"
+
+thiserror.workspace = true
 
 serde = { version = "1", features = ["derive"], optional = true }
 

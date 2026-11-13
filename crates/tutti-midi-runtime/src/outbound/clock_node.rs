@@ -7,13 +7,12 @@
 //! follow the transport from there. Tap its port
 //! (`Graph::taps().open_event`) for a hardware pump to drain.
 //!
-//! The master is shared: the node's controls are the same `Arc<ClockMaster>`,
-//! through which a control thread enables it and picks MTC. `prepare` gives
-//! it the graph's rate.
+//! The node owns the [`ClockMaster`]; its controls are the
+//! [`ClockControls`] of that master, through which a control thread enables
+//! it and picks MTC. `prepare` gives the master the graph's rate.
 //!
 //! Its fork sends nothing: an offline render drives no external gear.
 
-use std::sync::Arc;
 use tutti_graph::UmpAt;
 
 use tutti_graph::{
@@ -24,7 +23,7 @@ use tutti_rt::RtVec;
 use tutti_types::SampleRate;
 use tutti_ump::MidiGroup;
 
-use super::clock_master::ClockMaster;
+use super::clock_master::{ClockControls, ClockMaster};
 use crate::live::order::{in_offset_order, offset_of};
 
 /// The most events a [`ClockNode`] sends in one block, its declared event
@@ -37,7 +36,7 @@ use crate::live::order::{in_offset_order, offset_of};
 /// frames at 120 BPM and 48 kHz, 600 at 300 BPM) wraps about 14 times in an
 /// 8 192-frame block, well under the cap; it takes a loop of about sixty
 /// frames (a millisecond) to reach it. Past it the events of later passes are refused and
-/// counted ([`ClockMaster::losses`]).
+/// counted ([`ClockControls::losses`]).
 pub const CLOCK_EVENT_CAPACITY: usize = 256;
 
 /// Outbound MIDI clock and timecode as a graph node with one event output.
@@ -57,10 +56,11 @@ pub const CLOCK_EVENT_CAPACITY: usize = 256;
 /// ```
 #[derive(Debug)]
 pub struct ClockNode {
-    master: Arc<ClockMaster>,
+    master: ClockMaster,
+    controls: ClockControls,
     /// Where a block's events are gathered, to go out in offset order. Capped
     /// at the port's capacity: past it an event is refused and counted on the
-    /// master ([`ClockMaster::losses`]), never grown into.
+    /// master ([`ClockControls::losses`]), never grown into.
     pending: RtVec<UmpAt, CLOCK_EVENT_CAPACITY>,
 }
 
@@ -69,8 +69,10 @@ impl ClockNode {
     /// events at `sample_rate` until `prepare` gives it the graph's.
     #[must_use]
     pub fn new(group: MidiGroup, sample_rate: SampleRate) -> Self {
+        let (master, controls) = ClockMaster::new(group, sample_rate);
         Self {
-            master: Arc::new(ClockMaster::new(group, sample_rate)),
+            master,
+            controls,
             pending: RtVec::new(),
         }
     }
@@ -143,11 +145,11 @@ impl ForkSource for SilentClock {
 }
 
 impl IntoNode for ClockNode {
-    /// The shared master: enable it, pick MTC and its frame rate.
-    type Controls = Arc<ClockMaster>;
+    /// The master's controls: enable it, pick MTC and its frame rate.
+    type Controls = ClockControls;
 
-    fn into_parts(self) -> NodeParts<Arc<ClockMaster>> {
-        let controls = Arc::clone(&self.master);
+    fn into_parts(self) -> NodeParts<ClockControls> {
+        let controls = self.controls.clone();
         let fork = SilentClock {
             group: self.master.group(),
             sample_rate: self.master.sample_rate(),

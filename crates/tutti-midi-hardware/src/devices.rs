@@ -18,12 +18,12 @@ use tutti_midi_device::{
     DeviceEvent, DeviceId, DeviceInfo, DeviceTable, EndpointId, Identity, OsChange, OsDevice,
     PortDirection, Resolved,
 };
-use tutti_midi_runtime::{DeviceSlot, MidiOut, Outgoing};
+use tutti_midi_runtime::{DeviceSlot, Outgoing};
 use tutti_ump::StreamConfig;
 
 use crate::HardwareMidiInputs;
 use crate::backend;
-use crate::capability::{EndpointInfo, UmpCapability};
+use crate::capability::UmpCapability;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use crate::wire::Wire;
@@ -443,7 +443,7 @@ impl Devices {
         Ok(OpenOutput {
             info,
             sink,
-            wire: Mutex::new(Wire::new(described)),
+            wire: Wire::new(described),
         })
     }
 
@@ -666,8 +666,7 @@ impl OpenInput {
 pub struct OpenOutput {
     info: DeviceInfo,
     sink: Box<dyn DeviceOut>,
-    /// Behind a lock because `queue` takes `&self`; control side.
-    wire: Mutex<Wire>,
+    wire: Wire,
 }
 
 impl core::fmt::Debug for OpenOutput {
@@ -691,21 +690,16 @@ impl OpenOutput {
         &self.info.name
     }
 
-    fn wire(&self) -> MutexGuard<'_, Wire> {
-        self.wire.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// The Protocol and JR Timestamps this output sends in now.
     #[must_use]
     pub fn config(&self) -> StreamConfig {
-        self.wire().config()
+        self.wire.config()
     }
 
     /// Sends in `config` from now on: what the device's UMP Stream negotiation
     /// settled.
-    pub fn set_config(&self, config: StreamConfig) {
-        let mut wire = self.wire();
-        wire.set_config(config);
+    pub fn set_config(&mut self, config: StreamConfig) {
+        self.wire.set_config(config);
         self.sink.follow(config.protocol);
     }
 }
@@ -714,18 +708,20 @@ impl OpenOutput {
 /// of them the device took: an event that has no form on the wire (a JR
 /// Timestamp the device does not take, a per-note controller for MIDI 1.0)
 /// counts as taken, and one of several packets counts when all went.
-impl MidiOut for OpenOutput {
-    fn queue(&self, events: &[UmpAt]) -> usize {
+impl OpenOutput {
+    /// Queues `events` in the device's wire form, each to go now. Returns how
+    /// many the device took.
+    pub fn queue(&mut self, events: &[UmpAt]) -> usize {
         self.queue_timed(&Outgoing::now_batch(events))
     }
 
-    /// Each packet goes to the device at its [`SendAt`](tutti_midi_runtime::SendAt),
-    /// which the conversion keeps with the event it came from.
-    fn queue_timed(&self, events: &[Outgoing]) -> usize {
-        let mut wire = self.wire();
-        wire.convert(events);
-        let taken = self.sink.queue_timed(wire.batch());
-        wire.accepted(taken)
+    /// As [`queue`](Self::queue), each packet going to the device at its
+    /// [`SendAt`](tutti_midi_runtime::SendAt), which the conversion keeps with
+    /// the event it came from.
+    pub fn queue_timed(&mut self, events: &[Outgoing]) -> usize {
+        self.wire.convert(events);
+        let taken = self.sink.queue_timed(self.wire.batch());
+        self.wire.accepted(taken)
     }
 }
 
@@ -738,9 +734,18 @@ impl Drop for OpenInput {
 
 /// The devices of an enumeration, one per handle: an endpoint listed both ways
 /// is [`Duplex`](PortDirection::Duplex).
-pub(crate) fn os_devices(inputs: &[EndpointInfo], outputs: &[EndpointInfo]) -> Vec<OsDevice> {
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", alsa_ump),
+    test,
+    feature = "testing"
+))]
+pub(crate) fn os_devices(
+    inputs: &[crate::capability::EndpointInfo],
+    outputs: &[crate::capability::EndpointInfo],
+) -> Vec<OsDevice> {
     let mut devices: BTreeMap<EndpointId, OsDevice> = BTreeMap::new();
-    let as_device = |e: &EndpointInfo, direction| OsDevice {
+    let as_device = |e: &crate::capability::EndpointInfo, direction| OsDevice {
         handle: e.id,
         identity: e.identity.clone(),
         name: e.name.clone(),

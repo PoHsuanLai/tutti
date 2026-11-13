@@ -8,6 +8,7 @@ use crate::MidiSession;
 use crate::session::Polled;
 use crate::test_support::{FakeBackend, FakeCounters, endpoint};
 use crate::{HardwareMidiInputs, Pushed};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use tutti_midi_device::{
@@ -45,7 +46,7 @@ fn streams(polled: impl IntoIterator<Item = Polled>) -> Vec<(DeviceId, DeviceStr
 fn session_over(os: UmpCapability, direction: PortDirection, device: Endpoint) -> Wire {
     let (backend, counters) = FakeBackend::build_with(vec![], vec![], usize::MAX);
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        4,
+        NonZeroUsize::new(4).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );
@@ -556,7 +557,7 @@ fn sysex_is_copied_to_the_stream_ring_while_asked_and_always_reaches_the_graph()
     use crate::testing::Rig;
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        2,
+        NonZeroUsize::new(2).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );
@@ -610,7 +611,7 @@ fn stream_messages_never_reach_the_graph() {
     use tutti_ump::{MidiChannel, MidiGroup};
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        2,
+        NonZeroUsize::new(2).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );
@@ -876,7 +877,7 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     use tutti_ump::{MidiChannel, MidiGroup, Utility};
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        2,
+        NonZeroUsize::new(2).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );

@@ -2,6 +2,7 @@
 //! readable and writable port is a device to every other client, so creating
 //! and dropping one is a hot-plug the kernel announces: nothing here is faked.
 
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use crate::{Devices, HardwareMidiInputs};
@@ -258,7 +259,7 @@ fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
-            4,
+            NonZeroUsize::new(4).unwrap(),
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
@@ -355,7 +356,7 @@ fn the_engines_own_clients_are_not_listed() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
-            4,
+            NonZeroUsize::new(4).unwrap(),
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
@@ -611,8 +612,11 @@ impl Pumped {
 
     /// A pump on `device`'s port 0.
     fn over(device: Virtual, lead: Duration) -> Self {
-        let inlets =
-            tutti_midi_runtime::DeviceInlets::new(4, tutti_graph::EventCapacity::of(64), lead);
+        let inlets = tutti_midi_runtime::DeviceInlets::new(
+            NonZeroUsize::new(4).unwrap(),
+            tutti_graph::EventCapacity::of(64),
+            lead,
+        );
         let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::clone(&inlets)));
         let id = super::enumerate::pack_id(device.0.id(), 0);
         let producer = ports.open_input_port("pump").expect("a slot");
@@ -807,7 +811,7 @@ fn an_input_whose_pump_fails_reads_as_gone() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
-            4,
+            NonZeroUsize::new(4).unwrap(),
             tutti_graph::EventCapacity::of(16),
             Duration::ZERO,
         ),
@@ -1106,7 +1110,7 @@ fn a_device_on_the_sequencer_is_negotiated_through_the_pump_and_the_output() {
     let device = plug_ump(&name, tutti_alsa_ffi::PROTO_MIDI1);
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let inlets = tutti_midi_runtime::DeviceInlets::new(
-        4,
+        NonZeroUsize::new(4).unwrap(),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     );

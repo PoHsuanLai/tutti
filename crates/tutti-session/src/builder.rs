@@ -52,7 +52,7 @@ pub struct SessionBuilder {
     midi_ports: tutti_midi_runtime::MidiInputPorts,
     /// How many hardware MIDI devices may be connected at once.
     #[cfg(feature = "midi")]
-    midi_devices: usize,
+    midi_devices: NonZeroUsize,
     #[cfg(feature = "modulation")]
     unresolved_warning: std::time::Duration,
     #[cfg(feature = "plugin")]
@@ -334,11 +334,11 @@ impl SessionBuilder {
     /// node has one event input, and each device one event inlet and one
     /// translator state, for each ([`MIDI_INPUT_DEVICES`](crate::MIDI_INPUT_DEVICES)
     /// by default). Connecting one past it is refused
-    /// (`tutti_midi_hardware::Error::NoFreeSlot`). At least one.
+    /// (`tutti_midi_hardware::Error::NoFreeSlot`).
     #[cfg(feature = "midi")]
     #[must_use]
-    pub fn midi_devices(mut self, devices: usize) -> Self {
-        self.midi_devices = devices.max(1);
+    pub fn midi_devices(mut self, devices: NonZeroUsize) -> Self {
+        self.midi_devices = devices;
         self
     }
 

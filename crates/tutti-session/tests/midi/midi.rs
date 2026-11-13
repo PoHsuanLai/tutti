@@ -1145,6 +1145,110 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     assert_eq!(io.stream(id), Some(*stream));
 }
 
+/// **A MIDI-CI peer of an input the session holds open is a session event**
+/// (design 017 L8, M2-101 §5.5 and §5.6): once the UMP Endpoint settles, a
+/// Function Block that declares MIDI-CI is sent a Discovery by the session's
+/// tick; the device's Reply to Discovery is reported as one
+/// `MidiEvent::CiPeer` (`CiChange::Found`) naming the device, and the peer is
+/// then in `Midi::ci_peers`.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
+    use tutti_midi_device::{
+        BlockName, CiCategories, CiHeader, CiMessage, Decoded, DiscoveryData, MaxSysexSize, Muid,
+    };
+    use tutti_midi_hardware::{Capabilities, CiChange, Endpoint, FunctionBlock};
+    use tutti_ump::{Direction, FirstGroup, FunctionBlockId, GroupSpan, SysexAssembler, SysexStep};
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Wire", PortDirection::Duplex);
+    let _ = s.update();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
+    io.connect_input("wire").expect("connects");
+
+    let block = FunctionBlock::builder(
+        FunctionBlockId::new(0).unwrap(),
+        Direction::Bidirectional,
+        FirstGroup::new(0).unwrap(),
+        GroupSpan::new(1).unwrap(),
+    )
+    .midi_ci(2, 0)
+    .name(BlockName::new("Main").unwrap())
+    .build()
+    .unwrap();
+    let mut device = Endpoint::new(Capabilities {
+        midi1: true,
+        midi2: true,
+        ..Capabilities::default()
+    })
+    .with_function_block(block);
+    let raw = EndpointId::from_raw(7);
+    let peer = Muid::new(0x0012_3456).unwrap();
+    let data = DiscoveryData::new(
+        tutti_ump::DeviceIdentity {
+            manufacturer: tutti_ump::ManufacturerId::of(0x41),
+            family: [tutti_ump::U7::of(1); 2],
+            model: [tutti_ump::U7::of(2); 2],
+            revision: [tutti_ump::U7::of(3); 4],
+        },
+        CiCategories::empty(),
+        MaxSysexSize::of(256),
+    );
+    let room = SysexAssembler::room_for(256, 1, 16);
+    let mut assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16);
+    let start = Instant::now();
+    let mut found = Vec::new();
+    let mut replied = false;
+    for ms in 0..40 {
+        let now = start + Duration::from_millis(ms);
+        for event in update_at(&mut s, now) {
+            if let SessionEvent::Midi(MidiEvent::CiPeer { device, change }) = event {
+                found.push((device, change));
+            }
+        }
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(raw) {
+            if let Ok(message @ tutti_ump::Message::Stream(_)) = ump.decode() {
+                device.reply(message, &mut answers);
+                continue;
+            }
+            assembler.begin_block();
+            let SysexStep::Complete(done) = assembler.push(ump) else {
+                continue;
+            };
+            if let Decoded::Message(CiMessage::Discovery { header, .. }) =
+                CiMessage::decode(assembler.message(done).payload())
+                && !replied
+            {
+                replied = true;
+                let reply = CiMessage::DiscoveryReply {
+                    header: CiHeader::new(peer),
+                    to: header.source,
+                    data,
+                };
+                answers.extend(reply.packets(MidiGroup::FIRST));
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(raw, ump, now));
+        }
+    }
+    assert!(replied, "the session sent a Discovery");
+    let [(device_id, CiChange::Found(info))] = found.as_slice() else {
+        panic!("one peer found, got {found:?}");
+    };
+    assert_eq!(
+        io.inputs()
+            .iter()
+            .find(|d| d.id == *device_id)
+            .map(|d| d.name.as_str()),
+        Some("Wire")
+    );
+    assert_eq!(info.muid(), peer);
+    assert_eq!(info.peer().discovery(), &data);
+    assert_eq!(s.midi().ci_peers(device_id), std::slice::from_ref(info));
+}
+
 /// **The hardware out JR-stamps only as its device's configuration says**
 /// (M2-104 §7.1.6.2: a Sender "shall not send JR Timestamps until after a
 /// Stream Configuration Notification" has said the device receives them). The

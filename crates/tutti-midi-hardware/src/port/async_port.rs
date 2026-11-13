@@ -90,7 +90,7 @@ impl InputProducerHandle {
     /// A **SysEx7 packet** (type `0x3`) is music's too, and goes to the graph
     /// whatever else happens to it; but while the control side is waiting for a
     /// device to say what it is ([`HardwareMidiInputs::hear_sysex`](super::HardwareMidiInputs::hear_sysex),
-    /// an Identity Request is out), a copy goes to the same stream ring. It is a
+    /// an Identity Request is out, or MIDI-CI runs), a copy goes to the same stream ring. It is a
     /// copy, not a diversion, because the packets of a message are not
     /// recognisable one by one: whether a SysEx is an Identity Reply is known
     /// only once it is whole, and a patch dump that arrives meanwhile must still

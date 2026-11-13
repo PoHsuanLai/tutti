@@ -18,6 +18,7 @@ mod backend;
 )]
 mod block;
 mod capability;
+mod ci;
 mod devices;
 mod endpoints;
 mod error;
@@ -41,6 +42,7 @@ mod wire;
 pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};
+pub use ci::{CiChange, CiPeerInfo};
 pub use devices::{
     ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, Pending, RecvTimeoutError, SeedError,
     WatchFailure,
@@ -48,7 +50,7 @@ pub use devices::{
 pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, Pushed, StreamDrain};
-pub use session::{DeviceQuery, MidiSession, OutputInfo};
+pub use session::{DeviceQuery, MidiSession, OutputInfo, Polled};
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{
     BindPolicy, Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId,

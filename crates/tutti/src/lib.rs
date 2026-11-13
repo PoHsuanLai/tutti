@@ -188,7 +188,7 @@ pub mod midi {
     };
 
     #[cfg(feature = "midi-hardware")]
-    pub use tutti_midi_hardware::{DeviceId, DeviceInfo, DeviceQuery};
+    pub use tutti_midi_hardware::{CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery};
     #[cfg(all(feature = "session", feature = "midi-hardware"))]
     pub use tutti_session::Resolution;
 }

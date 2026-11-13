@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::MidiSession;
+use crate::session::Polled;
 use crate::test_support::{FakeBackend, FakeCounters, endpoint};
 use crate::{HardwareMidiInputs, Pushed};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use tutti_midi_device::{
 };
 use tutti_ump::{
     Direction as BlockDirection, FirstGroup, FunctionBlockId, GroupSpan, Message, Stream,
+    SysexAssembler, SysexStep,
 };
 
 /// A fake duplex device `raw` and the session that opened its input.
@@ -26,6 +28,17 @@ struct Wire {
     /// The device's own state, which answers what it is sent.
     device: Endpoint,
     start: Instant,
+}
+
+/// The stream reports among what a poll returned.
+fn streams(polled: impl IntoIterator<Item = Polled>) -> Vec<(DeviceId, DeviceStream)> {
+    polled
+        .into_iter()
+        .filter_map(|p| match p {
+            Polled::Stream(id, stream) => Some((id, *stream)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn session_over(os: UmpCapability, direction: PortDirection, device: Endpoint) -> Wire {
@@ -64,11 +77,13 @@ impl Wire {
     /// devices the tick settled.
     fn tick(&mut self, ms: u64) -> (Vec<Stream>, Vec<(DeviceId, DeviceStream)>) {
         let now = self.at(ms);
-        let settled: Vec<_> = self.session.poll(now).collect();
+        let settled = streams(self.session.poll(now));
         let sent: Vec<Stream> = self
             .counters
             .take_sent(self.raw)
             .into_iter()
+            // MIDI-CI is SysEx and is not the negotiation's.
+            .filter(|ump| ump.message_type() != 3)
             .map(|ump| match ump.decode() {
                 Ok(Message::Stream(stream)) => stream,
                 other => panic!("sent something that is not a Stream message: {other:?}"),
@@ -242,7 +257,7 @@ fn a_silent_device_settles_as_the_os_describes_it() {
         3 * step + 1,
     ] {
         let now = wire.at(ms);
-        settled.extend(wire.session.poll(now));
+        settled.extend(streams(wire.session.poll(now)));
         sent += wire.counters.take_sent(wire.raw).len();
     }
     assert_eq!(sent, usize::from(MAX_ATTEMPTS), "one send per attempt");
@@ -336,7 +351,7 @@ fn a_midi1_device_that_answers_an_identity_request_has_its_identity() {
 
     // The device's own id is 5, not the all-call.
     reply_at(&wire, identity_reply(0x05), 10);
-    let settled: Vec<_> = wire.session.poll(wire.at(20)).collect();
+    let settled = streams(wire.session.poll(wire.at(20)));
     let [(id, stream)] = settled.as_slice() else {
         panic!("the answer is reported once, got {settled:?}");
     };
@@ -348,9 +363,12 @@ fn a_midi1_device_that_answers_an_identity_request_has_its_identity() {
         wire.session.stream(&wire.id).unwrap().endpoint().identity(),
         Some(&identity())
     );
-    // Over: nothing more is sent, however long it goes on.
-    assert!(wire.session.poll(wire.at(5000)).next().is_none());
-    assert!(received(&wire).is_empty());
+    // Over: no Identity Request is sent again, however long it goes on (what
+    // is sent is MIDI-CI's, which takes the SysEx reader from here).
+    for ms in [30, 5000, 10_000] {
+        let _ = wire.session.poll(wire.at(ms)).count();
+        assert_eq!(identity_requests(&received(&wire)), 0);
+    }
 }
 
 /// A device that never answers (one that does not implement Device Inquiry) is
@@ -364,7 +382,7 @@ fn a_silent_midi1_device_is_asked_twice_and_stays_described() {
     let mut sends = 0;
     for step in 0..6 {
         assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
-        sends += received(&wire).len();
+        sends += identity_requests(&received(&wire));
     }
     assert_eq!(sends, usize::from(INQUIRY_ATTEMPTS));
     let stream = wire.session.stream(&wire.id).unwrap();
@@ -372,16 +390,18 @@ fn a_silent_midi1_device_is_asked_twice_and_stays_described() {
     assert_eq!(stream.endpoint().identity(), None);
 }
 
-/// Once the inquiry has given up on a silent device, its copy of the device's
-/// SysEx7 packets is off (a packet that arrives is not kept in the stream ring,
-/// though it still reaches the graph, the next test) and nothing more is sent.
+/// Once the inquiry has given up on a silent device, MIDI-CI takes over the
+/// port's copy of the device's SysEx7 packets (it stays on, and the graph still
+/// hears them, the next test), and no Identity Request is sent again: what
+/// goes out is MIDI-CI's.
 #[test]
-fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
+fn after_giving_up_the_sysex_copy_stays_on_for_midi_ci_and_no_request_is_sent() {
     use tutti_midi_device::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT};
     let wire = midi1_wire();
     let ms = INQUIRY_TIMEOUT.as_millis() as u64;
-    // The request, its one retry, then the poll that gives up.
-    for step in 0..=u64::from(INQUIRY_ATTEMPTS) {
+    // The request, its one retry, then the poll that gives up, then the one
+    // that starts MIDI-CI.
+    for step in 0..=u64::from(INQUIRY_ATTEMPTS) + 1 {
         assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
     }
     let slot = wire.session.ports().list_input_ports()[0].id;
@@ -392,16 +412,13 @@ fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
     reply_at(&wire, identity_reply(0), 10 * ms);
     assert_eq!(
         wire.session.ports().drain_stream(slot).count(),
-        0,
-        "the copy is off once the inquiry is over"
+        identity_reply(0).len(),
+        "the copy is on while MIDI-CI runs"
     );
     for step in 10..13 {
-        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+        let _ = wire.session.poll(wire.at(step * ms)).count();
     }
-    assert!(
-        received(&wire).is_empty(),
-        "nothing is sent after giving up"
-    );
+    assert_eq!(identity_requests(&received(&wire)), 0);
 }
 
 /// An output the session cannot open (another app holds it) does not fail the
@@ -583,6 +600,30 @@ fn received(wire: &Wire) -> Vec<Ump> {
     wire.counters.take_sent(wire.raw)
 }
 
+/// The complete System Exclusive messages among `packets`, each with its Group
+/// and its payload (between `F0` and `F7`).
+fn payloads(packets: &[Ump]) -> Vec<(tutti_ump::MidiGroup, Vec<u8>)> {
+    let room = SysexAssembler::room_for(256, 1, 16);
+    let mut assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16);
+    let mut found = Vec::new();
+    for &ump in packets {
+        assembler.begin_block();
+        if let SysexStep::Complete(done) = assembler.push(ump) {
+            let group = ump.group().expect("a SysEx7 packet has a Group");
+            found.push((group, assembler.message(done).payload().to_vec()));
+        }
+    }
+    found
+}
+
+/// How many Identity Requests (M1 p.40) `packets` hold.
+fn identity_requests(packets: &[Ump]) -> usize {
+    payloads(packets)
+        .iter()
+        .filter(|(_, payload)| payload == &[0x7E, 0x7F, 0x06, 0x01])
+        .count()
+}
+
 fn send_ump(wire: &Wire, stream: Stream, ms: u64) {
     let ump = Ump::from(Message::Stream(stream));
     assert!(wire.counters.send_input(wire.raw, ump, wire.at(ms)));
@@ -689,7 +730,7 @@ fn the_output_follows_the_negotiated_protocol() {
     // The device goes to MIDI 1.0 on its own: it is told, and the output goes
     // with it.
     send_ump(&wire, notification(Protocol::Midi1, false), 20);
-    let changed = wire.session.poll(wire.at(20));
+    let changed = streams(wire.session.poll(wire.at(20)));
     assert!(
         matches!(changed.as_slice(), [(_, s)] if s.config().protocol == Protocol::Midi1),
         "{changed:?}"
@@ -760,7 +801,7 @@ fn static_blocks_are_not_re_read_and_others_are() {
         wire.session.connect_input(&wire.id.clone()).unwrap();
         settle(&mut wire);
         send_ump(&wire, moved_block(6), 40);
-        let changed: Vec<_> = wire.session.poll(wire.at(40)).collect();
+        let changed = streams(wire.session.poll(wire.at(40)));
         let first_group = || {
             wire.session.stream(&wire.id).unwrap().capability().blocks[0]
                 .first_group()
@@ -831,3 +872,5 @@ fn an_output_connected_after_the_settle_starts_in_the_settled_protocol() {
     )]);
     assert_eq!(received(&wire)[0].message_type(), 2);
 }
+
+mod ci;

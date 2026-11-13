@@ -5,7 +5,7 @@
 //! negotiation come back as [`MidiEvent`](crate::MidiEvent)s from
 //! `Session::update`.
 
-use tutti_midi_hardware::{DeviceId, DeviceInfo, DeviceQuery, Resolved};
+use tutti_midi_hardware::{CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Resolved};
 
 use crate::MidiError;
 use crate::midi::{Midi, UmpOut};
@@ -62,6 +62,16 @@ impl Midi<'_> {
     /// an input, the device has no free slot, or the OS refuses it.
     pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
         Ok(self.hardware()?.connect_input(device)?)
+    }
+
+    /// The MIDI-CI peers found on the open input `id`, by Group then MUID: what
+    /// a device that answered the session's Discovery declared (identity,
+    /// categories, receivable SysEx size, Function Block). Empty when the
+    /// input is not open, the device has no output to talk on, or nothing
+    /// answered; a change is a [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer).
+    #[must_use]
+    pub fn ci_peers(&self, id: &DeviceId) -> Vec<CiPeerInfo> {
+        self.io.map_or_else(Vec::new, |io| io.ci_peers(id))
     }
 
     /// Closes an input, by id or name. Whether one was open.

@@ -588,7 +588,7 @@ fn graph(
                 port: 0,
             },
             TapAlign::Raw,
-            256,
+            EventCapacity::of(256),
         )
         .expect("the port exists")
     });

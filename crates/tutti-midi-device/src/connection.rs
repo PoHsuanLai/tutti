@@ -15,9 +15,6 @@
 //!    truth (§7.1.6.1 step 3: the peer may refuse any part).
 //! 3. **Function Blocks** (step 4): ask for every block's Info and Name.
 //!
-//! Step 5, MIDI-CI Discovery, is the CI codec's and has no state machine yet
-//! (design 017 §5, "MIDI-CI").
-//!
 //! A step that gets no answer within [`STEP_TIMEOUT`] is sent again, up to
 //! [`MAX_ATTEMPTS`] times in all. Then Discovery and Select Protocol give up
 //! and the peer is a MIDI 1.0 device ([`Ending::Midi1Fallback`]); Function

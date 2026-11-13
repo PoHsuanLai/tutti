@@ -7,13 +7,13 @@
 //! the next commit compiles them.
 
 use tutti_graph::{
-    CloseError, EventCapacity, EventTapId, EventTapReader, MeterId, MeterReader, MeterSpec,
-    MissingSource, NodeKey, TapAlign, TapId, TapReader,
+    CloseError, EventCapacity, EventTapId, EventTapReader, EventTapSource, MeterId, MeterReader,
+    MeterSpec, MissingSource, NodeKey, TapAlign, TapId, TapReader,
 };
 use tutti_types::Samples;
 
 use super::Graph;
-use crate::{EventOutPort, OutPort};
+use crate::{EventTapPort, OutPort};
 
 /// The taps of a [`Graph`]: copies of its audio and of one event port, read
 /// through a [`TapReader`] or an [`EventTapReader`]. Made by [`Graph::taps`].
@@ -146,7 +146,9 @@ impl Taps<'_> {
         Ok(())
     }
 
-    /// Opens a tap on one event output of a node and returns its reader: the
+    /// Opens a tap on one event port of a node, an output
+    /// ([`Key::events_out`](crate::Key::events_out)) or an input
+    /// ([`Key::events_in`](crate::Key::events_in)), and returns its reader: the
     /// MIDI events the port carries, each with the frame it was due on
     /// ([`TapEvent`](tutti_graph::TapEvent)), on the clock of the rate the
     /// graph is prepared at now ([`EventTapReader::rate`]). The tap is
@@ -163,9 +165,14 @@ impl Taps<'_> {
     /// outputs; [`TapAlign::Raw`] reads it as it leaves its node. Ramps,
     /// segments, harmony and resync are not copied.
     ///
+    /// A tap of an input hears what the node hears there: every source of the
+    /// port merged, in the order the node is handed them, after their latency
+    /// delays (and, with [`TapAlign::ToOutput`], the delay the node's input
+    /// time needs to reach the output time).
+    ///
     /// The port must exist now, edits not yet committed included
-    /// ([`MissingSource::Node`] or [`MissingSource::EventPort`] otherwise, and
-    /// nothing is opened). One that vanishes later reads no events, counts no
+    /// ([`MissingSource::Node`], [`MissingSource::EventPort`] or
+    /// [`MissingSource::EventInPort`] otherwise, and nothing is opened). One that vanishes later reads no events, counts no
     /// loss and fails no commit. Dropping the reader leaves the tap open until
     /// [`close_event`](Self::close_event) or the session's next
     /// [`Reclaim`](crate::Phase::Reclaim) phase, which closes it.
@@ -180,23 +187,33 @@ impl Taps<'_> {
     /// [`MissingSource`] for a port that is not in the graph now.
     pub fn open_event(
         &mut self,
-        source: EventOutPort,
+        source: impl Into<EventTapPort>,
         align: TapAlign,
         capacity: EventCapacity,
     ) -> Result<EventTapReader, MissingSource> {
         let id = EventTapId(self.graph.next_event_tap);
-        let raw = source.raw().ok_or_else(|| MissingSource::EventPort {
-            node: source.node(),
-            port: u16::MAX,
-            width: self
-                .graph
-                .shape(source.node())
-                .map_or(0, |s| usize::from(s.event_out)),
+        let source = source.into();
+        let node = source.node();
+        let raw = match source {
+            EventTapPort::Out(p) => p.raw().map(EventTapSource::Out),
+            EventTapPort::In(p) => p.raw().map(EventTapSource::In),
+        }
+        .ok_or_else(|| {
+            let shape = self.graph.shape(node);
+            match source {
+                EventTapPort::Out(_) => MissingSource::EventPort {
+                    node,
+                    port: u16::MAX,
+                    width: shape.map_or(0, |s| usize::from(s.event_out)),
+                },
+                EventTapPort::In(_) => MissingSource::EventInPort {
+                    node,
+                    port: u16::MAX,
+                    width: shape.map_or(0, |s| usize::from(s.event_in)),
+                },
+            }
         })?;
-        let reader = self
-            .graph
-            .editor
-            .open_event_tap(id, raw, align, capacity.get() as usize)?;
+        let reader = self.graph.editor.open_event_tap(id, raw, align, capacity)?;
         self.graph.next_event_tap += 1;
         self.graph.event_taps.insert(id, (raw, align, capacity));
         self.graph.edited = true;
@@ -251,11 +268,7 @@ impl Taps<'_> {
     pub fn reopen_event(&mut self, id: EventTapId) -> Option<EventTapReader> {
         let &(port, align, capacity) = self.graph.event_taps.get(&id)?;
         self.graph.edited = true;
-        match self
-            .graph
-            .editor
-            .open_event_tap(id, port, align, capacity.get() as usize)
-        {
+        match self.graph.editor.open_event_tap(id, port, align, capacity) {
             Ok(reader) => Some(reader),
             Err(_) => {
                 self.graph.event_taps.remove(&id);

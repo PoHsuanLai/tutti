@@ -1,8 +1,11 @@
 //! Event taps: copy-out points for one event port of the compiled plan.
 //!
 //! The event sibling of [`tap`](crate::TapReader). An event tap is declared on
-//! the [`Topology`](crate::Topology) as "copy this event output"
-//! ([`EventTapSpec`](crate::EventTapSpec)); the compiler emits one
+//! the [`Topology`](crate::Topology) as "copy this event port"
+//! ([`EventTapSpec`](crate::EventTapSpec)), an output (what the port wrote) or
+//! an input ([`EventTapSource`](crate::EventTapSource)). A tap of an input
+//! copies what its node reads there: the sources merged in the order the node
+//! is handed them, after the delays that align them. The compiler emits one
 //! [`Op::EventTap`](crate::Op::EventTap) per tap whose port exists, and, for
 //! an aligned tap, the same delay an event edge into an output-time sink would
 //! get ([`DelayKey::EventTap`](crate::DelayKey::EventTap)). A tap that is not
@@ -48,10 +51,10 @@ use tutti_rt::RtScope;
 use tutti_types::{Frame, SampleRate};
 use tutti_ump::Ump;
 
-use crate::EventTapId;
 use crate::event::{EventKind, note_off_room};
 use crate::node::Env;
 use crate::slots::EventSlots;
+use crate::{EventCapacity, EventTapId};
 
 /// One event a tap copied out: the packet, and the frame of the graph's clock
 /// it was due on.
@@ -101,6 +104,7 @@ impl Drop for EventTapWriter {
 }
 
 /// [`Op::EventTap`](crate::Op::EventTap): every MIDI event of event slot `src`
+/// (an output port's, or the merge a node reads at an input)
 /// into the tap's ring, stamped with its frame in the block `env` describes.
 ///
 /// A non-note-off is refused once `capacity` events are held, a note-off once
@@ -180,15 +184,15 @@ impl Drop for EventTapReader {
 
 impl EventTapReader {
     /// A reader and the writer the executor will fill it with: a ring that
-    /// holds [`note_off_room`] of `capacity` events (`capacity` at least one),
+    /// holds [`note_off_room`] of `capacity` events,
     /// of which a non-note-off may take `capacity`; its frames are on the
     /// clock of `rate`.
     pub(crate) fn pair(
         id: EventTapId,
-        capacity: usize,
+        capacity: EventCapacity,
         rate: SampleRate,
     ) -> (Self, EventTapWriter) {
-        let capacity = capacity.max(1);
+        let capacity = capacity.slots();
         let lost = Arc::new(AtomicU64::new(0));
         let (prod, cons) = HeapRb::<TapEvent>::new(note_off_room(capacity)).split();
         let reader = Self {

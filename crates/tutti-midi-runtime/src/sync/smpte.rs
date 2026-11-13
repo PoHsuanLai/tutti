@@ -70,6 +70,15 @@ impl TryFrom<u8> for SmpteFrameRate {
 }
 
 impl SmpteFrameRate {
+    /// Every rate, in discriminant order.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Fps24,
+        Self::Fps25,
+        Self::Fps2997Df,
+        Self::Fps2997Ndf,
+        Self::Fps30,
+    ];
+
     /// Frames per second, as the exact rational the standard specifies.
     ///
     /// **`f64`, deliberately, and not a unit type.** The 29.97 rates are

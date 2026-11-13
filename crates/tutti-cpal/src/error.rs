@@ -27,10 +27,6 @@ pub enum Error {
     #[error("Failed to enumerate devices")]
     DevicesError(#[from] cpal::DevicesError),
 
-    /// Querying a device's name via CPAL failed.
-    #[error("Failed to get device name")]
-    DeviceNameError(#[from] cpal::DeviceNameError),
-
     /// The requested stream configuration was rejected as invalid.
     #[error("Invalid config: {0}")]
     InvalidConfig(String),

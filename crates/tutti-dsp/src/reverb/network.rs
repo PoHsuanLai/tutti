@@ -1,4 +1,4 @@
-//! The reverb model (design 022): a reverb as a plain value with analytic
+//! The reverb model: a reverb as a plain value with analytic
 //! queries.
 //!
 //! A [`Network`] describes what a reverb *is*, in the state-space form of a
@@ -79,12 +79,17 @@ impl Band {
     }
 }
 
-/// A reverb as a value (design 022 section 3).
+/// A reverb as a value.
 ///
 /// The stages run in series, input to output, after the pre-delay. The network
 /// is wet-only: it has no direct path from input to output (a network that has
-/// one says so, [`has_direct_path`](Self::has_direct_path)); the node owns the
-/// dry mix.
+/// one says so, [`has_direct_path`](Self::has_direct_path)); the dry mix is the
+/// graph's, so "wet-only means no dry leak" is a property of the model that a
+/// realization is held to.
+///
+/// Freeze is a property of the network, not a flag: every absorption gain at
+/// unity with an orthogonal matrix is a lossless loop ([`is_lossless`](Self::is_lossless)),
+/// marginally stable, and its [`tail`](crate::System::tail) is [`Ring::Unbounded`](crate::Ring::Unbounded).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Network {
     /// The rate the frame counts are in.

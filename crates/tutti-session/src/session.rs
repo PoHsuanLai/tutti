@@ -1256,12 +1256,4 @@ impl Session {
     pub fn testing_midi_io(&self) -> Option<&tutti_midi_hardware::MidiSession> {
         self.midi_io.as_ref()
     }
-
-    /// Takes the disk streamer the builder made, for a host that holds it
-    /// itself: a restart then re-rates it only through the host's `follow`
-    /// hook.
-    #[cfg(feature = "sampler")]
-    pub fn take_disk_streamer(&mut self) -> Option<tutti_sampler::DiskStreamer> {
-        self.disk_streamer.take()
-    }
 }

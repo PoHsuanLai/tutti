@@ -1,5 +1,5 @@
 //! [`FdnRecurrence`]: the [`Recurrence`] of [`FdnFamily`](crate::FdnFamily), run by
-//! [`Realized`](crate::Realized) (design 022 step 1c, design 024 section 4.3a).
+//! [`Realized`](crate::Realized).
 //!
 //! `N` delay lines read with linear interpolation (so a length may move), a
 //! three-band absorption in each loop, a mix `A = I - 2 m v v^T` (`m` is 1 for a

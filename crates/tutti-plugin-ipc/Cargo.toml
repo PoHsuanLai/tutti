@@ -3,10 +3,13 @@ name = "tutti-plugin-ipc"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The plugin host's process edge for Tutti: the wire, the shared-memory slab, the plugin-server's launch, and the client of a served plugin"
+description = "How tutti talks to its plugin helper process"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 publish = false
+keywords = ["audio", "plugin", "ipc", "sandbox"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true

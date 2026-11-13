@@ -3,10 +3,10 @@ name = "tutti-plugin-host"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The format-generic half of plugin hosting for Tutti: the control handle, the node's controls, transport and parameter delivery, and the in-process node"
+description = "The format-independent part of plugin hosting in tutti"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-plugin-host"
 # Not published, like `tutti-plugin-ipc` and `tutti-plugin-db`: whether and when
 # the split goes to crates.io is the maintainer's call.
 publish = false

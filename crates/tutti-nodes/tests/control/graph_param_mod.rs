@@ -908,7 +908,6 @@ fn mix_cases() -> Vec<MixCase> {
     ];
     // The convolver joins only with its feature: the cases are rebound, not
     // pushed to, so the list needs no `mut` the featureless build leaves unused.
-    #[cfg(feature = "convolution")]
     let cases: Vec<MixCase> = cases
         .into_iter()
         .chain([MixCase {

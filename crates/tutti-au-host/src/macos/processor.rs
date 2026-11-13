@@ -237,7 +237,7 @@ impl AuProcessor {
 
     /// Test-only: how many times the input render callback has been installed
     /// on this activation.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn input_callback_installs(&self) -> u32 {
         self.rendering.renderer.input_callback_installs()
     }

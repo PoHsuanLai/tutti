@@ -3523,10 +3523,79 @@ What the decoded messages are consumed by, one item each.
   Instance Id. (6) *NAK*: only for a message addressed to the device's own MUID that the codec could
   not read or does not model (Profile and Property Exchange sub-IDs are `0x01`, a malformed body
   `0x41`, a version `0x02`), never for another MUID, the Broadcast MUID, an ACK or a NAK.
-- **Open.** Wiring into `tutti-midi-hardware`'s negotiation (a SysEx7 assembler per Group feeding
-  `on_message`, `CiAction::Send` onto the output, the `Found` peers in the device's `Endpoint`) is
-  part 3. The device advertises no category, so Profile Configuration and Property Exchange are
-  later parts.
+- **Open.** The wiring is part 3 (below). The device advertises no category, so Profile
+  Configuration and Property Exchange are later parts.
+
+### L8 part 3: MIDI-CI on the wire: as built
+
+`tutti-midi-hardware`'s `ci.rs` runs `CiDevice` on an open input once the app enables it;
+`tutti-session` reports what it finds.
+
+- **Off by default; on with the app's identity.** `MidiSession::enable_ci(DeviceIdentity)` /
+  `disable_ci()` / `ci_identity()` (through `s.midi()`: `enable_ci`, `disable_ci`, both
+  `Result<(), MidiError>`). A Discovery announces a System Exclusive manufacturer id and tutti has
+  none; M1 reserves `7D` for non-commercial use and says it "is not to be used on any product
+  released to the public", and tutti is a library apps ship, so it never announces itself with `7D`
+  unasked: no `CiDevice` starts, and the port keeps no SysEx copy for CI, until the app gives the id
+  it registered. Enabling reaches the inputs already open (their devices start at the next poll,
+  after any Identity Request in progress has ended, the copy turned on first) and later ones;
+  enabling again with another identity restarts the devices under it. **Disabling** ends every
+  running device at the next poll: each sends an Invalidate MUID from and for its own MUID (§5.9
+  lists a shutdown among its reasons, so peers learn at once and not by silence), its peers are
+  reported `Lost`, and the copy is turned off. The Identity Request of part 1 carries no identity of
+  ours and is unaffected. The state is one `Mutex<Option<DeviceIdentity>>` of the session.
+
+- **Where it runs** (every input whose device has an output, the negotiation's own): (1) a UMP
+  Endpoint that answered the Stream negotiation gets one `CiDevice` per Function Block that declares
+  MIDI-CI (`midi_ci_version() != 0`, M2-104 §7.1.8), on the block's first Group, each with its own
+  MUID (M2-101 §3.2.2: one MUID per Function Block); **a block that declares none gets none**, since
+  it said it does not speak MIDI-CI. (2) An Endpoint that declares no block, or never answered the
+  negotiation (`Unanswered`), gets one on Group 0: §3.2.2 treats the Group addressed by `7F` "as a
+  Function Block with only one member Group". (3) A MIDI 1.0 port gets one on Group 0 once the
+  Identity Request of part 1 has ended, answered or given up, so the two never read the SysEx stream
+  at once. It then runs as long as the input does: the Discovery it sends when it starts is only the
+  first round, and it answers a Discovery or an Invalidate MUID from anyone at any time (Appendix E,
+  a Responder). It is stepped by `Negotiation::poll` from `MidiSession::poll(now)`, before the stream
+  stage, so what a settle or an inquiry's end decides is started by the next poll.
+- **Hearing.** While any device runs (or is about to), `hears_sysex()` is true and the port copies
+  SysEx7 packets to the stream ring (part 1's copy, not a divert: the graph still gets everything).
+  The session turns the copy on before the poll that starts the devices (`Ci::Idle` is that
+  one-poll wait), so no reply can arrive unheard. One `SysexAssembler` per input, a lane per device,
+  sized for the declared maximum, reassembles per Group; only a Group with a device is read; the
+  payload is decoded with `CiMessage::decode` and routed to that Group's device. `Decoded::NotCi` is
+  ignored. A MIDI 1.0 port's SysEx is already group-0 type 3 UMPs by the time it is in the ring.
+- **A gap never joins a message.** The stream ring is 512 packets, and a packet is lost when it is
+  full (`PortInfo::stream_lost`). The session reads that count either side of each drain and hands
+  the readers a `Heard` (`lost_before`, `lost_during`). A packet lost on a full ring is after
+  everything the ring held, so a loss counted before the drain is a gap at the end of its packets:
+  the readers take them, then `SysexAssembler::lost_tail()` drops the messages still open (counted),
+  so the packets after the gap find none to continue. A loss counted during the drain (a pop made room
+  for a packet that followed the gap) is somewhere inside, so the readers take none of those packets
+  and drop what is open. Part 1's Identity Request reader (`Asking`) had the same hole and is fixed
+  the same way.
+- **Sending.** `CiAction::Send(msg)` goes out as `msg.packets(group)` through `OpenOutput::queue` on
+  the input's own output, never the session's MIDI output. A refused queue is logged at debug and
+  not retried; the core's protocol tolerates loss.
+- **What it declares.** *Identity*: the app's, as given to `enable_ci` (a later M2-101 draft adds a
+  `7C` special id, usable in a released product only for Discovery and free of gain; whether to use
+  it is the app's). *Categories*:
+  none. *Receivable Maximum SysEx Message Size*: 512, `MaxSysexSize::INITIATOR_MIN` (§5.5.3: the
+  floor of a device that will initiate Profile Configuration or Property Exchange), which the
+  assembler's `max_message` is too (delimiters included, so conservative). *MUIDs*: std's
+  `RandomState` hasher keys over a counter, one per device (Appendix A: a desktop OS's random
+  numbers are good); no dependency.
+- **What the app sees.** `MidiSession::poll` now yields `Polled::{Stream(DeviceId, Box<DeviceStream>),
+  Ci(DeviceId, CiChange)}` (`CiChange::{Found(CiPeerInfo), Updated(CiPeerInfo), Lost { group, muid
+  }}`, once each). `MidiSession::ci_peers(&DeviceId) -> Vec<CiPeerInfo>` reads the peers by Group then
+  MUID; `CiPeerInfo` has `group()`, `muid()` and `peer() -> &CiPeer` (identity, categories, size,
+  Function Block, Product Instance Id). In `tutti-session`: `MidiEvent::CiPeer { device, change }`
+  from `Phase::Poll` and `Midi::ci_peers(&DeviceId)`; the `tutti::midi` module exports `CiChange` and
+  `CiPeerInfo`. A change of the device's own MUID reaches the app as every peer `Lost`, and the new
+  round finds them again.
+- **Open.** (1) Function Blocks that change after the settle (a Function Block Info Change) are not
+  followed: the devices are decided at the settle. (2) No Invalidate MUID is sent when an input
+  closes (only on `disable_ci`), so a peer learns of that by silence. (3) Profile Configuration and Property Exchange, and the answer to Endpoint Inquiry
+  (tutti has no Product Instance Id), are later parts.
 
 ### L7b: the MIDI Tuning Standard: as built (part 2)
 

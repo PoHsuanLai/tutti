@@ -13,6 +13,10 @@
 //!    after [`STEP_TIMEOUT`](tutti_midi_device::STEP_TIMEOUT) and given up after [`MAX_ATTEMPTS`](tutti_midi_device::MAX_ATTEMPTS).
 //! 3. It ends as a [`DeviceStream`].
 //!
+//! MIDI-CI then runs beside it for the life of the input: see the `ci` module's
+//! docs (design 017 L8 part 3). It is stepped by the same
+//! [`poll`](Negotiation::poll), and what it finds is returned with the stream.
+//!
 //! Time is an argument. Nothing here reads a clock, waits or blocks: a device
 //! that never answers (M2-104 Appendix I: a device that does not know UMP
 //! Stream messages, or an OS that never delivers them) costs three sends and
@@ -66,6 +70,7 @@ use tutti_ump::{
 };
 
 use crate::capability::UmpCapability;
+use crate::ci::{Ci, CiChange, CiPeerInfo, Heard, groups_after_settle, groups_of_a_midi1_port};
 use crate::devices::OpenOutput;
 
 /// The configuration the session asks every Endpoint for (see the module).
@@ -143,6 +148,15 @@ pub(crate) struct Negotiation {
     out: Option<OpenOutput>,
     run: Run,
     inquire: Inquire,
+    ci: Ci,
+}
+
+/// What one [`Negotiation::poll`] did.
+pub(crate) struct Stepped {
+    /// The stream, when this call settled it or changed it.
+    pub(crate) stream: Option<DeviceStream>,
+    /// The MIDI-CI peers that came, changed or went.
+    pub(crate) ci: Vec<CiChange>,
 }
 
 /// The Identity Request of a MIDI 1.0 port that has an output (the module's
@@ -236,6 +250,7 @@ impl Negotiation {
             out,
             run,
             inquire,
+            ci: Ci::default(),
         }
     }
 
@@ -248,19 +263,21 @@ impl Negotiation {
     }
 
     /// Whether the port should copy the SysEx7 packets the device sends to the
-    /// stream ring: an Identity Request is about to go out or is out.
-    pub(crate) fn hears_sysex(&self) -> bool {
-        matches!(self.inquire, Inquire::Idle | Inquire::Asking(_))
+    /// stream ring: an Identity Request is about to go out or is out, or
+    /// MIDI-CI is enabled (`ci`) and running or about to.
+    pub(crate) fn hears_sysex(&self, ci: bool) -> bool {
+        matches!(self.inquire, Inquire::Idle | Inquire::Asking(_)) || self.ci.hears_sysex(ci)
+    }
+
+    /// The MIDI-CI peers found on this device.
+    pub(crate) fn ci_peers(&self) -> std::sync::Arc<[CiPeerInfo]> {
+        self.ci.peers()
     }
 
     /// The Identity Request of a MIDI 1.0 port: starts it, or hands it the
     /// packets the port copied (`incoming`) and the time. Returns the stream
     /// when the device answered, with the identity it gave.
-    fn poll_inquiry(
-        &mut self,
-        now: Instant,
-        incoming: impl IntoIterator<Item = Ump>,
-    ) -> Option<DeviceStream> {
+    fn poll_inquiry(&mut self, now: Instant, heard: &Heard<'_>) -> Option<DeviceStream> {
         let mut actions = Vec::new();
         match &mut self.inquire {
             Inquire::No => {}
@@ -270,10 +287,14 @@ impl Negotiation {
                 self.inquire = Inquire::Asking(Box::new(asking));
             }
             Inquire::Asking(asking) => {
-                for ump in incoming {
+                for &ump in heard.sysex() {
                     if let Some(identity) = asking.hear(ump) {
                         actions.push(asking.inquiry.on_reply(identity));
                     }
+                }
+                if heard.gap() {
+                    // A reply cut by a gap is not completed by what follows it.
+                    asking.assembler.lost_tail();
                 }
                 if asking.inquiry.deadline().is_some_and(|at| now >= at) {
                     actions.push(asking.inquiry.on_timeout(now));
@@ -284,9 +305,13 @@ impl Negotiation {
             match action {
                 InquiryAction::Wait => {}
                 InquiryAction::Send(ump) => self.send(ump),
-                InquiryAction::GaveUp => self.inquire = Inquire::No,
+                InquiryAction::GaveUp => {
+                    self.inquire = Inquire::No;
+                    self.ci.decide(groups_of_a_midi1_port());
+                }
                 InquiryAction::Answered(identity) => {
                     self.inquire = Inquire::No;
+                    self.ci.decide(groups_of_a_midi1_port());
                     let Run::Done { stream, .. } = &mut self.run else {
                         return None;
                     };
@@ -299,16 +324,34 @@ impl Negotiation {
         None
     }
 
-    /// Takes the Stream messages the device sent (`incoming`) and the time
-    /// `now`: starts the negotiation, or steps it. Returns the stream when this
-    /// call settled it, or, after that, changed it.
+    /// Takes what the port heard (`heard`: the device's Stream messages and,
+    /// while MIDI-CI or the Identity Request listens, its SysEx7 packets) and
+    /// the time `now`: starts the negotiation, or steps it, and steps MIDI-CI.
+    /// Returns the stream when this call settled it, or, after that, changed
+    /// it, and the peers' changes.
+    ///
+    /// `ci` is the identity MIDI-CI is enabled with, if it is.
+    ///
+    /// MIDI-CI steps first: what a settle or an inquiry's end makes it start is
+    /// started by the next poll, after the port has been asked to copy SysEx.
     pub(crate) fn poll(
         &mut self,
         now: Instant,
-        incoming: impl IntoIterator<Item = Ump>,
-    ) -> Option<DeviceStream> {
+        heard: &Heard<'_>,
+        ci: Option<DeviceIdentity>,
+    ) -> Stepped {
+        let ci = match &self.out {
+            Some(out) => self.ci.poll(now, heard, ci, out),
+            None => Vec::new(),
+        };
+        let stream = self.poll_stream(now, heard);
+        Stepped { stream, ci }
+    }
+
+    fn poll_stream(&mut self, now: Instant, heard: &Heard<'_>) -> Option<DeviceStream> {
+        let incoming = heard.packets;
         if !matches!(self.inquire, Inquire::No) {
-            return self.poll_inquiry(now, incoming);
+            return self.poll_inquiry(now, heard);
         }
         let mut actions = Vec::new();
         match &mut self.run {
@@ -318,7 +361,7 @@ impl Negotiation {
                 self.run = Run::Asking(Box::new(connection));
             }
             Run::Asking(connection) => {
-                for ump in incoming {
+                for &ump in incoming {
                     if let Ok(message) = ump.decode() {
                         actions.push(connection.on_message(message, now));
                     }
@@ -330,7 +373,7 @@ impl Negotiation {
             Run::Done { stream, listening } => {
                 let connection = listening.as_mut()?;
                 let mut changed = false;
-                for ump in incoming {
+                for &ump in incoming {
                     if let Ok(message) = ump.decode() {
                         changed |= connection.on_message(message, now) == Action::Changed;
                     }
@@ -381,6 +424,7 @@ impl Negotiation {
                 None,
             ),
         };
+        self.ci.decide(groups_after_settle(&stream));
         self.run = Run::Done {
             stream: Box::new(stream),
             listening,

@@ -88,7 +88,7 @@ mod modulator;
 // `LfoNode` is `ModulatorNode<Waveform>` — the graph node over a pure
 // `Modulator`. `LfoShape` and `Waveform` are re-exported from `tutti-modulation` through
 // `lfo`, so `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Waveform};
+pub use lfo::{LfoClock, LfoNode, LfoShape, ModulatorNode, Waveform};
 pub use modulator::Modulator;
 
 mod delay;

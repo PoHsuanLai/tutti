@@ -25,7 +25,7 @@ use tutti_nodes::{
 };
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
-    PhaseIncrement, Q, Resonance, Seconds, UnitParam,
+    Q, Resonance, Seconds, UnitParam,
 };
 
 #[test]
@@ -169,9 +169,10 @@ fn lfo() {
             .with_frequency(Hz(3.0))
             .with_depth(Depth::clamped(0.8))
     })
-    .control("frequency", |l| l.set_frequency(Hz(5.0)))
-    .control("depth", |l| l.set_depth(Depth::clamped(0.3)))
-    .control("phase offset", |l| l.set_phase_offset(PhaseIncrement(0.25)))
+    .control("rate", |l| assert!(l.param_set().set(UnitParam::Rate, 5.0)))
+    .control("depth", |l| {
+        assert!(l.param_set().set(UnitParam::Depth, 0.3))
+    })
     .check();
 }
 

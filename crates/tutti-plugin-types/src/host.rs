@@ -28,8 +28,9 @@ use std::time::Instant;
 use crate::ParamEdit;
 use crate::{
     AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorSize, EditorWindow,
-    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, SampleRate, Samples, WindowHandle,
+    KeyEvent, KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
+    PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
+    SampleRate, Samples, WindowHandle,
 };
 use crate::{
     FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
@@ -628,6 +629,10 @@ impl<W: Wraps> EditorWindow for W {
 
     fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
         self.plugin_mut().set_editor_scale(main, scale)
+    }
+
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        self.plugin_mut().editor_key(main, event)
     }
 
     fn close_editor(&mut self, main: &MainThread) {

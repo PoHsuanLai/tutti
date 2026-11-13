@@ -5,14 +5,15 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginClass,
-    PluginDescriptor, PluginError, PluginResult, Preset, PresetId, RenderMode, RenderModeSupport,
-    Request, StateUse, WindowHandle,
+    KeyEvent, KeyPhase, KeyUse, LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo,
+    PluginBus, PluginClass, PluginDescriptor, PluginError, PluginResult, Preset, PresetId,
+    RenderMode, RenderModeSupport, Request, StateUse, WindowHandle,
 };
 use tutti_types::ChannelTopology;
 
 use crate::error::Vst2Error;
 use crate::host::ParameterChange;
+use crate::keys::key_code_of;
 use crate::loaded::Vst2Loaded;
 use crate::types::PluginInfo;
 
@@ -297,6 +298,20 @@ impl EditorWindow for Vst2Loaded {
         _scale: ContentScale,
     ) -> PluginResult<EditorSize> {
         self.open_editor_in(main, parent).map_err(plugin_error)
+    }
+
+    /// Forwards the key as `effEditKeyDown` or `effEditKeyUp` and reports the plugin's 1 as
+    /// [`KeyUse::Used`]. A key VST2 cannot write (a character outside ASCII, a modifier with
+    /// no bit) is not sent and is [`KeyUse::Ignored`], as is any key while no editor is open.
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        let Some(code) = key_code_of(&event, cfg!(target_os = "macos")) else {
+            return Ok(KeyUse::Ignored);
+        };
+        let used = match event.phase {
+            KeyPhase::Down => self.instance.editor_key_down(main, code),
+            KeyPhase::Up => self.instance.editor_key_up(main, code),
+        };
+        Ok(if used { KeyUse::Used } else { KeyUse::Ignored })
     }
 
     fn close_editor(&mut self, main: &MainThread) {

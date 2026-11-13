@@ -14,6 +14,7 @@
 //! - pin and parameter counts are read after `effOpen`;
 //! - `audioMasterCanDo` answers what the host supports;
 //! - `effEditIdle` reaches an open editor;
+//! - editor keys reach an open editor, and its answer is reported;
 //! - a speaker arrangement is proposed to a suspended plugin and read back;
 //! - a block longer than the announced maximum is split before the plugin.
 
@@ -23,7 +24,10 @@ use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_plugin_types::{ContentScale, Control, Controller, EditorWindow, Request};
+use tutti_plugin_types::{
+    ContentScale, Control, Controller, EditorWindow, KeyEvent, KeyModifiers, KeyPhase, KeyUse,
+    NamedKey, Request,
+};
 use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
@@ -471,6 +475,92 @@ fn editor_idle_reaches_an_open_editor() {
     instance.loaded_mut().close_editor(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());
     assert_eq!(idles(), 3, "none once closed");
+}
+
+// ---------------------------------------------------------------------------
+// effEditKeyDown / effEditKeyUp
+// ---------------------------------------------------------------------------
+
+fn set_key_consumed(consumed: bool) {
+    probe_call(b"tutti_vst2_probe_set_key_consumed\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
+        f(consumed);
+    });
+}
+
+/// A key forwarded to an open editor reaches the plugin as `effEditKeyDown` or
+/// `effEditKeyUp` with the ASCII character in `index`, the SDK's virtual key in `value` and
+/// the modifier mask in the bits of `opt`; the plugin's answer is reported as used or
+/// ignored. None reaches a closed editor, or a character outside ASCII.
+#[test]
+fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
+    let _guard = lock_probe();
+    let mut instance = load_with_env(512, &[("TUTTI_VST2_PROBE_EDITOR", "1")]);
+    probe_call(b"tutti_vst2_probe_set_editor_opens\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
+        f(true);
+    });
+    let key = |phase, character, key, modifiers| KeyEvent {
+        phase,
+        character,
+        key,
+        modifiers,
+    };
+    let down_a = key(
+        KeyPhase::Down,
+        Some('a'),
+        Some(NamedKey::Left),
+        KeyModifiers::SHIFT,
+    );
+
+    let closed = instance.loaded_mut().editor_key(&main_thread(), down_a);
+    assert_eq!(closed.ok(), Some(KeyUse::Ignored), "no editor is open");
+    assert_eq!(read_capture().key_events, 0, "and the plugin heard nothing");
+
+    let parent = tutti_fixtures::StandInWindow.handle();
+    instance
+        .loaded_mut()
+        .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
+        .expect("the probe opens");
+
+    set_key_consumed(true);
+    let used = instance.loaded_mut().editor_key(&main_thread(), down_a);
+    assert_eq!(used.ok(), Some(KeyUse::Used), "the plugin returned 1");
+    let cap = read_capture();
+    assert_eq!(cap.key_events, 1);
+    assert!(cap.last_key.down);
+    assert_eq!(cap.last_key.character, i32::from(b'a'));
+    assert_eq!(cap.last_key.key, 11, "VKEY_LEFT");
+    assert_eq!(cap.last_key.modifier_bits, 1, "the shift bit");
+
+    set_key_consumed(false);
+    let up_control = key(
+        KeyPhase::Up,
+        None,
+        Some(NamedKey::F1),
+        KeyModifiers::CONTROL,
+    );
+    let ignored = instance.loaded_mut().editor_key(&main_thread(), up_control);
+    assert_eq!(ignored.ok(), Some(KeyUse::Ignored), "the plugin returned 0");
+    let cap = read_capture();
+    assert_eq!(cap.key_events, 2);
+    assert!(!cap.last_key.down, "effEditKeyUp");
+    assert_eq!(cap.last_key.character, 0, "no character");
+    assert_eq!(cap.last_key.key, 40, "VKEY_F1");
+    // Control is bit 8 off a Mac, where bit 4 is the role the SDK calls Command.
+    let control_bit = if cfg!(target_os = "macos") { 4 } else { 8 };
+    assert_eq!(cap.last_key.modifier_bits, control_bit);
+
+    set_key_consumed(true);
+    let accented = key(KeyPhase::Down, Some('é'), None, KeyModifiers::empty());
+    let unwritable = instance.loaded_mut().editor_key(&main_thread(), accented);
+    assert_eq!(unwritable.ok(), Some(KeyUse::Ignored), "ASCII only");
+    assert_eq!(read_capture().key_events, 2, "and it was not sent");
+
+    instance.loaded_mut().close_editor(&main_thread());
+    set_key_consumed(false);
 }
 
 // ---------------------------------------------------------------------------

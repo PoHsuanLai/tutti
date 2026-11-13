@@ -3,6 +3,129 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 
+/// Whether a key went down or came up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyPhase {
+    /// The key was pressed.
+    Down,
+    /// The key was released.
+    Up,
+}
+
+bitflags::bitflags! {
+    /// The modifier keys held with a key.
+    ///
+    /// Each flag is the physical key. A format that numbers its modifier bits by role
+    /// (VST2 and VST3 swap the Control and Command bits on macOS) maps them in its host.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct KeyModifiers: u8 {
+        /// Shift.
+        const SHIFT = 1;
+        /// Alt, Option on macOS.
+        const ALT = 1 << 1;
+        /// Control.
+        const CONTROL = 1 << 2;
+        /// Command on macOS, the Windows key elsewhere.
+        const COMMAND = 1 << 3;
+    }
+}
+
+/// A key with no character of its own, or named apart from the character it types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[allow(missing_docs)]
+pub enum NamedKey {
+    Backspace,
+    Tab,
+    Clear,
+    Return,
+    Pause,
+    Escape,
+    Space,
+    /// Next, the key after Previous on a media keyboard.
+    Next,
+    End,
+    Home,
+    Left,
+    Up,
+    Right,
+    Down,
+    PageUp,
+    PageDown,
+    Select,
+    Print,
+    Enter,
+    Snapshot,
+    Insert,
+    Delete,
+    Help,
+    Numpad0,
+    Numpad1,
+    Numpad2,
+    Numpad3,
+    Numpad4,
+    Numpad5,
+    Numpad6,
+    Numpad7,
+    Numpad8,
+    Numpad9,
+    Multiply,
+    Add,
+    Separator,
+    Subtract,
+    Decimal,
+    Divide,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    NumLock,
+    ScrollLock,
+    Shift,
+    Control,
+    Alt,
+    Equals,
+}
+
+/// A key press or release the host forwards to a plugin's editor: the character it
+/// typed, the named key, and the modifiers held.
+///
+/// Either of [`character`](Self::character) and [`key`](Self::key) may be absent, as
+/// the formats that take a key take both (VST2's `effEditKeyDown`, VST3's `onKeyDown`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeyEvent {
+    /// Down or up.
+    pub phase: KeyPhase,
+    /// The character the key typed, if it typed one.
+    pub character: Option<char>,
+    /// The named key, if it has a name.
+    pub key: Option<NamedKey>,
+    /// The modifiers held.
+    pub modifiers: KeyModifiers,
+}
+
+/// What an editor did with a forwarded [`KeyEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyUse {
+    /// The editor used the key: the host does not act on it.
+    Used,
+    /// The editor did not use the key, or the format cannot carry it (a character or a
+    /// modifier it has no way to write): the host may act on it.
+    Ignored,
+}
+
 /// Pixel dimensions of a plugin editor window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -303,6 +426,10 @@ pub enum EditorError {
     /// Not a fault: nothing needs doing on the plugin's side.
     #[error("the editor takes no new scale after it opened")]
     ScaleUnsupported,
+
+    /// This format forwards no key events to its editor.
+    #[error("this plugin format takes no key events in its editor")]
+    KeysUnsupported,
 
     /// Another `open_editor` holds the GUI lock. Retryable once it completes.
     #[error("could not acquire GUI lock (another open_editor in progress?)")]

@@ -34,11 +34,11 @@ fn a_graph_re_rates_the_unit_within_16_to_192_khz_and_leaves_it_outside() {
         .unwrap()
         .sample_rate();
     for hz in [16_000_u32, 48_000, 192_000] {
-        let rate = SampleRate::from(hz);
+        let rate = SampleRate::from_hz(hz).unwrap();
         assert_eq!(prepared_at(rate).sample_rate(), rate, "{hz} Hz");
     }
     for hz in [15_999_u32, 192_001] {
-        let unit = prepared_at(SampleRate::from(hz));
+        let unit = prepared_at(SampleRate::from_hz(hz).unwrap());
         assert_eq!(unit.sample_rate(), initial, "{hz} Hz is left alone");
     }
 }
@@ -998,4 +998,33 @@ fn a_reset_per_note_pitch_is_forgotten_by_the_next_note() {
         (0.95..1.05).contains(&(playing / plain)),
         "{playing}/{plain}"
     );
+}
+
+/// A sample whose header states no rate (0) starts no voice: nothing sounds,
+/// and the skip is counted, rather than the sample playing at a made-up rate.
+#[test]
+fn a_sample_with_no_rate_is_skipped_and_counted() {
+    use tutti_fixtures::sf2::SampleSpec;
+    let zone = vec![(generator::SAMPLE_MODES, 1), (generator::SAMPLE_ID, 0)];
+    let sample = |rate| SampleSpec {
+        sample_type: 1,
+        link: 0,
+        gain: 1.0,
+        rate,
+    };
+    let mut rig = Rig::dry(&support::font::one_preset_with_samples(
+        vec![zone.clone()],
+        &[sample(0)],
+    ));
+    rig.note_on(0, 69, 100);
+    assert!(rig.energy(4096) < 1e-6, "an unrated sample sounds");
+    assert_eq!(rig.hand.unrated_starts(), 1);
+
+    let mut rig = Rig::dry(&support::font::one_preset_with_samples(
+        vec![zone],
+        &[sample(44_100)],
+    ));
+    rig.note_on(0, 69, 100);
+    assert!(rig.energy(4096) > 1.0, "a rated sample sounds");
+    assert_eq!(rig.hand.unrated_starts(), 0);
 }

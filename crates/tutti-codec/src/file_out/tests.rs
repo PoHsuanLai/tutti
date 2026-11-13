@@ -417,7 +417,7 @@ fn a_flac_take_round_trips_through_the_decoder() {
     let wave = Wave::read(&path).expect("the codec's own decoder reads the take");
     assert_eq!(wave.channels(), 2);
     assert_eq!(wave.sample_rate(), SampleRate::SR_44K1);
-    assert_eq!(wave.len(), frames);
+    assert_eq!(wave.len().get(), frames);
     for i in 0..frames {
         for c in 0..2 {
             let want = signal[i * 2 + c];

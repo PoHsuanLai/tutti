@@ -37,7 +37,7 @@ fn delay_loaded() -> AuLoaded {
 }
 
 fn activate(au: AuLoaded) -> (AuProcessor, AuController) {
-    let prepare = Prepare::new(RATE, MaxBlock::of(tutti_types::Samples(BLOCK as _))).unwrap();
+    let prepare = Prepare::new(RATE, MaxBlock::of(tutti_types::Samples(BLOCK as _)));
     au.activate(&MainThread::claim().unwrap(), prepare)
         .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
 }

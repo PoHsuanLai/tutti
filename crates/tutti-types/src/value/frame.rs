@@ -166,9 +166,9 @@ impl AddAssign<Samples> for Frame {
 ///
 /// ```
 /// use tutti_types::{Frame, Moment, SampleRate, Samples};
-/// let m = Moment::new(Frame(48_000), SampleRate(48_000.0));
+/// let m = Moment::new(Frame(48_000), SampleRate::of(48_000.0));
 /// let later = m.after(Samples(480));
-/// assert_eq!((later.frame(), later.rate()), (Frame(48_480), SampleRate(48_000.0)));
+/// assert_eq!((later.frame(), later.rate()), (Frame(48_480), SampleRate::of(48_000.0)));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Moment {

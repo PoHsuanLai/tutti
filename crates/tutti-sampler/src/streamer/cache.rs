@@ -148,7 +148,7 @@ impl LruCache {
     /// leave it over budget. Its holder keeps it (a stream that cannot seek
     /// holds its file on its writer, `RegionOut::set_resident`).
     pub fn insert(&self, path: PathBuf, wave: Arc<Wave>) {
-        let size = wave.len() as u64 * wave.channels() as u64 * 4;
+        let size = wave.len().get() as u64 * wave.channels() as u64 * 4;
         if size > self.max_bytes {
             return;
         }
@@ -292,7 +292,7 @@ mod tests {
         cache.insert(path.clone(), wave);
 
         let retrieved = cache.get(&path).expect("just inserted");
-        assert_eq!(retrieved.len(), 100);
+        assert_eq!(retrieved.len().get(), 100);
     }
 
     /// Two accesses with no delay between them still order — the property a

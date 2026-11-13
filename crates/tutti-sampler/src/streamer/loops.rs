@@ -811,7 +811,7 @@ mod tests {
         let reads = std::cell::Cell::new(0);
         let mut read = reader(wave, 1, &reads);
         let looped = crate::testing::loop_frames(range.0 as usize, range.1 as usize, fade);
-        let captured = RingLoop::capture(looped, wave.len(), 1u16, &mut read);
+        let captured = RingLoop::capture(looped, wave.len().get(), 1u16, &mut read);
         captured.expect("a loop").0
     }
 
@@ -828,7 +828,7 @@ mod tests {
     fn loop_frames(wave: &Wave, range: (u64, u64), fade: usize) -> Mapping {
         Mapping {
             reverse: false,
-            len: Some(Samples::new(wave.len())),
+            len: Some(wave.len()),
             ring_loop: Some(ring_loop(wave, range, fade)),
         }
     }

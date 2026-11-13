@@ -45,7 +45,7 @@ mod tests;
 pub use processor::IpcProcessor;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -55,6 +55,7 @@ use tutti_plugin_types::{
     PluginTail, Prepare, Refused, Reopen, Request, RestartRules, SampleFormat, SampleRate, Samples,
     Stuck,
 };
+use tutti_types::AtomicSampleRate;
 
 use crate::{
     Batcher, BridgeConfig, BridgeEvent, BridgeListener, EditorLoader, OfflineWait, PluginBridge,
@@ -200,8 +201,8 @@ pub(crate) struct Link {
     pub(crate) origin: Option<IpcOrigin>,
     pub(crate) counters: Arc<ChunkCounters>,
     events: Arc<Events>,
-    /// The rate the server runs at, as bits.
-    rate: AtomicU64,
+    /// The rate the server runs at.
+    rate: AtomicSampleRate,
     /// A fork's watch: the latches it reads back, and whether the pipeline
     /// waits for each chunk (an offline fork).
     wait: Mutex<Option<Watch>>,
@@ -222,12 +223,11 @@ impl Link {
     }
 
     pub(crate) fn rate(&self) -> SampleRate {
-        SampleRate::new(f64::from_bits(self.rate.load(Ordering::Acquire)))
-            .unwrap_or(SampleRate::DEFAULT)
+        self.rate.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_rate(&self, rate: SampleRate) {
-        self.rate.store(rate.get().to_bits(), Ordering::Release);
+        self.rate.store(rate, Ordering::Release);
     }
 
     pub(crate) fn watch(&self) -> Option<Watch> {
@@ -333,7 +333,7 @@ impl Ipc {
             origin,
             counters,
             events,
-            rate: AtomicU64::new(rate.get().to_bits()),
+            rate: AtomicSampleRate::new(rate),
             wait: Mutex::new(None),
         };
         Self {

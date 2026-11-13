@@ -21,9 +21,6 @@ pub enum Error {
     /// A zero hop: frames would never advance.
     #[error("hop size is zero: frames would not advance")]
     ZeroHop,
-    /// A sample rate of zero or below.
-    #[error("sample rate must be positive")]
-    NonPositiveSampleRate,
     /// A threshold in decibels that is NaN or infinite.
     #[error("threshold {threshold} is not finite")]
     InvalidThreshold {

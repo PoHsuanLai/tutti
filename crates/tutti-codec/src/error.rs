@@ -99,8 +99,8 @@ impl From<Error> for io::Error {
 #[derive(Error, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum SpecError {
-    /// A sample rate no header can hold: it rounds to zero, exceeds
-    /// `u32::MAX` Hz or is not finite.
+    /// A sample rate no header can hold: it rounds to zero or exceeds
+    /// `u32::MAX` Hz.
     #[error("a sample rate of {0} Hz does not fit a file header (1 Hz to 4294967295 Hz)")]
     SampleRate(f64),
     /// A channel count of zero.

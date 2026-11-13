@@ -35,7 +35,7 @@ const START_PROCESS: i32 = 71;
 const STOP_PROCESS: i32 = 72;
 
 fn prepare() -> Prepare {
-    Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK))).expect("a real rate")
+    Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
 }
 
 /// Holds the probe for one test and puts its switches, capture, trace and
@@ -263,31 +263,15 @@ fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
     drop(rejoin(processor, controller));
 }
 
-/// **No `Prepare` holds a rate or block that is none**: zero, negative and
-/// non-finite rates, and a block of no frames, are refused where the `Prepare`
-/// is built, so the host is never asked to activate at one. A real one then
-/// activates and is the first resume. (The server loaders' tests drive the
-/// refusal through the load and `set_sample_rate` entry points.)
+/// **No `Prepare` holds a block that is none**: a block of no frames is refused
+/// where the block is built, so the host is never asked to activate at one (a
+/// rate is a `SampleRate`, which cannot be none). A real one then activates and
+/// is the first resume. (The server loaders' tests drive the refusal through
+/// the load and `set_sample_rate` entry points.)
 #[test]
-fn no_prepare_holds_a_rate_or_block_that_is_none() {
+fn no_prepare_holds_a_block_that_is_none() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        assert!(
-            Prepare::new(
-                <SampleRate as tutti_types::Unit>::from_raw(rate),
-                MaxBlock::of(Samples(BLOCK))
-            )
-            .is_none(),
-            "{rate} Hz"
-        );
-        assert!(
-            prepare()
-                .with_rate(<SampleRate as tutti_types::Unit>::from_raw(rate))
-                .is_none(),
-            "{rate} Hz"
-        );
-    }
     assert!(MaxBlock::new(Samples(0)).is_none());
     let (processor, controller) = loaded
         .activate(&main_thread(), prepare())
@@ -860,9 +844,7 @@ fn a_rate_change_that_moves_the_latency_is_told() {
     set_late_latency(0);
     let mut driven = Driven::activated(&probe);
     set_late_latency(1537);
-    let wanted = prepare()
-        .with_rate(SampleRate::SR_96K)
-        .expect("a real rate");
+    let wanted = prepare().with_rate(SampleRate::SR_96K);
     driven.drive(Event::Op(HostOp::Reconfigure(wanted)));
     assert_eq!(driven.state.stage(), Stage::Active);
     assert!(

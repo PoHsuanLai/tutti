@@ -92,6 +92,7 @@ pub fn bytes_with_samples(presets: &[Preset], insts: &[Inst], samples: usize) ->
         sample_type: 0,
         link: 0,
         gain: 1.0,
+        rate: 44_100,
     };
     build(presets, insts, &vec![shared; samples], false)
 }
@@ -105,6 +106,9 @@ pub struct SampleSpec {
     pub link: u16,
     /// The sine's amplitude, as a fraction of the usual 20 000.
     pub gain: f32,
+    /// The header's sample rate in Hz: 44 100 for the usual sine, 0 for a
+    /// sample that states none.
+    pub rate: u32,
 }
 
 /// The file's bytes with one sample header for each of `samples`, each its own
@@ -186,8 +190,9 @@ fn build(presets: &[Preset], insts: &[Inst], samples: &[SampleSpec], own: bool) 
     igen.extend([0, 0]);
 
     let sample = |label: &str, start: u32, rate: u32, pitch: u8, spec: SampleSpec| {
-        let end = if rate == 0 { 0 } else { start + 2000 };
-        let (loop_start, loop_end) = if rate == 0 {
+        let eos = label == "EOS";
+        let end = if eos { 0 } else { start + 2000 };
+        let (loop_start, loop_end) = if eos {
             (0, 0)
         } else {
             (start + 100, start + 1900)
@@ -205,6 +210,7 @@ fn build(presets: &[Preset], insts: &[Inst], samples: &[SampleSpec], own: bool) 
         sample_type: 0,
         link: 0,
         gain: 1.0,
+        rate: 0,
     };
     let shdr = [
         samples
@@ -212,7 +218,7 @@ fn build(presets: &[Preset], insts: &[Inst], samples: &[SampleSpec], own: bool) 
             .enumerate()
             .flat_map(|(i, spec)| {
                 let start = if own { i as u32 * 2100 } else { 0 };
-                sample("sine", start, 44_100, 69, *spec)
+                sample("sine", start, spec.rate, 69, *spec)
             })
             .collect::<Vec<u8>>(),
         sample("EOS", 0, 0, 0, terminator),

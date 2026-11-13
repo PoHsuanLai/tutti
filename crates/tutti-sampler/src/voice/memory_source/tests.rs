@@ -4,8 +4,8 @@ use crate::testing::MockTransport;
 use crate::testing::loop_frames;
 use tutti_types::Bpm;
 use tutti_types::MaxBlock;
-use tutti_types::Seconds;
 use tutti_types::UnitParam;
+use tutti_types::{Samples, Seconds};
 
 fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
     let samples: Vec<f32> = (0..len).map(|i| (i + 1) as f32).collect();
@@ -555,7 +555,7 @@ fn loop_wrap_survives_a_degenerate_region() {
 
 #[test]
 fn test_sampler_outputs_silence_when_stopped() {
-    let wave = Wave::with_capacity(1, SampleRate::SR_44K1, 100);
+    let wave = Wave::with_capacity(1, SampleRate::SR_44K1, Samples(100));
     let mut sampler = MemorySource::new(Arc::new(wave)).expect("a placeable wave");
 
     sampler.stop();
@@ -1106,7 +1106,7 @@ fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
         SampleRate::SR_44K1,
         Seconds::new(len as f64) / 44_100.0,
     );
-    for i in 0..w.len() {
+    for i in 0..w.len().get() {
         for c in 0..channels {
             w.set(c, i, (c + 1) as f32);
         }

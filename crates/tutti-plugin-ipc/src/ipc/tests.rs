@@ -261,7 +261,7 @@ fn mock_with(
 }
 
 fn prepare(block: usize) -> Prepare {
-    Prepare::new(RATE, MaxBlock::of(Samples(block))).expect("a rate")
+    Prepare::new(RATE, MaxBlock::of(Samples(block)))
 }
 
 fn activate(ipc: Ipc, block: usize) -> (IpcProcessor, IpcController) {

@@ -175,17 +175,11 @@ impl RenderGraph {
     ///
     /// [`ConfigError::UnpairedGraph`] if `editor` does not feed `executor`
     /// (`Editor::is_paired_with`): pass the pair built or forked together.
-    /// [`ConfigError::InvalidRate`] if the pair was prepared at a rate that is
-    /// not finite and positive. That the pair's rate is the render's is
-    /// checked at render, where the [`Job`](crate::Job) names it
-    /// ([`ConfigError::RateMismatch`]).
+    /// That the pair's rate is the render's is checked at render, where the
+    /// [`Job`](crate::Job) names it ([`ConfigError::RateMismatch`]).
     pub fn assemble(editor: Editor, mut executor: Executor, setup: Setup) -> Result<Self> {
         if !editor.is_paired_with(&executor) {
             return Err(ConfigError::UnpairedGraph.into());
-        }
-        let prepared = executor.prepare().sample_rate().get();
-        if !(prepared.is_finite() && prepared > 0.0) {
-            return Err(ConfigError::InvalidRate { prepared }.into());
         }
         if setup.pool.is_some() {
             executor.set_pool(setup.pool);

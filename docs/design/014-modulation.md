@@ -700,7 +700,7 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
   nodes, plus each source's feed and each wanted edge as source → target
   node.
 - The compiler gives each signal source a
-  `SourceNode { id, kind }`: a pure description (`SignalKind::Follower
+  `SignalSource { id, kind }`: a pure description (`SignalKind::Follower
   { attack, release }` or `SignalKind::NoteEnvelope { adsr }`) carrying
   everything construction needs and nothing runtime. The nodes and their
   `from_decl` constructors are §12.4's.
@@ -741,9 +741,9 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     clone would share, and neither has controls, so a `ForkSource` would
     gather nothing; the fork (the node as inserted, cloned, reset) starts
     idle, as a live play start leaves it.
-  - **`from_decl`** is `EnvelopeFollowerNode::from_decl(&SourceNode,
+  - **`from_decl`** is `EnvelopeFollowerNode::from_decl(&SignalSource,
     ChannelLayout)` (the width is the audio graph's, which the compiler
-    does not see) and `NoteEnvelopeNode::from_decl(&SourceNode)`, each
+    does not see) and `NoteEnvelopeNode::from_decl(&SignalSource)`, each
     `None` for the other kind. They live in `tutti-nodes` because
     `tutti-nodes` already names `tutti-modulation` (§3), never the reverse.
   - **Capacity**: 256 events each. A follower sends one piece per grid
@@ -825,7 +825,7 @@ pub struct TargetDecl { pub min: f32, pub max: f32,
                         pub automation: Option<Arc<dyn Curve>> }
 
 /// What a signal source's node is built from: no runtime state.
-pub struct SourceNode { pub id: SourceId, pub kind: SignalKind }
+pub struct SignalSource { pub id: SourceId, pub kind: SignalKind }
 pub enum SignalKind { Follower { attack: Seconds, release: Seconds },
                       NoteEnvelope { adsr: Adsr } }
 
@@ -834,7 +834,7 @@ pub struct Compiled {
     pub programs: BTreeMap<TargetKey, ControlProgram>,
     /// A node per signal source, with its `SourceId`; built by the host
     /// (`EnvelopeFollowerNode::from_decl`).
-    pub nodes: BTreeMap<SourceKey, SourceNode>,
+    pub nodes: BTreeMap<SourceKey, SignalSource>,
     /// Event edges, source node → target lane.
     pub edges: BTreeSet<(SourceKey, TargetKey)>,
     /// The next `SourceId` to give a new source: ids are never
@@ -1772,7 +1772,7 @@ crate builds with and without `--features bevy`.
 **What it holds.**
 
 - `compile.rs` (ungated) holds the keys, `Source`, `RouteDecl`,
-  `RouteTarget`, `TargetDecl`, `Declarations`, `Adsr`, `SourceNode`,
+  `RouteTarget`, `TargetDecl`, `Declarations`, `Adsr`, `SignalSource`,
   `SignalKind`, `Compiled`, `CompileError`, `layer_id` and `compile`
   (§7). Each property above is a test in `compile/tests.rs`, and
   `what_bevy_tutti_expresses_compiles_without_a_runtime` is the exit.

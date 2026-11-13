@@ -155,11 +155,12 @@ pub use tutti_dsp::{
     StaggerError, Sweep, SweepError, SweepRange, SweepRangeError,
 };
 
-// The signal-driven sources a `tutti_modulation::compile` declaration describes
-// (`SourceNode`): nodes that send a raw value into control lanes.
+// The control sources' node (`SourceNode<S: ControlSource>`) and the
+// signal-driven sources a `tutti_modulation::compile` declaration describes
+// (`SignalSource`): nodes that send a raw value into control lanes.
 mod signal;
 pub use signal::{
-    EnvelopeFollowerNode, FOLLOWER_EVENT_CAPACITY, NOTE_ENVELOPE_EVENT_CAPACITY, NoteEnvelopeNode,
+    EnvelopeFollowerNode, NoteEnvelopeNode, SOURCE_EVENT_CAPACITY, SourceNode, SourcePorts,
 };
 
 // The reconcile step (doc 014 §8.2): declarations compiled and applied to

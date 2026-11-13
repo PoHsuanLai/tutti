@@ -92,24 +92,27 @@ impl Bell {
 mod tests {
     use super::*;
 
+    /// Whether the bell's descriptor is readable within `ms`.
+    fn readable(b: &Bell, ms: i32) -> bool {
+        use std::os::fd::AsFd;
+        tutti_plugin_ipc_ffi::wait_readable(b.rx.as_fd(), ms).expect("poll")
+    }
+
     /// **A ring ends a wait on the bell's descriptor at once, and a drain
     /// quiets it**: the wait the main loop makes returns on a ring from
     /// another thread, and not again until the next.
     #[test]
     fn a_ring_from_another_thread_ends_a_wait_on_the_descriptor() {
-        use std::os::fd::BorrowedFd;
-        let bell = bell();
-        bell.drain();
-        let _ = bell.take();
-        // SAFETY: the descriptor is the bell's own, open for the process's life.
-        let fd = unsafe { BorrowedFd::borrow_raw(bell.fd()) };
-        assert!(!tutti_plugin_ipc_ffi::wait_readable(fd, 0).expect("poll"));
+        let b = bell();
+        b.drain();
+        let _ = b.take();
+        assert!(!readable(b, 0));
         std::thread::spawn(|| bell().ring()).join().expect("ringer");
-        assert!(tutti_plugin_ipc_ffi::wait_readable(fd, 1000).expect("poll"));
-        assert!(bell.rung());
-        bell.drain();
-        assert!(!tutti_plugin_ipc_ffi::wait_readable(fd, 0).expect("poll"));
-        assert!(bell.take());
-        assert!(!bell.take());
+        assert!(readable(b, 1000));
+        assert!(b.rung());
+        b.drain();
+        assert!(!readable(b, 0));
+        assert!(b.take());
+        assert!(!b.take());
     }
 }

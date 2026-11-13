@@ -19,10 +19,11 @@ use super::{SourceNode, SourcePorts};
 ///   0 there unless it was idle already. A note-on on that same frame (a
 ///   clip's first note) then starts from 0.
 /// - **It sends only on events**, so a lane that starts reading it while it
-/// holds a sustain (a newly wired route) would read 0 until its next note or stage boundary. An
-/// `EventKind::Resync` on its input closes that: it re-sends where it stands, resumed, on the
-/// event's frame The [`Modulation`](crate::Modulation) reconciler schedules one whenever a
-/// lane's program newly reads the envelope.
+///   holds a sustain (a newly wired route) would read 0 until its next note
+///   or stage boundary. An `EventKind::Resync` on its input closes that:
+///   it re-sends where it stands, resumed, on the event's frame. The
+///   [`Modulation`](crate::Modulation) reconciler schedules one whenever a
+///   lane's program newly reads the envelope.
 ///
 /// Insert it `ForkByClone(node)`: it shares nothing with a clone, and a
 /// fork's (the node as inserted, reset) starts idle, as a live play start

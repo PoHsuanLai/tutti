@@ -209,6 +209,20 @@ impl HardwareMidiInputs {
         }
     }
 
+    /// Whether the stream ring of the port `id` names also takes a copy of the
+    /// SysEx7 packets the device sends (`drain_stream` then yields them beside
+    /// the Stream messages), for a control side that is waiting for an Identity
+    /// Reply. The packets still reach the graph. `false` for a stale id.
+    pub fn hear_sysex(&self, id: DeviceSlot, hear: bool) -> bool {
+        match self.port(id) {
+            Some(port) => {
+                port.set_hear_sysex(hear);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Whether the port `id` names delivers. `false` for a stale id.
     pub fn is_port_active(&self, id: DeviceSlot) -> bool {
         self.port(id).is_some_and(|port| port.is_active())

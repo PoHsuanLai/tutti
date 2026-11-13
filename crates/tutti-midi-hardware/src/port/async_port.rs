@@ -50,6 +50,9 @@ pub struct InputProducerHandle {
     stream: HeapProd<Ump>,
     /// How many of them the ring had no room for: shared with the port's entry.
     stream_lost: Arc<AtomicU64>,
+    /// Whether the control side wants a copy of the SysEx7 packets the device
+    /// sends (it is waiting for an Identity Reply): shared with the port's entry.
+    hear_sysex: Arc<AtomicBool>,
 }
 
 /// How many UMP Stream messages a port holds between two looks of the control
@@ -58,6 +61,9 @@ pub struct InputProducerHandle {
 /// reads them at every update, and a reply lost to a full ring is asked for
 /// again when its step times out.
 pub(crate) const STREAM_CAPACITY: usize = 512;
+
+/// The UMP message type of a 7-bit System Exclusive packet (M2-104 §7.7).
+const SYSEX7: u8 = 0x3;
 
 impl core::fmt::Debug for InputProducerHandle {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -80,6 +86,15 @@ impl InputProducerHandle {
     /// and one the ring has no room for is counted
     /// ([`PortInfo::stream_lost`](super::PortInfo::stream_lost)) and is
     /// `Diverted` all the same: it was not lost from the inlet.
+    ///
+    /// A **SysEx7 packet** (type `0x3`) is music's too, and goes to the graph
+    /// whatever else happens to it; but while the control side is waiting for a
+    /// device to say what it is ([`HardwareMidiInputs::hear_sysex`](super::HardwareMidiInputs::hear_sysex),
+    /// an Identity Request is out), a copy goes to the same stream ring. It is a
+    /// copy, not a diversion, because the packets of a message are not
+    /// recognisable one by one: whether a SysEx is an Identity Reply is known
+    /// only once it is whole, and a patch dump that arrives meanwhile must still
+    /// reach the graph.
     ///
     /// A **JR Clock or JR Timestamp** (type `0x0`, M2-104 §7.2.2) is dropped
     /// here too, and is `Diverted`. The session asks for JR Timestamps off, and
@@ -113,6 +128,12 @@ impl InputProducerHandle {
         }
         if event.is_jr() {
             return Pushed::Diverted;
+        }
+        if event.message_type() == SYSEX7
+            && self.hear_sysex.load(Ordering::Relaxed)
+            && self.stream.try_push(event).is_err()
+        {
+            self.stream_lost.fetch_add(1, Ordering::Relaxed);
         }
         if self.input.push(event, timestamp) {
             Pushed::Sent
@@ -177,6 +198,7 @@ pub(crate) struct HardwareMidiInput {
     /// The reading end of the stream ring; control side, one reader at a time.
     stream: Mutex<HeapCons<Ump>>,
     stream_lost: Arc<AtomicU64>,
+    hear_sysex: Arc<AtomicBool>,
 }
 
 impl HardwareMidiInput {
@@ -184,6 +206,7 @@ impl HardwareMidiInput {
     pub(crate) fn new(name: impl Into<String>, input: DeviceInput) -> (Self, InputProducerHandle) {
         let active = Arc::new(AtomicBool::new(true));
         let stream_lost = Arc::new(AtomicU64::new(0));
+        let hear_sysex = Arc::new(AtomicBool::new(false));
         let (stream_in, stream_out) = HeapRb::<Ump>::new(STREAM_CAPACITY).split();
         (
             Self {
@@ -192,12 +215,14 @@ impl HardwareMidiInput {
                 counts: input.counts(),
                 stream: Mutex::new(stream_out),
                 stream_lost: Arc::clone(&stream_lost),
+                hear_sysex: Arc::clone(&hear_sysex),
             },
             InputProducerHandle {
                 input,
                 active,
                 stream: stream_in,
                 stream_lost,
+                hear_sysex,
             },
         )
     }
@@ -210,6 +235,11 @@ impl HardwareMidiInput {
     /// How many Stream messages the ring had no room for.
     pub(crate) fn stream_lost(&self) -> u64 {
         self.stream_lost.load(Ordering::Relaxed)
+    }
+
+    /// Whether the stream ring also takes a copy of the SysEx7 packets.
+    pub(crate) fn set_hear_sysex(&self, hear: bool) {
+        self.hear_sysex.store(hear, Ordering::Relaxed);
     }
 
     /// The oldest Stream message held, if any.

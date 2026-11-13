@@ -27,6 +27,7 @@ serde = ["dep:serde"]
 bitflags = "2"
 unicode-normalization = { workspace = true }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+winnow = { workspace = true }
 serde = { version = "1", optional = true, features = ["derive"] }
 
 [dev-dependencies]

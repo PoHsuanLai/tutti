@@ -60,6 +60,7 @@ mod ci;
 mod connection;
 mod endpoint;
 mod id;
+mod inquiry;
 mod name;
 mod table;
 
@@ -76,5 +77,6 @@ pub use endpoint::{
     UMP_VERSION,
 };
 pub use id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection};
+pub use inquiry::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT, IdentityInquiry, InquiryAction};
 pub use name::{BlockName, EndpointName, Name, NameError, ProductInstanceId};
 pub use table::{BindPolicy, DeviceEvent, DeviceTable, OsChange, OsDevice, Resolved};

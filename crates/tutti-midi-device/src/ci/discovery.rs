@@ -8,7 +8,7 @@
 use std::fmt;
 
 use bitflags::bitflags;
-use tutti_ump::{DeviceIdentity, FunctionBlockId, ManufacturerId, U7};
+use tutti_ump::{DeviceIdentity, FunctionBlockId, U7};
 
 /// Sub-ID#2: Discovery message (M2-101 §5.5).
 pub const SUB_ID2_DISCOVERY: u8 = 0x70;
@@ -238,36 +238,7 @@ impl DiscoveryData {
     /// when it is lower than its own. A missing Function Block reads as `None`
     /// rather than block 0, which would be a lie.
     pub(crate) fn decode_body(is_reply: bool, b: &[u8]) -> Option<DiscoveryData> {
-        if b.len() < Self::BODY_LEN || b[..Self::BODY_LEN].iter().any(|&v| v & 0x80 != 0) {
-            return None;
-        }
-        let max_sysex_size = MaxSysexSize::new(
-            u32::from(b[12])
-                | (u32::from(b[13]) << 7)
-                | (u32::from(b[14]) << 14)
-                | (u32::from(b[15]) << 21),
-        )?;
-        let output_path_id = match b.get(Self::BODY_LEN) {
-            Some(&id) => U7::new(id)?,
-            None => U7::default(),
-        };
-        let function_block = match (is_reply, b.get(Self::BODY_LEN + 1)) {
-            (true, Some(&NO_FUNCTION_BLOCK_WIRE)) | (false, _) | (true, None) => None,
-            (true, Some(&n)) => Some(FunctionBlockId::new(n)?),
-        };
-        Some(DiscoveryData {
-            // Every byte of the common fields was checked 7-bit above.
-            identity: DeviceIdentity {
-                manufacturer: ManufacturerId::from_sysex_bytes([b[0], b[1], b[2]].map(U7::masked))?,
-                family: [b[3], b[4]].map(U7::masked),
-                model: [b[5], b[6]].map(U7::masked),
-                revision: [b[7], b[8], b[9], b[10]].map(U7::masked),
-            },
-            categories: CiCategories::from_bits_truncate(b[11]),
-            max_sysex_size,
-            output_path_id,
-            function_block,
-        })
+        super::read::discovery_body(is_reply, b)
     }
 }
 

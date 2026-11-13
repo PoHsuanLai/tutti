@@ -385,7 +385,7 @@ impl Player {
     /// reverb and chorus send. Modulation, volume, pan and expression, and Reset
     /// All Controllers (RP-015), are the core's `ChannelState`. RPN and NRPN arrive
     /// assembled, as Registered and Assignable Controllers (the input edge's
-    /// translator, design 017 §4), not as Data Entry. The pedals (64, 66), all sound off (120), all
+    /// translator), not as Data Entry. The pedals (64, 66), all sound off (120), all
     /// notes off (123) and the mode messages are the core's
     /// (`Voicing::step`), not the channel's. Any other controller is ignored.
     fn control(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {

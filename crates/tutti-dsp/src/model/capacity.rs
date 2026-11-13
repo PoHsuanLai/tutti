@@ -1,4 +1,4 @@
-//! [`Capacity`]: the lattice of sizes a recurrence allocates (design 024 section 2.7.2).
+//! [`Capacity`]: the lattice of sizes a recurrence allocates.
 
 use core::fmt::Debug;
 
@@ -7,7 +7,7 @@ use tutti_types::Db;
 use super::Ring;
 
 /// The sizes a recurrence allocates for the worst case of a family: lines, taps,
-/// an impulse response's length, a longest delay (design 024 section 4.4), a point
+/// an impulse response's length, a longest delay, a point
 /// of the lattice 𝒦.
 /// Engineering, not mathematics, so it is the recurrence's and not the member's.
 ///

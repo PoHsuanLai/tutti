@@ -98,6 +98,17 @@
 //!   function for it. The 14-bit pairs (CC 1 to 31 with 33 to 63) stay two
 //!   independent messages, as D.3.3 says.
 //!
+//! Translation runs once, at the edge where MIDI 1.0 enters or leaves. Reading
+//! never translates: `tutti-ump` cannot call this crate, so a decoded
+//! [`Message`](tutti_ump::Message) keeps the protocol it arrived in.
+//!
+//! The crate also holds the values the translation and the instruments share:
+//! [`flex_tempo`] and [`flex_time_signature`] read a Flex Set Tempo and Set Time
+//! Signature as a `Bpm` and a project meter (`None` for a field the type cannot
+//! hold, never clamped); [`MpeZoneConfig`], [`MpeZones`] and [`MpeMode`] are the
+//! MPE zone layout (RP-053), checked at construction; and [`TuningMessage`] and
+//! its types are the MIDI Tuning Standard's wire values.
+//!
 //! [`PitchBendSensitivity`] is the 7.25 fixed-point range of RPN #00/07 (M2-104
 //! section 7.4.13), the one value type here that is not a function.
 //!

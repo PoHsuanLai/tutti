@@ -900,9 +900,7 @@ fn a_routes_polarity_and_curve_reach_the_render() {
 #[test]
 fn a_bus_strips_volume_and_pan_take_lanes() {
     let (mut s, _side) = rig(2);
-    let (strip, _) = s.graph().add(tutti_nodes::BusStripNode::with_channels(
-        ChannelLayout::STEREO,
-    ));
+    let (strip, _) = s.graph().add(tutti_nodes::BusStripNode::stereo());
     let mut m = s.mods_mut();
     let offset = m.macro_(0.5);
     for param in [UnitParam::Volume, UnitParam::Pan] {

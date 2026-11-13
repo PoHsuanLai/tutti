@@ -1,5 +1,4 @@
-//! [`ModDelayFamily`]: the chorus and the flanger as a [`Family`] (design 024 section 3,
-//! row 12).
+//! [`ModDelayFamily`]: the chorus and the flanger as a [`Family`].
 //!
 //! A swept delay of any width: one [`DelayLine`] per channel, each read at a delay an LFO
 //! moves around a base, with feedback. The output is the delayed signal alone, the **wet**
@@ -205,12 +204,6 @@ impl ModDelayMember {
     #[must_use]
     pub fn feedback(&self) -> Feedback {
         Feedback(self.feedback)
-    }
-
-    /// The LFO's step per frame, in cycles.
-    #[must_use]
-    pub fn increment(&self) -> PhaseIncrement {
-        self.inc
     }
 
     /// The delays the sweep reaches, in frames: from the shortest, `base - depth` floored

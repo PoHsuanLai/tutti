@@ -127,7 +127,7 @@
 //! ### State and editor
 //!
 //! ```rust,no_run
-//! # use tutti_plugin_types::{Control, EditorWindow};
+//! # use tutti_plugin_types::{Control, EditorWindow, StateUse};
 //! # use tutti_plugin_types::ContentScale;
 //! # use tutti_vst2_host::{Vst2Loaded, WindowHandle};
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -136,8 +136,8 @@
 //! // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
 //! // fallback; `load_state` reads the header back and reports a refusal rather
 //! // than swallowing it.
-//! let saved = plugin.save_state(&main).expect("saves");
-//! plugin.load_state(&main, &saved).expect("restores");
+//! let saved = plugin.save_state(&main, StateUse::Project).expect("saves");
+//! plugin.load_state(&main, &saved, StateUse::Project).expect("restores");
 //!
 //! // The editor is the same `AEffect` the audio path drives, hence in-process.
 //! // VST2 has no content scale: the argument is accepted and ignored.

@@ -720,18 +720,20 @@ fn calls_after_a_crash_fail_fast_instead_of_waiting_out_the_timeout() {
 #[test]
 fn a_crash_during_save_state_does_not_block_the_caller_forever() {
     let mock = MockServer::start("save-death", |msg| match msg {
-        HostMessage::SaveState => Action::Die,
+        HostMessage::SaveState { .. } => Action::Die,
         _ => Action::Silent,
     });
 
     let bridge = Arc::clone(&mock.bridge);
-    let (saved, elapsed) = call_within(move || bridge.save_state()).unwrap_or_else(|waited| {
-        panic!(
-            "save_state against a server that died mid-request was still \
+    let (saved, elapsed) =
+        call_within(move || bridge.save_state(tutti_plugin_types::StateUse::Project))
+            .unwrap_or_else(|waited| {
+                panic!(
+                    "save_state against a server that died mid-request was still \
              blocked after {waited:?}; the caller is waiting on a reply that \
              will never arrive"
-        )
-    });
+                )
+            });
     assert!(
         saved.is_err(),
         "save_state returned {saved:?} from a server that never answered \
@@ -1238,7 +1240,7 @@ fn a_state_larger_than_one_frame_round_trips() {
     let expected = big.clone();
 
     let mock = MockServer::start("big-state", move |msg| match msg {
-        HostMessage::SaveState => Action::ReplyMany(
+        HostMessage::SaveState { .. } => Action::ReplyMany(
             crate::transport::state_chunk::split(&big)
                 .map(|(seq, last, bytes)| BridgeMessage::StateChunk {
                     seq,
@@ -1251,8 +1253,9 @@ fn a_state_larger_than_one_frame_round_trips() {
     });
 
     let bridge = Arc::clone(&mock.bridge);
-    let (got, elapsed) = call_within(move || bridge.save_state())
-        .unwrap_or_else(|w| panic!("save_state on a multi-chunk state blocked for {w:?}"));
+    let (got, elapsed) =
+        call_within(move || bridge.save_state(tutti_plugin_types::StateUse::Project))
+            .unwrap_or_else(|w| panic!("save_state on a multi-chunk state blocked for {w:?}"));
     let got = got.unwrap_or_else(|e| {
         panic!(
             "a {}-byte state failed with {e} — a state larger than one frame \
@@ -1309,7 +1312,11 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
     let start = Instant::now();
     let err = mock
         .bridge
-        .load_state(&main_thread(), &oversized)
+        .load_state(
+            &main_thread(),
+            &oversized,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect_err("an over-limit state was accepted");
     let elapsed = start.elapsed();
 
@@ -1331,7 +1338,13 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
     // And the session must still work afterwards, which is the property
     // `is_crashed` only implies.
     assert!(
-        mock.bridge.load_state(&main_thread(), b"small").is_err(),
+        mock.bridge
+            .load_state(
+                &main_thread(),
+                b"small",
+                tutti_plugin_types::StateUse::Project
+            )
+            .is_err(),
         "a later call should still reach the (silent) server and time out, \
          rather than short-circuit on a latched crash"
     );
@@ -1385,7 +1398,7 @@ fn a_slow_but_progressing_state_transfer_completes() {
         "slow-state",
         SLOW_TRANSFER_TIMEOUT,
         move |msg| match msg {
-            HostMessage::SaveState => Action::ReplyManySlowly {
+            HostMessage::SaveState { .. } => Action::ReplyManySlowly {
                 msgs: msgs.clone(),
                 gap: GAP,
             },
@@ -1394,8 +1407,9 @@ fn a_slow_but_progressing_state_transfer_completes() {
     );
 
     let bridge = Arc::clone(&mock.bridge);
-    let (got, elapsed) = call_within(move || bridge.save_state())
-        .unwrap_or_else(|w| panic!("a steadily-progressing save_state blocked for {w:?}"));
+    let (got, elapsed) =
+        call_within(move || bridge.save_state(tutti_plugin_types::StateUse::Project))
+            .unwrap_or_else(|w| panic!("a steadily-progressing save_state blocked for {w:?}"));
     let got = got.unwrap_or_else(|e| {
         panic!(
             "a slow but progressing transfer failed with {e} — a plugin that is \
@@ -1456,7 +1470,7 @@ fn a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy() {
         "stalled-save",
         STATE_PROGRESS_TIMEOUT,
         move |msg| match msg {
-            HostMessage::SaveState => Action::ReplyManySlowly {
+            HostMessage::SaveState { .. } => Action::ReplyManySlowly {
                 msgs: (0..2)
                     .map(|i| BridgeMessage::StateChunk {
                         seq: i,
@@ -1478,8 +1492,9 @@ fn a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy() {
     );
 
     let bridge = Arc::clone(&mock.bridge);
-    let (got, elapsed) = call_within(move || bridge.save_state())
-        .unwrap_or_else(|w| panic!("a stalled save_state never returned; blocked for {w:?}"));
+    let (got, elapsed) =
+        call_within(move || bridge.save_state(tutti_plugin_types::StateUse::Project))
+            .unwrap_or_else(|w| panic!("a stalled save_state never returned; blocked for {w:?}"));
     let err = got.expect_err("a stalled transfer reported success");
 
     assert!(
@@ -1534,8 +1549,14 @@ fn a_stalled_load_state_fails_typed_and_leaves_the_bridge_healthy() {
     );
 
     let bridge = Arc::clone(&mock.bridge);
-    let (got, elapsed) = call_within(move || bridge.load_state(&main_thread(), &[3u8; 128]))
-        .unwrap_or_else(|w| panic!("a stalled load_state never returned; blocked for {w:?}"));
+    let (got, elapsed) = call_within(move || {
+        bridge.load_state(
+            &main_thread(),
+            &[3u8; 128],
+            tutti_plugin_types::StateUse::Project,
+        )
+    })
+    .unwrap_or_else(|w| panic!("a stalled load_state never returned; blocked for {w:?}"));
     let err = got.expect_err("an unacknowledged load reported success");
 
     assert!(
@@ -1713,7 +1734,7 @@ fn the_rest_of_a_stalled_state_is_not_the_next_answer() {
         "stalled-rest",
         STATE_PROGRESS_TIMEOUT,
         |msg| match msg {
-            HostMessage::SaveState => Action::ReplyManySlowly {
+            HostMessage::SaveState { .. } => Action::ReplyManySlowly {
                 msgs: (0..2)
                     .map(|seq| BridgeMessage::StateChunk {
                         seq,
@@ -1732,7 +1753,10 @@ fn the_rest_of_a_stalled_state_is_not_the_next_answer() {
         },
     );
 
-    let err = mock.bridge.save_state().expect_err("the transfer stalls");
+    let err = mock
+        .bridge
+        .save_state(tutti_plugin_types::StateUse::Project)
+        .expect_err("the transfer stalls");
     assert!(
         matches!(err, StateError::Stalled { bytes: 0, .. }),
         "{err:?}"

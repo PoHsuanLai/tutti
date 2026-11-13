@@ -20,7 +20,7 @@ pub(crate) enum MpeControl {
 /// A voice's MPE state: whether it is applied at render time and the
 /// expression received so far. Which messages reach a voice (Detach, the bend's
 /// sensitivity) is `tutti-voicing`'s decision; the values arrive resolved.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MpeVoiceState {
     enabled: bool,
     /// Per-note pressure, `0..=1`.

@@ -7,8 +7,7 @@
 pub const MAX_LANES: usize = 4;
 
 /// The input of an effect's [`Recurrence::run`](crate::Recurrence::run) and of
-/// [`Realized::process`](crate::Realized::process): the effect shape `X` of design 024
-/// section 2.7.3, as a concrete value.
+/// [`Realized::process`](crate::Realized::process): the effect shape `X` as a concrete value.
 ///
 /// - [`audio`](Self::audio) is the main signal, one planar slice per input channel;
 /// - [`key`](Self::key) is the side-chain: the key channels a detector reads
@@ -21,9 +20,6 @@ pub const MAX_LANES: usize = 4;
 /// Every slice is indexed by the frame of the block, like the audio, and at least as
 /// long as the frames a call renders. A family with no key and no lane (a filter, a
 /// reverb) is fed [`Feed::new`] alone.
-///
-/// This is a struct and not the associated type `Input<'a>` of the doc's §2.7.3: that
-/// waits for the first generator, whose input is not audio.
 #[derive(Clone, Copy, Debug)]
 pub struct Feed<'a> {
     /// The main audio, one slice per input channel.

@@ -68,7 +68,7 @@ fn two_bands_have_the_closed_form_anchors() {
     assert!((at(&m, 1, 24_000.0).norm() - 1.0).abs() < 1e-9);
 }
 
-/// The spec (the design diagram of the crossover, doc 024 section 2.7.4): the two
+/// The spec: the two
 /// bands of one split are the Linkwitz-Riley prototypes, the Butterworth section
 /// `D(s) = s^2 + sqrt2 s + 1` squared, `LP^2 = 1 / D^2` and `HP^2 = s^4 / D^2`, under
 /// the bilinear map prewarped at the crossover, `s = (1/g)(z - 1)/(z + 1)` with

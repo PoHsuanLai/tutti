@@ -1470,7 +1470,9 @@ fn test_clap_param_write_is_settled_for_a_state_save() {
         original,
         "queued, not applied out of band"
     );
-    instance.save_state(&main_thread()).expect("state saves");
+    instance
+        .save_state(&main_thread(), StateUse::Project)
+        .expect("state saves");
     let readback = instance.normalized(&main_thread(), param_id);
     assert!(
         (readback - new_value).abs() < 0.01,
@@ -1635,7 +1637,7 @@ fn test_clap_state_save_nonempty() {
     .expect("Failed to load");
 
     let state = instance
-        .save_state(&main_thread())
+        .save_state(&main_thread(), StateUse::Project)
         .expect("save_state should succeed");
     assert!(!state.is_empty(), "Saved state should not be empty");
 }
@@ -1658,7 +1660,7 @@ fn test_clap_state_save_load_roundtrip() {
 
     // Save original state
     let saved = instance
-        .save_state(&main_thread())
+        .save_state(&main_thread(), StateUse::Project)
         .expect("save should succeed");
     let original_value = instance.normalized(&main_thread(), param_id);
 
@@ -1668,7 +1670,7 @@ fn test_clap_state_save_load_roundtrip() {
 
     // Restore state
     instance
-        .load_state(&main_thread(), &saved)
+        .load_state(&main_thread(), &saved, StateUse::Project)
         .expect("restore should succeed");
 
     let restored_value = instance.normalized(&main_thread(), param_id);
@@ -1917,7 +1919,7 @@ fn test_reference_state_save_load() {
     let param_id = params[0].id();
 
     let saved = instance
-        .save_state(&main_thread())
+        .save_state(&main_thread(), StateUse::Project)
         .expect("save should succeed");
     assert!(
         !saved.is_empty(),
@@ -1929,7 +1931,7 @@ fn test_reference_state_save_load() {
     instance.set_parameter(&main_thread(), param_id, Normalized::clamped(new_value));
 
     instance
-        .load_state(&main_thread(), &saved)
+        .load_state(&main_thread(), &saved, StateUse::Project)
         .expect("restore should succeed");
 
     let restored = instance.normalized(&main_thread(), param_id);

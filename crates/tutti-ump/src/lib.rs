@@ -41,6 +41,23 @@
 //! reading it as a Note Off is translation's, and the same for scaling between
 //! the two protocols.
 //!
+//! # Messages are values
+//!
+//! A [`Message`] has no lifetime: it can be matched, stored or queued on any
+//! thread with no allocation. Every message M2-104 defines is one packet of at
+//! most 16 bytes, so text and SysEx chunks are small arrays in their variants;
+//! a whole string or SysEx message is reassembled above the codec, off the audio
+//! thread, by [`FlexTextAssembler`] and [`SysexAssembler`]. The limits on a
+//! reassembled name (Endpoint Name, Function Block Name, Product Instance Id)
+//! are not the codec's: `tutti-midi-device` checks them where it builds a name.
+//!
+//! The fields are typed ([`NoteNumber`], [`U4`], [`U7`], [`U14`], [`Pitch`] and
+//! the address types). A public `new` refuses an out-of-range raw, `of` builds
+//! one from a literal or constant and panics out of range, and `masked` is the
+//! one constructor that masks, for bits a decoder has just framed. Only the
+//! codec shifts bits: a consumer matches on [`Message`], and the graph's queues
+//! call [`Ump::is_note_off`].
+//!
 //! The crate depends on no other tutti crate and has no allocation, so the
 //! audio graph can carry packets without linking a MIDI stack.
 

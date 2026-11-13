@@ -49,7 +49,7 @@ pub enum OscillatorType {
 /// Which response of the state-variable filter [`FilterType::Svf`] taps.
 ///
 /// All four share one cutoff and one `Q`; only the output tap differs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum SvfMode {
     /// Passes below cutoff. The default, and the conventional subtractive tap.
@@ -181,8 +181,7 @@ pub struct FilterModConfig {
 
 /// Everything a [`PolySynth`](crate::PolySynth) is built from.
 ///
-/// Fill it the idiomatic way, `Default` plus struct update, or with the
-/// builder (`with_polyphony`, `with_group`), and hand it to
+/// Fill it with `Default` plus struct update, and hand it to
 /// [`PolySynth::new`](crate::PolySynth::new). The rate is not here: the synth
 /// renders at the rate its graph prepares it at.
 ///
@@ -196,7 +195,7 @@ pub struct FilterModConfig {
 /// `Volume` and, with a unison engine, `Detune` and `StereoSpread`. Everything
 /// else here is read per note or per sample and has no control after the
 /// synth is built.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SynthConfig {
     /// How many notes may sound at once. At least 1 (the type refuses 0); there
     /// is no upper bound. Every voice is fully constructed up front, so this is
@@ -272,28 +271,6 @@ pub struct SynthConfig {
 impl SynthConfig {
     /// The polyphony of [`Default`]: 8 voices.
     pub const DEFAULT_POLYPHONY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
-
-    /// This config with `polyphony` voices at most sounding at once.
-    #[must_use]
-    pub fn with_polyphony(mut self, polyphony: NonZeroUsize) -> Self {
-        self.polyphony = polyphony;
-        self
-    }
-
-    /// This config playing the channels of `group`, and no other Group's.
-    #[must_use]
-    pub fn with_group(mut self, group: MidiGroup) -> Self {
-        self.group = group;
-        self
-    }
-
-    /// This config answering to the Universal System Exclusive device id
-    /// `device`.
-    #[must_use]
-    pub fn with_device(mut self, device: SysexDeviceId) -> Self {
-        self.device = device;
-        self
-    }
 
     /// What a full per-note pitch bend sweeps until a channel's own RPN 0/7
     /// says otherwise: a zone's member range ([`mpe`](Self::mpe)), else the MPE

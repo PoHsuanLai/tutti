@@ -95,9 +95,7 @@ pub use gui::{EmbedOutcome, GuiError, GuiHints};
 pub use host::{Host, HostCallbacks};
 pub use library::{Bundle, DescriptorInfo, LoadError, Stage, chars_to_string};
 pub use plugin::PortConfigRequest;
-pub use plugin::{
-    ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortKind, off_thread_drops,
-};
+pub use plugin::{ActivateError, AudioPortInfo, CallError, Plugin, PortKind, off_thread_drops};
 pub use pool::{GraphPool, PoolHandle, TaskPool};
 pub use roles::{AudioClaim, LifecycleClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};

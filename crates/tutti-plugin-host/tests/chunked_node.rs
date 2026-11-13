@@ -161,10 +161,19 @@ macro_rules! rec_control {
             ) -> Option<Normalized> {
                 None
             }
-            fn save_state(&mut self, _: &MainThread) -> PluginResult<Vec<u8>> {
+            fn save_state(
+                &mut self,
+                _: &MainThread,
+                _: tutti_plugin_types::StateUse,
+            ) -> PluginResult<Vec<u8>> {
                 Ok(Vec::new())
             }
-            fn load_state(&mut self, _: &MainThread, _: &[u8]) -> PluginResult<()> {
+            fn load_state(
+                &mut self,
+                _: &MainThread,
+                _: &[u8],
+                _: tutti_plugin_types::StateUse,
+            ) -> PluginResult<()> {
                 Ok(())
             }
             fn dropped_reported_edits(&self) -> u64 {

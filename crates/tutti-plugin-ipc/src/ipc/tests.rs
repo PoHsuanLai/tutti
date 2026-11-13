@@ -359,23 +359,28 @@ fn the_controller_reports_what_the_plugin_re_reports() {
     say(Samples(77));
     // An idle bridge reads nothing: the next command's reply reads it.
     assert_eq!(controller.parameters(&main).len(), 1);
+    // The bridge's thread stores the latency, asks for the re-read, then
+    // forwards the event, in that order: once the host has heard it, all
+    // three are done.
     let start = Instant::now();
-    while controller.latency(&main) != Samples(77) {
-        assert!(start.elapsed() < Duration::from_secs(5), "latency moves");
+    while !heard
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| e.contains("LatencyChanged"))
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the host hears it"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
+    assert_eq!(controller.latency(&main), Samples(77));
     let mut asked = Vec::new();
     controller.take_requests(&main, &mut asked);
     assert_eq!(asked, [Request::LatencyChanged]);
     controller.take_requests(&main, &mut asked);
     assert_eq!(asked.len(), 1, "once");
-    assert!(
-        heard
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|e| e.contains("LatencyChanged"))
-    );
     assert!(server.wait_for(|got| {
         got.iter()
             .any(|m| matches!(m, HostMessage::GetParameterList))

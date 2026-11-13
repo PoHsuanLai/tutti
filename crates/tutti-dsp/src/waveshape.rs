@@ -4,7 +4,7 @@
 use tutti_types::Drive;
 
 /// Selects which waveshaping curve the distortion node applies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum ShapeKind {
     /// `tanh` saturation — smooth, tube-like.

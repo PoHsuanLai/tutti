@@ -89,8 +89,6 @@ pub trait Real:
     fn from_f64(x: f64) -> Self;
     /// This value as `f32`, rounded.
     fn to_f32(self) -> f32;
-    /// This value as `f64`, widened or kept.
-    fn to_f64(self) -> f64;
     /// Absolute value.
     #[must_use]
     fn abs(self) -> Self;
@@ -116,10 +114,6 @@ impl Real for f32 {
     #[inline(always)]
     fn to_f32(self) -> f32 {
         self
-    }
-    #[inline(always)]
-    fn to_f64(self) -> f64 {
-        f64::from(self)
     }
     #[inline(always)]
     fn abs(self) -> Self {
@@ -151,10 +145,6 @@ impl Real for f64 {
     #[inline(always)]
     fn to_f32(self) -> f32 {
         self as f32
-    }
-    #[inline(always)]
-    fn to_f64(self) -> f64 {
-        self
     }
     #[inline(always)]
     fn abs(self) -> Self {

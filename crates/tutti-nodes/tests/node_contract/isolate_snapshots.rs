@@ -11,8 +11,7 @@
 //! Units with no live cell are not rows — there is nothing to move:
 //! `AutomationLaneNode` (its `Arc<dyn Curve>`
 //! is read-only, or frozen by its fork when it is not — its own unit test
-//! `a_fork_freezes_a_live_curve`; `set_curve` takes `&mut self` and so cannot
-//! reach a live node) and the `testing` stimulus nodes.
+//! `a_fork_freezes_a_live_curve`) and the `testing` stimulus nodes.
 
 use tutti_graph::ParamNode;
 use tutti_graph::contract::IsolateRow;
@@ -24,8 +23,8 @@ use tutti_nodes::{
     SvfControls, SvfFilterNode, SvfType,
 };
 use tutti_types::{
-    Amplitude, BusTopology, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
-    Q, Resonance, Seconds, UnitParam,
+    Amplitude, BusTopology, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Q,
+    Resonance, Seconds, UnitParam,
 };
 
 #[test]
@@ -166,7 +165,9 @@ fn distortion() {
     IsolateRow::new("DistortionNode (stereo)", || {
         DistortionNode::new(ShapeKind::Tanh, Drive(2.0))
     })
-    .control("drive", |d| d.set_drive(Drive(8.0)))
+    .control("drive", |d| {
+        assert!(d.param_set().set(UnitParam::Drive, 8.0))
+    })
     .check();
 }
 
@@ -266,9 +267,9 @@ fn eq_band() {
 
 #[test]
 fn bus_strip() {
-    IsolateRow::new("BusStripNode (stereo)", BusStripNode::new)
+    IsolateRow::new("BusStripNode (stereo)", BusStripNode::stereo)
         .control("volume", |s| s.set_volume(Amplitude(0.5)))
-        .control("pan", |s| s.set_pan(Pan::new_clamped(-0.7)))
+        .control("pan", |s| assert!(s.param_set().set(UnitParam::Pan, -0.7)))
         .check();
 }
 #[test]

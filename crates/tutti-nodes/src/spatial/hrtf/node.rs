@@ -170,8 +170,7 @@ impl Node for HrtfBinauralNode {
                 0 => Tail::None,
                 n => Tail::Finite(Samples(n)),
             })
-            // An exception to the nearest-class rule (doc 013, "The cost
-            // model and coarsening"). The FFT work lands all at once in the
+            // An exception to the nearest-class rule. The FFT work lands all at once in the
             // block that completes a 128-frame step: at 64-frame blocks that
             // block carries twice the mean, past the Heavy boundary for a
             // moving source with 512-tap HRIRs, and the schedule must price

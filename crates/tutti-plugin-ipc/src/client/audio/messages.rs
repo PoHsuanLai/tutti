@@ -8,7 +8,7 @@ use crate::protocol::{
     Preset, PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
 use tutti_plugin_types::{
-    BlockStatus, ContentScale, EditorSize, PluginFailure, ResyncKind, StateError,
+    BlockStatus, ContentScale, EditorSize, PluginFailure, ResyncKind, StateError, StateUse,
 };
 use tutti_types::SampleRate;
 
@@ -86,6 +86,7 @@ pub(super) enum Command {
     /// `progress` is advanced per chunk so the waiting caller can tell a slow
     /// transfer from a stalled one; see [`StateProgress`](super::progress::StateProgress).
     SaveState {
+        state_use: StateUse,
         progress: super::progress::StateProgress,
         reply: Reply<std::result::Result<Vec<u8>, StateError>>,
     },
@@ -93,6 +94,7 @@ pub(super) enum Command {
     /// [`SaveState`](Self::SaveState) — bytes handed to the socket rather than
     /// bytes received.
     LoadState {
+        state_use: StateUse,
         data: Vec<u8>,
         progress: super::progress::StateProgress,
         reply: Reply<std::result::Result<(), StateError>>,

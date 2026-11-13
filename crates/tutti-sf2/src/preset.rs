@@ -8,7 +8,7 @@ use crate::preset_region::PresetRegion;
 use crate::zone::Zone;
 
 /// Represents a preset in the SoundFont.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Preset {
     pub(crate) name: String,

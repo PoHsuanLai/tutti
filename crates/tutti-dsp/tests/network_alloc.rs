@@ -1,10 +1,9 @@
-//! A `Family::member` call allocates nothing: a design is pure,
-//! and building a member must not touch the allocator.
+//! A `Family::member` call allocates nothing: a design is pure, and building
+//! a member must not touch the allocator.
 //!
-//! The crate carries no `assert_no_alloc` dev-dependency (see its Cargo.toml),
-//! so this binary counts allocations with its own global allocator, per thread
-//! as `chroma_alloc.rs` does. The check is generic over a [`Family`], so a later
-//! design runs it on its own controls.
+//! The crate carries no `assert_no_alloc` dev-dependency,
+//! so this binary counts allocations with its own global allocator, per thread.
+//! The check is generic over a [`Family`].
 
 use tutti_dsp::{Family, FreeverbControls, FreeverbFamily, Grows};
 use tutti_fixtures::{ThreadCounting, allocations};

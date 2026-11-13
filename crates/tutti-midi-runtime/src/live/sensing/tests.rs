@@ -21,7 +21,7 @@ fn a_cable_that_never_sent_active_sensing_is_never_judged() {
 }
 
 /// **Once an FE is seen, a message is expected within the limit, and over it
-/// the cable lapses** (p. 32: "over 330 ms"): the lapse is at the last
+/// the cable lapses** (p. 32: the receiver judges at over 330 ms): the lapse is at the last
 /// message plus the limit, not before and not at it, reported once, and the
 /// Group is unwatched after it.
 #[test]

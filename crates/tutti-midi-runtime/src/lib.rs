@@ -133,6 +133,17 @@
 //! assert_eq!(key.note(), NoteNumber::of(60));
 //! ```
 //!
+//! ## Events are not lost silently
+//!
+//! An event port's capacity follows the block: [`CLIP_EVENT_DENSITY`],
+//! [`HARMONY_EVENT_DENSITY`] and [`MIDI_INPUT_DENSITY`] are the events per frame a
+//! node is sized for, and the graph multiplies by the block length. A port at
+//! capacity refuses a new event, and the graph counts every refusal
+//! (`Editor::take_event_losses`); a clock counts its own ([`ClockControls::losses`]).
+//! A note-off has room past the capacity, and one the port still refuses is owed:
+//! the [`NoteLedger`] writes it at the first frame of a later block, before
+//! anything else, so a note is never left sounding by a full port.
+//!
 //! ## MPE folded to native per-note messages
 //!
 //! `MpeIngest` is the input edge: a member channel's bend is rewritten as a

@@ -63,8 +63,10 @@ pub(super) struct Channels {
     /// How many replies the bridge thread has taken from the plugin, ever,
     /// on time or owed. With [`abandoned`](Self::abandoned) the hang
     /// verdict's input (`PluginHandle::block_counts`): a hang is abandoned
-    /// blocks growing while this does not. Written by the bridge thread only;
-    /// a relaxed read is enough, since a host that reads it is polling.
+    /// blocks growing while this does not. Written by the bridge thread only.
+    /// A block's reply is counted after it is queued, `Release` against the
+    /// `Acquire` read in [`block_counts`](Self::block_counts): a reader that
+    /// sees the count finds the reply queued.
     replies: Arc<AtomicU64>,
     /// How many unsolicited parameter events the bridge thread dropped
     /// because more arrived during one command than its inbox holds, ever.
@@ -159,18 +161,18 @@ impl Channels {
     }
 
     /// Record that the plugin answered (a reply for a block, on time or
-    /// owed): it is not hung. Bridge thread only.
+    /// owed): it is not hung. Bridge thread only, after the reply is queued.
     pub(super) fn note_replied(&self) {
-        self.replies.fetch_add(1, Ordering::Relaxed);
+        self.replies.fetch_add(1, Ordering::Release);
     }
 
     /// Blocks abandoned and replies taken, over the life of the bridge. Two
-    /// relaxed reads: a reply landing between them shows up on the next call,
-    /// which is all a poller needs.
+    /// reads: a reply landing between them shows up on the next call, which is
+    /// all a poller needs. A counted reply is queued.
     pub(super) fn block_counts(&self) -> (u64, u64) {
         (
             self.abandoned.load(Ordering::Relaxed),
-            self.replies.load(Ordering::Relaxed),
+            self.replies.load(Ordering::Acquire),
         )
     }
 

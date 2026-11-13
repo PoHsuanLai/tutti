@@ -12,9 +12,8 @@ use crate::common;
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
-    Cost, Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode, EventKind, EventOut,
-    Executor, ForkByClone, Io, Node, Prepare, Schedule, Shape, Status, TransportPosition,
-    Unforkable,
+    Cost, Cx, Editor, EventCapacity, EventInletNode, EventKind, Executor, ForkByClone, Io, Node,
+    Prepare, Schedule, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{ClockNode, HarmonyNode, MidiClipNode, MidiIngestNode, TimedMidiEvent};
@@ -90,16 +89,6 @@ fn clip(k: u64) -> MidiClipNode {
     }))
 }
 
-fn connect(ed: &mut Editor, from: NodeKey, to: NodeKey) {
-    ed.spec_mut().connect_events(
-        EventIn { node: to, port: 0 },
-        EventEdge::Direct(EventOut {
-            node: from,
-            port: 0,
-        }),
-    );
-}
-
 /// [`LANES`] clips each under an event tap, and [`HEAVY`] clips each into a
 /// recorder on a global output; on a pool of `workers` when more than one.
 /// `declared`: the clips as shipped, or wrapped to declare nothing. The
@@ -137,7 +126,7 @@ fn graph(workers: usize, declared: bool) -> (Executor, Vec<common::Sink>, Vec<Se
             outs.push(common::sink(&mut ed, k as u32, &[(source.0, 0)]));
         }
         if k >= LANES {
-            connect(&mut ed, source, sink);
+            common::connect(&mut ed, source.0, sink.0);
         }
     }
     ed.spec_mut().topology.set_outputs(outputs);

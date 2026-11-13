@@ -16,11 +16,6 @@
 //! division headers. It is intentionally literal: no cleverness, so that when
 //! it and the crate disagree, the spec says which is wrong.
 
-#![allow(dead_code)]
-// Each integration-test binary compiles this tree separately, and no single
-// binary uses every item. Same reason, and same allow, as the plugin hosts'
-// `tests/support/mod.rs`.
-
 // ---------------------------------------------------------------- writing --
 
 /// The variable-length quantity: 7 bits per byte, big-endian, continuation bit

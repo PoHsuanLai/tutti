@@ -8,8 +8,6 @@ license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-midi-protocol"
 readme = "README.md"
-# Not published: whether and when this goes to crates.io is the maintainer's
-# call, not a side effect of a workspace change. Remove this line to publish.
 publish = false
 keywords = ["midi", "ump", "audio", "real-time"]
 categories = ["multimedia::audio"]
@@ -30,6 +28,5 @@ winnow = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"
-# The persisted-value tests run on every build, not only under `--features serde`.
 tutti-midi-protocol = { path = ".", features = ["serde"] }
 

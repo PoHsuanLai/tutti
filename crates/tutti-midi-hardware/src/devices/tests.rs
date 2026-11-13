@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::HardwareMidiInputs;
+use crate::capability::EndpointInfo;
 use crate::test_support::{FakeBackend, FakeCounters, endpoint};
 
 /// Long enough to be a failure, not a race: a wake returns at once.
@@ -648,7 +649,7 @@ fn the_sink_follows_the_protocol_the_output_is_in() {
     use tutti_ump::{Protocol, StreamConfig};
     let told = Arc::default();
     let devices = Devices::open_over(Box::new(Tagging(Arc::clone(&told)))).unwrap();
-    let out = devices.open_output(&id_of(&devices, "Synth")).unwrap();
+    let mut out = devices.open_output(&id_of(&devices, "Synth")).unwrap();
     assert_eq!(*told.lock().unwrap(), [Protocol::Midi2], "at open");
     out.set_config(StreamConfig {
         protocol: Protocol::Midi1,

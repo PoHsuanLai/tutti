@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{Drive, Hz, Resonance};
 
 use super::*;
@@ -48,10 +48,10 @@ impl FamilyCase for LadderFamily<f64> {
         let mut rng = StdRng::seed_from_u64(24);
         all.extend((0..200).map(|_| {
             controls(
-                TYPES[rng.gen_range(0..TYPES.len())],
-                rng.gen_range(20.0..3_000.0),
-                rng.gen_range(0.0..0.7),
-                rng.gen_range(0.1..8.0),
+                TYPES[rng.random_range(0..TYPES.len())],
+                rng.random_range(20.0..3_000.0),
+                rng.random_range(0.0..0.7),
+                rng.random_range(0.1..8.0),
             )
         }));
         all

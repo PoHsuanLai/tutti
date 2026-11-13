@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{BusTopology, Db, SampleRate, Seconds};
 
 use super::*;
@@ -40,9 +40,9 @@ impl FamilyCase for LimiterFamily {
         let mut rng = StdRng::seed_from_u64(24);
         all.extend((0..64).map(|_| {
             controls(
-                rng.gen_range(-40.0..6.0),
-                rng.gen_range(-20.0..3.0),
-                rng.gen_range(0.0..1.0),
+                rng.random_range(-40.0..6.0),
+                rng.random_range(-20.0..3.0),
+                rng.random_range(0.0..1.0),
             )
         }));
         all
@@ -166,7 +166,9 @@ fn run_mono(k: &mut Realized<LimiterRecurrence>, audio: &[f32]) -> Vec<f32> {
 /// `frames` of seeded noise in `-level..=level`.
 fn noise(seed: u64, frames: usize, level: f32) -> Vec<f32> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..frames).map(|_| rng.gen_range(-level..=level)).collect()
+    (0..frames)
+        .map(|_| rng.random_range(-level..=level))
+        .collect()
 }
 
 /// A level of `db` as an amplitude, from the definition.

@@ -345,7 +345,7 @@ fn spans(path: &[u8], geometry: StftGeometry) -> Result<Vec<ChordSpan>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
     use tutti_dsp::{BinCount, FrameCount};
     use tutti_types::SampleRate;
 
@@ -414,7 +414,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(7);
         let noise: Vec<[f32; CLASSES]> = (0..200)
             .map(|_| {
-                let mut x: [f32; CLASSES] = core::array::from_fn(|_| rng.gen_range(0.3..1.0));
+                let mut x: [f32; CLASSES] = core::array::from_fn(|_| rng.random_range(0.3..1.0));
                 let max = x.iter().copied().fold(0.0, f32::max);
                 x.iter_mut().for_each(|v| *v /= max);
                 x
@@ -470,7 +470,7 @@ mod tests {
                 .map(|_| {
                     let mut x = triad(root, minor);
                     for v in x.iter_mut().filter(|v| **v == 0.0) {
-                        *v = constant.unwrap_or_else(|| rng.gen_range(0.2..0.4));
+                        *v = constant.unwrap_or_else(|| rng.random_range(0.2..0.4));
                     }
                     x
                 })
@@ -494,7 +494,7 @@ mod tests {
     fn the_chords_do_not_depend_on_the_scale() {
         let mut rng = StdRng::seed_from_u64(9);
         let mut rows: Vec<[f32; CLASSES]> = (0..40)
-            .map(|_| core::array::from_fn(|_| rng.gen_range(0.3..1.0)))
+            .map(|_| core::array::from_fn(|_| rng.random_range(0.3..1.0)))
             .collect();
         rows.extend([triad(0, false); 10]);
         rows.extend([triad(9, true); 10]);
@@ -589,7 +589,7 @@ mod tests {
             let config = cfg().with_self_transition(p).unwrap();
             for _ in 0..3 {
                 let rows: Vec<[f32; CLASSES]> = (0..4)
-                    .map(|_| core::array::from_fn(|_| rng.gen_range(0.0..1.0)))
+                    .map(|_| core::array::from_fn(|_| rng.random_range(0.0..1.0)))
                     .collect();
                 let p = f64::from(p);
                 let (stay, switch) = (p.ln(), ((1.0 - p) / 24.0).ln());

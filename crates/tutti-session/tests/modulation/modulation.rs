@@ -30,7 +30,7 @@ use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 use common::probe::{ProbeUnit, Pulse};
 
 const RATE: f64 = 48_000.0;
-/// A lane's control step (`tutti_nodes::automation::CONTROL_STEP`).
+/// A lane's control step (`tutti_modulation::CONTROL_GRID`).
 const STEP: usize = 32;
 /// A port's connect crossfade (`PARAM_DECLICK`).
 const DECLICK: usize = 256;

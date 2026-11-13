@@ -7,7 +7,7 @@
 //! and targets: it proves `tutti-export` is usable standalone, which is the
 //! layering claim this crate must not obscure. This one has a `Session`, which
 //! knows the project: the rate, the clock, the graph's latency and tail and the
-//! root's width are derived from it (doc 019 section 3), and a request names
+//! root's width are derived from it, and a request names
 //! only what it wants.
 //!
 //! The imports group by *subsystem* rather than by crate boundary, which is
@@ -20,8 +20,10 @@
 
 use tutti::measure::{LoudnessConfig, measure_loudness};
 use tutti::nodes::testing::{Const, Osc};
-use tutti::prelude::Root;
-use tutti::prelude::*;
+use tutti::{
+    Amplitude, Bounce, ChannelLayout, Format, Hz, Interleaved, Pcm, Range, Root, SampleRate,
+    Seconds, Session,
+};
 
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate::SR_48K;

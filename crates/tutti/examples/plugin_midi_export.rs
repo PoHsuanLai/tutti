@@ -22,9 +22,9 @@
 //!
 //! CI runs it as a test (`test = true`), which plays the phrase.
 //!
-//! It is the umbrella's, not `tutti-session`'s, so that it reads as the
-//! design does: one `use tutti::prelude::*;` (the session's requests are in
-//! the prelude with the features that gate them). `tutti-session` cannot
+//! It is the umbrella's, not `tutti-session`'s, so that it reads as an
+//! application does: one `use tutti::{..}` from the root (the session's
+//! requests are there, behind the features that gate them). `tutti-session` cannot
 //! name `tutti`, which depends on it.
 
 // The server lookup `tutti-session`'s plugin suite uses (its reference-probe
@@ -34,11 +34,14 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use tutti::prelude::Root;
 
 use tutti::export::Written;
-use tutti::prelude::*;
 use tutti::session::Master;
+use tutti::{
+    Beat, Bounce, Bpm, ChannelLayout, Format, MaxBlock, MidiChannel, MidiFile, NodeKey, NoteNumber,
+    Pcm, PluginLoadRequest, PluginRef, PluginState, Range, Root, SampleRate, Samples, Session,
+    SessionEvent, Tick, TimedMidiEvent, Track,
+};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -222,13 +225,8 @@ mod tests {
         let (plugin, state) = super::notes_plugin();
         // Into buffers, not the file: the plugin's output is a key number,
         // far past full scale, which a WAV clips.
-        let rendered = super::play(
-            &plugin,
-            Some(state),
-            &midi,
-            tutti::prelude::Bounce::master_buffers,
-        )
-        .expect("the example runs");
+        let rendered = super::play(&plugin, Some(state), &midi, tutti::Bounce::master_buffers)
+            .expect("the example runs");
         let left: Vec<i32> = rendered.planes()[0].iter().map(|&s| s as i32).collect();
 
         let onsets: Vec<(usize, i32)> = (0..left.len())

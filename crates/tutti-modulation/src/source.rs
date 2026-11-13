@@ -35,6 +35,12 @@ impl PlayGrid {
     pub const fn get(self) -> NonZeroU32 {
         self.0
     }
+
+    /// Returns the stride in play frames, as a plain count.
+    #[must_use]
+    pub const fn stride(self) -> u32 {
+        self.0.get()
+    }
 }
 
 impl From<PlayGrid> for NonZeroU32 {

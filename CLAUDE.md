@@ -405,7 +405,7 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
-- **Import paths:** import engine types from a crate's root or prelude, never
+- **Import paths:** import engine types from a crate's root, never
   through its modules. Only `cargo xtask check-paths` enforces this.
 
 ### Check Windows before you push
@@ -482,7 +482,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
                  `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
                  recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`), and
-                 the bounce (feature `export`, doc 019): `Bounce` (the master's fork, a
+                 the bounce (feature `export`): `Bounce` (the master's fork, a
                  `Range`, `BounceLatency`, `BounceTail`, `stem`s, each a plan tap) through
                  `Session::{bounce, bounce_start, finish_bounce}`, `BounceJob`,
                  `BounceHandle` and `BounceError`; it derives the figures and
@@ -499,7 +499,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  block start and restored on unfollow; off by default, one follower, doc 020
                  section 11) and, with
                  `midi-hardware`, the devices (`devices`, `connect_input`/`connect_output`,
-                 `reconnect_saved -> Resolution`), and `load_file` and (`soundfont`)
+                 `reconnect_saved -> Resolution`; `learned(&id)`, `saved(&id) -> Option<SavedDevice>` and
+                 `confirm(&id, &saved) -> Match` check a saved device against what the open one said), and `load_file` and (`soundfont`)
                  `load_soundfont`, jobs on the session's spawner that return a `MidiLoad`
                  and land `FileLoaded` / `SoundFontLoaded` in `update()`, and `enable_ci(DeviceIdentity)` / `disable_ci()` (both `Result<(), MidiError>`), `ci_peers(&DeviceId)` (the MIDI-CI peers found on an open input; each change is `MidiEvent::CiPeer { device, change }`). Its events are `SessionEvent::Midi(MidiEvent)`
                  and its error `Error::Midi(MidiError)`, each cause (hardware, file, send,
@@ -605,7 +606,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-cpal     device
-  tutti-export   the offline render pipeline, which a `Bounce` drives (doc 019): a `Job`
+  tutti-export   the offline render pipeline, which a `Bounce` drives: a `Job`
                  (rate, length, latency trim) and a list of `Output`s (a `Feed`, the
                  graph's outputs or a plan tap, into a `FileTarget` or `BufferTarget`),
                  `render` / `render_one` with a `Control` (`CancelToken`, `Progress`,
@@ -731,7 +732,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti_ump::Ump`; CI runs the per-module path gate on it), is
   `#![forbid(unsafe_code)]` and has no `bevy` feature. A consumer names
   `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`. The
-  `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
+  `tutti` root and the `bevy-tutti` prelude export all three, and `tutti-session`
   exports `MidiChannel` behind `midi`. A consumer that persists one with serde
   depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
   `MidiChannel::index`/`MidiGroup::index` (`usize`), `all()`, `Address::index` and the 1-based
@@ -874,6 +875,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the saved name is `SameName` (bind or ask), and an ordinal above 0 or several
   alike devices are `Ambiguous`. Comparing a saved id with a listed one by hand
   can bind another keyboard of the same model.
+  **A Device Identity never promotes** `SameName` to `Exact` (units of a model share it); once the
+  device is open, `Learned` (what it said: Device Identity and Product Instance Id, `MidiSession::learned`)
+  is checked against a `SavedDevice` (`DeviceInfo` + `Learned`) with `Learned::compare -> Match`
+  (`SameUnit` only on an equal Product Instance Id, `SameModel`, `Different`, `Unknown`).
 - `tutti-transport`, `tutti-metering` and `tutti-engine` keep every module
   private (`tutti_transport::Transport`, never `tutti_transport::handle::Transport`;
   CI runs the per-module path gate on each), are `publish = false`,
@@ -972,7 +977,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
   `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
-  pairs and triplets, selected from the published method, doc 028 section 4; `VbapKernel`, the
+  pairs and triplets, selected from the published method; `VbapKernel`, the
   block's gains with the mono fold and the last-solve cache, and `VbapGains`, a ramp's end point,
   whose `render_channel` ramps one output channel), the HRTF
   convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`
@@ -1747,6 +1752,11 @@ read the `Cargo.toml`, grep for the type, run the probe.
   (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). `Graph::taps().open_event(port, align, usize)` and the session's event-tap capacity as a bare `usize` → `EventCapacity` (as `Midi::record` and `open_event_inlet`; `Taps::open_event(port, align, EventCapacity)`). `tutti_types::Frame`'s public field: `Frame(x)` and `frame.0` → `Frame::new(x)` and `frame.get()` (every `u64` is a frame, so `new` is infallible; `From<Frame> for u64` too). `tutti_ump::SysexMessage::new(&[u8]) -> Option` and `Sysex7Packets::checked(..) -> Option` → `SysexMessage::from_framed` (framed `F0 .. F7` bytes) and `Sysex7Packets::from_payload` (the bytes between them), each a `Result<_, SysexError>` (`MissingStart`, `MissingEnd`, `NotSevenBit { index }`); `NotSysex<'a>` → `SysexError`. `Voice2`'s bare `u32` values (`ControlChange`, `ChannelPressure`, `PolyPressure`, the per-note, Registered and Assignable controller data) and `Message::control_change2(.., u32)` → `tutti_ump::ControlValue` (`new`, `get`, `MIN`, `CENTER`, `MAX`), and `Voice2::PitchBend(u32)`, `PerNotePitchBend`'s value and `Message::pitch_bend2(.., u32)` → `tutti_ump::BendValue` (`CENTER` is `0x8000_0000`); `narrow_value(u32)` and `narrow_bend(u32)` take them; the scaling of a MIDI 1.0 value into one is `tutti_midi_protocol::{widen_velocity, widen_value, widen_bend}`; `u16_to_unit_f32`, `u32_to_unit_f32`, `bend_u32_to_signed_f32`, `unit_f32_to_u16`, `unit_f32_to_u32` and `signed_f32_to_bend_u32` → `velocity_to_unit_f32`, `value_to_unit_f32`, `bend_to_signed_f32`, `unit_f32_to_velocity`, `unit_f32_to_value` and `signed_f32_to_bend` (typed ends); `tutti_midi_file::Track::tempo(tick, bpm)` → `Track::meta(tick, Meta::tempo(bpm))` (one way to place a Set Tempo; two at one tick are both kept and the later governs). A comment or doc that
   disagrees with the code is the bug.
 - **Dead plugin names** (doc 029 step 4): `PluginHandle::presets(&main) -> Option<Vec<Preset>>` and `load_preset -> Option<bool>` → `-> Result<_, PresetError>` (`Unsupported`, `Refused`, `Lost`), and for a host the session's view, `MainSession::plugin(node)?.presets() -> Result<Presets, PresetError>` (`Presets::{kind, iter, get, current, load_file}`, `PresetEntry::load`; a main-thread call, so not on `Plugin<'_>`), `Plugin::liveness()` and the public `PluginLiveness` (the session's debounce is crate-private now) → `Plugin::health() -> PluginHealth` (`Running`, `Stalled`, `Died { cause }`, `Reloading { attempt, cause }`; the verdicts that remove the node are the events `PluginChange::{Died, GaveUp}`), `Plugin::{controls, meter}` and the handle's `server_pid`, `block_counts`, `dropped_parameter_events`, `terminate` as a host's calls → `Plugin::diagnostics()` (`server_pid`, `block_counts`, `missed_chunks`, `latency`, `tail`, `follows_project_meter`, `reported_latency`, `chunk_in_flight_answered`, `terminate`, and the counts as `tutti_graph::Losses`: `midi_in`, `parameter_points`, `parameter_edits`; the same in either hosting), `Plugin::handle()` → behind `tutti-session`'s `testing` feature (a host uses the views), `Plugin::controls()` / `meter()` → deleted (`Diagnostics::{reported_latency, chunk_in_flight_answered, missed_chunks, follows_project_meter}`), `PluginHandle::set_render_mode` → deleted (the session's `Phase::RenderMode`; `AnyThread::set_render_mode` is the backend's), a plugin's `input_buses()` / `output_buses()` as a host's wiring vocabulary → `Plugin::buses() -> PluginBuses` (`main_input`, `input(i)`, `output(i)`; no `sidechain()`, since no loader marks one and an app wires a key input by index: the graph's `BusRef` and `BusSource`).
+- **Dead prelude names**: `tutti::prelude::*`, `tutti_engine::prelude`,
+  `tutti_types::prelude`, `tutti_midi_hardware::prelude` and
+  `tutti_vst2_author::prelude` → deleted (no crate defines a prelude: name items
+  at the crate's root, `use tutti::{Session, Samples, ..}`; the session's
+  `Phase` is `tutti::Phase`, the types' one stays `tutti::types::Phase`).
 - **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
   restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook
   `LiveSession::on_restart`; `restart_on`, `Session::watch_devices` with four
@@ -1759,7 +1769,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   OutputsListSlow}` → `SessionEvent::Device(DeviceEvent::..)`; `render_workers(usize)`
   (0 for per core) → `Workers`; `inputs`/`outputs_floor` of a bare `usize` →
   `ChannelLayout`.
-- **Dead export names** (doc 019): `tutti-export`'s `ExportConfig`, `RenderConfig`,
+- **Dead export names**: `tutti-export`'s `ExportConfig`, `RenderConfig`,
   `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,
   `render_to_buffers`, `render_normalized_to_file` and their `_with` twins → `render` /
   `render_one` with a `Control`; `Flow`, `Pass` → `Control` and `CancelToken`;

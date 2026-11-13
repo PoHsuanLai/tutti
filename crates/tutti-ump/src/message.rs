@@ -1123,7 +1123,11 @@ pub struct EndpointInfo {
 }
 
 /// A device's identity, as in a Device Inquiry reply (§7.1.3). Every byte is 7-bit.
+///
+/// The serde form is the plain derive over fields that each refuse what they
+/// cannot hold (`ManufacturerId` and `U7` read back through their own checks).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeviceIdentity {
     /// The manufacturer's SysEx id (on the wire, three bytes: `xx 00 00` or `00 xx yy`).
     pub manufacturer: ManufacturerId,

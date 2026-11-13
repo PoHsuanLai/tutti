@@ -1,4 +1,4 @@
-//! What a render writes, and where each output reads from (doc 019 section 4).
+//! What a render writes, and where each output reads from.
 //!
 //! One render pass feeds a list of [`Output`]s. An output is a [`Feed`] (the
 //! audio it reads: the graph's outputs, or a plan tap) and a [`Target`] (what

@@ -211,7 +211,7 @@ impl<S: SourcePorts> SourceNode<S> {
     /// The grid's stride for this block: the source's, doubled while the
     /// block's grid points and `reserve` other stops would not fit.
     fn stride(&self, cx: &Cx<'_>, walk: &PlayWalk, len: usize, reserve: usize) -> Option<u64> {
-        let mut stride = u64::from(S::GRID?.get().get());
+        let mut stride = u64::from(S::GRID?.stride());
         let room = (SOURCE_EVENT_CAPACITY as usize).saturating_sub(reserve);
         while grid_points(cx, walk, len, self.epoch, stride) > room && stride < len as u64 {
             stride *= 2;

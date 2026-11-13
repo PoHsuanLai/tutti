@@ -3538,7 +3538,7 @@ mod tests {
 
     /// **`effClose` is the instance's drop, on its thread, and no handle outlives it.**
     /// The plugin frees its `AEffect` in response to `effClose`, so a handle that reads it
-    /// afterwards is the audit's SIGSEGV. The render handle shares the core but does not
+    /// afterwards reads freed memory. The render handle shares the core but does not
     /// own the plugin: it can neither close it (dropped last, it does nothing) nor reach it
     /// once closed (every entry takes the gate and finds it closed). The fake plugin poisons
     /// its slots on close, as freeing the `AEffect` does, so a call after the close is

@@ -112,7 +112,7 @@ above.
 
 ```rust,no_run
 # use tutti_clap_host::{ClapLoaded, LoadOptions, StateContext};
-use tutti_plugin_types::{Control, Normalized, ParamId};
+use tutti_plugin_types::{Control, Normalized, ParamId, StateUse};
 # fn ex() -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
@@ -133,8 +133,8 @@ plugin.set_parameter(&main, ParamId::new(1), Normalized::of(0.5));
 // State save/restore is legal before any buffer exists. A project's state is
 // saved for `CLAP_STATE_CONTEXT_FOR_PROJECT` when the plugin implements
 // `clap.state-context`, and through plain `clap.state` when it does not.
-let saved = plugin.save_state(&main)?;
-plugin.load_state(&main, &saved)?;
+let saved = plugin.save_state(&main, StateUse::Project)?;
+plugin.load_state(&main, &saved, StateUse::Project)?;
 
 // A duplicate of the instance is saved and restored for its own context. A
 // plugin that implements `clap.state-context` and refuses is not answered with

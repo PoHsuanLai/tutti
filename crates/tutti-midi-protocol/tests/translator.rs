@@ -560,8 +560,8 @@ fn reset_all_controllers_nulls_the_selection() {
     );
 }
 
-/// **RP-015: Reset All Controllers sets "Registered and Non-registered
-/// parameter number LSB and MSB (#98-#101) to null value (127)"**, both halves.
+/// **RP-015: Reset All Controllers sets the Registered and Non-registered
+/// parameter number LSB and MSB (#98-#101) to the null value (127)**, both halves.
 /// A select of the LSB alone afterwards therefore pairs with an MSB of 127, not
 /// with the MSB the channel had before the reset: RPN 0 (pitch bend
 /// sensitivity) must not come back from a lone `CC 100 = 0`.
@@ -582,12 +582,12 @@ fn reset_all_controllers_nulls_both_halves_of_the_number() {
     assert_eq!(out[5], vec![registered(127, 0, zx(12, 0))]);
 }
 
-/// **CA-031: "Bn 58 vv: vv = lower 7 bits affixed to the subsequent Note On /
-/// Note Off velocity"**; the velocity byte is the higher 7 bits. The 14-bit
+/// **CA-031: `Bn 58 vv` carries the lower 7 bits of the following Note On or
+/// Note Off velocity**; the velocity byte is the higher 7 bits. The 14-bit
 /// velocity is scaled Min-Center-Max to the 16 bits of the MIDI 2.0 Note On
 /// (M2-115 section 3), so `0x3FFF` is `0xFFFF` and `0x2000` the centre `0x8000`.
-/// The CC 88 itself is absorbed (M2-104 section 7.4.6: it "shall not be used
-/// for High Resolution Velocity" in the MIDI 2.0 Protocol).
+/// The CC 88 itself is absorbed (M2-104 section 7.4.6: it is not used
+/// for High Resolution Velocity in the MIDI 2.0 Protocol).
 #[test]
 fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
     let note_on = |v: u8| -> Ump {
@@ -632,9 +632,8 @@ fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
     assert_ne!(out[1], vec![on(0xFFFF)]);
 }
 
-/// **CA-031: "A single High Resolution Velocity Prefix message only affects the
-/// next Note On or Note Off received on the matching channel. There may be
-/// other MIDI messages in between"**, and the smallest 14-bit Note On velocity
+/// **CA-031: a High Resolution Velocity Prefix affects only the next Note On or
+/// Note Off on its channel, with other messages possibly in between**, and the smallest 14-bit Note On velocity
 /// is `0x0080`, so `Bn 58 00` then `9n kk 01` is the quietest Note On, the one
 /// the 7-bit message already was. A prefix on another channel does not apply.
 #[test]
@@ -669,8 +668,8 @@ fn a_velocity_prefix_waits_across_other_messages_on_its_channel_only() {
     assert_eq!(velocity(&out[3]), NoteVelocity::new(0x0300));
 }
 
-/// **CA-031: "If 9n kk 00 is received, that still qualifies as a valid Note
-/// Off, and the preceding Bn 58 xx has no effect."** The Note Off is the one
+/// **CA-031: `9n kk 00` is still a valid Note Off, and a preceding `Bn 58 xx`
+/// has no effect.** The Note Off is the one
 /// `widen` makes (release velocity `0x8000`, M2-104 D.3.1), and the prefix does
 /// not carry over to the Note On after it.
 #[test]
@@ -762,9 +761,9 @@ fn flush_sends_a_lone_cc_38_on_its_own_channel() {
     );
 }
 
-/// **CC 96 and 97 stay Control Changes after an RPN select** (D.3.3: "They
-/// should not be translated to MIDI 2.0 Relative Registered Controller and
-/// Relative Assignable Controller Messages").
+/// **CC 96 and 97 stay Control Changes after an RPN select** (D.3.3: they are not
+/// translated to MIDI 2.0 Relative Registered Controller or Relative
+/// Assignable Controller messages).
 #[test]
 fn increment_and_decrement_stay_control_changes() {
     let mut t = Translator::new();

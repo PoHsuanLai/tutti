@@ -322,9 +322,6 @@ fn setting_the_same_events_cuts_nothing() {
 /// truth). At 90 BPM and 48 kHz a beat is 32 000 frames: notes at beats 1
 /// and 3 land on frames 32 000 and 96 000 exactly, in 64-frame blocks whose
 /// transport beat is `frame / 32 000` (not exact in binary).
-///
-/// Carried over from the retired clip-source test, which caught a clip
-/// flooring a beat's offset onto the frame before it.
 #[test]
 fn a_note_lands_on_its_frame_at_ninety_bpm() {
     let clip = MidiClipNode::new([
@@ -755,11 +752,10 @@ fn bend(channel: u8, value: u32) -> Ump {
 }
 
 /// **A stop returns every pedal and the bend to their normal positions,
-/// after the note-offs, once.** MIDI 1.0 Detailed Spec p. 31 (Stop): "any
-/// controllers not in their initialized position (pitch wheels, sustain
-/// pedal, etc.) should be returned to their normal positions"; A-5: a pedal
-/// down "takes priority over Note Off and All Notes Off until it is
-/// released", so the offs come first and the pedals are lifted after them.
+/// after the note-offs, once.** MIDI 1.0 Detailed Spec p. 31 (Stop): controllers
+/// off their initialized position (pitch wheels, sustain pedal, etc.) return
+/// to normal; A-5: a pedal down outranks Note Off and All Notes Off until it
+/// is released, so the offs come first and the pedals are lifted after them.
 /// Sustain, sostenuto, soft and hold 2 are down and the bend is off centre;
 /// a second stopped block sends nothing.
 #[test]
@@ -800,8 +796,8 @@ fn stopping_lifts_the_pedals_and_centres_the_bend_after_the_note_offs() {
 /// **A controller already at its normal position is not sent again.**
 /// Channel 0's sustain goes down and up and its bend goes off centre and
 /// back; channel 1's sustain stays down. A stop sends one pedal-up, for
-/// channel 1, and nothing else (M1 p. 31 asks only for controllers "not in
-/// their initialized position").
+/// channel 1, and nothing else (M1 p. 31 asks only for controllers off
+/// their initialized position).
 #[test]
 fn a_controller_at_rest_is_not_resent_at_a_stop() {
     let s = CCNumber::SUSTAIN;

@@ -19,7 +19,7 @@ enum Selected {
     Assignable { bank: U7, index: U7 },
 }
 
-/// One channel's output state. `None` is "not known": the receiver may have
+/// One channel's output state. `None` is not known: the receiver may have
 /// anything, so the next message sends the select or the bank in full.
 #[derive(Clone, Copy, Debug, Default)]
 struct Channel {
@@ -31,25 +31,24 @@ struct Channel {
 /// and channel (M2-104 Appendix D.2). The inverse of [`Translator`](crate::Translator).
 ///
 /// - **A Registered or Assignable Controller** is the four Control Changes of
-///   D.2.3: "each message generates a sequence of four MIDI 1.0 Protocol
-///   messages", CC 101 and 100 (RPN) or CC 99 and 98 (NRPN) selecting the
+///   D.2.3: each message generates a sequence of four MIDI 1.0 Protocol
+///   messages, CC 101 and 100 (RPN) or CC 99 and 98 (NRPN) selecting the
 ///   parameter, then CC 6 and CC 38, the top 14 bits of the 32-bit value. The
 ///   select is **skipped when the same parameter is already selected** on that
 ///   group and channel (MIDI 1.0 rule 6: a selected parameter stays selected
-///   "until a new Parameter Number is chosen"), so a stream of values for one
+///   until a new Parameter Number is chosen), so a stream of values for one
 ///   parameter is a CC 6 and a CC 38 each.
 /// - **The data narrows** by the rule the [`Translator`](crate::Translator) widened with. A
 ///   Registered Controller of bank 0 and index 0 to 31 is a fixed-point number
 ///   or a pair of fields, widened by zero-extension (M2-115 section 4.1:
-///   "Translators shall use Zero-Extension Scaling on all Registered
-///   Controller (RPN) Messages where the index (RPN LSB) is 0-31"), and
-///   narrows **with rounding** (section 4.4: "When downscaling fixed-point
-///   values, they should be rounded in the reduced resolution": add half the
+///   Zero-Extension Scaling for every Registered Controller whose index is
+///   0 to 31), and narrows **with rounding** (section 4.4: fixed-point values
+///   are rounded when downscaled: add half the
 ///   scaled range, shift, clamp to 14 bits). Every other controller was scaled
 ///   Min-Center-Max and narrows by the plain right shift of section 3.4
 ///   (`narrow_value`), which returns the value it was widened from.
 /// - **Null Function is not sent after a run.** D.2.3 gives four messages, not
-///   five, and D.3.3 says the Null Function "is not translated"; the select
+///   five, and D.3.3 says the Null Function is not translated; the select
 ///   stays until the next one, which is what lets the select be skipped. A
 ///   Reset All Controllers (CC 121, RP-015) that passes through nulls the
 ///   receiver's selection, and this narrower forgets it on seeing one.

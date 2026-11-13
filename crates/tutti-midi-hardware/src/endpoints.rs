@@ -115,7 +115,7 @@ pub trait MidiEndpoints: Send + Sync {
     ///
     /// [`Error::MidiDevice`](crate::Error::MidiDevice) when `id` names no
     /// current endpoint, or the platform error from opening the port. (The
-    /// caller, [`Devices::open_input`](crate::Devices::open_input), has already
+    /// caller, `Devices::open_input`, has already
     /// refused an id that is not a present input.)
     fn open_input(
         &self,

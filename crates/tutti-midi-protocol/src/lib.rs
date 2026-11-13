@@ -51,7 +51,7 @@
 //! [`widen_bend`]: they build a [`NoteVelocity`](tutti_ump::NoteVelocity), a
 //! [`ControlValue`](tutti_ump::ControlValue) or a
 //! [`BendValue`](tutti_ump::BendValue) from a 7-bit or 14-bit one, which a
-//! MIDI 2.0 constructor such as `Message::note_on2` wants.
+//! MIDI 2.0 constructor such as `Voice2::note_on` wants.
 //!
 //! Going down has four entry points; pick by what you hold and what you need.
 //!

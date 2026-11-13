@@ -82,14 +82,14 @@ impl InputProducerHandle {
     /// A **UMP Stream message** (type `0xF`, M2-104 §7.1) is the device's talk
     /// about itself, not music: it never reaches the graph. It goes to the
     /// port's stream ring, which the control side reads
-    /// ([`HardwareMidiInputs::drain_stream`](super::HardwareMidiInputs::drain_stream)),
+    /// (`HardwareMidiInputs::drain_stream`),
     /// and one the ring has no room for is counted
     /// ([`PortInfo::stream_lost`](super::PortInfo::stream_lost)) and is
     /// `Diverted` all the same: it was not lost from the inlet.
     ///
     /// A **SysEx7 packet** (type `0x3`) is music's too, and goes to the graph
     /// whatever else happens to it; but while the control side is waiting for a
-    /// device to say what it is ([`HardwareMidiInputs::hear_sysex`](super::HardwareMidiInputs::hear_sysex),
+    /// device to say what it is (`HardwareMidiInputs::hear_sysex`,
     /// an Identity Request is out, or MIDI-CI runs), a copy goes to the same stream ring. It is a
     /// copy, not a diversion, because the packets of a message are not
     /// recognisable one by one: whether a SysEx is an Identity Reply is known
@@ -100,9 +100,7 @@ impl InputProducerHandle {
     /// here too, and is `Diverted`. The session asks for JR Timestamps off, and
     /// a device that sends them anyway has them ignored: the placement of an
     /// event is its OS arrival stamp, and §7.2.2.1 leaves what a Receiver does
-    /// with JR to it ("the Receiver may use smoothing or averaging of time from
-    /// each JR Clock message ... to determine a steady JR Clock to render
-    /// against"). Reading them would need a `JrReceiver` per device, its delay
+    /// with JR to it (it may smooth or average the JR Clock messages). Reading them would need a `JrReceiver` per device, its delay
     /// applied to the arrival stamp, and a clock to reconstruct, to refine a
     /// time the OS has already stamped; and nothing downstream reads a
     /// timestamp utility message, so one that reached the graph would be noise.
@@ -167,7 +165,7 @@ pub enum Pushed {
 }
 
 /// The UMP Stream messages of one port, drained as they are read
-/// ([`HardwareMidiInputs::drain_stream`](super::HardwareMidiInputs::drain_stream)):
+/// (`HardwareMidiInputs::drain_stream`):
 /// one ring lock per step, none held across the caller's work.
 #[derive(Debug)]
 pub struct StreamDrain {

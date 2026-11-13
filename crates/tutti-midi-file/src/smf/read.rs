@@ -9,8 +9,7 @@
 //! 1. **Framing** ([`chunk`], [`smf`]): the header chunk, then chunks of
 //!    `type, length, body` until the input ends. A chunk cut off anywhere is
 //!    [`Fault::Truncated`]; an unknown chunk type is skipped (SMF 1.0 section
-//!    2: "your programs should expect alien chunks and treat them as if they
-//!    weren't there").
+//!    2: a program expects alien chunks and treats them as absent).
 //! 2. **Tracks** ([`track`]): each `MTrk` body into events.
 //!
 //! # Running status is a value
@@ -42,8 +41,8 @@
 //! bytes, an event cut off inside its chunk, a zero division
 //! ([`Fault::Malformed`]); and an SMPTE division ([`Fault::Timecode`]). A track
 //! with no End of Track ends at its last event, and an End of Track that is
-//! not the track's last event is refused (SMF 1.0 section 3.3: it "must occur
-//! as the last event in the track").
+//! not the track's last event is refused (SMF 1.0 section 3.3: it is the last
+//! event in the track).
 
 use std::iter::successors;
 
@@ -219,9 +218,8 @@ fn channel<'a>(status: u8) -> impl Parser<&'a [u8], FileEvent, ContextError<Faul
 
 /// A meta event's type byte and data as the model's [`Meta`]. A fixed-size
 /// event with more data than it defines is read for the bytes it defines and
-/// keeps the rest as `extra` (SMF 1.0 section 3.3: "they shouldn't be surprised
-/// if it's bigger than they expected. If so, they must ignore everything past
-/// what they know about"). Anything shorter than the typed shape stays
+/// keeps the rest as `extra` (SMF 1.0 section 3.3: a program ignores what is past
+/// what it knows). Anything shorter than the typed shape stays
 /// `Other`, so no byte is lost.
 fn meta_of(kind: u8, data: &[u8]) -> Meta {
     let text = |kind| Meta::Text {
@@ -343,8 +341,8 @@ fn track(body: &[u8]) -> Res<Track> {
         })
         .collect::<Res<Vec<_>>>()?;
     let is_end = |e: &FileEvent| matches!(e, FileEvent::Meta(Meta::Other { kind: 0x2F, data }) if data.is_empty());
-    // SMF 1.0 section 3.3: "An end-of-track event must occur as the last
-    // event in the track." One before the last is refused, not read as the
+    // SMF 1.0 section 3.3: an end-of-track event is the last
+    // event in the track. One before the last is refused, not read as the
     // track's end: what follows it would be dropped, and the model is lossless.
     let last = events.len().saturating_sub(1);
     if events.iter().take(last).any(|(_, e)| is_end(e)) {

@@ -39,7 +39,7 @@ fn the_served_control_and_any_thread_answer_alike() {
         tutti_plugin_types::Load::new(),
         SampleRate(48_000.0),
         None,
-        crate::format::gui::load_gui_instance,
+        Some(crate::format::gui::load_gui_instance),
     )
     .expect("the probe launches in a real plugin-server");
     let main = main_thread();
@@ -94,4 +94,56 @@ fn the_served_control_and_any_thread_answer_alike() {
         "the advisory is delivered"
     );
     assert!(!Health::is_crashed(&any));
+}
+
+/// **A client launched with no editor loader asks the real server for its
+/// editor** (doc 029 section 6.5): the open crosses the wire to a real
+/// `plugin-server`, which opens the editor on the served instance through the
+/// format's own call, and the plugin's refusal comes back as the editor's error.
+/// The probe presents no `clap.gui` in a server process (its shape is a switch
+/// of the process that loaded it, which a test cannot reach across the
+/// boundary), so the open is refused by the plugin: the reason is the server's,
+/// where a client that loaded an editor itself would have said it has no
+/// loader. What the server does with an editor that opens is the server's
+/// suite (`event_loop`).
+#[test]
+fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
+    use tutti_plugin_types::EditorWindow;
+    let _lock = machine_lock();
+    let mut env = tutti_fixtures::ScopedEnv::new();
+    env.set("TUTTI_PLUGIN_SERVER", plugin_server_path());
+    let Launched { mut ipc, .. } = Ipc::launch(
+        BridgeConfig::default(),
+        tutti_fixtures::clap_probe().to_path_buf(),
+        tutti_plugin_types::Load::new(),
+        SampleRate(48_000.0),
+        None,
+        None,
+    )
+    .expect("the probe launches in a real plugin-server with no editor loader");
+    let main = main_thread();
+
+    let refused = ipc
+        .open_floating_editor(&main)
+        .expect_err("the probe has no gui in the server");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains("No GUI extension"),
+        "the refusal is the CLAP host's, in the server: {reason}"
+    );
+    // The server's answer was an answer, not a crash: the plugin is still served.
+    assert!(
+        AnyThread::parameter_descriptors(&ipc.controller()).is_some(),
+        "the refused open left the server serving"
+    );
+    let resize = ipc
+        .set_editor_size(
+            &main,
+            tutti_plugin_types::EditorSize {
+                width: 100,
+                height: 100,
+            },
+        )
+        .expect_err("no editor is open");
+    assert!(resize.to_string().contains("not open"), "{resize}");
 }

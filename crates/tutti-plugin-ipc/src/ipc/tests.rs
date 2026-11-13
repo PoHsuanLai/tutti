@@ -21,6 +21,11 @@ use crate::{
 
 const CEILING: usize = 64;
 const RATE: SampleRate = SampleRate(48_000.0);
+/// The size the mock server's editor opens at.
+const MOCK_EDITOR: tutti_plugin_types::EditorSize = tutti_plugin_types::EditorSize {
+    width: 640,
+    height: 480,
+};
 
 /// What the mock server was sent, in order.
 type Received = Arc<Mutex<Vec<HostMessage>>>;
@@ -82,6 +87,21 @@ fn mock() -> (Ipc, Mock) {
 fn mock_loading(
     origin: tutti_plugin_types::Origin,
     load_editor: crate::EditorLoader,
+) -> (Ipc, Mock) {
+    mock_with(origin, Some(load_editor))
+}
+
+/// [`mock`] whose bridge has no editor loader: its editor lives in the server.
+fn mock_remote() -> (Ipc, Mock) {
+    mock_with(
+        tutti_plugin_types::Origin::new("test.clap", tutti_plugin_types::Load::new()),
+        None,
+    )
+}
+
+fn mock_with(
+    origin: tutti_plugin_types::Origin,
+    load_editor: Option<crate::EditorLoader>,
 ) -> (Ipc, Mock) {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
     use std::io::{Read, Write};
@@ -153,6 +173,21 @@ fn mock_loading(
                         error: None,
                     },
                 ),
+                // The server's editor: a parent of 0 is a window it cannot embed
+                // into; any other opens at the size the test pins.
+                HostMessage::OpenEditor { parent, .. } => reply(
+                    &served,
+                    &BridgeMessage::EditorOpened {
+                        result: match parent {
+                            Some(0) => Err("the mock plugin has no editor".to_string()),
+                            Some(_) => Ok(Some(MOCK_EDITOR)),
+                            None => Ok(None),
+                        },
+                    },
+                ),
+                HostMessage::SetEditorSize { size } => {
+                    reply(&served, &BridgeMessage::EditorSized { result: Ok(*size) })
+                }
                 HostMessage::GetParameterList => reply(
                     &served,
                     &BridgeMessage::ParameterList {
@@ -359,4 +394,143 @@ fn the_editor_instance_is_loaded_with_the_choice_the_bridge_was_made_for() {
     let refused = ipc.bridge().open_floating_editor(&main_thread());
     assert!(refused.is_err(), "the recording loader loads no editor");
     assert_eq!(*EDITOR_LOAD.lock().unwrap(), Some(chosen));
+}
+
+/// A window number the mock's X11-style server takes.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn host_window(raw: u64) -> tutti_plugin_types::WindowHandle {
+    tutti_plugin_types::WindowHandle::from_remote(raw).expect("an X11 id embeds across processes")
+}
+
+/// **A client with no editor loader opens, resizes and closes its editor over
+/// the wire**: the open carries the host window's number and scale and answers
+/// with the server's size, the resize is the server's answer, and the close
+/// is a message with no editor in this process to load.
+#[test]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn a_remote_editor_opens_resizes_and_closes_over_the_wire() {
+    use tutti_plugin_types::{ContentScale, EditorSize, EditorWindow};
+    let _machine = machine_lock();
+    let (mut ipc, server) = mock_remote();
+    let main = main_thread();
+    let scale = ContentScale::new(2.0).expect("a scale");
+
+    let size = ipc
+        .open_editor(&main, host_window(0x40_0001), scale)
+        .expect("the server opens it");
+    assert_eq!(size, MOCK_EDITOR);
+    let wanted = EditorSize {
+        width: 801,
+        height: 601,
+    };
+    assert_eq!(ipc.set_editor_size(&main, wanted).expect("resized"), wanted);
+    ipc.close_editor(&main);
+
+    assert!(server.wait_for(|got| matches!(
+        got,
+        [
+            HostMessage::OpenEditor { parent: Some(0x40_0001), scale: s },
+            HostMessage::SetEditorSize { size },
+            HostMessage::CloseEditor,
+        ] if *s == scale && *size == wanted
+    )));
+}
+
+/// **A floating editor is the server's own window**: no parent crosses the
+/// wire, and no size comes back.
+#[test]
+fn a_remote_floating_editor_sends_no_parent() {
+    use tutti_plugin_types::EditorWindow;
+    let _machine = machine_lock();
+    let (mut ipc, server) = mock_remote();
+    ipc.open_floating_editor(&main_thread()).expect("opens");
+    assert!(server.wait_for(|got| matches!(got, [HostMessage::OpenEditor { parent: None, .. }])));
+}
+
+/// **The server's refusal is the editor's error, in the server's words.**
+#[test]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn a_refused_remote_open_carries_the_servers_reason() {
+    use tutti_plugin_types::{ContentScale, EditorWindow};
+    let _machine = machine_lock();
+    let (mut ipc, _server) = mock_remote();
+    let refused = ipc
+        .open_editor(&main_thread(), host_window(0), ContentScale::IDENTITY)
+        .expect_err("the mock refuses a window 0");
+    assert!(
+        refused
+            .to_string()
+            .contains("the mock plugin has no editor"),
+        "{refused}"
+    );
+}
+
+/// **A size the plugin asks its window to take reaches the host's poll, once,
+/// and the server closing its editor is heard**: the bridge reads both off the
+/// stream with the next reply, and the editor is closed, so a resize is
+/// refused until it is opened again.
+#[test]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn what_the_servers_editor_says_unprompted_is_heard() {
+    use tutti_plugin_types::{ContentScale, EditorSize, EditorWindow};
+    let _machine = machine_lock();
+    let (mut ipc, server) = mock_remote();
+    let main = main_thread();
+    ipc.open_editor(&main, host_window(0x40_0001), ContentScale::IDENTITY)
+        .expect("opens");
+    let asked = EditorSize {
+        width: 1024,
+        height: 768,
+    };
+    server.say(&BridgeMessage::EditorWantsSize { size: asked });
+    server.say(&BridgeMessage::EditorClosed);
+    // An idle bridge reads nothing: the next command's reply reads both.
+    assert_eq!(ipc.bridge().parameters().expect("answered").len(), 1);
+
+    assert_eq!(ipc.poll_editor_resize_request(&main), Some(asked));
+    assert_eq!(ipc.poll_editor_resize_request(&main), None, "once");
+    let refused = ipc
+        .set_editor_size(&main, asked)
+        .expect_err("the server closed it");
+    assert!(refused.to_string().contains("not open"), "{refused}");
+    // A close of an editor the server already closed sends nothing: asked
+    // after it, in order, a reply the mock answers proves what it was sent.
+    ipc.close_editor(&main);
+    assert_eq!(ipc.bridge().parameters().expect("answered").len(), 1);
+    assert!(
+        !server
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| matches!(m, HostMessage::CloseEditor)),
+        "no close for an editor that is not open"
+    );
+}
+
+/// **A client with a loader keeps its editor in the host**: nothing about the
+/// editor crosses the wire.
+#[test]
+fn a_client_with_a_loader_sends_no_editor_message() {
+    use tutti_plugin_types::EditorWindow;
+    let _machine = machine_lock();
+    let (mut ipc, server) = mock();
+    assert!(
+        ipc.open_floating_editor(&main_thread()).is_err(),
+        "no editor in these tests"
+    );
+    assert_eq!(ipc.bridge().parameters().expect("answered").len(), 1);
+    assert!(server.wait_for(|got| {
+        got.iter()
+            .any(|m| matches!(m, HostMessage::GetParameterList))
+    }));
+    assert!(
+        !server
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| matches!(m, HostMessage::OpenEditor { .. })),
+        "the editor is the host's"
+    );
 }

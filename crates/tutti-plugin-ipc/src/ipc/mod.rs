@@ -3,7 +3,8 @@
 //!
 //! It wraps what a served plugin is today: the [`PluginBridge`] (control
 //! socket and audio slab), the [`ProcessGuard`] that owns the server, the
-//! [`EditorLoader`] the host passed, and the [`LoadedPlugin`] descriptor the
+//! [`EditorLoader`] the host passed (or none: the editor then lives in the server,
+//! doc 029 section 6.5), and the [`LoadedPlugin`] descriptor the
 //! server reported. [`activate`](Loaded::activate) splits it into an
 //! [`IpcProcessor`] (the [`Batcher`] behind
 //! [`Processor::process`](tutti_plugin_types::Processor::process)) and an [`IpcController`] (the bridge's control
@@ -70,8 +71,9 @@ pub struct IpcOrigin {
     pub path: PathBuf,
     /// Which plugin of the file, as the first launch chose it.
     pub load: Load,
-    /// Loads the editor-only instance, as the first launch's did.
-    pub load_editor: EditorLoader,
+    /// Loads the editor-only instance, as the first launch's did; `None`
+    /// again for an editor in the server.
+    pub load_editor: Option<EditorLoader>,
 }
 
 impl IpcOrigin {
@@ -347,6 +349,11 @@ impl Ipc {
     ///
     /// Blocks while the server launches and handshakes. Needs no main thread.
     ///
+    /// `load_editor` is where the editor lives: `Some` loads an editor-only
+    /// second instance in this process (CLAP, VST3, AU), `None` opens it on the
+    /// served instance in the server, parented to the host's window (doc 029
+    /// section 6.5).
+    ///
     /// # Errors
     ///
     /// The server cannot be found or spawned, the handshake fails or times
@@ -357,7 +364,7 @@ impl Ipc {
         load: Load,
         rate: SampleRate,
         state: Option<&[u8]>,
-        load_editor: EditorLoader,
+        load_editor: Option<EditorLoader>,
     ) -> BridgeResult<Launched> {
         let server = launch(&config, &path, &load, rate, state)?;
         let restored = server.state_restore.clone();

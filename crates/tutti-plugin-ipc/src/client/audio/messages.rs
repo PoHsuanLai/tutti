@@ -7,7 +7,9 @@ use crate::protocol::{
     NoteExpressionTextChanges, ParamEdit, ParamId, ParameterChanges, ParameterInfo, PluginTail,
     Preset, PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
-use tutti_plugin_types::{BlockStatus, PluginFailure, ResyncKind, StateError};
+use tutti_plugin_types::{
+    BlockStatus, ContentScale, EditorSize, PluginFailure, ResyncKind, StateError,
+};
 use tutti_types::SampleRate;
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
@@ -131,6 +133,17 @@ pub(super) enum Command {
         param_id: ParamId,
         plain: f64,
         reply: Reply<Option<Normalized>>,
+    },
+    /// Open the editor in the server (`None` parent: floating).
+    OpenEditor {
+        parent: Option<u64>,
+        scale: ContentScale,
+        reply: Reply<std::result::Result<Option<EditorSize>, String>>,
+    },
+    CloseEditor,
+    SetEditorSize {
+        size: EditorSize,
+        reply: Reply<std::result::Result<EditorSize, String>>,
     },
 }
 
@@ -349,6 +362,20 @@ impl Unsolicited {
             super::dispatch::apply_rate_reply(&lifecycle, self, rate, error);
         }
         true
+    }
+
+    /// The server's editor asked its window for `size`.
+    pub(super) fn editor_wants_size(&mut self, size: EditorSize) {
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle.set_editor_wants(size);
+        }
+    }
+
+    /// The server closed its editor on its own account.
+    pub(super) fn editor_closed(&mut self) {
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle.set_editor_closed();
+        }
     }
 
     /// A rate refusal, or its clearing, replacing one already held.

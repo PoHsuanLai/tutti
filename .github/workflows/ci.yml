@@ -52,7 +52,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - run: cargo fmt --all --check
@@ -67,7 +67,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: taiki-e/install-action@v2
@@ -79,7 +79,7 @@ jobs:
     name: canonical paths
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # For the submodule-pin gate below, which reads `git submodule
           # status`. A checkout without them still prints the recorded SHAs,
@@ -187,7 +187,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The VST3 SDK is three submodules; without them tutti-vst3-host
           # cannot build its `audio-probe` reference plugin.
@@ -232,7 +232,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       # The toolchain `rust-toolchain.toml` pins, with its components.
@@ -265,7 +265,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -297,7 +297,7 @@ jobs:
     continue-on-error: true
     steps:
       # The VST3 shells and the C++ witness build against the SDK submodules.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       # The toolchain `rust-toolchain.toml` pins, with its components.
@@ -319,7 +319,7 @@ jobs:
     steps:
       # The submodules are the VST3 SDK: `tutti-plugin-contract` builds the VST3
       # shells and the C++ witness against it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install Linux audio deps
@@ -533,7 +533,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install Linux audio deps
@@ -581,7 +581,7 @@ jobs:
       # suite alone was a third of the run at opt-level 0).
       CARGO_PROFILE_DEV_OPT_LEVEL: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install Linux audio deps
@@ -649,7 +649,7 @@ jobs:
       TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
       CARGO_PROFILE_DEV_OPT_LEVEL: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install Linux audio deps
@@ -689,7 +689,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install Linux audio deps
@@ -754,7 +754,7 @@ jobs:
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       # The toolchain `rust-toolchain.toml` pins, with its components.
@@ -801,7 +801,7 @@ jobs:
     # each); the native test job still runs it at full size.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # ALSA headers: `tutti-rt` does not need them, but
       # cargo resolves the whole workspace before building a member.
       - uses: ./.github/actions/linux-audio-deps
@@ -888,7 +888,7 @@ jobs:
       macos: ${{ steps.diff.outputs.macos }}
       test_os: ${{ steps.diff.outputs.test_os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: diff
@@ -941,7 +941,7 @@ jobs:
     env:
       RUSTFLAGS: --cfg loom
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # ALSA headers: neither crate needs them, but cargo resolves the whole
       # workspace before building a member.
       - uses: ./.github/actions/linux-audio-deps
@@ -1014,7 +1014,7 @@ jobs:
       RUSTFLAGS: --cfg loom
       LOOM_MAX_PREEMPTIONS: 3
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install

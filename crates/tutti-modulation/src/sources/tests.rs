@@ -1,6 +1,6 @@
 use super::*;
 use crate::RateAnchor;
-use tutti_types::{Amplitude, BeatDuration};
+use tutti_types::Amplitude;
 
 /// The fields of an [`Source::Lfo`]: `(shape, seed, clock)`.
 fn lfo_parts(source: Source) -> (LfoShape, u64, Clock) {
@@ -56,7 +56,7 @@ fn an_lfos_clock_and_seed_are_pinned_field_by_field() {
     assert_eq!(
         clock,
         Clock::Beats {
-            per_cycle: BeatDuration(0.5),
+            per_cycle: BeatsPerCycle::of(0.5),
             phase: PhaseIncrement(0.25),
         }
     );

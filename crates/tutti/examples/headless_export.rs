@@ -20,8 +20,10 @@
 
 use tutti::measure::{LoudnessConfig, measure_loudness};
 use tutti::nodes::testing::{Const, Osc};
-use tutti::prelude::Root;
-use tutti::prelude::*;
+use tutti::{
+    Amplitude, Bounce, ChannelLayout, Format, Hz, Interleaved, Pcm, Range, Root, SampleRate,
+    Seconds, Session,
+};
 
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate::SR_48K;

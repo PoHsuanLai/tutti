@@ -11,16 +11,17 @@
 //! cargo run -p tutti --features modulation --example headless_modulation
 //! ```
 //!
-//! The umbrella's, so that it imports as the design does (`tutti::prelude`);
-//! what the prelude does not carry (the node contract, the nodes, the
-//! modulation sources) is named through `tutti::`.
-
-use tutti::prelude::{InPort, OutPort, Root};
+//! The umbrella's, so that it imports as an application does, from `tutti`'s
+//! root; what the root does not carry (the node contract, the testing
+//! oscillator) is named through `tutti::graph` and `tutti::nodes`.
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti::nodes::testing::Osc;
 use tutti::nodes::{SvfFilterNode, SvfType};
-use tutti::prelude::*;
+use tutti::{
+    ChannelLayout, Depth, Error, Follower, Hz, InPort, InterleavedMut, Lfo, MaxBlock, OutPort, Q,
+    Root, RouteSpec, SampleRate, Samples, Session, SessionEvent,
+};
 
 const RATE: f64 = 48_000.0;
 
@@ -76,7 +77,7 @@ fn play(s: &mut Session, windows: usize) {
     println!("{line}");
 }
 
-fn main() -> Result<(), tutti::Error> {
+fn main() -> Result<(), Error> {
     let mut s = Session::builder()
         .build_offline(
             SampleRate::of(RATE),

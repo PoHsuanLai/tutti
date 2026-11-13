@@ -36,7 +36,7 @@ cargo check -p tutti-transport -p tutti-metering -p tutti-engine
 cargo xtask check-paths
 ```
 
-Engine types are imported from a crate's root or prelude, never through its
+Engine types are imported from a crate's root, never through its
 modules. Neither rustc nor clippy has a lint for a redundant path, and doc
 comments in ` ```text ` / ` ```ignore ` blocks are never compiled — so this grep
 is the only enforcement there is. It searches `*.md` as well as `*.rs` for that

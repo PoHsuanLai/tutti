@@ -15,7 +15,7 @@
 //! note; the plugin's first parameter is set and dragged (`params()`); its state is saved with
 //! `state().save()` and written beside the WAV.
 //!
-//! The plugin is a [`Plugin`] view (`session.plugin(node)`), and what happens to
+//! The plugin is a [`Plugin`](tutti::Plugin) view (`session.plugin(node)`), and what happens to
 //! it is a [`PluginEvent`] in `update()`'s events. The host's thread claims the
 //! main thread and calls `session.main(main).update()`, which services the
 //! editors it opened (`ui.plugin(node)?.editor().open(&window, scale)`, with a
@@ -29,8 +29,12 @@
 use std::path::PathBuf;
 
 use tutti::plugin::catalog::CatalogConfig;
-use tutti::prelude::*;
 use tutti::ump::{Address, Message, NoteNumber, U7, Ump, Voice1};
+use tutti::{
+    Beat, Bounce, Catalog, ChannelLayout, Format, Hosting, MaxBlock, MidiChannel, Normalized,
+    ParamId, Pcm, PluginEvent, PluginLoadRequest, PluginRef, PresetError, PresetKind, Range, Root,
+    SampleRate, Samples, Session, SessionEvent, TimedMidiEvent,
+};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 

@@ -149,8 +149,6 @@ param_session_node!(
     tutti_nodes::FreeverbNode,
     tutti_nodes::FdnNode,
 );
-
-#[cfg(feature = "convolution")]
 param_session_node!(tutti_nodes::ConvolverNode);
 
 /// An audio inlet as a graph node: no controls (the writer is the producer's),

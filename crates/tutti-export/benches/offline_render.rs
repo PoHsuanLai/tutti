@@ -205,26 +205,22 @@ fn bench_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode");
     group.throughput(Throughput::Elements((0.25 * SR) as u64));
 
-    // A `Vec`, not an array: a `#[cfg]` on an array element changes its
-    // length, which the type cannot express. The `mut` is only used when a
-    // pushing arm is compiled in.
-    #[cfg_attr(not(any(feature = "flac", feature = "ogg")), allow(unused_mut))]
-    let mut formats: Vec<(&str, Format)> = vec![("wav", Format::Wav(Pcm::Int24))];
-    #[cfg(feature = "flac")]
-    formats.push((
-        "flac",
-        Format::Flac {
-            depth: tutti_codec::IntDepth::Int24,
-            level: tutti_codec::FlacLevel::default(),
-        },
-    ));
-    #[cfg(feature = "ogg")]
-    formats.push((
-        "ogg",
-        Format::Vorbis {
-            quality: tutti_codec::Quality::default(),
-        },
-    ));
+    let formats: [(&str, Format); 3] = [
+        ("wav", Format::Wav(Pcm::Int24)),
+        (
+            "flac",
+            Format::Flac {
+                depth: tutti_codec::IntDepth::Int24,
+                level: tutti_codec::FlacLevel::default(),
+            },
+        ),
+        (
+            "ogg",
+            Format::Vorbis {
+                quality: tutti_codec::Quality::default(),
+            },
+        ),
+    ];
 
     for (name, format) in formats {
         // Int24 throughout, FLAC being an integer codec: one depth across the

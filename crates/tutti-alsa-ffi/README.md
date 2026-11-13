@@ -39,6 +39,6 @@ nothing is linked.
 
 ## Features
 
-`test-support` adds `Client::rename` and `Client::set_port_caps`, which let a
+`testing` adds `Client::rename` and `Client::set_port_caps`, which let a
 test stand in for a device that appears, changes and goes. Off in a production
 build.

@@ -163,7 +163,7 @@ backend.
 
 ## Features
 
-- `test-support`: exports `test_support::FakeBackend`, a device list with no OS
+- `testing`: exports `test_support::FakeBackend`, a device list with no OS
   behind it, for [`MidiSession::open_over`] in headless tests; its `plug` and
   `unplug` drive hot-plug. Off by default.
 - `sequencer-tests`: the suites that run `Devices` against the real ALSA

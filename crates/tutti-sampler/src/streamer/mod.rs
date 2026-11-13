@@ -44,7 +44,7 @@ pub(crate) use loops::GUARD_FRAMES;
 pub(crate) use loops::RingControl;
 pub(crate) use loops::{Arrangement, RingMap};
 pub(crate) use prefetch::SharedReader;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 pub use thread::ByHand;
 pub use thread::Running;
 
@@ -63,7 +63,7 @@ pub(crate) use stream::StreamerPort;
 
 // The hand-driven cycle's verdict. Public only alongside the driver that
 // produces it — the threaded streamer consumes its own outcomes.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 pub use step::StepOutcome;
 
 // Test-only re-exports for unit tests outside the streamer module tree (e.g.
@@ -91,7 +91,7 @@ use tutti_types::SampleRate;
 /// is the session rate it streams at.
 ///
 /// Its type says how it is driven: [`DiskStreamer<Running>`](Running) (the
-/// default, from `new`) on a thread of its own, or, with the `test-support`
+/// default, from `new`) on a thread of its own, or, with the `testing`
 /// feature, `DiskStreamer<ByHand>` from `manual`,
 /// stepped by the caller.
 ///
@@ -157,7 +157,7 @@ pub struct DiskStreamer<D = Running> {
     shared: Handles,
     /// The driver: the thread, which only its drop uses, or the caller's
     /// cycle.
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
     driver: D,
     /// The next stream's identity, minted here on the control side.
     next_stream: AtomicU64,
@@ -210,11 +210,11 @@ impl DiskStreamer<Running> {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "testing"))]
 impl DiskStreamer<ByHand> {
     /// Creates the streaming engine without spawning the streamer thread;
     /// cycles are then run by hand with `step_once`.
-    /// Requires the `test-support` feature.
+    /// Requires the `testing` feature.
     ///
     /// The step is the same one the thread runs, so this is the shipped path
     /// with its sleeping removed rather than a parallel implementation. What it

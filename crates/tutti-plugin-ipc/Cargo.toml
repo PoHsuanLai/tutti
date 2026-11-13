@@ -15,7 +15,7 @@ workspace = true
 # The client's test-only knobs and counters (a shortened rate wait, the replies
 # it settled), for `tutti-plugin`'s tests, which turn it on through their
 # dev-dependency. Never on in a shipping build.
-test-support = []
+testing = []
 
 [dependencies]
 tutti-types = { path = "../tutti-types" }

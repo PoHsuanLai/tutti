@@ -1,10 +1,9 @@
 //! `check-ffi`: `unsafe` lives only in the crates that exist to hold it.
 //!
-//! Replaces `check-plugin-ffi.sh` and `check-midi-ffi.sh` (design 016 section
-//! 2.9, design 017 stage 4d). The compiler does the work those scripts
-//! repeated: a crate that carries `#![forbid(unsafe_code)]` cannot hold an
-//! `unsafe` token (not in a test inside `src/` either), so what is left to
-//! check is that the attribute is there.
+//! The compiler does the work a script would repeat: a crate that carries
+//! `#![forbid(unsafe_code)]` cannot hold an `unsafe` token (not in a test
+//! inside `src/` either), so what is left to check is that the attribute is
+//! there.
 //!
 //! - **Every crate root forbids `unsafe`**, `src/lib.rs` and `src/main.rs`
 //!   alike, except the crates in [`HOMES`]: the `-ffi` crates, `tutti-rt`,

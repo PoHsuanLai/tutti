@@ -1,5 +1,4 @@
-//! Every piece of the session's MIDI in one program, offline and with no device
-//! (design 030, L1f-a; design 017).
+//! Every piece of the session's MIDI in one program, offline and with no device.
 //!
 //! It builds a session, adds a synth as an instrument, sets MPE once, builds a
 //! MIDI file and plays it as a clip, sends live notes, routes the hardware

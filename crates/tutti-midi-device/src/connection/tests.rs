@@ -309,9 +309,8 @@ fn requested(t0: Instant) -> Connection {
     c
 }
 
-// §7.1.6.1 step 3: a receiver that cannot change some or all of the
-// configuration replies with its current one. The
-// connection reports what the Notification says, not what it asked for.
+// §7.1.6.1 step 3: a receiver that cannot apply part of a request answers
+// with the configuration it has. The connection reports what the Notification says, not what it asked for.
 #[test]
 fn a_notification_of_another_protocol_is_reported_as_it_is() {
     let t0 = Instant::now();

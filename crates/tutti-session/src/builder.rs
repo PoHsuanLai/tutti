@@ -258,7 +258,7 @@ impl SessionBuilder {
         self
     }
 
-    /// The spawner the session runs its blocking work on (design 029 §3.4):
+    /// The spawner the session runs its blocking work on:
     /// a file load, a plugin round trip, a recording's pump. It is handed
     /// each [`Job`](crate::Job) and calls [`Job::run`](crate::Job::run) on a
     /// thread of its own (`tokio::task::spawn_blocking`, a rayon pool); what
@@ -400,7 +400,7 @@ impl SessionBuilder {
         let midi_io = self.midi_hardware.then(|| -> Result<_> {
             // One event inlet for each device, which its thread pushes into
             // for the frame the engine's block clock puts its arrival on: a
-            // block later, so no event is late (the lead, doc 017 E5).
+            // block later, so no event is late (the lead).
             let inlets = tutti_midi_runtime::DeviceInlets::new(
                 self.midi_devices,
                 crate::midi::MIDI_INPUT_INLET_CAPACITY,
@@ -465,7 +465,7 @@ impl SessionBuilder {
                 rate,
             ));
             // The hardware out: a tap on the clock's event output, aligned to
-            // the outputs' time so MIDI leaves with the audio (doc 017, E3).
+            // the outputs' time so MIDI leaves with the audio.
             let tap = graph
                 .taps()
                 .open_event(

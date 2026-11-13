@@ -565,7 +565,7 @@ mod tests {
                 .expect("room");
         }
         Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: SampleRate::SR_48K,
             block_len: Samples(BLOCK),
             transport,

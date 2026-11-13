@@ -1,5 +1,6 @@
 use super::*;
 use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
+use tutti_ump::BendValue;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 
 #[test]
@@ -883,7 +884,10 @@ fn random_streams_keep_their_invariants() {
                     if let Some((v, _, false)) = table(&alloc).into_iter().find(|t| !t.2) {
                         alloc.voice_finished(v);
                     }
-                    alloc.message(ch, &Voice2::PitchBend(rng.below(1 << 32) as u32));
+                    alloc.message(
+                        ch,
+                        &Voice2::PitchBend(BendValue::new(rng.below(1 << 32) as u32)),
+                    );
                 }
             }
             // (a)

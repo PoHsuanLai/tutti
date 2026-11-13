@@ -139,7 +139,7 @@ fn is_stale(seq: u64, newest: u64) -> bool {
 /// which every read goes through, [`next_reply`]) therefore keeps each answer
 /// paired with its own request, whatever kind of request gave up. Leaving them
 /// there is what paired a block with its predecessor's reply, and a query with
-/// a stale `AudioProcessed` (doc 027 D5).
+/// a stale `AudioProcessed`.
 ///
 /// Owned by `pump` and passed in, rather than living in [`Channels`]: only the
 /// bridge thread ever reads or writes it, so an `Arc<AtomicU32>` would advertise
@@ -321,7 +321,7 @@ pub(super) enum Late {
 /// owed for earlier requests: `Ok(None)` when it did not come in time.
 ///
 /// **One deadline for the whole read.** The owed frames and the unsolicited
-/// events read on the way are inside it (doc 027 D7); a chatty plugin or a
+/// events read on the way are inside it; a chatty plugin or a
 /// backlog does not extend it.
 ///
 /// A timeout on a frame boundary is not an error: the stream is synchronised
@@ -362,7 +362,7 @@ fn next_reply(
 }
 
 /// [`next_reply`], owing the reply as `late` when it does not come in time,
-/// so it is taken off the stream when it does (doc 027 D5, D6).
+/// so it is taken off the stream when it does.
 fn answer(
     stream: &mut ControlStream,
     inbox: &mut Unsolicited,
@@ -851,7 +851,7 @@ pub(super) fn handle(
 
 /// A query's reply, within [`PARAM_TIMEOUT`]: `None` when it does not come
 /// in time, which the query answers as "cannot be asked" (and the reply is
-/// owed). A timeout here was a `?` that crashed a healthy bridge (doc 027 D6).
+/// owed). A timeout here was a `?` that crashed a healthy bridge.
 fn ask(
     stream: &mut ControlStream,
     inbox: &mut Unsolicited,
@@ -957,7 +957,7 @@ pub(super) fn apply_rate_reply(
 ///
 /// The timeout is one deadline for the whole call: each read gets what is left
 /// of it. Restarting it per read let a plugin that keeps sending events (a GUI
-/// drag, a meter) hold the bridge past every budget (doc 027 D7).
+/// drag, a meter) hold the bridge past every budget.
 fn recv_reply(
     stream: &mut ControlStream,
     inbox: &mut Unsolicited,
@@ -1027,7 +1027,7 @@ mod tests {
     }
 
     /// **What is owed is taken first, in order, and the next request's answer
-    /// is its own** (doc 027 D5). An abandoned block's reply is forwarded and
+    /// is its own**. An abandoned block's reply is forwarded and
     /// counted as settled; a query's late reply and the rest of a stalled
     /// state are taken without answering anything; the frame after them is
     /// the answer.

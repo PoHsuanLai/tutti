@@ -195,22 +195,27 @@ fn voice2(a: Address, v: Voice2) -> [u32; 4] {
             0x0,
             u32::from(note.get()),
             u32::from(controller.number()),
-            value,
+            value.get(),
         ),
         Voice2::AssignablePerNote {
             note,
             controller,
             value,
-        } => (0x1, u32::from(note.get()), u32::from(controller), value),
-        Voice2::Registered { bank, index, value } => (0x2, u7(bank), u7(index), value),
-        Voice2::Assignable { bank, index, value } => (0x3, u7(bank), u7(index), value),
+        } => (
+            0x1,
+            u32::from(note.get()),
+            u32::from(controller),
+            value.get(),
+        ),
+        Voice2::Registered { bank, index, value } => (0x2, u7(bank), u7(index), value.get()),
+        Voice2::Assignable { bank, index, value } => (0x3, u7(bank), u7(index), value.get()),
         Voice2::RelativeRegistered { bank, index, delta } => {
             (0x4, u7(bank), u7(index), delta as u32)
         }
         Voice2::RelativeAssignable { bank, index, delta } => {
             (0x5, u7(bank), u7(index), delta as u32)
         }
-        Voice2::PerNotePitchBend { note, value } => (0x6, u32::from(note.get()), 0, value),
+        Voice2::PerNotePitchBend { note, value } => (0x6, u32::from(note.get()), 0, value.get()),
         Voice2::NoteOff {
             note,
             velocity,
@@ -237,8 +242,10 @@ fn voice2(a: Address, v: Voice2) -> [u32; 4] {
                 (u32::from(velocity.get()) << 16) | d,
             )
         }
-        Voice2::PolyPressure { note, value } => (0xA, u32::from(note.get()), 0, value),
-        Voice2::ControlChange { controller, value } => (0xB, u32::from(controller.get()), 0, value),
+        Voice2::PolyPressure { note, value } => (0xA, u32::from(note.get()), 0, value.get()),
+        Voice2::ControlChange { controller, value } => {
+            (0xB, u32::from(controller.get()), 0, value.get())
+        }
         Voice2::ProgramChange { program, bank } => {
             let (valid, msb, lsb) = match bank {
                 Some(b) => (1, u7(b.msb), u7(b.lsb)),
@@ -246,8 +253,8 @@ fn voice2(a: Address, v: Voice2) -> [u32; 4] {
             };
             (0xC, 0, valid, (u7(program) << 24) | (msb << 8) | lsb)
         }
-        Voice2::ChannelPressure(value) => (0xD, 0, 0, value),
-        Voice2::PitchBend(value) => (0xE, 0, 0, value),
+        Voice2::ChannelPressure(value) => (0xD, 0, 0, value.get()),
+        Voice2::PitchBend(value) => (0xE, 0, 0, value.get()),
         Voice2::PerNoteManagement {
             note,
             detach,

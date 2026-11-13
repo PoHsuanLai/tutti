@@ -43,6 +43,9 @@ pub enum ProcessError {
     FormatMismatch,
     /// The plugin returned `CLAP_PROCESS_ERROR`; its outputs were zeroed.
     PluginReturnedError,
+    /// The main thread held the instance (a lifecycle change or a parameter
+    /// flush) and the block does not wait for it; nothing was called.
+    Busy,
 }
 
 /// The channel-pointer tables of one sample width, and the silent channels
@@ -405,9 +408,19 @@ impl AudioSide {
         self.core.retired.load(Ordering::Acquire) || !self.core.active.load(Ordering::Acquire)
     }
 
-    /// `plugin.reset`, a no-op once retired.
+    /// `plugin.reset`, a no-op once retired. Never waits: while the main
+    /// thread holds the instance the reset is owed, and the next block runs it
+    /// first.
     pub fn reset(&mut self) {
-        let _claim = self.core.roles.claim();
+        match self.core.roles.try_claim() {
+            Some(_claim) => self.reset_claimed(),
+            None => self.core.reset_owed.store(true, Ordering::Release),
+        }
+    }
+
+    /// `plugin.reset` under a claim the caller holds.
+    fn reset_claimed(&self) {
+        self.core.reset_owed.store(false, Ordering::Release);
         if self.is_retired() {
             return;
         }
@@ -422,8 +435,15 @@ impl AudioSide {
     }
 
     /// `plugin.stop_processing` if processing; a no-op once retired.
+    ///
+    /// Never waits: a recall runs this on the audio thread, and the main
+    /// thread may hold the instance then (a parameter flush). The plugin is
+    /// left processing in that case, and the next deactivation stops it under
+    /// its own claim, as CLAP requires before `deactivate`.
     pub fn stop(&mut self) {
-        let _claim = self.core.roles.claim();
+        let Some(_claim) = self.core.roles.try_claim() else {
+            return;
+        };
         if self.is_retired() || !self.core.processing.swap(false, Ordering::Relaxed) {
             return;
         }
@@ -467,9 +487,16 @@ impl AudioSide {
         if scratch.format() != audio.format() {
             return Err(ProcessError::FormatMismatch);
         }
-        let _claim = self.core.roles.claim();
+        // Never waits on the main thread: a block it holds the instance for
+        // is refused, as the other formats refuse one.
+        let Some(_claim) = self.core.roles.try_claim() else {
+            return Err(ProcessError::Busy);
+        };
         if self.is_retired() {
             return Err(ProcessError::Retired);
+        }
+        if self.core.reset_owed.load(Ordering::Acquire) {
+            self.reset_claimed();
         }
         if frames > self.core.max_frames.load(Ordering::Acquire) {
             return Err(ProcessError::BlockTooLarge);

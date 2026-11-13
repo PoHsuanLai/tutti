@@ -15,7 +15,7 @@ fn ms(n: u64) -> Duration {
 }
 
 fn map_at(t0: Instant, frame: u64) -> ClockMap {
-    ClockMap::new(R48, ClockReading::new(t0, Frame(frame)))
+    ClockMap::new(R48, ClockReading::new(t0, Frame::new(frame)))
 }
 
 // Frames follow the rate from the anchor: 1 s is 48 000 frames, 10 ms is 480.
@@ -23,15 +23,15 @@ fn map_at(t0: Instant, frame: u64) -> ClockMap {
 fn a_time_after_the_anchor_is_the_rate_times_the_distance() {
     let t0 = base();
     let map = map_at(t0, 1000);
-    assert_eq!(map.frame_at(t0), Some(Frame(1000)));
+    assert_eq!(map.frame_at(t0), Some(Frame::new(1000)));
     assert_eq!(
         map.frame_at(t0 + Duration::from_secs(1)),
-        Some(Frame(49_000))
+        Some(Frame::new(49_000))
     );
-    assert_eq!(map.frame_at(t0 + ms(10)), Some(Frame(1480)));
+    assert_eq!(map.frame_at(t0 + ms(10)), Some(Frame::new(1480)));
     assert_eq!(
         map.moment_at(t0 + ms(10)),
-        Some(Moment::new(Frame(1480), R48))
+        Some(Moment::new(Frame::new(1480), R48))
     );
 }
 
@@ -40,8 +40,8 @@ fn a_time_after_the_anchor_is_the_rate_times_the_distance() {
 fn a_time_before_the_anchor_is_extrapolated_back_until_frame_zero() {
     let t0 = base();
     let map = map_at(t0, 1000);
-    assert_eq!(map.frame_at(t0 - ms(10)), Some(Frame(520)));
-    assert_eq!(map.frame_at(t0 - ms(20)), Some(Frame(40)));
+    assert_eq!(map.frame_at(t0 - ms(10)), Some(Frame::new(520)));
+    assert_eq!(map.frame_at(t0 - ms(20)), Some(Frame::new(40)));
     // 1000 frames is 20.83 ms: 21 ms back is frame -8, before the start.
     assert_eq!(map.frame_at(t0 - ms(21)), None);
 }
@@ -54,11 +54,11 @@ fn a_time_lands_on_the_nearest_frame() {
     let map = map_at(t0, 0);
     assert_eq!(
         map.frame_at(t0 + Duration::from_nanos(10_417)),
-        Some(Frame(1))
+        Some(Frame::new(1))
     );
     assert_eq!(
         map.frame_at(t0 + Duration::from_nanos(10_416)),
-        Some(Frame(0))
+        Some(Frame::new(0))
     );
 }
 
@@ -68,16 +68,19 @@ fn a_time_lands_on_the_nearest_frame() {
 fn a_frame_maps_back_to_its_time() {
     let t0 = base();
     let map = map_at(t0, 1000);
-    assert_eq!(map.os_at(Frame(49_000)), Some(t0 + Duration::from_secs(1)));
-    assert_eq!(map.os_at(Frame(520)), Some(t0 - ms(10)));
+    assert_eq!(
+        map.os_at(Frame::new(49_000)),
+        Some(t0 + Duration::from_secs(1))
+    );
+    assert_eq!(map.os_at(Frame::new(520)), Some(t0 - ms(10)));
     for f in [0, 1, 519, 1000, 1001, 123_456] {
-        let os = map.os_at(Frame(f)).unwrap();
-        assert_eq!(map.frame_at(os), Some(Frame(f)), "frame {f}");
+        let os = map.os_at(Frame::new(f)).unwrap();
+        assert_eq!(map.frame_at(os), Some(Frame::new(f)), "frame {f}");
     }
     // A distance an `Instant` cannot hold is no instant (a rate of 1e-9 makes
     // 2^64 frames 1e28 seconds).
-    let slow = ClockMap::new(SampleRate::of(1e-9), ClockReading::new(t0, Frame(0)));
-    assert_eq!(slow.os_at(Frame(u64::MAX)), None);
+    let slow = ClockMap::new(SampleRate::of(1e-9), ClockReading::new(t0, Frame::new(0)));
+    assert_eq!(slow.os_at(Frame::new(u64::MAX)), None);
 }
 
 // One reading 8 ms late (frame 48 000 seen at 1 s + 8 ms) moves the map by one
@@ -86,13 +89,13 @@ fn a_frame_maps_back_to_its_time() {
 fn a_late_reading_moves_the_map_by_an_eighth() {
     let t0 = base();
     let mut map = map_at(t0, 0);
-    let late = ClockReading::new(t0 + Duration::from_secs(1) + ms(8), Frame(48_000));
+    let late = ClockReading::new(t0 + Duration::from_secs(1) + ms(8), Frame::new(48_000));
     assert_eq!(map.observe(late), Observed::Followed);
-    assert_eq!(map.anchor().frame(), Frame(48_000));
+    assert_eq!(map.anchor().frame(), Frame::new(48_000));
     assert_eq!(map.anchor().os(), t0 + Duration::from_secs(1) + ms(1));
     assert_eq!(
         map.frame_at(t0 + Duration::from_secs(1)),
-        Some(Frame(47_952))
+        Some(Frame::new(47_952))
     );
 }
 
@@ -101,7 +104,7 @@ fn a_late_reading_moves_the_map_by_an_eighth() {
 fn an_early_reading_moves_the_map_back_by_an_eighth() {
     let t0 = base();
     let mut map = map_at(t0, 0);
-    let early = ClockReading::new(t0 + Duration::from_secs(1) - ms(8), Frame(48_000));
+    let early = ClockReading::new(t0 + Duration::from_secs(1) - ms(8), Frame::new(48_000));
     assert_eq!(map.observe(early), Observed::Followed);
     assert_eq!(map.anchor().os(), t0 + Duration::from_secs(1) - ms(1));
 }
@@ -111,7 +114,7 @@ fn an_early_reading_moves_the_map_back_by_an_eighth() {
 fn a_reading_far_off_re_anchors_exactly() {
     let t0 = base();
     let mut map = map_at(t0, 0);
-    let far = ClockReading::new(t0 + Duration::from_secs(1) + ms(50), Frame(48_000));
+    let far = ClockReading::new(t0 + Duration::from_secs(1) + ms(50), Frame::new(48_000));
     assert_eq!(map.observe(far), Observed::Resynced);
     assert_eq!(map.anchor(), far);
 }
@@ -129,7 +132,7 @@ fn the_map_follows_a_drifting_clock_within_its_bound() {
     let at = |k: f64| t0 + Duration::from_secs_f64(k * period * (1.0 + epsilon));
     let mut map = map_at(t0, 0);
     for k in 1..=2000u64 {
-        let reading = ClockReading::new(at(k as f64), Frame(k * 512));
+        let reading = ClockReading::new(at(k as f64), Frame::new(k * 512));
         assert_eq!(map.observe(reading), Observed::Followed);
     }
     let delta = 0.005; // seconds past the last reading
@@ -154,9 +157,9 @@ fn a_reading_that_goes_backwards_is_rejected() {
     let mut map = map_at(t0, 48_000);
     let before = map;
     for bad in [
-        ClockReading::new(t0 - ms(1), Frame(48_512)),
-        ClockReading::new(t0 + ms(10), Frame(47_000)),
-        ClockReading::new(t0 + ms(10), Frame(48_000)),
+        ClockReading::new(t0 - ms(1), Frame::new(48_512)),
+        ClockReading::new(t0 + ms(10), Frame::new(47_000)),
+        ClockReading::new(t0 + ms(10), Frame::new(48_000)),
     ] {
         assert_eq!(map.observe(bad), Observed::Rejected, "{bad:?}");
         assert_eq!(map, before);
@@ -174,10 +177,13 @@ fn a_rate_change_keeps_the_instant_of_the_anchor() {
     let mut map = map_at(t0, 48_000);
     map.set_rate(SampleRate::SR_44K1);
     assert_eq!(map.rate(), SampleRate::SR_44K1);
-    assert_eq!(map.frame_at(t0), Some(Frame(44_100)));
+    assert_eq!(map.frame_at(t0), Some(Frame::new(44_100)));
     assert_eq!(
         map.frame_at(t0 + Duration::from_secs(1)),
-        Some(Frame(88_200))
+        Some(Frame::new(88_200))
     );
-    assert_eq!(map.os_at(Frame(88_200)), Some(t0 + Duration::from_secs(1)));
+    assert_eq!(
+        map.os_at(Frame::new(88_200)),
+        Some(t0 + Duration::from_secs(1))
+    );
 }

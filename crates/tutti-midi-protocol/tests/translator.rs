@@ -6,6 +6,7 @@
 //! returns the packet), so the test pins that a fold is never added.
 
 use tutti_midi_protocol::Translator;
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
     U7, Ump, Voice1, Voice2,
@@ -55,7 +56,7 @@ fn registered(bank: u8, index: u8, value: u32) -> Message {
         Voice2::Registered {
             bank: U7::of(bank),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }
@@ -66,7 +67,7 @@ fn assignable(bank: u8, index: u8, value: u32) -> Message {
         Voice2::Assignable {
             bank: U7::of(bank),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }
@@ -377,7 +378,7 @@ fn the_group_and_channel_are_kept() {
             Voice2::Registered {
                 bank: U7::of(0),
                 index: U7::of(0),
-                value: zx(2, 0),
+                value: ControlValue::new(zx(2, 0)),
             }
         )]
     );
@@ -409,7 +410,7 @@ fn groups_keep_their_own_runs() {
                 Voice2::Registered {
                     bank: U7::of(0),
                     index: U7::of(0),
-                    value: zx(4, 0),
+                    value: ControlValue::new(zx(4, 0)),
                 }
             ),
             Message::Midi2(
@@ -417,7 +418,7 @@ fn groups_keep_their_own_runs() {
                 Voice2::Assignable {
                     bank: U7::of(1),
                     index: U7::of(2),
-                    value: 0,
+                    value: ControlValue::new(0),
                 }
             ),
         ]
@@ -497,7 +498,7 @@ fn stateless_messages_are_widened() {
             at(A.0, A.1),
             Voice2::ControlChange {
                 controller: CCNumber::of(96),
-                value: 0xFFFF_FFFF,
+                value: ControlValue::new(0xFFFF_FFFF),
             }
         )]]
     );
@@ -550,7 +551,7 @@ fn reset_all_controllers_nulls_the_selection() {
                 at(A.0, A.1),
                 Voice2::ControlChange {
                     controller: CCNumber::RESET_ALL,
-                    value: 0,
+                    value: ControlValue::new(0),
                 }
             )],
             vec![],

@@ -102,17 +102,20 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
     let mut live = s.midi().input(target).expect("the take left the keys");
     let _ = s.update();
     let (c, k) = (MidiChannel::of(2), NoteNumber::of(60));
-    live.note_on(Frame(600), c, k, NoteVelocity::new(0x8000))
+    live.note_on(Frame::new(600), c, k, NoteVelocity::new(0x8000))
         .unwrap();
-    live.note_off(Frame(900), c, k).unwrap();
+    live.note_off(Frame::new(900), c, k).unwrap();
     blocks(&s, 3);
 
     let got: Vec<_> = take.drain().map(|e| (e.frame, e.ump)).collect();
     assert_eq!(
         got,
         [
-            (Frame(600), midi::note_on(MidiGroup::FIRST, c, 60, 0x8000)),
-            (Frame(900), midi::note_off(MidiGroup::FIRST, c, 60, 0)),
+            (
+                Frame::new(600),
+                midi::note_on(MidiGroup::FIRST, c, 60, 0x8000)
+            ),
+            (Frame::new(900), midi::note_off(MidiGroup::FIRST, c, 60, 0)),
         ]
     );
     assert_eq!(take.drain().count(), 0, "a second drain is empty");
@@ -145,11 +148,15 @@ fn a_take_is_placed_by_the_documented_figures() {
         lead: Samples(50),
         trim: Samples(10),
     };
-    assert_eq!(p.place(Frame(1_000)), Frame(660));
-    assert_eq!(p.place(Frame(300)), Frame(10), "saturates at the start");
+    assert_eq!(p.place(Frame::new(1_000)), Frame::new(660));
     assert_eq!(
-        TakePlacement::default().place(Frame(77)),
-        Frame(77),
+        p.place(Frame::new(300)),
+        Frame::new(10),
+        "saturates at the start"
+    );
+    assert_eq!(
+        TakePlacement::default().place(Frame::new(77)),
+        Frame::new(77),
         "no compensation, no move"
     );
 }

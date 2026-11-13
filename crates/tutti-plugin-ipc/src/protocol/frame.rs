@@ -13,7 +13,7 @@
 //! body halves ([`decode_prefix`], [`decode_body`]); the subprocess blocks, and
 //! takes [`read_frame`]. Both send through [`write_frame`].
 //!
-//! **A frame costs no allocation once its buffers are warm** (doc 027 P2b).
+//! **A frame costs no allocation once its buffers are warm**.
 //! Each thread writes through one buffer and the subprocess reads through one
 //! (the host's read buffer is its `PartialFrame`'s), each kept between frames
 //! and trimmed back to [`KEEP_BYTES`] after a larger one ([`keep`]). A message

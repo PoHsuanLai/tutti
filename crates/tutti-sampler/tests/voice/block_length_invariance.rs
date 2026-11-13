@@ -94,7 +94,7 @@ fn frame_at(i: usize) -> [f32; 2] {
 fn env_at(frame: usize, len: usize) -> Env {
     let beat = frame as f64 * BPM / 60.0 / SR;
     Env {
-        frame: Frame(frame as u64),
+        frame: Frame::new(frame as u64),
         sample_rate: SampleRate::of(SR),
         block_len: Samples(len),
         transport: TransportPosition::new(true, Bpm::of(BPM), Beat::new(beat), None),

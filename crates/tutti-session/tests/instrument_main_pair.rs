@@ -127,7 +127,7 @@ fn the_handle_counts_what_its_queue_dropped() {
     for k in 0..256u64 {
         rig.handle
             .keys_mut()
-            .push(Frame(1_000_000 + k), on)
+            .push(Frame::new(1_000_000 + k), on)
             .unwrap();
     }
     rig.block();
@@ -135,7 +135,7 @@ fn the_handle_counts_what_its_queue_dropped() {
     for k in 0..3u64 {
         rig.handle
             .keys_mut()
-            .push(Frame(9_000_000 + k), on)
+            .push(Frame::new(9_000_000 + k), on)
             .unwrap();
     }
     rig.block();

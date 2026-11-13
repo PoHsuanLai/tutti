@@ -79,8 +79,8 @@ fn bounce() -> Bounce {
     Bounce::project()
         .channels(ChannelLayout::STEREO)
         .range(Range::Frames(
-            Frame(0),
-            Frame((BLOCKS * GRAPH_MAX_BLOCK.get()) as u64),
+            Frame::new(0),
+            Frame::new((BLOCKS * GRAPH_MAX_BLOCK.get()) as u64),
         ))
         .sample_rate(RATE)
         .clock(ExportClock::frozen())

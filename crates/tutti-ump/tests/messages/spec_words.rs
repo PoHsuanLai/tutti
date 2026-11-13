@@ -15,6 +15,7 @@ use tutti_ump::{
     SysexStatus, System, TimeSignature, U4, U7, U14, UiHint, Ump, UmpVersion, Utility, Voice1,
     Voice2,
 };
+use tutti_ump::{BendValue, ControlValue};
 
 fn g(n: u8) -> MidiGroup {
     MidiGroup::of(n)
@@ -288,14 +289,14 @@ fn midi2_note_and_pressure() {
         [0x41A2_3C00, 0x1122_3344, 0, 0],
         v(Voice2::PolyPressure {
             note: note(60),
-            value: 0x1122_3344,
+            value: ControlValue::new(0x1122_3344),
         }),
     );
     pin(
         [0x4162_3C00, 0x8000_0000, 0, 0],
         v(Voice2::PerNotePitchBend {
             note: note(60),
-            value: 0x8000_0000,
+            value: BendValue::new(0x8000_0000),
         }),
     );
 }
@@ -310,7 +311,7 @@ fn midi2_per_note_and_controllers() {
         v(Voice2::RegisteredPerNote {
             note: note(60),
             controller: RegisteredPerNoteController::Pitch,
-            value: 0x3C00_0000,
+            value: ControlValue::new(0x3C00_0000),
         }),
     );
     pin(
@@ -318,7 +319,7 @@ fn midi2_per_note_and_controllers() {
         v(Voice2::AssignablePerNote {
             note: note(60),
             controller: 0xC8,
-            value: 1,
+            value: ControlValue::new(1),
         }),
     );
     // RPN bank 1 index 2; NRPN the same with opcode 3.
@@ -327,7 +328,7 @@ fn midi2_per_note_and_controllers() {
         v(Voice2::Registered {
             bank: u7(1),
             index: u7(2),
-            value: 0xDEAD_BEEF,
+            value: ControlValue::new(0xDEAD_BEEF),
         }),
     );
     pin(
@@ -335,7 +336,7 @@ fn midi2_per_note_and_controllers() {
         v(Voice2::Assignable {
             bank: u7(1),
             index: u7(2),
-            value: 0xDEAD_BEEF,
+            value: ControlValue::new(0xDEAD_BEEF),
         }),
     );
     // Relative controllers carry a two's complement: -1 is all ones.
@@ -359,16 +360,16 @@ fn midi2_per_note_and_controllers() {
         [0x41B2_0700, 0x1122_3344, 0, 0],
         v(Voice2::ControlChange {
             controller: CCNumber::of(7),
-            value: 0x1122_3344,
+            value: ControlValue::new(0x1122_3344),
         }),
     );
     pin(
         [0x41D2_0000, 0xC000_0000, 0, 0],
-        v(Voice2::ChannelPressure(0xC000_0000)),
+        v(Voice2::ChannelPressure(ControlValue::new(0xC000_0000))),
     );
     pin(
         [0x41E2_0000, 0x8000_0000, 0, 0],
-        v(Voice2::PitchBend(0x8000_0000)),
+        v(Voice2::PitchBend(BendValue::new(0x8000_0000))),
     );
     // Per-Note Management: option flags in byte 4, D is bit 1 and S bit 0.
     pin(
@@ -933,7 +934,7 @@ fn registered_per_note_controllers_have_their_appendix_a_numbers() {
                 Voice2::RegisteredPerNote {
                     note: note(60),
                     controller,
-                    value: 5,
+                    value: ControlValue::new(5),
                 },
             ),
         );

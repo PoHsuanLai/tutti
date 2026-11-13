@@ -95,7 +95,7 @@ fn period(x: &[f32]) -> f64 {
 }
 
 /// **A restart onto a 48 kHz device re-rates everything.** One second at
-/// 44.1 kHz, rolling at 120 BPM with a stop scheduled at `Frame(66 150)`
+/// 44.1 kHz, rolling at 120 BPM with a stop scheduled at `Frame::new(66 150)`
 /// (1.5 s at 44.1 kHz); then the restart, and one second on the new device:
 ///
 /// - the 1 kHz sine is 48 frames a cycle, not 44.1 (the graph runs at the
@@ -128,7 +128,7 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     let t = s.transport().clone();
     t.motion().try_send(MotionEvent::Play).expect("room");
     t.motion()
-        .schedule(At::Frame(Frame(66_150)), MotionEvent::stop_unfaded())
+        .schedule(At::Frame(Frame::new(66_150)), MotionEvent::stop_unfaded())
         .expect("room");
     let before = play(&mut s, &old, 441, 100);
     assert!(
@@ -167,7 +167,7 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     // in 48 kHz frames (1.75 s of wall clock), so the rate's adoption must
     // leave it where it is.
     t.motion()
-        .schedule(At::Frame(Frame(84_000)), MotionEvent::Play)
+        .schedule(At::Frame(Frame::new(84_000)), MotionEvent::Play)
         .expect("room");
 
     let mut after = play(&mut s, &new, 480, 1);

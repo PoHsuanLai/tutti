@@ -48,6 +48,7 @@ use tutti_types::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice1, Voice2,
 };
+use tutti_ump::{BendValue, ControlValue};
 
 const SR: f64 = 48_000.0;
 /// The block every case renders: a constant here, not an axis (see the
@@ -250,11 +251,11 @@ fn bench_events(c: &mut Criterion) {
             address,
             Voice2::ControlChange {
                 controller: CCNumber::of(1),
-                value: 0x8000_0000,
+                value: ControlValue::new(0x8000_0000),
             },
         ),
         Message::Midi1(address, Voice1::PitchBend(U14::of(9000))),
-        Message::Midi2(address, Voice2::PitchBend(0x9000_0000)),
+        Message::Midi2(address, Voice2::PitchBend(BendValue::new(0x9000_0000))),
         Message::Midi1(
             address,
             Voice1::PolyPressure {
@@ -266,7 +267,7 @@ fn bench_events(c: &mut Criterion) {
             address,
             Voice2::PolyPressure {
                 note,
-                value: 0x4000_0000,
+                value: ControlValue::new(0x4000_0000),
             },
         ),
     ];

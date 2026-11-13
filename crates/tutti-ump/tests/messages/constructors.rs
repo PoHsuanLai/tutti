@@ -5,6 +5,7 @@ use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
     System, U7, U14, Ump, Unknown, Voice2,
 };
+use tutti_ump::{BendValue, ControlValue};
 
 #[test]
 fn first_is_the_first_group_with_the_channel() {
@@ -118,7 +119,11 @@ fn the_midi2_constructors_are_the_section_7_4_words() {
         (0x4082_3C00, 0x1234_0000)
     );
     assert_eq!(
-        words(Message::control_change2(ch, cc, 0xDEAD_BEEF)),
+        words(Message::control_change2(
+            ch,
+            cc,
+            ControlValue::new(0xDEAD_BEEF)
+        )),
         (0x40B2_0700, 0xDEAD_BEEF)
     );
     // The program is the top byte of the second word; Bank Valid is clear.
@@ -127,7 +132,7 @@ fn the_midi2_constructors_are_the_section_7_4_words() {
         (0x40C2_0000, 0x0500_0000)
     );
     assert_eq!(
-        words(Message::pitch_bend2(ch, 0x8000_0000)),
+        words(Message::pitch_bend2(ch, BendValue::new(0x8000_0000))),
         (0x40E2_0000, 0x8000_0000)
     );
 }
@@ -146,9 +151,9 @@ fn a_constructed_message_decodes_back_to_itself() {
         Message::pitch_bend(ch, U14::MAX),
         Message::note_on2(ch, note, NoteVelocity::new(0xFFFF)),
         Message::note_off2(ch, note, NoteVelocity::MIN),
-        Message::control_change2(ch, cc, u32::MAX),
+        Message::control_change2(ch, cc, ControlValue::new(u32::MAX)),
         Message::program_change2(ch, v),
-        Message::pitch_bend2(ch, u32::MAX),
+        Message::pitch_bend2(ch, BendValue::new(u32::MAX)),
     ] {
         assert_eq!(Message::try_from(Ump::from(m)), Ok(m));
         assert_eq!(Ump::from(m).decode(), Ok(m));

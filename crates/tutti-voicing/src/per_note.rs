@@ -54,8 +54,9 @@
 //! The state is sized in [`PerNoteState::new`], about 270 KiB for each Group
 //! (128 notes on 16 channels), and `step` allocates nothing.
 
-use tutti_midi_protocol::{PitchBendSensitivity, bend_u32_to_signed_f32};
+use tutti_midi_protocol::{PitchBendSensitivity, bend_to_signed_f32};
 use tutti_types::Semitones;
+use tutti_ump::BendValue;
 use tutti_ump::{
     Address, Attribute, MidiChannel, NoteId, NoteNumber, Pitch, RegisteredPerNoteController, Rpn,
     Voice2,
@@ -310,7 +311,7 @@ impl PerNoteState {
                 note,
                 controller,
                 value,
-            } => self.control(address, note, u16::from(controller.number()), value),
+            } => self.control(address, note, u16::from(controller.number()), value.get()),
             Voice2::AssignablePerNote {
                 note,
                 controller,
@@ -319,13 +320,13 @@ impl PerNoteState {
                 address,
                 note,
                 Held::ASSIGNABLE | u16::from(controller),
-                value,
+                value.get(),
             ),
             Voice2::PerNotePitchBend { note, value } => {
-                self.control(address, note, Held::BEND, value);
+                self.control(address, note, Held::BEND, value.get());
             }
             Voice2::PolyPressure { note, value } => {
-                self.control(address, note, Held::PRESSURE, value);
+                self.control(address, note, Held::PRESSURE, value.get());
             }
             Voice2::PerNoteManagement {
                 note,
@@ -335,7 +336,7 @@ impl PerNoteState {
             Voice2::Registered { bank, index, value }
                 if Rpn::new(bank, index) == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY =>
             {
-                self.sensitivity(address, value);
+                self.sensitivity(address, value.get());
             }
             _ => {}
         }
@@ -395,9 +396,9 @@ impl PerNoteState {
         let range = self
             .channel_index(address)
             .map_or(self.default_range, |c| self.ranges[c]);
-        let bend = self.held[at]
-            .get(Held::BEND)
-            .map_or(0.0, |v| f64::from(bend_u32_to_signed_f32(v) * range.get()));
+        let bend = self.held[at].get(Held::BEND).map_or(0.0, |v| {
+            f64::from(bend_to_signed_f32(BendValue::new(v)) * range.get())
+        });
         let q = f64::from(told.q7_25()) + bend * f64::from(1u32 << 25);
         Pitch::from_q7_25(q.round().clamp(0.0, f64::from(u32::MAX)) as u32)
     }
@@ -503,7 +504,7 @@ impl PerNoteState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_ump::{CCNumber, MidiGroup, NoteVelocity, U7};
+    use tutti_ump::{CCNumber, ControlValue, MidiGroup, NoteVelocity, U7};
 
     const PITCH_60: u32 = 60 << 25;
 
@@ -528,7 +529,7 @@ mod tests {
             Voice2::RegisteredPerNote {
                 note: key(n),
                 controller: RegisteredPerNoteController::Pitch,
-                value,
+                value: ControlValue::new(value),
             },
         )
         .to_vec()
@@ -539,7 +540,7 @@ mod tests {
             a,
             Voice2::PerNotePitchBend {
                 note: key(n),
-                value,
+                value: BendValue::new(value),
             },
         )
         .to_vec()
@@ -569,7 +570,7 @@ mod tests {
             Voice2::Registered {
                 bank: U7::of(0),
                 index: U7::of(7),
-                value: semitones << 25,
+                value: ControlValue::new(semitones << 25),
             },
         )
         .to_vec()
@@ -859,14 +860,14 @@ mod tests {
         for m in [
             Voice2::ControlChange {
                 controller: CCNumber::RESET_ALL,
-                value: 0,
+                value: ControlValue::new(0),
             },
             Voice2::NoteOff {
                 note: key(5),
                 velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
-            Voice2::PitchBend(u32::MAX),
+            Voice2::PitchBend(BendValue::new(u32::MAX)),
         ] {
             assert_eq!(s.step(a, m), &[], "{m:?}");
         }

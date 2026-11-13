@@ -51,7 +51,7 @@ fn locate_play_and_stop_move_the_playhead_on_the_set_tempo() {
 fn a_scheduled_play_starts_on_its_frame() {
     let s = offline();
     s.set_tempo(Bpm::of(60.0)).expect("not following");
-    s.schedule(Frame(24_000), MotionEvent::Play).unwrap();
+    s.schedule(Frame::new(24_000), MotionEvent::Play).unwrap();
     render(&s, 48_000);
     let beat = s.transport().beat().get();
     assert!((beat - 0.5).abs() < 1e-3, "{beat}");
@@ -85,7 +85,7 @@ fn the_playhead_is_one_read_of_the_last_block() {
     render(&s, 2_000);
     let p = s.playhead();
     assert!(p.playing());
-    assert_eq!(p.frame(), Frame(1_000));
+    assert_eq!(p.frame(), Frame::new(1_000));
     assert!((p.beat().get() - (2.0 + 1_000.0 / 48_000.0)).abs() < 1e-9);
     assert!((p.seconds().get() - p.beat().get()).abs() < 1e-9);
     assert!(p.at().is_some());
@@ -97,7 +97,7 @@ fn the_playhead_is_one_read_of_the_last_block() {
         !p.playing(),
         "the stop and the beat it left are one snapshot"
     );
-    assert_eq!(p.frame(), Frame(2_000));
+    assert_eq!(p.frame(), Frame::new(2_000));
     assert!((p.beat().get() - (2.0 + 2_000.0 / 48_000.0)).abs() < 1e-9);
     assert_eq!(
         p.beat_now(p.at().unwrap() + 500_000),
@@ -116,7 +116,10 @@ fn a_detached_session_reads_a_resting_playhead() {
         .expect("builds");
     let p = s.playhead();
     assert!(!p.playing());
-    assert_eq!((p.beat(), p.frame(), p.at()), (Beat(0.0), Frame(0), None));
+    assert_eq!(
+        (p.beat(), p.frame(), p.at()),
+        (Beat(0.0), Frame::new(0), None)
+    );
     assert_eq!(s.beat_now(), Beat(0.0));
 }
 
@@ -210,7 +213,7 @@ fn a_play_at_a_beat_on_a_stopped_transport_is_refused() {
     );
 
     assert!(s.schedule(Beat(4.0), MotionEvent::stop_unfaded()).is_ok());
-    assert!(s.schedule(Frame(48_000), MotionEvent::Play).is_ok());
+    assert!(s.schedule(Frame::new(48_000), MotionEvent::Play).is_ok());
 }
 
 /// **A play at a beat straight after `play()` is taken**, before any block has

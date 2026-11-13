@@ -1341,7 +1341,7 @@ mod tests {
             c.push(Offset::new(at, Samples(len)).unwrap(), to).unwrap();
         }
         Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: SampleRate::SR_48K,
             block_len: Samples(len),
             transport,

@@ -162,7 +162,7 @@ fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
         .map(|_| &silence[..])
         .collect();
     let env = Env {
-        frame: tutti_types::Frame(0),
+        frame: tutti_types::Frame::new(0),
         sample_rate: rate,
         block_len: tutti_types::Samples(frames),
         transport: TransportPosition::default(),
@@ -438,7 +438,7 @@ fn the_output_is_what_the_plugin_wrote() {
             .collect();
         let inputs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
         let env = Env {
-            frame: tutti_types::Frame(0),
+            frame: tutti_types::Frame::new(0),
             sample_rate: rate,
             block_len: tutti_types::Samples(frames),
             transport: TransportPosition::default(),

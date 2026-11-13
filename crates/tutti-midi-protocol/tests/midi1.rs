@@ -8,6 +8,7 @@ use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
     RegisteredPerNoteController, Sysex7Packet, SysexStatus, System, U7, U14, Voice1, Voice2,
 };
+use tutti_ump::{BendValue, ControlValue};
 
 fn address(channel: u8) -> Address {
     Address {
@@ -152,19 +153,22 @@ fn the_other_messages_are_their_bytes() {
             address(1),
             Voice2::ControlChange {
                 controller: CCNumber::of(7),
-                value: 0x8000_0000
+                value: ControlValue::new(0x8000_0000)
             }
         )),
         [[0xB1, 7, 64]]
     );
     assert_eq!(
-        bytes(Message::Midi2(address(1), Voice2::PitchBend(0x8000_0000))),
+        bytes(Message::Midi2(
+            address(1),
+            Voice2::PitchBend(BendValue::new(0x8000_0000))
+        )),
         [[0xE1, 0x00, 0x40]]
     );
     assert_eq!(
         bytes(Message::Midi2(
             address(1),
-            Voice2::ChannelPressure(u32::MAX)
+            Voice2::ChannelPressure(ControlValue::new(u32::MAX))
         )),
         [[0xD1, 127]]
     );
@@ -173,7 +177,7 @@ fn the_other_messages_are_their_bytes() {
             address(1),
             Voice2::PolyPressure {
                 note: NoteNumber::of(60),
-                value: 0
+                value: ControlValue::new(0)
             }
         )),
         [[0xA1, 60, 0]]
@@ -185,17 +189,17 @@ fn messages_without_a_midi1_form_send_nothing() {
     let none = [
         Voice2::PerNotePitchBend {
             note: NoteNumber::of(60),
-            value: 0x8000_0000,
+            value: BendValue::new(0x8000_0000),
         },
         Voice2::RegisteredPerNote {
             note: NoteNumber::of(60),
             controller: RegisteredPerNoteController::Volume,
-            value: 1,
+            value: ControlValue::new(1),
         },
         Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
-            value: 0,
+            value: ControlValue::new(0),
         },
         Voice2::PerNoteManagement {
             note: NoteNumber::of(60),
@@ -257,14 +261,17 @@ fn narrow_returns_what_widen_was_given() {
 fn a_refusal_names_why_there_is_no_midi1_message() {
     let note = NoteNumber::of(60);
     assert_eq!(
-        narrow(Voice2::PerNotePitchBend { note, value: 0 }),
+        narrow(Voice2::PerNotePitchBend {
+            note,
+            value: BendValue::new(0)
+        }),
         Err(NoMidi1Form::PerNote)
     );
     assert_eq!(
         narrow(Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
-            value: 0
+            value: ControlValue::new(0)
         }),
         Err(NoMidi1Form::Parameter)
     );
@@ -276,4 +283,39 @@ fn a_refusal_names_why_there_is_no_midi1_message() {
         }),
         Err(NoMidi1Form::PerNoteManagement)
     );
+}
+
+/// `narrow_message` is `narrow` on the voice with the Group and Channel kept
+/// (M2-104 Appendix D.2): a MIDI 2.0 Note On on Group 2, Channel 5 is the MIDI
+/// 1.0 Note On there, and a message that is not MIDI 2.0 channel voice is as
+/// it came.
+#[test]
+fn narrow_message_keeps_the_address() {
+    use tutti_midi_protocol::{narrow_message, widen_velocity};
+    let to = Address::new(MidiGroup::of(2), MidiChannel::of(5));
+    let note = NoteNumber::of(60);
+    let on2 = Message::note_on2(to, note, widen_velocity(U7::of(100)));
+    assert_eq!(
+        narrow_message(on2),
+        Ok(Message::note_on(to, note, U7::of(100)))
+    );
+    let clock = Message::System(MidiGroup::of(2), System::TimingClock);
+    assert_eq!(narrow_message(clock), Ok(clock));
+    let already = Message::note_on(to, note, U7::of(9));
+    assert_eq!(narrow_message(already), Ok(already));
+}
+
+/// A message MIDI 1.0 has no single message for is refused with the reason
+/// `narrow` gives, not dropped: a Per-Note Pitch Bend (D.2.8).
+#[test]
+fn narrow_message_refuses_what_narrow_refuses() {
+    use tutti_midi_protocol::narrow_message;
+    let bend = Message::Midi2(
+        address(0),
+        Voice2::PerNotePitchBend {
+            note: NoteNumber::of(60),
+            value: BendValue::CENTER,
+        },
+    );
+    assert_eq!(narrow_message(bend), Err(NoMidi1Form::PerNote));
 }

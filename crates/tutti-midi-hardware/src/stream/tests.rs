@@ -14,6 +14,7 @@ use tutti_midi_device::{
     BlockName, Capabilities, DeviceId, EndpointId, FunctionBlock, MAX_ATTEMPTS, PortDirection,
     STEP_TIMEOUT,
 };
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Direction as BlockDirection, FirstGroup, FunctionBlockId, GroupSpan, Message, Stream,
     SysexAssembler, SysexStep,
@@ -307,7 +308,7 @@ fn midi1_wire() -> Wire {
 
 /// The SysEx7 packets of the payload between `F0` and `F7`.
 fn sysex(payload: &[u8]) -> Vec<Ump> {
-    tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, payload)
+    tutti_ump::Sysex7Packets::from_payload(tutti_ump::MidiGroup::FIRST, payload)
         .expect("7-bit payload")
         .collect()
 }
@@ -489,7 +490,7 @@ fn a_gap_in_the_stream_ring_never_joins_an_identity_reply() {
     ];
     let payload: Vec<u8> = [&valid[..6], &[0x11; 6], &valid[6..]].concat();
     let packets: Vec<Ump> =
-        tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, &payload)
+        tutti_ump::Sysex7Packets::from_payload(tutti_ump::MidiGroup::FIRST, &payload)
             .unwrap()
             .collect();
     assert_eq!(packets.len(), 4, "Start, Continue, Continue, End");
@@ -702,7 +703,7 @@ fn rpn_ump(value: u32) -> Ump {
         Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
-            value,
+            value: ControlValue::new(value),
         },
     ))
 }

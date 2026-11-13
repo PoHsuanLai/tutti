@@ -18,7 +18,7 @@ fn registered(channel: MidiChannel, rpn: Rpn, value: u32) -> Ump {
         Voice2::Registered {
             bank: rpn.bank(),
             index: rpn.index(),
-            value,
+            value: ControlValue::new(value),
         },
     )
     .into()

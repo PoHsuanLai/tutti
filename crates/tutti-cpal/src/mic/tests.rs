@@ -197,7 +197,7 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
     let mut node =
         tutti_graph::contract::prepared(tutti_graph::InletNode::new(ring), SampleRate::SR_48K, 64);
     let env = tutti_graph::Env {
-        frame: tutti_types::Frame(0),
+        frame: tutti_types::Frame::new(0),
         sample_rate: SampleRate::SR_48K,
         block_len: Samples(3),
         transport: tutti_graph::TransportPosition::default(),

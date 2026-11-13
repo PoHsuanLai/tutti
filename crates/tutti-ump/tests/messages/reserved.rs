@@ -11,6 +11,7 @@
 //! and a `0ddddddd` data byte with its top bit set are `Unknown`, which keeps
 //! the words.
 
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, BlockSelect, ChordBass, ChordName,
     ChordPitch, ChordType, Direction, EndpointInfo, Flex, FlexAddress, FlexTextKind, Form,
@@ -280,7 +281,7 @@ fn reserved_values_are_kept() {
                 Voice2::RegisteredPerNote {
                     note: n(60),
                     controller: RegisteredPerNoteController::Reserved(controller as u8),
-                    value: 7,
+                    value: ControlValue::new(7),
                 },
             ),
         );

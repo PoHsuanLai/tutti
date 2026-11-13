@@ -11,7 +11,7 @@ fn parse(payload: &[u8]) -> Read {
     let mut framed = vec![0xF0];
     framed.extend_from_slice(payload);
     framed.push(0xF7);
-    read(SysexMessage::new(&framed).expect("a framed message"))
+    read(SysexMessage::from_framed(&framed).expect("a framed message"))
 }
 
 fn tuning(payload: &[u8]) -> TuningMessage {

@@ -105,7 +105,7 @@ impl Clock {
     fn env(&self, len: usize) -> Env {
         let c = self.clock.get();
         Env {
-            frame: Frame(self.frame.get()),
+            frame: Frame::new(self.frame.get()),
             sample_rate: c.sample_rate(),
             block_len: Samples(len),
             transport: tutti_graph::TransportPosition::counted(

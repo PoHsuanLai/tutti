@@ -224,7 +224,19 @@ impl<F: Loaded> Instance<F> {
     /// carries the mode, and the Processor changes at the pump, as a rate
     /// change's does. Returns whether the plugin now runs in `mode` (or is
     /// on its way to it).
-    pub(super) fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+    ///
+    /// With `rt`, the node's own realtime end out of any executor (a fork
+    /// being built), a reconfiguration runs here to the end, as
+    /// [`set_sample_rate`](Self::set_sample_rate)'s does: the Processor is
+    /// lent again on return, so the node's first block has one. Without, the
+    /// recall waits for the audio thread's next poll and a later
+    /// [`pump`](Self::pump) finishes it.
+    pub(super) fn set_render_mode(
+        &mut self,
+        main: &MainThread,
+        mode: RenderMode,
+        rt: Option<&mut Rt<F::Processor>>,
+    ) -> bool {
         self.prepare = self.prepare.with_mode(mode);
         self.state.set_mode(mode);
         let live = self
@@ -237,7 +249,16 @@ impl<F: Loaded> Instance<F> {
         if self.lifecycle.is_poisoned() {
             return false;
         }
-        match self.drive(main, Event::Op(HostOp::Reconfigure(self.prepare))) {
+        let mut refused = self.drive(main, Event::Op(HostOp::Reconfigure(self.prepare)));
+        if let Some(rt) = rt {
+            // The recall raised above: the realtime end hands the Processor
+            // back, the tick runs the parked plan, and the reactivated
+            // Processor is lent and taken.
+            let _ = rt.poll(Processor::stop);
+            refused = refused.or(self.drive(main, Event::Tick));
+            let _ = rt.poll(Processor::stop);
+        }
+        match refused {
             None => true,
             Some(why) => {
                 self.note_refusal(why);

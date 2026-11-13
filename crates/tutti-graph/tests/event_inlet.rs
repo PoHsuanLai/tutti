@@ -77,7 +77,7 @@ fn keys(d: &Direct<EventInletNode>) -> Vec<u32> {
 /// re-prepare or a stretch it did not run.
 fn block_at(d: &mut Direct<EventInletNode>, frame: u64, rate: SampleRate, len: usize) {
     d.block_in(&Env {
-        frame: Frame(frame),
+        frame: Frame::new(frame),
         sample_rate: rate,
         block_len: Samples(len),
         transport: TransportPosition::default(),
@@ -117,7 +117,7 @@ fn an_event_lands_on_its_frame_across_block_sizes() {
         let (node, mut tx) = EventInletNode::pair(EventCapacity::of(64));
         let mut d = Direct::new(node, R48, size);
         for (k, &f) in frames.iter().enumerate().rev() {
-            tx.push(Frame(f), note(k as u32)).unwrap();
+            tx.push(Frame::new(f), note(k as u32)).unwrap();
         }
         let mut got = Vec::new();
         let (mut start, mut blocks) = (0u64, 0u64);
@@ -155,11 +155,11 @@ fn next_block_late_and_not_yet() {
         0,
         "as soon as possible is not late"
     );
-    tx.push(Frame(5), note(2)).unwrap();
+    tx.push(Frame::new(5), note(2)).unwrap();
     d.block(); // 192..256
     assert_eq!(sent(&d), [(0, 9, 2)], "a past frame lands at offset 0");
     assert_eq!(tx.counts().losses().late, 1);
-    tx.push(Frame(64 * 8 + 20), note(3)).unwrap();
+    tx.push(Frame::new(64 * 8 + 20), note(3)).unwrap();
     for _ in 0..3 {
         d.block(); // 256..448
         assert_eq!(sent(&d), []);
@@ -189,12 +189,12 @@ fn equal_frames_leave_in_push_order() {
     let (mut d, mut tx) = rig(256);
     d.block();
     d.block();
-    tx.push(Frame(128 + 40), note(61)).unwrap();
-    tx.push(Frame(128 + 10), note(62)).unwrap();
+    tx.push(Frame::new(128 + 40), note(61)).unwrap();
+    tx.push(Frame::new(128 + 10), note(62)).unwrap();
     tx.push(Stamp::NextBlock, note(64)).unwrap();
-    tx.push(Frame(5), note(63)).unwrap();
-    tx.push(Frame(128 + 20), note(70)).unwrap();
-    tx.push(Frame(128 + 20), off(70)).unwrap();
+    tx.push(Frame::new(5), note(63)).unwrap();
+    tx.push(Frame::new(128 + 20), note(70)).unwrap();
+    tx.push(Frame::new(128 + 20), off(70)).unwrap();
     d.block();
     assert_eq!(
         sent(&d),
@@ -254,9 +254,10 @@ fn push_all_answers_how_many_were_taken_and_counts_the_rest_lost() {
 fn full_list_keeps(last: Ump, survivor: Vec<u32>) {
     let (mut d, mut tx) = rig(8);
     for k in 0..7 {
-        tx.push(Frame(10_000 + u64::from(k)), note(10 + k)).unwrap();
+        tx.push(Frame::new(10_000 + u64::from(k)), note(10 + k))
+            .unwrap();
     }
-    tx.push(Frame(20_000), last).unwrap();
+    tx.push(Frame::new(20_000), last).unwrap();
     d.block(); // the list is full
     assert_eq!(tx.counts().losses().evicted, 0);
     tx.push(Stamp::NextBlock, note(72)).unwrap();
@@ -295,11 +296,11 @@ fn a_full_list_keeps_a_panic_controller() {
 fn a_list_of_nothing_but_note_offs_loses_the_latest() {
     let (mut d, mut tx) = rig(8);
     for k in 0u64..8 {
-        tx.push(Frame(10_000 + k), off(10)).unwrap();
+        tx.push(Frame::new(10_000 + k), off(10)).unwrap();
     }
     d.block();
-    tx.push(Frame(10_000_000), off(11)).unwrap();
-    tx.push(Frame(9_000), off(12)).unwrap();
+    tx.push(Frame::new(10_000_000), off(11)).unwrap();
+    tx.push(Frame::new(9_000), off(12)).unwrap();
     d.block();
     assert_eq!(tx.counts().losses().evicted, 2);
     block_at(&mut d, 9_000, R48, 64);
@@ -313,10 +314,11 @@ fn a_list_of_nothing_but_note_offs_loses_the_latest() {
 fn a_note_on_never_displaces_a_waiting_note_off() {
     let (mut d, mut tx) = rig(8);
     for k in 0u32..8 {
-        tx.push(Frame(10_000 + u64::from(k)), off(20 + k)).unwrap();
+        tx.push(Frame::new(10_000 + u64::from(k)), off(20 + k))
+            .unwrap();
     }
     d.block();
-    tx.push(Frame(9_000), note(30)).unwrap();
+    tx.push(Frame::new(9_000), note(30)).unwrap();
     d.block();
     assert_eq!(tx.counts().losses().evicted, 1);
     block_at(&mut d, 9_000, R48, 64);
@@ -362,7 +364,7 @@ fn a_port_narrower_than_the_burst_counts_refused() {
 #[test]
 fn the_writer_reads_the_clock_and_its_rate() {
     let (mut d, tx) = rig(8);
-    let at = |frame, rate| Some(Moment::new(Frame(frame), rate));
+    let at = |frame, rate| Some(Moment::new(Frame::new(frame), rate));
     assert_eq!(tx.clock(), at(0, R48));
     d.block();
     assert_eq!(tx.clock(), at(64, R48));
@@ -379,7 +381,7 @@ fn the_writer_reads_the_clock_and_its_rate() {
 #[test]
 fn what_waits_is_rescaled_by_a_rate_change() {
     let (mut d, mut tx) = rig(8);
-    tx.push(Frame(1_000), note(60)).unwrap();
+    tx.push(Frame::new(1_000), note(60)).unwrap();
     d.block();
     d.block();
     d.block(); // the node holds it now
@@ -399,7 +401,7 @@ fn a_moment_read_before_a_re_prepare_keeps_its_instant() {
     d.block();
     d.block();
     let read = tx.clock().expect("prepared");
-    assert_eq!((read.frame(), read.rate()), (Frame(192), R48));
+    assert_eq!((read.frame(), read.rate()), (Frame::new(192), R48));
     reprepare(&mut d, R441);
     tx.push(read.after(Samples(500)), note(61)).unwrap();
     // 692 x 44100 / 48000 = 635.7, so offset 8 of the block at 628
@@ -414,7 +416,7 @@ fn a_moment_read_before_a_re_prepare_keeps_its_instant() {
 #[test]
 fn a_bare_frame_is_at_the_rate_the_node_has_when_it_takes_it() {
     let (mut d, mut tx) = rig(8);
-    tx.push(Frame(1_000), note(60)).unwrap();
+    tx.push(Frame::new(1_000), note(60)).unwrap();
     reprepare(&mut d, R441); // the ring still holds it
     // frame 1000 of 44.1 kHz: offset 40 of the block at 960
     block_at(&mut d, 960, R441, 64);
@@ -427,8 +429,8 @@ fn a_bare_frame_is_at_the_rate_the_node_has_when_it_takes_it() {
 #[test]
 fn what_came_due_while_the_node_slept_lands_on_the_first_frame() {
     let (mut d, mut tx) = rig(8);
-    tx.push(Frame(100), note(60)).unwrap();
-    tx.push(Frame(120), note(61)).unwrap();
+    tx.push(Frame::new(100), note(60)).unwrap();
+    tx.push(Frame::new(120), note(61)).unwrap();
     d.block(); // frames 0..64: both wait
     block_at(&mut d, 500, R48, 64);
     assert_eq!(sent(&d), [(0, 9, 60), (0, 9, 61)]);
@@ -439,7 +441,7 @@ fn what_came_due_while_the_node_slept_lands_on_the_first_frame() {
 #[test]
 fn what_waits_survives_a_reset() {
     let (mut d, mut tx) = rig(8);
-    tx.push(Frame(200), note(70)).unwrap();
+    tx.push(Frame::new(200), note(70)).unwrap();
     d.block();
     d.node.reset();
     d.block();
@@ -637,10 +639,10 @@ fn script(k: u32) -> Vec<(Stamp, Ump)> {
     for i in 0..30u32 {
         let frame = u64::from(i) * (13 + u64::from(k)) + u64::from(k);
         let ump = if i % 4 == 3 { off(i) } else { note(i + k) };
-        v.push((Stamp::Frame(Frame(frame)), ump));
+        v.push((Stamp::Frame(Frame::new(frame)), ump));
     }
-    v.push((Stamp::Frame(Frame(100)), note(1)));
-    v.push((Stamp::Frame(Frame(100)), off(1)));
+    v.push((Stamp::Frame(Frame::new(100)), note(1)));
+    v.push((Stamp::Frame(Frame::new(100)), off(1)));
     v
 }
 
@@ -663,7 +665,7 @@ fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
         let mut tap = tap.expect("opened");
         let mut got = Vec::new();
         let mut buf = [TapEvent {
-            frame: Frame(0),
+            frame: Frame::new(0),
             ump: Ump::default(),
         }; 64];
         loop {
@@ -691,7 +693,7 @@ fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
     let want: Vec<TapEvent> = want
         .into_iter()
         .map(|(f, ump)| TapEvent {
-            frame: Frame(f),
+            frame: Frame::new(f),
             ump,
         })
         .collect();
@@ -710,7 +712,7 @@ fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
 #[test]
 fn the_fork_is_silent() {
     let (mut ed, mut exec, mut writers, _) = graph(1, 1, false, false, false);
-    writers[0].push(Frame(10), note(5)).unwrap();
+    writers[0].push(Frame::new(10), note(5)).unwrap();
     commit(&mut ed, &mut exec);
     let (mut fed, mut fexec) = ed
         .fork(

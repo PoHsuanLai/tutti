@@ -95,7 +95,7 @@ struct State {
     /// module's own `IRunLoop` (the factory's host context), which cannot say
     /// which plugin it serves: see [`RunLoop::scope`].
     scope: Option<Owner>,
-    /// Dispatch tallies. Test-only: see [`RunLoopActivity`].
+    /// Dispatch tallies. Test-only: see [`RunLoopActivity`](crate::RunLoopActivity).
     #[cfg(feature = "conformance")]
     timers_fired: u64,
     #[cfg(feature = "conformance")]

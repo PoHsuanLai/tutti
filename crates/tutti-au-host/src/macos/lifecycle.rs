@@ -7,8 +7,6 @@
 //! callback *and* the compensating uninitialize cannot be handed back, and
 //! `Refused::plugin` is `None`.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::Arc;
 
 use tutti_au_ffi::{RenderNotify, Renderer};

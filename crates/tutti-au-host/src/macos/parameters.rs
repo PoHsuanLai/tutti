@@ -49,7 +49,6 @@
 //! fabricated success. Do not "fix" those tests by relaxing them into a tautology;
 //! the absence is the measurement.
 
-#![cfg(target_os = "macos")]
 // AudioUnit is an opaque C pointer (`ComponentInstanceRecord*`) that every
 // AudioToolbox call dereferences. Callers must supply a valid unit, same as
 // every other entry point in this crate.
@@ -805,7 +804,6 @@ pub fn dependents_of_at(unit: &Unit, addr: ParamAddress, id: u32) -> Option<Vec<
 }
 
 #[cfg(test)]
-#[cfg(target_os = "macos")]
 mod tests {
     use super::*;
     use crate::component::*;

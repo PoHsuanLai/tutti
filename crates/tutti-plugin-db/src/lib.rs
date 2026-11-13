@@ -27,6 +27,7 @@
 mod facts;
 mod format;
 mod fs;
+mod os_path;
 mod pedal;
 mod scanner;
 #[cfg(feature = "json")]

@@ -354,63 +354,6 @@ mod tests {
         assert_eq!(found.len(), 1);
     }
 
-    /// A symlink back to an ancestor must not be walked again. Without the seen
-    /// set the walk follows `loop` until the OS refuses (about 40 links deep) and
-    /// reports the plugin once per level.
-    #[cfg(unix)]
-    #[test]
-    fn a_symlink_cycle_ends_the_walk_and_reports_each_plugin_once() {
-        let dir = TempDir::new().unwrap();
-        let sub = dir.path().join("a").join("b");
-        std::fs::create_dir_all(&sub).unwrap();
-        create_fake_plugin(&sub, "deep.vst3");
-        std::os::unix::fs::symlink(dir.path(), sub.join("loop")).unwrap();
-
-        let found = discover([dir.path()]);
-
-        assert_eq!(found.len(), 1, "got {found:?}");
-        assert_eq!(found[0].0, sub.join("deep.vst3").canonicalize().unwrap());
-    }
-
-    /// Two routes to one plugin report it once (a file link and a directory
-    /// link), and a dangling link not at all.
-    #[cfg(unix)]
-    #[test]
-    fn a_plugin_reached_twice_is_reported_once_and_a_dangling_link_not_at_all() {
-        let dir = TempDir::new().unwrap();
-        let real = dir.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        let synth = create_fake_plugin(&real, "synth.clap");
-        std::os::unix::fs::symlink(&synth, dir.path().join("link.clap")).unwrap();
-        std::os::unix::fs::symlink(&real, dir.path().join("alias")).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("nowhere"), real.join("dead.vst3")).unwrap();
-
-        let found = discover([dir.path()]);
-
-        assert_eq!(found.len(), 1, "got {found:?}");
-        assert_eq!(found[0].1, PluginFormat::Clap);
-    }
-
-    /// A plugin is reported under its canonical path with the format of the name
-    /// it was found under, so a link to a file named anything keeps its format
-    /// and two routes give one key.
-    #[cfg(unix)]
-    #[test]
-    fn a_link_is_reported_under_its_target_with_the_links_format() {
-        let dir = TempDir::new().unwrap();
-        let target = create_fake_plugin(dir.path(), "libsynth.bin");
-        let links = dir.path().join("links");
-        std::fs::create_dir(&links).unwrap();
-        std::os::unix::fs::symlink(&target, links.join("synth.clap")).unwrap();
-
-        let found = discover([links.as_path()]);
-
-        assert_eq!(
-            found,
-            vec![(target.canonicalize().unwrap(), PluginFormat::Clap)]
-        );
-    }
-
     /// The seen set spans the roots: a root inside another is not walked twice.
     #[test]
     fn overlapping_roots_report_each_plugin_once() {
@@ -422,44 +365,6 @@ mod tests {
         let found = discover([dir.path(), sub.as_path()]);
 
         assert_eq!(found.len(), 1, "got {found:?}");
-    }
-
-    /// A bundle directory holding one bare-stem binary, with the binary's and the
-    /// directory's times set; returns the facts read.
-    #[cfg(unix)]
-    fn facts_of_bundle(name: &str, module_secs: u64, dir_secs: u64) -> FileFacts {
-        use std::time::{Duration, UNIX_EPOCH};
-        let dir = TempDir::new().unwrap();
-        let bundle = dir.path().join(name);
-        let arch = bundle
-            .join("Contents")
-            .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
-        std::fs::create_dir_all(&arch).unwrap();
-        let module = arch.join(name.split('.').next().unwrap());
-        std::fs::write(&module, b"x").unwrap();
-        let set = |p: &Path, secs: u64| {
-            std::fs::File::open(p)
-                .unwrap()
-                .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
-                .unwrap();
-        };
-        set(&module, module_secs);
-        set(&bundle, dir_secs);
-        FileFacts::read(&bundle)
-    }
-
-    /// Replacing a bundle's binary leaves the directory's own time alone; the
-    /// facts must still move, for every bundle format.
-    #[cfg(unix)]
-    #[test]
-    fn a_bundle_whose_binary_changed_reads_as_changed() {
-        for name in ["Reverb.vst3", "Legacy.vst", "Synth.clap", "Verb.component"] {
-            let facts = facts_of_bundle(name, 2_000_000_000, 1_000_000_000);
-            assert_eq!(facts.mtime, Some(2_000_000_000), "{name}");
-            // The directory later than the binary still wins.
-            let facts = facts_of_bundle(name, 1_000_000_000, 3_000_000_000);
-            assert_eq!(facts.mtime, Some(3_000_000_000), "{name}");
-        }
     }
 
     #[test]
@@ -476,5 +381,100 @@ mod tests {
         assert!(!absent.exists);
         assert_eq!(absent.mtime, None);
         assert_eq!(absent.format, Some(PluginFormat::Vst3));
+    }
+
+    #[cfg(unix)]
+    mod unix_tests {
+        use super::*;
+
+        /// A symlink back to an ancestor must not be walked again. Without the seen
+        /// set the walk follows `loop` until the OS refuses (about 40 links deep) and
+        /// reports the plugin once per level.
+        #[test]
+        fn a_symlink_cycle_ends_the_walk_and_reports_each_plugin_once() {
+            let dir = TempDir::new().unwrap();
+            let sub = dir.path().join("a").join("b");
+            std::fs::create_dir_all(&sub).unwrap();
+            create_fake_plugin(&sub, "deep.vst3");
+            std::os::unix::fs::symlink(dir.path(), sub.join("loop")).unwrap();
+
+            let found = discover([dir.path()]);
+
+            assert_eq!(found.len(), 1, "got {found:?}");
+            assert_eq!(found[0].0, sub.join("deep.vst3").canonicalize().unwrap());
+        }
+
+        /// Two routes to one plugin report it once (a file link and a directory
+        /// link), and a dangling link not at all.
+        #[test]
+        fn a_plugin_reached_twice_is_reported_once_and_a_dangling_link_not_at_all() {
+            let dir = TempDir::new().unwrap();
+            let real = dir.path().join("real");
+            std::fs::create_dir(&real).unwrap();
+            let synth = create_fake_plugin(&real, "synth.clap");
+            std::os::unix::fs::symlink(&synth, dir.path().join("link.clap")).unwrap();
+            std::os::unix::fs::symlink(&real, dir.path().join("alias")).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), real.join("dead.vst3")).unwrap();
+
+            let found = discover([dir.path()]);
+
+            assert_eq!(found.len(), 1, "got {found:?}");
+            assert_eq!(found[0].1, PluginFormat::Clap);
+        }
+
+        /// A plugin is reported under its canonical path with the format of the name
+        /// it was found under, so a link to a file named anything keeps its format
+        /// and two routes give one key.
+        #[test]
+        fn a_link_is_reported_under_its_target_with_the_links_format() {
+            let dir = TempDir::new().unwrap();
+            let target = create_fake_plugin(dir.path(), "libsynth.bin");
+            let links = dir.path().join("links");
+            std::fs::create_dir(&links).unwrap();
+            std::os::unix::fs::symlink(&target, links.join("synth.clap")).unwrap();
+
+            let found = discover([links.as_path()]);
+
+            assert_eq!(
+                found,
+                vec![(target.canonicalize().unwrap(), PluginFormat::Clap)]
+            );
+        }
+
+        /// A bundle directory holding one bare-stem binary, with the binary's and the
+        /// directory's times set; returns the facts read.
+        fn facts_of_bundle(name: &str, module_secs: u64, dir_secs: u64) -> FileFacts {
+            use std::time::{Duration, UNIX_EPOCH};
+            let dir = TempDir::new().unwrap();
+            let bundle = dir.path().join(name);
+            let arch = bundle
+                .join("Contents")
+                .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
+            std::fs::create_dir_all(&arch).unwrap();
+            let module = arch.join(name.split('.').next().unwrap());
+            std::fs::write(&module, b"x").unwrap();
+            let set = |p: &Path, secs: u64| {
+                std::fs::File::open(p)
+                    .unwrap()
+                    .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+                    .unwrap();
+            };
+            set(&module, module_secs);
+            set(&bundle, dir_secs);
+            FileFacts::read(&bundle)
+        }
+
+        /// Replacing a bundle's binary leaves the directory's own time alone; the
+        /// facts must still move, for every bundle format.
+        #[test]
+        fn a_bundle_whose_binary_changed_reads_as_changed() {
+            for name in ["Reverb.vst3", "Legacy.vst", "Synth.clap", "Verb.component"] {
+                let facts = facts_of_bundle(name, 2_000_000_000, 1_000_000_000);
+                assert_eq!(facts.mtime, Some(2_000_000_000), "{name}");
+                // The directory later than the binary still wins.
+                let facts = facts_of_bundle(name, 1_000_000_000, 3_000_000_000);
+                assert_eq!(facts.mtime, Some(3_000_000_000), "{name}");
+            }
+        }
     }
 }

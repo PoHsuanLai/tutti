@@ -62,8 +62,6 @@
 //! alone push state into a live one — so listing is a free function that never
 //! touches an `AuLoaded`.
 
-#![cfg(target_os = "macos")]
-
 use std::path::Path;
 use tutti_au_ffi::property::ClassInfo;
 use tutti_au_ffi::{Element, Scope};

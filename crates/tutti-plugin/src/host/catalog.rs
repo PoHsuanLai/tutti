@@ -913,28 +913,6 @@ mod tests {
         );
     }
 
-    /// An alias of a blacklisted plugin is refused like the plugin itself: the
-    /// catalog keys by canonical path.
-    #[cfg(unix)]
-    #[test]
-    fn a_blacklist_set_through_an_alias_holds_for_the_real_path() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let real = dir.path().join("Real.vst3");
-        std::fs::write(&real, b"x").unwrap();
-        let alias = dir.path().join("Alias.vst3");
-        std::os::unix::fs::symlink(&real, &alias).unwrap();
-        let mut plugins = Catalog::empty(CatalogConfig::new(
-            dir.path().join("db.json"),
-            crate::catalog::NO_SCAN_DIRS,
-        ));
-
-        plugins.blacklist(&alias, "boom");
-
-        assert!(plugins.is_blacklisted(&real));
-        assert!(plugins.is_blacklisted(&alias));
-        assert_eq!(plugins.db().len(), 1);
-    }
-
     /// The save after a rescan is off the owner's thread: `poll_scan` reports
     /// `Done` while the saver is still running, and the next `save` waits for
     /// it, and dropping the catalog waits for it.
@@ -974,32 +952,6 @@ mod tests {
         assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    /// `remove` and `unblacklist` through an alias reach the row of a file that
-    /// is gone: the key resolves the parent and keeps the name.
-    #[cfg(unix)]
-    #[test]
-    fn remove_through_an_alias_reaches_a_deleted_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let real_dir = dir.path().join("real");
-        std::fs::create_dir(&real_dir).unwrap();
-        let file = real_dir.join("Gone.vst3");
-        std::fs::write(&file, b"x").unwrap();
-        let alias_dir = dir.path().join("alias");
-        std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
-        let mut plugins = Catalog::empty(CatalogConfig::new(
-            dir.path().join("db.json"),
-            crate::catalog::NO_SCAN_DIRS,
-        ));
-        plugins.blacklist(&file, "boom");
-        plugins.blacklist(real_dir.join("Also.vst3"), "boom");
-        std::fs::remove_file(&file).unwrap();
-
-        plugins.remove(alias_dir.join("Gone.vst3"));
-        assert!(plugins.unblacklist(alias_dir.join("Also.vst3")));
-
-        assert_eq!(plugins.db().len(), 0);
-    }
-
     /// A plugin the user unblacklists, or removes, is not put back by the next
     /// recovery from an entry a failed save kept in the sentinel.
     #[test]
@@ -1027,35 +979,85 @@ mod tests {
         assert!(!config.pedal_path().exists());
     }
 
-    /// The whole catalog works through a root that is a link, as macOS's temp
-    /// dir is: a sentinel entry, a blacklist, a lookup and an unblacklist all
-    /// name the file by the link path and meet at the canonical key. Linux has
-    /// no such temp dir, so the link is made here.
     #[cfg(unix)]
-    #[test]
-    fn a_catalog_under_a_symlinked_root_agrees_with_itself() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let real = dir.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        std::fs::write(real.join("A.vst3"), b"x").unwrap();
-        std::fs::write(real.join("B.vst3"), b"x").unwrap();
-        let root = dir.path().join("root");
-        std::os::unix::fs::symlink(&real, &root).unwrap();
-        let config = CatalogConfig::new(root.join("db.json"), crate::catalog::NO_SCAN_DIRS);
-        std::fs::write(config.pedal_path(), root.join("A.vst3").to_str().unwrap()).unwrap();
-        let mut plugins = Catalog::empty(config).with_saver(|_| Ok(()));
+    mod unix_tests {
+        use super::*;
 
-        let crashed = plugins.recover_crash().unwrap();
-        plugins.blacklist(root.join("B.vst3"), "boom");
+        /// An alias of a blacklisted plugin is refused like the plugin itself: the
+        /// catalog keys by canonical path.
+        #[test]
+        fn a_blacklist_set_through_an_alias_holds_for_the_real_path() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let real = dir.path().join("Real.vst3");
+            std::fs::write(&real, b"x").unwrap();
+            let alias = dir.path().join("Alias.vst3");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            let mut plugins = Catalog::empty(CatalogConfig::new(
+                dir.path().join("db.json"),
+                crate::catalog::NO_SCAN_DIRS,
+            ));
 
-        let real_a = real.canonicalize().unwrap().join("A.vst3");
-        assert_eq!(crashed, vec![real_a.clone()]);
-        for name in ["A.vst3", "B.vst3"] {
-            assert!(plugins.is_blacklisted(root.join(name)), "{name} by link");
-            assert!(plugins.is_blacklisted(real.join(name)), "{name} by path");
+            plugins.blacklist(&alias, "boom");
+
+            assert!(plugins.is_blacklisted(&real));
+            assert!(plugins.is_blacklisted(&alias));
+            assert_eq!(plugins.db().len(), 1);
         }
-        assert!(plugins.unblacklist(root.join("A.vst3")));
-        assert!(!plugins.is_blacklisted(real_a));
-        assert_eq!(plugins.db().len(), 1);
+
+        /// `remove` and `unblacklist` through an alias reach the row of a file that
+        /// is gone: the key resolves the parent and keeps the name.
+        #[test]
+        fn remove_through_an_alias_reaches_a_deleted_file() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let real_dir = dir.path().join("real");
+            std::fs::create_dir(&real_dir).unwrap();
+            let file = real_dir.join("Gone.vst3");
+            std::fs::write(&file, b"x").unwrap();
+            let alias_dir = dir.path().join("alias");
+            std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
+            let mut plugins = Catalog::empty(CatalogConfig::new(
+                dir.path().join("db.json"),
+                crate::catalog::NO_SCAN_DIRS,
+            ));
+            plugins.blacklist(&file, "boom");
+            plugins.blacklist(real_dir.join("Also.vst3"), "boom");
+            std::fs::remove_file(&file).unwrap();
+
+            plugins.remove(alias_dir.join("Gone.vst3"));
+            assert!(plugins.unblacklist(alias_dir.join("Also.vst3")));
+
+            assert_eq!(plugins.db().len(), 0);
+        }
+
+        /// The whole catalog works through a root that is a link, as macOS's temp
+        /// dir is: a sentinel entry, a blacklist, a lookup and an unblacklist all
+        /// name the file by the link path and meet at the canonical key. Linux has
+        /// no such temp dir, so the link is made here.
+        #[test]
+        fn a_catalog_under_a_symlinked_root_agrees_with_itself() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let real = dir.path().join("real");
+            std::fs::create_dir(&real).unwrap();
+            std::fs::write(real.join("A.vst3"), b"x").unwrap();
+            std::fs::write(real.join("B.vst3"), b"x").unwrap();
+            let root = dir.path().join("root");
+            std::os::unix::fs::symlink(&real, &root).unwrap();
+            let config = CatalogConfig::new(root.join("db.json"), crate::catalog::NO_SCAN_DIRS);
+            std::fs::write(config.pedal_path(), root.join("A.vst3").to_str().unwrap()).unwrap();
+            let mut plugins = Catalog::empty(config).with_saver(|_| Ok(()));
+
+            let crashed = plugins.recover_crash().unwrap();
+            plugins.blacklist(root.join("B.vst3"), "boom");
+
+            let real_a = real.canonicalize().unwrap().join("A.vst3");
+            assert_eq!(crashed, vec![real_a.clone()]);
+            for name in ["A.vst3", "B.vst3"] {
+                assert!(plugins.is_blacklisted(root.join(name)), "{name} by link");
+                assert!(plugins.is_blacklisted(real.join(name)), "{name} by path");
+            }
+            assert!(plugins.unblacklist(root.join("A.vst3")));
+            assert!(!plugins.is_blacklisted(real_a));
+            assert_eq!(plugins.db().len(), 1);
+        }
     }
 }

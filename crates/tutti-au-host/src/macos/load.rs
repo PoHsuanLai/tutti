@@ -5,8 +5,6 @@
 //! installed. The lookup reads the bundle's declared components and resolves
 //! the chosen one by its exact type, subtype and manufacturer.
 
-#![cfg(target_os = "macos")]
-
 use std::path::Path;
 
 use tutti_au_ffi::declared_components;

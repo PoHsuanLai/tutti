@@ -77,8 +77,6 @@
 //!    insertion order. Any comparison must be order-insensitive; the tests use
 //!    set containment, not index equality.
 
-#![cfg(target_os = "macos")]
-
 use std::mem::size_of;
 use tutti_au_ffi::property::{
     AddParameterMidiMapping, AllParameterMidiMappings, HotMapParameterMidiMapping,

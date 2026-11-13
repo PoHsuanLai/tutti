@@ -34,8 +34,6 @@
 //! Declining is the point. `MidSide` silently read as `L R` is a stereo image
 //! collapsed to mono-plus-noise, and the count says nothing is wrong.
 
-#![cfg(target_os = "macos")]
-
 use tutti_types::{ChannelTopology, Speaker};
 
 use crate::channel_layout::AuLayoutTag;

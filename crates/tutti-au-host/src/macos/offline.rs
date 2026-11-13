@@ -38,8 +38,6 @@
 //! exactly one for pull) is what stops the pull path's callback from firing
 //! during a push render and overwriting the input the host just handed in.
 
-#![cfg(target_os = "macos")]
-
 use tutti_au_ffi::Unit;
 use tutti_au_ffi::property::{InPlaceProcessing, OfflineRender, RenderQuality};
 use tutti_au_ffi::{Element, Scope};

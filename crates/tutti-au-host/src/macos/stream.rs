@@ -1,7 +1,5 @@
 //! Stream-format configuration (sample rate, block size, channel layout).
 
-#![cfg(target_os = "macos")]
-
 use tutti_au_ffi::property::{MaximumFramesPerSlice, SampleRate, StreamFormat};
 use tutti_au_ffi::{Element, Scope};
 use tutti_plugin_types::ChannelLayout;

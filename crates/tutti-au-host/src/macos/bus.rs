@@ -11,8 +11,6 @@
 //! DAW-facing word, and **element** only where it names the AudioToolbox
 //! property (`kAudioUnitProperty_ElementCount`).
 
-#![cfg(target_os = "macos")]
-
 use tutti_au_ffi::property::{ElementCount, StreamFormat, SupportedNumChannels};
 use tutti_au_ffi::{Element, Scope};
 use tutti_plugin_types::ChannelLayout;

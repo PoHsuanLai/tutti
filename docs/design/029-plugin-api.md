@@ -212,8 +212,10 @@ Session::builder().spawn_with(|job: Job| { std::thread::spawn(move || job.run())
 
 A `Job` is `Send` and blocks (a server launch, a state round trip, a reload).
 The session hands its due jobs to the spawner and lands their results in the
-next `update()`, as events. The default spawner is `std::thread`, so a headless
-host writes nothing. It is the session's facility, not the plugins': the
+next `update()`. The default spawner is `std::thread`, so a headless
+host writes nothing. It is the session's facility, not the plugins', and it was built
+for the MIDI file and SoundFont loads and the recording take (doc 017 L1f-b,
+doc 030 step 8), not here: step 5 only makes the plugin jobs its users. The
 bounce's job (`bounce_start` / `finish_bounce`) moves onto it later.
 `load_plugin(..).run()` stays for a host that wants the load's latency in its
 own hands.
@@ -229,8 +231,8 @@ Landing is the first thing `Phase::Collect` does, so what a job landed is in the
 graph that update commits. There is no cancel: a job that stops carries its own
 flag, and `Landings::is_closed` (a send returns the message) tells it the session
 is gone. The recording take's pump (doc 030 step 8) and the MIDI file and
-SoundFont loads (doc 017 L1f-b) are its first users; the bounce moves onto it
-later.
+SoundFont loads (doc 017 L1f-b) were its first users, the plugin jobs (step 5)
+are its next; the bounce moves onto it later.
 
 ### 3.5 Where it meets the graph and MIDI
 
@@ -276,7 +278,7 @@ what it replaces; no deprecated twin is kept.
 | 2 (view and events built; main-thread view and editor servicing open) | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
 | 3 (built) | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
 | 4 (4a and 4b built, but for the items 4b lists as not done) | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
-| 5 | **The spawner.** `spawn_with`, `Job`; jobs landed in `update()` | `land_snapshot`, `land_params`, `land_reload` as public calls; the `*Due` events | a reload completes with no host code but `update()` |
+| 5 (built) | **The spawner.** `spawn_with`, `Job`; jobs landed in `update()` | `land_snapshot`, `land_params`, `land_reload` as public calls; the `*Due` events | a reload completes with no host code but `update()` |
 | 6 | **The catalog and the facade.** `Catalog::open_db`, `scan()`; `Plugins::open` removed; the probe lists every plugin of a bundle (`FileState::Probed` already holds several); 021 step 6's `Hosting` as a `PluginRef` field (`Auto`, `InProcess`, `OutOfProcess`) | `with_fresh_scan`, `Plugins::open`, `Backend` | a blacklisted plugin is refused at load, not at open |
 
 **As built (step 2, the view and events).** `session.plugin(node)` lends a
@@ -297,7 +299,7 @@ crash and an in-place reload stay the plugin's health (step 4's `Health`).
 A gesture is three variants, not a field:
 `GestureBegan`, `ParamChanged { recorded }`, `GestureEnded`, since the two ends
 carry no value (`ParamEdit`). `PluginSnapshotDue`, `PluginParamsDue` and
-`PluginReloadDue` stay `SessionEvent` variants until step 5. Still open in
+`PluginReloadDue` were `SessionEvent` variants until step 5, which deleted them. Still open in
 step 2: `MainSession` and `Session::main`, `update()` servicing editors, the
 editor's `Opened`, `resize` and `rescale`, `EditorWantsSize`, and removing the
 freeing paths' `debug_assert!`: built next, below.
@@ -341,8 +343,8 @@ well, every parameter with a value: one the plugin did not answer reads as its
 declared default). The mirror is every hosted plugin's, no longer a
 `modulation` feature: `Session::add_plugin` reads it in the load job; a plugin
 the host inserted itself (`host_plugin`, `insert_plugin`) or a crossfade
-rebuilds it by the job the session hands out as `SessionEvent::PluginParamsDue`
-(run it, `Session::land_params`; step 5 replaces the event with the spawner);
+rebuilds it by a job the session submits to its spawner (step 5; it was the event
+`PluginParamsDue` and `Session::land_params`), landed in `update()`;
 and a plugin's rescan, `PluginChange::ParamsRescanned` or `ParamTitlesChanged`,
 asks for the same read again, landing descriptors and values together. A read
 the plugin cannot answer (an in-process plugin whose main thread did not
@@ -562,6 +564,52 @@ it stays a `kDefaultActive` wish), VST3 `tresult` and AU `OSStatus` typed into
 the diagnostics, and §6.3's transport items.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
+
+**As built (step 5, the spawner).** The facility is doc 017 L1f's (§3.4); step 5
+moves the three plugin jobs onto it and deletes what the host did for them.
+`Phase::Plugins` calls the crate-private `submit(work, land)` where it emitted
+an event: the snapshot (`save_state` on a clone of the handle), the parameter
+read (`ParamRead::run`) and the reload (`PluginLoad::run`) are the work, and
+the landing, in the next update's `Phase::Collect`, is what `land_snapshot`,
+`land_params` and `land_reload` did, now private methods. Deleted:
+`SessionEvent::{PluginSnapshotDue, PluginParamsDue, PluginReloadDue}`,
+`Session::{land_snapshot, land_params, land_reload}`, and the job types
+`PluginSnapshot`, `PluginSnapshotTaken`, `PluginParamRead`, `PluginParamsRead`,
+`PluginReload` and `PluginReloaded` (no one outside the session holds a job any
+more; the closures carry the node, the token and what was asked). Kept: the
+per-record tokens, which decide whether a landing still applies (a crossfade or
+a new attempt mints another; a stale job lands nowhere) and, for the snapshot,
+are the one-in-flight check (the landing holds its clone until it lands, run,
+dropped or panicked); the parameter read still goes back to the record when the
+plugin's list was unavailable and is submitted again by the next phase.
+
+- **A dropped or panicked job is the attempt's failure, by `JobFailed`.** The
+  `Arc::strong_count` test for a dropped reload is gone: the spawner dropping the
+  job lands `JobFailed::Dropped` as `RecoveryFailure::ReloadDropped`, and a panic
+  lands `JobFailed::Panicked` as the new `RecoveryFailure::ReloadPanicked
+  { message }`; either is `fail_reload`, the next backoff or the give-up. A
+  dropped snapshot or parameter read is logged (the next snapshot is on the
+  interval; a read that is lost leaves the mirror unread until the next
+  crossfade or rescan, as before).
+- **The reload's landing takes no main-thread proof.** `land_reload` took a
+  `&MainThread` only to open a load that came back `Opened::OnMain`, an
+  in-process plugin, and a served plugin's replacement must not be one
+  (`RecoveryFailure::ReplacementInProcess`; only out-of-process plugins carry an
+  `origin` and are recovered at all). So the landing does not open it: a load
+  that came back for the main thread is that failure at once, without loading a
+  library only to drop it. Nothing in a landing needs the main thread, so
+  `update()` may run on any thread, and nothing waits for `MainSession::update`
+  (the alternative, holding a result until a main-thread update, would have
+  parked a reload forever in a headless host). Every other main-thread step
+  (opening an editor, dropping an in-process plugin) is still the view's.
+- **Tests.** `a_reload_completes_with_no_host_code_but_update` kills the served
+  plugin's server, runs a thread-per-job spawner, and calls only `render` and
+  `update()` until `PluginChange::Recovered`;
+  `a_reload_job_the_spawner_drops_is_a_failed_attempt` (a spawner that drops
+  every job) and a unit test over `reload_job_failed` (dropped and panicked, and a
+  stale attempt) pin the mapping. The suite's `Drive` and the fake-backend
+  rigs use `spawn_with(|job| job.run())`: a job runs in the phase that submits
+  it and lands in the next `Collect`, in the same order every run.
 
 **As built (step 1).** `PluginRef` and `PluginState` are `tutti_plugin::catalog`'s
 (serde behind `tutti-plugin`'s `serde` feature); `PluginRef::load()` is the

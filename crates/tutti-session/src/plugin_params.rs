@@ -4,39 +4,40 @@
 //! Every one of them borrows the session through [`Plugin`](crate::Plugin), so
 //! none can outlive what it names. The descriptors a [`Params`] shows are the
 //! session's own, read at load and read again when the plugin announces a
+//! session's own, read at load and read again when the plugin announces a
 //! rescan ([`PluginChange::ParamsRescanned`](crate::PluginChange::ParamsRescanned),
-//! [`ParamTitlesChanged`](crate::PluginChange::ParamTitlesChanged)); a rescan
-//! lands in [`Session::land_params`](crate::Session::land_params), which takes
-//! `&mut Session`. So **a handle cannot be stale**: holding one across the
-//! landing is a borrow error, and what a host keeps across updates is the
+//! [`ParamTitlesChanged`](crate::PluginChange::ParamTitlesChanged)); the read
+//! is a job on the session's spawner and lands in [`Session::update`](crate::Session::update), which
+//! takes `&mut Session`. So **a handle cannot be stale**: holding one across
+//! an update is a borrow error, and what a host keeps across updates is the
 //! `ParamId`, resolved again with [`Params::get`] (which refuses an id the
 //! plugin stopped declaring). No generation counter is checked, because there
 //! is no state to check it against.
 //!
-//! A parameter read, a rescan landed, and the kept id resolved again:
+//! The kept id resolved again after an update:
 //!
 //! ```
-//! # use tutti_session::{PluginParamsRead, Session};
+//! # use tutti_session::Session;
 //! # use tutti_graph::NodeKey;
 //! # use tutti_plugin_types::ParamId;
-//! # fn rescan(session: &mut Session, node: NodeKey, read: PluginParamsRead) {
+//! # fn rescan(session: &mut Session, node: NodeKey) {
 //! let id = ParamId::new(0);
 //! let before = session.plugin(node).unwrap().params().get(id).unwrap().normalized();
-//! session.land_params(read);
+//! let _events = session.update();
 //! let after = session.plugin(node).unwrap().params().get(id).map(|p| p.normalized());
 //! # let _ = (before, after);
 //! # }
 //! ```
 //!
-//! A handle held across the landing is the stale one, and does not compile:
+//! A handle held across the update is the stale one, and does not compile:
 //!
 //! ```compile_fail
-//! # use tutti_session::{PluginParamsRead, Session};
+//! # use tutti_session::Session;
 //! # use tutti_graph::NodeKey;
 //! # use tutti_plugin_types::{Normalized, ParamId};
-//! # fn rescan(session: &mut Session, node: NodeKey, read: PluginParamsRead) {
+//! # fn rescan(session: &mut Session, node: NodeKey) {
 //! let level = session.plugin(node).unwrap().params().get(ParamId::new(0)).unwrap();
-//! session.land_params(read);
+//! let _events = session.update();
 //! let _ = level.set(Normalized::of(0.5));
 //! # }
 //! ```
@@ -79,9 +80,9 @@ use crate::plugin::{Gate, HostedPlugin, Notices, queue};
 #[non_exhaustive]
 pub enum PluginParamError {
     /// The plugin's parameters have not been read yet (the read at load was
-    /// not answered and its job has not landed). Run the pending
-    /// [`PluginParamRead`](crate::PluginParamRead); the next
-    /// [`Params::get`] after it landed answers.
+    /// not answered and its job has not landed). The session submits the
+    /// read again in `Phase::Plugins` and lands it in a later update; the
+    /// next [`Params::get`] after it landed answers.
     #[error("the plugin's parameters have not been read yet")]
     NotRead,
     /// The plugin declares no parameter with this id.
@@ -151,8 +152,8 @@ impl<'a> Params<'a> {
 
     /// Whether the plugin's parameters have been read. A plugin loaded through
     /// the session is read at load; one the host inserted itself
-    /// ([`Graph::host_plugin`](crate::Graph::host_plugin)) is read by the job
-    /// the session hands out ([`SessionEvent::PluginParamsDue`](crate::SessionEvent::PluginParamsDue)).
+    /// ([`Graph::host_plugin`](crate::Graph::host_plugin)) is read by a job
+    /// on the session's spawner, landed in [`Session::update`](crate::Session::update).
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.hosted.mirror.is_ready()

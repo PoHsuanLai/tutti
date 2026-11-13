@@ -34,8 +34,9 @@ pub enum Phase {
     /// Hosted plugins' health, latency, parameter edits and state
     /// snapshots (feature `plugin`): a dead plugin's node is removed
     /// (`PluginChange::Died`), a moved latency handed to the graph
-    /// (`PluginChange::LatencyChanged`), a due snapshot handed to the
-    /// host as a job (`SessionEvent::PluginSnapshotDue`).
+    /// (`PluginChange::LatencyChanged`), a due snapshot, a parameter
+    /// read and a reload submitted to the session's spawner (their results land in
+    /// the next `Phase::Collect`).
     Plugins,
     /// The plugins' render mode (features `plugin` and `export`): Offline
     /// while an export is in flight, Realtime otherwise, each plugin told on
@@ -250,23 +251,6 @@ pub enum SessionEvent {
     /// gave up). See [`PluginEvent`](crate::PluginEvent).
     #[cfg(feature = "plugin")]
     Plugin(crate::PluginEvent),
-    /// A healthy plugin's state is due a snapshot: run the job off the
-    /// control thread and land it with
-    /// [`Session::land_snapshot`](crate::Session::land_snapshot).
-    #[cfg(feature = "plugin")]
-    PluginSnapshotDue(crate::PluginSnapshot),
-    /// A parameter mirror rebuilt by a crossfade to another plugin is due
-    /// its read: run the job off the control thread and land it with
-    /// [`Session::land_params`](crate::Session::land_params). Until then the
-    /// mirror is not ready.
-    #[cfg(feature = "plugin")]
-    PluginParamsDue(crate::PluginParamRead),
-    /// A replacement plugin is due its load: run the job off the control
-    /// thread and land it with
-    /// [`Session::land_reload`](crate::Session::land_reload). A job dropped
-    /// unrun counts as a failed attempt.
-    #[cfg(feature = "plugin")]
-    PluginReloadDue(crate::PluginReload),
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -312,12 +296,6 @@ impl std::fmt::Debug for SessionEvent {
                 .finish(),
             #[cfg(feature = "plugin")]
             Self::Plugin(event) => f.debug_tuple("Plugin").field(event).finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginSnapshotDue(job) => f.debug_tuple("PluginSnapshotDue").field(job).finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginParamsDue(job) => f.debug_tuple("PluginParamsDue").field(job).finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginReloadDue(job) => f.debug_tuple("PluginReloadDue").field(job).finish(),
         }
     }
 }

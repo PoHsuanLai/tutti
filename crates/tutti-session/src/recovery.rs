@@ -259,8 +259,13 @@ pub enum RecoveryFailure {
         /// The graph's refusal.
         source: CrossfadeRefused,
     },
-    /// The reload's job was dropped before it reported.
+    /// The reload's job was dropped by the session's spawner before it ran.
     ReloadDropped,
+    /// The reload's job panicked.
+    ReloadPanicked {
+        /// The panic's message.
+        message: String,
+    },
     /// The reload did not finish within its allowance.
     ReloadTimedOut {
         /// The allowance.
@@ -284,6 +289,7 @@ impl std::fmt::Display for RecoveryFailure {
                 write!(f, "the graph refused the replacement: {source}")
             }
             Self::ReloadDropped => f.write_str("the reload job was dropped"),
+            Self::ReloadPanicked { message } => write!(f, "the reload job panicked: {message}"),
             Self::ReloadTimedOut { after } => {
                 write!(f, "the reload did not finish in {after:?}")
             }
@@ -300,6 +306,7 @@ impl std::error::Error for RecoveryFailure {
             Self::ReplacementInProcess
             | Self::ReplacementPorts { .. }
             | Self::ReloadDropped
+            | Self::ReloadPanicked { .. }
             | Self::ReloadTimedOut { .. } => None,
         }
     }

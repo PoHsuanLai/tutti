@@ -190,7 +190,7 @@ where
     /// the only failure the plugin can produce.
     ///
     /// `effGetChunk` and its kin are main-thread calls, and the health snapshot
-    /// runs this on a task pool (`PluginSnapshot::run`): off the main thread it
+    /// runs this on the session's spawner: off the main thread it
     /// is run by the main thread's next tick (`on_main`), and
     /// [`StateError::Unavailable`] if that does not come within the deadline.
     fn save_state(&self) -> Result<Vec<u8>, StateError> {

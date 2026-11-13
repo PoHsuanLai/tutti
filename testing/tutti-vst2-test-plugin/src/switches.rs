@@ -418,8 +418,7 @@ pub(crate) fn is_resumed() -> bool {
 /// Lives in the probe's image rather than in the host, which is the whole
 /// point: it is readable *after* the host has dropped its instance, and it
 /// survives exactly as long as the image stays mapped. Those two properties are
-/// what let one test separate the two events that
-/// `tutti_vst2_host::handle`'s module docs insist are different — `effClose`
+/// what let one test separate two different events: `effClose`
 /// (release this instance; mandatory) and `dlclose` (unload the module; the
 /// step hosts must not take).
 ///

@@ -36,7 +36,7 @@ use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::UnitParam;
-use tutti_types::{Amplitude, ChannelLayout, Pan, Param, Tail};
+use tutti_types::{Amplitude, BusTopology, Pan, Param, Tail};
 
 // The params a [`BusStripNode`] lets the graph modulate, in port order.
 tutti_graph::declare_params!([] BusStripNode, n {
@@ -65,20 +65,16 @@ tutti_graph::declare_params!([] BusStripNode, n {
 pub struct BusStripNode {
     volume: Param<Amplitude>,
     pan: Param<Pan>,
-    /// The width this strip runs at — its declared audio layout (as many
-    /// inputs as outputs).
+    /// The bus this strip runs on, in and out: the speakers its channels feed.
     ///
     /// Balance is only meaningful on a stereo pair, so it applies to channels 0
     /// and 1 and leaves any others at unity — a 5.1 strip fades whole
     /// but does not "balance" its surrounds, which have no left/right axis.
     ///
-    /// Stored as the layout alone, with the count derived at use via
-    /// [`channels`](Self::channels). There is no cached `usize` beside it: the
-    /// count is a loop *bound*, so it is loop-invariant and hoisted — `count()`
-    /// is a `const fn` over a four-variant `Copy` enum, and the match lands in
-    /// the prologue rather than the inner loop. A second field would only be a
-    /// way for the two to disagree.
-    layout: ChannelLayout,
+    /// A placed bus is what lets a bus edge fold into or out of the strip: a mono
+    /// source reaches both sides of a stereo strip, and a stereo strip lands on the
+    /// front pair of a declared 5.1 root.
+    topology: BusTopology,
     /// Which params the previous block was modulated on (bit `k`). A change is not
     /// ramped by the strip: the graph declicks the fed value itself, and
     /// ramping the control gain across the same block would apply the gain
@@ -124,38 +120,40 @@ impl StripGains {
 }
 
 impl BusStripNode {
-    /// A stereo strip at unity volume, centred.
+    /// A strip on `topology`, unity volume, centred.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_channels(ChannelLayout::STEREO)
-    }
-
-    /// A strip at the given width, unity volume, centred.
-    /// `with_channels(ChannelLayout::STEREO)` is identical to [`new`](Self::new).
-    ///
-    /// A zero-wide strip is meaningless — there would be nothing to fade — so an
-    /// empty layout is clamped to mono.
-    pub fn with_channels(channels: impl Into<ChannelLayout>) -> Self {
-        let layout = channels.into();
+    pub fn new(topology: BusTopology) -> Self {
         Self {
             volume: Param::new(Amplitude::UNITY),
             pan: Param::new(Pan::CENTER),
-            layout: ChannelLayout::from(layout.count().max(1)),
+            topology,
             last_fed: 0,
             good: LastGood::fixed(1.0),
             ramp_from: None,
         }
     }
 
-    /// The width this strip runs at, as the engine's channel vocabulary.
-    pub fn layout(&self) -> ChannelLayout {
-        self.layout
+    /// A mono strip ([`BusTopology::MONO`]): a fader, with no pair to balance.
+    #[must_use]
+    pub fn mono() -> Self {
+        Self::new(BusTopology::MONO)
+    }
+
+    /// A stereo strip ([`BusTopology::STEREO`]).
+    #[must_use]
+    pub fn stereo() -> Self {
+        Self::new(BusTopology::STEREO)
+    }
+
+    /// The bus this strip runs on.
+    pub fn topology(&self) -> BusTopology {
+        self.topology
     }
 
     /// The audio channel count (its output count).
     #[inline]
-    pub fn channels(&self) -> usize {
-        self.layout.count() as usize
+    fn channels(&self) -> usize {
+        self.topology.layout().count() as usize
     }
 
     /// Atomic handle for the UI / automation to share the volume cell.
@@ -347,7 +345,7 @@ fn scale(x: &[f32], y: &mut [f32], gain: impl Fn(usize) -> f32) {
 
 impl Default for BusStripNode {
     fn default() -> Self {
-        Self::new()
+        Self::stereo()
     }
 }
 
@@ -356,7 +354,7 @@ impl Node for BusStripNode {
     /// Volume and pan are per-frame gains, so it stops
     /// with its input.
     fn shape(&self) -> Shape {
-        Shape::through_unassigned(self.layout)
+        Shape::through(self.topology)
             // Measured: steady and ramping are far under the `Light`/`Moderate` boundary.
             // With the volume fed per frame it is borderline: about 0.7 of
             // the way from a gain to `SvfFilterNode` on a log scale, the
@@ -428,13 +426,19 @@ mod tests {
     use crate::test_support::{RATE, tick};
     use std::sync::atomic::Ordering;
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_types::ChannelLayout;
     use tutti_types::UnitParam;
+
+    /// The engine's bus at `n` channels.
+    fn width(n: u16) -> BusTopology {
+        BusTopology::assumed(ChannelLayout::from(n)).expect("a test width fits a bus")
+    }
 
     /// The strip measured as a `Light` node, at every width.
     #[test]
     fn the_strip_is_light() {
-        for layout in [ChannelLayout::MONO, ChannelLayout::STEREO] {
-            let strip = BusStripNode::with_channels(layout);
+        for topology in [BusTopology::MONO, BusTopology::STEREO] {
+            let strip = BusStripNode::new(topology);
             assert_eq!(strip.shape().cost, tutti_graph::Cost::Light);
         }
     }
@@ -460,27 +464,27 @@ mod tests {
     /// `ParamSet` and shares no cell with it.
     #[test]
     fn a_fork_shares_no_cell() {
-        assert_param_fork(BusStripNode::new());
+        assert_param_fork(BusStripNode::stereo());
     }
 
     /// A strip must be transparent until somebody moves it. An equal-power
     /// pan law would attenuate a centred signal by 3 dB.
     #[test]
     fn unity_at_defaults() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         assert_eq!(tick2(&mut s, 0.5, -0.25), (0.5, -0.25));
     }
 
     #[test]
     fn volume_scales_both_channels() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         s.set_volume(Amplitude(0.5));
         assert_eq!(tick2(&mut s, 1.0, 1.0), (0.5, 0.5));
     }
 
     #[test]
     fn balance_attenuates_the_far_channel_only() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         set_pan(&s, -1.0); // hard left
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 0.0));
         set_pan(&s, 1.0); // hard right
@@ -496,7 +500,7 @@ mod tests {
     /// `pan = -2` would give the left channel a gain of 3.
     #[test]
     fn balance_saturates_out_of_range() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         set_pan(&s, -2.0);
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 0.0));
         set_pan(&s, 2.0);
@@ -505,7 +509,7 @@ mod tests {
 
     #[test]
     fn set_dispatches_each_unit_param() {
-        let s = BusStripNode::new();
+        let s = BusStripNode::stereo();
 
         assert!(set_param(&s, UnitParam::Volume, 0.25));
         assert_eq!(s.volume().load(Ordering::Relaxed), 0.25);
@@ -519,7 +523,7 @@ mod tests {
     /// dispatching on node type.
     #[test]
     fn ignores_params_it_does_not_own() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         assert!(!set_param(&s, UnitParam::Cutoff, 8000.0));
         assert!(!set_param(&s, UnitParam::Drive, 4.0));
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 1.0));
@@ -528,7 +532,7 @@ mod tests {
     /// The shape declares volume then pan, and never changes the arity.
     #[test]
     fn the_shape_declares_volume_then_pan() {
-        let s = BusStripNode::with_channels(ChannelLayout::from(6u16));
+        let s = BusStripNode::new(width(6));
         assert_eq!(
             s.shape().params.as_slice(),
             &[UnitParam::Volume, UnitParam::Pan][..]
@@ -545,7 +549,7 @@ mod tests {
     /// A fed volume overrides the atomic per sample.
     #[test]
     fn a_fed_volume_overrides_the_atomic() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         s.set_volume(Amplitude(1.0));
         let mut out = [0.0f32; 2];
         crate::test_support::tick_fed(&mut s, &[1.0, 1.0], &[Some(0.5)], &mut out);
@@ -557,7 +561,7 @@ mod tests {
     /// from its first frame, where the graph's declick puts it at the base.
     #[test]
     fn starting_a_feed_does_not_apply_the_gain_twice() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         s.set_volume(Amplitude(0.5));
         let x = [1.0f32; 16];
         let steady = drive(&mut s, RATE, &[&x, &x], &[None, None]);
@@ -577,7 +581,7 @@ mod tests {
     /// and a fork taken later must read the cells as they are then.
     #[test]
     fn clone_shares_atomics() {
-        let original = BusStripNode::new();
+        let original = BusStripNode::stereo();
         let clone = original.clone();
         clone.set_volume(Amplitude(0.1));
         set_pan(&clone, 0.5);
@@ -589,7 +593,7 @@ mod tests {
     /// a surround channel has no left/right axis to sit on.
     #[test]
     fn extra_channels_are_faded_but_not_balanced() {
-        let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
+        let mut s = BusStripNode::new(width(3));
         s.set_volume(Amplitude(0.5));
         set_pan(&s, -1.0);
         let mut out = [0.0f32; 3];
@@ -603,7 +607,7 @@ mod tests {
     /// controls hold: the ramp is the only thing block length changes.
     #[test]
     fn a_block_matches_its_frames() {
-        let mut framed = BusStripNode::new();
+        let mut framed = BusStripNode::stereo();
         framed.set_volume(Amplitude(0.6));
         set_pan(&framed, 0.25);
         let mut block = framed.fork_fresh();
@@ -667,7 +671,7 @@ mod tests {
         // bound leaves room for rounding and nothing near a real step.
         const MAX_STEP: f32 = 1.5 / BLOCK as f32;
 
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         let steady = process_dc(&mut s, BLOCK, 1.0, 1.0);
         assert!(steady.iter().all(|f| *f == [1.0, 1.0]));
 
@@ -709,7 +713,7 @@ mod tests {
     #[test]
     fn volume_change_ramps_across_one_block() {
         const BLOCK: usize = 32;
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         let _ = process_dc(&mut s, BLOCK, 1.0, 1.0);
 
         s.set_volume(Amplitude(0.5));
@@ -734,7 +738,7 @@ mod tests {
     /// at zero must not fade in from unity for a block before going silent.
     #[test]
     fn a_fresh_or_reset_strip_starts_at_its_target() {
-        let mut s = BusStripNode::new();
+        let mut s = BusStripNode::stereo();
         s.set_volume(Amplitude(0.0));
         assert!(
             process_dc(&mut s, 16, 1.0, 1.0)
@@ -758,7 +762,7 @@ mod tests {
     #[test]
     fn every_channel_ramps_linearly_past_the_simd_width() {
         const N: usize = 67;
-        let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
+        let mut s = BusStripNode::new(width(3));
         set_pan(&s, -0.5);
         let ones = [1.0f32; N];
         let _ = drive(&mut s, RATE, &[&ones, &ones, &ones], &[]);
@@ -785,7 +789,7 @@ mod tests {
     #[test]
     fn a_fader_ramp_under_a_fed_pan_is_their_product() {
         const N: usize = 37;
-        let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
+        let mut s = BusStripNode::new(width(3));
         let ones = [1.0f32; N];
         let pan = [0.5f32; N];
         let fed = [None, Some(&pan[..])];

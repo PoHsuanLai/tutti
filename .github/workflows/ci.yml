@@ -178,6 +178,8 @@ jobs:
       # Every InProcess/OutOfProcess impl is listed in the plugin contract's
       # `hostings` (`xtask` over the source, no build).
       - run: cargo xtask check-hosting
+      - run: cargo xtask check-doc-refs
+      - run: cargo xtask check-pointers
 
   clippy:
     name: clippy

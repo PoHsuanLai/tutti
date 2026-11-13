@@ -569,8 +569,6 @@ fn the_loop_sums_what_the_source_lost() {
     assert_eq!(pump_loop.lost(), Samples(14));
 }
 
-// The pump's own tests: a source moved into a sink one block at a time.
-
 /// A finite source with a per-pull cap, so chunks straddle the buffer.
 struct Chunked {
     samples: Vec<f32>,

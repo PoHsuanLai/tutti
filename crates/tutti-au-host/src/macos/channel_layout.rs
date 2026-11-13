@@ -137,7 +137,7 @@ pub enum AuLayoutTag {
     /// LFE is at index **3**, not last: `CoreAudioBaseTypes.h:1287` annotates
     /// `MPEG_5_1_A` `L R C LFE Ls Rs`, and `:1347` aliases `AudioUnit_5_1` to
     /// it. That matches the engine's own SMPTE/WAV order
-    /// (`tutti_types::ChannelLayout`), so no remap is needed for this tag — but the
+    /// (`tutti_types::ChannelTopology::assumed`), so no remap is needed for this tag — but the
     /// agreement is per-tag, not general: `MPEG_5_1_B` (`:1288`) is the same
     /// six speakers as `L R Ls Rs C LFE`, and Apple defines four such orders
     /// for one speaker set.

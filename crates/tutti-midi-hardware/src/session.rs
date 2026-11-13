@@ -420,7 +420,7 @@ impl MidiSession {
     /// backend raises while opening.
     pub fn connect_output(&self, device: impl Into<DeviceQuery>) -> Result<()> {
         let id = device.into().pick(self.outputs())?;
-        let output = self.inner.devices.open_output(&id)?;
+        let mut output = self.inner.devices.open_output(&id)?;
         let mut open = self.inner.open();
         // A device whose input is held may have settled already.
         if let Some(stream) = open.inputs.get(&id).and_then(|held| held.stream.settled()) {
@@ -517,7 +517,7 @@ impl MidiSession {
             );
         }
         // The output the session holds sends in what its device settled.
-        if let Some(out) = &open.output
+        if let Some(out) = &mut open.output
             && let Some(stream) = polled.iter().rev().find_map(|p| match p {
                 Polled::Stream(id, stream) if id == out.id() => Some(stream),
                 _ => None,
@@ -676,8 +676,8 @@ impl MidiSession {
     /// each at its [`SendAt`](tutti_midi_runtime::SendAt) (the backend
     /// schedules it natively), after the conversion to its wire form.
     pub fn send_timed(&self, events: &[Outgoing]) -> usize {
-        let open = self.inner.open();
-        match open.output.as_ref() {
+        let mut open = self.inner.open();
+        match open.output.as_mut() {
             Some(out) => out.queue_timed(events),
             None => 0,
         }

@@ -2,6 +2,8 @@
 //! run in ([`PHASES`]).
 
 use std::any::Any;
+#[cfg(feature = "midi")]
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -315,13 +317,13 @@ pub struct MidiNodes {
     /// How many hardware devices the input takes at once: it has that many
     /// event inputs, one for each
     /// ([`SessionBuilder::midi_devices`](crate::SessionBuilder::midi_devices)).
-    pub input_devices: usize,
+    pub input_devices: NonZeroUsize,
     /// Its controls (the MPE mode).
     pub input_controls: tutti_midi_runtime::MidiIngestControls,
     /// The clock's node.
     pub clock: NodeKey,
     /// The clock master: enable it, pick MTC and its frame rate.
-    pub clock_master: Arc<tutti_midi_runtime::ClockMaster>,
+    pub clock_master: tutti_midi_runtime::ClockControls,
 }
 
 /// Whether the root is as it was asked to be

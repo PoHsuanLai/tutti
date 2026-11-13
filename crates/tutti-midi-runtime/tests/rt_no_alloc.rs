@@ -4,6 +4,7 @@
 //! inlet into the event tap's ring, and the clock's ticks.
 
 use assert_no_alloc::AllocDisabler;
+use std::num::NonZeroUsize;
 use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
 use tutti_graph::{
@@ -72,7 +73,7 @@ fn busy(device: &mut EventInletWriter, block: u64) {
 fn the_border_nodes_process_without_allocating() {
     let (mut ed, mut exec) =
         Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
-    ed.insert(NodeKey(1), "in", MidiIngestNode::new(1));
+    ed.insert(NodeKey(1), "in", MidiIngestNode::new(NonZeroUsize::MIN));
     let mut dev = device(&mut ed, 4);
     let (inlet, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     ed.insert(NodeKey(2), "keys", inlet);
@@ -144,7 +145,7 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     ed.insert(
         NodeKey(1),
         "in",
-        MidiIngestNode::new(1).with_mpe(tutti_fixtures::midi::lower_zone(15)),
+        MidiIngestNode::new(NonZeroUsize::MIN).with_mpe(tutti_fixtures::midi::lower_zone(15)),
     );
     let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
@@ -194,7 +195,7 @@ fn the_mpe_expression_paths_process_without_allocating() {
     ed.insert(
         NodeKey(1),
         "in",
-        MidiIngestNode::new(1).with_mpe(tutti_fixtures::midi::lower_zone(15)),
+        MidiIngestNode::new(NonZeroUsize::MIN).with_mpe(tutti_fixtures::midi::lower_zone(15)),
     );
     let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 2)]);
@@ -237,7 +238,7 @@ fn mcm(device: &mut EventInletWriter, block: u64, upper: bool) {
 fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
     let (mut ed, mut exec) =
         Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
-    let controls = ed.insert(NodeKey(1), "in", MidiIngestNode::new(1));
+    let controls = ed.insert(NodeKey(1), "in", MidiIngestNode::new(NonZeroUsize::MIN));
     let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
     ed.commit().unwrap();

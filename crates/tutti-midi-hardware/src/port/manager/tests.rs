@@ -1,6 +1,7 @@
 use super::*;
 use crate::Pushed;
 use crate::testing::{RATE, Rig, ports};
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_midi_runtime::DeviceInlets;
@@ -17,7 +18,11 @@ fn note(n: u8) -> Ump {
 /// A rig over `slots` inlets with `lead`, whose clock has read once (frame 0 at
 /// `origin`), so an arrival can be placed.
 fn rig(slots: usize, capacity: u32, lead: Duration) -> (Arc<HardwareMidiInputs>, Rig) {
-    let inlets = DeviceInlets::new(slots, tutti_graph::EventCapacity::of(capacity), lead);
+    let inlets = DeviceInlets::new(
+        NonZeroUsize::new(slots).expect("a slot"),
+        tutti_graph::EventCapacity::of(capacity),
+        lead,
+    );
     let manager = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let mut rig = Rig::over(&inlets, now());
     rig.run(1);

@@ -11,6 +11,7 @@
 //! `try_lock`ed there. It still allocates the message string, as cpal's own
 //! error path does.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -46,6 +47,11 @@ pub enum StreamFaultKind {
     Disconnected,
     /// Anything else the backend reported.
     Backend,
+    /// The stream's own callback panicked. The stream is latched: every later
+    /// callback writes silence and never renders again, since what panicked
+    /// may have been left half-written. Only a new stream (a restart) renders
+    /// again.
+    CallbackPanicked,
 }
 
 /// One fault reported by the backend, with the backend's own message.
@@ -53,8 +59,9 @@ pub enum StreamFaultKind {
 pub struct StreamFault {
     /// Whether the device went away or the backend reported something else.
     pub kind: StreamFaultKind,
-    /// The backend's message, as its `Display` rendered it.
-    pub message: String,
+    /// The backend's message, as its `Display` rendered it; a fixed text for a
+    /// panic, which is recorded on the audio thread and must not allocate.
+    pub message: Cow<'static, str>,
 }
 
 /// The accumulated faults of one output stream, shared between CPAL's error
@@ -123,8 +130,10 @@ impl StreamFaults {
         self.count() > 0
     }
 
-    /// Returns whether the backend reported the device gone. Lock-free; stays
-    /// set until the stream is started again.
+    /// Returns whether the stream is gone: the backend reported the device
+    /// gone, or the stream's own callback panicked
+    /// ([`StreamFaultKind::CallbackPanicked`]). Lock-free; stays set until the
+    /// stream is started again.
     pub fn is_disconnected(&self) -> bool {
         self.disconnected.is_raised()
     }
@@ -171,7 +180,7 @@ impl StreamFaults {
     /// [`record`](Self::record) at a given time, for tests.
     pub(crate) fn record_at(&self, err: &cpal::StreamError, now: Instant) {
         if matches!(err, cpal::StreamError::DeviceNotAvailable) {
-            self.publish(StreamFaultKind::Disconnected, err.to_string());
+            self.publish(StreamFaultKind::Disconnected, err.to_string().into());
             return;
         }
         if self.is_disconnected() {
@@ -181,26 +190,38 @@ impl StreamFaults {
         let started = self.run_start.load(Ordering::Relaxed);
         if started == 0 {
             self.run_start.store(at, Ordering::Relaxed);
-            self.publish(StreamFaultKind::Backend, err.to_string());
+            self.publish(StreamFaultKind::Backend, err.to_string().into());
         } else if Duration::from_nanos(at.saturating_sub(started)) >= STALL_GRACE {
             self.publish(
                 StreamFaultKind::Disconnected,
                 format!(
                     "no audio for {} ms while the backend kept failing: {err}",
                     STALL_GRACE.as_millis()
-                ),
+                )
+                .into(),
             );
         }
     }
 
-    fn publish(&self, kind: StreamFaultKind, message: String) {
+    /// Records that a callback of this stream panicked, from the audio thread
+    /// that caught it: `what` names the callback. Allocates nothing and never
+    /// waits (the message is dropped if another thread holds `last`). Raises
+    /// the same latch a disconnect does, so [`AudioEngine::is_running`] reads
+    /// `false` and a capture source answers `Failed`.
+    ///
+    /// [`AudioEngine::is_running`]: crate::AudioEngine::is_running
+    pub(crate) fn record_panic(&self, what: &'static str) {
+        self.publish(StreamFaultKind::CallbackPanicked, Cow::Borrowed(what));
+    }
+
+    fn publish(&self, kind: StreamFaultKind, message: Cow<'static, str>) {
         let fault = StreamFault { kind, message };
         match self.last.try_lock() {
             Ok(mut last) => *last = Some(fault),
             Err(std::sync::TryLockError::Poisoned(p)) => *p.into_inner() = Some(fault),
             Err(std::sync::TryLockError::WouldBlock) => {}
         }
-        if kind == StreamFaultKind::Disconnected {
+        if kind != StreamFaultKind::Backend {
             self.disconnected.raise();
         }
         self.count.fetch_add(1, Ordering::Release);

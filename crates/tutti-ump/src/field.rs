@@ -29,8 +29,7 @@ impl core::fmt::Display for OutOfRange {
 
 impl std::error::Error for OutOfRange {}
 
-// A bit-width field, to the shape of a range-checked value (CLAUDE.md, "Range-
-// checked values"): `new` refuses above `MAX`, `of` panics, `masked` masks.
+// A bit-width field, to the shape of a range-checked value: `new` refuses above `MAX`, `of` panics, `masked` masks.
 macro_rules! bits {
     ($(#[$doc:meta])* $name:ident, $repr:ty, $repr_name:literal, $width:expr) => {
         $(#[$doc])*

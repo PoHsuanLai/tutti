@@ -779,7 +779,7 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
 /// routes to.
 #[cfg(feature = "midi-hardware")]
 fn keyboards(
-    devices: usize,
+    devices: std::num::NonZeroUsize,
 ) -> (
     Session,
     tutti_midi_hardware::test_support::FakeCounters,
@@ -833,7 +833,7 @@ fn key(channel: u8, n: u8) -> Ump {
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_connected_devices_note_reaches_the_synth_through_its_inlet() {
-    let (mut s, fake, seen) = keyboards(4);
+    let (mut s, fake, seen) = keyboards(std::num::NonZeroUsize::new(4).expect("four"));
     connect(&mut s, "keys");
     roll(&s, 1_024);
     assert!(fake.send_input(EndpointId::from_raw(1), key(2, 60), Instant::now()));
@@ -848,7 +848,7 @@ fn a_connected_devices_note_reaches_the_synth_through_its_inlet() {
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
-    let (mut s, fake, seen) = keyboards(4);
+    let (mut s, fake, seen) = keyboards(std::num::NonZeroUsize::new(4).expect("four"));
     let before = plan_nodes(&s);
     connect(&mut s, "keys");
     connect(&mut s, "pads");
@@ -885,7 +885,7 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_disconnected_device_ends_its_held_key_once() {
-    let (mut s, fake, seen) = keyboards(4);
+    let (mut s, fake, seen) = keyboards(std::num::NonZeroUsize::new(4).expect("four"));
     connect(&mut s, "keys");
     roll(&s, 1_024);
     assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
@@ -915,7 +915,7 @@ fn a_disconnected_device_ends_its_held_key_once() {
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_devices_arrival_is_placed_on_the_engines_clock() {
-    let (mut s, fake, seen) = keyboards(4);
+    let (mut s, fake, seen) = keyboards(std::num::NonZeroUsize::new(4).expect("four"));
     connect(&mut s, "keys");
     roll(&s, 1_024);
     let ahead = Instant::now() + Duration::from_secs(1);
@@ -938,7 +938,7 @@ fn a_devices_arrival_is_placed_on_the_engines_clock() {
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_device_whose_inlet_overflows_is_reported() {
-    let (mut s, fake, _seen) = keyboards(4);
+    let (mut s, fake, _seen) = keyboards(std::num::NonZeroUsize::new(4).expect("four"));
     connect(&mut s, "keys");
     for n in 0..3_000u32 {
         fake.send_input(
@@ -966,7 +966,7 @@ fn a_device_whose_inlet_overflows_is_reported() {
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_device_past_the_slots_is_refused() {
-    let (mut s, fake, seen) = keyboards(1);
+    let (mut s, fake, seen) = keyboards(std::num::NonZeroUsize::MIN);
     connect(&mut s, "keys");
     let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     let refused = io.connect_input("pads").unwrap_err();

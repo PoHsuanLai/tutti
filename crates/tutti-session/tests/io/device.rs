@@ -9,7 +9,7 @@ use tutti_cpal::cpal::StreamError;
 use tutti_cpal::{
     DeviceId, DeviceSelector, Direction, ManualStreamDriver, OutputSpec, Snapshot, SnapshotSource,
 };
-use tutti_graph::ForkByClone;
+use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{
@@ -871,4 +871,58 @@ fn a_refused_declaration_is_retried_on_a_restart() {
     assert_eq!(session.root_topology_status(), RootTopologyStatus::Applied);
     assert_eq!(session.root_topology(), Some(&buses));
     assert_eq!(session.graph_ref().outputs(), 4);
+}
+
+/// A source whose render always panics.
+#[derive(Clone)]
+struct AlwaysPanics;
+
+impl Node for AlwaysPanics {
+    fn shape(&self) -> Shape {
+        Shape::source_unassigned(ChannelLayout::MONO)
+    }
+
+    fn prepare(&mut self, _: &Prepare) {}
+
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        panic!("a node that always fails");
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// **A panic in the render reaches the app as a device fault**: the callback
+/// returns normally with silence, and the next `update` reports
+/// `DeviceEvent::Fault` of kind `CallbackPanicked`, once.
+#[test]
+fn a_panic_in_the_render_is_a_device_fault_event() {
+    let (driver, stream) = ManualStreamDriver::new();
+    let (mut session, _device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .expect("builds with no device")
+        .into_parts();
+    let (node, _) = session.graph().add(ForkByClone(AlwaysPanics));
+    session
+        .graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(node, 0)])
+        .unwrap();
+    let _ = session.update();
+
+    let block = stream.render_block(64).expect("the stream is open");
+    assert!(
+        block.iter().all(|&s| s == 0.0),
+        "the panicked block is silent"
+    );
+
+    let faulted = |events: &[SessionEvent]| {
+        events
+            .iter()
+            .filter(|e| {
+                matches!(e, SessionEvent::Device(DeviceEvent::Fault(f))
+                    if f.kind == tutti_cpal::StreamFaultKind::CallbackPanicked)
+            })
+            .count()
+    };
+    assert_eq!(faulted(&session.update()), 1);
+    assert_eq!(faulted(&session.update()), 0, "reported once");
 }

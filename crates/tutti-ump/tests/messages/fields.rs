@@ -1,5 +1,5 @@
 //! The bit-width fields (`U4`, `U7`, `U14`, `NoteNumber`, `DeltaTicks`) to the
-//! shape of a range-checked value (CLAUDE.md, "Range-checked values"): `new`
+//! shape of a range-checked value: `new`
 //! and `TryFrom` refuse above the width and agree, `of` panics there, `masked`
 //! keeps the low bits, `get` and `From` give the raw back, and serde (feature
 //! `serde`) refuses what `new` refuses. `tutti-ump` depends on no workspace

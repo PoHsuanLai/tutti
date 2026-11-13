@@ -303,8 +303,8 @@ pub use tutti_session::{
 };
 #[cfg(feature = "session")]
 pub use tutti_session::{
-    ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Job,
-    JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, ScheduleError, Session,
+    ConnectError, Edge, EventInPort, EventOutPort, EventTapPort, HeardOpen, HeardTapError, InPort,
+    Job, JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, ScheduleError, Session,
     SessionBuilder, SessionEvent, TypedParamRef, Workers,
 };
 #[cfg(all(feature = "session", feature = "device"))]

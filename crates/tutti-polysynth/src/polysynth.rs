@@ -125,7 +125,7 @@ impl PolySynth {
     pub fn new(config: SynthConfig) -> Self {
         let polyphony = config.polyphony.get();
         let allocator_config = VoiceAllocatorConfig {
-            max_voices: polyphony,
+            max_voices: config.polyphony,
             mode: config.voice_mode,
             strategy: config.allocation_strategy,
             bend_range: config.pitch_bend_range,

@@ -414,7 +414,6 @@ fn a_message_that_is_not_a_request_is_not_answered() {
     assert!(out.is_empty());
 }
 
-// Design 017 §5: a MIDI 1.0 device is an Endpoint with one inferred block.
 #[test]
 fn a_midi1_device_has_one_inferred_block() {
     let e = Endpoint::midi1_device(EndpointName::new("Keystep"));

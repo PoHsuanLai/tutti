@@ -3,6 +3,8 @@
 //! Scale/Octave Tuning, and what each says to a voice that sounds and one that
 //! starts. A key's tuning is its offset from equal temperament in semitones.
 
+use std::num::NonZeroUsize;
+
 use tutti_midi_protocol::{
     Addressee, ChannelMask, Heard, KeyChange, KeyChanges, KeyTable, OctaveOffsets, Timing,
     TuningFrequency, TuningMessage, TuningName, Universal,
@@ -137,7 +139,7 @@ fn cents(of: &[(usize, i8)]) -> OctaveOffsets {
     OctaveOffsets::Cents(bytes)
 }
 
-const SAMPLE: Rules = Rules::poly(8);
+const SAMPLE: Rules = Rules::poly(NonZeroUsize::new(8).unwrap());
 
 /// RP-020: "the initial tuning of the instrument is equal temperament": every
 /// key of every program starts at its own number, so a note is not retuned.
@@ -244,8 +246,10 @@ fn a_non_real_time_change_leaves_the_sounding_note() {
 /// program. "The basic channel number" discriminates between active tunings.
 #[test]
 fn rpn_3_and_4_select_the_channels_tuning_and_retune_its_sounding_notes() {
-    let mut core =
-        Voicing::new(Rules::poly(8).with_tuning_capacity(TuningCapacity::new(2, 4).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(8).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(2, 4).unwrap()),
+    );
     // Program 2 of bank 1 raises key 60 by a semitone; program 2 of bank 0 by two.
     for (bank, up) in [(0, 62), (1, 61)] {
         say(
@@ -279,8 +283,10 @@ fn rpn_3_and_4_select_the_channels_tuning_and_retune_its_sounding_notes() {
 /// 4 programs ignores program 4 and bank 1, and counts each.
 #[test]
 fn a_program_or_bank_the_core_has_none_of_is_ignored_and_counted() {
-    let mut core =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()),
+    );
     on(&mut core, 0, 60);
     assert!(rpn(&mut core, 0, Rpn::TUNING_PROGRAM_SELECT, 4).is_empty());
     assert!(rpn(&mut core, 0, Rpn::TUNING_BANK_SELECT, 1).is_empty());
@@ -298,8 +304,10 @@ fn a_program_or_bank_the_core_has_none_of_is_ignored_and_counted() {
 /// `store_tuning` answers with the error instead.
 #[test]
 fn a_change_for_a_program_there_is_no_room_for_is_refused_and_counted() {
-    let mut core =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(1, 4).unwrap()),
+    );
     let refused = |core: &mut Voicing, bank: Option<u8>, program: u8| {
         let before = core.tuning_refused();
         say(
@@ -494,7 +502,9 @@ fn a_dump_request_does_nothing_here() {
 /// no tuning of a key reaches it (as the master tuning does not).
 #[test]
 fn the_percussion_channel_takes_no_key_tuning() {
-    let mut core = Voicing::new(Rules::poly(4).with_percussion(MidiChannel::of(9)));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap()).with_percussion(MidiChannel::of(9)),
+    );
     say(
         &mut core,
         note_change(Timing::NonRealTime, None, 0, &[change(40, word(45, 0))]),
@@ -620,14 +630,18 @@ fn a_relative_registered_controller_steps_the_program() {
 /// 4 as Registered Controllers on the channel), the tables are not.
 #[test]
 fn the_chase_carries_the_selected_program_and_bank() {
-    let mut core =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()));
+    let mut core = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()),
+    );
     rpn(&mut core, 5, Rpn::TUNING_PROGRAM_SELECT, 6);
     rpn(&mut core, 5, Rpn::TUNING_BANK_SELECT, 2);
     let mut sent = Vec::new();
     core.chase(tutti_ump::MidiGroup::FIRST, |ump| sent.push(ump));
-    let mut heir =
-        Voicing::new(Rules::poly(4).with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()));
+    let mut heir = Voicing::new(
+        Rules::poly(NonZeroUsize::new(4).unwrap())
+            .with_tuning_capacity(TuningCapacity::new(3, 8).unwrap()),
+    );
     for ump in sent {
         let tutti_ump::Message::Midi2(address, message) = ump.decode().unwrap() else {
             continue;

@@ -30,8 +30,8 @@ pub use live::{
     NoFreeSlot, RouteRule, SlotCountMismatch, compile_routes,
 };
 pub use outbound::{
-    CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
-    JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream,
+    CLOCK_EVENT_CAPACITY, ClockControls, ClockMaster, ClockNode, JR_CLOCK_INTERVAL,
+    JR_CLOCK_MAX_INTERVAL, JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream,
 };
 pub use output_plan::{
     MAX_OUTPUT_AHEAD, MAX_OUTPUT_LATENCY, OffsetOutOfRange, Outgoing, OutputLatency, OutputOffset,

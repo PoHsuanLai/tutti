@@ -17,6 +17,7 @@
 //! Each gate runs the nodes in a graph, channel 0's port wired to an event tap
 //! whose ring the test drains, so what was carried is counted.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
@@ -115,7 +116,7 @@ impl Rig {
                     port: 0,
                 },
                 TapAlign::Raw,
-                1024,
+                tutti_graph::EventCapacity::of(1024),
             )
             .expect("the ingest node is in the graph");
         editor.commit().expect("commits");
@@ -166,7 +167,7 @@ impl Rig {
 
 fn inputs(slots: usize, capacity: u32) -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(DeviceInlets::new(
-        slots,
+        NonZeroUsize::new(slots).expect("a slot"),
         tutti_graph::EventCapacity::of(capacity),
         Duration::ZERO,
     )))

@@ -14,6 +14,7 @@
 //! [`Phase::MidiOut`]: crate::Phase::MidiOut
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tutti_graph::UmpAt;
@@ -44,7 +45,7 @@ const DRAIN_CHUNK: usize = 256;
 
 /// How many hardware MIDI devices may be connected at once by default
 /// ([`SessionBuilder::midi_devices`](crate::SessionBuilder::midi_devices)).
-pub const MIDI_INPUT_DEVICES: usize = 8;
+pub const MIDI_INPUT_DEVICES: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 /// Events one connected device's inlet holds: the ring its thread pushes into,
 /// and as many waiting for their frame. It is the one ring of the hardware

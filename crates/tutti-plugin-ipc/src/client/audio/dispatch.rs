@@ -389,15 +389,39 @@ fn answer(
     Ok(reply)
 }
 
+/// One connection of the bridge: its stream, and the replies it still owes.
+pub(super) struct Lane {
+    pub(super) stream: ControlStream,
+    pub(super) owed: Owed,
+}
+
+/// The bridge's two connections to the server (doc 029 section 6.5). **Each is
+/// in order, one request at a time, and independent of the other**: the audio
+/// lane carries `ProcessAudio` and `Reset` (the server's render thread answers
+/// them) and the control lane every other request and the plugin's unsolicited
+/// news (the server's main thread, which may be busy with an editor). A block
+/// is never queued behind the main thread, and what a block's reply owes
+/// ([`Owed`]) is paired on its own stream.
+pub(super) struct Lanes {
+    pub(super) audio: Lane,
+    pub(super) control: Lane,
+}
+
 pub(super) fn handle(
     cmd: Command,
-    stream: &mut ControlStream,
+    lanes: &mut Lanes,
     channels: &Channels,
     payloads: &PayloadPool,
-    owed: &mut Owed,
     inbox: &mut Unsolicited,
     lifecycle: &Lifecycle,
 ) -> BridgeResult<()> {
+    let Lanes {
+        audio: Lane {
+            stream: audio_stream,
+            owed: audio_owed,
+        },
+        control: Lane { stream, owed },
+    } = lanes;
     match cmd {
         Command::Process(mut payload) => {
             let seq = payload.seq;
@@ -413,21 +437,21 @@ pub(super) fn handle(
                 // complete it from the next block's packets, with these
                 // missing. (No wire change: a gap is never sent.)
                 for e in &payload.midi_events {
-                    owed.intake.admit(e);
+                    audio_owed.intake.admit(e);
                 }
-                owed.intake.lost();
+                audio_owed.intake.lost();
                 channels.note_dropped_midi(payload.midi_events.len() as u64);
-                owed.carry(&payload.param_changes);
+                audio_owed.carry(&payload.param_changes);
                 payloads.return_params(core::mem::take(&mut payload.param_changes));
                 payloads.recycle(payload);
                 return Ok(());
             }
 
-            if !owed.carried.is_empty() {
-                owed.merge_carried(&mut payload.param_changes);
+            if !audio_owed.carried.is_empty() {
+                audio_owed.merge_carried(&mut payload.param_changes);
             }
             let before = payload.midi_events.len();
-            payload.midi_events.retain(|e| owed.intake.admit(e));
+            payload.midi_events.retain(|e| audio_owed.intake.admit(e));
             channels.note_dropped_midi((before - payload.midi_events.len()) as u64);
             let msg = HostMessage::ProcessAudio(ProcessAudioData {
                 seq: payload.seq,
@@ -446,7 +470,7 @@ pub(super) fn handle(
             payloads.recycle(payload);
 
             let timeout = process_timeout(num_samples, channels.sample_rate());
-            let sent = ipc::send(stream, &msg);
+            let sent = ipc::send(audio_stream, &msg);
             // The parameter-change buffer goes back to the audio thread's free
             // list once its contents are on the wire (sent or not: a failed
             // send crashes the bridge below, and the buffer is no use to it).
@@ -457,7 +481,14 @@ pub(super) fn handle(
 
             // Replies owed from earlier blocks come first and are forwarded
             // (`Owed::take`); then this block's own, within its budget.
-            match answer(stream, inbox, owed, channels, timeout, Late::Block)? {
+            match answer(
+                audio_stream,
+                inbox,
+                audio_owed,
+                channels,
+                timeout,
+                Late::Block,
+            )? {
                 // **A missed block budget costs the block, not the connection.**
                 //
                 // [`process_timeout`] is a few block periods with a 2 ms floor,
@@ -510,6 +541,13 @@ pub(super) fn handle(
                         _ => {}
                     }
                 }
+            }
+            // The plugin's news arrives on the control lane, which a block does
+            // not read: take what is there, as the blocks' replies used to
+            // carry it in. Nothing waits: a frame begun is finished (and one a
+            // late request still owes is taken off), and the rest is for later.
+            if ipc::has_pending(stream) {
+                next_reply(stream, inbox, owed, channels, DRAIN_FINISH)?;
             }
         }
         Command::SetParameter { param_id, value } => {
@@ -580,7 +618,7 @@ pub(super) fn handle(
             ipc::send(stream, &HostMessage::SetRenderMode { mode })?;
         }
         Command::Reset => {
-            ipc::send(stream, &HostMessage::Reset)?;
+            ipc::send(audio_stream, &HostMessage::Reset)?;
         }
         Command::Shutdown => {
             ipc::send(stream, &HostMessage::Shutdown)?;

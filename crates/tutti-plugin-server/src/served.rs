@@ -15,14 +15,15 @@
 //! each [`Notice`] of the core as the [`BridgeMessage`] that carries it.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use tutti_plugin_ipc::BridgeMessage;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, AutomationMode, Control, Event, Features, Hand, HostOp, Lifecycle,
-    Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized, Notice,
-    OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo,
-    PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor, RenderMode,
-    Request, Sample, SampleFormat, SampleRate, Samples, Stage, State, standing,
+    AudioBuffer, AudioBufferMut, AutomationMode, Control, Effect, Event, Features, Hand, HostOp,
+    Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized,
+    Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
+    PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor,
+    RenderMode, Request, Sample, SampleFormat, SampleRate, Samples, Seat, Stage, State, standing,
 };
 
 mod any;
@@ -88,8 +89,11 @@ pub(crate) trait ServedPlugin: Render {
     /// returns what the host should be told. Between blocks, on the thread
     /// that loaded the plugin.
     fn poll(&mut self, main: &MainThread) -> Vec<BridgeMessage>;
-    /// Forgets the plugin's signal history, between blocks.
-    fn reset(&mut self);
+    /// Brings the Processor home from the render thread and deactivates the
+    /// plugin, so it can be dropped. `false` when the Processor did not come
+    /// (a render thread stuck inside the plugin): dropping the plugin then
+    /// leaks it.
+    fn quiesce(&mut self, main: &MainThread) -> bool;
     /// Follows the host's rate.
     ///
     /// # Errors
@@ -139,6 +143,14 @@ pub(crate) trait ServedPlugin: Render {
     ///
     /// The plugin cannot save, or is lost.
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
+    /// The plugin's state as it is, with no Processor brought home: for a
+    /// caller that knows no write is waiting for a block (the session's
+    /// barrier, `Session::handle_save_state`), so a save never silences one.
+    ///
+    /// # Errors
+    ///
+    /// The plugin cannot save, or is lost.
+    fn save_state_live(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
     /// Restores a saved state.
     ///
     /// # Errors
@@ -163,6 +175,34 @@ pub(crate) struct Served<F: OutOfProcess> {
     events: Vec<BridgeMessage>,
     /// A refusal was told since the last [`finish_refusals`](Self::finish_refusals).
     refused: bool,
+}
+
+/// How long a plan that waits for the Processor to come home from the render
+/// thread is given: the render thread returns it at its next poll (a few
+/// milliseconds), so this is a render thread that is stuck inside the plugin.
+const HOME_PATIENCE: Duration = Duration::from_secs(3);
+
+/// How often a wait for the Processor looks again.
+const HOME_STEP: Duration = Duration::from_micros(500);
+
+/// A Processor that is still on the render thread when the plugin is dropped
+/// must not outlive the Controller that destroys the plugin, so the plugin is
+/// leaked instead: only a render thread stuck inside the plugin reaches it.
+impl<F: OutOfProcess> Drop for Served<F> {
+    fn drop(&mut self) {
+        if matches!(
+            self.lifecycle,
+            Lifecycle::Active {
+                seat: Seat::Lent,
+                ..
+            }
+        ) {
+            tracing::error!(
+                "plugin-server: the render thread still holds the processor; leaking the plugin"
+            );
+            std::mem::forget(std::mem::replace(&mut self.lifecycle, Lifecycle::Poisoned));
+        }
+    }
 }
 
 fn lost() -> PluginError {
@@ -200,6 +240,7 @@ impl<F: ServerSide> Served<F> {
         prefer_f64: bool,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
+        hand: Hand<F::Processor>,
     ) -> PluginResult<(Self, Option<String>)> {
         Self::activate(
             main,
@@ -209,6 +250,7 @@ impl<F: ServerSide> Served<F> {
             prefer_f64,
             state,
             before_restore,
+            hand,
         )
     }
 
@@ -223,6 +265,11 @@ impl<F: ServerSide> Served<F> {
     /// is activated at 32-bit. What it runs at is its wiring's
     /// [`Features::F64_AUDIO`], never the request.
     ///
+    /// `hand` is the Processor's way to the thread that renders: the server's
+    /// is [`Hand::threaded`], whose other end is the render thread's seat
+    /// ([`crate::render::End`]); a [`Hand::local`] keeps the Processor in this
+    /// value, which then renders through [`Render`].
+    ///
     /// # Errors
     ///
     /// [`PluginError::Load`] at [`LoadStage::Activation`] when no activation
@@ -235,6 +282,7 @@ impl<F: ServerSide> Served<F> {
         prefer_f64: bool,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
+        hand: Hand<F::Processor>,
     ) -> PluginResult<(Self, Option<String>)> {
         let activation_failed = |reason: String| {
             load_failed(LoadStage::Activation, format!("activate failed: {reason}"))
@@ -251,7 +299,7 @@ impl<F: ServerSide> Served<F> {
         let mut this = Self {
             lifecycle: Lifecycle::new(loaded),
             state: Lifecycle::<F>::initial_state(),
-            hand: Hand::local(),
+            hand,
             descriptor: PluginDescriptor::default(),
             wiring: LoadedPlugin::default(),
             requests: Vec::new(),
@@ -310,6 +358,57 @@ impl<F: ServerSide> Served<F> {
             }
         }
         refusal
+    }
+
+    /// [`drive`](Self::drive), then, while the plan is parked for the Processor
+    /// to come home from the render thread, ticks until it has: the render
+    /// thread returns it at its next poll. Bounded: a render thread stuck
+    /// inside the plugin leaves the plan parked and the refusal says so.
+    fn drive_settled(&mut self, main: &MainThread, event: Event) -> Option<PluginError> {
+        let mut refusal = self.drive(main, event);
+        let giving_up = Instant::now() + HOME_PATIENCE;
+        while self.state.is_parked() {
+            if Instant::now() >= giving_up {
+                return refusal.or_else(|| {
+                    Some(PluginError::Other(
+                        "the render thread did not hand the processor back".to_string(),
+                    ))
+                });
+            }
+            std::thread::sleep(HOME_STEP);
+            let ticked = self.drive(main, Event::Tick);
+            refusal = refusal.or(ticked);
+        }
+        refusal
+    }
+
+    /// Brings the Processor home from the render thread without deactivating:
+    /// `true` once it is held here (also when it never left), `false` when the
+    /// render thread did not return it in time.
+    fn bring_home(&mut self, main: &MainThread) -> bool {
+        if self.lifecycle.processor().is_some() {
+            return true;
+        }
+        if !matches!(
+            self.lifecycle,
+            Lifecycle::Active {
+                seat: Seat::Lent,
+                ..
+            }
+        ) {
+            return false;
+        }
+        self.lifecycle.apply(Effect::Recall, &mut self.hand, main);
+        let giving_up = Instant::now() + HOME_PATIENCE;
+        while self.lifecycle.processor().is_none() {
+            if Instant::now() >= giving_up {
+                return false;
+            }
+            std::thread::sleep(HOME_STEP);
+            // A tick collects what the render thread returned.
+            self.drive(main, Event::Tick);
+        }
+        true
     }
 
     /// Turns a notice into what the host hears, keeping the cached wiring in
@@ -422,10 +521,14 @@ impl<F: ServerSide> Served<F> {
             if !asked && pass > 0 {
                 break;
             }
+            // A restart a request plans needs the Processor home, which the
+            // render thread returns within a poll: the plan is waited for here,
+            // so what it tells the host (a latency that moved) is told in this
+            // pass, in order with the message that caused it.
             for request in requests.drain(..) {
-                self.drive(main, Event::Request(request));
+                self.drive_settled(main, Event::Request(request));
             }
-            self.drive(main, Event::Tick);
+            self.drive_settled(main, Event::Tick);
         }
         self.requests = requests;
         self.finish_refusals();
@@ -458,7 +561,7 @@ impl<F: ServerSide> Served<F> {
         previous: Prepare,
         wanted: Prepare,
     ) -> Result<(), (PluginError, bool)> {
-        let result = match self.drive(main, Event::Op(HostOp::Reconfigure(wanted))) {
+        let result = match self.drive_settled(main, Event::Op(HostOp::Reconfigure(wanted))) {
             None => {
                 // The plugin may take another layout, or another latency, at
                 // another rate or in another mode.
@@ -518,7 +621,7 @@ impl<F: ServerSide> Render for Served<F> {
 /// borrow is this call's own, because [`PluginIo`] holds one lifetime for
 /// tables and data and a `&mut [&mut _]` is invariant in the data's. An array,
 /// not a `Vec`: this is the audio thread.
-fn through<P: Processor, T: Sample>(
+pub(crate) fn through<P: Processor, T: Sample>(
     processor: &mut P,
     buffer: AudioBuffer<'_, '_, T>,
     ctx: &ProcessContext<'_>,
@@ -567,11 +670,15 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         std::mem::take(&mut self.events)
     }
 
-    fn reset(&mut self) {
-        // No processor (a refused activation) has nothing to forget.
-        if let Some(processor) = self.lifecycle.processor() {
-            processor.reset();
-        }
+    fn quiesce(&mut self, main: &MainThread) -> bool {
+        self.drive_settled(main, Event::Op(HostOp::Deactivate));
+        !matches!(
+            self.lifecycle,
+            Lifecycle::Active {
+                seat: Seat::Lent,
+                ..
+            }
+        )
     }
 
     /// The rate the plugin already runs at is a no-op, so a per-frame caller
@@ -721,10 +828,25 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     }
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        // The server serves requests on the thread that renders, so a save
-        // right after a write would read the old value until the next block
-        // without this.
-        F::settle_edits(&mut self.lifecycle, main);
+        // A write waits in the Processor's ring until a block drains it, so a
+        // save right after one would read the old value. Only the Processor
+        // can deliver it, so it is brought home for the settle (the render
+        // thread hands it back at its next poll; a block meanwhile is silence)
+        // and lent again after the save. The session asks for this only when
+        // no block is draining the writes.
+        let home = self.bring_home(main);
+        if home {
+            F::settle_edits(&mut self.lifecycle, main);
+        }
+        let saved = self.lifecycle.control().ok_or_else(lost)?.save_state(main);
+        if home {
+            // The tick lends the Processor again.
+            self.drive(main, Event::Tick);
+        }
+        saved
+    }
+
+    fn save_state_live(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         self.lifecycle.control().ok_or_else(lost)?.save_state(main)
     }
 

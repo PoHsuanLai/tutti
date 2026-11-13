@@ -47,6 +47,9 @@ tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
 
+# The queues between the main thread and the render thread.
+ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
+
 # MIDI support
 
 # Serialization for IPC

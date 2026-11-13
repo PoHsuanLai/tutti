@@ -134,7 +134,9 @@ fn mock_with(
         RATE,
     )
     .unwrap();
-    let stream = Arc::new(listener.accept().unwrap());
+    // The audio connection first, then the control one, as the server accepts
+    // them. Blocks and resets arrive on the first and are only logged.
+    let audio = Arc::new(listener.accept().unwrap());
     let reply = |stream: &interprocess::local_socket::Stream, message: &BridgeMessage| {
         let data = postcard::to_allocvec(message).unwrap();
         let mut stream = stream;
@@ -143,6 +145,15 @@ fn mock_with(
             .unwrap();
         stream.write_all(&data).unwrap();
     };
+    // The host connects the control stream only once it has the audio one's
+    // `Ready`.
+    reply(
+        &audio,
+        &BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    );
+    let stream = Arc::new(listener.accept().unwrap());
     reply(
         &stream,
         &BridgeMessage::Ready {
@@ -150,6 +161,26 @@ fn mock_with(
         },
     );
     let received: Received = Arc::default();
+    std::thread::spawn({
+        let (log, audio) = (Arc::clone(&received), Arc::clone(&audio));
+        move || {
+            loop {
+                let mut len = [0u8; 4];
+                let mut stream = &*audio;
+                if stream.read_exact(&mut len).is_err() {
+                    break;
+                }
+                let mut bytes = vec![0u8; u32::from_be_bytes(len) as usize];
+                if stream.read_exact(&mut bytes).is_err() {
+                    break;
+                }
+                let Ok(message) = postcard::from_bytes::<HostMessage>(&bytes) else {
+                    break;
+                };
+                log.lock().unwrap().push(message);
+            }
+        }
+    });
     let (log, served) = (Arc::clone(&received), Arc::clone(&stream));
     std::thread::spawn(move || {
         loop {

@@ -1,9 +1,11 @@
 //! `PluginServer` — the outer shell. Owns a [`Session`] and drives it
-//! over a [`Transport`] across the two-phase connection dance the host
-//! expects: first a handshake connection for plugin load / format
-//! negotiation / shared-memory setup, then the audio connection that
-//! carries per-block traffic for the rest of the session.
+//! over a [`Transport`] across the connection dance the host expects: first a
+//! handshake connection for plugin load / format negotiation / shared-memory
+//! setup, then, for the rest of the session, two more: the audio connection,
+//! which the render thread serves (`ProcessAudio` and `Reset`, nothing else),
+//! and the control connection, which the main thread's event loop serves.
 
+use crate::render::{RenderSide, RenderThread};
 use crate::session::{Reaction, Session};
 use crate::transport::{Transport, TransportListener};
 use tutti_plugin_ipc::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
@@ -11,7 +13,8 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
 /// Ask the OS for the highest priority it grants this thread, now that it is
-/// about to do nothing but per-block audio work, and log what it got once.
+/// about to do nothing but per-block audio work (the render thread, and a
+/// plugin's thread-pool helpers), and log what it got once.
 /// That is not real time: on Linux it is nice -20 at best, and a refusal
 /// (`EPERM`) is common (`tutti_rt::request_priority`).
 ///
@@ -48,6 +51,9 @@ pub(crate) fn request_audio_priority(what: &str) {
 pub struct PluginServer {
     config: BridgeConfig,
     session: Session,
+    /// What renders the blocks, until the audio connection is there to hand it
+    /// to a thread.
+    render: Option<RenderSide>,
     /// The thread that built the server: the one the plugin's main-thread
     /// calls run on, claimed once at startup.
     main: MainThread,
@@ -74,41 +80,47 @@ impl PluginServer {
     pub fn new(config: BridgeConfig) -> BridgeResult<Self> {
         // Before anything can block: the orphan check compares against the PID
         // recorded here, and recording it later would sample a reaper instead
-        // of the real spawner. See `transport::record_parent_pid`.
-        crate::transport::record_parent_pid();
+        // of the real spawner. See `main_loop::record_parent_pid`.
+        crate::main_loop::record_parent_pid();
         let main = MainThread::claim().map_err(|e| BridgeError::ProtocolError(e.to_string()))?;
+        let (session, render) = Session::new();
         Ok(Self {
             config,
-            session: Session::new(),
+            session,
+            render: Some(render),
             main,
         })
     }
 
     /// Serves one host, then returns. Blocks for the lifetime of the session.
     ///
-    /// # The two-phase connection dance
+    /// # The connection dance
     ///
-    /// The host connects twice, and the split is what lets the second phase run
-    /// at the highest priority the OS grants (not real time) without the
-    /// load-time work behind it:
+    /// The host connects three times, and the split is what lets the blocks run
+    /// at the highest priority the OS grants (not real time) on a thread that
+    /// nothing else shares:
     ///
-    /// 1. **Handshake** — plugin load, format negotiation, shared-memory setup.
+    /// 1. **Handshake**: plugin load, format negotiation, shared-memory setup.
     ///    Returns early if the host asks for shutdown before any audio flows.
-    /// 2. **Audio** — per-block traffic for the rest of the session. The thread
-    ///    asks for the highest priority on entry (`request_audio_priority`), and
-    ///    runs the event loop (`event_loop`): async plugin events are
-    ///    drained to the host after each block, and the editor's idle ticks
-    ///    between them.
+    /// 2. **Audio**: `ProcessAudio` and `Reset`, in order, answered one by one.
+    ///    The **render thread** serves it (`render`): it owns the
+    ///    plugin's `Processor`, asks for the highest priority on entry
+    ///    (`request_audio_priority`), and shares nothing with the main thread
+    ///    but queues, so an editor's paint can never delay a block.
+    /// 3. **Control**: every other request and the plugin's unsolicited news,
+    ///    for the rest of the session. The **main thread** serves it in its
+    ///    event loop (`main_loop`), which keeps the plugin's
+    ///    `Controller`, its editor and the idle tick.
     ///
     /// Each phase opens with a [`BridgeMessage::Ready`] carrying
     /// `PROTOCOL_VERSION`; the host refuses a version it does not know.
     ///
     /// # Errors
     ///
-    /// Returns an error if the socket cannot be bound, or if the audio phase's
-    /// transport fails. A transport failure during the *handshake* is treated as
-    /// the host having gone away and returns `Ok(())` — there is no session to
-    /// report an error to.
+    /// Returns an error if the socket cannot be bound, or if the control
+    /// connection fails. A transport failure during the *handshake* is treated
+    /// as the host having gone away and returns `Ok(())`: there is no session
+    /// to report an error to.
     pub fn run(mut self) -> BridgeResult<()> {
         let listener = TransportListener::bind(&self.config.socket_path)?;
 
@@ -122,13 +134,27 @@ impl PluginServer {
         }
         drop(handshake);
 
-        // Second connection: audio.
+        // Second connection: audio. Third: control.
         let mut audio = listener.accept()?;
         audio.send(&BridgeMessage::Ready {
             protocol_version: PROTOCOL_VERSION,
         })?;
-        request_audio_priority("the audio phase");
-        self.audio_phase(&mut audio)
+        let mut control = listener.accept()?;
+        control.send(&BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        })?;
+        let side = self
+            .render
+            .take()
+            .ok_or_else(|| BridgeError::ProtocolError("the audio phase runs once".to_string()))?;
+        let render = RenderThread::spawn(side, Box::new(audio))?;
+        let served = self.control_phase(&mut control, &render);
+        // The plugin goes home before the render thread stops: its Processor
+        // is returned by that thread's poll, and the plugin is destroyed only
+        // once it has it back.
+        self.session.drop_plugin(&self.main);
+        drop(render.stop());
+        served
     }
 
     fn handshake_phase(&mut self, transport: &mut dyn Transport) -> BridgeResult<bool> {
@@ -161,11 +187,16 @@ impl PluginServer {
         }
     }
 
-    /// The audio phase: the main thread's [event loop](crate::event_loop),
-    /// serving the socket and the editor's idle tick until the host leaves.
-    fn audio_phase(&mut self, transport: &mut dyn Transport) -> BridgeResult<()> {
+    /// The control phase: the main thread's [event loop](crate::main_loop),
+    /// serving the control connection and the editor's idle tick until the
+    /// host leaves.
+    fn control_phase(
+        &mut self,
+        transport: &mut dyn Transport,
+        render: &RenderThread,
+    ) -> BridgeResult<()> {
         let main = self.main;
-        crate::event_loop::serve(&mut self.session, transport, &main)
+        crate::main_loop::serve(&mut self.session, transport, &main, render)
     }
 }
 

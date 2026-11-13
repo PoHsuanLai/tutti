@@ -78,7 +78,14 @@ pub(crate) mod wire;
 ///   and the server's `EditorOpened`, `EditorSized`, `EditorWantsSize` and
 ///   `EditorClosed`, so a served plugin's editor can live in the server. They
 ///   follow every earlier variant, which keep their numbers.
-pub const PROTOCOL_VERSION: u32 = 33;
+/// - **Version 34** splits the audio phase into two connections (doc 029
+///   section 6.5). No message changed: the host connects a third time after the
+///   audio connection, the server sends `Ready` on it, and the audio connection
+///   carries `ProcessAudio` and `Reset` alone (the server's render thread
+///   serves it) while the control connection carries every other request and
+///   the plugin's unsolicited news (its main thread serves it, and an editor's
+///   paint may keep it busy). A version-33 server accepts no third connection.
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

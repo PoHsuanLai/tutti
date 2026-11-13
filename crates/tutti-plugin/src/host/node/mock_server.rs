@@ -106,6 +106,53 @@ fn send(stream: &interprocess::local_socket::Stream, message: &BridgeMessage) ->
     stream.write_all(&(data.len() as u32).to_be_bytes()).is_ok() && stream.write_all(&data).is_ok()
 }
 
+/// One connection of the mock server: answers what it is sent. The audio
+/// connection carries the blocks and resets (the slab is its), the control
+/// one the rest.
+fn serve_lane(
+    stream: &interprocess::local_socket::Stream,
+    mut slab: Option<SlabWriter>,
+    log: &Record,
+) {
+    let mut scratch = vec![0.0f32; CHUNK];
+    while let Some((bytes, message)) = read_frame(stream) {
+        let reply = match message {
+            HostMessage::GetParameterList => Some(BridgeMessage::ParameterList {
+                parameters: PARAMS
+                    .iter()
+                    .map(|&id| ParameterInfo::new(ParamId::new(id), "p"))
+                    .collect(),
+            }),
+            HostMessage::GetPresetList => Some(BridgeMessage::PresetList {
+                presets: Vec::new(),
+            }),
+            // What `PluginBridge::settle` asks, which a watched
+            // plugin's retune waits on.
+            HostMessage::GetCurrentPreset => Some(BridgeMessage::CurrentPreset { id: None }),
+            HostMessage::ProcessAudio(data) => {
+                log.lock().unwrap().push(bytes);
+                slab.as_mut().map(|slab| answer(slab, &mut scratch, data))
+            }
+            // The bridge holds every block behind a rate change until the
+            // server answers it.
+            HostMessage::SetSampleRate { rate } => {
+                log.lock().unwrap().push(bytes);
+                Some(BridgeMessage::SampleRateSet { rate, error: None })
+            }
+            HostMessage::Reset => {
+                log.lock().unwrap().push(bytes);
+                None
+            }
+            _ => None,
+        };
+        if let Some(reply) = reply
+            && !send(stream, &reply)
+        {
+            break;
+        }
+    }
+}
+
 pub(super) fn rig(label: &str) -> Rig {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -122,7 +169,7 @@ pub(super) fn rig(label: &str) -> Rig {
         .create_sync()
         .unwrap();
     let slab = AudioSlab::create(shm.clone(), layout()).unwrap();
-    let mut server_slab = AudioSlab::open(shm, layout()).unwrap();
+    let server_slab = AudioSlab::open(shm, layout()).unwrap();
     let (bridge, thread) = PluginBridge::new(
         path.clone(),
         Arc::clone(slab.slab()),
@@ -131,57 +178,28 @@ pub(super) fn rig(label: &str) -> Rig {
         SR,
     )
     .unwrap();
-    let stream = listener.accept().unwrap();
-    send(
-        &stream,
-        &BridgeMessage::Ready {
-            protocol_version: PROTOCOL_VERSION,
-        },
-    );
+    // The audio connection first, then the control one, as the server accepts
+    // them; the host connects the second after the first one's `Ready`.
+    let audio = listener.accept().unwrap();
+    let ready = BridgeMessage::Ready {
+        protocol_version: PROTOCOL_VERSION,
+    };
+    send(&audio, &ready);
+    let control = listener.accept().unwrap();
+    send(&control, &ready);
     let record: Record = Arc::default();
     let log = Arc::clone(&record);
+    std::thread::Builder::new()
+        .name("mock-differential-control".into())
+        .spawn({
+            let log = Arc::clone(&record);
+            move || serve_lane(&control, None, &log)
+        })
+        .unwrap();
     let server = std::thread::Builder::new()
         .name("mock-differential-server".into())
         .spawn(move || {
-            let mut scratch = vec![0.0f32; CHUNK];
-            while let Some((bytes, message)) = read_frame(&stream) {
-                let reply = match message {
-                    HostMessage::GetParameterList => Some(BridgeMessage::ParameterList {
-                        parameters: PARAMS
-                            .iter()
-                            .map(|&id| ParameterInfo::new(ParamId::new(id), "p"))
-                            .collect(),
-                    }),
-                    HostMessage::GetPresetList => Some(BridgeMessage::PresetList {
-                        presets: Vec::new(),
-                    }),
-                    // What `PluginBridge::settle` asks, which a watched
-                    // plugin's retune waits on.
-                    HostMessage::GetCurrentPreset => {
-                        Some(BridgeMessage::CurrentPreset { id: None })
-                    }
-                    HostMessage::ProcessAudio(data) => {
-                        log.lock().unwrap().push(bytes);
-                        Some(answer(&mut server_slab, &mut scratch, data))
-                    }
-                    // The bridge holds every block behind a rate change until the
-                    // server answers it.
-                    HostMessage::SetSampleRate { rate } => {
-                        log.lock().unwrap().push(bytes);
-                        Some(BridgeMessage::SampleRateSet { rate, error: None })
-                    }
-                    HostMessage::Reset => {
-                        log.lock().unwrap().push(bytes);
-                        None
-                    }
-                    _ => None,
-                };
-                if let Some(reply) = reply
-                    && !send(&stream, &reply)
-                {
-                    break;
-                }
-            }
+            serve_lane(&audio, Some(server_slab), &log);
             let _ = std::fs::remove_file(&path);
         })
         .unwrap();

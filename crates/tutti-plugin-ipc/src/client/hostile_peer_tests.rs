@@ -201,6 +201,109 @@ const PROBE_WAITING: u8 = 1;
 /// [`Action::EventsThenProbe`] found nothing sent yet.
 const PROBE_NOT_YET: u8 = 2;
 
+/// One connection of the mock server: answers each request as `respond` says.
+fn serve_lane(
+    stream: interprocess::local_socket::Stream,
+    respond: &std::sync::Mutex<Box<dyn Fn(HostMessage) -> Action + Send>>,
+) {
+    let mut next = None;
+    loop {
+        let msg = match next.take() {
+            Some(msg) => msg,
+            None => match recv_host_msg(&stream) {
+                Ok(msg) => msg,
+                Err(_) => return, // host hung up
+            },
+        };
+        match (respond.lock().unwrap())(msg) {
+            Action::Reply(m) => {
+                if send_bridge_msg(&stream, &m).is_err() {
+                    return;
+                }
+            }
+            Action::ReplyMany(ms) => {
+                if ms.iter().any(|m| send_bridge_msg(&stream, m).is_err()) {
+                    return;
+                }
+            }
+            Action::ReplyManySlowly { msgs, gap } => {
+                for m in &msgs {
+                    std::thread::sleep(gap);
+                    if send_bridge_msg(&stream, m).is_err() {
+                        return;
+                    }
+                }
+            }
+            Action::Silent => {}
+            Action::Raw(len, body) => {
+                if send_raw_frame(&stream, len, &body).is_err() {
+                    return;
+                }
+            }
+            Action::Dribble { len, gap } => {
+                let mut s = &stream;
+                if s.write_all(&len.to_be_bytes()).is_err() {
+                    return;
+                }
+                // Forever, or until the host hangs up. A bounded loop
+                // would let the test pass by the peer running out of
+                // bytes rather than by the host refusing the frame.
+                loop {
+                    std::thread::sleep(gap);
+                    if s.write_all(&[0u8]).is_err() {
+                        return;
+                    }
+                }
+            }
+            Action::EventsThenProbe { count, gap, probe } => {
+                for n in 0..count {
+                    std::thread::sleep(gap);
+                    let event = BridgeMessage::LatencyChanged {
+                        samples: crate::protocol::Samples(n),
+                    };
+                    if send_bridge_msg(&stream, &event).is_err() {
+                        return;
+                    }
+                }
+                use interprocess::local_socket::traits::Stream as _;
+                let _ = stream.set_recv_timeout(Some(Duration::from_millis(300)));
+                let waiting = recv_host_msg(&stream).ok();
+                let _ = stream.set_recv_timeout(None);
+                probe.store(
+                    if waiting.is_some() {
+                        PROBE_WAITING
+                    } else {
+                        PROBE_NOT_YET
+                    },
+                    Ordering::SeqCst,
+                );
+                next = waiting;
+            }
+            Action::SplitEvents { split } => {
+                let mut s = &stream;
+                for n in 0.. {
+                    let body = postcard::to_allocvec(&BridgeMessage::LatencyChanged {
+                        samples: crate::protocol::Samples(n),
+                    })
+                    .unwrap();
+                    let prefix = (body.len() as u32).to_be_bytes();
+                    if s.write_all(&prefix).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(split);
+                    if s.write_all(&body).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            // Dropping `stream` closes the socket, so the host's next
+            // read sees EOF — exactly what a killed server produces.
+            Action::Die => return,
+        }
+    }
+}
+
 struct MockServer {
     bridge: Arc<PluginBridge>,
     /// `Option` only so `Drop` can take it out and `mem::forget` it; see there.
@@ -259,116 +362,33 @@ impl MockServer {
         )
         .expect("bridge");
 
-        let stream = listener.accept().expect("accept");
-        send_bridge_msg(
-            &stream,
-            &BridgeMessage::Ready {
-                protocol_version: PROTOCOL_VERSION,
-            },
-        )
-        .expect("handshake");
-
-        let server = std::thread::Builder::new()
-            .name(format!("mock-hostile-{label}"))
-            .spawn(move || {
-                let mut next = None;
-                loop {
-                    let msg = match next.take() {
-                        Some(msg) => msg,
-                        None => match recv_host_msg(&stream) {
-                            Ok(msg) => msg,
-                            Err(_) => return, // host hung up
-                        },
-                    };
-                    match respond(msg) {
-                        Action::Reply(m) => {
-                            if send_bridge_msg(&stream, &m).is_err() {
-                                return;
-                            }
-                        }
-                        Action::ReplyMany(ms) => {
-                            if ms.iter().any(|m| send_bridge_msg(&stream, m).is_err()) {
-                                return;
-                            }
-                        }
-                        Action::ReplyManySlowly { msgs, gap } => {
-                            for m in &msgs {
-                                std::thread::sleep(gap);
-                                if send_bridge_msg(&stream, m).is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                        Action::Silent => {}
-                        Action::Raw(len, body) => {
-                            if send_raw_frame(&stream, len, &body).is_err() {
-                                return;
-                            }
-                        }
-                        Action::Dribble { len, gap } => {
-                            let mut s = &stream;
-                            if s.write_all(&len.to_be_bytes()).is_err() {
-                                return;
-                            }
-                            // Forever, or until the host hangs up. A bounded loop
-                            // would let the test pass by the peer running out of
-                            // bytes rather than by the host refusing the frame.
-                            loop {
-                                std::thread::sleep(gap);
-                                if s.write_all(&[0u8]).is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                        Action::EventsThenProbe { count, gap, probe } => {
-                            for n in 0..count {
-                                std::thread::sleep(gap);
-                                let event = BridgeMessage::LatencyChanged {
-                                    samples: crate::protocol::Samples(n),
-                                };
-                                if send_bridge_msg(&stream, &event).is_err() {
-                                    return;
-                                }
-                            }
-                            use interprocess::local_socket::traits::Stream as _;
-                            let _ = stream.set_recv_timeout(Some(Duration::from_millis(300)));
-                            let waiting = recv_host_msg(&stream).ok();
-                            let _ = stream.set_recv_timeout(None);
-                            probe.store(
-                                if waiting.is_some() {
-                                    PROBE_WAITING
-                                } else {
-                                    PROBE_NOT_YET
-                                },
-                                Ordering::SeqCst,
-                            );
-                            next = waiting;
-                        }
-                        Action::SplitEvents { split } => {
-                            let mut s = &stream;
-                            for n in 0.. {
-                                let body = postcard::to_allocvec(&BridgeMessage::LatencyChanged {
-                                    samples: crate::protocol::Samples(n),
-                                })
-                                .unwrap();
-                                let prefix = (body.len() as u32).to_be_bytes();
-                                if s.write_all(&prefix).is_err() {
-                                    return;
-                                }
-                                std::thread::sleep(split);
-                                if s.write_all(&body).is_err() {
-                                    return;
-                                }
-                                std::thread::sleep(Duration::from_millis(10));
-                            }
-                        }
-                        // Dropping `stream` closes the socket, so the host's next
-                        // read sees EOF — exactly what a killed server produces.
-                        Action::Die => return,
-                    }
-                }
-            })
-            .expect("spawn mock");
+        // Two connections, as the server accepts them: audio, then control.
+        // Each is served on its own thread by the same responder, so a test's
+        // script sees the requests of both as it saw the one's.
+        let respond: Arc<std::sync::Mutex<Box<dyn Fn(HostMessage) -> Action + Send>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(respond)));
+        let mut servers = Vec::new();
+        for lane in ["audio", "control"] {
+            let stream = listener.accept().expect("accept");
+            send_bridge_msg(
+                &stream,
+                &BridgeMessage::Ready {
+                    protocol_version: PROTOCOL_VERSION,
+                },
+            )
+            .expect("handshake");
+            let respond = Arc::clone(&respond);
+            servers.push(
+                std::thread::Builder::new()
+                    .name(format!("mock-hostile-{label}-{lane}"))
+                    .spawn(move || serve_lane(stream, &respond))
+                    .expect("spawn mock"),
+            );
+        }
+        let mut servers = servers.into_iter();
+        let server = servers.next().expect("the audio lane");
+        // The control lane's thread ends with the connection; nothing joins it.
+        drop(servers);
 
         // Let the bridge thread connect and consume the handshake before a test
         // starts asserting on it.

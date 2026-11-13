@@ -165,6 +165,28 @@ fn bytes_available(stream: &ControlStream) -> std::io::Result<u32> {
     tutti_plugin_ipc_ffi::pipe_bytes_available(pipe.as_handle())
 }
 
+/// Whether `stream` has something to read now, asked without blocking or
+/// consuming. **A failed ask is "yes"**: the read is the authority on a closed
+/// or broken stream, and this must never be able to hide one.
+pub fn has_pending(stream: &ControlStream) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd;
+        // On unix `local_socket::Stream` has exactly one variant.
+        let Stream::UdSocket(socket) = stream;
+        tutti_plugin_ipc_ffi::wait_readable(socket.as_fd(), 0).unwrap_or(true)
+    }
+    #[cfg(windows)]
+    {
+        bytes_available(stream).map_or(true, |n| n > 0)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = stream;
+        false
+    }
+}
+
 /// Wait longer each time a peeked stream comes back empty, never past `remaining`.
 ///
 /// **The first polls yield instead of sleeping, and that is not an optimisation.**

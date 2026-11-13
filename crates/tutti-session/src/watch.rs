@@ -264,7 +264,9 @@ impl Follow {
 }
 
 /// A source, its roster and the policy: what a session runs on `Phase::Poll`
-/// ([`LiveSession::watch_devices`](crate::LiveSession::watch_devices)).
+/// ([`LiveSession::watch_devices`](crate::LiveSession::watch_devices)), or, with no
+/// session yet, what an app polls until a device appears
+/// ([`without_stream`](Self::without_stream)).
 pub struct DeviceWatch {
     source: Box<dyn SnapshotSource + Send>,
     roster: DeviceRoster,
@@ -294,6 +296,52 @@ impl DeviceWatch {
             follow: Follow::running(policy, want, running_on),
             looked: false,
         }
+    }
+
+    /// Watches for a stream that never started: [`retry_start`](Self::retry_start)
+    /// starts it once `want` is listed (with `retry_startup` on).
+    pub fn without_stream(
+        source: impl SnapshotSource + Send + 'static,
+        policy: DevicePolicy,
+        want: DeviceSelector,
+    ) -> Self {
+        Self {
+            source: Box::new(source),
+            roster: DeviceRoster::new(),
+            follow: Follow::not_started(policy, want),
+            looked: false,
+        }
+    }
+
+    /// The source, to hand to the session that takes over once the start
+    /// succeeds ([`LiveSession::watch_devices`](crate::LiveSession::watch_devices)).
+    #[must_use]
+    pub fn into_source(self) -> Box<dyn SnapshotSource + Send> {
+        self.source
+    }
+
+    /// For a watch with no stream: polls at the current time, and when the
+    /// policy asks for a start, runs `start` with the selector. A failure
+    /// is told to the policy, which waits out its backoff. `events` gets the
+    /// device events the poll found (for a list). `None`: nothing was due.
+    pub fn retry_start<T, E>(
+        &mut self,
+        events: &mut Vec<SessionEvent>,
+        start: impl FnOnce(DeviceSelector) -> std::result::Result<T, E>,
+    ) -> Option<std::result::Result<T, E>> {
+        let now = Instant::now();
+        self.poll(now, events);
+        let at = events
+            .iter()
+            .position(|e| matches!(e, SessionEvent::Device(DeviceEvent::RestartWanted(_))))?;
+        let SessionEvent::Device(DeviceEvent::RestartWanted(request)) = events.remove(at) else {
+            return None;
+        };
+        let result = start(request.device);
+        if result.is_err() {
+            self.note(FollowEvent::RestartFailed { running: false }, now);
+        }
+        Some(result)
     }
 
     /// Tells the policy something happened without deciding, for a decision

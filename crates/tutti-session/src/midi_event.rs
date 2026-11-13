@@ -73,6 +73,18 @@ pub enum MidiEvent {
         /// What happened to the peer.
         change: tutti_midi_hardware::CiChange,
     },
+    /// A MIDI-CI peer's Profiles became known or changed, a request to switch one
+    /// ended, or the peer's Profiles were dropped with it (M2-101 section 7): the
+    /// session is the Initiator with every peer that declares Profile
+    /// Configuration, and reports each change once, from `Phase::Poll`. The
+    /// Profiles now are [`Midi::profiles`](crate::Midi::profiles).
+    #[cfg(feature = "midi-hardware")]
+    CiProfiles {
+        /// The device.
+        device: tutti_midi_hardware::DeviceId,
+        /// What happened.
+        change: tutti_midi_hardware::ProfilesChange,
+    },
     /// The hardware devices' event inlets dropped events because they were
     /// full: the total over every input so far, reported when it rises, at
     /// most once per [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT)

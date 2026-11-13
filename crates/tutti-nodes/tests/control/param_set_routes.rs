@@ -1,7 +1,7 @@
 //! A node's [`ParamSet`](tutti_graph::ParamSet) is the address a modulation
 //! host resolves a param on: `ParamSet::cell(p)` is the very cell the node
-//! reads, which an engine hands a control lane as its knob (doc 014 §4.2:
-//! one writer per knob, the host's `set`), so a write through the set moves
+//! reads, which an engine hands a control lane as its knob (one
+//! writer per knob, the host's `set`), so a write through the set moves
 //! the node's own control and the lane's offsets ride on it.
 //!
 //! The `ParamSet` is each node's one address: a set is addressed by
@@ -274,7 +274,7 @@ fn dry_chorus(input: BusTopology) -> ModDelayNode {
 
 /// **A control lane modulates a chorus's rate**, around the chorus's own rate cell: a
 /// +2 Hz offset on the 1 Hz knob sweeps the delay at 3 Hz, and the cell still holds the
-/// knob (the lane sends to the port and never writes it, doc 014 §4.2).
+/// knob (the lane sends to the port and never writes it).
 ///
 /// The definition of the sweep: channel `c`'s delay is `base + depth * sin(2π (f t +
 /// φ_c))`, with the chorus's 10 ms base, 5 ms depth and a quarter cycle between the

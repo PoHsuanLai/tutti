@@ -229,7 +229,7 @@ impl Family for FdnFamily {
     type Recurrence = FdnRecurrence;
 
     // The grid the render is a function of: the recurrence ramps in whole chunks
-    // counted from the last reset (doc 024 section 4.4). The *design* is still
+    // counted from the last reset. The *design* is still
     // sampled once per block; a grid finer than that would redesign per chunk
     // for nothing the recurrence needs, so this names the render's clock
     // and not a schedule for `member_into`.

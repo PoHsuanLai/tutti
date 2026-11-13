@@ -54,7 +54,7 @@ node without a lock.
   cells (`tutti_graph::declare_params!`), as param ports, filled per
   frame from one event source each (read through `Io::param`).
 - **Modulation** — the `automation` module's `ControlLaneNode`, which
-  evaluates a `tutti_modulation::ControlProgram` into a param port (design doc 014),
+  evaluates a `tutti_modulation::ControlProgram` into a param port,
   the signal sources that feed a lane (`SourceNode<S>`, the one sender of a
   `tutti_modulation::ControlSource`: `EnvelopeFollowerNode`,
   `NoteEnvelopeNode`), and `Modulation`, the reconciler that builds them from

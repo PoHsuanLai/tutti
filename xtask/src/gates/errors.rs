@@ -57,31 +57,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "permanent: `Unfed` has a field named `source` that is a `SourceName`, not an `Error`, and `thiserror` takes that name as the source",
     ),
     (
-        "tutti-dsp",
-        "CrossoverError",
-        "temporary: dsp session converts it",
-    ),
-    (
-        "tutti-nodes",
-        "ReconcileError",
-        "temporary: dsp session converts it",
-    ),
-    (
-        "tutti-polysynth",
-        "UnisonVoicesError",
-        "temporary: dsp session converts it",
-    ),
-    (
-        "tutti-sf2",
-        "BankError",
-        "temporary: dsp session converts it",
-    ),
-    (
-        "tutti-soundfont",
-        "PolyphonyError",
-        "temporary: dsp session converts it",
-    ),
-    (
         "tutti-au-ffi",
         "BundleError",
         "temporary: plugins session converts it",

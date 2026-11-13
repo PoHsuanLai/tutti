@@ -13,8 +13,23 @@ fn word(b: u8) -> bool {
 /// quotes of a string, raw string, byte string or char literal, replaced by
 /// spaces (newlines kept). The quotes stay, so `""` still marks a literal.
 pub(super) fn blank(src: &str) -> String {
+    split(src).0
+}
+
+/// `src` with everything but its `//` and `/* */` comments replaced by spaces
+/// (newlines kept): the prose of a source file, at its own offsets.
+pub(super) fn comments(src: &str) -> String {
+    split(src).1
+}
+
+/// The blanked code and the comments alone, both at the source's offsets.
+fn split(src: &str) -> (String, String) {
     let b = src.as_bytes();
     let mut out = b.to_vec();
+    let mut prose: Vec<u8> = b
+        .iter()
+        .map(|&c| if c == b'\n' { b'\n' } else { b' ' })
+        .collect();
     let n = b.len();
     let wipe = |out: &mut [u8], from: usize, to: usize| {
         for c in &mut out[from..to] {
@@ -28,6 +43,7 @@ pub(super) fn blank(src: &str) -> String {
         let c = b[i];
         if c == b'/' && b.get(i + 1) == Some(&b'/') {
             let end = src[i..].find('\n').map_or(n, |j| i + j);
+            prose[i..end].copy_from_slice(&b[i..end]);
             wipe(&mut out, i, end);
             i = end;
         } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
@@ -44,6 +60,8 @@ pub(super) fn blank(src: &str) -> String {
                     j += 1;
                 }
             }
+            let j = j.min(n);
+            prose[i..j].copy_from_slice(&b[i..j]);
             wipe(&mut out, i, j);
             i = j;
         } else if word(c) {
@@ -99,7 +117,11 @@ pub(super) fn blank(src: &str) -> String {
             i += 1;
         }
     }
-    String::from_utf8(out).expect("blanking keeps UTF-8: it only writes spaces over whole spans")
+    let utf8 = "blanking keeps UTF-8: it only writes spaces over whole spans";
+    (
+        String::from_utf8(out).expect(utf8),
+        String::from_utf8(prose).expect(utf8),
+    )
 }
 
 /// The index after a char literal opening at `at` (`'x'`, `'\n'`, `'\x41'`,
@@ -193,6 +215,16 @@ mod tests {
         assert_eq!(b.matches('\n').count(), 2);
         assert!(b.contains("let s = \"      \";"));
         assert!(b.contains("let c = ' ';"));
+    }
+
+    #[test]
+    fn comments_keep_only_the_prose_at_its_offsets() {
+        let src = "let s = \"// not\"; // said\n/* block */ x\n";
+        let c = comments(src);
+        assert_eq!(c.len(), src.len());
+        assert!(!c.contains("not") && !c.contains("let") && !c.contains(" x"));
+        assert_eq!(c.find("// said"), src.find("// said"));
+        assert_eq!(c.find("/* block */"), src.find("/* block */"));
     }
 
     #[test]

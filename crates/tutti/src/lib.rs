@@ -163,7 +163,9 @@ pub use tutti_midi_file as midi_file;
 /// the session's route rule, events and errors (`MidiRouteRule`, `MidiEvent`,
 /// `midi::Error`), and under `midi-hardware` a device (`DeviceId`,
 /// `DeviceInfo`), what a saved one resolves to (`Resolution`) and what an
-/// open one said of itself (`Learned`, `SavedDevice`, `Match`). The
+/// open one said of itself (`Learned`, `SavedDevice`, `Match`), and the Profiles
+/// its MIDI-CI peers support and how to switch one (`PeerProfiles`,
+/// `ListedProfile`, `ProfileSwitch`, `ProfilesChange`). The
 /// lower layers (`Translator`, `Narrower`, `SysexAssembler`, `ClockMap`) are
 /// by path through [`ump`], [`midi_protocol`] and [`midi_runtime`]; the
 /// MIDI-CI codec is `tutti-midi-device`'s. Feature `midi`.
@@ -188,7 +190,9 @@ pub mod midi {
 
     #[cfg(feature = "midi-hardware")]
     pub use tutti_midi_hardware::{
-        CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, SavedDevice,
+        ChannelCount, ChannelProfile, CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery,
+        Learned, ListedProfile, Match, PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange,
+        SavedDevice, Whole, WholeProfile,
     };
     #[cfg(all(feature = "session", feature = "midi-hardware"))]
     pub use tutti_session::Resolution;

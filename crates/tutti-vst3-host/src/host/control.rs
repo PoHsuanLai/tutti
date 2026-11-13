@@ -8,7 +8,7 @@ use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
     LoadedPlugin, Normalized, ParamEdit, ParamId, ParamMapping, ParameterInfo, PluginClass,
     PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, RenderModeSupport,
-    Request, RescanScope, Samples, Vst3SubCategories, WindowHandle,
+    Request, RescanScope, Samples, StateUse, Vst3SubCategories, WindowHandle,
 };
 
 use crate::error::Vst3Error;
@@ -320,14 +320,14 @@ impl Control for Vst3Loaded {
             .map(Normalized::clamped)
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
         self.save_state_with(main, &[])
     }
 
     /// Restores the state. The writes a rejoin carried are older than it, and
     /// are dropped; the writes the blob itself carries wait in `carried`, for the
     /// next activation, or (active) for the Controller to queue to the Processor.
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
         self.carried = self.restore_state(main, bytes)?;
         Ok(())
     }

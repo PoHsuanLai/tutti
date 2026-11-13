@@ -484,7 +484,9 @@ impl PluginHandle {
         let Some(control) = self.control.as_deref() else {
             return Err(StateError::NoStateRoute);
         };
-        match lent(control, |c| c.load_state(main, data)) {
+        match lent(control, |c| {
+            c.load_state(main, data, tutti_plugin_types::StateUse::Project)
+        }) {
             Some(Ok(())) => Ok(()),
             Some(Err(PluginError::StateFailed(error))) => Err(error),
             Some(Err(other)) => Err(StateError::Rejected(other.to_string())),
@@ -832,13 +834,18 @@ mod tests {
         ) -> Option<Normalized> {
             None
         }
-        fn save_state(&mut self, _main: &MainThread) -> tutti_plugin_types::PluginResult<Vec<u8>> {
+        fn save_state(
+            &mut self,
+            _main: &MainThread,
+            _: tutti_plugin_types::StateUse,
+        ) -> tutti_plugin_types::PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
         fn load_state(
             &mut self,
             _main: &MainThread,
             _bytes: &[u8],
+            _: tutti_plugin_types::StateUse,
         ) -> tutti_plugin_types::PluginResult<()> {
             Ok(())
         }

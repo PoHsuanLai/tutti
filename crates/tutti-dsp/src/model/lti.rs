@@ -5,7 +5,7 @@ use tutti_types::Hz;
 use super::System;
 use crate::Complex64;
 
-/// A linear time-invariant system (design 024 section 4.2, class 1; order 0 is a
+/// A linear time-invariant system (order 0 is a
 /// gain matrix). The queries are the system's invariants, answered from its
 /// structure and never from its realization.
 ///

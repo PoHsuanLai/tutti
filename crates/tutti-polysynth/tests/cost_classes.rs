@@ -1,8 +1,7 @@
-//! The synth declares a cost class from its oscillator lanes (doc 013,
-//! "The cost model and coarsening"): `Moderate` up to sixteen (`polyphony` × unison),
-//! `Heavy` past them. Declaring one changes only the parallel schedule:
-//! sibling synths pack into fewer tasks than undeclared ones, and the render
-//! on a pool is bit for bit the serial one.
+//! The synth declares a cost class from its oscillator lanes: `Moderate` up to sixteen
+//! (`polyphony` × unison), `Heavy` past them. Declaring one changes only the parallel schedule:
+//! sibling synths pack into fewer tasks than undeclared ones, and the render on a pool is bit
+//! for bit the serial one.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

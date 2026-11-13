@@ -22,7 +22,7 @@ pub use times::{ChannelTimes, ChannelTimesError};
 /// The cost/quality ladder for a *modulated* delay: a moving delay time lands
 /// between samples, and how that gap is filled is what separates a clean chorus
 /// from a gritty one. At a fixed, integral delay all three agree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum InterpolationMode {
     /// Round to the nearest whole sample. Cheapest, and it quantises the delay

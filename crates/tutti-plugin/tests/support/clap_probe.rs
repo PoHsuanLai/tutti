@@ -16,7 +16,7 @@
 //!
 //! The probe's switches are process-global statics **inside the cdylib**. This
 //! process links the same crate as an rlib, and an rlib is a separate image with
-//! separate statics — so `tutti_clap_test_plugin::set_render_mode` called
+//! separate statics — so `tutti_clap_test_plugin::tutti_test_plugin_set_render_mode` called
 //! directly would write a static nothing ever reads. Worse here than in the
 //! in-process suites: the plugin is resident in *another process entirely*, so
 //! the switch has to be flipped in that process's copy.
@@ -298,6 +298,14 @@ impl ProbeEnv {
     pub fn stall_every_block(mut self, stall: std::time::Duration) -> Self {
         let us = u32::try_from(stall.as_micros()).expect("a stall under an hour");
         self.set("TUTTI_CLAP_PROBE_STALL_US", us.to_string());
+        self
+    }
+
+    /// Make the plugin take a state only in `clap.state-context` `context`
+    /// (CLAP's value: 2 duplicate, 3 project), saved for that same context:
+    /// any other load is refused.
+    pub fn load_only_context(mut self, context: u32) -> Self {
+        self.set("TUTTI_CLAP_PROBE_LOAD_ONLY_CONTEXT", context.to_string());
         self
     }
 

@@ -44,24 +44,6 @@ format keeps its own native spelling, because the spelling *is* part of the cont
 Struct field lists are inlined the same way for anything a host must fill or read
 (`clap_process`, `ProcessData`, `AudioUnitParameterInfo`, `AEffect`, `TimeInfo`, …).
 
-## Coverage grading
-
-The spec documents above describe the **formats**. Grading our implementation against them
-is a separate pass, deliberately run after the specs were extracted so a checklist could not
-simply mirror what we already do.
-
-| Format | Coverage doc | Status |
-|---|---|---|
-| VST3 | [vst3-coverage.md](vst3-coverage.md) | graded — 37 interfaces contract-verified, 34 absences classified, 16 findings upheld across three passes; **all 16 fixed** |
-| CLAP | [clap-coverage.md](clap-coverage.md) | graded — 28 stable extension IDs, **0 absent** (24 bound, 4 partial); 5 claims → **1 upheld**, since fixed |
-| AU | [au-coverage.md](au-coverage.md) | graded — 47 entry points, 170 properties, 13 callback surfaces; 5 claims → **0 upheld as stated**, 2 misdescribed |
-| VST2 | [vst2-coverage.md](vst2-coverage.md) | graded — 59 live + 31 live audioMaster opcodes; 7 claims → **1 upheld**, since fixed |
-
-The old Phase-1 numbers (CLAP 27/27, AU 40/107, VST2 35/80) were **symbol-presence counts only** and overstate coverage: VST3's
-raw count scored `IUnitInfo` as covered when it appears solely in doc comments. Presence
-also says nothing about correctness — AU's `HostCallbacks` would score covered and still
-lose transport silently.
-
 ## Read the VST2 row differently
 
 Three of these come from the vendor. **VST2 does not, and cannot** — Steinberg

@@ -389,7 +389,7 @@ impl Session {
         let graph = self.graph();
         let (queue, keys) = open_keys(graph);
         graph.set_feed(node, Feeder::Instrument, vec![queue.events_out()]);
-        let (strip, strip_params) = graph.add(BusStripNode::new());
+        let (strip, strip_params) = graph.add(BusStripNode::stereo());
         graph.connect(OutPort::new(node, usize::from(main[0])), strip.input(0))?;
         graph.connect(OutPort::new(node, usize::from(main[1])), strip.input(1))?;
         Ok(InstrumentHandle {

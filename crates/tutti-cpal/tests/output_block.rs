@@ -8,10 +8,8 @@
 //! it. That is most of the code a device-layer bug hides in.
 //!
 //! Expected values are stated from **each format's own arithmetic**, never by
-//! calling `T::from_sample`. That is the argument `tutti-export`'s
-//! `tests/formats/roundtrip.rs:46` makes for recomputing a quantization independently:
-//! asking the function under test what it should have produced is not a
-//! second opinion.
+//! calling `T::from_sample`: asking the function under test what it should
+//! have produced is not a second opinion.
 //!
 //! The master meter's tests (the centre of a wide device, the analytic
 //! level, enabled against disabled) are `tutti-engine`'s `tests/outputs/master_meter.rs`:

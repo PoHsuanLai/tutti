@@ -121,6 +121,7 @@ fn served<F: Format>(
         Load::new(),
         SampleRate::of(RATE),
         None,
+        tutti_plugin_types::StateUse::Project,
         Some(no_editor),
     )
     .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));

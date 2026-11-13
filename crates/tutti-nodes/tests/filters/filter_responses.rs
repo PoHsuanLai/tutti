@@ -1,5 +1,5 @@
 //! The filter nodes' steady-state magnitude responses, against the closed forms
-//! of what each filter is (doc 024): a sine is rendered through the node and the
+//! of what each filter is: a sine is rendered through the node and the
 //! gain read from the settled half. The SVF low-pass and high-pass are held to an
 //! independent biquad in `oracle_biquad.rs`; what moves cells and lanes inside a
 //! block is held by `filter_block_independence.rs`.

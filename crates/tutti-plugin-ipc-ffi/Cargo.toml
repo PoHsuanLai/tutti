@@ -24,7 +24,7 @@ rustix = { version = "1", default-features = false, features = ["std", "event", 
 
 [target.'cfg(windows)'.dependencies]
 # The process table walk and liveness probe, and the named-pipe peek.
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Pipes",

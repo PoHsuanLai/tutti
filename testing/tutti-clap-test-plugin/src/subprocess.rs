@@ -243,11 +243,6 @@ pub(crate) fn configure() {
     // whether the plugin emits anything at all, so without an environment path
     // every out-of-process audio assertion would be made against the `Inert`
     // default and read as "the host collected nothing".
-    // `TUTTI_CLAP_PROBE_RENDER_EXTENSION=0` withholds `clap.render`, so a host
-    // can tell the plugin its render mode only by reactivating it.
-    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_RENDER_EXTENSION") {
-        crate::RENDER_EXTENSION.store(n != 0, Ordering::SeqCst);
-    }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_RENDER_MODE") {
         // SAFETY: the switch is a plain atomic store; `unsafe` is on the
         // signature only because it is an `extern "C"` export.

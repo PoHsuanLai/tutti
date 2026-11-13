@@ -605,9 +605,6 @@ unsafe extern "C" fn plugin_get_extension(
         return &TAIL as *const _ as *const c_void;
     }
     if id == CLAP_EXT_RENDER {
-        if !RENDER_EXTENSION.load(Ordering::SeqCst) {
-            return ptr::null();
-        }
         return &RENDER as *const _ as *const c_void;
     }
     // THREADING extensions (`clap.timer-support`) — see `threading.rs`.
@@ -2016,11 +2013,6 @@ static TAIL_EXTENSION: AtomicBool = AtomicBool::new(true);
 pub unsafe extern "C" fn tutti_test_plugin_set_tail_extension(present: u32) {
     TAIL_EXTENSION.store(present != 0, Ordering::SeqCst);
 }
-
-/// Whether the plugin offers `clap.render` at all. On by default; off
-/// (`TUTTI_CLAP_PROBE_RENDER_EXTENSION=0`) it is a plugin a host can tell its
-/// render mode only by reactivating it.
-pub(crate) static RENDER_EXTENSION: AtomicBool = AtomicBool::new(true);
 
 static TAIL: clap_plugin_tail = clap_plugin_tail {
     get: Some(tail_get),

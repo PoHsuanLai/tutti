@@ -111,6 +111,7 @@ members = [
 # pinned toolchain's minor; let chains need 1.88), and the licence and
 # repository the published members share. Pinned here once.
 [workspace.package]
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"

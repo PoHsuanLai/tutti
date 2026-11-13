@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "arc-lend"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "arc-swap",
  "assert_no_alloc",
@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "tutti-clap-ffi"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
@@ -2423,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "tutti-clap-host"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
@@ -3032,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "tutti-session"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "hound",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "tutti-vst2-ffi"
-version = "0.3.0"
+version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
@@ -3264,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "tutti-vst3-ffi"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "arrayvec",
  "assert_no_alloc",
@@ -3284,7 +3284,7 @@ dependencies = [
 
 [[package]]
 name = "tutti-vst3-host"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "cc",

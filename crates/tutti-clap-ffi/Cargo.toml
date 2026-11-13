@@ -1,6 +1,6 @@
 [package]
 name = "tutti-clap-ffi"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Safe bindings for hosting CLAP plugins, built on clap-sys, for tutti"
@@ -25,10 +25,10 @@ libloading.workspace = true
 bitflags = "2"
 # `WindowHandle`, the one value whose unsafe constructor carries the claim that
 # a parent window is valid; the editor entries take it by reference.
-tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 # `GraphPool`: a graph worker pool as the `TaskPool` that serves `clap.thread-pool`.
-tutti-graph = { path = "../tutti-graph" }
-tutti-rt = { path = "../tutti-rt" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 log = "0.4"
 
 [target.'cfg(unix)'.dependencies]

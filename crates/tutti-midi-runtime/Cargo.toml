@@ -1,6 +1,6 @@
 [package]
 name = "tutti-midi-runtime"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Carries MIDI through tutti's audio graph: device input, clips, clock and timecode sync, and MPE"
@@ -22,10 +22,10 @@ tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 atomic_float = "1.1"
 thiserror = { workspace = true }
 crossbeam-queue = "0.3"
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 
 [dev-dependencies]
 # `check_range_contract` for `OutputOffset`, whose serde shape the test writes

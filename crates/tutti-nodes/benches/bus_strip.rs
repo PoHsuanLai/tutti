@@ -24,7 +24,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::contract::Direct;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::BusStripNode;
-use tutti_types::{Amplitude, ChannelLayout, SampleRate};
+use tutti_types::{Amplitude, BusTopology, ChannelLayout, SampleRate};
 
 const BLOCK: usize = 128;
 const SR: SampleRate = SampleRate::SR_48K;

@@ -92,7 +92,7 @@ fn this_thread() -> usize {
 }
 
 struct Plugin {
-    core: Core,
+    core: std::sync::Arc<Core>,
     dsp: Mutex<Dsp>,
     /// Whether `initialize` has run and `terminate` has not: the SDK allows
     /// `terminate` after a successful `initialize` only, and this plugin
@@ -647,7 +647,7 @@ impl IEditControllerTrait for Plugin {
     }
     unsafe fn createView(&self, _name: *const c_char) -> *mut IPlugView {
         if self.core.editor() != core::EDITOR_NONE {
-            return view::create(self.core.editor(), self.context.clone());
+            return view::create(self.core.clone(), self.context.clone());
         }
         std::ptr::null_mut()
     }
@@ -774,7 +774,7 @@ impl IPluginFactoryTrait for Factory {
             return kInvalidArgument;
         }
         let plugin = ComWrapper::new(Plugin {
-            core: Core::new(),
+            core: std::sync::Arc::new(Core::new()),
             dsp: Mutex::new(Dsp::default()),
             initialized: AtomicBool::new(false),
             refuses_initialize: wanted == REFUSING_CID,
@@ -990,6 +990,8 @@ mod view {
     struct View {
         /// An `EDITOR_*` behaviour other than none.
         editor: u32,
+        /// The plugin's core, whose transcript records the keys the view receives.
+        core: std::sync::Arc<core::Core>,
         context: std::sync::Arc<SharedContext>,
         registered: Mutex<Option<Registered>>,
         /// The thread `attached` ran on: a toolkit's view belongs to it, and
@@ -1006,9 +1008,13 @@ mod view {
         type Interfaces = (IPlugView,);
     }
 
-    pub(super) fn create(editor: u32, context: std::sync::Arc<SharedContext>) -> *mut IPlugView {
+    pub(super) fn create(
+        core: std::sync::Arc<core::Core>,
+        context: std::sync::Arc<SharedContext>,
+    ) -> *mut IPlugView {
         let view = ComWrapper::new(View {
-            editor,
+            editor: core.editor(),
+            core,
             context,
             registered: Mutex::new(None),
             thread: Mutex::new(None),
@@ -1112,16 +1118,21 @@ mod view {
                 kResultFalse
             }
         }
-        unsafe fn onKeyDown(&self, key: char16, code: int16, _modifiers: int16) -> tresult {
+        unsafe fn onKeyDown(&self, key: char16, code: int16, modifiers: int16) -> tresult {
+            self.core.log_key(true, key, code, modifiers);
             if self.live() && (key == KEY_CHARACTER || code == KEY_LEFT) {
                 kResultTrue
             } else {
                 kResultFalse
             }
         }
-        unsafe fn onKeyUp(&self, key: char16, code: int16, _modifiers: int16) -> tresult {
-            // SAFETY: the same call, on the same arguments.
-            unsafe { self.onKeyDown(key, code, 0) }
+        unsafe fn onKeyUp(&self, key: char16, code: int16, modifiers: int16) -> tresult {
+            self.core.log_key(false, key, code, modifiers);
+            if self.live() && (key == KEY_CHARACTER || code == KEY_LEFT) {
+                kResultTrue
+            } else {
+                kResultFalse
+            }
         }
         unsafe fn getSize(&self, size: *mut ViewRect) -> tresult {
             // SAFETY: `size` is an out-pointer the host owns for the call.

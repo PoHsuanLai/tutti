@@ -8,7 +8,7 @@ use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::note_on;
 
-mod common;
+use crate::common;
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{

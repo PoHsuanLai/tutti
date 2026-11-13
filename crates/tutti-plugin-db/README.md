@@ -10,9 +10,10 @@ Plugin discovery for the Tutti engine.
   then either the plugins it holds or a blacklist reason. The file is the unit
   because a crash blacklists a file before any plugin id is known. A `Delta`
   replaces or drops one row, and `PluginDb::apply` is the only code that
-  changes the table. `save` and `load` (feature `json`) write and read it as a
-  versioned file: a file of another version, or an old one with none, is moved
-  aside and rebuilt by a rescan, and a corrupt one is quarantined.
+  changes the table. With feature `serde` it is `Serialize`
+  and `Deserialize` as a versioned record: the app picks the file format and
+  where it lives, and a record of another version, or a path listed twice, does
+  not deserialize.
 - `Scanner` probes the files that are new or changed since their row was
   stamped, and blacklists one that fails to load, hangs or crashes its probe.
   A scan runs on a worker over a snapshot and sends deltas; the owner applies

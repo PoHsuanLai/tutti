@@ -9,11 +9,11 @@ use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,
     CCNumber, ChordBass, ChordName, ChordPitch, ChordType, Data128, DeltaTicks, DeviceIdentity,
     Direction, DiscoveryFilter, EndpointInfo, FirstGroup, Flex, FlexAddress, FlexTextKind, Form,
-    FunctionBlockId, FunctionBlockInfo, GroupSpan, KeySignature, Letter, Message, Metronome,
-    Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, NoteVelocity, Protocol,
-    RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, Sysex7Packet, Sysex8Packet,
-    SysexStatus, System, TimeSignature, U4, U7, U14, UiHint, Ump, UmpVersion, Utility, Voice1,
-    Voice2,
+    FunctionBlockId, FunctionBlockInfo, GroupSpan, KeySignature, Letter, MdsChunk, MdsChunkSize,
+    MdsChunks, MdsIdentity, Message, Metronome, Midi1Port, MidiChannel, MidiGroup, MixedDataHeader,
+    NoteNumber, NoteVelocity, Protocol, RegisteredPerNoteController, SharpsFlats, Stream,
+    StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System, TimeSignature, U4, U7, U14,
+    UiHint, Ump, UmpVersion, Utility, Voice1, Voice2,
 };
 use tutti_ump::{BendValue, ControlValue};
 
@@ -223,13 +223,15 @@ fn mixed_data_set() {
             g(4),
             Data128::MixedDataHeader(MixedDataHeader {
                 mds_id: U4::new(5).unwrap(),
-                chunk_bytes: 0x20,
-                chunks: 2,
-                chunk: 1,
-                manufacturer: ManufacturerId::of(0x8213),
-                device: 0xFFFF,
-                sub_id_1: 0x0102,
-                sub_id_2: 0x0304,
+                chunk_size: MdsChunkSize::of(0x20),
+                chunks: MdsChunks::new(2),
+                chunk: MdsChunk::new(1),
+                identity: MdsIdentity {
+                    manufacturer: ManufacturerId::of(0x8213),
+                    device: 0xFFFF,
+                    sub_id_1: 0x0102,
+                    sub_id_2: 0x0304,
+                },
             }),
         ),
     );

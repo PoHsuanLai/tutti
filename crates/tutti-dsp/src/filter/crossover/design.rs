@@ -8,7 +8,9 @@
 //! Like the SVF and the ladder it is designed on a 16-frame grid counted on the
 //! stream clock from the last reset ([`Family::CADENCE`](crate::Family::CADENCE)), so a control is
 //! in the render at most 16 frames after it was sampled and the render does not
-//! depend on how audio is split into blocks. **Unlike them its coefficients do not
+//! depend on how audio is split into blocks. The design is right when each band is the
+//! prewarped bilinear image of the Linkwitz-Riley prototype's:
+//! `the_two_bands_are_the_prewarped_bilinear_image_of_the_lr4_prototypes`. **Unlike them its coefficients do not
 //! ramp over the segment**: a retarget lands whole (`STEPS = 0`) and the segment runs on the set
 //! it solved, stair by stair. The interpolation is better left out for what the tree is: the
 //! bands sum to an all-pass only while each split's low-pass, high-pass and all-pass share one

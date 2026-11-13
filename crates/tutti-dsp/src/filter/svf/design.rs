@@ -9,6 +9,10 @@
 //! arriving exactly on the solved set at the segment's last frame. A control is
 //! therefore in the render at most 16 frames after it was sampled, and the render does
 //! not depend on how audio is split into blocks.
+//!
+//! The design is right when the model's response is the prewarped bilinear image of the
+//! analog prototype's: `the_svf_model_is_the_prewarped_bilinear_image_of_the_analog_prototype`
+//! holds all eight responses to a prototype written out in the test.
 
 use core::marker::PhantomData;
 

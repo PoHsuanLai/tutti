@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::{
-    AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, Loaded, MainThread,
-    Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Wakeups, WindowHandle,
+    AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, KeyEvent, KeyUse,
+    Loaded, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Wakeups,
+    WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -169,8 +170,8 @@ impl<F: InProcess> Reopen for F {
 /// editor-only instance). Every method is a main-thread call, which the
 /// `&MainThread` proves.
 ///
-/// Every method is required but [`open_floating_editor`](Self::open_floating_editor)
-/// and [`set_editor_scale`](Self::set_editor_scale), whose default is a typed
+/// Every method is required but [`open_floating_editor`](Self::open_floating_editor),
+/// [`set_editor_scale`](Self::set_editor_scale) and [`editor_key`](Self::editor_key), whose default is a typed
 /// refusal, so an implementation states its answer to each other rather than
 /// inheriting one.
 pub trait EditorWindow {
@@ -222,6 +223,22 @@ pub trait EditorWindow {
     fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
         let _ = (main, scale);
         Err(PluginError::Editor(EditorError::ScaleUnsupported))
+    }
+
+    /// Forwards a key the host's window received to the open editor, and reports
+    /// whether the editor used it: VST2's `effEditKeyDown` and `effEditKeyUp`.
+    ///
+    /// Defaulted to a refusal, [`EditorError::KeysUnsupported`], as
+    /// [`set_editor_scale`](Self::set_editor_scale) is: a format states whether it takes
+    /// keys rather than inheriting "not used".
+    ///
+    /// # Errors
+    ///
+    /// [`EditorError::KeysUnsupported`] as above, and any other refusal of the plugin or of
+    /// a missing editor.
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        let _ = (main, event);
+        Err(PluginError::Editor(EditorError::KeysUnsupported))
     }
 
     /// Closes the editor. The plugin stays loaded. Nothing happens when no

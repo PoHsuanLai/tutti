@@ -41,7 +41,7 @@ use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polar
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
 use tutti_types::{
-    Amplitude, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, PhaseIncrement, SampleRate,
+    Amplitude, Beat, BeatsPerCycle, Bpm, ChannelLayout, Depth, Frame, PhaseIncrement, SampleRate,
     Samples, UnitParam,
 };
 
@@ -270,7 +270,7 @@ fn drive_volume(
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: tutti_modulation::Waveform::Const(1.0),

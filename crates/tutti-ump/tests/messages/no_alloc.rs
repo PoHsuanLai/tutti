@@ -1,11 +1,8 @@
 //! `decode` and `From<Message> for Ump` allocate nothing, on every message
 //! family and on a packet that is `Unknown`.
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_ump::{Message, Ump};
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 /// One packet of every family, the defined messages and some refused ones.
 fn corpus() -> Vec<Ump> {

@@ -1,8 +1,8 @@
 //! Plugin host configuration, in three layers — each one a different
 //! question, so each one its own struct.
 //!
-//! - [`CatalogConfig`] (in [`catalog`]) — **where plugins live**: the database
-//!   path and the scan directories. Read by discovery; never by audio.
+//! - [`CatalogConfig`] (in [`catalog`]) — **where plugins live**: the sentinel
+//!   directory and the scan directories. Read by discovery; never by audio.
 //! - [`AudioConfig`] (in [`catalog`]) — **how a loaded plugin runs**: sample
 //!   format, block size, IPC timeout. Read per load.
 //! - [`BridgeConfig`] (in [`bridge`]) — the **low-level, per-subprocess**

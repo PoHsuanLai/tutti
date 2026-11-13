@@ -5,8 +5,6 @@
 //! which evaluates the segment definitions with Python's `decimal`. It shares
 //! no code with the map, so a cancellation in the map's forms shows as an
 //! error here. The pure-Rust `libm` makes the figures hold on any platform.
-//!
-//! "
 
 mod common;
 #[path = "stability/figures.rs"]

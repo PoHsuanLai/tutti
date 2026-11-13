@@ -1504,8 +1504,8 @@ fn pitch_of(channel: u8, note: u8, hcu: u32) -> Ump {
     )
 }
 
-/// M2-104 Appendix C.3, Method 1: "Per-Note Management; PNCC#3 Set Pitch 60.0;
-/// Note On #0 (Pitch sounds as 60.0)". The Pitch arrives while no voice holds
+/// M2-104 Appendix C.3, Method 1: Per-Note Management sets Pitch 60.0 before Note
+/// On #0, and the note sounds at 60.0. The Pitch arrives while no voice holds
 /// Note Number 0, and the note that starts on it sounds at 60.0 (middle C,
 /// about 261.6 Hz), where Note Number 0 alone would be about 8.2 Hz.
 #[test]
@@ -1524,11 +1524,10 @@ fn a_pitch_sent_before_the_note_on_is_the_pitch_it_sounds_at() {
     assert!((freqs[0] - 261.63).abs() < 0.5, "{freqs:?}");
 }
 
-/// M2-104 section 7.4.5: after Detach, the old note "shall no longer respond
-/// to any Per-Note Controllers" and later changes "apply to future notes
-/// only". Note 0 sounds as 60.0; Detach, then Pitch 62.0, then a new Note On on
-/// the same Note Number: the new note sounds 62.0 and the detached one stays
-/// at 60.0.
+/// M2-104 section 7.4.5: after Detach, the old note ignores Per-Note
+/// Controllers and later changes apply to future notes only. Note 0 sounds as
+/// 60.0; Detach, then Pitch 62.0, then a new Note On on the same Note Number:
+/// the new note sounds 62.0 and the detached one stays at 60.0.
 #[test]
 fn a_pitch_after_a_detach_reaches_the_next_note_and_not_the_old_one() {
     let mut synth = hand_mpe();
@@ -3051,9 +3050,8 @@ fn key_freq(key: u8) -> f32 {
     440.0 * 2.0_f32.powf((f32::from(key) - 69.0) / 12.0)
 }
 
-/// RP-015: "Set Modulation (#1) to 0" is a channel's own: the wheels are per
-/// channel, and a reset on one leaves every other (this synth's wheel was one
-/// global value, which a reset on any channel cleared for all).
+/// RP-015: Reset All Controllers sets Modulation (#1) to 0 per channel: a reset
+/// on one channel leaves every other's wheel.
 #[test]
 fn a_reset_on_one_channel_leaves_the_other_channels_wheel() {
     let mut s = steady(|_| {});
@@ -3185,7 +3183,7 @@ fn channel_pan_follows_rp_036() {
 /// Channel Pressure (a MIDI 1.0 message of its own) is a channel's: at full it
 /// raises that channel's notes by the factor the synth gives pressure (`1 + p /
 /// 2`, 1.5), leaves another channel's, and Reset All Controllers sets it back to
-/// 0 (RP-015: "Reset channel pressure to 0").
+/// 0 (RP-015).
 #[test]
 fn channel_pressure_is_per_channel_and_reset_returns_it() {
     let lone = |events: &[Ump]| peaks(&mut steady(|_| {}), events).0;
@@ -3205,8 +3203,8 @@ fn channel_pressure_is_per_channel_and_reset_returns_it() {
     assert_eq!(reset, base, "the reset returned it to 0");
 }
 
-/// M1 p.16, Example 2 through the synth: `B0 54 3C`, `90 40 40` is "#64 with
-/// glide from #60", at the rate of Portamento Time: at CC 5 = 0, the figure's
+/// M1 p.16, Example 2 through the synth: `B0 54 3C`, `90 40 40` is note 64
+/// gliding from note 60, at the rate of Portamento Time: at CC 5 = 0, the figure's
 /// fastest (1,000 cent/msec), the glide is over in 4 ms; at 127 (0.01
 /// cent/msec), after a second the pitch has left its source by 10 cents. The
 /// next note has none.
@@ -3270,7 +3268,7 @@ fn a_portamento_control_glides_one_voice_at_the_rate_of_cc_5() {
     assert!((freqs[1] / key_freq(72) - 1.0).abs() < 1e-3, "{freqs:?}");
 }
 
-/// GM2 section 3.3.8: Portamento On "between 64 and 127": a note glides from
+/// GM2 section 3.3.8: Portamento On at 64 to 127: a note glides from
 /// the key struck before it, in a straight line in cents (the rate is in cents a
 /// millisecond), and with Portamento Time at its slowest the voice has barely
 /// left the old pitch after a second.
@@ -3352,8 +3350,8 @@ fn a_per_note_pitch_survives_a_glide() {
     );
 }
 
-/// M1 p.14, Legato Footswitch: the second note moves the voice "without
-/// re-attacking", and the pitch it moves to is the new key's: the pitch a
+/// M1 p.14, Legato Footswitch: the second note moves the voice without a new
+/// attack, and the pitch it moves to is the new key's: the pitch a
 /// per-note controller told the first note is that note's, not the new one's.
 #[test]
 fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
@@ -3618,8 +3616,8 @@ fn the_construction_time_scale_is_the_initial_mts_table() {
     assert!((s.voices[2].sounding_freq().get() - 440.0).abs() < 0.01);
 }
 
-/// MTS: a real-time Single Note Tuning Change "should instantly [...] re-tune"
-/// a sounding note with no new attack; the same key struck after has it too.
+/// MTS: a real-time Single Note Tuning Change retunes a sounding note with no
+/// new attack; the same key struck after has it too.
 /// `3D 00 00` for key 60 is note 61's pitch.
 #[test]
 fn a_real_time_single_note_change_retunes_a_sounding_note() {
@@ -3643,8 +3641,8 @@ fn a_real_time_single_note_change_retunes_a_sounding_note() {
     assert!((cents_above(struck.sounding_freq(), before.get()) - 100.0).abs() < 0.1);
 }
 
-/// CA-020: the non-real-time bank form "will NOT update the currently sounding
-/// notes" but the next one has it.
+/// CA-020: the non-real-time bank form leaves the sounding notes alone; the next
+/// note has it.
 #[test]
 fn a_non_real_time_change_waits_for_the_next_note_on() {
     let mut s = steady(|_| {});

@@ -63,6 +63,7 @@ fn cc(group: u8, value: u32) -> tutti_graph::UmpAt {
 
 /// **A unit that takes no MIDI 2.0 is the legacy path.** The installed Apple
 /// instruments answer no protocol.
+/// Spec: au.prop.AudioUnitMIDIProtocol
 #[test]
 fn an_installed_instrument_reports_no_protocol_and_is_legacy() {
     let _g = AU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -111,6 +112,7 @@ fn the_legacy_path_counts_a_message_it_cannot_narrow() {
 /// Control Change packet, built by `EventList`, moves the parameter mapped to
 /// it, and a controller at 32 bits is not narrowed away (full scale lands on
 /// the top of the range).
+/// Spec: au.midi.MusicDeviceMIDIEventList
 #[test]
 fn a_ump_list_moves_a_mapped_parameter() {
     let _g = AU_LOCK.lock().unwrap_or_else(|e| e.into_inner());

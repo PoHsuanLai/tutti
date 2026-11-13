@@ -152,6 +152,7 @@ fn an_au_property_change_reaches_the_event_list() {
 /// figure captured at load while the event carried a newer one, and a client
 /// that trusted the wiring over the event would compensate the stale value
 /// forever.
+/// Spec: au.prop.Latency
 #[test]
 fn an_au_latency_poll_refreshes_the_cached_wiring() {
     let _lock = crate::test_utils::plugin_load_lock();

@@ -82,6 +82,7 @@ const BLOCK: u32 = 512;
 /// Uniqueness matters because `number` is the AU's own selector, not a position:
 /// duplicate numbers would mean two rows of a preset menu that load the same
 /// thing, and the duplicate is exactly what a mis-strided array walk produces.
+/// Spec: au.prop.FactoryPresets
 #[test]
 fn a_unit_with_presets_enumerates_all_of_them() {
     let _g = lock();
@@ -184,6 +185,7 @@ fn instruments_report_an_empty_preset_list() {
 /// that stored the number and did nothing else would satisfy a number-only
 /// assertion. The name can only come from the AU's own preset table, so
 /// matching it proves the AU actually resolved the selector.
+/// Spec: au.prop.PresentPreset
 #[test]
 fn every_factory_preset_loads_and_reads_back() {
     let _g = lock();
@@ -395,6 +397,7 @@ fn enumerating_presets_repeatedly_is_stable() {
 /// Reading back `false` after `set_bypass(false)` is not redundant with the
 /// `true` case — a property write that was silently ignored would leave the AU
 /// at its initial `false` and pass a `true`-only test in reverse.
+/// Spec: au.prop.BypassEffect
 #[test]
 fn bypass_round_trips_on_effects() {
     let _g = lock();

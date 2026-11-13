@@ -215,6 +215,7 @@ fn instruments_report_no_input_buses() {
 /// drifts from the AU's element count — which is what would break first if
 /// either side were rewritten independently. A unit that genuinely disagrees is
 /// the case the change exists for, and this is where it would surface.
+/// Spec: au.prop.ElementCount
 #[test]
 fn has_input_is_derived_from_the_element_count() {
     let _g = lock();
@@ -385,6 +386,7 @@ fn an_instrument_has_no_input_bus_zero() {
 /// emptiness is not asserted against. What is asserted is that whatever *is*
 /// published decodes into the typed form without an `Exactly` variant holding a
 /// value that came from a negative field.
+/// Spec: au.prop.SupportedNumChannels
 #[test]
 fn declared_channel_configs_decode_without_coercing_sentinels() {
     let _g = lock();

@@ -11,6 +11,7 @@
 mod cmd;
 mod gates;
 mod recipes;
+mod release;
 
 use cmd::Cmd;
 use recipes::{Ctx, RECIPES, Step};
@@ -148,6 +149,10 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
             if report.passed() { Ok(()) } else { Err(1) }
         }
         Step::DocFeatures => doc_features(ctx),
+        Step::Release(v) => release::run(&ctx.root, v).map_err(|e| {
+            eprintln!("xtask: release: {e}");
+            1
+        }),
         Step::RequireCargoDeny => {
             let ok = process::Command::new("cargo")
                 .args(["deny", "--version"])

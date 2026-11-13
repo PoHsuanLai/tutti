@@ -4,6 +4,7 @@
 
 use crate::cmd::Cmd;
 use crate::gates::Gate;
+use crate::release::Version;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -31,6 +32,9 @@ pub(crate) enum Step {
     DocFeatures,
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
+    /// The release edits (`release.rs`): the workspace version, the path
+    /// dependency pins and the changelog section.
+    Release(Version),
 }
 
 impl Step {
@@ -45,6 +49,10 @@ impl Step {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
             }
+            Step::Release(v) => format!(
+                "release {}: set the workspace version and path pins, write the changelog section",
+                v.display()
+            ),
         }
     }
 }
@@ -211,6 +219,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "render the audio cases and verify them with the Python checks (needs uv)",
     ),
     ("deny", "", "RustSec advisories (needs cargo-deny)"),
+    (
+        "release",
+        "<version>",
+        "a release pull request's edits: the shared version, the path pins and the changelog section",
+    ),
     ("ci", "", "everything CI runs"),
 ];
 
@@ -290,6 +303,7 @@ impl Planner<'_> {
                 | "bench-cmp"
                 | "profile-bench"
                 | "verify-audio"
+                | "release"
         );
         if !takes_args && !args.is_empty() {
             return Err(format!(
@@ -424,6 +438,13 @@ impl Planner<'_> {
                     format!("uv run python crates/tutti-polysynth/examples/verify_synth.py {out}/synth"),
                     format!("uv run python crates/tutti-dsp/examples/verify_dsp.py {out}/dsp"),
                 ]);
+            }
+            "release" => {
+                let [version] = Self::params(name, args, [""])?;
+                let v = Version::parse(&version).ok_or_else(|| {
+                    format!("`release` takes a version MAJOR.MINOR.PATCH, got `{version}`")
+                })?;
+                self.out.push(Step::Release(v));
             }
             "deny" => {
                 self.out.push(Step::RequireCargoDeny);

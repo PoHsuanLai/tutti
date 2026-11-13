@@ -192,7 +192,7 @@ pub enum Error {
 }
 
 /// Why audio cannot be normalized ([`Error::Unmeasurable`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Unmeasured {
     /// The meter does not take this width or rate: EBU R128 accepts 1 to 64

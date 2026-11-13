@@ -580,6 +580,7 @@ fn an_explicit_refusal_beats_declared_midi_pins() {
 ///
 /// The probe echoes whatever `effSetChunk` hands it, so this asserts the
 /// host's framing, not that any particular plugin state survived.
+/// Spec: vst2.eff.GetChunk, vst2.eff.SetChunk, vst2.flag.effFlagsProgramChunks
 #[test]
 fn chunk_state_round_trips() {
     let _guard = lock_probe();
@@ -860,6 +861,7 @@ fn load_and_metadata() {
 /// The trace records *order*, not arrival: a `begin` that lands after the
 /// change it was meant to bracket is as wrong as one that never arrives, and a
 /// pair of counters cannot tell those apart.
+/// Spec: vst2.eff.BeginSetProgram, vst2.eff.SetProgram, vst2.eff.EndSetProgram
 #[test]
 fn a_program_switch_is_bracketed_in_order() {
     let _guard = lock_probe();
@@ -913,6 +915,7 @@ fn an_out_of_range_program_dispatches_nothing() {
 }
 
 /// Programs are listed at the count the plugin declares, names included.
+/// Spec: vst2.eff.GetProgramNameIndexed, vst2.field.numPrograms
 #[test]
 fn the_declared_programs_are_listed_with_their_names() {
     let _guard = lock_probe();
@@ -967,6 +970,7 @@ fn an_unnamed_program_keeps_its_index() {
 /// tail rather than having a reverb cut mid-decay. Without the opcode a host
 /// can only hard-mute, which is audibly worse and is what this host was
 /// limited to.
+/// Spec: vst2.eff.SetBypass
 #[test]
 fn an_accepted_soft_bypass_reaches_the_plugin() {
     let _guard = lock_probe();
@@ -1073,6 +1077,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
 /// plugin in a bundled suite. Reading only the product string collapses a
 /// suite to a single label, so a host that asks for one must ask for the
 /// other first.
+/// Spec: vst2.eff.GetEffectName
 #[test]
 fn the_effect_name_is_preferred_over_the_product_string() {
     let _guard = lock_probe();
@@ -1181,6 +1186,7 @@ fn parameter_count_and_names() {
     }
 }
 
+/// Spec: vst2.field.setParameter, vst2.field.getParameter
 #[test]
 fn parameter_set_get_roundtrip() {
     let _guard = lock_probe();

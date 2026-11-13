@@ -149,11 +149,11 @@ pub(crate) fn cross_correlate_shaped(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
 
     fn noise(len: usize, seed: u64) -> Vec<f32> {
         let mut rng = StdRng::seed_from_u64(seed);
-        (0..len).map(|_| rng.gen_range(-1.0..1.0)).collect()
+        (0..len).map(|_| rng.random_range(-1.0..1.0)).collect()
     }
 
     /// A hand-worked case: `a = [1, 2, 3]`, `b = [0, 1, 0.5]`, with

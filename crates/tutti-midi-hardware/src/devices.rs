@@ -665,8 +665,8 @@ impl OpenInput {
 /// 38); and JR Timestamps go only to a device whose configuration receives them.
 /// The configuration is the OS's description of the device until
 /// [`set_config`](Self::set_config) says what a negotiation settled
-/// ([`MidiSession::poll`](crate::MidiSession::poll) does it for the output it
-/// holds). UMP Stream messages pass in every form.
+/// ([`follow`](Self::follow) takes it from a
+/// [`MidiSession::poll`](crate::MidiSession::poll) report). UMP Stream messages pass in every form.
 pub struct OpenOutput {
     info: DeviceInfo,
     sink: Box<dyn DeviceOut>,
@@ -705,6 +705,18 @@ impl OpenOutput {
     pub fn set_config(&mut self, config: StreamConfig) {
         self.wire.set_config(config);
         self.sink.follow(config.protocol);
+    }
+
+    /// Follows what a [`MidiSession::poll`](crate::MidiSession::poll) reported:
+    /// a settled or changed Stream of this output's device is its
+    /// [`set_config`](Self::set_config), and any other report, or another
+    /// device's, changes nothing.
+    pub fn follow(&mut self, polled: &crate::Polled) {
+        if let crate::Polled::Stream(id, stream) = polled
+            && *id == self.info.id
+        {
+            self.set_config(stream.config());
+        }
     }
 }
 

@@ -77,6 +77,7 @@ fn events_leave_on_their_channels_port() {
 /// leaves from that Group's channelless port; a message with no Group
 /// (Utility) from the first Group's; a Group the node was not built to hear
 /// has no port.
+/// Spec: m2-104/2.1.2#2
 #[test]
 fn a_group_has_ports_of_its_own() {
     let two = MidiInputPorts::through(MidiGroup::of(1));

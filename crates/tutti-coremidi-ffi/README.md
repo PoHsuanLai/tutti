@@ -1,21 +1,15 @@
 # tutti-coremidi-ffi
 
-The unsafe half of the macOS MIDI backend. Every `unsafe` call
-`tutti-midi-hardware` makes into CoreMIDI and the Mach clock lives here, behind
-safe handles; the backend above it is `#![forbid(unsafe_code)]` and holds the
-logic (enumeration, the device watch, the packet to `Instant` placement).
+This crate is a small wrapper that lets tutti call parts of Apple's CoreMIDI and the host clock from safe Rust, such as MIDI 2.0 virtual ports and device endpoint information.
 
-The crate is empty off macOS.
+It is an internal building block of `tutti-midi-hardware` and is empty off macOS. Most people will use it through the `tutti` crate rather than directly.
 
-## What is here
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
-| | |
-|---|---|
-| `UmpSource` | a native-UMP (MIDI 2.0 protocol) virtual source: it disposes its endpoint on drop, and sends a UMP message as an event list. The safe `coremidi` wrapper has the destination side and no source |
-| `ump_endpoints` | the UMP Endpoints and Function Blocks CoreMIDI reports (macOS 15's `MIDIUMPEndpoint`, Objective-C classes bound through `objc2-core-midi`), as plain values; `None` before macOS 15, where the classes do not exist |
-| `Timebase`, `host_ticks` | the Mach host clock CoreMIDI timestamps its packets with, and the ratio from its ticks to nanoseconds |
+## License
 
-Each `unsafe` block carries one `// SAFETY:` argument where it is introduced;
-`undocumented_unsafe_blocks` and `missing_safety_doc` are denied. What the safe
-`coremidi` crate already wraps (ports, endpoints, properties) stays in the
-backend: it needs no `unsafe` of ours.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

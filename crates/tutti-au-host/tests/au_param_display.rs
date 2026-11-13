@@ -68,6 +68,7 @@ const BLOCK: u32 = 512;
 /// than merely asserting non-empty, because the failure this guards is a
 /// *truncated* or *misordered* `CFArray` walk — an off-by-one, or elements dropped
 /// by a `filter_map` — and "more than zero strings" would pass all of those.
+/// Spec: au.prop.ParameterValueStrings
 #[test]
 fn a_value_strings_parameter_enumerates_them() {
     let _g = lock();
@@ -181,6 +182,7 @@ fn an_unknown_id_has_no_value_strings() {
 /// parameter (nothing carries clump 6, "Filter"), so a name with no parameters is
 /// legal and `CLUMPED_EFFECTS` counts the claimed set. See
 /// `distortion_names_its_seven_sections` for the naming side.
+/// Spec: au.prop.ParameterClumpName, au.param.flag.HasClump
 #[test]
 fn clumped_parameters_resolve_to_section_names() {
     let _g = lock();
@@ -295,6 +297,7 @@ fn an_unclumped_unit_reports_no_groups() {
 ///
 /// The named parameters are frequency and time controls — exactly the ones where
 /// a linear taper is unusable.
+/// Spec: au.param.flag.DisplayLogarithmic
 #[test]
 fn a_log_taper_parameter_reports_a_logarithmic_curve() {
     let _g = lock();
@@ -370,6 +373,7 @@ fn non_linear_curves_are_actually_observed() {
 /// The counts are pinned because the failure mode is under-detection — a host that
 /// flagged none would still pass an "at least zero" assertion, and the meters
 /// would reappear as automatable targets that discard writes.
+/// Spec: au.param.flag.MeterReadOnly
 #[test]
 fn meter_parameters_are_flagged_as_read_only_readings() {
     let _g = lock();

@@ -1,14 +1,13 @@
 [package]
 name = "tutti-export"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Offline audio export and rendering for Tutti audio engine"
+description = "Renders an audio graph to files or memory, faster or slower than real time"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-export"
 readme = "README.md"
-keywords = ["audio", "export", "render", "wav", "flac", "aiff", "ogg"]
+keywords = ["audio", "export", "render", "wav", "flac"]
 categories = ["multimedia::audio"]
 
 [lints]
@@ -19,23 +18,23 @@ thiserror.workspace = true
 # A spill file that cannot be removed is logged, not an error: the render's
 # outcome is already decided.
 tracing = "0.1"
-tutti-transport = { path = "../tutti-transport" }
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 # The encoders and the file's format; the pipeline in this crate hands them
 # blocks. No features of its own: a consumer names the `encode-*` formats it
 # writes on `tutti-codec`; this crate's tests turn them all on below.
-tutti-codec = { path = "../tutti-codec" }
+tutti-codec = { version = "0.0.1", path = "../tutti-codec" }
 # The graph: `RenderGraph` is a forked or built
 # `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
 # tutti-graph depends on no tutti crate but tutti-types, tutti-rt and tutti-ump.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 # The resampler's `RealFft` and the dither noise. Acyclic: tutti-dsp does NOT
 # depend on tutti-export.
-tutti-dsp = { path = "../tutti-dsp", default-features = false }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false }
 # EBU R128 loudness measurement (the Config/State/step analysis home):
 # a normalizing output measures with it. Acyclic: tutti-measure does NOT
 # depend on tutti-export.
-tutti-measure = { path = "../tutti-measure" }
+tutti-measure = { version = "0.0.1", path = "../tutti-measure" }
 
 [dev-dependencies]
 # Every encoder on for this crate's own tests, examples and bench (none is

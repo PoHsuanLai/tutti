@@ -41,7 +41,7 @@ pub enum Polarity {
 /// depends on the cycle index, so a caller must
 /// match on them before calling `evaluate_periodic`, or evaluate any shape at
 /// an unwrapped position through [`Waveform::raw_at`](crate::Waveform::raw_at).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum LfoShape {
     /// Sine over the cycle: `sin(phase · 2π)`.
     #[default]

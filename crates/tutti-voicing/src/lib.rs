@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! What a note-driven instrument decides before it makes sound, as one pure
 //! step.
 //!

@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The Universal MIDI Packet (M2-104): its storage, its addresses and its
 //! messages.
 //!

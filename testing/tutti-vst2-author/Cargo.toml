@@ -33,7 +33,7 @@ log = "0.4"
 
 # `util::parameter_transfer`'s test module does `extern crate rand`.
 [dev-dependencies]
-rand = "0.8"
+rand = "0.10"
 
 [lints]
 workspace = true

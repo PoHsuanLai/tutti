@@ -11,7 +11,7 @@ const NOTE_ON_FLOOR: U7 = U7::of(1);
 /// Why a MIDI 2.0 channel voice message has no single MIDI 1.0 message
 /// ([`narrow`]'s refusal): the kind of message, as M2-104 Appendix D.2 groups
 /// them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum NoMidi1Form {
     /// A Registered or Assignable Per-Note Controller, or Per-Note Pitch Bend

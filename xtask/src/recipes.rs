@@ -4,6 +4,7 @@
 
 use crate::cmd::Cmd;
 use crate::gates::Gate;
+use crate::release::Version;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -33,6 +34,12 @@ pub(crate) enum Step {
     ConformanceInventory(String),
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
+    /// The release edits (`release.rs`): the workspace version, the path
+    /// dependency pins and the changelog section.
+    Release(Version),
+    /// `cargo package --no-verify` over every crate under `crates/`, listed
+    /// when the step runs.
+    Package,
 }
 
 impl Step {
@@ -48,6 +55,13 @@ impl Step {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
             }
+            Step::Package => {
+                "cargo package --locked --no-verify -p <each crate under crates/>".to_owned()
+            }
+            Step::Release(v) => format!(
+                "release {}: set the workspace version and path pins, write the changelog section",
+                v.display()
+            ),
         }
     }
 }
@@ -162,6 +176,16 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "unsafe lives only in the -ffi crates (plugin formats and MIDI), everything else forbids it",
     ),
     (
+        "check-lints",
+        "",
+        "every crate takes the workspace lints and missing_debug_implementations denies",
+    ),
+    (
+        "check-value-traits",
+        "",
+        "a fieldless public Eq enum derives Hash",
+    ),
+    (
         "check-layout",
         "",
         "the repo layout, the crate layering, the codec boundary and the depth-free test paths",
@@ -184,12 +208,12 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     (
         "check-conformance",
         "",
-        "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys",
+        "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
     ),
     (
         "conformance-inventory",
-        "[clap]",
-        "regenerate an inventory's id, side and maturity columns from the spec source",
+        "[clap|vst3|midi]",
+        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS)",
     ),
     (
         "check-range-types",
@@ -234,6 +258,16 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "render the audio cases and verify them with the Python checks (needs uv)",
     ),
     ("deny", "", "RustSec advisories (needs cargo-deny)"),
+    (
+        "package",
+        "",
+        "package every crate under crates/ the way crates.io takes it, without building",
+    ),
+    (
+        "release",
+        "<version>",
+        "a release pull request's edits: the shared version, the path pins and the changelog section",
+    ),
     ("ci", "", "everything CI runs"),
 ];
 
@@ -313,6 +347,7 @@ impl Planner<'_> {
                 | "bench-cmp"
                 | "profile-bench"
                 | "verify-audio"
+                | "release"
                 | "conformance-inventory"
         );
         if !takes_args && !args.is_empty() {
@@ -403,6 +438,8 @@ impl Planner<'_> {
             "check-guards" => self.out.push(Step::Gate(Gate::Guards)),
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
+            "check-lints" => self.out.push(Step::Gate(Gate::Lints)),
+            "check-value-traits" => self.out.push(Step::Gate(Gate::ValueTraits)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
@@ -453,6 +490,14 @@ impl Planner<'_> {
                     format!("uv run python crates/tutti-dsp/examples/verify_dsp.py {out}/dsp"),
                 ]);
             }
+            "release" => {
+                let [version] = Self::params(name, args, [""])?;
+                let v = Version::parse(&version).ok_or_else(|| {
+                    format!("`release` takes a version MAJOR.MINOR.PATCH, got `{version}`")
+                })?;
+                self.out.push(Step::Release(v));
+            }
+            "package" => self.out.push(Step::Package),
             "deny" => {
                 self.out.push(Step::RequireCargoDeny);
                 self.lines(&["cargo deny --locked check advisories"]);
@@ -461,9 +506,10 @@ impl Planner<'_> {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-lints", "check-value-traits",
                     "check-submodule-pins", "check-doc-refs", "check-pointers",
                     "check-platform-seam", "check-conformance",
-                    "check-features",
+                    "check-features", "package",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",
                 ] {

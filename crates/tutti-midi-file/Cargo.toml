@@ -1,12 +1,11 @@
 [package]
 name = "tutti-midi-file"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "MIDI file codecs — Standard MIDI File (SMF) and MIDI 2.0 Clip File"
+description = "Reads and writes Standard MIDI Files and MIDI 2.0 Clip Files"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-midi-file"
 readme = "README.md"
 keywords = ["midi", "smf", "audio", "codec"]
 categories = ["multimedia::audio", "parser-implementations"]
@@ -17,11 +16,11 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 
-tutti-tempo = { path = "../tutti-tempo" }
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 winnow = { workspace = true }
 unicode-normalization = { workspace = true }
 

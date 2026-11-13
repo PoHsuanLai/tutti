@@ -1,25 +1,15 @@
 # tutti-tempo
 
-A tempo map for the Tutti audio engine.
+A tempo map: it converts between beats, seconds and audio frames when the tempo changes over time, either in steps or in smooth ramps.
 
-## What this is
+It depends only on `tutti-types` (units such as beats and seconds), so it can be used on its own, for example in a sequencer or a notation tool.
 
-- `TempoMap`: an immutable value built on the control side from `TempoPoint`s.
-  Each point holds its tempo until the next (`Transition::Step`) or moves to the next
-  one's, linear in time (`RampTime`) or linear in beats (`RampBeats`). Queries
-  convert between beats, `f64` seconds and frames; none allocates. A `TempoView`
-  (`TempoMap::view(rate)`) holds the rate and a lookup hint, which makes the monotone
-  case a few nanoseconds. A `TempoMapBuilder` writes a map that cannot end on a ramp.
-- `TempoView::chord_cell`, `CellGrid`, `Cell`: a map as constant-tempo cells on one fixed
-  frame grid, cut also at every point (`TempoView::next_change`). A cell is a
-  pure function of the absolute frame, so it is the same at any buffer size.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
-The constructors refuse a tempo that is not finite and positive themselves.
+## License
 
-## Dependencies
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
-`tutti-types` and `libm` (pure-Rust `log1p`, `expm1` and `exp`, so a ramp's
-figures do not depend on the platform's math library). `serde` is optional and
-only on `CellGrid`. `#![forbid(unsafe_code)]`.
+### Contribution
 
-`cargo run --release -p tutti-tempo --example bench` times the lookups.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

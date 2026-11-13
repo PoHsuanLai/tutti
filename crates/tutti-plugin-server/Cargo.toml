@@ -1,12 +1,11 @@
 [package]
 name = "tutti-plugin-server"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The plugin-server subprocess for tutti-plugin: hosts one VST3, CLAP or AU plugin in isolation"
+description = "The helper program that runs one plugin in its own process for tutti"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-plugin-server"
 readme = "README.md"
 keywords = ["audio", "plugin", "vst3", "clap", "sandbox"]
 categories = ["multimedia::audio"]
@@ -34,15 +33,15 @@ au = ["dep:tutti-au-host"]
 [dependencies]
 # The wire, the shared-memory slab and the state chunking: the process edge's
 # other end (the host's is the same crate).
-tutti-plugin-ipc = { path = "../tutti-plugin-ipc" }
+tutti-plugin-ipc = { version = "0.0.1", path = "../tutti-plugin-ipc" }
 # The shared bundle-layout walk (`bundle::any_module_in_bundle`). Direct rather
 # than reached through the wire crate, because this is a dependency in its own
 # right and a re-export would hide that.
-tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-graph = { path = "../tutti-graph" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # The queues between the main thread and the render thread.
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
@@ -64,16 +63,16 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # CLAP plugin hosting (optional)
-tutti-clap-host = { path = "../tutti-clap-host", optional = true }
+tutti-clap-host = { version = "0.0.1", path = "../tutti-clap-host", optional = true }
 
 # VST3 plugin hosting (optional)
-tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
+tutti-vst3-host = { version = "0.0.1", path = "../tutti-vst3-host", optional = true }
 
 # Audio Unit hosting (optional, macOS only)
-tutti-au-host = { path = "../tutti-au-host", optional = true }
+tutti-au-host = { version = "0.0.1", path = "../tutti-au-host", optional = true }
 
 # The OS calls of the host watchdog and the connection wait, behind safe calls.
-tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
+tutti-plugin-ipc-ffi = { version = "0.0.1", path = "../tutti-plugin-ipc-ffi" }
 
 [dev-dependencies]
 # The slab's sample bound (`Pod`) on the generic round-trip helper.

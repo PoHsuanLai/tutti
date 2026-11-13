@@ -124,7 +124,6 @@ unsafe impl Sync for Shared {}
 pub struct RingFull;
 
 /// The producing end.
-#[derive(Debug)]
 pub struct EditWriter<T> {
     shared: Arc<Shared>,
     head: u64,
@@ -132,11 +131,28 @@ pub struct EditWriter<T> {
 }
 
 /// The consuming end.
-#[derive(Debug)]
 pub struct EditReader<T> {
     shared: Arc<Shared>,
     tail: u64,
     _value: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T> std::fmt::Debug for EditWriter<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EditWriter")
+            .field("shared", &self.shared)
+            .field("head", &self.head)
+            .finish()
+    }
+}
+
+impl<T> std::fmt::Debug for EditReader<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EditReader")
+            .field("shared", &self.shared)
+            .field("tail", &self.tail)
+            .finish()
+    }
 }
 
 /// A ring holding up to `capacity` values, as its two ends.

@@ -226,27 +226,6 @@ fn src_ratio_converts_mismatched_rates() {
     );
 }
 
-#[test]
-fn src_ratio_survives_a_nonpositive_session_rate() {
-    // Would otherwise divide by zero and poison every downstream sample.
-    assert_eq!(
-        SrcRatio::for_rates(SampleRate::SR_44K1, SampleRate(0.0)),
-        SrcRatio::UNITY
-    );
-    assert_eq!(
-        SrcRatio::for_rates(SampleRate::SR_44K1, SampleRate(-1.0)),
-        SrcRatio::UNITY
-    );
-}
-
-#[test]
-fn playback_rate_clamps_into_range() {
-    assert_eq!(PlaybackRate::new_clamped(8.0), PlaybackRate::MAX);
-    assert_eq!(PlaybackRate::new_clamped(0.0), PlaybackRate::MIN);
-    assert_eq!(PlaybackRate::new_clamped(-2.0), PlaybackRate::MIN);
-    assert_eq!(PlaybackRate::new_clamped(1.5), PlaybackRate::new(1.5));
-}
-
 /// The module's one non-finite rule: NaN stays NaN, an infinity saturates
 /// at its bound.
 #[test]

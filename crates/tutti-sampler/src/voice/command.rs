@@ -8,7 +8,7 @@
 //! its one voice and owns the disk [`Stream`] that feeds it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::streamer::{Stream, StreamId};
@@ -25,27 +25,27 @@ use tutti_codec::Wave;
 use tutti_graph::ParamSet;
 use tutti_rt::ArcLend;
 use tutti_types::{
-    Amplitude, Cents, ChannelLayout, Param, PlaybackRate, SampleRate, StretchFactor,
+    Amplitude, AtomicSampleRate, Cents, ChannelLayout, Param, PlaybackRate, SampleRate,
+    StretchFactor,
 };
 
 /// A node's sample rate, shared with its handle: the node stores it when it
 /// is prepared (control thread), the handle reads it to build a stretch
 /// filter at that rate (control thread). A scalar: no audio-thread read.
 #[derive(Clone, Debug)]
-pub(crate) struct SharedRate(Arc<AtomicU64>);
+pub(crate) struct SharedRate(Arc<AtomicSampleRate>);
 
 impl SharedRate {
     pub(crate) fn new(rate: SampleRate) -> Self {
-        Self(Arc::new(AtomicU64::new(rate.get().to_bits())))
+        Self(Arc::new(AtomicSampleRate::new(rate)))
     }
 
     pub(crate) fn store(&self, rate: SampleRate) {
-        self.0.store(rate.get().to_bits(), Ordering::Relaxed);
+        self.0.store(rate, Ordering::Relaxed);
     }
 
     pub(crate) fn load(&self) -> SampleRate {
-        SampleRate::new(f64::from_bits(self.0.load(Ordering::Relaxed)))
-            .unwrap_or(SampleRate::DEFAULT)
+        self.0.load(Ordering::Relaxed)
     }
 }
 

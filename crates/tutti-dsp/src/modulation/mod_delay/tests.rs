@@ -49,7 +49,7 @@ impl FamilyCase for ModDelayFamily {
 
     /// The family's own longest delay is the domain it is built to.
     fn reach_at(&self, rate: SampleRate) -> Reach<MaxDelay> {
-        Reach::new(rate, self.max_delay(), TAIL_FLOOR).expect("a positive finite rate")
+        Reach::new(rate, self.max_delay(), TAIL_FLOOR).expect("TAIL_FLOOR is a valid floor")
     }
 
     /// Rates from the floor to audio rate, depths from none to the sweep's greatest, and

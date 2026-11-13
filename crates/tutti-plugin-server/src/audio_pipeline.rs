@@ -1389,7 +1389,7 @@ mod tests {
             &tutti_fixtures::main_thread(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
             &Load::new(),
-            SR,
+            tutti_types::SampleRate::of(SR),
             N,
             false,
             None,

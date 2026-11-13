@@ -309,8 +309,13 @@ impl PluginClient<Unbound> {
         // `MAX_CHUNK` for the same reason): the raw `max_buffer_size` would
         // stage 8192 samples per channel to ship 64.
         let prepare = MaxBlock::new(Samples(ipc.ceiling()))
-            .and_then(|block| Prepare::new(rate, block))
-            .ok_or_else(|| failed(format!("the plugin cannot run at {rate:?} Hz")))?;
+            .map(|block| Prepare::new(rate, block))
+            .ok_or_else(|| {
+                failed(format!(
+                    "the plugin cannot run in blocks of {} frames",
+                    ipc.ceiling()
+                ))
+            })?;
 
         let controls = PluginControls::with_chunks(
             loaded.latency_samples,

@@ -173,11 +173,6 @@ fn phase_increment_derives_from_frequency_and_rate() {
         PhaseIncrement::per_sample(Hz(1.0), SampleRate::of(100.0)),
         PhaseIncrement(0.01)
     );
-    // A degenerate rate yields a standing phase rather than inf/NaN.
-    assert_eq!(
-        PhaseIncrement::per_sample(Hz(440.0), SampleRate(0.0)),
-        PhaseIncrement(0.0)
-    );
 }
 
 /// `wrapped_signed` holds `[-pi, pi)` exactly for every finite input, with

@@ -47,7 +47,8 @@ use crate::{SmpteFrameRate, SmpteTimecode};
 use atomic_float::AtomicF64;
 use tutti_graph::{Offset, TransportPosition};
 use tutti_types::{
-    Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, first_frame_at_or_after,
+    AtomicSampleRate, Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples,
+    first_frame_at_or_after,
 };
 
 /// Below this beat, a play edge is treated as "from the top" → Start (0xFA)
@@ -70,7 +71,7 @@ pub struct ClockMaster {
     /// offsets. An atomic because a device restart moves it
     /// ([`set_sample_rate`](Self::set_sample_rate)) on a master the audio
     /// thread shares; `tick` reads it once per block.
-    sample_rate: AtomicF64,
+    sample_rate: AtomicSampleRate,
     /// UMP group stamped on every emitted event.
     group: MidiGroup,
 
@@ -151,7 +152,7 @@ impl ClockMaster {
     /// connected.
     pub fn new(group: MidiGroup, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
-            sample_rate: AtomicF64::new(sample_rate.into().get()),
+            sample_rate: AtomicSampleRate::new(sample_rate.into()),
             group,
             enabled: AtomicBool::new(false),
             send_mtc: AtomicBool::new(false),
@@ -218,14 +219,11 @@ impl ClockMaster {
     /// quarter-frame due, rescaled to the same wall-clock time: that
     /// quarter-frame stays where it was due.
     ///
-    /// `&self`, lock-free: the master is shared with the audio thread. A
-    /// non-positive rate is stored as given, and `tick` then emits nothing.
+    /// `&self`, lock-free: the master is shared with the audio thread.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
-        let new = sample_rate.into().get();
+        let new = sample_rate.into();
         let old = self.sample_rate.swap(new, Ordering::AcqRel);
-        if old > 0.0 && new > 0.0 {
-            self.rebase_mtc(old, self.fps(), new);
-        }
+        self.rebase_mtc(old.get(), self.fps(), new.get());
     }
 
     /// The MTC frame rate in force.
@@ -278,7 +276,7 @@ impl ClockMaster {
 
     /// The rate [`tick`](Self::tick) places events at.
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate::new(self.sample_rate.load(Ordering::Acquire)).unwrap_or(SampleRate::DEFAULT)
+        self.sample_rate.load(Ordering::Acquire)
     }
 
     /// Turn MTC quarter-frame emission on or off, independently of the 24-PPQN
@@ -296,8 +294,8 @@ impl ClockMaster {
     /// next complete 8-piece cycle.
     pub fn set_mtc_fps(&self, fps: SmpteFrameRate) {
         let old = self.fps();
-        let rate = self.sample_rate.load(Ordering::Acquire);
-        if rate > 0.0 && old != fps {
+        let rate = self.sample_rate.load(Ordering::Acquire).get();
+        if old != fps {
             // The pending quarter-frame keeps its time; the new fps spaces
             // the ones after it.
             self.rebase_mtc(rate, old, rate);
@@ -327,7 +325,7 @@ impl ClockMaster {
         let sample_rate = transport
             .origin()
             .map_or_else(|| self.sample_rate(), |o| o.sample_rate);
-        if !self.enabled.load(Ordering::Acquire) || block_size == 0 || sample_rate.get() <= 0.0 {
+        if !self.enabled.load(Ordering::Acquire) || block_size == 0 {
             // Keep prev.playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming playback was already
             // under way.
@@ -485,9 +483,6 @@ impl ClockMaster {
         let (beat, len) = (pass.beat, pass.len.get());
         let fps = self.fps();
         let rate = sample_rate.get();
-        if !(fps.fps() > 0.0 && rate > 0.0) {
-            return;
-        }
 
         // Where the block starts on the grid segment, and the next
         // quarter-frame to send. Each one's frame is derived from its index

@@ -49,7 +49,6 @@ fn refusal(error: PluginError) -> AuError {
 
 fn prepare_of(rate: f64, block: u32) -> Prepare {
     Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(block as usize)))
-        .expect("a usable rate")
 }
 
 impl Au {
@@ -158,7 +157,6 @@ impl Au {
         if result.is_ok() {
             self.prepare =
                 Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(block as usize)))
-                    .expect("a usable rate")
                     .with_mode(self.prepare.mode());
         }
         if was_active {

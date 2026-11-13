@@ -33,11 +33,6 @@ use tutti_types::SampleRate;
 /// slab's sequence check. Beyond a few periods it is worthless anyway.
 const PROCESS_TIMEOUT_PERIODS: u32 = 4;
 
-/// Fallback sample rate when the bridge has not been told the real one yet.
-/// Only ever affects how long the bridge thread waits for a reply before
-/// abandoning a block.
-const FALLBACK_SAMPLE_RATE: f64 = 48_000.0;
-
 /// Floor for the `ProcessAudio` reply timeout. At very short periods the
 /// computed timeout drops under the scheduler's own wake latency (~0.7-1 ms
 /// measured on this machine), and a bridge thread that times out before the
@@ -113,16 +108,10 @@ const MAX_BEHIND: u64 = RING_SLOTS as u64 - 1;
 /// of that block's own period, clamped to
 /// [`MIN_PROCESS_TIMEOUT`]..=[`MAX_PROCESS_TIMEOUT`].
 ///
-/// `num_samples`/`rate` stay raw: both come off the IPC wire, where the unit
-/// mandate stops.
+/// `num_samples` stays raw: it comes off the IPC wire, where the unit mandate
+/// stops.
 fn process_timeout(num_samples: usize, rate: SampleRate) -> Duration {
-    let rate = rate.get();
-    let rate = if rate.is_finite() && rate > 0.0 {
-        rate
-    } else {
-        FALLBACK_SAMPLE_RATE
-    };
-    let period = Duration::from_secs_f64(num_samples as f64 / rate);
+    let period = Duration::from_secs_f64(num_samples as f64 / rate.get());
     (period * PROCESS_TIMEOUT_PERIODS).clamp(MIN_PROCESS_TIMEOUT, MAX_PROCESS_TIMEOUT)
 }
 
@@ -1287,18 +1276,6 @@ mod tests {
                      is recycled ({ring_lifetime:?})"
                 );
             }
-        }
-    }
-
-    /// A garbage rate off the wire must not produce a nonsense timeout.
-    #[test]
-    fn non_finite_rate_falls_back() {
-        for bad in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
-            let t = process_timeout(64, <SampleRate as tutti_types::Unit>::from_raw(bad));
-            assert!(
-                t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT,
-                "rate={bad}: {t:?}"
-            );
         }
     }
 

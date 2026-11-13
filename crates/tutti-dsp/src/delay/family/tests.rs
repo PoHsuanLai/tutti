@@ -56,7 +56,7 @@ impl FamilyCase for DelayFamily {
 
     /// The family's own longest delay is the domain it is built to.
     fn reach_at(&self, rate: SampleRate) -> Reach<MaxDelay> {
-        Reach::new(rate, self.max_delay(), TAIL_FLOOR).expect("a positive finite rate")
+        Reach::new(rate, self.max_delay(), TAIL_FLOOR).expect("TAIL_FLOOR is a valid floor")
     }
 
     /// Times from under a frame to the longest, and loop gains up to the stable pair's bound

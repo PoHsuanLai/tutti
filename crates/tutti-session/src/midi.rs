@@ -157,10 +157,10 @@ impl OutputClockSource {
     /// before the first block.
     fn map(&self) -> Option<ClockMap> {
         let reading = self.clock.read()?;
-        ClockMap::new(
+        Some(ClockMap::new(
             reading.rate,
             tutti_midi_runtime::ClockReading::new(os_instant(reading.os_ns)?, reading.frame),
-        )
+        ))
     }
 }
 
@@ -1943,10 +1943,10 @@ mod tests {
 
     fn timing_at(t0: Instant, terms: OutputTerms) -> OutputTiming {
         OutputTiming {
-            map: ClockMap::new(
+            map: Some(ClockMap::new(
                 SampleRate::SR_48K,
                 tutti_midi_runtime::ClockReading::new(t0, Frame::ZERO),
-            ),
+            )),
             now: t0 - Duration::from_millis(10),
             terms,
         }

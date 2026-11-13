@@ -341,7 +341,7 @@ impl Open {
 
     fn len(&self) -> usize {
         match self {
-            Self::Resident(wave) => wave.len(),
+            Self::Resident(wave) => wave.len().get(),
             Self::Paged(pages) => pages.len,
         }
     }

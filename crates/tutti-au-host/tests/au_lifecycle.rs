@@ -394,7 +394,6 @@ mod halves {
 
     fn prepare(rate: f64, block: usize) -> tutti_plugin_types::Prepare {
         tutti_plugin_types::Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(block)))
-            .unwrap()
     }
 
     fn active(rate: f64, block: usize) -> (AuProcessor, AuController) {

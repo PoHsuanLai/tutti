@@ -52,9 +52,9 @@ pub use timeline::{
 };
 pub use unit_param::{ParamAddr, ParamKey, UnitAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{
-    Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, BpmOutOfRange, Cents,
-    CompressionRatio, Confidence, Correlation, Db, Depth, DepthOutOfRange, Direction, Drive,
+    Amplitude, ArcDegrees, AtomicSampleRate, Azimuth, Beat, BeatDuration, Bpm, BpmOutOfRange,
+    Cents, CompressionRatio, Confidence, Correlation, Db, Depth, DepthOutOfRange, Direction, Drive,
     Elevation, Feedback, Hz, Mix, Pan, Phase, PhaseIncrement, PlaybackRate, Q, Radians, ReadRate,
-    Resonance, SamplePosition, SampleRate, Seconds, Semitones, Spread, SrcRatio, StereoWidth,
-    StretchFactor, Unit, Velocity,
+    Resonance, SamplePosition, SampleRate, SampleRateOutOfRange, Seconds, Semitones, Spread,
+    SrcRatio, StereoWidth, StretchFactor, Unit, Velocity,
 };

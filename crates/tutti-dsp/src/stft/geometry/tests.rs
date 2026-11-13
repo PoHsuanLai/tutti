@@ -14,14 +14,6 @@ fn rejects_a_zero_window_a_zero_hop_and_a_non_positive_rate() {
         StftGeometry::new(SampleRate::SR_44K1, Samples(2048), Samples(0)),
         Err(Error::ZeroHop)
     );
-    assert_eq!(
-        StftGeometry::new(
-            <SampleRate as tutti_types::Unit>::from_raw(0.0),
-            Samples(2048),
-            Samples(512)
-        ),
-        Err(Error::NonPositiveSampleRate)
-    );
 }
 
 /// A hop wider than the window is legal for analysis and illegal for

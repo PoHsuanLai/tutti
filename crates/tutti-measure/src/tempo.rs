@@ -99,8 +99,7 @@ impl TempoConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
-    /// NaN.
+    /// [`Error::Dsp`] when the geometry is refused.
     pub fn geometry(sample_rate: impl Into<SampleRate>) -> Result<StftGeometry> {
         Ok(StftGeometry::new(
             sample_rate,
@@ -371,9 +370,6 @@ pub fn track_beats_from_novelty(
 fn frame_rate(sample_rate: SampleRate, hop: Samples) -> Result<f64> {
     if hop.is_zero() {
         return Err(Error::ZeroHop);
-    }
-    if sample_rate.get().is_nan() || sample_rate.get() <= 0.0 {
-        return Err(Error::NonPositiveSampleRate);
     }
     Ok(sample_rate.get() / hop.get() as f64)
 }
@@ -1022,22 +1018,11 @@ mod tests {
         assert!(cfg.with_tightness(-1.0).is_err());
         assert!(cfg.with_tightness(f32::NAN).is_err());
         assert!(cfg.with_tightness(0.0).is_ok());
-        assert!(TempoConfig::geometry(<SampleRate as tutti_types::Unit>::from_raw(0.0)).is_err());
 
         let curve = vec![0.0f32; 1000];
         assert_eq!(
             estimate_tempo_from_novelty(&cfg, &curve, SampleRate::of(RATE), Samples(0), &mut fft),
             Err(Error::ZeroHop)
-        );
-        assert_eq!(
-            estimate_tempo_from_novelty(
-                &cfg,
-                &curve,
-                <SampleRate as tutti_types::Unit>::from_raw(0.0),
-                Samples(512),
-                &mut fft
-            ),
-            Err(Error::NonPositiveSampleRate)
         );
         // Under one window, and under two periods of the slowest tempo.
         assert!(matches!(

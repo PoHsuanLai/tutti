@@ -77,7 +77,6 @@ fn prep(n: u8) -> Prepare {
         44_100.0
     });
     Prepare::new(rate, MaxBlock::of(Samples(64 << (n % 3))))
-        .expect("the tests use real rates")
         .with_format(if n.is_multiple_of(5) {
             SampleFormat::Float64
         } else {
@@ -1561,40 +1560,21 @@ fn set_mode_changes_the_next_activation_and_restarts_nothing() {
     assert_eq!(fx, [Fx::Activate(want)]);
 }
 
-/// **A `Prepare` has a real rate and a block of at least one frame**: no other
-/// one can be built, so a host is never asked to activate at one.
+/// **A `Prepare` carries its rate and a block of at least one frame**: both
+/// types refuse the rest, so a host is never asked to activate at one.
 #[test]
-fn a_prepare_has_a_real_rate_and_a_block() {
+fn a_prepare_carries_a_rate_and_a_block() {
     let block = MaxBlock::of(Samples(64));
     for rate in [48_000.0, 44_100.0, f64::MIN_POSITIVE, f64::MAX] {
-        let prepare = Prepare::new(SampleRate::of(rate), block).expect("a real rate");
+        let prepare = Prepare::new(SampleRate::of(rate), block);
         assert_eq!(prepare.rate(), SampleRate::of(rate));
         assert_eq!(prepare.max_block(), block);
         assert_eq!(prepare.format(), SampleFormat::Float32);
         assert_eq!(prepare.mode(), RenderMode::Realtime);
     }
-    for rate in [
-        0.0,
-        -0.0,
-        -48_000.0,
-        f64::NAN,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-    ] {
-        assert!(
-            Prepare::new(<SampleRate as tutti_types::Unit>::from_raw(rate), block).is_none(),
-            "{rate}"
-        );
-        assert!(
-            prep(0)
-                .with_rate(<SampleRate as tutti_types::Unit>::from_raw(rate))
-                .is_none(),
-            "with_rate({rate})"
-        );
-    }
     assert_eq!(
-        prep(0).with_rate(SampleRate::SR_96K).map(|p| p.rate()),
-        Some(SampleRate::SR_96K)
+        prep(0).with_rate(SampleRate::SR_96K).rate(),
+        SampleRate::SR_96K
     );
     assert!(MaxBlock::new(Samples(0)).is_none());
 }

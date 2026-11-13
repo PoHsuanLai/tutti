@@ -67,8 +67,7 @@ fn a_probe_does_not_activate() {
     let prepare = tutti_plugin_types::Prepare::new(
         tutti_types::SampleRate::SR_48K,
         tutti_plugin_types::MaxBlock::new(tutti_types::Samples(64)).unwrap(),
-    )
-    .unwrap();
+    );
     let active = loaded.activate(&main, prepare);
     assert!(active.is_ok(), "the control activation");
     assert_eq!(

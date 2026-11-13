@@ -1,7 +1,6 @@
 //! [`Rendered`]: planar audio held in memory, which only this crate builds
 //! unchecked.
 
-use crate::job::is_rate;
 use tutti_codec::Wave;
 use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples};
@@ -78,12 +77,6 @@ pub enum RenderedError {
         /// The number of planes given.
         planes: usize,
     },
-    /// The rate is NaN, infinite, zero or negative.
-    #[error("the rate of rendered audio must be finite and positive, not {rate:?}")]
-    InvalidRate {
-        /// What was given.
-        rate: SampleRate,
-    },
 }
 
 impl std::fmt::Debug for Rendered {
@@ -105,9 +98,7 @@ impl Rendered {
     ///
     /// [`RenderedError::NoPlanes`] for no planes,
     /// [`RenderedError::TooWide`] for more planes than a layout holds,
-    /// [`RenderedError::UnequalPlanes`] for planes of different lengths and
-    /// [`RenderedError::InvalidRate`] for a rate that is not finite and
-    /// positive.
+    /// [`RenderedError::UnequalPlanes`] for planes of different lengths.
     pub fn new(
         planes: Vec<Vec<f32>>,
         sample_rate: SampleRate,
@@ -131,9 +122,6 @@ impl Rendered {
                 expected: Samples(first.len()),
                 found: Samples(other.len()),
             });
-        }
-        if !is_rate(sample_rate) {
-            return Err(RenderedError::InvalidRate { rate: sample_rate });
         }
         Ok(Self {
             planes,
@@ -256,11 +244,8 @@ impl From<Rendered> for Wave {
     /// Infallible: a `Rendered` has at least one channel, no more than a
     /// layout holds, and planes of one length, which is what a `Wave` is.
     fn from(rendered: Rendered) -> Self {
-        let mut wave = Wave::with_capacity(
-            rendered.channels(),
-            rendered.sample_rate,
-            rendered.frames().get(),
-        );
+        let mut wave =
+            Wave::with_capacity(rendered.channels(), rendered.sample_rate, rendered.frames());
         let mut frame = vec![0.0; rendered.planes.len()];
         for i in 0..rendered.frames().get() {
             for (sample, plane) in frame.iter_mut().zip(&rendered.planes) {

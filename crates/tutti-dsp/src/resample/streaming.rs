@@ -113,12 +113,11 @@ impl Default for ChunkSize {
     }
 }
 
-/// A rate as the converter's integer Hz, or an error if it is not a finite
-/// rate of at least 0.5 Hz (which rounds to 1) and under 2^32 Hz. A bare
-/// `as usize` would saturate infinity and a huge rate, and turn NaN or a
-/// negative rate into 0.
+/// A rate as the converter's integer Hz, or an error if it is under 0.5 Hz
+/// (which rounds to 0) or at 2^32 Hz and over. A bare `as usize` would
+/// saturate a huge rate and turn a tiny one into 0.
 fn whole_hz(hz: f64) -> Result<usize, ResampleError> {
-    if hz.is_finite() && (0.5..4_294_967_296.0).contains(&hz) {
+    if (0.5..4_294_967_296.0).contains(&hz) {
         Ok(hz.round() as usize)
     } else {
         Err(ResampleError::InvalidRate { hz })

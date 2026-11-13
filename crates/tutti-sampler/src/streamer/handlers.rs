@@ -9,9 +9,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
-use tutti_types::{SampleRate, Samples, SrcRatio};
+use tutti_types::{AtomicSampleRate, SampleRate, Samples, SrcRatio};
 
 use super::StreamerSender;
 use super::bell::Bell;
@@ -63,21 +62,21 @@ pub(super) struct Handles {
 /// between the store and the command reads the new rate either way, and the
 /// command re-derives it to the same ratio, so no lock orders the two.
 #[derive(Clone)]
-pub(crate) struct SessionRate(Arc<AtomicF64>);
+pub(crate) struct SessionRate(Arc<AtomicSampleRate>);
 
 impl SessionRate {
     pub(crate) fn new(rate: SampleRate) -> Self {
-        Self(Arc::new(AtomicF64::new(rate.get())))
+        Self(Arc::new(AtomicSampleRate::new(rate)))
     }
 
     pub(crate) fn get(&self) -> SampleRate {
-        SampleRate::new(self.0.load(Ordering::SeqCst)).unwrap_or(SampleRate::DEFAULT)
+        self.0.load(Ordering::SeqCst)
     }
 
     /// Move the rate. Control thread; the streamer re-derives its ratios when
     /// it is told ([`StreamerCommand::SessionRate`]).
     pub(super) fn set(&self, rate: SampleRate) {
-        self.0.store(rate.get(), Ordering::SeqCst);
+        self.0.store(rate, Ordering::SeqCst);
     }
 }
 
@@ -359,13 +358,13 @@ fn build_stream(
             #[cfg(codec)]
             Source::Stream(meta, decoder) => (
                 meta.total_frames.unwrap_or(0),
-                SampleRate::from(meta.sample_rate),
+                meta.sample_rate,
                 decoder.topology().clone(),
                 Some(*decoder),
                 None,
             ),
             Source::Whole(wave) => (
-                wave.len() as u64,
+                wave.len().get() as u64,
                 wave.sample_rate(),
                 wave.topology().clone(),
                 None,

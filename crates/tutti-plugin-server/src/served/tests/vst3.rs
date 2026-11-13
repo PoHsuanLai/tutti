@@ -213,7 +213,7 @@ fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
     assert!(instance.poll(&main_thread()).is_empty());
 
     instance
-        .set_sample_rate(&main_thread(), 96_000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(96_000.0))
         .expect("rate change");
 
     assert_eq!(instance.wiring.latency_samples, Samples(96));
@@ -314,7 +314,7 @@ fn a_refused_rate_is_rolled_back_to_the_previous_one() {
     let layout = instance.wiring.clone();
 
     let error = instance
-        .set_sample_rate(&main_thread(), 96_000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(96_000.0))
         .expect_err("the probe refuses 96 kHz");
     assert!(
         error.to_string().contains("running at 48000"),
@@ -334,7 +334,7 @@ fn a_refused_rate_is_rolled_back_to_the_previous_one() {
     assert_eq!(activations_seen_by_the_plugin(&mut instance), 2);
 
     instance
-        .set_sample_rate(&main_thread(), 44_100.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(44_100.0))
         .expect("a rate it takes is taken");
     assert!(instance.is_active());
 }
@@ -359,7 +359,7 @@ fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
     let prepare = instance.state.prepare();
     for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let error = instance
-            .set_sample_rate(&main_thread(), rate)
+            .set_sample_rate(&main_thread(), SampleRate::of(rate))
             .expect_err("a rate that is no rate is refused");
         assert!(error.to_string().contains("running at 48000"), "{error}");
         assert!(instance.is_active(), "{rate}");
@@ -377,7 +377,7 @@ fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
         "the plugin was never activated again"
     );
     instance
-        .set_sample_rate(&main_thread(), 44_100.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(44_100.0))
         .expect("a real rate");
 }
 

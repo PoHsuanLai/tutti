@@ -411,11 +411,7 @@ impl MultibandCompressorNode {
 
     /// Prepares the realization for `rate` and blocks of up to `max_block`.
     fn retune(&mut self, rate: SampleRate, max_block: tutti_types::MaxBlock) {
-        self.rate = if rate.get().is_finite() && rate.get() > 0.0 {
-            rate
-        } else {
-            SampleRate::DEFAULT
-        };
+        self.rate = rate;
         self.realization.prepare(
             &(),
             &Setup {

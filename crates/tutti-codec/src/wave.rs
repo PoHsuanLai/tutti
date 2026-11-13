@@ -9,9 +9,10 @@
 use crate::{Format, Spec};
 #[cfg(encode)]
 use std::path::Path;
-use tutti_types::{ChannelLayout, ChannelTopology};
 #[cfg(encode)]
-use tutti_types::{Interleaved, Samples};
+use tutti_types::Interleaved;
+use tutti_types::Samples;
+use tutti_types::{ChannelLayout, ChannelTopology, SampleRate};
 
 /// Frames written to the encoder at a time by [`Wave::write`].
 #[cfg(encode)]
@@ -34,10 +35,10 @@ const WRITE_CHUNK: usize = 8192;
 /// ```
 /// use tutti_codec::Wave;
 ///
-/// let mut wave = Wave::new(2, tutti_types::SampleRate::SR_48K);
+/// let mut wave = Wave::new(2, SampleRate::SR_48K);
 /// wave.push_frame(&[0.5, -0.5]);
 /// wave.push_frame(&[0.25, -0.25]);
-/// assert_eq!(wave.len(), 2);
+/// assert_eq!(wave.len(), tutti_types::Samples(2));
 /// assert_eq!(wave.channel(1), &[-0.5, -0.25]);
 /// ```
 #[derive(Clone)]
@@ -45,9 +46,9 @@ pub struct Wave {
     /// One vector per channel.
     vec: Vec<Vec<f32>>,
     /// The rate the samples were recorded at. Nothing here resamples.
-    sample_rate: tutti_types::SampleRate,
+    sample_rate: SampleRate,
     /// Length in frames. 0 if there are no channels.
-    len: usize,
+    len: Samples,
     /// Which speaker each channel feeds; its length is the channel count.
     topology: ChannelTopology,
 }
@@ -74,8 +75,8 @@ impl Wave {
     /// # Panics
     ///
     /// If `channels` is above `u16::MAX`, which no layout holds.
-    pub fn new(channels: usize, sample_rate: impl Into<tutti_types::SampleRate>) -> Self {
-        Self::with_capacity(channels, sample_rate, 0)
+    pub fn new(channels: usize, sample_rate: SampleRate) -> Self {
+        Self::with_capacity(channels, sample_rate, Samples::ZERO)
     }
 
     /// Creates an empty wave with `channels` channels, each with room for
@@ -84,17 +85,13 @@ impl Wave {
     /// # Panics
     ///
     /// If `channels` is above `u16::MAX`, which no layout holds.
-    pub fn with_capacity(
-        channels: usize,
-        sample_rate: impl Into<tutti_types::SampleRate>,
-        capacity: usize,
-    ) -> Self {
+    pub fn with_capacity(channels: usize, sample_rate: SampleRate, capacity: Samples) -> Self {
         Self {
             vec: (0..channels)
-                .map(|_| Vec::with_capacity(capacity))
+                .map(|_| Vec::with_capacity(capacity.get()))
                 .collect(),
-            sample_rate: sample_rate.into(),
-            len: 0,
+            sample_rate,
+            len: Samples::ZERO,
             topology: assumed(channels),
         }
     }
@@ -107,14 +104,11 @@ impl Wave {
     /// widths that have one (1, 2, 6, 8 and 12) and channels that feed no
     /// speaker ([`ChannelTopology::unassigned`]) for the rest. Use this when the
     /// source says more.
-    pub fn with_topology(
-        topology: ChannelTopology,
-        sample_rate: impl Into<tutti_types::SampleRate>,
-    ) -> Self {
+    pub fn with_topology(topology: ChannelTopology, sample_rate: SampleRate) -> Self {
         Self {
             vec: vec![Vec::new(); topology.positions().len()],
-            sample_rate: sample_rate.into(),
-            len: 0,
+            sample_rate,
+            len: Samples::ZERO,
             topology,
         }
     }
@@ -147,33 +141,32 @@ impl Wave {
     /// If `channels` is 0 and the duration rounds to at least one frame.
     pub fn zero(
         channels: usize,
-        sample_rate: impl Into<tutti_types::SampleRate>,
+        sample_rate: SampleRate,
         duration: impl Into<tutti_types::Seconds>,
     ) -> Self {
-        let sample_rate = sample_rate.into();
         let length = (duration.into().get() * sample_rate.get()).round() as usize;
         assert!(channels > 0 || length == 0);
         Self {
             vec: vec![vec![0.0; length]; channels],
             sample_rate,
-            len: length,
+            len: Samples(length),
             topology: assumed(channels),
         }
     }
 
     /// Creates a mono wave holding a copy of `samples`.
-    pub fn from_samples(sample_rate: impl Into<tutti_types::SampleRate>, samples: &[f32]) -> Self {
+    pub fn from_samples(sample_rate: SampleRate, samples: &[f32]) -> Self {
         Self {
             vec: vec![samples.to_vec()],
-            sample_rate: sample_rate.into(),
-            len: samples.len(),
+            sample_rate,
+            len: Samples(samples.len()),
             topology: assumed(1),
         }
     }
 
     /// Returns the rate the samples were recorded at.
     #[inline]
-    pub fn sample_rate(&self) -> tutti_types::SampleRate {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
@@ -219,14 +212,14 @@ impl Wave {
             channel.push(s);
         }
         if !self.vec.is_empty() {
-            self.len += 1;
+            self.len += Samples(1);
         }
     }
 
     /// Returns the length in frames.
     #[inline]
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> Samples {
         self.len
     }
 
@@ -234,14 +227,14 @@ impl Wave {
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len == Samples::ZERO
     }
 
     /// Returns the duration, exact to the frame for the reason
     /// [`zero`](Self::zero) gives.
     #[inline]
     pub fn duration(&self) -> tutti_types::Seconds {
-        tutti_types::Seconds(self.len as f64 / self.sample_rate.get())
+        tutti_types::Seconds(self.len.get() as f64 / self.sample_rate.get())
     }
 
     /// Returns every sample frame by frame: channel 0 to the last of frame 0,
@@ -251,7 +244,7 @@ impl Wave {
     /// caller that wants flat samples (an encoder, a meter) reads them in
     /// chunks instead of doubling the memory.
     pub fn interleaved(&self) -> impl Iterator<Item = f32> + '_ {
-        (0..self.len).flat_map(|frame| self.vec.iter().map(move |channel| channel[frame]))
+        (0..self.len.get()).flat_map(|frame| self.vec.iter().map(move |channel| channel[frame]))
     }
 
     /// Writes the wave as a file of `format` at `path`, at its own rate and
@@ -290,7 +283,7 @@ impl Wave {
     #[cfg(encode)]
     pub fn write(&self, path: impl AsRef<Path>, format: Format) -> crate::Result<()> {
         let spec = Spec::new(format, self.topology.clone(), self.sample_rate);
-        let mut encoder = crate::Encoder::create_file_planned(&spec, path, Samples(self.len))?;
+        let mut encoder = crate::Encoder::create_file_planned(&spec, path, self.len)?;
         let layout = self.layout();
         let mut flat = Vec::with_capacity(WRITE_CHUNK * usize::from(layout.count()));
         let mut samples = self.interleaved();
@@ -321,7 +314,7 @@ impl Wave {
     /// already hold at least this many samples.
     #[cfg(decode)]
     #[inline]
-    pub(crate) fn set_len(&mut self, len: usize) {
+    pub(crate) fn set_len(&mut self, len: Samples) {
         self.len = len;
     }
 }

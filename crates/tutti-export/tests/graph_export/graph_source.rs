@@ -614,25 +614,6 @@ fn a_crossed_pair_is_refused_at_construction() {
     }
 }
 
-/// A pair prepared at a rate that is not a sample rate (zero, negative, NaN,
-/// infinite) is refused when the `RenderGraph` is assembled, naming the rate.
-#[test]
-fn a_pair_prepared_at_no_rate_is_refused_at_assembly() {
-    for bad in [0.0, -48_000.0, f64::INFINITY] {
-        let (editor, executor) = sine(1000.0)
-            .build(RenderGraph::prepare(
-                <SampleRate as tutti_types::Unit>::from_raw(bad),
-            ))
-            .expect("the builder does not judge the rate");
-        match RenderGraph::assemble(editor, executor, Setup::new()) {
-            Err(Error::InvalidConfig(tutti_export::ConfigError::InvalidRate { prepared })) => {
-                assert!(prepared.to_bits() == bad.to_bits(), "{prepared} for {bad}");
-            }
-            other => panic!("{bad}: expected InvalidRate, got {other:?}"),
-        }
-    }
-}
-
 /// A pair prepared at another rate is refused, not rendered at the wrong one.
 #[test]
 fn a_graph_prepared_at_another_rate_is_refused() {

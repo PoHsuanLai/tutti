@@ -99,11 +99,10 @@ pub(crate) struct SynthVoice {
     sub_voices: usize,
 }
 
-/// What the channel's Volume and Expression do to a voice's gain: General MIDI 2
-/// section 3.3.4's square law ("the square of the value is proportional to the
-/// volume": `gain in dB = 40 * log10(cc7/127)`) on their product, relative to
-/// the defaults (Volume 100, Expression 127), so a channel that has been told
-/// nothing sounds at the voice's own level.
+/// What the channel's Volume and Expression do to a voice's gain: General MIDI
+/// 2 section 3.3.4's square law (`gain in dB = 40 * log10(cc7/127)`) on their
+/// product, relative to the defaults (Volume 100, Expression 127), so a channel
+/// that has been told nothing sounds at the voice's own level.
 fn channel_level(channel: &ChannelState) -> f32 {
     let relative = channel.volume() * channel.expression() / ChannelState::DEFAULT_LEVEL;
     relative * relative

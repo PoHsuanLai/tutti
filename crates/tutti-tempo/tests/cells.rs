@@ -1,6 +1,4 @@
 //! A ramp as constant-tempo cells on one fixed frame grid.
-//!
-//! "
 
 mod common;
 

@@ -240,8 +240,8 @@ fn a_non_real_time_change_leaves_the_sounding_note() {
     assert_eq!(start_tune(&on(&mut core, 0, 60)), 2.0);
 }
 
-/// MTS, Changing Tuning Programs: RPN 3 and 4 select the "current" tuning
-/// "instantly", on the channel. A sounding note of the channel follows (`Tune`),
+/// MTS, Changing Tuning Programs: RPN 3 and 4 select the channel's current
+/// tuning at once. A sounding note of the channel follows (`Tune`),
 /// a note of another channel does not, and a note struck after is by the new
 /// program. The basic channel number discriminates between active tunings.
 #[test]

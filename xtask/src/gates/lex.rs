@@ -13,17 +13,24 @@ fn word(b: u8) -> bool {
 /// quotes of a string, raw string, byte string or char literal, replaced by
 /// spaces (newlines kept). The quotes stay, so `""` still marks a literal.
 pub(super) fn blank(src: &str) -> String {
-    split(src).0
+    split(src, false).0
+}
+
+/// [`blank`] that leaves `///` doc comments (not `////`) in place, so a gate
+/// can read a tag a doc comment carries while every other comment and every
+/// literal stays blanked. A `///` inside a string is still blanked.
+pub(super) fn blank_keeping_docs(src: &str) -> String {
+    split(src, true).0
 }
 
 /// `src` with everything but its `//` and `/* */` comments replaced by spaces
 /// (newlines kept): the prose of a source file, at its own offsets.
 pub(super) fn comments(src: &str) -> String {
-    split(src).1
+    split(src, false).1
 }
 
 /// The blanked code and the comments alone, both at the source's offsets.
-fn split(src: &str) -> (String, String) {
+fn split(src: &str, keep_docs: bool) -> (String, String) {
     let b = src.as_bytes();
     let mut out = b.to_vec();
     let mut prose: Vec<u8> = b
@@ -44,7 +51,10 @@ fn split(src: &str) -> (String, String) {
         if c == b'/' && b.get(i + 1) == Some(&b'/') {
             let end = src[i..].find('\n').map_or(n, |j| i + j);
             prose[i..end].copy_from_slice(&b[i..end]);
-            wipe(&mut out, i, end);
+            let line = &src[i..end];
+            if !(keep_docs && line.starts_with("///") && !line.starts_with("////")) {
+                wipe(&mut out, i, end);
+            }
             i = end;
         } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
             let mut depth = 1;
@@ -215,6 +225,17 @@ mod tests {
         assert_eq!(b.matches('\n').count(), 2);
         assert!(b.contains("let s = \"      \";"));
         assert!(b.contains("let c = ' ';"));
+    }
+
+    #[test]
+    fn doc_comments_survive_when_asked_and_nothing_else_does() {
+        let src = "/// Spec: a.b\n//// not doc\n// plain\nfn f() { let s = \"/// Spec: x\"; }\n";
+        let kept = blank_keeping_docs(src);
+        assert_eq!(kept.len(), src.len());
+        assert!(kept.contains("/// Spec: a.b"));
+        assert!(!kept.contains("not doc") && !kept.contains("plain"));
+        assert!(!kept.contains("Spec: x"));
+        assert!(!blank(src).contains("Spec: a.b"));
     }
 
     #[test]

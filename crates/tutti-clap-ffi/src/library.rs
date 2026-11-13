@@ -640,6 +640,7 @@ mod tests {
     /// image goes, and a second `init` is legal only after it. Two overlapping
     /// claims share one `init` and one `deinit`, run when the second is
     /// released; a later claim starts the cycle again.
+    /// Spec: clap.entry.init, clap.entry.deinit
     #[test]
     fn deinit_runs_once_when_the_last_claim_is_released_and_before_a_second_init() {
         let path = Path::new("/test/c1-deinit-pairs-init.clap");

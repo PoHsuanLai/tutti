@@ -177,7 +177,7 @@ impl Stft {
 
     /// Converts to magnitude/phase. Lossless.
     #[must_use]
-    pub(crate) fn to_polar(&self) -> StftPolar {
+    pub fn to_polar(&self) -> StftPolar {
         let (mut magnitudes, mut phases) = (
             Vec::with_capacity(self.bins.as_slice().len()),
             Vec::with_capacity(self.bins.as_slice().len()),
@@ -195,7 +195,7 @@ impl Stft {
 
     /// Discards phase. One-way, and the return type says so.
     #[must_use]
-    pub(crate) fn to_magnitude(&self) -> StftMagnitude {
+    pub fn to_magnitude(&self) -> StftMagnitude {
         let magnitudes: Vec<f32> = self.bins.as_slice().iter().map(|b| b.norm()).collect();
         StftMagnitude {
             magnitudes: RawMagnitudes(self.bins.same_shape(magnitudes)),

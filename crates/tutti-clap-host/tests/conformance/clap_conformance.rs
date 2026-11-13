@@ -44,7 +44,7 @@ const OFFSET_BLOCK: usize = 10_000;
 
 /// The offset `k` frames into the block.
 fn at(k: u32) -> Offset {
-    Offset::new(k as usize, Samples(OFFSET_BLOCK)).expect("inside the block")
+    Offset::of(k as usize, Samples(OFFSET_BLOCK))
 }
 
 // CLAP event type constants we assert against (from clap-sys).

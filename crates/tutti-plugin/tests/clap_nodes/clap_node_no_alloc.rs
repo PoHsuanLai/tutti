@@ -145,7 +145,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let mut changes = TransportChanges::NONE;
     changes
         .push(
-            Offset::new(20, Samples(BLOCK)).expect("inside"),
+            Offset::of(20, Samples(BLOCK)),
             TransportPosition::new(true, Bpm::of(90.0), Beat(9.0), None),
         )
         .expect("a change inside the block");

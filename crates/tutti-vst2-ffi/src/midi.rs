@@ -615,7 +615,7 @@ mod tests {
 
     /// A block event at frame `k` of a block long enough to hold it.
     fn at(k: usize, ump: Ump) -> UmpAt {
-        (Offset::new(k, Samples(k + 1)).unwrap(), ump)
+        (Offset::of(k, Samples(k + 1)), ump)
     }
 
     /// **Draining a full inbox does not allocate**: the out-list was reserved

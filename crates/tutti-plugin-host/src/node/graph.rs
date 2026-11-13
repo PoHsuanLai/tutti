@@ -786,7 +786,7 @@ mod owed_tests {
         unit.events(
             0,
             &[Event::ramp(
-                Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block"),
+                Offset::of(0, tutti_types::Samples(BLOCK)),
                 ParamRamp::foreign(1, 0.75, tutti_types::Samples(0)),
             )],
         );
@@ -821,7 +821,7 @@ mod owed_tests {
                 tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
                     .expect("a 7-bit payload"),
             );
-            let at = Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block");
+            let at = Offset::of(0, tutti_types::Samples(BLOCK));
             out.iter().map(|e| Event::midi(at, *e)).collect::<Vec<_>>()
         };
         (packets(60), packets(12))

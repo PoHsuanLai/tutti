@@ -173,7 +173,7 @@ fn scene(b: usize) -> (TransportPosition, TransportChanges) {
         // A tempo change inside the block, after the frame the next block
         // hears (frame 24 of this one) and before it.
         2 => {
-            let at = Offset::new(10, Samples(BLOCK)).expect("inside");
+            let at = Offset::of(10, Samples(BLOCK));
             changes
                 .push(
                     at,

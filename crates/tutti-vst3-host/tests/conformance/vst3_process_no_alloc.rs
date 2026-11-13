@@ -38,7 +38,7 @@ const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
 fn at(k: u32) -> Offset {
-    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+    Offset::of(usize::try_from(k).unwrap(), Samples(TEST_BLOCK))
 }
 
 #[allow(unused_imports)]

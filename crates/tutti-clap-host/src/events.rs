@@ -2281,7 +2281,7 @@ mod tests {
 
     /// The offset `k` frames into the block.
     fn at(k: u32) -> Offset {
-        Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+        Offset::of(k as usize, Samples(BLOCK))
     }
 
     /// The packet of `words`, zero-padded to four, at offset `k`.
@@ -3114,7 +3114,7 @@ mod tests {
 
     fn cc_message(group: u8) -> UmpAt {
         (
-            Offset::new(0, Samples(64)).expect("inside the block"),
+            Offset::of(0, Samples(64)),
             Message::Midi1(
                 Address::new(MidiGroup::new(group).unwrap(), MidiChannel::FIRST),
                 Voice1::ControlChange {
@@ -3158,7 +3158,7 @@ mod tests {
                 tutti_ump::Sysex7Packets::from_payload(MidiGroup::new(group).unwrap(), &payload)
                     .expect("seven-bit bytes");
             let ump = packets.into_iter().next().expect("one packet");
-            (Offset::new(0, Samples(64)).expect("inside the block"), ump)
+            (Offset::of(0, Samples(64)), ump)
         };
         let mut list = InputEventList::new();
         list.reserve_sysex();

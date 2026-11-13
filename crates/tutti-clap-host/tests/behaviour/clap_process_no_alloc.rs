@@ -63,7 +63,7 @@ const BLOCK: usize = 64;
 
 /// The offset `k` frames into the block.
 fn at(k: u32) -> Offset {
-    Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+    Offset::of(k as usize, Samples(BLOCK))
 }
 
 /// The packet of `words`, zero-padded to four, `k` frames into the block.

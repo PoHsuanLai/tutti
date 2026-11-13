@@ -104,7 +104,7 @@ fn process_honors_frame_offset_within_block() {
     let note = |offset: u32| {
         let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
         (
-            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            Offset::of(offset as usize, Samples(BLOCK)),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
         )
     };
@@ -191,7 +191,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     let note = |key: u8, offset: u32| {
         let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
         (
-            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            Offset::of(offset as usize, Samples(BLOCK)),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, velocity),
         )
     };
@@ -280,7 +280,7 @@ fn event_at_last_frame_of_block_still_applies() {
     let note = |offset: u32| {
         let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
         (
-            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            Offset::of(offset as usize, Samples(BLOCK)),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
         )
     };

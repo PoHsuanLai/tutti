@@ -57,7 +57,7 @@ fn unit() -> Hand {
 
 /// `offset` frames into a block of [`Hand`]'s length.
 fn at(offset: u32) -> Offset {
-    Offset::new(offset as usize, Samples(64)).expect("inside the block")
+    Offset::of(offset as usize, Samples(64))
 }
 
 fn note_on(key: u8, offset: u32) -> UmpAt {

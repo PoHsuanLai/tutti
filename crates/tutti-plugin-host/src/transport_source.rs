@@ -742,7 +742,7 @@ mod tests {
     }
 
     fn at(i: usize, len: usize) -> Offset {
-        Offset::new(i, Samples(len)).expect("inside the block")
+        Offset::of(i, Samples(len))
     }
 
     /// A node's context in `e` with no arrival latency.

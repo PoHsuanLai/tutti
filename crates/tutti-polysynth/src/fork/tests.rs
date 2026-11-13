@@ -29,7 +29,7 @@ fn note_on() -> Ump {
 /// frame 0, in 64-frame blocks.
 fn peak(synth: PolySynth, frames: usize) -> f32 {
     let mut hand = Direct::new(synth, RATE, 64);
-    let on = Offset::new(0, tutti_types::Samples(64)).expect("inside");
+    let on = Offset::of(0, tutti_types::Samples(64));
     hand.events(0, &[Event::midi(on, note_on())]);
     let mut peak = 0.0f32;
     for _ in 0..frames / 64 {

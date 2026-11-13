@@ -1313,7 +1313,7 @@ fn many_midi_events_in_one_block() {
     let events: Vec<UmpAt> = (0..10usize)
         .map(|i| {
             (
-                Offset::new(i, Samples(BLOCK)).unwrap(),
+                Offset::of(i, Samples(BLOCK)),
                 midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 100),
             )
         })

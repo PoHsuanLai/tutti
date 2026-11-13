@@ -944,7 +944,7 @@ fn direct_driving_events_does_not_allocate() {
     let events: Vec<Event> = (0..64)
         .map(|k| {
             Event::midi(
-                Offset::new(k, Samples(64)).expect("inside"),
+                Offset::of(k, Samples(64)),
                 m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)),
             )
         })

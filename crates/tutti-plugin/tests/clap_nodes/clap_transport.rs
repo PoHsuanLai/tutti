@@ -79,7 +79,7 @@ fn scene(b: usize, block: usize) -> (TransportPosition, TransportChanges) {
         // block has one; at the last frame otherwise.
         2 => {
             let at = if block > CHUNK { 40 } else { block - 1 };
-            let at = Offset::new(at, Samples(block)).expect("inside");
+            let at = Offset::of(at, Samples(block));
             changes
                 .push(
                     at,
@@ -171,7 +171,7 @@ fn render_scenes(
 }
 
 fn offset(i: usize, block: usize) -> Offset {
-    Offset::new(i, Samples(block)).expect("inside the block")
+    Offset::of(i, Samples(block))
 }
 
 /// **Live**: blocks of one chunk, paced to the device. The echo of block

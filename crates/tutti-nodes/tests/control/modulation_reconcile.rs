@@ -135,9 +135,7 @@ impl Node for Kick {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         for i in 0..io.frames() {
-            let t = cx
-                .env
-                .transport_at(Offset::new(i, cx.env.block_len).expect("in"));
+            let t = cx.env.transport_at(Offset::of(i, cx.env.block_len));
             let v = if t.playing {
                 let frac = t.beat().get().rem_euclid(1.0);
                 if frac < 0.1 {
@@ -1426,8 +1424,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     let mut head = Playhead::new();
     let mut ch = TransportChanges::NONE;
     let start = TransportPosition::counted(true, TEMPO, head.0.origin(), None);
-    ch.push(Offset::new(37, Samples(128)).expect("in"), start)
-        .expect("room");
+    ch.push(Offset::of(37, Samples(128)), start).expect("room");
     let mut live = block(&mut ed, &mut exec, &stopped(), &ch, 128);
     for c in &mut live {
         c.drain(..37);
@@ -1708,8 +1705,7 @@ fn a_play_start_after_a_steady_state_republishes_an_anchored_program() {
     steady(&mut r);
     let mut ch = TransportChanges::NONE;
     let start = TransportPosition::new(true, TEMPO, Beat(0.0), None);
-    ch.push(Offset::new(37, Samples(128)).expect("in"), start)
-        .expect("room");
+    ch.push(Offset::of(37, Samples(128)), start).expect("room");
     block(&mut r.ed, &mut r.exec, &stopped(), &ch, 128);
     assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
 }

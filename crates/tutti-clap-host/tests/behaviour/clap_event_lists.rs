@@ -32,10 +32,7 @@ use tutti_ump::{SysexStep, Ump};
 fn packet(k: u32, words: &[u32]) -> UmpAt {
     let mut w = [0u32; 4];
     w[..words.len()].copy_from_slice(words);
-    (
-        Offset::new(k as usize, Samples(100)).expect("inside the block"),
-        Ump(w),
-    )
+    (Offset::of(k as usize, Samples(100)), Ump(w))
 }
 
 /// The raw output list of `output`, valid while `output` is alive and unmoved.

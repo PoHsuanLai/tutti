@@ -226,9 +226,7 @@ mod tests {
             arrival: Latency::ZERO,
             history: TransportHistory::none(),
         };
-        let at = |i: usize, ramp: ParamRamp| {
-            Event::ramp(Offset::new(i, Samples(len)).expect("inside"), ramp)
-        };
+        let at = |i: usize, ramp: ParamRamp| Event::ramp(Offset::of(i, Samples(len)), ramp);
         let events = [
             at(0, ParamRamp::foreign(7, 0.0, Samples(8))),
             at(
@@ -292,7 +290,7 @@ mod tests {
             arrival: Latency::ZERO,
             history: TransportHistory::none(),
         };
-        let off = |i: usize| Offset::new(i, Samples(len)).expect("inside");
+        let off = |i: usize| Offset::of(i, Samples(len));
         let events = [
             Event::ramp(off(0), ParamRamp::foreign(7, 0.2, Samples(0))),
             Event::ramp(off(10), ParamRamp::foreign(7, 0.4, Samples(0))),
@@ -381,7 +379,7 @@ mod tests {
         segments.prepare(params.room());
         params.begin();
         segments.begin(64);
-        let off = |i: usize| Offset::new(i, Samples(64)).expect("inside");
+        let off = |i: usize| Offset::of(i, Samples(64));
         let events = [
             Event::ramp(off(10), ParamRamp::foreign(9, 0.4, Samples(0))),
             Event::ramp(off(10), ParamRamp::foreign(9, 1.0, Samples(4))),
@@ -406,7 +404,7 @@ mod tests {
         segments.prepare(params.room());
         params.begin();
         segments.begin(64);
-        let off = |i: usize| Offset::new(i, Samples(64)).expect("inside");
+        let off = |i: usize| Offset::of(i, Samples(64));
         let step = [Event::ramp(off(10), ParamRamp::foreign(7, 0.2, Samples(0)))];
         walk(&step, 64, &mut segments, &mut params);
         params.handed_off(false);
@@ -456,7 +454,7 @@ mod tests {
             .map(|i| {
                 let v = if i % 2 == 0 { 0.25 } else { 0.75 };
                 let seg = ParamSegment::foreign(7, v, v, Samples(2), Law::Linear);
-                Event::segment(Offset::new(i, Samples(len)).expect("inside"), seg)
+                Event::segment(Offset::of(i, Samples(len)), seg)
             })
             .collect();
         take(

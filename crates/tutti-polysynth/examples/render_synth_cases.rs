@@ -48,7 +48,7 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
     // Driven as a graph drives it: `Node::process`, the notes on its event
     // input in the first block.
     let mut synth = Direct::new(PolySynth::new(cfg), rate, BLOCK);
-    let at = Offset::new(0, Samples(BLOCK)).expect("inside");
+    let at = Offset::of(0, Samples(BLOCK));
     let events: Vec<Event> = notes
         .iter()
         .map(|&n| {

@@ -1922,7 +1922,7 @@ mod tests {
 
     fn note(offset: u32) -> UmpAt {
         (
-            Offset::new(offset as usize, Samples(512)).unwrap(),
+            Offset::of(offset as usize, Samples(512)),
             tutti_fixtures::midi::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
@@ -2043,7 +2043,7 @@ mod tests {
         let offsets: Vec<_> = sent.iter().map(|e| e.0).collect();
         assert_eq!(
             offsets,
-            [250, 0, 999].map(|o| Offset::new(o, span).unwrap()),
+            [250, 0, 999].map(|o| Offset::of(o, span)),
             "each event's spacing from the earliest"
         );
         out.set_stamping(true);
@@ -2076,7 +2076,7 @@ mod tests {
         let span = Samples(11);
         assert_eq!(
             sent.iter().map(|e| e.0).collect::<Vec<_>>(),
-            [0, 10].map(|o| Offset::new(o, span).unwrap())
+            [0, 10].map(|o| Offset::of(o, span))
         );
     }
 

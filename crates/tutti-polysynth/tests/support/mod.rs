@@ -72,7 +72,7 @@ impl Hand {
     /// last frame). `(left, right)`.
     pub fn block(&mut self, frames: usize) -> (&[f32], &[f32]) {
         self.direct.set_block_len(frames);
-        let last = Offset::new(frames - 1, Samples(frames)).expect("inside");
+        let last = Offset::of(frames - 1, Samples(frames));
         for e in &mut self.queued {
             if e.offset.index() >= frames {
                 e.offset = last;

@@ -60,7 +60,7 @@ fn note(offset: u32, on: bool) -> UmpAt {
     } else {
         midi::note_off(group, channel, 60, 0)
     };
-    let offset = Offset::new(offset as usize, Samples(BLOCK)).unwrap();
+    let offset = Offset::of(offset as usize, Samples(BLOCK));
     (offset, ump)
 }
 

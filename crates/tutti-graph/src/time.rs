@@ -39,7 +39,7 @@ use crate::node::{Env, TransportChanges, TransportPosition};
 /// A position inside the current block: frames from its first frame.
 ///
 /// Created only checked against a block length —
-/// [`Offset::new`], [`Env::offset`](crate::Env::offset),
+/// [`Offset::new`], [`Offset::of`], [`Env::offset`](crate::Env::offset),
 /// [`Env::offset_of`](crate::Env::offset_of) or
 /// [`Io::offset`](crate::Io::offset) — or as [`Offset::ZERO`], which every
 /// block has. There is no conversion from a [`Frame`], so an absolute frame
@@ -80,6 +80,29 @@ impl Offset {
         } else {
             None
         }
+    }
+
+    /// Frame `index` of a block `block_len` long, for a position known to be
+    /// inside the block: a literal, or a loop over the block's frames.
+    ///
+    /// ```
+    /// use tutti_graph::Offset;
+    /// use tutti_types::Samples;
+    /// const AT: Offset = Offset::of(37, Samples(128));
+    /// assert_eq!(AT.get(), 37);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// When `index` is past the end of the block, where [`new`](Self::new)
+    /// returns `None`. In a `const` that is a compile error.
+    #[must_use]
+    pub const fn of(index: usize, block_len: Samples) -> Offset {
+        assert!(
+            index < block_len.get() && index <= u32::MAX as usize,
+            "the offset is past the end of the block"
+        );
+        Offset(index as u32)
     }
 
     /// The offset as a count of frames from the block's start.
@@ -668,6 +691,26 @@ mod tests {
         }
     }
 
+    /// `of` is `new` for an offset inside the block, at both of its edges.
+    #[test]
+    fn of_agrees_with_new_inside_the_block() {
+        for (index, len) in [(0, 1), (0, 64), (37, 128), (63, 64)] {
+            assert_eq!(
+                Some(Offset::of(index, Samples(len))),
+                Offset::new(index, Samples(len)),
+                "frame {index} of {len}"
+            );
+        }
+    }
+
+    /// Past the end, where `new` is `None`, `of` panics.
+    #[test]
+    #[should_panic(expected = "past the end of the block")]
+    fn of_panics_past_the_end() {
+        assert_eq!(Offset::new(64, Samples(64)), None);
+        let _ = Offset::of(64, Samples(64));
+    }
+
     #[test]
     fn for_each_beat_walks_each_piece_of_the_block() {
         let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(3.0), None);
@@ -1105,7 +1148,7 @@ mod tests {
     }
 
     fn at(k: usize) -> Offset {
-        Offset::new(k, Samples(usize::MAX)).expect("small")
+        Offset::of(k, Samples(usize::MAX))
     }
 
     /// A change list is ordered and distinct; one at the block start or past

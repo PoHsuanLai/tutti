@@ -107,7 +107,7 @@ fn read(handle: &PluginHandle, i: u32) -> Option<f32> {
 /// A ramp to `value` on parameter `id` (a VST2 index) at block frame `at`.
 fn ramp(at: usize, id: u32, value: f32) -> Event {
     Event::ramp(
-        Offset::new(at, Samples(BLOCK)).expect("inside the block"),
+        Offset::of(at, Samples(BLOCK)),
         ParamRamp::foreign(id, value, Samples(0)),
     )
 }

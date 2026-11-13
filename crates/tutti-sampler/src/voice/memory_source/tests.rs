@@ -483,7 +483,7 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     let stop_beat = Beat::new(0.25 + 40.0 * 2.0 / SR);
     changes
         .push(
-            Offset::new(40, Samples(64)).unwrap(),
+            Offset::of(40, Samples(64)),
             tutti_graph::TransportPosition::new(false, Bpm::of(120.0), stop_beat, None),
         )
         .unwrap();

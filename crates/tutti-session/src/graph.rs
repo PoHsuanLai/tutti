@@ -2086,23 +2086,6 @@ impl Graph {
         Ok(Connection::new(self, edges, from, to))
     }
 
-    /// As [`connect`](Self::connect) for a bus edge, channel by index: sink
-    /// channel `c` is source channel `c` and a wider sink is zero-filled,
-    /// whatever either bus names. For an edge whose author knows the channels
-    /// line up; `connect` never falls back to it.
-    ///
-    /// # Errors
-    ///
-    /// As [`connect`](Self::connect); a sink narrower than the source is
-    /// refused.
-    pub fn connect_by_index(
-        &mut self,
-        from: BusSource,
-        to: impl Inlet<Bus>,
-    ) -> Result<(), ConnectError> {
-        self.add_bus_edge(from, to.sink(), true)
-    }
-
     /// Takes the edge `from -> to` out, its gain with it (for a bus edge, its
     /// lanes and weights; the edges and gains the author set stay). Returns
     /// whether it was connected, and marks the graph edited when it was. For a
@@ -2150,15 +2133,12 @@ impl Graph {
         &mut self,
         from: BusSource,
         to: BusSink,
-        by_index: bool,
     ) -> Result<(), ConnectError> {
         let at = Self::bus_sink(to);
         let was = self.editor.spec().bus_fade(from, at);
-        match (to, by_index) {
-            (BusSink::Node(to), false) => self.editor.connect_bus(from, to),
-            (BusSink::Node(to), true) => self.editor.connect_bus_by_index(from, to),
-            (BusSink::Root, false) => self.editor.connect_bus_to_root(from),
-            (BusSink::Root, true) => self.editor.connect_bus_to_root_by_index(from),
+        match to {
+            BusSink::Node(to) => self.editor.connect_bus(from, to),
+            BusSink::Root => self.editor.connect_bus_to_root(from),
         }?;
         // A new bus edge, or one on its way out, fades in: each lane of its
         // fold does.

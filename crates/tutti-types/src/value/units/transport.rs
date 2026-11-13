@@ -538,13 +538,6 @@ impl BeatDuration {
         BeatDuration(self.0.abs())
     }
 
-    /// Whether this span moves forward. `LoopRange`'s non-empty invariant.
-    #[inline]
-    #[must_use]
-    pub fn is_positive(self) -> bool {
-        self.0 > 0.0
-    }
-
     /// The remainder in `[0, |rhs|)`, for a finite `self` and a finite non-zero
     /// `rhs`. A zero `rhs` or a NaN gives NaN. An infinite `rhs` is outside
     /// that contract: a negative `self` gives `f64::MAX` there, and a non-negative

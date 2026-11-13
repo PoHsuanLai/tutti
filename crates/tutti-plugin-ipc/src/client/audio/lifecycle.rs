@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tutti_plugin_types::PluginFailure;
+use tutti_plugin_types::{EditorSize, PluginFailure};
 use tutti_types::SampleRate;
 
 #[derive(Clone)]
@@ -36,6 +36,12 @@ pub(super) struct Lifecycle {
     refused: Arc<AtomicBool>,
     /// How long a rate change is waited on, in milliseconds.
     rate_timeout_ms: Arc<AtomicU64>,
+    /// The size the server's editor asked its window to take
+    /// (`EditorWantsSize`), until the host takes it.
+    editor_wants: Arc<Mutex<Option<EditorSize>>>,
+    /// The server said it closed the editor on its own account
+    /// (`EditorClosed`), until the remote editor takes the news.
+    editor_closed: Arc<AtomicBool>,
 }
 
 impl Lifecycle {
@@ -49,7 +55,31 @@ impl Lifecycle {
             rate_timeout_ms: Arc::new(AtomicU64::new(
                 super::dispatch::RATE_TIMEOUT.as_millis() as u64
             )),
+            editor_wants: Arc::new(Mutex::new(None)),
+            editor_closed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The server's editor asked for `size`; the latest ask stands.
+    pub(super) fn set_editor_wants(&self, size: EditorSize) {
+        if let Ok(mut slot) = self.editor_wants.lock() {
+            *slot = Some(size);
+        }
+    }
+
+    /// The size the server's editor asked for since the last call.
+    pub(super) fn take_editor_wants(&self) -> Option<EditorSize> {
+        self.editor_wants.lock().ok().and_then(|mut s| s.take())
+    }
+
+    /// The server closed its editor itself.
+    pub(super) fn set_editor_closed(&self) {
+        self.editor_closed.store(true, Ordering::Release);
+    }
+
+    /// Whether the server closed its editor itself since the last call.
+    pub(super) fn take_editor_closed(&self) -> bool {
+        self.editor_closed.swap(false, Ordering::AcqRel)
     }
 
     pub(super) fn rate_timeout(&self) -> std::time::Duration {

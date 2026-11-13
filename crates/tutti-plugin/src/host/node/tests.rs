@@ -118,7 +118,7 @@ fn handle_with_mock_server(
         path.clone(),
         buffer,
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        crate::format::gui::load_gui_instance,
+        Some(crate::format::gui::load_gui_instance),
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -221,7 +221,7 @@ fn handle_with_multi_reply_server(
         path.clone(),
         buffer,
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        crate::format::gui::load_gui_instance,
+        Some(crate::format::gui::load_gui_instance),
         SampleRate(48_000.0),
     )
     .unwrap();

@@ -253,7 +253,7 @@ impl MockServer {
             path.clone(),
             slab,
             tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-            no_editor,
+            Some(no_editor),
             SampleRate(48_000.0),
             state_progress_timeout,
         )

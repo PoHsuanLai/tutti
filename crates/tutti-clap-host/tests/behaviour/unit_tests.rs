@@ -768,15 +768,12 @@ fn test_host_state_take_clears_flag() {
     use std::sync::atomic::Ordering;
 
     let state = HostState::new(&main_thread());
-    state
-        .lifecycle
-        .process_requested
-        .store(true, Ordering::Release);
+    state.processing.state_dirty.store(true, Ordering::Release);
 
     // First take returns true and clears
-    assert!(state.take(&state.lifecycle.process_requested));
+    assert!(state.take(&state.processing.state_dirty));
     // Second take returns false
-    assert!(!state.take(&state.lifecycle.process_requested));
+    assert!(!state.take(&state.processing.state_dirty));
 }
 
 /// The main thread is the one thread that proved it with a token, and no
@@ -858,6 +855,7 @@ fn host_gui_closed_was_destroyed_latches_window_destroyed() {
 ///
 /// A plugin reads a null as "the host does not support this" and takes its
 /// degraded path silently, so a dropped arm is invisible at runtime.
+/// Spec: clap.host.get_extension
 #[test]
 fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
@@ -927,6 +925,7 @@ fn test_host_get_extension_returns_non_null_for_supported() {
 /// a plugin built against the older header asks the host for that id. The host
 /// answers it with the stable extension's own vtable, as it does for the plugin
 /// side.
+/// Spec: clap.host.get_extension
 #[test]
 fn test_host_get_extension_answers_the_compat_ids_with_the_stable_vtable() {
     use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT};
@@ -949,6 +948,7 @@ fn test_host_get_extension_answers_the_compat_ids_with_the_stable_vtable() {
     }
 }
 
+/// Spec: clap.host.get_extension
 #[test]
 fn test_host_get_extension_returns_null_for_unknown() {
     let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
@@ -1013,9 +1013,13 @@ fn test_host_request_restart_raises_the_request() {
     assert_eq!(taken(&state.requests).count(), 0, "taken once");
 }
 
+/// `request_process` raises the bound wake once per call, and a request made
+/// before any binding has nobody to wake and changes nothing.
 #[test]
-fn test_host_request_process_sets_flag() {
+fn test_host_request_process_raises_the_bound_wake() {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tutti_plugin_types::ProcessWake;
 
     let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
@@ -1023,7 +1027,26 @@ fn test_host_request_process_sets_flag() {
     let request_process = unsafe { (*raw).request_process.unwrap() };
 
     unsafe { request_process(raw) };
-    assert!(state.take(&state.lifecycle.process_requested));
+
+    let raised = Arc::new(AtomicU32::new(0));
+    let count = raised.clone();
+    assert!(
+        state
+            .process_wake
+            .set(ProcessWake::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }))
+            .is_ok()
+    );
+    assert_eq!(
+        raised.load(Ordering::SeqCst),
+        0,
+        "the early request is gone"
+    );
+
+    unsafe { request_process(raw) };
+    unsafe { request_process(raw) };
+    assert_eq!(raised.load(Ordering::SeqCst), 2, "one raise per request");
 }
 
 /// `request_callback` raises `Request::Callback`.
@@ -1415,7 +1438,7 @@ fn test_host_audio_ports_config_rescan() {
 /// and a call from outside the plugin's `process` must be rejected. No
 /// process call is in flight here (and no pool), so every request must be
 /// rejected — a `true` tells the plugin its tasks completed when nothing ran
-/// them. The served case is `tests/clap_thread_pool.rs`.
+/// them. The served case is `tests/behaviour/clap_thread_pool.rs`.
 #[test]
 fn test_host_thread_pool_request_exec_rejects() {
     use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};

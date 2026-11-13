@@ -11,7 +11,7 @@ use tutti_plugin_types::{
     AutomationMode, BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence,
     EditorSize, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit,
     ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass,
-    PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, RenderMode,
+    PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake, RenderMode,
     RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, WindowHandle, Wraps,
 };
 
@@ -452,6 +452,12 @@ impl Control for ClapLoaded {
     /// `ProcessOutput`, not through a queue that can drop them.
     fn dropped_reported_edits(&self) -> u64 {
         0
+    }
+
+    /// What the plugin's `request_process` raises: CLAP's `SLEEP` status is
+    /// the plugin's word that it needs no `process` until it asks.
+    fn bind_wake(&self, wake: ProcessWake) {
+        let _ = self.host_state.process_wake.set(wake);
     }
 }
 

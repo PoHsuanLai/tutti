@@ -74,9 +74,9 @@ impl HostCallbacks for HostState {
     }
 
     fn request_process(&self) {
-        self.lifecycle
-            .process_requested
-            .store(true, Ordering::Release);
+        if let Some(wake) = self.process_wake.get() {
+            wake.raise();
+        }
     }
 
     fn request_callback(&self) {

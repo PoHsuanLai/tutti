@@ -24,8 +24,7 @@ use tutti_plugin_types::{MainThread, WindowHandle};
 use crate::{
     api::{self, AEffect, ChunkError, PluginFlags, PluginMain, Supported, TimeInfo, consts::*},
     buffer::AudioBuffer,
-    channels::ChannelInfo,
-    editor::Rect,
+    editor::{KeyCode, Rect},
     interfaces,
     plugin::{self, Category, Info},
 };
@@ -273,15 +272,16 @@ pub trait Host {
     }
 
     /// Report the current process level (`audioMasterGetCurrentProcessLevel`,
-    /// `VstProcessLevels`): 0 = unknown, 2 = realtime, 4 = offline.
-    fn get_process_level(&self) -> isize {
-        0
+    /// `VstProcessLevels`) of the thread asking. The default is `Unknown`: the host
+    /// does not say.
+    fn get_process_level(&self) -> api::ProcessLevel {
+        api::ProcessLevel::Unknown
     }
 
     /// Report the host's automation state (`audioMasterGetAutomationState`,
-    /// `VstAutomationStates`): 0 = unsupported / not applicable.
-    fn get_automation_state(&self) -> isize {
-        0
+    /// `VstAutomationStates`). The default is `Unsupported`: the host does not say.
+    fn get_automation_state(&self) -> api::AutomationState {
+        api::AutomationState::Unsupported
     }
 
     /// Answer the plugin's `audioMasterCanDo` query for the capability named
@@ -1214,56 +1214,6 @@ impl PluginInstance {
         plug
     }
 
-    /// Ask the plugin to fill an `api::ChannelProperties` and return what it
-    /// wrote, or an all-zero struct if it wrote nothing.
-    ///
-    /// `effGetInputProperties` / `effGetOutputProperties` are *optional*
-    /// opcodes: an unimplemented one falls through the plugin's dispatcher and
-    /// returns 0 without touching the buffer. Handing the plugin a
-    /// `MaybeUninit` and then calling `assume_init()` unconditionally therefore
-    /// read uninitialised memory — UB in its own right, before any garbage
-    /// `flags` value ever reached [`ChannelInfo`]. We hand over a zeroed struct
-    /// instead (all-zero is a valid `ChannelProperties`: no flags,
-    /// `arrangement_type = 0` = `Mono`, empty labels), then sanitise the one
-    /// field whose type constrains its bit pattern.
-    fn channel_properties(&self, opcode: plugin::OpCode, index: i32) -> api::ChannelProperties {
-        // SAFETY: `ChannelProperties` is a `#[repr(C)]` POD of byte arrays, an
-        // `i32` and a `#[repr(i32)]` enum whose `0` discriminant is `Mono`, so
-        // the all-zero bit pattern is a valid, in-range value for every field.
-        let mut props: MaybeUninit<api::ChannelProperties> = MaybeUninit::zeroed();
-        let ptr = props.as_mut_ptr() as *mut c_void;
-
-        self.dispatch(opcode, index, 0, ptr, 0.0);
-
-        // `arrangement_type` is a `#[repr(i32)]` enum the *plugin* wrote. Its
-        // valid discriminants are -2..=28; anything else is not a value of the
-        // type, and simply `match`ing on it (which `ChannelInfo::from` does)
-        // would be UB. Read the raw i32 out of the still-`MaybeUninit` struct
-        // and overwrite an out-of-range one with `Custom` before the value is
-        // ever materialised as the enum.
-        //
-        // SAFETY: `props` was zeroed above, so every byte is initialised; the
-        // field offset comes from `addr_of_mut!` on the same allocation.
-        unsafe {
-            let ty = std::ptr::addr_of_mut!((*props.as_mut_ptr()).arrangement_type);
-            let raw = ty.cast::<i32>().read();
-            const MIN: i32 = api::SpeakerArrangementType::Custom as i32; // -2
-            const MAX: i32 = api::SpeakerArrangementType::Surround102 as i32;
-            if !(MIN..=MAX).contains(&raw) {
-                warn!("plugin reported out-of-range speaker arrangement {raw}; treating as Custom");
-                ty.cast::<i32>().write(MIN);
-            }
-        }
-
-        // Initialised either way: we zeroed it, and the plugin may have
-        // overwritten it in place.
-        //
-        // SAFETY: every byte was zeroed before the plugin ran, so none is uninitialised; the
-        // only field with a restricted bit pattern (`arrangement_type`) was clamped to a valid
-        // discriminant above, and the rest are integers and byte arrays.
-        unsafe { props.assume_init() }
-    }
-
     /// Query `effGetParameterProperties` for one parameter.
     ///
     /// `None` when the plugin does not implement the opcode — which is the
@@ -1924,7 +1874,7 @@ impl Drop for RenderHandle {
     /// the audio thread, which is where a Processor could be dropped. The graph keeps it off
     /// that thread (it retires a plugin node's unit, and so its `Processor`, to the control
     /// side: see `tutti_plugin_types::defer_to_main`, "Never from an audio thread", and
-    /// `tutti-plugin-host/tests/vst2_in_process_retire.rs`), so this branch runs on a control or
+    /// `tutti-plugin-host/tests/node/vst2_in_process_retire.rs`), so this branch runs on a control or
     /// pool thread. **It must not run on an audio thread:** it takes a lock and allocates.
     /// Off the instance's thread, the last holder's share goes to the main thread to be freed
     /// there.
@@ -2196,6 +2146,38 @@ impl PluginInstance {
         });
     }
 
+    /// `effEditKeyDown` for `key`, to the open editor: whether the plugin used the key.
+    /// `false` with no call when no editor is open.
+    pub fn editor_key_down(&mut self, _main: &MainThread, key: KeyCode) -> bool {
+        self.editor_key(plugin::OpCode::EditorKeyDown, key)
+    }
+
+    /// `effEditKeyUp`, as [`editor_key_down`](Self::editor_key_down).
+    pub fn editor_key_up(&mut self, _main: &MainThread, key: KeyCode) -> bool {
+        self.editor_key(plugin::OpCode::EditorKeyUp, key)
+    }
+
+    /// The key opcodes carry the ASCII character in `index`, the virtual key in `value` and
+    /// the modifier mask in `opt`, whose `f32` bits are the mask (the receiver reads
+    /// `opt.to_bits()`).
+    fn editor_key(&self, opcode: plugin::OpCode, key: KeyCode) -> bool {
+        if !self.editor_open {
+            return false;
+        }
+        self.dispatch(
+            opcode,
+            // The ASCII character, or 0 for a key with none.
+            if key.character.is_ascii() {
+                key.character as i32
+            } else {
+                0
+            },
+            isize::from(key.key),
+            ptr::null_mut(),
+            f32::from_bits(u32::from(key.modifier)),
+        ) == 1
+    }
+
     /// `effCanDo`.
     pub fn can_do(&self, _main: &MainThread, can_do: plugin::CanDo) -> Supported {
         let s: String = can_do.into();
@@ -2204,16 +2186,6 @@ impl PluginInstance {
         // Panicking here would abort during *load*, since the host queries
         // canDo while probing every plugin.
         Supported::from(self.write_string(plugin::OpCode::CanDo, 0, 0, &s, usize::MAX, 0.0))
-    }
-
-    /// The name and arrangement of one input, `effGetInputProperties`.
-    pub fn get_input_info(&self, _main: &MainThread, input: i32) -> ChannelInfo {
-        ChannelInfo::from(self.channel_properties(plugin::OpCode::GetInputInfo, input))
-    }
-
-    /// The name and arrangement of one output, `effGetOutputProperties`.
-    pub fn get_output_info(&self, _main: &MainThread, output: i32) -> ChannelInfo {
-        ChannelInfo::from(self.channel_properties(plugin::OpCode::GetOutputInfo, output))
     }
 
     /// Whether the plugin publishes a GUI at all: `effFlagsHasEditor`.
@@ -2236,15 +2208,6 @@ impl PluginInstance {
                 (rect.right - rect.left) as i32,
                 (rect.bottom - rect.top) as i32,
             ),
-        }
-    }
-
-    /// The editor's origin, `effEditGetRect`; `(0, 0)` when the plugin gives no rect.
-    pub fn editor_position(&self, _main: &MainThread) -> (i32, i32) {
-        // Assuming coordinate origins from top-left
-        match self.editor_rect() {
-            None => (0, 0),
-            Some(rect) => (rect.left as i32, rect.top as i32),
         }
     }
 
@@ -2311,11 +2274,6 @@ impl PluginInstance {
         self.editor_open = false;
     }
 
-    /// Whether the editor is open.
-    pub fn is_editor_open(&self) -> bool {
-        self.editor_open
-    }
-
     /// Dispatch `effEditIdle` while the editor is open.
     ///
     /// The host calls this on a timer (about 30 Hz) from its main thread;
@@ -2345,20 +2303,6 @@ impl PluginInstance {
         self.opcode(plugin::OpCode::GetCurrentPresetNum) as i32
     }
 
-    /// `effSetProgramName`.
-    pub fn set_preset_name(&self, _main: &MainThread, name: String) {
-        // `kVstMaxProgNameLen` counts the NUL.
-        self.write_string(
-            plugin::OpCode::SetCurrentPresetName,
-            0,
-            0,
-            &name,
-            MAX_PRESET_NAME_LEN - 1,
-            0.0,
-        );
-    }
-
-    /// `effGetProgramNameIndexed`.
     pub fn get_preset_name(&self, _main: &MainThread, preset: i32) -> String {
         self.read_string_param(
             plugin::OpCode::GetPresetName,
@@ -2379,15 +2323,6 @@ impl PluginInstance {
         self.core.get_chunk(1 /*preset*/)
     }
 
-    /// Bank counterpart of [`try_get_preset_data`](Self::try_get_preset_data).
-    ///
-    /// # Errors
-    ///
-    /// As [`try_get_preset_data`](Self::try_get_preset_data).
-    pub fn try_get_bank_data(&self, _main: &MainThread) -> Result<Vec<u8>, ChunkError> {
-        self.core.get_chunk(0 /*bank*/)
-    }
-
     /// Hand a preset chunk to the plugin (`effSetChunk`, index 1: the current program's).
     ///
     /// Nothing is reported back: the header gives the opcode no return value, so there is no
@@ -2395,12 +2330,6 @@ impl PluginInstance {
     /// ([`change_preset`](Self::change_preset)): a program chunk is the current program's.
     pub fn load_preset_data(&self, _main: &MainThread, data: &[u8]) {
         self.core.set_chunk(1, data);
-    }
-
-    /// Bank counterpart of [`load_preset_data`](Self::load_preset_data): `effSetChunk`,
-    /// index 0.
-    pub fn load_bank_data(&self, _main: &MainThread, data: &[u8]) {
-        self.core.set_chunk(0, data);
     }
 }
 
@@ -2862,34 +2791,6 @@ mod tests {
         }
     }
 
-    /// The host must survive a plugin that sets bits VST2.4 does not define in
-    /// `ChannelProperties::flags` — 29 of the 32 are unspecified, so any of
-    /// them appearing is a plugin quirk, not a host error.
-    #[test]
-    fn undefined_channel_flag_bits_do_not_panic() {
-        use crate::channels::ChannelInfo;
-
-        // SAFETY: `ChannelProperties` is `repr(C)` of byte arrays, an `i32` and a `repr(i32)` enum whose discriminant 0 (`Mono`) exists, so the all-zero bit pattern is a valid value.
-        let mut props: api::ChannelProperties = unsafe { MaybeUninit::zeroed().assume_init() };
-        // ACTIVE plus a pile of bits the SDK says nothing about.
-        props.flags = api::ChannelFlags::ACTIVE.bits() | 0x7FF0_0000;
-
-        // Reaching this line is the test.
-        let _info = ChannelInfo::from(props);
-    }
-
-    /// An all-zero `ChannelProperties` — what a plugin that ignores
-    /// `effGetInputProperties` leaves behind now that we zero the buffer
-    /// instead of handing over `MaybeUninit::uninit()` — must convert cleanly.
-    #[test]
-    fn zeroed_channel_properties_convert_cleanly() {
-        use crate::channels::ChannelInfo;
-
-        // SAFETY: `ChannelProperties` is `repr(C)` of byte arrays, an `i32` and a `repr(i32)` enum whose discriminant 0 (`Mono`) exists, so the all-zero bit pattern is a valid value.
-        let props: api::ChannelProperties = unsafe { MaybeUninit::zeroed().assume_init() };
-        let _info = ChannelInfo::from(props);
-    }
-
     /// `effGetChunk` used to be trusted blindly:
     /// `slice::from_raw_parts(ptr, len as usize)` with no null check and no
     /// sign check. This is the project-*save* path, so each of these is a real
@@ -3119,6 +3020,31 @@ mod tests {
         assert_eq!(ask("somethingElse"), 0);
     }
 
+    /// **The host has no file dialog and no localization**: `audioMasterOpenFileSelector` and
+    /// `audioMasterCloseFileSelector` answer 0 (declined) without reading the `VstFileSelect`
+    /// the plugin passes, and `audioMasterGetLanguage` answers `kVstLangEnglish` (1), never
+    /// the 0 that names no language.
+    #[test]
+    fn file_selector_is_declined_and_language_is_english() {
+        struct Plain;
+        impl Host for Plain {}
+        let ask = |opcode: OpCode| {
+            // A non-null garbage pointer: a declining arm must not dereference it.
+            interfaces::host_dispatch(
+                &Plain,
+                ptr::null_mut(),
+                opcode as i32,
+                0,
+                0,
+                0x10 as *mut c_void,
+                0.0,
+            )
+        };
+        assert_eq!(ask(OpCode::OpenFileSelector), 0);
+        assert_eq!(ask(OpCode::CloseFileSelector), 0);
+        assert_eq!(ask(OpCode::GetLanguage), 1);
+    }
+
     /// **A chunk reaches the plugin as the header lays `effSetChunk` out**: `[index]` is 0 for a
     /// bank and 1 for a program, `[value]` the byte size, `[ptr]` the data. The plugin's
     /// return value is not part of that layout (`aeffect.h` documents none), and a plugin
@@ -3151,11 +3077,7 @@ mod tests {
         effect.dispatcher = Some(dispatch as DispatcherProc);
         let (params, main) = instance_over(&mut effect as *mut AEffect);
         params.load_preset_data(&main, b"program");
-        params.load_bank_data(&main, b"the bank");
-        assert_eq!(
-            *SEEN.lock().unwrap(),
-            [(1, 7, b"program".to_vec()), (0, 8, b"the bank".to_vec())]
-        );
+        assert_eq!(*SEEN.lock().unwrap(), [(1, 7, b"program".to_vec())]);
     }
 
     /// A plugin's chunk-**save** failure must be representable through the trait
@@ -4470,49 +4392,6 @@ mod tests {
         );
     }
 
-    /// **A string sent to the plugin is a C string that fits the opcode's buffer.**
-    /// A program name longer than `kVstMaxProgNameLen` (24 with the NUL) is cut to
-    /// 23 bytes at a char boundary, and an interior NUL cuts it. The fake records the C string it
-    /// is handed.
-    #[test]
-    fn strings_to_the_plugin_are_short_and_c_strings() {
-        use std::sync::Mutex;
-        static SEEN: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-
-        extern "C" fn dispatch(
-            _: *mut AEffect,
-            opcode: i32,
-            _: i32,
-            _: isize,
-            ptr: *mut c_void,
-            _: f32,
-        ) -> isize {
-            if opcode == plugin::OpCode::SetCurrentPresetName as i32 && !ptr.is_null() {
-                // SAFETY: the host passes a NUL-terminated string (the property
-                // under test); the read stops at the NUL.
-                let bytes = unsafe { std::ffi::CStr::from_ptr(ptr as *const _) }.to_bytes();
-                *SEEN.lock().unwrap() = bytes.to_vec();
-            }
-            0
-        }
-        let effect = fake_effect(dispatch);
-        let (params, main) = instance_over(effect);
-
-        // `kVstMaxProgNameLen` is 24 with the NUL: 23 bytes reach the plugin.
-        params.set_preset_name(&main, "n".repeat(100));
-        assert_eq!(SEEN.lock().unwrap().len(), MAX_PRESET_NAME_LEN - 1);
-
-        // A multi-byte char is not cut in half.
-        params.set_preset_name(&main, "é".repeat(100));
-        let seen = SEEN.lock().unwrap().clone();
-        assert!(std::str::from_utf8(&seen).is_ok(), "cut inside a char");
-        assert!(seen.len() < MAX_PRESET_NAME_LEN);
-
-        // An interior NUL cuts the string; it does not panic.
-        params.set_preset_name(&main, "a\0b".to_string());
-        assert_eq!(*SEEN.lock().unwrap(), b"a");
-    }
-
     /// `truncated_c_str`, directly: the NUL cut, the cap, and a char boundary.
     #[test]
     fn truncated_c_str_cuts_at_a_nul_a_cap_and_a_char_boundary() {
@@ -4549,7 +4428,6 @@ mod tests {
         let (params, main) = instance_over(fake_effect(dispatch));
         let data = vec![1u8, 2, 3, 4];
         params.load_preset_data(&main, &data);
-        params.load_bank_data(&main, &data);
         assert_eq!(
             data,
             vec![1, 2, 3, 4],

@@ -3,7 +3,7 @@
 //! Every tone is a few harmonics at amplitudes `1/h`, written straight from
 //! `sin` in f64.
 
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use tutti_dsp::{FftScratch, StftGeometry};
 use tutti_measure::Error;
 use tutti_measure::{
@@ -310,7 +310,7 @@ fn silence_noise_and_bad_input() {
 
     let mut rng = StdRng::seed_from_u64(3);
     let noise: Vec<f32> = (0..SR as usize * 4)
-        .map(|_| rng.gen_range(-0.3..0.3))
+        .map(|_| rng.random_range(-0.3..0.3))
         .collect();
     let noisy = chroma(&noise, &cfg, &mut fft).unwrap();
     assert!(noisy.grid().as_slice().iter().all(|v| v.is_finite()));

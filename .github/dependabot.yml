@@ -1,6 +1,8 @@
-# Weekly dependency updates. Patch releases arrive grouped, one pull request
+# Monthly dependency updates. Patch releases arrive grouped, one pull request
 # per ecosystem; a minor or major release arrives in a pull request of its own,
-# since below 1.0 a minor release may break the API. The Rust toolchain
+# since below 1.0 a minor release may break the API. At most five cargo pull
+# requests are open at once: each merge moves Cargo.lock, and Dependabot
+# rebases every open one, which reruns its CI. The Rust toolchain
 # (rust-toolchain.toml) and the VST3 SDK submodules are bumped by hand, each in
 # a pull request of its own.
 version: 2
@@ -8,7 +10,7 @@ updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       cargo:
         patterns: ["*"]
@@ -16,11 +18,11 @@ updates:
     commit-message:
       prefix: build
       include: scope
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       actions:
         patterns: ["*"]

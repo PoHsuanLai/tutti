@@ -313,11 +313,11 @@ fn distinctness(
 mod tests {
     use super::*;
     use crate::cross_correlate;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
 
     fn noise(len: usize, seed: u64) -> Vec<f32> {
         let mut rng = StdRng::seed_from_u64(seed);
-        (0..len).map(|_| rng.gen_range(-1.0..1.0)).collect()
+        (0..len).map(|_| rng.random_range(-1.0..1.0)).collect()
     }
 
     /// `x` delayed by `delay` samples (negative: advanced), same length.
@@ -353,9 +353,9 @@ mod tests {
         let partials: Vec<(f32, f32, f32)> = (0..40)
             .map(|_| {
                 (
-                    rng.gen_range(0.02..0.4),
-                    rng.gen_range(0.0..core::f32::consts::TAU),
-                    rng.gen_range(0.5..1.0),
+                    rng.random_range(0.02..0.4),
+                    rng.random_range(0.0..core::f32::consts::TAU),
+                    rng.random_range(0.5..1.0),
                 )
             })
             .collect();
@@ -402,7 +402,7 @@ mod tests {
         let (mut a, mut b) = (0.0f32, 0.0f32);
         (0..len)
             .map(|_| {
-                a = 0.95 * a + rng.gen_range(-1.0..1.0);
+                a = 0.95 * a + rng.random_range(-1.0..1.0);
                 b = 0.95 * b + a;
                 b
             })
@@ -507,8 +507,8 @@ mod tests {
         let partials: Vec<(f32, f32)> = (0..12)
             .map(|_| {
                 (
-                    rng.gen_range(0.04..0.08),
-                    rng.gen_range(0.0..core::f32::consts::TAU),
+                    rng.random_range(0.04..0.08),
+                    rng.random_range(0.0..core::f32::consts::TAU),
                 )
             })
             .collect();

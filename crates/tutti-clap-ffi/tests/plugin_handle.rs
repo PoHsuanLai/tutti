@@ -299,6 +299,7 @@ fn a_short_channel_is_refused_without_calling_the_plugin() {
 
 /// A parameter value the host sends in a block's events is applied by the
 /// plugin, and `params.flush` on an inactive plugin reaches it too.
+/// Spec: clap.ext.params.flush, clap.event.param_value, clap.ext.params.get_value
 #[test]
 fn an_event_list_reaches_the_plugin_through_flush() {
     let _g = lock();
@@ -316,6 +317,7 @@ fn an_event_list_reaches_the_plugin_through_flush() {
 
 /// What `state.save` writes, `state.load` reads back: the streams carry the
 /// plugin's bytes both ways.
+/// Spec: clap.ext.state.save, clap.ext.state.load, clap.stream.istream.read, clap.stream.ostream.write
 #[test]
 fn state_round_trips_through_the_streams() {
     let _g = lock();
@@ -850,6 +852,7 @@ fn an_active_plugin_is_not_activated_again_even_with_no_audio_half() {
 /// The numbers `activate` hands the plugin are the ones CLAP allows: a rate
 /// that is finite and positive, at least one frame, and a minimum no larger
 /// than the maximum. Anything else is refused with the plugin uncalled.
+/// Spec: clap.plugin.activate
 #[test]
 fn activation_refuses_numbers_clap_forbids() {
     let _g = lock();
@@ -1000,6 +1003,7 @@ fn entry_calls() -> (u32, u32) {
 /// descriptors, drop, open again) must read init, deinit, init, deinit on the
 /// plugin's entry, and two overlapping bundles share one pair. The reference
 /// image stays mapped through `library()`, so its counters see every call.
+/// Spec: clap.entry.init, clap.entry.deinit
 #[test]
 fn the_entry_is_deinitialised_when_the_last_bundle_closes() {
     let _g = lock();

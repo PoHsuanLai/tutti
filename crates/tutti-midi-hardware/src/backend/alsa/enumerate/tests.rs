@@ -44,6 +44,7 @@ fn block(direction: u32, first_group: u32, num_groups: u32, flags: u32) -> UmpBl
 // A sequencer block the UMP spec cannot hold is left out, not clamped: a
 // reserved direction (M2-104 §7.1.8 `0b00`), a span past Group 16, a number
 // above 31.
+/// Spec: m2-104/6.1.1#1, m2-104/6.1.1#2
 #[test]
 fn a_block_the_spec_cannot_hold_is_refused() {
     assert!(block_of(&block(0, 0, 1, 0)).is_none(), "reserved direction");

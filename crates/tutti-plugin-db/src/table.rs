@@ -10,12 +10,12 @@
 
 use crate::facts::{self, FileFacts};
 use crate::format::{PluginDescriptor, PluginFormat, PluginRole};
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// What the database knows about one plugin file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileRow {
     /// Which format's loader opens the file.
     pub format: PluginFormat,
@@ -31,7 +31,8 @@ pub struct FileRow {
 ///
 /// A sum type, so a blacklisted file cannot also list plugins and a reason
 /// cannot outlive the state that justifies it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FileState {
     /// The plugins the file holds, in the probe's order: every descriptor of a
     /// CLAP factory, every audio class of a VST3 factory, every unit of an AU
@@ -175,8 +176,9 @@ pub struct BlacklistedFile<'a> {
 
 /// The plugin database: a table of files, and the plugins read out of it.
 ///
-/// Plain data with no I/O; `save` and `load` (feature `json`) are functions over
-/// it. Every change goes through [`apply`](Self::apply).
+/// Plain data with no I/O. With feature `serde` it serializes as a versioned
+/// record and deserializes only a valid one. Every change goes through
+/// [`apply`](Self::apply).
 ///
 /// A path matches exactly; the table never touches the filesystem to resolve
 /// one. A scan, the pedal's recovery and `tutti_plugin::catalog::Catalog` key
@@ -184,6 +186,8 @@ pub struct BlacklistedFile<'a> {
 /// this table directly asks with a canonical path too: an alias of a file finds
 /// no row.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "crate::wire::Raw"))]
 pub struct PluginDb {
     files: BTreeMap<PathBuf, FileRow>,
 }

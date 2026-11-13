@@ -22,7 +22,7 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
   converts no time; the ingest node has one event input per device slot.
 - [`TempoFollower`]: what a transport that follows an outside tempo applies, as a pure
   value (a Group's Flex Set Tempo and Set Time Signature, M2-104 §7.5.3, §7.5.4); the
-  session places the change (design 020, section 11).
+  session places the change.
 - [`NoteLedger`]: the notes a node has started and not ended, and the only way
   it writes to its port; [`MidiClipNode`] uses it.
 - [`MidiKeys`]: the key helpers (`note_on`, `note_off`) over `tutti-graph`'s
@@ -133,6 +133,17 @@ assert_eq!(rx.poll_into(&mut block), 1);
 let Some(KeyEvent::On(key)) = block[0].1.key_event() else { panic!("a note-on") };
 assert_eq!(key.note(), NoteNumber::of(60));
 ```
+
+## Events are not lost silently
+
+An event port's capacity follows the block: [`CLIP_EVENT_DENSITY`],
+[`HARMONY_EVENT_DENSITY`] and [`MIDI_INPUT_DENSITY`] are the events per frame a
+node is sized for, and the graph multiplies by the block length. A port at
+capacity refuses a new event, and the graph counts every refusal
+(`Editor::take_event_losses`); a clock counts its own ([`ClockControls::losses`]).
+A note-off has room past the capacity, and one the port still refuses is owed:
+the [`NoteLedger`] writes it at the first frame of a later block, before
+anything else, so a note is never left sounding by a full port.
 
 ## MPE folded to native per-note messages
 

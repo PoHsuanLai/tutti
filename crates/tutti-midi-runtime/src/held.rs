@@ -18,8 +18,8 @@
 //! receiver and that notes should first be turned off by individual Note-Off
 //! messages (p. 24), so the individual offs are what every
 //! receiver understands. The notes come first and the controllers after,
-//! because a pedal that is down takes priority over Note Off and All Notes
-//! Off until it is released (Appendix A-5), so the pedal-up lets go of the
+//! because a pedal that is down holds a note through a Note Off or All Notes
+//! Off until it is lifted (Appendix A-5), so the pedal-up lets go of the
 //! notes just ended; p. 31 (Stop) and RP-015 (Reset All Controllers) name the
 //! pedals and the pitch wheel as what returns to its normal position. A
 //! per-note controller (MIDI 2.0) ends with its note (M2-104 section 7.4), so

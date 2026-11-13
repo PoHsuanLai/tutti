@@ -33,29 +33,81 @@ const BYTES_PER_PACKET: usize = 8;
 /// A complete MIDI 1.0 System Exclusive message, checked once: it starts with
 /// `0xF0`, ends with `0xF7`, and every byte between is 7-bit.
 ///
-/// It borrows its bytes. A host that sends one builds it at the edge, and the
-/// check is the type's, so no function below it accepts "a message with or
-/// without its delimiters".
+/// It borrows its bytes, framed as they appear on a MIDI 1.0 wire. A host that
+/// sends one builds it at the edge, and the check is the type's, so no function
+/// below it accepts "a message with or without its delimiters". Bytes without
+/// the delimiters are a payload, which [`Sysex7Packets::from_payload`] takes.
+///
+/// # Examples
 ///
 /// ```
-/// use tutti_ump::SysexMessage;
+/// use tutti_ump::{SysexError, SysexMessage};
 ///
-/// let message = SysexMessage::new(&[0xF0, 0x7E, 0x7F, 0xF7]).unwrap();
+/// let message = SysexMessage::from_framed(&[0xF0, 0x7E, 0x7F, 0xF7]).unwrap();
 /// assert_eq!(message.payload(), [0x7E, 0x7F]);
-/// assert!(SysexMessage::new(&[0x7E, 0x7F]).is_none());
+/// assert_eq!(SysexMessage::from_framed(&[0x7E, 0x7F]), Err(SysexError::MissingStart));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SysexMessage<'a>(&'a [u8]);
 
+/// Why bytes are not a System Exclusive message ([`SysexMessage::from_framed`])
+/// or a SysEx7 payload ([`Sysex7Packets::from_payload`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SysexError {
+    /// The first byte is not `0xF0` (or there are no bytes).
+    MissingStart,
+    /// The last byte is not `0xF7`, or the only byte is the `0xF0`.
+    MissingEnd,
+    /// A data byte is 128 or more. `index` counts from the first byte given:
+    /// the `0xF0` of a framed message, the first payload byte of a payload.
+    NotSevenBit {
+        /// The position of the first byte above `0x7F`.
+        index: usize,
+    },
+}
+
+impl core::fmt::Display for SysexError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MissingStart => f.write_str("a SysEx message starts with 0xF0"),
+            Self::MissingEnd => f.write_str("a SysEx message ends with 0xF7"),
+            Self::NotSevenBit { index } => {
+                write!(
+                    f,
+                    "the byte at {index} is 128 or more, so it is not SysEx data"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for SysexError {}
+
 impl<'a> SysexMessage<'a> {
-    /// The message, or `None` unless `bytes` is `0xF0`, any number of 7-bit
-    /// bytes, then `0xF7` (at least the two delimiters).
-    #[must_use]
-    pub fn new(bytes: &'a [u8]) -> Option<Self> {
-        let [0xF0, interior @ .., 0xF7] = bytes else {
-            return None;
+    /// The message in `bytes`, framed as `0xF0`, any number of 7-bit bytes,
+    /// then `0xF7`.
+    ///
+    /// # Errors
+    ///
+    /// [`SysexError::MissingStart`] unless the first byte is `0xF0`,
+    /// [`SysexError::MissingEnd`] unless the last is `0xF7` (and it is not the
+    /// same byte), and [`SysexError::NotSevenBit`] for the first byte between
+    /// them that is 128 or more.
+    pub fn from_framed(bytes: &'a [u8]) -> Result<Self, SysexError> {
+        let Some((&first, rest)) = bytes.split_first() else {
+            return Err(SysexError::MissingStart);
         };
-        interior.iter().all(|&b| b < 0x80).then_some(Self(bytes))
+        if first != 0xF0 {
+            return Err(SysexError::MissingStart);
+        }
+        let Some((&0xF7, interior)) = rest.split_last() else {
+            return Err(SysexError::MissingEnd);
+        };
+        match interior.iter().position(|&b| b >= 0x80) {
+            Some(i) => Err(SysexError::NotSevenBit { index: i + 1 }),
+            None => Ok(Self(bytes)),
+        }
     }
 
     /// The whole message, delimiters included.
@@ -72,7 +124,7 @@ impl<'a> SysexMessage<'a> {
 
     /// The message as SysEx7 packets on `group` (M2-104 section 7.7): see
     /// [`Sysex7Packets`]. The one way to packetise a checked message; a
-    /// payload of unchecked bytes goes through [`Sysex7Packets::checked`].
+    /// payload of unchecked bytes goes through [`Sysex7Packets::from_payload`].
     #[must_use]
     pub fn packets(self, group: MidiGroup) -> Sysex7Packets<'a> {
         // Checked in `new`: every byte between the delimiters is below 128.
@@ -82,7 +134,7 @@ impl<'a> SysexMessage<'a> {
 
 /// The SysEx7 packets (M2-104 section 7.7) of one payload: the bytes between
 /// `0xF0` and `0xF7`, without them. Made by [`SysexMessage::packets`] for a
-/// checked message, or by [`Sysex7Packets::checked`] for a payload of plain
+/// checked message, or by [`Sysex7Packets::from_payload`] for a payload of plain
 /// bytes that arrives unchecked.
 ///
 /// A payload of up to six bytes is one `Complete` packet (an empty one is a
@@ -94,7 +146,7 @@ impl<'a> SysexMessage<'a> {
 /// ```
 /// use tutti_ump::{MidiGroup, SysexStatus, Sysex7Packets, Message};
 ///
-/// let mut packets = Sysex7Packets::checked(MidiGroup::of(0), &[1; 7]).unwrap();
+/// let mut packets = Sysex7Packets::from_payload(MidiGroup::of(0), &[1; 7]).unwrap();
 /// assert_eq!(packets.len(), 2);
 /// let Ok(Message::Sysex7(_, first)) = packets.next().unwrap().decode() else { unreachable!() };
 /// assert_eq!(first.status(), SysexStatus::Start);
@@ -111,16 +163,18 @@ pub struct Sysex7Packets<'a> {
 
 impl<'a> Sysex7Packets<'a> {
     /// The packets of `payload` (the bytes between `0xF0` and `0xF7`, without
-    /// them) from plain bytes, or `None` if a byte is 128 or more: the entry
-    /// for a payload that arrives unchecked, such as a plugin's. Nothing is
-    /// masked and nothing is allocated; a message with its delimiters is a
-    /// [`SysexMessage`].
-    #[must_use]
-    pub fn checked(group: MidiGroup, payload: &'a [u8]) -> Option<Self> {
-        payload
-            .iter()
-            .all(|&b| b < 0x80)
-            .then(|| Self::over(group, payload))
+    /// them) from plain bytes: the entry for a payload that arrives unchecked,
+    /// such as a plugin's. Nothing is masked and nothing is allocated; a
+    /// message with its delimiters is a [`SysexMessage`].
+    ///
+    /// # Errors
+    ///
+    /// [`SysexError::NotSevenBit`] for the first byte that is 128 or more.
+    pub fn from_payload(group: MidiGroup, payload: &'a [u8]) -> Result<Self, SysexError> {
+        match payload.iter().position(|&b| b >= 0x80) {
+            Some(index) => Err(SysexError::NotSevenBit { index }),
+            None => Ok(Self::over(group, payload)),
+        }
     }
 
     fn over(group: MidiGroup, payload: &'a [u8]) -> Self {
@@ -167,27 +221,11 @@ impl Iterator for Sysex7Packets<'_> {
 impl ExactSizeIterator for Sysex7Packets<'_> {}
 impl FusedIterator for Sysex7Packets<'_> {}
 
-/// The slice [`SysexMessage::new`] refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotSysex<'a>(pub &'a [u8]);
-
-impl core::fmt::Display for NotSysex<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{} bytes are not one SysEx message (0xF0, 7-bit bytes, 0xF7)",
-            self.0.len()
-        )
-    }
-}
-
-impl core::error::Error for NotSysex<'_> {}
-
 impl<'a> TryFrom<&'a [u8]> for SysexMessage<'a> {
-    type Error = NotSysex<'a>;
+    type Error = SysexError;
 
-    fn try_from(bytes: &'a [u8]) -> Result<Self, NotSysex<'a>> {
-        Self::new(bytes).ok_or(NotSysex(bytes))
+    fn try_from(bytes: &'a [u8]) -> Result<Self, SysexError> {
+        Self::from_framed(bytes)
     }
 }
 
@@ -484,7 +522,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
     /// If `message` is not one this assembler returned this block.
     #[must_use]
     pub fn message(&self, message: SysexRef) -> SysexMessage<'_> {
-        SysexMessage::new(&self.bytes()[message.range()])
+        SysexMessage::from_framed(&self.bytes()[message.range()])
             .expect("a completed message is F0, 7-bit bytes, F7")
     }
 

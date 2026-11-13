@@ -1278,7 +1278,7 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 #[test]
 fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_midi_protocol::signed_f32_to_bend_u32;
+    use tutti_midi_protocol::signed_f32_to_bend;
 
     if !harness_ready() {
         return;
@@ -1300,7 +1300,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
-                signed_f32_to_bend_u32(0.25),
+                signed_f32_to_bend(0.25).get(),
             ),
         )
     };
@@ -1540,7 +1540,8 @@ fn a_sysex_open_across_a_stop_is_dropped() {
         let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
         let mut out = Vec::new();
         out.extend(
-            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+            tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
+                .expect("a 7-bit payload"),
         );
         out.into_iter()
             .map(|ump| (Offset::ZERO, ump))

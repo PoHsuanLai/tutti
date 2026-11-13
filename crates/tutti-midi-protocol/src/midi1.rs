@@ -39,7 +39,8 @@ impl core::error::Error for NoMidi1Form {}
 
 /// `voice` at MIDI 1.0 resolution (M2-115 section 3.4), or the [`NoMidi1Form`]
 /// that says why MIDI 1.0 has no single message for it: per-note controllers
-/// and bend, RPN and NRPN, per-note management.
+/// and bend, RPN and NRPN, per-note management. For a [`Voice2`] you already
+/// hold; [`narrow_message`] does the same to a whole [`Message`].
 ///
 /// A Note On whose velocity narrows to 0 becomes velocity 1, because a MIDI 1.0
 /// Note On at velocity 0 is a Note Off (M2-104 section 7.4.2). A Program Change
@@ -82,13 +83,48 @@ pub fn narrow(voice: Voice2) -> Result<Voice1, NoMidi1Form> {
     })
 }
 
+/// `message` as MIDI 1.0 when it is a MIDI 2.0 channel voice message
+/// ([`narrow`], Group and Channel kept); every other message as it came. The
+/// inverse of [`widen_message`](crate::widen_message), and the one to reach for
+/// when you hold a [`Message`] and want a [`Message`].
+///
+/// Stateless, like `narrow`: a Program Change keeps its program and loses its
+/// bank, and a Registered or Assignable Controller is refused. A stream that
+/// must keep them runs a [`Narrower`](crate::Narrower); the wire bytes are
+/// [`midi1()`](fn@midi1).
+///
+/// # Examples
+///
+/// ```
+/// use tutti_midi_protocol::{narrow_message, widen_velocity};
+/// use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, Voice1};
+///
+/// let to = Address::new(MidiGroup::of(2), MidiChannel::of(5));
+/// let on2 = Message::note_on2(to, NoteNumber::of(60), widen_velocity(U7::of(100)));
+/// let on1 = narrow_message(on2).unwrap();
+/// assert_eq!(on1, Message::note_on(to, NoteNumber::of(60), U7::of(100)));
+/// ```
+///
+/// # Errors
+///
+/// [`NoMidi1Form`] for a per-note message, a registered or assignable
+/// controller, or per-note management, as for [`narrow`].
+pub fn narrow_message(message: Message) -> Result<Message, NoMidi1Form> {
+    match message {
+        Message::Midi2(address, voice) => Ok(Message::Midi1(address, narrow(voice)?)),
+        other => Ok(other),
+    }
+}
+
 /// The MIDI 1.0 messages `message` stands for, in the order to send them:
 /// none when it has no MIDI 1.0 form, three for a MIDI 2.0 Program Change with
 /// a bank (CC 0 the bank MSB, CC 32 the LSB, then the Program Change; M2-104
 /// Appendix D), one otherwise. Channel voice messages narrow as [`narrow`] does.
 ///
-/// Takes a [`Message`] or the [`Ump`] it is (a packet that does not decode has
-/// no MIDI 1.0 form).
+/// The bytes of the wire, for an output that speaks MIDI 1.0 and has no state
+/// to keep: a stream that must keep Registered and Assignable Controllers is a
+/// [`Narrower`](crate::Narrower). Takes a [`Message`] or the [`Ump`] it is (a
+/// packet that does not decode has no MIDI 1.0 form).
 pub fn midi1(packet: impl Into<Ump>) -> impl Iterator<Item = Midi1Bytes> {
     let none = None;
     let slots = match packet.into().decode() {

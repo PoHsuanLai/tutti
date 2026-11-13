@@ -8,6 +8,7 @@ use tutti_midi_protocol::{
     TuningFrequency, TuningMessage, TuningName, Universal,
 };
 use tutti_types::{Amplitude, Seconds};
+use tutti_ump::ControlValue;
 use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, Rpn, U7, U14, Voice2};
 use tutti_voicing::{
     Command, NoSuchTuning, Patch, Rules, TuningCapacity, VoiceId, VoiceSpec, Voicing,
@@ -58,7 +59,7 @@ fn rpn(core: &mut Voicing, channel: u8, which: Rpn, value: u8) -> Vec<Command> {
         Voice2::Registered {
             bank: which.bank(),
             index: which.index(),
-            value: u32::from(value) << 25,
+            value: ControlValue::new(u32::from(value) << 25),
         },
     )
 }
@@ -549,7 +550,7 @@ fn a_retarget_and_a_glide_carry_the_tuning_of_their_keys() {
         0,
         Voice2::ControlChange {
             controller: CCNumber::PORTAMENTO_SWITCH,
-            value: 127 << 25,
+            value: ControlValue::new(127 << 25),
         },
     );
     assert_eq!(start_tune(&on(&mut core, 0, 60)), 0.25);

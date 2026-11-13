@@ -115,6 +115,7 @@ use crate::play::PlayClock;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
 use tutti_types::PlayReading;
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump, Voice1,
     Voice2,
@@ -2237,7 +2238,7 @@ fn ref_key(e: &Event) -> Option<RefKey> {
                 Voice2::NoteOn { note, .. } => Some(RefKey::On((true, g, c, note))),
                 Voice2::NoteOff { note, .. } => Some(RefKey::Off((true, g, c, note))),
                 Voice2::ControlChange { controller, value } if controller == CCNumber::SUSTAIN => {
-                    Some(RefKey::Pedal(true, g, c, value >= 0x8000_0000))
+                    Some(RefKey::Pedal(true, g, c, value >= ControlValue::CENTER))
                 }
                 _ => None,
             }
@@ -2282,7 +2283,7 @@ impl RefHeld {
                     addr(g, c),
                     Voice2::ControlChange {
                         controller: cc,
-                        value: 0,
+                        value: ControlValue::new(0),
                     },
                 )
             } else {

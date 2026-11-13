@@ -6,7 +6,7 @@
 //! place the distinction bites is the two zone anchors: the lower zone's master
 //! is `0` and the upper zone's is `15`.
 
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, Rpn, Ump, Voice2};
+use tutti_ump::{Address, ControlValue, Message, MidiChannel, MidiGroup, Rpn, Ump, Voice2};
 
 use crate::PitchBendSensitivity;
 
@@ -267,7 +267,7 @@ impl MpeZoneConfig {
             Voice2::Registered {
                 bank: Rpn::MPE_CONFIGURATION.bank(),
                 index: Rpn::MPE_CONFIGURATION.index(),
-                value: u32::from(self.member_count) << 25,
+                value: ControlValue::new(u32::from(self.member_count) << 25),
             },
         )
         .into()
@@ -296,7 +296,7 @@ impl MpeZoneConfig {
         let zone = [MpeZone::Lower, MpeZone::Upper]
             .into_iter()
             .find(|z| z.master_channel() == address.channel)?;
-        let member_count = (value >> 25) as u8;
+        let member_count = (value.get() >> 25) as u8;
         (member_count <= Self::MAX_MEMBERS).then_some((zone, member_count))
     }
 }

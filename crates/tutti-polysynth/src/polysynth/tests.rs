@@ -9,13 +9,15 @@ use std::num::NonZeroUsize;
 use tutti_curve::Law;
 use tutti_fixtures::midi;
 use tutti_midi_protocol::{
-    MpeMode, MpeZoneConfig, MpeZones, PitchBendSensitivity, bend_u32_to_signed_f32, u16_to_unit_f32,
+    MpeMode, MpeZoneConfig, MpeZones, PitchBendSensitivity, bend_to_signed_f32,
+    velocity_to_unit_f32,
 };
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7,
     U14, Ump, Voice1, Voice2,
 };
+use tutti_ump::{BendValue, ControlValue};
 
 /// MPE's lower zone as RP-053 allows it with no upper zone: master channel 0
 /// and every other channel its member, with the default bend ranges.
@@ -2654,7 +2656,7 @@ fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
         assert_eq!(slot.channel(), MidiChannel::of(3), "{message:?}");
         assert_eq!(
             slot.velocity(),
-            u16_to_unit_f32(wide),
+            velocity_to_unit_f32(NoteVelocity::new(wide)),
             "{message:?} sounds at the widened velocity"
         );
     }
@@ -2736,10 +2738,10 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
 fn midi1_and_midi2_controllers_reach_the_same_state() {
     let bend14 = 12_288u16;
     let wide_bend = tutti_fixtures::midi::wide_bend(bend14);
-    let expected = bend_u32_to_signed_f32(wide_bend);
+    let expected = bend_to_signed_f32(BendValue::new(wide_bend));
     for message in [
         Message::Midi1(address(0), Voice1::PitchBend(U14::of(bend14))),
-        Message::Midi2(address(0), Voice2::PitchBend(wide_bend)),
+        Message::Midi2(address(0), Voice2::PitchBend(BendValue::new(wide_bend))),
     ] {
         let mut synth = poly_synth();
         synth.apply_midi(ump(message));
@@ -2783,7 +2785,7 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
         address(0),
         Voice2::ControlChange {
             controller: pedal,
-            value: tutti_fixtures::midi::wide_value(127)
+            value: ControlValue::new(tutti_fixtures::midi::wide_value(127))
         }
     )));
     assert!(!sustain(Message::Midi1(
@@ -2844,7 +2846,7 @@ fn per_note_management_flags_are_read_from_the_spec_bits() {
             address(1),
             Voice2::PerNotePitchBend {
                 note: NoteNumber::of(60),
-                value,
+                value: BendValue::new(value),
             },
         ))
     };
@@ -2919,7 +2921,7 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
             Voice2::AssignablePerNote {
                 note: NoteNumber::of(60),
                 controller,
-                value: u32::MAX,
+                value: ControlValue::new(u32::MAX),
             },
         )));
         (before, voice_of(&synth, 60).mpe_state().slide)
@@ -3014,7 +3016,7 @@ fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
     let bend = |synth: &mut PolySynth, channel: u8| {
         synth.apply_midi(ump(Message::Midi2(
             address(channel),
-            Voice2::PitchBend(u32::MAX),
+            Voice2::PitchBend(BendValue::new(u32::MAX)),
         )));
     };
     let mut synth = poly_synth();
@@ -3025,7 +3027,10 @@ fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
     bend(&mut synth, 15);
     assert_ne!(synth.bends[15].0, 0.0, "and its own channel");
     // Off again, a bend on channel 0 stays on channel 0.
-    synth.apply_midi(ump(Message::Midi2(address(0), Voice2::PitchBend(0))));
+    synth.apply_midi(ump(Message::Midi2(
+        address(0),
+        Voice2::PitchBend(BendValue::new(0)),
+    )));
     assert_ne!(
         synth.bends[5].0, synth.bends[0].0,
         "channel 5 keeps the bend it had"
@@ -3133,7 +3138,7 @@ fn registered(channel: u8, index: u8, value: u32) -> Ump {
         Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     ))
 }
@@ -3501,7 +3506,7 @@ fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
 
 /// The SysEx7 packets of the framed message `bytes` on `group`.
 fn sysex(group: u8, bytes: &[u8]) -> Vec<Ump> {
-    tutti_ump::SysexMessage::new(bytes)
+    tutti_ump::SysexMessage::from_framed(bytes)
         .expect("a framed message")
         .packets(MidiGroup::of(group))
         .collect()
@@ -3694,7 +3699,7 @@ fn ev_tuning_program(channel: u8, program: u8) -> Ump {
         Voice2::Registered {
             bank: tutti_ump::Rpn::TUNING_PROGRAM_SELECT.bank(),
             index: tutti_ump::Rpn::TUNING_PROGRAM_SELECT.index(),
-            value: u32::from(program) << 25,
+            value: ControlValue::new(u32::from(program) << 25),
         },
     ))
 }

@@ -558,7 +558,7 @@ impl CiMessage {
         let payload = self.encode();
         // Every byte a CI message encodes is 7-bit: the fields are `U7`, the
         // MUIDs and sizes are cut to 7-bit bytes and a text is ASCII.
-        Sysex7Packets::checked(group, &payload)
+        Sysex7Packets::from_payload(group, &payload)
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()

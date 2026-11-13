@@ -589,7 +589,7 @@ fn the_loss_a_chunked_processor_reports_is_counted() {
 #[test]
 fn a_sysex_cut_by_a_reported_loss_stays_cut() {
     let payload: Vec<u8> = (0..30).collect();
-    let dump: Vec<_> = tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+    let dump: Vec<_> = tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
         .expect("a 7-bit payload")
         .collect();
     assert_eq!(dump.len(), 5);

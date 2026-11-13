@@ -4,7 +4,9 @@
 use crate::field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
 };
-use crate::{CCNumber, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump};
+use crate::{
+    BendValue, CCNumber, ControlValue, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump,
+};
 
 /// One UMP, decoded.
 ///
@@ -133,10 +135,28 @@ impl From<MidiChannel> for Address {
 /// Named constructors for the common channel voice messages. Each takes an
 /// [`Address`] or, for the first Group, a bare [`MidiChannel`]
 /// (`impl Into<Address>`), and the typed fields of the message. The plain name
-/// is the MIDI 1.0 form (message type `0x2`, 7-bit data); the `2` form is the
-/// MIDI 2.0 one (type `0x4`, the wire's wider integers, no attribute and no
-/// bank). Neither scales: M2-115 translation is
-/// `tutti-midi-protocol`'s.
+/// is the MIDI 1.0 form (message type `0x2`, 7-bit data: [`U7`], [`U14`]); the
+/// `2` form is the MIDI 2.0 one (type `0x4`, the wire's wider integers
+/// [`NoteVelocity`], [`ControlValue`] and [`BendValue`], no attribute and no
+/// bank). Neither scales: a 7-bit value reaches a wide one through M2-115, in
+/// `tutti-midi-protocol`'s `widen_velocity`, `widen_value` and `widen_bend`.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_ump::{
+///     BendValue, CCNumber, ControlValue, Message, MidiChannel, NoteNumber, NoteVelocity, U7,
+/// };
+///
+/// let ch = MidiChannel::FIRST;
+/// // MIDI 1.0: 7-bit data.
+/// let note = Message::note_on(ch, NoteNumber::of(60), U7::of(100));
+/// // MIDI 2.0: 16- and 32-bit data, each its own type.
+/// let note2 = Message::note_on2(ch, NoteNumber::of(60), NoteVelocity::new(0xC000));
+/// let cc = Message::control_change2(ch, CCNumber::VOLUME, ControlValue::CENTER);
+/// let bend = Message::pitch_bend2(ch, BendValue::CENTER);
+/// # let _ = (note, note2, cc, bend);
+/// ```
 impl Message {
     /// A MIDI 1.0 Note On. At velocity 0 it is still a Note On here (a
     /// receiver reads it as a Note Off, M2-104 §7.3.2).
@@ -174,8 +194,8 @@ impl Message {
         Self::Midi1(address.into(), Voice1::PitchBend(bend))
     }
 
-    /// A MIDI 2.0 Note On with a 16-bit `velocity` and no attribute. Velocity
-    /// 0 is a Note On (§7.4.2).
+    /// A MIDI 2.0 Note On with a 16-bit `velocity` (not a 7-bit one: see
+    /// [`NoteVelocity`]) and no attribute. Velocity 0 is a Note On (§7.4.2).
     #[inline]
     #[must_use]
     pub fn note_on2(address: impl Into<Address>, note: NoteNumber, velocity: NoteVelocity) -> Self {
@@ -193,10 +213,14 @@ impl Message {
         Self::Midi2(address.into(), Voice2::note_off(note, velocity))
     }
 
-    /// A MIDI 2.0 Control Change with a 32-bit `value`.
+    /// A MIDI 2.0 Control Change with a 32-bit `value` ([`ControlValue`]).
     #[inline]
     #[must_use]
-    pub fn control_change2(address: impl Into<Address>, controller: CCNumber, value: u32) -> Self {
+    pub fn control_change2(
+        address: impl Into<Address>,
+        controller: CCNumber,
+        value: ControlValue,
+    ) -> Self {
         Self::Midi2(address.into(), Voice2::ControlChange { controller, value })
     }
 
@@ -213,10 +237,10 @@ impl Message {
         )
     }
 
-    /// A MIDI 2.0 Pitch Bend, `0x8000_0000` centred.
+    /// A MIDI 2.0 Pitch Bend, [`BendValue::CENTER`] centred.
     #[inline]
     #[must_use]
-    pub fn pitch_bend2(address: impl Into<Address>, bend: u32) -> Self {
+    pub fn pitch_bend2(address: impl Into<Address>, bend: BendValue) -> Self {
         Self::Midi2(address.into(), Voice2::PitchBend(bend))
     }
 }
@@ -634,7 +658,7 @@ pub enum Voice2 {
         /// The controller.
         controller: RegisteredPerNoteController,
         /// Its value.
-        value: u32,
+        value: ControlValue,
     },
     /// Assignable Per-Note Controller.
     AssignablePerNote {
@@ -645,7 +669,7 @@ pub enum Voice2 {
         /// controllers (§7.4.4), so a `CCNumber` could not hold one above 127.
         controller: u8,
         /// Its value.
-        value: u32,
+        value: ControlValue,
     },
     /// Registered Controller (RPN).
     Registered {
@@ -654,7 +678,7 @@ pub enum Voice2 {
         /// Index (the RPN LSB).
         index: U7,
         /// Its value.
-        value: u32,
+        value: ControlValue,
     },
     /// Assignable Controller (NRPN).
     Assignable {
@@ -663,7 +687,7 @@ pub enum Voice2 {
         /// Index (the NRPN LSB).
         index: U7,
         /// Its value.
-        value: u32,
+        value: ControlValue,
     },
     /// Relative Registered Controller.
     RelativeRegistered {
@@ -683,12 +707,12 @@ pub enum Voice2 {
         /// The two's-complement change.
         delta: i32,
     },
-    /// Per-Note Pitch Bend, `0x8000_0000` centred.
+    /// Per-Note Pitch Bend, [`BendValue::CENTER`] centred.
     PerNotePitchBend {
         /// The note.
         note: NoteNumber,
         /// The bend.
-        value: u32,
+        value: BendValue,
     },
     /// Note Off.
     NoteOff {
@@ -713,14 +737,14 @@ pub enum Voice2 {
         /// The note.
         note: NoteNumber,
         /// The pressure.
-        value: u32,
+        value: ControlValue,
     },
     /// Control Change.
     ControlChange {
         /// The controller.
         controller: CCNumber,
         /// Its value.
-        value: u32,
+        value: ControlValue,
     },
     /// Program Change, with an optional bank.
     ProgramChange {
@@ -730,9 +754,9 @@ pub enum Voice2 {
         bank: Option<Bank>,
     },
     /// Channel pressure.
-    ChannelPressure(u32),
-    /// Pitch Bend, `0x8000_0000` centred.
-    PitchBend(u32),
+    ChannelPressure(ControlValue),
+    /// Pitch Bend, [`BendValue::CENTER`] centred.
+    PitchBend(BendValue),
     /// Per-Note Management.
     PerNoteManagement {
         /// The note.

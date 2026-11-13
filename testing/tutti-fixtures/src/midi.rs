@@ -14,6 +14,7 @@ use tutti_ump::{
     RegisteredPerNoteController, Rpn, Sysex7Packets, System, U7, U14, Ump, Utility, Voice1, Voice2,
     parse_exact,
 };
+use tutti_ump::{BendValue, ControlValue};
 
 /// A MIDI 2.0 velocity at the midpoint of its 16-bit range: M2-115 section 3
 /// widens a MIDI 1.0 velocity of 64 to `0x8000` (a velocity of 0 is `0`).
@@ -52,7 +53,7 @@ impl BendRanges {
             return false;
         }
         self.0[address.channel.index()] =
-            tutti_midi_protocol::PitchBendSensitivity::from_rpn_bits(value)
+            tutti_midi_protocol::PitchBendSensitivity::from_rpn_bits(value.get())
                 .semitones()
                 .get();
         true
@@ -96,7 +97,7 @@ pub fn from_midi1_bytes(bytes: &[u8]) -> Option<Ump> {
 /// `F0`/`F7`) in the first Group. Panics on a byte with its top bit set or a
 /// payload past `SYSEX7_MAX_PAYLOAD`.
 pub fn sysex7_packets(payload: &[u8]) -> Vec<Ump> {
-    Sysex7Packets::checked(MidiGroup::FIRST, payload)
+    Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
         .expect("a payload of 7-bit bytes")
         .collect()
 }
@@ -151,7 +152,7 @@ pub fn wide_value(v: u8) -> u32 {
     let Voice2::ControlChange { value, .. } = widen(cc) else {
         unreachable!("a Control Change widens to a Control Change")
     };
-    value
+    value.get()
 }
 
 /// A 14-bit Pitch Bend as the 32-bit value M2-115 section 3 gives it.
@@ -159,7 +160,7 @@ pub fn wide_bend(v: u16) -> u32 {
     let Voice2::PitchBend(bend) = widen(Voice1::PitchBend(U14::of(v))) else {
         unreachable!("a Pitch Bend widens to a Pitch Bend")
     };
-    bend
+    bend.get()
 }
 
 /// A MIDI 2.0 Note On, no attribute.
@@ -195,12 +196,19 @@ pub fn cc(
     controller: tutti_ump::CCNumber,
     value: u32,
 ) -> Ump {
-    voice(group, channel, Voice2::ControlChange { controller, value })
+    voice(
+        group,
+        channel,
+        Voice2::ControlChange {
+            controller,
+            value: ControlValue::new(value),
+        },
+    )
 }
 
 /// A MIDI 2.0 Pitch Bend, `0x8000_0000` centred.
 pub fn pitch_bend(group: MidiGroup, channel: MidiChannel, value: u32) -> Ump {
-    voice(group, channel, Voice2::PitchBend(value))
+    voice(group, channel, Voice2::PitchBend(BendValue::new(value)))
 }
 
 /// A MIDI 2.0 Per-Note Pitch Bend.
@@ -210,7 +218,7 @@ pub fn per_note_pitch_bend(group: MidiGroup, channel: MidiChannel, n: u8, value:
         channel,
         Voice2::PerNotePitchBend {
             note: NoteNumber::of(n),
-            value,
+            value: BendValue::new(value),
         },
     )
 }
@@ -238,7 +246,11 @@ pub fn program_change(
 
 /// A MIDI 2.0 Channel Pressure.
 pub fn channel_pressure(group: MidiGroup, channel: MidiChannel, value: u32) -> Ump {
-    voice(group, channel, Voice2::ChannelPressure(value))
+    voice(
+        group,
+        channel,
+        Voice2::ChannelPressure(ControlValue::new(value)),
+    )
 }
 
 /// A MIDI 2.0 Poly Pressure.
@@ -248,7 +260,7 @@ pub fn poly_pressure(group: MidiGroup, channel: MidiChannel, n: u8, value: u32) 
         channel,
         Voice2::PolyPressure {
             note: NoteNumber::of(n),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }
@@ -267,7 +279,7 @@ pub fn registered_controller(
         Voice2::Registered {
             bank: U7::of(bank),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }
@@ -280,7 +292,7 @@ pub fn registered_rpn(group: MidiGroup, channel: MidiChannel, rpn: Rpn, value: u
         Voice2::Registered {
             bank: rpn.bank(),
             index: rpn.index(),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }
@@ -299,7 +311,7 @@ pub fn assignable_controller(
         Voice2::Assignable {
             bank: U7::of(bank),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }
@@ -356,13 +368,13 @@ pub fn per_note_controller(
         Voice2::RegisteredPerNote {
             note: NoteNumber::of(n),
             controller: RegisteredPerNoteController::from(index),
-            value,
+            value: ControlValue::new(value),
         }
     } else {
         Voice2::AssignablePerNote {
             note: NoteNumber::of(n),
             controller: index,
-            value,
+            value: ControlValue::new(value),
         }
     };
     voice(group, channel, v)

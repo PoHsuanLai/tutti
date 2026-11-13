@@ -690,7 +690,7 @@ fn a_gap_in_the_stream_ring_never_joins_a_midi_ci_message() {
         }
         .encode();
         payload.extend([0u8; 24]);
-        tutti_ump::Sysex7Packets::checked(GROUP_0, &payload)
+        tutti_ump::Sysex7Packets::from_payload(GROUP_0, &payload)
             .unwrap()
             .collect::<Vec<_>>()
     };

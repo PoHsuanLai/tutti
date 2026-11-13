@@ -464,9 +464,9 @@ fn heard(seen: &Seen) -> Vec<(u64, String)> {
                 (Some(KeyEvent::On(k)), _) => format!("on {}", k.note().get()),
                 (Some(KeyEvent::Off(k)), _) => format!("off {}", k.note().get()),
                 (_, Ok(Message::Midi2(_, Voice2::ControlChange { controller, value }))) => {
-                    format!("cc {} {value:#x}", controller.get())
+                    format!("cc {} {:#x}", controller.get(), value.get())
                 }
-                (_, Ok(Message::Midi2(_, Voice2::PitchBend(v)))) => format!("bend {v:#x}"),
+                (_, Ok(Message::Midi2(_, Voice2::PitchBend(v)))) => format!("bend {:#x}", v.get()),
                 _ => "other".to_string(),
             };
             (frame, what)

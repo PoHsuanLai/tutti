@@ -80,6 +80,9 @@ pub(super) enum Command {
         mode: crate::protocol::RenderMode,
     },
     Reset,
+    /// Reads what the plugin said unprompted off the control connection, so
+    /// it reaches the listener while no other command is waiting on a reply.
+    Drain,
     Shutdown,
     /// Chunked state read.
     ///
@@ -214,6 +217,9 @@ pub enum BridgeEvent {
     /// (preset load, param-title change, IO change, full reload). Carries no
     /// payload — the host re-reads from the plugin in response.
     Resync(ResyncKind),
+    /// The plugin asked to be processed again (CLAP's `request_process`, after
+    /// it slept). Carries no payload: the host wakes the node it parked.
+    ProcessRequested,
     /// The plugin refused the rate it was asked to run at (`Some`: the rate in
     /// Hz and the plugin's reason), or took a rate after refusing one (`None`).
     RateRefusal(Option<(SampleRate, String)>),
@@ -270,9 +276,11 @@ pub(super) const UNSOLICITED_PARAMS: usize = 128;
 ///    it applies them.
 /// 2. The parameter events, in arrival order.
 /// 3. The latency, then the tail: values the host takes as they stand.
-/// 4. `Resync(ParamTitles)`, then `Resync(ParamValues)` last: a re-read
+/// 4. `Resync(ParamTitles)`, then `Resync(ParamValues)`: a re-read
 ///    reads the plugin as it is now, so it must win over any queued value,
 ///    and a drop's `ParamValues` must follow the values that survived it.
+/// 5. `ProcessRequested`, last: the node it wakes finds the host's view of
+///    the plugin already current.
 ///
 /// What is lost is the order of a parameter event *before* a structural
 /// change in the same command: it is delivered after it, against the
@@ -297,6 +305,7 @@ pub(super) struct Unsolicited {
     io: bool,
     param_titles: bool,
     param_values: bool,
+    process_requested: bool,
     /// Parameter events dropped since the last [`take_dropped`](Self::take_dropped).
     dropped: u64,
 }
@@ -314,6 +323,7 @@ impl Unsolicited {
             io: false,
             param_titles: false,
             param_values: false,
+            process_requested: false,
             dropped: 0,
         }
     }
@@ -380,6 +390,11 @@ impl Unsolicited {
         }
     }
 
+    /// The plugin asked to be processed again; a second request adds nothing.
+    pub(super) fn process_requested(&mut self) {
+        self.process_requested = true;
+    }
+
     /// A rate refusal, or its clearing, replacing one already held.
     pub(super) fn rate_refusal(&mut self, refusal: Option<(SampleRate, String)>) {
         self.rate = Some(refusal);
@@ -422,6 +437,8 @@ impl Unsolicited {
             .take()
             .map(|tail| BridgeEvent::TailChanged { tail });
         let rate = self.rate.take().map(BridgeEvent::RateRefusal);
+        let process =
+            std::mem::take(&mut self.process_requested).then_some(BridgeEvent::ProcessRequested);
         structural
             .into_iter()
             .flatten()
@@ -430,6 +447,7 @@ impl Unsolicited {
             .chain(tail)
             .chain(rate)
             .chain(refresh.into_iter().flatten())
+            .chain(process)
     }
 
     /// How many parameter events were dropped since the last call.
@@ -450,10 +468,25 @@ mod tests {
                 BridgeEvent::ParameterChanged { edit } => format!("p{}", edit.id()),
                 BridgeEvent::LatencyChanged { samples } => format!("latency {}", samples.get()),
                 BridgeEvent::TailChanged { .. } => "tail".to_owned(),
+                BridgeEvent::ProcessRequested => "process".to_owned(),
                 BridgeEvent::Resync(kind) => format!("{kind:?}"),
                 other => panic!("unexpected {other:?}"),
             })
             .collect()
+    }
+
+    /// **A request to be processed again is heard once, after everything the
+    /// host re-reads for**, so the node it wakes finds the host's view of the
+    /// plugin current.
+    #[test]
+    fn a_process_request_is_heard_once_and_last() {
+        let mut inbox = Unsolicited::new();
+        inbox.process_requested();
+        inbox.resync(ResyncKind::ParamValues);
+        inbox.latency(Samples::new(64));
+        inbox.process_requested();
+        assert_eq!(labels(&mut inbox), ["latency 64", "ParamValues", "process"]);
+        assert!(labels(&mut inbox).is_empty());
     }
 
     /// **The inbox hands parameter events over in arrival order and

@@ -1384,7 +1384,6 @@ fn test_clap_take_initially_clear() {
     // Nothing is pending on a fresh instance.
     assert!(instance.pending_requests().is_empty());
     let loaded = instance.clap_loaded();
-    assert!(!loaded.take_process_requested());
     assert!(!loaded.take_params_flush_requested());
     assert!(!loaded.take_state_dirty());
     assert!(!loaded.take_note_ports_changed());
@@ -1433,20 +1432,14 @@ fn test_clap_take_flags() {
     .expect("Failed to load");
 
     let state = instance.clap_loaded().host_state();
-    state
-        .lifecycle
-        .process_requested
-        .store(true, Ordering::Release);
     state.notes.ports_changed.store(true, Ordering::Release);
     state.processing.state_dirty.store(true, Ordering::Release);
 
     let loaded = instance.clap_loaded();
-    assert!(loaded.take_process_requested());
     assert!(loaded.take_note_ports_changed());
     assert!(loaded.take_state_dirty());
 
     // Second take should be false (cleared)
-    assert!(!loaded.take_process_requested());
     assert!(!loaded.take_note_ports_changed());
     assert!(!loaded.take_state_dirty());
 }

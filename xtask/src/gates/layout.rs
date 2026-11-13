@@ -209,7 +209,10 @@ pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[
     ),
     (
         "tutti-midi-device",
-        &["crates/tutti-midi-device/src/ci/read.rs"],
+        &[
+            "crates/tutti-midi-device/src/ci/read.rs",
+            "crates/tutti-midi-device/src/ci/pe/json.rs",
+        ],
     ),
 ];
 

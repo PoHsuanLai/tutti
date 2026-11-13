@@ -70,6 +70,10 @@ pub(crate) fn wait_readable(stream: &Stream, timeout: std::time::Duration) -> Br
     let deadline = Instant::now() + timeout;
     let mut empty = 0u32;
     loop {
+        // A plugin rang the bell: the loop has something to send.
+        if crate::bell::bell().rung() {
+            return Ok(false);
+        }
         match tutti_plugin_ipc_ffi::pipe_bytes_available(pipe.as_handle()) {
             Ok(0) => {}
             Ok(_) | Err(_) => return Ok(true),

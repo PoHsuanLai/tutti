@@ -28,7 +28,8 @@ use crate::message::{
     UmpVersion, Unknown, Utility, Voice1, Voice2,
 };
 use crate::{
-    BendValue, CCNumber, ControlValue, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump,
+    BendValue, CCNumber, ControlValue, ManufacturerId, MdsChunk, MdsChunkSize, MdsChunks,
+    MdsIdentity, MidiChannel, MidiGroup, NoteVelocity, Ump,
 };
 
 impl Ump {
@@ -243,13 +244,15 @@ fn data128(w: [u32; 4]) -> Option<Data128> {
         }
         0x8 => Some(Data128::MixedDataHeader(MixedDataHeader {
             mds_id: U4::masked(low),
-            chunk_bytes: w[0] as u16,
-            chunks: (w[1] >> 16) as u16,
-            chunk: w[1] as u16,
-            manufacturer: ManufacturerId::new((w[2] >> 16) as u16)?,
-            device: w[2] as u16,
-            sub_id_1: (w[3] >> 16) as u16,
-            sub_id_2: w[3] as u16,
+            chunk_size: MdsChunkSize::new(w[0] as u16)?,
+            chunks: MdsChunks::new((w[1] >> 16) as u16),
+            chunk: MdsChunk::new(w[1] as u16),
+            identity: MdsIdentity {
+                manufacturer: ManufacturerId::new((w[2] >> 16) as u16)?,
+                device: w[2] as u16,
+                sub_id_1: (w[3] >> 16) as u16,
+                sub_id_2: w[3] as u16,
+            },
         })),
         0x9 => {
             let mut bytes = [0u8; 14];

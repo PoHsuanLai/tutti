@@ -421,32 +421,35 @@ fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
     );
 }
 
-/// `request_process` is the other `[thread-safe]` lifecycle request; it must be
-/// recorded and consumed independently of `request_restart`.
-///
-/// The three lifecycle flags live in one struct and share a polling helper, so
-/// a copy-paste pointing `request_process` at `restart_requested` would leave
-/// both single-flag tests passing.
+/// `request_process` is the other `[thread-safe]` lifecycle request: called
+/// from inside `process`, it raises the host's bound wake and nothing else, so
+/// it is not a restart.
 /// Spec: clap.host.request_process
 #[test]
-fn request_process_is_recorded_independently_of_restart() {
+fn request_process_raises_the_bound_wake_and_no_restart() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tutti_plugin_types::{Control, ProcessWake};
+
     let probe = Probe::acquire();
     let mut inst = probe.activate();
+    let raised = Arc::new(AtomicU32::new(0));
+    let count = raised.clone();
+    inst.loaded().bind_wake(ProcessWake::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    }));
 
     probe.command(CMD_REQUEST_PROCESS);
     drive_block(&mut inst, 64, &ClapProcessContext::default());
 
-    assert!(
-        inst.loaded().take_process_requested(),
-        "the plugin called request_process() inside process; the host must record it"
+    assert_eq!(
+        raised.load(Ordering::SeqCst),
+        1,
+        "the plugin called request_process() inside process; the host must raise its wake"
     );
     assert!(
         !restart_requested(inst.loaded_mut()),
-        "request_process() must not raise a restart — they are different requests"
-    );
-    assert!(
-        !inst.loaded().take_process_requested(),
-        "take_process_requested() must consume the flag"
+        "request_process() must not raise a restart: they are different requests"
     );
 }
 

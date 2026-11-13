@@ -128,7 +128,7 @@ fn a_send_sums_the_generator_and_the_modulator_and_stops_at_full_level() {
     );
 }
 
-/// A send is never below zero: "0% or less" sends nothing (section 8.1.2),
+/// A send is never below zero: a level of 0% or less sends nothing (section 8.1.2),
 /// and the limit applies to the sum with the modulator (section 8.1.3). With
 /// the generators at -100 (-10%) and CC 91 and 93 dropping from 127 to 0
 /// mid-note, the sum goes from +0.098 to -0.1; the send ramps down and ends at

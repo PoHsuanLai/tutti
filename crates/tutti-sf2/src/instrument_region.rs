@@ -266,8 +266,8 @@ impl InstrumentRegion {
         LoopMode::from_i16(self.generator(GeneratorType::SampleModes))
     }
 
-    /// The exclusive class (generator 57), or `None` for class 0, "no exclusive
-    /// class". A value outside the generator's 0 to 127 reads as none as well.
+    /// The exclusive class (generator 57), or `None` for class 0. A value
+    /// outside the generator's 0 to 127 reads as none as well.
     #[must_use]
     pub fn exclusive_class(&self) -> Option<NonZeroU8> {
         let class = self.generator(GeneratorType::ExclusiveClass);

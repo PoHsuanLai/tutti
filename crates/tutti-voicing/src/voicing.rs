@@ -1091,7 +1091,7 @@ impl Voicing {
             Rpn::MODULATION_DEPTH_RANGE => {
                 self.channels[channel.index()].set_modulation_range(value);
             }
-            // Tuning Program and Bank Select (MTS): the channel's "current"
+            // Tuning Program and Bank Select (MTS): the channel's current
             // tuning, effective at once on its sounding notes. A number the core
             // holds nothing for is ignored.
             Rpn::TUNING_PROGRAM_SELECT | Rpn::TUNING_BANK_SELECT => {

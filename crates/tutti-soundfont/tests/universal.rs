@@ -241,10 +241,9 @@ fn crossings(rig: &mut Rig) -> usize {
         .count()
 }
 
-/// MTS: "the note should instantly be re-tuned to the new frequency while it
-/// continues to sound": a real-time Single Note Tuning Change moves a sounding
-/// voice (key 69, 441 Hz, to the pitch of key 81: an octave), and one struck
-/// after has it.
+/// MTS: a real-time Single Note Tuning Change retunes a sounding voice without
+/// a new attack (key 69, 441 Hz, to the pitch of key 81: an octave), and one
+/// struck after has it.
 #[test]
 fn a_real_time_note_change_retunes_a_sounding_voice_and_the_next() {
     let mut rig = Rig::dry(&font_with(false));
@@ -257,8 +256,8 @@ fn a_real_time_note_change_retunes_a_sounding_voice_and_the_next() {
     near(pitch(&mut rig, 1), 882, "a note struck after");
 }
 
-/// CA-020: the non-real-time form "will NOT update the currently sounding
-/// notes": it stays at 441 Hz and the next note is at the new pitch.
+/// CA-020: the non-real-time form leaves the sounding notes alone: the voice
+/// stays at 441 Hz and the next note is at the new pitch.
 #[test]
 fn a_non_real_time_note_change_leaves_the_sounding_voice() {
     let mut rig = Rig::dry(&font_with(false));
@@ -272,9 +271,8 @@ fn a_non_real_time_note_change_leaves_the_sounding_voice() {
     near(pitch(&mut rig, 0), 882, "the next note");
 }
 
-/// MTS: RPN 3 selects the channel's tuning and "the basic channel number"
-/// discriminates: channel 0 goes to program 1 (key 69 an octave up) while
-/// channel 1 stays on program 0.
+/// MTS: RPN 3 selects the channel's tuning, per basic channel: channel 0 goes
+/// to program 1 (key 69 an octave up) while channel 1 stays on program 0.
 #[test]
 fn a_tuning_program_select_is_per_channel_and_instant() {
     let mut rig = Rig::dry(&font_with(false));

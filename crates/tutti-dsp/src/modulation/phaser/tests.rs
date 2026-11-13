@@ -120,14 +120,23 @@ impl RecurrenceCase for PhaserFamily {
     }
 }
 
+/// How much of `f32::EPSILON / (1 - r)` the phaser's render differs from its model by, fitted
+/// once on the most marginal design (12 stages parked at a 20 Hz bottom, feedback 0.99,
+/// slowest at 96 kHz): 0.15 passes its `response` case and 0.1 fails it, so 0.25 holds it with
+/// a margin of about two. It absorbs what the first-order figure leaves out: the roundoff
+/// accumulating over the chain's stages, and the window the contract's comparison is taken
+/// over.
+const ROUNDOFF_GAIN: f64 = 0.25;
+
 impl LtiCase for PhaserFamily {
-    /// 1e-3, the render's `f32` against the model's `f64`, for every design but one whose
-    /// slowest frozen probe is **numerically marginal**: a spectral radius within 1e-5 of 1
-    /// (the 12-stage chain parked at a 20 Hz bottom with feedback 0.99 has 0.9999988, a
-    /// ringing of some 10^6 frames). The model and the render share the coefficient, rounded
-    /// to `f32`, so what differs there is the `f32` roundoff of the loop's state, which the
-    /// loop amplifies by about `1 / (1 - r)`: measured at 3.3e-2 of the norm, held to 5%. A
-    /// sign flipped in the loop is off by order one at every design.
+    /// `max(1e-3, ROUNDOFF_GAIN * f32::EPSILON / (1 - r))`, with `r` the spectral radius of
+    /// the design's slowest frozen probe (over the contract's rates): the render's `f32`
+    /// against the model's `f64`. The model and the render share the coefficient, rounded to
+    /// `f32`, so what differs is the `f32` roundoff of the loop's state, which a loop of radius
+    /// `r` amplifies by about `1 / (1 - r)`. A design whose loop is far from the circle is held
+    /// to 1e-3; the 12-stage chain parked at a 20 Hz bottom with feedback 0.99 (`r` within
+    /// about 1e-6 of 1, some 10^6 frames of ringing) gets a few percent, where 3.3e-2 was
+    /// measured at 48 kHz. A sign flipped in the loop is off by order one at every design.
     fn response_tolerance(&self) -> f64 {
         let slowest = self
             .rates()
@@ -138,7 +147,7 @@ impl LtiCase for PhaserFamily {
                     .map(move |c| self.member(&c, rate).spectral_radius())
             })
             .fold(0.0f64, f64::max);
-        if 1.0 - slowest < 1e-5 { 0.05 } else { 1e-3 }
+        (ROUNDOFF_GAIN * f64::from(f32::EPSILON) / (1.0 - slowest)).max(1e-3)
     }
 
     /// The closed forms of the chain at its fixed points: `A = 1` at DC and `(-1)^N` at

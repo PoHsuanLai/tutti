@@ -10,7 +10,7 @@ use support::rig::{Rig, timgm6mb};
 use tutti_fixtures::sf2::generator;
 use tutti_ump::{Bank, CCNumber, MidiChannel, U7, Voice2};
 
-use tutti_fixtures::{RangeContract, check_range_contract};
+use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
 use tutti_graph::{Node, Prepare};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Error, Polyphony, Settings, SoundFontUnit};
@@ -119,13 +119,15 @@ fn a_polyphony_keeps_the_range_checked_shape() {
             c.0.get()
         }
     }
-    check_range_contract(&RangeContract {
+    let c = RangeContract {
         new: |raw| Polyphony::new(raw).map(Checked),
         get: |c| c.0.get(),
         of: Some(|raw| Checked(Polyphony::of(raw))),
         valid: &[1, 64, Polyphony::MAX],
         invalid: &[0, Polyphony::MAX + 1, usize::MAX],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 #[test]

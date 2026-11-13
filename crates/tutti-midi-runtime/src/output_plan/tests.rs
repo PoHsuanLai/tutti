@@ -2,7 +2,7 @@
 //! reads no clock, so `base` is any instant and only differences matter.
 
 use serde::{Deserialize, Serialize};
-use tutti_fixtures::{RangeContract, check_range_contract};
+use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
 
 use super::*;
 use crate::ClockReading;
@@ -160,7 +160,7 @@ impl<'de> Deserialize<'de> for OutputOffset {
 /// than that and anything not finite is refused, never clamped.
 #[test]
 fn an_output_offset_keeps_the_range_checked_shape() {
-    check_range_contract(&RangeContract {
+    let c = RangeContract {
         new: OutputOffset::new,
         get: OutputOffset::get,
         of: None,
@@ -171,7 +171,9 @@ fn an_output_offset_keeps_the_range_checked_shape() {
             Seconds(f64::NAN),
             Seconds(f64::INFINITY),
         ],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 /// A device latency over the same bound is refused.

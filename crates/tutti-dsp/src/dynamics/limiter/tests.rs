@@ -691,7 +691,7 @@ impl<'de> serde::Deserialize<'de> for Lookahead {
 /// latency the limiter does not have.
 #[test]
 fn a_lookahead_keeps_the_range_checked_shape() {
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: Lookahead::new,
         get: Lookahead::get,
         of: Some(Lookahead::of),
@@ -704,7 +704,9 @@ fn a_lookahead_keeps_the_range_checked_shape() {
             Seconds(f64::INFINITY),
             Seconds(f64::NEG_INFINITY),
         ],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
     assert_eq!(
         Lookahead::try_from(Seconds(-1.0)),
         Err(LookaheadError(Seconds(-1.0)))

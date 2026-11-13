@@ -1,22 +1,29 @@
-//! `check-range-types`: a tuple struct with a private field must not derive
+//! `check-range-types`: a struct whose fields are all private must not derive
 //! `Deserialize` plainly.
 //!
 //! The derive builds the value without `new`, so a document can carry a raw
 //! the type refuses (CLAUDE.md, "Range-checked values"). The one accepted
 //! spelling is `serde(try_from = ..)`. `transparent` and `from = ..` build the
 //! value without a check too, so they are flagged like a plain derive. A type
-//! whose every raw is valid goes on [`EXCEPTIONS`], by name, with that reason.
+//! whose every combination of field values is valid goes on [`EXCEPTIONS`], by
+//! file and name, with that reason.
 //!
 //! `EXCEPTIONS` is the debt, one entry per type with what removes it. An entry
-//! whose type no longer matches is an error, so the list cannot rot.
+//! whose type no longer matches (the file or struct is gone, or it no longer
+//! derives `Deserialize` plainly) is an error, so the list cannot rot.
 //!
-//! Limits: a textual scan of `struct Name(..)` preceded by its attributes. It
-//! sees tuple structs only (not named fields) and a derive spelled in
-//! `#[derive]` or `#[cfg_attr(.., derive(..))]`; a hand-written `impl
-//! Deserialize` is not checked. Directories named `tests`, `target` and
-//! `benches` are skipped.
+//! Two passes read the same attributes: tuple structs (`struct Name(..)`, whose
+//! first field is not a bare `pub`) and named-field structs (`struct Name {
+//! .. }` with at least one field and none a bare `pub`). A struct with a bare
+//! `pub` field is skipped: its fields are public, so the derive admits nothing
+//! a caller could not build. `pub(crate)` and `pub(super)` count as private.
 //!
-//! The script was Python over a regex; [`tuple_struct`] is that regex
+//! Limits: a textual scan of `struct Name` preceded by its attributes, over a
+//! derive spelled in `#[derive]` or `#[cfg_attr(.., derive(..))]`; a
+//! hand-written `impl Deserialize` is not checked. Directories named `tests`,
+//! `target` and `benches` are skipped.
+//!
+//! The tuple pass was a Python regex; [`struct_head`] is that regex
 //! (`re.M`) written as code, with its backtracking order:
 //!
 //! ```text
@@ -63,6 +70,101 @@ pub(super) const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "NoteVelocity",
         "permanent: every u16 is a valid velocity field, so the derive cannot admit a bad raw",
     ),
+    (
+        "crates/tutti-midi-device/src/id.rs",
+        "DeviceId",
+        "permanent: the OS mints the identity and ordinal, and any pair names a device; new has no check",
+    ),
+    (
+        "crates/tutti-midi-device/src/learned.rs",
+        "Learned",
+        "permanent: each field is its own checked type or absent, so every combination is a valid report",
+    ),
+    (
+        "crates/tutti-midi-device/src/learned.rs",
+        "SavedDevice",
+        "permanent: any listing row with any report is a saved device",
+    ),
+    (
+        "crates/tutti-midi-protocol/src/mpe/zone.rs",
+        "MpeZoneConfigRaw",
+        "permanent: the persisted shape `TryFrom` reads and checks",
+    ),
+    (
+        "crates/tutti-midi-protocol/src/mpe/zone.rs",
+        "MpeZonesRaw",
+        "permanent: the persisted shape `TryFrom` reads and checks",
+    ),
+    (
+        "crates/tutti-plugin-db/src/store.rs",
+        "In",
+        "permanent: the file's rows as written; any list of rows is a valid index",
+    ),
+    (
+        "crates/tutti-plugin-ipc/src/protocol/wire.rs",
+        "Holder",
+        "permanent: a test-local codec fixture, never read from a document",
+    ),
+    (
+        "crates/tutti-plugin-ipc/src/protocol/wire.rs",
+        "Plain",
+        "permanent: a test-local codec fixture, never read from a document",
+    ),
+    (
+        "crates/tutti-plugin-ipc/src/protocol/wire.rs",
+        "Coded",
+        "permanent: a test-local codec fixture, never read from a document",
+    ),
+    (
+        "crates/tutti-plugin-types/src/automation.rs",
+        "Raw",
+        "permanent: the local shape `ParameterQueue`'s `Deserialize` reads, then checks",
+    ),
+    (
+        "crates/tutti-plugin-types/src/classification.rs",
+        "Vst3SubCategories",
+        "permanent: `serde(from = String)`, and every string parses",
+    ),
+    (
+        "crates/tutti-plugin-types/src/harmony.rs",
+        "Got",
+        "permanent: a test-local codec fixture, never read from a document",
+    ),
+    (
+        "crates/tutti-plugin-types/src/hosting.rs",
+        "Load",
+        "permanent: every optional id is a choice of plugin; a missing one is the load's error",
+    ),
+    (
+        "crates/tutti-plugin-types/src/parameters.rs",
+        "ParameterInfo",
+        "temporary: a document can set `flags` outside `known` and a `measures` its range does not fit; `serde(try_from)` removes it",
+    ),
+    (
+        "crates/tutti-plugin/src/host/plugin_ref.rs",
+        "PluginRef",
+        "permanent: any path, format and id names a plugin; a missing one is the load's error",
+    ),
+    (
+        "crates/tutti-plugin/src/host/plugin_ref.rs",
+        "PluginState",
+        "permanent: any plugin with any saved bytes is a state; the plugin refuses what it cannot read",
+    ),
+    (
+        "crates/tutti-types/src/meter.rs",
+        "TimeSignature",
+        "permanent: each half is its own checked type, so every pair is a signature",
+    ),
+    (
+        "crates/tutti-types/src/topology.rs",
+        "ChannelTopology",
+        "permanent: any ordered list of speakers is a topology; duplicates are not refused",
+    ),
+    (
+        "crates/tutti-types/src/value/note.rs",
+        "Note",
+        "permanent: every class and octave is a note; only the MIDI conversion refuses",
+    ),
 ];
 
 const SKIPPED_DIRS: &[&str] = &["tests", "target", "benches"];
@@ -82,27 +184,33 @@ pub(super) fn check(tree: &dyn Tree, exceptions: &[(&str, &str, &str)]) -> Repor
             let Some(text) = tree.read(&path) else {
                 continue;
             };
-            let mut at = 0;
-            while let Some(m) = next_tuple_struct(&text, at) {
-                at = m.end;
-                if !m.private {
-                    // a `pub` field or unit-like `()`
-                    continue;
-                }
-                let a = format!("{}{}", attrs_before(&text, m.start), &text[m.start..m.end]);
-                if !a.contains("Deserialize") || has_word(&a, "try_from") {
-                    continue;
-                }
-                let line = text[..m.start].matches('\n').count() + 1;
-                match exceptions
-                    .iter()
-                    .find(|(p, n, _)| *p == path && *n == m.name)
-                {
-                    Some((p, n, _)) => seen.push((*p, *n)),
-                    None => bad.push(format!(
-                        "{path}:{line}: {} derives Deserialize on a private field; use serde(try_from = ..)",
-                        m.name
-                    )),
+            for head in [struct_head as Head, named_head as Head] {
+                let mut at = 0;
+                while let Some(m) = next_struct(&text, at, head) {
+                    at = m.end;
+                    if !m.private {
+                        // a `pub` field, unit-like `()`, or no fields
+                        continue;
+                    }
+                    let a = format!(
+                        "{}{}",
+                        attrs_before(&text, m.start),
+                        &text[m.start..m.head_end]
+                    );
+                    if !a.contains("Deserialize") || has_word(&a, "try_from") {
+                        continue;
+                    }
+                    let line = text[..m.start].matches('\n').count() + 1;
+                    match exceptions
+                        .iter()
+                        .find(|(p, n, _)| *p == path && *n == m.name)
+                    {
+                        Some((p, n, _)) => seen.push((*p, *n)),
+                        None => bad.push(format!(
+                            "{path}:{line}: {} derives Deserialize on a private field; use serde(try_from = ..)",
+                            m.name
+                        )),
+                    }
                 }
             }
         }
@@ -144,11 +252,26 @@ fn has_word(hay: &str, needle: &str) -> bool {
     })
 }
 
-/// One match of the tuple-struct regex.
+/// How one pass reads a struct item at `at` (past its attributes): the end of
+/// the item, its name, and whether every field is private.
+type Head = fn(&str, usize) -> Option<Item>;
+
+struct Item {
+    /// Past the whole match: the rest of the scan resumes here.
+    end: usize,
+    /// Past the part the derive attributes can sit in (the header, not the
+    /// body), so a field's own attribute is not read as the struct's.
+    head_end: usize,
+    name: String,
+    private: bool,
+}
+
+/// One match of a struct pass.
 struct Match {
     /// The start of the line the match begins on (`^`).
     start: usize,
     end: usize,
+    head_end: usize,
     name: String,
     /// The first field is not a `pub` (and the struct is not unit-like): the
     /// regex's group 2 did not match.
@@ -157,12 +280,12 @@ struct Match {
 
 /// `re.finditer` from `from`: the next match, which can begin only at a line
 /// start. Matches never overlap.
-fn next_tuple_struct(text: &str, from: usize) -> Option<Match> {
+fn next_struct(text: &str, from: usize, head: Head) -> Option<Match> {
     let mut start = from;
     loop {
         // `^` under `re.M`: the start of the text or just after a `\n`.
         if (start == 0 || text.as_bytes()[start - 1] == b'\n')
-            && let Some(m) = tuple_struct(text, start)
+            && let Some(m) = struct_at(text, start, head)
         {
             return Some(m);
         }
@@ -177,36 +300,67 @@ fn skip_blanks(text: &str, mut at: usize) -> usize {
     at
 }
 
-/// The regex at the line start `start`.
-fn tuple_struct(text: &str, start: usize) -> Option<Match> {
+/// The pass `head` at the line start `start`.
+fn struct_at(text: &str, start: usize, head: Head) -> Option<Match> {
     let at = skip_blanks(text, start);
-    let (end, name, private) = after_attributes(text, at)?;
+    let it = after_attributes(text, at, head)?;
     Some(Match {
         start,
-        end,
-        name,
-        private,
+        end: it.end,
+        head_end: it.head_end,
+        name: it.name,
+        private: it.private,
     })
 }
 
 /// `(?:#\[.*?\][ \t]*)*` then the rest: greedy in the number of attributes,
 /// lazy in where each one's `]` is (`.` does not cross a line).
-fn after_attributes(text: &str, at: usize) -> Option<(usize, String, bool)> {
+fn after_attributes(text: &str, at: usize, head: Head) -> Option<Item> {
     if text[at..].starts_with("#[") {
         let line_end = text[at..].find('\n').map_or(text.len(), |n| at + n);
         for (k, _) in text[at + 2..line_end].match_indices(']') {
             let next = skip_blanks(text, at + 2 + k + 1);
-            if let Some(found) = after_attributes(text, next) {
+            if let Some(found) = after_attributes(text, next, head) {
                 return Some(found);
             }
         }
     }
-    struct_head(text, at)
+    head(text, at)
 }
 
 /// `(?:pub(?:\([^)]*\))?[ \t]+)?struct[ \t]+(\w+)(?:<[^>]*>)?[ \t]*\(
 /// [ \t\n]*(pub(?![\w(])|\))?`
-fn struct_head(text: &str, at: usize) -> Option<(usize, String, bool)> {
+fn struct_head(text: &str, at: usize) -> Option<Item> {
+    let (mut p, name) = struct_name(text, at)?;
+    p = skip_blanks(text, p);
+    if !text[p..].starts_with('(') {
+        return None;
+    }
+    p += 1;
+    while matches!(text.as_bytes().get(p), Some(b' ' | b'\t' | b'\n')) {
+        p += 1;
+    }
+    let rest = &text[p..];
+    let item = |end, private| Item {
+        end,
+        head_end: end,
+        name: name.clone(),
+        private,
+    };
+    if let Some(r) = rest.strip_prefix("pub")
+        && !r.chars().next().is_some_and(|c| word(c) || c == '(')
+    {
+        return Some(item(p + 3, false));
+    }
+    if rest.starts_with(')') {
+        return Some(item(p + 1, false));
+    }
+    Some(item(p, true))
+}
+
+/// `(?:pub(?:\([^)]*\))?[ \t]+)?struct[ \t]+(\w+)(?:<[^>]*>)?`: the position
+/// after the generics, and the name.
+fn struct_name(text: &str, at: usize) -> Option<(usize, String)> {
     let mut p = at;
     if let Some(rest) = text[p..].strip_prefix("pub") {
         p += 3;
@@ -241,24 +395,114 @@ fn struct_head(text: &str, at: usize) -> Option<(usize, String, bool)> {
     if text[p..].starts_with('<') {
         p += text[p..].find('>')? + 1;
     }
-    p = skip_blanks(text, p);
-    if !text[p..].starts_with('(') {
+    Some((p, name))
+}
+
+/// `struct Name<..> [where ..] { fields }`: private when there is at least one
+/// field and none is a bare `pub`. A field's attributes and comments are not
+/// part of its visibility.
+fn named_head(text: &str, at: usize) -> Option<Item> {
+    let (p, name) = struct_name(text, at)?;
+    let open = p + text[p..].find(['{', ';', '('])?;
+    if text.as_bytes()[open] != b'{'
+        || !text[p..open].trim().is_empty() && !is_where(&text[p..open])
+    {
         return None;
     }
-    p += 1;
-    while matches!(text.as_bytes().get(p), Some(b' ' | b'\t' | b'\n')) {
-        p += 1;
+    let close = matching_brace(text, open)?;
+    let fields = fields_of(&text[open + 1..close]);
+    let private = !fields.is_empty() && fields.iter().all(|f| !is_bare_pub(f));
+    Some(Item {
+        end: close + 1,
+        head_end: open,
+        name,
+        private,
+    })
+}
+
+/// A `where` clause between the name and the `{`.
+fn is_where(between: &str) -> bool {
+    between.trim_start().starts_with("where") && !between.contains([';', '(', '{'])
+}
+
+/// The `}` closing the `{` at `open`; `None` when it never closes.
+fn matching_brace(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i);
+                }
+            }
+            _ => {}
+        }
     }
-    let rest = &text[p..];
-    if let Some(r) = rest.strip_prefix("pub")
-        && !r.chars().next().is_some_and(|c| word(c) || c == '(')
-    {
-        return Some((p + 3, name, false));
+    None
+}
+
+/// The fields of a struct body: split at commas outside brackets, with `//`
+/// comments and `#[..]` attributes removed. An empty piece is not a field.
+fn fields_of(body: &str) -> Vec<String> {
+    let mut clean = String::new();
+    for line in body.lines() {
+        clean.push_str(line.find("//").map_or(line, |i| &line[..i]));
+        clean.push('\n');
     }
-    if rest.starts_with(')') {
-        return Some((p + 1, name, false));
+    let (mut out, mut cur, mut depth) = (Vec::new(), String::new(), 0i32);
+    let mut prev = ' ';
+    for c in clean.chars() {
+        match c {
+            '(' | '[' | '<' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '>' if prev != '-' => depth -= 1,
+            _ => {}
+        }
+        if c == ',' && depth == 0 {
+            out.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+        prev = c;
     }
-    Some((p, name, true))
+    out.push(cur);
+    out.into_iter()
+        .map(|f| strip_attributes(f.trim()))
+        .filter(|f| !f.is_empty())
+        .collect()
+}
+
+/// `field` without its leading `#[..]` attributes.
+fn strip_attributes(field: &str) -> String {
+    let mut rest = field.trim_start();
+    while rest.starts_with("#[") {
+        let mut depth = 0i32;
+        let mut end = rest.len();
+        for (i, c) in rest.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest = rest[end..].trim_start();
+    }
+    rest.to_owned()
+}
+
+/// The field starts with `pub` alone, not `pub(..)` or a name like `public`.
+fn is_bare_pub(field: &str) -> bool {
+    field
+        .strip_prefix("pub")
+        .is_some_and(|r| !r.chars().next().is_some_and(|c| word(c) || c == '('))
 }
 
 /// The attributes directly above `pos`, walking back over `#[..]` (matched
@@ -381,7 +625,9 @@ mod tests {
         );
         assert_eq!(r.findings[1], flagged("P", 5));
         // A derive above an unrelated item is not this struct's.
-        assert!(one("#[derive(serde::Deserialize)]\nstruct A { x: u8 }\nstruct P(u8);\n").passed());
+        assert!(
+            one("#[derive(serde::Deserialize)]\nstruct A { pub x: u8 }\nstruct P(u8);\n").passed()
+        );
         // Code above stops the walk.
         assert!(one("#[derive(serde::Deserialize)]\nfn f() {}\nstruct P(u8);\n").passed());
     }
@@ -463,19 +709,20 @@ mod tests {
     }
 
     #[test]
-    fn the_exception_list_is_the_five_it_was() {
-        let names: Vec<_> = EXCEPTIONS.iter().map(|e| e.1).collect();
-        assert_eq!(
-            names,
-            [
-                "PitchBendSensitivity",
-                "ParamId",
-                "Latency",
-                "ChannelLayout",
-                "NoteVelocity"
-            ]
+    fn every_exception_states_why_and_none_is_listed_twice() {
+        assert!(
+            EXCEPTIONS
+                .iter()
+                .all(|e| e.2.starts_with("permanent: ") || e.2.starts_with("temporary: "))
         );
-        assert!(EXCEPTIONS.iter().all(|e| e.2.starts_with("permanent: ")));
+        for (i, e) in EXCEPTIONS.iter().enumerate() {
+            assert!(
+                EXCEPTIONS[i + 1..].iter().all(|o| (o.0, o.1) != (e.0, e.1)),
+                "{} in {} is listed twice",
+                e.1,
+                e.0
+            );
+        }
     }
 
     #[test]
@@ -498,5 +745,59 @@ mod tests {
         let src = "#[derive(serde::Deserialize)] struct P(u8);\n#[derive(serde::Deserialize)] struct P(u8);\n";
         let r = run(&[(FILE, src)], &[(FILE, "P", "why")]);
         assert_eq!(r.out, ["check-range-types: ok (1 excepted)"]);
+    }
+
+    const NAMED: &str = "#[derive(serde::Deserialize)]\nstruct P {\n    a: u8,\n    b: u8,\n}\n";
+
+    #[test]
+    fn a_named_struct_with_only_private_fields_is_flagged() {
+        let r = one(NAMED);
+        assert_eq!(r.findings, ["check-range-types: FAIL", &flagged("P", 2)]);
+        let r = one(
+            "#[cfg_attr(feature = \"serde\", derive(serde::Deserialize))]\npub struct P<T> where T: A {\n    /// docs\n    #[serde(default)]\n    a: Vec<(u8, u8)>,\n    pub(crate) b: T,\n}\n",
+        );
+        assert_eq!(r.findings[1], flagged("P", 2));
+        let try_from = "#[derive(serde::Deserialize)]\n#[serde(try_from = \"Raw\")]\nstruct P {\n    a: u8,\n}\n";
+        assert!(one(try_from).passed());
+        // A field's own `try_from` is not the struct's.
+        let field = "#[derive(serde::Deserialize)]\nstruct P {\n    #[serde(try_from = \"u8\")]\n    a: u8,\n}\n";
+        assert_eq!(one(field).findings[1], flagged("P", 2));
+        // A struct without the derive is not checked.
+        assert!(one("#[derive(Debug)]\nstruct P {\n    a: u8,\n}\n").passed());
+    }
+
+    #[test]
+    fn a_named_struct_with_a_pub_field_is_skipped() {
+        let pub_last = NAMED.replace("    b: u8", "    pub b: u8");
+        assert!(one(&pub_last).passed());
+        let pub_first = NAMED.replace("    a: u8", "    pub a: u8");
+        assert!(one(&pub_first).passed());
+        // A field named `public` is private, and an empty struct has no field.
+        assert!(!one(&NAMED.replace("    a: u8", "    public: u8")).passed());
+        assert!(one("#[derive(serde::Deserialize)]\nstruct P {}\n").passed());
+        assert!(one("#[derive(serde::Deserialize)]\nstruct P;\n").passed());
+    }
+
+    #[test]
+    fn a_named_exception_passes_and_a_stale_one_fails() {
+        let ex = [(FILE, "P", "permanent: every combination is valid")];
+        let r = run(&[(FILE, NAMED)], &ex);
+        assert_eq!(r.out, ["check-range-types: ok (1 excepted)"]);
+        // The struct gained `try_from`: the exception no longer matches.
+        let fixed = NAMED.replace("struct P", "#[serde(try_from = \"R\")]\nstruct P");
+        let r = run(&[(FILE, &fixed)], &ex);
+        assert_eq!(
+            r.findings,
+            [
+                "check-range-types: FAIL".to_owned(),
+                format!("  stale exception P in {FILE} (permanent: every combination is valid)")
+            ]
+        );
+        // The struct no longer derives `Deserialize`.
+        let r = run(&[(FILE, "struct P {\n    a: u8,\n}\n")], &ex);
+        assert!(!r.passed());
+        // The struct is renamed.
+        let r = run(&[(FILE, &NAMED.replace("struct P", "struct Q"))], &ex);
+        assert_eq!(r.findings.len(), 3, "{:?}", r.findings);
     }
 }

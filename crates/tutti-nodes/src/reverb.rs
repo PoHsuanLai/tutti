@@ -796,21 +796,6 @@ mod tail_ceiling_tests {
 
     use super::TailCeiling;
 
-    // The shape `check_range_contract` checks is serde's; `TailCeiling` has none in the
-    // library (nothing persists it), so the check runs on the same `try_from` shape here.
-    impl serde::Serialize for TailCeiling {
-        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            self.0.serialize(s)
-        }
-    }
-
-    impl<'de> serde::Deserialize<'de> for TailCeiling {
-        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            Self::try_from(<Seconds as serde::Deserialize>::deserialize(d)?)
-                .map_err(serde::de::Error::custom)
-        }
-    }
-
     /// `TailCeiling` keeps the range-checked shape: `new` refuses a NaN, an infinite or a
     /// negative time and never clamps, `of` agrees, and `TryFrom` carries the refused raw,
     /// so no declared `Tail::Finite` comes from a time that is not one.

@@ -443,8 +443,8 @@ fn a_midi1_device_has_one_inferred_block() {
 // The range checks `FunctionBlockBuilder::build` adds to the field types: a
 // block stays inside 16 Groups (§7.1.8), a MIDI 1.0 port is one Group, the
 // direction and the port are not the reserved values, and each refusal says
-// which. (The field types' own ranges are `tutti-ump`'s tests;
-// `check_range_contract` needs serde, which these refusals do not use.)
+// which. They span several fields, not one raw's range, so they do not fit
+// `check_range_contract`; the field types' own ranges are `tutti-ump`'s tests.
 #[test]
 fn a_function_block_stays_inside_the_groups() {
     let new = |first, span, dir| {

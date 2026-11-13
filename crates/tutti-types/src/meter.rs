@@ -1281,12 +1281,7 @@ mod tests {
         }
 
         // And the round trip still holds for legal values.
-        let seven_eight = seven_eight();
-        let json = serde_json::to_string(&seven_eight).unwrap();
-        assert_eq!(
-            serde_json::from_str::<TimeSignature>(&json).unwrap(),
-            seven_eight
-        );
+        tutti_fixtures::check_round_trip(&seven_eight(), r#"{"beats_per_bar":7,"note_value":8}"#);
     }
 
     /// Non-finite beats are dropped rather than poisoning the map: a NaN makes

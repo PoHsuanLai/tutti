@@ -769,13 +769,15 @@ impl<'de> Deserialize<'de> for Stages {
 /// `2..=12` (a node used to clamp it into range silently) and never clamps.
 #[test]
 fn stages_keep_the_range_checked_shape() {
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: Stages::new,
         get: Stages::get,
         of: Some(Stages::of),
         valid: &[2, 3, 7, 11, 12],
         invalid: &[0, 1, 13, 20, usize::MAX],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
     assert_eq!(Stages::try_from(13), Err(StagesError(13)));
     assert_eq!((Stages::MIN, Stages::MAX), (2, 12));
 }

@@ -567,11 +567,12 @@ mod tests {
             Speaker::Unknown(4242),
             Speaker::LowFrequency,
         ]);
-        let json = serde_json::to_string(&original).expect("serialize");
-        let back: ChannelTopology = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back, original);
-        assert_eq!(back.positions()[1], Speaker::Unknown(4242));
-        assert_eq!(back.lfe_index(), Some(2));
+        tutti_fixtures::check_round_trip(
+            &original,
+            r#"{"positions":["FrontLeft",{"Unknown":4242},"LowFrequency"]}"#,
+        );
+        assert_eq!(original.positions()[1], Speaker::Unknown(4242));
+        assert_eq!(original.lfe_index(), Some(2));
     }
 
     /// Only the LFE answers `is_lfe`.

@@ -169,7 +169,7 @@ fn test_config_update() {
 #[test]
 fn unison_voices_keep_the_range_checked_shape() {
     use serde::{Deserialize, Serialize};
-    use tutti_fixtures::{RangeContract, check_range_contract};
+    use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
 
     #[derive(Debug, Clone, Copy, PartialEq)]
     struct Checked(UnisonVoices);
@@ -196,13 +196,15 @@ fn unison_voices_keep_the_range_checked_shape() {
             c.0.get()
         }
     }
-    check_range_contract(&RangeContract {
+    let c = RangeContract {
         new: |raw| UnisonVoices::new(raw).map(Checked),
         get: |c| c.0.get(),
         of: Some(|raw| Checked(UnisonVoices::of(raw))),
         valid: &[1, 2, 16],
         invalid: &[0, 17, 100, u8::MAX],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 /// Recomputing detune/spread keeps the drawn phases.

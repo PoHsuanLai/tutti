@@ -21,5 +21,8 @@ workspace = true
 # `Beat`, the position of an automation point.
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 
+[dev-dependencies]
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

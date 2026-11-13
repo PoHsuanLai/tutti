@@ -323,21 +323,25 @@ fn an_unreadable_ack_or_nak_is_not_nakked() {
 #[cfg(feature = "serde")]
 #[test]
 fn the_device_id_and_version_are_range_checked_values() {
-    use tutti_fixtures::{RangeContract, check_range_contract};
-    check_range_contract(&RangeContract {
+    use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
+    let c = RangeContract {
         new: CiDeviceId::new,
         get: CiDeviceId::get,
         of: None,
         valid: &[0x00, 0x05, 0x0F, 0x7E, 0x7F],
         invalid: &[0x10, 0x7D, 0x80, 0xFF],
-    });
-    check_range_contract(&RangeContract {
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
+    let c = RangeContract {
         new: CiVersion::new,
         get: CiVersion::get,
         of: Some(CiVersion::of),
         valid: &[0x01, 0x02, 0x1F],
         invalid: &[0x00, 0x20, 0x80, 0xFF],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 fn long_message() -> CiMessage {

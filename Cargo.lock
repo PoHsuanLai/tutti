@@ -3318,6 +3318,7 @@ dependencies = [
 name = "tutti-curve"
 version = "0.0.1"
 dependencies = [
+ "tutti-fixtures",
  "tutti-types",
 ]
 
@@ -3405,7 +3406,6 @@ dependencies = [
  "libc",
  "proptest",
  "ringbuf",
- "serde",
  "tutti-curve",
  "tutti-fixtures",
  "tutti-graph",
@@ -3541,7 +3541,6 @@ dependencies = [
  "biquad",
  "criterion",
  "libm",
- "serde",
  "thiserror 2.0.21",
  "tutti-curve",
  "tutti-dsp",
@@ -3796,6 +3795,7 @@ dependencies = [
  "libc",
  "loom",
  "thread-priority",
+ "tutti-fixtures",
  "windows 0.52.0",
 ]
 

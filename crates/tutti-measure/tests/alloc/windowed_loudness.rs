@@ -5,12 +5,9 @@
 //! as in `chroma_alloc.rs`. It counts per thread, so the harness's
 //! other threads do not show up.
 
-use tutti_fixtures::{ThreadCounting, allocations};
+use tutti_fixtures::allocations;
 use tutti_measure::{WindowedLoudnessConfig, WindowedLoudnessState, step_windowed_loudness};
 use tutti_types::{ChannelLayout, Interleaved, SampleRate};
-
-#[global_allocator]
-static A: ThreadCounting = ThreadCounting;
 
 fn stereo(s: &[f32]) -> Interleaved<'_> {
     Interleaved::new(s, ChannelLayout::STEREO)

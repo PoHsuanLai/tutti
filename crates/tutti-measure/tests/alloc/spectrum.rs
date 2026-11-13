@@ -4,12 +4,9 @@
 //! counts per thread, so the harness's other threads do not show up.
 
 use tutti_dsp::{FftScratch, FrameCount, StftGeometry};
-use tutti_fixtures::{ThreadCounting, allocations};
+use tutti_fixtures::allocations;
 use tutti_measure::{Banding, Smoothing, SpectrumConfig, SpectrumState, step_spectrum};
 use tutti_types::{Db, Hz, SampleRate, Samples, Seconds};
-
-#[global_allocator]
-static A: ThreadCounting = ThreadCounting;
 
 /// Construction allocates (so the counter is live); then many frames across
 /// block sizes that split frames, a reset, and more frames allocate nothing,

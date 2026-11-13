@@ -1,4 +1,6 @@
 //! The VST2 host against the shared traits, and its realtime safety, on the reference plugin.
+//!
+//! The binary's global allocator is armed (`AllocDisabler`), so its no-alloc gates bite.
 
 #[path = "../support/active.rs"]
 mod active;

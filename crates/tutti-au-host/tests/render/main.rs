@@ -1,5 +1,7 @@
 //! Bounce-time properties, the push-render path and the realtime safety of the host's audio-thread operations,
 //! against the real corpus (macOS only).
+//!
+//! The binary's global allocator is armed (`AllocDisabler`), so its no-alloc gates bite.
 
 #[cfg(target_os = "macos")]
 #[path = "../support/mod.rs"]

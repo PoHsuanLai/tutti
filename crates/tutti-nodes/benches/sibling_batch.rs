@@ -1,7 +1,5 @@
 //! Same-kind siblings run as one call: what batching `N` sibling nodes of
-//! one kind into one kernel call would save, at the graph level. The
-//! figures and the decision they led to are in doc 013, "Same-kind sibling
-//! batching".
+//! one kind into one kernel call would save, at the graph level.
 //!
 //! Each case is one block of `frames` through an `Executor` (serial, no
 //! pool), `members` siblings of one kind, every member reading the global
@@ -370,7 +368,7 @@ fn graph(kind: Kind, variant: Variant, members: usize, frames: usize) -> Executo
                         ed.insert(k, "strip", ForkByClone(StripNode(Ramp::member(m))));
                     }
                     Kind::BusStrip => {
-                        let s = BusStripNode::new();
+                        let s = BusStripNode::stereo();
                         s.set_volume(Amplitude::new(0.5 + m as f32 * 1e-3));
                         ed.insert(k, "bus strip", s);
                     }

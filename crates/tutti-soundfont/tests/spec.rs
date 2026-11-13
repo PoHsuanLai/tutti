@@ -326,8 +326,8 @@ fn kit_rig() -> Rig {
 
 /// 8.1.2, generator 57: a note with an exclusive class ends any other sounding
 /// note of that class. The key is still down, and the zone's own release is 5
-/// s; the note is gone within a tenth of a second. A note of class 0 ("no
-/// exclusive class; no special action") and one of another class leave it be.
+/// s; the note is gone within a tenth of a second. A note of class 0 (none) and
+/// one of another class leave it be.
 #[test]
 fn a_note_of_an_exclusive_class_ends_the_others_of_it() {
     let mut same = kit_rig();
@@ -358,7 +358,7 @@ fn a_note_of_an_exclusive_class_ends_the_others_of_it() {
     assert!(none.energy(512) > alone * 1.5, "both sound");
 }
 
-/// 8.1.2, generator 57: the other notes are terminated "rapidly", not shut off:
+/// 8.1.2, generator 57: the other notes are terminated quickly, not shut off:
 /// the note still sounds in the first millisecond (a cut is silent in the same
 /// block) and has fallen by a tenth of a second. The release is quick whatever
 /// the zone's own is (5 s here).
@@ -383,9 +383,9 @@ fn the_class_is_ended_quickly_not_cut_and_not_released_slowly() {
     assert!(rig.energy(512) < 0.01, "a tenth of a second on, it is gone");
 }
 
-/// 8.1.2, generator 57: "the scope of the exclusive class is the entire
-/// preset". The same class in another preset is another class; another channel
-/// playing the same preset shares it.
+/// 8.1.2, generator 57: an exclusive class is scoped to its preset. The same
+/// class in another preset is another class; another channel playing the same
+/// preset shares it.
 #[test]
 fn the_scope_of_an_exclusive_class_is_the_preset() {
     // Channel 1 plays preset 1: its class 1 is not preset 0's.

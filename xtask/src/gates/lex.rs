@@ -13,8 +13,30 @@ fn word(b: u8) -> bool {
 /// quotes of a string, raw string, byte string or char literal, replaced by
 /// spaces (newlines kept). The quotes stay, so `""` still marks a literal.
 pub(super) fn blank(src: &str) -> String {
+    split(src, false).0
+}
+
+/// [`blank`] that leaves `///` doc comments (not `////`) in place, so a gate
+/// can read a tag a doc comment carries while every other comment and every
+/// literal stays blanked. A `///` inside a string is still blanked.
+pub(super) fn blank_keeping_docs(src: &str) -> String {
+    split(src, true).0
+}
+
+/// `src` with everything but its `//` and `/* */` comments replaced by spaces
+/// (newlines kept): the prose of a source file, at its own offsets.
+pub(super) fn comments(src: &str) -> String {
+    split(src, false).1
+}
+
+/// The blanked code and the comments alone, both at the source's offsets.
+fn split(src: &str, keep_docs: bool) -> (String, String) {
     let b = src.as_bytes();
     let mut out = b.to_vec();
+    let mut prose: Vec<u8> = b
+        .iter()
+        .map(|&c| if c == b'\n' { b'\n' } else { b' ' })
+        .collect();
     let n = b.len();
     let wipe = |out: &mut [u8], from: usize, to: usize| {
         for c in &mut out[from..to] {
@@ -28,7 +50,11 @@ pub(super) fn blank(src: &str) -> String {
         let c = b[i];
         if c == b'/' && b.get(i + 1) == Some(&b'/') {
             let end = src[i..].find('\n').map_or(n, |j| i + j);
-            wipe(&mut out, i, end);
+            prose[i..end].copy_from_slice(&b[i..end]);
+            let line = &src[i..end];
+            if !(keep_docs && line.starts_with("///") && !line.starts_with("////")) {
+                wipe(&mut out, i, end);
+            }
             i = end;
         } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
             let mut depth = 1;
@@ -44,6 +70,8 @@ pub(super) fn blank(src: &str) -> String {
                     j += 1;
                 }
             }
+            let j = j.min(n);
+            prose[i..j].copy_from_slice(&b[i..j]);
             wipe(&mut out, i, j);
             i = j;
         } else if word(c) {
@@ -99,7 +127,11 @@ pub(super) fn blank(src: &str) -> String {
             i += 1;
         }
     }
-    String::from_utf8(out).expect("blanking keeps UTF-8: it only writes spaces over whole spans")
+    let utf8 = "blanking keeps UTF-8: it only writes spaces over whole spans";
+    (
+        String::from_utf8(out).expect(utf8),
+        String::from_utf8(prose).expect(utf8),
+    )
 }
 
 /// The index after a char literal opening at `at` (`'x'`, `'\n'`, `'\x41'`,
@@ -193,6 +225,27 @@ mod tests {
         assert_eq!(b.matches('\n').count(), 2);
         assert!(b.contains("let s = \"      \";"));
         assert!(b.contains("let c = ' ';"));
+    }
+
+    #[test]
+    fn doc_comments_survive_when_asked_and_nothing_else_does() {
+        let src = "/// Spec: a.b\n//// not doc\n// plain\nfn f() { let s = \"/// Spec: x\"; }\n";
+        let kept = blank_keeping_docs(src);
+        assert_eq!(kept.len(), src.len());
+        assert!(kept.contains("/// Spec: a.b"));
+        assert!(!kept.contains("not doc") && !kept.contains("plain"));
+        assert!(!kept.contains("Spec: x"));
+        assert!(!blank(src).contains("Spec: a.b"));
+    }
+
+    #[test]
+    fn comments_keep_only_the_prose_at_its_offsets() {
+        let src = "let s = \"// not\"; // said\n/* block */ x\n";
+        let c = comments(src);
+        assert_eq!(c.len(), src.len());
+        assert!(!c.contains("not") && !c.contains("let") && !c.contains(" x"));
+        assert_eq!(c.find("// said"), src.find("// said"));
+        assert_eq!(c.find("/* block */"), src.find("/* block */"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! [`LadderFamily`]: the Moog ladder as a [`Family`](crate::Family) (design 024 step 2b).
+//! [`LadderFamily`]: the Moog ladder as a [`Family`](crate::Family).
 //!
 //! The controls are [`LadderControls`], the model [`LadderModel`] (the small-signal
 //! linearisation) and the kernel [`Ladder`]: the four stages with the `tanh` in the
@@ -8,6 +8,9 @@
 //! the drive** ramp linearly over the 16 frames after each retarget and arrive exactly
 //! on it, so a control is in the render at most 16 frames after it was sampled and the
 //! render does not depend on how audio is split into blocks.
+//!
+//! The design is right when the model's response is the prewarped bilinear image of the
+//! continuous ladder's: `the_lp24_model_is_the_prewarped_bilinear_image_of_the_continuous_ladder`.
 
 use core::marker::PhantomData;
 

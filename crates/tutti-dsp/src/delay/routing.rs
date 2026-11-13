@@ -9,7 +9,7 @@ pub(crate) const MAX_WIDTH: usize = tutti_types::MAX_BUS_CHANNELS;
 /// delayed tap recirculates into channel `c`'s line, before the cross-feedback amount
 /// scales it.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): square on one bus, every
+/// A range-checked value: square on one bus, every
 /// weight finite and **every row's absolute sum at most 1**. With the self and cross
 /// feedback bounded as a pair ([`Feedback::stable_pair`](tutti_types::Feedback::stable_pair)),
 /// that keeps each line's loop gain under

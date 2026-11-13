@@ -1,4 +1,4 @@
-//! File loads are jobs (doc 017 L1f-b): `Midi::load_file` and
+//! File loads are jobs: `Midi::load_file` and
 //! `Midi::load_soundfont` return a `MidiLoad` at once and the result lands as
 //! `MidiEvent::FileLoaded` / `SoundFontLoaded` carrying that id, in `update()`.
 

@@ -1,5 +1,4 @@
-//! [`MultibandFamily`]: the multiband compressor as a [`Family`] (design 024 section 3,
-//! row 9).
+//! [`MultibandFamily`]: the multiband compressor as a [`Family`].
 //!
 //! A Linkwitz-Riley crossover (the tree of [`CrossoverFamily`], one
 //! per channel) splits the signal into 2 to 4 bands; each band is compressed by its own
@@ -126,21 +125,6 @@ impl MultibandMember {
     #[must_use]
     pub fn compressor(&self, band: usize) -> Option<&CompressorMember> {
         self.bands[..self.count].get(band)
-    }
-
-    /// Whether band `band` is bypassed; `false` past the last band.
-    #[must_use]
-    pub fn is_bypassed(&self, band: usize) -> bool {
-        self.bypass[..self.count]
-            .get(band)
-            .copied()
-            .unwrap_or(false)
-    }
-
-    /// Whether band `band` is soloed; `false` past the last band.
-    #[must_use]
-    pub fn is_soloed(&self, band: usize) -> bool {
-        self.solo[..self.count].get(band).copied().unwrap_or(false)
     }
 
     /// Whether band `band` is heard: nothing is soloed, or it is. `false` past the last

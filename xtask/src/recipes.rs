@@ -29,6 +29,8 @@ pub(crate) enum Step {
     /// the feature-gated crates alone (`gates/doc_features.rs`); every run is
     /// attempted and the failures reported together.
     DocFeatures,
+    /// `conformance-inventory <format>`: rewrite an inventory from its spec source.
+    ConformanceInventory(String),
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
 }
@@ -41,6 +43,7 @@ impl Step {
             Step::WriteFile { path, .. } => format!("write {}", path.display()),
             Step::Gate(g) => g.display(),
             Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <fs>, each member with its features together (private items), then each feature of tutti-session and tutti alone".to_owned(),
+            Step::ConformanceInventory(f) => format!("conformance-inventory {f}"),
             Step::RequireCargoDeny => {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
@@ -164,6 +167,26 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "the repo layout, the crate layering, the codec boundary and the depth-free test paths",
     ),
     (
+        "check-doc-refs",
+        "",
+        "prose names crate paths and design-doc sections that exist",
+    ),
+    (
+        "check-pointers",
+        "",
+        "no file:line pointer in code prose; one under docs/ names a line that exists",
+    ),
+    (
+        "check-conformance",
+        "",
+        "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys",
+    ),
+    (
+        "conformance-inventory",
+        "[clap|midi]",
+        "regenerate an inventory's generated columns from the spec source (midi: TUTTI_MIDI_SPECS)",
+    ),
+    (
         "check-range-types",
         "",
         "no plain derived Deserialize on a private tuple field",
@@ -285,6 +308,7 @@ impl Planner<'_> {
                 | "bench-cmp"
                 | "profile-bench"
                 | "verify-audio"
+                | "conformance-inventory"
         );
         if !takes_args && !args.is_empty() {
             return Err(format!(
@@ -375,6 +399,13 @@ impl Planner<'_> {
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
+            "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
+            "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
+            "conformance-inventory" => {
+                let [f] = Self::params(name, args, ["clap"])?;
+                self.out.push(Step::ConformanceInventory(f));
+            }
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
             "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
@@ -424,7 +455,7 @@ impl Planner<'_> {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
-                    "check-submodule-pins",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-conformance",
                     "check-features",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",
@@ -475,8 +506,8 @@ impl Planner<'_> {
             "-p tutti-shared-plugin --all-targets",
             "-p tutti-export --lib",
             "-p tutti-codec --features encode-wav,encode-aiff,encode-flac,decode-wav,decode-flac,decode-mp3,decode-ogg,serde --all-targets",
-            "-p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets",
-            "-p tutti-plugin-db --features json --all-targets",
+            "-p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/serde --all-targets",
+            "-p tutti-plugin-db --features serde --all-targets",
             "-p tutti-vst2-host --all-targets",
             "-p tutti-vst3-host -p tutti-plugin-server -p tutti-plugin-probe --lib --bins",
         ] {
@@ -518,8 +549,8 @@ const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-plugin-types --lib --features contract -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings"#,
-    r#"cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-plugin --features clap,vst2,serde --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-plugin-db --features serde --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings"#,
@@ -550,9 +581,9 @@ const TEST_FEATURES: &[&str] = &[
     r#"cargo nextest run --locked -p tutti-tempo --features serde"#,
     r#"cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests"#,
     r#"cargo nextest run --locked -p tutti-plugin-types --features testing"#,
-    r#"cargo nextest run --locked -p tutti-plugin-db --features json"#,
+    r#"cargo nextest run --locked -p tutti-plugin-db --features serde"#,
     r#"cargo nextest run --locked -p tutti-plugin-contract --features server"#,
-    r#"cargo nextest run --locked -p tutti-plugin --features clap,vst2,json"#,
+    r#"cargo nextest run --locked -p tutti-plugin --features clap,vst2,serde"#,
 ];
 
 const MIRI: &[&str] = &[
@@ -580,6 +611,7 @@ const LOOM: &[&str] = &[
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test edit_ring_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test fault_latch_loom -- --nocapture"#,
+    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test wake_flag_loom"#,
 ];
 
 const LOOM_FULL: &[&str] = &[

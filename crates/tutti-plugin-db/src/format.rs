@@ -1,7 +1,5 @@
 //! The plugin format, and the catalog-identity types re-exported beside it.
 
-use serde::{Deserialize, Serialize};
-
 // Catalog-identity types, defined in `tutti-plugin-types` so the format host
 // crates can name them without depending on `tutti-plugin`.
 pub use tutti_plugin_types::{AuComponentType, PluginClass, PluginDescriptor};
@@ -14,7 +12,8 @@ pub use tutti_plugin_types::Vst2Category;
 pub use tutti_plugin_types::{ClapFeature, PluginRole, Vst3PlugType, Vst3SubCategories};
 
 /// A plugin format, as recognized from a file's extension.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum PluginFormat {
     /// Steinberg VST3.

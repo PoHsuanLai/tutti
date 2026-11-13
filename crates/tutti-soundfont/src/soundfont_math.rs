@@ -16,8 +16,7 @@ impl SoundFontMath {
     pub(crate) const NON_AUDIBLE: f32 = 1.0e-3_f32;
     /// The natural-log fall of a 100 dB amplitude change: `100 / 20 * ln 10`.
     /// The volume envelope's decay and release times are the time to fall this
-    /// far (SF2 2.04 section 8.1.2, generators 36 and 38: "a 100% change", the
-    /// time "until 100dB attenuation were reached"), at a constant dB per second.
+    /// far (SF2 2.04 section 8.1.2, generators 36 and 38), at a constant dB per second.
     pub(crate) const HUNDRED_DB_NEPERS: f64 = 11.512_925_464_970_229;
     pub(crate) const LOG_NON_AUDIBLE: f32 = -6.907_755_4_f32;
 

@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{Db, Hz, Q};
 
 use super::*;
@@ -48,10 +48,10 @@ impl FamilyCase for SvfFamily<f64> {
         let mut rng = StdRng::seed_from_u64(24);
         all.extend((0..200).map(|_| {
             controls(
-                TYPES[rng.gen_range(0..TYPES.len())],
-                rng.gen_range(20.0..18_000.0),
-                rng.gen_range(0.1..30.0),
-                rng.gen_range(-24.0..24.0),
+                TYPES[rng.random_range(0..TYPES.len())],
+                rng.random_range(20.0..18_000.0),
+                rng.random_range(0.1..30.0),
+                rng.random_range(-24.0..24.0),
             )
         }));
         all

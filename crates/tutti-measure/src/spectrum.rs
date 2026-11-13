@@ -360,13 +360,6 @@ impl SpectrumConfig {
         self.peak_decay
     }
 
-    /// Columns the spectrogram keeps.
-    #[inline]
-    #[must_use]
-    pub fn spectrogram_columns(&self) -> FrameCount {
-        FrameCount(self.columns)
-    }
-
     /// Outputs per frame: bins or bands.
     #[must_use]
     pub fn outputs(&self) -> BinCount {
@@ -635,13 +628,6 @@ impl SpectrumState {
         })
     }
 
-    /// Frames analysed since construction or the last reset.
-    #[inline]
-    #[must_use]
-    pub fn frames_seen(&self) -> u64 {
-        self.frames
-    }
-
     /// Analyses the ring as the frame that just became due.
     fn analyse(&mut self, fft: &mut FftScratch) {
         let cfg = self.cfg;
@@ -792,7 +778,7 @@ pub fn step_spectrum(
 mod tests {
     use super::*;
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use std::f64::consts::TAU;
     use tutti_types::SampleRate;
     use tutti_types::Samples;
@@ -996,7 +982,7 @@ mod tests {
             .with_spectrogram(FrameCount(6))
             .unwrap();
         let mut rng = StdRng::seed_from_u64(7);
-        let signal: Vec<f32> = (0..9_000).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let signal: Vec<f32> = (0..9_000).map(|_| rng.random_range(-1.0..1.0)).collect();
         let read = |block: usize| {
             let mut fft = FftScratch::new();
             let mut state = SpectrumState::new(&cfg, &mut fft);
@@ -1004,15 +990,9 @@ mod tests {
                 step_spectrum(&cfg, &mut state, chunk, &mut fft).unwrap();
             }
             let cols: Vec<Vec<Db>> = state.spectrogram().map(<[Db]>::to_vec).collect();
-            (
-                state.levels().to_vec(),
-                state.peaks().to_vec(),
-                cols,
-                state.frames_seen(),
-            )
+            (state.levels().to_vec(), state.peaks().to_vec(), cols)
         };
         let whole = read(signal.len());
-        assert_eq!(whole.3, (9_000 - 256) / 100 + 1);
         assert_eq!(whole.2.len(), 6);
         for block in [1, 7, 100, 1013, 4096] {
             assert_eq!(read(block), whole, "block {block}");
@@ -1043,7 +1023,7 @@ mod tests {
         let sigma = 0.1f64;
         let mut rng = StdRng::seed_from_u64(0x5eed);
         let mut gauss = || {
-            let (u, v): (f64, f64) = (rng.gen_range(1e-12..1.0), rng.gen_range(0.0..1.0));
+            let (u, v): (f64, f64) = (rng.random_range(1e-12..1.0), rng.random_range(0.0..1.0));
             sigma * (-2.0 * u.ln()).sqrt() * (TAU * v).cos()
         };
         let frames = 600;
@@ -1482,6 +1462,19 @@ mod tests {
         ));
     }
 
+    /// The floor is where silence reads, and no level reads under it: a tone
+    /// far below a -60 dB floor reads the floor in every bin.
+    #[test]
+    fn no_level_reads_under_the_configured_floor() {
+        let cfg = config(256, 64).with_floor(Db(-60.0)).unwrap();
+        let mut fft = FftScratch::new();
+        let mut state = SpectrumState::new(&cfg, &mut fft);
+        step_spectrum(&cfg, &mut state, &vec![0.0; 1000], &mut fft).unwrap();
+        assert!(state.levels().iter().all(|&l| l == Db(-60.0)));
+        step_spectrum(&cfg, &mut state, &tone(1000, 1000.0, 1e-6), &mut fft).unwrap();
+        assert!(state.levels().iter().all(|&l| l == Db(-60.0)));
+    }
+
     /// A refused block leaves the state as it was; silence reads the floor;
     /// a huge finite block stays finite; `reset` returns to the first state.
     #[test]
@@ -1495,7 +1488,7 @@ mod tests {
         assert!(state.levels().iter().all(|&l| l == cfg.floor()), "silence");
         assert!(state.peaks().iter().all(|&l| l == cfg.floor()));
 
-        let before = (state.frames_seen(), state.levels().to_vec());
+        let before = state.levels().to_vec();
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut block = vec![0.1f32; 500];
             block[499] = bad;
@@ -1503,7 +1496,7 @@ mod tests {
                 step_spectrum(&cfg, &mut state, &block, &mut fft),
                 Err(Error::NonFiniteInput)
             );
-            assert_eq!((state.frames_seen(), state.levels().to_vec()), before);
+            assert_eq!(state.levels().to_vec(), before);
         }
 
         step_spectrum(&cfg, &mut state, &vec![3.0e38; 600], &mut fft).unwrap();
@@ -1519,7 +1512,6 @@ mod tests {
         assert!(state.levels().iter().all(|l| l.get().is_finite()));
 
         state.reset();
-        assert_eq!(state.frames_seen(), 0);
         assert!(
             state
                 .levels()

@@ -6,16 +6,19 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    LoadedPlugin, Normalized, ParamEdit, ParamId, ParamMapping, ParameterInfo, PluginClass,
-    PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, RenderModeSupport,
-    Request, RescanScope, Samples, Vst3SubCategories, WindowHandle,
+    KeyEvent, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
+    ParamMapping, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
+    PluginTail, Preset, PresetId, RenderModeSupport, Request, RescanScope, Samples, StateUse,
+    Vst3SubCategories, WindowHandle,
 };
 
 use crate::error::Vst3Error;
 use crate::types::PluginInfo;
 
+use super::keys::view_key_of;
 use super::loaded::Vst3Loaded;
 use crate::BusDirection;
+use keyboard_types::KeyState;
 
 /// A `Vst3Error` as the shared vocabulary's error.
 pub(crate) fn plugin_error(error: Vst3Error) -> PluginError {
@@ -320,14 +323,14 @@ impl Control for Vst3Loaded {
             .map(Normalized::clamped)
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
         self.save_state_with(main, &[])
     }
 
     /// Restores the state. The writes a rejoin carried are older than it, and
     /// are dropped; the writes the blob itself carries wait in `carried`, for the
     /// next activation, or (active) for the Controller to queue to the Processor.
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
         self.carried = self.restore_state(main, bytes)?;
         Ok(())
     }
@@ -492,6 +495,27 @@ impl Control for Vst3Loaded {
 }
 
 impl EditorWindow for Vst3Loaded {
+    /// Forwards the key as `onKeyDown` or `onKeyUp` and reports the view's `kResultTrue`
+    /// as [`KeyUse::Used`]. A key VST3 cannot write (a character outside the Basic
+    /// Multilingual Plane) is not sent and is [`KeyUse::Ignored`], as is any key while
+    /// no editor is open.
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        let Some(key) = view_key_of(&event, ModifierConvention::HOST) else {
+            return Ok(KeyUse::Ignored);
+        };
+        let used = match event.state {
+            KeyState::Down => {
+                self.plugin
+                    .editor_key_down(main, key.character, key.virtual_key, key.modifiers)
+            }
+            KeyState::Up => {
+                self.plugin
+                    .editor_key_up(main, key.character, key.virtual_key, key.modifiers)
+            }
+        };
+        Ok(if used { KeyUse::Used } else { KeyUse::Ignored })
+    }
+
     /// Returns `true` if the plugin actually publishes an editor view.
     ///
     /// **Asks `createView`, not `controller.is_some()`.** Those are different

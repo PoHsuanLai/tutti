@@ -8,18 +8,18 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence, EditorSize,
-    EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit, ParamId,
-    ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, PresetId, RenderMode, RenderModeSupport, Request,
-    RescanScope, Samples, TimerId, WindowHandle, Wraps,
+    AutomationMode, BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence,
+    EditorSize, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit,
+    ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass,
+    PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake, RenderMode,
+    RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, WindowHandle, Wraps,
 };
 
 use super::ClapLoaded;
 use super::controller::ClapController;
 use super::lifecycle::plugin_error;
 use crate::events::ParamBounds;
-use crate::types::{AudioPortFlags, PluginInfo};
+use crate::types::{AudioPortFlags, ParamAutomationState, PluginInfo};
 
 /// What the two editor answers mean for the three capability bits.
 #[derive(Debug, PartialEq, Eq)]
@@ -280,6 +280,18 @@ impl Control for ClapLoaded {
         ClapLoaded::parameter_count(self, main)
     }
 
+    /// `param-indication.set_automation` for every automatable parameter: the
+    /// mode is the plugin's whole, and CLAP names automation per parameter.
+    /// A plugin without `clap.param-indication` is not told.
+    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+        let state = ParamAutomationState::from(mode);
+        for info in self.parameter_list(main) {
+            if info.flag(ParamFlags::AUTOMATABLE) == Some(true) {
+                self.set_param_automation(main, info.id().get(), state, None);
+            }
+        }
+    }
+
     /// Normalized `0..=1`; CLAP has no normalization concept, so the plugin
     /// answers in its plain range and the declared bounds map it back.
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
@@ -341,12 +353,21 @@ impl Control for ClapLoaded {
         )))
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.read_state(main).map_err(plugin_error)
+    /// `state-context` for the context `state_use` names when the plugin has
+    /// it, plain `state` when not.
+    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+        self.state_with_context(main, state_use.into())
+            .map_err(plugin_error)
     }
 
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        self.write_state(main, bytes).map_err(plugin_error)
+    fn load_state(
+        &mut self,
+        main: &MainThread,
+        bytes: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()> {
+        self.set_state_with_context(main, bytes, state_use.into())
+            .map_err(plugin_error)
     }
 
     /// Loads the preset a [`PresetId::Location`] names, via
@@ -409,7 +430,7 @@ impl Control for ClapLoaded {
     /// active plugin), `Unsupported` without: the extension is optional, and a
     /// plugin whose rendering does not depend on the mode leaves it out.
     fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
-        if self.plugin.supports(tutti_clap_ffi::Extension::Render) {
+        if self.plugin.supports_render() {
             RenderModeSupport::Live
         } else {
             RenderModeSupport::Unsupported
@@ -431,6 +452,12 @@ impl Control for ClapLoaded {
     /// `ProcessOutput`, not through a queue that can drop them.
     fn dropped_reported_edits(&self) -> u64 {
         0
+    }
+
+    /// What the plugin's `request_process` raises: CLAP's `SLEEP` status is
+    /// the plugin's word that it needs no `process` until it asks.
+    fn bind_wake(&self, wake: ProcessWake) {
+        let _ = self.host_state.process_wake.set(wake);
     }
 }
 

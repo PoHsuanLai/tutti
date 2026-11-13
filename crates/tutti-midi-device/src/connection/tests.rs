@@ -309,9 +309,8 @@ fn requested(t0: Instant) -> Connection {
     c
 }
 
-// §7.1.6.1 step 3: a receiver that cannot change some or all of the
-// configuration replies with its current one. The
-// connection reports what the Notification says, not what it asked for.
+// §7.1.6.1 step 3: a receiver that cannot apply part of a request answers
+// with the configuration it has. The connection reports what the Notification says, not what it asked for.
 #[test]
 fn a_notification_of_another_protocol_is_reported_as_it_is() {
     let t0 = Instant::now();
@@ -337,6 +336,7 @@ fn a_reserved_protocol_in_a_notification_is_midi1() {
 }
 
 // Only a Notification answers the Request (§7.1.6.2: not before it arrives).
+/// Spec: m2-104/7.1.6.2#1
 #[test]
 fn another_message_does_not_answer_the_request() {
     let t0 = Instant::now();

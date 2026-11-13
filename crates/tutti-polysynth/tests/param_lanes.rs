@@ -1,7 +1,6 @@
-//! The synth's params under a control lane, as an engine wires one (doc 014
-//! §4.2): a `ControlLaneNode` whose knob is the synth's own cell, sending
-//! into the synth's param port. The master volume, unison detune and
-//! stereo spread are ports.
+//! The synth's params under a control lane, as an engine wires one: a `ControlLaneNode` whose
+//! knob is the synth's own cell, sending into the synth's param port. The master volume, unison
+//! detune and stereo spread are ports.
 //!
 //! A note at frame 0 into a saw synth, 120 BPM at 48 kHz.
 
@@ -18,7 +17,7 @@ use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polar
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig, UnisonVoices};
 use tutti_types::{
-    Beat, BeatDuration, Bpm, Cents, Depth, PhaseIncrement, SampleRate, Samples, Seconds, Spread,
+    Beat, BeatsPerCycle, Bpm, Cents, Depth, PhaseIncrement, SampleRate, Samples, Seconds, Spread,
     UnitParam,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -53,7 +52,7 @@ fn constant(depth: f32) -> ControlProgram {
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),

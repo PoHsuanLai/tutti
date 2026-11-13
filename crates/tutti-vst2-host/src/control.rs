@@ -4,16 +4,18 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin,
-    Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, Preset, PresetId, RenderMode, RenderModeSupport, Request,
-    WindowHandle,
+    AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
+    KeyEvent, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
+    ParameterInfo, PluginBus, PluginClass, PluginDescriptor, PluginError, PluginResult, Preset,
+    PresetId, RenderMode, RenderModeSupport, Request, StateUse, WindowHandle,
 };
 
 use crate::error::Vst2Error;
 use crate::host::ParameterChange;
+use crate::keys::key_code_of;
 use crate::loaded::Vst2Loaded;
 use crate::types::PluginInfo;
+use keyboard_types::KeyState;
 
 /// A `Vst2Error` as the shared vocabulary's error.
 pub(crate) fn plugin_error(error: Vst2Error) -> PluginError {
@@ -166,11 +168,11 @@ impl Control for Vst2Loaded {
         self.set_parameter_from_string(id, text)
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
         self.read_state(main).map_err(plugin_error)
     }
 
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
         self.write_state(main, bytes).map_err(plugin_error)
     }
 
@@ -237,6 +239,14 @@ impl Control for Vst2Loaded {
         true
     }
 
+    /// Stores the mode the plugin is told: `audioMasterGetAutomationState` answers it from
+    /// now on, and the time info of each block carries it in its automation flags. VST2
+    /// has no push to the plugin, so there is nothing to refuse. The store is atomic: the
+    /// plugin may ask from its audio thread while the control thread sets it.
+    fn set_automation_state(&mut self, _main: &MainThread, mode: AutomationMode) {
+        self.host.set_automation(mode);
+    }
+
     /// The reports of `audioMasterBeginEdit`, `audioMasterAutomate` and
     /// `audioMasterEndEdit` (the plugin's own editor moving a knob), oldest
     /// first, as [`ParamEdit`]s. A report naming a negative index names no
@@ -277,6 +287,20 @@ impl EditorWindow for Vst2Loaded {
         _scale: ContentScale,
     ) -> PluginResult<EditorSize> {
         self.open_editor_in(main, parent).map_err(plugin_error)
+    }
+
+    /// Forwards the key as `effEditKeyDown` or `effEditKeyUp` and reports the plugin's 1 as
+    /// [`KeyUse::Used`]. A key VST2 cannot write (a character outside ASCII, a modifier with
+    /// no bit) is not sent and is [`KeyUse::Ignored`], as is any key while no editor is open.
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        let Some(code) = key_code_of(&event, ModifierConvention::HOST) else {
+            return Ok(KeyUse::Ignored);
+        };
+        let used = match event.state {
+            KeyState::Down => self.instance.editor_key_down(main, code),
+            KeyState::Up => self.instance.editor_key_up(main, code),
+        };
+        Ok(if used { KeyUse::Used } else { KeyUse::Ignored })
     }
 
     fn close_editor(&mut self, main: &MainThread) {

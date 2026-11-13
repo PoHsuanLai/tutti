@@ -20,7 +20,9 @@ pub use tutti_shared_plugin::transcript::{
 ///
 /// When the plugin's log overflowed.
 pub fn transcript<F: Format, C: Control + ?Sized>(c: &mut C) -> Transcript {
-    let state = c.save_state(&main_thread()).expect("the plugin saves");
+    let state = c
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("the plugin saves");
     Transcript::parse(&F::extract_blob(&state)).complete()
 }
 
@@ -29,19 +31,31 @@ pub fn transcript<F: Format, C: Control + ?Sized>(c: &mut C) -> Transcript {
 /// a VST3 separate controller reaches the component only inside a block, after
 /// setup has read the mode.
 pub fn set_mode<F: Format, C: Control + ?Sized>(c: &mut C, mode: Mode) {
-    let state = c.save_state(&main_thread()).expect("the plugin saves");
+    let state = c
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("the plugin saves");
     let patched = F::embed_blob(&state, &patch_mode(F::extract_blob(&state), mode));
-    c.load_state(&main_thread(), &patched)
-        .expect("the plugin takes its configuration");
+    c.load_state(
+        &main_thread(),
+        &patched,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("the plugin takes its configuration");
 }
 
 /// Selects the plugin's `level` the same way: through the state, so it reaches
 /// the component itself and not a controller that a host delivers separately.
 pub fn set_level<F: Format, C: Control + ?Sized>(c: &mut C, level: f64) {
-    let state = c.save_state(&main_thread()).expect("the plugin saves");
+    let state = c
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("the plugin saves");
     let patched = F::embed_blob(&state, &patch_level(F::extract_blob(&state), level));
-    c.load_state(&main_thread(), &patched)
-        .expect("the plugin takes its configuration");
+    c.load_state(
+        &main_thread(),
+        &patched,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("the plugin takes its configuration");
 }
 
 /// Selects the plugin's editor and notice behaviours (the second and third
@@ -49,20 +63,28 @@ pub fn set_level<F: Format, C: Control + ?Sized>(c: &mut C, level: f64) {
 /// its mode, through the state like [`set_mode`]. A load that selects a notice
 /// raises one.
 pub fn select<F: Format, C: Control + ?Sized>(c: &mut C, editor: u32, notice: u32) {
-    let state = c.save_state(&main_thread()).expect("the plugin saves");
+    let state = c
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     let at = MAGIC.len();
     let mode = blob[at];
     blob[at..at + 4].copy_from_slice(&(u32::from(mode) | editor << 8 | notice << 16).to_le_bytes());
     let patched = F::embed_blob(&state, &blob);
-    c.load_state(&main_thread(), &patched)
-        .expect("the plugin takes its configuration");
+    c.load_state(
+        &main_thread(),
+        &patched,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("the plugin takes its configuration");
 }
 
 /// Selects the plugin's tail behaviour (the fourth byte of the mode word),
 /// keeping the rest of the word, through the state like [`set_mode`].
 pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
-    let state = c.save_state(&main_thread()).expect("the plugin saves");
+    let state = c
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     let at = MAGIC.len();
     let mut word = [0u8; 4];
@@ -70,8 +92,12 @@ pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
     let kept = u32::from_le_bytes(word) & 0x00FF_FFFF;
     blob[at..at + 4].copy_from_slice(&(kept | tail << 24).to_le_bytes());
     let patched = F::embed_blob(&state, &blob);
-    c.load_state(&main_thread(), &patched)
-        .expect("the plugin takes its configuration");
+    c.load_state(
+        &main_thread(),
+        &patched,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("the plugin takes its configuration");
 }
 
 /// The state of a fresh plugin of format `F` with its ring behaviour and tail
@@ -81,7 +107,7 @@ pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
 #[must_use]
 pub fn state_with_rings<F: Format>(rings: u32, tail: u32) -> Vec<u8> {
     let state = F::load()
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     let at = MAGIC.len();
@@ -98,7 +124,7 @@ pub fn state_with_rings<F: Format>(rings: u32, tail: u32) -> Vec<u8> {
 #[must_use]
 pub fn state_with_fault<F: Format>(fault: u32) -> Vec<u8> {
     let state = F::load()
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     blob[MAGIC.len()] = blob[MAGIC.len()] & 0x0F | (fault as u8) << 4;

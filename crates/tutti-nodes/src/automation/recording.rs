@@ -12,7 +12,7 @@
 //! (see the [`Curve`] impl). That is what makes latch-hold a plain curve
 //! rather than a second, disagreeing accumulator: for the take's duration the
 //! host reads the in-flight take where it would read the saved trajectory, and
-//! automation replaces the knob as it always does (doc 014 §2).
+//! automation replaces the knob as it always does.
 //!
 //! ## What lives where
 //!

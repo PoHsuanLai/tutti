@@ -35,11 +35,11 @@ postcard = { version = "1.1.3", default-features = false, features = ["use-std"]
 # The slab's sample views (`Pod`), so no `unsafe` byte cast of our own.
 bytemuck = "1"
 # Unpredictable slab and socket names (pure Rust; the OS's random source).
-getrandom = "0.3"
+getrandom = "0.4"
 
 crossbeam = "0.8"
 crossbeam-channel = "0.5"
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 # Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows).
 interprocess = { version = "2" }

@@ -32,7 +32,8 @@
 //!
 //! - `get_sample_rate`, `get_block_size` and `get_process_level` return **real
 //!   data**: the rate and maximum block the plugin was last told, and
-//!   realtime or offline for the render mode. The first two are written
+//!   realtime or offline for the render mode, answered by the asking thread
+//!   (process thread, main thread, other). The first two are written
 //!   before the opcode that tells the plugin, so a query from inside
 //!   `effSetSampleRate` reads the new figure.
 //! - `io_changed` and `update_display` raise [`Request`]s on a [`RequestWord`]
@@ -42,7 +43,9 @@
 //!   supports.
 //! - `size_window` keeps the plugin's requested editor size for the main thread
 //!   (`poll_editor_resize_request`) and answers 1.
-//! - `get_input_latency`, `get_output_latency`, `get_automation_state` return
+//! - `get_automation_state` answers the mode the session set, and the time info
+//!   carries it in its automation flags.
+//! - `get_input_latency` and `get_output_latency` return
 //!   honest neutral defaults — `HostState` has no reference to the value each
 //!   would need (see each method's note). The fork owns the answer rather than
 //!   falling through to vst-rs's swallowed 0.
@@ -51,10 +54,12 @@ use crate::midi::to_midi;
 use crate::transport_cell::TransportReader;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tutti_plugin_types::{Request, RescanScope, WireMidi, sysex_packets};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use tutti_plugin_types::{
+    AutomationMode, MainThread, Request, RescanScope, WireMidi, sysex_packets,
+};
 use tutti_rt::RequestWord;
-use vst::api::Supported;
+use vst::api::{AutomationState, ProcessLevel, Supported};
 use vst::host::Host;
 
 /// What the plugin reported of a parameter edit: `audioMasterBeginEdit`,
@@ -98,6 +103,29 @@ pub(crate) const PARAM_QUEUE_CAPACITY: usize = 512;
 /// apart for unrelated reasons.
 pub(crate) const MIDI_OUT_QUEUE_CAPACITY: usize = 256;
 
+/// [`HostState::automation`]'s read bit: the host plays automation back.
+const AUTOMATION_READ: u8 = 1;
+/// [`HostState::automation`]'s write bit: the host records automation.
+const AUTOMATION_WRITE: u8 = 2;
+
+/// An address unique to the calling thread while it lives: that of a thread-local byte.
+/// Reading it neither allocates nor locks, so the audio thread may.
+fn thread_token() -> usize {
+    thread_local! {
+        static TOKEN: u8 = const { 0 };
+    }
+    TOKEN.with(|t| std::ptr::from_ref(t) as usize)
+}
+
+/// The span of one process call on a thread, ended on drop (a panicking plugin included).
+pub(crate) struct ProcessScope<'a>(&'a HostState);
+
+impl Drop for ProcessScope<'_> {
+    fn drop(&mut self) {
+        self.0.process_thread.store(0, Ordering::Release);
+    }
+}
+
 /// Implements `vst::host::Host`. Owns the producer end of the queues the
 /// plugin writes into.
 pub(crate) struct HostState {
@@ -139,6 +167,15 @@ pub(crate) struct HostState {
     /// behind an `Arc` with no lock by design: every field it exposes is
     /// already lock-free.
     offline: std::sync::atomic::AtomicBool,
+    /// The thread inside the plugin's process call ([`thread_token`]), or 0 outside one.
+    /// Answers `audioMasterGetCurrentProcessLevel` by caller: written by the process
+    /// thread's [`ProcessScope`], read from whichever thread the plugin calls from.
+    process_thread: AtomicUsize,
+    /// The host's automation mode ([`AutomationMode`] as two bits: [`AUTOMATION_READ`],
+    /// [`AUTOMATION_WRITE`]), answered through `audioMasterGetAutomationState` and
+    /// served in the time info's flags. Written by the control thread, read from
+    /// whichever thread the plugin calls from and by the process thread's snapshot.
+    automation: AtomicU8,
     /// What the plugin asked of the host through `audioMasterIOChanged` and
     /// `audioMasterUpdateDisplay`: bits for the main thread to take, because
     /// the plugin may call from its audio thread, where a re-read dispatching
@@ -186,6 +223,8 @@ impl HostState {
             block_size: AtomicU64::new(block_size as u64),
             sample_rate_bits: AtomicU64::new(default_sample_rate.to_bits()),
             offline: std::sync::atomic::AtomicBool::new(false),
+            process_thread: AtomicUsize::new(0),
+            automation: AtomicU8::new(0),
             requests: RequestWord::new(),
             size_request: AtomicU64::new(0),
             current_id,
@@ -228,6 +267,34 @@ impl HostState {
     pub(crate) fn set_offline(&self, offline: bool) {
         self.offline
             .store(offline, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Marks the calling thread as inside the plugin's process call until the returned
+    /// scope drops. Real-time safe: one atomic store each way.
+    pub(crate) fn enter_process(&self) -> ProcessScope<'_> {
+        self.process_thread.store(thread_token(), Ordering::Release);
+        ProcessScope(self)
+    }
+
+    /// Records the automation mode the plugin is told from now on.
+    pub(crate) fn set_automation(&self, mode: AutomationMode) {
+        let bits = match mode {
+            AutomationMode::Off => 0,
+            AutomationMode::Reading => AUTOMATION_READ,
+            AutomationMode::Writing => AUTOMATION_WRITE,
+            AutomationMode::ReadWriting => AUTOMATION_READ | AUTOMATION_WRITE,
+        };
+        self.automation.store(bits, Ordering::Release);
+    }
+
+    /// The automation mode last recorded: `Off` until one is.
+    pub(crate) fn automation(&self) -> AutomationMode {
+        match self.automation.load(Ordering::Acquire) {
+            AUTOMATION_READ => AutomationMode::Reading,
+            AUTOMATION_WRITE => AutomationMode::Writing,
+            bits if bits == AUTOMATION_READ | AUTOMATION_WRITE => AutomationMode::ReadWriting,
+            _ => AutomationMode::Off,
+        }
     }
 
     pub(crate) fn is_offline(&self) -> bool {
@@ -419,19 +486,23 @@ impl Host for HostState {
         f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
     }
 
-    /// Real data: `kVstProcessLevelOffline` (4) while the host is rendering
-    /// offline, `kVstProcessLevelRealtime` (2) otherwise.
-    ///
-    /// The two the host can honestly answer. `User` (1) and `Prefetch` (3)
-    /// describe *which thread is asking* — this callback is re-entrant from
-    /// wherever the plugin chooses to call it, and the host cannot tell — so
-    /// answering either would be a guess. `Unknown` (0) would mean "host does
-    /// not support the query", which is false.
-    fn get_process_level(&self) -> isize {
-        if self.is_offline() {
-            4 // kVstProcessLevelOffline
+    /// The level of the thread asking (`audioMasterGetCurrentProcessLevel`): from inside the
+    /// plugin's process call, `Offline` while the host renders offline and `Realtime`
+    /// otherwise; from the process's main thread, `User`; from any other thread,
+    /// `Unknown`. `Prefetch` is never answered: the host runs no sequencing thread. The
+    /// caller is told what its own thread is, never a guess.
+    fn get_process_level(&self) -> ProcessLevel {
+        let me = thread_token();
+        if self.process_thread.load(Ordering::Acquire) == me {
+            if self.is_offline() {
+                ProcessLevel::Offline
+            } else {
+                ProcessLevel::Realtime
+            }
+        } else if MainThread::current().is_some() {
+            ProcessLevel::User
         } else {
-            2 // kVstProcessLevelRealtime
+            ProcessLevel::Unknown
         }
     }
 
@@ -491,9 +562,18 @@ impl Host for HostState {
     /// `Yes` for `supportShell` and `shellCategory`: the host walks a shell's
     /// sub-plugins (`effShellGetNextPlugin`) and answers `audioMasterCurrentId`.
     ///
+    /// `Yes` for `acceptIOChanges`: `audioMasterIOChanged` is answered 1 and restarts the
+    /// plugin on the pins it reports now; for `startStopProcess`: an activation sends
+    /// `effStartProcess` and a rejoin or reset `effStopProcess`; and for
+    /// `receiveVstSysexEvent`: a `kVstSysExType` event the plugin emits reaches the host
+    /// whole.
+    ///
     /// `No`, because the host does not do it: `supplyIdle`
     /// (`audioMasterIdle` is not routed to anything). Everything else is
-    /// `Maybe`, VST 2.4's "don't know".
+    /// `Maybe`, VST 2.4's "don't know": among them `sendVstMidiEventFlagIsRealtime`. The host
+    /// marks the events of a realtime block `kVstMidiEventIsRealtime` and not those of an
+    /// offline render, but the flag means an event is played live and not in playback, and
+    /// the engine's events carry no such distinction.
     ///
     /// The strings and the reference set are JUCE's host `canDo` answers
     /// (`juce_VSTPluginFormat.cpp`), an open re-implementation of the
@@ -507,16 +587,25 @@ impl Host for HostState {
             | "receiveVstMidiEvent"
             | "sizeWindow"
             | "supportShell"
-            | "shellCategory" => Supported::Yes,
-            "supplyIdle" => Supported::No,
+            | "shellCategory"
+            | "acceptIOChanges"
+            | "startStopProcess"
+            | "receiveVstSysexEvent" => Supported::Yes,
+            "supplyIdle" | "openFileSelector" | "closeFileSelector" => Supported::No,
             _ => Supported::Maybe,
         }
     }
 
-    /// Neutral default: the host does not expose an automation-read/write
-    /// state to VST2 plugins today. 0 = unsupported.
-    fn get_automation_state(&self) -> isize {
-        0
+    /// `audioMasterGetAutomationState`: the mode the session last set through
+    /// `Control::set_automation_state` (`Off` until one is), as
+    /// `kVstAutomationOff`, `Read`, `Write` or `ReadWrite`.
+    fn get_automation_state(&self) -> AutomationState {
+        match self.automation() {
+            AutomationMode::Off => AutomationState::Off,
+            AutomationMode::Reading => AutomationState::Read,
+            AutomationMode::Writing => AutomationState::Write,
+            AutomationMode::ReadWriting => AutomationState::ReadWrite,
+        }
     }
 }
 
@@ -674,10 +763,20 @@ mod tests {
             "sizeWindow",
             "supportShell",
             "shellCategory",
+            "acceptIOChanges",
+            "startStopProcess",
+            "receiveVstSysexEvent",
         ] {
             assert_eq!(host.can_do(yes), Supported::Yes, "{yes}");
         }
-        assert_eq!(host.can_do("supplyIdle"), Supported::No, "supplyIdle");
+        for no in ["supplyIdle", "openFileSelector", "closeFileSelector"] {
+            assert_eq!(host.can_do(no), Supported::No, "{no}");
+        }
+        // Not claimed: the engine's MIDI has no live/playback distinction to set the flag by.
+        assert_eq!(
+            host.can_do("sendVstMidiEventFlagIsRealtime"),
+            Supported::Maybe
+        );
         assert_eq!(host.can_do("somethingNew"), Supported::Maybe);
     }
 
@@ -702,14 +801,88 @@ mod tests {
     /// block. Reporting realtime during a bounce is what made an offline render
     /// silently produce the live-quality result.
     #[test]
-    fn get_process_level_follows_the_render_mode() {
+    fn process_level_inside_process_follows_the_render_mode() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
 
         host.set_offline(true);
-        assert_eq!(host.get_process_level(), 4); // kVstProcessLevelOffline
+        {
+            let _in_process = host.enter_process();
+            assert_eq!(host.get_process_level(), ProcessLevel::Offline);
+        }
 
         host.set_offline(false);
-        assert_eq!(host.get_process_level(), 2); // kVstProcessLevelRealtime
+        let _in_process = host.enter_process();
+        assert_eq!(host.get_process_level(), ProcessLevel::Realtime);
+    }
+
+    /// Outside a process call the answer is the caller's thread: the claimed main thread is
+    /// `User`, another thread is `Unknown`, and the process scope ending ends `Realtime`.
+    #[test]
+    fn process_level_outside_process_is_user_on_main_and_unknown_elsewhere() {
+        let host = Arc::new(make_host(TransportWriter::new().reader(), 48_000.0));
+        let _main = MainThread::claim().expect("one test, one process");
+
+        assert_eq!(host.get_process_level(), ProcessLevel::User);
+        let other = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.get_process_level())
+                .join()
+                .unwrap()
+        };
+        assert_eq!(other, ProcessLevel::Unknown, "never a guessed Realtime");
+
+        // A scope open on the main thread does not make another thread a process thread.
+        let scope = host.enter_process();
+        assert_eq!(host.get_process_level(), ProcessLevel::Realtime);
+        let other = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.get_process_level())
+                .join()
+                .unwrap()
+        };
+        assert_eq!(other, ProcessLevel::Unknown);
+        drop(scope);
+        assert_eq!(host.get_process_level(), ProcessLevel::User);
+    }
+
+    /// The process thread is not the main thread: inside its scope it answers by the render
+    /// mode, and after the scope it is `Unknown`.
+    #[test]
+    fn process_level_on_a_process_thread_that_is_not_main() {
+        let host = Arc::new(make_host(TransportWriter::new().reader(), 48_000.0));
+        let _main = MainThread::claim().expect("one test, one process");
+        host.set_offline(true);
+        let answers = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                let inside = {
+                    let _scope = host.enter_process();
+                    host.get_process_level()
+                };
+                (inside, host.get_process_level())
+            })
+            .join()
+            .unwrap()
+        };
+        assert_eq!(answers, (ProcessLevel::Offline, ProcessLevel::Unknown));
+    }
+
+    /// `audioMasterGetAutomationState` answers each mode with its `VstAutomationStates` value
+    /// (`aeffectx.h`: off 1, read 2, write 3, read/write 4), 1 before any mode is set.
+    #[test]
+    fn automation_state_answers_each_mode_with_its_header_value() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert_eq!(host.get_automation_state() as i32, 1, "off before any set");
+        for (mode, value) in [
+            (AutomationMode::Reading, 2),
+            (AutomationMode::Writing, 3),
+            (AutomationMode::ReadWriting, 4),
+            (AutomationMode::Off, 1),
+        ] {
+            host.set_automation(mode);
+            assert_eq!(host.get_automation_state() as i32, value, "{mode:?}");
+            assert_eq!(host.automation(), mode, "{mode:?} round-trips");
+        }
     }
 
     /// The automation queue is bounded, and overflowing it is *reported*.

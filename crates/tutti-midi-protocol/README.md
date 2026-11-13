@@ -1,22 +1,15 @@
 # tutti-midi-protocol
 
-MIDI 1.0 to MIDI 2.0 translation for the Tutti engine.
+This crate translates between MIDI 1.0 and MIDI 2.0 messages, for example turning a 7-bit note velocity into MIDI 2.0's 16 bits, and combining bank select, RPN and NRPN sequences into single messages.
 
-- `widen`: a MIDI 1.0 channel voice message as the MIDI 2.0 message that means
-  the same, per M2-104 Appendix D.3 and the Min-Center-Max scaling of M2-115.
-  Pure and stateless, so Control Changes that need per-channel state to
-  translate (RPN, NRPN and Bank Select) stay plain Control Changes.
-- `narrow_velocity`, `narrow_value`, `narrow_bend`: the M2-115 downscale (a
-  right shift) for a consumer with MIDI 1.0 resolution only.
-- `narrow`, `midi1`: a MIDI 2.0 voice message as the MIDI 1.0 one that means
-  it, and a `Message` as the MIDI 1.0 bytes a host or a wire takes (a Program
-  Change with a bank is three messages).
+It needs only `tutti-types` and `tutti-ump`, so you can use it on its own wherever you handle both protocols.
 
-- `MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`: the MPE (RP-053) zone layout
-  and the MPE Configuration Message. `MpeZoneConfig::new` refuses a member count
-  outside 1 to 15, `MpeZones::new` refuses a zone in the wrong role and two zones that
-  share a member channel, and a persisted value (feature `serde`) is read back through
-  the same checks. The state that drives zones from incoming MIDI is
-  `tutti-midi-runtime`'s `MpeIngest`.
+This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
 
-The crate depends on `tutti-ump` alone. Licensed under MIT or Apache-2.0.
+## License
+
+Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

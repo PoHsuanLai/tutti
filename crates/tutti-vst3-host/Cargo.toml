@@ -34,9 +34,11 @@ conformance = ["tutti-vst3-ffi/conformance"]
 
 [dependencies]
 thiserror = "2"
-parking_lot = "0.12"
+parking_lot = "0.13"
 crossbeam-channel = "0.5"
 crossbeam-queue = "0.3"
+# The editor key vocabulary a `KeyEvent` is written in.
+keyboard-types.workspace = true
 tutti-graph = { path = "../tutti-graph" }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
@@ -76,7 +78,7 @@ tempfile = "3"
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin", "vst3-cpp"] }
 tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
-# The README's editor example takes any `raw-window-handle` window.
+# The crate docs' editor example takes any `raw-window-handle` window.
 raw-window-handle = "0.6"
 
 [[test]]
@@ -86,14 +88,6 @@ path = "tests/conformance/main.rs"
 [[test]]
 name = "host"
 path = "tests/host/main.rs"
-
-[[test]]
-name = "vst3_process_no_alloc"
-path = "tests/vst3_process_no_alloc.rs"
-
-[[test]]
-name = "vst3_traits"
-path = "tests/vst3_traits.rs"
 
 # docs.rs renders with every feature on, or the feature-gated half of the
 # public API would be missing.

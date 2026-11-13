@@ -33,6 +33,7 @@ fn packets(text: &str) -> Vec<(Form, [u8; 12])> {
     .collect()
 }
 
+/// Spec: m2-104/7.5.1#2
 #[test]
 fn twelve_bytes_are_one_complete_packet() {
     assert_eq!(
@@ -46,6 +47,7 @@ fn an_empty_text_is_one_complete_packet_of_zeros() {
     assert_eq!(packets(""), [(Form::Complete, [0; 12])]);
 }
 
+/// Spec: m2-104/7.5.1#2, m2-104/7.5.1#3
 #[test]
 fn a_long_text_is_start_continue_end() {
     let got = packets("0123456789ab0123456789abXYZ");
@@ -55,6 +57,7 @@ fn a_long_text_is_start_continue_end() {
     assert_eq!(got[2].0, Form::End);
 }
 
+/// Spec: m2-104/7.5.9#2
 #[test]
 fn the_last_packet_is_padded_with_zeros() {
     let got = packets("0123456789abXYZ");

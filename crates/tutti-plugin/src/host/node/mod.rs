@@ -286,6 +286,7 @@ impl PluginClient<Unbound> {
             plugin.load(),
             sample_rate.into(),
             state,
+            tutti_plugin_types::StateUse::Project,
             Some(crate::format::gui::load_gui_instance),
         )?;
         Self::over(ipc).map(|client| (client, restored))
@@ -374,6 +375,9 @@ impl PluginClient<Unbound> {
             BridgeEvent::Crashed { cause } => {
                 listener_invalidate_sink.fire(PluginInvalidation::Crashed { cause });
             }
+            // The wake it raises is bound through `Control::bind_wake` and
+            // raised by `Ipc` before this listener runs.
+            BridgeEvent::ProcessRequested => {}
         })));
 
         // The parameter list, once, while loading blocks anyway: the node's

@@ -3,12 +3,13 @@ use tutti_ump::U7;
 use crate::bank::Bank;
 use crate::error::Error;
 use crate::instrument::Instrument;
+use crate::preset_generator::PresetGenerator;
 use crate::preset_info::PresetInfo;
 use crate::preset_region::PresetRegion;
 use crate::zone::Zone;
 
 /// Represents a preset in the SoundFont.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Preset {
     pub(crate) name: String,
@@ -24,7 +25,7 @@ impl Preset {
     fn new(
         info: &PresetInfo,
         preset_id: usize,
-        zones: &[Zone],
+        zones: &[Zone<PresetGenerator>],
         instruments: &[Instrument],
     ) -> Result<Option<Self>, Error> {
         let name = info.name.clone();
@@ -53,7 +54,7 @@ impl Preset {
 
     pub(crate) fn create(
         infos: &[PresetInfo],
-        zones: &[Zone],
+        zones: &[Zone<PresetGenerator>],
         instruments: &[Instrument],
     ) -> Result<Vec<Preset>, Error> {
         if infos.len() <= 1 {

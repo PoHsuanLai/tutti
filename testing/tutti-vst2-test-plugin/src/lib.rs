@@ -38,15 +38,15 @@ use std::sync::Arc;
 use num_traits::Float;
 use vst::api::{self, AEffect, HostCallbackProc, Supported};
 use vst::buffer::AudioBuffer;
-use vst::editor::Editor;
+use vst::editor::{Editor, KeyCode};
 // `update_display` and `get_process_level` are `Host` methods on the callback,
 // not `Plugin` ones.
 use vst::host::Host as _;
 use vst::plugin::{CanDo, HostCallback, Info, Plugin, PluginParameters};
 
 pub use capture::{
-    CapturedEvent, MAX_CAPTURED_EVENTS, ProcessCapture, ProcessEntry, tutti_vst2_probe_capture,
-    tutti_vst2_probe_reset_capture,
+    CapturedEvent, CapturedKey, MAX_CAPTURED_EVENTS, ProcessCapture, ProcessEntry,
+    tutti_vst2_probe_capture, tutti_vst2_probe_reset_capture,
 };
 pub use config::{ProbeConfig, channel_tag};
 pub use switches::CanDoAnswer;
@@ -165,6 +165,17 @@ impl PluginParameters for ProbeParameters {
         ["dB", "Hz", "%", "ms"][(index as usize) % 4].to_string()
     }
 
+    /// Takes the text as the new value when a test enabled it, and declines otherwise.
+    fn string_to_parameter(&self, index: i32, text: String) -> bool {
+        if !switches::accept_string_to_parameter() {
+            return false;
+        }
+        match text.trim().parse::<f32>() {
+            Ok(value) => self.set_parameter(index, value),
+            Err(_) => false,
+        }
+    }
+
     fn get_parameter_text(&self, index: i32) -> String {
         match self.get_parameter(index) {
             Some(v) => format!("{v:.3}"),
@@ -245,6 +256,29 @@ impl Editor for ProbeEditor {
     fn is_open(&mut self) -> bool {
         false
     }
+
+    fn key_down(&mut self, keycode: KeyCode) -> bool {
+        record_key(true, keycode)
+    }
+
+    fn key_up(&mut self, keycode: KeyCode) -> bool {
+        record_key(false, keycode)
+    }
+}
+
+/// Record an editor key event as the host sent it, and answer whether the probe
+/// uses it (the [`switches::key_consumed`] switch).
+fn record_key(down: bool, keycode: KeyCode) -> bool {
+    capture::with_capture(|cap| {
+        cap.key_events = cap.key_events.saturating_add(1);
+        cap.last_key = capture::CapturedKey {
+            down,
+            character: keycode.character as i32,
+            key: isize::from(keycode.key) as i32,
+            modifier_bits: u32::from(keycode.modifier),
+        };
+    });
+    switches::key_consumed()
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +344,8 @@ impl ProbePlugin {
         });
         self.capture_time_info();
         self.capture_process_level();
+        let automation = self.host.get_automation_state() as i32;
+        capture::with_capture(|cap| cap.automation_state = automation);
         for _ in 0..switches::automate_burst() {
             self.host.automate(0, 0.5);
         }

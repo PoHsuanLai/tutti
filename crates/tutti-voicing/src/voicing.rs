@@ -770,6 +770,19 @@ impl Voicing {
     /// Reads one message on `channel`, with `level` to ask about the voices
     /// that exist (the envelope level of a voice, `None` when it has ended), and
     /// returns what to do. The slice is valid until the next call.
+    ///
+    /// # Registered parameters
+    ///
+    /// A Registered Controller sets the channel's pitch bend sensitivity (RPN
+    /// 0), Channel Fine and Coarse Tuning (1 and 2), Tuning Program and Bank
+    /// Select (3 and 4) and Modulation Depth Range (5). A Relative Registered
+    /// Controller (M2-104 section 7.4.8) adds its two's complement delta to the
+    /// value the channel holds for one of those and then takes the same path as
+    /// an absolute one. The sum saturates at the ends of the 32-bit word, which
+    /// the specification leaves open, so a nudge up from the top stays at the
+    /// top. Any other parameter and every Relative Assignable Controller have no
+    /// value here to add to and are ignored, and Data Increment and Decrement
+    /// (CC 96 and 97) are not read. The per-note messages are [`PerNoteState`]'s.
     pub fn step<P: Patch + ?Sized>(
         &mut self,
         channel: MidiChannel,
@@ -1091,7 +1104,7 @@ impl Voicing {
             Rpn::MODULATION_DEPTH_RANGE => {
                 self.channels[channel.index()].set_modulation_range(value);
             }
-            // Tuning Program and Bank Select (MTS): the channel's "current"
+            // Tuning Program and Bank Select (MTS): the channel's current
             // tuning, effective at once on its sounding notes. A number the core
             // holds nothing for is ignored.
             Rpn::TUNING_PROGRAM_SELECT | Rpn::TUNING_BANK_SELECT => {
@@ -3148,6 +3161,7 @@ mod tests {
     /// referenced Note Number stop responding, so until then the tail of the
     /// first strike (released by the second on the same key) follows a value
     /// with the second; after the Detach neither does.
+    /// Spec: m2-104/7.4.5#1
     #[test]
     fn a_tail_follows_a_per_note_value_until_a_detach() {
         let mut s = Sim::new(POLY);
@@ -3203,6 +3217,7 @@ mod tests {
     /// Controllers, and later changes apply to future notes only.
     /// Detach, then Pitch, then Note On on the same number: the Pitch reaches
     /// the new voice (2) and never the detached one (1).
+    /// Spec: m2-104/7.4.5#5
     #[test]
     fn after_a_detach_the_next_pitch_is_for_the_next_note_alone() {
         let mut s = Sim::new(POLY);
@@ -3231,6 +3246,7 @@ mod tests {
     /// Detach function, then performs the Reset function: the playing note
     /// keeps its values (it is told nothing), and the defaults apply to the
     /// next note, which starts with no per-note controller.
+    /// Spec: m2-104/7.4.5#2, m2-104/7.4.5#4
     #[test]
     fn detach_and_reset_together_freeze_the_note_and_default_the_next() {
         let mut s = Sim::new(POLY);
@@ -3248,6 +3264,7 @@ mod tests {
     /// M2-104 section 7.4.5, Reset: all Per-Note Controllers on the referenced
     /// Note Number are reset to their default values. Without Detach the
     /// playing note is reset too, and the next note starts at the defaults.
+    /// Spec: m2-104/7.4.5#3, m2-104/7.4.5#5
     #[test]
     fn a_reset_returns_the_playing_note_and_the_next_one_to_defaults() {
         let mut s = Sim::new(POLY);

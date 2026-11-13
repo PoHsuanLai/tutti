@@ -80,6 +80,7 @@ fn zx(msb: u8, lsb: u8) -> u32 {
 
 // D.3.3: a run is sent on a CC 38, a later CC 6, or a new parameter select.
 
+/// Spec: m2-104/d.3.3#7
 #[test]
 fn cc_6_then_cc_38_is_one_controller() {
     let mut t = Translator::new();
@@ -98,6 +99,7 @@ fn cc_6_then_cc_38_is_one_controller() {
     );
 }
 
+/// Spec: m2-104/d.3.3#5
 #[test]
 fn a_cc_6_alone_waits_for_a_trigger() {
     let mut t = Translator::new();
@@ -125,6 +127,7 @@ fn a_cc_6_alone_waits_for_a_trigger() {
     );
 }
 
+/// Spec: m2-104/d.3.3#7
 #[test]
 fn cc_38_then_cc_6_is_one_controller() {
     let mut t = Translator::new();
@@ -230,6 +233,7 @@ fn data_entry_with_nothing_selected_is_dropped() {
     );
 }
 
+/// Spec: m2-104/d.3.3#4
 #[test]
 fn a_select_of_one_half_keeps_the_other() {
     let mut t = Translator::new();
@@ -310,6 +314,7 @@ fn bank_0_registered_controllers_0_to_31_are_zero_extended() {
     }
 }
 
+/// Spec: m2-104/d.1.1#1
 #[test]
 fn other_controllers_are_scaled_min_center_max() {
     // Registered bank 0 index 32, registered bank 1, and every NRPN.
@@ -384,6 +389,7 @@ fn the_group_and_channel_are_kept() {
     );
 }
 
+/// Spec: m2-104/2.1.2#2
 #[test]
 fn groups_keep_their_own_runs() {
     let mut t = Translator::new();
@@ -425,6 +431,7 @@ fn groups_keep_their_own_runs() {
     );
 }
 
+/// Spec: m2-104/d.3.3#8
 #[test]
 fn bank_select_rides_on_the_next_program_change_only() {
     let mut t = Translator::new();
@@ -467,6 +474,7 @@ fn bank_select_rides_on_the_next_program_change_only() {
     );
 }
 
+/// Spec: m2-104/d.3.1#1, m2-104/d.3.1#2
 #[test]
 fn stateless_messages_are_widened() {
     let mut t = Translator::new();
@@ -588,6 +596,7 @@ fn reset_all_controllers_nulls_both_halves_of_the_number() {
 /// (M2-115 section 3), so `0x3FFF` is `0xFFFF` and `0x2000` the centre `0x8000`.
 /// The CC 88 itself is absorbed (M2-104 section 7.4.6: it is not used
 /// for High Resolution Velocity in the MIDI 2.0 Protocol).
+/// Spec: m2-104/7.4.6#6
 #[test]
 fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
     let note_on = |v: u8| -> Ump {
@@ -672,6 +681,7 @@ fn a_velocity_prefix_waits_across_other_messages_on_its_channel_only() {
 /// has no effect.** The Note Off is the one
 /// `widen` makes (release velocity `0x8000`, M2-104 D.3.1), and the prefix does
 /// not carry over to the Note On after it.
+/// Spec: m2-104/d.3.1#1
 #[test]
 fn a_velocity_prefix_has_no_effect_on_a_note_on_at_zero() {
     let note = |v: u8| -> Ump {
@@ -764,6 +774,7 @@ fn flush_sends_a_lone_cc_38_on_its_own_channel() {
 /// **CC 96 and 97 stay Control Changes after an RPN select** (D.3.3: they are not
 /// translated to MIDI 2.0 Relative Registered Controller or Relative
 /// Assignable Controller messages).
+/// Spec: m2-104/d.3.3#3
 #[test]
 fn increment_and_decrement_stay_control_changes() {
     let mut t = Translator::new();
@@ -788,6 +799,7 @@ fn increment_and_decrement_stay_control_changes() {
 /// section 2.1.2: a Group is a channel space of its own). RPN 0/0 is selected
 /// on channel 0 of Groups 1 and 2; Group 2 is reset; a Data Entry then
 /// completes Group 1's run, and Group 2's finds no select to complete.
+/// Spec: m2-104/2.1.2#2
 #[test]
 fn reset_group_forgets_that_groups_selection_alone() {
     let mut t = Translator::new();

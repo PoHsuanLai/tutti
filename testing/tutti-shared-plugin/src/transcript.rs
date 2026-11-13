@@ -28,6 +28,11 @@ pub enum Kind {
     NullParams,
     /// A VST3 process call with `numSamples == 0`, a parameter flush (offset 0).
     Flush,
+    /// A key press the host forwarded to the editor: the `id` is the character in the
+    /// low 16 bits and the virtual key in the high 16, the `value` the modifier bits.
+    KeyDown,
+    /// A key release, recorded as [`Kind::KeyDown`] is.
+    KeyUp,
 }
 
 /// An event as the plugin received it.
@@ -185,6 +190,8 @@ impl Transcript {
                     5 => Kind::Data,
                     6 => Kind::NullParams,
                     7 => Kind::Flush,
+                    8 => Kind::KeyDown,
+                    9 => Kind::KeyUp,
                     other => panic!("the transcript holds event kind {other}"),
                 };
                 let id = c.u64() as u32;

@@ -1,7 +1,7 @@
 //! A node's [`ParamSet`](tutti_graph::ParamSet) is the address a modulation
 //! host resolves a param on: `ParamSet::cell(p)` is the very cell the node
-//! reads, which an engine hands a control lane as its knob (doc 014 §4.2:
-//! one writer per knob, the host's `set`), so a write through the set moves
+//! reads, which an engine hands a control lane as its knob (one
+//! writer per knob, the host's `set`), so a write through the set moves
 //! the node's own control and the lane's offsets ride on it.
 //!
 //! The `ParamSet` is each node's one address: a set is addressed by
@@ -31,7 +31,9 @@ use tutti_nodes::{
     LimiterControls, LimiterNode, ModDelayNode, PhaserControls, PhaserNode, Stages, SvfFilterNode,
     SvfType,
 };
-use tutti_types::{BeatDuration, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples};
+use tutti_types::{
+    BeatsPerCycle, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples,
+};
 use tutti_types::{BusTopology, ChannelLayout, UnitParam};
 
 /// Writes `value` to `p` through `node`'s set, as a host does; `false` for
@@ -223,7 +225,7 @@ fn render_chorus(
         let layer = Layer {
             id: LayerId(1),
             clock: Clock::Beats {
-                per_cycle: BeatDuration(1.0),
+                per_cycle: BeatsPerCycle::of(1.0),
                 phase: PhaseIncrement(0.0),
             },
             wave: Waveform::Const(1.0),
@@ -274,7 +276,7 @@ fn dry_chorus(input: BusTopology) -> ModDelayNode {
 
 /// **A control lane modulates a chorus's rate**, around the chorus's own rate cell: a
 /// +2 Hz offset on the 1 Hz knob sweeps the delay at 3 Hz, and the cell still holds the
-/// knob (the lane sends to the port and never writes it, doc 014 §4.2).
+/// knob (the lane sends to the port and never writes it).
 ///
 /// The definition of the sweep: channel `c`'s delay is `base + depth * sin(2π (f t +
 /// φ_c))`, with the chorus's 10 ms base, 5 ms depth and a quarter cycle between the
@@ -381,7 +383,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),
@@ -481,7 +483,7 @@ where
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),
@@ -739,7 +741,7 @@ fn shelf_handed_back(block: usize) -> Vec<f32> {
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),

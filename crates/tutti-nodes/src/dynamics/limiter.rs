@@ -567,9 +567,7 @@ mod tests {
     /// The threshold drives the input: under the knee the output is the
     /// input plus `ceiling - threshold` dB, and over it the output sits at
     /// the ceiling. This is the curve for a ceiling above the threshold as
-    /// well as below; it replaces a curve that boosted quiet signals by the
-    /// drive but held loud ones at the threshold (a jump of the drive at the
-    /// knee, and a louder input giving a quieter output).
+    /// well as below.
     #[test]
     fn the_threshold_drives_the_input_and_loud_signals_settle_at_the_ceiling() {
         for (t, c) in CURVES {

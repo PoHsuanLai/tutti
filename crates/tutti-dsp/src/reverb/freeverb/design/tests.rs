@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{Db, Seconds};
 
 use super::*;
@@ -26,7 +26,9 @@ impl FamilyCase for FreeverbFamily {
             .flat_map(|&r| steps.iter().map(move |&d| controls(r, d)))
             .collect();
         let mut rng = StdRng::seed_from_u64(22);
-        all.extend((0..200).map(|_| controls(rng.gen_range(0.0..=1.0), rng.gen_range(0.0..=1.0))));
+        all.extend(
+            (0..200).map(|_| controls(rng.random_range(0.0..=1.0), rng.random_range(0.0..=1.0))),
+        );
         all
     }
 
@@ -61,8 +63,8 @@ impl ReverbCase for FreeverbFamily {
     /// 15%. The measured figure is the energy slope 40 to 65 dB down, where
     /// a bank of combs of 1116 to 1640 frames (a 1.47 ratio in rate) has
     /// not yet settled on the slowest: it lands 5 to 11% under the network's
-    /// `rt60`, which is the slowest comb's; the
-    /// bank's own spread needs more than the default 10%.
+    /// `rt60`, which is the slowest comb's; the bank's own spread needs more
+    /// than the default 10%.
     fn tolerance(&self) -> f32 {
         0.15
     }

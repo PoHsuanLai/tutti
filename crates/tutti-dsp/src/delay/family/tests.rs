@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tutti_types::{BusTopology, Db, Feedback, Hz, SampleRate, Seconds};
 
@@ -75,8 +75,12 @@ impl FamilyCase for DelayFamily {
         }
         let mut rng = StdRng::seed_from_u64(24);
         all.extend((0..32).map(|_| {
-            let fb = rng.gen_range(0.0..limit);
-            controls(rng.gen_range(0.0..1.0), fb, rng.gen_range(0.0..limit - fb))
+            let fb = rng.random_range(0.0..limit);
+            controls(
+                rng.random_range(0.0..1.0),
+                fb,
+                rng.random_range(0.0..limit - fb),
+            )
         }));
         all
     }
@@ -114,7 +118,7 @@ impl FamilyCase for DelayFamily {
     fn musical_delay(&self, m: &DelayMember) -> usize {
         (0..m.width())
             .flat_map(|c| {
-                let (taps, n) = read_taps(m.delay_frames(c), m.cap, m.interpolation());
+                let (taps, n) = read_taps(m.delays[c], m.cap, m.interpolation());
                 taps.into_iter().take(n).filter(|t| t.1 != 0.0).map(|t| t.0)
             })
             .min()
@@ -619,9 +623,8 @@ impl<'de> Deserialize<'de> for MaxDelay {
     }
 }
 
-/// `MaxDelay` keeps the range-checked shape of CLAUDE.md: `new` refuses what is not a
-/// longest delay (not finite, not above zero, past the cap: a finite 1e30 s among them,
-/// which used to ask for an allocation that aborts) and never clamps.
+/// `MaxDelay` keeps the range-checked shape: `new` refuses what is not a longest delay (not
+/// finite, not above zero, past the cap: a finite 1e30 s among them) and never clamps.
 #[test]
 fn a_max_delay_keeps_the_range_checked_shape() {
     tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
@@ -870,7 +873,7 @@ fn the_member_declares_its_echoes_as_the_tail_and_no_latency() {
     };
     assert!((t.get() - 11.0 * 482.0 / 48_000.0).abs() < 1e-9, "{t:?}");
     // A delay of 0 is a one-frame loop, and its blank is the default's.
-    assert_eq!(f.blank(rate).delay_frames(0), 0.0);
+    assert_eq!(f.blank(rate).delays[0], 0.0);
 }
 
 /// A time past the longest, or not a time, is a member the family can run: it reads as the
@@ -888,7 +891,7 @@ fn a_hostile_time_is_a_member_within_the_line() {
         (0.5, 24_000.0),
     ] {
         let m = f.member(&controls(time, 0.0, 0.0), rate);
-        assert_eq!(m.delay_frames(0), want, "{time}");
+        assert_eq!(m.delays[0], want, "{time}");
     }
     // The feedback is the pair's, bounded (the raw ask is kept, and the bound read from it).
     let m = f.member(&controls(0.01, 5.0, 0.0), rate);

@@ -886,7 +886,7 @@ use tutti::prelude::*;
 let (mut s, _device) = Session::builder().build_device(DeviceSelector::Default)?;
 let (filter, _) = s.graph().add(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
 let (pad, _) = s.graph().add(PolySynth::new(SynthConfig::default())?);
-let (kick_bus, _) = s.graph().add(BusStripNode::new());
+let (kick_bus, _) = s.graph().add(BusStripNode::stereo());
 s.graph().connect(pad.out(0), filter.input(0))?;
 s.graph().connect(filter, Root)?;
 

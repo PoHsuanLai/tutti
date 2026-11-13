@@ -77,8 +77,7 @@ impl ActiveSensing {
     /// The watched Group that ran out of time soonest by `now`, with the
     /// frame it ran out at (its last message plus the limit), if any is
     /// **over** the limit at `now`; that Group is not watched after (the
-    /// spec's "reset flag": the receiver returns to normal operation until
-    /// the next Active Sensing). Call again for the next, until `None`.
+    /// receiver returns to normal operation until the next Active Sensing). Call again for the next, until `None`.
     pub(crate) fn next_lapse(&mut self, now: Frame) -> Option<(MidiGroup, Frame)> {
         let (index, deadline) = self
             .watched

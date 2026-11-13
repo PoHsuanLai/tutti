@@ -22,6 +22,7 @@ fn follower(group: u8, meter: bool) -> TempoFollower {
 
 /// **A Set Tempo of the followed Group is its tempo**: the field is 10 ns per
 /// quarter note (M2-104 §7.5.3), so 0.5 s is 120 bpm and 1 s is 60 bpm.
+/// Spec: m2-104/msg/d/00.00
 #[test]
 fn a_set_tempo_of_the_followed_group_is_its_tempo() {
     let f = follower(2, false);

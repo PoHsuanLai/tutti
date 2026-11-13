@@ -361,21 +361,31 @@ pub trait StateExt {
 
 impl StateExt for Vst3Loaded {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        Control::save_state(self, &main_thread())
+        Control::save_state(self, &main_thread(), tutti_plugin_types::StateUse::Project)
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
-        Control::load_state(self, &main_thread(), bytes)
+        Control::load_state(
+            self,
+            &main_thread(),
+            bytes,
+            tutti_plugin_types::StateUse::Project,
+        )
     }
 }
 
 impl StateExt for Vst3Controller {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        Control::save_state(self, &main_thread())
+        Control::save_state(self, &main_thread(), tutti_plugin_types::StateUse::Project)
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
-        Control::load_state(self, &main_thread(), bytes)
+        Control::load_state(
+            self,
+            &main_thread(),
+            bytes,
+            tutti_plugin_types::StateUse::Project,
+        )
     }
 }
 

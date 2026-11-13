@@ -1,4 +1,4 @@
-//! `ControlLaneNode` (doc 014 §5): a target's `ControlProgram` evaluated on
+//! `ControlLaneNode` a target's `ControlProgram` evaluated on
 //! the play-clock grid and sent as segments, against analytic figures and
 //! invariants of the render (never another reference render).
 //!
@@ -24,7 +24,7 @@ use tutti_modulation::{
 };
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_types::{
-    AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamKey,
+    AtomicF32, Beat, BeatsPerCycle, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamKey,
     Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
 };
 
@@ -175,8 +175,8 @@ fn probes(max: usize, probes: &[u64], range: (f32, f32)) -> (Editor, Executor) {
 /// A native lane for `probe`'s cutoff: knob `knob` (its own cell, as a
 /// node's `Param` cell would be), the port's own range cell.
 fn native(ed: &Editor, probe: u64, program: ControlProgram, knob: Option<f32>) -> ControlLaneNode {
-    ControlLaneNode::for_param(
-        ParamKey::<Hz>::CUTOFF,
+    ControlLaneNode::for_unit(
+        ParamKey::<Hz>::CUTOFF.addr(),
         program,
         knob.map(|k| Arc::new(AtomicF32::new(k)).into()),
         Some(ed.param_range_cell(cutoff(probe)).expect("committed")),
@@ -295,7 +295,7 @@ fn amount(depth: f32) -> Amount {
 
 fn beats(per_cycle: f64) -> Clock {
     Clock::Beats {
-        per_cycle: BeatDuration(per_cycle),
+        per_cycle: BeatsPerCycle::of(per_cycle),
         phase: PhaseIncrement(0.0),
     }
 }
@@ -350,7 +350,7 @@ fn triangle(cycles: f64) -> f64 {
 // ---------------------------------------------------------------- tests --
 
 /// Automation replaces the knob, offsets add to it, and the clamp is per
-/// frame (doc 014 §2, §12's figures):
+/// frame:
 ///
 /// - knob 1000 under a constant 500 automation reads 500.0 on every frame,
 ///   on a native port (exact mode) and on a plugin lane (the program's own
@@ -609,7 +609,7 @@ fn an_export_is_the_live_render_bit_for_bit() {
 /// One LFO on two targets is phase-coherent: a second lane with the same
 /// program, wired in later at a frame off the grid, renders the first's
 /// bits from its first grid point after its connect crossfade (the port
-/// fades in from its base over `PARAM_DECLICK`, doc 014 §5.6).
+/// fades in from its base over `PARAM_DECLICK`).
 #[test]
 fn one_lfo_on_two_targets_is_phase_coherent() {
     let p = || {
@@ -651,7 +651,7 @@ fn one_lfo_on_two_targets_is_phase_coherent() {
     }
 }
 
-/// A rate edit through an anchor (doc 014 §4.3): two lanes that read it on
+/// A rate edit through an anchor: two lanes that read it on
 /// different blocks, both before the anchor, are phase-identical at every
 /// frame before, at and after it; the triangle follows 3 Hz up to the
 /// anchor and 5 Hz from it, continuously, with no step larger than one
@@ -738,8 +738,8 @@ fn a_rate_anchor_holds_two_lanes_in_phase() {
     }
 }
 
-/// A range edit rescales an offset from the next block with no republish
-/// (doc 014 §4.2): a ±100 square (depth 0.125 of 100..900) on knob 500
+/// A range edit rescales an offset from the next block with no republish:
+/// a ±100 square (depth 0.125 of 100..900) on knob 500
 /// reads 600; the range moves to 100..700 between blocks, and the lane
 /// glides from 600 to 575 (0.125 of 600) by the next grid point and holds
 /// it.
@@ -776,7 +776,7 @@ fn a_range_edit_rescales_on_the_next_block() {
 }
 
 /// A plugin lane under shaped automation sends linear grid pieces, never
-/// exact mode (doc 014 §5.4): every segment it sends is `Linear`, a point
+/// exact mode: every segment it sends is `Linear`, a point
 /// lands on every grid frame, and the value there is the curve's.
 #[test]
 fn a_plugin_lane_sends_linear_grid_pieces() {
@@ -865,7 +865,7 @@ fn an_lfos_phase_survives_a_depth_edit() {
 }
 
 /// A `Linear` triangle is exact at every frame (its pieces are lines
-/// between corners), and a `Linear` sine at 10 Hz stays within §5.3's
+/// between corners), and a `Linear` sine at 10 Hz stays within the
 /// bound, `(2πfh)²/8` of its depth (2.2e-4 at h = 32), at every frame.
 #[test]
 fn a_triangle_is_exact_and_a_sine_within_the_bound() {
@@ -907,7 +907,7 @@ fn a_triangle_is_exact_and_a_sine_within_the_bound() {
     }
 }
 
-/// The curves doc 014 §5.3's formula gives no bound for err at 10 Hz
+/// The curves the linear bound's formula gives no bound for err at 10 Hz
 /// (h = 32 at 48 kHz) by the figures measured here, as a fraction of
 /// depth: a bipolar sine through each, and a bipolar triangle through
 /// `Stepped`. `Stepped` is 0 below full magnitude and 1 only at it, a
@@ -963,7 +963,7 @@ fn the_curves_with_no_bound_err_as_measured() {
     }
 }
 
-/// Capacity (doc 014 §5.3): a 703.125 Hz square (120 edges per 4096
+/// Capacity: a 703.125 Hz square (120 edges per 4096
 /// frames, between frames and on them) in 4096-frame blocks takes the grid
 /// and every edge with nothing thinned or dropped, exact at every frame;
 /// a 140.625 Hz square in 16 384-frame blocks (512 grid points and 96
@@ -994,7 +994,7 @@ fn the_lane_keeps_every_corner_within_its_capacity() {
     }
 }
 
-/// An input layer's offset is exactly `depth × span × x` (doc 014 §4.4):
+/// An input layer's offset is exactly `depth × span × x`:
 /// knob 10, depth 0.5 of a 0..96 range, a source stepping to 0.5 then
 /// 0.25 reads 34.0 then 22.0 from the step's own frame (300, off the
 /// grid); a ramp to 1.0 lands 58.0 on its arrival frame. Stopped, so the
@@ -1059,13 +1059,7 @@ fn feed_into(ed: &mut Editor, feed: u64, lane: u64) {
 /// **A republish that reads a new source frees a slot for it.** A program
 /// reading sources 1..=8 (every input slot, each at 0.0) is republished to
 /// read source 9 alone at depth 0.5 of a 0..96 range; source 9 stepping to
-/// 0.5 on frame 640 reads 10 + 24 = 34.0 from that frame. (Reported in
-/// review: the eight stale slots were never freed, so source 9's
-/// events were dropped, uncounted, and the lane held 10.)
-///
-/// Changed in doc 014 §12.4: a lane now frees
-/// every slot its new program does not read when it takes the program, so
-/// a free slot is the only fallback.
+/// 0.5 on frame 640 reads 10 + 24 = 34.0 from that frame.
 #[test]
 fn a_republished_program_reads_a_new_source() {
     let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));
@@ -1100,13 +1094,11 @@ fn a_republished_program_reads_a_new_source() {
     }
 }
 
-/// **A reused source id starts from nothing** (doc 014 §7's hazard, closed
-/// in §12.4). A lane reads source 3 at depth 0.5 of a 0..96 range on knob
-/// 10, and source 3 steps to 0.5 on frame 0: 34.0. A republish drops the
-/// source (the lane glides to 10.0 by the next grid point), then another
-/// reads source 3 again, as a new source given the old id would be, which
-/// has not sent yet: it contributes 0, so the lane reads 10.0, never the
-/// removed source's 0.5. When the new source sends 0.25 on frame 1 000,
+/// **A reused source id starts from nothing**. A lane reads source 3 at depth 0.5 of a 0..96
+/// range on knob 10, and source 3 steps to 0.5 on frame 0: 34.0. A republish drops the source
+/// (the lane glides to 10.0 by the next grid point), then another reads source 3 again, as a
+/// new source given the old id would be, which has not sent yet: it contributes 0, so the lane
+/// reads 10.0, never the removed source's 0.5. When the new source sends 0.25 on frame 1 000,
 /// 22.0.
 #[test]
 fn a_reused_source_id_starts_from_nothing() {
@@ -1142,7 +1134,7 @@ fn a_reused_source_id_starts_from_nothing() {
         let want = match f {
             0..256 => 34.0,
             // The first republish glides to the knob by the next grid
-            // point (doc 014 §4.2).
+            // point.
             256..288 => {
                 assert!((10.0..=34.0).contains(&got), "frame {f}: {got}, gliding");
                 continue;
@@ -1186,7 +1178,7 @@ fn an_unread_source_is_no_point() {
 }
 
 /// **A resync tells a new target a steady lane's value.** A stopped lane
-/// with knob 250 sends one held value and nothing more (doc 014 §5.2), so
+/// with knob 250 sends one held value and nothing more, so
 /// re-wiring it from probe 2 to probe 3 leaves probe 3 at its own base
 /// until something moves. `LaneControls::resync` makes the next block send
 /// at frame 0: probe 3 hears it on that block's first frame (through the
@@ -1240,7 +1232,7 @@ fn a_resync_sends_a_steady_lane_to_its_new_target() {
     }
 }
 
-/// A lane-fed fork reads its value at frame 0 (doc 014 §5.6): the fork's lane
+/// A lane-fed fork reads its value at frame 0: the fork's lane
 /// is fresh and sends on its first frame, from the program, knob and range
 /// at the gather; a later live knob write and republish reach the live
 /// lane, not the fork.

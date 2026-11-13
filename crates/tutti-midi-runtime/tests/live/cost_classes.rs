@@ -1,0 +1,241 @@
+//! The MIDI nodes are event-only and declare `Cost::Light`. Declaring it changes only the parallel schedule: sibling
+//! clip-to-output lanes pack into fewer tasks than undeclared ones, and on a
+//! pool every event leaves on the frame the serial walk sends it on.
+
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
+
+use tutti_fixtures::midi::note_on;
+
+use crate::common;
+use tutti_graph::NodeKey;
+use tutti_graph::WorkerPool;
+use tutti_graph::{
+    Cost, Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode, EventKind, EventOut,
+    Executor, ForkByClone, Io, Node, Prepare, Schedule, Shape, Status, TransportPosition,
+    Unforkable,
+};
+use tutti_graph::{OutPort, Source};
+use tutti_midi_runtime::{ClockNode, HarmonyNode, MidiClipNode, MidiIngestNode, TimedMidiEvent};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
+
+const SR: f64 = 48_000.0;
+const BPM: f64 = 120.0;
+const MAX_BLOCK: usize = 256;
+/// Clip → out lanes, every node `Light`.
+const LANES: u64 = 16;
+/// Clip → recorder lanes, the recorder declaring nothing (`Heavy`), so the
+/// plan still spreads.
+const HEAVY: u64 = 2;
+
+/// `node` as a node that declares nothing: the cost model's default.
+struct Undeclared<N>(N);
+
+impl<N: Node> Node for Undeclared<N> {
+    fn shape(&self) -> Shape {
+        self.0.shape().with_cost(Cost::Heavy)
+    }
+    fn prepare(&mut self, p: &Prepare) {
+        self.0.prepare(p);
+    }
+    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
+        self.0.process(cx, io)
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
+/// `(absolute frame, packet)` of every MIDI event a recorder received.
+type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
+
+/// Logs the MIDI on its event input; a silent mono output. Declares
+/// nothing.
+#[derive(Clone)]
+struct Recorder(Seen);
+
+impl Node for Recorder {
+    fn shape(&self) -> Shape {
+        Shape::source_unassigned(ChannelLayout::MONO).with_events(1, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let mut seen = self.0.lock().unwrap();
+        for e in io.events(0) {
+            if let EventKind::Midi(Ump(data)) = e.kind {
+                seen.push((cx.env.frame.get() + u64::from(e.offset.get()), Ump(data)));
+            }
+        }
+        io.output(0).fill(0.0);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// Notes every 1/50 beat for lane `k`, each lane a little later.
+fn clip(k: u64) -> MidiClipNode {
+    MidiClipNode::new((0..20).map(|i| {
+        TimedMidiEvent::new(
+            Beat(0.02 * i as f64 + 0.000_3 * k as f64),
+            note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                (36 + k + i) as u8,
+                0xFFFF,
+            ),
+        )
+        .unwrap()
+    }))
+}
+
+fn connect(ed: &mut Editor, from: NodeKey, to: NodeKey) {
+    ed.spec_mut().connect_events(
+        EventIn { node: to, port: 0 },
+        EventEdge::Direct(EventOut {
+            node: from,
+            port: 0,
+        }),
+    );
+}
+
+/// [`LANES`] clips each under an event tap, and [`HEAVY`] clips each into a
+/// recorder on a global output; on a pool of `workers` when more than one.
+/// `declared`: the clips as shipped, or wrapped to declare nothing. The
+/// taps' sinks and the recorders' logs.
+fn graph(workers: usize, declared: bool) -> (Executor, Vec<common::Sink>, Vec<Seen>) {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate::of(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
+    if workers > 1 {
+        exec.set_pool(Some(Arc::new(
+            WorkerPool::builder()
+                .num_threads(workers)
+                .build()
+                .expect("a worker pool"),
+        )));
+    }
+    let (mut outs, mut seen, mut outputs) = (Vec::new(), Vec::new(), Vec::new());
+    for k in 0..LANES + HEAVY {
+        let (source, sink) = (NodeKey(100 + k), NodeKey(k + 1));
+        if k >= LANES {
+            ed.insert(source, "clip", clip(k));
+            let log = Seen::default();
+            ed.insert(sink, "recorder", ForkByClone(Recorder(Arc::clone(&log))));
+            seen.push(log);
+            outputs.push(Source::Node(OutPort {
+                node: sink,
+                port: 0,
+            }));
+        } else if declared {
+            ed.insert(source, "clip", clip(k));
+            outs.push(common::sink(&mut ed, k as u32, &[(source.0, 0)]));
+        } else {
+            ed.insert(source, "clip", Unforkable(Undeclared(clip(k))));
+            outs.push(common::sink(&mut ed, k as u32, &[(source.0, 0)]));
+        }
+        if k >= LANES {
+            connect(&mut ed, source, sink);
+        }
+    }
+    ed.spec_mut().topology.set_outputs(outputs);
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    (exec, outs, seen)
+}
+
+/// Blocks from one frame to the maximum, ragged, rolling from beat 0.
+fn render(exec: &mut Executor) {
+    let mut frame = 0usize;
+    for i in 0..60 {
+        let n = 1 + (i * 37) % MAX_BLOCK;
+        let mut chunk = vec![vec![0.0f32; n]; HEAVY as usize];
+        let mut outs: Vec<&mut [f32]> = chunk.iter_mut().map(Vec::as_mut_slice).collect();
+        let beat = frame as f64 * BPM / 60.0 / SR;
+        let t = TransportPosition::new(true, Bpm::of(BPM), Beat(beat), None);
+        exec.process(n, &t, &[], &mut outs);
+        frame += n;
+    }
+}
+
+/// Everything the graph sent, by absolute frame: each tap's events (the
+/// frame is the block's plus the offset, as the tap stamps it), then each
+/// recorder's (it adds `Env::frame` itself).
+fn sent(outs: &mut [common::Sink], seen: &[Seen]) -> Vec<Vec<(u64, [u32; 4])>> {
+    let mut all: Vec<Vec<(u64, [u32; 4])>> = outs
+        .iter_mut()
+        .map(|o| {
+            let mut buf = vec![(0, Ump([0; 4])); 1024];
+            let n = o.poll_into(&mut buf);
+            buf[..n].iter().map(|e| (u64::from(e.0), e.1.0)).collect()
+        })
+        .collect();
+    all.extend(
+        seen.iter()
+            .map(|s| s.lock().unwrap().iter().map(|(f, e)| (*f, e.0)).collect()),
+    );
+    all
+}
+
+/// Every MIDI node is `Light`.
+#[test]
+fn every_midi_node_is_light() {
+    assert_eq!(clip(0).shape().cost, Cost::Light);
+    assert_eq!(HarmonyNode::new([]).shape().cost, Cost::Light);
+    assert_eq!(
+        ClockNode::new(tutti_ump::MidiGroup::FIRST, tutti_types::SampleRate::SR_48K)
+            .shape()
+            .cost,
+        Cost::Light
+    );
+    assert_eq!(
+        EventInletNode::pair(EventCapacity::of(8)).0.shape().cost,
+        Cost::Light
+    );
+    assert_eq!(
+        MidiIngestNode::new(NonZeroUsize::MIN).shape().cost,
+        Cost::Light
+    );
+}
+
+/// Sixteen light clip → out lanes beside two heavy ones: the light lanes
+/// pack into fewer tasks than the same lanes declaring nothing, the plan
+/// spreads from a one-frame block, and on a pool of two and of four every
+/// event is sent on the absolute frame the serial walk sends it on.
+#[test]
+#[cfg_attr(miri, ignore = "spawns a worker pool")]
+fn light_lanes_pack_and_send_on_the_serial_frames() {
+    let (declared, ..) = graph(4, true);
+    let (undeclared, ..) = graph(4, false);
+    let (plan, bare) = (
+        declared.plan().expect("a plan"),
+        undeclared.plan().expect("a plan"),
+    );
+    assert!(
+        plan.tasks().len() < bare.tasks().len(),
+        "declared {} tasks, undeclared {}",
+        plan.tasks().len(),
+        bare.tasks().len()
+    );
+    // From a one-frame block: every ragged block below is spread, so the
+    // comparison is never a serial walk against itself.
+    assert!(
+        matches!(plan.schedule(4), Schedule::Parallel { from, .. } if from == Samples(1)),
+        "{:?}",
+        plan.schedule(4)
+    );
+
+    let (mut exec, mut outs, seen) = graph(1, true);
+    render(&mut exec);
+    let serial = sent(&mut outs, &seen);
+    assert!(serial.iter().all(|lane| !lane.is_empty()));
+    for workers in [2, 4] {
+        let (mut exec, mut outs, seen) = graph(workers, true);
+        assert!(exec.is_parallel());
+        render(&mut exec);
+        assert_eq!(serial, sent(&mut outs, &seen), "{workers} workers");
+    }
+}

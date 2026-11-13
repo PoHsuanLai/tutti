@@ -817,7 +817,7 @@ fn build_note(
 mod tests {
     use super::*;
     use crate::yin::Pitch;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
     use tutti_dsp::StftGeometry;
     use tutti_types::{Confidence, Hz};
 
@@ -1095,6 +1095,18 @@ mod tests {
         let (hop, half) = (c.hop().get(), c.frame().get() / 2);
         let centre = |f: usize| f * hop + half / 2;
         assert_eq!(fast[0].end.get(), (centre(29) + centre(30)) / 2);
+
+        // The split is the threshold: 80 cents over a span is under 200.
+        let loose = c.with_pitch_split(Cents(200.0)).unwrap();
+        let t: Vec<Option<f32>> = (0..60)
+            .map(|i| Some(440.0 * (8.0 * i as f32 / 1200.0).exp2()))
+            .collect();
+        assert_eq!(
+            notes_from_track(&loose, &track(&t), &loud(60), &[])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// The sliding median agrees with sorting every window, on sequences with
@@ -1104,11 +1116,11 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(11);
         for span in [1, 2, 3, 7, 10] {
             let cents: Vec<f32> = (0..200)
-                .map(|_| match rng.gen_range(0..6) {
+                .map(|_| match rng.random_range(0..6) {
                     0 => 0.0,
                     1 => -0.0,
                     2 => 100.0,
-                    _ => rng.gen_range(-80.0..80.0),
+                    _ => rng.random_range(-80.0..80.0),
                 })
                 .collect();
             let mut want = Vec::new();
@@ -1163,7 +1175,7 @@ mod tests {
             Err(Error::NoSignal)
         );
         let mut rng = StdRng::seed_from_u64(7);
-        let noise: Vec<f32> = (0..88200).map(|_| rng.gen_range(-0.3..0.3)).collect();
+        let noise: Vec<f32> = (0..88200).map(|_| rng.random_range(-0.3..0.3)).collect();
         assert_eq!(transcribe(&c, &noise, &mut fft), Ok(Vec::new()));
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut x = render(RATE, &[tone(0.1, 0.5, 440.0, 0.5)], 0.7);

@@ -109,7 +109,7 @@ impl From<Lfo> for Source {
     fn from(lfo: Lfo) -> Self {
         let clock = match lfo.rate {
             LfoRate::Beats(per_cycle) => Clock::Beats {
-                per_cycle: per_cycle.span(),
+                per_cycle,
                 phase: lfo.phase,
             },
             LfoRate::Hz(rate) => Clock::Seconds {

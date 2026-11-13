@@ -20,7 +20,7 @@ use tutti_ump::NoteNumber;
 const A4_FREQ: Hz = Hz(440.0);
 const A4_NOTE: NoteNumber = NoteNumber::of(69);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ScaleDegree {
     /// 0 = unison, 1200 = octave
     pub cents: Cents,
@@ -61,7 +61,7 @@ pub(crate) fn key_freq(note: f32, tune: Semitones) -> Hz {
 /// `k / n`, so a non-12 scale repeats every `n` note numbers rather than every
 /// 12. A 24-degree quarter-tone scale therefore spans an octave across 24 keys,
 /// and the keyboard covers correspondingly less range.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tuning {
     degrees: Vec<ScaleDegree>,
     freq_table: [Hz; 128],
@@ -166,46 +166,6 @@ impl Tuning {
 
         let mut tuning = Self {
             degrees,
-            freq_table: [Hz(0.0); 128],
-            reference_freq: A4_FREQ,
-            reference_note: A4_NOTE,
-        };
-        tuning.recompute_table();
-        tuning
-    }
-
-    /// Quarter-comma meantone, twelve degrees given to the nearest whole
-    /// [`Cents`] (0, 76, 193, 310, 386, …), rooted on C and pinned at
-    /// A4 = 440 [`Hz`].
-    ///
-    /// The historical compromise between [`just_intonation`](Self::just_intonation)
-    /// and [`equal_temperament`](Self::equal_temperament): thirds are near-pure
-    /// (386 cents against just's 386 and equal's 400) and the error is pushed
-    /// into the fifths.
-    pub fn meantone() -> Self {
-        let mut cents = Vec::with_capacity(12);
-
-        for i in 0..12 {
-            let c = match i {
-                0 => 0.0,
-                1 => 76.0,
-                2 => 193.0,
-                3 => 310.0,
-                4 => 386.0,
-                5 => 503.0,
-                6 => 579.0,
-                7 => 697.0,
-                8 => 773.0,
-                9 => 890.0,
-                10 => 1007.0,
-                11 => 1083.0,
-                _ => 0.0,
-            };
-            cents.push(ScaleDegree::from_cents(Cents::new(c)));
-        }
-
-        let mut tuning = Self {
-            degrees: cents,
             freq_table: [Hz(0.0); 128],
             reference_freq: A4_FREQ,
             reference_note: A4_NOTE,

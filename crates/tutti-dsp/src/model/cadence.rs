@@ -5,7 +5,7 @@ use core::ops::Range;
 
 use tutti_types::Samples;
 
-/// When a node samples `theta(t)` (design 024 section 4.5): on the block, or on a
+/// When a node samples `theta(t)`: on the block, or on a
 /// grid of the stream clock. An engineering choice, not a property of a system,
 /// except that it decides whether a render depends on the block length
 /// ([`block_independent`](Self::block_independent)).

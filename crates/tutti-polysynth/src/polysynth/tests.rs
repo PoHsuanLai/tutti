@@ -314,10 +314,7 @@ fn test_unison_creates_subvoices() {
 
 /// `synth`'s param `p` set through its `ParamSet`, as a host writes a
 /// knob (`AudioParam`, `write_param`) and as a control lane's knob is
-/// the same cell: `false` for a param the set lacks. (These tests
-/// pinned the synth's `ModParams` impl and then an `AtomicTarget` over
-/// the set's cell; doc 014 §10 deleted both, and the `ParamSet` is the
-/// one address.)
+/// the same cell: `false` for a param the set lacks.
 fn set(synth: &PolySynth, p: tutti_types::UnitParam, value: f32) -> bool {
     tutti_graph::ParamNode::param_set(synth).set(p, value)
 }
@@ -509,57 +506,6 @@ fn test_basic_dsp_chain() {
     assert!(
         max_out > 0.1,
         "Chain should produce output after triggering gate, max={}",
-        max_out
-    );
-}
-
-#[test]
-fn test_dynamic_unison_resize() {
-    // Create synth with 2-voice unison
-    let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(2).unwrap(),
-        voice_mode: VoiceMode::Poly,
-        oscillator: OscillatorType::Saw,
-        unison: Some(UnisonConfig {
-            voice_count: UnisonVoices::of(2),
-            detune_cents: tutti_types::Cents(10.0),
-            stereo_spread: Spread(0.5),
-            phase_randomize: false,
-        }),
-        ..Default::default()
-    });
-
-    // Initial state: 2 sub-voices per polyphonic voice
-    assert_eq!(synth.voices[0].sub_voice_count(), 2);
-    assert_eq!(synth.voices[1].sub_voice_count(), 2);
-    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(2));
-
-    // Increase to 5 unison voices
-    synth.set_unison_voice_count(UnisonVoices::of(5));
-    assert_eq!(synth.voices[0].sub_voice_count(), 5);
-    assert_eq!(synth.voices[1].sub_voice_count(), 5);
-    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(5));
-
-    // Decrease to 3 unison voices
-    synth.set_unison_voice_count(UnisonVoices::of(3));
-    assert_eq!(synth.voices[0].sub_voice_count(), 3);
-    assert_eq!(synth.voices[1].sub_voice_count(), 3);
-    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(3));
-
-    // Verify it still produces sound
-    let note_on = ev_note_on(0, 60, 100);
-    queue_midi(&mut synth, &[note_on]);
-
-    let mut output = [0.0f32; 2];
-    let mut max_out = 0.0f32;
-    for _ in 0..2000 {
-        synth.tick(&[], &mut output);
-        max_out = max_out.max(output[0].abs().max(output[1].abs()));
-    }
-
-    assert!(
-        max_out > 0.0,
-        "Synth should produce output after resize, got max={}",
         max_out
     );
 }
@@ -970,19 +916,6 @@ fn test_mono_mode_retrigger() {
 
 /// One wheel position means one pitch, whether the note was already
 /// sounding or is struck after the bend.
-///
-/// It did not. `handle_note_on` multiplies the base frequency by
-/// `2^(semitones/12)`, while `apply_pitch_bend` fed `note + semitones` into
-/// a lookup (since removed: the note logic now says how far each key sounds from equal temperament) that interpolated between *table*
-/// entries. Under equal temperament the table is geometric and the two
-/// agree exactly, which is why every existing test passed. Under any
-/// unequal scale they do not: measured at **3.9 cents** on
-/// `Tuning::just_intonation` — a held note and a new note, same wheel,
-/// audibly different pitch.
-///
-/// Pinned in cents rather than Hz because the defect is a pitch error, and
-/// because a ratio comparison stays meaningful if the fixture's reference
-/// frequency ever changes.
 #[test]
 fn a_bend_lands_on_the_same_pitch_whether_the_note_was_already_sounding() {
     let config = || SynthConfig {
@@ -1571,8 +1504,8 @@ fn pitch_of(channel: u8, note: u8, hcu: u32) -> Ump {
     )
 }
 
-/// M2-104 Appendix C.3, Method 1: "Per-Note Management; PNCC#3 Set Pitch 60.0;
-/// Note On #0 (Pitch sounds as 60.0)". The Pitch arrives while no voice holds
+/// M2-104 Appendix C.3, Method 1: Per-Note Management sets Pitch 60.0 before Note
+/// On #0, and the note sounds at 60.0. The Pitch arrives while no voice holds
 /// Note Number 0, and the note that starts on it sounds at 60.0 (middle C,
 /// about 261.6 Hz), where Note Number 0 alone would be about 8.2 Hz.
 #[test]
@@ -1591,11 +1524,10 @@ fn a_pitch_sent_before_the_note_on_is_the_pitch_it_sounds_at() {
     assert!((freqs[0] - 261.63).abs() < 0.5, "{freqs:?}");
 }
 
-/// M2-104 section 7.4.5: after Detach, the old note "shall no longer respond
-/// to any Per-Note Controllers" and later changes "apply to future notes
-/// only". Note 0 sounds as 60.0; Detach, then Pitch 62.0, then a new Note On on
-/// the same Note Number: the new note sounds 62.0 and the detached one stays
-/// at 60.0.
+/// M2-104 section 7.4.5: after Detach, the old note ignores Per-Note
+/// Controllers and later changes apply to future notes only. Note 0 sounds as
+/// 60.0; Detach, then Pitch 62.0, then a new Note On on the same Note Number:
+/// the new note sounds 62.0 and the detached one stays at 60.0.
 #[test]
 fn a_pitch_after_a_detach_reaches_the_next_note_and_not_the_old_one() {
     let mut synth = hand_mpe();
@@ -2266,49 +2198,6 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
     assert_eq!(long.active_voice_count(), short.active_voice_count());
 }
 
-/// Sub-voices added under a held note sound at once, without waiting for
-/// the next note-on.
-///
-/// Growing unison from 1 to 3 at full spread moves the existing sub-voice
-/// hard left and adds two more, centre and hard right. If the added lanes
-/// started idle the right channel would go silent until the key was struck
-/// again.
-#[test]
-fn unison_grown_under_a_held_note_sounds_immediately() {
-    let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(2).unwrap(),
-        oscillator: OscillatorType::Saw,
-        unison: Some(UnisonConfig {
-            voice_count: UnisonVoices::of(1),
-            detune_cents: tutti_types::Cents(12.0),
-            stereo_spread: Spread(1.0),
-            phase_randomize: false,
-        }),
-        ..Default::default()
-    });
-    queue_midi(&mut synth, &[ev_note_on(0, 57, 100)]);
-    let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
-    for _ in 0..16 {
-        synth.render_planar(&mut l, &mut r);
-    }
-
-    synth.set_unison_voice_count(UnisonVoices::of(3));
-    let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
-    let (mut left, mut right) = (Vec::new(), Vec::new());
-    for _ in 0..8 {
-        synth.render_planar(&mut l, &mut r);
-        left.extend_from_slice(&l);
-        right.extend_from_slice(&r);
-    }
-    assert!(rms(&left) > 0.05, "the held note went quiet on resize");
-    assert!(
-        rms(&right) > 0.5 * rms(&left),
-        "the added sub-voices are silent: left rms {}, right rms {}",
-        rms(&left),
-        rms(&right)
-    );
-}
-
 /// A portamento glide sounds the same through `process` as through `tick`.
 ///
 /// Rendering a whole MIDI sub-block at the glide's final pitch would make
@@ -2399,7 +2288,6 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
         }),
         ..Default::default()
     });
-    synth.seed_unison_rng(99);
     queue_midi(
         &mut synth,
         &[ev_note_on(0, 60, 100), ev_note_on(1, 60, 100)],
@@ -2902,7 +2790,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
 }
 
 /// An Assignable Per-Note Controller whose index byte has the high bit set is
-/// not CC74 or CC7: `CCNumber::new` used to mask 0xCA to 74.
+/// not CC74 or CC7.
 #[test]
 fn an_assignable_per_note_index_is_a_whole_byte() {
     let drive = |controller: u8| {
@@ -3104,7 +2992,10 @@ fn a_synth_plays_its_own_groups_channels_only() {
     first.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(first.active_voice_count(), 1);
 
-    let mut second = synth(SynthConfig::default().with_group(group2));
+    let mut second = synth(SynthConfig {
+        group: group2,
+        ..SynthConfig::default()
+    });
     second.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(second.active_voice_count(), 0, "Group 1 is not Group 2's");
     second.apply_midi(note(group2));
@@ -3159,9 +3050,8 @@ fn key_freq(key: u8) -> f32 {
     440.0 * 2.0_f32.powf((f32::from(key) - 69.0) / 12.0)
 }
 
-/// RP-015: "Set Modulation (#1) to 0" is a channel's own: the wheels are per
-/// channel, and a reset on one leaves every other (this synth's wheel was one
-/// global value, which a reset on any channel cleared for all).
+/// RP-015: Reset All Controllers sets Modulation (#1) to 0 per channel: a reset
+/// on one channel leaves every other's wheel.
 #[test]
 fn a_reset_on_one_channel_leaves_the_other_channels_wheel() {
     let mut s = steady(|_| {});
@@ -3293,7 +3183,7 @@ fn channel_pan_follows_rp_036() {
 /// Channel Pressure (a MIDI 1.0 message of its own) is a channel's: at full it
 /// raises that channel's notes by the factor the synth gives pressure (`1 + p /
 /// 2`, 1.5), leaves another channel's, and Reset All Controllers sets it back to
-/// 0 (RP-015: "Reset channel pressure to 0").
+/// 0 (RP-015).
 #[test]
 fn channel_pressure_is_per_channel_and_reset_returns_it() {
     let lone = |events: &[Ump]| peaks(&mut steady(|_| {}), events).0;
@@ -3313,8 +3203,8 @@ fn channel_pressure_is_per_channel_and_reset_returns_it() {
     assert_eq!(reset, base, "the reset returned it to 0");
 }
 
-/// M1 p.16, Example 2 through the synth: `B0 54 3C`, `90 40 40` is "#64 with
-/// glide from #60", at the rate of Portamento Time: at CC 5 = 0, the figure's
+/// M1 p.16, Example 2 through the synth: `B0 54 3C`, `90 40 40` is note 64
+/// gliding from note 60, at the rate of Portamento Time: at CC 5 = 0, the figure's
 /// fastest (1,000 cent/msec), the glide is over in 4 ms; at 127 (0.01
 /// cent/msec), after a second the pitch has left its source by 10 cents. The
 /// next note has none.
@@ -3378,7 +3268,7 @@ fn a_portamento_control_glides_one_voice_at_the_rate_of_cc_5() {
     assert!((freqs[1] / key_freq(72) - 1.0).abs() < 1e-3, "{freqs:?}");
 }
 
-/// GM2 section 3.3.8: Portamento On "between 64 and 127": a note glides from
+/// GM2 section 3.3.8: Portamento On at 64 to 127: a note glides from
 /// the key struck before it, in a straight line in cents (the rate is in cents a
 /// millisecond), and with Portamento Time at its slowest the voice has barely
 /// left the old pitch after a second.
@@ -3460,8 +3350,8 @@ fn a_per_note_pitch_survives_a_glide() {
     );
 }
 
-/// M1 p.14, Legato Footswitch: the second note moves the voice "without
-/// re-attacking", and the pitch it moves to is the new key's: the pitch a
+/// M1 p.14, Legato Footswitch: the second note moves the voice without a new
+/// attack, and the pitch it moves to is the new key's: the pitch a
 /// per-note controller told the first note is that note's, not the new one's.
 #[test]
 fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
@@ -3726,8 +3616,8 @@ fn the_construction_time_scale_is_the_initial_mts_table() {
     assert!((s.voices[2].sounding_freq().get() - 440.0).abs() < 0.01);
 }
 
-/// MTS: a real-time Single Note Tuning Change "should instantly [...] re-tune"
-/// a sounding note with no new attack; the same key struck after has it too.
+/// MTS: a real-time Single Note Tuning Change retunes a sounding note with no
+/// new attack; the same key struck after has it too.
 /// `3D 00 00` for key 60 is note 61's pitch.
 #[test]
 fn a_real_time_single_note_change_retunes_a_sounding_note() {
@@ -3751,8 +3641,8 @@ fn a_real_time_single_note_change_retunes_a_sounding_note() {
     assert!((cents_above(struck.sounding_freq(), before.get()) - 100.0).abs() < 0.1);
 }
 
-/// CA-020: the non-real-time bank form "will NOT update the currently sounding
-/// notes" but the next one has it.
+/// CA-020: the non-real-time bank form leaves the sounding notes alone; the next
+/// note has it.
 #[test]
 fn a_non_real_time_change_waits_for_the_next_note_on() {
     let mut s = steady(|_| {});

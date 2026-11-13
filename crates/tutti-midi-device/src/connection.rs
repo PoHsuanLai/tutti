@@ -189,14 +189,11 @@ impl Connection {
     /// After a [`Negotiated`](Ending::Negotiated) settle the peer may still
     /// change what it said, and the connection follows it, answering
     /// [`Action::Changed`]: a Stream Configuration Notification is the
-    /// Protocol and JR Timestamps in use whenever it comes (§7.1.6.1 step 3:
-    /// the Sender starts using the Protocol and JR Timestamps configuration
-    /// the Notification declares), but a Function
-    /// Block Info or Name is read only when the Endpoint did not declare its
-    /// Function Blocks static (§6.1.1: such an Endpoint changes none of
-    /// the properties of its Function Blocks after initial discovery, and
-    /// §7.1.8 and §7.1.9 send the Notifications for a change only from one that
-    /// has not). A Function Block outside the count Endpoint Info declared is
+    /// Protocol and JR Timestamps in use whenever it comes (§7.1.6.1 step 3),
+    /// but a Function Block Info or Name is read only when the Endpoint did
+    /// not declare its Function Blocks static (§6.1.1: a static Endpoint's
+    /// blocks never change after discovery, and §7.1.8 and §7.1.9 send
+    /// change Notifications only from an Endpoint that has not declared that). A Function Block outside the count Endpoint Info declared is
     /// never read. After a [`Midi1Fallback`](Ending::Midi1Fallback) settle
     /// everything is ignored: the peer is a MIDI 1.0 device.
     pub fn on_message(&mut self, message: Message, now: Instant) -> Action {

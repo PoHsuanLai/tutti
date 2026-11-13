@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 unicode-normalization = { workspace = true }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 winnow = { workspace = true }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 serde = { version = "1", optional = true, features = ["derive"] }
 
 [dev-dependencies]

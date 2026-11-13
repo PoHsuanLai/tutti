@@ -18,12 +18,10 @@ use crate::protocol::frame::{decode_body, decode_prefix, write_frame};
 use crate::protocol::{BridgeMessage, HostMessage};
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
+use super::sys::Wakeup;
+pub use super::sys::{Watch, has_pending, socket_name};
+use interprocess::local_socket::Stream;
 use interprocess::local_socket::traits::Stream as _;
-#[cfg(not(windows))]
-use interprocess::local_socket::{GenericFilePath, ToFsName as _};
-#[cfg(windows)]
-use interprocess::local_socket::{GenericNamespaced, ToNsName as _};
-use interprocess::local_socket::{Name, Stream};
 use std::io::Read;
 use std::path::Path;
 use std::thread;
@@ -31,42 +29,6 @@ use std::time::{Duration, Instant};
 
 /// Duplex byte stream to the plugin-server.
 pub type ControlStream = Stream;
-
-/// Converts a host-chosen socket path into the local-socket name for this
-/// platform.
-///
-/// The host dials and the server binds with this one function, so both ends
-/// name the endpoint the same way.
-///
-/// `BridgeConfig::socket_path` is a filesystem path. On Unix that path is the
-/// socket. On Windows a named pipe lives in the `\\.\pipe\` namespace, which
-/// is not the filesystem, so the pipe is named after the path's **final
-/// component** (`tutti-bridge-<pid>-<n>-<random>`, already unique per bridge).
-///
-/// # Errors
-///
-/// Returns an I/O error when the path (or, on Windows, its final component)
-/// is not a valid local-socket name.
-// Why not `GenericNamespaced` on both: on Linux it maps to the abstract
-// namespace, but on every other Unix it maps to `SpecialDirUdSocket`, which
-// interprocess itself deprecates, and it would move macOS off the filesystem
-// path that works there.
-pub fn socket_name(socket: &Path) -> std::io::Result<Name<'static>> {
-    #[cfg(not(windows))]
-    {
-        socket.to_owned().to_fs_name::<GenericFilePath>()
-    }
-    #[cfg(windows)]
-    {
-        let leaf = socket.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("socket path {socket:?} has no final component to name a pipe with"),
-            )
-        })?;
-        leaf.to_owned().to_ns_name::<GenericNamespaced>()
-    }
-}
 
 /// How long one [`send`] may block on a peer that reads nothing.
 ///
@@ -135,56 +97,6 @@ pub fn send(stream: &mut ControlStream, msg: &HostMessage) -> BridgeResult<()> {
 /// and finite because nothing else would ever end the wait.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Bytes the named pipe can hand over right now, without blocking or consuming.
-///
-/// This is the whole Windows deadline mechanism. `interprocess` refuses
-/// `set_recv_timeout` on a named pipe unconditionally (`no_timeouts()` in its
-/// source), so a blocked `read` there returns only when the peer speaks or hangs
-/// up — and [`read_exact_by`] can consult its deadline only *between* syscalls.
-/// Asking first turns the blocking read into one that is known not to block.
-///
-/// **`Ok(0)` means "nothing yet", never end of stream.** That distinction is the
-/// entire reason this is `PeekNamedPipe` and not `set_nonblocking`, which
-/// reports a quiet pipe and a dead one identically — see [`Wakeup::arm`].
-///
-/// A closed peer makes this *fail* (`ERROR_BROKEN_PIPE`), and callers must treat
-/// any failure as "go read and find out" rather than as a verdict: the real
-/// `read` is the authority on EOF, and this must never be able to manufacture
-/// one. That is what keeps a peek that goes wrong from becoming a false crash
-/// report, which is the exact bug the `PIPE_NOWAIT` attempt shipped.
-#[cfg(windows)]
-fn bytes_available(stream: &ControlStream) -> std::io::Result<u32> {
-    use std::os::windows::io::AsHandle;
-
-    // On Windows `local_socket::Stream` has exactly one variant, so this
-    // destructure is irrefutable. Written as a `let` rather than a `match` for
-    // that reason: a wildcard arm would be unreachable code.
-    let Stream::NamedPipe(pipe) = stream;
-    tutti_plugin_ipc_ffi::pipe_bytes_available(pipe.as_handle())
-}
-
-/// Whether `stream` has something to read now, asked without blocking or
-/// consuming. **A failed ask is "yes"**: the read is the authority on a closed
-/// or broken stream, and this must never be able to hide one.
-pub fn has_pending(stream: &ControlStream) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsFd;
-        // On unix `local_socket::Stream` has exactly one variant.
-        let Stream::UdSocket(socket) = stream;
-        tutti_plugin_ipc_ffi::wait_readable(socket.as_fd(), 0).unwrap_or(true)
-    }
-    #[cfg(windows)]
-    {
-        bytes_available(stream).map_or(true, |n| n > 0)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = stream;
-        false
-    }
-}
-
 /// Wait longer each time a peeked stream comes back empty, never past `remaining`.
 ///
 /// **The first polls yield instead of sleeping, and that is not an optimisation.**
@@ -199,7 +111,7 @@ pub fn has_pending(stream: &ControlStream) -> bool {
 /// Capping each nap at `remaining` is what makes the deadline *exact* on this
 /// path rather than exact-plus-one-sleep: the loop cannot oversleep past the
 /// instant it is meant to give up.
-fn back_off(empty_polls: &mut u32, remaining: Duration) {
+pub(super) fn back_off(empty_polls: &mut u32, remaining: Duration) {
     /// Polls served by `yield_now` before any sleeping starts.
     const SPIN_POLLS: u32 = 64;
     /// First sleep once spinning stops, doubled per poll up to [`POLL_INTERVAL`].
@@ -570,122 +482,6 @@ fn with_poll_timeout<T>(
     result
 }
 
-/// How a blocked read is made to return so the deadline can be re-checked.
-///
-/// Two mechanisms, because no single one exists on both platforms, and which one
-/// is armed decides *who sleeps*.
-enum Wakeup {
-    /// `SO_RCVTIMEO`. The kernel blocks for the poll interval before returning
-    /// `WouldBlock`, so the read loop must not sleep on top of that.
-    Timeout,
-    /// `PeekNamedPipe`. Nothing wakes a blocked read on a Windows named pipe, so
-    /// this end never blocks in the first place: it asks how many bytes are
-    /// buffered and only reads when the answer is "some". The waiting happens
-    /// here, in `back_off`.
-    #[cfg(windows)]
-    Peek,
-    /// No wakeup could be armed. The deadline still holds between syscalls, but
-    /// a single blocked read can overshoot it.
-    ///
-    /// Not reachable on Windows, where `Wakeup::Peek` always applies — hence
-    /// the `cfg`, which keeps the dead arm from having to be tolerated there.
-    #[cfg(not(windows))]
-    None,
-}
-
-impl Wakeup {
-    fn arm(stream: &mut ControlStream, poll: Duration) -> Self {
-        use interprocess::local_socket::traits::Stream as _;
-        if stream.set_recv_timeout(Some(poll)).is_ok() {
-            return Self::Timeout;
-        }
-        // No receive timeout on a named pipe — `interprocess` refuses one
-        // unconditionally. Peek instead of blocking; see [`bytes_available`].
-        //
-        // Returned unconditionally rather than after a trial peek, because
-        // `would_park` already defers to the real read on any peek failure. A
-        // pipe that cannot be peeked therefore behaves exactly like `None`, and
-        // probing here would only move that decision earlier for no gain.
-        //
-        // **Do not reach for `set_nonblocking` here.** It is the obvious next
-        // idea on Windows and it was tried: it made things worse, 37 failures
-        // to 47.
-        //
-        // interprocess implements it as `PIPE_NOWAIT`, and in that mode
-        // `ReadFile` reports *success with zero bytes* when nothing is
-        // available. `read_exact_by` reads `Ok(0)` as `UnexpectedEof`, which
-        // `crashed_on_eof` turns into `ProcessCrashed` — so a peer that is
-        // merely quiet is reported as a peer that died. The suite said so
-        // plainly: "expected a timeout, got ProcessCrashed", plus a scattering
-        // of BrokenPipe and UnexpectedEof where there had been neither. A
-        // mechanism that manufactures false crash reports is worse than no
-        // mechanism, and this is a production path, not only a test one.
-        // Microsoft says the same of the flag itself: PIPE_NOWAIT exists for
-        // LAN Manager 2.0 compatibility and "should not be used to achieve
-        // asynchronous input and output".
-        //
-        // `PeekNamedPipe` is the mechanism that *does* work, because it answers
-        // a different question — "is there data" rather than "give me data now"
-        // — and so cannot confuse silence with death.
-        #[cfg(windows)]
-        {
-            let _ = poll;
-            Self::Peek
-        }
-        #[cfg(not(windows))]
-        {
-            tracing::debug!(
-                "no wakeup available on the control stream: a {poll:?} receive \
-                 timeout could not be set. The total deadline still applies \
-                 between reads, but a single blocked read may overshoot it"
-            );
-            Self::None
-        }
-    }
-
-    /// Whether a blocking `read` on this stream would park the thread now.
-    ///
-    /// Only `Wakeup::Peek` can answer, and it answers conservatively: any
-    /// failure to peek reports `false`, handing the decision to the real read.
-    /// A peek must never be able to *invent* a reason not to read — that is how
-    /// "the peer is quiet" turns into "the peer died", which is precisely the
-    /// bug the `PIPE_NOWAIT` attempt shipped.
-    fn would_park(&self, stream: &ControlStream) -> bool {
-        let _ = stream;
-        match self {
-            #[cfg(windows)]
-            Self::Peek => matches!(bytes_available(stream), Ok(0)),
-            // Constant `false` off Windows, and defined there anyway so the
-            // read loop carries no `cfg` of its own. Under `Timeout` the kernel
-            // bounds the read; under `None` nothing can be asked. The compiler
-            // folds this away — the alternative was a `cfg` around the call,
-            // which leaves the `wakeup` argument unused on Unix and the loop
-            // reading differently on each platform.
-            #[cfg(not(windows))]
-            Self::None => false,
-            Self::Timeout => false,
-        }
-    }
-
-    /// Put the stream back as it was, undoing only what was actually done:
-    /// clearing a timeout that was never set is at best a no-op and at worst a
-    /// second spurious error on the platform that just refused the first.
-    fn disarm(self, stream: &mut ControlStream) {
-        use interprocess::local_socket::traits::Stream as _;
-        match self {
-            Self::Timeout => {
-                let _ = stream.set_recv_timeout(None);
-            }
-            // Nothing was set: peeking leaves no state on the handle, which is
-            // most of why it is preferable to a mode change.
-            #[cfg(windows)]
-            Self::Peek => {}
-            #[cfg(not(windows))]
-            Self::None => {}
-        }
-    }
-}
-
 /// Name which of `recv_by`'s two reads an error came from.
 ///
 /// Kept separate from the error itself because the two are indistinguishable
@@ -786,46 +582,6 @@ mod tests {
         };
         round(); // warms this thread's buffers and the cursor's
         assert_no_alloc::assert_no_alloc(&mut round);
-    }
-
-    /// **A send to a peer that reads nothing gives up at the send deadline**, as a `partial`
-    /// timeout: the frame may be half on the wire, so the connection cannot go on. Before, the
-    /// write blocked until the peer read or died.
-    ///
-    /// Unix only: Windows has no send timeout on a named pipe (`connect_within`
-    /// says what ends a hung write there).
-    #[cfg(unix)]
-    #[test]
-    fn a_send_to_a_peer_that_reads_nothing_is_bounded() {
-        use interprocess::local_socket::traits::Listener as _;
-        let path = crate::unique_socket_path();
-        let _ = std::fs::remove_file(&path);
-        let name = socket_name(&path).unwrap();
-        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
-        let connect_path = path.clone();
-        let (done, outcome) = std::sync::mpsc::channel();
-        let _writer = std::thread::spawn(move || {
-            let mut host =
-                connect_within(&connect_path, Duration::from_millis(200)).expect("connect");
-            let chunk = HostMessage::LoadStateChunk {
-                seq: 0,
-                last: false,
-                bytes: vec![0u8; 1 << 20],
-            };
-            // Far more than any socket buffer holds: the peer reads nothing.
-            let result = (0..256).try_for_each(|_| send(&mut host, &chunk));
-            let _ = done.send(result);
-        });
-        let _peer = listener.accept().unwrap();
-
-        let result = outcome
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the send never gave up on a peer that reads nothing");
-        let _ = std::fs::remove_file(&path);
-        assert!(
-            matches!(result, Err(BridgeError::Timeout { partial: true, .. })),
-            "{result:?}"
-        );
     }
 
     /// Send one framed `BridgeMessage`, but pause between the length prefix and
@@ -1010,6 +766,52 @@ mod tests {
                  read the frame's tail as a length prefix"
             ),
             other => panic!("expected a timeout, got {other:?}"),
+        }
+    }
+
+    /// Tests that exist only where the socket has a kernel send timeout.
+    #[cfg(unix)]
+    mod unix_send_bound {
+        use super::super::*;
+        use interprocess::local_socket::ListenerOptions;
+
+        /// **A send to a peer that reads nothing gives up at the send deadline**, as a `partial`
+        /// timeout: the frame may be half on the wire, so the connection cannot go on. Before, the
+        /// write blocked until the peer read or died.
+        ///
+        /// Unix only: Windows has no send timeout on a named pipe (`connect_within`
+        /// says what ends a hung write there).
+        #[test]
+        fn a_send_to_a_peer_that_reads_nothing_is_bounded() {
+            use interprocess::local_socket::traits::Listener as _;
+            let path = crate::unique_socket_path();
+            let _ = std::fs::remove_file(&path);
+            let name = socket_name(&path).unwrap();
+            let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+            let connect_path = path.clone();
+            let (done, outcome) = std::sync::mpsc::channel();
+            let _writer = std::thread::spawn(move || {
+                let mut host =
+                    connect_within(&connect_path, Duration::from_millis(200)).expect("connect");
+                let chunk = HostMessage::LoadStateChunk {
+                    seq: 0,
+                    last: None,
+                    bytes: vec![0u8; 1 << 20],
+                };
+                // Far more than any socket buffer holds: the peer reads nothing.
+                let result = (0..256).try_for_each(|_| send(&mut host, &chunk));
+                let _ = done.send(result);
+            });
+            let _peer = listener.accept().unwrap();
+
+            let result = outcome
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the send never gave up on a peer that reads nothing");
+            let _ = std::fs::remove_file(&path);
+            assert!(
+                matches!(result, Err(BridgeError::Timeout { partial: true, .. })),
+                "{result:?}"
+            );
         }
     }
 }

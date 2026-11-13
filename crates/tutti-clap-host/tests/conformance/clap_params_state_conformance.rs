@@ -35,7 +35,7 @@ use tutti_clap_test_plugin::{
     PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture,
     ProcessCapture, STATE_MAGIC,
 };
-use tutti_plugin_types::Control;
+use tutti_plugin_types::{AutomationMode, Control, StateUse};
 use tutti_plugin_types::{Normalized, ParamFlags, ParamId, ParamSteps, Request, RescanScope};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
@@ -218,6 +218,7 @@ fn read_process_capture() -> ProcessCapture {
 ///
 /// The point of the `101, 4242, 9` id table: a host returning `0, 1, 2`
 /// (index-as-id) or `9, 101, 4242` (sorted) fails here.
+/// Spec: clap.ext.params.count, clap.ext.params.get_info
 #[test]
 fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     let probe = Probe::acquire();
@@ -241,6 +242,7 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
 
 /// Every field of the CLAP `clap_param_info` the shared `ParameterInfo` models
 /// must survive the projection with its exact value.
+/// Spec: clap.ext.params.get_info
 #[test]
 fn host_projects_parameter_metadata_exactly() {
     let probe = Probe::acquire();
@@ -328,8 +330,8 @@ fn host_derives_step_count_from_the_stepped_flag() {
 }
 
 /// `CLAP_PARAM_IS_AUTOMATABLE` must reach `ParamFlags::AUTOMATABLE`.
-/// Every probe param sets it, so a host that drops the bit fails on all three;
-/// a host that hardcodes `true` is caught by the `READ_ONLY`/`BYPASS`/`HIDDEN`
+/// Every probe param but `Manual` sets it, so a host that drops the bit fails
+/// on all the others, and one that hardcodes `true` fails on `Manual`; a host that hardcodes `true` is caught by the `READ_ONLY`/`BYPASS`/`HIDDEN`
 /// half, which no probe param sets.
 ///
 /// Each assertion is `Some(_)`, not a bare bool: CLAP reports every capability
@@ -341,10 +343,17 @@ fn host_projects_parameter_flags() {
     let loaded = probe.load();
 
     for p in loaded.parameter_list(&main_thread()) {
+        let declared = probe_params()
+            .iter()
+            .find(|d| d.id == p.id().get())
+            .expect("a declared parameter")
+            .flags
+            & clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE
+            != 0;
         assert_eq!(
             p.flag(ParamFlags::AUTOMATABLE),
-            Some(true),
-            "param {} is AUTOMATABLE in the plugin's info",
+            Some(declared),
+            "param {} is AUTOMATABLE exactly as the plugin's info declares",
             p.id()
         );
         assert_eq!(
@@ -383,6 +392,7 @@ fn host_projects_parameter_flags() {
 /// The probe's `get_value` rejects an unknown id rather than clamping, so a
 /// host passing an index gets `None` for 0 and 1 — and the *wrong parameter*
 /// for 2, since id 9 sits at index 2.
+/// Spec: clap.ext.params.get_value
 #[test]
 fn host_reads_parameter_values_by_id_not_index() {
     let probe = Probe::acquire();
@@ -444,6 +454,7 @@ fn parameter_range_is_keyed_by_id_and_refuses_unknown_ids() {
 
 /// `set_parameter` on an inactive instance must reach the plugin's own value
 /// table through `params.flush`, and the value must come back on the next read.
+/// Spec: clap.ext.params.flush, clap.ext.params.get_value
 #[test]
 fn host_sets_parameter_through_flush_on_an_inactive_instance() {
     let probe = Probe::acquire();
@@ -487,6 +498,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
 ///
 /// `set_parameter` takes a *plain* value, so unlike the `ClapProcessContext::params`
 /// path there is no range scaling to apply.
+/// Spec: clap.ext.params.flush, clap.event.param_value
 #[test]
 fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
     let probe = Probe::acquire();
@@ -713,6 +725,7 @@ fn set_parameter_does_not_write_a_read_only_parameter() {
 
 /// A plugin's output `PARAM_VALUE` events must reach the caller as parameter
 /// changes, grouped by id and with the sample offset preserved.
+/// Spec: clap.event.param_value, clap.events.output.try_push
 #[test]
 fn host_decodes_plugin_emitted_param_values() {
     let probe = Probe::acquire();
@@ -739,6 +752,7 @@ fn host_decodes_plugin_emitted_param_values() {
 /// `fill_param_changes` matches only `ParamValue`; the rest go through
 /// `fill_gestures`. A host that collapses all four kinds into `PARAM_VALUE`, or
 /// drops the two gesture types, fails here.
+/// Spec: clap.event.param_gesture_begin, clap.event.param_gesture_end, clap.event.param_value, clap.event.param_mod, clap.events.output.try_push
 #[test]
 fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
     let probe = Probe::acquire();
@@ -781,6 +795,7 @@ fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
 
 /// `params.rescan(RESCAN_VALUES)` must reach the host as a *values* rescan that
 /// does not demand a restart.
+/// Spec: clap.ext.params.host.rescan
 #[test]
 fn host_records_a_values_rescan_as_not_needing_deactivation() {
     let probe = Probe::acquire();
@@ -808,6 +823,7 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
 /// The reason the scopes are separate requests rather than a bare boolean:
 /// conflating the two either restarts on every value tweak, or re-reads the
 /// parameter list underneath a running plugin.
+/// Spec: clap.ext.params.host.rescan
 #[test]
 fn host_records_a_full_rescan_as_needing_deactivation() {
     let probe = Probe::acquire();
@@ -876,6 +892,7 @@ fn taking_a_rescan_consumes_it() {
 /// `request_flush` must reach the host as a pending flush, and that flush must
 /// then actually deliver parameters **outside `process`**. Asserting only the
 /// flag would leave the second half — the part a plugin depends on — untested.
+/// Spec: clap.ext.params.host.request_flush, clap.ext.params.flush
 #[test]
 fn request_flush_round_trips_into_a_real_out_of_band_flush() {
     let probe = Probe::acquire();
@@ -921,6 +938,7 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
 /// The probe chunks its I/O and rejects a payload whose magic or length is
 /// wrong, so a host whose ostream honours only the first `write` — or whose
 /// istream restarts its offset — produces a `load` the *plugin* refuses.
+/// Spec: clap.ext.state.save, clap.ext.state.load, clap.stream.istream.read, clap.stream.ostream.write
 #[test]
 fn host_round_trips_plugin_state_through_its_streams() {
     let probe = Probe::acquire();
@@ -929,7 +947,7 @@ fn host_round_trips_plugin_state_through_its_streams() {
 
     loaded.set_plain_value(&main_thread(), p.id, 999.0);
     let saved = loaded
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("state save should succeed");
 
     // The payload must be the plugin's, not an empty or truncated stand-in.
@@ -958,7 +976,11 @@ fn host_round_trips_plugin_state_through_its_streams() {
     assert_eq!(probe.peek(p.id), Some(101.0));
 
     loaded
-        .load_state(&main_thread(), &saved)
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("state load should succeed");
     assert_eq!(
         probe.peek(p.id),
@@ -969,6 +991,7 @@ fn host_round_trips_plugin_state_through_its_streams() {
 
 /// The restore must be keyed on parameter *id*, not on position — a payload
 /// carrying several parameters must land each value on its own parameter.
+/// Spec: clap.ext.state.save, clap.ext.state.load
 #[test]
 fn state_load_restores_every_parameter_to_its_own_value() {
     let probe = Probe::acquire();
@@ -983,13 +1006,21 @@ fn state_load_restores_every_parameter_to_its_own_value() {
     for &(id, v) in &marks {
         loaded.set_plain_value(&main_thread(), id, v);
     }
-    let saved = loaded.save_state(&main_thread()).expect("save");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
     // Scramble them all, then restore.
     for &(id, _) in &marks {
         loaded.set_plain_value(&main_thread(), id, 0.0);
     }
-    loaded.load_state(&main_thread(), &saved).expect("load");
+    loaded
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("load");
 
     for &(id, v) in &marks {
         assert_eq!(
@@ -1003,13 +1034,22 @@ fn state_load_restores_every_parameter_to_its_own_value() {
 /// The plugin must see the whole payload and a clean end-of-stream — the host's
 /// `InputStream` must report exhaustion as 0, never as an error or a short read
 /// that leaves bytes behind.
+/// Spec: clap.ext.state.load, clap.stream.istream.read
 #[test]
 fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let saved = loaded.save_state(&main_thread()).expect("save");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
-    loaded.load_state(&main_thread(), &saved).expect("load");
+    loaded
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("load");
 
     let cap = probe.capture();
     assert_eq!(cap.load_calls, 1);
@@ -1038,12 +1078,18 @@ fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
 fn host_reports_a_load_failure_when_the_payload_is_corrupt() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let mut saved = loaded.save_state(&main_thread()).expect("save");
+    let mut saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
     // Flip one byte of the magic.
     saved[0] ^= 0xFF;
 
-    let result = loaded.load_state(&main_thread(), &saved);
+    let result = loaded.load_state(
+        &main_thread(),
+        &saved,
+        tutti_plugin_types::StateUse::Project,
+    );
     assert!(
         result.is_err(),
         "a payload the plugin rejects must surface as an error, not a silent \
@@ -1059,7 +1105,7 @@ fn empty_state_is_a_no_op() {
     let mut loaded = probe.load();
 
     loaded
-        .load_state(&main_thread(), &[])
+        .load_state(&main_thread(), &[], tutti_plugin_types::StateUse::Project)
         .expect("empty state is not an error");
 
     assert_eq!(
@@ -1080,6 +1126,7 @@ fn empty_state_is_a_no_op() {
 /// value that crossed the FFI rather than merely that *a* save happened. CLAP
 /// numbers the contexts 1 (preset), 2 (duplicate), 3 (project); a host passing
 /// its own enum discriminant lands on the wrong one.
+/// Spec: clap.ext.state_context.save
 #[test]
 fn host_passes_the_state_context_through_to_the_plugin() {
     let probe = Probe::acquire();
@@ -1091,8 +1138,7 @@ fn host_passes_the_state_context_through_to_the_plugin() {
 
     // (StateContext, the CLAP wire value the plugin must observe)
     let cases = [
-        (StateContext::ForPreset, 1u32),
-        (StateContext::ForDuplicate, 2),
+        (StateContext::ForDuplicate, 2u32),
         (StateContext::ForProject, 3),
     ];
     for (ctx, wire) in cases {
@@ -1115,6 +1161,7 @@ fn host_passes_the_state_context_through_to_the_plugin() {
 
 /// Loading with a context must use the context entry point too, and the payload
 /// must still round-trip.
+/// Spec: clap.ext.state_context.load
 #[test]
 fn host_loads_state_with_the_requested_context() {
     let probe = Probe::acquire();
@@ -1140,5 +1187,97 @@ fn host_loads_state_with_the_requested_context() {
         probe.peek(p.id),
         Some(3.0),
         "the context load must restore the value"
+    );
+}
+
+/// The host's automation mode reaches the plugin as `param-indication`'s raw
+/// states, per `clap_param_indication` (NONE 0, PLAYING 2, RECORDING 3):
+/// once for every automatable parameter, and never for one that is not.
+/// Spec: clap.ext.param_indication.set_automation
+#[test]
+fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    let automatable: Vec<u32> = probe_params()
+        .iter()
+        .filter(|p| p.flags & clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE != 0)
+        .map(|p| p.id)
+        .collect();
+    assert!(
+        automatable.len() < probe_params().len(),
+        "the table holds a parameter that cannot be automated"
+    );
+
+    let cases = [
+        (AutomationMode::Reading, 2u32),
+        (AutomationMode::Writing, 3),
+        (AutomationMode::ReadWriting, 3),
+        (AutomationMode::Off, 0),
+    ];
+    for (mode, raw) in cases {
+        param_reset();
+        Control::set_automation_state(&mut loaded, &main_thread(), mode);
+        let cap = probe.capture();
+        let got: Vec<(u32, u32)> = cap.indications[..cap.indication_calls as usize]
+            .iter()
+            .map(|i| (i.param_id, i.state))
+            .collect();
+        let want: Vec<(u32, u32)> = automatable.iter().map(|&id| (id, raw)).collect();
+        assert_eq!(
+            got, want,
+            "{mode:?} must reach every automatable parameter as {raw}"
+        );
+    }
+}
+
+/// The shared layer's save is a project save, and a duplicate is saved and
+/// loaded as `CLAP_STATE_CONTEXT_FOR_DUPLICATE`: the context values the plugin
+/// observes are CLAP's 3 (project) and 2 (duplicate), never the plain entry
+/// point's 0.
+#[test]
+fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+
+    let project = Control::save_state(
+        &mut loaded,
+        &main_thread(),
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("project save");
+    assert_eq!(
+        probe.capture().last_save_context,
+        3,
+        "save_state is FOR_PROJECT"
+    );
+    assert_eq!(project[STATE_MAGIC.len()], 3);
+
+    let copy = Control::save_state(&mut loaded, &main_thread(), StateUse::Duplicate)
+        .expect("duplicate save");
+    assert_eq!(
+        probe.capture().last_save_context,
+        2,
+        "a duplicate is FOR_DUPLICATE"
+    );
+    assert_eq!(copy[STATE_MAGIC.len()], 2);
+
+    Control::load_state(
+        &mut loaded,
+        &main_thread(),
+        &project,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("project load");
+    assert_eq!(
+        probe.capture().last_load_context,
+        3,
+        "load_state is FOR_PROJECT"
+    );
+    Control::load_state(&mut loaded, &main_thread(), &copy, StateUse::Duplicate)
+        .expect("duplicate load");
+    assert_eq!(
+        probe.capture().last_load_context,
+        2,
+        "a duplicate is FOR_DUPLICATE"
     );
 }

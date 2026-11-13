@@ -164,7 +164,7 @@ static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::ne
 /// `TuttiDriver` field order, `owner.rs`'s join), so the executor and its units drop on the
 /// control thread. So the `RenderHandle` of a plugin node (in its `Processor`) is never dropped
 /// on the audio thread, and its deferral here never runs there. The in-process VST2 suite pins
-/// it: `tutti-plugin-host/tests/vst2_in_process_retire.rs`.
+/// it: `tutti-plugin-host/tests/node/vst2_in_process_retire.rs`.
 pub fn defer_to_main(work: impl FnOnce(&MainThread) + Send + 'static) {
     DEFERRED
         .lock()

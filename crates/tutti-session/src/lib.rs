@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The tutti engine's API layer (design 015): the cross-crate composition.
 //!
 //! A [`Session`] is a [`Graph`] (a `tutti-graph` editor, the nodes inserted

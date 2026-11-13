@@ -335,6 +335,16 @@ mod tests {
         assert_eq!(correlate(pair(&silence, &silence)).balance, Pan::CENTER);
     }
 
+    /// The standard ballistics are a 10 ms attack and a 100 ms release: over a
+    /// step of one time constant a one-pole moves `1 - 1/e` of the way.
+    #[test]
+    fn standard_ballistics_are_ten_milliseconds_up_and_a_hundred_down() {
+        let cfg = Ballistics::standard();
+        let want = 1.0 - (-1.0f32).exp();
+        assert!((cfg.coefficient(true, Seconds(0.01)) - want).abs() < 1e-6);
+        assert!((cfg.coefficient(false, Seconds(0.1)) - want).abs() < 1e-6);
+    }
+
     /// Width is derived, so it cannot
     /// drift from the correlation it is defined from — even after smoothing.
     #[test]
@@ -468,10 +478,10 @@ mod tests {
 
     #[test]
     fn independent_noise_is_near_zero() {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
-        let left: Vec<f32> = (0..20000).map(|_| rng.gen_range(-1.0..1.0)).collect();
-        let right: Vec<f32> = (0..20000).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let left: Vec<f32> = (0..20000).map(|_| rng.random_range(-1.0..1.0)).collect();
+        let right: Vec<f32> = (0..20000).map(|_| rng.random_range(-1.0..1.0)).collect();
 
         let reading = correlate(pair(&left, &right));
         assert!(reading.correlation.get().abs() < 0.05);

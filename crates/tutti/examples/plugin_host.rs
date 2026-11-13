@@ -28,7 +28,7 @@
 
 use std::path::PathBuf;
 
-use tutti::plugin::catalog::CatalogConfig;
+use tutti::plugin::catalog::{CatalogConfig, PluginDb};
 use tutti::ump::{Address, Message, NoteNumber, U7, Ump, Voice1};
 use tutti::{
     Beat, Bounce, Catalog, ChannelLayout, Format, Hosting, MaxBlock, MidiChannel, Normalized,
@@ -47,14 +47,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = PathBuf::from(out);
     let dirs: Vec<PathBuf> = args.map(PathBuf::from).collect();
 
-    // 1. Scan. The catalog's table is in memory (no `json` feature here, so
-    //    nothing is kept between runs); the scan probes every file it finds in a
+    // 1. Scan. The catalog's table is in memory (its persistence stores nothing,
+    //    so nothing is kept between runs); the scan probes every file it finds in a
     //    `plugin-probe` subprocess, so a plugin that crashes the probe is
     //    blacklisted, not loaded into this process.
-    let mut catalog = Catalog::empty(CatalogConfig::new(
-        std::env::temp_dir().join("tutti-plugin-host-example.db"),
-        dirs,
-    ));
+    let mut catalog = Catalog::new(
+        PluginDb::new(),
+        CatalogConfig::new(std::env::temp_dir(), dirs),
+        |_| Ok(()),
+    );
     let scanned = catalog.scan()?;
     eprintln!("scanned {} plugin file(s)", scanned.scanned);
 

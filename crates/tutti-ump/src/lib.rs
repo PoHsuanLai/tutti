@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The Universal MIDI Packet (M2-104): its storage, its addresses and its
 //! messages.
 //!
@@ -13,7 +14,7 @@
 //! reads a byte stream into [`Message`]s. [`NoteId`] is a note's identity
 //! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
 //! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
-//! reassembler (a stream per Group), over a buffer the caller owns; [`SysexMessage::packets`] is its inverse,
+//! reassembler (a stream per Group), over a buffer the caller owns, as [`Sysex8Assembler`] and [`MixedDataAssembler`] are of System Exclusive 8 (a message per Group and Stream ID, [`Sysex8Message::packets`] its inverse) and Mixed Data Sets (a set per Group and MDS ID, [`MixedDataSet::packets`] its inverse); [`SysexMessage::packets`] is its inverse,
 //! the one writer of a payload as SysEx7 packets ([`Sysex7Packets::from_payload`] for plain bytes), as [`flex_text_packets`] is of a text as Flex
 //! Data packets. [`split_stream`] cuts a buffer
 //! of concatenated packets (a native-UMP transport's) into [`Ump`]s.
@@ -40,6 +41,23 @@
 //! reading it as a Note Off is translation's, and the same for scaling between
 //! the two protocols.
 //!
+//! # Messages are values
+//!
+//! A [`Message`] has no lifetime: it can be matched, stored or queued on any
+//! thread with no allocation. Every message M2-104 defines is one packet of at
+//! most 16 bytes, so text and SysEx chunks are small arrays in their variants;
+//! a whole string or SysEx message is reassembled above the codec, off the audio
+//! thread, by [`FlexTextAssembler`] and [`SysexAssembler`]. The limits on a
+//! reassembled name (Endpoint Name, Function Block Name, Product Instance Id)
+//! are not the codec's: `tutti-midi-device` checks them where it builds a name.
+//!
+//! The fields are typed ([`NoteNumber`], [`U4`], [`U7`], [`U14`], [`Pitch`] and
+//! the address types). A public `new` refuses an out-of-range raw, `of` builds
+//! one from a literal or constant and panics out of range, and `masked` is the
+//! one constructor that masks, for bits a decoder has just framed. Only the
+//! codec shifts bits: a consumer matches on [`Message`], and the graph's queues
+//! call [`Ump::is_note_off`].
+//!
 //! The crate depends on no other tutti crate and has no allocation, so the
 //! audio graph can carry packets without linking a MIDI stack.
 
@@ -57,10 +75,12 @@ mod message;
 mod midi1;
 mod midi_channel;
 mod midi_group;
+mod mixed_data;
 mod note_id;
 mod note_velocity;
 mod rpn;
 mod sysex;
+mod sysex8;
 mod ump;
 
 pub use bend_value::BendValue;
@@ -85,6 +105,10 @@ pub use message::{
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame, parse_exact};
+pub use mixed_data::{
+    MdsChunk, MdsChunkSize, MdsChunkUmps, MdsChunks, MdsIdentity, MixedDataAssembler,
+    MixedDataPackets, MixedDataSet, MixedDataStep, NotChunkSize,
+};
 pub use note_id::NoteId;
 pub use note_velocity::NoteVelocity;
 pub use rpn::Rpn;
@@ -92,4 +116,5 @@ pub use sysex::{
     SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler, SysexError, SysexMessage, SysexRef,
     SysexStep,
 };
+pub use sysex8::{Sysex8Assembler, Sysex8Message, Sysex8Packets, Sysex8Step};
 pub use ump::{Key, KeyEvent, Ump, split_stream};

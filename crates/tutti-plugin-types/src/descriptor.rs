@@ -314,11 +314,11 @@ mod tests {
 
     /// A catalog written before this field existed still loads.
     ///
-    /// The plugin database is JSON (`tutti-plugin-db`'s `database.rs`), not postcard, so it
-    /// is self-describing and an old record simply lacks the key. Without
-    /// `serde(default)` that is a parse error, and `load` quarantines the whole
-    /// file — every scan result and blacklist entry gone because one field was
-    /// added. Measured here rather than assumed.
+    /// The plugin database is stored in a self-describing format (the app's
+    /// choice, JSON here), not postcard, so an old record simply lacks the key.
+    /// Without `serde(default)` that is a parse error, and the whole database
+    /// fails to deserialize: every scan result and blacklist entry gone because
+    /// one field was added. Measured here rather than assumed.
     #[cfg(feature = "serde")]
     #[test]
     fn a_catalog_record_without_the_field_still_loads() {
@@ -326,7 +326,7 @@ mod tests {
                       "version":"1.6.0","class":"Unknown"}"#;
         let d: PluginDescriptor = serde_json::from_str(old).expect(
             "a record written before `editor` existed must still parse — the \
-             database quarantines the whole file on a parse error",
+             whole database fails to deserialize on a parse error",
         );
         assert_eq!(d.editor, EditorPresence::Unknown);
         assert_eq!(d.name, "AUDelay");

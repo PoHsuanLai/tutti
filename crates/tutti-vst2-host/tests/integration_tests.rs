@@ -591,11 +591,15 @@ fn chunk_state_round_trips() {
     let mut seeded = b"CHK\0".to_vec();
     seeded.extend_from_slice(b"probe-state-v1");
     instance
-        .load_state(&main_thread(), &seeded)
+        .load_state(
+            &main_thread(),
+            &seeded,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("probe accepts any chunk");
 
     let saved = instance
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("get_state should succeed");
     assert_eq!(
         &saved[..4],
@@ -608,7 +612,11 @@ fn chunk_state_round_trips() {
     assert_eq!(&saved[8..], b"probe-state-v1");
 
     instance
-        .load_state(&main_thread(), &saved)
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("restore should succeed");
 }
 
@@ -628,7 +636,7 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
     let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
     let saved = instance
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("no chunk support is not a failure — fall back, don't error");
     assert_eq!(
         &saved[..4],
@@ -655,7 +663,11 @@ fn restoring_a_chunk_into_a_chunkless_plugin_goes_to_the_plugin() {
     // The probe answers `effSetChunk` with 0, as a JUCE plugin does after a successful load:
     // the host must not read that as a failure.
     instance
-        .load_state(&main_thread(), &chunk)
+        .load_state(
+            &main_thread(),
+            &chunk,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("a plugin answering 0 to effSetChunk has not refused it");
 }
 
@@ -677,7 +689,7 @@ fn parameter_state_round_trips() {
     );
 
     let state = instance
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("get_state should succeed");
     assert_eq!(&state[..4], b"PRM\x01");
 
@@ -693,7 +705,11 @@ fn parameter_state_round_trips() {
     );
 
     instance
-        .load_state(&main_thread(), &state)
+        .load_state(
+            &main_thread(),
+            &state,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("set_state should succeed");
 
     assert!(
@@ -723,19 +739,39 @@ fn state_restore_rejects_malformed_blobs() {
     let mut instance = load_probe();
 
     assert!(
-        instance.load_state(&main_thread(), &[]).is_err(),
+        instance
+            .load_state(&main_thread(), &[], tutti_plugin_types::StateUse::Project)
+            .is_err(),
         "empty blob"
     );
     assert!(
-        instance.load_state(&main_thread(), &[0, 1, 2]).is_err(),
+        instance
+            .load_state(
+                &main_thread(),
+                &[0, 1, 2],
+                tutti_plugin_types::StateUse::Project
+            )
+            .is_err(),
         "short header"
     );
     assert!(
-        instance.load_state(&main_thread(), &[0xFF; 4]).is_err(),
+        instance
+            .load_state(
+                &main_thread(),
+                &[0xFF; 4],
+                tutti_plugin_types::StateUse::Project
+            )
+            .is_err(),
         "unknown header"
     );
     assert!(
-        instance.load_state(&main_thread(), b"CHK\0").is_err(),
+        instance
+            .load_state(
+                &main_thread(),
+                b"CHK\0",
+                tutti_plugin_types::StateUse::Project
+            )
+            .is_err(),
         "empty chunk payload"
     );
 
@@ -743,7 +779,9 @@ fn state_restore_rejects_malformed_blobs() {
     bad.extend_from_slice(&2i32.to_le_bytes()); // claims 2 params
     bad.extend_from_slice(&0.5f32.to_le_bytes()); // only 1 value follows
     assert!(
-        instance.load_state(&main_thread(), &bad).is_err(),
+        instance
+            .load_state(&main_thread(), &bad, tutti_plugin_types::StateUse::Project)
+            .is_err(),
         "count/length mismatch"
     );
 }
@@ -766,7 +804,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
     ]);
 
     let state = instance
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("a negative numParams should produce an empty snapshot, not an abort");
 
     assert_eq!(&state[..4], b"PRM\x01");
@@ -786,7 +824,11 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
 
     // The blob must survive the round trip it just claimed to be.
     instance
-        .load_state(&main_thread(), &state)
+        .load_state(
+            &main_thread(),
+            &state,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("a state blob this host wrote must be one it can read");
 }
 

@@ -15,6 +15,8 @@
 //! each [`Notice`] of the core as the [`BridgeMessage`] that carries it.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tutti_plugin_ipc::BridgeMessage;
@@ -22,9 +24,9 @@ use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, AutomationMode, Control, Effect, Event, Features, Hand, HostOp,
     Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized,
     Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
-    PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor,
-    RenderMode, RenderModeSupport, Request, Sample, SampleFormat, SampleRate, Samples, Seat, Stage,
-    State,
+    PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, ProcessWake,
+    Processor, RenderMode, RenderModeSupport, Request, Sample, SampleFormat, SampleRate, Samples,
+    Seat, Stage, State, StateUse,
 };
 
 mod any;
@@ -143,7 +145,7 @@ pub(crate) trait ServedPlugin: Render {
     /// # Errors
     ///
     /// The plugin cannot save, or is lost.
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
+    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>>;
     /// The plugin's state as it is, with no Processor brought home: for a
     /// caller that knows no write is waiting for a block (the session's
     /// barrier, `Session::handle_save_state`), so a save never silences one.
@@ -151,13 +153,18 @@ pub(crate) trait ServedPlugin: Render {
     /// # Errors
     ///
     /// The plugin cannot save, or is lost.
-    fn save_state_live(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
+    fn save_state_live(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>>;
     /// Restores a saved state.
     ///
     /// # Errors
     ///
     /// The plugin rejects the bytes, or is lost.
-    fn load_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()>;
+    fn load_state(
+        &mut self,
+        main: &MainThread,
+        data: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()>;
 }
 
 /// A plugin of format `F` that the server runs: its [`Lifecycle`], the
@@ -176,6 +183,9 @@ pub(crate) struct Served<F: OutOfProcess> {
     events: Vec<BridgeMessage>,
     /// A refusal was told since the last [`finish_refusals`](Self::finish_refusals).
     refused: bool,
+    /// Set by the plugin's request to be processed again (any thread), taken
+    /// by `poll`, which tells the host.
+    process_requested: Arc<AtomicBool>,
 }
 
 /// How long a plan that waits for the Processor to come home from the render
@@ -239,7 +249,7 @@ impl<F: ServerSide> Served<F> {
         sample_rate: SampleRate,
         block_size: usize,
         prefer_f64: bool,
-        state: Option<&[u8]>,
+        state: Option<(&[u8], StateUse)>,
         before_restore: &mut dyn FnMut(),
         hand: Hand<F::Processor>,
     ) -> PluginResult<(Self, Option<String>)> {
@@ -281,7 +291,7 @@ impl<F: ServerSide> Served<F> {
         sample_rate: SampleRate,
         block_size: usize,
         prefer_f64: bool,
-        state: Option<&[u8]>,
+        state: Option<(&[u8], StateUse)>,
         before_restore: &mut dyn FnMut(),
         hand: Hand<F::Processor>,
     ) -> PluginResult<(Self, Option<String>)> {
@@ -306,12 +316,25 @@ impl<F: ServerSide> Served<F> {
             edits: Vec::new(),
             events: Vec::new(),
             refused: false,
+            process_requested: Arc::new(AtomicBool::new(false)),
         };
+        // The wake outlives every activation: the plugin's host state is the
+        // loaded plugin's.
+        if let Some(control) = this.lifecycle.control() {
+            let requested = Arc::clone(&this.process_requested);
+            control.bind_wake(ProcessWake::new(move || {
+                requested.store(true, Ordering::Release);
+                crate::bell::bell().ring();
+            }));
+        }
         // Before the activation: see above.
-        let state_error = state.and_then(|data| {
+        let state_error = state.and_then(|(data, state_use)| {
             before_restore();
             match this.lifecycle.control() {
-                Some(control) => control.load_state(main, data).err().map(|e| e.to_string()),
+                Some(control) => control
+                    .load_state(main, data, state_use)
+                    .err()
+                    .map(|e| e.to_string()),
                 None => Some(lost().to_string()),
             }
         });
@@ -667,6 +690,9 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     fn poll(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
         self.serve(main);
         self.forward_edits(main);
+        if self.process_requested.swap(false, Ordering::Acquire) {
+            self.events.push(BridgeMessage::ProcessRequested);
+        }
         std::mem::take(&mut self.events)
     }
 
@@ -832,7 +858,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         self.lifecycle.control()?.current_preset(main)
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
         // A write waits in the Processor's ring until a block drains it, so a
         // save right after one would read the old value. Only the Processor
         // can deliver it, so it is brought home for the settle (the render
@@ -843,7 +869,11 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         if home {
             F::settle_edits(&mut self.lifecycle, main);
         }
-        let saved = self.lifecycle.control().ok_or_else(lost)?.save_state(main);
+        let saved = self
+            .lifecycle
+            .control()
+            .ok_or_else(lost)?
+            .save_state(main, state_use);
         if home {
             // The tick lends the Processor again.
             self.drive(main, Event::Tick);
@@ -851,14 +881,22 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         saved
     }
 
-    fn save_state_live(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.lifecycle.control().ok_or_else(lost)?.save_state(main)
-    }
-
-    fn load_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
+    fn save_state_live(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
         self.lifecycle
             .control()
             .ok_or_else(lost)?
-            .load_state(main, data)
+            .save_state(main, state_use)
+    }
+
+    fn load_state(
+        &mut self,
+        main: &MainThread,
+        data: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()> {
+        self.lifecycle
+            .control()
+            .ok_or_else(lost)?
+            .load_state(main, data, state_use)
     }
 }

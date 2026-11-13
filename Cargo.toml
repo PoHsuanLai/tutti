@@ -42,14 +42,14 @@ members = [
     # it carries. Depends on no workspace crate, so `tutti-graph` can carry a
     # packet without a MIDI codec.
     "crates/tutti-ump",
-    # MIDI 1.0 to MIDI 2.0 widening and the M2-115 scaling (design 017 §4 and §6);
+    # MIDI 1.0 to MIDI 2.0 widening and the M2-115 scaling;
     # depends on `tutti-ump` alone.
     "crates/tutti-midi-protocol",
     # What a note-driven instrument decides before it makes sound, as one pure
     # step (`Voicing::step`): channel state, the note table, the note gate.
     "crates/tutti-voicing",
-    # The pure core of MIDI device detection (design 017 §5): `DeviceId` and
-    # `DeviceTable`. Depends on no workspace crate.
+    # The pure core of MIDI device detection and the MIDI-CI codec: `DeviceId` and
+    # `DeviceTable`. Depends on `tutti-ump` alone.
     "crates/tutti-midi-device",
     "crates/tutti-graph",
     "crates/tutti-modulation",
@@ -153,6 +153,9 @@ missing_panics_doc = "warn"
 # Shared-dep pins the members inherit via `workspace = true`.
 [workspace.dependencies]
 thiserror = "2"
+# The W3C UI Events key vocabulary (`Key`, `Code`, `Modifiers`, `KeyState`) a plugin editor's
+# key events are written in, so a windowing frontend converts name for name.
+keyboard-types = { version = "0.8.3", default-features = false }
 
 # Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —
 # dead, never with a `[[bench]]` — while the vendored fundsp fork was already

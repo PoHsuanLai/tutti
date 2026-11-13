@@ -409,8 +409,7 @@ mod tests {
         }
     }
 
-    /// The controls given to a constructor are the cells' values, all six of them (the
-    /// knee and makeup too, which the old positional constructors left to builders).
+    /// The controls given to a constructor are the cells' values, all six of them.
     #[test]
     fn the_constructor_controls_reach_the_cells() {
         let c = CompressorControls {

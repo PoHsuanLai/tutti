@@ -33,7 +33,7 @@ tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 atomic_float = "1.1"
 # The in-process node's stack channel tables.
 arrayvec = "0.7"
-parking_lot = "0.12"
+parking_lot = "0.13"
 tracing = "0.1"
 
 [dev-dependencies]

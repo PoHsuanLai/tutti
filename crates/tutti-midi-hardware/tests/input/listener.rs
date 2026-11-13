@@ -1,8 +1,7 @@
-//! What the loopback examples share: the graph's side of the input, played on
-//! the wall clock.
+//! The graph's side of the input, played on the wall clock.
 //!
 //! A port's events reach the graph through an event inlet, each on its frame.
-//! An example has no engine, so [`Listener`] is one: it adds the inlets of the
+//! A loopback test has no engine, so [`Listener`] is one: it adds the inlets of the
 //! ports opened, writes the block clock the way the engine does (the OS time a
 //! block begins and its frame) and renders blocks as real time passes, logging
 //! what the inlets emit.

@@ -40,7 +40,7 @@ use tutti::session::Master;
 use tutti::{
     Beat, Bounce, Bpm, ChannelLayout, Format, MaxBlock, MidiChannel, MidiFile, NodeKey, NoteNumber,
     Pcm, PluginLoadRequest, PluginRef, PluginState, Range, Root, SampleRate, Samples, Session,
-    SessionEvent, Tick, TimedMidiEvent, Track,
+    SessionEvent, Tick, Track,
 };
 
 const RATE: SampleRate = SampleRate::SR_48K;
@@ -85,14 +85,7 @@ fn play<M: Master>(
     s.set_tempo_map(file.tempo_map().clone())?;
     // Its messages on the file's timeline (a format 2 file has none), as the
     // packets they are: the clip translates them when it is loaded.
-    let timeline = file
-        .timeline()
-        .ok_or("a format 2 file has no one timeline")?
-        .map(|(beat, packet)| {
-            TimedMidiEvent::new(beat, packet).ok_or("a beat of the file is not finite")
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    s.midi().play_clip(synth, timeline)?;
+    s.midi().play_file(synth, Beat(0.0), &file)?;
     report(s.update());
 
     // Everything else is derived: the clock is the project's tempo map from

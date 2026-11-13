@@ -1000,12 +1000,18 @@ impl MidiFile {
     /// Every event of the file's one timeline (a Clip File's
     /// [`header`](Track::header) is not on it) as `(position, event)`, in
     /// order: the tracks merged by tick, ties in track order and then in the
-    /// track's own order. `None` for a format 2 file, whose sequences are
+    /// track's own order.
+    ///
+    /// # Errors
+    ///
+    /// [`NoCommonTimeline`] for a format 2 file, whose sequences are
     /// independent and have no common timeline to merge on: read each
     /// [`Track`] with [`beat_at`](Self::beat_at).
-    pub fn events(&self) -> Option<impl Iterator<Item = (Beat, &FileEvent)>> {
+    pub fn events(
+        &self,
+    ) -> std::result::Result<impl Iterator<Item = (Beat, &FileEvent)>, NoCommonTimeline> {
         if self.container == Container::Smf(SmfFormat::Sequential) {
-            return None;
+            return Err(NoCommonTimeline);
         }
         let mut all: Vec<(Tick, &FileEvent)> = self
             .tracks
@@ -1014,19 +1020,23 @@ impl MidiFile {
             .collect();
         // Stable: equal ticks keep track order, then the track's own.
         all.sort_by_key(|&(tick, _)| tick);
-        Some(
-            all.into_iter()
-                .map(move |(tick, event)| (self.beat_at(tick), event)),
-        )
+        Ok(all
+            .into_iter()
+            .map(move |(tick, event)| (self.beat_at(tick), event)))
     }
 }
 
 impl MidiFile {
     /// The file's one timeline as the packets a clip plays, `(Beat, Ump)` in
     /// order ([`events`](Self::events)' order), for
-    /// `Midi::play_clip` (each pair through `TimedMidiEvent::new`). `None` for a format 2
-    /// file, which has no one timeline: read each [`Track`] with
+    /// `Midi::play_clip` (each pair through `TimedMidiEvent::new`), or
+    /// `Midi::play_file`, which does it. Every beat is finite. Refused for a
+    /// format 2 file, which has no one timeline: read each [`Track`] with
     /// [`Track::timeline`].
+    ///
+    /// # Errors
+    ///
+    /// [`NoCommonTimeline`] for a format 2 file.
     ///
     /// The rule, one event at a time:
     ///
@@ -1052,17 +1062,25 @@ impl MidiFile {
     ///
     /// let track = Track::new().note(Tick(480), 480, MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
     /// let file = MidiFile::smf(SmfFormat::SingleTrack, 480, vec![track])?;
-    /// let clip: Vec<(Beat, Ump)> = file.timeline().unwrap().collect();
+    /// let clip: Vec<(Beat, Ump)> = file.timeline()?.collect();
     /// assert_eq!(clip.len(), 2);
     /// assert_eq!(clip[0].0, Beat(1.0));
     /// assert_eq!(clip[1].0, Beat(2.0));
     /// # Ok::<(), tutti_midi_file::Error>(())
     /// ```
-    pub fn timeline(&self) -> Option<impl Iterator<Item = (Beat, Ump)> + '_> {
+    pub fn timeline(
+        &self,
+    ) -> std::result::Result<impl Iterator<Item = (Beat, Ump)> + '_, NoCommonTimeline> {
         let events = self.events()?;
-        Some(events.flat_map(|(beat, event)| packets(event).map(move |ump| (beat, ump))))
+        Ok(events.flat_map(|(beat, event)| packets(event).map(move |ump| (beat, ump))))
     }
 }
+
+/// A format 2 file has no one timeline: its sequences are independent
+/// ([`MidiFile::events`], [`MidiFile::timeline`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a format 2 file has no common timeline: its sequences are independent")]
+pub struct NoCommonTimeline;
 
 /// The packets of one event, by [`MidiFile::timeline`]'s rule.
 enum EventPackets<'a> {

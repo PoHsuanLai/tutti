@@ -29,6 +29,14 @@ impl TimedMidiEvent {
         beat.get().is_finite().then_some(Self { event, beat })
     }
 
+    /// This event moved `by` later (earlier for a negative duration), or
+    /// `None` when the moved beat is not finite.
+    #[inline]
+    #[must_use]
+    pub fn shifted(self, by: tutti_types::BeatDuration) -> Option<Self> {
+        Self::new(Beat(self.beat.get() + by.get()), self.event)
+    }
+
     /// The event itself. It carries no offset in storage: [`beat`](Self::beat)
     /// is the authority, and a reader stamps the offset from it at poll time.
     #[inline]

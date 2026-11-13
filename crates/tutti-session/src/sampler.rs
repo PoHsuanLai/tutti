@@ -37,7 +37,7 @@ pub struct SamplerLoad(u64);
 pub const STREAM_ABOVE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Which tier [`Session::load_clip`] plays a file from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Residency {
     /// By the file's size: resident up to [`STREAM_ABOVE_BYTES`] of decoded
     /// audio, streamed past it. Resident whatever its size when the file

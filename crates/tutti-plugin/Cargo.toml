@@ -3,10 +3,9 @@ name = "tutti-plugin"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Plugin hosting for Tutti: loads VST3, CLAP and AU plugins in isolated subprocesses (VST2 in-process) as audio-graph nodes"
+description = "Hosts VST3, CLAP, Audio Unit and VST2 plugins in a tutti audio graph, out of process where the format allows"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-plugin"
 readme = "README.md"
 keywords = ["audio", "plugin", "vst3", "clap", "host"]
 categories = ["multimedia::audio"]
@@ -17,17 +16,12 @@ workspace = true
 [features]
 # Nothing on by default. This is a library: persistence and format support are
 # the embedding app's choices, so every one of them is opt-in and the default
-# build pulls no `serde_json` and no format FFI.
+# build pulls no serde and no format FFI.
 default = []
 
-# Opt-in versioned JSON database file (`tutti-plugin-db`'s `save` and `load`)
-# behind `Catalog::open_db` and `Catalog::save`. Leave it off and build a
-# `PluginDb` from your own store.
-json = ["tutti-plugin-db/json"]
-
 # `PluginRef` and `PluginState` derive `Serialize` and `Deserialize`: a project
-# file keeps them.
-serde = ["dep:serde"]
+# file keeps them. So does the catalog's `PluginDb`: the app picks the format.
+serde = ["dep:serde", "tutti-plugin-db/serde"]
 
 # In-process GUI support (loads plugin library in host for editor only)
 vst3 = ["dep:tutti-vst3-host"]
@@ -73,6 +67,8 @@ tutti-plugin-db = { path = "../tutti-plugin-db" }
 # Logging
 tracing = "0.1"
 
+thiserror.workspace = true
+
 serde = { version = "1", features = ["derive"], optional = true }
 
 # In-process plugin GUI (optional — loads plugin library for editor only).
@@ -90,7 +86,7 @@ tempfile = "3"
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # The tests' mock listeners.
-parking_lot = "0.12"
+parking_lot = "0.13"
 # The node tests' mock plugin-server speaks the wire by hand.
 interprocess = { version = "2" }
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
@@ -124,15 +120,15 @@ assert_no_alloc = { version = "1", default-features = false }
 # globals see the host's calls. The same pair, for the same reasons, as
 # `tutti-vst2-host`'s dev-dependencies; here it lets a test assert what the
 # *node* dispatched rather than what the instance API does.
-libloading = "0.8"
+libloading.workspace = true
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # The reference CLAP plugin the OUT-OF-PROCESS correctness suites drive. A
 # dev-dependency for the artifact, not the API: cargo builds its cdylib in this
 # same `cargo test` (no nested cargo, no target-dir-lock deadlock) and the
-# tests find it beside the test binary. Unlike the VST2 probe, nothing here links
-# its rlib — the plugin is loaded by a `plugin-server` subprocess, so the only
-# thing this crate needs is the file on disk.
-tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+# tests find it beside the test binary. The served suites load it in a
+# `plugin-server` subprocess and need only the file on disk; `clap_wake` also
+# loads it in process and reaches its switches through `ClapProbe` (`probe`).
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin", features = ["probe"] }
 
 # `kill(pid, 0)`, so `real_plugin_pressure`'s leak check asks about the exact
 # `plugin-server` pids it launched rather than spawning `pgrep` to scan the

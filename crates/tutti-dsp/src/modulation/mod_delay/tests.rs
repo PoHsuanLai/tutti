@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{BusTopology, Db, Feedback, Hz, Phase, PhaseIncrement, SampleRate, Seconds};
 
 use super::*;
@@ -69,9 +69,9 @@ impl FamilyCase for ModDelayFamily {
         let mut rng = StdRng::seed_from_u64(12);
         all.extend((0..32).map(|_| {
             controls(
-                rng.gen_range(0.01..30.0),
-                rng.gen_range(0.0..=hi),
-                rng.gen_range(0.0..=fmax),
+                rng.random_range(0.01..30.0),
+                rng.random_range(0.0..=hi),
+                rng.random_range(0.0..=fmax),
             )
         }));
         all

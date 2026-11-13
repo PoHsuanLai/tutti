@@ -13,6 +13,9 @@ use crate::{
     host::Host,
 };
 
+/// `kVstLangEnglish`, the host's one language: the values are 1-based, so `0` names none.
+const LANGUAGE_ENGLISH: isize = 1;
+
 /// Copy a string into a destination buffer.
 ///
 /// String will be cut at `max` characters.
@@ -131,8 +134,14 @@ pub fn host_dispatch(
         Ok(OpCode::IOChanged) => return host.io_changed() as isize,
         Ok(OpCode::GetInputLatency) => return host.get_input_latency(),
         Ok(OpCode::GetOutputLatency) => return host.get_output_latency(),
-        Ok(OpCode::GetCurrentProcessLevel) => return host.get_process_level(),
-        Ok(OpCode::GetAutomationState) => return host.get_automation_state(),
+        Ok(OpCode::GetCurrentProcessLevel) => {
+            // The ABI carries the level as an integer: the typed `ProcessLevel` stops here.
+            return host.get_process_level() as isize;
+        }
+        Ok(OpCode::GetAutomationState) => {
+            // The ABI carries the state as an integer: the typed `AutomationState` stops here.
+            return host.get_automation_state() as isize;
+        }
 
         // `audioMasterUpdateDisplay`. A plugin fires this after changing preset
         // or program from its own editor: the parameter set the host is showing
@@ -154,11 +163,15 @@ pub fn host_dispatch(
         // ever asked for.
         Ok(OpCode::CurrentId) => return host.get_plugin_id() as isize,
 
-        // `audioMasterGetLanguage`. `HostLanguage` is 1-based (`English = 1`),
-        // so the fall-through's `0` is not a language — a plugin indexing a
-        // string table by it reads slot 0. English is the honest answer for a
-        // host with no localization rather than a placeholder.
-        Ok(OpCode::GetLanguage) => return api::HostLanguage::English as isize,
+        // `audioMasterGetLanguage`. `kVstLangEnglish` is 1 and the values are
+        // 1-based, so a `0` is not a language: a plugin indexing a string table
+        // by it reads slot 0. English is the honest answer for a host with no
+        // localization.
+        Ok(OpCode::GetLanguage) => return LANGUAGE_ENGLISH,
+
+        // `audioMasterOpenFileSelector` / `audioMasterCloseFileSelector`. The
+        // host has no file dialog; `0` declines, and `canDo` answers No.
+        Ok(OpCode::OpenFileSelector | OpCode::CloseFileSelector) => return 0,
 
         _ => {
             trace!("VST: Got unimplemented host opcode ({:?})", opcode);

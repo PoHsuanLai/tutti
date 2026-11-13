@@ -594,9 +594,10 @@ fn plugin_output_at_the_pool_budget_groups_without_allocating() {
     output.set_param_room(budget, &ids);
     let mut changes = ParameterChanges::reserved(PARAMS as usize, room);
     let (floor, _) = ParameterChanges::point_layout(PARAMS as usize, room);
-    let push = |output: &mut OutputEventList, event: &ClapEvent| {
-        let list = raw_out(output);
-        // SAFETY: `list` is `output`'s own vtable, live for the call, and
+    // The raw list is made once, outside the gate: building it allocates.
+    let list = raw_out(&mut output);
+    let push = |event: &ClapEvent| {
+        // SAFETY: `list` is `output`'s own vtable, live for the test, and
         // `event` a whole `PARAM_VALUE` event.
         unsafe { (*list).try_push.expect("try_push")(list, event.header()) }
     };
@@ -610,7 +611,7 @@ fn plugin_output_at_the_pool_budget_groups_without_allocating() {
                     continue;
                 }
                 let e = ClapEvent::param_value(3 * k as u32, id, pooled_value(id, k));
-                assert!(push(output, &e));
+                assert!(push(&e));
             }
         }
         output.fill_param_changes(changes)

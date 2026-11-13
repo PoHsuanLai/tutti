@@ -89,7 +89,7 @@ pub struct ScheduleFull {
 }
 
 /// One command in flight.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scheduled {
     at: At,
     command: TransportCommand,

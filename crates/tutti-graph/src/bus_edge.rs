@@ -117,7 +117,7 @@ pub struct BusFeed {
 }
 
 /// Which side of a node a bus was asked for on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BusSide {
     /// An output bus: a source's.
     Output,

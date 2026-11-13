@@ -46,14 +46,14 @@ pub use processor::IpcProcessor;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tutti_plugin_types::{
     BridgeError, BridgeResult, ChunkCounters, Controller, Load, LoadStage, Loaded, LoadedPlugin,
     MainThread, ParameterChanges, ParameterQueue, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Prepare, Refused, Reopen, Request, RestartRules, SampleFormat, SampleRate, Samples,
-    StateUse, Stuck,
+    PluginTail, Prepare, ProcessWake, Refused, Reopen, Request, RestartRules, SampleFormat,
+    SampleRate, Samples, StateUse, Stuck,
 };
 use tutti_types::AtomicSampleRate;
 
@@ -157,6 +157,9 @@ struct Events {
     tail: Mutex<PluginTail>,
     requests: Mutex<Vec<Request>>,
     forward: Mutex<Option<BridgeListener>>,
+    /// What the plugin's request to be processed again raises, from the
+    /// bridge's thread ([`Control::bind_wake`](tutti_plugin_types::Control::bind_wake)).
+    wake: OnceLock<ProcessWake>,
 }
 
 impl Events {
@@ -169,6 +172,11 @@ impl Events {
             BridgeEvent::TailChanged { tail } => {
                 *self.tail.lock().unwrap_or_else(PoisonError::into_inner) = *tail;
                 self.ask(Request::TailChanged);
+            }
+            BridgeEvent::ProcessRequested => {
+                if let Some(wake) = self.wake.get() {
+                    wake.raise();
+                }
             }
             _ => {}
         }
@@ -320,6 +328,7 @@ impl Ipc {
             tail: Mutex::new(loaded.tail),
             requests: Mutex::new(Vec::new()),
             forward: Mutex::new(None),
+            wake: OnceLock::new(),
         });
         let listening = Arc::clone(&events);
         bridge.set_listener(Some(Arc::new(move |event| listening.on(event))));

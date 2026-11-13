@@ -853,7 +853,7 @@ impl std::ops::Deref for SortedEvents<'_> {
 }
 
 /// Why [`EventWriter::push`] refused an event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EventRejected {
     /// The port's preallocated buffer is full: at its declared capacity for

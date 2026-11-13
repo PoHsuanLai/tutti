@@ -1104,7 +1104,7 @@ impl Voicing {
             Rpn::MODULATION_DEPTH_RANGE => {
                 self.channels[channel.index()].set_modulation_range(value);
             }
-            // Tuning Program and Bank Select (MTS): the channel's "current"
+            // Tuning Program and Bank Select (MTS): the channel's current
             // tuning, effective at once on its sounding notes. A number the core
             // holds nothing for is ignored.
             Rpn::TUNING_PROGRAM_SELECT | Rpn::TUNING_BANK_SELECT => {
@@ -3161,6 +3161,7 @@ mod tests {
     /// referenced Note Number stop responding, so until then the tail of the
     /// first strike (released by the second on the same key) follows a value
     /// with the second; after the Detach neither does.
+    /// Spec: m2-104/7.4.5#1
     #[test]
     fn a_tail_follows_a_per_note_value_until_a_detach() {
         let mut s = Sim::new(POLY);
@@ -3216,6 +3217,7 @@ mod tests {
     /// Controllers, and later changes apply to future notes only.
     /// Detach, then Pitch, then Note On on the same number: the Pitch reaches
     /// the new voice (2) and never the detached one (1).
+    /// Spec: m2-104/7.4.5#5
     #[test]
     fn after_a_detach_the_next_pitch_is_for_the_next_note_alone() {
         let mut s = Sim::new(POLY);
@@ -3244,6 +3246,7 @@ mod tests {
     /// Detach function, then performs the Reset function: the playing note
     /// keeps its values (it is told nothing), and the defaults apply to the
     /// next note, which starts with no per-note controller.
+    /// Spec: m2-104/7.4.5#2, m2-104/7.4.5#4
     #[test]
     fn detach_and_reset_together_freeze_the_note_and_default_the_next() {
         let mut s = Sim::new(POLY);
@@ -3261,6 +3264,7 @@ mod tests {
     /// M2-104 section 7.4.5, Reset: all Per-Note Controllers on the referenced
     /// Note Number are reset to their default values. Without Detach the
     /// playing note is reset too, and the next note starts at the defaults.
+    /// Spec: m2-104/7.4.5#3, m2-104/7.4.5#5
     #[test]
     fn a_reset_returns_the_playing_note_and_the_next_one_to_defaults() {
         let mut s = Sim::new(POLY);

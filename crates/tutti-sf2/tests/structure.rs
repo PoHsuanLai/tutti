@@ -1,11 +1,12 @@
 //! A structurally defective file is a clean load error, never a panic; a
-//! preset with no zone is ignored; and the DWORDs of a header are unsigned.
-//! SF2 2.04 sections 7.2, 7.6 and 7.10.
+//! preset with no zone is ignored; an unused generator number does not decide
+//! the global zone; and the DWORDs of a header are unsigned.
+//! SF2 2.04 sections 7.2, 7.6, 7.10 and 8.1.2.
 
 use std::io::Cursor;
 
 use tutti_fixtures::sf2::{Inst, Preset, bytes};
-use tutti_sf2::{Error, SoundFont};
+use tutti_sf2::{Error, InstrumentGenerator, SoundFont};
 use tutti_types::SampleRate;
 
 fn preset(name: &'static str, program: u16, zones: usize) -> Preset {
@@ -101,7 +102,7 @@ fn a_generator_index_past_the_generators_is_a_clean_error() {
     assert!(matches!(error, Error::InvalidGeneratorList), "{error:?}");
 }
 
-/// 7.2: "any preset with no zones should be ignored". It is not in the font and
+/// 7.2: a preset with no zones is ignored. It is not in the font and
 /// not an error; the presets after it keep their own.
 #[test]
 fn a_preset_with_no_zone_is_ignored() {
@@ -173,8 +174,7 @@ fn the_dwords_of_a_header_are_unsigned() {
     let _ = SHDR_RECORD;
 }
 
-/// 7.2: `dwLibrary`, `dwGenre` and `dwMorphology` are DWORDs "preserved as
-/// read".
+/// 7.2: `dwLibrary`, `dwGenre` and `dwMorphology` are DWORDs kept as read.
 #[test]
 fn the_reserved_dwords_of_a_preset_are_preserved_as_read() {
     let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -188,4 +188,30 @@ fn the_reserved_dwords_of_a_preset_are_preserved_as_read() {
         (p.library(), p.genre(), p.morphology()),
         (u32::MAX, 0x8000_0001, 7)
     );
+}
+
+/// 8.1.2: an unused generator number is ignored, so the global-zone test (a first
+/// instrument zone whose last generator is not `sampleID`) reads the zone without it.
+/// The one zone here is `pan 4, sampleID 0`, then number 14: it is local and plays,
+/// where reading the raw last record would make it a global zone and leave the
+/// instrument with no region.
+#[test]
+fn an_unused_number_after_the_sample_id_leaves_the_zone_local() {
+    let mut file = bytes(
+        &[preset("a", 0, 1)],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![(17, 4)]],
+        }],
+    );
+    // The builder writes the zone as `pan 4, sampleModes 1, sampleID 0`.
+    let igen = chunk(&file, b"igen");
+    put(&mut file, igen + 4, 53, 2);
+    put(&mut file, igen + 6, 0, 2);
+    put(&mut file, igen + 8, 14, 2);
+    put(&mut file, igen + 10, 0, 2);
+    let font = load(file).expect("it loads");
+    let regions = font.instruments()[0].regions();
+    assert_eq!(regions.len(), 1, "the zone is local");
+    assert_eq!(regions[0].generator(InstrumentGenerator::Pan), 4);
 }

@@ -15,7 +15,7 @@
 use std::fmt;
 
 /// What a thread asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PriorityRequest {
     /// The highest priority the scheduler grants the thread's current
     /// policy: nice -20 on Linux, `HIGHEST` on Windows. For a thread with a
@@ -29,7 +29,7 @@ pub enum PriorityRequest {
 }
 
 /// The scheduling class the thread ended up in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Scheduling {
     /// A real-time policy (`SCHED_FIFO`/`SCHED_RR`): the thread already was
     /// one, and kept it. This call never moves a thread into one.

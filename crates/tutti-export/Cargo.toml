@@ -3,12 +3,11 @@ name = "tutti-export"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Offline audio export and rendering for Tutti audio engine"
+description = "Renders an audio graph to files or memory, faster or slower than real time"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-export"
 readme = "README.md"
-keywords = ["audio", "export", "render", "wav", "flac", "aiff", "ogg"]
+keywords = ["audio", "export", "render", "wav", "flac"]
 categories = ["multimedia::audio"]
 
 [lints]

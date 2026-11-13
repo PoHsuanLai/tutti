@@ -11,6 +11,7 @@ fn collect<const W: usize>(bytes: &[u8]) -> Vec<(Form, [u8; W])> {
 
 // The longest text of each kind, from the packet counts of M2-104 §7.1.4,
 // §7.1.5 and §7.1.9.
+/// Spec: m2-104/7.1.4#3, m2-104/7.1.5#6, m2-104/7.1.9#5
 #[test]
 fn a_name_holds_exactly_what_its_packets_carry() {
     assert!(EndpointName::new(&"a".repeat(98)).is_some());
@@ -57,6 +58,7 @@ fn a_name_is_held_in_nfc() {
     assert!(EndpointName::new(&"e\u{301}".repeat(50)).is_none());
 }
 
+/// Spec: m2-104/1.8#2
 #[test]
 fn a_leading_byte_order_mark_is_refused() {
     let bom = "\u{FEFF}Piano";
@@ -68,6 +70,7 @@ fn a_leading_byte_order_mark_is_refused() {
 }
 
 // §7.1.5: ASCII 32 to 126.
+/// Spec: m2-104/7.1.5#4
 #[test]
 fn an_instance_id_is_printable_ascii() {
     assert!(ProductInstanceId::new(" ~").is_some());
@@ -78,6 +81,7 @@ fn an_instance_id_is_printable_ascii() {
 
 // §7.1.4: a message under 15 bytes is Complete, else a Start, up to five
 // Continue and an End.
+/// Spec: m2-104/7.1.4#3, m2-104/7.1.4#4, m2-104/7.1.4#5
 #[test]
 fn packets_are_complete_start_continue_end() {
     assert!(collect::<14>(b"").is_empty());
@@ -158,6 +162,7 @@ fn the_packets_of_a_name_reassemble_to_it() {
 }
 
 // §7.1.4, §7.1.5, §7.1.9: a name at its limit is seven, seven and three packets.
+/// Spec: m2-104/7.1.4#3, m2-104/7.1.5#6, m2-104/7.1.9#5
 #[test]
 fn the_longest_names_are_seven_seven_and_three_packets() {
     assert_eq!(

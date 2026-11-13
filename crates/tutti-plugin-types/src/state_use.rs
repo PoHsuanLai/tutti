@@ -5,7 +5,7 @@
 /// A plugin that distinguishes the two (CLAP's `state-context`) may keep
 /// things in a project's state that a copy of the instance must not share.
 /// Every other format has one state and ignores the use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StateUse {
     /// The state of the instance itself, saved with or restored from a project.

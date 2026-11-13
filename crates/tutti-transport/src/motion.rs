@@ -42,7 +42,7 @@ pub use super::fsm::MotionState;
 /// The transport's only real fade decision: ramp the gain to zero first, or
 /// switch on the next buffer. A parameter rather than a variant per verb, so
 /// adding a new motion verb does not double the event list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FadeOut {
     /// Fade the audio out over the declick window. What a user-facing
     /// button should almost always be.
@@ -53,7 +53,7 @@ pub enum FadeOut {
 }
 
 /// What the transport should be doing once a locate lands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Then {
     /// Stay (or become) stopped at the target.
     #[default]

@@ -3,7 +3,8 @@ name = "tutti-plugin-probe"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "plugin-probe: loads a plugin just far enough to read its descriptor, writes it to a result file and exits"
+description = "A small program tutti runs to read a plugin's details without risking the host"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 keywords = ["audio", "plugin", "vst3", "clap", "scan"]
@@ -51,7 +52,7 @@ tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # `tests/vst2_shell.rs`: a VST2 file of two plugins.
 tutti-vst2-shell-plugin = { path = "../../testing/tutti-vst2-shell-plugin" }
-libloading = "0.8"
+libloading.workspace = true
 tutti-vst2-host = { path = "../tutti-vst2-host" }
 tutti-types = { path = "../tutti-types" }
 tempfile = "3"

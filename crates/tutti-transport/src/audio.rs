@@ -29,7 +29,7 @@ pub struct AudioTaken;
 /// What applying a command did to the output: the transport has moved at once
 /// either way, and a declicked stop or seek leaves the fade to the caller,
 /// as gain, on the frame the command landed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[must_use]
 pub enum Applied {
     /// No fade: the output continues.

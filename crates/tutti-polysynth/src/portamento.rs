@@ -1,8 +1,7 @@
 //! Portamento: one pitch glide, stepped per sample.
 //!
 //! Each voice has its own, so a note's glide moves that voice and no other (M1
-//! p.16: a Portamento Control "does not affect the pitch of other currently
-//! sounding voices"). A glide is a factor on the voice's pitch
+//! p.16). A glide is a factor on the voice's pitch
 //! ([`Portamento::ratio`]), not a pitch of its own, so it composes with a
 //! per-note pitch and the channel's bend instead of replacing them.
 //!

@@ -2,23 +2,24 @@ use std::io::Read;
 
 use crate::binary_reader::ReadExt;
 use crate::error::Error;
+use crate::generator_type::GeneratorType;
 
+/// One record of a generator list. `kind` is `None` for a number SF2 2.04 section
+/// 8.1.2 leaves unused or reserved: the record keeps its position, which the zone
+/// bags index, and is dropped when a zone is cut out of the list.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub(crate) struct Generator {
-    pub(crate) generator_type: u16,
-    pub(crate) value: u16,
+    pub(crate) kind: Option<GeneratorType>,
+    pub(crate) value: i16,
 }
 
 impl Generator {
     fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
-        let generator_type = reader.read_u16()?;
-        let value = reader.read_u16()?;
+        let kind = GeneratorType::from_id(reader.read_u16()?);
+        let value = reader.read_i16()?;
 
-        Ok(Self {
-            generator_type,
-            value,
-        })
+        Ok(Self { kind, value })
     }
 
     pub(crate) fn read_from_chunk<R: Read>(

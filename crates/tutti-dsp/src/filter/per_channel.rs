@@ -253,7 +253,7 @@ impl<C: ChannelRecurrence> Recurrence for PerChannel<C> {
 #[cfg(test)]
 pub(crate) mod tests {
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use tutti_types::SampleRate;
 
     use super::*;
@@ -278,8 +278,8 @@ pub(crate) mod tests {
         let mut rng = StdRng::seed_from_u64(11);
         for _ in 0..300 {
             let (a, b) = (
-                all[rng.gen_range(0..all.len())],
-                all[rng.gen_range(0..all.len())],
+                all[rng.random_range(0..all.len())],
+                all[rng.random_range(0..all.len())],
             );
             let (from, to) = (
                 d.recurrence.coeffs(&d.member(&a, rate)),

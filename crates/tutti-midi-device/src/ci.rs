@@ -28,6 +28,7 @@ mod device;
 mod discovery;
 mod endpoint;
 mod initiator;
+mod pe;
 mod profile;
 mod read;
 mod status;
@@ -43,6 +44,16 @@ pub use endpoint::{CiInstanceId, EndpointInfo, EndpointStatus};
 pub use initiator::{
     Outcome, PROFILE_TIMEOUT, ProfileAction, ProfileChange, ProfileEntry, ProfileInitiator,
     ProfileTable, ProfileTarget, Request, RequestError,
+};
+pub use pe::{
+    BodyLimit, BufferLimit, ChunkNo, ChunkPosition, ChunkTotal, MediaType, NotInRange, NotValid,
+    PE_MAX_CHUNK_DATA_LEN, PE_MAX_HEADER_LEN, PE_TIMEOUT, PeAnswer, PeBodyError, PeBuffered,
+    PeChunk, PeChunkError, PeDecimal, PeEncoding, PeEndedBy, PeExpired, PeExtra, PeFlowControl,
+    PeHeader, PeHeaderError, PeHeaderTooLong, PeMessage, PeMessageKind, PePage, PeReassembler,
+    PeReassemblyError, PeReassemblyLimits, PeReceived, PeRefused, PeReply, PeRequest, PeRequestId,
+    PeReservedProperty, PeSignal, PeStatus, PeStep, PeSubscription, PeTerminator, PeTransaction,
+    PeUpdateCommand, PeValue, PropertyName, ResourceId, ResourceName, StreamLimit, SubscribeId,
+    TimeoutWait, decode_body, encode_body, mcoded7, split_message,
 };
 pub use profile::{
     ChannelsDetail, DetailsData, InquiryTarget, ListTooLong, ManufacturerProfile, ProfileChannels,

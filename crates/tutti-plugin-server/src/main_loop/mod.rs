@@ -167,6 +167,13 @@ pub(crate) fn serve_every(
             .until_due(now)
             .map_or(ticker.wait(now), |due| due.min(ticker.wait(now)));
         let readable = backend.wait(transport, main, timeout, &wakeups, &mut ready)?;
+        // A plugin called the host from a thread of its own (its `request_process`,
+        // say) and rang the bell: what it raised leaves now, not on the tick.
+        if crate::bell::bell().take() {
+            for event in session.drain_async_events(main) {
+                transport.send(&event)?;
+            }
+        }
         let now = Instant::now();
         if !ready.is_empty() || wakeups.is_due(now) {
             for event in session.wake(main, &ready, now) {

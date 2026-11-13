@@ -1384,7 +1384,7 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
 /// needs the first reply to miss its budget, and 120 ms against a ~2 ms budget
 /// is not a race on any machine.
 fn bridge_with_first_block_stalled(stall: std::time::Duration) -> Rig {
-    stamped_server(stall, true)
+    stamped_server(stall, true, SampleRate::SR_48K)
 }
 
 /// The doubling server of [`bridge_with_server_stall`], with two additions the
@@ -1400,7 +1400,7 @@ fn bridge_with_first_block_stalled(stall: std::time::Duration) -> Rig {
 /// own sequence — so this stamp is the only way a test can observe *which block*
 /// an arriving frame belongs to. `offset` is a label here and nothing
 /// interprets it as a position.
-fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
+fn stamped_server(stall: std::time::Duration, first_only: bool, rate: SampleRate) -> Rig {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
     let path = unique_socket_path();
@@ -1418,7 +1418,7 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
         Arc::clone(host_slab.slab()),
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         Some(no_editor),
-        SampleRate::SR_48K,
+        rate,
     )
     .unwrap();
 
@@ -1544,8 +1544,15 @@ impl crate::Chunks for StatusProbe {
 #[test]
 fn a_blocks_status_reaches_the_host_with_its_chunk() {
     let _lock = machine_lock();
-    let (bridge, _thread, _server, slab) =
-        bridge_with_first_block_stalled(std::time::Duration::ZERO);
+    // The bridge's per-block reply budget is four block periods, capped at
+    // 50 ms. At 4 kHz a 64-frame block is 16 ms long, so the budget is the
+    // cap: a loaded machine does not abandon a block, which is not what this
+    // test is about.
+    let (bridge, _thread, _server, slab) = stamped_server(
+        std::time::Duration::ZERO,
+        true,
+        SampleRate::new(4_000.0).unwrap(),
+    );
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE, slab);
     let silence = vec![0.0f32; BATCH_SIZE];
     let mut out = Planar::new();
@@ -1559,13 +1566,21 @@ fn a_blocks_status_reaches_the_host_with_its_chunk() {
             &mut out.outs(),
             &mut host,
         );
-        // The reply is read off the socket by the bridge thread, after the
-        // audio is published: wait for it, so the next collect finds it.
+        // The bridge thread counts a reply once it is available to the next
+        // collect: wait for it.
         let deadline = std::time::Instant::now() + WAIT_BUDGET;
-        while bridge.block_counts().replies < block && std::time::Instant::now() < deadline {
+        while bridge.block_counts().replies < block {
+            let counts = bridge.block_counts();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "block {block}'s reply never arrived within {WAIT_BUDGET:?} \
+                 ({} blocks abandoned, {} replies); a block the bridge abandoned \
+                 on its reply budget carries no status",
+                counts.abandoned,
+                counts.replies,
+            );
             std::thread::sleep(std::time::Duration::from_micros(200));
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(
         host.said,

@@ -6,7 +6,7 @@
 //! it publishes the claiming thread's identity.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::thread::ThreadId;
 
 use tutti_plugin_types::MainThread;
@@ -137,6 +137,28 @@ impl ThreadRoles {
             roles: self,
             _guard: guard,
         }
+    }
+
+    /// Claims the `[audio-thread]` role if no other claim is held, and never
+    /// waits: `None` while a claim is held, by the main thread's lifecycle
+    /// and parameter calls or by another audio entry. What the audio thread
+    /// takes, so a main-thread call never stalls a block. A poisoned lock is
+    /// taken as is, as [`claim`](Self::claim) takes it.
+    pub fn try_claim(&self) -> Option<AudioClaim<'_>> {
+        let guard = match self.lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        // `Release` pairs with the `Acquire` in `is_audio_thread`.
+        self.audio.store(
+            thread_id_hash(std::thread::current().id()),
+            Ordering::Release,
+        );
+        Some(AudioClaim {
+            roles: self,
+            _guard: guard,
+        })
     }
 
     /// Whether the calling thread holds the audio claim.

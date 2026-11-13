@@ -29,13 +29,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// It was 4 against a queue of 128, so blocks 5..=128 each allocated.
 ///
-/// **Plus two**, because a payload out of the pool is not only in the queue
-/// (doc 027 D10). At most `COMMAND_QUEUE_SIZE` are queued; one more is in the
-/// bridge thread's hands, popped and not yet recycled (it recycles once the
-/// message is built); and one more in the audio thread's, acquired before the
-/// push that a full queue refuses (and the refusal recycles it). With the
-/// queue alone the 129th and 130th allocated on the audio thread, again
-/// exactly when the bridge had fallen behind.
+/// **Plus two**, because a payload out of the pool is not only in the queue. At most
+/// `COMMAND_QUEUE_SIZE` are queued; one more is in the bridge thread's hands, popped and not yet
+/// recycled (it recycles once the message is built); and one more in the audio thread's, acquired
+/// before the push that a full queue refuses (and the refusal recycles it). With the queue alone
+/// the 129th and 130th allocated on the audio thread, again exactly when the bridge had fallen
+/// behind.
 const POOL_CAPACITY: usize = super::channels::COMMAND_QUEUE_SIZE + 2;
 
 /// Parameter-change buffers in circulation between the audio thread and the
@@ -271,7 +270,7 @@ mod tests {
 
     /// **Every payload that can be out at once comes from the pool**: a full
     /// queue, the one the bridge thread holds, and the one the audio thread
-    /// holds before its refused push, all without allocating (doc 027 D10).
+    /// holds before its refused push, all without allocating.
     #[test]
     fn a_full_queue_and_both_threads_take_payloads_without_allocating() {
         let pool = PayloadPool::new();

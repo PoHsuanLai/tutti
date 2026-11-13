@@ -2,10 +2,10 @@
 //! audio thread in steady state.
 //!
 //! The plugin is `audio-probe`, which allocates nothing in `process`, so an
-//! allocation in the guarded region is the host's. The global allocator is
-//! swapped for `AllocDisabler` binary-wide and an allocation in the guarded
-//! region **aborts the process**, so this is its own test binary and nextest
-//! (one process per test) reports an abort as the failure of that case.
+//! allocation in the guarded region is the host's. The binary's global
+//! allocator is `AllocDisabler` (in `main.rs`) and an allocation in the guarded
+//! region **aborts the process**, so nextest (one process per test) reports an
+//! abort as the failure of that case.
 //! `audio-probe` is built by `build.rs` on the `conformance` feature, which
 //! this crate's dev-dependency on itself turns on; a missing plugin is a panic
 //! naming the build command, never a skip.
@@ -27,7 +27,6 @@
 use std::path::Path;
 use tutti_graph::UmpAt;
 
-use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_types::Samples;
@@ -42,13 +41,8 @@ fn at(k: u32) -> Offset {
     Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
 }
 
-#[path = "support/active.rs"]
-mod active;
 #[allow(unused_imports)]
-use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
+use crate::active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 
 /// Loads `audio-probe` from the directory `build.rs` builds it into, at 64
 /// frames per block.

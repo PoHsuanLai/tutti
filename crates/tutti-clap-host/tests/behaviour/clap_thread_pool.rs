@@ -7,26 +7,21 @@
 //! Its switches live in the image the host loaded, so they are reached across
 //! the `dlopen` seam, and set before load (the extension is read then).
 //!
-//! The `#[global_allocator]` makes `assert_no_alloc` abort on an allocation;
+//! The binary's `#[global_allocator]` (in `main.rs`) makes `assert_no_alloc` abort on an allocation;
 //! without it the no-alloc test below would pass unconditionally.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use assert_no_alloc::AllocDisabler;
 use tutti_clap_ffi::GraphPool;
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::ThreadPoolCapture;
 use tutti_graph::Pool;
 use tutti_graph::WorkerPool;
 
-mod support;
-use support::active::{Activate, Active, ActiveExt};
-use support::main_thread;
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
+use crate::support::active::{Activate, Active, ActiveExt};
+use crate::support::main_thread;
 
 /// The probe's switches are process-global; one test drives them at a time.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());

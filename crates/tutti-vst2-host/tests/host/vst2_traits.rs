@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
@@ -20,9 +20,6 @@ use tutti_plugin_types::{
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Vst2Controller, Vst2Loaded, Vst2Processor};
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 

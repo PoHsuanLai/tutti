@@ -1,8 +1,8 @@
 //! RT-safety regression: the host's audio-thread operations must not allocate
 //! in steady state.
 //!
-//! Mirrors `tutti-clap-host/tests/clap_process_no_alloc.rs` and
-//! `tutti-vst3-host/tests/vst3_process_no_alloc.rs`. macOS-only; uses Apple's
+//! Mirrors `tutti-clap-host/tests/behaviour/clap_process_no_alloc.rs` and
+//! `tutti-vst3-host/tests/conformance/vst3_process_no_alloc.rs`. macOS-only; uses Apple's
 //! stock units (always installed), so the suite runs anywhere the AU framework
 //! is available — no third-party plugin required, and the macOS CI job runs it
 //! with the rest of the workspace.
@@ -45,28 +45,17 @@
 //! guard) while calibrating this file — which is also what confirms the
 //! allocator hook is armed at all, the property every assertion here rests on.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::Mutex;
 use tutti_graph::UmpAt;
 
 use crate::support::au::Au;
-use assert_no_alloc::AllocDisabler;
 use tutti_au_host::BusDirection;
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 
-mod support;
-use support::corpus;
+use crate::support::corpus;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
-
-// The `assert_no_alloc` checks below are inert unless `AllocDisabler` is the
-// active global allocator for THIS test binary. The `#[cfg(test)]` decl in
-// `src/lib.rs` does not apply to integration tests, so declare it here —
-// matching `tutti-vst3-host` / `tutti-clap-host`.
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 /// Serializes AU instantiation across these tests.
 ///

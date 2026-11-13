@@ -1415,7 +1415,7 @@ fn test_host_audio_ports_config_rescan() {
 /// and a call from outside the plugin's `process` must be rejected. No
 /// process call is in flight here (and no pool), so every request must be
 /// rejected — a `true` tells the plugin its tasks completed when nothing ran
-/// them. The served case is `tests/clap_thread_pool.rs`.
+/// them. The served case is `tests/behaviour/clap_thread_pool.rs`.
 #[test]
 fn test_host_thread_pool_request_exec_rejects() {
     use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};

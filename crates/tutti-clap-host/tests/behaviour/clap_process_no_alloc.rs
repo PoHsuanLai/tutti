@@ -1,7 +1,7 @@
 //! RT-safety: `ClapProcessor::process` must not allocate on the audio thread — in
 //! steady state, and in the awkward corners a real plugin reaches.
 //!
-//! The `#[global_allocator]` below is what detects; `assert_no_alloc` only sets
+//! The binary's `#[global_allocator]` (in `main.rs`) is what detects; `assert_no_alloc` only sets
 //! a thread-local flag, so **without the allocator registered the gate is a
 //! silent no-op that passes unconditionally**. A violation aborts the process,
 //! so a failure here is a SIGABRT naming the test, not an assertion message.
@@ -22,18 +22,13 @@ use std::path::Path;
 use std::sync::Mutex;
 use tutti_graph::UmpAt;
 
-use assert_no_alloc::AllocDisabler;
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, TransportInfo};
 use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_types::Samples;
 
-mod support;
-use support::active::{Activate, Active, ActiveExt};
-use support::main_thread;
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
+use crate::support::active::{Activate, Active, ActiveExt};
+use crate::support::main_thread;
 
 /// The RT-hazard switches are process-global (one loaded image per test
 /// process), so the whole set-switches → drive → assert sequence is serialized.

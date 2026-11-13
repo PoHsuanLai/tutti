@@ -88,14 +88,6 @@ path = "tests/conformance/main.rs"
 name = "host"
 path = "tests/host/main.rs"
 
-[[test]]
-name = "vst3_process_no_alloc"
-path = "tests/vst3_process_no_alloc.rs"
-
-[[test]]
-name = "vst3_traits"
-path = "tests/vst3_traits.rs"
-
 # docs.rs renders with every feature on, or the feature-gated half of the
 # public API would be missing.
 [package.metadata.docs.rs]

@@ -12,7 +12,6 @@
 //! means the in-process backend (or the `vst2-host` codec) introduced a
 //! per-block alloc.
 
-use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::Load;
@@ -23,9 +22,6 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 

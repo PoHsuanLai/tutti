@@ -13,19 +13,13 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-mod support;
-use support::active::{Activate, Active, ActiveExt};
-use support::main_thread;
+use crate::support::active::{Activate, Active, ActiveExt};
+use crate::support::main_thread;
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_clap_host::{AudioBuffer32, ClapError, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{PORTS_64BIT_INPUTS, PORTS_64BIT_OUTPUTS, REPORTED_TAIL_SAMPLES};
 use tutti_plugin_types::PluginError;
-
-// Makes `assert_no_alloc` abort on an allocation; without it the no-alloc
-// assertions below would pass unconditionally.
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 

@@ -15,16 +15,10 @@
 
 #![cfg(feature = "clap")]
 
-use assert_no_alloc::AllocDisabler;
 use tutti_nodes::automation::Exponent;
 use tutti_types::MaxBlock;
 
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
-
-#[path = "support/clap_probe.rs"]
-mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, load_probe, render};
+use crate::clap_probe::{ProbeEnv, Rig, load_probe, render};
 use tutti_fixtures::machine_lock;
 
 use std::sync::Arc;

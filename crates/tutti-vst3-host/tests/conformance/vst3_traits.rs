@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Loaded, MaxBlock, Normalized, ParamId,
     PluginError, PluginIo, PluginTail, Prepare, ProcessContext, ProcessOutput, Processor,
@@ -17,9 +17,6 @@ use tutti_plugin_types::{
 };
 use tutti_vst3_host::host::conformance::plugin_restart_component;
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 

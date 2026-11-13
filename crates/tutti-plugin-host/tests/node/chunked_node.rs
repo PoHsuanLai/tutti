@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
-use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::main_thread;
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
@@ -34,9 +33,6 @@ use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
 use tutti_types::{Beat, Bpm, Frame, SampleRate};
 use tutti_ump::{MidiChannel, MidiGroup};
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 const SR: SampleRate = SampleRate::SR_48K;
 /// Quarter notes per frame at 120 BPM and 48 kHz.

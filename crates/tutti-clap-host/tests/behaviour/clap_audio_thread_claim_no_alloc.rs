@@ -22,20 +22,16 @@
 //!
 //! # On `assert_no_alloc`
 //!
-//! The `#[global_allocator]` below is what does the detecting;
+//! The binary's `#[global_allocator]` (in `main.rs`) is what does the detecting;
 //! `assert_no_alloc` only sets a thread-local flag, so without the allocator
 //! registered it is a silent no-op that passes unconditionally. A violation
 //! aborts the process rather than unwinding, so a failure here is a SIGABRT
 //! naming this test, not a normal assertion failure.
 
-use assert_no_alloc::AllocDisabler;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use tutti_clap_host::HostState;
 use tutti_fixtures::main_thread;
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 /// Claiming repeatedly from one thread must not allocate.
 ///

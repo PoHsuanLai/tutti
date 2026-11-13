@@ -688,6 +688,10 @@ mod tests {
     const PARAMS_SRC: &str =
         "pub struct clap_plugin_params { pub flush: Option<unsafe extern \"C\" fn()>, }";
 
+    const VST3_ROW: &str = "vst3.IComponent.setActive | plugin | stable | | vst/ivstcomponent.h | host activates or deactivates the component | | |";
+    const VST3_HEADER_PATH: &str = "vendor/vst3-sdk/pluginterfaces/vst/ivstcomponent.h";
+    const VST3_SRC: &str = "/** [plug imp] */\nclass IComponent : public IPluginBase { public: virtual tresult PLUGIN_API setActive (TBool state) = 0; };\nDECLARE_CLASS_IID (IComponent, 1, 2, 3, 4)\n";
+
     fn inv(rows: &[&str]) -> String {
         rows.join("\n")
     }
@@ -700,6 +704,10 @@ mod tests {
             Err("no specs".to_owned()),
             Require::default(),
         )
+    }
+
+    fn has_out(r: &Report, needle: &str) -> bool {
+        r.out.iter().any(|l| l.contains(needle))
     }
 
     fn has(r: &Report, needle: &str) -> bool {
@@ -750,7 +758,8 @@ mod tests {
         };
         assert!(parse_row(&base(0, "a.b")).is_ok());
         for (i, v, why) in [
-            (0, "A.b", "id"),
+            (0, "a b", "id"),
+            (0, "a.b!", "id"),
             (0, "", "id"),
             (1, "Host", "side"),
             (1, "", "side"),
@@ -992,7 +1001,12 @@ mod tests {
 
     #[test]
     fn without_the_midi_text_the_check_is_skipped_unless_require_all() {
-        let lock = Mem::with(&[("Cargo.lock", LOCK), ("testing/conformance/clap.txt", ROW)]);
+        let lock = Mem::with(&[
+            ("Cargo.lock", LOCK),
+            ("testing/conformance/clap.txt", ROW),
+            ("testing/conformance/vst3.txt", VST3_ROW),
+            (VST3_HEADER_PATH, VST3_SRC),
+        ]);
         let sys = Mem::with(&[("src/ext/params.rs", PARAMS_SRC)]);
         let run = |v: Option<&str>| {
             check(
@@ -1015,6 +1029,46 @@ mod tests {
             &run(Some("require-all")),
             "M2-104 inventory not checked: TUTTI_MIDI_SPECS"
         ));
+    }
+
+    #[test]
+    fn the_vst3_rows_are_held_to_the_sdk_headers() {
+        let go = |row: &str| {
+            check(
+                &Mem::with(&[
+                    ("testing/conformance/vst3.txt", row),
+                    (VST3_HEADER_PATH, VST3_SRC),
+                ]),
+                Err("absent".to_owned()),
+                Err("no specs".to_owned()),
+                Require::default(),
+            )
+        };
+        assert!(go(VST3_ROW).passed());
+        let wrong_side = VST3_ROW.replace("| plugin |", "| host |");
+        assert!(has(&go(&wrong_side), "is not what the VST3 SDK declares"));
+        assert!(has(&go(""), "declares `vst3.IComponent.setActive`"));
+        let r = run(&[("testing/conformance/vst3.txt", VST3_ROW)]);
+        assert!(r.passed() && has_out(&r, "vst3 inventory not checked"));
+    }
+
+    #[test]
+    fn vst3_regeneration_keeps_hand_columns_and_reports_added_and_removed() {
+        let items = vst3_sdk::extract(&Mem::with(&[(VST3_HEADER_PATH, VST3_SRC)])).unwrap();
+        let kept = format!(
+            "{} | host | draft | required | stale | my words | | |\nvst3.IGone.x | core | stable | | | old | | |\n",
+            items[0].id
+        );
+        let (out, added, removed) = regenerate_vst3(Some(&kept), &items).unwrap();
+        let row = out.lines().find(|l| l.starts_with(&items[0].id)).unwrap();
+        assert_eq!(
+            row,
+            "vst3.IComponent.setActive | plugin | stable | required | vst/ivstcomponent.h | my words |  |  |"
+        );
+        assert!(added.is_empty());
+        assert_eq!(removed, ["vst3.IGone.x"]);
+        let (_, added, _) = regenerate_vst3(None, &items).unwrap();
+        assert_eq!(added, ["vst3.IComponent.setActive"]);
     }
 
     #[test]

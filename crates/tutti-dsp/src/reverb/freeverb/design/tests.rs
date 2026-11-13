@@ -299,7 +299,7 @@ use crate::Ring;
 /// decay: it has no decay control to cap.
 #[test]
 fn the_bounds_are_the_largest_design() {
-    let reach = Reach::at(SampleRate::SR_48K).unwrap();
+    let reach = Reach::at(SampleRate::SR_48K);
     let b = FreeverbFamily.reach(&reach);
     let room_one = FreeverbFamily.member(&controls(1.0, 0.0), SampleRate::SR_48K);
     assert_eq!(b, NetworkCapacity::need(&room_one, reach.floor()));

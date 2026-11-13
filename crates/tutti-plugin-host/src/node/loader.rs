@@ -79,9 +79,7 @@ where
     F: InProcess + 'static,
     F::Processor: 'static,
 {
-    // `.get()` here and not at the caller: this is the last hop before
-    // `Instance::load`, which takes a bare rate into the activation.
-    let sample_rate = sample_rate.into().get();
+    let sample_rate = sample_rate.into();
     let (inner, rt, restored) =
         Instance::<F>::load(main, path, load, sample_rate, MAX_BLOCK_SIZE, restore).map_err(
             |(stage, reason)| BridgeError::LoadFailed {
@@ -98,7 +96,7 @@ where
         pending_sample_rate,
         descriptor,
         loaded,
-    } = wire(main, inner, rt, origin, sample_rate, 0).map_err(|(stage, reason)| {
+    } = wire(main, inner, rt, origin, sample_rate.get(), 0).map_err(|(stage, reason)| {
         BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage,

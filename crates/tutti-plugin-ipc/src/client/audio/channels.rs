@@ -15,7 +15,7 @@ use crossbeam::queue::ArrayQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_rt::Doorbell;
-use tutti_types::SampleRate;
+use tutti_types::{AtomicSampleRate, SampleRate};
 
 /// How many commands the audio thread can queue before `push_command` fails.
 /// This also bounds how many `Process` payloads can be outstanding at once,
@@ -43,7 +43,7 @@ pub(super) struct Channels {
     /// keeps the two from drifting apart: two independently-derived periods let
     /// a constant sit orders of magnitude off the real block period, which
     /// starves the command queue.
-    sample_rate_bits: Arc<AtomicU64>,
+    sample_rate: Arc<AtomicSampleRate>,
     /// How many owed replies the drain has taken back off the socket, ever.
     ///
     /// Pure instrumentation, and the only externally visible evidence that the
@@ -83,7 +83,7 @@ impl Channels {
             audio_responses: Arc::new(ArrayQueue::new(RESPONSE_QUEUE_SIZE)),
             newest_seq: Arc::new(AtomicU64::new(0)),
             bell: Arc::new(Doorbell::new()),
-            sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.get().to_bits())),
+            sample_rate: Arc::new(AtomicSampleRate::new(sample_rate)),
             settled: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(AtomicU64::new(0)),
             replies: Arc::new(AtomicU64::new(0)),
@@ -95,15 +95,11 @@ impl Channels {
     /// The current sample rate. `Relaxed` suffices: it only sizes a timeout, so
     /// reading a value one block stale is harmless.
     pub(super) fn sample_rate(&self) -> SampleRate {
-        SampleRate::new(f64::from_bits(
-            self.sample_rate_bits.load(Ordering::Relaxed),
-        ))
-        .unwrap_or(SampleRate::DEFAULT)
+        self.sample_rate.load(Ordering::Relaxed)
     }
 
     pub(super) fn set_sample_rate(&self, rate: SampleRate) {
-        self.sample_rate_bits
-            .store(rate.get().to_bits(), Ordering::Relaxed);
+        self.sample_rate.store(rate, Ordering::Relaxed);
     }
 
     /// Park the bridge thread until a command is queued or `stop` says to

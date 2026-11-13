@@ -292,7 +292,7 @@ mod tests {
 
     fn at(rate: f64) -> Prepare {
         let block = MaxBlock::new(Samples(64)).expect("a block");
-        Prepare::new(SampleRate::of(rate), block).expect("a rate")
+        Prepare::new(SampleRate::of(rate), block)
     }
 
     /// A refused `reconfigure` reports the refusal and leaves the activation

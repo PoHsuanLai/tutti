@@ -52,15 +52,6 @@ fn every_fft_size_yields_a_cola_grid() {
     }
 }
 
-/// A zero or negative rate must not reach `cola`, which rejects it.
-#[test]
-fn non_positive_sample_rate_does_not_panic() {
-    for rate in [0.0, -44_100.0] {
-        let u = Unit::new(<SampleRate as tutti_types::Unit>::from_raw(rate));
-        assert_eq!(u.channels(), ChannelLayout::STEREO);
-    }
-}
-
 /// Every input lands in a single turn, and differs from the input by a whole
 /// number of turns -- the two halves of what wrapping means.
 ///

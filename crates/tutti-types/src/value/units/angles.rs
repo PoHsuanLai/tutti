@@ -278,11 +278,7 @@ impl PhaseIncrement {
     /// drifts audibly over a long note.
     #[inline]
     pub fn per_sample(frequency: Hz, sample_rate: impl Into<SampleRate>) -> PhaseIncrement {
-        let sample_rate = sample_rate.into().get();
-        if sample_rate <= 0.0 {
-            return PhaseIncrement(0.0);
-        }
-        PhaseIncrement((frequency.0 as f64 / sample_rate) as f32)
+        PhaseIncrement((frequency.0 as f64 / sample_rate.into().get()) as f32)
     }
 }
 

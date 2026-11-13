@@ -64,8 +64,7 @@ impl AlignConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
-    /// NaN; [`Error::EmptyFrequencyRange`] when `low` is negative or not below
+    /// [`Error::EmptyFrequencyRange`] when `low` is negative or not below
     /// `high`; [`Error::AboveNyquist`] when `high` exceeds half the rate.
     pub fn with_band(
         mut self,
@@ -74,13 +73,6 @@ impl AlignConfig {
         high: impl Into<Hz>,
     ) -> Result<Self> {
         let (sample_rate, low, high) = (sample_rate.into(), low.into(), high.into());
-        #[allow(
-            clippy::neg_cmp_op_on_partial_ord,
-            reason = "the negation is the NaN guard: `x <= 0.0` would admit a NaN rate"
-        )]
-        if !(sample_rate.get() > 0.0) {
-            return Err(Error::NonPositiveSampleRate);
-        }
         if !(low.get() >= 0.0 && low < high) {
             return Err(Error::EmptyFrequencyRange {
                 min: low,
@@ -751,13 +743,5 @@ mod tests {
             cfg.with_band(SampleRate::SR_48K, Hz::new(500.0), Hz::new(100.0)),
             Err(Error::EmptyFrequencyRange { .. })
         ));
-        assert_eq!(
-            cfg.with_band(
-                <SampleRate as tutti_types::Unit>::from_raw(0.0),
-                Hz::new(100.0),
-                Hz::new(200.0)
-            ),
-            Err(Error::NonPositiveSampleRate)
-        );
     }
 }

@@ -24,7 +24,7 @@ use tutti_graph::UmpAt;
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
+use tutti_plugin_types::{MaxBlock, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
@@ -380,30 +380,18 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
     assert!(inst.loaded().is_active());
 }
 
-/// A rate or block that is none cannot be built into a `Prepare`, and a valid
-/// activation after the refused ones is the first resume. (The refusal reaching
-/// the plugin is tested through the server loaders, which take a bare rate.)
+/// A block of no frames cannot be built into a `Prepare` (a rate is a
+/// `SampleRate`, which cannot be none), and a valid activation is the first
+/// resume. (The refusal reaching the plugin is tested through the server
+/// loaders.)
 #[test]
-fn a_prepare_that_is_no_rate_cannot_be_built() {
+fn a_prepare_with_no_block_cannot_be_built() {
     let _guard = lock_probe();
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     let loaded = Vst2Loaded::load(&main_thread(), &path).expect("the probe loads");
 
-    for (rate, block) in [
-        (0.0, BLOCK),
-        (f64::NAN, BLOCK),
-        (-48_000.0, BLOCK),
-        (48_000.0, 0),
-    ] {
-        let prepare = MaxBlock::new(Samples(block)).and_then(|block| {
-            Prepare::new(<SampleRate as tutti_types::Unit>::from_raw(rate), block)
-        });
-        assert!(
-            prepare.is_none(),
-            "{rate} Hz in {block} frames must be refused"
-        );
-    }
+    assert!(MaxBlock::new(Samples(0)).is_none(), "no frames is no block");
 
     let inst = Active::activate(loaded, active::prepare_for(SAMPLE_RATE, BLOCK, false))
         .expect("the same plugin activates at a valid rate");

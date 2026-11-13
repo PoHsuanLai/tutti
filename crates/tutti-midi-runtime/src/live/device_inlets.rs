@@ -419,12 +419,14 @@ impl DeviceInput {
         let rebuild = match self.map.as_mut() {
             None => true,
             Some(map) => {
-                (map.rate() != at.rate() && map.set_rate(at.rate()).is_err())
-                    || map.observe(reading) == Observed::Rejected
+                if map.rate() != at.rate() {
+                    map.set_rate(at.rate());
+                }
+                map.observe(reading) == Observed::Rejected
             }
         };
         if rebuild {
-            self.map = ClockMap::new(at.rate(), reading);
+            self.map = Some(ClockMap::new(at.rate(), reading));
         }
     }
 }

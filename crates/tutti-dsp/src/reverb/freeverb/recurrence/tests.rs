@@ -57,7 +57,7 @@ fn a_moving_room_glides_its_combs() {
     let d = FreeverbFamily;
     let mut r = d.realized();
     r.prepare(
-        &d.reach(&Reach::at(rate).unwrap()),
+        &d.reach(&Reach::at(rate)),
         &Setup {
             rate,
             max_block: MaxBlock::of(tutti_types::Samples(CHUNK)),

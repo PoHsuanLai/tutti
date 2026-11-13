@@ -39,8 +39,6 @@ pub enum CrossoverError {
         /// The count asked for.
         channels: usize,
     },
-    /// The sample rate is not finite and positive.
-    SampleRate,
     /// A frequency is not finite, or not above 0 Hz.
     Frequency {
         /// Which crossover.
@@ -69,7 +67,6 @@ impl fmt::Display for CrossoverError {
                 write!(f, "{bands} bands: {min} to {max} are supported")
             }
             Self::Channels { channels } => write!(f, "{channels} channels is not supported"),
-            Self::SampleRate => f.write_str("the sample rate must be finite and positive"),
             Self::Frequency { index, hz } => write!(
                 f,
                 "crossover {index} is {} Hz: it must be finite and above 0",
@@ -107,9 +104,6 @@ pub(super) fn check_bands(bands: usize) -> Result<(), CrossoverError> {
 /// Checks a whole set: count, then each frequency in order.
 pub(super) fn validate(frequencies: &[Hz], rate: SampleRate) -> Result<(), CrossoverError> {
     check_bands(frequencies.len() + 1)?;
-    if !(rate.get().is_finite() && rate.get() > 0.0) {
-        return Err(CrossoverError::SampleRate);
-    }
     let nyquist = rate.nyquist();
     for (index, &hz) in frequencies.iter().enumerate() {
         if !(hz.get().is_finite() && hz.get() > 0.0) {

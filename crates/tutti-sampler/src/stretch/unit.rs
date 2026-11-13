@@ -195,16 +195,10 @@ impl Unit {
     ///
     /// `cola` is fallible in general — a hop that does not divide its window,
     /// or overlaps under 75%, cannot reconstruct. Neither is reachable here:
-    /// `FftSize::hop` is exactly `size / 4`. The rate is clamped because a
-    /// non-positive one is the remaining rejectable input, and a stretcher that
-    /// panicked on a device reporting 0 Hz would be worse than one that runs at
-    /// a nominal rate.
+    /// `FftSize::hop` is exactly `size / 4`.
     pub(super) fn geometry(sample_rate: impl Into<SampleRate>, fft_size: FftSize) -> StftGeometry {
-        // At least 1 Hz; an infinite rate stands at the largest finite one.
-        let rate =
-            SampleRate::new(sample_rate.into().get().max(1.0)).unwrap_or(SampleRate::of(f64::MAX));
-        StftGeometry::cola(rate, fft_size.size(), fft_size.hop())
-            .expect("BUG: FftSize hop is size/4, which is COLA-valid at a positive rate")
+        StftGeometry::cola(sample_rate, fft_size.size(), fft_size.hop())
+            .expect("BUG: FftSize hop is size/4, which is COLA-valid")
     }
 
     /// Channel width — the number of vocoders, and this unit's in/out arity.

@@ -39,9 +39,7 @@ fn freeverb_design_allocates_nothing() {
     for rate in [44_100.0, 48_000.0, 192_000.0] {
         design_allocates_nothing(&FreeverbFamily, &controls, SampleRate::of(rate));
         let bounds = allocations(|| {
-            std::hint::black_box(
-                FreeverbFamily.reach(&tutti_dsp::Reach::at(SampleRate::of(rate)).unwrap()),
-            );
+            std::hint::black_box(FreeverbFamily.reach(&tutti_dsp::Reach::at(SampleRate::of(rate))));
         });
         assert_eq!(bounds, 0, "bounds allocated");
     }
@@ -60,7 +58,7 @@ fn freeverb_retargets_and_renders_without_allocating() {
     let design = FreeverbFamily;
     let mut realization = design.realized();
     realization.prepare(
-        &design.reach(&Reach::at(rate).unwrap()),
+        &design.reach(&Reach::at(rate)),
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),
@@ -119,7 +117,7 @@ fn the_fdn_retargets_and_renders_without_allocating() {
     let design = FdnFamily::new(8, Seconds(8.0), true).unwrap();
     let mut realization = design.realized();
     realization.prepare(
-        &design.reach(&Reach::at(rate).unwrap()),
+        &design.reach(&Reach::at(rate)),
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),

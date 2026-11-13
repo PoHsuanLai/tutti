@@ -448,7 +448,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
-        &d.reach(&Reach::at(rate).unwrap()),
+        &d.reach(&Reach::at(rate)),
         &Setup {
             rate,
             max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
@@ -508,7 +508,7 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
-        &d.reach(&Reach::at(rate).unwrap()),
+        &d.reach(&Reach::at(rate)),
         &Setup {
             rate,
             max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
@@ -560,7 +560,7 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
 fn the_bounds_dominate_where_rounding_matters() {
     let d = FdnFamily::default();
     let rate = SampleRate::SR_192K;
-    let reach = Reach::at(rate).unwrap();
+    let reach = Reach::at(rate);
     let bound = d.reach(&reach);
     for k in 1..100 {
         let c = FdnControls {

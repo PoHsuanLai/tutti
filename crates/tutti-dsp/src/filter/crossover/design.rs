@@ -42,7 +42,7 @@ impl CrossoverControls {
     /// # Errors
     ///
     /// [`CrossoverError`]: a band
-    /// count outside 2 to 6, a rate that is not finite and positive, or
+    /// count outside 2 to 6, or
     /// frequencies that are not finite, above 0, strictly increasing and below
     /// Nyquist.
     pub fn new(frequencies: &[Hz], rate: SampleRate) -> Result<Self, CrossoverError> {

@@ -77,7 +77,7 @@ pub use angles::{ArcDegrees, Azimuth, Direction, Elevation, Phase, PhaseIncremen
 pub use level::{Amplitude, Db};
 pub use measures::{Confidence, Correlation, Pan, Velocity};
 pub use ratios::{Cents, CompressionRatio, Q, Resonance, Semitones};
-pub use time::{Hz, SampleRate, Seconds};
+pub use time::{AtomicSampleRate, Hz, SampleRate, SampleRateOutOfRange, Seconds};
 pub use transport::{
     Beat, BeatDuration, Bpm, BpmOutOfRange, PlaybackRate, ReadRate, SamplePosition, SrcRatio,
     StretchFactor,

@@ -28,7 +28,6 @@
 use crate::support::au::Au;
 use tutti_au_host::component::{AuComponentInfo, AuType, enumerate_components_of_type};
 use tutti_au_host::{AuLayoutTag, BusDirection};
-use tutti_types::Samples;
 
 /// One Apple Audio Unit, addressed by the codes AudioToolbox registers it under.
 #[derive(Debug, Clone, Copy)]

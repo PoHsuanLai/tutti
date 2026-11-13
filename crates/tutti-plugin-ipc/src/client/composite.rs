@@ -629,7 +629,13 @@ impl PluginBridge {
 
     /// The editor's main-thread tick: applies what the realtime setters queued
     /// for it and sends the audio instance the user's edits.
+    ///
+    /// It also has the bridge read what the server said while no command was
+    /// waiting ([`AudioBridge::drain_unsolicited`]), so a plugin that asks to
+    /// be processed again while its node is parked reaches the node's wake
+    /// within a tick or two.
     pub fn editor_idle(&self, main: &MainThread) {
+        self.audio.drain_unsolicited();
         if self.load_editor.is_none() {
             if let Ok(mut remote) = self.remote.lock() {
                 remote.editor_idle(main);

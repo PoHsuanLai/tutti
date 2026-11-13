@@ -46,6 +46,10 @@ const MIN_PROCESS_TIMEOUT: Duration = Duration::from_millis(2);
 /// cannot help any live block and continuing to wait only starves the queue.
 const MAX_PROCESS_TIMEOUT: Duration = Duration::from_millis(50);
 
+/// How long a [`Command::Drain`] waits for the control connection to say more
+/// once it has gone quiet: news the server sent is already in the socket.
+const DRAIN_UNSOLICITED: Duration = Duration::from_millis(1);
+
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the bridge waits for the server to open its editor or resize it:
@@ -609,6 +613,12 @@ pub(super) fn handle(
         Command::Reset => {
             ipc::send(audio_stream, &HostMessage::Reset)?;
         }
+        Command::Drain => {
+            // Only the plugin's unsolicited news is coming, and `next_reply`
+            // files each into the inbox as it reads: what is left over is an
+            // answer owed to nobody.
+            while next_reply(stream, inbox, owed, channels, DRAIN_UNSOLICITED)?.is_some() {}
+        }
         Command::Shutdown => {
             ipc::send(stream, &HostMessage::Shutdown)?;
         }
@@ -983,6 +993,7 @@ fn absorb(inbox: &mut Unsolicited, msg: BridgeMessage) -> Option<BridgeMessage> 
         BridgeMessage::PluginParamTitlesChanged => inbox.resync(ResyncKind::ParamTitles),
         BridgeMessage::PluginIoChanged => inbox.resync(ResyncKind::Io),
         BridgeMessage::PluginReloaded => inbox.resync(ResyncKind::Reloaded),
+        BridgeMessage::ProcessRequested => inbox.process_requested(),
         // The server's editor is the remote editor's to hear of: no event of
         // the plugin's, so the lifecycle holds them.
         BridgeMessage::EditorWantsSize { size } => inbox.editor_wants_size(size),

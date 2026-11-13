@@ -238,6 +238,7 @@ pub mod render {
     pub const LATENCY: u32 = 3;
     pub const NOTES: u32 = 4;
     pub const TRANSPORT: u32 = 5;
+    pub const WOKEN: u32 = 6;
 }
 
 /// Environment the probe reads **in the subprocess**, on load.
@@ -262,6 +263,23 @@ impl ProbeEnv {
     /// What the plugin writes into its outputs. See [`render`].
     pub fn render_mode(mut self, mode: u32) -> Self {
         self.set("TUTTI_CLAP_PROBE_RENDER_MODE", mode.to_string());
+        self
+    }
+
+    /// What the plugin returns from `process` (`tutti_clap_test_plugin::StatusMode`
+    /// as a number).
+    pub fn status_mode(mut self, mode: u32) -> Self {
+        self.set("TUTTI_CLAP_PROBE_STATUS_MODE", mode.to_string());
+        self
+    }
+
+    /// A thread of the plugin calls `host.request_process()` once the file at
+    /// `path` exists, and deletes it.
+    pub fn request_process_file(mut self, path: &std::path::Path) -> Self {
+        self.set(
+            "TUTTI_CLAP_PROBE_REQUEST_PROCESS_FILE",
+            path.display().to_string(),
+        );
         self
     }
 

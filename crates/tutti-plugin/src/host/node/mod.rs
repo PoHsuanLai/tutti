@@ -374,6 +374,9 @@ impl PluginClient<Unbound> {
             BridgeEvent::Crashed { cause } => {
                 listener_invalidate_sink.fire(PluginInvalidation::Crashed { cause });
             }
+            // The wake it raises is bound through `Control::bind_wake` and
+            // raised by `Ipc` before this listener runs.
+            BridgeEvent::ProcessRequested => {}
         })));
 
         // The parameter list, once, while loading blocks anyway: the node's

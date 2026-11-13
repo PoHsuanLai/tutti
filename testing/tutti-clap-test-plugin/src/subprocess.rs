@@ -47,6 +47,8 @@
 //! that way would be a second spelling of the same control.
 
 use std::path::PathBuf;
+
+use clap_sys::host::clap_host;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -105,6 +107,16 @@ static BLOCKS_SEEN: AtomicU64 = AtomicU64::new(0);
 /// How many blocks were parked and later released. Read back through
 /// [`tutti_test_plugin_parked_blocks`].
 static PARKED_BLOCKS: AtomicU64 = AtomicU64::new(0);
+
+/// The `clap_host` of the plugin instance, for the calls a test makes into
+/// the host from a thread of its own ([`tutti_test_plugin_request_process_now`]).
+/// Null while no instance is initialised.
+static WAKE_HOST: std::sync::atomic::AtomicPtr<clap_host> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Whether the plugin has asked the host to process it again since this image
+/// loaded: what [`RenderMode::Woken`](crate::RenderMode::Woken) reads.
+static PROCESS_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Abort when a state is loaded: `TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD`.
 static CRASH_ON_STATE_LOAD: AtomicBool = AtomicBool::new(false);
@@ -190,6 +202,17 @@ pub(crate) fn configure() {
         // flag that is only set once `process()` has already decided to park
         // would let a release that arrives first be lost.
         BLOCKED.store(n > 0, Ordering::SeqCst);
+    }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_NOTE_OUT_PORTS") {
+        // SAFETY: a plain atomic store; `unsafe` is on the signature only.
+        unsafe { crate::tutti_test_plugin_set_note_out_ports(n) };
+    }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_STATUS_MODE") {
+        // SAFETY: a plain atomic store; `unsafe` is on the signature only.
+        unsafe { crate::rt_probe::tutti_test_plugin_set_status_mode(n) };
+    }
+    if let Some(path) = std::env::var_os("TUTTI_CLAP_PROBE_REQUEST_PROCESS_FILE") {
+        watch_request_file(std::path::PathBuf::from(path));
     }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_STALL_US") {
         STALL_US.store(n, Ordering::SeqCst);
@@ -386,6 +409,68 @@ pub(crate) fn on_process_entry() {
     if stall != 0 {
         std::thread::sleep(std::time::Duration::from_micros(u64::from(stall)));
     }
+}
+
+/// Records the host the plugin was created with. `[main-thread]`.
+pub(crate) fn remember_host(host: *const clap_host) {
+    WAKE_HOST.store(host.cast_mut(), Ordering::Release);
+}
+
+/// Drops the recorded host, as the plugin is destroyed.
+pub(crate) fn forget_host() {
+    WAKE_HOST.store(std::ptr::null_mut(), Ordering::Release);
+}
+
+/// Whether [`tutti_test_plugin_request_process_now`] has run in this image.
+pub(crate) fn process_requested() -> bool {
+    PROCESS_REQUESTED.load(Ordering::Acquire)
+}
+
+/// Calls `host.request_process()` **now**, from the calling thread (a thread
+/// that is neither the host's main thread nor its audio thread: a plugin's own
+/// GUI or worker thread), and from then on [`RenderMode::Woken`] renders
+/// sound. `false` when no plugin instance is initialised.
+///
+/// The environment path, `TUTTI_CLAP_PROBE_REQUEST_PROCESS_FILE=<path>`, makes
+/// a thread of the plugin make this call when the file exists, which is how a
+/// test reaches a plugin in another process.
+///
+/// # Safety
+/// The host recorded at `init` must still be alive: the `ClapLoaded` that
+/// created the plugin must not have been dropped.
+///
+/// [`RenderMode::Woken`]: crate::RenderMode::Woken
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_request_process_now() -> bool {
+    request_process_now()
+}
+
+fn request_process_now() -> bool {
+    let host = WAKE_HOST.load(Ordering::Acquire);
+    if host.is_null() {
+        return false;
+    }
+    PROCESS_REQUESTED.store(true, Ordering::Release);
+    // SAFETY: the host outlives the plugin instance, which cleared the pointer
+    // before it was destroyed; `request_process` is `[thread-safe]`.
+    if let Some(request) = unsafe { (*host).request_process } {
+        unsafe { request(host) };
+    }
+    true
+}
+
+/// Starts the thread behind `TUTTI_CLAP_PROBE_REQUEST_PROCESS_FILE`: it makes
+/// the request when `path` exists, deletes it and ends.
+fn watch_request_file(path: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        loop {
+            if path.exists() && request_process_now() {
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    });
 }
 
 /// Arm or disarm the applied gain, for a test **in the host's own process**.

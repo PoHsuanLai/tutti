@@ -85,7 +85,12 @@ pub(crate) mod wire;
 ///   serves it) while the control connection carries every other request and
 ///   the plugin's unsolicited news (its main thread serves it, and an editor's
 ///   paint may keep it busy). A version-33 server accepts no third connection.
-pub const PROTOCOL_VERSION: u32 = 34;
+///
+/// - **Version 36** appends the server's `ProcessRequested`: the plugin asked
+///   to be processed again (CLAP's `request_process`), so a host that parked
+///   the node on the plugin's *sleep* wakes it. It follows every earlier
+///   variant, which keep their numbers.
+pub const PROTOCOL_VERSION: u32 = 36;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

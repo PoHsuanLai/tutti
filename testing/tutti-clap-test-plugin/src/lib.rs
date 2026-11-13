@@ -306,6 +306,7 @@ unsafe extern "C" fn plugin_init(plugin: *const clap_plugin) -> bool {
     // arguments valid per the CLAP ABI.
     unsafe { threading::record_thread_roles(threading::Site::Init, plugin_host(plugin)) };
     subprocess::die_if_init_crashes();
+    subprocess::remember_host(unsafe { plugin_host(plugin) });
     true
 }
 
@@ -351,6 +352,7 @@ unsafe extern "C" fn plugin_destroy(plugin: *const clap_plugin) {
     // arguments valid per the CLAP ABI.
     let data = unsafe { (*plugin).plugin_data } as *mut PluginState;
     if !data.is_null() {
+        subprocess::forget_host();
         drop(unsafe { Box::from_raw(data) });
     }
 }
@@ -1285,7 +1287,18 @@ pub enum RenderMode {
     ///
     /// Only when the block has [`TRANSPORT_EVENTS_END`] frames or more.
     Transport = 5,
+    /// Silence until the plugin has asked the host to process it again
+    /// ([`tutti_test_plugin_request_process_now`], or the file the environment
+    /// names), then [`WOKEN_LEVEL`] on every channel. With
+    /// [`StatusMode::Sleep`] it is a plugin that slept and is woken: the
+    /// first non-silent block is the first `process` call after the request,
+    /// and the plugin's `process` count says no call came before it.
+    Woken = 6,
 }
+
+/// What [`RenderMode::Woken`] writes once the plugin has asked to be processed
+/// again.
+pub const WOKEN_LEVEL: f32 = 0.5;
 
 /// Frames [`RenderMode::Transport`] writes per block for the block's own
 /// transport.
@@ -1306,6 +1319,7 @@ impl RenderMode {
             3 => Self::Latency,
             4 => Self::Notes,
             5 => Self::Transport,
+            6 => Self::Woken,
             _ => Self::Inert,
         }
     }
@@ -1722,6 +1736,13 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
                         *sample = T::from_f32(gate.level());
                     }
                 }
+                RenderMode::Woken => {
+                    dst.fill(T::from_f32(if subprocess::process_requested() {
+                        WOKEN_LEVEL
+                    } else {
+                        0.0
+                    }));
+                }
                 RenderMode::Latency => {
                     let Some(d) = delay.as_mut() else { continue };
                     // Derive the slot from `(port, ch)` rather than counting
@@ -1890,8 +1911,28 @@ pub unsafe extern "C" fn tutti_test_plugin_set_port0_dialects(raw: u32) {
     PORT0_DIALECTS_OVERRIDE.store(raw, Ordering::SeqCst);
 }
 
+/// How many output note ports the plugin declares: one, as a plugin that
+/// emits MIDI does, or none.
+static NOTE_OUT_PORTS: AtomicU32 = AtomicU32::new(1);
+
+/// Sets how many output note ports the plugin declares (`0` or `1`). Read when
+/// the host scans its note ports, so set it **before** the host loads the
+/// plugin: a host that never sends MIDI out of a plugin may park it when it
+/// sleeps.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_set_note_out_ports(count: u32) {
+    NOTE_OUT_PORTS.store(count.min(1), Ordering::SeqCst);
+}
+
 unsafe extern "C" fn note_ports_count(_plugin: *const clap_plugin, is_input: bool) -> u32 {
-    if is_input { 2 } else { 1 }
+    if is_input {
+        2
+    } else {
+        NOTE_OUT_PORTS.load(Ordering::SeqCst)
+    }
 }
 
 unsafe extern "C" fn note_ports_get(

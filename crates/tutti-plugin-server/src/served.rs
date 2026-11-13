@@ -15,6 +15,8 @@
 //! each [`Notice`] of the core as the [`BridgeMessage`] that carries it.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tutti_plugin_ipc::BridgeMessage;
@@ -22,9 +24,9 @@ use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, AutomationMode, Control, Effect, Event, Features, Hand, HostOp,
     Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized,
     Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
-    PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor,
-    RenderMode, RenderModeSupport, Request, Sample, SampleFormat, SampleRate, Samples, Seat, Stage,
-    State,
+    PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, ProcessWake,
+    Processor, RenderMode, RenderModeSupport, Request, Sample, SampleFormat, SampleRate, Samples,
+    Seat, Stage, State,
 };
 
 mod any;
@@ -176,6 +178,9 @@ pub(crate) struct Served<F: OutOfProcess> {
     events: Vec<BridgeMessage>,
     /// A refusal was told since the last [`finish_refusals`](Self::finish_refusals).
     refused: bool,
+    /// Set by the plugin's request to be processed again (any thread), taken
+    /// by [`poll`](ServerSide::poll), which tells the host.
+    process_requested: Arc<AtomicBool>,
 }
 
 /// How long a plan that waits for the Processor to come home from the render
@@ -306,7 +311,16 @@ impl<F: ServerSide> Served<F> {
             edits: Vec::new(),
             events: Vec::new(),
             refused: false,
+            process_requested: Arc::new(AtomicBool::new(false)),
         };
+        // The wake outlives every activation: the plugin's host state is the
+        // loaded plugin's.
+        if let Some(control) = this.lifecycle.control() {
+            let requested = Arc::clone(&this.process_requested);
+            control.bind_wake(ProcessWake::new(move || {
+                requested.store(true, Ordering::Release);
+            }));
+        }
         // Before the activation: see above.
         let state_error = state.and_then(|data| {
             before_restore();
@@ -667,6 +681,9 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     fn poll(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
         self.serve(main);
         self.forward_edits(main);
+        if self.process_requested.swap(false, Ordering::Acquire) {
+            self.events.push(BridgeMessage::ProcessRequested);
+        }
         std::mem::take(&mut self.events)
     }
 

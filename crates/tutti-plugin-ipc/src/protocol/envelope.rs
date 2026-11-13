@@ -537,4 +537,8 @@ pub enum BridgeMessage {
     /// to was unloaded or replaced. Not an answer to a
     /// [`HostMessage::CloseEditor`].
     EditorClosed,
+    /// The plugin asked to be processed again (CLAP's `request_process`,
+    /// from any of its threads), after it slept. The host wakes the node it
+    /// parked, so the next block reaches the plugin.
+    ProcessRequested,
 }

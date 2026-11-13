@@ -367,7 +367,13 @@ where
                     }
                 }
             }
-            return slept_status(&io, slept && this.out_events.is_empty());
+            // A block that follows an Idle one reads the answers of chunks
+            // shipped before the node parked, so the plugin's word on what
+            // this one shipped (a wake's) comes a block later: it is not
+            // parked again before then.
+            let stale = std::mem::take(&mut this.idled);
+            this.idled = slept && this.out_events.is_empty() && !stale;
+            return slept_status(&io, this.idled);
         }
 
         // The event input: its MIDI, in its (sorted) order, past the cap
@@ -520,6 +526,17 @@ where
         // and a rate change that brings the new one starts it clear.
         if let Some(processor) = this.rt.held() {
             processor.reset();
+        }
+    }
+
+    /// Hands the plugin's host a wake that raises the node's: a plugin that
+    /// slept and later asks to be processed again (CLAP's `request_process`)
+    /// runs on the next block even though the executor parked the node.
+    /// Control thread.
+    fn bind_wake(&mut self, wake: tutti_graph::Wake) {
+        let mut instance = self.client.inner.lock();
+        if let Some(control) = instance.control() {
+            control.bind_wake(tutti_plugin_types::ProcessWake::new(move || wake.raise()));
         }
     }
 }

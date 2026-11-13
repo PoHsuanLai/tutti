@@ -1060,7 +1060,7 @@ activate, measure.**
   { reported, measured }`, `NeverSettles { level }` or `NotChecked(NotChecked)`;
   `LatencyVerdict` is `Honest`, `LatencyDiffers { reported, measured }`,
   `NeverSettles { level }` or `NotChecked(NotChecked)`; the reasons are a closed
-  enum (`UnboundedClaim`, `UnknownClaim`, `NeverReachedFloor`, `NoOnset`,
+  enum (`UnboundedClaim`, `UnknownClaim`, `NeverReachedFloor`, `Silent`,
   `Instrument`), not text. `NeverSettles` is in both because nothing is judged
   of a plugin that makes its own sound. The verdict is stored beside the figures
   because the descriptor is the only place the record persists and the claim it
@@ -1072,16 +1072,20 @@ activate, measure.**
   start-up transient is not hiss) and judge nothing; `reset`; then the impulse
   (0.1 on every input channel at frame 0) or, for a plugin with **no audio
   input**, a note-on and a note-off at 100 ms; render until the output has
-  stayed below the floor for 1 s or 65 s of audio are spent (past
-  `MAX_NODE_TAIL` on purpose: a plugin still sounding is a lower bound that
-  `Processing::ceiling` turns into `Unbounded`). Latency is the first frame
+  stayed below the floor for 1 s or the budget is spent (`MAX_NODE_TAIL` plus
+  `BUDGET_MARGIN`, 5 s, in frames, so it follows the graph's bound at every rate:
+  an effect still sounding is judged by its lower bound, which is past the bound,
+  so `TailLonger`, and `Processing::ceiling` turns it into `Unbounded`; an
+  instrument is `NotChecked(NeverReachedFloor)`). The stimulus level, 0.1
+  (`IMPULSE`), is the probe's constant and no bound for a nonlinear plugin: a gate
+  that never opens at it is `Silent`. Latency is the first frame
   above the floor; the tail is the last, **less the reported latency** (a tail
   excludes latency, doc 013, so a plugin that delays by 137 and rings 5000
   beyond says 5000 and is `Honest`). A tail longer than the claim is `TailLonger`;
   a shorter one is honest (a claim is a ceiling). An instrument's latency is
   `NotChecked(Instrument)` (its first sound is its attack) and an instrument
   still sounding at the budget is `NotChecked(NeverReachedFloor)`; a plugin that
-  made no sound at all is `NotChecked(NoOnset)` for both, never a pass. A NaN
+  made no sound at all is `NotChecked(Silent)` for both, never a pass. A NaN
   counts as sound. An instrument is "no audio input" and not the descriptor's
   role, because the shared CLAP plugin's features say both.
 - **Two configurations, one record.** It measures at 48 kHz/512 and 44.1
@@ -1139,7 +1143,7 @@ activate, measure.**
   `measured` and an old file reads as `None`; the catalog's opt-in and
   `measure`. Mutations checked once: a plugin reporting 8190 for a ring of 8191
   turns `Honest` into `TailLonger`; skipping the silence-in render reads the noisy
-  plugin as `TailLonger` (a tail of 65 s).
+  plugin as `TailLonger` (a tail at the budget, past `MAX_NODE_TAIL`).
 
 ## 7. The reverse direction (parked)
 

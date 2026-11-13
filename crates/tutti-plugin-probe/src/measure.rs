@@ -19,7 +19,7 @@
 //!    note-on at frame 0 and a note-off [`NOTE_LENGTH`] later.
 //! 4. **Render until it settles**: until the output has stayed below the floor
 //!    for [`SETTLE`] after its last frame above it (and after the note-off), or
-//!    [`BUDGET`] is spent.
+//!    the render budget ([`BUDGET_MARGIN`] past `MAX_NODE_TAIL`) is spent.
 //!
 //! The figures: the first frame above the floor is the latency (an onset, so a
 //! disagreement with the report is recorded and never corrected); the last is
@@ -30,7 +30,7 @@
 
 use std::path::Path;
 
-use tutti_graph::{Offset, UmpAt};
+use tutti_graph::{MAX_NODE_TAIL, Offset, UmpAt};
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Controller, InProcess, LatencyVerdict, Load, MainThread, MaxBlock,
     Measured, NotChecked, PROBE_FLOOR, PluginDescriptor, PluginError, PluginIo, PluginTail,
@@ -43,7 +43,9 @@ use tutti_ump::{
 };
 
 /// The impulse an effect is given, on every input channel (doc 023 section 6:
-/// 0.1, not 1.0, for the nonlinear plugins).
+/// 0.1, not 1.0, for the nonlinear plugins). **The probe measures at this
+/// level**: a figure is of that stimulus, not a bound for a nonlinear plugin (a
+/// gate or an expander may never open at 0.1, which reads as `Silent`).
 pub const IMPULSE: Amplitude = Amplitude(0.1);
 
 /// How long silence is rendered before the stimulus: what decides
@@ -54,11 +56,17 @@ pub const SILENCE: Seconds = Seconds(1.0);
 /// it, for the plugin to count as settled.
 pub const SETTLE: Seconds = Seconds(1.0);
 
-/// The most the stimulus render is run for. Past [`tutti_graph::MAX_NODE_TAIL`]
-/// (60 s) on purpose, so a plugin still sounding at the end reads as a tail
-/// longer than any the graph bounds: its figure is a lower bound, and
-/// `Processing::ceiling` turns it into `Unbounded`.
-pub const BUDGET: Seconds = Seconds(65.0);
+/// What the stimulus render runs past [`tutti_graph::MAX_NODE_TAIL`]: **the render
+/// budget is `MAX_NODE_TAIL` plus this**, in frames, so it follows the graph's
+/// bound at every rate and the two cannot drift. A plugin still above the floor
+/// when the budget runs out has rung past the bound, so:
+///
+/// - an **effect** is judged by its lower bound: the last frame above the floor,
+///   which is beyond `MAX_NODE_TAIL`, so it reads as `TailLonger` (against any
+///   claim) and `Processing::ceiling` declares it `Unbounded`;
+/// - an **instrument** is `NotChecked(NeverReachedFloor)`: a held note has no
+///   lower bound worth reporting.
+pub const BUDGET_MARGIN: Seconds = Seconds(5.0);
 
 /// How long an instrument's note is held before its note-off.
 pub const NOTE_LENGTH: Seconds = Seconds(0.1);
@@ -221,7 +229,7 @@ pub fn measure_at<P: Processor>(
 
     // 3 and 4. The stimulus, rendered until it settles.
     let judge_tail = matches!(subject.tail, PluginTail::None | PluginTail::Finite(_));
-    let (settle, budget) = (frames(SETTLE), frames(BUDGET));
+    let (settle, budget) = (frames(SETTLE), MAX_NODE_TAIL.get() + frames(BUDGET_MARGIN));
     let note_off = subject.instrument.then(|| frames(NOTE_LENGTH));
     let mut onset = None;
     let mut last = None;
@@ -296,7 +304,7 @@ fn judge(
     };
     let latency = match (subject.instrument, latency_figure) {
         (true, _) => LatencyVerdict::NotChecked(NotChecked::Instrument),
-        (false, None) => LatencyVerdict::NotChecked(NotChecked::NoOnset),
+        (false, None) => LatencyVerdict::NotChecked(NotChecked::Silent),
         (false, Some(m)) if m == subject.latency => LatencyVerdict::Honest,
         (false, Some(m)) => LatencyVerdict::LatencyDiffers {
             reported: subject.latency,
@@ -315,7 +323,7 @@ fn judge(
         PluginTail::Unknown => (None, TailVerdict::NotChecked(NotChecked::UnknownClaim)),
         // Nothing rose above the floor: there is no ring to measure, which is
         // not the same as a ring of none.
-        _ if last.is_none() => (None, TailVerdict::NotChecked(NotChecked::NoOnset)),
+        _ if last.is_none() => (None, TailVerdict::NotChecked(NotChecked::Silent)),
         // A note that is still sounding at the end of the budget has no figure.
         _ if subject.instrument && !settled => {
             (None, TailVerdict::NotChecked(NotChecked::NeverReachedFloor))

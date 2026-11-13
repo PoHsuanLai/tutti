@@ -14,7 +14,7 @@ use tutti_plugin_types::Locator;
 use tutti_plugin_types::PluginDescriptor;
 
 /// How long a measuring probe may take, spawn, load and both renders included
-/// (doc 023 section 6: two configurations, each up to the render budget of 65 s of
+/// (doc 023 section 6: two configurations, each up to the render budget of `MAX_NODE_TAIL` and 5 s of
 /// audio, which a plugin slower than real time cannot meet in 15 s).
 pub const DEFAULT_MEASURE_TIMEOUT: Duration = Duration::from_secs(180);
 

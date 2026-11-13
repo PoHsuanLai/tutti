@@ -306,7 +306,7 @@ mod tests {
                 TailVerdict::NeverSettles {
                     level: tutti_types::Db(-60.0),
                 },
-                LatencyVerdict::NotChecked(NotChecked::NoOnset),
+                LatencyVerdict::NotChecked(NotChecked::Silent),
             ),
         ];
         let plugins = verdicts

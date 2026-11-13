@@ -41,6 +41,15 @@ impl StateHash {
 
 /// The configuration a measurement was made at: the figures depend on it (a
 /// block-sized lookahead, a rate-dependent tail), so every [`Measured`] says.
+///
+/// **The stimulus level is not a field: it is the probe's constant** (0.1 on
+/// every input channel, `tutti_plugin_probe::IMPULSE`). A figure is of that
+/// level and not a bound for a nonlinear plugin; a gate or an expander that never
+/// opens at 0.1 reads as [`NotChecked::Silent`], never as honest. The render is
+/// bounded at `MAX_NODE_TAIL` plus a margin: an effect still sounding at the end
+/// is judged by its lower bound (so [`TailVerdict::TailLonger`], which
+/// `Processing::ceiling` turns into `Unbounded`) and an instrument is
+/// [`NotChecked::NeverReachedFloor`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ProbeConfig {
@@ -70,7 +79,7 @@ pub enum NotChecked {
     NeverReachedFloor,
     /// Nothing rose above the floor in the onset window: the latency has no
     /// first frame to read.
-    NoOnset,
+    Silent,
     /// An instrument's first sound is its attack, not its latency.
     Instrument,
 }
@@ -338,7 +347,7 @@ mod tests {
             latency: LatencyVerdict::Honest,
         };
         assert!(v.is_honest());
-        v.latency = LatencyVerdict::NotChecked(NotChecked::NoOnset);
+        v.latency = LatencyVerdict::NotChecked(NotChecked::Silent);
         assert!(!v.is_honest());
     }
 }

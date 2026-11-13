@@ -309,12 +309,12 @@ fn a_silent_plugin_has_no_onset() {
     let m = measure_at(&mut fake, effect(PluginTail::None, 0), primary()).unwrap();
     assert_eq!(
         m.verdict.latency,
-        LatencyVerdict::NotChecked(NotChecked::NoOnset)
+        LatencyVerdict::NotChecked(NotChecked::Silent)
     );
     assert_eq!(m.latency, None);
     assert_eq!(
         m.verdict.tail,
-        TailVerdict::NotChecked(NotChecked::NoOnset),
+        TailVerdict::NotChecked(NotChecked::Silent),
         "no ring is not a ring of none"
     );
     assert_eq!(m.tail, None);
@@ -332,6 +332,16 @@ fn an_instruments_tail_is_measured_from_its_note_off() {
         honest.verdict.latency,
         LatencyVerdict::NotChecked(NotChecked::Instrument)
     );
+    // From the note-off, less the reported latency: a plugin that sounds 137
+    // frames late (reported) and rings 3000 more after the note-off reads 3000,
+    // not 3137 and not the 100 ms the note was held.
+    let late = Subject {
+        latency: Samples(137),
+        ..instrument(finite(3000))
+    };
+    let m = measure_at(&mut Fake::new(137, 3000), late, primary()).unwrap();
+    assert_eq!(m.tail, Some(Samples(3000)));
+    assert_eq!(m.verdict.tail, TailVerdict::Honest);
     let longer = measure_at(&mut Fake::new(0, 3000), instrument(finite(2999)), primary()).unwrap();
     assert_eq!(
         longer.verdict.tail,
@@ -378,6 +388,30 @@ fn an_effect_that_outlasts_the_budget_raises_the_ceiling_to_unbounded() {
     assert!(measured > MAX_NODE_TAIL, "{measured:?}");
     let ceiling = Processing::new(finite(1000)).with_measured(m).ceiling();
     assert_eq!(ceiling, PluginTail::Unbounded);
+}
+
+/// **The budget is the graph's bound plus a margin at every rate**: a ring past
+/// it reads as a figure beyond `MAX_NODE_TAIL` at each configuration, even at
+/// 44.1 kHz where 65 s of audio is fewer frames than the bound.
+#[test]
+fn the_budget_exceeds_the_graphs_bound_at_every_rate() {
+    for (rate, block) in CONFIGS {
+        let forever = MAX_NODE_TAIL.get() + 10 * 48_000;
+        let m = measure_at(
+            &mut Fake::new(0, forever),
+            effect(finite(1000), 0),
+            config(rate, block),
+        )
+        .unwrap();
+        let TailVerdict::TailLonger { measured, .. } = m.verdict.tail else {
+            panic!("{rate:?}: {:?}", m.verdict.tail);
+        };
+        assert!(measured > MAX_NODE_TAIL, "{rate:?}: {measured:?}");
+        assert_eq!(
+            Processing::new(finite(1000)).with_measured(m).ceiling(),
+            PluginTail::Unbounded
+        );
+    }
 }
 
 /// The record of a measured honest plugin raises no ceiling; a longer one raises it

@@ -11,7 +11,8 @@ use tutti_plugin_types::{MainThread, PluginDescriptor};
 mod measure;
 
 pub use measure::{
-    BUDGET, CONFIGS, IMPULSE, NOTE, NOTE_LENGTH, SETTLE, SILENCE, Subject, measure, measure_at,
+    BUDGET_MARGIN, CONFIGS, IMPULSE, NOTE, NOTE_LENGTH, SETTLE, SILENCE, Subject, measure,
+    measure_at,
 };
 
 /// The descriptor of every plugin the file at `path` holds, by its extension, in

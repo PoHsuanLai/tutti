@@ -994,7 +994,10 @@ pub struct Plan {
     pub(crate) event_list: Vec<u32>,
     /// Every event edge, `(source port, sink port)`, direct and feedback,
     /// sorted: what the executor compares across a commit to close the held
-    /// keys of an edge that ended (`held.rs`).
+    /// keys of an edge that ended (`held.rs`), and the sources an input tap's
+    /// FIFO is sized for. Built from the same `Graph::events` the compiler
+    /// sizes that FIFO from, so the two agree; verify re-derives the size
+    /// from this list and refuses a plan where they do not.
     pub(crate) event_edges: Vec<(EventOut, EventIn)>,
     pub(crate) op_succ: Csr,
     pub(crate) tasks: Vec<Span>,

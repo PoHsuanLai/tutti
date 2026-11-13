@@ -841,8 +841,8 @@ impl Editor {
     ///
     /// A tap of an output copies what the port wrote. A tap of an input copies
     /// what its node reads there: the node's sources merged in the order the
-    /// node is handed them, after their own latency delays. (An input fed by a
-    /// feedback edge is read undelayed by an aligned tap.)
+    /// node is handed them, after their own latency delays. (An aligned tap reads an input whose only
+    /// source is a feedback edge undelayed.)
     ///
     /// What the reader gets is the MIDI events the port carries, each with the
     /// frame it was due on ([`TapEvent`](crate::TapEvent)); ramps, segments,

@@ -14,7 +14,7 @@ use tutti_dsp::{FftScratch, StftGeometry};
 use tutti_measure::{DetectionFunction, OnsetConfig, StftRequest, YinConfig, detect_onsets, stft};
 use tutti_types::{SampleRate, Samples};
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 
 fn signal() -> Vec<f32> {
     let mut state = 0x2545_f491_4f6c_dd1du64;

@@ -32,7 +32,7 @@ const BASE: f32 = 5.0;
 fn session() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::MONO,
             MaxBlock::of(Samples(1_024)),
         )

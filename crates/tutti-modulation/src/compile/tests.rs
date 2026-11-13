@@ -7,7 +7,7 @@ use tutti_curve::Exponent;
 use tutti_curve::{Breakpoint, Trajectory};
 use tutti_types::{Amplitude, Frame, Hz, UnitParam};
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 
 fn now(epoch: u32, play: u64) -> PlayReading {
     PlayReading {

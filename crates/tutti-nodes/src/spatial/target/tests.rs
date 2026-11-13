@@ -7,7 +7,7 @@ fn aim(azimuth: f32, elevation: f32) -> Direction {
 /// A smoother that moves the whole way in one step, so the *path* is
 /// visible without waiting out an exponential ramp.
 fn with_coeff(coeff: f32) -> AngleSmoother {
-    let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
+    let mut s = AngleSmoother::new(SampleRate::SR_48K, Samples(1));
     s.azimuth.set_coeff(coeff);
     s.elevation.set_coeff(coeff);
     s
@@ -23,7 +23,7 @@ fn seeded(azimuth: f32, coeff: f32) -> AngleSmoother {
 /// direction of travel — the exact per-step position is the smoother's.
 #[test]
 fn bearing_crosses_the_seam_the_short_way() {
-    let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
+    let mut s = AngleSmoother::new(SampleRate::SR_48K, Samples(1));
     // Settle at 170 degrees.
     for _ in 0..48_000 {
         s.step(aim(170.0, 0.0));
@@ -50,7 +50,7 @@ fn bearing_crosses_the_seam_the_short_way() {
 /// The counterpart: elevation saturates rather than wrapping.
 #[test]
 fn height_saturates_and_does_not_wrap() {
-    let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
+    let mut s = AngleSmoother::new(SampleRate::SR_48K, Samples(1));
     for _ in 0..48_000 {
         s.step(aim(0.0, 90.0));
     }
@@ -65,7 +65,7 @@ fn height_saturates_and_does_not_wrap() {
 /// Otherwise every static source sits slightly off-axis forever.
 #[test]
 fn settles_on_a_stationary_target() {
-    let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
+    let mut s = AngleSmoother::new(SampleRate::SR_48K, Samples(1));
     for _ in 0..48_000 {
         s.step(aim(45.0, 30.0));
     }
@@ -116,7 +116,7 @@ fn angular_smoothing_stays_on_the_circle_over_a_long_sweep() {
 #[test]
 fn advance_is_the_closed_form_of_repeated_steps() {
     for steps in [1usize, 64, 1024, 48_000] {
-        let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
+        let mut s = AngleSmoother::new(SampleRate::SR_48K, Samples(1));
         let coeff = f64::from(s.azimuth.coeff());
         let left = (1.0 - coeff).powi(steps as i32);
         // 170 toward -170: a +20 degree arc, remainder `20 * left`.
@@ -126,7 +126,7 @@ fn advance_is_the_closed_form_of_repeated_steps() {
         let err = Azimuth(b).shortest_arc_to(Azimuth(want)).get().abs();
         assert!(err < 1e-3, "{steps}: {b} vs {want}");
     }
-    let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
+    let mut s = AngleSmoother::new(SampleRate::SR_48K, Samples(1));
     s.reset_to_target(aim(10.0, 0.0));
     assert_eq!(s.advance(aim(-170.0, 0.0), 0).azimuth, Azimuth(10.0));
     let mut i = seeded(170.0, 1.0);

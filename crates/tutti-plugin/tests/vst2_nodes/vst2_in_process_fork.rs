@@ -149,14 +149,14 @@ fn load_with(tempo: tutti_transport::TempoReader) -> (PluginNode<Vst2Loaded>, Pl
         &main_thread(),
         path,
         &Load::new(),
-        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+        tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
     (client.bind(tempo), handle)
 }
 
 fn prepare_at(rate: f64) -> Prepare {
-    Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK)))
+    Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(BLOCK)))
 }
 
 /// A live editor holding `node` at `key`, both its outputs global.
@@ -358,7 +358,7 @@ fn a_plugin_handed_back_by_into_client_forks() {
         Some(&main_thread()),
         &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
             .expect("a plugin file"),
-        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+        tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
     )
     .expect("the probe opens");
     let handle = plugin.handle().clone();

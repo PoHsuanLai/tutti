@@ -8,7 +8,7 @@ fn spec(channels: u16, pcm: Pcm) -> Spec {
     Spec::of_width(
         crate::Format::Wav(pcm),
         ChannelLayout::from(channels),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
     )
 }
 
@@ -136,7 +136,7 @@ fn a_topology_sets_the_mask() {
     let quad = Spec::new(
         crate::Format::Wav(Pcm::Int24),
         ChannelTopology::quad(),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
     );
     assert_eq!(u32_at(&write_all(&quad, &ramp(4, 2)), 40), 0x33);
     assert_eq!(
@@ -162,7 +162,7 @@ fn a_zero_rate_is_refused() {
         let s = Spec::of_width(
             crate::Format::Wav(Pcm::Int16),
             ChannelLayout::STEREO,
-            SampleRate(rate),
+            SampleRate::of(rate),
         );
         let err = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new()))
             .err()

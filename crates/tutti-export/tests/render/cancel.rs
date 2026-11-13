@@ -25,13 +25,13 @@ use tutti_types::ChannelLayout;
 use tutti_types::Seconds;
 use tutti_types::{Db, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 /// Blocks in a short render: three reports of 4096 frames.
 const BLOCKS: usize = 12;
 /// A render of two and a half seconds: three one-second measuring chunks.
 const LONG_FRAMES: usize = 120_000;
 /// The rate a converting render is written at.
-const FILE_RATE: SampleRate = SampleRate(44_100.0);
+const FILE_RATE: SampleRate = SampleRate::SR_44K1;
 
 fn graph() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);

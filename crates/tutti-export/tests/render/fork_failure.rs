@@ -27,7 +27,7 @@ use tutti_graph::{OutPort, Source};
 use tutti_transport::FrozenClock;
 use tutti_types::{ChannelLayout, Db, SampleRate};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCKS: usize = 4;
 
 #[derive(Clone)]

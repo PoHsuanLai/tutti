@@ -36,7 +36,7 @@ use tutti_types::Bpm;
 // `sample_rate` takes anything convertible to `SampleRate` — the engine's
 // unit type, not a bare rate that could be a block size.
 let file = PluginRef::file("/usr/lib/vst3/MyPlugin.vst3").expect("a plugin file");
-let plugin = Plugin::open(None, &file, SampleRate::new(48_000.0))?;
+let plugin = Plugin::open(None, &file, SampleRate::SR_48K)?;
 println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 
 // Two handles, one subprocess: keep the control surface before the node goes
@@ -50,7 +50,7 @@ println!("reported latency: {:?}", handle.loaded().latency());
 // A session hands every plugin it adds a reader of its own; with none, a fixed
 // map does.
 let tempo = TempoReader::constant(Bpm::of(120.0)).expect("a tempo");
-let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::new(48_000.0), MaxBlock::of(Samples(512))));
+let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
 let _controls = editor.insert(NodeKey(1), "plugin", plugin.bind(tempo));
 # Ok::<(), tutti_plugin_types::BridgeError>(())
 ```

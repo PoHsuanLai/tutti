@@ -40,7 +40,7 @@ impl Node for Every4 {
 fn session() -> (Session, EventOutPort) {
     let mut s = Session::builder()
         .outputs_floor(ChannelLayout::MONO)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds");
     let (key, ()) = s.graph().add(Unforkable(Every4));
     (s, key.events_out())
@@ -95,7 +95,7 @@ fn opening_a_tap_yields_the_events_rendered_since_the_open() {
         .taps()
         .open_event(source, TapAlign::Raw, 64)
         .expect("the port exists");
-    assert_eq!(tap.rate(), SampleRate(48_000.0));
+    assert_eq!(tap.rate(), SampleRate::SR_48K);
     frames(15, &mut s);
     assert_eq!(drain(&mut tap), vec![4, 8, 12]);
     assert_eq!(tap.take_lost(), 0);
@@ -177,13 +177,13 @@ fn reopening_replaces_the_tap_at_the_new_rate() {
         .expect("the port exists");
     frames(5, &mut s);
     assert_eq!(drain(&mut old), vec![0, 4]);
-    s.graph().set_sample_rate(SampleRate(44_100.0));
+    s.graph().set_sample_rate(SampleRate::SR_44K1);
     let mut readers = s.graph().taps().reopen_events();
     assert_eq!(readers.len(), 1);
     let mut new = readers.remove(0);
     assert_eq!(new.id(), old.id());
-    assert_eq!(old.rate(), SampleRate(48_000.0));
-    assert_eq!(new.rate(), SampleRate(44_100.0));
+    assert_eq!(old.rate(), SampleRate::SR_48K);
+    assert_eq!(new.rate(), SampleRate::SR_44K1);
     frames(16, &mut s);
     assert_eq!(
         drain(&mut old),

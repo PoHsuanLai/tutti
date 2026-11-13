@@ -248,10 +248,10 @@ impl InstrumentRegion {
         )
     }
 
-    /// The rate the sample was recorded at.
+    /// The rate the sample was recorded at, or `None` when the file states 0.
     #[must_use]
-    pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(f64::from(self.sample_sample_rate))
+    pub fn sample_rate(&self) -> Option<SampleRate> {
+        SampleRate::new(f64::from(self.sample_sample_rate))
     }
 
     /// The sample header's pitch correction.

@@ -10,7 +10,7 @@ const RATE: f64 = 48_000.0;
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -19,7 +19,7 @@ fn offline() -> Session {
 
 /// One second of a constant mono wave.
 fn level(value: f32) -> tutti_codec::Wave {
-    let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
+    let mut wave = tutti_codec::Wave::new(1, SampleRate::of(RATE));
     for _ in 0..RATE as usize {
         wave.push_frame(&[value]);
     }

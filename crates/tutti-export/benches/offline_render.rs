@@ -47,7 +47,7 @@ const SR: f64 = 48_000.0;
 /// what a bounce costs.
 fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(SampleRate(rate)))
+        .build(RenderGraph::prepare(SampleRate::of(rate)))
         .expect("builds");
     RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
@@ -102,7 +102,7 @@ impl Case {
 }
 
 fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: Format) -> Case {
-    let rate = SampleRate(rate);
+    let rate = SampleRate::of(rate);
     Case {
         job: Job::new(
             rate,
@@ -257,7 +257,7 @@ fn bench_resample(c: &mut Criterion) {
             ChannelLayout::STEREO,
             Format::Wav(Pcm::Float32),
         );
-        cfg.resample = Some(Resample::to(SampleRate(SR)));
+        cfg.resample = Some(Resample::to(SampleRate::of(SR)));
         let path = dir.path().join("resampled.wav");
         group.throughput(Throughput::Elements((seconds * from) as u64));
         group.bench_with_input(

@@ -219,7 +219,7 @@ mod tests {
             )),
             metrics: Arc::new(Metrics::new()),
             bell: Bell::new(),
-            session_rate: SessionRate::new(SampleRate(48_000.0)),
+            session_rate: SessionRate::new(SampleRate::SR_48K),
             seams: Seams::default(),
         };
         let (reports, _queue) = crossbeam_channel::bounded(8);
@@ -257,7 +257,7 @@ mod tests {
             )),
             metrics: Arc::new(Metrics::new()),
             bell: Bell::new(),
-            session_rate: SessionRate::new(SampleRate(48_000.0)),
+            session_rate: SessionRate::new(SampleRate::SR_48K),
             seams: Seams::default(),
         };
         let (reports, _queue) = crossbeam_channel::bounded(8);
@@ -298,7 +298,7 @@ mod tests {
             )),
             metrics: Arc::new(Metrics::new()),
             bell: Bell::new(),
-            session_rate: SessionRate::new(SampleRate(48_000.0)),
+            session_rate: SessionRate::new(SampleRate::SR_48K),
             seams: Seams::default(),
         };
         let (reports, _queue) = crossbeam_channel::bounded(8);

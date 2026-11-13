@@ -7,7 +7,7 @@ use super::*;
 use crate::Realized;
 use crate::contract::{FamilyCase, Figure, LtiCase, RecurrenceCase, built, noise, render};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn controls(rate: f32, depth: f32, feedback: f32) -> PhaserControls {
     PhaserControls {
@@ -156,7 +156,7 @@ impl LtiCase for PhaserFamily {
     fn figures(&self) -> Vec<Figure<PhaserControls>> {
         let n = self.stages().get();
         let mut all = Vec::new();
-        for rate in [SampleRate(48_000.0), SampleRate(96_000.0)] {
+        for rate in [SampleRate::SR_48K, SampleRate::SR_96K] {
             for g in [0.0f32, 0.5, 0.9] {
                 let c = controls(1.0, 0.0, g);
                 let q = f64::from(g);
@@ -541,8 +541,10 @@ fn a_rate_below_the_floor_is_the_floor() {
 #[test]
 fn the_range_is_capped_at_0_9_nyquist_and_a_rising_rate_restores_the_authored_top() {
     let f = family(1, 4, SweepRange::DEFAULT, Stagger::NONE);
-    let top =
-        |f: &PhaserFamily, sr: f64| f.member(&controls(1.0, 1.0, 0.5), SampleRate(sr)).max_hz();
+    let top = |f: &PhaserFamily, sr: f64| {
+        f.member(&controls(1.0, 1.0, 0.5), SampleRate::of(sr))
+            .max_hz()
+    };
     assert_eq!(top(&f, 8_000.0), Hz(3_600.0), "0.90 of a 4 kHz Nyquist");
     assert_eq!(top(&f, 48_000.0), Hz(4_000.0));
     let wide = family(1, 4, range(300.0, 30_000.0), Stagger::NONE);

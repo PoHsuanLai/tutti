@@ -151,7 +151,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     let probe = load_probe(rate);
     let _awake = KeepAwake::new();
     let inputs = probe.client.inputs();
-    let prepare = Prepare::new(SampleRate(rate), MaxBlock::of(Samples(quantum)))
+    let prepare = Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(quantum)))
         .with_quantum(MaxBlock::of(Samples(quantum)));
     let (mut ed, exec) = Editor::new(prepare);
     let (src, key) = (NodeKey(1), NodeKey(2));
@@ -178,7 +178,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     ed.commit().expect("the graph compiles");
     let declared = ed.spec().topology.nodes[&key].latency;
 
-    let transport = Transport::new(SampleRate::new(rate));
+    let transport = Transport::new(SampleRate::of(rate));
     let engine = Engine::new(&transport, &mut ed, exec).expect("the engine builds");
     let period = Duration::from_secs_f64(quantum as f64 / rate);
     let warm_up = 8 + declared.get().div_ceil(quantum);

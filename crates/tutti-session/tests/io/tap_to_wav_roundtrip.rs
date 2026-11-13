@@ -107,7 +107,7 @@ fn pump_until_dry<I: Source, O: Sink>(pump: &mut PumpLoop<I, O>, budget: usize) 
 /// A stereo tap on a [`Ramp`], its ring `capacity` frames.
 fn graph_tap(capacity: usize) -> (Graph, TapReader) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxBlock::of(Samples(BLOCK)),
     ));
     ed.insert(NodeKey(1), "ramp", Unforkable(Ramp { at: 0 }));
@@ -155,7 +155,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
         &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ),
         &path,
     )
@@ -232,7 +232,7 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
         &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ),
         &path,
     )
@@ -284,7 +284,7 @@ fn a_gap_in_a_take_is_counted_and_the_file_closes_up_over_it() {
         &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ),
         &path,
     )

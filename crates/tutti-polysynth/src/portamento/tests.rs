@@ -7,7 +7,7 @@ fn test_no_glide() {
         mode: PortamentoMode::Off,
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, SampleRate::new(44100.0));
+    let mut porta = Portamento::new(config, SampleRate::SR_44K1);
 
     porta.set_target(Hz::new(880.0), false);
     assert!((porta.tick().get() - 880.0).abs() < 0.01);
@@ -21,7 +21,7 @@ fn test_always_glide() {
         time: Seconds(0.01), // 10ms
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, SampleRate::new(44100.0));
+    let mut porta = Portamento::new(config, SampleRate::SR_44K1);
 
     porta.reset(Hz::new(440.0));
     porta.set_target(Hz::new(880.0), false);
@@ -46,7 +46,7 @@ fn test_legato_only() {
         time: Seconds(0.01),
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, SampleRate::new(44100.0));
+    let mut porta = Portamento::new(config, SampleRate::SR_44K1);
 
     porta.reset(Hz::new(440.0));
 
@@ -73,7 +73,7 @@ fn test_curve_shapes() {
             time: Seconds(0.01),
             ..Default::default()
         };
-        let mut porta = Portamento::new(config, SampleRate::new(44100.0));
+        let mut porta = Portamento::new(config, SampleRate::SR_44K1);
 
         porta.reset(Hz::new(440.0));
         porta.set_target(Hz::new(880.0), false);
@@ -107,8 +107,8 @@ fn advance_is_that_many_ticks() {
             ..Default::default()
         };
         let (mut by_tick, mut by_advance) = (
-            Portamento::new(config.clone(), SampleRate::new(44100.0)),
-            Portamento::new(config, SampleRate::new(44100.0)),
+            Portamento::new(config.clone(), SampleRate::SR_44K1),
+            Portamento::new(config, SampleRate::SR_44K1),
         );
         for target in [587.0, 311.13, 1234.5, 97.3, 2093.0] {
             for p in [&mut by_tick, &mut by_advance] {
@@ -152,7 +152,7 @@ fn advance_is_that_many_ticks() {
 /// `ln`/`exp` of the pitch.
 #[test]
 fn a_glide_follows_its_law_in_cents() {
-    let rate = SampleRate::new(48_000.0);
+    let rate = SampleRate::SR_48K;
     for law in [
         Law::Linear,
         Law::PowerIn(Exponent::of(2.0)),

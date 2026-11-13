@@ -68,7 +68,7 @@ fn streamer_on(path: &Path) -> (Rig, StreamReader) {
 
 /// [`streamer_on`], with `config`.
 fn streamer_with(path: &Path, config: tutti_sampler::DiskStreamerConfig) -> (Rig, StreamReader) {
-    let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::of(SR), config).expect("builds");
     let opening = streamer.open(path, Placement::HEAD);
     let (stream, reader) = settle(&mut streamer, opening).expect("the file opens");
     (Rig { streamer, stream }, reader)
@@ -163,7 +163,7 @@ fn fork_unprepared(node: impl IntoNode) -> Fork {
 fn fork(voice: &DiskVoice, rate: f64) -> Fork {
     let mut f = fork_unprepared(voice.clone());
     f.node.prepare(&Prepare::new(
-        SampleRate(rate),
+        SampleRate::of(rate),
         MaxBlock::of(Samples(BLOCK)),
     ));
     f
@@ -192,7 +192,11 @@ fn clock_at(rate: f64) -> Clock {
 
 fn looping_clock_at(rate: f64, looping: Option<LoopRange>) -> Clock {
     Clock {
-        clock: Cell::new(FrameClock::new(Beat(0.0), Bpm::of(120.0), SampleRate(rate))),
+        clock: Cell::new(FrameClock::new(
+            Beat(0.0),
+            Bpm::of(120.0),
+            SampleRate::of(rate),
+        )),
         frame: Cell::new(0),
         looping,
     }
@@ -218,9 +222,10 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
     );
 
     let mut node_fork = fork_unprepared(node);
-    node_fork
-        .node
-        .prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+    node_fork.node.prepare(&Prepare::new(
+        SampleRate::of(SR),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     for (what, mut copy) in [
         ("a bare voice", fork(&voice, SR)),
         ("a voice node", node_fork),
@@ -743,7 +748,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         if case.reverse {
             reverse(&mut rig);
         }
-        let mut wave = tutti_codec::Wave::new(2, SampleRate::new(case.file_rate as f64));
+        let mut wave = tutti_codec::Wave::new(2, SampleRate::of(case.file_rate as f64));
         for i in 0..LEN {
             wave.push_frame(&[value(i), -value(i)]);
         }
@@ -767,7 +772,10 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         } else {
             Box::new(source)
         };
-        memory.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+        memory.prepare(&Prepare::new(
+            SampleRate::of(SR),
+            MaxBlock::of(Samples(BLOCK)),
+        ));
         let mut copy = fork(&voice, SR);
 
         let mut sounded = 0usize;

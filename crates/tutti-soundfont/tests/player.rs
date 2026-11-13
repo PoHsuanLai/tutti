@@ -129,8 +129,8 @@ fn a_polyphony_keeps_the_range_checked_shape() {
 
 #[test]
 fn a_unit_prepared_at_a_fractional_rate_renders_at_whole_hertz() {
-    let unit = prepared_at(SampleRate(48_000.4));
-    assert_eq!(unit.sample_rate(), SampleRate(48_000.0));
+    let unit = prepared_at(SampleRate::of(48_000.4));
+    assert_eq!(unit.sample_rate(), SampleRate::SR_48K);
 }
 
 /// A font of three presets that differ in pitch: `0:0` plays the sine at key

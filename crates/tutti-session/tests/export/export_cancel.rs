@@ -16,7 +16,7 @@ use tutti_session::{
 use tutti_types::ChannelLayout;
 use tutti_types::{Db, Frame, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCKS: usize = 20;
 
 /// A node that cancels the export it renders in when it processes its

@@ -229,7 +229,7 @@ mod tests {
 
     fn cfg(threshold: Db, min_silence_ms: f32) -> SilenceConfig {
         SilenceConfig::new(
-            SampleRate::new(RATE),
+            SampleRate::of(RATE),
             threshold,
             Seconds::from_f32(min_silence_ms / 1000.0),
         )
@@ -374,7 +374,7 @@ mod tests {
     fn a_non_finite_threshold_is_refused() {
         for t in [f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {
             assert!(matches!(
-                SilenceConfig::new(SampleRate::new(RATE), Db(t), Seconds(0.1)),
+                SilenceConfig::new(SampleRate::of(RATE), Db(t), Seconds(0.1)),
                 Err(Error::InvalidThreshold { .. })
             ));
         }
@@ -384,7 +384,7 @@ mod tests {
     fn a_bad_rate_is_refused() {
         for rate in [0.0, -1.0, f64::NAN] {
             assert_eq!(
-                SilenceConfig::new(SampleRate::new(rate), Db(-20.0), Seconds(0.1)),
+                SilenceConfig::new(SampleRate::of(rate), Db(-20.0), Seconds(0.1)),
                 Err(Error::NonPositiveSampleRate)
             );
         }

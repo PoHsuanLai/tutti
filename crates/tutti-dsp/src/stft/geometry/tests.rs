@@ -1,21 +1,25 @@
 use super::*;
 
 fn geo(window: usize, hop: usize) -> StftGeometry {
-    StftGeometry::new(SampleRate::new(44100.0), Samples(window), Samples(hop)).unwrap()
+    StftGeometry::new(SampleRate::SR_44K1, Samples(window), Samples(hop)).unwrap()
 }
 
 #[test]
 fn rejects_a_zero_window_a_zero_hop_and_a_non_positive_rate() {
     assert_eq!(
-        StftGeometry::new(SampleRate::new(44100.0), Samples(0), Samples(512)),
+        StftGeometry::new(SampleRate::SR_44K1, Samples(0), Samples(512)),
         Err(Error::ZeroWindow)
     );
     assert_eq!(
-        StftGeometry::new(SampleRate::new(44100.0), Samples(2048), Samples(0)),
+        StftGeometry::new(SampleRate::SR_44K1, Samples(2048), Samples(0)),
         Err(Error::ZeroHop)
     );
     assert_eq!(
-        StftGeometry::new(SampleRate::new(0.0), Samples(2048), Samples(512)),
+        StftGeometry::new(
+            <SampleRate as tutti_types::Unit>::from_raw(0.0),
+            Samples(2048),
+            Samples(512)
+        ),
         Err(Error::NonPositiveSampleRate)
     );
 }
@@ -24,11 +28,11 @@ fn rejects_a_zero_window_a_zero_hop_and_a_non_positive_rate() {
 /// reconstruction — decimated display grids sample sparsely on purpose.
 #[test]
 fn a_hop_wider_than_the_window_analyses_but_does_not_invert() {
-    let sparse = StftGeometry::new(SampleRate::new(44100.0), Samples(2048), Samples(8192)).unwrap();
+    let sparse = StftGeometry::new(SampleRate::SR_44K1, Samples(2048), Samples(8192)).unwrap();
     assert!(!sparse.frames_overlap());
 
     assert_eq!(
-        StftGeometry::cola(SampleRate::new(44100.0), Samples(2048), Samples(8192)),
+        StftGeometry::cola(SampleRate::SR_44K1, Samples(2048), Samples(8192)),
         Err(Error::HopExceedsWindow {
             window: Samples(2048),
             hop: Samples(8192),
@@ -41,12 +45,12 @@ fn a_hop_wider_than_the_window_analyses_but_does_not_invert() {
 #[test]
 fn cola_refuses_what_new_accepts() {
     // 4x overlap: fine for both.
-    assert!(StftGeometry::cola(SampleRate::new(44100.0), Samples(2048), Samples(512)).is_ok());
+    assert!(StftGeometry::cola(SampleRate::SR_44K1, Samples(2048), Samples(512)).is_ok());
 
     // 2x overlap: analysable, not invertible.
-    assert!(StftGeometry::new(SampleRate::new(44100.0), Samples(2048), Samples(1024)).is_ok());
+    assert!(StftGeometry::new(SampleRate::SR_44K1, Samples(2048), Samples(1024)).is_ok());
     assert_eq!(
-        StftGeometry::cola(SampleRate::new(44100.0), Samples(2048), Samples(1024)),
+        StftGeometry::cola(SampleRate::SR_44K1, Samples(2048), Samples(1024)),
         Err(Error::NotColaCompliant {
             window: Samples(2048),
             hop: Samples(1024),
@@ -55,8 +59,8 @@ fn cola_refuses_what_new_accepts() {
     );
 
     // Hop does not divide the window: analysable, not invertible.
-    assert!(StftGeometry::new(SampleRate::new(44100.0), Samples(2048), Samples(500)).is_ok());
-    assert!(StftGeometry::cola(SampleRate::new(44100.0), Samples(2048), Samples(500)).is_err());
+    assert!(StftGeometry::new(SampleRate::SR_44K1, Samples(2048), Samples(500)).is_ok());
+    assert!(StftGeometry::cola(SampleRate::SR_44K1, Samples(2048), Samples(500)).is_err());
 }
 
 /// **A grid that is COLA for one window is not automatically COLA for
@@ -68,11 +72,11 @@ fn cola_refuses_what_new_accepts() {
 #[test]
 fn a_hann_cola_grid_may_not_be_cola_for_another_window() {
     let hop = Samples(512);
-    assert!(StftGeometry::cola(SampleRate::new(44100.0), Samples(2048), hop).is_ok());
+    assert!(StftGeometry::cola(SampleRate::SR_44K1, Samples(2048), hop).is_ok());
 
     assert_eq!(
         StftGeometry::cola_with(
-            SampleRate::new(44100.0),
+            SampleRate::SR_44K1,
             Samples(2048),
             hop,
             CosineWindow::BLACKMAN
@@ -88,7 +92,7 @@ fn a_hann_cola_grid_may_not_be_cola_for_another_window() {
     // And it is accepted at the overlap it actually asks for.
     assert!(
         StftGeometry::cola_with(
-            SampleRate::new(44100.0),
+            SampleRate::SR_44K1,
             Samples(2048),
             Samples(256),
             CosineWindow::BLACKMAN
@@ -103,7 +107,7 @@ fn a_hann_cola_grid_may_not_be_cola_for_another_window() {
 #[test]
 fn the_builder_can_produce_a_non_cola_grid() {
     let hann =
-        StftGeometry::cola(SampleRate::new(44100.0), Samples(2048), Samples(512)).expect("hann 4x");
+        StftGeometry::cola(SampleRate::SR_44K1, Samples(2048), Samples(512)).expect("hann 4x");
     assert!(hann.is_cola());
 
     let blackman = hann.with_window_fn(CosineWindow::BLACKMAN);

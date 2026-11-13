@@ -32,7 +32,7 @@ use tutti::plugin::catalog::CatalogConfig;
 use tutti::prelude::*;
 use tutti::ump::{Address, Message, NoteNumber, U7, Ump, Voice1};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);

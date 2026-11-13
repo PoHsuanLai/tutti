@@ -206,19 +206,19 @@ fn src_ratio_is_exactly_unity_for_matched_rates() {
     // Bit-exact, not 1.0000001 — the matched case is the common one and must
     // not accumulate resampling error.
     assert_eq!(
-        SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(44_100.0)),
+        SrcRatio::for_rates(SampleRate::SR_44K1, SampleRate::SR_44K1),
         SrcRatio::UNITY
     );
     // Within the 0.01 Hz tolerance.
     assert_eq!(
-        SrcRatio::for_rates(SampleRate::new(44_100.005), SampleRate::new(44_100.0)),
+        SrcRatio::for_rates(SampleRate::of(44_100.005), SampleRate::SR_44K1),
         SrcRatio::UNITY
     );
 }
 
 #[test]
 fn src_ratio_converts_mismatched_rates() {
-    let r = SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0));
+    let r = SrcRatio::for_rates(SampleRate::SR_48K, SampleRate::SR_44K1);
     assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-12);
     assert!(
         r > SrcRatio::UNITY,
@@ -230,11 +230,11 @@ fn src_ratio_converts_mismatched_rates() {
 fn src_ratio_survives_a_nonpositive_session_rate() {
     // Would otherwise divide by zero and poison every downstream sample.
     assert_eq!(
-        SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(0.0)),
+        SrcRatio::for_rates(SampleRate::SR_44K1, SampleRate(0.0)),
         SrcRatio::UNITY
     );
     assert_eq!(
-        SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(-1.0)),
+        SrcRatio::for_rates(SampleRate::SR_44K1, SampleRate(-1.0)),
         SrcRatio::UNITY
     );
 }
@@ -266,7 +266,7 @@ fn read_rate_composes_varispeed_with_conversion() {
     // composition matches the exact figure to f64 precision (an f32 ratio was
     // off by ~1e-8 here).
     let rate = PlaybackRate::new(0.5);
-    let src = SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0));
+    let src = SrcRatio::for_rates(SampleRate::SR_48K, SampleRate::SR_44K1);
     let expected = 0.5 * (48_000.0 / 44_100.0);
     assert!((rate.read_rate(src).get() - expected).abs() < 1e-12);
 
@@ -354,8 +354,8 @@ fn a_converted_read_position_does_not_drift_over_an_hour() {
         (96_000.0, 44_100.0),
     ] {
         let rate = PlaybackRate::UNITY.read_rate(SrcRatio::for_rates(
-            SampleRate::new(file),
-            SampleRate::new(session),
+            SampleRate::of(file),
+            SampleRate::of(session),
         ));
         let n = (session * 3600.0) as i64;
         // Block-wise accumulation, as a stream does.

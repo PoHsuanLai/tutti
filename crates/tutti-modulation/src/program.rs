@@ -352,7 +352,7 @@ impl std::error::Error for ProgramError {}
 ///     beat: Beat(beat),
 ///     play: SamplePosition(0.0),
 ///     play_epoch: 1,
-///     rate: SampleRate(48_000.0),
+///     rate: SampleRate::SR_48K,
 /// };
 /// // Range 0..800: a span of 800, so the offset is ±200.
 /// assert_eq!(program.value_at(Some(1000.0), &at(1.0), 800.0, &[]), Some(1200.0));

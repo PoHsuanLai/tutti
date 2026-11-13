@@ -10,7 +10,7 @@ use tutti_graph::{Node, ParamNode};
 use tutti_nodes::{FamilyNode, FreeverbNode, SvfFilterNode};
 use tutti_types::{Hz, Q, SampleRate, UnitAddr, UnitParam};
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 64;
 
 /// No `Wet` port in any of them: the filter's ports are its cutoff, Q and gain, in

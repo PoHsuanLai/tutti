@@ -111,7 +111,7 @@ impl LtiCase for FreeverbFamily {
     /// the four all-passes have unit gain at DC for a feedback of 0.5. The right
     /// channel is the same sum over its eight combs.
     fn figures(&self) -> Vec<Figure<FreeverbControls>> {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         [(0.5, 0.5), (0.0, 0.5), (1.0, 0.2), (0.9, 1.0)]
             .into_iter()
             .flat_map(|(room, damp)| {
@@ -141,7 +141,7 @@ crate::family_contract!(FreeverbFamily, Grows, Lti, reverb);
 /// feedback and the input gain.
 #[test]
 fn the_general_midi_controls_give_todays_coefficients_to_the_bit() {
-    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
+    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate::SR_44K1);
     let Stage::Fdn(fdn) = &n.stages[0] else {
         panic!("the first stage is the combs")
     };
@@ -184,11 +184,11 @@ fn the_network_has_the_lines_of_a_freeverb_built_at_the_rate() {
     for hz in [
         22_050.0, 44_100.0, 44_100.4, 48_000.0, 88_200.0, 96_000.0, 192_000.0,
     ] {
-        let rate = SampleRate(hz);
+        let rate = SampleRate::of(hz);
         let reverb = Freeverb::new(rate);
         let figures = reverb.figures();
         let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, rate);
-        assert_eq!(n.rate, SampleRate(hz.round()));
+        assert_eq!(n.rate, SampleRate::of(hz.round()));
         let Stage::Fdn(fdn) = &n.stages[0] else {
             panic!()
         };
@@ -238,7 +238,7 @@ fn a_gain(n: &Network) -> f32 {
 /// delay is their sum, a figure fixed by the definition.
 #[test]
 fn the_tunings_and_the_stereo_spread_are_freeverbs() {
-    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
+    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate::SR_44K1);
     let Stage::Fdn(fdn) = &n.stages[0] else {
         panic!()
     };
@@ -274,7 +274,7 @@ fn the_tunings_and_the_stereo_spread_are_freeverbs() {
 /// -60 dB is the longest line, the all-passes' trains and that RT60.
 #[test]
 fn the_general_midi_network_decays_as_the_definition_says() {
-    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
+    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate::SR_44K1);
     let low = -3.0 * 1640.0 / (44_100.0 * libm::log10(0.84));
     assert!(
         (n.rt60(Band::Low).get() - low).abs() < 1e-5,
@@ -299,13 +299,13 @@ use crate::Ring;
 /// decay: it has no decay control to cap.
 #[test]
 fn the_bounds_are_the_largest_design() {
-    let reach = Reach::at(SampleRate(48_000.0)).unwrap();
+    let reach = Reach::at(SampleRate::SR_48K).unwrap();
     let b = FreeverbFamily.reach(&reach);
-    let room_one = FreeverbFamily.member(&controls(1.0, 0.0), SampleRate(48_000.0));
+    let room_one = FreeverbFamily.member(&controls(1.0, 0.0), SampleRate::SR_48K);
     assert_eq!(b, NetworkCapacity::need(&room_one, reach.floor()));
     assert_eq!((b.lines, b.stages, b.outputs), (16, 5, 2));
     let short = Reach::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxDecay::new(Seconds(0.5)).unwrap(),
         Db(-60.0),
     )
@@ -317,7 +317,7 @@ fn the_bounds_are_the_largest_design() {
 /// range is clamped, so the design is total.
 #[test]
 fn a_hostile_control_is_made_safe() {
-    let rate = SampleRate(44_100.0);
+    let rate = SampleRate::SR_44K1;
     let gm = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, rate);
     assert_eq!(
         FreeverbFamily.member(&controls(f32::NAN, f32::INFINITY), rate),

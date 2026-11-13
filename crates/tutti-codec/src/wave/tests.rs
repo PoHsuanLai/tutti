@@ -5,7 +5,7 @@ use tutti_types::Seconds;
 /// `push_frame` appends to every channel and advances the length once.
 #[test]
 fn push_frame_appends_one_frame_across_channels() {
-    let mut w = Wave::new(2, SampleRate::new(48_000.0));
+    let mut w = Wave::new(2, SampleRate::SR_48K);
     w.push_frame(&[0.25, -0.5]);
     assert_eq!(w.len(), 1);
     assert_eq!((w.at(0, 0), w.at(1, 0)), (0.25, -0.5));
@@ -14,12 +14,12 @@ fn push_frame_appends_one_frame_across_channels() {
 #[test]
 #[should_panic(expected = "frame width")]
 fn push_frame_rejects_a_frame_of_the_wrong_width() {
-    Wave::new(2, SampleRate::new(48_000.0)).push_frame(&[0.5]);
+    Wave::new(2, SampleRate::SR_48K).push_frame(&[0.5]);
 }
 
 #[test]
 fn zero_rounds_the_duration_to_the_nearest_frame() {
-    let w = Wave::zero(1, SampleRate::new(2.0), Seconds::new(0.75));
+    let w = Wave::zero(1, SampleRate::of(2.0), Seconds::new(0.75));
     assert_eq!(w.len(), 2);
     assert!(w.channel(0).iter().all(|&s| s == 0.0));
 }
@@ -31,7 +31,7 @@ fn zero_rounds_the_duration_to_the_nearest_frame() {
 fn a_count_assumes_smpte_or_unassigned_and_a_topology_is_kept() {
     use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
     for n in [1u16, 2, 6, 8, 12] {
-        let w = Wave::new(usize::from(n), SampleRate::new(48_000.0));
+        let w = Wave::new(usize::from(n), SampleRate::SR_48K);
         assert_eq!(
             Some(w.topology()),
             ChannelTopology::smpte(ChannelLayout::from(n)).as_ref(),
@@ -40,27 +40,25 @@ fn a_count_assumes_smpte_or_unassigned_and_a_topology_is_kept() {
     }
     for n in [3usize, 4, 5, 7, 16] {
         assert_eq!(
-            Wave::new(n, SampleRate::new(48_000.0))
-                .topology()
-                .positions(),
+            Wave::new(n, SampleRate::SR_48K).topology().positions(),
             vec![Speaker::Unassigned; n],
             "{n}"
         );
     }
     assert!(
-        Wave::new(0, SampleRate::new(48_000.0))
+        Wave::new(0, SampleRate::SR_48K)
             .topology()
             .positions()
             .is_empty()
     );
     assert_eq!(
-        Wave::from_samples(SampleRate::new(48_000.0), &[0.5])
+        Wave::from_samples(SampleRate::SR_48K, &[0.5])
             .topology()
             .positions(),
         [Speaker::FrontCenter]
     );
 
-    let quad = Wave::with_topology(ChannelTopology::quad(), SampleRate::new(48_000.0));
+    let quad = Wave::with_topology(ChannelTopology::quad(), SampleRate::SR_48K);
     assert_eq!(quad.channels(), 4);
     assert_eq!(quad.topology(), &ChannelTopology::quad());
 }
@@ -70,7 +68,7 @@ fn a_count_assumes_smpte_or_unassigned_and_a_topology_is_kept() {
 #[test]
 #[should_panic(expected = "at most u16::MAX channels")]
 fn a_wave_wider_than_a_layout_is_refused() {
-    let _ = Wave::new(usize::from(u16::MAX) + 1, SampleRate::new(48_000.0));
+    let _ = Wave::new(usize::from(u16::MAX) + 1, SampleRate::SR_48K);
 }
 
 /// `frames` frames over `topology` whose sample at `(c, i)` is
@@ -78,7 +76,7 @@ fn a_wave_wider_than_a_layout_is_refused() {
 /// exact at 16 bits (a whole multiple of 128 / 32768).
 #[cfg(all(feature = "encode-wav", feature = "encode-flac", decode))]
 fn ramp_wave(topology: ChannelTopology, rate: f64, frames: usize) -> Wave {
-    let mut wave = Wave::with_topology(topology, SampleRate::new(rate));
+    let mut wave = Wave::with_topology(topology, SampleRate::of(rate));
     let width = wave.channels();
     for i in 0..frames {
         let frame: Vec<f32> = (0..width)
@@ -146,7 +144,7 @@ fn a_written_wave_reads_back_as_itself() {
 /// `interleaved` is frame-major: the order of an `Interleaved` block.
 #[test]
 fn interleaved_is_frame_major() {
-    let mut w = Wave::new(2, SampleRate::new(48_000.0));
+    let mut w = Wave::new(2, SampleRate::SR_48K);
     w.push_frame(&[1.0, 2.0]);
     w.push_frame(&[3.0, 4.0]);
     assert_eq!(w.interleaved().collect::<Vec<_>>(), [1.0, 2.0, 3.0, 4.0]);

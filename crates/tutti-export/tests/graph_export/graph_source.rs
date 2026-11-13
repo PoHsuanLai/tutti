@@ -66,7 +66,7 @@ use tutti_types::ChannelLayout;
 use tutti_types::{Amplitude, Azimuth, Beat, Bpm, Hz, SampleRate};
 use tutti_types::{Db, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// 0.3013 s at 48 kHz is 14 462 frames: 14 × 1024 + 126, and 225 × 64 + 62.
 /// The last block is short at either size.
@@ -312,7 +312,7 @@ fn a_sine_renders_its_closed_form() {
 #[test]
 fn a_resampled_export_writes_its_render() {
     let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
-    cfg.resample = Some(Resample::to(SampleRate(44_100.0)));
+    cfg.resample = Some(Resample::to(SampleRate::SR_44K1));
     let bytes = same_file(
         || sine(1000.0),
         &cfg,
@@ -620,7 +620,9 @@ fn a_crossed_pair_is_refused_at_construction() {
 fn a_pair_prepared_at_no_rate_is_refused_at_assembly() {
     for bad in [0.0, -48_000.0, f64::INFINITY] {
         let (editor, executor) = sine(1000.0)
-            .build(RenderGraph::prepare(SampleRate(bad)))
+            .build(RenderGraph::prepare(
+                <SampleRate as tutti_types::Unit>::from_raw(bad),
+            ))
             .expect("the builder does not judge the rate");
         match RenderGraph::assemble(editor, executor, Setup::new()) {
             Err(Error::InvalidConfig(tutti_export::ConfigError::InvalidRate { prepared })) => {
@@ -636,7 +638,7 @@ fn a_pair_prepared_at_no_rate_is_refused_at_assembly() {
 fn a_graph_prepared_at_another_rate_is_refused() {
     let g = sine(1000.0);
     let (editor, executor) = g
-        .build(RenderGraph::prepare(SampleRate(44_100.0)))
+        .build(RenderGraph::prepare(SampleRate::SR_44K1))
         .expect("builds");
     let r = render_to_buffers(
         RenderGraph::assemble(editor, executor, Setup::new()).expect("built together"),
@@ -711,7 +713,7 @@ impl Node for BeatPorts {
 /// A 440 Hz sine at the render's rate, one second long: a plain wave table,
 /// so a voice reading it at unit rate reproduces it sample for sample.
 fn tone() -> Arc<tutti_codec::Wave> {
-    let mut w = tutti_codec::Wave::new(1, SampleRate::new(RATE.get()));
+    let mut w = tutti_codec::Wave::new(1, SampleRate::of(RATE.get()));
     for i in 0..RATE.get() as usize {
         w.push_frame(&[tone_at(i)]);
     }

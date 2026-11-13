@@ -235,7 +235,7 @@ mod tests {
         );
 
         let rate = HostMessage::SetSampleRate {
-            rate: SampleRate(48_000.0),
+            rate: SampleRate::SR_48K,
         };
         // variant 8, 48000.0f64
         assert_eq!(
@@ -244,7 +244,7 @@ mod tests {
         );
 
         let set_reply = BridgeMessage::SampleRateSet {
-            rate: SampleRate(48_000.0),
+            rate: SampleRate::SR_48K,
             error: None,
         };
         // variant 24 (26 until v25 removed `EditorOpened` and `EditorClosed`

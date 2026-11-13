@@ -31,7 +31,7 @@ const UPDATES: usize = 2_000;
 fn scene(n: usize, modulated: bool) -> (Session, Vec<Key<SvfFilterNode<f32>>>) {
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(512)),
         )

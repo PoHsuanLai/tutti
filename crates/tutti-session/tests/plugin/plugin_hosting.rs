@@ -14,7 +14,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 fn session() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(512)),
         )

@@ -393,7 +393,8 @@ mod halves {
     use tutti_types::Samples;
 
     fn prepare(rate: f64, block: usize) -> tutti_plugin_types::Prepare {
-        tutti_plugin_types::Prepare::new(SampleRate(rate), MaxBlock::of(Samples(block))).unwrap()
+        tutti_plugin_types::Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(block)))
+            .unwrap()
     }
 
     fn active(rate: f64, block: usize) -> (AuProcessor, AuController) {
@@ -669,10 +670,7 @@ mod tail {
                 // The point of the whole type: converting first would have made
                 // this `None`, and a bounce would truncate the reverb entirely.
                 assert_ne!(mapped, PluginTail::None);
-                assert_eq!(
-                    seconds.to_samples_ceil(SampleRate::new(44_100.0)),
-                    Samples::ZERO
-                );
+                assert_eq!(seconds.to_samples_ceil(SampleRate::SR_44K1), Samples::ZERO);
             }
         }
     }

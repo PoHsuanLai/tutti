@@ -78,12 +78,12 @@ fn watch(f: impl FnOnce()) -> (usize, usize) {
 fn the_add_voice_drain_frees_nothing() {
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = Arc::new(Wave::from_samples(
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
         &vec![0.5f32; 48_000],
     ));
     let (pool, handle) = VoicePool::new().with_handle();
-    let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
-    let env = t.env(64, SampleRate(48_000.0));
+    let mut rig = Direct::new(pool, SampleRate::SR_48K, 64);
+    let env = t.env(64, SampleRate::SR_48K);
     let voice = || {
         (
             MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
@@ -138,7 +138,7 @@ fn write_wav(path: &std::path::Path) {
             [s, s]
         })
         .collect();
-    tutti_fixtures::signal::write_wav_f32(path, tutti_types::SampleRate(48_000.0), 2, &interleaved);
+    tutti_fixtures::signal::write_wav_f32(path, tutti_types::SampleRate::SR_48K, 2, &interleaved);
 }
 
 /// A hand-stepped streamer streaming a fresh file, and the stream's handle and
@@ -153,7 +153,7 @@ fn stream() -> (
     let path = dir.path().join("two_seconds.wav");
     write_wav(&path);
     let mut streamer =
-        DiskStreamer::manual(SampleRate(48_000.0), Default::default()).expect("builds");
+        DiskStreamer::manual(SampleRate::SR_48K, Default::default()).expect("builds");
     let opening = streamer.open(&path, Placement::HEAD);
     let (stream, reader) = settle(&mut streamer, opening).expect("the file opens");
     (dir, streamer, stream, reader)
@@ -244,8 +244,8 @@ fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
     let (_dir, streamer, stream, reader) = stream();
     let (pool, handle) = pool_holding_the_last_holder(streamer, stream, reader);
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
-    let env = t.env(64, SampleRate(48_000.0));
+    let mut rig = Direct::new(pool, SampleRate::SR_48K, 64);
+    let env = t.env(64, SampleRate::SR_48K);
     rig.block_in(&env);
     assert_eq!(rig.node.voice_count(), 1, "setup: the voice is in");
 
@@ -284,14 +284,11 @@ fn a_removed_disk_voice_on_a_full_retirement_channel_frees_its_ring_in_the_callb
     let (_dir, streamer, stream, reader) = stream();
     let (pool, handle) = pool_holding_the_last_holder(streamer, stream, reader);
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
-    let env = t.env(64, SampleRate(48_000.0));
+    let mut rig = Direct::new(pool, SampleRate::SR_48K, 64);
+    let env = t.env(64, SampleRate::SR_48K);
     rig.block_in(&env);
 
-    let wave = Arc::new(Wave::from_samples(
-        SampleRate::new(48_000.0),
-        &vec![0.5f32; 480],
-    ));
+    let wave = Arc::new(Wave::from_samples(SampleRate::SR_48K, &vec![0.5f32; 480]));
     let memory = || {
         MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
             .expect("a placeable wave")

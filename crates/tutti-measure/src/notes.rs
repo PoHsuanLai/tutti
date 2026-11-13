@@ -825,9 +825,9 @@ mod tests {
     const TAU: f64 = std::f64::consts::TAU;
 
     fn config(rate: f64, min_freq: f32, hop_div: usize, onset_window: usize) -> NoteConfig {
-        let yin = YinConfig::new(SampleRate::new(rate), Hz(min_freq), Hz(1000.0)).unwrap();
+        let yin = YinConfig::new(SampleRate::of(rate), Hz(min_freq), Hz(1000.0)).unwrap();
         let g = StftGeometry::new(
-            SampleRate::new(rate),
+            SampleRate::of(rate),
             Samples(onset_window),
             Samples(onset_window / 4),
         )
@@ -1400,16 +1400,15 @@ mod tests {
     /// Every setting is validated, so absurd ones cannot allocate or overflow.
     #[test]
     fn settings_and_inputs_are_validated() {
-        let g = StftGeometry::new(SampleRate::new(RATE), Samples(1024), Samples(256)).unwrap();
+        let g = StftGeometry::new(SampleRate::of(RATE), Samples(1024), Samples(256)).unwrap();
         let flux = OnsetConfig::new(g, DetectionFunction::SpectralFlux);
         let bad = |e: Error| matches!(e, Error::InvalidNoteParameter(_));
-        let huge = YinConfig::new(SampleRate::new(RATE), Hz(0.01), Hz(1000.0)).unwrap();
+        let huge = YinConfig::new(SampleRate::of(RATE), Hz(0.01), Hz(1000.0)).unwrap();
         assert!(bad(NoteConfig::new(huge, flux).unwrap_err()));
-        let yin = YinConfig::new(SampleRate::new(RATE), Hz(80.0), Hz(1000.0)).unwrap();
+        let yin = YinConfig::new(SampleRate::of(RATE), Hz(80.0), Hz(1000.0)).unwrap();
         let energy = OnsetConfig::new(g, DetectionFunction::Energy);
         assert!(bad(NoteConfig::new(yin, energy).unwrap_err()));
-        let other =
-            StftGeometry::new(SampleRate::new(48000.0), Samples(1024), Samples(256)).unwrap();
+        let other = StftGeometry::new(SampleRate::SR_48K, Samples(1024), Samples(256)).unwrap();
         let other = OnsetConfig::new(other, DetectionFunction::SpectralFlux);
         assert!(bad(NoteConfig::new(yin, other).unwrap_err()));
 
@@ -1467,8 +1466,8 @@ mod tests {
     /// anything is allocated.
     #[test]
     fn too_many_frames_are_refused() {
-        let yin = YinConfig::new(SampleRate::new(RATE), Hz(5000.0), Hz(10000.0)).unwrap();
-        let g = StftGeometry::new(SampleRate::new(RATE), Samples(1024), Samples(256)).unwrap();
+        let yin = YinConfig::new(SampleRate::of(RATE), Hz(5000.0), Hz(10000.0)).unwrap();
+        let g = StftGeometry::new(SampleRate::of(RATE), Samples(1024), Samples(256)).unwrap();
         let c = NoteConfig::new(yin, OnsetConfig::new(g, DetectionFunction::SpectralFlux))
             .unwrap()
             .with_hop(Samples(1))

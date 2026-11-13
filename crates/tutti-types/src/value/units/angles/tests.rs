@@ -170,12 +170,12 @@ fn phase_advances_backwards_without_escaping_the_cycle() {
 fn phase_increment_derives_from_frequency_and_rate() {
     // One cycle per second at 100 Hz sampling = 1/100 turn per sample.
     assert_eq!(
-        PhaseIncrement::per_sample(Hz(1.0), SampleRate::new(100.0)),
+        PhaseIncrement::per_sample(Hz(1.0), SampleRate::of(100.0)),
         PhaseIncrement(0.01)
     );
     // A degenerate rate yields a standing phase rather than inf/NaN.
     assert_eq!(
-        PhaseIncrement::per_sample(Hz(440.0), SampleRate::new(0.0)),
+        PhaseIncrement::per_sample(Hz(440.0), SampleRate(0.0)),
         PhaseIncrement(0.0)
     );
 }

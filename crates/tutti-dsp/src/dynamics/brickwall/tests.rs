@@ -91,7 +91,7 @@ fn definition(x: f32, c: f32) -> f32 {
 #[test]
 fn the_member_ceiling_is_the_amplitude_of_the_decibels() {
     let family = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     for db in [-96.0f32, -24.0, -6.0, -0.3, 0.0, 3.0, 12.0] {
         let c = f64::from(family.member(&controls(db), rate).ceiling());
         assert!(
@@ -113,7 +113,7 @@ fn the_member_ceiling_is_the_amplitude_of_the_decibels() {
 #[test]
 fn the_member_is_the_clamp_and_its_four_consequences() {
     let family = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let mut rng = StdRng::seed_from_u64(8);
     let mut xs: Vec<f32> = vec![0.0, -0.0, 1.0, -1.0, 0.5, 1e-30, 1e30, f32::MAX, f32::MIN];
     xs.extend((0..200).map(|_| rng.gen_range(-4.0..4.0)));
@@ -137,7 +137,7 @@ fn the_member_is_the_clamp_and_its_four_consequences() {
 #[test]
 fn infinite_ceilings_pass_everything_and_mute() {
     let family = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let open = family.member(&controls(f32::INFINITY), rate);
     let shut = family.member(&controls(f32::NEG_INFINITY), rate);
     for x in [1e30f32, -3.0, 0.0, f32::INFINITY, f32::NEG_INFINITY] {
@@ -155,7 +155,7 @@ fn render_blocks(
     block: usize,
 ) -> Vec<Vec<f32>> {
     let family = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let mut k: Realized<BrickwallRecurrence> = family.realized();
     k.prepare(
         &(),
@@ -187,9 +187,7 @@ fn render_blocks(
 fn the_render_is_the_clamp_at_any_block() {
     let x = noise(5, 2048, 2.0);
     for db in [-18.0f32, -6.0, 0.0, 6.0] {
-        let c = design()
-            .member(&controls(db), SampleRate(48_000.0))
-            .ceiling();
+        let c = design().member(&controls(db), SampleRate::SR_48K).ceiling();
         for block in [1, 17, 64, 512] {
             for (ch, out) in render_blocks(controls(db), &x, None, block)
                 .iter()
@@ -219,7 +217,7 @@ fn a_fed_ceiling_is_read_per_frame() {
     lane[101] = f32::NEG_INFINITY;
     let base = -6.0;
     let held = design()
-        .member(&controls(base), SampleRate(48_000.0))
+        .member(&controls(base), SampleRate::SR_48K)
         .ceiling();
     for block in [1, 17, 64, 512] {
         for out in render_blocks(controls(base), &x, Some(&lane), block) {

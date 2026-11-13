@@ -57,7 +57,7 @@ impl Node for BeatLog {
 }
 
 fn graph(log: &Log) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(512))));
     ed.insert(NodeKey(1), "beats", Unforkable(BeatLog(Arc::clone(log))));
     ed.spec_mut()
         .topology
@@ -106,7 +106,7 @@ fn render(engine: &Engine, frames: usize) {
 /// The live engine over `map` from beat `start`, rendered in `blocks` (a
 /// pattern repeated until `total` frames).
 fn live(map: &Arc<TempoMap>, start: f64, blocks: &[usize], total: usize) -> Seen {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Log::default();
     let (mut ed, exec) = graph(&log);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
@@ -238,7 +238,7 @@ fn an_offline_render_is_the_live_render_with_a_step_map() {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo_map: Arc::clone(&map),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         loop_range: None,
     });
     let mut out = vec![0.0f32; 512];
@@ -269,7 +269,7 @@ fn an_offline_render_is_the_live_render_with_a_step_map() {
 #[test]
 fn a_seek_seats_at_the_exact_beat_in_its_step() {
     let points = [(0.0, 120.0), (4.0, 60.0)];
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Log::default();
     let (mut ed, exec) = graph(&log);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
@@ -314,7 +314,7 @@ fn a_seek_seats_at_the_exact_beat_in_its_step() {
 #[test]
 fn a_loop_wrap_takes_the_tempo_where_it_lands() {
     let points = [(0.0, 120.0), (4.0, 60.0)];
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Log::default();
     let (mut ed, exec) = graph(&log);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");

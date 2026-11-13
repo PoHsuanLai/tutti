@@ -106,7 +106,7 @@ fn connect(ed: &mut Editor, from: NodeKey, to: NodeKey) {
 /// taps' sinks and the recorders' logs.
 fn graph(workers: usize, declared: bool) -> (Executor, Vec<common::Sink>, Vec<Seen>) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     if workers > 1 {
@@ -186,12 +186,9 @@ fn every_midi_node_is_light() {
     assert_eq!(clip(0).shape().cost, Cost::Light);
     assert_eq!(HarmonyNode::new([]).shape().cost, Cost::Light);
     assert_eq!(
-        ClockNode::new(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_types::SampleRate(48_000.0)
-        )
-        .shape()
-        .cost,
+        ClockNode::new(tutti_ump::MidiGroup::FIRST, tutti_types::SampleRate::SR_48K)
+            .shape()
+            .cost,
         Cost::Light
     );
     assert_eq!(

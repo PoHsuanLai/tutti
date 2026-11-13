@@ -498,7 +498,7 @@ mod tests {
     /// every channel of a fork, reads the same spectra.
     #[test]
     fn the_spectra_are_stored_once_and_a_fork_shares_them() {
-        let ir = generate_test_ir(4_096, Seconds::new(0.3), SampleRate::new(48_000.0));
+        let ir = generate_test_ir(4_096, Seconds::new(0.3), SampleRate::SR_48K);
         let node = ConvolverNode::shared_ir(6u16, &ir, 256);
         let first = node.convolvers[0].spectra();
         assert!(
@@ -521,7 +521,7 @@ mod tests {
     /// the live node has run, the fork renders what a new node does.
     #[test]
     fn a_fork_carries_none_of_the_live_state() {
-        let ir = generate_test_ir(700, Seconds::new(0.3), SampleRate::new(48_000.0));
+        let ir = generate_test_ir(700, Seconds::new(0.3), SampleRate::SR_48K);
         let x = crate::test_support::noise(5, 512);
         let mut live = prepared(ConvolverNode::stereo(&ir, &ir, 64));
         drive_block(&mut live, &[&x, &x]);
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn reset_zeroes_state() {
-        let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::new(48_000.0));
+        let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::SR_48K);
         let mut node = prepared(ConvolverNode::new(&ir, 64));
         drive_frames(&mut node, &[&[1.0; 100]]);
         Node::reset(&mut node);
@@ -611,8 +611,8 @@ mod tests {
 
     #[test]
     fn stereo_convolver_true_stereo_produces_finite_output() {
-        let ir_l = generate_test_ir(512, Seconds::new(0.3), SampleRate::new(48_000.0));
-        let ir_r = generate_test_ir(512, Seconds::new(0.4), SampleRate::new(48_000.0));
+        let ir_l = generate_test_ir(512, Seconds::new(0.3), SampleRate::SR_48K);
+        let ir_r = generate_test_ir(512, Seconds::new(0.4), SampleRate::SR_48K);
         let mut node = prepared(ConvolverNode::stereo(&ir_l, &ir_r, 64));
         let out = drive_frames(&mut node, &[&[1.0], &[0.5]]);
         assert!(out[0][0].is_finite() && out[1][0].is_finite());
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn room_ir_has_content() {
-        let ir = generate_room_ir(0.5, Seconds::new(1.0), SampleRate::new(48_000.0));
+        let ir = generate_room_ir(0.5, Seconds::new(1.0), SampleRate::SR_48K);
         assert!(!ir.is_empty());
         assert_eq!(ir[0], 1.0);
         assert!(ir.iter().any(|&x| x != 0.0));
@@ -654,7 +654,7 @@ mod golden {
     /// `node` over `x` in `BLOCK`-frame blocks (the last one short), as a
     /// graph running at a `BLOCK`-frame quantum hands it.
     fn render(node: ConvolverNode, x: &[Vec<f32>]) -> Vec<Vec<f32>> {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let mut node = prepared(node, rate, BLOCK);
         let frames = x[0].len();
         let mut out = vec![Vec::with_capacity(frames); x.len()];
@@ -683,8 +683,8 @@ mod golden {
     /// magnitude more.
     #[test]
     fn every_configuration_is_the_direct_sum_of_its_definition() {
-        let ir_a = generate_test_ir(700, Seconds::new(0.3), SampleRate::new(48_000.0));
-        let ir_b = generate_test_ir(300, Seconds::new(0.5), SampleRate::new(48_000.0));
+        let ir_a = generate_test_ir(700, Seconds::new(0.3), SampleRate::SR_48K);
+        let ir_b = generate_test_ir(300, Seconds::new(0.5), SampleRate::SR_48K);
         /// The input channel of an output that reads the mono fold of every input.
         const FOLDED: usize = usize::MAX;
         let gain = 0.7_f64;
@@ -757,7 +757,7 @@ mod golden {
                 generate_test_ir(
                     200 + 90 * c,
                     tutti_types::Seconds::from_f32(0.2 + 0.05 * c as f32),
-                    SampleRate::new(48_000.0),
+                    SampleRate::SR_48K,
                 )
             })
             .collect();
@@ -807,7 +807,7 @@ mod golden {
     #[test]
     fn a_six_channel_fold_convolves_the_engine_fold() {
         let irs: Vec<Vec<f32>> = (0..6)
-            .map(|c| generate_test_ir(150 + 40 * c, Seconds::new(0.3), SampleRate::new(48_000.0)))
+            .map(|c| generate_test_ir(150 + 40 * c, Seconds::new(0.3), SampleRate::SR_48K))
             .collect();
         let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
         let node = ConvolverNode::folded(&refs, 32);
@@ -838,7 +838,7 @@ mod golden {
     #[test]
     fn a_gain_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
-        let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::new(48_000.0));
+        let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::SR_48K);
         let x = noise(21, 64 * 8);
         let (hist, block) = (&x[..64 * 7], &x[64 * 7..]);
         let make = || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64);

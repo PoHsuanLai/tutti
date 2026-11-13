@@ -33,11 +33,11 @@ fn formats() -> Vec<(&'static str, Format)> {
 }
 
 fn spec(format: Format, channels: u16) -> Spec {
-    Spec::of_width(format, ChannelLayout::from(channels), SampleRate(44_100.0))
+    Spec::of_width(format, ChannelLayout::from(channels), SampleRate::SR_44K1)
 }
 
 fn at_rate(format: Format, rate: f64) -> Spec {
-    Spec::of_width(format, ChannelLayout::STEREO, SampleRate(rate))
+    Spec::of_width(format, ChannelLayout::STEREO, SampleRate::of(rate))
 }
 
 /// `frames` frames of a sawtooth under a hash, exact in binary and not

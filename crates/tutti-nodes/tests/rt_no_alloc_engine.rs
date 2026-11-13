@@ -35,9 +35,9 @@ static A: AllocDisabler = AllocDisabler;
 /// `process` path.
 fn build_engine_with_chain() -> Engine {
     let sample_rate = 48_000.0;
-    let transport = Transport::new(SampleRate::new(sample_rate));
+    let transport = Transport::new(SampleRate::of(sample_rate));
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(sample_rate),
+        SampleRate::of(sample_rate),
         MaxBlock::of(Samples(512)),
     ));
     let [osc, eq, strip, limiter] = [1, 2, 3, 4].map(NodeKey);

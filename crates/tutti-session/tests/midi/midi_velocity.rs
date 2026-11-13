@@ -72,7 +72,7 @@ fn note(number: u8, velocity: u16) -> [TimedMidiEvent; 2] {
 fn velocity_keeps_its_full_width() {
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

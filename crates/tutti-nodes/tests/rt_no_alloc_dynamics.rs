@@ -29,7 +29,7 @@ static A: AllocDisabler = AllocDisabler;
 /// ±`amplitude` (to keep the envelope follower active), `warm` warm-up
 /// blocks, then `blocks` 64-frame blocks under `assert_no_alloc`.
 fn gate<N: IntoNode>(node: N, amplitude: f32, warm: usize, blocks: usize) {
-    let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
     for c in rig.inputs_mut() {
         for (i, x) in c.iter_mut().enumerate() {
             *x = if i % 2 == 0 { amplitude } else { -amplitude };
@@ -107,7 +107,7 @@ fn compressor_fed_threshold_and_moving_cells_are_allocation_free() {
                 ..CompressorControls::DEFAULT
             },
         ),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         64,
     );
     for c in node.inputs_mut() {
@@ -236,7 +236,7 @@ fn limiter_node_burst_and_release_are_allocation_free() {
         ceiling: Db::new(-0.3),
         ..LimiterControls::DEFAULT
     });
-    let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
     let fill = |rig: &mut BlockRig, amplitude: f32| {
         for c in rig.inputs_mut() {
             for (i, x) in c.iter_mut().enumerate() {
@@ -274,7 +274,7 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
             BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
             Db::new(-0.3),
         ),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         64,
     );
     for c in node.inputs_mut() {
@@ -313,7 +313,7 @@ fn brickwall_limiter_moving_cell_and_hostile_lane_are_allocation_free() {
             BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
             Db::new(-0.3),
         ),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         64,
     );
     for c in node.inputs_mut() {
@@ -349,7 +349,7 @@ fn limiter_node_fed_ceiling_and_threshold_process_is_allocation_free() {
             Lookahead::DEFAULT,
             LimiterControls::DEFAULT,
         ),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         64,
     );
     for c in node.inputs_mut() {
@@ -392,7 +392,7 @@ fn a_limiter_cloned_mid_release_processes_allocation_free() {
         ceiling: Db::new(-0.3),
         ..LimiterControls::DEFAULT
     });
-    let mut d = Direct::new(node, SampleRate(48_000.0), 64);
+    let mut d = Direct::new(node, SampleRate::SR_48K, 64);
     let fill = |d: &mut Direct<LimiterNode>, amplitude: f32| {
         for c in d.inputs_mut() {
             for (i, x) in c.iter_mut().enumerate() {

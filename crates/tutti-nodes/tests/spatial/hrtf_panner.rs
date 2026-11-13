@@ -154,7 +154,7 @@ fn synthetic_itd_ild_sphere() -> Vec<u8> {
     b
 }
 
-const RATE: SampleRate = SampleRate(SAMPLE_RATE as f64);
+const RATE: SampleRate = SampleRate::of(SAMPLE_RATE as f64);
 
 fn make_node() -> HrtfBinauralNode {
     let bytes = synthetic_itd_ild_sphere();

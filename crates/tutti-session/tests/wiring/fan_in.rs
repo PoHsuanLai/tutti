@@ -19,7 +19,7 @@ const C: f32 = 0.125;
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

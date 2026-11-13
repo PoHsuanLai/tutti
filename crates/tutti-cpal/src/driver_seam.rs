@@ -295,7 +295,7 @@ impl CpalDriver {
 /// use tutti_graph::{Editor, Prepare};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let rate = SampleRate(48_000.0);
+/// let rate = SampleRate::SR_48K;
 /// let transport = Transport::new(rate);
 /// let (mut editor, executor) = Editor::new(Prepare::new(rate, MaxBlock::of(Samples(512))));
 /// let engine = Engine::new(&transport, &mut editor, executor)?;

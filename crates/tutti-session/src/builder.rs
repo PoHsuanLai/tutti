@@ -23,7 +23,7 @@ use crate::{Result, Session};
 /// let session = Session::builder()
 ///     .outputs_floor(ChannelLayout::from_count(6)) // a 5.1 project renders six, whatever the device
 ///     .render_workers(Workers::SERIAL)
-///     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))
+///     .build_offline(SampleRate::SR_48K, ChannelLayout::STEREO, MaxBlock::of(Samples(512)))
 ///     .unwrap();
 /// assert_eq!(session.graph_ref().outputs(), 6);
 /// ```

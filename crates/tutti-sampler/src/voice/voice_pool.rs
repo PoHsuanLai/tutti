@@ -35,7 +35,7 @@ const SR: f64 = 44_100.0;
 /// One one-frame block of `node` under `t` at `rate`, into `out` (as many
 /// channels as it holds); the transport is not moved.
 fn tick(node: &mut dyn Node, t: &MockTransport, rate: f64, out: &mut [f32]) {
-    let got = crate::testing::block(node, t, SampleRate::new(rate), 1);
+    let got = crate::testing::block(node, t, SampleRate::of(rate), 1);
     for (o, c) in out.iter_mut().zip(got) {
         *o = c[0];
     }
@@ -44,7 +44,7 @@ fn tick(node: &mut dyn Node, t: &MockTransport, rate: f64, out: &mut [f32]) {
 /// One block of `n` frames of `node` under `t` at `rate`, planar; the
 /// transport is not moved.
 fn run(node: &mut dyn Node, t: &MockTransport, rate: f64, n: usize) -> Vec<Vec<f32>> {
-    crate::testing::block(node, t, SampleRate::new(rate), n)
+    crate::testing::block(node, t, SampleRate::of(rate), n)
 }
 
 /// `node` as the graph takes it: the unit it renders, and the source a
@@ -61,7 +61,10 @@ fn fork_of(source: &dyn tutti_graph::ForkSource, rate: f64) -> Box<dyn Node> {
         .fork(tutti_graph::ForkMode::Live)
         .expect("a memory voice forks")
         .node;
-    node.prepare(&Prepare::new(SampleRate(rate), MaxBlock::of(Samples(64))));
+    node.prepare(&Prepare::new(
+        SampleRate::of(rate),
+        MaxBlock::of(Samples(64)),
+    ));
     node
 }
 
@@ -69,7 +72,7 @@ fn make_wave(samples: usize) -> Arc<Wave> {
     let data: Vec<f32> = (0..samples)
         .map(|i| (i as f32 + 1.0) / samples as f32)
         .collect();
-    Arc::new(Wave::from_samples(SampleRate::new(44100.0), &data))
+    Arc::new(Wave::from_samples(SampleRate::SR_44K1, &data))
 }
 
 /// Send an in-memory voice through the one `AddVoice` path — the test-setup
@@ -122,7 +125,7 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
     );
     assert!(node.slot.stretch.is_some(), "vacuous without a filter");
     let (mut live, source) = live_and_fork(node);
-    live.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
+    live.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
 
     // Build real vocoder history. The playhead must ADVANCE: a placed
     // source derives its position from the transport every tick, so a frozen
@@ -131,7 +134,7 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
     let mut peak_before = 0.0f32;
     for _ in 0..8192 {
         tick(&mut *live, &transport, SR, &mut out);
-        transport.advance(1, SampleRate::new(SR));
+        transport.advance(1, SampleRate::of(SR));
         peak_before = peak_before.max(out[0].abs());
     }
     assert!(
@@ -149,7 +152,7 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
     let mut peak_after = 0.0f32;
     for _ in 0..512 {
         tick(&mut *live, &transport, SR, &mut out);
-        transport.advance(1, SampleRate::new(SR));
+        transport.advance(1, SampleRate::of(SR));
         peak_after = peak_after.max(out[0].abs());
     }
     assert!(
@@ -197,14 +200,14 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
         "test is vacuous unless a filter is resident"
     );
     let (mut live, source) = live_and_fork(live);
-    live.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
-    twin.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
+    live.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
+    twin.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
     let mut out = [0.0f32; 1];
     let mut out_twin = [0.0f32; 1];
     for _ in 0..4096 {
         tick(&mut *live, &transport, SR, &mut out);
         tick(&mut twin, &transport, SR, &mut out_twin);
-        transport.advance(1, SampleRate::new(SR));
+        transport.advance(1, SampleRate::of(SR));
     }
 
     let mut render = fork_of(&*source, SR);
@@ -218,7 +221,7 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
     for i in 0..8192 {
         tick(&mut *live, &transport, SR, &mut out);
         tick(&mut twin, &transport, SR, &mut out_twin);
-        transport.advance(1, SampleRate::new(SR));
+        transport.advance(1, SampleRate::of(SR));
         assert_eq!(
             out[0].to_bits(),
             out_twin[0].to_bits(),
@@ -253,18 +256,15 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
         fork,
     } = pool.into_parts();
     let source = fork.expect("a pool forks");
-    live.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
+    live.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
     let mut fork = source
         .fork(tutti_graph::ForkMode::Live)
         .expect("a pool forks")
         .node;
-    fork.prepare(&Prepare::new(
-        SampleRate(96_000.0),
-        MaxBlock::of(Samples(64)),
-    ));
+    fork.prepare(&Prepare::new(SampleRate::SR_96K, MaxBlock::of(Samples(64))));
     assert_eq!(
         handle.rate.load(),
-        SampleRate(SR),
+        SampleRate::of(SR),
         "the fork moved the live pool's rate"
     );
     add_ram_clip(
@@ -334,7 +334,7 @@ fn a_transport_seek_flushes_stretch_state() {
             }
         })
         .collect();
-    let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
+    let wave = Arc::new(Wave::from_samples(SampleRate::of(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::of(120.0));
     let (mut unit, handle) = VoicePool::with_channels(1u16)
@@ -376,7 +376,7 @@ fn a_transport_seek_flushes_stretch_state() {
         let mut out = [0.0f32; 1];
         for _ in 0..n {
             tick(unit, &transport, SR, &mut out);
-            transport.advance(1, SampleRate::new(SR));
+            transport.advance(1, SampleRate::of(SR));
             peak = peak.max(out[0].abs());
         }
         peak
@@ -431,7 +431,7 @@ fn a_transport_seek_flushes_a_standalone_voice_node() {
             }
         })
         .collect();
-    let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
+    let wave = Arc::new(Wave::from_samples(SampleRate::of(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::of(120.0));
     let sampler =
@@ -456,7 +456,7 @@ fn a_transport_seek_flushes_a_standalone_voice_node() {
         let mut out = [0.0f32; 1];
         for _ in 0..n {
             tick(node, &transport, SR, &mut out);
-            transport.advance(1, SampleRate::new(SR));
+            transport.advance(1, SampleRate::of(SR));
             peak = peak.max(out[0].abs());
         }
         peak
@@ -496,7 +496,7 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
     let data: Vec<f32> = (0..LEN)
         .map(|i| 0.5 * (std::f32::consts::TAU * 3000.0 * i as f32 / SR as f32).sin())
         .collect();
-    let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
+    let wave = Arc::new(Wave::from_samples(SampleRate::of(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let sampler =
@@ -515,7 +515,7 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
     let mut out = [0.0f32; 1];
     for _ in 0..16_384 {
         tick(&mut node, &transport, SR, &mut out);
-        transport.advance(1, SampleRate::new(SR));
+        transport.advance(1, SampleRate::of(SR));
     }
 
     let mut quiet_blocks = 0usize;
@@ -523,7 +523,7 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
         let mut peak = 0.0f32;
         for _ in 0..64 {
             tick(&mut node, &transport, SR, &mut out);
-            transport.advance(1, SampleRate::new(SR));
+            transport.advance(1, SampleRate::of(SR));
             peak = peak.max(out[0].abs());
         }
         if peak < 0.01 {
@@ -573,7 +573,7 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
         let data: Vec<f32> = (0..(SR as usize * 4))
             .map(|i| (std::f32::consts::TAU * 440.0 * i as f32 / SR as f32).sin())
             .collect();
-        let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
+        let wave = Arc::new(Wave::from_samples(SampleRate::of(SR), &data));
 
         let source = MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0)))
             .expect("a placeable wave");
@@ -592,11 +592,14 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
             })
             .expect("the command queue has room in a test");
 
-        pool.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+        pool.prepare(&Prepare::new(
+            SampleRate::of(SR),
+            MaxBlock::of(Samples(BLOCK)),
+        ));
         let mut out = Vec::with_capacity(BLOCK * BLOCKS);
         for _ in 0..BLOCKS {
             out.extend(run(&mut pool, &transport, SR, BLOCK).swap_remove(0));
-            transport.advance(BLOCK as i64, SampleRate::new(SR));
+            transport.advance(BLOCK as i64, SampleRate::of(SR));
         }
 
         // Measure well past the vocoder's fill, over a whole number of
@@ -619,7 +622,7 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
 fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
     const LEN: usize = 4_096;
     let data: Vec<f32> = (0..LEN).map(|i| (i + 1) as f32).collect();
-    let wave = Arc::new(Wave::from_samples(SampleRate::new(24_000.0), &data));
+    let wave = Arc::new(Wave::from_samples(SampleRate::of(24_000.0), &data));
     for direction in [Direction::Forward, Direction::Reverse] {
         for via_tick in [false, true] {
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -636,14 +639,10 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
                 },
                 1u16,
             );
-            node.prepare(&Prepare::new(
-                SampleRate(48_000.0),
-                MaxBlock::of(Samples(64)),
-            ));
+            node.prepare(&Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))));
             let len = if via_tick { 1 } else { 64 };
-            let out =
-                crate::testing::play(&mut node, &transport, SampleRate::new(48_000.0), 512, len)
-                    .swap_remove(0);
+            let out = crate::testing::play(&mut node, &transport, SampleRate::SR_48K, 512, len)
+                .swap_remove(0);
             for (n, &got) in out.iter().enumerate().skip(4) {
                 let at = n as f32 / 2.0;
                 let want = match direction {
@@ -722,7 +721,7 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
                     start: Beat::new(0.0),
                     duration: None,
                 },
-                file_sample_rate: SampleRate(44_100.0),
+                file_sample_rate: SampleRate::SR_44K1,
             },
         );
 
@@ -743,7 +742,7 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
 
         for _ in 0..BLOCKS {
             run(&mut pool, &transport, 44_100.0, BLOCK);
-            transport.advance(BLOCK as i64, SampleRate::new(44_100.0));
+            transport.advance(BLOCK as i64, SampleRate::SR_44K1);
         }
         ring.play()
     };
@@ -816,7 +815,7 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
     let data: Vec<f32> = (0..LEN)
         .map(|i| 0.5 * (std::f32::consts::TAU * 3000.0 * i as f32 / SR as f32).sin())
         .collect();
-    let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
+    let wave = Arc::new(Wave::from_samples(SampleRate::of(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let (mut unit, handle) = VoicePool::with_channels(1u16)
@@ -844,7 +843,7 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
     // quiet while the FIFOs and overlap-add tail prime.
     for _ in 0..16_384 {
         tick(&mut unit, &transport, SR, &mut out);
-        transport.advance(1, SampleRate::new(SR));
+        transport.advance(1, SampleRate::of(SR));
     }
     assert!(unit.voices[0].needs_stretch(), "stretch path must be live");
 
@@ -856,7 +855,7 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
         let mut peak = 0.0f32;
         for _ in 0..64 {
             tick(&mut unit, &transport, SR, &mut out);
-            transport.advance(1, SampleRate::new(SR));
+            transport.advance(1, SampleRate::of(SR));
             peak = peak.max(out[0].abs());
         }
         if peak < 0.01 {
@@ -1316,7 +1315,7 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
         other => panic!("expected a Memory source, got {other:?}"),
     }
     let mut node = VoiceNode::with_channels(fork, 1u16);
-    node.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
+    node.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
     let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::of(120.0));
     assert!(
         run(&mut node, &at(1.0), SR, 8)[0].iter().all(|&s| s == 0.0),
@@ -1364,7 +1363,7 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
                 start: Beat::new(0.0),
                 duration: None,
             },
-            file_sample_rate: SampleRate(44100.0),
+            file_sample_rate: SampleRate::SR_44K1,
         },
     );
 
@@ -1422,7 +1421,7 @@ fn streaming_voice_of(region: u64) -> Voice {
                     start: Beat::new(0.0),
                     duration: None,
                 },
-                file_sample_rate: SampleRate(44100.0),
+                file_sample_rate: SampleRate::SR_44K1,
             },
         )),
         play: Playback::default(),
@@ -1606,7 +1605,7 @@ fn the_drains_silent_drops_are_counted() {
     handle
         .send(VoiceCommand::ReplaceWave {
             id,
-            wave: Arc::new(Wave::zero(2, SampleRate::new(44_100.0), Seconds::new(0.01))),
+            wave: Arc::new(Wave::zero(2, SampleRate::SR_44K1, Seconds::new(0.01))),
         })
         .expect("the command queue has room in a test");
     tick(&mut pool, &transport, SR, &mut out);
@@ -1809,7 +1808,7 @@ fn add(id: SlotId, voice: Voice) -> VoiceCommand {
 fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
     const BLOCK: usize = 64;
     let value = |i: usize| (i + 1) as f32 / 1024.0;
-    let mut wave = Wave::zero(2, SampleRate::new(SR), Seconds::new(0.1));
+    let mut wave = Wave::zero(2, SampleRate::of(SR), Seconds::new(0.1));
     for i in 0..wave.len() {
         wave.set(0, i, value(i));
         wave.set(1, i, -value(i));
@@ -1844,7 +1843,7 @@ fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
         if !silent_gain.is_finite() {
             pool.insert_voice(SlotId(2), voice(0.0, Some(20.0 / 22_050.0), silent_gain));
         }
-        let mut pool = crate::testing::prepared(pool, SampleRate::new(SR), BLOCK);
+        let mut pool = crate::testing::prepared(pool, SampleRate::of(SR), BLOCK);
         let out = run(&mut pool, &t, SR, BLOCK);
         for (c, sign) in [(0, 1.0f32), (1, -1.0)] {
             for (i, &got) in out[c].iter().enumerate() {
@@ -1864,7 +1863,7 @@ fn memory_voice() -> Voice {
         source: VoiceSource::Memory(
             MemorySource::new(Arc::new(Wave::zero(
                 2,
-                SampleRate::new(44_100.0),
+                SampleRate::SR_44K1,
                 Seconds::new(0.01),
             )))
             .expect("a placeable wave"),
@@ -2112,7 +2111,7 @@ fn a_remove_never_waits_on_another_threads_forward() {
 fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
     let mut w = Wave::zero(
         channels,
-        SampleRate::new(44_100.0),
+        SampleRate::SR_44K1,
         Seconds::new(len as f64) / 44_100.0,
     );
     for i in 0..w.len() {
@@ -2167,11 +2166,11 @@ fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
         },
         ChannelLayout::try_from(wide).expect("a test width is small"),
     );
-    let mut direct = tutti_graph::contract::Direct::new(node, SampleRate(SR), 64);
+    let mut direct = tutti_graph::contract::Direct::new(node, SampleRate::of(SR), 64);
     for ch in direct.outputs_mut() {
         ch.fill(7.0);
     }
-    direct.block_in(&transport.env(64, SampleRate::new(SR)));
+    direct.block_in(&transport.env(64, SampleRate::of(SR)));
     for c in crate::MAX_SAMPLER_CHANNELS..wide {
         for i in 0..64 {
             assert_eq!(
@@ -2310,7 +2309,7 @@ fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
     let mut out = [0.0f32; 6];
     for n in 0..16_384 {
         tick(&mut unit, &transport, SR, &mut out);
-        transport.advance(1, SampleRate::new(SR));
+        transport.advance(1, SampleRate::of(SR));
         for (c, &s) in out.iter().enumerate() {
             if s.abs() > 1e-6 {
                 seen[c] = true;

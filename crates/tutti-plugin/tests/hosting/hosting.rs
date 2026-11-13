@@ -22,7 +22,7 @@ fn a_vst2_plugin_asked_for_out_of_process_is_refused_at_load() {
             .expect("a plugin file")
             .with_hosting(Hosting::OutOfProcess);
         assert_eq!(plugin.hosting(), Hosting::OutOfProcess);
-        match Plugin::open(None, &plugin, SampleRate::new(RATE)) {
+        match Plugin::open(None, &plugin, SampleRate::of(RATE)) {
             Err(BridgeError::NotOutOfProcess { format, .. }) => assert_eq!(format, "VST2"),
             Err(other) => panic!("{name}: expected NotOutOfProcess, got {other:?}"),
             Ok(_) => panic!("{name}: a VST2 file must not be served"),
@@ -53,7 +53,7 @@ mod clap {
     #[test]
     fn auto_serves_a_clap_plugin() {
         let _env = with_server();
-        let plugin = Plugin::open(None, &clap(Hosting::Auto), SampleRate::new(RATE))
+        let plugin = Plugin::open(None, &clap(Hosting::Auto), SampleRate::of(RATE))
             .expect("the reference plugin loads through a server");
         assert_eq!(plugin.hosting(), Hosting::OutOfProcess);
         assert!(plugin.handle().server_pid().is_some());
@@ -63,7 +63,7 @@ mod clap {
     #[test]
     fn out_of_process_serves_a_clap_plugin() {
         let _env = with_server();
-        let plugin = Plugin::open(None, &clap(Hosting::OutOfProcess), SampleRate::new(RATE))
+        let plugin = Plugin::open(None, &clap(Hosting::OutOfProcess), SampleRate::of(RATE))
             .expect("the reference plugin loads through a server");
         assert_eq!(plugin.hosting(), Hosting::OutOfProcess);
         assert!(plugin.handle().server_pid().is_some());
@@ -78,7 +78,7 @@ mod clap {
         env.set("TUTTI_PLUGIN_SERVER", "/nonexistent/plugin-server");
         let asked = clap(Hosting::InProcess);
 
-        match Plugin::open(None, &asked, SampleRate::new(RATE)) {
+        match Plugin::open(None, &asked, SampleRate::of(RATE)) {
             Err(BridgeError::LoadFailed { reason, .. }) => {
                 assert!(reason.contains("main thread"), "{reason}");
             }
@@ -86,7 +86,7 @@ mod clap {
         }
 
         let main = MainThread::claim().expect("one test, one process");
-        let plugin = Plugin::open(Some(&main), &asked, SampleRate::new(RATE))
+        let plugin = Plugin::open(Some(&main), &asked, SampleRate::of(RATE))
             .expect("the reference plugin loads in this process");
         assert_eq!(plugin.hosting(), Hosting::InProcess);
         assert_eq!(plugin.handle().server_pid(), None);
@@ -108,7 +108,7 @@ fn auto_hosts_a_vst2_plugin_in_process() {
     let plugin = Plugin::open(
         Some(&main),
         &PluginRef::file(&staged).expect("a plugin file"),
-        SampleRate::new(RATE),
+        SampleRate::of(RATE),
     )
     .expect("the reference VST2 plugin loads in this process");
     assert_eq!(plugin.hosting(), Hosting::InProcess);

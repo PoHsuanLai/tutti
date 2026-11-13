@@ -15,7 +15,7 @@ const RATE: f64 = 48_000.0;
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -54,7 +54,7 @@ fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
     use tutti_tempo::{TempoMap, TempoPoint, Transition};
     use tutti_types::{Beat, Bpm};
 
-    let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
+    let mut wave = tutti_codec::Wave::new(1, SampleRate::of(RATE));
     for i in 0..RATE as usize * 2 {
         wave.push_frame(&[i as f32 / 131_072.0]);
     }

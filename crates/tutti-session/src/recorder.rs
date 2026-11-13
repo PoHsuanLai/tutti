@@ -219,7 +219,7 @@ pub enum PumpPass {
 /// }
 ///
 /// // A tap on both of the graph's outputs, copied as the graph renders.
-/// let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
+/// let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))));
 /// editor.insert(NodeKey(1), "tone", Unforkable(Tone));
 /// let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
 /// editor.spec_mut().topology.set_outputs([out(0), out(1)]);
@@ -236,7 +236,7 @@ pub enum PumpPass {
 /// executor.process(3, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 ///
 /// let dir = tempfile::tempdir().expect("temp dir");
-/// let spec = Spec::of_width(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let spec = Spec::of_width(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate::SR_48K);
 /// let sink = FileOut::create(&spec, dir.path().join("take.wav")).expect("sink opens");
 ///
 /// // `new` checks the widths agree, before a frame moves.
@@ -433,7 +433,7 @@ where
 ///
 /// # fn go(reader: tutti_graph::TapReader) -> Result<(), Box<dyn std::error::Error>> {
 /// // A stereo tap and a stereo sink pair: a tap is a `Source` as it is.
-/// let spec = Spec::of_width(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let spec = Spec::of_width(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate::SR_48K);
 /// let rec = Recorder::start(reader, FileOut::create(&spec, "master.wav")?)?;
 /// // ... later ...
 /// rec.finish()?;

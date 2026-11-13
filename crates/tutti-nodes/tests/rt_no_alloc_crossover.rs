@@ -21,7 +21,7 @@ static A: AllocDisabler = AllocDisabler;
 /// driven), 16 warm-up blocks, then 2 000 blocks under `assert_no_alloc`,
 /// `between` run before each.
 fn gate<N: IntoNode>(node: N, mut between: impl FnMut(&N::Controls, usize)) {
-    let (mut rig, controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    let (mut rig, controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
     for c in rig.inputs_mut() {
         for (i, x) in c.iter_mut().enumerate() {
             *x = if (i / 16) % 2 == 0 { 0.8 } else { -0.8 };

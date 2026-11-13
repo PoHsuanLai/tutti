@@ -122,7 +122,7 @@ impl Setup {
 /// use tutti_nodes::testing::Osc;
 /// use tutti_types::ChannelLayout;
 ///
-/// let rate = SampleRate(48_000.0);
+/// let rate = SampleRate::SR_48K;
 /// let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
 /// let tone = g.add(Osc::sine(Hz(440.0)));
 /// g.pipe_output(tone);
@@ -247,7 +247,7 @@ impl RenderGraph {
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;
     /// # use tutti_types::{ChannelLayout, Samples};
-    /// # let rate = SampleRate(48_000.0);
+    /// # let rate = SampleRate::SR_48K;
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);
@@ -283,7 +283,7 @@ impl RenderGraph {
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;
     /// # use tutti_types::{ChannelLayout, Samples};
-    /// # let rate = SampleRate(48_000.0);
+    /// # let rate = SampleRate::SR_48K;
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);

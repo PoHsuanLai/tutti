@@ -10,7 +10,7 @@ use tutti_types::{
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_000)),
         )
@@ -112,7 +112,7 @@ fn the_playhead_is_one_read_of_the_last_block() {
 #[test]
 fn a_detached_session_reads_a_resting_playhead() {
     let s = Session::builder()
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds");
     let p = s.playhead();
     assert!(!p.playing());

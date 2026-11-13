@@ -18,7 +18,7 @@ use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_types::{ChannelLayout, Db, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(44_100.0);
+const RATE: SampleRate = SampleRate::SR_44K1;
 
 fn detached() -> Session {
     Session::builder()
@@ -212,7 +212,7 @@ fn a_re_prepare_republishes_the_figures_once_it_resumes() {
     let mut out = [0.0f32; 2];
     side.tick(&[], &mut out);
 
-    s.graph().set_sample_rate(SampleRate(48_000.0));
+    s.graph().set_sample_rate(SampleRate::SR_48K);
     for _ in 0..3 {
         side.tick(&[], &mut out);
         let _ = s.update();

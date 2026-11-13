@@ -702,7 +702,7 @@ mod owed_tests {
     fn a_fork_prepared_off_the_main_thread_is_refused() {
         let main = main_thread();
         let (client, _handle) =
-            load_client(&main, tutti_fixtures::vst2_probe(), SampleRate(48_000.0))
+            load_client(&main, tutti_fixtures::vst2_probe(), SampleRate::SR_48K)
                 .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
         let fork = client
             .bind(tempo())
@@ -710,7 +710,7 @@ mod owed_tests {
             .expect("the fork loads on the main thread");
         let (fork, refused) = std::thread::spawn(move || {
             let mut fork = fork;
-            fork.set_rate(SampleRate(96_000.0));
+            fork.set_rate(SampleRate::SR_96K);
             let refused = fork.rate_refused;
             (fork, refused)
         })
@@ -718,7 +718,7 @@ mod owed_tests {
         .expect("the thread returns");
         assert!(refused, "off the main thread the rate cannot be told");
         let mut fork = fork;
-        fork.set_rate(SampleRate(96_000.0));
+        fork.set_rate(SampleRate::SR_96K);
         assert!(!fork.rate_refused, "a prepare on the main thread clears it");
     }
 
@@ -749,7 +749,7 @@ mod owed_tests {
         let (client, handle) = load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         )
         .unwrap_or_else(|e| {
             panic!(
@@ -760,7 +760,7 @@ mod owed_tests {
         let inner = std::sync::Arc::clone(&client.inner);
         let unlent = std::sync::Arc::clone(&client.unlent);
         let controls = client.controls();
-        let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
+        let mut unit = Direct::new(client.bind(tempo()), SampleRate::SR_48K, BLOCK);
         assert_eq!(read(&handle, 1), Some(1.0 / 16.0), "the probe's default");
         // The realtime end takes the Processor it was lent.
         unit.block();
@@ -821,7 +821,7 @@ mod owed_tests {
         let (client, _handle) = load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         )
         .unwrap_or_else(|e| {
             panic!(
@@ -831,7 +831,7 @@ mod owed_tests {
         });
         let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
-        let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
+        let mut unit = Direct::new(client.bind(tempo()), SampleRate::SR_48K, BLOCK);
         let (cut, next) = dumps();
 
         unit.events(0, &cut[..3]);
@@ -864,7 +864,7 @@ mod owed_tests {
         let (client, _handle) = load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         )
         .unwrap_or_else(|e| {
             panic!(
@@ -873,7 +873,7 @@ mod owed_tests {
             )
         });
         let controls = client.controls();
-        let mut unit = Direct::new(client.bind(tempo()), SampleRate(48_000.0), BLOCK);
+        let mut unit = Direct::new(client.bind(tempo()), SampleRate::SR_48K, BLOCK);
         let (cut, next) = dumps();
 
         unit.events(0, &cut[..3]);

@@ -363,7 +363,7 @@ pub enum RootTopologyStatus {
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
 ///     .outputs_floor(ChannelLayout::MONO)
-///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
+///     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
 /// session.graph().set_sources_hard(Root::output(0), [OutPort::new(dc, 0)]).unwrap();

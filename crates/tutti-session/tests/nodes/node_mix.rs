@@ -51,7 +51,7 @@ struct Rig {
 fn rig() -> Rig {
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

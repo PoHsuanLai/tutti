@@ -31,7 +31,7 @@ fn write_constant(path: &Path, value: f32, frames: usize) {
 }
 
 fn manual() -> DiskStreamer<crate::ByHand> {
-    DiskStreamer::manual(SampleRate::new(RATE), Default::default()).expect("builds")
+    DiskStreamer::manual(SampleRate::of(RATE), Default::default()).expect("builds")
 }
 
 /// A file of `value` in a temp dir.
@@ -46,11 +46,11 @@ fn constant_file(value: f32) -> (tempfile::TempDir, PathBuf) {
 fn first_block(reader: StreamReader) -> Vec<Vec<f32>> {
     let mut voice = prepared(
         DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
-        SampleRate::new(RATE),
+        SampleRate::of(RATE),
         64,
     );
     let clock = MockTransport::rolling(Beat(0.0), Bpm::of(120.0));
-    play(&mut voice, &clock, SampleRate::new(RATE), 64, 64)
+    play(&mut voice, &clock, SampleRate::of(RATE), 64, 64)
 }
 
 /// `Placement` keeps the range-checked contract: `new`, `TryFrom` and serde
@@ -124,11 +124,11 @@ fn a_ready_reader_has_registered_its_control_before_it_is_returned() {
     let ring = Arc::clone(&reader.ring);
     let mut voice = prepared(
         DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
-        SampleRate::new(RATE),
+        SampleRate::of(RATE),
         64,
     );
     let clock = MockTransport::rolling(Beat(0.0), Bpm::of(120.0));
-    let _ = play(&mut voice, &clock, SampleRate::new(RATE), 64, 64);
+    let _ = play(&mut voice, &clock, SampleRate::of(RATE), 64, 64);
     assert_eq!(ring.control_holders(), 2, "the voice registers none");
 }
 

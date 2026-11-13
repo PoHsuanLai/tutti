@@ -13,7 +13,7 @@ use tutti_graph::{
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 /// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 0, channel 0.
 fn note() -> EventKind {
     EventKind::Midi(note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC800))

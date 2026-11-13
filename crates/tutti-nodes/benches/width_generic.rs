@@ -28,7 +28,7 @@ use tutti_nodes::{
 use tutti_types::{BusTopology, ChannelLayout, Feedback, Hz, Q, Resonance, SampleRate, Seconds};
 
 const BLOCK: usize = 64;
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 
 /// Deterministic broadband input: `tutti_fixtures::Noise`, a cheap LCG, so the
 /// bench needs no `rand`.

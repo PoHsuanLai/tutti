@@ -98,7 +98,7 @@ fn main() {
     // Chosen for the failure modes YIN actually has, not for coverage of the
     // frequency axis. A detector can nail every pure sine and still be wrong on
     // everything musical.
-    let cfg = YinConfig::standard(SampleRate::new(SR)).expect("standard range");
+    let cfg = YinConfig::standard(SampleRate::of(SR)).expect("standard range");
 
     // Pure sines across the range, including the extremes where the period
     // bounds bite. 55 Hz needs a long window; 1975 Hz sits near min_period,
@@ -206,7 +206,7 @@ fn main() {
     //
     // EBU R128 is a published spec with absolute answers, so unlike pitch these
     // are checkable against a number rather than against another implementation.
-    let lcfg = LoudnessConfig::new(SampleRate(SR), ChannelLayout::STEREO);
+    let lcfg = LoudnessConfig::new(SampleRate::of(SR), ChannelLayout::STEREO);
     for &amp in &[1.0, 0.5, 0.25, 0.1, 0.0891, 0.01] {
         let mono = sine(1000.0, 3.0, amp);
         let st = to_stereo(&mono);
@@ -232,7 +232,7 @@ fn main() {
             .map(|i| (0.5 * (TAU * 1000.0 * i as f64 / rate).sin()) as f32)
             .collect();
         let st = to_stereo(&mono);
-        let c = LoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO);
+        let c = LoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO);
         let l = measure_loudness(&c, Interleaved::new(&st, ChannelLayout::STEREO))
             .expect("stereo layout meters");
         writeln!(

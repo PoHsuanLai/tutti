@@ -74,7 +74,7 @@ const SCHEDULES: &[(usize, &[usize])] = &[(64, &[64]), (512, &[512]), (512, RAGG
 /// A stereo tone with an overtone, `secs` long: a waveform whose every
 /// sample differs, so a frame read at the wrong position shows.
 fn tone(secs: f64) -> Arc<Wave> {
-    let mut w = Wave::new(2, SampleRate::new(SR));
+    let mut w = Wave::new(2, SampleRate::of(SR));
     for i in 0..(secs * SR) as usize {
         w.push_frame(&frame_at(i));
     }
@@ -95,7 +95,7 @@ fn env_at(frame: usize, len: usize) -> Env {
     let beat = frame as f64 * BPM / 60.0 / SR;
     Env {
         frame: Frame(frame as u64),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         block_len: Samples(len),
         transport: TransportPosition::new(true, Bpm::of(BPM), Beat::new(beat), None),
         changes: TransportChanges::NONE,
@@ -106,7 +106,7 @@ fn env_at(frame: usize, len: usize) -> Env {
 /// [`FRAMES`] of `node`, prepared for `max_block`, in blocks of `schedule`
 /// (cycled); planar, the first two channels.
 fn render<N: Node>(node: N, max_block: usize, schedule: &[usize]) -> [Vec<f32>; 2] {
-    let mut d = Direct::new(node, SampleRate(SR), max_block);
+    let mut d = Direct::new(node, SampleRate::of(SR), max_block);
     let mut out = [Vec::with_capacity(FRAMES), Vec::with_capacity(FRAMES)];
     let mut frame = 0;
     for &len in schedule.iter().cycle() {
@@ -132,7 +132,7 @@ fn render_by_hand<N: Node>(
     schedule: &[usize],
 ) -> [Vec<f32>; 2] {
     if let Some(max) = prepared {
-        node = contract::prepared(node, SampleRate(SR), max);
+        node = contract::prepared(node, SampleRate::of(SR), max);
     }
     let mut out = [Vec::with_capacity(FRAMES), Vec::with_capacity(FRAMES)];
     let mut frame = 0;
@@ -315,14 +315,14 @@ fn a_memory_source_node_renders_the_same_frames_at_any_block_length() {
 /// A stereo float WAV of [`frame_at`], `frames` long.
 fn write_wav(path: &Path, frames: usize) {
     let interleaved: Vec<f32> = (0..frames).flat_map(frame_at).collect();
-    tutti_fixtures::signal::write_wav_f32(path, SampleRate(SR), 2, &interleaved);
+    tutti_fixtures::signal::write_wav_f32(path, SampleRate::of(SR), 2, &interleaved);
 }
 
 /// A live disk voice streaming `path` from its start, on its own
 /// hand-driven streamer, its ring primed (a file this short is prefilled
 /// whole, so the render never waits on the streamer).
 fn disk_voice(path: &Path) -> (DiskStreamer<ByHand>, Stream, tutti_sampler::DiskVoice) {
-    let mut s = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+    let mut s = DiskStreamer::manual(SampleRate::of(SR), DiskStreamerConfig::default())
         .expect("streamer builds");
     let opening = s.open(path, tutti_sampler::Placement::HEAD);
     let (stream, reader) = tutti_sampler::testing::settle(&mut s, opening).expect("the file opens");

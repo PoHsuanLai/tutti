@@ -805,7 +805,7 @@ mod tests {
     const FFT_TOL: f32 = 1e-3;
 
     fn geometry(size: usize, hop: usize) -> StftGeometry {
-        StftGeometry::new(SampleRate::new(RATE), Samples(size), Samples(hop)).unwrap()
+        StftGeometry::new(SampleRate::of(RATE), Samples(size), Samples(hop)).unwrap()
     }
 
     fn config(size: usize, hop: usize) -> SpectrumConfig {
@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(frames(0.0101), 2);
         assert!(matches!(
             SpectrumConfig::new(
-                StftGeometry::new(SampleRate::new(10_000_000.0), Samples(64), Samples(1)).unwrap()
+                StftGeometry::new(SampleRate::of(10_000_000.0), Samples(64), Samples(1)).unwrap()
             )
             .unwrap()
             .with_peak_hold(Seconds(3600.0), Db(1.0)),
@@ -1393,10 +1393,17 @@ mod tests {
         assert!(new(64, 1).is_ok() && new(65_536, 65_536).is_ok() && new(4096, 64).is_ok());
         for rate in [f64::INFINITY, 0.5, 1e9] {
             assert!(bad(SpectrumConfig::new(
-                StftGeometry::new(SampleRate::new(rate), Samples(256), Samples(64)).unwrap()
+                StftGeometry::new(SampleRate::of(rate), Samples(256), Samples(64)).unwrap()
             )));
         }
-        assert!(StftGeometry::new(SampleRate::new(f64::NAN), Samples(256), Samples(64)).is_err());
+        assert!(
+            StftGeometry::new(
+                <SampleRate as tutti_types::Unit>::from_raw(f64::NAN),
+                Samples(256),
+                Samples(64)
+            )
+            .is_err()
+        );
 
         let cfg = config(1024, 256);
         for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 3601.0] {

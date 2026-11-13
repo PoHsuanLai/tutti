@@ -6,6 +6,7 @@ use std::io::Cursor;
 
 use tutti_fixtures::sf2::{Inst, Preset, bytes};
 use tutti_sf2::{Error, SoundFont};
+use tutti_types::SampleRate;
 
 fn preset(name: &'static str, program: u16, zones: usize) -> Preset {
     Preset {
@@ -165,10 +166,10 @@ fn the_dwords_of_a_header_are_unsigned() {
     put(&mut file, shdr + 36, 0x8000_0000 + 44_100, 4);
     let font = load(file).expect("the rate is not a range");
     assert_eq!(
-        font.sample_headers()[0].sample_rate().get(),
-        f64::from(0x8000_0000_u32 + 44_100)
+        font.sample_headers()[0].sample_rate().map(SampleRate::get),
+        Some(f64::from(0x8000_0000_u32 + 44_100))
     );
-    assert!(font.instruments()[0].regions()[0].sample_rate().get() > 0.0);
+    assert!(font.instruments()[0].regions()[0].sample_rate().is_some());
     let _ = SHDR_RECORD;
 }
 

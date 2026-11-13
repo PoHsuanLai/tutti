@@ -85,7 +85,7 @@ use tutti_measure::{
 use tutti_dsp::{FftScratch, StftGeometry};
 use tutti_types::{ChannelLayout, Interleaved, SampleRate, Samples, StereoPlanes};
 
-let sample_rate = SampleRate::new(44100.0);
+let sample_rate = SampleRate::SR_44K1;
 let samples: Vec<f32> = vec![0.0; 44100];
 let mut fft = FftScratch::new();
 
@@ -149,7 +149,7 @@ impl Node for Tone {
 }
 
 // A tap on the graph's two outputs.
-let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
+let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))));
 editor.insert(NodeKey(1), "tone", Unforkable(Tone));
 let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
 editor.spec_mut().topology.set_outputs([out(0), out(1)]);

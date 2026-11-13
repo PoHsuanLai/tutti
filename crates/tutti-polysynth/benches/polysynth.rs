@@ -81,7 +81,7 @@ fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
         polyphony: NonZeroUsize::new(n.max(cfg.polyphony.get())).unwrap(),
         ..cfg
     };
-    let mut synth = Direct::new(PolySynth::new(cfg), SampleRate(SR), BLOCK);
+    let mut synth = Direct::new(PolySynth::new(cfg), SampleRate::of(SR), BLOCK);
     let at = Offset::new(0, Samples(BLOCK)).expect("inside");
     let events: Vec<Event> = (0..n)
         .map(|i| {

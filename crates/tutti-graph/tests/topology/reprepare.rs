@@ -21,7 +21,7 @@ use tutti_types::{ChannelLayout, Latency, SampleRate, Samples, Tail};
 use tutti_ump::Ump;
 
 fn prep(rate: f64, max: usize) -> Prepare {
-    Prepare::new(SampleRate(rate), MaxBlock::of(Samples(max)))
+    Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(max)))
 }
 
 const LAG: NodeKey = NodeKey(1);
@@ -283,7 +283,7 @@ fn a_rate_change_resets_rings_and_flushes_pending_events() {
     );
     let in_flight_at_change = 192u64;
     rig.reprepare(prep(96_000.0, 64));
-    assert_eq!(rig.exec.prepare().sample_rate(), SampleRate(96_000.0));
+    assert_eq!(rig.exec.prepare().sample_rate(), SampleRate::SR_96K);
     let after = rig.render(&[64, 64, 64, 64]);
     assert!(
         after[..20].iter().all(|&x| x == 1.0),

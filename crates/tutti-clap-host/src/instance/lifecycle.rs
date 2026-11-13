@@ -150,7 +150,7 @@ impl ClapLoaded {
         // The rate and block size are fixed by `activate`; a refusal below
         // leaves the previous ones in place.
         let previous = self.audio;
-        self.audio.sample_rate = prepare.rate().0;
+        self.audio.sample_rate = prepare.rate().get();
         self.audio.max_frames = max_frames;
         // CLAP's render mode is `[main-thread]` and carries no activation
         // constraint; a plugin without the extension has declined, which is

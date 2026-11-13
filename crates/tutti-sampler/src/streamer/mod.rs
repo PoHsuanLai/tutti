@@ -108,7 +108,7 @@ use tutti_types::SampleRate;
 /// use tutti_sampler::{DiskStreamer, DiskVoice, Open, Placement, VoiceWindow};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let streamer = DiskStreamer::new(tutti_types::SampleRate::new(48_000.0), Default::default())?;
+/// let streamer = DiskStreamer::new(tutti_types::SampleRate::SR_48K, Default::default())?;
 ///
 /// // The streamer opens the file on its own thread; the reply is polled, and
 /// // a poll that is not ready hands the `Opening` back.
@@ -137,7 +137,7 @@ use tutti_types::SampleRate;
 ///
 /// ```compile_fail
 /// # fn run() -> tutti_sampler::Result<()> {
-/// let mut streamer = tutti_sampler::DiskStreamer::new(tutti_types::SampleRate::new(48_000.0), Default::default())?;
+/// let mut streamer = tutti_sampler::DiskStreamer::new(tutti_types::SampleRate::SR_48K, Default::default())?;
 /// streamer.step_once(); // only a `DiskStreamer<ByHand>` steps
 /// # Ok(())
 /// # }
@@ -147,7 +147,7 @@ use tutti_types::SampleRate;
 ///
 /// ```
 /// # fn run() -> tutti_sampler::Result<()> {
-/// let mut streamer = tutti_sampler::DiskStreamer::manual(tutti_types::SampleRate::new(48_000.0), Default::default())?;
+/// let mut streamer = tutti_sampler::DiskStreamer::manual(tutti_types::SampleRate::SR_48K, Default::default())?;
 /// let _ = streamer.step_once();
 /// # Ok(())
 /// # }
@@ -232,7 +232,7 @@ impl DiskStreamer<ByHand> {
     /// use tutti_sampler::{DiskStreamer, DiskStreamerConfig};
     ///
     /// # fn main() -> tutti_sampler::Result<()> {
-    /// let mut sampler = DiskStreamer::manual(tutti_types::SampleRate::new(48_000.0), DiskStreamerConfig::default())?;
+    /// let mut sampler = DiskStreamer::manual(tutti_types::SampleRate::SR_48K, DiskStreamerConfig::default())?;
     /// sampler.step_once();   // nothing queued: an idle cycle
     /// # Ok(())
     /// # }
@@ -425,8 +425,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("loop.wav");
         write_tone(&path, 48_000, 2.0);
-        let mut sampler =
-            DiskStreamer::manual(SampleRate::new(48_000.0), Default::default()).unwrap();
+        let mut sampler = DiskStreamer::manual(SampleRate::SR_48K, Default::default()).unwrap();
         let opening = sampler.open(&path, Placement::HEAD);
         let (mut stream, reader) =
             crate::testing::settle(&mut sampler, opening).expect("the file opens");
@@ -483,8 +482,7 @@ mod tests {
         write_tone(&at_48, 48_000, 1.0);
         write_tone(&at_44, 44_100, 1.0);
 
-        let mut sampler =
-            DiskStreamer::manual(SampleRate::new(44_100.0), Default::default()).unwrap();
+        let mut sampler = DiskStreamer::manual(SampleRate::SR_44K1, Default::default()).unwrap();
         let stream = |sampler: &mut DiskStreamer<ByHand>, path: &std::path::Path| {
             let opening = sampler.open(path, Placement::HEAD);
             crate::testing::settle(sampler, opening).expect("the file opens")
@@ -494,22 +492,22 @@ mod tests {
         let first_ratio = Arc::clone(&first.cells);
         assert_eq!(
             first_ratio.src_ratio(),
-            SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0))
+            SrcRatio::for_rates(SampleRate::SR_48K, SampleRate::SR_44K1)
         );
         assert!(
             first_ratio.src_ratio() != SrcRatio::UNITY,
             "setup: a converting stream"
         );
 
-        sampler.set_sample_rate(SampleRate::new(48_000.0));
+        sampler.set_sample_rate(SampleRate::SR_48K);
         assert_eq!(
             sampler.sample_rate(),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             "the rate is stored at once"
         );
         assert_eq!(
             first_ratio.src_ratio(),
-            SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0)),
+            SrcRatio::for_rates(SampleRate::SR_48K, SampleRate::SR_44K1),
             "the ratio is the streamer's to write: it moves when the streamer takes the command"
         );
         let _ = sampler.step_once();
@@ -520,12 +518,12 @@ mod tests {
         );
 
         let voice = crate::DiskVoice::from_reader(first, VoiceWindow::from(Beat(0.0)));
-        assert_eq!(voice.file_sample_rate(), SampleRate(48_000.0));
+        assert_eq!(voice.file_sample_rate(), SampleRate::SR_48K);
 
         let (_second_stream, second) = stream(&mut sampler, &at_44);
         assert_eq!(
             second.cells.src_ratio(),
-            SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(48_000.0))
+            SrcRatio::for_rates(SampleRate::SR_44K1, SampleRate::SR_48K)
         );
     }
 
@@ -542,8 +540,7 @@ mod tests {
         let path = dir.path().join("a.wav");
         write_tone(&path, 48_000, 1.0);
 
-        let mut sampler =
-            DiskStreamer::manual(SampleRate::new(48_000.0), Default::default()).unwrap();
+        let mut sampler = DiskStreamer::manual(SampleRate::SR_48K, Default::default()).unwrap();
         let opening = sampler.open(&path, Placement::HEAD);
         let (stream, reader) =
             crate::testing::settle(&mut sampler, opening).expect("the file opens");

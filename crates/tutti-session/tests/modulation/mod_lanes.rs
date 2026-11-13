@@ -57,7 +57,7 @@ fn rig(outputs: usize) -> (Session, AudioSide) {
         .outputs_floor(ChannelLayout::clamped(outputs))
         .build_detached(SampleRate::DEFAULT)
         .expect("builds");
-    s.graph().set_sample_rate(SampleRate(RATE));
+    s.graph().set_sample_rate(SampleRate::of(RATE));
     let side = s.graph().take_audio_side();
     (s, side)
 }
@@ -210,7 +210,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo_map: Arc::new(tutti_tempo::TempoMap::constant(TEMPO).expect("a tempo")),
-        sample_rate: SampleRate(RATE),
+        sample_rate: SampleRate::of(RATE),
         loop_range: None,
     }));
     let request = Bounce::project()
@@ -220,7 +220,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
             tutti_types::Frame(0),
             tutti_types::Frame(total as u64),
         ))
-        .sample_rate(SampleRate(RATE))
+        .sample_rate(SampleRate::of(RATE))
         .clock(ExportClock::timeline(timeline))
         .latency(BounceLatency::Keep)
         .tail(BounceTail::None);
@@ -1182,7 +1182,7 @@ fn a_depth_slider_keeps_phase() {
 fn a_fork_renders_a_modulated_param_as_live_does() {
     let mut s = Session::builder()
         .outputs_floor(ChannelLayout::STEREO)
-        .build_detached(SampleRate(RATE))
+        .build_detached(SampleRate::of(RATE))
         .expect("builds");
     let (written, _) = s.graph().add(ProbeUnit::of(UnitParam::Drive, 1.0));
     let (built, _) = s.graph().add(ProbeUnit::of(UnitParam::Drive, 1.0));

@@ -87,10 +87,7 @@ fn a_scan_measures_only_when_asked() {
     measuring.scan().expect("no scan is running");
     let (_, descriptor) = measuring.iter().next().expect("the plugin is listed");
     let measured = descriptor.measured.expect("the scan measured it");
-    assert_eq!(
-        measured.config.rate,
-        tutti_plugin_types::SampleRate(48_000.0)
-    );
+    assert_eq!(measured.config.rate, tutti_plugin_types::SampleRate::SR_48K);
 }
 
 /// **`measure` measures a file a scan already probed**, which a scan never

@@ -60,12 +60,14 @@ fn a_removed_vst2_node_is_dropped_on_the_control_side() {
     let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     let (unit, handle) =
-        load_client::<Vst2Loaded>(&main, &path, &Load::new(), SampleRate::new(RATE))
+        load_client::<Vst2Loaded>(&main, &path, &Load::new(), SampleRate::of(RATE))
             .expect("the probe loads in process");
 
     let key = NodeKey(1);
-    let (mut editor, mut exec) =
-        Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(BLOCK))));
+    let (mut editor, mut exec) = Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     editor.insert(key, "vst2", Unforkable(unit.bind(tempo())));
     editor
         .spec_mut()

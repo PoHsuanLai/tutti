@@ -904,7 +904,7 @@ pub const MAX_EVENT_PORT_CAPACITY: u32 = 8_192;
 /// use tutti_types::{SampleRate, Samples};
 ///
 /// let one_per_frame = EventDensity::per_frame(1);
-/// let at = |block| one_per_frame.capacity(&Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(block))));
+/// let at = |block| one_per_frame.capacity(&Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(block))));
 /// assert_eq!(at(64), 256); // the floor
 /// assert_eq!(at(1024), 1024);
 /// assert_eq!(at(1 << 20), 8_192); // the cap
@@ -1487,7 +1487,7 @@ mod tests {
     fn a_density_sizes_a_port_by_the_block() {
         let at = |density: EventDensity, block| {
             density.capacity(&crate::Prepare::new(
-                tutti_types::SampleRate(48_000.0),
+                tutti_types::SampleRate::SR_48K,
                 MaxBlock::of(Samples(block)),
             ))
         };

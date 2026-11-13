@@ -17,8 +17,7 @@ static A: ThreadCounting = ThreadCounting;
 /// allocate nothing. A different geometry rebuilds the buffers, which does.
 #[test]
 fn steps_after_the_first_do_not_allocate() {
-    let geometry =
-        StftGeometry::new(SampleRate::new(22_050.0), Samples(2048), Samples(512)).unwrap();
+    let geometry = StftGeometry::new(SampleRate::SR_22K05, Samples(2048), Samples(512)).unwrap();
     let cfg = ChromaConfig::new(geometry).unwrap();
     let fixed = cfg.with_tuning(Tuning::Fixed(Cents(10.0))).unwrap();
     let frame: Vec<f32> = (0..2048)
@@ -49,7 +48,7 @@ fn steps_after_the_first_do_not_allocate() {
     assert_eq!(retuned, 0, "a tuning-only switch and a step");
     assert_eq!(state.frames_seen(), 1, "the switch reset the carry");
 
-    let wider = StftGeometry::new(SampleRate::new(22_050.0), Samples(4096), Samples(512)).unwrap();
+    let wider = StftGeometry::new(SampleRate::SR_22K05, Samples(4096), Samples(512)).unwrap();
     let wide = ChromaConfig::new(wider).unwrap();
     let rebuilt = allocations(|| {
         step_chroma(&wide, &mut state, &vec![0.0; 4096], &mut fft).unwrap();

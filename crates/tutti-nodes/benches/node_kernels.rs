@@ -36,7 +36,7 @@ use tutti_types::{
 };
 
 const BLOCKS: [usize; 2] = [64, 1024];
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 
 /// Broadband input from a cheap LCG, so the bench needs no `rand`.
 fn fill_noise<N: Node>(d: &mut Direct<N>) {

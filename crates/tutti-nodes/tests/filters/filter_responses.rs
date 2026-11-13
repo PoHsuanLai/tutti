@@ -19,7 +19,7 @@ const RATE: f64 = 48_000.0;
 /// channel, the RMS of the settled second half over the input's RMS, as the
 /// gain in decibels.
 fn gains_db<N: Node + 'static>(node: N, freq: f64, amp: f32) -> Vec<f64> {
-    let mut node = prepared(node, SampleRate(RATE), BLOCK);
+    let mut node = prepared(node, SampleRate::of(RATE), BLOCK);
     let width = usize::from(node.shape().audio_in().count());
     let total = BLOCK * BLOCKS;
     let input: Vec<f32> = (0..total)
@@ -31,7 +31,7 @@ fn gains_db<N: Node + 'static>(node: N, freq: f64, amp: f32) -> Vec<f64> {
         let ins: Vec<&[f32]> = (0..width).map(|_| block).collect();
         let env = Env {
             frame: Frame((b * BLOCK) as u64),
-            sample_rate: SampleRate(RATE),
+            sample_rate: SampleRate::of(RATE),
             block_len: Samples(BLOCK),
             transport: TransportPosition::default(),
             changes: TransportChanges::NONE,

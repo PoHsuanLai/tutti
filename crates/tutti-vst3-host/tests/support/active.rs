@@ -70,7 +70,7 @@ fn render_mode(mode: ProcessMode) -> RenderMode {
 
 fn prepare_for<T: Vst3Sample>(rate: f64, frames: usize, mode: ProcessMode) -> Prepare {
     let block = MaxBlock::new(Samples(frames)).expect("a block of at least one frame");
-    Prepare::new(SampleRate(rate), block)
+    Prepare::new(SampleRate::of(rate), block)
         .expect("a positive finite rate")
         .with_format(format_of::<T>())
         .with_mode(render_mode(mode))
@@ -276,16 +276,16 @@ impl<T: Vst3Sample> ActiveExt<T> for Active<T> {
     }
 
     fn sample_rate(&self) -> f64 {
-        self.prepare().rate().0
+        self.prepare().rate().get()
     }
 
     fn set_sample_rate(&mut self, rate: f64) -> Result<(), PluginError> {
-        if rate == self.prepare().rate().0 {
+        if rate == self.prepare().rate().get() {
             return Ok(());
         }
         let wanted = self
             .prepare()
-            .with_rate(SampleRate(rate))
+            .with_rate(SampleRate::of(rate))
             .expect("a positive finite rate");
         self.reconfigure(wanted)
     }

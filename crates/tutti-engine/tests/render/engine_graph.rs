@@ -49,7 +49,7 @@ const SR: f64 = 48_000.0;
 const FPB: u64 = 24_000;
 
 fn prepare(max_block: usize) -> Prepare {
-    Prepare::new(SampleRate(SR), MaxBlock::of(Samples(max_block)))
+    Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(max_block)))
 }
 
 /// Wire global outputs `0..width` to `node`'s outputs.
@@ -207,7 +207,7 @@ fn graph_engine(
 #[test]
 fn graph_engine_render_is_bit_identical_to_the_executor() {
     let blocks = [64usize, 256, 100, 1024, 1, 512];
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed) = graph_engine(&transport, 512, Unforkable(Clocked), 3);
     let got = render(&engine, ChannelLayout::from_count(3), &blocks);
 
@@ -259,7 +259,7 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
     for (src, device) in [(2usize, 2u16), (6, 2), (6, 6), (2, 6)] {
         let layout = ChannelLayout::from_count(device);
         let ch = device as usize;
-        let transport = Transport::new(SampleRate::new(SR));
+        let transport = Transport::new(SampleRate::of(SR));
         let (engine, _ed) = graph_engine(
             &transport,
             512,
@@ -320,7 +320,7 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
 /// the middle of a block.
 #[test]
 fn a_timed_start_sounds_from_its_exact_frame() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Gate { log: None }), 1);
     transport
         .motion()
@@ -343,7 +343,7 @@ fn a_timed_start_sounds_from_its_exact_frame() {
 /// must land there, on that frame, without counting as late.
 #[test]
 fn beat_timed_seek_and_stop_land_on_their_frames() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(
         &transport,
@@ -433,7 +433,7 @@ impl Node for RecLog {
 /// `Env`.
 #[test]
 fn the_recording_flag_reaches_a_nodes_env() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(RecLog(Arc::clone(&log))), 1);
     transport
@@ -480,7 +480,7 @@ fn dc_run(
     blocks: usize,
     script: impl Fn(&tutti_transport::MotionFsm, usize),
 ) -> (Vec<f32>, Vec<(f64, bool)>) {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(DcLog(Arc::clone(&log))), 1);
     let mut out = Vec::new();
@@ -585,9 +585,11 @@ fn a_timed_declicked_stop_fades_out_before_its_frame() {
 fn a_declick_lasts_ten_milliseconds_at_any_rate() {
     for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
         let fade = (rate * 0.01) as usize;
-        let transport = Transport::new(SampleRate::new(rate));
-        let (mut ed, exec) =
-            Editor::new(Prepare::new(SampleRate(rate), MaxBlock::of(Samples(256))));
+        let transport = Transport::new(SampleRate::of(rate));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate::of(rate),
+            MaxBlock::of(Samples(256)),
+        ));
         let log = Arc::new(Mutex::new(Vec::new()));
         ed.insert(NodeKey(1), "node", Unforkable(DcLog(log)));
         outputs(&mut ed, NodeKey(1), 1);
@@ -645,7 +647,7 @@ fn a_next_block_declicked_seek_fades_in_after_the_jump() {
 /// frame and is counted late, never dropped.
 #[test]
 fn a_past_frame_lands_at_once_and_is_counted() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Gate { log: None }), 1);
     render(&engine, ChannelLayout::MONO, &[256; 2]);
     transport
@@ -661,7 +663,7 @@ fn a_past_frame_lands_at_once_and_is_counted() {
 /// to it and the new one after, and a loop armed at a frame wraps from then.
 #[test]
 fn tempo_and_loop_change_on_their_frames() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(
         &transport,
@@ -704,7 +706,7 @@ fn tempo_and_loop_change_on_their_frames() {
 /// frame itself, beat 0.5 half a beat later.
 #[test]
 fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let notes = Arc::new(Mutex::new(Vec::new()));
     let (engine, mut ed) =
         graph_engine(&transport, 256, Unforkable(NoteLog(Arc::clone(&notes))), 1);
@@ -740,7 +742,7 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
 /// segment's origin, so the tolerance is 1e-9 beat.
 #[test]
 fn env_beats_are_the_closed_form_of_each_segment() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(
         &transport,
@@ -846,7 +848,7 @@ fn env_beats_are_the_closed_form_of_each_segment() {
 /// playhead after every block.
 #[test]
 fn a_loop_armed_behind_the_playhead_does_not_jump() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(
         &transport,
@@ -907,7 +909,7 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
 fn a_declick_stop_stops_the_transport_on_its_frame() {
     // Rolling from frame 256; a declick stop at frame 600, inside the block
     // 512..768.
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(
         &transport,
@@ -931,7 +933,7 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
 
     // A graph beat command after the stop's frame, in the same block: beat
     // 400/24 000 would be frame 656 had the transport rolled on.
-    let t2 = Transport::new(SampleRate::new(SR));
+    let t2 = Transport::new(SampleRate::of(SR));
     let notes = Arc::new(Mutex::new(Vec::new()));
     let (e, mut ed2) = graph_engine(&t2, 256, Unforkable(NoteLog(Arc::clone(&notes))), 1);
     render(&e, ChannelLayout::MONO, &[256]);
@@ -971,7 +973,7 @@ fn a_graph_engine_refuses_more_outputs_than_it_folds() {
     use tutti_graph::CommitError;
     use tutti_graph::MAX_ROOT_CHANNELS;
 
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (mut ed, exec) = Editor::new(prepare(256));
     ed.insert(NodeKey(1), "node", Unforkable(Clocked));
     // Ten outputs off a three-channel node's ports, repeated: a legal graph,
@@ -1027,7 +1029,7 @@ fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
     use tutti_graph::CommitError;
 
     for segment in [false, true] {
-        let transport = Transport::new(SampleRate::new(SR));
+        let transport = Transport::new(SampleRate::of(SR));
         let (mut ed, exec) = Editor::new(prepare(512));
         ed.insert(NodeKey(1), "node", Unforkable(Clocked));
         outputs(&mut ed, NodeKey(1), 3);
@@ -1080,7 +1082,7 @@ fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
 /// at the 120.0005 BPM asked.
 #[test]
 fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(
         &transport,
@@ -1149,7 +1151,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     const LOOP_AT: u64 = 48_000 * 400 + 5;
     let (loop_start, loop_end) = (800.0, 816.0);
 
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let first = Arc::new(Mutex::new(0.0));
     let (engine, _ed) = graph_engine(&transport, 64, Unforkable(FirstBeat(Arc::clone(&first))), 1);
     transport.settings().set_tempo(Bpm::of(123.0));
@@ -1297,9 +1299,12 @@ const NEW_SR: f64 = 48_000.0;
 /// second at the new one.
 #[test]
 fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
-    let transport = Transport::new(SampleRate::new(OLD_SR));
+    let transport = Transport::new(SampleRate::of(OLD_SR));
     let log = Arc::new(Mutex::new(Vec::new()));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(OLD_SR), MaxBlock::of(Samples(512))));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(OLD_SR),
+        MaxBlock::of(Samples(512)),
+    ));
     ed.insert(
         NodeKey(1),
         "node",
@@ -1320,8 +1325,11 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
         .expect("room");
 
     render(&engine, ChannelLayout::MONO, &[441; 50]);
-    ed.reprepare(Prepare::new(SampleRate(NEW_SR), MaxBlock::of(Samples(512))))
-        .expect("re-prepares");
+    ed.reprepare(Prepare::new(
+        SampleRate::of(NEW_SR),
+        MaxBlock::of(Samples(512)),
+    ))
+    .expect("re-prepares");
     // The suspended block: silence, and the rate moves here.
     render(&engine, ChannelLayout::MONO, &[480]);
     ed.collect();
@@ -1369,7 +1377,7 @@ fn a_transport_has_one_playhead_writer() {
     use tutti_engine::GraphEngineError;
     use tutti_transport::AudioTaken;
 
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);
 
     let (mut ed, exec) = Editor::new(prepare(256));
@@ -1379,7 +1387,7 @@ fn a_transport_has_one_playhead_writer() {
         Some(GraphEngineError::TransportHeld(AudioTaken)),
         "a clone shares the playhead, so it shares the claim"
     );
-    assert_eq!(transport.audio(SampleRate::new(SR)).err(), Some(AudioTaken));
+    assert_eq!(transport.audio(SampleRate::of(SR)).err(), Some(AudioTaken));
 
     drop(engine);
     let (mut ed, exec) = Editor::new(prepare(256));
@@ -1393,7 +1401,7 @@ fn a_transport_has_one_playhead_writer() {
 /// a jump its beat cannot show.
 #[test]
 fn a_seek_to_the_same_beat_moves_the_live_generation() {
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);
     render(&engine, ChannelLayout::STEREO, &[256]);
     let (beat, generation) = (transport.beat(), transport.segment_generation());
@@ -1439,7 +1447,7 @@ fn a_seek_to_the_same_beat_moves_the_live_generation() {
 #[test]
 fn the_playhead_another_thread_reads_never_goes_backwards() {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed) = graph_engine(
         &transport,
         1024,

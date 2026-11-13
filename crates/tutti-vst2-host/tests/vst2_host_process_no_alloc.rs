@@ -396,8 +396,8 @@ fn a_prepare_that_is_no_rate_cannot_be_built() {
         (-48_000.0, BLOCK),
         (48_000.0, 0),
     ] {
-        let prepare =
-            MaxBlock::new(Samples(block)).and_then(|block| Prepare::new(SampleRate(rate), block));
+        let prepare = MaxBlock::new(Samples(block))
+            .and_then(|block| Prepare::new(SampleRate::of(rate), block));
         assert!(
             prepare.is_none(),
             "{rate} Hz in {block} frames must be refused"

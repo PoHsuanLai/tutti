@@ -76,10 +76,10 @@ pub struct FdId(pub i32);
 /// use tutti_types::{SampleRate, Samples};
 ///
 /// let block = MaxBlock::of(Samples(512));
-/// let prepare = Prepare::new(SampleRate(48_000.0), block).unwrap();
+/// let prepare = Prepare::new(SampleRate::SR_48K, block).unwrap();
 /// assert_eq!(prepare.mode(), RenderMode::Realtime);
-/// assert!(Prepare::new(SampleRate(f64::NAN), block).is_none());
-/// assert!(Prepare::new(SampleRate(0.0), block).is_none());
+/// assert!(SampleRate::new(f64::NAN).is_none());
+/// assert!(SampleRate::new(0.0).is_none());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Prepare {
@@ -157,7 +157,7 @@ impl Prepare {
 #[must_use]
 pub fn standing(active: bool, rate: SampleRate) -> String {
     if active {
-        format!("running at {}", rate.0)
+        format!("running at {}", rate.get())
     } else {
         "deactivated".to_string()
     }

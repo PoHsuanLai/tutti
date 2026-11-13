@@ -21,7 +21,7 @@ use tutti_types::MaxBlock;
 use tutti_types::{BusTopology, ChannelLayout, Feedback, Hz, Mix, Seconds};
 use tutti_types::{SampleRate, Samples};
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 /// The block the impulse responses are rendered in.
 const BLOCK: usize = 64;
 

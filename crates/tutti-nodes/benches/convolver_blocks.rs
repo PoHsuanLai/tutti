@@ -75,7 +75,7 @@ fn main() {
         let ir = generate_test_ir(
             len,
             tutti_types::Seconds::from_f32(secs.min(1.0)),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         for partition in [512usize] {
             for host in [64usize, 128, 512] {
@@ -99,7 +99,7 @@ fn main() {
         let ir = generate_test_ir(
             (secs * 48_000.0) as usize,
             tutti_types::Seconds::from_f32(secs.min(1.0)),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         let (mean, p99, p999, max) = run(&ir, partition, &[64]);
         println!(
@@ -109,7 +109,7 @@ fn main() {
         );
     }
     // A ragged mix: three small calls and one that crosses a boundary.
-    let ir = generate_test_ir(96_000, Seconds::new(1.0), SampleRate(48_000.0));
+    let ir = generate_test_ir(96_000, Seconds::new(1.0), SampleRate::SR_48K);
     let (mean, p99, p999, max) = run(&ir, 512, &[64, 64, 64, 500]);
     println!(
         "{:>9} {:>6} {:>6} {mean:>9.2} {p99:>9.2} {p999:>9.2} {max:>9.2} {:>9.2}",

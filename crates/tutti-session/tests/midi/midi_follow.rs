@@ -32,7 +32,7 @@ fn rig_with(groups: Option<MidiGroup>) -> (Session, FakeCounters) {
     }
     let mut s = builder
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

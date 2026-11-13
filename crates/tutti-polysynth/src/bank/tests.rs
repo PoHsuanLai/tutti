@@ -5,7 +5,7 @@ use tutti_types::{Amplitude, Seconds};
 const SR: f64 = 48_000.0;
 
 fn sr() -> SampleRate {
-    SampleRate::new(SR)
+    SampleRate::of(SR)
 }
 
 /// Instant attack, full sustain: the envelope is 1.0 from the first

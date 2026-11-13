@@ -261,7 +261,7 @@ mod tests {
         use tutti_plugin_types::WireMidi;
         use tutti_ump::{MidiChannel, MidiGroup};
 
-        let channels = Channels::new(SampleRate(48_000.0));
+        let channels = Channels::new(SampleRate::SR_48K);
         for n in [3, 0, 2] {
             let mut payload = Box::new(ProcessPayload::empty());
             for _ in 0..n {
@@ -290,7 +290,7 @@ mod tests {
         use tutti_plugin_types::WireMidi;
         use tutti_ump::{MidiChannel, MidiGroup};
 
-        let channels = Channels::new(SampleRate(48_000.0));
+        let channels = Channels::new(SampleRate::SR_48K);
         let lifecycle = Lifecycle::new();
         let mut payload = Box::new(ProcessPayload::empty());
         for _ in 0..4 {
@@ -324,7 +324,7 @@ mod tests {
     /// test pins what it keeps; this pins that `pump`'s drain reports it.
     #[test]
     fn a_drain_reports_the_drops() {
-        let channels = Channels::new(SampleRate(48_000.0));
+        let channels = Channels::new(SampleRate::SR_48K);
         let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let listener: ListenerSlot = {
             let heard = Arc::clone(&heard);

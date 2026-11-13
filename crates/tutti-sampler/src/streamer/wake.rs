@@ -34,7 +34,7 @@ const BOUND: Duration = Duration::from_secs(10);
 fn sleeper(seams: Seams) -> (DiskStreamer<Running>, Arc<Bell>) {
     let built = Built::new(
         256,
-        SampleRate::new(f64::from(RATE)),
+        SampleRate::of(f64::from(RATE)),
         BufferConfig::default(),
         seams,
     )

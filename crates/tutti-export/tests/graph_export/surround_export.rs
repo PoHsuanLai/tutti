@@ -22,7 +22,7 @@ use tutti_types::ChannelLayout;
 use tutti_types::Seconds;
 
 /// The rate [`export`] renders at, and so the rate every graph is built for.
-const RATE: tutti_types::SampleRate = tutti_types::SampleRate(48_000.0);
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 
 /// Render `g` to `path` as float WAV at `layout`, for `secs`.
 ///

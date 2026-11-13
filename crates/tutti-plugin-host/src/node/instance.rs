@@ -108,8 +108,9 @@ impl<F: Loaded> Instance<F> {
         sample_rate: f64,
         block_size: usize,
     ) -> Result<(Self, Rt<F::Processor>), (LoadStage, String)> {
-        let prepare = MaxBlock::new(Samples(block_size))
-            .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
+        let prepare = SampleRate::new(sample_rate)
+            .zip(MaxBlock::new(Samples(block_size)))
+            .and_then(|(rate, block)| Prepare::new(rate, block))
             .ok_or_else(|| {
                 (
                     LoadStage::Activation,
@@ -279,7 +280,7 @@ impl<F: Loaded> Instance<F> {
                 standing(this.state.renders(), this.prepare.rate())
             )
         };
-        let result = match self.prepare.with_rate(SampleRate(rate)) {
+        let result = match SampleRate::new(rate).and_then(|rate| self.prepare.with_rate(rate)) {
             // Before the plugin is touched: nothing is recalled for a rate
             // that is no rate.
             None => Err(refused(self, "not a positive finite rate")),
@@ -306,7 +307,10 @@ impl<F: Loaded> Instance<F> {
         match &result {
             Err(reason) => {
                 self.rate_refused = true;
-                self.rate_report = Some(Some((SampleRate(rate), reason.clone())));
+                // A raw that is no rate cannot be named as the refused one: the
+                // report carries the rate the plugin stands at.
+                let refused_rate = SampleRate::new(rate).unwrap_or_else(|| self.prepare.rate());
+                self.rate_report = Some(Some((refused_rate, reason.clone())));
             }
             Ok(()) if self.rate_refused => {
                 self.rate_refused = false;
@@ -467,7 +471,7 @@ mod tests {
             let report = instance.take_rate_report().expect("and reported");
             let (reported, why) = report.expect("a refusal, not a recovery");
             assert!(
-                reported.0 == rate || (reported.0.is_nan() && rate.is_nan()),
+                reported.get() == rate || (reported.get().is_nan() && rate.is_nan()),
                 "{rate}"
             );
             assert_eq!(why, reason);
@@ -479,7 +483,7 @@ mod tests {
         instance
             .set_sample_rate(&main_thread(), 96_000.0, None)
             .expect("a real rate is taken");
-        assert_eq!(instance.prepare.rate().0, 96_000.0);
+        assert_eq!(instance.prepare.rate().get(), 96_000.0);
         assert_eq!(
             instance.take_rate_report(),
             Some(None),
@@ -520,7 +524,7 @@ mod tests {
         assert!(instance.state.is_parked(), "waits for the Processor");
         let _ = instance.pump(&main);
         assert!(instance.renders());
-        assert_eq!(instance.rate(), SampleRate(96_000.0));
+        assert_eq!(instance.rate(), SampleRate::SR_96K);
         assert!(rt.poll(Processor::stop).is_some(), "the new Processor");
     }
 }

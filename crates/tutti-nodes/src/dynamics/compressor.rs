@@ -507,7 +507,7 @@ mod tests {
     /// is the old times 10^(6/20).
     #[test]
     fn a_makeup_write_glides_over_five_milliseconds() {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let mut node = tutti_graph::contract::prepared(comp(0.0, 1.0, 0.0, 0.0), rate, 64);
         let (audio, key) = (vec![0.5f32; 64], vec![0.0f32; 64]);
         for _ in 0..4 {

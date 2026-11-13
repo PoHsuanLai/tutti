@@ -74,7 +74,7 @@ impl SessionNode for Src {}
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -234,7 +234,7 @@ fn a_group_route_cut_with_keys_held_ends_them_at_the_next_block_then_nothing() {
     let mut s = Session::builder()
         .midi_groups(MidiGroup::of(1))
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

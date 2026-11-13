@@ -79,7 +79,10 @@ impl Node for Probe {
 
 /// A lane sending `curve` to the probe's cutoff.
 fn graph(lane: ControlLaneNode) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(MAX))));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(MAX)),
+    ));
     ed.insert(NodeKey(1), "lane", lane);
     ed.insert(NodeKey(2), "probe", Unforkable(Probe));
     let s = ed.spec_mut();
@@ -137,7 +140,7 @@ fn check_rolling(
     looping: Option<LoopRange>,
 ) -> Vec<f32> {
     let (mut ed, mut exec) = graph(lane);
-    let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
+    let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE));
     let graph_loop = looping.map(|l| tutti_graph::LoopRange {
         start: l.start(),
         end: l.end(),
@@ -273,7 +276,7 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
 /// such frames. Returns the rendered values.
 fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f32) -> Vec<f32> {
     let (mut ed, mut exec) = graph(lane);
-    let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
+    let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE));
     let mut out = Vec::new();
     for &n in blocks {
         let t = TransportPosition::counted(true, TEMPO, clock.origin(), None);
@@ -282,7 +285,7 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
     }
     let step = CONTROL_STEP as usize;
     let at = |f: usize| {
-        let mut c = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
+        let mut c = FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE));
         c.advance(Samples(f), None);
         curve.value_at(c.beat()).expect("a value")
     };

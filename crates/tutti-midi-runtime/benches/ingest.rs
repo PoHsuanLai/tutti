@@ -51,7 +51,7 @@ fn rig() -> (Executor, DeviceInput) {
     let inlets = DeviceInlets::new(1, EventCapacity::of(4_096), Duration::ZERO);
     let device = inlets.open().expect("a free slot");
     let (mut editor, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxBlock::of(Samples(BLOCK)),
     ));
     editor.insert(

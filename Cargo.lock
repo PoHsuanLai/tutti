@@ -4032,6 +4032,7 @@ dependencies = [
  "tutti-plugin-ipc-ffi",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-types",
  "tutti-ump",
  "tutti-vst3-host",
 ]

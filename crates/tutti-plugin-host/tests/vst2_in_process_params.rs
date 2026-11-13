@@ -90,7 +90,7 @@ fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
         &main_thread(),
         path,
         &Load::new(),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
     (client.bind(tempo()), handle)
@@ -123,7 +123,7 @@ fn a_moving_parameter_reaches_the_plugin() {
     let _env = ProbeEnv::new().params(8);
     let (client, handle) = load();
     let controls = client.controls();
-    let mut unit = Direct::new(client, SampleRate(SAMPLE_RATE), BLOCK);
+    let mut unit = Direct::new(client, SampleRate::of(SAMPLE_RATE), BLOCK);
     assert_eq!(read(&handle, 1), Some(1.0 / 16.0), "the probe's default");
 
     // Exact eighths, distinct within and across blocks.
@@ -169,7 +169,7 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
     let _env = ProbeEnv::new().params(8);
     let (client, handle) = load();
     let controls = client.controls();
-    let mut unit = Direct::new(client, SampleRate(SAMPLE_RATE), BLOCK);
+    let mut unit = Direct::new(client, SampleRate::of(SAMPLE_RATE), BLOCK);
     let p = 2;
 
     let held = |unit: &mut Direct<PluginNode<Vst2Loaded>>, v: f32, blocks: usize| {
@@ -229,7 +229,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let (plugin, controls) = g.add_with_controls(client);
     g.connect_events(lane, 0, plugin, 0);
     g.pipe_output(plugin);
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
+    let prepare = Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let mut live = g.renderer(prepare).expect("the graph compiles");
     live.set_transport(TransportPosition::new(
         true,
@@ -256,7 +256,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
 
     // The export.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
+        sample_rate: SampleRate::of(SAMPLE_RATE),
         ..Default::default()
     }));
     let (_fork_ed, mut fork_exec) = live

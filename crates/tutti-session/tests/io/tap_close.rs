@@ -18,7 +18,7 @@ use tutti_types::{SampleRate, Samples};
 fn session() -> Session {
     let mut s = Session::builder()
         .outputs_floor(ChannelLayout::MONO)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds");
     let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.25)));
     s.graph()

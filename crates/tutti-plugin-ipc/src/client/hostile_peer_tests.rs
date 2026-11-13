@@ -254,7 +254,7 @@ impl MockServer {
             slab,
             tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
             no_editor,
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             state_progress_timeout,
         )
         .expect("bridge");
@@ -1004,15 +1004,15 @@ fn a_refused_rate_is_reported_without_crashing_the_bridge() {
         }
         _ => Action::Silent,
     });
-    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate::SR_96K));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
     assert_eq!(
         mock.bridge.rate_refusal(),
-        Some((SampleRate(96_000.0), "no".to_string()))
+        Some((SampleRate::SR_96K, "no".to_string()))
     );
     assert!(!mock.bridge.is_crashed(), "a refusal is not a crash");
 
-    assert!(mock.bridge.set_sample_rate_rt(SampleRate(48_000.0)));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate::SR_48K));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_none()));
     assert!(!mock.bridge.is_crashed());
 }
@@ -1037,10 +1037,10 @@ fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
         _ => Action::Silent,
     });
     mock.bridge.set_rate_timeout(Duration::from_millis(300));
-    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate::SR_96K));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
     let (rate, reason) = mock.bridge.rate_refusal().unwrap();
-    assert_eq!(rate, SampleRate(96_000.0));
+    assert_eq!(rate, SampleRate::SR_96K);
     assert!(reason.contains("did not answer"), "{reason}");
     assert!(
         !mock.bridge.is_crashed(),
@@ -1102,17 +1102,17 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
         _ => Action::Silent,
     });
     mock.bridge.set_rate_timeout(Duration::from_millis(300));
-    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate::SR_96K));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
     // Only A's release gates B's answer, so B's wait is far beyond any stall.
     mock.bridge.set_rate_timeout(Duration::from_secs(30));
     // B, queued behind A's wait; its answer follows A's on the stream.
-    assert!(mock.bridge.set_sample_rate_rt(SampleRate(88_200.0)));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate::SR_88K2));
     release.send(()).expect("the mock is listening");
     assert!(wait_until(|| mock
         .bridge
         .rate_refusal()
-        .is_some_and(|(rate, _)| rate == SampleRate(88_200.0))));
+        .is_some_and(|(rate, _)| rate == SampleRate::SR_88K2)));
     // Barrier: B's command has ended, with everything it applies.
     assert_eq!(
         mock.bridge.parameter(ParamId::new(1)),
@@ -1120,7 +1120,7 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
     );
     assert_eq!(
         mock.bridge.rate_refusal(),
-        Some((SampleRate(88_200.0), "no".to_string())),
+        Some((SampleRate::SR_88K2, "no".to_string())),
         "the later answer stands"
     );
     assert!(!mock.bridge.is_crashed());
@@ -1132,7 +1132,7 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
 #[test]
 fn dropping_the_bridge_ends_a_hung_rate_change() {
     let mut mock = MockServer::start("hung_rate", |_| Action::Silent);
-    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate::SR_96K));
     // Let the bridge thread reach the wait.
     std::thread::sleep(Duration::from_millis(300));
 

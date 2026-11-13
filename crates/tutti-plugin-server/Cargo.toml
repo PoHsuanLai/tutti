@@ -80,6 +80,8 @@ tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 bytemuck = "1"
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
+# An unchecked `SampleRate` (`Unit::from_raw`), to build the rate a hostile peer sends.
+tutti-types = { path = "../tutti-types" }
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the loader tests drive. A dev-dependency rather

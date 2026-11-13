@@ -87,7 +87,7 @@ mod tests {
     use crate::{Settings, SoundFont, SoundFontUnit};
 
     /// The live unit's rate.
-    const LIVE: SampleRate = SampleRate(48_000.0);
+    const LIVE: SampleRate = SampleRate::SR_48K;
 
     /// The repo's committed test soundfont. Panics with the path when it is
     /// missing: a checkout without it is broken, not a reason to skip.
@@ -153,7 +153,7 @@ mod tests {
         let live = unit(&font, U7::of(24));
         let source = live.fork_template();
 
-        for rate in [LIVE, SampleRate(96_000.0)] {
+        for rate in [LIVE, SampleRate::SR_96K] {
             let held = Arc::strong_count(&font);
             let fork = source.fork(ForkMode::Live).expect("forks").node;
             assert_eq!(

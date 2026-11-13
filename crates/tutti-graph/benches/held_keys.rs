@@ -60,7 +60,7 @@ impl Node for Sink {
 
 fn rig(k: u32, sinks: u64) -> Executor {
     let (mut ed, mut exec) = Editor::with_event_capacity(
-        Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(BLOCK))),
+        Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(BLOCK))),
         1024,
     );
     ed.insert(NodeKey(1), "source", Unforkable(Source { k, flip: false }));

@@ -21,7 +21,7 @@ const BLOCK: usize = 512;
 fn a_step_published_behind_the_playhead_moves_no_beat() {
     let s = Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

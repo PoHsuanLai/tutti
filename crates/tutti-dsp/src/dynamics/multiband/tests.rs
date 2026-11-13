@@ -9,7 +9,7 @@ use crate::contract::{FamilyCase, Hook, RecurrenceCase, built};
 use crate::testing::amplitude_at;
 use crate::{Complex32, Complex64, Lti, MAX_LANES, RealFft, Realized};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 /// The longest block `run` hands the runner.
 const CHUNK: usize = 256;
 /// Frames a glide takes at [`RATE`]: `ceil(0.005 * 48000)`.

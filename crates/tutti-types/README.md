@@ -38,7 +38,7 @@ Use it directly when you need only the vocabulary (a crate that implements
 
 **The root is the API.** The common names are re-exported there, so
 `tutti_types::Bpm` and `tutti_types::Source` resolve directly — import from the
-root, or from `prelude` for the common subset. Three of the eight modules are
+root. Three of the eight modules are
 public (`value`, `io`, `meter`), because each holds items the root does not
 re-export; the others (`channels`, `downmix`, `fold`, `interleaved`, `topology`)
 are private and fully re-exported. The graph as a value (`Topology`), the

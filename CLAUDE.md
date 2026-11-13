@@ -396,7 +396,7 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
-- **Import paths:** import engine types from a crate's root or prelude, never
+- **Import paths:** import engine types from a crate's root, never
   through its modules. Only `cargo xtask check-paths` enforces this.
 
 ### Check Windows before you push
@@ -719,7 +719,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti_ump::Ump`; CI runs the per-module path gate on it), is
   `#![forbid(unsafe_code)]` and has no `bevy` feature. A consumer names
   `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`. The
-  `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
+  `tutti` root and the `bevy-tutti` prelude export all three, and `tutti-session`
   exports `MidiChannel` behind `midi`. A consumer that persists one with serde
   depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
   `MidiChannel::index`/`MidiGroup::index` (`usize`), `all()`, `Address::index` and the 1-based
@@ -1729,6 +1729,11 @@ read the `Cargo.toml`, grep for the type, run the probe.
   (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). A comment or doc that
   disagrees with the code is the bug.
 - **Dead plugin names** (doc 029 step 4): `PluginHandle::presets(&main) -> Option<Vec<Preset>>` and `load_preset -> Option<bool>` → `-> Result<_, PresetError>` (`Unsupported`, `Refused`, `Lost`), and for a host the session's view, `MainSession::plugin(node)?.presets() -> Result<Presets, PresetError>` (`Presets::{kind, iter, get, current, load_file}`, `PresetEntry::load`; a main-thread call, so not on `Plugin<'_>`), `Plugin::liveness()` and the public `PluginLiveness` (the session's debounce is crate-private now) → `Plugin::health() -> PluginHealth` (`Running`, `Stalled`, `Died { cause }`, `Reloading { attempt, cause }`; the verdicts that remove the node are the events `PluginChange::{Died, GaveUp}`), `Plugin::{controls, meter}` and the handle's `server_pid`, `block_counts`, `dropped_parameter_events`, `terminate` as a host's calls → `Plugin::diagnostics()` (`server_pid`, `block_counts`, `missed_chunks`, `latency`, `tail`, `follows_project_meter`, `reported_latency`, `chunk_in_flight_answered`, `terminate`, and the counts as `tutti_graph::Losses`: `midi_in`, `parameter_points`, `parameter_edits`; the same in either hosting), `Plugin::handle()` → behind `tutti-session`'s `testing` feature (a host uses the views), `Plugin::controls()` / `meter()` → deleted (`Diagnostics::{reported_latency, chunk_in_flight_answered, missed_chunks, follows_project_meter}`), `PluginHandle::set_render_mode` → deleted (the session's `Phase::RenderMode`; `AnyThread::set_render_mode` is the backend's), a plugin's `input_buses()` / `output_buses()` as a host's wiring vocabulary → `Plugin::buses() -> PluginBuses` (`main_input`, `input(i)`, `output(i)`; no `sidechain()`, since no loader marks one and an app wires a key input by index: the graph's `BusRef` and `BusSource`).
+- **Dead prelude names**: `tutti::prelude::*`, `tutti_engine::prelude`,
+  `tutti_types::prelude`, `tutti_midi_hardware::prelude` and
+  `tutti_vst2_author::prelude` → deleted (no crate defines a prelude: name items
+  at the crate's root, `use tutti::{Session, Samples, ..}`; the session's
+  `Phase` is `tutti::Phase`, the types' one stays `tutti::types::Phase`).
 - **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
   restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook
   `LiveSession::on_restart`; `restart_on`, `Session::watch_devices` with four

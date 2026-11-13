@@ -4,8 +4,7 @@
 //! `cargo run -p tutti --features device --example headless_engine`
 use tutti::graph::ForkByClone;
 use tutti::nodes::testing::Osc;
-use tutti::prelude::Root;
-use tutti::prelude::*;
+use tutti::{Amplitude, Hz, Root, SessionBuilder, SessionEvent};
 
 /// What `Session::update` found: faults and dropouts (a refused commit, a
 /// plugin that died, a lost block). A host logs them; here they are printed.

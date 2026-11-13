@@ -1,5 +1,5 @@
-//! `check-canonical-paths`: engine types are imported from a crate's root or
-//! prelude, never through its modules.
+//! `check-canonical-paths`: engine types are imported from a crate's root,
+//! never through its modules.
 //!
 //! Neither the compiler nor clippy has a lint for a redundant path, and doc
 //! comments in ```text / ```ignore blocks are never compiled, so this scan is

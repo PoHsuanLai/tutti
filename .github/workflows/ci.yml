@@ -831,7 +831,7 @@ jobs:
       # each feature of the umbrellas alone (`xtask/src/gates/doc_features.rs`).
       # A workspace build turns on only what some member's edge enables, so an
       # item behind a feature nothing enables (a `contract` harness,
-      # `test-support`, a codec) and its links are documented by no line above;
+      # `testing`, a codec) and its links are documented by no line above;
       # broken links reached main from five crates that way. The member list and
       # the features are read from the manifests, so a new crate is covered.
       - run: cargo xtask check-doc-features

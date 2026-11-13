@@ -10,7 +10,7 @@
 //!
 //! A Device Identity never names a unit: two keyboards of one model share
 //! it, so it can refute a saved device (a different model answers) but never
-//! confirm one. Only a Product Instance Id can, so [`Learned::compare`] says
+//! confirm one. Only a Product Instance Id can, so `Learned::compare` says
 //! [`Match::SameUnit`] only when both sides have one and they are equal.
 //! [`DeviceTable::resolve`](crate::DeviceTable::resolve) is unchanged: it works
 //! over the listing, before anything is opened, and this check runs after.
@@ -122,7 +122,7 @@ fn both<T: PartialEq>(a: Option<T>, b: Option<T>) -> Option<bool> {
     Some(a? == b?)
 }
 
-/// Names what [`Learned::compare`] concluded.
+/// Names what `Learned::compare` concluded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Match {
@@ -173,7 +173,7 @@ impl SavedDevice {
         &self.learned
     }
 
-    /// Compares what the device now says with what was saved, as [`Learned::compare`] does.
+    /// Compares what the device now says with what was saved, as `Learned::compare` does.
     #[must_use]
     pub fn confirm(&self, now: &Learned) -> Match {
         self.learned.compare(now)

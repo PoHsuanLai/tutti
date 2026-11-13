@@ -186,7 +186,7 @@ impl ProfileId {
 /// Zero is a value the spec gives a meaning: when the Profile Destination is
 /// address 0x7E or 0x7F, the number of Channels is the
 /// width of the Group or Function Block, and the field is then 0
-/// ([`BY_ADDRESS`](Self::BY_ADDRESS)).
+/// (`BY_ADDRESS`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProfileChannels(U14);
 
@@ -252,7 +252,7 @@ pub struct ListTooLong {
 
 /// The two lists of a Reply to Profile Inquiry (§7.3): the Profiles supported and
 /// currently enabled, and those supported but currently disabled. Each holds at
-/// most [`MAX_LEN`](Self::MAX_LEN) Ids, the largest count the message carries.
+/// most `MAX_LEN` Ids, the largest count the message carries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProfileLists {
     enabled: Vec<ProfileId>,
@@ -267,7 +267,7 @@ impl ProfileLists {
     ///
     /// # Errors
     ///
-    /// [`ListTooLong`] when either list is longer than [`MAX_LEN`](Self::MAX_LEN).
+    /// [`ListTooLong`] when either list is longer than `MAX_LEN`.
     pub fn new(enabled: Vec<ProfileId>, disabled: Vec<ProfileId>) -> Result<Self, ListTooLong> {
         for list in [&enabled, &disabled] {
             if list.len() > Self::MAX_LEN {

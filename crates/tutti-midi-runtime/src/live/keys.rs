@@ -58,7 +58,6 @@ impl MidiKeys {
     ///
     /// The velocity is the 16-bit field of M2-104 §7.4.2, `0` to `0xFFFF`, and
     /// not a MIDI 1.0 velocity: `NoteVelocity::new(100)` is nearly silent. A
-    /// 7-bit velocity goes through [`note_on_midi1`](Self::note_on_midi1). A
     /// velocity of 0 is a Note On.
     ///
     /// # Errors

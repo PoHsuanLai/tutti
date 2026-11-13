@@ -62,7 +62,7 @@ impl PortInfo {
 /// [`InputProducerHandle`] it returns from the driver's own thread; each port
 /// is an event inlet of the [`DeviceInlets`] the list was built over, which the
 /// graph's owner wires to the ingest node. When the connection closes,
-/// [`remove_input_port`](Self::remove_input_port) retires the port, and
+/// `remove_input_port` retires the port, and
 /// dropping the handle gave its slot back, so hot-plug cycles do not grow the
 /// set.
 ///
@@ -126,7 +126,7 @@ impl HardwareMidiInputs {
     /// There is no other way to reach a port's producer: give the handle to the
     /// one thread that pushes. **The slot is the handle's: dropping it frees
     /// the slot** (and queues the inlet's removal), but leaves the port's entry
-    /// in the list until [`remove_input_port`](Self::remove_input_port)
+    /// in the list until `remove_input_port`
     /// retires it, and the entry then reads as a port fed by nothing.
     ///
     /// # Errors

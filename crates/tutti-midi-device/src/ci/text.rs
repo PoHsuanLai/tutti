@@ -29,7 +29,7 @@ use crate::name::NameError;
 /// to send (§5.10.4). 103 is what the
 /// smallest receivable size, 128 bytes, leaves after the 25 bytes the rest of
 /// the message takes (`F0`, the 13-byte preamble, 10 bytes of status fields,
-/// `F7`): [`MAX_ENCODED`](Self::MAX_ENCODED) counts the *escaped* bytes, the
+/// `F7`): `MAX_ENCODED` counts the *escaped* bytes, the
 /// ones on the wire. [`new`](Self::new) holds a text to it; a text a peer sent
 /// longer (it declared a larger receive size) is read whole.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -40,7 +40,7 @@ impl MessageText {
     pub(crate) const MAX_ENCODED: usize = 103;
 
     /// The text, or `None` when its escaped form is longer than
-    /// [`MAX_ENCODED`](Self::MAX_ENCODED) bytes.
+    /// `MAX_ENCODED` bytes.
     #[must_use]
     pub fn new(text: &str) -> Option<Self> {
         Self::try_from(text).ok()
@@ -145,7 +145,7 @@ impl AsRef<str> for MessageText {
 impl TryFrom<&str> for MessageText {
     type Error = NameError;
 
-    /// The text, or [`NameError::TooLong`] with [`MAX_ENCODED`](Self::MAX_ENCODED)
+    /// The text, or [`NameError::TooLong`] with `MAX_ENCODED`
     /// when its escaped form is longer. A message text has no other refusal:
     /// every character has an escape.
     fn try_from(text: &str) -> Result<Self, NameError> {

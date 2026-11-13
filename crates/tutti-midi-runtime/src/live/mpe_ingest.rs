@@ -392,7 +392,7 @@ impl MpeIngest {
 
     /// The zone layout the host configured, which every Group starts in. A
     /// Group's channel messages are folded to per-note or passed through by
-    /// [`mode_of`](Self::mode_of).
+    /// `mode_of`.
     pub fn mode(&self) -> &MpeMode {
         &self.mode
     }
@@ -411,7 +411,7 @@ impl MpeIngest {
     /// What a channel held or was told is kept where the channel is what it
     /// was, and forgotten where it entered or left MPE control. The sounding
     /// notes of those channels are the instrument's, and M1-100 section 2.2.3
-    /// has the receiver stop them: [`zone_defaults`](Self::zone_defaults),
+    /// has the receiver stop them: `zone_defaults`,
     /// which the host sends downstream after this, carries the All Sound Off
     /// and Reset All Controllers that do.
     pub fn set_mode(&mut self, mode: MpeMode) {
@@ -458,7 +458,7 @@ impl MpeIngest {
     /// - an MPE Configuration Message is absorbed, the channels it takes into
     ///   or out of MPE control are stopped and reset (section 2.2.3), and the
     ///   zone it configures is reset to its default ranges
-    ///   ([`zone_defaults`](Self::zone_defaults));
+    ///   (`zone_defaults`);
     /// - a message the specification's receive table prohibits there is
     ///   dropped (`MpeSpec::receive`);
     /// - note-on/off and master-channel messages pass (with the channel

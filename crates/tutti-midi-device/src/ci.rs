@@ -213,8 +213,8 @@ impl From<CiDeviceId> for u8 {
 /// device gives itself. Four 7-bit bytes, least significant first, on the wire.
 ///
 /// It holds a MUID a device can *own*: the reserved range
-/// [`RESERVED_START`](Self::RESERVED_START) to `0x0FFF_FFFE` and the broadcast
-/// value [`BROADCAST_RAW`](Self::BROADCAST_RAW) are refused. The broadcast
+/// `RESERVED_START` to `0x0FFF_FFFE` and the broadcast
+/// value `BROADCAST_RAW` are refused. The broadcast
 /// address is a [`Destination`], not a `Muid`. A MUID is drawn from an OS random
 /// source by whoever owns the device; this type only checks one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1039,7 +1039,7 @@ impl Unread {
     /// The NAK that answers this message from the device `own`: to the sender,
     /// on the Device ID it used (the Function Block when that was reserved), in
     /// this codec's [`CI_VERSION`] (the Receiver's own Message Format
-    /// Version, §5.4), with the Status Code of [`UnreadReason::nak_status`] and
+    /// Version, §5.4), with the Status Code of `UnreadReason::nak_status` and
     /// the failed sub-ID#2 as the Original Transaction.
     ///
     /// `None` when there is nobody to answer (the source was not a MUID), when

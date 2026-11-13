@@ -36,7 +36,7 @@ impl PitchBendSensitivity {
     pub(crate) const MAX_SEMITONES: u8 = 127;
 
     /// Whole-semitone sensitivity (the common MPE case, e.g. 48), or `None`
-    /// above [`MAX_SEMITONES`](Self::MAX_SEMITONES). A `u8` count, not
+    /// above `MAX_SEMITONES`. A `u8` count, not
     /// `Semitones`: that is an `f32`, and this is an exact integer count.
     #[inline]
     #[must_use]
@@ -52,7 +52,7 @@ impl PitchBendSensitivity {
     ///
     /// # Panics
     ///
-    /// Above [`MAX_SEMITONES`](Self::MAX_SEMITONES).
+    /// Above `MAX_SEMITONES`.
     #[inline]
     #[must_use]
     #[track_caller]

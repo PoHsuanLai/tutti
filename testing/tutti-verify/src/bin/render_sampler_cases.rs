@@ -2,7 +2,7 @@
 //!
 //! Tests written against the same understanding of the DSP as the code cannot
 //! contradict it. An external tool re-deriving the expected answer from the
-//! signal alone (`verify_sampler.py`, beside this file) has no such shared
+//! signal alone (`py/verify_sampler.py`) has no such shared
 //! blind spot.
 //!
 //! Drives the real `VoicePool`: placement gate, `MemorySource`, the resident
@@ -10,7 +10,7 @@
 //! isolation. That is the point; the unit already has value-based tests, and what
 //! is unverified is the assembly.
 //!
-//! Run: `cargo run --release -p tutti-sampler --example render_cases -- <outdir>`
+//! Run: `cargo run --release -p tutti-verify --bin render_sampler_cases -- <outdir>`
 
 use tutti_sampler::VoiceWindow;
 
@@ -135,7 +135,7 @@ fn write_wav(path: &Path, interleaved: &[f32], channels: u16) {
 fn main() {
     let dir = std::env::args()
         .nth(1)
-        .expect("usage: render_cases <outdir>");
+        .expect("usage: render_sampler_cases <outdir>");
     let dir = Path::new(&dir);
     std::fs::create_dir_all(dir).expect("create outdir");
 

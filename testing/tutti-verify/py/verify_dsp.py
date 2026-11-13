@@ -2,8 +2,8 @@
 """Judge tutti-dsp's filters and export resampler against independent references.
 
 Run:
-    cargo run --locked --release -p tutti-dsp --example render_dsp_cases -- /tmp/tutti-dsp
-    uv run python crates/tutti-dsp/examples/verify_dsp.py /tmp/tutti-dsp
+    cargo run --locked --release -p tutti-verify --bin render_dsp_cases -- /tmp/tutti-dsp
+    uv run python testing/tutti-verify/py/verify_dsp.py /tmp/tutti-dsp
 
 The Rust half renders impulse responses (and test tones for the resampler) and
 writes the parameters of every case to cases.json. This half re-derives the

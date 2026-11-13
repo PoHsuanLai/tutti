@@ -3,8 +3,8 @@
 
 Run:
     cargo run --release \
-        -p tutti-measure --example render_analysis_cases -- /tmp/tutti-measure
-    uv run python crates/tutti-measure/examples/verify_analysis.py /tmp/tutti-measure
+        -p tutti-verify --bin render_analysis_cases -- /tmp/tutti-measure
+    uv run python testing/tutti-verify/py/verify_analysis.py /tmp/tutti-measure
 
 The Rust half emits what tutti *measured*; this half recomputes what the answer
 should be, from the case name and from libraries with no knowledge of tutti.

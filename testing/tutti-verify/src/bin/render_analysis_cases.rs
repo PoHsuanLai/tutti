@@ -20,7 +20,7 @@
 //! (`finds_a440`, ±1 Hz on one tone). Octave errors, YIN's signature failure
 //! mode, are unasserted anywhere.
 //!
-//! Run: `cargo run --release -p tutti-measure --example render_analysis_cases -- <outdir>`
+//! Run: `cargo run --release -p tutti-verify --bin render_analysis_cases -- <outdir>`
 
 use std::f64::consts::TAU;
 use std::fmt::Write as _;

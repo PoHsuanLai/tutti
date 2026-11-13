@@ -7,9 +7,9 @@ harmonic series, filter transfer functions, unison beating.
 cargo xtask verify-audio                 # renders + judges everything, this included
 # or directly:
 cargo run --release \
-    -p tutti-polysynth --example render_synth_cases -- /tmp/tutti-polysynth
+    -p tutti-verify --bin render_synth_cases -- /tmp/tutti-polysynth
 uv run python \
-    crates/tutti-polysynth/examples/verify_synth.py /tmp/tutti-polysynth
+    testing/tutti-verify/py/verify_synth.py /tmp/tutti-polysynth
 ```
 
 ## Why this exists

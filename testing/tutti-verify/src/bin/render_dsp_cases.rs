@@ -12,7 +12,7 @@
 //! Only tutti-dsp's public API is used: a design's model, its runner, and
 //! `Realized::process`, as a node drives them.
 //!
-//! Run: `cargo run --release -p tutti-dsp --example render_dsp_cases -- <outdir>`
+//! Run: `cargo run --release -p tutti-verify --bin render_dsp_cases -- <outdir>`
 
 use std::f64::consts::TAU;
 use std::fmt::Write as _;

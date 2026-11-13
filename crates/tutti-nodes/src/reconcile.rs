@@ -11,7 +11,6 @@
 //! which graph node a target key or a source's input names.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::sync::Arc;
 
 use tutti_graph::NodeKey;
@@ -122,13 +121,15 @@ pub enum Feed {
 
 /// Why [`Modulation::apply`] refused. A refusal changes nothing: neither
 /// the editor nor the reconciler's own state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReconcileError {
     /// The declarations do not compile.
-    Compile(CompileError),
+    #[error("modulation does not compile")]
+    Compile(#[from] CompileError),
     /// A route from a signal source whose input is downstream of the route's
     /// own target (doc 014 §6): its edge would close a cycle.
+    #[error("route {}: its source's input is downstream of its target", route.0)]
     Cycle {
         /// The route.
         route: RouteKey,
@@ -136,17 +137,22 @@ pub enum ReconcileError {
     /// The host resolved a native (`Unit` or `Indexed`) target to a foreign parameter,
     /// or a `ParamAddr::Id` one to a native port, or an edge key to a node's
     /// param, or a mix key to anything but a mix (or the other way round).
+    #[error("target {0:?}: resolved to the other kind")]
     WrongTarget(TargetKey),
     /// A native target whose node does not declare the param.
+    #[error("target {0:?}: its node does not declare it")]
     NoSuchParam(TargetKey),
     /// A foreign target whose node has no event input at the port given.
+    #[error("target {0:?}: no such event input")]
     NoSuchEventInput(TargetKey),
     /// A native target whose param port already takes an event source that
     /// is not one of this reconciler's lanes: the graph allows one per port.
+    #[error("target {0:?}: its port has another event source")]
     PortTaken(TargetKey),
     /// Two native targets the host resolved to the same param port (or two
     /// edge targets to the same edge): one lane each would be two event
     /// sources on it.
+    #[error("targets {first:?} and {second:?} resolve to one param port")]
     SharedPort {
         /// The first, in key order.
         first: TargetKey,
@@ -157,50 +163,17 @@ pub enum ReconcileError {
     /// envelope fed from an event output its node does not have. (A feed
     /// naming a node not in the graph is no feed: the follower is
     /// unresolved, the envelope gets none.)
+    #[error("source {}: a feed it cannot take", .0.0)]
     WrongFeed(SourceKey),
     /// A mix target on a node with no pass ([`Editor::check_pass`]): the dry
     /// side of the mix would be a guess.
+    #[error("target {target:?}: no mix without a pass: {error}")]
     Unplaced {
         /// The target.
         target: TargetKey,
         /// What the node would need to declare.
         error: PassError,
     },
-}
-
-impl fmt::Display for ReconcileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Compile(e) => write!(f, "modulation does not compile: {e}"),
-            Self::Cycle { route } => write!(
-                f,
-                "route {}: its source's input is downstream of its target",
-                route.0
-            ),
-            Self::WrongTarget(t) => write!(f, "target {t:?}: resolved to the other kind"),
-            Self::NoSuchParam(t) => write!(f, "target {t:?}: its node does not declare it"),
-            Self::NoSuchEventInput(t) => write!(f, "target {t:?}: no such event input"),
-            Self::PortTaken(t) => write!(f, "target {t:?}: its port has another event source"),
-            Self::SharedPort { first, second } => {
-                write!(
-                    f,
-                    "targets {first:?} and {second:?} resolve to one param port"
-                )
-            }
-            Self::WrongFeed(s) => write!(f, "source {}: a feed it cannot take", s.0),
-            Self::Unplaced { target, error } => {
-                write!(f, "target {target:?}: no mix without a pass: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ReconcileError {}
-
-impl From<CompileError> for ReconcileError {
-    fn from(e: CompileError) -> Self {
-        Self::Compile(e)
-    }
 }
 
 /// What one [`Modulation::apply`] did.
@@ -663,11 +636,6 @@ impl Modulation {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// The last compile applied.
-    pub fn compiled(&self) -> Option<&Compiled> {
-        self.prev.as_ref()
     }
 
     /// `target`'s lane: its node key and its controls (a plugin lane's knob

@@ -175,8 +175,8 @@ fn probes(max: usize, probes: &[u64], range: (f32, f32)) -> (Editor, Executor) {
 /// A native lane for `probe`'s cutoff: knob `knob` (its own cell, as a
 /// node's `Param` cell would be), the port's own range cell.
 fn native(ed: &Editor, probe: u64, program: ControlProgram, knob: Option<f32>) -> ControlLaneNode {
-    ControlLaneNode::for_param(
-        ParamKey::<Hz>::CUTOFF,
+    ControlLaneNode::for_unit(
+        ParamKey::<Hz>::CUTOFF.addr(),
         program,
         knob.map(|k| Arc::new(AtomicF32::new(k)).into()),
         Some(ed.param_range_cell(cutoff(probe)).expect("committed")),

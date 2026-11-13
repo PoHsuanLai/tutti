@@ -21,6 +21,7 @@ workspace = true
 default = []
 
 [dependencies]
+thiserror = { workspace = true }
 
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 

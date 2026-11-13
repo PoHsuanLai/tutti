@@ -335,6 +335,16 @@ mod tests {
         assert_eq!(correlate(pair(&silence, &silence)).balance, Pan::CENTER);
     }
 
+    /// The standard ballistics are a 10 ms attack and a 100 ms release: over a
+    /// step of one time constant a one-pole moves `1 - 1/e` of the way.
+    #[test]
+    fn standard_ballistics_are_ten_milliseconds_up_and_a_hundred_down() {
+        let cfg = Ballistics::standard();
+        let want = 1.0 - (-1.0f32).exp();
+        assert!((cfg.coefficient(true, Seconds(0.01)) - want).abs() < 1e-6);
+        assert!((cfg.coefficient(false, Seconds(0.1)) - want).abs() < 1e-6);
+    }
+
     /// Width is derived, so it cannot
     /// drift from the correlation it is defined from — even after smoothing.
     #[test]

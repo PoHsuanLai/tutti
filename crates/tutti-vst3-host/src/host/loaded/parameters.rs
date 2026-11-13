@@ -374,7 +374,7 @@ fn apply_function_roles(list: Vec<ParameterInfo>, wet: Option<ParamId>) -> Vec<P
         .collect()
 }
 
-/// What a VST3 parameter's declaration says it measures (doc 023 §5.2).
+/// What a VST3 parameter's declaration says it measures.
 ///
 /// A list (`kIsList`) with at least one step is a [`Choice`](ParamUnit::Choice);
 /// otherwise a step count of 1 is a [`Toggle`](ParamUnit::Toggle) (a two-entry

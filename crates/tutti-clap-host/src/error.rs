@@ -117,6 +117,11 @@ pub enum ClapError {
     #[error("Plugin not activated")]
     NotActive,
 
+    /// The main thread held the instance (a lifecycle change or a parameter
+    /// flush), and the block was refused rather than wait for it.
+    #[error("The plugin was busy on the main thread")]
+    Busy,
+
     /// A requested capability is not advertised by the plugin (e.g. activating
     /// at `f64` when the plugin is 32-bit only).
     #[error("Not supported: {0}")]

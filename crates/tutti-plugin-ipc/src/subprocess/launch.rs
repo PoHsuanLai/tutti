@@ -51,7 +51,7 @@ pub(crate) const STATE_RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A plugin-server that has loaded its plugin and waits for the bridge
 /// thread to connect ([`launch`]).
 pub struct LaunchedServer {
-    /// The server process, killed and reaped when this drops (doc 027 D11).
+    /// The server process, killed and reaped when this drops.
     pub process: Reaped,
     /// Catalog identity (name, vendor, class, editor).
     pub descriptor: PluginDescriptor,

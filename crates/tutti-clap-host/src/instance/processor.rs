@@ -125,7 +125,8 @@ impl ClapProcessor {
     /// is taken here rather than asserted: the call runs under an
     /// [`AudioClaim`](tutti_clap_ffi::AudioClaim), so the calling OS
     /// thread becomes the audio thread for its duration (which the spec permits
-    /// for any thread) and blocks until any in-flight `process` has returned.
+    /// for any thread). It never waits: while the main thread holds the
+    /// instance, the plugin's `reset` is owed and the next block runs it first.
     pub fn reset(&mut self) {
         // Under the audio claim, which the FFI half takes; a retired instance
         // (the Controller is gone) is left alone.
@@ -152,13 +153,15 @@ impl ClapProcessor {
     }
 
     /// Ends processing (`stop_processing`) if it started, under the audio
-    /// claim. The next `process` starts it again.
+    /// claim. The next `process` starts it again. Never waits: while the main
+    /// thread holds the instance the plugin stays processing, and the next
+    /// deactivation stops it.
     pub fn stop(&mut self) {
         let was_processing = self.audio_side.is_processing();
         self.audio_side.stop();
         // The CLAP steady_time counter is per start/stop cycle — reset it so
         // the next start_processing begins the monotonic sequence at 0.
-        if was_processing && !self.audio_side.is_retired() {
+        if was_processing && !self.audio_side.is_processing() && !self.audio_side.is_retired() {
             self.scratch.steady_time = 0;
         }
     }
@@ -297,6 +300,7 @@ fn block_reason(error: &crate::ClapError) -> &'static str {
         ClapError::BlockTooSmall => "the block is shorter than the activated min_frames",
         ClapError::StartProcessingFailed => "the plugin refused to start processing",
         ClapError::NotActive => "the plugin is no longer active",
+        ClapError::Busy => "the main thread held the plugin, and the block does not wait",
         ClapError::BufferTooShort => "a channel buffer is shorter than the block",
         ClapError::FormatMismatch => "the block's sample format is not the activated one",
         ClapError::LayoutMismatch => "the port layout is larger than the activation sized for",

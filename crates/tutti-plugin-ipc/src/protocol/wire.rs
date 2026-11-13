@@ -124,7 +124,7 @@ fn checked<E: serde::de::Error>(raw: f64) -> Result<tutti_plugin_types::Normaliz
 ///
 /// Serde writes a plain `Vec<u8>` as a sequence, which the codec encodes one
 /// `u8` call at a time; a state chunk is megabytes. As bytes it is one copy
-/// each way (doc 027 P2b). The encoding is the same: postcard writes a byte
+/// each way. The encoding is the same: postcard writes a byte
 /// string and a byte sequence alike, as a varint length and the bytes.
 pub mod bytes {
     use std::fmt;
@@ -297,7 +297,7 @@ mod tests {
 
     /// **A rate that is no rate fails the message**: a `SampleRate` decodes only
     /// from a finite `f64` above zero, so zero, a negative, NaN and infinity
-    /// never reach the server's clock or a plugin (doc 027 D13).
+    /// never reach the server's clock or a plugin.
     #[test]
     fn a_rate_that_is_no_rate_does_not_decode() {
         use crate::protocol::HostMessage;

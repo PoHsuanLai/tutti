@@ -189,7 +189,10 @@ fn gain_value(s: &Session, node: impl Into<NodeKey> + Copy) -> Option<Normalized
 /// (`TUTTI_CLAP_PROBE_ONCE_FILE`); the second server is the replacement.
 #[test]
 fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
-    let once = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("session-recovery-lane.once");
+    // This process's own marker: a concurrent run of this test over the same
+    // target directory must not remove it between the two servers.
+    let once = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("session-recovery-lane.once.{}", std::process::id()));
     let _ = std::fs::remove_file(&once);
     set_env("TUTTI_CLAP_PROBE_RENDER_MODE", "1");
     set_env("TUTTI_CLAP_PROBE_ONCE_FILE", &once);

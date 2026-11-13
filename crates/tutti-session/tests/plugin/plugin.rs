@@ -434,9 +434,13 @@ fn is_quarter(v: Option<f64>) -> bool {
 }
 
 /// A marker path for `TUTTI_CLAP_PROBE_ONCE_FILE`, free now: the first server
-/// to start fails, replacements do not.
+/// to start fails, replacements do not. The path is this test process's own:
+/// two runs of one test over one target directory (two gates at once) would
+/// otherwise share it, and the second run's removal would make the first
+/// run's replacement a first server again.
 fn once_file(name: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("{name}.{}", std::process::id()));
     let _ = std::fs::remove_file(&path);
     path.to_string_lossy().into_owned()
 }

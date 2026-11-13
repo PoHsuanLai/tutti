@@ -322,7 +322,7 @@ impl ConvolverNode {
     }
 
     /// Scale channel `c`'s already-convolved block `out` by the wet gain, in
-    /// place, ramped across the block (see [`GainRamp`]).
+    /// place, ramped across the block (see [`begin_block`](Self::begin_block)).
     #[inline]
     fn apply_gain(out: &mut [f32], ramp: &Ramp, held: Option<Amplitude>) {
         if let Some(gain) = held {

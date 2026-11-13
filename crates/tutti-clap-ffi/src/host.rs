@@ -43,7 +43,6 @@ use clap_sys::ext::note_ports::{
     CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, clap_host_note_ports,
 };
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_host_params};
-#[cfg(unix)]
 use clap_sys::ext::posix_fd_support::{CLAP_EXT_POSIX_FD_SUPPORT, clap_host_posix_fd_support};
 use clap_sys::ext::preset_load::{
     CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_host_preset_load,
@@ -343,19 +342,16 @@ pub trait HostCallbacks: Send + Sync + 'static {
         let _ = wanted;
     }
     /// `clap.posix-fd-support` `register_fd`.
-    #[cfg(unix)]
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {
         let _ = (fd, flags);
         false
     }
     /// `clap.posix-fd-support` `modify_fd`.
-    #[cfg(unix)]
     fn posix_fd_modify(&self, fd: i32, flags: u32) -> bool {
         let _ = (fd, flags);
         false
     }
     /// `clap.posix-fd-support` `unregister_fd`.
-    #[cfg(unix)]
     fn posix_fd_unregister(&self, fd: i32) -> bool {
         let _ = fd;
         false
@@ -583,6 +579,9 @@ extern "C" fn host_get_extension(
             CLAP_EXT_AMBISONIC_COMPAT       => HOST_AMBISONIC,
             CLAP_EXT_SURROUND_COMPAT        => HOST_SURROUND,
         );
+        // The one platform line: `posix-fd-support.h` is POSIX's, so a host
+        // on Windows does not offer it, and a plugin there falls back to its own
+        // events.
         #[cfg(unix)]
         if id == CLAP_EXT_POSIX_FD_SUPPORT {
             return std::ptr::from_ref(&HOST_POSIX_FD_SUPPORT).cast::<c_void>();
@@ -1174,14 +1173,12 @@ trampoline!(
     |cb| cb.undo_wants_context_updates(is_subscribed)
 );
 
-#[cfg(unix)]
 static HOST_POSIX_FD_SUPPORT: clap_host_posix_fd_support = clap_host_posix_fd_support {
     register_fd: Some(host_posix_fd_register),
     modify_fd: Some(host_posix_fd_modify),
     unregister_fd: Some(host_posix_fd_unregister),
 };
 
-#[cfg(unix)]
 trampoline!(
     host_posix_fd_register(fd: i32, flags: u32) -> bool,
     main_only,
@@ -1189,7 +1186,6 @@ trampoline!(
     |cb| cb.posix_fd_register(fd, flags)
 );
 
-#[cfg(unix)]
 trampoline!(
     host_posix_fd_modify(fd: i32, flags: u32) -> bool,
     main_only,
@@ -1197,7 +1193,6 @@ trampoline!(
     |cb| cb.posix_fd_modify(fd, flags)
 );
 
-#[cfg(unix)]
 trampoline!(
     host_posix_fd_unregister(fd: i32) -> bool,
     main_only,
@@ -1349,7 +1344,6 @@ mod tests {
                 .fetch_add(1 + delta.len() as u32, Ordering::SeqCst);
         }
 
-        #[cfg(unix)]
         fn posix_fd_register(&self, _fd: i32, _flags: u32) -> bool {
             self.reached.fetch_add(1, Ordering::SeqCst);
             true

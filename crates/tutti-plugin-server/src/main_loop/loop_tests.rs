@@ -19,6 +19,8 @@ use tutti_plugin_types::{BridgeError, BridgeResult, ContentScale, EditorSize, Lo
 
 use super::{Native, serve_every};
 
+#[cfg(unix)]
+mod fds;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod x11;
 use crate::render::{RenderSide, RenderThread, ToRender};
@@ -243,6 +245,12 @@ fn session(name: &str) -> (Fixture, tutti_plugin_ipc::SlabWriter) {
 }
 
 fn run(fixture: &mut Fixture, script: &mut Script) {
+    run_ticking(fixture, script, TICK);
+}
+
+/// [`run`], with the loop's idle tick every `tick`: a long one shows what the
+/// loop serves without it.
+fn run_ticking(fixture: &mut Fixture, script: &mut Script, tick: Duration) {
     let main = main_thread();
     let render = RenderThread::spawn(
         fixture.side.take().expect("run once"),
@@ -252,10 +260,10 @@ fn run(fixture: &mut Fixture, script: &mut Script) {
     let result = serve_every(
         &mut fixture.session,
         script,
-        &mut Native,
+        &mut Native::default(),
         &main,
         &render,
-        TICK,
+        tick,
     );
     // As the server ends: the plugin goes home, then the render thread stops.
     fixture.session.drop_plugin(&main);
@@ -300,6 +308,60 @@ fn a_quiet_host_does_not_stop_the_plugins_timers() {
     assert!(
         ticks >= 5,
         "300 ms of a quiet host at a 10 ms tick served the timer {ticks} times"
+    );
+}
+
+/// Sets the period the plugin's next timer asks for; the default (0) again on
+/// drop.
+struct TimerPeriod;
+
+impl TimerPeriod {
+    fn of(millis: u32) -> Self {
+        crate::test_utils::clap().set(tutti_clap_test_plugin::ClapSwitch::TimerPeriod, millis);
+        Self
+    }
+}
+
+impl Drop for TimerPeriod {
+    fn drop(&mut self) {
+        crate::test_utils::clap().set(tutti_clap_test_plugin::ClapSwitch::TimerPeriod, 0);
+    }
+}
+
+/// **A timer fires at its period through the loop, not at its tick.** The
+/// plugin registers a 50 ms timer, and the loop ticks once a second: what
+/// serves the timer is the loop's wait ending at the timer's deadline
+/// (`wakeups`), so 520 ms of silence is about ten fires. With the timer left to
+/// the tick it would fire once or not at all.
+#[test]
+fn a_timer_fires_at_its_period_through_the_loop() {
+    let _lock = crate::test_utils::plugin_load_lock();
+    let probe = crate::test_utils::clap();
+    probe.thread_reset();
+    let _period = TimerPeriod::of(50);
+    let _cmd =
+        crate::test_utils::clap_probe_thread_command(tutti_clap_test_plugin::CMD_REGISTER_TIMER);
+    let (mut session, _slab) = session("period");
+    let host = session.host();
+    let mut script = Script::new([
+        Step::Send(load_message()),
+        Step::Call(Box::new(move || {
+            assert!(host.block(1, 64, Duration::from_secs(5)).is_some());
+        })),
+        // A message is served at once, and with it the callback the block asked
+        // for, which registers the timer.
+        Step::Send(HostMessage::GetParameterList),
+        Step::Quiet(Duration::from_millis(520)),
+    ]);
+
+    run_ticking(&mut session, &mut script, Duration::from_secs(1));
+
+    let cap = probe.thread_capture();
+    assert!(cap.timer_registered, "the plugin registered its timer");
+    let fires = cap.sites[Site::OnTimer as usize].visits;
+    assert!(
+        (7..=11).contains(&fires),
+        "a 50 ms timer over 520 ms of a quiet host with a 1 s tick fired {fires} times"
     );
 }
 

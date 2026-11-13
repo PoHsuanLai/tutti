@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{FdId, Interest, MainThread, Ready, Wakeups};
 
 use vst3::ComRef;
 use vst3::Steinberg::Linux::{
@@ -54,7 +54,7 @@ use vst3::Steinberg::{kResultFalse, kResultOk};
 /// The module's run loop is shared by every plugin made from it, and the
 /// handlers it holds are raw pointers into the plugin that registered them. A
 /// plugin that leaves one registered when its editor closes (or when it is
-/// dropped) would have the next [`RunLoop::run_iteration`], on behalf of any
+/// dropped) would have the next [`RunLoop::dispatch`], on behalf of any
 /// plugin of the module, call into freed memory. The owner lets
 /// [`RunLoop::purge`] take them back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -83,7 +83,7 @@ struct FdEntry {
 }
 
 /// Registered handlers. Raw pointers are plugin-owned COM objects; they are
-/// dereferenced only from [`RunLoop::run_iteration`], which the host calls on
+/// dereferenced only from [`RunLoop::dispatch`], which the host calls on
 /// its UI thread — the same thread that registered them.
 #[derive(Default)]
 struct State {
@@ -103,7 +103,7 @@ struct State {
 }
 
 // SAFETY: see `RunLoop` — the pointers are only dereferenced from
-// `run_iteration` on the UI thread, after being re-checked as registered, and
+// `dispatch` on the UI thread, after being re-checked as registered, and
 // the Mutex serialises access to the collections themselves.
 unsafe impl Send for State {}
 
@@ -111,11 +111,11 @@ unsafe impl Send for State {}
 ///
 /// Handlers are plugin-owned COM objects registered through `IRunLoop` (by the
 /// host application and the plug frame, which hold this loop). The loop calls
-/// them from [`run_iteration`](Self::run_iteration), and the VST3 contract is
+/// them from [`dispatch`](Self::dispatch), and the VST3 contract is
 /// that the plugin keeps a handler alive until it unregisters it and that all
 /// of this happens on the UI thread. The registration entries are therefore
 /// crate-private and `unsafe`; the type itself is `Send + Sync` only so the
-/// owning objects can be, and `run_iteration` must be called on the UI thread
+/// owning objects can be, and `dispatch` must be called on the UI thread
 /// that registers (it takes a `&MainThread`, which only that thread holds).
 #[derive(Default)]
 pub(crate) struct RunLoop {
@@ -184,52 +184,63 @@ impl RunLoop {
         }
     }
 
-    /// Fires any timers whose period has elapsed and dispatches any readable
-    /// file descriptors.
+    /// What the host's main loop should wait on for this loop's registrations:
+    /// every file descriptor a plugin registered an event handler for (read
+    /// interest) and the earliest moment a timer is due. Added to `out`.
+    pub(crate) fn describe(&self, out: &mut Wakeups) {
+        let state = self.state();
+        for &fd in state.event_handlers.keys() {
+            out.watch(FdId(fd), Interest::READ);
+        }
+        for entry in state.timers.values() {
+            out.due_at(entry.last_fired + entry.period);
+        }
+    }
+
+    /// One pass without waiting: [`describe`](Self::describe), a look at the
+    /// descriptors and the clock, and [`dispatch`](Self::dispatch) of what is
+    /// ready. What a host does where it has no main loop of its own to wait in.
+    pub(crate) fn run_iteration(&self, main: &MainThread) {
+        let mut wakeups = Wakeups::new();
+        self.describe(&mut wakeups);
+        let mut ready = Vec::new();
+        wakeups.poll_now(&mut ready);
+        self.dispatch(main, &ready, Instant::now());
+    }
+
+    /// Fires the timers whose period has elapsed at `now` and dispatches the
+    /// file descriptors the host's wait found `ready` (readable).
     ///
-    /// A Linux host must call this regularly from its UI thread while a plugin
-    /// editor is open; without it the plugin's GUI never redraws and its timers
-    /// never tick.
+    /// A Linux host must call this from its UI thread, after waiting on what
+    /// [`describe`](Self::describe) says, for as long as a plugin editor is
+    /// open; without it the plugin's GUI never redraws and its timers never
+    /// tick. The wait is the host's (the plugin server's main loop blocks on it,
+    /// an in-process host looks without blocking), so this blocks on nothing.
     ///
     /// The lock is not held while a handler runs, so a handler may register or
     /// unregister handlers (itself included) from inside its callback. A handler
-    /// unregistered by an earlier callback of the same iteration is not called.
+    /// unregistered by an earlier callback of the same call is not called.
     ///
     /// The handlers are the plugin's UI-thread objects, which the `&MainThread`
     /// proves this thread to be the owner of; the host crate (which forbids
     /// `unsafe`) calls it as it calls every other main-thread entry.
-    pub(crate) fn run_iteration(&self, _main: &MainThread) {
+    pub(crate) fn dispatch(&self, _main: &MainThread, ready: &[Ready], now: Instant) {
         let mut due: Vec<Due> = Vec::new();
-        let mut fds: Vec<libc::pollfd> = Vec::new();
         {
             let mut state = self.state();
-            let now = Instant::now();
             for (&key, entry) in state.timers.iter_mut() {
-                if now.duration_since(entry.last_fired) >= entry.period {
+                if now.saturating_duration_since(entry.last_fired) >= entry.period {
                     entry.last_fired = now;
                     if !entry.handler.is_null() {
                         due.push(Due::Timer(key, entry.handler, entry.owner));
                     }
                 }
             }
-            // Zero timeout below: never block the caller's UI loop.
-            fds.extend(state.event_handlers.keys().map(|&fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            }));
-        }
-        if !fds.is_empty() {
-            // SAFETY: `fds` is a valid array of its own length.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 0) };
-            if ready > 0 {
-                let state = self.state();
-                for pfd in fds.iter().filter(|p| p.revents & libc::POLLIN != 0) {
-                    if let Some(entry) = state.event_handlers.get(&pfd.fd)
-                        && !entry.handler.is_null()
-                    {
-                        due.push(Due::Fd(pfd.fd, entry.handler, entry.owner));
-                    }
+            for r in ready.iter().filter(|r| r.events.contains(Interest::READ)) {
+                if let Some(entry) = state.event_handlers.get(&r.fd.0)
+                    && !entry.handler.is_null()
+                {
+                    due.push(Due::Fd(r.fd.0, entry.handler, entry.owner));
                 }
             }
         }
@@ -335,7 +346,7 @@ impl RunLoop {
     // ── The IRunLoop operations, shared by every exposing object ─────────────
 
     /// `IRunLoop::registerEventHandler`: calls `handler.onFDIsSet(fd)` from
-    /// [`run_iteration`](Self::run_iteration) when `fd` is readable. A null
+    /// [`dispatch`](Self::dispatch) when `fd` is readable. A null
     /// handler is ignored.
     ///
     /// # Safety
@@ -372,7 +383,7 @@ impl RunLoop {
     }
 
     /// `IRunLoop::registerTimer`: calls `handler.onTimer()` from
-    /// [`run_iteration`](Self::run_iteration) every `milliseconds` (at least 1).
+    /// [`dispatch`](Self::dispatch) every `milliseconds` (at least 1).
     /// A null handler is ignored.
     ///
     /// # Safety
@@ -495,7 +506,7 @@ mod tests {
         unsafe fn onTimer(&self) {
             self.calls.fetch_add(1, Ordering::SeqCst);
             // Re-enters the loop from the callback: takes the state lock,
-            // which `run_iteration` must not hold across this call.
+            // which `dispatch` must not hold across this call.
             self.run_loop
                 .unregister_timer(self.me.load(Ordering::SeqCst));
         }

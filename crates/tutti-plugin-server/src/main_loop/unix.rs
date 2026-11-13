@@ -6,7 +6,7 @@
 //! loop's logic.
 
 use crate::transport::Transport;
-use tutti_plugin_types::{BridgeResult, MainThread};
+use tutti_plugin_types::{BridgeResult, FdId, Interest, MainThread, Ready, Wakeups};
 
 /// The platform's concrete listener and stream, not the crate's dispatch enum.
 ///
@@ -15,16 +15,33 @@ use tutti_plugin_types::{BridgeResult, MainThread};
 pub(crate) type Listener = interprocess::os::unix::uds_local_socket::Listener;
 pub(crate) type Stream = interprocess::os::unix::uds_local_socket::Stream;
 
-/// The reactor's window-system half. Nothing to pump here.
+/// The reactor: what the loop waits with, and the window system's half (nothing
+/// to pump here). It keeps the scratch of the wait, so a steady watch set
+/// allocates nothing.
 #[derive(Debug, Default)]
-pub(crate) struct Native;
+pub(crate) struct Native {
+    poller: tutti_plugin_ipc_ffi::Poller,
+    asked: Vec<(i32, u8)>,
+    got: Vec<(i32, u8)>,
+}
+
+/// How long a transport with no descriptor of its own (an in-memory one) is
+/// waited on before the plugin's descriptors are looked at.
+const NO_DESCRIPTOR_SLICE: std::time::Duration = std::time::Duration::from_millis(2);
 
 impl Native {
-    /// Waits until `transport`'s socket is readable (`Ok(true)`) or `timeout`
-    /// passes (`Ok(false)`), then pumps the window system's events.
+    /// Waits until `transport`'s socket is readable (`Ok(true)`), a descriptor
+    /// the plugin asked to have watched (`wakeups`) is ready (into `ready`, the
+    /// socket not readable: `Ok(false)`), or `timeout` passes (`Ok(false)`, `ready`
+    /// empty), then pumps the window system's events. The socket and the plugin's
+    /// descriptors are one `poll(2)`: whichever is ready first ends the wait the
+    /// instant it is.
     ///
-    /// The socket's wait is the transport's ([`wait_readable`] for a real
-    /// socket), so a test's scripted transport drives the same loop.
+    /// With nothing watched, the socket's wait is the transport's
+    /// ([`wait_readable`] for a real socket), so a test's scripted transport
+    /// drives the same loop. A transport that has no descriptor to poll
+    /// ([`Transport::stream`]) is waited on in slices of [`NO_DESCRIPTOR_SLICE`],
+    /// the plugin's descriptors looked at between them.
     ///
     /// # Errors
     ///
@@ -34,9 +51,56 @@ impl Native {
         transport: &mut dyn Transport,
         main: &MainThread,
         timeout: std::time::Duration,
+        wakeups: &Wakeups,
+        ready: &mut Vec<Ready>,
     ) -> BridgeResult<bool> {
-        let readable = transport.wait_readable(timeout)?;
+        ready.clear();
+        let readable = if wakeups.watches().is_empty() {
+            transport.wait_readable(timeout)?
+        } else if let Some(stream) = transport.stream() {
+            self.wait_on(stream, wakeups, timeout, ready)?
+        } else {
+            let readable = transport.wait_readable(timeout.min(NO_DESCRIPTOR_SLICE))?;
+            wakeups.poll_now(ready);
+            readable
+        };
         self.pump(main);
+        Ok(readable)
+    }
+
+    /// The one `poll(2)` over `stream` and the plugin's descriptors.
+    fn wait_on(
+        &mut self,
+        stream: &Stream,
+        wakeups: &Wakeups,
+        timeout: std::time::Duration,
+        ready: &mut Vec<Ready>,
+    ) -> BridgeResult<bool> {
+        use std::os::fd::AsFd;
+
+        self.asked.clear();
+        self.asked.extend(
+            wakeups
+                .watches()
+                .iter()
+                .map(|w| (w.fd.0, w.interest.bits())),
+        );
+        // Rounded up: a wait of 0.3 ms must not become a busy `poll(0)` loop.
+        let ms = i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
+        let readable = loop {
+            match self
+                .poller
+                .wait(Some(stream.as_fd()), &self.asked, ms, &mut self.got)
+            {
+                // A signal during the wait is not a failure; wait again.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => break other?,
+            }
+        };
+        ready.extend(self.got.iter().map(|&(fd, bits)| Ready {
+            fd: FdId(fd),
+            events: Interest::from_bits(bits),
+        }));
         Ok(readable)
     }
 

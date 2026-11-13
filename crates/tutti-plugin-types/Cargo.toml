@@ -48,6 +48,8 @@ tutti-types = { path = "../tutti-types" }
 # `Offset`: where a block's MIDI sits (`ProcessContext::midi_events`, `WireMidi::at`).
 tutti-graph = { path = "../tutti-graph" }
 tutti-rt = { path = "../tutti-rt" }
+# The one OS wait a plugin's descriptors are looked at with (`Wakeups::poll_now`).
+tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 raw-window-handle = "0.6"

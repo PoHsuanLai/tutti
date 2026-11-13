@@ -33,6 +33,118 @@ pub fn wait_readable(fd: BorrowedFd<'_>, timeout_ms: i32) -> std::io::Result<boo
     Ok(n > 0)
 }
 
+/// The readiness bit for "readable" in [`Poller`]'s interest and answers.
+#[cfg(unix)]
+pub const READ: u8 = 1 << 0;
+/// The readiness bit for "writable".
+#[cfg(unix)]
+pub const WRITE: u8 = 1 << 1;
+/// The readiness bit for "in an error state" (a hung-up or invalid descriptor
+/// included).
+#[cfg(unix)]
+pub const ERROR: u8 = 1 << 2;
+
+/// Waits on one descriptor of the caller's own and any number of others a
+/// plugin asked to have watched, in one `poll(2)`, reusing its scratch so a
+/// steady watch set allocates nothing.
+///
+/// Interest and answers are the [`READ`], [`WRITE`] and [`ERROR`] bits.
+#[cfg(unix)]
+#[derive(Debug, Default)]
+pub struct Poller {
+    polls: Vec<libc::pollfd>,
+}
+
+#[cfg(unix)]
+impl Poller {
+    /// Waits up to `timeout_ms` for `own` to be readable (a hang-up counts: the
+    /// read reports it) or for any of `watched` (descriptor, interest bits) to
+    /// be ready, and writes the ready ones, with only the bits they asked for,
+    /// into `ready` (replacing its contents). Returns whether `own` is
+    /// readable; `false` on a timeout.
+    ///
+    /// A descriptor that is not open answers [`ERROR`], never a fault. A zero
+    /// timeout never blocks.
+    ///
+    /// # Errors
+    ///
+    /// The OS error of `poll`, [`Interrupted`](std::io::ErrorKind::Interrupted)
+    /// included: a signal during the wait is the caller's to retry.
+    pub fn wait(
+        &mut self,
+        own: Option<BorrowedFd<'_>>,
+        watched: &[(i32, u8)],
+        timeout_ms: i32,
+        ready: &mut Vec<(i32, u8)>,
+    ) -> std::io::Result<bool> {
+        ready.clear();
+        self.polls.clear();
+        if let Some(own) = own {
+            self.polls.push(libc::pollfd {
+                fd: own.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+        let skip = self.polls.len();
+        self.polls.extend(watched.iter().map(|&(fd, interest)| {
+            let mut events = 0;
+            if interest & READ != 0 {
+                events |= libc::POLLIN;
+            }
+            if interest & WRITE != 0 {
+                events |= libc::POLLOUT;
+            }
+            libc::pollfd {
+                fd,
+                events,
+                revents: 0,
+            }
+        }));
+        if self.polls.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(
+                u64::try_from(timeout_ms).unwrap_or(0),
+            ));
+            return Ok(false);
+        }
+        // SAFETY: `polls` is a live, initialised array of `polls.len()`
+        // `pollfd`s that `poll` reads and writes only within that length; `own`
+        // is borrowed for the call. A descriptor that is not open answers
+        // `POLLNVAL` rather than faulting.
+        let n = unsafe {
+            libc::poll(
+                self.polls.as_mut_ptr(),
+                self.polls.len() as libc::nfds_t,
+                timeout_ms,
+            )
+        };
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if n == 0 {
+            return Ok(false);
+        }
+        let own_ready = skip == 1 && self.polls[0].revents != 0;
+        ready.extend(self.polls[skip..].iter().zip(watched).filter_map(
+            |(poll, &(fd, interest))| {
+                let mut now = 0;
+                if poll.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+                    now |= READ;
+                }
+                if poll.revents & libc::POLLOUT != 0 {
+                    now |= WRITE;
+                }
+                if poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                    now |= ERROR;
+                }
+                let now = now & interest;
+                (now != 0).then_some((fd, now))
+            },
+        ));
+        Ok(own_ready)
+    }
+}
+
 /// Whether `pid` names a live process, without signalling it.
 ///
 /// `kill(pid, 0)` runs the permission and existence checks and delivers
@@ -181,5 +293,42 @@ mod tests {
         assert!(!wait_readable(reader.as_fd(), 0).unwrap());
         writer.write_all(b"x").unwrap();
         assert!(wait_readable(reader.as_fd(), 1000).unwrap());
+    }
+
+    /// **A watched descriptor is reported when it is readable and not before,
+    /// with the bits it asked for; the caller's own descriptor is reported
+    /// apart.** The instant a byte arrives ends a long wait.
+    #[test]
+    fn a_poller_reports_a_watched_descriptor_when_it_is_readable() {
+        use std::io::Write;
+        use std::os::fd::{AsFd, AsRawFd};
+        let (watched, mut writer) = std::io::pipe().unwrap();
+        let (own, _own_writer) = std::io::pipe().unwrap();
+        let mut poller = Poller::default();
+        let mut ready = Vec::new();
+        let fd = watched.as_raw_fd();
+        let own_ready = poller
+            .wait(Some(own.as_fd()), &[(fd, READ)], 0, &mut ready)
+            .unwrap();
+        assert!(!own_ready && ready.is_empty(), "nothing yet");
+        writer.write_all(b"x").unwrap();
+        let started = std::time::Instant::now();
+        let own_ready = poller
+            .wait(Some(own.as_fd()), &[(fd, READ)], 5000, &mut ready)
+            .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(1000));
+        assert!(!own_ready, "the caller's own descriptor is apart");
+        assert_eq!(ready, [(fd, READ)]);
+        // A write interest it did not ask for is not reported; a closed
+        // descriptor is an error, not a fault.
+        poller.wait(None, &[(fd, WRITE)], 0, &mut ready).unwrap();
+        assert!(ready.is_empty(), "a pipe's read end is never writable");
+        // A descriptor that is not open is an error for whoever asked for
+        // errors, never a fault.
+        drop(watched);
+        poller
+            .wait(None, &[(fd, READ | ERROR)], 0, &mut ready)
+            .unwrap();
+        assert_eq!(ready, [(fd, ERROR)]);
     }
 }

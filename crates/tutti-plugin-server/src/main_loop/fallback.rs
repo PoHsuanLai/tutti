@@ -2,7 +2,7 @@
 //! Windows: nothing to wait on or to key liveness on, so a read blocks.
 
 use crate::transport::Transport;
-use tutti_plugin_types::{BridgeResult, MainThread};
+use tutti_plugin_types::{BridgeResult, MainThread, Ready, Wakeups};
 
 pub(crate) type Listener = interprocess::local_socket::Listener;
 pub(crate) type Stream = interprocess::local_socket::Stream;
@@ -16,7 +16,10 @@ impl Native {
     /// passes (`Ok(false)`), then pumps the window system's events.
     ///
     /// The socket's wait is the transport's ([`wait_readable`] for a real
-    /// socket), so a test's scripted transport drives the same loop.
+    /// socket), so a test's scripted transport drives the same loop. A plugin's
+    /// descriptors are not waited on here: they are POSIX's (CLAP) and Linux's
+    /// (VST3's run loop), so no plugin registers one on this platform, and
+    /// `ready` stays empty. Its timers bound `timeout` in the loop.
     ///
     /// # Errors
     ///
@@ -26,7 +29,10 @@ impl Native {
         transport: &mut dyn Transport,
         main: &MainThread,
         timeout: std::time::Duration,
+        _wakeups: &Wakeups,
+        ready: &mut Vec<Ready>,
     ) -> BridgeResult<bool> {
+        ready.clear();
         let readable = transport.wait_readable(timeout)?;
         self.pump(main);
         Ok(readable)

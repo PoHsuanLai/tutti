@@ -598,8 +598,11 @@ fn a_callback_the_plugin_asks_for_is_served() {
     assert!(after.timer_registered, "the latched command ran in it");
 }
 
-/// **A timer the plugin registers ticks on the service pass.** The host
-/// answered `register_timer` with `true` and never called `on_timer`.
+/// **A timer the plugin registers ticks when the loop wakes the plugin for it
+/// and the service pass runs.** The host answered `register_timer` with `true`
+/// and never called `on_timer`. The wake is the main loop's (`wakeups` and
+/// `wake`, here `service_now` after the floor a zero period is given): the
+/// pass serves what it latched.
 #[test]
 fn a_timer_the_plugin_registers_is_ticked() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -620,9 +623,18 @@ fn a_timer_the_plugin_registers_is_ticked() {
     );
 
     instance.service_requests();
+    assert_eq!(
+        crate::test_utils::clap_probe_thread_capture().sites[site].visits,
+        0,
+        "the pass alone latches nothing: the loop's wake does"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    tutti_plugin_types::service_now(instance.loaded_mut_unwrapped(), &main_thread());
+    instance.service_requests();
 
     let cap = crate::test_utils::clap_probe_thread_capture();
-    assert_eq!(cap.sites[site].visits, 1, "a period-0 timer is due at once");
+    assert_eq!(cap.sites[site].visits, 1, "a period-0 timer is due");
     assert_eq!(cap.last_fired_timer_id, cap.timer_id);
 }
 

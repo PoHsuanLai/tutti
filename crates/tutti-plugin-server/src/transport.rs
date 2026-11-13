@@ -46,6 +46,14 @@ pub(crate) trait Transport: Send {
     /// The OS refuses the wait.
     fn wait_readable(&mut self, timeout: std::time::Duration) -> BridgeResult<bool>;
 
+    /// The connection's own OS stream, for a wait that also covers descriptors
+    /// of the plugin's ([`crate::main_loop`]); `None` for a transport that is
+    /// not one (an in-memory pair), which is waited on through
+    /// [`wait_readable`](Self::wait_readable) alone.
+    fn stream(&self) -> Option<&PlatformStream> {
+        None
+    }
+
     /// Write one length-prefixed message. Returns once it is handed to the OS,
     /// which is not a guarantee the host has read it.
     ///
@@ -88,6 +96,10 @@ impl Transport for SocketTransport {
     /// ([`crate::main_loop`], which owns what each OS waits with).
     fn wait_readable(&mut self, timeout: std::time::Duration) -> BridgeResult<bool> {
         crate::main_loop::wait_readable(&self.stream, timeout)
+    }
+
+    fn stream(&self) -> Option<&PlatformStream> {
+        Some(&self.stream)
     }
 
     fn send(&mut self, msg: &BridgeMessage) -> BridgeResult<()> {

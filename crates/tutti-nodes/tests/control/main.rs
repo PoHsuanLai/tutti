@@ -2,6 +2,7 @@
 
 mod automation_segments;
 mod control_lane;
+mod corners;
 mod graph_param_mod;
 mod live_controls_reach_the_node;
 mod modulation_reconcile;

@@ -188,7 +188,12 @@ impl AuLoaded {
         match self.get_tail_time() {
             Err(_) => PluginTail::Unknown,
             Ok(seconds) => {
-                PluginTail::from_seconds(seconds, SampleRate::new(self.config().sample_rate))
+                PluginTail::from_seconds(
+                    seconds,
+                    // Unchecked as before: the AU's stream config still holds a
+                    // bare `f64` rate (typing it is C4 PR 2's).
+                    <SampleRate as tutti_types::Unit>::from_raw(self.config().sample_rate),
+                )
             }
         }
     }

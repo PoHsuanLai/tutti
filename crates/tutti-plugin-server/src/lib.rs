@@ -52,12 +52,9 @@ static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::Al
 pub(crate) mod test_utils {
     // Every import here belongs to the probe-path helpers, which are gated to
     // the format whose reference plugin they find.
-    // `Path`/`PathBuf` belong to the VST3 bundle walk; CLAP only resolves a
-    // path string.
+    // `Path` belongs to the VST3 bundle walk; CLAP only resolves a path string.
     #[cfg(any(feature = "clap", feature = "vst3"))]
     use std::path::Path;
-    #[cfg(feature = "vst3")]
-    use std::path::PathBuf;
     #[cfg(any(feature = "clap", feature = "vst3"))]
     use std::sync::OnceLock;
     #[cfg(any(
@@ -111,9 +108,6 @@ pub(crate) mod test_utils {
     /// during this same `cargo test` — so its absence is a build failure, not a
     /// property of the machine.
     ///
-    /// `TUTTI_TEST_VST3_PLUGIN` overrides, for running these tests
-    /// against a real third-party plugin.
-    ///
     /// # Panics
     ///
     /// If the probe is absent — see above. The message names the likely cause.
@@ -122,16 +116,6 @@ pub(crate) mod test_utils {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
             .get_or_init(|| {
-                if let Some(p) = std::env::var_os("TUTTI_TEST_VST3_PLUGIN") {
-                    let p = PathBuf::from(p);
-                    assert!(
-                        p.exists(),
-                        "TUTTI_TEST_VST3_PLUGIN={} does not exist",
-                        p.display()
-                    );
-                    return p.to_string_lossy().into_owned();
-                }
-
                 assert!(
                     !VST3_PROBE_DIR.is_empty(),
                     "no VST3 probe directory: `tutti-vst3-host` did not export one. \
@@ -164,8 +148,7 @@ pub(crate) mod test_utils {
     /// # Panics
     ///
     /// If absent. It is built from the in-repo SDK submodule by the same
-    /// `cargo test`, so that is a build failure. The three tests using it used
-    /// to skip on a missing `VST3_SAMPLE_PLUGIN_DIR`, which was every machine.
+    /// `cargo test`, so that is a build failure.
     #[cfg(feature = "vst3")]
     pub fn vst3_program_sample_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();
@@ -567,10 +550,8 @@ pub(crate) mod test_utils {
     /// Absolute path to `tutti-clap-test-plugin`, the reference CLAP cdylib the
     /// loader tests drive.
     ///
-    /// This replaced a hard-coded `/Library/Audio/Plug-Ins/CLAP/…` path, which
-    /// made the whole CLAP suite macOS-only *and* dependent on a third-party
-    /// plugin being installed. The reference plugin is a dev-dependency built
-    /// by the same `cargo test` run, so the suite works on any machine.
+    /// The reference plugin is a dev-dependency built by the same `cargo test`
+    /// run, so the suite works on any machine.
     ///
     /// Resolution (newest candidate wins) and the panic-on-absence rule are
     /// `tutti_fixtures`'s; see that crate for why each matters.
@@ -588,9 +569,8 @@ pub(crate) mod test_utils {
 
     /// Acquire the plugin-load lock, recovering from poisoning.
     ///
-    /// These tests load real third-party plugins, and a single failing
-    /// assertion (e.g. a plugin that doesn't advertise an expected
-    /// capability) panics while holding the lock — poisoning it. Without
+    /// These tests load real plugins, and a single failing
+    /// assertion panics while holding the lock — poisoning it. Without
     /// recovery, every *other* plugin test then fails with `PoisonError`,
     /// turning one real failure into dozens of misleading cascade failures.
     /// The guarded data is `()`, so there's no invariant a poisoned lock

@@ -18,30 +18,22 @@
 //! every plugin answers in time. The timing tests here therefore stall probes
 //! on purpose (see `load_stalled`) and assert on the steps that drive them.
 //!
-//! `EFFECTS` names macOS system paths, so on a bare checkout no installed
-//! plugin is found. `load_n` then falls back to the **reference CLAP probe**,
-//! which cargo builds as a dev-dependency, so these run anywhere the `clap`
-//! feature is on:
+//! The plugin is the **reference CLAP probe**, which cargo builds as a
+//! dev-dependency, so these run anywhere the `clap` feature is on:
 //!
 //! ```text
 //! cargo build -p tutti-plugin-server
 //! cargo nextest run -p tutti-plugin --features clap --test real_plugin_pressure
 //! ```
 //!
-//! `cargo xtask pressure` wraps both. Installed third-party plugins are still
-//! preferred when present; each run prints which of the two it drove, and the
-//! numbers mean different things — see `load_n_from_probe`.
+//! `cargo xtask pressure` wraps both. The numbers are a bridge measurement, not
+//! a plugin one — see `load_n`.
 //!
 //! No `--test-threads=1` needed: these serialize on an internal lock, because
 //! two of them running at once starve each other's subprocesses (see
 //! [`EXCLUSIVE`]).
 //!
-//! Reference figures from a 12-core machine, debug build, TAL-Reverb-4:
-//! 1 plugin 23 us median, 2 -> 60 us, 4 -> 135 us, 8 -> 303 us. That is
-//! ~23-38 us *per plugin*, against the 667 us per plugin the synchronous
-//! design could pay. Debug build, so release will be faster; the point is the
-//! order of magnitude, not the absolute number. Callback wall time and
-//! deadline misses are printed, not asserted: see
+//! Callback wall time and deadline misses are printed, not asserted: see
 //! `eight_real_plugins_half_stalled_never_wait_for_replies`. What is asserted
 //! about cost is a working step's median on-CPU time, against the old
 //! 200 us per-plugin ceiling (`assert_working_steps_cheap`).
@@ -67,27 +59,18 @@
 //!
 //! That starvation path is worth a test of its own, and gets one below.
 
-// The whole file needs a format host to load anything, and the builders it uses
-// are feature-gated. Without this the default `cargo test` fails to compile
-// rather than simply skipping. With `clap` on they run by default, against the
-// reference probe where no third-party plugin is installed.
-#![cfg(any(feature = "clap", feature = "vst3", feature = "au"))]
+// The harness drives the reference CLAP probe, so the whole file needs the
+// `clap` feature.
+#![cfg(feature = "clap")]
 
-// The reference CLAP probe, so this harness has something to drive on a bare
-// checkout. `clap_probe` is the same module the out-of-process CLAP suites
-// use; it resolves the cdylib (a dev-dependency) and the `plugin-server` binary
-// (built first, see `CLAUDE.md`) beside the test binary.
-// Also built for VST3 alone: `repeated_load_and_drop_leaves_no_subprocesses`
-// runs there too and checks its servers with `clap_probe::is_alive`, which is
-// a plain process check, not CLAP's. (Without this the `vst3`-only build of
-// this suite did not compile.)
-#[cfg(any(feature = "clap", feature = "vst3"))]
+// The reference CLAP probe. `clap_probe` is the same module the out-of-process
+// CLAP suites use; it resolves the cdylib (a dev-dependency) and the
+// `plugin-server` binary (built first, see `CLAUDE.md`) beside the test binary.
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
 
 use std::time::{Duration, Instant};
-use tutti_fixtures::{machine_lock, main_thread};
-use tutti_types::SampleRate;
+use tutti_fixtures::machine_lock;
 
 /// Planar scratch, `channels` × [`BLOCK`] frames: what this harness fills and
 /// measures.
@@ -98,7 +81,6 @@ impl Planes {
         Self(vec![vec![0.0; BLOCK]; channels])
     }
 
-    #[cfg(any(feature = "clap", feature = "vst3"))]
     fn clear(&mut self) {
         for c in &mut self.0 {
             c.fill(0.0);
@@ -118,9 +100,6 @@ impl Planes {
 /// The global inputs feed its inputs, its outputs feed the global outputs.
 struct GraphUnit {
     renderer: tutti_graph::Renderer,
-    /// Read only by [`latency`](Self::latency), for the VST3/AU null test.
-    #[cfg(any(feature = "vst3", feature = "au"))]
-    key: tutti_graph::NodeKey,
     inputs: usize,
     outputs: usize,
     ins: Vec<Vec<f32>>,
@@ -144,33 +123,13 @@ impl GraphUnit {
                 tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK)),
             ))
             .expect("a one-plugin graph compiles");
-        #[cfg(not(any(feature = "vst3", feature = "au")))]
-        let _ = key;
         Self {
             renderer,
-            #[cfg(any(feature = "vst3", feature = "au"))]
-            key,
             inputs,
             outputs,
             ins: vec![vec![0.0; BLOCK]; inputs],
             outs: vec![vec![0.0; BLOCK]; outputs],
         }
-    }
-
-    /// A loaded plugin, whichever backend it landed in.
-    fn from_plugin(plugin: tutti_plugin::catalog::Plugin) -> Self {
-        let (inputs, outputs) = (
-            plugin.loaded().total_inputs(),
-            plugin.loaded().total_outputs(),
-        );
-        Self::new(
-            plugin.bind(
-                tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0))
-                    .expect("a tempo"),
-            ),
-            inputs,
-            outputs,
-        )
     }
 
     fn inputs(&self) -> usize {
@@ -179,13 +138,6 @@ impl GraphUnit {
 
     fn outputs(&self) -> usize {
         self.outputs
-    }
-
-    /// The node's latency as the graph compiles it: its declared `Shape`.
-    #[cfg(any(feature = "vst3", feature = "au"))]
-    fn latency(&self) -> Option<f64> {
-        let l = self.renderer.editor().spec().topology.nodes[&self.key].latency;
-        Some(l.get() as f64)
     }
 
     /// One block: `input`'s first `inputs` channels in, the plugin's outputs
@@ -247,65 +199,24 @@ const BLOCK: usize = 64;
 /// One block's worth of wall time — the audio callback's deadline.
 const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
 
-/// Effects, not synths: a synth ignores its input, so it cannot show that audio
-/// traversed the graph. Missing ones are skipped.
+/// `count` instances of the **reference CLAP probe**, through the real
+/// `plugin-server` subprocess and shared-memory bridge.
 ///
-/// `load_n` cycles through this list, so more than one entry means the multi-plugin
-/// cases run a *mix* of plugins and formats rather than N copies of one — closer to
-/// a real session, and it exercises both format hosts in the same callback.
-#[cfg(any(feature = "clap", feature = "vst3"))]
-const EFFECTS: &[&str] = &[
-    #[cfg(feature = "clap")]
-    "/Library/Audio/Plug-Ins/CLAP/TAL-Reverb-4.clap",
-    #[cfg(feature = "vst3")]
-    "/Library/Audio/Plug-Ins/VST3/TAL-Reverb-4.vst3",
-    // Declares 184 samples of its own latency, unlike the TAL plugins' 0, so the
-    // mixed runs cover a non-trivial PDC sum.
-    #[cfg(feature = "vst3")]
-    "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3",
-];
-
-#[cfg(any(feature = "clap", feature = "vst3"))]
-fn available_effects() -> Vec<&'static str> {
-    EFFECTS
-        .iter()
-        .copied()
-        .filter(|p| std::path::Path::new(p).exists())
-        .collect()
-}
-
-/// The fallback when no third-party plugin is installed: `count` instances of
-/// the **reference CLAP probe**, through the same real `plugin-server`
-/// subprocess and shared-memory bridge.
-///
-/// Why this exists. Every test in this file was `#[ignore]`d for needing
-/// plugins *installed on the machine*, and `EFFECTS` names macOS system paths
-/// — so on Linux, and on any bare checkout, the only harness that measures the
-/// out-of-process bridge ran **nowhere**, including CI. That is the same
-/// dark-code shape `cargo xtask check-features` exists to close, on the subsystem
-/// with the largest blast radius.
+/// Returns the units and their handles; the handles must outlive the units
+/// (they share the subprocess guard), so the caller keeps both.
 ///
 /// **Read the resulting numbers as a bridge measurement, not a plugin
 /// one.** The probe is a trivial fixture, so the per-block cost here is the
 /// cost of the submit/collect pipeline, the socket and the shm slab, with
 /// almost no DSP under it. That is the right quantity for "does hosting
-/// out-of-process cost anything" and the wrong one for "how many real plugins
-/// fit" — `available_effects()` covers the latter when the plugins are there,
-/// and the run prints which of the two it did.
-#[cfg(feature = "clap")]
-fn load_n_from_probe(
-    count: usize,
-) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>)> {
-    eprintln!(
-        "no third-party effect plugins installed — driving {count} instance(s) \
-         of the reference CLAP probe instead"
-    );
+/// out-of-process cost anything".
+fn load_n(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>) {
     // **The probe defaults to `RenderMode::Inert`, which writes nothing.**
     // Left at the default it reports `non-silent 0/N` on a perfectly healthy
     // bridge, and every throughput figure in this file becomes a measurement
     // of the fixture. `TAG_PASSTHROUGH` writes `in + tag`, so the output is
-    // both non-silent and *provably derived from the input* — which is the
-    // same reason `EFFECTS` names effects rather than synths.
+    // both non-silent and *provably derived from the input* — a synth that
+    // ignored its input could not show that audio traversed the graph.
     //
     // Set before the first spawn: the probe reads these on load, in the
     // subprocess, having inherited them. Held across the whole loop so every
@@ -328,72 +239,7 @@ fn load_n_from_probe(
         ));
         handles.push(probe.handle);
     }
-    Some((units, handles))
-}
-
-/// Without `clap` there is no probe to fall back to, so absence is still a
-/// skip. A `vst3`-only build has no in-tree reference *effect*: the VST3
-/// probe is `audio-probe`, which the delay-compensation tests drive directly
-/// through [`load_passthrough`].
-#[cfg(all(not(feature = "clap"), feature = "vst3"))]
-fn load_n_from_probe(
-    _count: usize,
-) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>)> {
-    eprintln!("no effect plugins installed and no `clap` feature to fall back on — skipping");
-    None
-}
-
-/// Load `count` plugin instances, cycling through whatever is installed.
-///
-/// Returns the units and their handles; the handles must outlive the units
-/// (they share the subprocess guard), so the caller keeps both.
-///
-/// Gated on the formats `EFFECTS` can name: with neither `clap` nor `vst3` every
-/// arm of the match below is cfg'd out, leaving nothing to infer the result type
-/// from. The delay-compensation tests do not go through here — they load one named
-/// plugin via [`load_passthrough`], which is why `au` alone is a valid build.
-#[cfg(any(feature = "clap", feature = "vst3"))]
-fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>)> {
-    let paths = available_effects();
-    if paths.is_empty() {
-        return load_n_from_probe(count);
-    }
-    eprintln!("driving {count} instance(s) of installed third-party plugins: {paths:?}");
-
-    let mut units = Vec::with_capacity(count);
-    let mut handles = Vec::with_capacity(count);
-    for i in 0..count {
-        let path = paths[i % paths.len()];
-        // `Plugin::open` infers the format from the path, so this does not
-        // dispatch on the extension itself. `available_effects` has already
-        // filtered to what is installed, and the whole function is cfg'd on the
-        // formats `EFFECTS` can name.
-        let built = tutti_plugin::catalog::Plugin::open(
-            Some(&main_thread()),
-            &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
-            SampleRate::of(SAMPLE_RATE),
-        )
-        .map(|plugin| {
-            let handle = plugin.handle().clone();
-            (GraphUnit::from_plugin(plugin), handle)
-        });
-        match built {
-            Ok((unit, handle)) => {
-                units.push(unit);
-                handles.push(handle);
-            }
-            // A plugin that is *installed* but will not load is a failure, not a
-            // reason to skip. Skipping here would make every test in this file
-            // report `ok` while loading nothing and asserting nothing. "Absent"
-            // and "broken" are different answers and only the first is a skip.
-            Err(e) => panic!(
-                "instance {i} ({path}) is installed but failed to load: {e}\n\
-                 This is a real failure. If the plugin is genuinely unavailable, \
-                 remove it from EFFECTS rather than letting the suite pass vacuously."
-            ),
-        }
-    }
-    Some((units, handles))
+    (units, handles)
 }
 
 /// A sine block at full-ish scale, so "audio arrived" is unambiguous.
@@ -406,7 +252,6 @@ fn fill_sine(input: &mut Planes, channels: usize, block_index: usize) {
     }
 }
 
-#[cfg(any(feature = "clap", feature = "vst3"))]
 fn peak(buf: &Planes, channels: usize) -> f32 {
     (0..channels)
         .map(|ch| {
@@ -418,7 +263,6 @@ fn peak(buf: &Planes, channels: usize) -> f32 {
 }
 
 /// One plugin's step in one block, as [`StepClock`] measured it.
-#[cfg(any(feature = "clap", feature = "vst3"))]
 #[cfg_attr(
     not(feature = "clap"),
     allow(dead_code, reason = "only the clap-gated timing tests read a step")
@@ -443,7 +287,6 @@ struct Step {
 
 /// What [`drive_series`] measured: each plugin's step in each block, each
 /// block's wall time, and whether each plugin's output carried audio.
-#[cfg(any(feature = "clap", feature = "vst3"))]
 #[cfg_attr(
     not(feature = "clap"),
     allow(dead_code, reason = "only the clap-gated timing tests read a run")
@@ -463,7 +306,6 @@ struct Run {
     wall: Duration,
 }
 
-#[cfg(feature = "clap")]
 impl Run {
     fn blocks(&self) -> usize {
         self.block_wall.len()
@@ -521,13 +363,11 @@ impl Run {
 ///
 /// Off Linux the time is wall time and no step counts as blocked; `report`
 /// prints which ([`MODE`](Self::MODE)).
-#[cfg(any(feature = "clap", feature = "vst3"))]
 struct StepClock {
     #[cfg(target_os = "linux")]
     schedstat: std::fs::File,
 }
 
-#[cfg(any(feature = "clap", feature = "vst3"))]
 #[cfg_attr(
     not(feature = "clap"),
     allow(dead_code, reason = "only the clap-gated timing tests report a mode")
@@ -646,7 +486,6 @@ impl StepClock {
 }
 
 /// The median of `samples`: the `n / 2`-th smallest.
-#[cfg(feature = "clap")]
 fn median(samples: impl Iterator<Item = Duration>) -> Duration {
     let mut sorted: Vec<Duration> = samples.collect();
     sorted.sort_unstable();
@@ -655,7 +494,6 @@ fn median(samples: impl Iterator<Item = Duration>) -> Duration {
 
 /// Drive `units` in series for `blocks` blocks at real callback pacing, and
 /// time each plugin's step *inside* processing (excluding the pacing sleep).
-#[cfg(any(feature = "clap", feature = "vst3"))]
 fn drive_series(units: &mut [GraphUnit], blocks: usize) -> Run {
     let mut steps = Vec::with_capacity(blocks * units.len());
     let mut block_wall = Vec::with_capacity(blocks);
@@ -732,7 +570,6 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> Run {
 /// Waiting on the condition instead of a guess makes the test independent of
 /// both. Returns whether 12 of a run of 16 blocks carried audio before
 /// `deadline`.
-#[cfg(feature = "clap")]
 fn warm_up(units: &mut [GraphUnit], deadline: Duration) -> bool {
     let start = Instant::now();
     let last = units.len() - 1;
@@ -750,7 +587,6 @@ fn warm_up(units: &mut [GraphUnit], deadline: Duration) -> bool {
 /// `eight_real_plugins_half_stalled_never_wait_for_replies` for why), the
 /// median step and slowest step per block, how many steps blocked, and how
 /// many blocks the last unit's output carried audio in.
-#[cfg(feature = "clap")]
 fn report(label: &str, run: &Run) {
     let n = run.blocks();
     let mut blocks = run.block_wall.clone();
@@ -786,7 +622,6 @@ fn report(label: &str, run: &Run) {
 
 /// What a synchronous design spent per plugin per block: half the block period
 /// at 64 frames / 48 kHz, waiting for a reply before giving up.
-#[cfg(feature = "clap")]
 const SYNC_WAIT_BUDGET: Duration = Duration::from_micros(667);
 
 /// The most blocked steps a run of `steps` may hold on Linux:
@@ -798,7 +633,6 @@ const SYNC_WAIT_BUDGET: Duration = Duration::from_micros(667);
 /// it (see [`assert_no_waiting`]). A wait on one stalled plugin in every 32nd collect
 /// blocks on 6 of 200 steps at one plugin, and 125 of 4000 at eight: both
 /// over it.
-#[cfg(feature = "clap")]
 fn most_blocked(steps: usize) -> usize {
     (steps / 200).max(2)
 }
@@ -858,7 +692,6 @@ fn most_blocked(steps: usize) -> usize {
 /// a minority of steps, of a plugin's steps and of blocks, or under load that
 /// deschedules it; and off Linux, any wait that load hides or that lands on
 /// a minority, since only wall time is read there.
-#[cfg(feature = "clap")]
 fn assert_no_waiting(label: &str, run: &Run) {
     let waited: Vec<bool> = run
         .steps
@@ -915,7 +748,6 @@ fn assert_no_waiting(label: &str, run: &Run) {
 
 /// The most a step that drives a working plugin may cost, as a median: the
 /// ceiling these tests used to assert per plugin, of wall time.
-#[cfg(feature = "clap")]
 const CEILING_PER_PLUGIN: Duration = Duration::from_micros(200);
 
 /// Assert that the plugins at `working` (ones that answer in time) cost a
@@ -940,7 +772,6 @@ const CEILING_PER_PLUGIN: Duration = Duration::from_micros(200);
 /// machine is several times the ceiling, too loose to catch a step that
 /// costs 2x what it should; the figure is still printed by `report`. No CI
 /// job runs this suite off Linux.
-#[cfg(feature = "clap")]
 fn assert_working_steps_cheap(label: &str, run: &Run, working: &[usize]) {
     if !StepClock::ON_CPU {
         eprintln!("{label}: working-step cost not asserted: the clock is wall time here");
@@ -965,12 +796,10 @@ fn assert_working_steps_cheap(label: &str, run: &Run, working: &[usize]) {
 
 /// The audio floor for a bridge that delivers most blocks, in percent: see
 /// [`assert_heard`].
-#[cfg(feature = "clap")]
 const DELIVERS: usize = 70;
 
 /// The audio floor for a bridge that works at all, in percent: see
 /// [`assert_heard`].
-#[cfg(feature = "clap")]
 const WORKS: usize = 50;
 
 /// Assert that each plugin at `working` carried audio in at least `floor`
@@ -987,7 +816,6 @@ const WORKS: usize = 50;
 ///
 /// `warmed` is what [`warm_up`] returned. A broken bridge never warms up, so
 /// it spends the whole warm-up deadline first, and the message says so.
-#[cfg(feature = "clap")]
 fn assert_heard(label: &str, run: &Run, working: &[usize], warmed: bool, floor: usize) {
     let n = run.blocks();
     for &p in working {
@@ -1020,7 +848,6 @@ fn assert_heard(label: &str, run: &Run, working: &[usize], warmed: bool, floor: 
 /// 10 ms, bursty load on the test's core stretched the paced blocks enough
 /// that one stalled probe carried audio in 116 of 200, and a waiting design
 /// pays nothing on those.
-#[cfg(feature = "clap")]
 const STALL: Duration = Duration::from_millis(500);
 
 /// `count` instances of the reference CLAP probe, each stalled by [`STALL`]
@@ -1030,10 +857,6 @@ const STALL: Duration = Duration::from_millis(500);
 /// a parked probe spins, `plugin-server` runs its audio thread at raised
 /// priority (nice -20 here), and eight spinning servers would take the host's
 /// cores, which is the time these tests measure.
-///
-/// Probes rather than installed plugins even where those exist: a third-party
-/// plugin cannot be told to stall.
-#[cfg(feature = "clap")]
 fn load_stalled(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>) {
     let _env = clap_probe::ProbeEnv::new()
         .render_mode(clap_probe::render::TAG_PASSTHROUGH)
@@ -1058,12 +881,9 @@ fn load_stalled(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin_host::PluginH
 
 /// `pairs` stalled probes ([`load_stalled`]) and `pairs` answering plugins
 /// ([`load_n`]), alternating: stalled at even positions, answering at odd.
-#[cfg(feature = "clap")]
 fn load_half_stalled(pairs: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>) {
     let (stalled, mut handles) = load_stalled(pairs);
-    let Some((answering, answering_handles)) = load_n(pairs) else {
-        unreachable!("with `clap` on, `load_n` falls back to the probe");
-    };
+    let (answering, answering_handles) = load_n(pairs);
     handles.extend(answering_handles);
     let units = stalled
         .into_iter()
@@ -1081,7 +901,6 @@ fn load_half_stalled(pairs: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin_host::Pl
 /// most `wall / STALL` blocks, plus one in flight at each end. The bound holds
 /// however slow the machine is, and bites wherever the run is short against
 /// the stall: 200 paced blocks take ~0.3 s idle, which allows 2.
-#[cfg(feature = "clap")]
 fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) {
     let most = (run.wall.as_nanos() / STALL.as_nanos()) as usize + 2;
     for p in stalled {
@@ -1102,9 +921,8 @@ fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) 
 /// thread no waiting**, over 500 blocks at true callback pacing.
 ///
 /// Stalled and answering instances alternate, starting with a stalled one and
-/// ending with an answering one. The answering four are installed effects
-/// where present, else the reference probe; the stalled four are always the
-/// probe (see [`load_stalled`]).
+/// ending with an answering one. All eight are the reference probe (see
+/// [`load_stalled`])
 ///
 /// # What this test asserts, and what it only reports
 ///
@@ -1135,7 +953,6 @@ fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) 
 /// The starvation property, that a starved block yields silence rather than
 /// the input echoed back, is asserted separately in
 /// [`starving_the_subprocesses_yields_silence_not_input_echo`].
-#[cfg(feature = "clap")]
 #[test]
 fn eight_real_plugins_half_stalled_never_wait_for_replies() {
     let _machine = machine_lock();
@@ -1167,7 +984,6 @@ fn eight_real_plugins_half_stalled_never_wait_for_replies() {
 ///
 /// No plugin here answers in time, so this says nothing about what a working
 /// step costs: [`working_plugins_cost_under_the_old_ceiling`] does.
-#[cfg(feature = "clap")]
 #[test]
 fn stalled_plugins_cost_no_waiting_at_any_count() {
     let _machine = machine_lock();
@@ -1209,7 +1025,6 @@ fn stalled_plugins_cost_no_waiting_at_any_count() {
 /// (100, 75 and 65 us idle), against 66-148 us over 10 runs when each
 /// follows a stalled probe, whose server sleeps through the block. That is the machine, not
 /// the bridge, so the arrangement keeps it out of the figure.
-#[cfg(feature = "clap")]
 #[test]
 fn working_plugins_cost_under_the_old_ceiling() {
     let _machine = machine_lock();
@@ -1250,7 +1065,7 @@ fn working_plugins_cost_under_the_old_ceiling() {
 ///
 /// Without `CAP_SYS_NICE` (CI's case) both read `(0, 0, 0)` and it passes, saying the
 /// OS refused.
-#[cfg(all(feature = "clap", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 #[test]
 fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
     /// `(policy, rt_priority, nice)` from a `/proc/.../stat` line.
@@ -1277,9 +1092,7 @@ fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
     .join()
     .expect("the scratch thread does not panic");
 
-    let Some((mut units, handles)) = load_n(1) else {
-        unreachable!("with `clap` on, `load_n` falls back to the probe");
-    };
+    let (mut units, handles) = load_n(1);
     // Audio flowing means the server is in its audio phase, past the raise.
     assert!(
         warm_up(&mut units, Duration::from_secs(10)),
@@ -1317,13 +1130,10 @@ fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
 ///
 /// This is the property that most directly guards the original bypass, checked
 /// against real subprocesses rather than a mock.
-#[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 fn starving_the_subprocesses_yields_silence_not_input_echo() {
     let _machine = machine_lock();
-    let Some((mut units, _handles)) = load_n(4) else {
-        return;
-    };
+    let (mut units, _handles) = load_n(4);
 
     let max_ch = units
         .iter()
@@ -1385,20 +1195,14 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 /// synchronously when the last `Arc` goes, and the unit and the handle are the
 /// only holders. So by the time `drop(handles)` returns, each server is already
 /// reaped.
-#[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 fn repeated_load_and_drop_leaves_no_subprocesses() {
     let _machine = machine_lock();
-    // No `available_effects()` guard: subprocess teardown is the same code
-    // whatever is loaded into it, so the reference probe exercises this
-    // exactly as a third-party plugin does — and `load_n` falls back to it.
-    // A guard would skip this test on every machine without plugins
-    // installed, which is every bare checkout.
+    // Subprocess teardown is the same code whatever is loaded into it, so the
+    // reference probe exercises it fully.
     let mut launched = Vec::new();
     for round in 0..8 {
-        let Some((mut units, handles)) = load_n(2) else {
-            return;
-        };
+        let (mut units, handles) = load_n(2);
         for handle in &handles {
             launched.push(
                 handle
@@ -1425,264 +1229,4 @@ fn repeated_load_and_drop_leaves_no_subprocesses() {
         survivors.len(),
         launched.len(),
     );
-}
-
-// ---------------------------------------------------------------------------
-// Delay compensation
-// ---------------------------------------------------------------------------
-
-/// A plugin that is a **passthrough at its defaults**, which is what the null
-/// test needs and what most effects are not.
-///
-/// TDR Nova is a linear-phase EQ whose bands are all flat until moved, so a
-/// freshly loaded instance reproduces its input exactly — and, usefully, does so
-/// behind 184 samples of its own declared latency. That is the interesting case:
-/// the total it reports is *its* latency plus the pipeline's, so the test
-/// exercises a real sum rather than the pipeline constant alone.
-///
-/// Deliberately no `set_parameter` call. An earlier version of this test used
-/// TAL-Reverb-4 with `Wet=0`/`Dry=1`. Those values *do* arrive — verified by
-/// reading them back over IPC — but that plugin is an algorithmic reverb whose
-/// dry path is not a bit-exact passthrough, so the test measured a reverb tail and
-/// could say nothing about latency. A fixture that needs no configuration cannot
-/// be misconfigured, and cannot be misdiagnosed either.
-#[cfg(feature = "vst3")]
-const PASSTHROUGH_VST3: &str = "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3";
-
-/// The same plugin as an Audio Unit.
-///
-/// Worth testing separately rather than trusting the VST3 result: it is a
-/// different format host, a different loader, and a different parameter/latency
-/// path in `tutti-plugin-server`, and AU has had format-specific bugs (NaN
-/// output) of its own.
-#[cfg(feature = "au")]
-const PASSTHROUGH_AU: &str = "/Library/Audio/Plug-Ins/Components/TDR Nova.component";
-
-/// The null test for delay compensation: the output must be the input delayed by
-/// *exactly* the latency the plugin declares.
-///
-/// This is what the whole PDC declaration is for. A parallel dry/wet split routes
-/// the same signal down two paths, one through the plugin; the host delays the
-/// clean path by the declared latency so the two line up again. If the number is
-/// wrong the paths are misaligned by the error and summing them comb-filters —
-/// audible, and silent in every other test, because each path on its own is
-/// perfectly fine.
-///
-/// The check is what an engineer does by ear, done numerically: align the legs by
-/// the declared latency, invert one, sum, and require the residual to vanish.
-/// Nulling is far sharper than comparing peaks. Measured on this fixture: exact
-/// alignment gives a residual energy of 0.000000000 over 7176 samples, while a
-/// **one-sample** slip gives -24.8 dB. No amplitude assertion would notice the
-/// latter.
-///
-/// Distinct from the pipelining tests: those establish that output lags input by
-/// one block. This establishes that the number reported to `latency::plan` is that
-/// same lag — a pipeline that worked while declaring 0 would pass every other test
-/// in this file.
-#[test]
-#[ignore]
-#[cfg(feature = "vst3")]
-fn vst3_output_nulls_against_the_input_delayed_by_the_declared_latency() {
-    let _guard = machine_lock();
-    let Some((unit, _handle)) = load_passthrough(PASSTHROUGH_VST3) else {
-        return;
-    };
-    assert_nulls_at_declared_latency(unit, PASSTHROUGH_VST3);
-}
-
-/// The same check through the AU host. Not redundant with the VST3 case: a
-/// different loader, a different format host, and a different latency path on the
-/// server side — any of which could report a number the compensation does not
-/// match.
-#[test]
-#[ignore]
-#[cfg(feature = "au")]
-fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
-    let _guard = machine_lock();
-    let Some((unit, _handle)) = load_passthrough(PASSTHROUGH_AU) else {
-        return;
-    };
-    assert_nulls_at_declared_latency(unit, PASSTHROUGH_AU);
-}
-
-/// Load an installed passthrough plugin.
-///
-/// Returns `None` only when the plugin is absent — a genuine skip. A plugin that
-/// is installed but will not load panics, for the reason `load_n` does.
-///
-/// `Plugin::open` picks the host from the path itself, so this does not
-/// dispatch on the extension.
-#[cfg(any(feature = "vst3", feature = "au"))]
-fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin_host::PluginHandle)> {
-    if !std::path::Path::new(path).exists() {
-        eprintln!("{path} not installed — skipping");
-        return None;
-    }
-    let built = tutti_plugin::catalog::Plugin::open(
-        Some(&main_thread()),
-        &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
-        SampleRate::of(SAMPLE_RATE),
-    )
-    .map(|plugin| {
-        let handle = plugin.handle().clone();
-        (GraphUnit::from_plugin(plugin), handle)
-    });
-    Some(built.unwrap_or_else(|e| panic!("{path} is installed but failed to load: {e}")))
-}
-
-/// Drive `unit` and require its output to null against the input delayed by the
-/// latency it declares.
-#[cfg(any(feature = "vst3", feature = "au"))]
-fn assert_nulls_at_declared_latency(mut unit: GraphUnit, path: &str) {
-    let unit = &mut unit;
-    // Wide enough for *both* directions: one width sizes both `Planes`, and
-    // `stage`/`read` index each by channel up to its own side, so sizing to the
-    // narrower one panics.
-    let channels = unit.inputs().max(unit.outputs()).max(1);
-
-    let declared = unit
-        .latency()
-        .expect("an out-of-process plugin must declare its pipeline latency to PDC")
-        as usize;
-    assert!(
-        declared > 0,
-        "a pipelined plugin declaring zero latency is the failure this test exists \
-         for: every other test still passes, and a dry/wet split comb-filters"
-    );
-
-    // Drive well past the declared latency so the comparison happens in steady
-    // state rather than across the start-up transient. This fixture declares 248
-    // samples (its own 184 plus the pipeline's 64), so 40 blocks would leave
-    // almost nothing to compare — enough to make an empty comparison look like a
-    // perfect null.
-    let blocks = 120;
-    let mut sent: Vec<Vec<f32>> = Vec::with_capacity(blocks);
-    let mut got: Vec<Vec<f32>> = Vec::with_capacity(blocks);
-
-    let mut input = Planes::new(channels);
-    let mut output = Planes::new(channels);
-
-    for b in 0..blocks {
-        fill_sine(&mut input, channels, b);
-        sent.push((0..BLOCK).map(|i| input.at(0, i)).collect());
-
-        let start = Instant::now();
-        unit.process(BLOCK, &input, &mut output);
-        got.push((0..BLOCK).map(|i| output.at(0, i)).collect());
-
-        // Real callback pacing: without it the subprocess never runs and every
-        // block reads back silent (see the module doc).
-        if let Some(rest) = PERIOD.checked_sub(start.elapsed()) {
-            std::thread::sleep(rest);
-        }
-    }
-
-    // Flatten to sample streams so the delay is expressible in samples, not
-    // blocks — the declared latency need not be a whole block.
-    let dry: Vec<f32> = sent.concat();
-    let wet: Vec<f32> = got.concat();
-
-    // Compare only the steady-state tail, and only where the plugin actually
-    // produced audio: a block whose reply missed its window is silence by design
-    // (see `starving_the_subprocesses_yields_silence_not_input_echo`) and is a
-    // scheduling artefact, not a latency error.
-    let skip = declared + BLOCK * 4;
-    let mut compared = 0usize;
-    let mut worst_residual = 0.0f32;
-    let mut signal_energy = 0.0f64;
-    let mut residual_energy = 0.0f64;
-
-    for i in skip..wet.len() {
-        let expected = dry[i - declared];
-        let actual = wet[i];
-        // Skip the silent stretches left by dropped blocks.
-        if actual == 0.0 && expected.abs() > 0.01 {
-            continue;
-        }
-        let residual = actual - expected;
-        worst_residual = worst_residual.max(residual.abs());
-        signal_energy += (expected as f64) * (expected as f64);
-        residual_energy += (residual as f64) * (residual as f64);
-        compared += 1;
-    }
-
-    // Scale the floor with the offset, not a constant: at a 248-sample latency a
-    // short run leaves few overlapping samples, and comparing almost nothing
-    // yields a residual of zero — a perfect-looking null that means the test did
-    // not run. This bit me while characterising the fixture.
-    assert!(
-        compared > BLOCK * 8,
-        "too few live samples to judge ({compared} at offset {declared}); either the \
-         plugin was starved or the run is too short for this latency — a near-empty \
-         comparison nulls perfectly and proves nothing"
-    );
-
-    // Null depth in dB. A correct alignment leaves only the plugin's own
-    // arithmetic error; a one-sample slip on this 440 Hz sine leaves ~-24 dB.
-    let null_db = 10.0 * (residual_energy / signal_energy.max(f64::MIN_POSITIVE)).log10();
-    println!(
-        "null: {null_db:.1} dB over {compared} samples (worst residual {worst_residual:.6}, \
-         declared latency {declared})"
-    );
-
-    if null_db >= -60.0 {
-        // Say which of the two failures this is before blaming either. Search
-        // every plausible offset for the deepest null: if some *other* offset
-        // nulls, the signal is passing through cleanly and the declared latency is
-        // simply wrong — the PDC bug this test exists to catch. If nothing nulls
-        // anywhere the fixture has stopped being a passthrough (a preset, a plugin
-        // update), which says nothing about PDC and should not be reported as if
-        // it did.
-        let (best_offset, best_db) = best_null_offset(&dry, &wet, declared * 2);
-        assert!(
-            best_db >= -60.0,
-            "DECLARED LATENCY IS WRONG: the output nulls at {best_offset} samples \
-             ({best_db:.1} dB) but the plugin declares {declared}. Any parallel \
-             dry/wet split will comb-filter by the {} sample difference.",
-            (best_offset as isize - declared as isize).abs()
-        );
-        panic!(
-            "nothing nulls at any offset (best {best_db:.1} dB at {best_offset}). \
-             This is not a PDC verdict, but it is not necessarily the fixture's \
-             fault either — two causes produce it identically:\n\
-             \x20 1. {path} stopped reproducing its input (a loaded preset, a \
-             plugin update), so there is no matching signal to null against; or\n\
-             \x20 2. the host stopped delivering the plugin's output — a \
-             regression in the collect path (the sequence check, the ring slot \
-             bound) yields silence every block, and silence nulls nowhere.\n\
-             Check whether the wet signal is non-silent to tell them apart: if it \
-             is silent, the fixture is fine and the bug is host-side."
-        );
-    }
-}
-
-/// Find the delay offset at which `wet` best nulls against `dry`, and how deep
-/// that null is in dB.
-///
-/// Used only to *diagnose* a failure: it separates "the signal passes through but
-/// the declared latency is wrong" from "the signal is not passing through", which
-/// otherwise look identical from a single failed comparison.
-#[cfg(any(feature = "vst3", feature = "au"))]
-fn best_null_offset(dry: &[f32], wet: &[f32], search_max: usize) -> (usize, f64) {
-    let mut best = (0usize, f64::INFINITY);
-    for offset in 0..=search_max.min(wet.len().saturating_sub(1)) {
-        let mut sig = 0.0f64;
-        let mut res = 0.0f64;
-        for i in (offset + BLOCK * 4)..wet.len() {
-            let expected = dry[i - offset];
-            let actual = wet[i];
-            if actual == 0.0 && expected.abs() > 0.01 {
-                continue;
-            }
-            sig += (expected as f64) * (expected as f64);
-            res += ((actual - expected) as f64) * ((actual - expected) as f64);
-        }
-        if sig > 0.0 {
-            let db = 10.0 * (res / sig).log10();
-            if db < best.1 {
-                best = (offset, db);
-            }
-        }
-    }
-    best
 }

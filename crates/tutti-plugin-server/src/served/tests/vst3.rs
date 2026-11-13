@@ -614,7 +614,7 @@ fn test_vst3_parameter_count() {
     let count = instance.parameters(&main_thread()).len();
     assert!(
         count > 0,
-        "TAL-NoiseMaker should have parameters, got {}",
+        "the plugin should have parameters, got {}",
         count
     );
 }
@@ -629,7 +629,7 @@ fn test_vst3_parameter_list() {
     let params = instance.parameters(&main_thread());
     assert!(
         !params.is_empty(),
-        "Parameter list should not be empty for TAL-NoiseMaker"
+        "Parameter list should not be empty for the plugin"
     );
 
     for param in &params {

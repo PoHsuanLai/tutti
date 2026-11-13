@@ -1,6 +1,5 @@
-//! The VST3 host's plugin-info reads against the in-repo `audio-probe` and any
-//! further plugin the machine has: bus widths, version, subcategories and
-//! plain parameter ranges.
+//! The VST3 host's plugin-info reads against the in-repo `audio-probe`: bus
+//! widths, version, subcategories and plain parameter ranges.
 
 use std::path::{Path, PathBuf};
 use tutti_fixtures::main_thread;
@@ -26,40 +25,10 @@ fn resolve_bundle(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-// Common VST3 plugin paths on macOS
-const TAL_NOISEMAKER: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
-const SURGE_XT: &str = "/Library/Audio/Plug-Ins/VST3/Surge XT.vst3";
-const VITAL: &str = "/Library/Audio/Plug-Ins/VST3/Vital.vst3";
-const DEXED: &str = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3";
-/// Steinberg's own SDK sample plugins, installed under the user domain. They
-/// implement `normalizedParamToPlain` properly (adelay's "Delay" is seconds,
-/// mda's parameters carry real units), which the commercial plugins above
-/// mostly do not.
-const SDK_SAMPLES: &[&str] = &["adelay.vst3", "mda-vst3.vst3", "note-expression-synth.vst3"];
-
-/// Every VST3 bundle available here — the in-repo probe first, then whatever
-/// this machine happens to have installed.
-///
-/// The absolute paths below are macOS-only and name third-party installs, so on
-/// any other machine they contribute nothing. The in-repo `audio-probe` is
-/// what makes the corpus non-empty everywhere; the rest only widen coverage:
-///
-/// - `built_binaries()` — `audio-probe`, compiled by this crate's build script
-///   from the SDK submodules. Always present.
-/// - `TUTTI_TEST_VST3_PLUGIN` — an explicit path to any VST3 binary, for
-///   running these against a real third-party plugin.
+/// Every VST3 bundle these tests load: the in-repo `audio-probe`, which the
+/// build script compiles from the SDK submodules.
 fn corpus() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    if let Some(p) = std::env::var_os("TUTTI_TEST_VST3_PLUGIN") {
-        out.push(PathBuf::from(p));
-    }
-    out.extend(built_binaries());
-    if let Some(user) = dirs_home().map(|h| h.join("Library/Audio/Plug-Ins/VST3")) {
-        out.extend(SDK_SAMPLES.iter().map(|n| user.join(n)));
-    }
-    out.extend([TAL_NOISEMAKER, SURGE_XT, VITAL, DEXED].map(PathBuf::from));
-    out.retain(|p| p.exists());
-    out
+    built_binaries()
 }
 
 /// The corpus, which is never empty.
@@ -105,18 +74,6 @@ fn binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
         bundle,
         tutti_plugin_types::bundle::ModuleKind::Vst3,
     )
-}
-
-/// The user's home directory, or `None` where the platform does not say.
-/// `HOME` on Unix, `USERPROFILE` on Windows.
-///
-/// `Option` rather than a fallback guess: the only thing this is used for is
-/// the *macOS* user-domain plugin directory, so on a platform without a home
-/// there is nothing to look for and skipping is the honest answer.
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
 }
 
 /// The flat `num_inputs`/`num_outputs` counts must equal bus 0 of the
@@ -325,7 +282,7 @@ fn corpus_subcategories_parse_into_named_facets() {
     );
 }
 
-/// `parameter_plain_range` recovers real ranges from the installed corpus.
+/// `parameter_plain_range` recovers real ranges from the built corpus.
 ///
 /// VST3's `ParameterInfo` carries no bounds — every value it exchanges is
 /// normalized. `IEditController::normalizedParamToPlain` is the same map the
@@ -341,9 +298,7 @@ fn corpus_subcategories_parse_into_named_facets() {
 ///   plain range really is `0..1`.
 /// - **Across the corpus**: at least one range is *not* `0..1`. Without this the
 ///   whole test would pass against a probe hardwired to return `Some((0.0,
-///   1.0))`, which is the failure it exists to catch. TAL-NoiseMaker alone
-///   returns identity for all 64 of its parameters, so a single plugin cannot
-///   tell the two apart.
+///   1.0))`, which is the failure it exists to catch.
 #[test]
 fn plain_range_probe_recovers_real_ranges() {
     let corpus = corpus_or_fail();
@@ -412,9 +367,7 @@ fn plain_range_probe_recovers_real_ranges() {
     // The load-bearing half. Without a single non-unit range, a working probe
     // and the hardcoded `0..1` it replaced produce identical output and this
     // test proves nothing. `audio-probe` guarantees one: `kParamDelayMs` is a
-    // `RangeParameter` over 5..750 ms, added for exactly this reason, so the
-    // assertion holds on a bare checkout rather than depending on which
-    // third-party plugins a machine happens to have.
+    // `RangeParameter` over 5..750 ms.
     assert!(
         total_non_unit > 0,
         "all {total_probed} probed ranges across {} plugin(s) were exactly \

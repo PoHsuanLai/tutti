@@ -499,12 +499,8 @@ jobs:
       - name: Lint JACK
         run: cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings
 
-      # The out-of-process plugin bridge, driven at real callback pacing. This
-      # belongs in *this* job because it was dark in exactly the same way: the
-      # whole suite was `#[ignore]`d for needing third-party plugins installed,
-      # and `EFFECTS` names macOS system paths, so the only harness measuring
-      # the bridge ran on no machine anywhere. It now falls back to the
-      # reference CLAP probe, which cargo builds as a dev-dependency.
+      # The out-of-process plugin bridge, driven at real callback pacing against
+      # the reference CLAP probe, which cargo builds as a dev-dependency.
       #
       # `plugin-server` first: the suite spawns it, and it cannot be a
       # dev-dependency because `tutti-plugin-server` depends on `tutti-plugin`

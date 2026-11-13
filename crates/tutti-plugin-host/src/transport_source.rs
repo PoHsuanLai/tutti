@@ -682,7 +682,7 @@ mod tests {
 
     fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
         Env {
-            frame: Frame(frame),
+            frame: Frame::new(frame),
             sample_rate: SR,
             block_len: Samples(len),
             transport,
@@ -814,7 +814,7 @@ mod tests {
             Bpm::of(120.0),
             SegmentOrigin {
                 beat: Beat(4.0),
-                frame: Frame(0),
+                frame: Frame::new(0),
                 sample_rate: SR,
             },
             looping,
@@ -1258,7 +1258,7 @@ mod tests {
             }
             self.roll(len - done);
             let e = Env {
-                frame: Frame(self.frame),
+                frame: Frame::new(self.frame),
                 sample_rate: self.clock.sample_rate(),
                 block_len: Samples(len),
                 transport: start,
@@ -1536,7 +1536,7 @@ mod tests {
         let counted = |bpm: f64, beat: f64, frame: u64| {
             let origin = SegmentOrigin {
                 beat: Beat(beat),
-                frame: Frame(frame),
+                frame: Frame::new(frame),
                 sample_rate: SR,
             };
             TransportPosition::counted(true, Bpm::of(bpm), origin, None)

@@ -147,7 +147,7 @@ impl Listener {
         while self.frames + BLOCK as u64 <= due {
             let start = self.origin + Duration::from_secs_f64(self.frames as f64 / RATE);
             self.clock
-                .write(start, Frame(self.frames), SampleRate::of(RATE));
+                .write(start, Frame::new(self.frames), SampleRate::of(RATE));
             let mut out = vec![0.0f32; BLOCK];
             self.exec.process(
                 BLOCK,

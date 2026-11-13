@@ -11,7 +11,7 @@ use tutti_ump::{
 };
 
 fn parse(bytes: &[u8]) -> Read {
-    read(SysexMessage::new(bytes).expect("a framed message"))
+    read(SysexMessage::from_framed(bytes).expect("a framed message"))
 }
 
 fn heard(bytes: &[u8]) -> Addressed {
@@ -140,7 +140,7 @@ fn what_is_not_read_is_foreign_or_unread() {
 }
 
 fn packets(group: u8, bytes: &[u8]) -> Vec<Ump> {
-    SysexMessage::new(bytes)
+    SysexMessage::from_framed(bytes)
         .unwrap()
         .packets(MidiGroup::of(group))
         .collect()

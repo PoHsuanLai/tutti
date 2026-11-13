@@ -7,6 +7,7 @@
 //! differ, so equality is on the model and on the independent decoder's
 //! reading of the bytes, never on the bytes.
 
+use tutti_ump::ControlValue;
 mod support;
 
 use support::{Division, RawEvent, build_smf, decode_smf};
@@ -756,7 +757,7 @@ fn what_an_smf_cannot_hold_is_refused() {
     assert!(matches!(one(group_1), Err(Error::Config(_))));
     let midi2 = FileEvent::Message(Message::Midi2(
         Address::first(MidiChannel::FIRST),
-        tutti_ump::Voice2::ChannelPressure(0),
+        tutti_ump::Voice2::ChannelPressure(ControlValue::new(0)),
     ));
     assert!(matches!(one(midi2), Err(Error::Config(_))));
     let slow = FileEvent::Meta(Meta::Tempo {

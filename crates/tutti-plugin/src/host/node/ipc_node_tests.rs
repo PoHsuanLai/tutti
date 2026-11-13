@@ -63,7 +63,7 @@ fn wait_for_chunks(record: &Record, chunks: usize) -> Vec<Sent> {
 /// The block at stream frame `frame`, rolling from beat 4 at the map's tempo.
 fn block_env(frame: u64, len: usize) -> Env {
     Env {
-        frame: Frame(frame),
+        frame: Frame::new(frame),
         sample_rate: SR,
         block_len: Samples(len),
         transport: TransportPosition::new(

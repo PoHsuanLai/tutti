@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_graph::UmpAt;
+use tutti_ump::ControlValue;
 
 mod support;
 
@@ -383,8 +384,8 @@ fn midi1_boundary_uses_spec_downscalers() {
     assert_eq!(narrow_velocity(NoteVelocity::new(0xFFFF)).get(), 127);
     assert_eq!(narrow_velocity(NoteVelocity::new(0x8000)).get(), 64); // center → center
     assert_eq!(narrow_velocity(NoteVelocity::new(0x0000)).get(), 0);
-    assert_eq!(narrow_value(0xFFFF_FFFF).get(), 127);
-    assert_eq!(narrow_value(0x8000_0000).get(), 64); // center → center
+    assert_eq!(narrow_value(ControlValue::new(0xFFFF_FFFF)).get(), 127);
+    assert_eq!(narrow_value(ControlValue::new(0x8000_0000)).get(), 64); // center → center
 }
 
 #[test]

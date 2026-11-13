@@ -58,7 +58,7 @@ pub enum StepOutcome {
     /// reach it however many cycles run. Reporting that as `Busy` makes the
     /// loop skip its sleep and re-run immediately, which spins a thread flat
     /// out for the whole tail of every clip. (A voice does not ring for it
-    /// either: [`needs_refill`](super::io::refill::needs_refill) is the one
+    /// either: `needs_refill` is the one
     /// predicate, and it calls a window that holds all the mapping writes
     /// satisfied.)
     ///

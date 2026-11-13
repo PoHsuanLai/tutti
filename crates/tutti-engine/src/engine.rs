@@ -1246,7 +1246,7 @@ mod tests {
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         transport
             .motion()
-            .schedule(At::Frame(Frame(100)), MotionEvent::Play)
+            .schedule(At::Frame(Frame::new(100)), MotionEvent::Play)
             .expect("room");
         let settings = &transport.settings();
         let mut render = engine.graph.borrow_mut();
@@ -1502,7 +1502,10 @@ mod tests {
         // A declicked stop 300 frames into the next block: one aim, at 0.
         transport
             .motion()
-            .schedule(At::Frame(Frame(812)), tutti_transport::MotionEvent::stop())
+            .schedule(
+                At::Frame(Frame::new(812)),
+                tutti_transport::MotionEvent::stop(),
+            )
             .expect("room");
         let walk = engine.walk(
             Track {
@@ -1516,7 +1519,7 @@ mod tests {
             &mut pieces,
         );
         assert_eq!(walk.gain.len, 1);
-        assert_eq!(walk.gain.items[0], (0, Gain::Aim(Some(Frame(812)))));
+        assert_eq!(walk.gain.items[0], (0, Gain::Aim(Some(Frame::new(812)))));
     }
 
     /// A block refused the graph is a dropout the meter counts, not times:

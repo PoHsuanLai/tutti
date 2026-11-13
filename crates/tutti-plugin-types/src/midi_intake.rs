@@ -214,7 +214,7 @@ mod tests {
 
     fn packets(group: MidiGroup, len: usize) -> Vec<WireMidi> {
         let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
-        tutti_ump::Sysex7Packets::checked(group, &payload)
+        tutti_ump::Sysex7Packets::from_payload(group, &payload)
             .expect("7-bit bytes")
             .map(wire)
             .collect()

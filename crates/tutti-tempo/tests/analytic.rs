@@ -17,8 +17,8 @@ use tutti_types::{Beat, Bpm, Frame, Seconds};
 fn step_is_beats_over_rate() {
     let m = TempoMap::constant(Bpm::of(120.0)).unwrap();
     assert_eq!(m.seconds_at(Beat(4.0)).get(), 2.0);
-    assert_eq!(m.view(R).frame_at_or_after(Beat(4.0)), Frame(96_000));
-    assert_eq!(m.view(R).beat_at_frame(Frame(96_000)), Beat(4.0));
+    assert_eq!(m.view(R).frame_at_or_after(Beat(4.0)), Frame::new(96_000));
+    assert_eq!(m.view(R).beat_at_frame(Frame::new(96_000)), Beat(4.0));
     assert_eq!(
         m.seconds_at(Beat(-2.0)).get(),
         -1.0,
@@ -26,7 +26,7 @@ fn step_is_beats_over_rate() {
     );
     assert_eq!(
         m.view(R).frame_at_or_after(Beat(-2.0)),
-        Frame(0),
+        Frame::new(0),
         "no frame before 0"
     );
     for bpm in [60.8, 61.3, 61.9, 133.3] {
@@ -45,7 +45,7 @@ fn time_ramp_matches_closed_form() {
         pt(4.0, 180.0, Transition::Step),
     ])
     .unwrap();
-    assert_eq!(m.view(R).frame_at_or_after(Beat(4.0)), Frame(76_800));
+    assert_eq!(m.view(R).frame_at_or_after(Beat(4.0)), Frame::new(76_800));
     assert!((m.seconds_at(Beat(4.0)).get() - 1.6).abs() < 1e-15);
     assert!((m.beat_at_seconds(Seconds(0.8)).get() - 1.8).abs() < 1e-15);
     assert!((m.tempo_at_seconds(Seconds(0.8)).get() - 150.0).abs() < 1e-12);
@@ -53,7 +53,7 @@ fn time_ramp_matches_closed_form() {
     // After the ramp: 180 BPM = 3 beats/s.
     assert!((m.seconds_at(Beat(7.0)).get() - (1.6 + 1.0)).abs() < 1e-15);
     // Frame 38 400 is 0.8 s.
-    assert!((m.view(R).beat_at_frame(Frame(38_400)).get() - 1.8).abs() < 1e-14);
+    assert!((m.view(R).beat_at_frame(Frame::new(38_400)).get() - 1.8).abs() < 1e-14);
 }
 
 /// 120 -> 180 over 4 beats, tempo linear in beats. `T = ln(1.5)/g`, `g = 0.25`
@@ -73,7 +73,7 @@ fn beat_ramp_matches_closed_form() {
         m.seconds_at(Beat(4.0)).get()
     );
     // 4 ln 1.5 s is 77 849.3 frames: the first frame at or after is 77 850.
-    assert_eq!(m.view(R).frame_at_or_after(Beat(4.0)), Frame(77_850));
+    assert_eq!(m.view(R).frame_at_or_after(Beat(4.0)), Frame::new(77_850));
     assert!((m.seconds_at(Beat(2.0)).get() - 4.0 * libm::log(1.25)).abs() < 1e-14);
     assert!((m.tempo_at(Beat(2.0)).get() - 150.0).abs() < 1e-12);
     assert!((m.tempo_at_seconds(Seconds(4.0 * libm::log(1.25))).get() - 150.0).abs() < 1e-11);
@@ -151,7 +151,7 @@ fn long_session_round_trip() {
         let back = m.beat_at_seconds(Seconds(s)).get();
         worst_beat = worst_beat.max((back - b).abs());
         worst_sec = worst_sec.max((m.seconds_at(Beat(back)).get() - s).abs());
-        let f = Frame((rng.next() * total * 48_000.0) as u64);
+        let f = Frame::new((rng.next() * total * 48_000.0) as u64);
         if m.view(R).frame_at_or_after(m.view(R).beat_at_frame(f)) != f {
             bad += 1;
         }
@@ -500,15 +500,15 @@ fn tempo_on_a_frame_is_the_tempo_at_that_second() {
         pt(4.0, 180.0, Transition::Step),
     ])
     .unwrap();
-    assert_eq!(time.view(R).tempo_at_frame(Frame(0)), Bpm::of(120.0));
-    assert!((time.view(R).tempo_at_frame(Frame(38_400)).get() - 150.0).abs() < 1e-12);
+    assert_eq!(time.view(R).tempo_at_frame(Frame::new(0)), Bpm::of(120.0));
+    assert!((time.view(R).tempo_at_frame(Frame::new(38_400)).get() - 150.0).abs() < 1e-12);
     let beats = TempoMap::new([
         pt(0.0, 120.0, Transition::RampBeats),
         pt(4.0, 180.0, Transition::Step),
     ])
     .unwrap();
     let want = 120.0 * libm::exp(0.25);
-    assert!((beats.view(R).tempo_at_frame(Frame(48_000)).get() - want).abs() < 1e-12);
+    assert!((beats.view(R).tempo_at_frame(Frame::new(48_000)).get() - want).abs() < 1e-12);
 }
 
 /// 120 -> 180 over four beats (tempo linear in time, 1.6 s), 180 to beat 8
@@ -568,17 +568,17 @@ fn a_view_answers_the_closed_forms_across_a_step_and_a_ramp() {
     let mut view = m.view(R);
     assert_eq!(view.rate(), R);
     // 4 beats at 90 BPM: 2.666.. s.
-    assert_eq!(view.frame_at_or_after(Beat(3.0)), Frame(96_000));
-    assert_eq!(view.beat_at_frame(Frame(96_000)), Beat(3.0));
-    assert_eq!(view.tempo_at_frame(Frame(96_000)), Bpm::of(90.0));
+    assert_eq!(view.frame_at_or_after(Beat(3.0)), Frame::new(96_000));
+    assert_eq!(view.beat_at_frame(Frame::new(96_000)), Beat(3.0));
+    assert_eq!(view.tempo_at_frame(Frame::new(96_000)), Bpm::of(90.0));
     let ramp_start = 4.0 * 60.0 / 90.0;
-    let on = Frame((ramp_start * 48_000.0) as u64);
+    let on = Frame::new((ramp_start * 48_000.0) as u64);
     assert_eq!(view.tempo_at_frame(on), Bpm::of(120.0));
-    let at = Frame(((ramp_start + 0.8) * 48_000.0) as u64);
+    let at = Frame::new(((ramp_start + 0.8) * 48_000.0) as u64);
     assert!((view.beat_at_frame(at).get() - 5.8).abs() < 1e-9);
     assert!((view.tempo_at_frame(at).get() - 150.0).abs() < 1e-9);
     let end = view.frame_at_or_after(Beat(8.0));
-    assert_eq!(end, Frame(((ramp_start + 1.6) * 48_000.0) as u64));
+    assert_eq!(end, Frame::new(((ramp_start + 1.6) * 48_000.0) as u64));
 }
 
 /// A builder writes the same map as its points do, and a ramp it writes always

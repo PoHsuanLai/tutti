@@ -811,34 +811,19 @@ jobs:
       - run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
-      # The two umbrellas with every feature at once: a workspace build turns on
-      # only what some member's edge enables, so an item behind `plugin`,
-      # `midi-hardware` or `audio-io` and its links are documented by none of the
-      # lines above, and a redundant or broken link there reached main twice
-      # (#684, #695). Per-feature builds (`check-doc-features` below) run without
-      # `--document-private-items`.
+      # The two umbrellas with every feature at once, JACK included (the one
+      # feature `check-doc-features` below leaves out, since its build script
+      # wants the headers this job installs).
       - run: cargo doc --locked -p tutti-session -p tutti --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
-      # `tutti_graph::contract` (doc 013 §6's harness) is behind the
-      # off-by-default `contract` feature, which only dev-dependencies turn on
-      # — and rustdoc builds none, so the line above never documents it. The
-      # tests and clippy (`--all-targets`) do reach it.
-      - run: cargo doc --locked -p tutti-graph --no-deps --features contract
-        env:
-          RUSTDOCFLAGS: -D warnings
-      # `tutti_dsp::contract` (doc 024 section 6) is behind the same kind of
-      # feature, for the same reason.
-      - run: cargo doc --locked -p tutti-dsp --no-deps --features contract
-        env:
-          RUSTDOCFLAGS: -D warnings
-      # `tutti_plugin_types::contract` (doc 029 §6.1: `mapping_contract!`), the same.
-      - run: cargo doc --locked -p tutti-plugin-types --no-deps --features contract
-        env:
-          RUSTDOCFLAGS: -D warnings
-      # Each feature of the feature-gated crates alone. The union above cannot
-      # see a link out of one feature's docs into an item another feature
-      # gates, which the union of features cannot see.
+      # Every member with its features together, private items included, then
+      # each feature of the umbrellas alone (`xtask/src/gates/doc_features.rs`).
+      # A workspace build turns on only what some member's edge enables, so an
+      # item behind a feature nothing enables (a `contract` harness,
+      # `test-support`, a codec) and its links are documented by no line above;
+      # broken links reached main from five crates that way. The member list and
+      # the features are read from the manifests, so a new crate is covered.
       - run: cargo xtask check-doc-features
       # The docs.rs build: nightly and `--cfg docsrs`, so `doc_cfg` parses and
       # the feature badges render. A dated nightly (bumped by hand, like

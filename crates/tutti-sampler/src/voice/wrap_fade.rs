@@ -212,7 +212,7 @@ impl Rig {
                 .expect("room");
         }
         let env = Env {
-            frame: Frame(self.frame),
+            frame: Frame::new(self.frame),
             sample_rate: SampleRate::of(SR),
             block_len: Samples(len),
             transport: self.transport(true),
@@ -479,7 +479,7 @@ fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     let at = rig.clock.beat();
     let restart = TransportPosition::new(true, Bpm::of(120.0), at, None);
     let env = Env {
-        frame: Frame(rig.frame),
+        frame: Frame::new(rig.frame),
         sample_rate: SampleRate::of(SR),
         block_len: Samples(64),
         transport: restart,

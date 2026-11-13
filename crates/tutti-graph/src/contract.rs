@@ -593,7 +593,7 @@ impl Row {
         match feed {
             Feed::AtFrame => {
                 rig.ed
-                    .schedule(At::Frame(Frame(f)), to, self.event_kind())
+                    .schedule(At::Frame(Frame::new(f)), to, self.event_kind())
                     .expect("room for one command");
             }
             Feed::AtBeat => {
@@ -928,7 +928,7 @@ impl Row {
 
     fn build(&self, topo: Topo, feed: Feed, f: u64, gap: u64) -> Rig {
         if let Excite::Param { param, amplitude } = self.excite {
-            return self.build_param(topo, param, Frame(f), amplitude);
+            return self.build_param(topo, param, Frame::new(f), amplitude);
         }
         let node = (self.make)();
         let shape = node.shape();
@@ -987,16 +987,16 @@ impl Row {
             }
             match feed {
                 Feed::Source => {
-                    let e = g.add(Unforkable(Emitter::new(Frame(f), kind)));
+                    let e = g.add(Unforkable(Emitter::new(Frame::new(f), kind)));
                     g.connect_events(e, 0, n, p);
-                    feeder = Some((e, FeederKind::Emitter(Frame(f), kind)));
+                    feeder = Some((e, FeederKind::Emitter(Frame::new(f), kind)));
                 }
                 Feed::FanIn => {
                     let late = g.add(Unforkable(Emitter::new(
-                        Frame(f + gap),
+                        Frame::new(f + gap),
                         Self::other_source_kind(kind),
                     )));
-                    let e = g.add(Unforkable(Emitter::new(Frame(f), kind)));
+                    let e = g.add(Unforkable(Emitter::new(Frame::new(f), kind)));
                     g.connect_events(late, 0, n, p).connect_events(e, 0, n, p);
                 }
                 Feed::AtFrame | Feed::AtBeat => {}
@@ -1750,7 +1750,7 @@ pub fn drive(
         .or_else(|| params.iter().flatten().next().map(|p| p.len()))
         .expect("a block needs a length: an input or a param");
     let env = Env {
-        frame: Frame(0),
+        frame: Frame::new(0),
         sample_rate: rate,
         block_len: Samples(frames),
         transport: TransportPosition::default(),
@@ -1896,7 +1896,7 @@ pub fn assert_honest_tail(node: &mut dyn Node, rate: SampleRate) {
     let width = usize::from(shape.audio_in().count());
     let latency = shape.latency.samples().get();
     let env = |frame: u64| Env {
-        frame: Frame(frame),
+        frame: Frame::new(frame),
         sample_rate: rate,
         block_len: Samples(BLOCK),
         transport: TransportPosition::default(),
@@ -2208,7 +2208,7 @@ impl<N: Node + ?Sized> Direct<N> {
             rate,
             frames,
             len: frames,
-            frame: Frame(0),
+            frame: Frame::new(0),
             transport: TransportPosition::default(),
             inputs: vec![vec![0.0; frames]; ins],
             outputs: vec![vec![0.0; frames]; outs],
@@ -2311,7 +2311,7 @@ impl<N: Node + ?Sized> Direct<N> {
             },
         };
         let status = self.block_in(&env);
-        self.frame = Frame(self.frame.0 + self.len as u64);
+        self.frame = Frame::new(self.frame.get() + self.len as u64);
         status
     }
 

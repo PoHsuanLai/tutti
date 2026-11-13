@@ -93,7 +93,7 @@ impl AuRef {
     }
 
     /// Instantiate this unit at `rate`/`block`, already initialized.
-    pub fn open(&self, rate: f64, block: u32) -> Au {
+    pub fn open(&self, rate: tutti_types::SampleRate, block: u32) -> Au {
         let info = self.require();
         let mut au = Au::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label));
@@ -103,7 +103,7 @@ impl AuRef {
     }
 
     /// Instantiate without initializing, for tests that drive the transition.
-    pub fn open_uninitialized(&self, rate: f64, block: u32) -> Au {
+    pub fn open_uninitialized(&self, rate: tutti_types::SampleRate, block: u32) -> Au {
         let info = self.require();
         Au::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label))
@@ -517,7 +517,7 @@ pub fn optional_third_party(
 
 /// Open an arbitrary [`AuComponentInfo`] initialized, for units reached through
 /// [`optional_third_party`] rather than an [`AuRef`].
-pub fn open_info(info: &AuComponentInfo, rate: f64, block: u32) -> Au {
+pub fn open_info(info: &AuComponentInfo, rate: tutti_types::SampleRate, block: u32) -> Au {
     let mut au = Au::new(info.component, rate, block)
         .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", info.name));
     au.initialize()
@@ -1032,7 +1032,12 @@ pub fn direction(is_output: bool) -> BusDirection {
 /// several units refuse a narrowing and keep their own, and a caller asserting on
 /// a layout needs to know which it got. `has_input` is taken from the AU's own
 /// probe by way of `Au`, so an instrument is not handed a phantom input.
-pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> (Au, u16) {
+pub fn open_at_output_width(
+    unit: &AuRef,
+    rate: tutti_types::SampleRate,
+    block: u32,
+    width: u16,
+) -> (Au, u16) {
     use tutti_au_host::{AuBusLayout, StreamConfig};
     use tutti_types::ChannelLayout;
 

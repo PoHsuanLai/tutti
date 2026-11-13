@@ -114,7 +114,7 @@ impl AuLoaded {
         // The unit's frame count is a `u32`, the bound `MaxBlock` holds, and a
         // `MaxBlock` is never zero.
         let block_size = prepare.max_block().get_u32();
-        if let Err(e) = self.apply_stream(prepare.rate().0, block_size) {
+        if let Err(e) = self.apply_stream(prepare.rate(), block_size) {
             return Err((Some(self), e));
         }
 

@@ -18,7 +18,7 @@ use tutti_plugin_types::{
     EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
     ParamEdit, ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
     PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
-    PresetId, RenderMode, Request, RescanScope, SampleRate, WindowHandle, Wraps, taken,
+    PresetId, RenderMode, Request, RescanScope, WindowHandle, Wraps, taken,
 };
 use tutti_types::Samples;
 
@@ -185,14 +185,7 @@ impl AuLoaded {
     pub(crate) fn tail_figure(&self) -> PluginTail {
         match self.get_tail_time() {
             Err(_) => PluginTail::Unknown,
-            Ok(seconds) => {
-                PluginTail::from_seconds(
-                    seconds,
-                    // Unchecked as before: the AU's stream config still holds a
-                    // bare `f64` rate (typing it is C4 PR 2's).
-                    <SampleRate as tutti_types::Unit>::from_raw(self.config().sample_rate),
-                )
-            }
+            Ok(seconds) => PluginTail::from_seconds(seconds, self.config().sample_rate),
         }
     }
 

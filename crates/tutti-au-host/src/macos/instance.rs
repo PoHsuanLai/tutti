@@ -25,8 +25,8 @@ use std::sync::Arc;
 use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
 use tutti_au_ffi::{AuEditor, Element, HostCallbacks, Scope, TransportState, Unit};
 use tutti_plugin_types::{ChannelLayout, MainThread, PluginDescriptor, RequestWord, TransportInfo};
-use tutti_types::Samples;
 use tutti_types::value::units::Seconds;
+use tutti_types::{SampleRate, Samples};
 
 use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::channel_layout::{self, AuLayoutTag};
@@ -120,7 +120,11 @@ impl AuLoaded {
     /// [`AuError::RequiresAsyncInstantiation`](crate::AuError::RequiresAsyncInstantiation)
     /// if the component cannot be instantiated, or the stream-configuration
     /// errors of [`StreamConfig`]'s `apply`.
-    pub fn new(component: AuComponentRef, sample_rate: f64, block_size: u32) -> Result<Self> {
+    pub fn new(
+        component: AuComponentRef,
+        sample_rate: SampleRate,
+        block_size: u32,
+    ) -> Result<Self> {
         let handle = AuHandle::new(component)?;
 
         let probed = StreamConfig::probe(&handle);
@@ -276,7 +280,7 @@ impl AuLoaded {
     /// # Errors
     /// The stream-configuration errors of `apply`, or
     /// [`AuError::BlockSizeRejected`](crate::AuError::BlockSizeRejected).
-    pub(crate) fn apply_stream(&mut self, sample_rate: f64, block_size: u32) -> Result<()> {
+    pub(crate) fn apply_stream(&mut self, sample_rate: SampleRate, block_size: u32) -> Result<()> {
         if sample_rate == self.config.sample_rate && block_size == self.config.block_size {
             return Ok(());
         }
@@ -317,7 +321,7 @@ impl AuLoaded {
     /// As the activation's: the stream-configuration errors, or
     /// [`AuError::BlockSizeRejected`](crate::AuError::BlockSizeRejected).
     #[cfg(feature = "test-support")]
-    pub fn reconfigure_stream(&mut self, sample_rate: f64, block_size: u32) -> Result<()> {
+    pub fn reconfigure_stream(&mut self, sample_rate: SampleRate, block_size: u32) -> Result<()> {
         self.apply_stream(sample_rate, block_size)
     }
 
@@ -426,7 +430,7 @@ impl AuLoaded {
     }
 
     /// Configured sample rate in Hz.
-    pub fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.config.sample_rate
     }
 
@@ -1012,13 +1016,7 @@ impl AuLoaded {
         // sample count can land a hair below it in f64, and truncating there
         // reports one sample less than the plugin actually delays — PDC then
         // under-compensates by a sample on every such plugin.
-        // Unchecked as before: the stream config still holds a bare `f64`
-        // rate (typing it is C4 PR 2's).
-        Ok(
-            Seconds(seconds).to_samples(<tutti_types::SampleRate as tutti_types::Unit>::from_raw(
-                self.sample_rate(),
-            )),
-        )
+        Ok(Seconds(seconds).to_samples(self.sample_rate()))
     }
 
     /// Seconds of audio this AU keeps producing after its input goes silent.

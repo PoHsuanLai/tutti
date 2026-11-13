@@ -55,7 +55,7 @@ use support::probe_au::{
 
 /// Block size every test renders at.
 const BLOCK: u32 = 64;
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 
 /// Render one block of silence into freshly-zeroed buffers.
 ///

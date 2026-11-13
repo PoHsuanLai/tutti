@@ -332,6 +332,8 @@ pub trait AsbdExt {
     /// This is the format the rest of the crate uses for AU I/O. For
     /// non-interleaved audio `mBytesPerFrame` / `mBytesPerPacket` are `4`
     /// (one channel's worth), *not* `channels * 4`.
+    ///
+    /// `sample_rate` is the raw `mSampleRate`: an ABI value, so `f64`.
     fn float32(sample_rate: f64, channels: u32) -> Self;
 
     /// The crate's fallback stream format: 44.1 kHz stereo float32.

@@ -27,7 +27,7 @@ use support::corpus::SAMPLER;
 
 static AU_LOCK: Mutex<()> = Mutex::new(());
 
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 const BLOCK: u32 = 512;
 const GAIN: u32 = 900;
 const CC: u8 = 20;

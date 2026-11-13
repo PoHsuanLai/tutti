@@ -42,7 +42,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     AU_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 const BLOCK: u32 = 512;
 
 /// Open `au`'s editor with no parent view.

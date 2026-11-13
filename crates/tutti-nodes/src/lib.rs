@@ -134,9 +134,9 @@ mod reverb;
 pub use params::{At, Control, ControlRead, ControlSet, ControlValid, Params};
 pub use reverb::{FamilyNode, FreeverbNode, NodeFamily, Rings, TailCeiling, TailCeilingError};
 
-// The feedback delay network as a `FamilyNode`, and the choice between the two.
+// The feedback delay network as a `FamilyNode`.
 mod reverb_fdn;
-pub use reverb_fdn::{FdnNode, ReverbKind, SpawnedReverb};
+pub use reverb_fdn::FdnNode;
 
 // The families and controls that sit in a `FamilyNode<F>`'s signature.
 pub use tutti_dsp::{FdnControls, FdnFamily, FreeverbControls, FreeverbFamily, SvfFamily};

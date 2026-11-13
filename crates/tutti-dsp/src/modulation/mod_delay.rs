@@ -189,14 +189,14 @@ impl ModDelayMember {
     /// The delay at the sweep's centre, in frames (fractional): the base, floored at one
     /// frame (a delay is at least a frame: the feedback tap is read one before it).
     #[must_use]
-    pub fn centre_frames(&self) -> f32 {
+    fn centre_frames(&self) -> f32 {
         self.base_frames.max(1.0)
     }
 
     /// How far the sweep reaches either side of the centre, in frames: the depth, clamped
     /// into the sweep's range, in delay.
     #[must_use]
-    pub fn depth_frames(&self) -> f32 {
+    fn depth_frames(&self) -> f32 {
         self.depth * self.sr
     }
 
@@ -210,7 +210,7 @@ impl ModDelayMember {
     /// at one frame (a `depth` past the base flat-bottoms the sweep), to the longest,
     /// `base + depth`, which is inside the line.
     #[must_use]
-    pub fn delay_range(&self) -> RangeInclusive<f32> {
+    fn delay_range(&self) -> RangeInclusive<f32> {
         let reach = self.depth_frames();
         let longest = (self.base_frames + reach).max(1.0).min(self.cap as f32);
         let shortest = (self.base_frames - reach).max(1.0).min(longest);
@@ -438,12 +438,6 @@ impl ModDelayFamily {
     #[must_use]
     pub const fn max_delay(&self) -> MaxDelay {
         self.sweep.max_delay()
-    }
-
-    /// How the channels' sweeps are offset.
-    #[must_use]
-    pub const fn stagger(&self) -> &Stagger {
-        &self.stagger
     }
 }
 

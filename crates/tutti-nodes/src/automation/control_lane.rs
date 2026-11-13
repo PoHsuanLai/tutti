@@ -110,7 +110,7 @@ impl LaneControls {
     }
 
     /// [`publish`](Self::publish) of a program already behind an `Arc`.
-    pub fn publish_arc(&self, program: Arc<ControlProgram>) {
+    fn publish_arc(&self, program: Arc<ControlProgram>) {
         let generation = self
             .0
             .generation
@@ -185,7 +185,7 @@ impl LaneControls {
     /// Sets a plugin lane's range: the span its offsets scale by and the
     /// clamp, from the next block. `false` for a native lane, whose range is
     /// its port's (`Editor::set_param_range`), and for an unranged one.
-    pub fn set_range(&self, min: f32, max: f32) -> bool {
+    pub(crate) fn set_range(&self, min: f32, max: f32) -> bool {
         match &self.0.range {
             RangeSource::Own(c) => {
                 c.store(ParamRange::new(min, max));
@@ -1143,5 +1143,26 @@ mod tests {
         assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
         assert_eq!(controls.reclaim(), 0);
         assert!(gone.upgrade().is_none(), "freed by the reclaim");
+    }
+
+    /// A plugin lane's range is its own cell, set from the next block; an
+    /// unranged lane (and a native one, whose range is its port's) refuses it.
+    #[test]
+    fn set_range_is_a_plugin_lanes_own() {
+        let plugin =
+            ControlLaneNode::for_foreign(1, ControlProgram::default(), Some(0.25), (0.0, 1.0));
+        let c = plugin.controls();
+        assert!(c.set_range(0.1, 0.9));
+        assert_eq!(c.range(), (0.1, 0.9));
+        let unranged = ControlLaneNode::for_unit(
+            tutti_types::UnitAddr::first(tutti_types::UnitParam::Cutoff),
+            ControlProgram::default(),
+            None,
+            None,
+        );
+        assert!(
+            !unranged.controls().set_range(0.0, 1.0),
+            "no range cell to set"
+        );
     }
 }

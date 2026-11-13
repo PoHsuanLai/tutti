@@ -564,7 +564,7 @@ fn the_bounds_dominate_where_rounding_matters() {
     let bound = d.reach(&reach);
     for k in 1..100 {
         let c = FdnControls {
-            decay: [d.max_decay(); 3],
+            decay: [d.max_decay; 3],
             size: Mix(1.0),
             diffusion: Mix(k as f32 / 100.0),
             pre_delay: MAX_PRE_DELAY,

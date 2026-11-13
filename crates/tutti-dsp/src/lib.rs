@@ -162,8 +162,7 @@ pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;
 pub use spatial::{
     HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPEAKERS,
-    MAX_SPHERE_RATE, MIN_SPHERE_RATE, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple,
-    VbapGains, VbapKernel,
+    MAX_SPHERE_RATE, MIN_SPHERE_RATE, SpeakerGeometryError, SpeakerLayout, VbapGains, VbapKernel,
 };
 pub use stft::error::{Error, Result};
 pub use stft::geometry::StftGeometry;

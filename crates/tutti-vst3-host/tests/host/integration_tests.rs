@@ -108,11 +108,7 @@ fn binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
 }
 
 /// The user's home directory, or `None` where the platform does not say.
-///
-/// Was `env::var("HOME").expect("HOME is set")`, which panics on Windows —
-/// `HOME` is a Unix convention and Windows sets `USERPROFILE` instead. Every
-/// test that builds a corpus goes through here, so one missing variable took
-/// out the whole file the first time this ran on Windows.
+/// `HOME` on Unix, `USERPROFILE` on Windows.
 ///
 /// `Option` rather than a fallback guess: the only thing this is used for is
 /// the *macOS* user-domain plugin directory, so on a platform without a home

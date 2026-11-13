@@ -36,9 +36,7 @@
 // NOTE: the macOS gate is `#[cfg]` on the *items* below, deliberately not `#![cfg]` on the file. This target is
 // `harness = false`, so cargo links it as a plain binary and requires a `main`
 // on **every** platform — a file-level cfg deletes `main` along with everything
-// else, and the target then fails to *compile* on Linux with a bare
-// "`main` function not found", which reads like a broken test rather than a
-// missing platform. `main` is unconditional and lists and runs no case there.
+// else, and the target then fails to compile elsewhere. `main` is unconditional and lists and runs no case there.
 
 /// The main-thread build of each shared test: a plain function, so `main` can
 /// call it.

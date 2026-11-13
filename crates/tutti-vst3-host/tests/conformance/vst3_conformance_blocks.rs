@@ -208,20 +208,7 @@ fn every_audio_class_survives_a_block() {
         driven + failures.len(),
         failures.join("\n")
     );
-    // Guard the premise: a sweep that drove nothing must not report success.
-    //
-    // This was `driven > 40`, a figure taken from one developer's external SDK
-    // build (~55 audio classes across ~18 bundles). That number is a property of
-    // `VST3_SAMPLE_PLUGIN_DIR`, not of this host, and it is unset on essentially
-    // every machine — so the moment these tests stopped skipping vacuously, the
-    // literal failed on the in-repo corpus of two bundles. A premise guard that
-    // only holds on one machine guards nothing on the others.
-    //
-    // The regression it was aimed at — class enumeration collapsing to
-    // one-per-bundle — is now caught relative to the corpus actually present.
-    // The *other* half of that concern, `load_class` ignoring which class it was
-    // asked for, is caught by the `info.name != name` check above, which is a
-    // per-class assertion and needs no corpus size at all.
+    // The sweep drove at least one audio class per bundle present.
     let bundles = sample_plugins().len();
     assert!(
         driven >= bundles && bundles > 0,

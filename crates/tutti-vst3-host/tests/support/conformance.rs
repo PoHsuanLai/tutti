@@ -28,11 +28,8 @@
 //! `VST3_SAMPLE_PLUGIN_DIR` only substitute an external SDK or an external
 //! plugin tree.
 //!
-//! **Nothing here skips.** Every test asserts; a plugin or build artifact a
-//! test needs and cannot find is a panic that names the build command
-//! (`require_probe`, `require_twin`, `require_sample`). There is no
-//! `eprintln!("skipping"); return;` in the suite, a shape that reports `ok`
-//! while executing nothing.
+//! Nothing here skips: a missing artifact panics with its build command
+//! (`require_probe`, `require_twin`, `require_sample`).
 //!
 //! The `harness_ready()` gate asserts (its two requirements are met by any
 //! recursive checkout, so absence has one cause and one fix). `sample` and
@@ -319,8 +316,6 @@ pub fn harness_ready() -> bool {
 
 /// Resolve a sample plugin that **must** be present, panicking by name if not.
 ///
-/// Used instead of `let Some(x) = sample(..) else { eprintln!("skipping");
-/// return; }`, a shape that makes a test report `ok` while executing nothing.
 /// Reaching this panic means a plugin `build.rs` produces went missing, which is
 /// a build failure and not an environment.
 #[track_caller]

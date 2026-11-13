@@ -22,7 +22,7 @@ tutti-graph = { path = "../../crates/tutti-graph" }
 tutti-measure = { path = "../../crates/tutti-measure" }
 tutti-nodes = { path = "../../crates/tutti-nodes", default-features = false, features = ["testing"] }
 tutti-polysynth = { path = "../../crates/tutti-polysynth" }
-tutti-sampler = { path = "../../crates/tutti-sampler" }
+tutti-sampler = { path = "../../crates/tutti-sampler", features = ["testing"] }
 tutti-transport = { path = "../../crates/tutti-transport" }
 tutti-types = { path = "../../crates/tutti-types" }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }

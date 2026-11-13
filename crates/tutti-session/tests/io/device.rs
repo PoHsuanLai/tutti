@@ -13,8 +13,8 @@ use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{
-    Backoff, DeviceEvent, DevicePolicy, DeviceRestart, InPort, OutPort, Phase, PhaseCx,
-    RestartOutcome, Root, Session, SessionEvent, Workers,
+    Backoff, DeviceEvent, DevicePolicy, DeviceRestart, DeviceWatch, InPort, OutPort, Phase,
+    PhaseCx, RestartOutcome, Root, Session, SessionEvent, Workers,
 };
 use tutti_types::{ChannelLayout, Db, Hz, MaxBlock, SampleRate, Samples};
 
@@ -922,4 +922,72 @@ fn a_panic_in_the_render_is_a_device_fault_event() {
     };
     assert_eq!(faulted(&session.update()), 1);
     assert_eq!(faulted(&session.update()), 0, "reported once");
+}
+
+/// Drives a watch with no stream through the public path: nothing listed asks
+/// for nothing; once the device is listed, `retry_start` runs the start once
+/// with the selector, on a stream that then renders. Returns what the start
+/// was asked for.
+fn start_when_listed(retry_startup: bool) -> Vec<DeviceSelector> {
+    let fake = Fake::default();
+    let mut watch = DeviceWatch::without_stream(
+        fake.clone(),
+        DevicePolicy {
+            retry_startup,
+            ..policy()
+        },
+        DeviceSelector::Default,
+    );
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (driver, stream) = ManualStreamDriver::new();
+    let mut driver = Some(driver);
+    let mut start = |watch: &mut DeviceWatch| {
+        let mut events = Vec::new();
+        let asked = Arc::clone(&asked);
+        let driver = &mut driver;
+        let ran = watch.retry_start(&mut events, |selector| {
+            asked.lock().unwrap().push(selector);
+            Session::builder().build_device_on(spec_at(48_000.0), driver.take().expect("one start"))
+        });
+        (ran, events)
+    };
+
+    fake.show(&[], None);
+    let (ran, events) = start(&mut watch);
+    assert!(ran.is_none(), "no device is listed: no start");
+    assert!(wants(&events).is_empty());
+    assert!(asked.lock().unwrap().is_empty());
+
+    fake.show(&["A"], Some("A"));
+    let (ran, _) = start(&mut watch);
+    if retry_startup {
+        let live = ran
+            .expect("the device is listed: a start is due")
+            .expect("the start builds");
+        assert!(
+            stream.render_block(64).is_some(),
+            "the stream runs after the start"
+        );
+        // The session takes the same source over.
+        let mut live = live;
+        live.watch_devices(watch.into_source(), policy());
+    } else {
+        assert!(ran.is_none(), "retry_startup is off: no start");
+        assert!(stream.render_block(64).is_none(), "no stream was started");
+    }
+    std::mem::take(&mut *asked.lock().unwrap())
+}
+
+/// **A start that failed for want of a device is retried when the device is
+/// listed**, once, with the selector the host asked for.
+#[test]
+fn a_start_with_no_device_is_retried_once_the_device_is_listed() {
+    assert_eq!(start_when_listed(true), [DeviceSelector::Default]);
+}
+
+/// With `retry_startup` off the same listing starts nothing: the retry is the
+/// policy's, not the watch's.
+#[test]
+fn a_listed_device_starts_nothing_with_retry_startup_off() {
+    assert!(start_when_listed(false).is_empty());
 }

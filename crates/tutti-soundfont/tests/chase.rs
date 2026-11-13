@@ -17,6 +17,7 @@ use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_ump::BendValue;
 use tutti_ump::{Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2};
 
 const BLOCK: usize = 256;
@@ -170,7 +171,7 @@ fn the_unit_chases_its_programs_banks_controllers_and_wheels() {
         ),
         (on(3), decoded(cc(3, 91, 10)).1),
         (on(3), decoded(cc(3, 7, 90)).1),
-        (on(3), Voice2::PitchBend(0xC000_0000)),
+        (on(3), Voice2::PitchBend(BendValue::new(0xC000_0000))),
         (on(5), decoded(cc(5, 0, 7)).1),
     ];
     for want in &wants {

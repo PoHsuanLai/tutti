@@ -206,7 +206,7 @@ impl Drop for Running {
 /// `testing` feature.
 ///
 /// There is no thread to race, so a test can say "after this many cycles the
-/// ring holds audio"; it is the same [`StreamerCycle::step`] the thread runs.
+/// ring holds audio"; it is the same `StreamerCycle::step` the thread runs.
 #[cfg(any(test, feature = "testing"))]
 pub struct ByHand {
     rx: Option<Receiver<StreamerCommand>>,

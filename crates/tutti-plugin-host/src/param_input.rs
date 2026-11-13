@@ -184,7 +184,7 @@ mod tests {
     /// `play`.
     fn env(len: usize, play: u64) -> Env {
         Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: SampleRate::SR_48K,
             block_len: Samples(len),
             transport: TransportPosition::new(false, Bpm::of(120.0), Beat(0.0), None),
@@ -192,7 +192,7 @@ mod tests {
             play: PlayClock {
                 start: PlayReading {
                     epoch: 0,
-                    play: Frame(play),
+                    play: Frame::new(play),
                 },
                 next_epoch: 0,
             },

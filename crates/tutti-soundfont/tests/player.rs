@@ -2,6 +2,7 @@
 //! SoundFont, driven through MIDI 1.0 messages as a keyboard sends them.
 //!
 
+use tutti_ump::{BendValue, ControlValue};
 mod support;
 
 use std::sync::Arc;
@@ -427,7 +428,7 @@ fn registered(index: u8, msb: u8, lsb: u8) -> Voice2 {
     Voice2::Registered {
         bank: U7::of(0),
         index: U7::of(index),
-        value: ((u32::from(msb) << 7) | u32::from(lsb)) << 18,
+        value: ControlValue::new(((u32::from(msb) << 7) | u32::from(lsb)) << 18),
     }
 }
 
@@ -593,12 +594,12 @@ fn other_controllers_leave_the_pitch_bend_range() {
             bank: U7::of(0),
             index: U7::of(0),
             // M2-115 §3: 12 as a 7-bit value, left-justified (shift 25).
-            value: 12 << 25,
+            value: ControlValue::new(12 << 25),
         },
         Voice2::Registered {
             bank: U7::of(1),
             index: U7::of(0),
-            value: 12 << 25,
+            value: ControlValue::new(12 << 25),
         },
     ] {
         let ignored = crossings(|s| s.voice2(0, voice), BEND_MAX) as f64;
@@ -884,7 +885,7 @@ fn per_note_pitch(note: u8, hcu: u32) -> Voice2 {
     Voice2::RegisteredPerNote {
         note: tutti_ump::NoteNumber::of(note),
         controller: tutti_ump::RegisteredPerNoteController::Pitch,
-        value: hcu << 25,
+        value: ControlValue::new(hcu << 25),
     }
 }
 
@@ -956,14 +957,14 @@ fn a_per_note_bend_spans_the_per_note_sensitivity() {
                 Voice2::Registered {
                     bank: U7::of(0),
                     index: U7::of(7),
-                    value: 12 << 25,
+                    value: ControlValue::new(12 << 25),
                 },
             );
             s.voice2(
                 0,
                 Voice2::PerNotePitchBend {
                     note: tutti_ump::NoteNumber::of(69),
-                    value: u32::MAX,
+                    value: BendValue::new(u32::MAX),
                 },
             );
         },

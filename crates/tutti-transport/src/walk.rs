@@ -82,7 +82,7 @@ impl TempoWalk {
     fn sync(&mut self, view: &mut TempoView, clock: &mut FrameClock, exact: bool) -> bool {
         let (tempo, beat) = match u64::try_from(self.frame) {
             Ok(f) => {
-                let cell = view.chord_cell(Frame(f), CELL_GRID);
+                let cell = view.chord_cell(Frame::new(f), CELL_GRID);
                 (cell.tempo, Some(cell.beat))
             }
             Err(_) => (view.map().points()[0].tempo, None),
@@ -101,7 +101,7 @@ impl TempoWalk {
     fn frames_to_edge(&mut self, view: &mut TempoView) -> usize {
         match u64::try_from(self.frame) {
             Ok(f) => {
-                let cell = view.chord_cell(Frame(f), CELL_GRID);
+                let cell = view.chord_cell(Frame::new(f), CELL_GRID);
                 (cell.end.get() - f).max(1) as usize
             }
             Err(_) => self.frame.unsigned_abs() as usize,

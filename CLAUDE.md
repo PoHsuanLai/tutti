@@ -270,7 +270,7 @@ cargo fmt
 cargo xtask check-paths [<crate> <module>...]  # the import-path gate (also searches *.md)
 cargo xtask check-submodule-pins   # VST3 SDK pins, asserted by SHA
 cargo xtask check-session          # tutti-session reaches no Bevy, has no bevy feature, re-exports no crate whole
-cargo xtask check-doc-features     # rustdoc per feature for tutti-session, tutti
+cargo xtask check-doc-features     # rustdoc: each member with its features (private items), each umbrella feature alone
 cargo xtask check-guards           # every host callback runs under the panic guard
 cargo xtask check-ffi              # every crate root forbids unsafe but the -ffi crates (plugin formats, MIDI), rt and arc-lend; the -ffi lints
 cargo xtask check-layout           # flat crates/ and testing/, layering, codec boundary, depth-free test paths, no C library in `export`
@@ -536,12 +536,12 @@ crates/          everything shipped; directory name = package name; no nesting
                  reader of `flex_text_packets`), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
                  (SysEx7 packets to whole messages over a caller's buffer) and its
-                 inverse `SysexMessage::packets` (`Sysex7Packets::checked` for a payload of plain bytes), with
+                 inverse `SysexMessage::packets` (`Sysex7Packets::from_payload` for a payload of plain bytes), with
                  `Sysex7Packet::data` and `SysexRef::new`; no
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
                  stateless `widen`, `narrow` (refusing with a `NoMidi1Form`) and `midi1`, the stateful `Translator` (`translate`, `flush`, `finish`) and `Narrower`, the M2-115 scaling, and the
-                 float converters (`u32_to_unit_f32` and kin), the Flex values as units
+                 float converters (`value_to_unit_f32` and kin), the Flex values as units
                  (`flex_tempo` to `Bpm`, `flex_time_signature` to `tutti_types::TimeSignature`), and the MPE zone
                  values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
                  `tutti-ump` and `tutti-types`
@@ -746,7 +746,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   has just framed. A packet's Group and Channel are `Ump::group`,
   `Ump::address` and `Ump::channel`: nothing outside `tutti-ump` shifts a
   header by hand. `NoteVelocity` is the M2 note velocity, the whole `u16` (0 is a Note On,
-  §7.4.2); `widen_velocity` / `narrow_velocity` are `tutti-midi-protocol`'s. A note's identity is `NoteId`, `channel * 128 + note` (the
+  §7.4.2); a MIDI 2.0 controller, pressure or data word is `ControlValue` and a MIDI 2.0 pitch bend `BendValue` (each the whole `u32`, so `new` is infallible: `Voice2` and `control_change2` / `pitch_bend2` hold no bare `u32`); the M2-115 scaling from a MIDI 1.0 value is `tutti-midi-protocol`'s `widen_velocity`, `widen_value` and `widen_bend` (and `narrow_*` the way back), because the scaling is shared with its translator. A note's identity is `NoteId`, `channel * 128 + note` (the
   plugin formats' wire value, one formula); an id above `NoteId::MAX_CHANNEL_NOTE`
   is one an allocator minted and `channel_note()` is `None`. A complete SysEx is a
   `SysexMessage` (checked once: `F0`, 7-bit bytes, `F7`), and the one SysEx7
@@ -768,7 +768,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-midi-protocol` depends on `tutti-ump`, `tutti-types` (layer 0, for `Semitones`) and `winnow` (named only in `universal/read.rs`, a listed parser module: `check-layout`), keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. Its functions (`widen`, `narrow`,
-  `midi1`) hold no state, and take a packet as `impl Into<Ump>` (one input type: `Translator::translate`, `Narrower::feed`, `midi1`, `channel_voice`); `narrow` refuses with a `NoMidi1Form`, and `widen`/`narrow` are free functions because `From`/`TryFrom` between the voice types would sit in `tutti-ump` with the M2-115 scaling; its two translators, `Translator` (MIDI 1.0 in) and
+  `midi1`) hold no state, and take a packet as `impl Into<Ump>` (one input type: `Translator::translate`, `Narrower::feed`, `midi1`, `channel_voice`); `narrow` refuses with a `NoMidi1Form` (`narrow_message` is it on a whole `Message`, address kept), and `widen`/`narrow` are free functions because `From`/`TryFrom` between the voice types would sit in `tutti-ump` with the M2-115 scaling; its two translators, `Translator` (MIDI 1.0 in) and
   `Narrower` (MIDI 2.0 out, per group and channel: RPN/NRPN selects, Bank
   Select), are fixed-size values, hold no clock, and allocate nothing after
   `new`. A consumer's call to `widen` is transitional: the stage 3 translator
@@ -978,7 +978,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
   `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
-  pairs and triplets, selected from the published method, doc 028 section 4; `VbapKernel`, the
+  pairs and triplets, selected from the published method; `VbapKernel`, the
   block's gains with the mono fold and the last-solve cache, and `VbapGains`, a ramp's end point,
   whose `render_channel` ramps one output channel), the HRTF
   convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`
@@ -1750,7 +1750,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   rule: the grid thins, then what is dropped is re-sent); `LoopRange::new` as the only check →
   `LoopRange::try_from(a..b)` (a `LoopRangeError`; `new` is the same check as an `Option`);
   `Session::schedule -> Result<(), ScheduleFull>` → `Result<(), ScheduleError>`
-  (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). A comment or doc that
+  (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). `Graph::taps().open_event(port, align, usize)` and the session's event-tap capacity as a bare `usize` → `EventCapacity` (as `Midi::record` and `open_event_inlet`; `Taps::open_event(port, align, EventCapacity)`). `tutti_types::Frame`'s public field: `Frame(x)` and `frame.0` → `Frame::new(x)` and `frame.get()` (every `u64` is a frame, so `new` is infallible; `From<Frame> for u64` too). `tutti_ump::SysexMessage::new(&[u8]) -> Option` and `Sysex7Packets::checked(..) -> Option` → `SysexMessage::from_framed` (framed `F0 .. F7` bytes) and `Sysex7Packets::from_payload` (the bytes between them), each a `Result<_, SysexError>` (`MissingStart`, `MissingEnd`, `NotSevenBit { index }`); `NotSysex<'a>` → `SysexError`. `Voice2`'s bare `u32` values (`ControlChange`, `ChannelPressure`, `PolyPressure`, the per-note, Registered and Assignable controller data) and `Message::control_change2(.., u32)` → `tutti_ump::ControlValue` (`new`, `get`, `MIN`, `CENTER`, `MAX`), and `Voice2::PitchBend(u32)`, `PerNotePitchBend`'s value and `Message::pitch_bend2(.., u32)` → `tutti_ump::BendValue` (`CENTER` is `0x8000_0000`); `narrow_value(u32)` and `narrow_bend(u32)` take them; the scaling of a MIDI 1.0 value into one is `tutti_midi_protocol::{widen_velocity, widen_value, widen_bend}`; `u16_to_unit_f32`, `u32_to_unit_f32`, `bend_u32_to_signed_f32`, `unit_f32_to_u16`, `unit_f32_to_u32` and `signed_f32_to_bend_u32` → `velocity_to_unit_f32`, `value_to_unit_f32`, `bend_to_signed_f32`, `unit_f32_to_velocity`, `unit_f32_to_value` and `signed_f32_to_bend` (typed ends); `tutti_midi_file::Track::tempo(tick, bpm)` → `Track::meta(tick, Meta::tempo(bpm))` (one way to place a Set Tempo; two at one tick are both kept and the later governs). A comment or doc that
   disagrees with the code is the bug.
 - **Dead plugin names** (doc 029 step 4): `PluginHandle::presets(&main) -> Option<Vec<Preset>>` and `load_preset -> Option<bool>` → `-> Result<_, PresetError>` (`Unsupported`, `Refused`, `Lost`), and for a host the session's view, `MainSession::plugin(node)?.presets() -> Result<Presets, PresetError>` (`Presets::{kind, iter, get, current, load_file}`, `PresetEntry::load`; a main-thread call, so not on `Plugin<'_>`), `Plugin::liveness()` and the public `PluginLiveness` (the session's debounce is crate-private now) → `Plugin::health() -> PluginHealth` (`Running`, `Stalled`, `Died { cause }`, `Reloading { attempt, cause }`; the verdicts that remove the node are the events `PluginChange::{Died, GaveUp}`), `Plugin::{controls, meter}` and the handle's `server_pid`, `block_counts`, `dropped_parameter_events`, `terminate` as a host's calls → `Plugin::diagnostics()` (`server_pid`, `block_counts`, `missed_chunks`, `latency`, `tail`, `follows_project_meter`, `reported_latency`, `chunk_in_flight_answered`, `terminate`, and the counts as `tutti_graph::Losses`: `midi_in`, `parameter_points`, `parameter_edits`; the same in either hosting), `Plugin::handle()` → behind `tutti-session`'s `testing` feature (a host uses the views), `Plugin::controls()` / `meter()` → deleted (`Diagnostics::{reported_latency, chunk_in_flight_answered, missed_chunks, follows_project_meter}`), `PluginHandle::set_render_mode` → deleted (the session's `Phase::RenderMode`; `AnyThread::set_render_mode` is the backend's), a plugin's `input_buses()` / `output_buses()` as a host's wiring vocabulary → `Plugin::buses() -> PluginBuses` (`main_input`, `input(i)`, `output(i)`; no `sidechain()`, since no loader marks one and an app wires a key input by index: the graph's `BusRef` and `BusSource`).
 - **Dead prelude names**: `tutti::prelude::*`, `tutti_engine::prelude`,

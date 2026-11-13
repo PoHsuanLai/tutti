@@ -166,7 +166,7 @@ pub(crate) struct MappedController {
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
 ///   `0.5`), matching what the plugin's parameter funnel expects.
 pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<MappedController> {
-    use tutti_midi_protocol::{bend_u32_to_signed_f32, u32_to_unit_f32};
+    use tutti_midi_protocol::{bend_to_signed_f32, value_to_unit_f32};
 
     // Not channel voice, or a packet `decode` cannot frame: there is no
     // controller in it, and the caller keeps the event as MIDI.
@@ -178,16 +178,16 @@ pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<MappedController> {
         Voice2::ControlChange { controller, value } => Some(MappedController {
             channel,
             controller: usize::from(controller.get()),
-            value: Normalized::clamped(f64::from(u32_to_unit_f32(value))),
+            value: Normalized::clamped(f64::from(value_to_unit_f32(value))),
         }),
         Voice2::ChannelPressure(pressure) => Some(MappedController {
             channel,
             controller: CTRL_AFTERTOUCH,
-            value: Normalized::clamped(f64::from(u32_to_unit_f32(pressure))),
+            value: Normalized::clamped(f64::from(value_to_unit_f32(pressure))),
         }),
         Voice2::PitchBend(bend) => {
             // Signed [-1, 1] (center 0) → unit [0, 1] (center 0.5).
-            let value = bend_u32_to_signed_f32(bend);
+            let value = bend_to_signed_f32(bend);
             Some(MappedController {
                 channel,
                 controller: CTRL_PITCH_BEND,

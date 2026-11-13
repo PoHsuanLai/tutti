@@ -2,13 +2,13 @@
 //! (M2-104 section 7.7), and `Sysex7Packet::data`.
 
 use tutti_ump::{
-    Message, MidiGroup, Sysex7Packet, Sysex7Packets, SysexAssembler, SysexMessage, SysexStatus,
-    SysexStep, Ump,
+    Message, MidiGroup, Sysex7Packet, Sysex7Packets, SysexAssembler, SysexError, SysexMessage,
+    SysexStatus, SysexStep, Ump,
 };
 
 /// The packets of a payload of 7-bit values: the plain-bytes door.
 fn sysex7_packets(group: MidiGroup, payload: &[u8]) -> Sysex7Packets<'_> {
-    Sysex7Packets::checked(group, payload).expect("7-bit bytes")
+    Sysex7Packets::from_payload(group, payload).expect("7-bit bytes")
 }
 
 fn payload(len: usize) -> Vec<u8> {
@@ -136,7 +136,7 @@ fn the_assembler_gives_back_the_message() {
         let mut framed = vec![0xF0];
         framed.extend(raw(&p));
         framed.push(0xF7);
-        let message = SysexMessage::new(&framed).unwrap();
+        let message = SysexMessage::from_framed(&framed).unwrap();
         let group = MidiGroup::of(3);
 
         let mut asm = SysexAssembler::new(vec![0u8; 128], 64, 1);
@@ -197,14 +197,20 @@ fn a_single_packet_is_the_spec_words() {
     assert_eq!(words(15, &[1, 2, 3, 4, 5, 6]), [0x3F06_0102, 0x0304_0506]);
 }
 
-/// `Sysex7Packets::checked` refuses a byte of 128 or more instead of masking
-/// it, and accepts every 7-bit payload.
+/// `Sysex7Packets::from_payload` refuses a byte of 128 or more instead of masking
+/// it, naming its index, and accepts every 7-bit payload.
 #[test]
 fn a_high_bit_is_refused_not_masked() {
-    assert!(Sysex7Packets::checked(MidiGroup::of(0), &[1, 0x80, 2]).is_none());
-    assert!(Sysex7Packets::checked(MidiGroup::of(0), &[0xF7]).is_none());
-    assert!(Sysex7Packets::checked(MidiGroup::of(0), &[0x7F]).is_some());
+    assert_eq!(
+        Sysex7Packets::from_payload(MidiGroup::of(0), &[1, 0x80, 2]).unwrap_err(),
+        SysexError::NotSevenBit { index: 1 }
+    );
+    assert_eq!(
+        Sysex7Packets::from_payload(MidiGroup::of(0), &[0xF7]).unwrap_err(),
+        SysexError::NotSevenBit { index: 0 }
+    );
+    assert!(Sysex7Packets::from_payload(MidiGroup::of(0), &[0x7F]).is_ok());
     for len in 0..=20 {
-        assert!(Sysex7Packets::checked(MidiGroup::of(2), &raw(&payload(len))).is_some());
+        assert!(Sysex7Packets::from_payload(MidiGroup::of(2), &raw(&payload(len))).is_ok());
     }
 }

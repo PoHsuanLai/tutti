@@ -278,7 +278,7 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
                 panic!("{ev:?} is not a registered controller");
             };
             assert_eq!(bank.get(), Rpn::PITCH_BEND_SENSITIVITY.bank().get());
-            let range = PitchBendSensitivity::from_rpn_bits(value);
+            let range = PitchBendSensitivity::from_rpn_bits(value.get());
             (address.channel.get(), index.get(), range.semitones().get())
         })
         .collect()
@@ -587,7 +587,7 @@ fn a_member_bend_before_the_note_on_is_the_notes_start() {
     assert!(matches!(
         out[0],
         (2, Voice2::PerNotePitchBend { note, value })
-            if note.get() == 60 && value == tutti_fixtures::midi::wide_bend(16383)
+            if note.get() == 60 && value == BendValue::new(tutti_fixtures::midi::wide_bend(16383))
     ));
     assert!(matches!(out[1], (2, Voice2::NoteOn { .. })));
 }
@@ -607,12 +607,12 @@ fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
     assert_eq!(out.len(), 3, "{out:?}");
     assert!(matches!(
         out[0],
-        (3, Voice2::PolyPressure { note, value }) if note.get() == 64 && value == 0x4000_0000
+        (3, Voice2::PolyPressure { note, value }) if note.get() == 64 && value == ControlValue::new(0x4000_0000)
     ));
     assert!(matches!(
         out[1],
         (3, Voice2::AssignablePerNote { note, controller: 74, value })
-            if note.get() == 64 && value == tutti_fixtures::midi::wide_value(64)
+            if note.get() == 64 && value == ControlValue::new(tutti_fixtures::midi::wide_value(64))
     ));
     assert!(matches!(out[2], (3, Voice2::NoteOn { .. })));
 }
@@ -666,7 +666,7 @@ fn a_managers_pressure_and_cc74_reach_every_members_note() {
     let out = decoded(&mut ingest, &note_on(1, 60, 100));
     assert!(matches!(
         out[0],
-        (1, Voice2::PolyPressure { note, value }) if note.get() == 60 && value == 0x2000_0000
+        (1, Voice2::PolyPressure { note, value }) if note.get() == 60 && value == ControlValue::new(0x2000_0000)
     ));
     ingest.translated(&note_on(2, 64, 100));
     // A member above the floor keeps its own; one below takes the floor.
@@ -677,13 +677,13 @@ fn a_managers_pressure_and_cc74_reach_every_members_note() {
     let heard: Vec<(u8, u8, u32)> = out
         .iter()
         .filter_map(|(c, v)| match v {
-            Voice2::PolyPressure { note, value } => Some((*c, note.get(), *value)),
+            Voice2::PolyPressure { note, value } => Some((*c, note.get(), value.get())),
             _ => None,
         })
         .collect();
     assert_eq!(heard, [(1, 60, 0x4000_0000), (2, 64, 0x7000_0000)]);
     assert!(
-        matches!(out.last(), Some((0, Voice2::ChannelPressure(0x4000_0000)))),
+        matches!(out.last(), Some((0, Voice2::ChannelPressure(v))) if v.get() == 0x4000_0000),
         "the manager's own message still passes"
     );
     // CC 74 is the same.

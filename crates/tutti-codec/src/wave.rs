@@ -239,7 +239,8 @@ impl Wave {
     }
 
     /// Returns every sample frame by frame: channel 0 to the last of frame 0,
-    /// then frame 1, and so on, the order of an [`Interleaved`](tutti_types::Interleaved) block.
+    /// then frame 1, and so on, the order of an
+    /// [interleaved](tutti_types::Interleaved) block.
     ///
     /// An iterator and not a `Vec`: a wave is already held whole, and the
     /// caller that wants flat samples (an encoder, a meter) reads them in

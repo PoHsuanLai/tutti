@@ -67,7 +67,7 @@ fn each_call_publishes_where_it_began() {
         let before = tutti_rt::monotonic_ns();
         render(&engine, 256, segment);
         let first = reader.read().expect("published by the first call");
-        assert_eq!(first.frame, Frame(0));
+        assert_eq!(first.frame, Frame::new(0));
         assert_eq!(first.rate, SampleRate::of(RATE));
         assert!(first.os_ns >= before && first.os_ns <= tutti_rt::monotonic_ns());
 
@@ -75,7 +75,7 @@ fn each_call_publishes_where_it_began() {
         let second = reader.read().expect("published by the second call");
         assert_eq!(
             second.frame,
-            Frame(256),
+            Frame::new(256),
             "the second call begins where the first ended"
         );
         assert!(second.os_ns >= first.os_ns);
@@ -96,7 +96,7 @@ fn a_stop_and_a_locate_land_in_one_snapshot() {
     let p = reader.playhead();
     assert_eq!(
         (p.playing(), p.beat(), p.frame()),
-        (false, Beat(0.0), Frame(0))
+        (false, Beat(0.0), Frame::new(0))
     );
 
     motion(MotionEvent::Play);
@@ -105,13 +105,13 @@ fn a_stop_and_a_locate_land_in_one_snapshot() {
     assert!(p.playing(), "the play landed on the call's first frame");
     assert_eq!(
         (p.frame(), p.beat(), p.seconds()),
-        (Frame(256), Beat(0.0), Seconds(0.0))
+        (Frame::new(256), Beat(0.0), Seconds(0.0))
     );
 
     render(&engine, 480, false);
     let p = reader.playhead();
     assert!(p.playing());
-    assert_eq!(p.frame(), Frame(736));
+    assert_eq!(p.frame(), Frame::new(736));
     assert!((p.beat().get() - beat_of(480)).abs() < 1e-12);
     assert!((p.seconds().get() - p.beat().get() / 2.0).abs() < 1e-12);
 
@@ -122,7 +122,7 @@ fn a_stop_and_a_locate_land_in_one_snapshot() {
         !p.playing(),
         "the stop is in the snapshot of the call it landed on"
     );
-    assert_eq!(p.frame(), Frame(1_216), "the graph's frame runs on");
+    assert_eq!(p.frame(), Frame::new(1_216), "the graph's frame runs on");
     assert!(
         (p.beat().get() - beat_of(960)).abs() < 1e-12,
         "held where it stopped"
@@ -136,7 +136,7 @@ fn a_stop_and_a_locate_land_in_one_snapshot() {
         (p.playing(), p.beat(), p.seconds()),
         (false, Beat(8.0), Seconds(4.0))
     );
-    assert_eq!(p.frame(), Frame(1_696));
+    assert_eq!(p.frame(), Frame::new(1_696));
 }
 
 /// **A reader never sees a torn playhead**: while the audio side renders a

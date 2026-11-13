@@ -20,7 +20,7 @@ fn ms(n: u64) -> Duration {
 
 /// A map where frame 0 is at `t0`.
 fn map_at(t0: Instant) -> ClockMap {
-    ClockMap::new(R48, ClockReading::new(t0, Frame(0)))
+    ClockMap::new(R48, ClockReading::new(t0, Frame::new(0)))
 }
 
 fn terms(audio: Option<Duration>, device: Duration, offset: f64) -> OutputTerms {
@@ -39,7 +39,7 @@ fn a_frame_is_sent_at_heard_plus_audio_less_device_plus_offset() {
     let t0 = base();
     let plan = OutputPlan::new(terms(Some(ms(30)), ms(5), 0.25));
     assert_eq!(
-        plan.place(Frame(4_800), Some(&map_at(t0)), t0 - ms(10)),
+        plan.place(Frame::new(4_800), Some(&map_at(t0)), t0 - ms(10)),
         Placement::Send(SendAt::At(t0 + ms(100 + 30 - 5 + 250)))
     );
 }
@@ -51,7 +51,7 @@ fn a_negative_offset_sends_earlier() {
     let t0 = base();
     let plan = OutputPlan::new(terms(Some(Duration::ZERO), Duration::ZERO, -0.25));
     assert_eq!(
-        plan.place(Frame(24_000), Some(&map_at(t0)), t0 - ms(10)),
+        plan.place(Frame::new(24_000), Some(&map_at(t0)), t0 - ms(10)),
         Placement::Send(SendAt::At(t0 + ms(250)))
     );
 }
@@ -65,17 +65,17 @@ fn a_time_at_or_before_now_is_sent_now() {
     let map = map_at(t0);
     // Frame 4 800 is at t0 + 110 ms.
     assert_eq!(
-        plan.place(Frame(4_800), Some(&map), t0 + ms(110)),
+        plan.place(Frame::new(4_800), Some(&map), t0 + ms(110)),
         Placement::Send(SendAt::Now),
         "exactly now"
     );
     assert_eq!(
-        plan.place(Frame(4_800), Some(&map), t0 + ms(500)),
+        plan.place(Frame::new(4_800), Some(&map), t0 + ms(500)),
         Placement::Send(SendAt::Now),
         "past"
     );
     assert_eq!(
-        plan.place(Frame(4_800), Some(&map), t0 + ms(109)),
+        plan.place(Frame::new(4_800), Some(&map), t0 + ms(109)),
         Placement::Send(SendAt::At(t0 + ms(110))),
         "1 ms ahead is scheduled"
     );
@@ -87,7 +87,7 @@ fn a_time_beyond_the_cap_is_refused() {
     let t0 = base();
     let plan = OutputPlan::default();
     let map = map_at(t0);
-    let frames_at = |d: Duration| Frame((d.as_secs_f64() * 48_000.0) as u64);
+    let frames_at = |d: Duration| Frame::new((d.as_secs_f64() * 48_000.0) as u64);
     assert_eq!(
         plan.place(frames_at(MAX_OUTPUT_AHEAD + ms(1)), Some(&map), t0),
         Placement::TooFar
@@ -105,13 +105,13 @@ fn a_frame_the_clock_cannot_place_is_sent_now() {
     let t0 = base();
     let plan = OutputPlan::new(terms(Some(ms(30)), Duration::ZERO, 0.0));
     assert_eq!(
-        plan.place(Frame(4_800), None, t0),
+        plan.place(Frame::new(4_800), None, t0),
         Placement::Send(SendAt::Now)
     );
     let tiny = SampleRate::of(1e-9);
-    let slow = ClockMap::new(tiny, ClockReading::new(t0, Frame(0)));
+    let slow = ClockMap::new(tiny, ClockReading::new(t0, Frame::new(0)));
     assert_eq!(
-        plan.place(Frame(u64::MAX), Some(&slow), t0),
+        plan.place(Frame::new(u64::MAX), Some(&slow), t0),
         Placement::Send(SendAt::Now),
         "an instant too far to hold"
     );
@@ -130,12 +130,12 @@ fn an_unreported_audio_latency_omits_only_that_term() {
     assert!(!unknown.terms().is_complete());
     assert!(known.terms().is_complete());
     assert_eq!(
-        unknown.place(Frame(4_800), Some(&map), now),
+        unknown.place(Frame::new(4_800), Some(&map), now),
         Placement::Send(SendAt::At(t0 + ms(100 - 5))),
         "everything but the audio latency"
     );
     assert_eq!(
-        known.place(Frame(4_800), Some(&map), now),
+        known.place(Frame::new(4_800), Some(&map), now),
         Placement::Send(SendAt::At(t0 + ms(100 + 30 - 5))),
         "the audio latency, as reported, in"
     );

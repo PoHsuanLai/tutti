@@ -7,6 +7,7 @@ use tutti_midi_file::{
     ClipFileError, Error, FileEvent, Meta, MidiFile, MidiFileKind, SmfFormat, Tick, Track,
 };
 use tutti_types::{Beat, Bpm, Seconds};
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, DeltaTicks, Flex, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Stream,
     U7, Ump, Utility, Voice1,
@@ -508,7 +509,7 @@ fn a_header_with_program_change_cc_and_sysex_round_trips() {
         Address::first(MidiChannel::FIRST),
         tutti_ump::Voice2::ControlChange {
             controller: tutti_ump::CCNumber::of(7),
-            value: 0x8000_0000,
+            value: ControlValue::new(0x8000_0000),
         },
     ));
     let sysex = sysex7(tutti_ump::SysexStatus::Complete, &[0x7D, 1, 2, 3]);

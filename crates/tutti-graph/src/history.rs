@@ -367,7 +367,7 @@ mod tests {
 
     fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
         Env {
-            frame: Frame(frame),
+            frame: Frame::new(frame),
             sample_rate: SR,
             block_len: Samples(len),
             transport,
@@ -387,7 +387,7 @@ mod tests {
             Bpm::of(120.0),
             SegmentOrigin {
                 beat: Beat(beat),
-                frame: Frame(0),
+                frame: Frame::new(0),
                 sample_rate: SR,
             },
             looping,
@@ -430,7 +430,7 @@ mod tests {
         fn truth(&self, f: u64) -> TransportPosition {
             let i = self.blocks.partition_point(|e| e.frame.get() <= f) - 1;
             let e = &self.blocks[i];
-            e.transport_at(e.offset_of(Frame(f)).expect("inside"))
+            e.transport_at(e.offset_of(Frame::new(f)).expect("inside"))
         }
     }
 
@@ -450,7 +450,7 @@ mod tests {
         let host = env(0, 64, counted(2.0, None), TransportChanges::NONE);
         let t = host.transport_at(off(40));
         let origin = t.origin().expect("still the host's count");
-        assert_eq!((origin.beat, origin.frame), (Beat(2.0), Frame(40)));
+        assert_eq!((origin.beat, origin.frame), (Beat(2.0), Frame::new(40)));
     }
 
     /// Inside the block, `transport_before` is `transport_at` of the earlier

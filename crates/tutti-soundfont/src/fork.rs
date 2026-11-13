@@ -123,7 +123,7 @@ mod tests {
         let mut frame = 0u64;
         while out.len() < frames {
             let env = Env {
-                frame: tutti_types::Frame(frame),
+                frame: tutti_types::Frame::new(frame),
                 sample_rate: rate,
                 block_len: Samples(64),
                 transport: TransportPosition::default(),
@@ -211,7 +211,7 @@ mod tests {
         let mut frame = 0u64;
         while out.len() < frames {
             let env = Env {
-                frame: tutti_types::Frame(frame),
+                frame: tutti_types::Frame::new(frame),
                 sample_rate: rate,
                 block_len: Samples(64),
                 transport: TransportPosition::default(),

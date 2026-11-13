@@ -54,8 +54,8 @@
 use std::num::NonZeroU16;
 
 use tutti_midi_protocol::{
-    GeneralMidi, Heard, KeyTable, MpeZones, Timing, TuningMessage, Universal,
-    bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32,
+    GeneralMidi, Heard, KeyTable, MpeZones, Timing, TuningMessage, Universal, bend_to_signed_f32,
+    narrow_value, value_to_unit_f32,
 };
 use tutti_types::{Amplitude, Seconds, Semitones};
 use tutti_ump::{
@@ -68,6 +68,7 @@ use crate::master::{Master, MasterGain};
 use crate::per_note::{MAX_EVENTS as NOTE_EVENTS, NOTE_CONTROLS};
 use crate::tuning::{NoSuchTuning, TuningCapacity, Tunings};
 use crate::{Controller, Effect, Holds, NoteControl, NoteEvent, PerNoteState, Phase, Stop};
+use tutti_ump::ControlValue;
 
 const CHANNELS: usize = MidiChannel::COUNT as usize;
 
@@ -703,7 +704,7 @@ impl Voicing {
             if self.sustain[i] {
                 send(Voice2::ControlChange {
                     controller: CCNumber::SUSTAIN,
-                    value: u32::MAX,
+                    value: ControlValue::new(u32::MAX),
                 });
             }
         }
@@ -805,11 +806,11 @@ impl Voicing {
                 }
             }
             Voice2::ChannelPressure(pressure) => {
-                let pressure = u32_to_unit_f32(pressure);
+                let pressure = value_to_unit_f32(pressure);
                 self.channels[channel.index()].set_pressure(pressure);
             }
             Voice2::PitchBend(bend) => {
-                let position = bend_u32_to_signed_f32(bend);
+                let position = bend_to_signed_f32(bend);
                 self.bend(channel, |b| b.position = position);
             }
             // The channel's registered parameters: the pitch bend sensitivity
@@ -818,7 +819,7 @@ impl Voicing {
             // 1.0 pair zero-extended (M2-115 section 4.1): `MSB << 7 | LSB` in
             // the top 14 bits.
             Voice2::Registered { bank, index, value } => {
-                self.registered(channel, Rpn::new(bank, index), value, message);
+                self.registered(channel, Rpn::new(bank, index), value.get(), message);
             }
             // A change of the same parameters (M2-104 section 7.4.8): a two's
             // complement delta added to the value now held. The spec does not
@@ -1755,6 +1756,7 @@ mod tests {
     use crate::LIVE_NOTES;
     use tutti_midi_protocol::MpeZoneConfig;
     use tutti_midi_protocol::widen;
+    use tutti_ump::BendValue;
     use tutti_ump::NoteVelocity;
     use tutti_ump::{Attribute, CCNumber, Pitch, RegisteredPerNoteController, U7, Voice1};
 
@@ -1891,7 +1893,7 @@ mod tests {
                 c,
                 Voice2::ControlChange {
                     controller: CCNumber::of(n),
-                    value: u32::from(v) << 25,
+                    value: ControlValue::new(u32::from(v) << 25),
                 },
                 &One,
             )
@@ -1938,13 +1940,18 @@ mod tests {
             ch,
             Voice2::ControlChange {
                 controller: CCNumber::of(64),
-                value: 1 << 31,
+                value: ControlValue::new(1 << 31),
             },
             &One,
             never,
         );
-        core.step(ch, Voice2::PitchBend(1 << 31), &One, never);
-        core.step(ch, Voice2::ChannelPressure(1 << 31), &One, never);
+        core.step(ch, Voice2::PitchBend(BendValue::new(1 << 31)), &One, never);
+        core.step(
+            ch,
+            Voice2::ChannelPressure(ControlValue::new(1 << 31)),
+            &One,
+            never,
+        );
     }
 
     /// A voice the lookup no longer knows is gone from the core's table, so its
@@ -2704,7 +2711,7 @@ mod tests {
     // ---- bends -------------------------------------------------------------
 
     fn bend(v: u32) -> Voice2 {
-        Voice2::PitchBend(v)
+        Voice2::PitchBend(BendValue::new(v))
     }
     fn retunes(c: &[Command]) -> Vec<(u8, f32)> {
         c.iter()
@@ -2718,7 +2725,7 @@ mod tests {
         Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
-            value: (range_semitones * (1u32 << 25) as f32) as u32,
+            value: ControlValue::new((range_semitones * (1u32 << 25) as f32) as u32),
         }
     }
 
@@ -2745,7 +2752,7 @@ mod tests {
         let rpn = |semitones: u32, cents: u32, low: u32| Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
-            value: semitones << 25 | cents << 18 | low,
+            value: ControlValue::new(semitones << 25 | cents << 18 | low),
         };
         for (semitones, cents, low, want) in [
             (12, 50, 0, 12.5f32),
@@ -3076,7 +3083,7 @@ mod tests {
             Voice2::RegisteredPerNote {
                 note: NoteNumber::of(k),
                 controller,
-                value,
+                value: ControlValue::new(value),
             },
             &One,
         );
@@ -3088,7 +3095,7 @@ mod tests {
             c,
             Voice2::PerNotePitchBend {
                 note: NoteNumber::of(k),
-                value,
+                value: BendValue::new(value),
             },
             &One,
         )
@@ -3290,7 +3297,7 @@ mod tests {
         Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         }
     }
 
@@ -3434,7 +3441,11 @@ mod tests {
             s.cc(c, 10, 20);
             s.cc(c, 11, 30);
             s.cc(c, 65, 127);
-            s.send(c, Voice2::ChannelPressure(u32::MAX), &One);
+            s.send(
+                c,
+                Voice2::ChannelPressure(ControlValue::new(u32::MAX)),
+                &One,
+            );
             s.send(c, registered(5, 1 << 25), &One);
             s.send(c, registered(2, 66 << 25), &One);
         }
@@ -3471,7 +3482,7 @@ mod tests {
             0,
             Voice2::PolyPressure {
                 note: NoteNumber::of(60),
-                value: 1 << 31,
+                value: ControlValue::new(1 << 31),
             },
             &One,
         );
@@ -3519,7 +3530,7 @@ mod tests {
     #[test]
     fn channel_pressure_is_per_channel() {
         let mut s = Sim::new(POLY);
-        s.send(3, Voice2::ChannelPressure(1 << 31), &One);
+        s.send(3, Voice2::ChannelPressure(ControlValue::new(1 << 31)), &One);
         assert!((s.core.channel(MidiChannel::of(3)).pressure() - 0.5).abs() < 1e-3);
         assert_eq!(s.core.channel(MidiChannel::of(0)).pressure(), 0.0);
     }
@@ -3833,14 +3844,18 @@ mod tests {
         let registered = |index: u8, value: u32| Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         };
         a.send(2, registered(0, (7 << 25) | (25 << 18)), &One);
         a.send(2, registered(1, 0x1234 << 18), &One);
         a.send(2, registered(2, 70 << 25), &One);
         a.send(2, registered(5, (3 << 25) | (64 << 18)), &One);
-        a.send(2, Voice2::PitchBend(0xC000_0000), &One);
-        a.send(2, Voice2::ChannelPressure(0x4000_0000), &One);
+        a.send(2, Voice2::PitchBend(BendValue::new(0xC000_0000)), &One);
+        a.send(
+            2,
+            Voice2::ChannelPressure(ControlValue::new(0x4000_0000)),
+            &One,
+        );
 
         let mut messages = Vec::new();
         a.core.chase(MidiGroup::of(2), |u| messages.push(u));

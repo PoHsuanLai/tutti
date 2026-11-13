@@ -80,6 +80,7 @@ use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, PitchBendSensitivity};
 use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, Rpn, Ump, Voice2};
+use tutti_ump::{BendValue, ControlValue};
 
 /// The Registered Controller `rpn` carrying `data` on each channel of `channels`, on `group`
 /// at `offset`.
@@ -99,7 +100,7 @@ fn send_rpns(
                 Voice2::Registered {
                     bank: rpn.bank(),
                     index: rpn.index(),
-                    value: data,
+                    value: ControlValue::new(data),
                 },
             )
             .into(),
@@ -347,7 +348,7 @@ fn control(group: MidiGroup, channel: MidiChannel, controller: CCNumber, offset:
             Address { group, channel },
             Voice2::ControlChange {
                 controller,
-                value: 0,
+                value: ControlValue::new(0),
             },
         )
         .into(),
@@ -561,7 +562,7 @@ impl MpeIngest {
             event.0,
             config.member_channels(),
             Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
-            value,
+            value.get(),
             out,
         );
         true
@@ -663,11 +664,21 @@ impl MpeIngest {
                         out(per_note(
                             address,
                             at,
-                            Voice2::PerNotePitchBend { note, value },
+                            Voice2::PerNotePitchBend {
+                                note,
+                                value: BendValue::new(value),
+                            },
                         ));
                     }
                     if let Some(value) = combined(told.pressure, manager.pressure) {
-                        out(per_note(address, at, Voice2::PolyPressure { note, value }));
+                        out(per_note(
+                            address,
+                            at,
+                            Voice2::PolyPressure {
+                                note,
+                                value: ControlValue::new(value),
+                            },
+                        ));
                     }
                     if let Some(value) = combined(told.brightness, manager.brightness) {
                         out(per_note(address, at, assignable(note, value)));
@@ -692,7 +703,7 @@ impl MpeIngest {
                 // sounding.
                 Role::Master => Some(*event),
                 Role::Member => {
-                    state.told[slot].bend = Some(value);
+                    state.told[slot].bend = Some(value.get());
                     let note = state.held.note_on(ch)?;
                     Some(per_note(
                         address,
@@ -702,43 +713,57 @@ impl MpeIngest {
                 }
             },
             Voice2::ChannelPressure(value) => {
-                state.told[slot].pressure = Some(value);
+                state.told[slot].pressure = Some(value.get());
                 match role {
                     Role::Master => {
                         for member in config.member_channels() {
                             if let Some(note) = state.held.note_on(member) {
                                 let value = combined(
                                     state.told[usize::from(member.get())].pressure,
-                                    Some(value),
+                                    Some(value.get()),
                                 )
-                                .unwrap_or(value);
+                                .unwrap_or(value.get());
                                 let to = Address {
                                     group,
                                     channel: member,
                                 };
-                                out(per_note(to, at, Voice2::PolyPressure { note, value }));
+                                out(per_note(
+                                    to,
+                                    at,
+                                    Voice2::PolyPressure {
+                                        note,
+                                        value: ControlValue::new(value),
+                                    },
+                                ));
                             }
                         }
                         Some(*event)
                     }
                     Role::Member => {
                         let note = state.held.note_on(ch)?;
-                        let value = combined(Some(value), manager.pressure)?;
-                        Some(per_note(address, at, Voice2::PolyPressure { note, value }))
+                        let value = combined(Some(value.get()), manager.pressure)?;
+                        Some(per_note(
+                            address,
+                            at,
+                            Voice2::PolyPressure {
+                                note,
+                                value: ControlValue::new(value),
+                            },
+                        ))
                     }
                 }
             }
             Voice2::ControlChange { controller, value } if controller == CCNumber::BRIGHTNESS => {
-                state.told[slot].brightness = Some(value);
+                state.told[slot].brightness = Some(value.get());
                 match role {
                     Role::Master => {
                         for member in config.member_channels() {
                             if let Some(note) = state.held.note_on(member) {
                                 let value = combined(
                                     state.told[usize::from(member.get())].brightness,
-                                    Some(value),
+                                    Some(value.get()),
                                 )
-                                .unwrap_or(value);
+                                .unwrap_or(value.get());
                                 let to = Address {
                                     group,
                                     channel: member,
@@ -750,7 +775,7 @@ impl MpeIngest {
                     }
                     Role::Member => {
                         let note = state.held.note_on(ch)?;
-                        let value = combined(Some(value), manager.brightness)?;
+                        let value = combined(Some(value.get()), manager.brightness)?;
                         // CC74 -> Assignable Per-Note Controller index 74 (the MPE slide).
                         Some(per_note(address, at, assignable(note, value)))
                     }
@@ -809,7 +834,7 @@ fn assignable(note: NoteNumber, value: u32) -> Voice2 {
     Voice2::AssignablePerNote {
         note,
         controller: CCNumber::BRIGHTNESS.get(),
-        value,
+        value: ControlValue::new(value),
     }
 }
 

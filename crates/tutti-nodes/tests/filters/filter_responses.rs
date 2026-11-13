@@ -30,7 +30,7 @@ fn gains_db<N: Node + 'static>(node: N, freq: f64, amp: f32) -> Vec<f64> {
         let block = &input[b * BLOCK..(b + 1) * BLOCK];
         let ins: Vec<&[f32]> = (0..width).map(|_| block).collect();
         let env = Env {
-            frame: Frame((b * BLOCK) as u64),
+            frame: Frame::new((b * BLOCK) as u64),
             sample_rate: SampleRate::of(RATE),
             block_len: Samples(BLOCK),
             transport: TransportPosition::default(),

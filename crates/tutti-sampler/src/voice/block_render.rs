@@ -112,7 +112,7 @@ fn apply(host: &mut Host, event: Event) {
 
 fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
     Env {
-        frame: Frame(frame),
+        frame: Frame::new(frame),
         sample_rate: SampleRate::of(SR),
         block_len: Samples(len),
         transport,

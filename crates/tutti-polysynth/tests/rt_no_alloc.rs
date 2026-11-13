@@ -22,6 +22,7 @@
 use assert_no_alloc::AllocDisabler;
 use std::num::NonZeroUsize;
 use tutti_types::MaxBlock;
+use tutti_ump::{BendValue, ControlValue};
 mod support;
 
 use support::Hand;
@@ -223,21 +224,21 @@ fn polysynth_every_decoded_message_is_allocation_free() {
         }),
         m2(Voice2::PerNotePitchBend {
             note,
-            value: 0xC000_0000,
+            value: BendValue::new(0xC000_0000),
         }),
         m2(Voice2::PolyPressure {
             note,
-            value: 0x4000_0000,
+            value: ControlValue::new(0x4000_0000),
         }),
         m2(Voice2::RegisteredPerNote {
             note,
             controller: RegisteredPerNoteController::Pitch,
-            value: 69 << 25,
+            value: ControlValue::new(69 << 25),
         }),
         m2(Voice2::AssignablePerNote {
             note,
             controller: 74,
-            value: 1 << 30,
+            value: ControlValue::new(1 << 30),
         }),
         m2(Voice2::PerNoteManagement {
             note,
@@ -252,19 +253,19 @@ fn polysynth_every_decoded_message_is_allocation_free() {
         m2(Voice2::RegisteredPerNote {
             note,
             controller: RegisteredPerNoteController::Pitch,
-            value: 60 << 25,
+            value: ControlValue::new(60 << 25),
         }),
         m2(Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(7),
-            value: 12 << 25,
+            value: ControlValue::new(12 << 25),
         }),
         // Pitch Bend Sensitivity (RPN 0) on the master channel, then
         // Reset All Controllers and All Notes Off.
         m2(Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
-            value: 7 << 25,
+            value: ControlValue::new(7 << 25),
         }),
         m1(Voice1::ControlChange {
             controller: CCNumber::RESET_ALL,
@@ -277,14 +278,14 @@ fn polysynth_every_decoded_message_is_allocation_free() {
         m2(Voice2::Assignable {
             bank: U7::of(1),
             index: U7::of(2),
-            value: 3,
+            value: ControlValue::new(3),
         }),
         m2(Voice2::ControlChange {
             controller: CCNumber::VOLUME,
-            value: 1 << 31,
+            value: ControlValue::new(1 << 31),
         }),
-        m2(Voice2::PitchBend(0x9000_0000)),
-        m2(Voice2::ChannelPressure(1 << 30)),
+        m2(Voice2::PitchBend(BendValue::new(0x9000_0000))),
+        m2(Voice2::ChannelPressure(ControlValue::new(1 << 30))),
         m2(Voice2::NoteOff {
             note,
             velocity: NoteVelocity::MIN,
@@ -627,7 +628,7 @@ fn polysynth_universal_sysex_is_allocation_free() {
         ..Default::default()
     }));
     let message = |bytes: &[u8]| -> Vec<Ump> {
-        tutti_ump::SysexMessage::new(bytes)
+        tutti_ump::SysexMessage::from_framed(bytes)
             .unwrap()
             .packets(MidiGroup::FIRST)
             .collect()
@@ -668,7 +669,7 @@ fn polysynth_mts_is_allocation_free() {
         ..Default::default()
     }));
     let message = |bytes: &[u8]| -> Vec<Ump> {
-        tutti_ump::SysexMessage::new(bytes)
+        tutti_ump::SysexMessage::from_framed(bytes)
             .unwrap()
             .packets(MidiGroup::FIRST)
             .collect()

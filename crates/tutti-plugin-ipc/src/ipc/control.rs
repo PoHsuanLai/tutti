@@ -10,8 +10,8 @@ use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, BlockCounts, ContentScale, Control, Delivered,
     EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Features, Health, LoadedPlugin,
     MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure,
-    PluginResult, Preset, PresetId, RenderMode, RenderModeSupport, Request, SampleRate, StateError,
-    StateUse, TerminationReason, WindowHandle,
+    PluginResult, Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport, Request,
+    SampleRate, StateError, StateUse, TerminationReason, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -259,6 +259,12 @@ macro_rules! served_control {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 out.append(&mut asked);
+            }
+
+            /// What the server's `ProcessRequested` raises, from the bridge's
+            /// thread.
+            fn bind_wake(&self, wake: ProcessWake) {
+                let _ = self.link.events.wake.set(wake);
             }
 
             /// `Live` from here wherever the plugin has a mode: the server

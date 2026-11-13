@@ -263,13 +263,6 @@ impl ClapLoaded {
         &self.host_state
     }
 
-    /// Consumes and returns the `process_requested` flag (the plugin wants
-    /// `process()` to be called even if the host would otherwise skip it).
-    pub fn take_process_requested(&self) -> bool {
-        self.host_state
-            .take(&self.host_state.lifecycle.process_requested)
-    }
-
     /// Consumes and returns the `params_flush_requested` flag — call
     /// [`Self::flush_params`] or run a process block when this fires.
     pub fn take_params_flush_requested(&self) -> bool {

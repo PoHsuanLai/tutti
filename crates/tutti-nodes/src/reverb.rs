@@ -145,6 +145,17 @@ pub trait NodeFamily: Family + 'static {
     /// block (the default), or every `n` frames when a control moves inside the
     /// block. A stream grid is counted from the last reset ([`Cadence::steps`]), so
     /// what it designs does not depend on where the blocks fall.
+    ///
+    /// On a stream grid the node renders a block a step at a time. It stops at each grid
+    /// point, reading the controls at the step's solve frame, and at each corner of a
+    /// port driving a slow control ([`ParamInput::corners`](tutti_graph::ParamInput::corners)),
+    /// read on that frame. A stop that moved a control past its dead-band designs and
+    /// retargets before the frames after it render; stops that did not move render
+    /// together with the model held. A control read every frame (a fast one) has no
+    /// corner. A block cadence designs once per block and takes no corner. The node
+    /// solves on the stream clock (frames since its reset), because audio runs
+    /// through it while the transport is stopped.
+    ///
     /// Separate from [`Family::CADENCE`], the grid the render is a function of: a
     /// reverb whose render is a function of the stream is still designed once per
     /// block.

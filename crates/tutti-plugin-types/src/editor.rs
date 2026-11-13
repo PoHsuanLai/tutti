@@ -3,6 +3,245 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 
+/// Whether a key went down or came up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyPhase {
+    /// The key was pressed.
+    Down,
+    /// The key was released.
+    Up,
+}
+
+bitflags::bitflags! {
+    /// The modifier keys held with a key.
+    ///
+    /// Each flag is the physical key. A format that numbers its modifier bits by role
+    /// (VST2 and VST3 swap the Control and Command bits on macOS) maps them in its host.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct KeyModifiers: u8 {
+        /// Shift.
+        const SHIFT = 1;
+        /// Alt, Option on macOS.
+        const ALT = 1 << 1;
+        /// Control.
+        const CONTROL = 1 << 2;
+        /// Command on macOS, the Windows key elsewhere.
+        const COMMAND = 1 << 3;
+    }
+}
+
+/// Which physical key carries the "command" role, the one a plugin's shortcuts (copy,
+/// paste, undo) use.
+///
+/// A format that numbers its modifier bits by role maps [`KeyModifiers`] through this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifierConvention {
+    /// The Apple convention: the command role is the Command key
+    /// ([`KeyModifiers::COMMAND`]), and the Control key is the separate control role.
+    Mac,
+    /// The PC convention: the command role is the Control key
+    /// ([`KeyModifiers::CONTROL`]), and the Windows key has no role.
+    Pc,
+}
+
+// The platform's convention is chosen here and nowhere else: a different target is a
+// different file and changes no code that reads `ModifierConvention::HOST`.
+#[cfg(target_os = "macos")]
+#[path = "editor/macos.rs"]
+mod platform;
+#[cfg(not(target_os = "macos"))]
+#[path = "editor/other.rs"]
+mod platform;
+
+impl ModifierConvention {
+    /// The convention of the platform this build runs on.
+    pub const HOST: Self = platform::HOST;
+}
+
+/// A key with no character of its own, or named apart from the character it types.
+///
+/// The names follow the VST2 `VKEY_*` set, which the other formats' key codes map onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum NamedKey {
+    /// Backspace.
+    Backspace,
+    /// Tab.
+    Tab,
+    /// Clear.
+    Clear,
+    /// Return.
+    Return,
+    /// Pause.
+    Pause,
+    /// Escape.
+    Escape,
+    /// Space bar.
+    Space,
+    /// Next, the key after Previous on a media keyboard (VST2 `VKEY_NEXT`); not Page Down, which is [`PageDown`](Self::PageDown).
+    Next,
+    /// End.
+    End,
+    /// Home.
+    Home,
+    /// Left arrow.
+    Left,
+    /// Up arrow.
+    Up,
+    /// Right arrow.
+    Right,
+    /// Down arrow.
+    Down,
+    /// Page Up.
+    PageUp,
+    /// Page Down.
+    PageDown,
+    /// Select.
+    Select,
+    /// Print.
+    Print,
+    /// Enter on the numeric keypad.
+    Enter,
+    /// Print Screen.
+    Snapshot,
+    /// Insert.
+    Insert,
+    /// Delete.
+    Delete,
+    /// Help.
+    Help,
+    /// Numeric keypad 0.
+    Numpad0,
+    /// Numeric keypad 1.
+    Numpad1,
+    /// Numeric keypad 2.
+    Numpad2,
+    /// Numeric keypad 3.
+    Numpad3,
+    /// Numeric keypad 4.
+    Numpad4,
+    /// Numeric keypad 5.
+    Numpad5,
+    /// Numeric keypad 6.
+    Numpad6,
+    /// Numeric keypad 7.
+    Numpad7,
+    /// Numeric keypad 8.
+    Numpad8,
+    /// Numeric keypad 9.
+    Numpad9,
+    /// Numeric keypad `*`.
+    Multiply,
+    /// Numeric keypad `+`.
+    Add,
+    /// Numeric keypad separator.
+    Separator,
+    /// Numeric keypad `-`.
+    Subtract,
+    /// Numeric keypad decimal point.
+    Decimal,
+    /// Numeric keypad `/`.
+    Divide,
+    /// Function key F1.
+    F1,
+    /// Function key F2.
+    F2,
+    /// Function key F3.
+    F3,
+    /// Function key F4.
+    F4,
+    /// Function key F5.
+    F5,
+    /// Function key F6.
+    F6,
+    /// Function key F7.
+    F7,
+    /// Function key F8.
+    F8,
+    /// Function key F9.
+    F9,
+    /// Function key F10.
+    F10,
+    /// Function key F11.
+    F11,
+    /// Function key F12.
+    F12,
+    /// Num Lock.
+    NumLock,
+    /// Scroll Lock.
+    ScrollLock,
+    /// Shift, pressed alone.
+    Shift,
+    /// Control, pressed alone.
+    Control,
+    /// Alt, pressed alone.
+    Alt,
+    /// The `=` key.
+    Equals,
+}
+
+/// The key an event names: the character it typed, the named key, or both. An event
+/// naming no key is not writable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyCode {
+    /// A key that typed a character and has no name of its own.
+    Char(char),
+    /// A named key that typed no character.
+    Named(NamedKey),
+    /// A named key and the character it typed.
+    Both(char, NamedKey),
+}
+
+impl KeyCode {
+    /// The character the key typed, if it typed one.
+    #[must_use]
+    pub const fn character(self) -> Option<char> {
+        match self {
+            Self::Char(c) | Self::Both(c, _) => Some(c),
+            Self::Named(_) => None,
+        }
+    }
+
+    /// The named key, if it has a name.
+    #[must_use]
+    pub const fn named(self) -> Option<NamedKey> {
+        match self {
+            Self::Named(k) | Self::Both(_, k) => Some(k),
+            Self::Char(_) => None,
+        }
+    }
+}
+
+/// A key press or release the host forwards to a plugin's editor: the key and the
+/// modifiers held.
+///
+/// The key carries a character, a named key, or both, as the formats that take a key take
+/// both (VST2's `effEditKeyDown`, VST3's `onKeyDown`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeyEvent {
+    /// Down or up.
+    pub phase: KeyPhase,
+    /// The key pressed or released.
+    pub key: KeyCode,
+    /// The modifiers held.
+    pub modifiers: KeyModifiers,
+}
+
+/// What an editor did with a forwarded [`KeyEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyUse {
+    /// The editor used the key: the host does not act on it.
+    Used,
+    /// The editor did not use the key, or the format cannot carry it (a character or a
+    /// modifier it has no way to write): the host may act on it.
+    Ignored,
+}
+
 /// Pixel dimensions of a plugin editor window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -303,6 +542,10 @@ pub enum EditorError {
     /// Not a fault: nothing needs doing on the plugin's side.
     #[error("the editor takes no new scale after it opened")]
     ScaleUnsupported,
+
+    /// This format forwards no key events to its editor.
+    #[error("this plugin format takes no key events in its editor")]
+    KeysUnsupported,
 
     /// Another `open_editor` holds the GUI lock. Retryable once it completes.
     #[error("could not acquire GUI lock (another open_editor in progress?)")]

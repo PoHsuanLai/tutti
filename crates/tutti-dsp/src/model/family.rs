@@ -8,7 +8,8 @@ use super::{Cadence, Domain, Reach, Realized, Recurrence, System};
 /// The buses a [`Family`] is made for: its input, and its outputs, which are one
 /// topology repeated `bands` times, band-major (a crossover's), or once (every
 /// other family). Its node declares exactly these buses, so the graph's dry path
-/// folds the input onto band 0 by speaker, and the runner's outputs are the
+/// folds the input onto band 0 by speaker (the graph refuses a dry path it would have
+/// to guess), and the runner's outputs are the
 /// bands in order: band `b` is the `b`-th run of [`output`](Self::output)'s width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channels {

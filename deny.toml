@@ -13,8 +13,4 @@ all-features = true
 unmaintained = "all"
 yanked = "deny"
 # The advisory DB is fetched; a fetch failure is an error, never a pass.
-ignore = [
-    # ttf-parser is unmaintained. Reached only through winit's Wayland
-    # title-bar crate (sctk-adwaita via ab_glyph), in tutti-vst3-host's tests.
-    { id = "RUSTSEC-2026-0192", reason = "unmaintained ttf-parser, reached via winit sctk-adwaita (tutti-vst3-host dev-dependency); no vulnerability" },
-]
+ignore = []

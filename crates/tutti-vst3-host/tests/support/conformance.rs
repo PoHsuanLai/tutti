@@ -18,23 +18,19 @@
 //!
 //! ```bash
 //! VST3_SDK_DIR=/path/to/vst3sdk \
-//! VST3_SAMPLE_PLUGIN_DIR=/path/to/build/VST3/Release \
 //! cargo nextest run -p tutti-vst3-host --features conformance --test conformance
 //! ```
 //!
-//! Neither env var is required. The SDK is an in-repo submodule and `build.rs`
+//! `VST3_SDK_DIR` is optional. The SDK is an in-repo submodule and `build.rs`
 //! compiles the `audio-probe` reference plugin from in-repo sources, so a
-//! recursive checkout has everything this suite needs; `VST3_SDK_DIR` and
-//! `VST3_SAMPLE_PLUGIN_DIR` only substitute an external SDK or an external
-//! plugin tree.
+//! recursive checkout has everything this suite needs; the variable only
+//! substitutes an external SDK.
 //!
 //! Nothing here skips: a missing artifact panics with its build command
 //! (`require_probe`, `require_twin`, `require_sample`).
 //!
 //! The `harness_ready()` gate asserts (its two requirements are met by any
-//! recursive checkout, so absence has one cause and one fix). `sample` and
-//! `sample_plugins` search the in-repo bundle directory as well as the external
-//! one.
+//! recursive checkout, so absence has one cause and one fix).
 //!
 //! The plugins the suites drive are all built from this repository: `audio-probe`
 //! and the SDK samples by `build.rs`, and the C++ twin of the shared test plugin
@@ -121,16 +117,10 @@ pub fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub const AVAILABLE: &str = env!("VST3_HOSTCHECK_AVAILABLE");
-pub const SAMPLE_PLUGIN_DIR: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
 
 /// The bundles `build.rs` builds from the vendored SDK — `audio-probe` and
 /// `multiple-program-changes`. Present on any recursive checkout, because they
 /// are compiled by this very `cargo test` invocation.
-///
-/// [`sample_plugins`] searches this as well as `VST3_SAMPLE_PLUGIN_DIR`, which
-/// names a hand-built external SDK tree and is unset on essentially every
-/// machine. The sibling suites (`vst3_audio_correctness.rs`,
-/// `vst3_process_no_alloc.rs`) fall back here for the same reason.
 pub const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
 
 /// `ProcessModes_::kOffline`. Lets tests assert the plugin observed the mode we
@@ -222,35 +212,21 @@ pub fn resolve_bundle(path: &Path) -> PathBuf {
     .unwrap_or_else(|| path.to_path_buf())
 }
 
-/// Every sample plugin we can find, as (name, resolved binary path).
-///
-/// Searches the external `VST3_SAMPLE_PLUGIN_DIR` first, then the in-repo
-/// [`PROBE_DIR_BUILT`], so an externally built SDK tree still wins when one is
-/// configured and the in-repo bundles are used otherwise. Both are read, not
-/// just the first non-empty one: a machine with an external tree should get its
-/// plugins *and* the probe, since several checks below want more than one
-/// plugin to be meaningful.
+/// Every sample plugin in [`PROBE_DIR_BUILT`], as (name, resolved binary path).
 pub fn sample_plugins() -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = Vec::new();
-    for dir in [SAMPLE_PLUGIN_DIR, PROBE_DIR_BUILT] {
-        if dir.is_empty() {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(Path::new(dir)) else {
-            continue;
-        };
-        out.extend(
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "vst3"))
-                .filter_map(|p| {
-                    let name = p.file_stem()?.to_str()?.to_string();
-                    let bin = resolve_bundle(&p);
-                    bin.is_file().then_some((name, bin))
-                }),
-        );
-    }
+    let Ok(entries) = std::fs::read_dir(Path::new(PROBE_DIR_BUILT)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "vst3"))
+        .filter_map(|p| {
+            let name = p.file_stem()?.to_str()?.to_string();
+            let bin = resolve_bundle(&p);
+            bin.is_file().then_some((name, bin))
+        })
+        .collect();
     out.sort();
     out.dedup_by(|a, b| a.1 == b.1);
     out
@@ -307,9 +283,7 @@ pub fn harness_ready() -> bool {
         "no VST3 plugin to drive. `build.rs` builds `audio-probe` from \
          tests/support/audio-probe into {PROBE_DIR_BUILT:?} whenever the \
          `conformance` feature is on, so an empty list means the build did not \
-         produce it — not that this machine lacks plugins. \
-         (VST3_SAMPLE_PLUGIN_DIR={SAMPLE_PLUGIN_DIR:?} is the optional external \
-         override and may legitimately be unset.)"
+         produce it — not that this machine lacks plugins."
     );
     true
 }
@@ -589,15 +563,9 @@ pub fn supports_f64(path: &Path) -> bool {
 // and to a plugin without the interface (`require_probe`), so a host that
 // returned a constant, or ignored its arguments, cannot satisfy both.
 
-/// Locate a sample bundle by file name, **searching both plugin directories**.
-///
-/// Searching `SAMPLE_PLUGIN_DIR` alone (the external, almost-always-unset tree)
-/// would make every lookup miss. These tests name a specific bundle rather than
-/// sweeping the corpus, so they need the in-repo directory too.
+/// Locate a sample bundle by file name in [`PROBE_DIR_BUILT`].
 pub fn sample_path(name: &str) -> Option<PathBuf> {
-    [SAMPLE_PLUGIN_DIR, PROBE_DIR_BUILT]
-        .into_iter()
-        .filter(|d| !d.is_empty())
-        .map(|d| resolve_bundle(&Path::new(d).join(name)))
-        .find(|p| p.is_file())
+    (!PROBE_DIR_BUILT.is_empty())
+        .then(|| resolve_bundle(&Path::new(PROBE_DIR_BUILT).join(name)))
+        .filter(|p| p.is_file())
 }

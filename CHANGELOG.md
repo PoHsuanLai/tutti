@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 tutti has no release yet. Each change lands on `main` as one squash-merged
 pull request, and that commit's message and PR description are its record,
 including migration notes for a breaking change:

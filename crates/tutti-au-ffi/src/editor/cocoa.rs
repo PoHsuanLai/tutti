@@ -192,8 +192,8 @@ fn make_view(
     // Debug builds additionally verify the argument encodings against the
     // *plugin's* method signature, and that check only passes because this
     // crate enables objc2's `relax-void-encoding`. There is no single encoding
-    // that would satisfy it otherwise: measured on this machine, TDR Nova's
-    // JUCE factory declares the parameter `^{ComponentInstanceRecord=[1q]}`
+    // that would satisfy it otherwise: a JUCE
+    // factory declares the parameter `^{ComponentInstanceRecord=[1q]}`
     // while Apple's own AUBandpassViewFactory declares
     // `^{OpaqueAudioComponentInstance=}` — the same 8-byte pointer under two
     // incompatible declared types, because each SDK generation binds a

@@ -138,7 +138,7 @@ impl ClapLoaded {
     ///
     /// Requires a created editor, not merely a `gui` extension. The CLAP
     /// spec orders every other `clap_plugin_gui` call after `create()`, and plugins
-    /// enforce it — TAL-Reverb-4's validation layer prints
+    /// enforce it, printing
     ///
     /// ```text
     /// [clap-plugin HOST-MISBEHAVING] clap_plugin_gui.can_resize() was called

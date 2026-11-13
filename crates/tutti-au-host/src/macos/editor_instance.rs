@@ -145,14 +145,12 @@ mod tests {
     #[test]
     fn the_gui_mirror_denormalizes_against_the_declared_range() {
         let main = tutti_fixtures::main_thread();
-        let Ok(mut gui) = AuEditorInstance::load(
+        let mut gui = AuEditorInstance::load(
             &main,
             Path::new("/System/Library/Components/CoreAudio.component"),
             &Load::new().plugin("au.aufx.dely.appl"),
-        ) else {
-            eprintln!("AUDelay unavailable; skipping");
-            return;
-        };
+        )
+        .expect("AUDelay ships with macOS and loads");
 
         // A parameter whose range is not 0..=1, or normalized and plain coincide
         // and the test cannot tell a conversion from a pass-through. AUDelay's

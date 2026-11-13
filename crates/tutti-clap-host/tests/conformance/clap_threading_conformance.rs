@@ -384,7 +384,7 @@ fn request_restart_from_process_reaches_the_host() {
 /// audio-thread call; before activation it is a main-thread call.** CLAP tags
 /// `flush` `[active ? audio-thread : main-thread]`, keyed on activation and not
 /// on whether audio has started. Keying it on processing took the main-thread
-/// branch in this window, which TAL-Reverb-4's validation layer reported as
+/// branch in this window, which a plugin's validation layer reports as
 /// `clap_plugin_params.flush() was called on the wrong thread`.
 #[test]
 fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {

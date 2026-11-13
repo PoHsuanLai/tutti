@@ -1288,7 +1288,7 @@ pub enum RenderMode {
     /// Only when the block has [`TRANSPORT_EVENTS_END`] frames or more.
     Transport = 5,
     /// Silence until the plugin has asked the host to process it again
-    /// ([`tutti_test_plugin_request_process_now`], or the file the environment
+    /// (`tutti_test_plugin_request_process_now`, or the file the environment
     /// names), then [`WOKEN_LEVEL`] on every channel. With
     /// [`StatusMode::Sleep`] it is a plugin that slept and is woken: the
     /// first non-silent block is the first `process` call after the request,

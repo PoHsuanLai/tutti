@@ -179,7 +179,7 @@ pub(crate) struct Served<F: OutOfProcess> {
     /// A refusal was told since the last [`finish_refusals`](Self::finish_refusals).
     refused: bool,
     /// Set by the plugin's request to be processed again (any thread), taken
-    /// by [`poll`](ServerSide::poll), which tells the host.
+    /// by `poll`, which tells the host.
     process_requested: Arc<AtomicBool>,
 }
 

@@ -59,7 +59,7 @@ impl Node for Burst {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         for &(f, port, tag) in &self.plan {
-            if let Some(at) = cx.env.offset_of(Frame(f))
+            if let Some(at) = cx.env.offset_of(Frame::new(f))
                 && io
                     .event_out(port as usize)
                     .push(Event::midi(at, Ump([tag, 0, 0, 0])))
@@ -827,7 +827,7 @@ fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
     // overlay has without the widening (89 + 88 planned + 256 commands).
     // Timeline frame 360 is the sink's frame 1 000: its arrival is 640.
     ed.schedule(
-        At::Frame(Frame(1_000 - LEN as u64)),
+        At::Frame(Frame::new(1_000 - LEN as u64)),
         at(1, 0),
         EventKind::Midi(Ump([COMMAND, 0, 0, 0])),
     )

@@ -52,7 +52,7 @@ impl PlayReading {
     pub const fn unpack(w: u64) -> Self {
         Self {
             epoch: (w >> (64 - EPOCH_BITS)) as u32,
-            play: Frame(w & PLAY_MASK),
+            play: Frame::new(w & PLAY_MASK),
         }
     }
 }

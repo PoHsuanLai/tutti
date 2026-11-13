@@ -672,7 +672,7 @@ mod tests {
         );
     }
 
-    /// **The recheck (D4).** A slot republished for a later block while it was
+    /// **The recheck.** A slot republished for a later block while it was
     /// being copied (the peer is two blocks ahead; with two slots it reuses
     /// this one) is a torn read: half of each block. It must be discarded,
     /// with silence in its place, though the first sequence load matched.
@@ -859,7 +859,7 @@ mod tests {
         assert!(format!("{open}").contains("overflows"), "got: {open}");
     }
 
-    /// **`create` is exclusive (D3).** A name that exists is refused rather
+    /// **`create` is exclusive.** A name that exists is refused rather
     /// than truncated: truncating a file another process has mapped faults
     /// that process (SIGBUS), and a planted file would carry our audio.
     #[test]

@@ -177,7 +177,7 @@ impl Rig {
         for _ in 0..blocks {
             self.clock.write(
                 self.time_of(self.frames),
-                Frame(self.frames),
+                Frame::new(self.frames),
                 SampleRate::of(RATE),
             );
             let mut out = vec![0.0f32; Self::BLOCK];

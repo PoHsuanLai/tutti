@@ -444,13 +444,11 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
     );
 }
 
-/// **A block longer than the activation promised never reaches the plugin**
-/// (doc 027 D12). `setupProcessing` told the plugin no block exceeds
-/// `maxSamplesPerBlock`, and a plugin sizes its own buffers by that, so the
-/// host refuses the block, as the plugin would (`InvalidArgument`), with its
-/// outputs cleared. A block within the promise still renders. The refusal is
-/// `tutti-vst3-ffi`'s `Processor::process` (the setup's `max_block` and the
-/// bound channels' capacity); this pins it through the host.
+/// **A block longer than the activation promised never reaches the plugin**. `setupProcessing` told
+/// the plugin no block exceeds `maxSamplesPerBlock`, and a plugin sizes its own buffers by that, so
+/// the host refuses the block, as the plugin would (`InvalidArgument`), with its outputs cleared. A
+/// block within the promise still renders. The refusal is `tutti-vst3-ffi`'s `Processor::process`
+/// (the setup's `max_block` and the bound channels' capacity); this pins it through the host.
 #[test]
 fn a_block_past_the_activated_length_is_refused() {
     if !harness_ready() {
@@ -1278,7 +1276,7 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 #[test]
 fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_midi_protocol::signed_f32_to_bend_u32;
+    use tutti_midi_protocol::signed_f32_to_bend;
 
     if !harness_ready() {
         return;
@@ -1300,7 +1298,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
-                signed_f32_to_bend_u32(0.25),
+                signed_f32_to_bend(0.25).get(),
             ),
         )
     };
@@ -1540,7 +1538,8 @@ fn a_sysex_open_across_a_stop_is_dropped() {
         let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
         let mut out = Vec::new();
         out.extend(
-            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+            tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
+                .expect("a 7-bit payload"),
         );
         out.into_iter()
             .map(|ump| (Offset::ZERO, ump))

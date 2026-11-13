@@ -360,7 +360,7 @@ impl Node for Tags {
 #[test]
 fn a_fan_in_tie_goes_by_source_order() {
     for k in OFFSETS {
-        let at = Frame(512 + k as u64);
+        let at = Frame::new(512 + k as u64);
         let log = Arc::new(Mutex::new(Vec::new()));
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
         let sink = g.add(Unforkable(Tags(Arc::clone(&log))));
@@ -436,7 +436,7 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
         )
         .unwrap();
     let env = Env {
-        frame: Frame(0),
+        frame: Frame::new(0),
         sample_rate: rate,
         block_len: Samples(4),
         transport: rolling_at_two(),

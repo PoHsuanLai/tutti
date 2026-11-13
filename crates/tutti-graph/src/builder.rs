@@ -763,7 +763,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> TransportPosition + Send>;
 /// // A rolling transport is a function of the block's first frame.
 /// r.set_transport_fn(|frame| {
 ///     // 120 BPM at 48 kHz: 24 000 frames a beat.
-///     TransportPosition::new(true, Bpm::of(120.0), Beat(frame.0 as f64 / 24_000.0), None)
+///     TransportPosition::new(true, Bpm::of(120.0), Beat(frame.get() as f64 / 24_000.0), None)
 /// });
 /// assert_eq!(r.render_interleaved(2), vec![0.0; 4]); // L R L R
 /// ```

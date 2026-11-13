@@ -13,10 +13,3 @@ pub use block_clock::{BlockClockReader, BlockReading, Playhead};
 pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError};
 pub use hearing::{HeardOpen, HeardTapError, HeardTaps};
 pub use output::OutputControl;
-
-/// What a host driving the engine names, in one import.
-///
-/// `Result` is left out: it would shadow a name a consumer already has.
-pub mod prelude {
-    pub use crate::{Engine, Error};
-}

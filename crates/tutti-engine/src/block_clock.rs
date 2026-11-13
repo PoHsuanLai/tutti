@@ -255,7 +255,7 @@ impl BlockClockReader {
         let wire = self.cell.read(RETRIES).ok().flatten()?;
         Some(BlockReading {
             os_ns: wire.nanos,
-            frame: Frame(wire.frame),
+            frame: Frame::new(wire.frame),
             rate: SampleRate::new(wire.rate)?,
         })
     }
@@ -274,7 +274,7 @@ impl BlockClockReader {
         };
         Playhead {
             beat: Beat(wire.beat),
-            frame: Frame(wire.frame),
+            frame: Frame::new(wire.frame),
             seconds: Seconds(wire.seconds),
             playing: wire.playing != 0,
             tempo: Bpm::new(wire.tempo).unwrap_or_default(),

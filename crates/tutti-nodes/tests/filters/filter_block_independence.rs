@@ -48,7 +48,7 @@ fn render<N: Node + ParamNode + 'static>(
             .map(|l| l.as_ref().map(|l| &l[start..end]))
             .collect();
         let env = Env {
-            frame: Frame(start as u64),
+            frame: Frame::new(start as u64),
             sample_rate: RATE,
             block_len: Samples(end - start),
             transport: TransportPosition::default(),

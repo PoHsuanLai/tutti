@@ -133,7 +133,7 @@ impl std::error::Error for Refused {}
 /// When a pushed event is due, as the producer names it.
 ///
 /// There is no beat: see the module docs. A [`Frame`] and a [`Moment`] convert
-/// into one (`push(Frame(10), ump)`, `push(clock.after(n), ump)`), so a call
+/// into one (`push(Frame::new(10), ump)`, `push(clock.after(n), ump)`), so a call
 /// site names the clock it means.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Stamp {
@@ -258,7 +258,7 @@ impl EventInletWriter {
     #[must_use]
     pub fn clock(&self) -> Option<Moment> {
         self.reading()
-            .and_then(|r| Some(Moment::new(Frame(r.frame), SampleRate::new(r.rate)?)))
+            .and_then(|r| Some(Moment::new(Frame::new(r.frame), SampleRate::new(r.rate)?)))
     }
 
     /// Queues `ump` (an [`Ump`], or a decoded `tutti_ump::Message`, which
@@ -532,9 +532,9 @@ impl Node for EventInletNode {
             && (self.rate - rate).abs() > f64::EPSILON
         {
             for w in &mut self.waiting {
-                w.frame = Frame(w.frame).rescaled(from, to).get();
+                w.frame = Frame::new(w.frame).rescaled(from, to).get();
             }
-            self.next = Frame(self.next).rescaled(from, to).get();
+            self.next = Frame::new(self.next).rescaled(from, to).get();
         }
         self.rate = rate;
         self.publish();
@@ -548,7 +548,7 @@ impl Node for EventInletNode {
         // it was due. The list is sorted, so what is late is a prefix and the
         // clamp keeps it sorted.
         for w in &mut self.waiting {
-            if env.due(At::Frame(Frame(w.frame))) != Due::Late {
+            if env.due(At::Frame(Frame::new(w.frame))) != Due::Late {
                 break;
             }
             w.frame = start.get();
@@ -566,7 +566,7 @@ impl Node for EventInletNode {
             let frame = match pushed.when {
                 When::NextBlock => start.get(),
                 When::Frame(frame) => {
-                    if env.due(At::Frame(Frame(frame))) == Due::Late {
+                    if env.due(At::Frame(Frame::new(frame))) == Due::Late {
                         self.counts.late.fetch_add(1, Ordering::Relaxed);
                         start.get()
                     } else {
@@ -576,11 +576,11 @@ impl Node for EventInletNode {
                 When::Moment { frame, rate } => {
                     let frame = match (SampleRate::new(rate), SampleRate::new(self.rate)) {
                         (Some(from), Some(to)) if (rate - self.rate).abs() > f64::EPSILON => {
-                            Frame(frame).rescaled(from, to).get()
+                            Frame::new(frame).rescaled(from, to).get()
                         }
                         _ => frame,
                     };
-                    if env.due(At::Frame(Frame(frame))) == Due::Late {
+                    if env.due(At::Frame(Frame::new(frame))) == Due::Late {
                         self.counts.late.fetch_add(1, Ordering::Relaxed);
                         start.get()
                     } else {
@@ -594,7 +594,7 @@ impl Node for EventInletNode {
         let mut sent = 0;
         let mut refused = 0u64;
         for w in &self.waiting {
-            let Due::In(offset) = env.due(At::Frame(Frame(w.frame))) else {
+            let Due::In(offset) = env.due(At::Frame(Frame::new(w.frame))) else {
                 break;
             };
             // A refusal is counted by the port (the executor's dropped-event

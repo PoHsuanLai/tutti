@@ -402,7 +402,7 @@ fn render_wide(
     for (i, &n) in blocks.iter().enumerate() {
         if i % 11 == 3 {
             let kind = EventKind::Midi(Ump([i as u32, 0, 0, 0]));
-            ed.schedule(At::Frame(Frame(frame + 5)), consumer_in(1), kind)
+            ed.schedule(At::Frame(Frame::new(frame + 5)), consumer_in(1), kind)
                 .expect("room");
             ed.schedule(
                 At::Beat(Beat(frame as f64 / 24_000.0 + 0.01)),

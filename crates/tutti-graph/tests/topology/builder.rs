@@ -573,14 +573,14 @@ fn renderer_drives_blocks_and_interleaves() {
         TransportPosition::new(
             true,
             tutti_types::Bpm::of(120.0),
-            Beat(frame.0 as f64),
+            Beat(frame.get() as f64),
             None,
         )
     });
     let out = r.render_interleaved(250);
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![Frame(0), Frame(100), Frame(200)]
+        vec![Frame::new(0), Frame::new(100), Frame::new(200)]
     );
     assert_eq!(out.len(), 500);
     assert!(out.chunks(2).all(|f| f == [1.0, 2.0]));
@@ -589,7 +589,7 @@ fn renderer_drives_blocks_and_interleaves() {
     let (mut l, mut rr) = (vec![0.0; 30], vec![0.0; 30]);
     r.render_into(&mut [&mut l, &mut rr]);
     assert_eq!((l, rr), (vec![1.0; 30], vec![2.0; 30]));
-    assert_eq!(r.executor().frame(), Frame(280));
+    assert_eq!(r.executor().frame(), Frame::new(280));
 }
 
 /// Silence is the empty set and `Source::Zero` is never stored: every writer

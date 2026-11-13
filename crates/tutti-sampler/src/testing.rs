@@ -116,7 +116,7 @@ impl MockTransport {
     /// A block of `frames` at `rate` starting where the playhead stands.
     pub fn env(&self, frames: usize, rate: impl Into<SampleRate>) -> Env {
         Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: rate.into(),
             block_len: Samples(frames),
             transport: self.transport(),

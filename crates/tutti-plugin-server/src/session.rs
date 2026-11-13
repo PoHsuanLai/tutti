@@ -1,8 +1,8 @@
 //! Pure message dispatch — no I/O, no async, no sockets.
 //!
-//! [`Session`] owns the plugin's control half and tells the render thread what its blocks read. [`Session::handle`] translates one [`HostMessage`] into state
-//! changes and returns a [`Reaction`] describing what the transport
-//! loop should do next. Because it has no `async` and no `Transport`
+//! [`Session`] owns the plugin's control half and tells the render thread what its blocks read.
+//! [`Session::handle`] translates one [`HostMessage`] into state changes and returns a [`Reaction`]
+//! describing what the transport loop should do next. Because it has no `async` and no `Transport`
 //! dependency, it's unit-testable without tokio or sockets.
 
 use std::time::Instant;
@@ -365,7 +365,7 @@ impl Session {
 
             M::SetSampleRate { rate } => {
                 // A rate no clock can run at is refused by the wire itself: a
-                // `SampleRate` does not decode from one (doc 027 D13).
+                // `SampleRate` does not decode from one.
                 // The clock follows the rate the host runs at, so a plugin
                 // that takes a later rate is on the right one. A refusal
                 // leaves it silent (`handle_process` publishes nothing) and
@@ -445,16 +445,14 @@ impl Session {
             return Vec::new();
         };
         let events = plugin.plugin_mut().poll(main);
-        // A parameter list that changed may have grown past the output
-        // reserved at load. This runs on the main thread between messages, so
-        // only a pass that told of a changed list pays for the count. What it helps: a VST3 `Reloaded` (the reload builds a new
-        // instance, whose output lists are sized at its activation) and an AU
-        // list change. A VST3 `kParamTitlesChanged` without a reload keeps the
-        // instance's activation-time output and emitted queue counts, so the
-        // instance drops (and counts) points past them before they reach
-        // this output. A CLAP plugin's `params.rescan` that changes the
-        // list reaches this as `PluginParamTitlesChanged` (the instance re-read
-        // it).
+        // A parameter list that changed may have grown past the output reserved at load. This runs
+        // on the main thread between messages, so only a pass that told of a changed list pays for
+        // the count. What it helps: a VST3 `Reloaded` (the reload builds a new instance, whose
+        // output lists are sized at its activation) and an AU list change. A VST3
+        // `kParamTitlesChanged` without a reload keeps the instance's activation-time output and
+        // emitted queue counts, so the instance drops (and counts) points past them before they
+        // reach this output. A CLAP plugin's `params.rescan` that changes the list reaches this as
+        // `PluginParamTitlesChanged` (the instance re-read it).
         if events.iter().any(|e| {
             matches!(
                 e,
@@ -1807,7 +1805,7 @@ mod tests {
         );
     }
 
-    /// **A block's length is the server's to check (doc 027 D12).** An empty
+    /// **A block's length is the server's to check.** An empty
     /// block, one past the length the plugin was activated for (`block_size`,
     /// 512 here), and one past anything memory holds are refused before the
     /// plugin, or the scratch, sees them. Each is answered, published nothing
@@ -2625,8 +2623,8 @@ mod tests {
     ///
     /// The failure used to be provoked with a block longer than the activated
     /// maximum, which the CLAP host refused (`BlockTooLarge`). The server now
-    /// refuses such a block before any plugin sees it (doc 027 D12,
-    /// `a_block_of_a_length_the_plugin_cannot_take_never_reaches_it`), so the
+    /// refuses such a block before any plugin sees it
+    /// (`a_block_of_a_length_the_plugin_cannot_take_never_reaches_it`), so the
     /// plugin fails here on its own account, through the probe's status.
     #[test]
     #[cfg(feature = "clap")]

@@ -367,7 +367,7 @@ mod tests {
         let t = Transport::new(SampleRate::SR_48K);
         let mut a = t.audio(SampleRate::SR_48K).expect("first");
         t.motion
-            .schedule(At::Frame(Frame(0)), MotionEvent::Play)
+            .schedule(At::Frame(Frame::new(0)), MotionEvent::Play)
             .expect("room");
         t.motion
             .schedule(At::NextBlock, MotionEvent::stop_unfaded())

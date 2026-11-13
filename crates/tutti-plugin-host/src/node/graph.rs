@@ -801,7 +801,7 @@ mod owed_tests {
             let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
             let mut out = Vec::new();
             out.extend(
-                tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+                tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
                     .expect("a 7-bit payload"),
             );
             let at = Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block");

@@ -10,8 +10,11 @@
 //! nothing in the engine offers that (see `examples/headless_engine.rs` and
 //! the note in `src/lib.rs`). It proves the vocabulary arrives.
 
-use tutti::prelude::*;
 use tutti::types::MaxBlock;
+use tutti::{
+    At, BarNumber, Beat, Bpm, Cents, ChannelLayout, Db, Engine, Frame, Hz, InterleavedMut, Meter,
+    MeterMap, MotionEvent, SampleRate, Samples, Seconds, TempoMap, Transport, TransportCommand,
+};
 
 /// Everything below is reached through `tutti::` and nothing else. If the
 /// façade stopped re-exporting something, this stops compiling.
@@ -28,8 +31,7 @@ fn one_import_renders_a_block() {
         .expect("builds");
 
     let transport = tutti::transport::Transport::new(SampleRate::SR_48K);
-    let engine =
-        tutti::engine::Engine::new(&transport, &mut editor, executor).expect("within the limits");
+    let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
     let mut out = vec![0.0f32; 256 * 2];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
@@ -41,12 +43,9 @@ fn one_import_renders_a_block() {
     );
 }
 
-/// The measurement vocabulary arrives through the prelude, converting as
-/// documented.
-///
-/// Mirrors `bevy-tutti`'s `prelude_surface.rs`, which makes the same claim
-/// for the Bevy side. If `tutti-engine`'s prelude ever narrowed, this names
-/// which type went missing rather than failing somewhere downstream.
+/// The measurement vocabulary is at the crate's root, converting as
+/// documented. If the root ever narrowed, this names which type went missing
+/// rather than failing somewhere downstream.
 #[test]
 fn the_measurement_vocabulary_arrives_and_converts() {
     assert!((Db(-6.0).to_amplitude().get() - 0.501).abs() < 0.01);
@@ -100,14 +99,14 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
     assert!(rendered.planes()[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));
 }
 
-/// A timed transport program is spelled from the prelude alone: `At`,
+/// A timed transport program is spelled from the root alone: `At`,
 /// `TransportCommand`, and the time-signature trait with its `BarNumber`.
 #[test]
-fn a_timed_transport_program_needs_only_the_prelude() {
+fn a_timed_transport_program_needs_only_the_root() {
     let transport = Transport::new(SampleRate::SR_48K);
     transport
         .motion()
-        .schedule(At::Frame(Frame(128)), MotionEvent::Play)
+        .schedule(At::Frame(Frame::new(128)), MotionEvent::Play)
         .expect("room");
     transport
         .motion()
@@ -125,7 +124,7 @@ fn a_timed_transport_program_needs_only_the_prelude() {
 
 /// A tempo map is built from `tutti::tempo` alone and published to the
 /// transport's settings (what `Session::set_tempo_map` forwards to), with
-/// `TempoMap` itself in the prelude: 120 BPM, then a time ramp to 180 over four
+/// `TempoMap` itself at the root: 120 BPM, then a time ramp to 180 over four
 /// beats, lasts 1.6 s, so beat 4 is frame 76 800 at 48 kHz.
 #[test]
 fn a_tempo_map_is_built_and_published_through_the_facade() {
@@ -134,7 +133,10 @@ fn a_tempo_map_is_built_and_published_through_the_facade() {
         .build()
         .expect("a map");
     let rate = SampleRate::SR_48K;
-    assert_eq!(map.view(rate).frame_at_or_after(Beat(4.0)), Frame(76_800));
+    assert_eq!(
+        map.view(rate).frame_at_or_after(Beat(4.0)),
+        Frame::new(76_800)
+    );
     let transport = tutti::transport::Transport::new(rate);
     transport.settings().set_tempo_map(map);
 }

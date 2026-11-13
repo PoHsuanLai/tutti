@@ -43,7 +43,7 @@ pub struct StagedState {
 /// Variant order is wire-significant; see the module docs.
 // `ProcessAudio` is inline, as `BridgeMessage::AudioProcessed` is: it is the
 // message of every block, and a box would be an allocation at each end per
-// block (doc 027 P2b). Bincode encodes a box and its contents alike.
+// block. Bincode encodes a box and its contents alike.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostMessage {
@@ -362,11 +362,10 @@ pub enum BridgeMessage {
         #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
-    /// The plugin edited one of its own parameters, typically from its editor:
-    /// a [`ParamEdit`](tutti_plugin_types::ParamEdit) (the parameter by the id the plugin reported, its
-    /// normalized value as an `f64`, and where in a gesture it fell). A
-    /// gesture's `Begin`, changes and `End` arrive in the order the plugin made
-    /// them.
+    /// The plugin edited one of its own parameters, typically from its editor: a
+    /// [`ParamEdit`](tutti_plugin_types::ParamEdit) (the parameter by the id the plugin reported,
+    /// its normalized value as an `f64`, and where in a gesture it fell). A gesture's `Begin`,
+    /// changes and `End` arrive in the order the plugin made them.
     ParameterChanged {
         /// The edit.
         edit: crate::protocol::ParamEdit,

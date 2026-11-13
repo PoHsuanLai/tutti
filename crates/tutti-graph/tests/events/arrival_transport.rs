@@ -210,7 +210,7 @@ impl Rig {
                     // The newest piece rolled forward `gap` frames, through
                     // the public walk.
                     let rolled = Env {
-                        frame: Frame(f),
+                        frame: Frame::new(f),
                         sample_rate: rate,
                         block_len: Samples(gap as usize + 1),
                         transport: t,
@@ -245,9 +245,9 @@ impl Rig {
         let e = self
             .played
             .iter()
-            .find(|e| e.offset_of(Frame(f)).is_some())
+            .find(|e| e.offset_of(Frame::new(f)).is_some())
             .expect("a block played that frame");
-        e.transport_at(e.offset_of(Frame(f)).expect("inside"))
+        e.transport_at(e.offset_of(Frame::new(f)).expect("inside"))
     }
 
     /// Every frame of the block just rendered reads the transport `lat`

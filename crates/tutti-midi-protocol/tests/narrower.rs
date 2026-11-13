@@ -2,6 +2,7 @@
 //! here from the spec, never read from the code under test.
 
 use tutti_midi_protocol::{Narrower, Translator};
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, Bank, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
     U7, Ump, Voice1, Voice2,
@@ -31,7 +32,7 @@ fn rpn(address: Address, bank: u8, index: u8, value: u32) -> Message {
         Voice2::Registered {
             bank: U7::of(bank),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }
@@ -42,7 +43,7 @@ fn nrpn(address: Address, bank: u8, index: u8, value: u32) -> Message {
         Voice2::Assignable {
             bank: U7::of(bank),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     )
 }

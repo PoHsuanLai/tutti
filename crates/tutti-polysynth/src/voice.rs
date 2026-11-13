@@ -9,7 +9,7 @@
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
 use crate::note_id::PerNoteMap;
-use tutti_midi_protocol::{Heard, MpeZones, u16_to_unit_f32, unit_f32_to_u16};
+use tutti_midi_protocol::{Heard, MpeZones, unit_f32_to_velocity, velocity_to_unit_f32};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber, NoteVelocity};
@@ -18,6 +18,7 @@ use tutti_voicing::{
     VoiceSpec, Voicing,
 };
 
+use tutti_ump::ControlValue;
 pub use tutti_voicing::VoiceId;
 
 /// Which sounding voice gets taken when every slot is busy and another note
@@ -489,7 +490,7 @@ impl VoiceAllocator {
             Some((id, v)) if id.channel_note().is_some_and(|(_, note)| note == key) => (id, v),
             _ => (
                 NoteId::from_channel_note(channel, key),
-                u16_to_unit_f32(velocity16),
+                velocity_to_unit_f32(NoteVelocity::new(velocity16)),
             ),
         }
     }
@@ -534,10 +535,10 @@ impl VoiceAllocator {
         attribute: tutti_ump::Attribute,
     ) -> AllocationResult {
         // 16 bits, never 0 (a zero velocity is a note-off).
-        let v16 = unit_f32_to_u16(velocity).max(1);
+        let v16 = unit_f32_to_velocity(velocity).max(NoteVelocity::new(1));
         let on = Voice2::NoteOn {
             note,
-            velocity: NoteVelocity::new(v16),
+            velocity: NoteVelocity::new(v16.get()),
             attribute,
         };
         self.run(channel, &on, Some((id, velocity)))
@@ -583,7 +584,11 @@ impl VoiceAllocator {
     fn control(&mut self, channel: MidiChannel, controller: tutti_ump::CCNumber, down: bool) {
         let cc = Voice2::ControlChange {
             controller,
-            value: if down { u32::MAX } else { 0 },
+            value: if down {
+                ControlValue::new(u32::MAX)
+            } else {
+                ControlValue::new(0)
+            },
         };
         self.run(channel, &cc, None);
     }

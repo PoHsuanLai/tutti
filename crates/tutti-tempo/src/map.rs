@@ -264,7 +264,7 @@ impl TempoMap {
         hint: &mut Cursor,
     ) -> Frame {
         let frames = self.seconds_at_from(beat, hint).get() * rate.get();
-        Frame(first_frame_at_or_after(frames).max(0) as u64)
+        Frame::new(first_frame_at_or_after(frames).max(0) as u64)
     }
 
     #[inline]
@@ -279,6 +279,6 @@ impl TempoMap {
         if start == frame.get() && seg.beat0 != Beat(0.0) {
             return Some(frame);
         }
-        next.map(Frame)
+        next.map(Frame::new)
     }
 }

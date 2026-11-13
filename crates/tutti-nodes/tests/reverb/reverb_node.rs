@@ -56,7 +56,7 @@ impl<N: Node> Rig<N> {
 
     fn block(&mut self, input: &[f32], params: &[Option<&[f32]>]) -> tutti_graph::contract::Driven {
         let env = Env {
-            frame: Frame(self.frame),
+            frame: Frame::new(self.frame),
             sample_rate: SR,
             block_len: Samples(input.len()),
             transport: TransportPosition::default(),

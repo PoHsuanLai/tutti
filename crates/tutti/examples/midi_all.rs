@@ -23,8 +23,12 @@ use tutti::midi::{self, MidiRouteRule, TakePlacement};
 use tutti::midi_file::{FileEvent, SmfFormat};
 use tutti::midi_protocol::{MpeMode, MpeZoneConfig, MpeZones};
 use tutti::polysynth::{PolySynth, SynthConfig};
-use tutti::prelude::*;
 use tutti::ump::U7;
+use tutti::{
+    AddedInstrument, ChannelLayout, Error, EventCapacity, Frame, InterleavedMut, MaxBlock, Message,
+    MidiChannel, MidiFile, MidiGroup, NoteNumber, NoteVelocity, SampleRate, Samples, Session,
+    SessionEvent, Stamp, Tick, TimedMidiEvent, Track,
+};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
@@ -46,7 +50,7 @@ struct Outcome {
 
 /// A session for the program: the hardware's OS layer if it opens, else none.
 /// Hears Groups 1 and 2 (`midi_groups`), so a route can name Group 2.
-fn session() -> Result<Session, tutti::Error> {
+fn session() -> Result<Session, Error> {
     let build = |hardware: bool| {
         let builder = Session::builder().midi_groups(MidiGroup::of(1));
         let builder = if hardware {

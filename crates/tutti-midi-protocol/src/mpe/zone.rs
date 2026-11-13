@@ -34,8 +34,8 @@ impl MpeZone {
     }
 }
 
-/// MPE's two default pitch-bend ranges (RP-053 / M1-100-UM, "Pitch Bend
-/// Sensitivity"): the Master channel bends the whole zone by 2 semitones, a
+/// MPE's two default pitch-bend ranges (RP-053 / M1-100-UM, Pitch Bend
+/// Sensitivity): the Master channel bends the whole zone by 2 semitones, a
 /// Member channel bends its one note by 48. A receiver of an MPE
 /// Configuration Message resets both to these.
 ///
@@ -109,8 +109,8 @@ impl MpeZoneConfig {
     /// (master 2 semitones, members 48), or `None` for a count outside
     /// `1..=`[`MAX_MEMBERS`](Self::MAX_MEMBERS).
     ///
-    /// `0` is not a zone: in an MPE Configuration Message it means "disable
-    /// this zone" ([`from_mcm`](Self::from_mcm) reports it as such), and no
+    /// `0` is not a zone: in an MPE Configuration Message it means disable
+    /// this zone ([`from_mcm`](Self::from_mcm) reports it as such), and no
     /// configuration describes a disabled zone.
     #[must_use]
     pub const fn new(zone: MpeZone, member_count: u8) -> Option<Self> {
@@ -277,7 +277,7 @@ impl MpeZoneConfig {
     /// `ump` is an MPE Configuration Message (RPN bank `0x00`, index `0x06`) on
     /// a zone's master channel. `None` for any other message.
     ///
-    /// A count of `0` is the spec's "disable this zone" and is returned as `0`,
+    /// A count of `0` is the spec's disable-this-zone value and is returned as `0`,
     /// which [`new`](Self::new) would refuse. A message is rejected, not
     /// clamped, when RP-053 does not allow it: an MCM goes on Ch1 or Ch16 only,
     /// and a zone has at most 15 members. Clamping would silently reconfigure

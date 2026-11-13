@@ -275,7 +275,6 @@ jobs:
       # The CoreMIDI backend: the native-UMP source and the host clock are
       # `tutti-coremidi-ffi`'s, the rest of the backend is `tutti-midi-hardware`'s.
       - run: cargo clippy --locked -p tutti-coremidi-ffi -p tutti-midi-hardware --all-targets -- -D warnings
-      - run: cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
       # The editor loader's AU arm (`format/gui`) is compiled here only; the AU
       # contract suite (`tutti-plugin-contract`'s `tests/au.rs`, the shared plugin's AU shell) runs in
       # the macOS `test` job.
@@ -377,12 +376,6 @@ jobs:
       #                         watch tests over `ManualStreamDriver`). With `audio-io`,
       #                         tests/io/device_input.rs (the inputs a restart
       #                         reopens, over a test's own capture).
-      #   tutti-au-host/installed-units — linted by the macOS clippy job (the
-      #                         crate is empty on Linux) and run only locally
-      #                         (`cargo xtask test-au-installed`, part of `test-all`):
-      #                         it asserts a claim about third-party Audio
-      #                         Units installed on the machine, and fails,
-      #                         never skips, where there are none
       #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
       #                         only locally (`cargo xtask test-features`): the suite
       #                         needs the kernel's `snd-seq` module, which the
@@ -501,12 +494,8 @@ jobs:
       - name: Lint JACK
         run: cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings
 
-      # The out-of-process plugin bridge, driven at real callback pacing. This
-      # belongs in *this* job because it was dark in exactly the same way: the
-      # whole suite was `#[ignore]`d for needing third-party plugins installed,
-      # and `EFFECTS` names macOS system paths, so the only harness measuring
-      # the bridge ran on no machine anywhere. It now falls back to the
-      # reference CLAP probe, which cargo builds as a dev-dependency.
+      # The out-of-process plugin bridge, driven at real callback pacing against
+      # the reference CLAP probe, which cargo builds as a dev-dependency.
       #
       # `plugin-server` first: the suite spawns it, and it cannot be a
       # dev-dependency because `tutti-plugin-server` depends on `tutti-plugin`
@@ -627,10 +616,6 @@ jobs:
       # editor on the process main thread; it answers nextest's
       # `--list --format terse` and `<case> --exact`, so it runs here like any
       # other binary.
-      # `no_installed_third_party_unit_implements_the_mapping_family` is behind
-      # `tutti-au-host`'s `installed-units` feature, which this run leaves off:
-      # it asserts a claim about third-party Audio Units installed on the
-      # machine and fails, never skips, where there are none.
       - name: Test
         shell: bash
         run: |

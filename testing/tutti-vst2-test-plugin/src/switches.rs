@@ -141,13 +141,12 @@ pub(crate) fn fire_update_display() -> bool {
 
 /// Make the probe answer `effGetParameterProperties`.
 ///
-/// Off by default, because *declining is the realistic behaviour*: every VST2
-/// plugin installed on the development machine (TAL-NoiseMaker, TAL-Reverb-4,
-/// TDR Nova) answers `0` for every parameter. The default probe therefore
-/// models the common case, and a test opts in to the rare plugin that answers.
+/// Off by default, because *declining is the realistic behaviour*: most VST2
+/// plugins answer `0` for every parameter. The default probe therefore models
+/// the common case, and a test opts in to the rare plugin that answers.
 ///
-/// Without this switch the host's decode path is unreachable from any test on
-/// this machine — the opcode would be implemented and never executed.
+/// Without this switch the host's decode path is unreachable from any test —
+/// the opcode would be implemented and never executed.
 #[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_answer_param_properties(enable: bool) {
     ANSWER_PARAM_PROPERTIES.store(enable, Ordering::SeqCst);

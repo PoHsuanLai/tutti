@@ -21,7 +21,7 @@ use tutti_ump::ControlValue;
 use tutti_ump::{CCNumber, NoteNumber, Rpn, U7, U14, Voice2};
 
 /// What a full Modulation Wheel spans until RPN 5 says otherwise: General MIDI
-/// 2 section 3.4.4, "Default Value: 00H/40H (+/-50 cents)" (MSB semitones, LSB
+/// 2 section 3.4.4, default 00H/40H (+/-50 cents) (MSB semitones, LSB
 /// 100/128 cent: 64 of them).
 pub const DEFAULT_MODULATION_RANGE: Cents = Cents(50.0);
 
@@ -32,8 +32,8 @@ const PAN_LSB: CCNumber = CCNumber::PAN.lsb().unwrap();
 const EXPRESSION_LSB: CCNumber = CCNumber::EXPRESSION.lsb().unwrap();
 
 /// A 14-bit controller with its most significant 7 bits replaced (CC 0 to 31).
-/// The least significant 7 bits go to zero: M1 p.12, "When an MSB is received,
-/// the receiver should set its concept of the LSB to zero."
+/// The least significant 7 bits go to zero: M1 p.12, a receiver sets its concept of the
+/// LSB to zero when an MSB is received.
 fn with_msb(msb: U7) -> U14 {
     U14::masked(u16::from(msb.get()) << 7)
 }
@@ -131,10 +131,10 @@ impl ChannelState {
     }
 
     /// Reset All Controllers (RP-015) for the controllers this value holds:
-    /// "Set Expression (#11) to 127; Set Modulation (#1) to 0; Set Pedals (#64,
-    /// #65, #66, #67) to 0 [...]; Reset channel pressure to 0", and nothing
-    /// else: not Volume (#7), Pan (#10), the sound controllers, "registered or
-    /// non-registered parameters" (the sensitivity, the tuning and the
+    /// Expression (#11) to 127, Modulation (#1) to 0, the pedals (#64, #65,
+    /// #66, #67) to 0 and channel pressure to 0, and nothing else: not Volume
+    /// (#7), Pan (#10), the sound controllers, nor the registered or
+    /// non-registered parameters (the sensitivity, the tuning and the
     /// Modulation Depth Range stay), nor the Legato Footswitch (#68), which the
     /// list does not name. The pitch wheel centres ([`Voicing`](crate::Voicing)
     /// does it, for it tells the instrument), and the pedals #64 and #66 are
@@ -258,8 +258,8 @@ impl ChannelState {
     /// value from, so that the state is the value a Registered Controller set
     /// (the inverse of what it reads), or `None` for a parameter this state
     /// does not hold. A word carries only the resolution the parameter has:
-    /// the bits below it are zero (M2-104 section 7.4.7: they are "undefined
-    /// and shall be ignored").
+    /// the bits below it are zero (M2-104 section 7.4.7: they are undefined
+    /// and ignored).
     pub(crate) fn registered_word(&self, rpn: Rpn) -> Option<u32> {
         match rpn {
             Rpn::PITCH_BEND_SENSITIVITY => {
@@ -324,9 +324,8 @@ impl ChannelState {
     }
 
     /// The modulation depth now: the wheel's position over the range. General
-    /// MIDI 2 section 3.3.2: "The depth of change at the maximum value conforms
-    /// to the value that is set by Modulation Depth Range [...] linear in
-    /// cents."
+    /// MIDI 2 section 3.3.2: the depth of change at the maximum value is the
+    /// Modulation Depth Range, linear in cents.
     #[must_use]
     pub fn modulation_depth(&self) -> Cents {
         self.modulation_range * self.modulation()
@@ -351,10 +350,9 @@ impl ChannelState {
         self.pressure
     }
 
-    /// The stereo position of CC 10 (and 42), by RP-036: "the effective range
-    /// for CC#10 is modified to be 1 to 127, and values 0 and 1 both pan hard
-    /// left. The recommended method is to subtract 1 from the value of CC#10,
-    /// and saturate the result to be non-negative", so 64 is true centre
+    /// The stereo position of CC 10 (and 42), by RP-036: the effective range
+    /// for CC#10 is 1 to 127, values 0 and 1 both pan hard left, and the
+    /// recommended method is to subtract 1 and saturate at zero, so 64 is true centre
     /// (`Pan::CENTER`), 0 and 1 are `Pan::LEFT` and 127 is `Pan::RIGHT`. The
     /// 14-bit value is read the same way, the subtracted 1 being 128 of its
     /// steps.
@@ -389,13 +387,13 @@ impl ChannelState {
     }
 
     /// How fast a glide goes, in cents a millisecond, from Portamento Time (CC
-    /// 5 and 37). General MIDI 2 section 3.3.3 gives "the recommended example"
+    /// 5 and 37). General MIDI 2 section 3.3.3 gives a recommended example
     /// as a figure on a log axis from 0.01 to 1,000 cent/msec, falling from the
     /// first value to the last; `PORTAMENTO_RATE` is its curve read at the
     /// points below and interpolated in log, so the end points are the figure's
     /// own. The default time, 0, is the fastest.
     #[must_use]
-    pub fn glide_rate(&self) -> f32 {
+    pub(crate) fn glide_rate(&self) -> f32 {
         let at = (f32::from(self.portamento_time.get()) / 128.0).min(127.0);
         let i = PORTAMENTO_RATE
             .iter()
@@ -440,7 +438,7 @@ mod tests {
         c.pan()
     }
 
-    /// RP-036: "64 (40H) is Center", "values 0 and 1 both pan hard left", and
+    /// RP-036: 64 (40H) is centre, values 0 and 1 both pan hard left, and
     /// 127 is hard right; the default, 64, is the centre.
     #[test]
     fn pan_64_is_true_centre_and_0_and_1_are_hard_left() {
@@ -463,8 +461,8 @@ mod tests {
         }
     }
 
-    /// M1 p.12: "When an MSB is received, the receiver should set its concept
-    /// of the LSB to zero." After MSB 100, LSB 64, MSB 100 the 14-bit value is
+    /// M1 p.12: a receiver sets its concept of the LSB to zero when an MSB is
+    /// received. After MSB 100, LSB 64, MSB 100 the 14-bit value is
     /// 100 * 128, not 100 * 128 + 64.
     #[test]
     fn an_msb_sets_the_lsb_to_zero() {
@@ -475,9 +473,9 @@ mod tests {
         assert_eq!(c.volume(), position(U14::of(100 * 128)));
     }
 
-    /// GM2 section 3.4.4: the default Modulation Depth Range is 00H/40H, "+/-50
-    /// cents", and "MSB = 00H, LSB = 08H means [...] 6.25 cents"; "MSB = 01H,
-    /// LSB = 00H" is a semitone. A full wheel reaches the range.
+    /// GM2 section 3.4.4: the default Modulation Depth Range is 00H/40H, +/-50
+    /// cents, MSB 00H with LSB 08H is 6.25 cents, and MSB 01H with LSB 00H is a
+    /// semitone. A full wheel reaches the range.
     #[test]
     fn the_modulation_depth_range_follows_gm2() {
         let mut c = ChannelState::new(Semitones(2.0));

@@ -225,7 +225,7 @@ fn disabled_master_emits_nothing() {
 /// sends that boundary's tick on frame 0.
 ///
 /// This pinned two ticks (1000, 2000) until the start tick was fixed:
-/// MIDI 1.0 (MMA, "System Real Time Messages", Start) has a receiver
+/// MIDI 1.0 (MMA, System Real Time Messages, Start) has a receiver
 /// begin on the first Timing Clock after Start, so the clock of beat 0
 /// must be sent, or every receiver runs one tick behind.
 #[test]
@@ -267,8 +267,8 @@ fn first_clock(events: &[UmpAt]) -> (usize, u32) {
 
 /// Start at beat 0, Continue at an on-tick beat, and a locate while
 /// playing to an on-tick beat: each sends an F8 on frame 0, queued after
-/// its Start / Continue / Song Position. MIDI 1.0 (MMA, "System Real
-/// Time Messages", Start, Continue): a receiver begins on the first
+/// its Start / Continue / Song Position. MIDI 1.0 (MMA, System Real
+/// Time Messages, Start, Continue): a receiver begins on the first
 /// Timing Clock after Start / Continue.
 #[test]
 fn an_on_tick_start_continue_or_locate_clocks_its_first_frame() {
@@ -607,8 +607,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
         );
         // Piece 0 sits on an even frame of the timeline, and the label the
         // cycle spells is that frame: the decoder reports it two frames on
-        // (MTC: "A receiver of this time must keep an internal offset of +2
-        // frames"), and the two differ by under the sample the event is
+        // (MTC: a receiver keeps an internal offset of +2 frames), and the two differ by under the sample the event is
         // placed on.
         let (num, den) = fps.ratio();
         let lag = piece0_at - (tc.to_seconds().get() - 2.0 * den as f64 / num as f64);

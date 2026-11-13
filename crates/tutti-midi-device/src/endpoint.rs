@@ -66,8 +66,8 @@ pub enum BlockError {
     /// The MIDI 1.0 port is the reserved `0x03`.
     #[error("the block's MIDI 1.0 port is the reserved 3")]
     ReservedMidi1Port,
-    /// A MIDI 1.0 port spans one Group (§7.1.8: "Number of Groups Spanned shall
-    /// be 1"), and this block spans `groups`.
+    /// A MIDI 1.0 port spans one Group (§7.1.8 requires Number of Groups Spanned
+    /// to be 1), and this block spans `groups`.
     #[error("a MIDI 1.0 port spans one Group, not {}", .groups.get())]
     Midi1PortSpansGroups {
         /// How many Groups it was to span.
@@ -261,7 +261,7 @@ impl FunctionBlock {
         let first_group = FirstGroup::new(info.first_group.get())?;
         let groups = GroupSpan::new(info.groups_spanned.get())?;
         // A peer's reserved MIDI 1.0 value, or a port over several Groups, is
-        // kept as "not a port": the block is still usable as MIDI 2.0.
+        // kept as not a port: the block is still usable as MIDI 2.0.
         let midi1 = match info.midi1 {
             Midi1Port::Unrestricted | Midi1Port::Restricted if groups.get() == 1 => info.midi1,
             _ => Midi1Port::No,
@@ -642,10 +642,9 @@ impl Endpoint {
     /// Endpoint's: `None` for one `from_info` refuses and for one outside the
     /// count the Endpoint declared (its numbers are `0..declared`, §7.1.7). A
     /// block a peer that declared its blocks static sends inactive is read
-    /// active: §7.1.8 says such an Endpoint "shall not have any inactive
-    /// Function Blocks and all Function Blocks shall have this bit set to
-    /// high". A MIDI 1.0 port over several Groups is already read as a plain
-    /// block (`from_info`: §7.1.8, "Number of Groups Spanned shall be 1").
+    /// active: §7.1.8 says such an Endpoint has no inactive
+    /// Function Blocks, every one having the bit set. A MIDI 1.0 port over several Groups is already read as a plain
+    /// block (`from_info`: §7.1.8 requires it to span one Group).
     pub(crate) fn read_block(&self, info: &FunctionBlockInfo) -> Option<FunctionBlock> {
         let mut block = FunctionBlock::from_info(info)?;
         if block.id.get() >= self.declared_blocks {

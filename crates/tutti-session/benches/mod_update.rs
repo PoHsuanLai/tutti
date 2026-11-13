@@ -23,7 +23,7 @@ use tutti_types::MaxBlock;
 use tutti_modulation::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{InPort, Key, OutPort, Root, RouteSpec, Session};
-use tutti_types::{BeatDuration, Depth, Hz, Q};
+use tutti_types::{BeatsPerCycle, Depth, Hz, Q};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const UPDATES: usize = 2_000;
@@ -59,7 +59,9 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<Key<SvfFilterNode<f32>>>) {
         for (i, &f) in filters.iter().enumerate() {
             let cutoff = f.cutoff();
             m.range(cutoff, Hz(20.0)..Hz(20_000.0)).unwrap();
-            let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.25 + i as f64 / 64.0)));
+            let lfo = m.lfo(
+                Lfo::sine().rate(BeatsPerCycle::new(0.25 + i as f64 / 64.0).expect("above zero")),
+            );
             m.route(RouteSpec::new(lfo, cutoff, Depth::of(0.1)))
                 .unwrap();
         }

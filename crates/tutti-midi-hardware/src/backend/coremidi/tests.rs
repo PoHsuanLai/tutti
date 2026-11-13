@@ -126,7 +126,7 @@ fn the_os_blocks_are_within_the_spec() {
 }
 
 /// **A packet sent `At` a future instant is held by CoreMIDI until then, and
-/// one sent `Now` goes at once** (design 017, "Output"): the send time the
+/// one sent `Now` goes at once**: the send time the
 /// plan gives becomes the packet's host-time stamp, which CoreMIDI schedules.
 /// A virtual UMP destination records when each packet arrives; the note sent
 /// 150 ms ahead arrives after the one sent now, and not before its instant.

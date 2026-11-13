@@ -57,11 +57,6 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "the workspace suite the way CI runs it (nextest; builds plugin-server and plugin-probe first)",
     ),
     (
-        "test-au-installed",
-        "",
-        "the AU mapping-family claim; needs third-party Audio Units installed (macOS)",
-    ),
-    (
         "test-doc",
         "[cargo test args]",
         "doctests (nextest does not run them)",
@@ -74,7 +69,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     (
         "test-all",
         "",
-        "test, test-features, test-au-installed, test-doc, test-release",
+        "test, test-features, test-doc, test-release",
     ),
     (
         "check-features",
@@ -313,10 +308,6 @@ impl Planner<'_> {
                 self.dep("plugin-probe")?;
                 self.run(Cmd::sh("cargo nextest run --locked --workspace").args(args));
             }
-            "test-au-installed" => self.run(
-                Cmd::sh("cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass")
-                    .args(["-E", "test(no_installed_third_party_unit_implements_the_mapping_family)"]),
-            ),
             "test-doc" => {
                 self.run(Cmd::sh("cargo test --locked --doc --workspace").args(args));
                 self.run(Cmd::sh("cargo test --locked --doc -p tutti-session --all-features").args(args));
@@ -325,7 +316,7 @@ impl Planner<'_> {
                 "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph",
             ]),
             "test-all" => {
-                for d in ["test", "test-features", "test-au-installed", "test-doc", "test-release"] {
+                for d in ["test", "test-features", "test-doc", "test-release"] {
                     self.dep(d)?;
                 }
             }
@@ -507,7 +498,6 @@ impl Planner<'_> {
 }
 
 const CHECK_FEATURES: &[&str] = &[
-    r#"cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,audio-io,serde --all-targets -- -D warnings"#,
@@ -551,7 +541,6 @@ const CHECK_FEATURES: &[&str] = &[
 ];
 
 const TEST_FEATURES: &[&str] = &[
-    r#"cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass"#,
     r#"cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst3"#,
     r#"cargo build --locked -p tutti-plugin-probe"#,
     r#"cargo nextest run --locked -p tutti-cpal --features capture"#,

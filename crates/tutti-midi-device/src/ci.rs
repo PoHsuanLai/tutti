@@ -63,32 +63,28 @@ pub const CI_SUB_ID_1: u8 = 0x0D;
 
 /// The MIDI-CI Message Format Version this codec speaks: **0x02** (MIDI-CI v1.2).
 ///
-/// M2-101 §5.3: "In this version 1.2 of the MIDI-CI Specification, the version
-/// number is 0x02." The same section requires a device to "always use its own
-/// Message Format Version", so this may only be raised alongside the message
+/// M2-101 §5.3 gives version 1.2 the number 0x02, and requires a device to
+/// always use its own Message Format Version, so this may only be raised alongside the message
 /// bodies, which carry every Version-2 field of the messages here: Discovery's
 /// Output Path ID (Table 6), the reply's Output Path Instance ID and Function
 /// Block (Table 8) and NAK's details, message length and text (Table 15).
 ///
-/// Older peers still interoperate: §5.3 requires a receiver to "process the
-/// fields, values, and bits defined in the received version" when it is lower
+/// Older peers still interoperate: §5.3 requires a receiver to process only the
+/// fields, values and bits of the received version when it is lower
 /// than its own, and the decoders default each absent Version-2 field rather
 /// than rejecting the message.
 ///
-/// Changing the version a device sends is not a free edit (§5.3): it "shall
-/// invalidate its MUID and initiate a new Discovery Transaction".
+/// Changing the version a device sends is not a free edit (§5.3): the device
+/// must invalidate its MUID and start a new Discovery Transaction.
 pub const CI_VERSION: CiVersion = CiVersion::of(0x02);
 
 /// The Message Format Version byte (M2-101 §5.2.1, §5.3, §5.4): `0x01` to
 /// `0x1F`.
 ///
-/// "In version 1.1 of the MIDI-CI specification, the version number is 0x01. In
-/// this version 1.2 ... the version number is 0x02." Bits 7 to 5 are "Reserved
-/// for future major revisions" and "If any of the reserved bits of the Message
-/// Format Version field are set, the Device shall reply with a NAK message
-/// (error code 0x02)", so a value with one set is not a version a message
-/// carries; and "Message Format Version 0x00 is deprecated and shall not be
-/// used".
+/// Version 1.1 is 0x01 and version 1.2 is 0x02. Bits 7 to 5 are reserved for
+/// future major revisions, and a device that sees one set replies with a NAK
+/// (error code 0x02), so a value with one set is not a version a message
+/// carries; Message Format Version 0x00 is deprecated (§5.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
@@ -96,7 +92,7 @@ pub struct CiVersion(u8);
 
 impl CiVersion {
     /// The mask of the reserved bits, 7 to 5.
-    pub const RESERVED_BITS: u8 = 0xE0;
+    pub(crate) const RESERVED_BITS: u8 = 0xE0;
 
     /// The version, or `None` for `0x00` and for a value with a reserved bit
     /// set.
@@ -153,8 +149,8 @@ impl From<CiVersion> for u8 {
 /// The Device ID byte of a message (M2-101 §3.2 and Table 5): which Channel,
 /// Group or Function Block it is to or from.
 ///
-/// "00-0F: To/from MIDI Channels 1-16; 10-7D: Reserved; 7E: To/from Group; 7F:
-/// To/from Function Block." A reserved value is not one.
+/// `00` to `0F` address MIDI Channels 1 to 16, `7E` the Group and `7F` the
+/// Function Block; `10` to `7D` are reserved, and a reserved value is not one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
@@ -217,8 +213,8 @@ impl From<CiDeviceId> for u8 {
 /// device gives itself. Four 7-bit bytes, least significant first, on the wire.
 ///
 /// It holds a MUID a device can *own*: the reserved range
-/// [`RESERVED_START`](Self::RESERVED_START) to `0x0FFF_FFFE` and the broadcast
-/// value [`BROADCAST_RAW`](Self::BROADCAST_RAW) are refused. The broadcast
+/// `RESERVED_START` to `0x0FFF_FFFE` and the broadcast
+/// value `BROADCAST_RAW` are refused. The broadcast
 /// address is a [`Destination`], not a `Muid`. A MUID is drawn from an OS random
 /// source by whoever owns the device; this type only checks one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -227,9 +223,9 @@ pub struct Muid(u32);
 impl Muid {
     /// The first reserved MUID, `0x0FFF_FF00` (M2-101 §3.3: `0x0FFF_FF00` to
     /// `0x0FFF_FFFE` are reserved).
-    pub const RESERVED_START: u32 = 0x0FFF_FF00;
+    pub(crate) const RESERVED_START: u32 = 0x0FFF_FF00;
     /// The broadcast value, `0x0FFF_FFFF` (M2-101 §3.3.3).
-    pub const BROADCAST_RAW: u32 = 0x0FFF_FFFF;
+    pub(crate) const BROADCAST_RAW: u32 = 0x0FFF_FFFF;
 
     /// A MUID, or `None` for a value past 28 bits, in the reserved range or the
     /// broadcast value.
@@ -244,7 +240,7 @@ impl Muid {
 
     /// A MUID from a caller's random word: its low 28 bits, or `None` when
     /// they fall in the reserved range or on the broadcast value, so the caller
-    /// draws again. No random source is named here: a MUID "should" come from a
+    /// draws again. No random source is named here: a MUID should come from a
     /// good one (M2-101 Appendix A.1), and whose is the owner's.
     #[must_use]
     pub const fn from_entropy(word: u32) -> Option<Self> {
@@ -351,10 +347,9 @@ fn from_wire_bytes(b: [u8; 4]) -> Option<u32> {
 /// type) is **not** stored here: the [`CiMessage`] variant determines it, and so
 /// it determines the destination MUID too, which is why neither is a field.
 ///
-/// M2-101 §3.3.3: "The Broadcast MUID shall be used only for the following
-/// MIDI-CI Messages: Discovery, Invalidate MUID, Profile Added Report, Profile
-/// Removed Report, Profile Enabled Report, Profile Disabled Report, Profile
-/// Specific Data". Discovery and Invalidate MUID are defined with the Broadcast
+/// M2-101 §3.3.3 limits the Broadcast MUID to Discovery, Invalidate MUID,
+/// the Profile Added, Removed, Enabled and Disabled Reports, and Profile
+/// Specific Data. Discovery and Invalidate MUID are defined with the Broadcast
 /// MUID as destination (Tables 6 and 12); Discovery Reply, ACK and NAK are not
 /// on the list, so they go to one device. A [`CiMessage`] holds exactly that
 /// and no other: a variant that is broadcast has no destination field, and one
@@ -370,9 +365,6 @@ pub struct CiHeader {
 }
 
 impl CiHeader {
-    /// Length of the encoded preamble in bytes: `7E id 0D sub2 ver` + 2x4 MUID.
-    pub const LEN: usize = 5 + 4 + 4;
-
     /// A header from `source`, to the whole Function Block, at [`CI_VERSION`]:
     /// the default of an inquiry and its reply (§5.2.1).
     #[must_use]
@@ -494,7 +486,7 @@ pub enum CiMessage {
         to: Muid,
         /// The Profile to enable.
         profile: ProfileId,
-        /// "Number Channels Requested": 0 for a Group or Function Block address.
+        /// `Number Channels Requested`: 0 for a Group or Function Block address.
         /// A Version 1 sender has no such field and it reads as 0.
         channels: ProfileChannels,
     },
@@ -507,25 +499,25 @@ pub enum CiMessage {
         /// The Profile to disable.
         profile: ProfileId,
     },
-    /// Profile Enabled Report (§7.10): a Profile is now enabled. "Always" to the
+    /// Profile Enabled Report (§7.10): a Profile is now enabled. Always sent to the
     /// Broadcast MUID.
     ProfileEnabled {
         /// Addressing preamble; its Device ID is the address.
         header: CiHeader,
         /// The Profile.
         profile: ProfileId,
-        /// "Number Channels enabled": 0 for a Group or Function Block address,
+        /// `Number Channels enabled`: 0 for a Group or Function Block address,
         /// and for a Version 1 sender, which has no such field.
         channels: ProfileChannels,
     },
-    /// Profile Disabled Report (§7.11): a Profile is now disabled. "Always" to the
+    /// Profile Disabled Report (§7.11): a Profile is now disabled. Always sent to the
     /// Broadcast MUID.
     ProfileDisabled {
         /// Addressing preamble; its Device ID is the address.
         header: CiHeader,
         /// The Profile.
         profile: ProfileId,
-        /// "Number Channels disabled": as [`ProfileEnabled`](Self::ProfileEnabled).
+        /// `Number Channels disabled`: as [`ProfileEnabled`](Self::ProfileEnabled).
         channels: ProfileChannels,
     },
     /// Profile Added Report (§7.4): a Profile is newly supported. To the
@@ -564,7 +556,7 @@ pub enum CiMessage {
         to: Muid,
         /// The Profile.
         profile: ProfileId,
-        /// The target answered, "the same as in the Profile Details Inquiry".
+        /// The target answered, as it was in the Profile Details Inquiry.
         target: InquiryTarget,
         /// The data of that target.
         data: DetailsData,
@@ -694,7 +686,7 @@ impl CiMessage {
                 out.extend(profile.to_bytes());
                 out.extend(wire_u14(channels.get()));
             }
-            // "2 bytes Reserved" (Table 25).
+            // Two reserved bytes (Table 25).
             CiMessage::SetProfileOff { profile, .. } => {
                 out.extend(profile.to_bytes());
                 out.extend([0, 0]);
@@ -731,7 +723,7 @@ impl CiMessage {
             }
             CiMessage::ProfileSpecificData { profile, data, .. } => {
                 out.extend(profile.to_bytes());
-                // Table 28: "4 bytes Length of Following Profile Specific Data (LSB first)".
+                // Table 28: a 4-byte length of the Profile Specific Data that follows, LSB first.
                 out.extend(wire_bytes(data.as_bytes().len() as u32));
                 out.extend(data.as_bytes().iter().copied());
             }
@@ -968,10 +960,9 @@ pub enum Decoded {
 
 /// A MIDI-CI message the codec could not read, with the fields of its preamble
 /// that were there: what a device needs to address the NAK that §5.3 and §5.11
-/// require ("Reply to a MIDI-CI message the Device does not support", "with
-/// MIDI-CI message Version/Format the Device does not support", "to a malformed
-/// MIDI-CI message", "with a MIDI-CI Message Format Version with reserved bits
-/// set").
+/// require: a reply to a message the device does not support, one of a version
+/// or format it does not support, a malformed one, or one whose Message Format
+/// Version has reserved bits set.
 ///
 /// The fields are the raw bytes, because the reason may be that one of them was
 /// not valid: the Device ID may be reserved, the version may be 0, the source may
@@ -1000,7 +991,7 @@ pub struct Unread {
 pub enum UnreadReason {
     /// A reserved bit (7 to 5) of the Message Format Version is set (§5.3).
     ReservedVersionBits,
-    /// Message Format Version `0x00`, "deprecated and shall not be used" (§5.4).
+    /// Message Format Version `0x00`, which is deprecated (§5.4).
     VersionZero,
     /// The Device ID is in the reserved range `0x10..=0x7D` (Table 5).
     ReservedDeviceId,
@@ -1027,18 +1018,17 @@ pub enum UnreadReason {
 }
 
 impl UnreadReason {
-    /// The NAK Status Code Table 16 gives this: `0x02` "MIDI-CI version not
-    /// supported" for a version the Device cannot read (§5.3 names reserved
-    /// bits; version 0 is tutti's reading), `0x01` "MIDI-CI message not
-    /// supported", else `0x41` "Message was malformed".
+    /// The NAK Status Code Table 16 gives this: `0x02` (version not
+    /// supported) for a version the Device cannot read (§5.3 names reserved
+    /// bits; version 0 is tutti's reading), `0x01` (message not
+    /// supported), else `0x41` (message malformed).
     #[must_use]
-    pub fn nak_status(self) -> U7 {
+    pub(crate) fn nak_status(self) -> U7 {
         match self {
             Self::ReservedVersionBits | Self::VersionZero => Nak::STATUS_VERSION_NOT_SUPPORTED,
             Self::UnsupportedMessage => Nak::STATUS_MESSAGE_NOT_SUPPORTED,
-            // §5.8: "If the Device is not able to provide the requested
-            // information of the given Status, it should reply with a MIDI-CI
-            // NAK": the generic "NAK, do not retry".
+            // §5.8: a device that cannot provide the information for the given
+            // Status replies with a NAK: the generic one, which is not retried.
             Self::ReservedStatus => Nak::STATUS_NAK,
             _ => Nak::STATUS_MALFORMED,
         }
@@ -1048,8 +1038,8 @@ impl UnreadReason {
 impl Unread {
     /// The NAK that answers this message from the device `own`: to the sender,
     /// on the Device ID it used (the Function Block when that was reserved), in
-    /// this codec's [`CI_VERSION`] ("using the Receiver's Message Format
-    /// Version", §5.4), with the Status Code of [`UnreadReason::nak_status`] and
+    /// this codec's [`CI_VERSION`] (the Receiver's own Message Format
+    /// Version, §5.4), with the Status Code of `UnreadReason::nak_status` and
     /// the failed sub-ID#2 as the Original Transaction.
     ///
     /// `None` when there is nobody to answer (the source was not a MUID), when

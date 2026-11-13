@@ -16,7 +16,7 @@ impl Release {
 
     /// Whether the note is released now.
     #[must_use]
-    pub const fn is_now(self) -> bool {
+    pub(crate) const fn is_now(self) -> bool {
         matches!(self, Self::Now)
     }
 }
@@ -36,7 +36,7 @@ pub struct Holds {
 impl Holds {
     /// A note just struck: the key holds it, nothing else.
     #[must_use]
-    pub const fn struck() -> Self {
+    pub(crate) const fn struck() -> Self {
         Self {
             key: true,
             sustain: false,
@@ -68,13 +68,13 @@ impl Holds {
     }
 
     /// The sostenuto pedal went down: it holds the note as it sounds now.
-    pub fn sostenuto_down(&mut self) {
+    pub(crate) fn sostenuto_down(&mut self) {
         self.sostenuto = true;
     }
 
     /// The sostenuto pedal came up. Returns whether the note is released now:
     /// only a note it was holding, with no other hold left.
-    pub fn sostenuto_up(&mut self) -> Release {
+    pub(crate) fn sostenuto_up(&mut self) -> Release {
         Release::when(
             self.sostenuto && {
                 self.sostenuto = false;

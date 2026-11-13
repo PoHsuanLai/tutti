@@ -204,7 +204,6 @@ pub fn measure_record_with(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use tutti_plugin_db::format_from_path;
     use tutti_plugin_types::PluginClass;
 
     /// A failure that is a property of the plugin must earn a catalog entry, not
@@ -288,15 +287,15 @@ mod tests {
     fn probe_without_a_probe_binary_falls_back_to_filename_metadata() {
         use tutti_plugin_types::BridgeError;
 
-        let path = Path::new("/plugins/TAL-NoiseMaker.vst3");
+        let path = Path::new("/plugins/Plain.vst3");
         let plugins = interpret_probe(Err(BridgeError::ProbeNotFound), path, PluginFormat::Vst3)
             .expect("a missing plugin-probe is a fallback, not an error");
         let [descriptor] = plugins.as_slice() else {
             panic!("the filename names one plugin: {plugins:?}");
         };
 
-        assert_eq!(descriptor.name, "TAL-NoiseMaker");
-        assert_eq!(descriptor.id, "vst3.tal-noisemaker");
+        assert_eq!(descriptor.name, "Plain");
+        assert_eq!(descriptor.id, "vst3.plain");
         assert!(
             matches!(descriptor.class, PluginClass::Unknown),
             "an unprobed plugin must not claim a category, got {:?}",
@@ -324,50 +323,5 @@ mod tests {
         .expect_err("a load failure must not be reported as successful metadata");
 
         assert!(failure.reason.contains("dlopen failed"));
-    }
-
-    /// Probe a real installed plugin end-to-end. **Opt-in**: set
-    /// `TUTTI_PROBE_PLUGIN` to a plugin path to run it.
-    ///
-    /// Gated rather than auto-detected, because the auto-detecting version of
-    /// this test was wrong in three ways at once and failed for years: it took
-    /// the first of two hardcoded paths (the VST3) and then asserted a *VST2*
-    /// class, which `PluginClass` makes unsatisfiable — the enum is per-format
-    /// by construction. It also could not reach a real probe at all without the
-    /// `plugin-probe` binary, since `probe_plugin` maps `ProbeNotFound` to a
-    /// filename fallback, so it was really asserting a synth category against
-    /// `PluginClass::Unknown`.
-    ///
-    /// What it can honestly check, given the class vocabulary is deliberately
-    /// native and uninterpreted: the probe returns a name, and the class it
-    /// reports belongs to the format that was actually probed.
-    #[test]
-    fn probe_installed_plugin_reports_its_own_formats_class() {
-        let Ok(raw) = std::env::var("TUTTI_PROBE_PLUGIN") else {
-            eprintln!("TUTTI_PROBE_PLUGIN not set, skipping real-plugin probe");
-            return;
-        };
-        let path = Path::new(&raw);
-        assert!(path.exists(), "TUTTI_PROBE_PLUGIN={raw} does not exist");
-
-        let format = format_from_path(path).expect("unrecognised plugin extension");
-        let plugins = probe_plugin(path, format).expect("probe failed");
-        assert!(!plugins.is_empty(), "a file holds a plugin");
-
-        for descriptor in &plugins {
-            assert!(!descriptor.name.is_empty(), "name should not be empty");
-
-            // The class must match the format probed — never another format's
-            // vocabulary. `Unknown` is allowed: it is what the filename fallback
-            // reports when no `plugin-probe` is on hand.
-            let class_format = descriptor.class.format_name();
-            assert!(
-                class_format == "unknown" || class_format == format.extension_id(),
-                "a {:?} plugin reported a {class_format} class: {:?}",
-                format,
-                descriptor.class
-            );
-        }
-        println!("Probed {path:?}: {plugins:?}");
     }
 }

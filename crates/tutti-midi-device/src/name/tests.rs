@@ -29,9 +29,8 @@ fn a_nul_cannot_be_in_a_name_because_it_ends_one() {
     assert_eq!(EndpointName::new("Pièce 5").unwrap().as_str(), "Pièce 5");
 }
 
-// M2-104 §1.8: "MIDI messages only use normalized UTF-8 encoded Unicode
-// characters, following the NFC (Normalization Form C) standard", and "Unicode
-// text in MIDI messages shall not include a Byte Order Mark." A name is composed
+// M2-104 §1.8: MIDI messages carry only NFC-normalized UTF-8 text with no Byte
+// Order Mark. A name is composed
 // to NFC (at the constructor and at the wire) and a leading BOM is refused.
 #[test]
 fn a_name_is_held_in_nfc() {
@@ -77,7 +76,7 @@ fn an_instance_id_is_printable_ascii() {
     assert!(ProductInstanceId::new("é").is_none());
 }
 
-// §7.1.4: "a Complete message (if less than 15 bytes)", else a Start, up to five
+// §7.1.4: a message under 15 bytes is Complete, else a Start, up to five
 // Continue and an End.
 #[test]
 fn packets_are_complete_start_continue_end() {

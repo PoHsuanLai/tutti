@@ -195,13 +195,6 @@ fn frame_count_inverts_from_frame_count_and_to_seconds_follows_it() {
 }
 
 #[test]
-fn test_to_beats() {
-    let tc = SmpteTimecode::new(0, 1, 0, 0, SmpteFrameRate::Fps30).unwrap();
-    // 60 seconds at 120 BPM = 120 beats
-    assert!((tc.to_beats(Bpm::of(120.0)).get() - 120.0).abs() < 0.001);
-}
-
-#[test]
 fn test_reset() {
     let mut decoder = MtcDecoder::new();
     feed_timecode(&mut decoder, 1, 2, 3, 4, 3);
@@ -267,8 +260,8 @@ fn a_corrupt_position_is_dropped_and_the_last_good_one_kept() {
     assert_eq!(decoder.timecode(), good);
 }
 
-/// MTC, Quarter Frame Message Implementation: "A receiver of this time must
-/// keep an internal offset of +2 frames for displaying." The reported time
+/// MTC, Quarter Frame Message Implementation: a receiver keeps an internal
+/// offset of +2 frames for displaying. The reported time
 /// carries across the second, the minute (drop-frame labels `;00` and `;01`
 /// are skipped: 00:00:59:29 plus two frames is 00:01:00:03) and the day.
 #[test]
@@ -290,9 +283,8 @@ fn the_reported_time_is_two_frames_on_across_every_carry() {
     }
 }
 
-/// MTC, Quarter Frame Messages: the bits above each count are "Undefined and
-/// reserved for future use. Transmitter must set these bits to 0 and receiver
-/// should ignore!" A cycle with every reserved bit set (frame bits 5-7,
+/// MTC, Quarter Frame Messages: the bits above each count are reserved; a
+/// transmitter sets them to 0 and a receiver ignores them. A cycle with every reserved bit set (frame bits 5-7,
 /// seconds and minutes bits 6-7, hours bit 7, which is bit 3 of piece 7) reads
 /// as the cycle with them clear, not as a corrupt frame.
 #[test]

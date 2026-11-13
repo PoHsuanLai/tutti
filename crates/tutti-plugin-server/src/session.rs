@@ -1443,7 +1443,7 @@ mod tests {
     }
 
     // --------------------------------------------------------------------
-    // CLAP integration tests — require TAL-NoiseMaker installed.
+    // CLAP integration tests.
     // --------------------------------------------------------------------
 
     #[cfg(feature = "clap")]

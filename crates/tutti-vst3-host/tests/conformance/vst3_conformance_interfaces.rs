@@ -544,9 +544,7 @@ fn param_id_for_function_name_resolves_known_functions() {
 /// tests rather than here.
 #[test]
 fn the_factory_flag_word_is_read_not_discarded() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
 
     let mut read = 0usize;
     let mut unicode = 0usize;

@@ -414,7 +414,7 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     clamped.add_breakpoint(Breakpoint::new(Beat(0.45), 1.0));
     let key = ParamKey::<Hz>::CUTOFF;
     let lane = |curve: Arc<dyn Curve>| {
-        ControlLaneNode::for_param(key, ControlProgram::from_curve(curve), None, None)
+        ControlLaneNode::for_unit(key.addr(), ControlProgram::from_curve(curve), None, None)
     };
     let lanes = [
         lane(Arc::new(shaped.clone())),
@@ -717,14 +717,14 @@ fn lane_for(
     let knob = Some(Arc::new(AtomicF32::new(400.0 + k as f32)).into());
     let r = Some(range);
     match k % 8 {
-        0 => L::for_param(ParamKey::<Hz>::CUTOFF, p, knob, r),
-        1 => L::for_param(ParamKey::<Q>::Q, p, knob, r),
-        2 => L::for_param(ParamKey::<Db>::GAIN_DB, p, knob, r),
-        3 => L::for_param(ParamKey::<Mix>::WET, p, knob, r),
-        4 => L::for_param(ParamKey::<Feedback>::FEEDBACK, p, knob, r),
-        5 => L::for_param(ParamKey::<Depth>::DEPTH, p, knob, r),
-        6 => L::for_param(ParamKey::<Hz>::RATE, p, knob, r),
-        _ => L::for_param(ParamKey::<Db>::THRESHOLD, p, knob, r),
+        0 => L::for_unit(ParamKey::<Hz>::CUTOFF.addr(), p, knob, r),
+        1 => L::for_unit(ParamKey::<Q>::Q.addr(), p, knob, r),
+        2 => L::for_unit(ParamKey::<Db>::GAIN_DB.addr(), p, knob, r),
+        3 => L::for_unit(ParamKey::<Mix>::WET.addr(), p, knob, r),
+        4 => L::for_unit(ParamKey::<Feedback>::FEEDBACK.addr(), p, knob, r),
+        5 => L::for_unit(ParamKey::<Depth>::DEPTH.addr(), p, knob, r),
+        6 => L::for_unit(ParamKey::<Hz>::RATE.addr(), p, knob, r),
+        _ => L::for_unit(ParamKey::<Db>::THRESHOLD.addr(), p, knob, r),
     }
 }
 
@@ -1098,8 +1098,8 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
                 curve: Law::Linear,
             },
         };
-        let lane = ControlLaneNode::for_param(
-            ParamKey::<Hz>::CUTOFF,
+        let lane = ControlLaneNode::for_unit(
+            ParamKey::<Hz>::CUTOFF.addr(),
             ControlProgram::new(None, vec![], vec![input]).expect("valid"),
             Some(Arc::new(AtomicF32::new(0.5)).into()),
             Some(ed.param_range_cell(cutoff(k)).expect("committed")),

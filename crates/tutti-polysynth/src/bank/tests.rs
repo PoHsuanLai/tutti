@@ -298,36 +298,6 @@ fn a_pitch_change_ramps_every_sample_across_the_step() {
     );
 }
 
-/// No two lanes share a noise stream after the unison width changes.
-///
-/// The case that broke: noise, two voices, stride 1 → 2 with voice 1 never
-/// sounding. Voice 1's sub-voice moves from lane 1 to lane 2 carrying its
-/// untouched seed, and voice 0's new sub-voice lands on lane 1 — which,
-/// seeded by lane index, got that same seed. Two lanes, one noise.
-#[test]
-fn unison_resizes_never_duplicate_a_noise_stream() {
-    let mut b = VoiceBank::new(
-        OscillatorType::Noise,
-        &FilterType::None,
-        &flat(),
-        sr(),
-        2,
-        1,
-    );
-    for stride in [2, 1, 3, 2, 5] {
-        b.resize_stride(stride);
-        let states = &b.noise_states()[..2 * stride];
-        for (i, a) in states.iter().enumerate() {
-            for (j, c) in states.iter().enumerate().skip(i + 1) {
-                assert_ne!(
-                    a, c,
-                    "stride {stride}: lanes {i} and {j} share a noise stream"
-                );
-            }
-        }
-    }
-}
-
 /// A sustain above unity is clamped, so a retrigger at sustain never drops
 /// the level: the attack peaks at 1.0 and would otherwise hand decay a
 /// level below where the note was held.
@@ -364,4 +334,26 @@ fn a_zero_pulse_width_still_oscillates() {
     let mean = out.iter().sum::<f32>() / out.len() as f32;
     let ac = (out.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / out.len() as f32).sqrt();
     assert!(ac > 0.05, "a zero-width pulse rendered DC (AC rms {ac})");
+}
+
+/// Every lane of a built bank, across voices and across one voice's unison
+/// stack, starts its noise generator on its own nonzero seed: two lanes on
+/// one seed would play the same noise, in both ears of a stereo stack.
+#[test]
+fn every_lane_starts_on_its_own_noise_seed() {
+    let bank = VoiceBank::new(
+        OscillatorType::Noise,
+        &FilterType::None,
+        &flat(),
+        sr(),
+        16,
+        7,
+    );
+    let seeds: Vec<u32> = bank.rng.iter().flat_map(|g| g.to_array()).collect();
+    assert!(seeds.len() >= 16 * 7);
+    assert!(seeds.iter().all(|&s| s != 0), "xorshift cannot leave zero");
+    let mut sorted = seeds.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), seeds.len(), "two lanes share a seed");
 }

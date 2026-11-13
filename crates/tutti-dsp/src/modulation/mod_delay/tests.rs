@@ -539,33 +539,28 @@ fn a_rate_change_lands_at_its_grid_point_and_the_phase_stays_continuous() {
 #[test]
 fn a_rate_below_the_floor_is_the_floor() {
     let f = trajectory();
-    let floor = PhaseIncrement::per_sample(Hz(0.01), RATE);
-    let default = f.member(&ModDelayControls::DEFAULT, RATE).increment();
-    for (hz, want) in [
-        (0.01f32, floor),
-        (0.005, floor),
-        (0.0, floor),
-        (-3.0, floor),
-        (-1e-9, floor),
-        (f32::NEG_INFINITY, default),
-        (f32::NAN, default),
-    ] {
-        assert_eq!(
-            f.member(&controls(hz, 0.01, 0.0), RATE).increment(),
-            want,
-            "{hz}"
-        );
-    }
     let depth = 0.01f32;
     let (len, at) = (6_000, 4_800);
-    let c = controls(-3.0, f64::from(depth), 0.0);
-    let trace = delay_trace(&f, &c, &[], len, 128);
-    let rise = trace[at] - BASE;
-    let figure = f64::from(depth) * SR * (std::f64::consts::TAU * 0.01 * 0.1).sin();
-    assert!(
-        (rise - figure).abs() < 0.05,
-        "a negative rate rose {rise}, the 0.01 Hz sweep {figure}"
-    );
+    let default_hz = f64::from(ModDelayControls::DEFAULT.rate.get());
+    for (hz, effective) in [
+        (0.01f32, 0.01),
+        (0.005, 0.01),
+        (0.0, 0.01),
+        (-3.0, 0.01),
+        (-1e-9, 0.01),
+        (f32::NEG_INFINITY, default_hz),
+        (f32::NAN, default_hz),
+    ] {
+        let c = controls(hz, f64::from(depth), 0.0);
+        let trace = delay_trace(&f, &c, &[], len, 128);
+        let rise = trace[at] - BASE;
+        let figure =
+            f64::from(depth) * SR * (std::f64::consts::TAU * effective * at as f64 / SR).sin();
+        assert!(
+            (rise - figure).abs() < 0.05,
+            "rate {hz} rose {rise}, the {effective} Hz sweep {figure}"
+        );
+    }
 }
 
 /// A depth that moves is a pitch bend, so it glides at no more than [`DELAY_SLEW`] frames of

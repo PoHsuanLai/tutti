@@ -6,7 +6,6 @@
 //! and spread are recomputed only when they change, so the audio thread does an
 //! array index rather than the trigonometry.
 
-use core::fmt;
 use tutti_types::{Amplitude, Cents, Pan, Param, Phase, Spread};
 
 pub(crate) const MAX_UNISON_VOICES: usize = UnisonVoices::MAX as usize;
@@ -63,21 +62,9 @@ impl Default for UnisonVoices {
 }
 
 /// The refused count of [`UnisonVoices`]'s `TryFrom<u8>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a unison stack is 1 to {} sub-voices, but was {}", UnisonVoices::MAX, .0)]
 pub struct UnisonVoicesError(pub u8);
-
-impl fmt::Display for UnisonVoicesError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "a unison stack is 1 to {} sub-voices, but was {}",
-            UnisonVoices::MAX,
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for UnisonVoicesError {}
 
 impl TryFrom<u8> for UnisonVoices {
     type Error = UnisonVoicesError;
@@ -100,7 +87,7 @@ impl From<UnisonVoices> for u8 {
 /// sub-voices are summed to a constant-power total, so raising
 /// [`voice_count`](Self::voice_count) thickens the tone without raising the
 /// level.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnisonConfig {
     /// Sub-voices per note, 1..=16. `1` is plain unison-off and the default.
     /// Even counts have no centre voice, so the written pitch is not itself
@@ -123,7 +110,7 @@ pub struct UnisonConfig {
     /// with a brief transient spike as the copies reinforce before the detune
     /// pulls them apart. `true` trades that consistent attack for a softer,
     /// note-to-note-varying one. The generator is a seeded xorshift, so a
-    /// render is reproducible after `seed_unison_rng`.
+    /// render is reproducible.
     pub phase_randomize: bool,
 }
 
@@ -140,7 +127,7 @@ impl Default for UnisonConfig {
 
 /// One unison sub-voice's derived parameters, recomputed by every unison
 /// setter.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct UnisonVoiceParams {
     /// Pitch ratio against the note's pitch; 1.0 is the center pitch. A bare
     /// ratio: it is the output of `Semitones::to_pitch_ratio`, and a
@@ -211,7 +198,7 @@ impl UnisonEngine {
     ///
     /// `driven` is the block's detune and spread from the synth's param
     /// ports where a lane drives them; `None` reads the atomic.
-    /// A detune in cents as [`set_detune`](Self::set_detune) stores it:
+    /// A detune in cents as `set_detune` stores it:
     /// floored at 0. Shared by the setter and the block's read.
     #[inline]
     fn clamp_detune(cents: f32) -> f32 {
@@ -314,36 +301,8 @@ impl UnisonEngine {
         &self.voices[..self.voice_count()]
     }
 
-    pub fn set_config(&mut self, config: UnisonConfig) {
-        self.detune.store(config.detune_cents);
-        self.spread.store(config.stereo_spread);
-        self.config = config;
-        self.recompute_params();
-    }
-
     pub fn config(&self) -> &UnisonConfig {
         &self.config
-    }
-
-    pub fn set_voice_count(&mut self, count: UnisonVoices) {
-        self.config.voice_count = count;
-        self.recompute_params();
-    }
-
-    pub fn set_detune(&mut self, cents: impl Into<Cents>) {
-        self.config.detune_cents = Cents(Self::clamp_detune(cents.into().get()));
-        self.detune.store(self.config.detune_cents);
-        self.recompute_params();
-    }
-
-    pub fn set_stereo_spread(&mut self, spread: Spread) {
-        self.config.stereo_spread = spread;
-        self.spread.store(self.config.stereo_spread);
-        self.recompute_params();
-    }
-
-    pub fn seed_rng(&mut self, seed: u32) {
-        self.rng_state = if seed == 0 { 1 } else { seed };
     }
 }
 

@@ -1513,6 +1513,10 @@ impl Node for Recorder {
         self.inner.shape()
     }
 
+    fn bind_wake(&mut self, wake: crate::Wake) {
+        self.inner.bind_wake(wake);
+    }
+
     fn prepare(&mut self, p: &Prepare) {
         self.inner.prepare(p);
     }

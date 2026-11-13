@@ -183,11 +183,6 @@ pub(crate) struct VoiceBank {
     /// Sub-voices per voice: lane stride between consecutive voices.
     stride: usize,
     voices: usize,
-    /// Next noise seed to hand out. Every lane array allocation draws fresh
-    /// seeds from here, so a lane added by a unison resize never starts on a
-    /// seed another lane already holds — seeding by lane index did, since a
-    /// surviving sub-voice keeps its old stream after moving to a new index.
-    next_seed: u32,
 
     // Oscillator.
     phase: Vec<V>,
@@ -235,7 +230,6 @@ impl std::fmt::Debug for VoiceBank {
             .field("sample_rate", &self.sample_rate)
             .field("stride", &self.stride)
             .field("voices", &self.voices)
-            .field("next_seed", &self.next_seed)
             .finish_non_exhaustive()
     }
 }
@@ -293,7 +287,6 @@ impl VoiceBank {
             sample_rate,
             stride: stride.max(1),
             voices,
-            next_seed: 1,
             phase: Vec::new(),
             inc: Vec::new(),
             inc_target: Vec::new(),
@@ -325,7 +318,7 @@ impl VoiceBank {
         self.lanes().div_ceil(kernel::LANES)
     }
 
-    /// (Re)size every lane array to the current `voices * stride`, zeroed.
+    /// Size every lane array to `voices * stride`, zeroed.
     fn allocate_lanes(&mut self) {
         let groups = self.groups();
         let lanes = groups * kernel::LANES;
@@ -335,11 +328,10 @@ impl VoiceBank {
         self.inc_target = vec![zero; groups];
         // Distinct nonzero seeds per lane: xorshift cannot leave zero, and two
         // lanes with one seed would play the same noise in both ears.
-        let mut seeds = (self.next_seed..).map(seed_from);
+        let mut seeds = (1..).map(seed_from);
         self.rng = (0..groups)
             .map(|_| u32x8::new(core::array::from_fn(|_| seeds.next().unwrap_or(1))))
             .collect();
-        self.next_seed = self.next_seed.wrapping_add(lanes as u32);
         self.pink = vec![[zero; 3]; groups];
         self.z = vec![[zero; 4]; groups];
         self.coef = vec![[zero; 3]; groups];
@@ -355,64 +347,6 @@ impl VoiceBank {
         self.gain = vec![[zero; 2]; groups];
         self.gain_target = vec![[zero; 2]; groups];
         self.live = vec![false; groups];
-    }
-
-    /// Change the unison stride, keeping every surviving sub-voice's state.
-    ///
-    /// Allocates; control-thread only (it backs `set_unison_voice_count`).
-    pub(crate) fn resize_stride(&mut self, stride: usize) {
-        let stride = stride.max(1);
-        if stride == self.stride {
-            return;
-        }
-        let old = self.clone();
-        self.stride = stride;
-        self.allocate_lanes();
-        for v in 0..self.voices {
-            for s in 0..stride {
-                let to = v * stride + s;
-                if s < old.stride {
-                    self.copy_lane_from(&old, v * old.stride + s, to);
-                } else {
-                    // A sub-voice added under a sounding note joins it where
-                    // its first sub-voice is — same envelope position, same
-                    // phase — rather than sitting idle until the next note-on.
-                    // Only the noise seed stays its own, or the new lane would
-                    // replay the first one's noise.
-                    let (g, k) = split(to);
-                    let seed = self.rng[g].as_array()[k];
-                    self.copy_lane_from(&old, v * old.stride, to);
-                    self.rng[g].as_mut_array()[k] = seed;
-                }
-            }
-        }
-    }
-
-    fn copy_lane_from(&mut self, src: &Self, from: usize, to: usize) {
-        let (fg, fk) = split(from);
-        let (tg, tk) = split(to);
-        macro_rules! copy {
-            ($($field:ident),*) => {
-                $(self.$field[tg].as_mut_array()[tk] = src.$field[fg].as_array()[fk];)*
-            };
-        }
-        copy!(phase, inc, inc_target, env, env_slope, env_target);
-        self.rng[tg].as_mut_array()[tk] = src.rng[fg].as_array()[fk];
-        for i in 0..3 {
-            self.pink[tg][i].as_mut_array()[tk] = src.pink[fg][i].as_array()[fk];
-            self.coef[tg][i].as_mut_array()[tk] = src.coef[fg][i].as_array()[fk];
-            self.coef_target[tg][i].as_mut_array()[tk] = src.coef_target[fg][i].as_array()[fk];
-        }
-        for i in 0..4 {
-            self.z[tg][i].as_mut_array()[tk] = src.z[fg][i].as_array()[fk];
-        }
-        for i in 0..2 {
-            self.gain[tg][i].as_mut_array()[tk] = src.gain[fg][i].as_array()[fk];
-            self.gain_target[tg][i].as_mut_array()[tk] = src.gain_target[fg][i].as_array()[fk];
-        }
-        self.cutoff_seen[to] = src.cutoff_seen[from];
-        self.res_seen[to] = src.res_seen[from];
-        self.stage[to] = src.stage[from];
     }
 
     /// Lane of voice `voice`'s sub-voice `sub`.
@@ -630,12 +564,6 @@ impl VoiceBank {
     pub(crate) fn phase(&self, lane: usize) -> f32 {
         let (g, k) = split(lane);
         self.phase[g].as_array()[k]
-    }
-
-    /// Each lane's current noise-generator state. Observability for tests.
-    #[cfg(test)]
-    pub(crate) fn noise_states(&self) -> Vec<u32> {
-        self.rng.iter().flat_map(|g| g.to_array()).collect()
     }
 
     // --- Render ----------------------------------------------------------

@@ -8,7 +8,7 @@ use crate::error::Error;
 /// The side a sample is meant for (SF2 2.04 section 7.10): the `Left` and
 /// `Right` sample types, which a pair of linked samples carries. A mono, a
 /// linked-only or a ROM sample has none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum Side {
     /// The left sample of a stereo pair.
     Left,
@@ -29,7 +29,7 @@ impl Side {
 }
 
 /// Represents a sample in the SoundFont.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SampleHeader {
     pub(crate) name: String,

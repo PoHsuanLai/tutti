@@ -15,7 +15,7 @@ use tutti_types::{Db, Hz, Q, SampleRate};
 /// change. The last three ([`Bell`](Self::Bell), [`LowShelf`](Self::LowShelf),
 /// [`HighShelf`](Self::HighShelf)) are the only ones that read the gain
 /// parameter; the rest ignore it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum SvfType {
     /// Passes below cutoff, attenuates above it at 12 dB/octave. The default.

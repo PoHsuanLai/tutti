@@ -36,8 +36,8 @@ fn an_identity_request_is_the_inquiry_of_p40() {
 }
 
 /// M1 p.40: `06 02 mm ff ff dd dd ss ss ss ss`, the 14-bit family and member
-/// codes LSB first, and a manufacturer id that begins with 00 "extended by two
-/// bytes".
+/// codes LSB first, and a manufacturer id that begins with 00 extended by two
+/// bytes.
 #[test]
 fn an_identity_reply_has_a_one_or_three_byte_manufacturer() {
     let one = heard(&[
@@ -86,7 +86,7 @@ fn value(message: Universal) -> u16 {
     }
 }
 
-/// M1 p.57: Master Volume and Balance carry "vv vv (lsb first)"; `00 00` is
+/// M1 p.57: Master Volume and Balance carry two data bytes, least significant first; `00 00` is
 /// off or hard left and `7F 7F` hard right.
 #[test]
 fn master_volume_and_balance_are_fourteen_bits_lsb_first() {
@@ -160,8 +160,8 @@ const REPLY: [u8; 15] = [
     0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x41, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xF7,
 ];
 
-/// M1 p.40: "if `<device ID>` = 7FH then the device should respond regardless
-/// of what `<device ID>` it is set to"; otherwise only its own id does.
+/// M1 p.40: device id 7FH makes every device respond whatever id it is set to;
+/// otherwise only the device with that id does.
 #[test]
 fn the_all_call_and_the_own_id_are_heard_and_no_other() {
     let mut r = reader(5);

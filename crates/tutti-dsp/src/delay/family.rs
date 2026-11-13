@@ -214,12 +214,6 @@ impl DelayMember {
         self.width
     }
 
-    /// The delay of `channel`, in frames (fractional), clamped into the line.
-    #[must_use]
-    pub fn delay_frames(&self, channel: usize) -> f32 {
-        self.delays[channel.min(self.width - 1)]
-    }
-
     /// The loop gains `(feedback, cross-feedback)`, bounded as a pair
     /// ([`Feedback::stable_pair`]).
     #[must_use]

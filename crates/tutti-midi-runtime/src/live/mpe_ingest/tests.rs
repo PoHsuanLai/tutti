@@ -320,7 +320,7 @@ fn stopped(events: impl IntoIterator<Item = UmpAt>) -> Vec<u8> {
 }
 
 /// **An MPE Configuration Message resets its zone's bend ranges** (MPE,
-/// RP-053 / M1-100-UM, "Pitch Bend Sensitivity": the master channel to
+/// RP-053 / M1-100-UM, Pitch Bend Sensitivity: the master channel to
 /// ±2, every member to ±48): an upper-zone MCM of three members yields
 /// RPN #00/00 = 2 on channel 15 and RPN #00/07 = 48 on 12, 13 and 14, at
 /// the message's offset, and a per-note receiver that had been told ±12
@@ -508,8 +508,8 @@ fn a_groups_member_channels_hold_notes_of_their_own() {
 }
 
 /// **An MPE Configuration Message configures the Group it arrives in** and no
-/// other (M2-104 Appendix B.1: what a message does in one Group "does not
-/// apply to Channels in any other Group"), and its reset ranges go out on
+/// other (M2-104 Appendix B.1: what a message does in one Group does not
+/// apply to Channels in any other Group), and its reset ranges go out on
 /// that Group.
 #[test]
 fn an_mcm_configures_its_own_group_only() {
@@ -569,12 +569,10 @@ fn decoded(ingest: &mut MpeIngest, event: &UmpAt) -> Vec<(u8, Voice2)> {
 }
 
 /// **A bend received before the Note On is the new note's** (M1-100 section
-/// 2.2.6: "The pitch of a new note is affected by the Pitch Bend message most
-/// recently received on both the Manager Channel and that note's Member
-/// Channel before Note On. A receiver shall continue to track Pitch Bend
-/// messages from both the Manager Channel and the Member Channels even when no
-/// note is playing"; section 2.4, Table 4: the sender's Pitch Bend comes
-/// first). The ingest remembers the bend of the member channel with no note,
+/// 2.2.6: the pitch of a new note follows the Pitch Bend most recently
+/// received on both the Manager Channel and that note's Member Channel before
+/// Note On, and a receiver keeps tracking Pitch Bend even when no note is
+/// playing; section 2.4, Table 4: the sender's Pitch Bend comes first). The ingest remembers the bend of the member channel with no note,
 /// and the note that starts there is told it ahead of its Note On; the last of
 /// two bends is the one.
 #[test]
@@ -593,10 +591,9 @@ fn a_member_bend_before_the_note_on_is_the_notes_start() {
 }
 
 /// **Channel Pressure and Control Change #74 received before the Note On are
-/// the new note's** (M1-100 section 2.2.7: "The control of a new note is
-/// affected by the Channel Pressure message most recently received on its
-/// Channel before Note On. A receiver shall continue to track Channel Pressure
-/// messages even when no note is playing"; section 2.2.8 the same of Control
+/// the new note's** (M1-100 section 2.2.7: the control of a new note follows the
+/// Channel Pressure most recently received on its Channel before Note On, and
+/// a receiver keeps tracking it even when no note is playing; section 2.2.8 the same of Control
 /// Change #74).
 #[test]
 fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
@@ -632,10 +629,9 @@ fn what_a_member_was_told_is_its_own() {
 }
 
 /// **A released note stops taking the member's messages** (M1-100 section
-/// 2.2.6: "A Released Note shall cease to be affected by Pitch Bend messages
-/// from the Member Channels after the Note Off message occurs"; section 2.4:
-/// "the MPE control messages shall not affect a note after the Note Off
-/// message has been received"), while the channel goes on tracking them for
+/// 2.2.6: a released note ceases to be affected by Pitch Bend from the Member
+/// Channels after its Note Off; section 2.4: MPE control messages do not
+/// affect a note after its Note Off), while the channel goes on tracking them for
 /// the next note.
 #[test]
 fn a_released_note_ignores_the_members_bend_and_the_next_note_starts_with_it() {
@@ -651,10 +647,9 @@ fn a_released_note_ignores_the_members_bend_and_the_next_note_starts_with_it() {
 }
 
 /// **A zone-wide pressure or CC 74 reaches the notes of its members**
-/// (M1-100 section 2.2.7: "All MPE receivers shall respond to Channel Pressure
-/// both on the Manager Channel and on each Member Channel. If a Device
-/// receives Channel Pressure on both ... it shall combine such data
-/// meaningfully and separately for each Sounding Note"; section 2.2.8 the same
+/// (M1-100 section 2.2.7: an MPE receiver responds to Channel Pressure on both
+/// the Manager Channel and each Member Channel and combines the two
+/// separately for each Sounding Note; section 2.2.8 the same
 /// of Control Change #74; Appendix D: Max is one way). The manager's value,
 /// told with no note sounding, is every new note's floor; told while notes
 /// sound, it reaches each of them, as the greater of it and the member's own.
@@ -698,8 +693,8 @@ fn a_managers_pressure_and_cc74_reach_every_members_note() {
 // ---- Table 5: what a receiver takes where (M1-100 Appendix E) -------------
 
 /// **A Prohibited message is ignored by a receiver** (M1-100 section 2.3.1,
-/// on a message that is not for the channel it came on: "it should ignore
-/// them"; Table 5, "P: Prohibited"). On the Manager Channel, All Sound Off
+/// on a message that is not for the channel it came on; Table 5, P for
+/// prohibited). On the Manager Channel, All Sound Off
 /// (120), Mono Mode On (126) and Poly Mode On (127); on every channel, Omni On
 /// (125). Reset All Controllers (121), Local Control (122), All Notes Off
 /// (123) and Omni Off (124) are Optional and pass, on the master and on a
@@ -762,11 +757,10 @@ fn an_mcm_on_a_member_channel_is_ignored() {
 
 /// **MIDI Mode 3 is the default and Program Change on a Member Channel is
 /// ignored in it; Mode 4 is switched on the lowest Member Channel**
-/// (M1-100 section 2.3.3: "A receiver operating in MIDI Mode 3 shall ignore
-/// Program Change messages received on Member Channels"; Table 5, Bank Select
-/// on Member Channels "Prohibited in MIDI Mode 3. Optional in MIDI Mode 4";
-/// section 2.2.4.3: "send the appropriate Mode Message to the lowest numbered
-/// Member Channel of a zone (not to the Manager Channel)"). Mono Mode On on
+/// (M1-100 section 2.3.3: a receiver in MIDI Mode 3 ignores Program Change on
+/// Member Channels; Table 5, Bank Select on Member Channels is prohibited in
+/// Mode 3 and optional in Mode 4; section 2.2.4.3: the Mode Message goes to
+/// the lowest numbered Member Channel of a zone, not the Manager Channel). Mono Mode On on
 /// the manager, or on another member, switches nothing; on the lowest member
 /// (channel 1 of a lower zone) it lets members' Program Changes through, and
 /// Poly Mode On there takes them away again. The manager's Program Change
@@ -796,8 +790,7 @@ fn program_change_on_a_member_follows_the_zones_midi_mode() {
 }
 
 /// **A channel in no zone is for conventional use** (M1-100 section 2.2.1:
-/// "Any MIDI Channels not assigned to any Zone remain available for
-/// conventional use."): notes, bends, pressure and CC 74 there pass as they
+/// a Channel in no Zone remains available for conventional use): notes, bends, pressure and CC 74 there pass as they
 /// came, whatever the zones are.
 #[test]
 fn a_channel_outside_the_zones_passes_everything() {
@@ -816,9 +809,9 @@ fn a_channel_outside_the_zones_passes_everything() {
 // ---- changing the zones (M1-100 section 2.2.3) ------------------------------
 
 /// **A zone change stops and resets the channels it moves** (M1-100 section
-/// 2.2.3: "when a receiver changes its Zone configurations, the receiver shall
-/// stop all Sounding Notes and reset all controls to reasonable default values
-/// on each Channel entering or leaving MPE control"). Growing a lower zone from
+/// 2.2.3: a receiver that changes its Zone configurations stops all Sounding
+/// Notes and resets all controls on each Channel entering or leaving MPE
+/// control). Growing a lower zone from
 /// 3 to 5 members takes channels 4 and 5 into it: an MCM from the wire stops
 /// those two (All Sound Off, then Reset All Controllers) and no other; the
 /// notes the other channels hold, and what they were told, stand; the same MCM
@@ -858,8 +851,8 @@ fn an_mcm_stops_only_the_channels_it_moves() {
 }
 
 /// **A channel that left MPE control forgets its note and what it was told**
-/// (section 2.2.3, "reset all controls ... on each Channel entering or leaving
-/// MPE control"): shrink a zone past a channel that held a note and had been
+/// (section 2.2.3, controls reset on each Channel entering or leaving MPE
+/// control): shrink a zone past a channel that held a note and had been
 /// bent, grow it back, and the channel starts clean.
 #[test]
 fn a_channel_that_left_the_zone_forgets_its_note_and_its_bend() {
@@ -882,7 +875,7 @@ fn a_channel_that_left_the_zone_forgets_its_note_and_its_bend() {
 }
 
 /// A disabling MCM stops the zone's channels, the master's too, and its
-/// notes are forgotten (section 2.2.3, "entering or leaving MPE control").
+/// notes are forgotten (section 2.2.3, entering or leaving MPE control).
 #[test]
 fn a_disabling_mcm_stops_every_channel_of_the_zone() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(2));

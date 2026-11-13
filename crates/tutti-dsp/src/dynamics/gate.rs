@@ -160,19 +160,6 @@ impl GateMember {
     pub fn silence_opens(&self) -> bool {
         self.silence_opens
     }
-
-    /// Whether a key at `level` opens the gate: at or over the threshold. A level of
-    /// silence is at [`Db::FLOOR`].
-    #[must_use]
-    pub fn opens(&self, level: Amplitude) -> bool {
-        opens(level.get(), self.threshold_linear, self.silence_opens)
-    }
-
-    /// The gain of a fully closed gate: the range as an amplitude.
-    #[must_use]
-    pub fn closed_gain(&self) -> Amplitude {
-        self.range.to_amplitude()
-    }
 }
 
 /// The decision against the member's threshold, in the linear domain.

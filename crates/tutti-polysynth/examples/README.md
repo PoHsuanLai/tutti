@@ -79,6 +79,4 @@ filters hit their −3 dB point within a few percent; unison beats and
 decorrelates as configured; polyphony sums correctly.
 
 The tuning tables match published temperament values: just intonation and
-Pythagorean to 0.01 cents, and the hardcoded quarter-comma meantone table
-within 0.5 cents of theory (whole-cent rounding, well under the perceptual
-threshold).
+Pythagorean to 0.01 cents.

@@ -1,16 +1,12 @@
 //! [`ActiveSensing`]: the receiver's watchdog of MIDI 1.0 Detailed
 //! Specification 4.2.1 (p. 32), as a pure value stepped with frames.
 //!
-//! "Use of Active Sensing is optional for either receivers or transmitters.
-//! This byte (FE) is sent every 300 ms (maximum) whenever there is no other
-//! MIDI data being transmitted. If a device never receives Active Sensing it
-//! should operate normally. However, once the receiver recognizes Active
-//! Sensing (FE), it then will expect to get a message of some kind every 300
-//! milliseconds. If no messages are received within this time period the
-//! receiver will assume the MIDI cable has been disconnected for some reason
-//! and should turn off all voices and return to normal operation. It is
-//! recommended that transmitters transmit Active Sensing within 270 ms and
-//! receivers judge at over 330 ms leaving a margin of roughly 10%."
+//! Active Sensing is optional. A transmitter sends FE at least every 300 ms
+//! while it has no other data. A device that never receives one operates
+//! normally; once it has seen one it expects some message every 300 ms, and
+//! when none comes it assumes the cable is gone, turns off all voices and
+//! returns to normal operation. Transmitters are recommended to send within
+//! 270 ms and receivers to judge at over 330 ms, a margin of roughly 10%.
 //!
 //! The spec's flowchart is two interrupts: reception (any data clears the
 //! timer, an FE sets the flag) and the timer (a flag set and over the limit:
@@ -29,8 +25,8 @@ use tutti_types::{Frame, SampleRate, Samples, Seconds};
 use tutti_ump::MidiGroup;
 
 /// How long a receiver waits for any message once it has seen an Active
-/// Sensing before it judges the cable gone: "receivers judge at over 330 ms"
-/// (p. 32), the 300 ms of the spec and the roughly 10% margin it recommends.
+/// Sensing before it judges the cable gone: over 330 ms (p. 32), the spec's 300 ms
+/// and the roughly 10% margin it recommends.
 pub const ACTIVE_SENSING_JUDGE: Seconds = Seconds(0.330);
 
 /// The Active Sensing watch of every Group of one device.
@@ -55,7 +51,7 @@ impl ActiveSensing {
 
     /// A watch with [`ACTIVE_SENSING_JUDGE`] at `rate`.
     #[must_use]
-    pub fn at_rate(rate: SampleRate) -> Self {
+    pub(crate) fn at_rate(rate: SampleRate) -> Self {
         Self::new(ACTIVE_SENSING_JUDGE.to_samples(rate))
     }
 
@@ -63,13 +59,6 @@ impl ActiveSensing {
     #[must_use]
     pub const fn limit(&self) -> Samples {
         self.limit
-    }
-
-    /// Whether `group` is watched: it has sent an Active Sensing and not
-    /// lapsed since.
-    #[must_use]
-    pub fn is_watched(&self, group: MidiGroup) -> bool {
-        self.watched[group.index()].is_some()
     }
 
     /// A message of `group` arrived at `at`: it clears the timer of a watched
@@ -90,7 +79,7 @@ impl ActiveSensing {
     /// **over** the limit at `now`; that Group is not watched after (the
     /// spec's "reset flag": the receiver returns to normal operation until
     /// the next Active Sensing). Call again for the next, until `None`.
-    pub fn next_lapse(&mut self, now: Frame) -> Option<(MidiGroup, Frame)> {
+    pub(crate) fn next_lapse(&mut self, now: Frame) -> Option<(MidiGroup, Frame)> {
         let (index, deadline) = self
             .watched
             .iter()
@@ -108,7 +97,7 @@ impl ActiveSensing {
     }
 
     /// Stops watching every Group.
-    pub fn forget_all(&mut self) {
+    pub(crate) fn forget_all(&mut self) {
         self.watched = [None; MidiGroup::COUNT as usize];
     }
 }

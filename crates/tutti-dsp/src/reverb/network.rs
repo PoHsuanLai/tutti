@@ -179,7 +179,7 @@ pub struct Tap {
 
 /// The two all-pass filters a network describes, which differ in their
 /// transfer function.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Hash, Eq)]
 pub enum AllPassForm {
     /// The Schroeder (lattice) all-pass `H(z) = (z^-D - g) / (1 - g z^-D)`:
     /// `|H| = 1` at every frequency, with a direct term `-g`.

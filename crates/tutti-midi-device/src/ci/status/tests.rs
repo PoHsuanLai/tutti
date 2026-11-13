@@ -124,11 +124,11 @@ fn an_ack_round_trips_with_its_sub_id_and_body() {
     };
     let bytes = msg.encode();
     assert_eq!(bytes[3], 0x7D);
-    assert_eq!(&bytes[CiHeader::LEN..CiHeader::LEN + 3], [0x34, 0x10, 25]);
+    assert_eq!(&bytes[13..13 + 3], [0x34, 0x10, 25]);
     assert_eq!(CiMessage::decode(&bytes), Decoded::Message(msg));
 }
 
-// §5.10.4 and §5.11.4: "the message text ... Message Length is in bytes", and a
+// §5.10.4 and §5.11.4: the Message Length counts bytes of text, and a
 // length that runs past the message is not a message.
 #[test]
 fn a_text_that_runs_past_the_message_is_malformed() {
@@ -141,9 +141,8 @@ fn a_text_that_runs_past_the_message_is_malformed() {
     assert_eq!(Nak::decode_body(&body), None);
 }
 
-// §5.10.4, rule 2, with its two examples: "Accepted Beat ♪ is converted to
-// Accepted Beat ♪" and "残りわずか5バイト is converted to
-// 残りわずか5バイト" (the spec writes the digits
+// §5.10.4, rule 2, with its two examples, "Accepted Beat ♪" and
+// "残りわずか5バイト" (the spec writes the escape digits
 // in both cases; the writer writes lower case, the reader takes either).
 #[test]
 fn non_ascii_text_is_escaped_as_utf16_and_unescaped() {
@@ -167,8 +166,8 @@ fn non_ascii_text_is_escaped_as_utf16_and_unescaped() {
     assert!(wire("é♪\u{1F600}").is_ascii());
 }
 
-// §5.10.4, rule 1: "the "\" character has a special function as defined in the
-// JSON standard", and "/" "can be optionally escaped ... either "/" or "\/"".
+// §5.10.4, rule 1: the backslash has the special meaning it has in JSON, and a
+// slash may optionally be escaped, so either spelling is read.
 #[test]
 fn the_backslash_is_escaped_and_a_slash_is_either() {
     assert_eq!(wire("a\\b"), "a\\\\b");
@@ -181,9 +180,8 @@ fn the_backslash_is_escaped_and_a_slash_is_either() {
     assert_eq!(unescaped(b"a\\u12"), "a\\u12");
 }
 
-// §5.10.4, rule 3: "The Message should not use ASCII Characters below 0x20
-// (space), except for 0x0A (line feed). Other ASCII Characters below 0x20 such
-// as 0x08 (tab) and 0x0D (carriage return) should be ignored."
+// §5.10.4, rule 3: a message uses no ASCII below 0x20 except 0x0A (line feed);
+// other such characters, tab and carriage return among them, are ignored.
 #[test]
 fn control_characters_are_escaped_on_write_and_ignored_raw_on_read() {
     // The line feed is the one raw control character.
@@ -196,7 +194,7 @@ fn control_characters_are_escaped_on_write_and_ignored_raw_on_read() {
     assert_eq!(unescaped(b"a\tb\rc\x08d\ne"), "abcd\ne");
 }
 
-// §5.10.4: "it is generally safe to send up to 103 bytes of Message text." The
+// §5.10.4: up to 103 bytes of Message text is safe to send. The
 // bound counts the escaped bytes.
 #[test]
 fn a_text_is_held_to_103_escaped_bytes() {
@@ -206,13 +204,11 @@ fn a_text_is_held_to_103_escaped_bytes() {
     assert!(MessageText::new(&"♪".repeat(17)).is_some());
     assert!(MessageText::new(&"♪".repeat(18)).is_none());
     // A backslash is two.
-    assert_eq!(
-        MessageText::new(&"\\".repeat(51)).unwrap().encoded_len(),
-        102
-    );
+    assert!(MessageText::new(&"\\".repeat(51)).is_some());
     assert!(MessageText::new(&"\\".repeat(52)).is_none());
     // The surrogate pair is twelve.
-    assert_eq!(MessageText::new("\u{1F600}").unwrap().encoded_len(), 12);
+    assert!(MessageText::new(&"\u{1F600}".repeat(8)).is_some());
+    assert!(MessageText::new(&"\u{1F600}".repeat(9)).is_none());
 }
 
 // A text written is the text read, whatever it holds.

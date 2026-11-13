@@ -41,6 +41,36 @@ use tutti::{
     SvfType, Wave,
 };
 
+const RATE: SampleRate = SampleRate::SR_48K;
+
+/// What `Session::update` found: faults and dropouts (a refused commit, a
+/// plugin that died, a lost block). A host logs them; here they are printed.
+fn report(events: Vec<SessionEvent>) {
+    for event in events {
+        eprintln!("session event: {event:?}");
+    }
+}
+
+/// Two seconds of a 110 Hz saw, mono: four beats at 120 BPM, and enough
+/// harmonics for the filter to sweep.
+fn saw() -> Wave {
+    let mut wave = Wave::new(1, RATE);
+    for i in 0..96_000u32 {
+        let phase = (i as f32 * 110.0 / RATE.get() as f32).fract();
+        wave.push_frame(&[0.4 * (2.0 * phase - 1.0)]);
+    }
+    wave
+}
+
+fn main() -> Result<(), Error> {
+    let dir = std::env::args_os()
+        .nth(1)
+        .map_or_else(std::env::temp_dir, Into::into);
+    let written = song(&dir)?;
+    println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
+    Ok(())
+}
+
 /// The song, bounced into `dir`.
 fn song(dir: &std::path::Path) -> Result<Written, Error> {
     std::fs::create_dir_all(dir)?;
@@ -109,7 +139,7 @@ fn song(dir: &std::path::Path) -> Result<Written, Error> {
 }
 ```
 
-The whole program is
+The program, with its test, is
 [`song_bounce.rs`](crates/tutti/examples/song_bounce.rs). The sound card is the
 `device` feature; on Linux it needs the ALSA headers (`libasound2-dev
 pkg-config`).
@@ -146,7 +176,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Supported Rust versions
 
 tutti supports the stable Rust pinned in
-[`rust-toolchain.toml`](rust-toolchain.toml) (1.99.1), and CI tests only that
+[`rust-toolchain.toml`](rust-toolchain.toml), and CI tests only that
 toolchain.
 
 ## License

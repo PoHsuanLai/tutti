@@ -18,7 +18,6 @@ use tutti::{
     MaxBlock, Pcm, Q, Root, RouteSpec, SampleRate, Samples, Session, SessionEvent, SvfFilterNode,
     SvfType, Wave,
 };
-// ANCHOR_END: readme
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -50,7 +49,6 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-// ANCHOR: readme
 /// The song, bounced into `dir`.
 fn song(dir: &std::path::Path) -> Result<Written, Error> {
     std::fs::create_dir_all(dir)?;

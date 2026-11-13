@@ -341,7 +341,7 @@ impl ScheduleAudio {
             }
             if let At::Frame(_) = cmd.at {
                 cmd.pos *= ratio;
-                cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
+                cmd.at = At::Frame(tutti_types::Frame::new(cmd.pos.round() as u64));
             }
         }
     }
@@ -371,9 +371,9 @@ mod tests {
         let s = Schedule::new();
         let play = TransportCommand::Motion(MotionEvent::Play);
         for i in 0..SCHEDULE_CAPACITY {
-            s.send(At::Frame(Frame(i as u64)), play).expect("room");
+            s.send(At::Frame(Frame::new(i as u64)), play).expect("room");
         }
-        let at = At::Frame(Frame(99));
+        let at = At::Frame(Frame::new(99));
         assert_eq!(s.send(at, play), Err(ScheduleFull { at, command: play }));
         let mut audio = ScheduleAudio::new(s.clone());
         audio.gather();
@@ -393,7 +393,7 @@ mod tests {
             s.send(At::Beat(tutti_types::Beat(1000.0 + i as f64)), play)
                 .expect("room");
         }
-        assert!(s.send(At::Frame(Frame(0)), play).is_err());
+        assert!(s.send(At::Frame(Frame::new(0)), play).is_err());
         for _ in 0..IMMEDIATE_RESERVE {
             s.send(At::NextBlock, play).expect("reserve");
         }
@@ -413,14 +413,14 @@ mod tests {
     fn cancel_drops_what_was_sent_before_it() {
         let s = Schedule::new();
         let play = TransportCommand::Motion(MotionEvent::Play);
-        s.send(At::Frame(Frame(10)), play).expect("room");
-        s.send(At::Frame(Frame(20)), play).expect("room");
+        s.send(At::Frame(Frame::new(10)), play).expect("room");
+        s.send(At::Frame(Frame::new(20)), play).expect("room");
         s.cancel_all();
-        s.send(At::Frame(Frame(30)), play).expect("room");
+        s.send(At::Frame(Frame::new(30)), play).expect("room");
         let mut audio = ScheduleAudio::new(s.clone());
         audio.gather();
         assert_eq!(audio.pending().len(), 1);
-        assert_eq!(audio.pending()[0].at(), At::Frame(Frame(30)));
+        assert_eq!(audio.pending()[0].at(), At::Frame(Frame::new(30)));
         assert_eq!(s.outstanding(), 1);
     }
 }

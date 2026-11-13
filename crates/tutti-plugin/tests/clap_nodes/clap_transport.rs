@@ -279,9 +279,9 @@ fn said_at(seen: &[(Env, Vec<f32>)], f: Option<u64>) -> TransportPosition {
     };
     let (env, _) = seen
         .iter()
-        .find(|(e, _)| e.offset_of(Frame(f)).is_some())
+        .find(|(e, _)| e.offset_of(Frame::new(f)).is_some())
         .expect("a block held the frame");
-    env.transport_at(env.offset_of(Frame(f)).expect("inside"))
+    env.transport_at(env.offset_of(Frame::new(f)).expect("inside"))
 }
 
 /// **Behind a latent path**: the plugin's input arrives 40 frames late (a

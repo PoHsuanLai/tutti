@@ -99,7 +99,7 @@ impl Hand {
             })
             .collect();
         let env = tutti_graph::Env {
-            frame: tutti_types::Frame(0),
+            frame: tutti_types::Frame::new(0),
             sample_rate: self.synth.sample_rate,
             block_len: block,
             transport: tutti_graph::TransportPosition::default(),

@@ -401,22 +401,22 @@ fn next_frame_is_the_graph_frame_of_the_next_frame_read() {
         )
         .expect("the sources exist");
     commit(&mut r);
-    assert_eq!(tap.next_frame(), Frame(0), "nothing has rendered");
+    assert_eq!(tap.next_frame(), Frame::new(0), "nothing has rendered");
     for i in 0..3 {
         block(&mut r, 100, i * 100);
     }
-    assert_eq!(tap.next_frame(), Frame(0), "nothing was read yet");
+    assert_eq!(tap.next_frame(), Frame::new(0), "nothing was read yet");
     let mut buf = vec![0.0f32; 2 * 150];
     assert_eq!(tap.pop_into(&mut buf).get(), 150);
     assert_eq!(
         tap.next_frame(),
-        Frame(150),
+        Frame::new(150),
         "mid-way through the second block"
     );
     assert_eq!(tap.contiguous().get(), 150, "no gap in the rest");
     let mut buf = vec![0.0f32; 2 * 1000];
     assert_eq!(tap.pop_into(&mut buf).get(), 150);
-    assert_eq!(tap.next_frame(), Frame(300));
+    assert_eq!(tap.next_frame(), Frame::new(300));
 }
 
 /// A block the ring had no room for advances the clock: the frame after a
@@ -448,12 +448,12 @@ fn a_lost_block_advances_next_frame_and_a_contiguous_read_stops_at_it() {
     block(&mut r, 100, 300);
     assert_eq!(
         tap.next_frame(),
-        Frame(300),
+        Frame::new(300),
         "the gap 150..300 is skipped over"
     );
     assert_eq!(tap.contiguous().get(), 100);
     assert_eq!(tap.pop_into(&mut buf).get(), 100);
-    assert_eq!(tap.next_frame(), Frame(400));
+    assert_eq!(tap.next_frame(), Frame::new(400));
 }
 
 /// A read is whole frames: a buffer that ends mid-frame leaves its tail as it

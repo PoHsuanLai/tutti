@@ -135,7 +135,7 @@ impl ClockMap {
             None => -self.anchor.os.duration_since(os).as_secs_f64(),
         };
         let frames = (self.anchor.frame.get() as f64 + seconds * self.rate.get()).round();
-        (frames >= 0.0).then_some(Frame(frames as u64))
+        (frames >= 0.0).then_some(Frame::new(frames as u64))
     }
 
     /// [`frame_at`](Self::frame_at) with the rate it is counted at: what the

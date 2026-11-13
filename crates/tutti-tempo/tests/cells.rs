@@ -32,7 +32,7 @@ fn cells_seen(map: &TempoMap, grid: CellGrid, end: u64, blocks: &[u64]) -> BTree
         i += 1;
         let mut f = at;
         while f < block_end {
-            let c = map.view(R).chord_cell(Frame(f), grid);
+            let c = map.view(R).chord_cell(Frame::new(f), grid);
             if let Some(earlier) = seen.insert(c.start.get(), c) {
                 assert_eq!(earlier, c, "the cell at {} changed between blocks", c.start);
             }
@@ -104,7 +104,7 @@ fn cells_do_not_depend_on_the_block_layout() {
     }
     // Every frame in a cell asks for that cell.
     for f in (0..end).step_by(997) {
-        let c = map.view(R).chord_cell(Frame(f), grid);
+        let c = map.view(R).chord_cell(Frame::new(f), grid);
         assert_eq!(c, reference[&c.start.get()]);
         assert!(c.start.get() <= f && f < c.end.get());
         assert_eq!(c.start.get() % grid.get(), 0);
@@ -164,16 +164,22 @@ fn a_step_inside_a_grid_cell_cuts_it() {
     ])
     .unwrap();
     let grid = CellGrid::of(512);
-    let before = on_frame.view(R).chord_cell(Frame(479_744), grid);
-    assert_eq!((before.start, before.end), (Frame(479_744), Frame(480_000)));
+    let before = on_frame.view(R).chord_cell(Frame::new(479_744), grid);
+    assert_eq!(
+        (before.start, before.end),
+        (Frame::new(479_744), Frame::new(480_000))
+    );
     assert_eq!(before.tempo.get().to_bits(), 60.0f64.to_bits());
-    let after = on_frame.view(R).chord_cell(Frame(480_000), grid);
-    assert_eq!((after.start, after.end), (Frame(480_000), Frame(480_256)));
+    let after = on_frame.view(R).chord_cell(Frame::new(480_000), grid);
+    assert_eq!(
+        (after.start, after.end),
+        (Frame::new(480_000), Frame::new(480_256))
+    );
     assert_eq!(after.tempo.get().to_bits(), 240.0f64.to_bits());
     assert_eq!(after.beat, Beat(10.0), "the beat at the cut");
     assert_eq!(
-        on_frame.view(R).next_change(Frame(479_000)),
-        Some(Frame(480_000))
+        on_frame.view(R).next_change(Frame::new(479_000)),
+        Some(Frame::new(480_000))
     );
 
     // Between frames: beat 10.00001 at 60 BPM is 480 000.48 frames.
@@ -182,15 +188,15 @@ fn a_step_inside_a_grid_cell_cuts_it() {
         pt(10.000_01, 240.0, Transition::Step),
     ])
     .unwrap();
-    let cut = off.view(R).next_change(Frame(479_000)).unwrap();
-    assert_eq!(cut, Frame(480_001));
-    let before = off.view(R).chord_cell(Frame(479_900), grid);
-    assert_eq!((before.start, before.end), (Frame(479_744), cut));
+    let cut = off.view(R).next_change(Frame::new(479_000)).unwrap();
+    assert_eq!(cut, Frame::new(480_001));
+    let before = off.view(R).chord_cell(Frame::new(479_900), grid);
+    assert_eq!((before.start, before.end), (Frame::new(479_744), cut));
     assert_eq!(before.tempo.get().to_bits(), 60.0f64.to_bits());
     let after = off.view(R).chord_cell(cut, grid);
     assert_eq!(
         (after.start, after.end),
-        (cut, Frame(480_256)),
+        (cut, Frame::new(480_256)),
         "back on the grid after the cut"
     );
     assert_eq!(after.tempo.get().to_bits(), 240.0f64.to_bits());
@@ -208,8 +214,11 @@ fn a_step_inside_a_grid_cell_cuts_it() {
     );
     assert!((after.beat.get() - old_line).abs() < 4.0 / R.get());
     // The cell on the grid multiple next to the cut is whole again.
-    let next = off.view(R).chord_cell(Frame(480_256), grid);
-    assert_eq!((next.start, next.end), (Frame(480_256), Frame(480_768)));
+    let next = off.view(R).chord_cell(Frame::new(480_256), grid);
+    assert_eq!(
+        (next.start, next.end),
+        (Frame::new(480_256), Frame::new(480_768))
+    );
 }
 
 /// `next_change` is the first frame at or after the one given on which a point
@@ -221,9 +230,9 @@ fn next_change_finds_the_next_point() {
         .iter()
         .map(|p| map.view(R).frame_at_or_after(p.beat))
         .collect();
-    assert_eq!(map.view(R).next_change(Frame(0)), Some(cuts[0]));
+    assert_eq!(map.view(R).next_change(Frame::new(0)), Some(cuts[0]));
     assert_eq!(
-        map.view(R).next_change(Frame(cuts[0].get() - 1)),
+        map.view(R).next_change(Frame::new(cuts[0].get() - 1)),
         Some(cuts[0])
     );
     assert_eq!(
@@ -232,24 +241,24 @@ fn next_change_finds_the_next_point() {
         "at or after"
     );
     assert_eq!(
-        map.view(R).next_change(Frame(cuts[0].get() + 1)),
+        map.view(R).next_change(Frame::new(cuts[0].get() + 1)),
         Some(cuts[1])
     );
     assert_eq!(map.view(R).next_change(cuts[3]), Some(cuts[3]));
-    assert_eq!(map.view(R).next_change(Frame(cuts[3].get() + 1)), None);
+    assert_eq!(map.view(R).next_change(Frame::new(cuts[3].get() + 1)), None);
     let constant = TempoMap::constant(tutti_types::Bpm::of(120.0)).unwrap();
     assert_eq!(
-        constant.view(R).next_change(Frame(0)),
+        constant.view(R).next_change(Frame::new(0)),
         None,
         "the first point is not a change"
     );
-    assert_eq!(constant.view(R).next_change(Frame(5)), None);
+    assert_eq!(constant.view(R).next_change(Frame::new(5)), None);
     // A view's hint changes nothing.
     let mut view = map.view(R);
     for f in (0..cuts[3].get() + 10).step_by(997) {
         assert_eq!(
-            view.next_change(Frame(f)),
-            map.view(R).next_change(Frame(f))
+            view.next_change(Frame::new(f)),
+            map.view(R).next_change(Frame::new(f))
         );
     }
 }
@@ -290,9 +299,9 @@ fn chord_error_stays_under_a_fraction_of_a_frame() {
             let grid = CellGrid::of(g);
             let mut worst = 0.0f64;
             for f in (0..end).step_by(7) {
-                let c = map.view(R).chord_cell(Frame(f), grid);
-                let want = map.view(R).beat_at_frame(Frame(f)).get();
-                let got = c.beat_at(Frame(f), R).get();
+                let c = map.view(R).chord_cell(Frame::new(f), grid);
+                let want = map.view(R).beat_at_frame(Frame::new(f)).get();
+                let got = c.beat_at(Frame::new(f), R).get();
                 // Beat error to frames, at the local rate.
                 let rate = map.tempo_at(Beat(want)).get() / 60.0;
                 worst = worst.max((got - want).abs() / rate * R.get());
@@ -315,7 +324,7 @@ fn a_step_cell_has_the_segments_exact_tempo() {
         for i in 0..100_000u64 {
             let c = map
                 .view(R)
-                .chord_cell(Frame(i * 128 + i % 97), CellGrid::of(128));
+                .chord_cell(Frame::new(i * 128 + i % 97), CellGrid::of(128));
             assert_eq!(c.tempo.get().to_bits(), bpm.to_bits(), "{bpm} cell {i}");
         }
     }
@@ -324,9 +333,9 @@ fn a_step_cell_has_the_segments_exact_tempo() {
         pt(20.000_01, 97.7, Transition::Step),
     ])
     .unwrap();
-    let cut = map.view(R).next_change(Frame(0)).unwrap().get();
+    let cut = map.view(R).next_change(Frame::new(0)).unwrap().get();
     for f in (0..cut + 20_000).step_by(61) {
-        let c = map.view(R).chord_cell(Frame(f), CellGrid::of(128));
+        let c = map.view(R).chord_cell(Frame::new(f), CellGrid::of(128));
         let want = if f < cut { 133.3f64 } else { 97.7 };
         assert_eq!(c.tempo.get().to_bits(), want.to_bits(), "frame {f}");
     }
@@ -352,7 +361,7 @@ fn cells_over_sub_frame_segments_stay_inside_the_map() {
         let mut cells = vec![];
         let mut f = 0;
         while f < frames {
-            let c = map.view(rate).chord_cell(Frame(f), grid);
+            let c = map.view(rate).chord_cell(Frame::new(f), grid);
             let t = c.tempo.get();
             assert!(
                 t.is_finite() && t >= lo * (1.0 - 1e-9) && t <= hi * (1.0 + 1e-9),
@@ -375,8 +384,8 @@ fn cells_over_sub_frame_segments_stay_inside_the_map() {
     ])
     .unwrap();
     let cells = check(&map, r44, CellGrid::of(64), 200, "ramp then step");
-    assert_eq!(cells[0].start, Frame(0));
-    assert_eq!(cells[0].end, Frame(1));
+    assert_eq!(cells[0].start, Frame::new(0));
+    assert_eq!(cells[0].end, Frame::new(1));
     assert!((105.0..=351.0).contains(&cells[0].tempo.get()));
     // 120 BPM to beat 5, a 16e-6 beat ramp 189 to 51, then 51: the ramp is under a frame.
     let map = TempoMap::new([
@@ -386,8 +395,11 @@ fn cells_over_sub_frame_segments_stay_inside_the_map() {
     ])
     .unwrap();
     let cells = check(&map, r44, CellGrid::of(1), 111_000, "step, ramp, step");
-    let c = cells.iter().find(|c| c.start == Frame(110_250)).unwrap();
-    assert_eq!(c.end, Frame(110_251));
+    let c = cells
+        .iter()
+        .find(|c| c.start == Frame::new(110_250))
+        .unwrap();
+    assert_eq!(c.end, Frame::new(110_251));
     assert!((51.0..=189.0).contains(&c.tempo.get()), "{c:?}");
     // Random maps with gaps from 1e-7 to 10 beats, at several grids.
     let mut rng = Lcg(21);

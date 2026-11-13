@@ -107,7 +107,7 @@ fn a_timed_transport_program_needs_only_the_prelude() {
     let transport = Transport::new(SampleRate::SR_48K);
     transport
         .motion()
-        .schedule(At::Frame(Frame(128)), MotionEvent::Play)
+        .schedule(At::Frame(Frame::new(128)), MotionEvent::Play)
         .expect("room");
     transport
         .motion()
@@ -134,7 +134,10 @@ fn a_tempo_map_is_built_and_published_through_the_facade() {
         .build()
         .expect("a map");
     let rate = SampleRate::SR_48K;
-    assert_eq!(map.view(rate).frame_at_or_after(Beat(4.0)), Frame(76_800));
+    assert_eq!(
+        map.view(rate).frame_at_or_after(Beat(4.0)),
+        Frame::new(76_800)
+    );
     let transport = tutti::transport::Transport::new(rate);
     transport.settings().set_tempo_map(map);
 }

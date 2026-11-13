@@ -19,7 +19,7 @@ fn block(node: &mut InletNode, frames: usize) -> Vec<Vec<f32>> {
     // `drive_input`, not `drive`: with no inputs and no params, the block's
     // length comes from its `Env`.
     let env = Env {
-        frame: Frame(0),
+        frame: Frame::new(0),
         sample_rate: RATE,
         block_len: Samples(frames),
         transport: TransportPosition::default(),
@@ -182,7 +182,7 @@ fn process_over(node: &mut InletNode, planes: usize, frames: usize, fill: f32) -
     let events_in: Vec<SortedEvents<'_>> = Vec::new();
     let mut writers: Vec<EventWriter<'_>> = Vec::new();
     let env = Env {
-        frame: Frame(0),
+        frame: Frame::new(0),
         sample_rate: RATE,
         block_len: Samples(frames),
         transport: TransportPosition::default(),

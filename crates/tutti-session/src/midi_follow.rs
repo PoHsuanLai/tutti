@@ -218,7 +218,7 @@ pub(crate) fn next_block_beat(playhead: &Playhead, map: &TempoMap) -> Beat {
     if playhead.playing() {
         at += playhead.span().to_seconds(rate);
     }
-    let frame = Frame(at.to_samples(rate).get() as u64);
+    let frame = Frame::new(at.to_samples(rate).get() as u64);
     map.view(rate).beat_at_frame(frame)
 }
 

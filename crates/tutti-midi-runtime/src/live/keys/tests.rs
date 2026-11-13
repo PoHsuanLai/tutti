@@ -103,7 +103,7 @@ fn the_helpers_send_on_the_keys_group() {
         NoteVelocity::new(5),
     )
     .unwrap();
-    keys.note_off(Frame(0), MidiChannel::FIRST, NoteNumber::of(60))
+    keys.note_off(Frame::new(0), MidiChannel::FIRST, NoteNumber::of(60))
         .unwrap();
     d.block();
     assert_eq!(

@@ -56,7 +56,7 @@ fn node(ring: usize, tail: usize) -> (PluginNode<FakeLoaded>, FakePlugin) {
 
 fn env(frame: u64) -> Env {
     Env {
-        frame: Frame(frame),
+        frame: Frame::new(frame),
         sample_rate: SR,
         block_len: Samples(BLOCK),
         transport: TransportPosition::default(),
@@ -182,8 +182,8 @@ fn a_parked_plugin_is_woken_by_a_note_on_its_frame() {
     let mut heard = Vec::new();
     let mut calls = Vec::new();
     let (first, second) = (8 * BLOCK as u64, 20 * BLOCK as u64 + 17);
-    tx.push(Frame(first), note()).expect("room");
-    tx.push(Frame(second), note()).expect("room");
+    tx.push(Frame::new(first), note()).expect("room");
+    tx.push(Frame::new(second), note()).expect("room");
     for _ in 0..40 {
         let [l, r] = render(&mut exec);
         assert_eq!(l, r);

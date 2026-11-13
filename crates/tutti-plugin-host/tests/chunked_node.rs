@@ -405,7 +405,7 @@ fn run_block_with(
     beat: Beat,
 ) {
     let env = Env {
-        frame: Frame(frame),
+        frame: Frame::new(frame),
         sample_rate: SR,
         block_len: Samples(len),
         transport: TransportPosition::new(playing, bpm, beat, None),

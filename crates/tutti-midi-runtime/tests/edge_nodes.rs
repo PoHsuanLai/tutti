@@ -187,7 +187,7 @@ impl Ingest {
                 let (inlet, mut writer) = EventInletNode::pair(EventCapacity::of(4096));
                 for (block, batch) in script.0.iter().enumerate() {
                     for &(offset, ump) in batch {
-                        let frame = Frame(512 * block as u64 + u64::from(offset.get()));
+                        let frame = Frame::new(512 * block as u64 + u64::from(offset.get()));
                         writer.push(Stamp::Frame(frame), ump).expect("room");
                     }
                 }
@@ -891,7 +891,7 @@ fn an_event_tap_hands_midi_back_and_counts_drops() {
         // The inlet holds each event for its frame: offset 7, then 8, in
         // block `k`.
         for i in 0..256u64 {
-            let frame = Frame(512 * k + 7 + i / 128);
+            let frame = Frame::new(512 * k + 7 + i / 128);
             keys.push(Stamp::Frame(frame), note(0, 60, 0).1).unwrap();
         }
         exec.process(512, &TransportPosition::default(), &[], &mut []);

@@ -328,7 +328,7 @@ impl Terms {
             + self.inlet_lead.get() as i128;
         let at = i128::from(first.get()) - behind + self.offset.frames();
         match u64::try_from(at) {
-            Ok(frame) => Start::At(Frame(frame)),
+            Ok(frame) => Start::At(Frame::new(frame)),
             Err(_) => Start::BeforeOrigin(Samples(usize::try_from(-at).unwrap_or(usize::MAX))),
         }
     }
@@ -1060,8 +1060,11 @@ mod tests {
             Samples(7),
             Trim::NONE,
         );
-        assert_eq!(terms.start(Frame(1_000)), Start::At(Frame(273)));
-        assert_eq!(terms.start(Frame(100)), Start::BeforeOrigin(Samples(627)));
+        assert_eq!(terms.start(Frame::new(1_000)), Start::At(Frame::new(273)));
+        assert_eq!(
+            terms.start(Frame::new(100)),
+            Start::BeforeOrigin(Samples(627))
+        );
         assert!(terms.is_complete());
         let partial = Terms::new(Some(Samples(240)), None, Samples(0), Trim::NONE);
         assert!(!partial.is_complete());
@@ -1082,14 +1085,14 @@ mod tests {
             sink: Box::new(Keep(Arc::clone(&kept))),
             path: None,
             window: Window {
-                start: Frame(0),
-                end: Some(Frame(250)),
+                start: Frame::new(0),
+                end: Some(Frame::new(250)),
             },
             terms: (Samples(0), Trim::NONE),
             probe: LatencyProbe::new(Arc::default(), None),
             anchor: Anchor {
                 beat: Beat(0.0),
-                frame: Frame(0),
+                frame: Frame::new(0),
                 map,
                 rate: SampleRate::SR_48K,
             },

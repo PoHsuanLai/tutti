@@ -82,7 +82,7 @@ impl Node for Probe {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        if let Some(o) = cx.env.offset_of(Frame(START_FRAME as u64)) {
+        if let Some(o) = cx.env.offset_of(Frame::new(START_FRAME as u64)) {
             *self.0.lock().expect("probe") = Some(cx.env.transport_at(o).beat());
         }
         io.output(0).fill(0.0);
@@ -172,7 +172,7 @@ fn by_hand(start: Beat) -> Run {
     let mut left = Vec::with_capacity(FRAMES);
     while left.len() < FRAMES {
         let env = Env {
-            frame: Frame(left.len() as u64),
+            frame: Frame::new(left.len() as u64),
             sample_rate: SampleRate::of(SR),
             block_len: Samples(HAND),
             transport: tutti_graph::TransportPosition::counted(true, TEMPO, host.origin(), None),

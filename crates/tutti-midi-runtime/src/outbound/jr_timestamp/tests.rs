@@ -30,10 +30,10 @@ fn at(offset: u32, ump: Ump) -> UmpAt {
 fn clock_maps_samples_to_ticks_monotonically() {
     let clock = JrClock::new(SampleRate::SR_48K);
     // 48000 samples = 1 s = 31250 ticks, which wraps: 31250 & 0xFFFF = 31250.
-    assert_eq!(clock.ticks_at(Frame(0)), 0);
-    assert_eq!(clock.ticks_at(Frame(48_000)), 31_250);
+    assert_eq!(clock.ticks_at(Frame::new(0)), 0);
+    assert_eq!(clock.ticks_at(Frame::new(48_000)), 31_250);
     // Half a second → half the ticks.
-    assert_eq!(clock.ticks_at(Frame(24_000)), 15_625);
+    assert_eq!(clock.ticks_at(Frame::new(24_000)), 15_625);
 }
 
 #[test]
@@ -41,9 +41,13 @@ fn clock_wraps_at_16_bits() {
     // At exactly the JR reference rate, one sample is one tick, so the wrap
     // boundary is integer-exact (no float rounding at the edge).
     let clock = JrClock::new(SampleRate::of(JR_TICKS_PER_SECOND as f64));
-    assert_eq!(clock.ticks_at(Frame(0xFFFF)), 0xFFFF);
-    assert_eq!(clock.ticks_at(Frame(0x1_0000)), 0, "wraps back to zero");
-    assert_eq!(clock.ticks_at(Frame(0x1_0001)), 1);
+    assert_eq!(clock.ticks_at(Frame::new(0xFFFF)), 0xFFFF);
+    assert_eq!(
+        clock.ticks_at(Frame::new(0x1_0000)),
+        0,
+        "wraps back to zero"
+    );
+    assert_eq!(clock.ticks_at(Frame::new(0x1_0001)), 1);
 }
 
 #[test]
@@ -52,7 +56,7 @@ fn the_first_clock_is_due_immediately() {
     // waiting one interval before the first would leave the opening block's
     // timing unusable.
     let mut e = JrClockEmitter::new(SampleRate::SR_48K);
-    let first = e.due(Frame(0)).expect("a clock is owed at once");
+    let first = e.due(Frame::new(0)).expect("a clock is owed at once");
     assert_eq!(jr_clock_value(&first), Some(0));
 }
 
@@ -61,9 +65,9 @@ fn clocks_are_emitted_on_the_configured_cadence() {
     let mut e = JrClockEmitter::with_interval(SampleRate::SR_48K, Duration::from_millis(100));
     let interval = e.interval();
     assert_eq!(interval, Samples(4_800));
-    let at = |frames: Samples| Frame(frames.get() as u64);
+    let at = |frames: Samples| Frame::new(frames.get() as u64);
 
-    assert!(e.due(Frame(0)).is_some(), "first");
+    assert!(e.due(Frame::new(0)).is_some(), "first");
     assert!(
         e.due(at(Samples(interval.get() - 1))).is_none(),
         "one sample short"
@@ -146,11 +150,15 @@ fn stamp_advances_by_events_and_stamp_span_by_the_block() {
     // empty block, `stamp_span` can.
     let mut by_events = JrStream::new(SampleRate::SR_48K);
     by_events.stamp(&[], &mut Vec::new());
-    assert_eq!(by_events.origin(), Frame(0), "silence stalls the origin");
+    assert_eq!(
+        by_events.origin(),
+        Frame::new(0),
+        "silence stalls the origin"
+    );
 
     let mut by_block = JrStream::new(SampleRate::SR_48K);
     by_block.stamp_span(&[], Samples(512), &mut Vec::new());
-    assert_eq!(by_block.origin(), Frame(512), "the block advanced it");
+    assert_eq!(by_block.origin(), Frame::new(512), "the block advanced it");
 }
 
 #[test]
@@ -198,13 +206,13 @@ fn a_stream_advances_its_origin_across_blocks() {
     let mut first = Vec::new();
     stream.stamp(&events, &mut first);
     assert_eq!(jr_timestamp_value(&first[0].1), Some(0));
-    assert_eq!(stream.origin(), Frame(24_001));
+    assert_eq!(stream.origin(), Frame::new(24_001));
 
     // The second block's first event is stamped from the new origin, not zero.
     let mut second = Vec::new();
     stream.stamp(&events, &mut second);
     assert_eq!(jr_timestamp_value(&second[0].1), Some(15_625));
-    assert_eq!(stream.origin(), Frame(48_002));
+    assert_eq!(stream.origin(), Frame::new(48_002));
 }
 
 /// The reason the origin lives on the stream: two producers feeding one wire
@@ -240,7 +248,7 @@ fn two_producers_on_one_stream_keep_stamps_monotonic() {
         second > first,
         "the second producer must stamp later than the first: {first} then {second}"
     );
-    assert_eq!(wire.origin(), Frame(1024), "two 512-frame blocks");
+    assert_eq!(wire.origin(), Frame::new(1024), "two 512-frame blocks");
 }
 
 #[test]
@@ -254,7 +262,7 @@ fn stamp_block_prefixes_each_event() {
         ),
     ];
     let mut out = Vec::new();
-    stamper.stamp_block(&events, Frame(0), &mut out);
+    stamper.stamp_block(&events, Frame::new(0), &mut out);
     assert_eq!(out.len(), 4, "one timestamp + one event, twice");
     assert_eq!(jr_timestamp_value(&out[0].1), Some(0));
     assert!(matches!(out[1].1.key_event(), Some(KeyEvent::On(_))));
@@ -276,7 +284,7 @@ fn stamp_then_observe_recovers_spacing() {
         ),
     ];
     let mut stream = Vec::new();
-    stamper.stamp_block(&events, Frame(0), &mut stream);
+    stamper.stamp_block(&events, Frame::new(0), &mut stream);
 
     let mut rx = JrReceiver::new();
     let mut recovered = Vec::new();

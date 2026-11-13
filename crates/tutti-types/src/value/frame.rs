@@ -52,36 +52,36 @@ unit! {
     ///
     /// ```compile_fail
     /// use tutti_types::Frame;
-    /// let _ = Frame(10) + Frame(20);
+    /// let _ = Frame::new(10) + Frame::new(20);
     /// ```
     ///
     /// ```compile_fail
     /// use tutti_types::Frame;
-    /// let _ = Frame(20) - Frame(10);
+    /// let _ = Frame::new(20) - Frame::new(10);
     /// ```
     ///
     /// A bare integer is not a frame count either:
     ///
     /// ```compile_fail
     /// use tutti_types::Frame;
-    /// let _ = Frame(10) + 5u64;
+    /// let _ = Frame::new(10) + 5u64;
     /// ```
     ///
     /// What does compile says what it means:
     ///
     /// ```
     /// use tutti_types::{Frame, Samples};
-    /// let start = Frame(48_000);
+    /// let start = Frame::new(48_000);
     /// let later = start + Samples(512);
     /// assert_eq!(later.since(start), Some(Samples(512)));
     /// assert_eq!(start.since(later), None); // not a count: it is in the past
     /// ```
-    pub struct Frame(pub u64): Display;
+    pub struct Frame(u64): Display;
 }
 
 impl Frame {
     /// The first frame the clock renders.
-    pub const ZERO: Frame = Frame(0);
+    pub const ZERO: Frame = Frame::new(0);
 
     /// Wraps a raw position already denominated in frames.
     #[inline]
@@ -104,12 +104,12 @@ impl Frame {
     ///
     /// ```
     /// use tutti_types::Frame;
-    /// assert_eq!(Frame(256).scaled(44_100.0 / 48_000.0), Frame(235));
+    /// assert_eq!(Frame::new(256).scaled(44_100.0 / 48_000.0), Frame::new(235));
     /// ```
     #[inline]
     #[must_use]
     pub fn scaled(self, ratio: f64) -> Frame {
-        Frame((self.0 as f64 * ratio).round() as u64)
+        Frame::new((self.0 as f64 * ratio).round() as u64)
     }
 
     /// The frame at the same wall-clock time at rate `to`, this one being a
@@ -131,6 +131,13 @@ impl Frame {
     pub fn since(self, earlier: Frame) -> Option<Samples> {
         let d = self.0.checked_sub(earlier.0)?;
         usize::try_from(d).ok().map(Samples)
+    }
+}
+
+impl From<Frame> for u64 {
+    #[inline]
+    fn from(frame: Frame) -> Self {
+        frame.0
     }
 }
 
@@ -166,9 +173,9 @@ impl AddAssign<Samples> for Frame {
 ///
 /// ```
 /// use tutti_types::{Frame, Moment, SampleRate, Samples};
-/// let m = Moment::new(Frame(48_000), SampleRate::of(48_000.0));
+/// let m = Moment::new(Frame::new(48_000), SampleRate::of(48_000.0));
 /// let later = m.after(Samples(480));
-/// assert_eq!((later.frame(), later.rate()), (Frame(48_480), SampleRate::of(48_000.0)));
+/// assert_eq!((later.frame(), later.rate()), (Frame::new(48_480), SampleRate::of(48_000.0)));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Moment {
@@ -256,30 +263,30 @@ impl From<Beat> for At {
 mod tests {
     use super::*;
 
-    /// **A frame or a beat is the time it names**: `Frame(n)` is `At::Frame`
+    /// **A frame or a beat is the time it names**: `Frame::new(n)` is `At::Frame`
     /// and `Beat(b)` is `At::Beat`. (`At` has no `Moment` variant: a moment
     /// carries its own rate and is a `Stamp::Moment`.)
     #[test]
     fn a_frame_or_a_beat_is_an_at() {
-        assert_eq!(At::from(Frame(48_000)), At::Frame(Frame(48_000)));
+        assert_eq!(At::from(Frame::new(48_000)), At::Frame(Frame::new(48_000)));
         assert_eq!(At::from(Beat(2.5)), At::Beat(Beat(2.5)));
     }
 
     /// Advancing adds the count, and saturates instead of wrapping.
     #[test]
     fn advancing_adds_and_saturates() {
-        assert_eq!(Frame(100) + Samples(28), Frame(128));
-        let mut f = Frame(u64::MAX - 1);
+        assert_eq!(Frame::new(100) + Samples(28), Frame::new(128));
+        let mut f = Frame::new(u64::MAX - 1);
         f += Samples(5);
-        assert_eq!(f, Frame(u64::MAX));
+        assert_eq!(f, Frame::new(u64::MAX));
     }
 
     /// `since` is a checked distance: a later frame is not "some frames ago".
     #[test]
     fn since_is_checked() {
-        assert_eq!(Frame(600).since(Frame(88)), Some(Samples(512)));
-        assert_eq!(Frame(88).since(Frame(88)), Some(Samples(0)));
-        assert_eq!(Frame(88).since(Frame(600)), None);
+        assert_eq!(Frame::new(600).since(Frame::new(88)), Some(Samples(512)));
+        assert_eq!(Frame::new(88).since(Frame::new(88)), Some(Samples(0)));
+        assert_eq!(Frame::new(88).since(Frame::new(600)), None);
     }
 
     /// What is deliberately *absent*: `Frame + Frame`, `Frame - Frame`,

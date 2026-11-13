@@ -38,7 +38,7 @@ fn frames(n: usize, s: &mut Session) {
 
 fn drain(tap: &mut EventTapReader) -> Vec<(u64, u8)> {
     let mut buf = [TapEvent {
-        frame: Frame(0),
+        frame: Frame::new(0),
         ump: Ump::default(),
     }; 64];
     let n = tap.pop_into(&mut buf);
@@ -73,10 +73,10 @@ fn pushed_events_come_out_at_their_frames() {
         .expect("the port exists");
     let _ = s.update();
 
-    writer.push(Frame(10), note(1)).unwrap();
-    writer.push(Frame(300), note(2)).unwrap();
+    writer.push(Frame::new(10), note(1)).unwrap();
+    writer.push(Frame::new(300), note(2)).unwrap();
     writer.push(Stamp::NextBlock, note(3)).unwrap();
-    prebuilt.push(Frame(10), note(9)).unwrap();
+    prebuilt.push(Frame::new(10), note(9)).unwrap();
     frames(400, &mut s);
     let first = drain(&mut tap);
     assert_eq!(first.len(), 3);

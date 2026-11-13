@@ -217,8 +217,8 @@ fn an_export_is_the_live_render_on_a_native_param() {
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Frames(
-            tutti_types::Frame(0),
-            tutti_types::Frame(total as u64),
+            tutti_types::Frame::new(0),
+            tutti_types::Frame::new(total as u64),
         ))
         .sample_rate(SampleRate::of(RATE))
         .clock(ExportClock::timeline(timeline))

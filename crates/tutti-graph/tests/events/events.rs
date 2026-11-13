@@ -300,7 +300,7 @@ fn run_scheduled(
             let target = now.saturating_add_signed(rel);
             let kind = EventKind::Midi(Ump([tag, target as u32, (target >> 32) as u32, 0]));
             let at = EventIn { node: REC, port };
-            let when = At::Frame(Frame(target));
+            let when = At::Frame(Frame::new(target));
             if executor {
                 ed.schedule(when, at, kind)
                     .expect("room for the test's commands");

@@ -1796,12 +1796,12 @@ mod tests {
         let (mut out, _) = out_with_counter(true);
 
         out.send_stamped(&[note(511)]);
-        assert_eq!(out.origin(), Frame(512), "one 512-frame block");
+        assert_eq!(out.origin(), Frame::new(512), "one 512-frame block");
 
         out.send_stamped(&[note(511)]);
         assert_eq!(
             out.origin(),
-            Frame(1024),
+            Frame::new(1024),
             "the second producer continues from the first, it does not restart"
         );
     }
@@ -1820,7 +1820,7 @@ mod tests {
         );
         assert_eq!(
             out.origin(),
-            Frame(0),
+            Frame::new(0),
             "and the stream must not advance when it did not stamp"
         );
     }

@@ -737,7 +737,7 @@ impl Node for OneShot {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        if let Some(at) = cx.env.offset_of(tutti_types::Frame(self.at)) {
+        if let Some(at) = cx.env.offset_of(tutti_types::Frame::new(self.at)) {
             let _ = io
                 .event_out(0)
                 .push(tutti_graph::Event::midi(at, Ump(self.words)));

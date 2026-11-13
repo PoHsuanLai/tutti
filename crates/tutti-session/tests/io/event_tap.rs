@@ -56,7 +56,7 @@ fn frames(n: usize, s: &mut Session) {
 
 fn drain(tap: &mut tutti_graph::EventTapReader) -> Vec<u64> {
     let mut buf = [TapEvent {
-        frame: Frame(0),
+        frame: Frame::new(0),
         ump: Ump::default(),
     }; 64];
     let n = tap.pop_into(&mut buf);

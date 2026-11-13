@@ -1586,7 +1586,7 @@ fn a_prepare_has_a_real_rate_and_a_block() {
             "{rate}"
         );
         assert!(
-            prep(0).with_rate(SampleRate::of(rate)).is_none(),
+            prep(0).with_rate(<SampleRate as tutti_types::Unit>::from_raw(rate)).is_none(),
             "with_rate({rate})"
         );
     }

@@ -10,7 +10,7 @@ use std::path::Path;
 use tutti_au_ffi::declared_components;
 use tutti_plugin_types::{
     EditorPresence, Load, LoadStage, MainThread, Origin, PluginClass, PluginDescriptor,
-    PluginError, PluginResult,
+    PluginError, PluginResult, SampleRate,
 };
 
 use crate::bus::BusDirection;
@@ -23,7 +23,7 @@ use crate::types::AudioComponentDescription;
 /// The stream configuration a unit is created at: the activation applies its
 /// own rate and block ceiling, so these only have to be a configuration the
 /// unit takes.
-const LOAD_RATE: f64 = 44_100.0;
+const LOAD_RATE: SampleRate = SampleRate::SR_44K1;
 const LOAD_BLOCK: u32 = 512;
 
 /// The Audio Units the bundle at `path` declares, as the descriptor id a

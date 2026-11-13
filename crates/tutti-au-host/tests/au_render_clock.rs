@@ -60,7 +60,7 @@ mod support;
 use support::probe_au::{Misbehaviour, last_render_sample_time, render_count};
 
 const BLOCK: u32 = 64;
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 
 /// Render one block through the pull path.
 fn render(au: &mut Au) {

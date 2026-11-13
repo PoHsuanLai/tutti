@@ -661,7 +661,7 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = find_component(&desc).expect("AUDelay ships with macOS");
-        let au = AuLoaded::new(comp, 48_000.0, 512).unwrap();
+        let au = AuLoaded::new(comp, SampleRate::SR_48K, 512).unwrap();
         let prepare =
             Prepare::new(SampleRate::SR_48K, MaxBlock::of(tutti_types::Samples(512))).unwrap();
         au.activate(&MainThread::claim().unwrap(), prepare)

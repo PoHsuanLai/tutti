@@ -11,7 +11,7 @@ use tutti_modulation::Lfo;
 use tutti_session::{OutPort, ParamError, ParamRef, Root, RouteSpec, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::MaxBlock;
-use tutti_types::{BeatDuration, Db, Depth, ParamAddr, UnitAddr, UnitParam};
+use tutti_types::{BeatsPerCycle, Db, Depth, ParamAddr, UnitAddr, UnitParam};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 use common::bands::{BAND0, BAND1, Bands};
@@ -140,7 +140,7 @@ fn a_route_to_index_1_does_not_touch_index_0() {
     );
     let mut m = s.mods_mut();
     m.range_raw(band1, 0.0, 1_000.0).unwrap();
-    let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
+    let lfo = m.lfo(Lfo::sine().rate(BeatsPerCycle::of(0.5)));
     m.route(RouteSpec::new(lfo, band1, Depth::of(0.3))).unwrap();
     for _ in 0..4 {
         let _ = s.update();

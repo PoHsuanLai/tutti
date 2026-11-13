@@ -166,7 +166,7 @@ fn distortion() {
 fn lfo() {
     IsolateRow::new("LfoNode (sine, 3 Hz)", || {
         LfoNode::new(LfoShape::Sine)
-            .with_frequency(Hz(3.0))
+            .with_rate(Hz(3.0))
             .with_depth(Depth::clamped(0.8))
     })
     .control("rate", |l| assert!(l.param_set().set(UnitParam::Rate, 5.0)))

@@ -361,7 +361,7 @@ fn convolver_addresses_nothing() {
 fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32) {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let lfo = LfoNode::new(LfoShape::Sine)
-        .with_frequency(Hz(1.0))
+        .with_rate(Hz(1.0))
         .with_depth(Depth::of(0.25));
     let (n, params) = g.add_with_controls(lfo);
     g.connect_output(n, 0, 0);
@@ -679,7 +679,7 @@ fn an_lfo_reads_a_driven_depth_per_frame() {
     use tutti_types::{Frame, UnitAddr};
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let lfo = LfoNode::new(LfoShape::Square)
-        .with_frequency(Hz(1.0))
+        .with_rate(Hz(1.0))
         .with_depth(Depth::of(0.25));
     let (n, _) = g.add_with_controls(lfo);
     g.connect_output(n, 0, 0);

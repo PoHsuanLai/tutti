@@ -24,7 +24,7 @@ use tutti_session::{
     RouteSpec, Session, SessionEvent, TargetName,
 };
 use tutti_transport::MotionEvent;
-use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, UnitParam};
+use tutti_types::{BeatsPerCycle, Depth, Hz, ParamAddr, UnitParam};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 use common::probe::{ProbeUnit, Pulse};
@@ -148,7 +148,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     m.range_raw(gain, 0.0, 1.0).unwrap();
-    let wobble = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
+    let wobble = m.lfo(Lfo::sine().rate(BeatsPerCycle::of(0.5)));
     m.route(RouteSpec::new(wobble, cutoff, Depth::of(0.3)))
         .unwrap();
     let kick = m.follower(Follower::default(), kick_bus);

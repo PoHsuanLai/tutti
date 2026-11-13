@@ -1,7 +1,7 @@
 //! Editor key events at the ABI edge: a [`KeyEvent`] as the three values
 //! `IPlugView::onKeyDown` and `onKeyUp` carry.
 
-use tutti_plugin_types::{KeyEvent, KeyModifiers, NamedKey};
+use tutti_plugin_types::{KeyEvent, KeyModifiers, ModifierConvention, NamedKey};
 use vst3::Steinberg::KeyModifier_ as M;
 use vst3::Steinberg::VirtualKeyCodes_ as V;
 
@@ -21,15 +21,15 @@ pub(crate) struct ViewKey {
 /// The key as the view's arguments, or `None` when VST3 cannot write it: a character
 /// outside the Basic Multilingual Plane (`char16` is one UTF-16 unit).
 ///
-/// `command_is_apple` is whether the platform is macOS, where `kCommandKey` is the Command
-/// key and `kControlKey` the Control key. Elsewhere `kCommandKey` is Control and
+/// `convention` is [`ModifierConvention::Mac`] on macOS, where `kCommandKey` is the Command
+/// key and `kControlKey` the Control key. Under [`ModifierConvention::Pc`] `kCommandKey` is Control and
 /// `kControlKey` the Windows key.
-pub(crate) fn view_key_of(event: &KeyEvent, command_is_apple: bool) -> Option<ViewKey> {
+pub(crate) fn view_key_of(event: &KeyEvent, convention: ModifierConvention) -> Option<ViewKey> {
     let character = match event.key.character() {
         Some(c) => u16::try_from(u32::from(c)).ok()?,
         None => 0,
     };
-    let (control, command) = if command_is_apple {
+    let (control, command) = if convention == ModifierConvention::Mac {
         (M::kControlKey, M::kCommandKey)
     } else {
         (M::kCommandKey, M::kControlKey)
@@ -154,8 +154,11 @@ mod tests {
             (NamedKey::Equals, 57),
         ];
         for (named, number) in sdk {
-            let key = view_key_of(&event(KeyCode::Named(named), KeyModifiers::empty()), false)
-                .expect("expressible");
+            let key = view_key_of(
+                &event(KeyCode::Named(named), KeyModifiers::empty()),
+                ModifierConvention::Pc,
+            )
+            .expect("expressible");
             assert_eq!(key.virtual_key, number, "{named:?}");
             assert_eq!(key.character, 0, "{named:?} types no character");
         }
@@ -165,19 +168,22 @@ mod tests {
     /// outside the Basic Multilingual Plane has no `char16` and is not expressible.
     #[test]
     fn a_character_is_a_utf16_unit_and_a_pair_is_not_expressible() {
-        let a = view_key_of(&event(KeyCode::Char('é'), KeyModifiers::empty()), false)
-            .expect("in the BMP");
+        let a = view_key_of(
+            &event(KeyCode::Char('é'), KeyModifiers::empty()),
+            ModifierConvention::Pc,
+        )
+        .expect("in the BMP");
         assert_eq!((a.character, a.virtual_key, a.modifiers), (0xE9, 0, 0));
         let both = view_key_of(
             &event(KeyCode::Both('a', NamedKey::Left), KeyModifiers::empty()),
-            false,
+            ModifierConvention::Pc,
         )
         .expect("expressible");
         assert_eq!((both.character, both.virtual_key), (97, 11));
         assert!(
             view_key_of(
                 &event(KeyCode::Char('\u{1D11E}'), KeyModifiers::empty()),
-                false
+                ModifierConvention::Pc
             )
             .is_none()
         );
@@ -188,17 +194,26 @@ mod tests {
     /// Command is 4 and Control is 8.
     #[test]
     fn modifier_bits_follow_the_sdks_roles_per_platform() {
-        let bits = |modifiers, apple| {
-            view_key_of(&event(KeyCode::Char('a'), modifiers), apple).map(|k| k.modifiers)
+        let bits = |modifiers, convention| {
+            view_key_of(&event(KeyCode::Char('a'), modifiers), convention).map(|k| k.modifiers)
         };
         assert_eq!(
-            bits(KeyModifiers::SHIFT | KeyModifiers::ALT, false),
+            bits(
+                KeyModifiers::SHIFT | KeyModifiers::ALT,
+                ModifierConvention::Pc
+            ),
             Some(3)
         );
-        assert_eq!(bits(KeyModifiers::CONTROL, false), Some(4));
-        assert_eq!(bits(KeyModifiers::COMMAND, false), Some(8));
-        assert_eq!(bits(KeyModifiers::CONTROL, true), Some(8));
-        assert_eq!(bits(KeyModifiers::COMMAND, true), Some(4));
-        assert_eq!(bits(KeyModifiers::all(), true), Some(15));
+        assert_eq!(bits(KeyModifiers::CONTROL, ModifierConvention::Pc), Some(4));
+        assert_eq!(bits(KeyModifiers::COMMAND, ModifierConvention::Pc), Some(8));
+        assert_eq!(
+            bits(KeyModifiers::CONTROL, ModifierConvention::Mac),
+            Some(8)
+        );
+        assert_eq!(
+            bits(KeyModifiers::COMMAND, ModifierConvention::Mac),
+            Some(4)
+        );
+        assert_eq!(bits(KeyModifiers::all(), ModifierConvention::Mac), Some(15));
     }
 }

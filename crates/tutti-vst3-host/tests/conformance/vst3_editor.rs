@@ -12,7 +12,8 @@
 
 use tutti_fixtures::{StandInWindow, main_thread};
 use tutti_plugin_types::{
-    Control, EditorWindow, KeyCode, KeyEvent, KeyModifiers, KeyPhase, KeyUse, NamedKey,
+    Control, EditorWindow, KeyCode, KeyEvent, KeyModifiers, KeyPhase, KeyUse, ModifierConvention,
+    NamedKey,
 };
 use tutti_shared_plugin::transcript::{Kind, Transcript, find_blob};
 use tutti_vst3_host::{ContentScale, EditorSize, LoadOptions, Vst3Loaded};
@@ -330,7 +331,10 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     assert_eq!(key_use(&mut plugin, clef), KeyUse::Ignored);
 
     // `kShiftKey` is 1; Control is `kCommandKey` (4) off a Mac and `kControlKey` (8) on one.
-    let control = if cfg!(target_os = "macos") { 8 } else { 4 };
+    let control = match ModifierConvention::HOST {
+        ModifierConvention::Mac => 8,
+        ModifierConvention::Pc => 4,
+    };
     assert_eq!(
         keys_received(&mut plugin),
         vec![

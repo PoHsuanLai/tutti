@@ -6,10 +6,10 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    KeyEvent, KeyPhase, KeyUse, LoadedPlugin, Normalized, ParamEdit, ParamId, ParamMapping,
-    ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
-    PresetId, RenderModeSupport, Request, RescanScope, Samples, StateUse, Vst3SubCategories,
-    WindowHandle,
+    KeyEvent, KeyPhase, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
+    ParamMapping, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
+    PluginTail, Preset, PresetId, RenderModeSupport, Request, RescanScope, Samples, StateUse,
+    Vst3SubCategories, WindowHandle,
 };
 
 use crate::error::Vst3Error;
@@ -499,7 +499,7 @@ impl EditorWindow for Vst3Loaded {
     /// Multilingual Plane) is not sent and is [`KeyUse::Ignored`], as is any key while
     /// no editor is open.
     fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
-        let Some(key) = view_key_of(&event, cfg!(target_os = "macos")) else {
+        let Some(key) = view_key_of(&event, ModifierConvention::HOST) else {
             return Ok(KeyUse::Ignored);
         };
         let used = match event.phase {

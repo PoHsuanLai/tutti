@@ -26,7 +26,7 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
     ContentScale, Control, Controller, EditorWindow, KeyCode, KeyEvent, KeyModifiers, KeyPhase,
-    KeyUse, NamedKey, Normalized, ParamEdit, ParamId, Request,
+    KeyUse, ModifierConvention, NamedKey, Normalized, ParamEdit, ParamId, Request,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
@@ -642,7 +642,10 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
     assert_eq!(cap.last_key.character, 0, "no character");
     assert_eq!(cap.last_key.key, 40, "VKEY_F1");
     // Control is bit 8 off a Mac, where bit 4 is the role the SDK calls Command.
-    let control_bit = if cfg!(target_os = "macos") { 4 } else { 8 };
+    let control_bit = match ModifierConvention::HOST {
+        ModifierConvention::Mac => 4,
+        ModifierConvention::Pc => 8,
+    };
     assert_eq!(cap.last_key.modifier_bits, control_bit);
 
     set_key_consumed(true);

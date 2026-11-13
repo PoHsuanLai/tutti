@@ -88,7 +88,8 @@ pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescrip
 pub use driver::{Hand, Lifecycle, Seat};
 pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
-    KeyCode, KeyEvent, KeyModifiers, KeyPhase, KeyUse, NamedKey, ResizeHints, WindowHandle,
+    KeyCode, KeyEvent, KeyModifiers, KeyPhase, KeyUse, ModifierConvention, NamedKey, ResizeHints,
+    WindowHandle,
 };
 pub use failure::{PluginFailure, TerminationReason};
 pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck, Wraps};

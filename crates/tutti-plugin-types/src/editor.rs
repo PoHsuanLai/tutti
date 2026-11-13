@@ -32,6 +32,34 @@ bitflags::bitflags! {
     }
 }
 
+/// Which physical key carries the "command" role, the one a plugin's shortcuts (copy,
+/// paste, undo) use.
+///
+/// A format that numbers its modifier bits by role maps [`KeyModifiers`] through this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifierConvention {
+    /// The Apple convention: the command role is the Command key
+    /// ([`KeyModifiers::COMMAND`]), and the Control key is the separate control role.
+    Mac,
+    /// The PC convention: the command role is the Control key
+    /// ([`KeyModifiers::CONTROL`]), and the Windows key has no role.
+    Pc,
+}
+
+// The platform's convention is chosen here and nowhere else: a different target is a
+// different file and changes no code that reads `ModifierConvention::HOST`.
+#[cfg(target_os = "macos")]
+#[path = "editor/macos.rs"]
+mod platform;
+#[cfg(not(target_os = "macos"))]
+#[path = "editor/other.rs"]
+mod platform;
+
+impl ModifierConvention {
+    /// The convention of the platform this build runs on.
+    pub const HOST: Self = platform::HOST;
+}
+
 /// A key with no character of its own, or named apart from the character it types.
 ///
 /// The names follow the VST2 `VKEY_*` set, which the other formats' key codes map onto.

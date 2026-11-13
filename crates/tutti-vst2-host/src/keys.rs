@@ -1,7 +1,7 @@
 //! Editor key events at the ABI edge: a [`KeyEvent`] as the three values
 //! `effEditKeyDown` and `effEditKeyUp` carry.
 
-use tutti_plugin_types::{KeyEvent, KeyModifiers, NamedKey};
+use tutti_plugin_types::{KeyEvent, KeyModifiers, ModifierConvention, NamedKey};
 use tutti_vst2_ffi::api::ModifierKey;
 use tutti_vst2_ffi::editor::{Key, KeyCode as Vst2KeyCode};
 
@@ -9,31 +9,29 @@ use tutti_vst2_ffi::editor::{Key, KeyCode as Vst2KeyCode};
 /// character outside ASCII (`[index]` is an ASCII character), or a modifier the host's
 /// platform has no bit for.
 ///
-/// `command_is_apple` is whether the platform is macOS, where the SDK numbers the bits by
+/// `convention` is [`ModifierConvention::Mac`] on macOS, where the SDK numbers the bits by
 /// role: `kVstModifierControl` (8) is the Command key, and `kVstModifierCommand` (4) the
-/// Control key. Elsewhere bit 8 is Control and no bit is the Windows key.
-pub(crate) fn key_code_of(event: &KeyEvent, command_is_apple: bool) -> Option<Vst2KeyCode> {
+/// Control key. Under [`ModifierConvention::Pc`] bit 8 is Control and no bit is the Windows key.
+pub(crate) fn key_code_of(event: &KeyEvent, convention: ModifierConvention) -> Option<Vst2KeyCode> {
     let character = match event.key.character() {
         Some(character) if character.is_ascii() => character,
         Some(_) => return None,
         None => '\0',
     };
+    let apple = convention == ModifierConvention::Mac;
     let mut modifier = ModifierKey::empty();
     for (flag, bit) in [
         (KeyModifiers::SHIFT, Some(ModifierKey::SHIFT)),
         (KeyModifiers::ALT, Some(ModifierKey::ALT)),
         (
             KeyModifiers::CONTROL,
-            Some(if command_is_apple {
+            Some(if apple {
                 ModifierKey::COMMAND
             } else {
                 ModifierKey::CONTROL
             }),
         ),
-        (
-            KeyModifiers::COMMAND,
-            command_is_apple.then_some(ModifierKey::CONTROL),
-        ),
+        (KeyModifiers::COMMAND, apple.then_some(ModifierKey::CONTROL)),
     ] {
         if event.modifiers.contains(flag) {
             modifier |= bit?;
@@ -148,8 +146,11 @@ mod tests {
             (NamedKey::Equals, 57),
         ];
         for (named, number) in sdk {
-            let code = key_code_of(&event(None, Some(named), KeyModifiers::empty()), false)
-                .expect("expressible");
+            let code = key_code_of(
+                &event(None, Some(named), KeyModifiers::empty()),
+                ModifierConvention::Pc,
+            )
+            .expect("expressible");
             assert_eq!(isize::from(code.key), number, "{named:?}");
         }
     }
@@ -157,8 +158,11 @@ mod tests {
     /// A key typed with no name is `Key::None` beside its ASCII character.
     #[test]
     fn a_character_alone_is_key_none() {
-        let code =
-            key_code_of(&event(Some('a'), None, KeyModifiers::empty()), false).expect("ASCII");
+        let code = key_code_of(
+            &event(Some('a'), None, KeyModifiers::empty()),
+            ModifierConvention::Pc,
+        )
+        .expect("ASCII");
         assert_eq!(code.character, 'a');
         assert_eq!(isize::from(code.key), 0);
         assert_eq!(code.modifier, 0);
@@ -167,7 +171,13 @@ mod tests {
     /// A character outside ASCII has no `[index]` to travel in: not forwarded.
     #[test]
     fn a_character_outside_ascii_is_not_expressible() {
-        assert!(key_code_of(&event(Some('é'), None, KeyModifiers::empty()), false).is_none());
+        assert!(
+            key_code_of(
+                &event(Some('é'), None, KeyModifiers::empty()),
+                ModifierConvention::Pc
+            )
+            .is_none()
+        );
     }
 
     /// The SDK numbers modifiers `shift` 1, `alt` 2, `command` 4 (Control on a Mac) and
@@ -175,19 +185,28 @@ mod tests {
     /// key has no bit; on a Mac, Control is 4 and Command is 8.
     #[test]
     fn modifier_bits_follow_the_sdks_roles_per_platform() {
-        let bits = |modifiers, apple| {
-            key_code_of(&event(Some('a'), None, modifiers), apple).map(|code| code.modifier)
+        let bits = |modifiers, convention| {
+            key_code_of(&event(Some('a'), None, modifiers), convention).map(|code| code.modifier)
         };
         assert_eq!(
-            bits(KeyModifiers::SHIFT | KeyModifiers::ALT, false),
+            bits(
+                KeyModifiers::SHIFT | KeyModifiers::ALT,
+                ModifierConvention::Pc
+            ),
             Some(3)
         );
-        assert_eq!(bits(KeyModifiers::CONTROL, false), Some(8));
-        assert_eq!(bits(KeyModifiers::COMMAND, false), None);
-        assert_eq!(bits(KeyModifiers::CONTROL, true), Some(4));
-        assert_eq!(bits(KeyModifiers::COMMAND, true), Some(8));
+        assert_eq!(bits(KeyModifiers::CONTROL, ModifierConvention::Pc), Some(8));
+        assert_eq!(bits(KeyModifiers::COMMAND, ModifierConvention::Pc), None);
         assert_eq!(
-            bits(KeyModifiers::all(), true),
+            bits(KeyModifiers::CONTROL, ModifierConvention::Mac),
+            Some(4)
+        );
+        assert_eq!(
+            bits(KeyModifiers::COMMAND, ModifierConvention::Mac),
+            Some(8)
+        );
+        assert_eq!(
+            bits(KeyModifiers::all(), ModifierConvention::Mac),
             Some(1 | 2 | 4 | 8),
             "every modifier a Mac has"
         );

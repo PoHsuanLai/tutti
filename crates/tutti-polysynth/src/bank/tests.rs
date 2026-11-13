@@ -335,3 +335,25 @@ fn a_zero_pulse_width_still_oscillates() {
     let ac = (out.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / out.len() as f32).sqrt();
     assert!(ac > 0.05, "a zero-width pulse rendered DC (AC rms {ac})");
 }
+
+/// Every lane of a built bank, across voices and across one voice's unison
+/// stack, starts its noise generator on its own nonzero seed: two lanes on
+/// one seed would play the same noise, in both ears of a stereo stack.
+#[test]
+fn every_lane_starts_on_its_own_noise_seed() {
+    let bank = VoiceBank::new(
+        OscillatorType::Noise,
+        &FilterType::None,
+        &flat(),
+        sr(),
+        16,
+        7,
+    );
+    let seeds: Vec<u32> = bank.rng.iter().flat_map(|g| g.to_array()).collect();
+    assert!(seeds.len() >= 16 * 7);
+    assert!(seeds.iter().all(|&s| s != 0), "xorshift cannot leave zero");
+    let mut sorted = seeds.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), seeds.len(), "two lanes share a seed");
+}

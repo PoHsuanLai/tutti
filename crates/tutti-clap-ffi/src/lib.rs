@@ -7,8 +7,6 @@
 
 mod audio;
 mod events;
-#[cfg(unix)]
-mod fds;
 mod guard;
 mod gui;
 mod host;
@@ -26,8 +24,6 @@ pub use events::{EventRef, EventSink, EventSource, PluginEvent, header_size};
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use events::{input_raw_for_test, output_raw_for_test};
-#[cfg(unix)]
-pub use fds::FdPoller;
 pub use gui::{EmbedOutcome, GuiError, GuiHints};
 pub use host::{
     Host, HostCallbacks, TrackInfoWriter, TrackPortKind, TransportCommand, TuningInfoWriter,

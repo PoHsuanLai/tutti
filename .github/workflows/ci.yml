@@ -876,8 +876,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
 
-  # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
-  # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
+  # Miri over the non-FFI `unsafe` (tutti-rt's README, "Safety", lists it).
+  # Why these crates and not the rest: most of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the
   # structural answer there instead. Of what is left, the ones that matter
   # are `tutti-rt`'s: the aliasing in `AudioThreadCell`, the claims behind

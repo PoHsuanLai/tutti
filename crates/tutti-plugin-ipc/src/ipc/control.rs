@@ -120,6 +120,19 @@ macro_rules! served_control {
                 self.link.bridge.editor_idle(main);
             }
 
+            fn wakeups(&mut self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+                self.link.bridge.wakeups(main, out);
+            }
+
+            fn wake(
+                &mut self,
+                main: &MainThread,
+                ready: &[tutti_plugin_types::Ready],
+                now: std::time::Instant,
+            ) {
+                self.link.bridge.wake(main, ready, now);
+            }
+
             fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
                 self.link.bridge.editor_capabilities(main)
             }

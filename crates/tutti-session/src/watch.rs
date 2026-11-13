@@ -1,9 +1,42 @@
-//! Watching the host's devices and deciding what to do when they change
-//! (design 018 §2, layer 3).
+//! Watching the host's devices and deciding what to do when they change.
 //!
 //! [`Follow`] is the decision, a pure step: the time and the roster's view
 //! are values. [`DeviceWatch`] is what the session runs on `Phase::Poll`: a
-//! [`SnapshotSource`], a [`DeviceRoster`] and a `Follow`.
+//! [`SnapshotSource`], a [`DeviceRoster`] and a `Follow`. Enumeration is
+//! [`DevicePoller`]'s thread, and the diff of two listings is the
+//! [`DeviceRoster`]'s; neither runs here.
+//!
+//! # The policy
+//!
+//! - Everything that moves the stream is opt-in ([`DevicePolicy`]), and the
+//!   session never replaces a device the user chose with another one: a lost
+//!   explicit device waits, silent, for its own return or for the host.
+//! - The session decides and the host executes. A `Device` is `!Send` and the
+//!   host owns it, so a poll reports [`DeviceEvent::RestartWanted`] and the
+//!   host calls `LiveSession::restart` with the request, or ignores it to
+//!   decline (a strike is counted). Every restart, wanted or the host's own,
+//!   is reported by the next poll as [`DeviceEvent::Restarted`] or
+//!   [`DeviceEvent::RestartFailed`]. A restart failed by the policy keeps the
+//!   old spec and is tried again after the [`Backoff`]'s wait.
+//! - A policy restart never makes a choice: the request goes through the same
+//!   call as the host's, which drops it as stale when the host has chosen
+//!   another device since.
+//! - A stream is lost only by a fault ([`DeviceEvent::Fault`]). Absence from a
+//!   listing never ends it: ALSA opens every PCM to enumerate, so a device
+//!   this process holds can drop out of the list while it plays.
+//!   [`DeviceEvent::Lost`] and [`DeviceEvent::Appeared`] mean "no longer
+//!   listed" and "listed again".
+//! - An unknown device is not a different one. The device a stream runs on is
+//!   `None` when the host cannot name it (a driver of the host's own), and
+//!   `None` is never compared with the default, so a healthy stream is not
+//!   restarted.
+//! - On bare ALSA the default's name is constant (`default`), so
+//!   [`DeviceEvent::DefaultChanged`] cannot fire there and following the
+//!   default moves the stream only after a fault.
+//!
+//! None of this has run against real hardware, and the cost of enumeration on
+//! WASAPI, CoreAudio and JACK is unmeasured, which is why the poll interval is
+//! a policy value.
 
 use std::time::{Duration, Instant};
 

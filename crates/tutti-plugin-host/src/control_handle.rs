@@ -36,6 +36,16 @@ pub trait MainThreadControl: Send + Sync {
     /// The editor's tick, which an in-process plugin pairs with the pump of
     /// what the plugin changed about itself.
     fn editor_idle(&self, main: &MainThread);
+
+    /// One non-blocking pass over what the plugin asked the host to wait on:
+    /// its descriptors looked at and its timers checked against the clock, and
+    /// what is ready handed back
+    /// ([`service_now`](crate::service_now)). The wait the plugin
+    /// server's main loop blocks in, as an in-process host without a loop of its
+    /// own can make it, between frames. A plugin that is lost is not asked.
+    fn service_wakeups(&self, main: &MainThread) {
+        self.lend(&mut |control| crate::service_now(control, main));
+    }
 }
 
 impl<C: Control + Clone + Send + Sync> MainThreadControl for C {
@@ -599,11 +609,21 @@ impl PluginHandle {
 
     /// Services the editor; call periodically (about 30 Hz) while it is open.
     ///
+    /// First the plugin's own event sources, without waiting: the descriptors
+    /// and timers it asked the host to run (CLAP's `posix-fd-support` and
+    /// `timer-support`, VST3's `Linux::IRunLoop`) are looked at and what is
+    /// ready is handed back ([`MainThreadControl::service_wakeups`]); then the
+    /// format's idle tick and the pump of what the plugin asked of the host.
+    /// A host that waits in a loop of its own gives the plugin's
+    /// [`wakeups`](tutti_plugin_types::EditorWindow::wakeups) to its wait
+    /// instead, as the plugin server does.
+    ///
     /// Like [`close_editor`](Self::close_editor), a no-op without an editor:
     /// this is driven from a per-frame system that should not branch on a
     /// capability that cannot change after load.
     pub fn editor_idle(&self, main: &MainThread) -> &Self {
         if let Some(control) = self.control.as_deref() {
+            control.service_wakeups(main);
             control.editor_idle(main);
         }
         self

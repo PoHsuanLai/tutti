@@ -1478,61 +1478,20 @@ fn a_requires_process_parameter_is_not_flushed_while_processing() {
     assert!(flush_out_of_band(false, false));
 }
 
-/// **A rate that is no rate is refused before the plugin is touched**: the
-/// instance runs on at the configuration it has, the plugin is not activated
-/// again, and the error says where it runs.
+/// **A load with no block is refused** at the activation stage, and the
+/// plugin is never activated. (A rate that is no rate cannot be asked: a
+/// `SampleRate` is finite and above zero.)
 #[test]
-fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
-    let _lock = crate::test_utils::plugin_load_lock();
-    let mut instance = ClapInstance::load_first(
-        &main_thread(),
-        Path::new(clap_plugin()),
-        44100.0,
-        512,
-        false,
-    )
-    .expect("load");
-    crate::test_utils::clap_probe_reset_activation_count();
-    let prepare = instance.state.prepare();
-    for rate in [0.0, -44_100.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let err = instance
-            .set_sample_rate(&main_thread(), SampleRate::of(rate))
-            .expect_err("a rate that is no rate is refused");
-        assert!(err.to_string().contains("running at 44100"), "{err}");
-        assert!(instance.is_active(), "{rate}");
-    }
-    assert_eq!(instance.state.prepare(), prepare);
-    assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
-    instance
-        .set_sample_rate(&main_thread(), SampleRate::of(48_000.0))
-        .expect("a real rate");
-    assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
-}
-
-/// **A load at no rate or no block is refused** at the activation stage:
-/// zero, negative and non-finite rates, and a block of no frames. The plugin
-/// is never activated.
-#[test]
-fn a_load_at_no_rate_or_no_block_is_refused() {
+fn a_load_with_no_block_is_refused() {
     let _lock = crate::test_utils::plugin_load_lock();
     crate::test_utils::clap_probe_reset_activation_count();
-    for (rate, block) in [
-        (0.0, 512),
-        (-44_100.0, 512),
-        (f64::NAN, 512),
-        (f64::INFINITY, 512),
-        (f64::NEG_INFINITY, 512),
-        (44_100.0, 0),
-    ] {
-        match ClapInstance::load_first(&main_thread(), Path::new(clap_plugin()), rate, block, false)
-        {
-            Err(PluginError::Load {
-                stage: LoadStage::Activation,
-                reason,
-            }) => assert!(reason.contains("cannot run at"), "{reason}"),
-            Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
-            Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
-        }
+    match ClapInstance::load_first(&main_thread(), Path::new(clap_plugin()), 44_100.0, 0, false) {
+        Err(PluginError::Load {
+            stage: LoadStage::Activation,
+            reason,
+        }) => assert!(reason.contains("cannot run in blocks of 0"), "{reason}"),
+        Err(other) => panic!("a block of no frames: {other:?}"),
+        Ok(_) => panic!("a block of no frames must be refused"),
     }
     assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
 }

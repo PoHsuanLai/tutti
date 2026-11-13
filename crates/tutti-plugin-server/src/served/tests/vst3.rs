@@ -339,71 +339,19 @@ fn a_refused_rate_is_rolled_back_to_the_previous_one() {
     assert!(instance.is_active());
 }
 
-/// **A rate that is no rate is refused before the plugin is touched**: the
-/// instance runs on at the configuration it has, the plugin sees no second
-/// activation, the host is told nothing, and the error says where the plugin
-/// runs.
+/// **A load with no block is refused** at the activation stage. A real load
+/// afterwards activates once. (A rate that is no rate cannot be asked: a
+/// `SampleRate` is finite and above zero.)
 #[test]
-fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
+fn a_load_with_no_block_is_refused() {
     let _lock = crate::test_utils::plugin_load_lock();
-    let mut instance = Vst3Instance::load_first(
-        &main_thread(),
-        Path::new(vst3_plugin()),
-        48_000.0,
-        128,
-        false,
-    )
-    .expect("the vendored VST3 probe loads");
-    assert!(instance.poll(&main_thread()).is_empty());
-    let layout = instance.wiring.clone();
-    let prepare = instance.state.prepare();
-    for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let error = instance
-            .set_sample_rate(&main_thread(), SampleRate::of(rate))
-            .expect_err("a rate that is no rate is refused");
-        assert!(error.to_string().contains("running at 48000"), "{error}");
-        assert!(instance.is_active(), "{rate}");
-    }
-    assert_eq!(instance.state.prepare(), prepare);
-    assert!(
-        instance.poll(&main_thread()).is_empty(),
-        "the host is told nothing"
-    );
-    assert_eq!(instance.wiring.inputs, layout.inputs);
-    assert_eq!(instance.wiring.outputs, layout.outputs);
-    assert_eq!(
-        activations_seen_by_the_plugin(&mut instance),
-        1,
-        "the plugin was never activated again"
-    );
-    instance
-        .set_sample_rate(&main_thread(), SampleRate::of(44_100.0))
-        .expect("a real rate");
-}
-
-/// **A load at no rate or no block is refused** at the activation stage:
-/// zero, negative and non-finite rates, and a block of no frames. A real load
-/// afterwards activates once.
-#[test]
-fn a_load_at_no_rate_or_no_block_is_refused() {
-    let _lock = crate::test_utils::plugin_load_lock();
-    for (rate, block) in [
-        (0.0, 128),
-        (-48_000.0, 128),
-        (f64::NAN, 128),
-        (f64::INFINITY, 128),
-        (f64::NEG_INFINITY, 128),
-        (48_000.0, 0),
-    ] {
-        match Vst3Instance::load_first(&main_thread(), Path::new(vst3_plugin()), rate, block, false)
-        {
-            Err(PluginError::Load {
-                stage: LoadStage::Activation,
-                reason,
-            }) => assert!(reason.contains("cannot run at"), "{reason}"),
-            Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
-            Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
-        }
+    match Vst3Instance::load_first(&main_thread(), Path::new(vst3_plugin()), 48_000.0, 0, false) {
+        Err(PluginError::Load {
+            stage: LoadStage::Activation,
+            reason,
+        }) => assert!(reason.contains("cannot run in blocks of 0"), "{reason}"),
+        Err(other) => panic!("a block of no frames: {other:?}"),
+        Ok(_) => panic!("a block of no frames must be refused"),
     }
     let mut instance = Vst3Instance::load_first(
         &main_thread(),
@@ -416,12 +364,6 @@ fn a_load_at_no_rate_or_no_block_is_refused() {
     assert_eq!(activations_seen_by_the_plugin(&mut instance), 1);
 }
 
-/// **A render mode is the activation's: changing it activates the plugin
-/// again in the new mode**, keeping the instance, and a mode the plugin
-/// refuses is rolled back and answered `false`. VST3 delivers the mode in
-/// `setupProcessing` and nowhere else, so (unlike a format that applies it
-/// live) the change is a restart, and the core's `Prepare` carries the mode
-/// the restart uses.
 #[test]
 fn a_render_mode_change_activates_the_plugin_again_in_the_new_mode() {
     let _lock = crate::test_utils::plugin_load_lock();

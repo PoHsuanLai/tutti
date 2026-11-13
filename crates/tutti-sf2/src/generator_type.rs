@@ -110,6 +110,20 @@ pub enum GeneratorType {
     OverridingRootKey = 58,
 }
 
+/// The error of converting a [`GeneratorType`] to the generator type of a zone level
+/// that does not hold it: [`PresetGenerator`](crate::PresetGenerator) refuses the
+/// instrument-only kinds, [`InstrumentGenerator`](crate::InstrumentGenerator) refuses
+/// `instrument`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} is not a generator of this zone level")]
+pub struct WrongLevelGenerator(GeneratorType);
+
+impl WrongLevelGenerator {
+    pub(crate) fn new(generator: GeneratorType) -> Self {
+        Self(generator)
+    }
+}
+
 impl GeneratorType {
     /// The number of generator slots a region keeps: one per generator number up to
     /// the last named one.

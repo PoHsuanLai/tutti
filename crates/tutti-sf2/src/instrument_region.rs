@@ -8,6 +8,7 @@ use tutti_ump::{NoteNumber, U7};
 use crate::error::Error;
 use crate::generator_range;
 use crate::generator_type::GeneratorType;
+use crate::instrument_generator::InstrumentGenerator;
 use crate::loop_mode::LoopMode;
 use crate::sample_header::{SampleHeader, Side};
 use crate::zone::Zone;
@@ -30,8 +31,8 @@ pub struct InstrumentRegion {
 impl InstrumentRegion {
     fn new(
         instrument_id: usize,
-        global: &Zone<GeneratorType>,
-        local: &Zone<GeneratorType>,
+        global: &Zone<InstrumentGenerator>,
+        local: &Zone<InstrumentGenerator>,
         samples: &[SampleHeader],
     ) -> Result<Self, Error> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
@@ -56,7 +57,7 @@ impl InstrumentRegion {
         gs[GeneratorType::OverridingRootKey as usize] = -1;
 
         for &(kind, value) in global.generators.iter().chain(&local.generators) {
-            gs[kind as usize] = value;
+            gs[GeneratorType::from(kind) as usize] = value;
         }
 
         // The generator is a 16-bit word holding an index; read as unsigned, so an
@@ -85,12 +86,12 @@ impl InstrumentRegion {
 
     pub(crate) fn create(
         instrument_id: usize,
-        zones: &[Zone<GeneratorType>],
+        zones: &[Zone<InstrumentGenerator>],
         samples: &[SampleHeader],
     ) -> Result<Vec<InstrumentRegion>, Error> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
-            || zones[0].generators.last().unwrap().0 != GeneratorType::SampleId
+            || zones[0].generators.last().unwrap().0 != InstrumentGenerator::SampleId
         {
             // The first one is the global zone.
             let global = &zones[0];
@@ -133,20 +134,20 @@ impl InstrumentRegion {
 
     /// The raw value of `generator`, in the unit the SoundFont 2.04 spec gives it.
     #[must_use]
-    pub fn generator(&self, generator: GeneratorType) -> i16 {
-        self.gs[generator as usize]
+    pub fn generator(&self, generator: InstrumentGenerator) -> i16 {
+        self.gs[GeneratorType::from(generator) as usize]
     }
 
     /// The keys the region sounds on.
     #[must_use]
     pub fn key_range(&self) -> RangeInclusive<u8> {
-        generator_range(self.generator(GeneratorType::KeyRange))
+        generator_range(self.generator(InstrumentGenerator::KeyRange))
     }
 
     /// The velocities the region sounds at.
     #[must_use]
     pub fn velocity_range(&self) -> RangeInclusive<u8> {
-        generator_range(self.generator(GeneratorType::VelocityRange))
+        generator_range(self.generator(InstrumentGenerator::VelocityRange))
     }
 
     /// The first sample frame, with the start address offsets applied. The
@@ -193,7 +194,7 @@ impl InstrumentRegion {
         i64::from(self.sample_end_loop) + i64::from(self.end_loop_address_offset())
     }
 
-    fn address_offset(&self, coarse: GeneratorType, fine: GeneratorType) -> i32 {
+    fn address_offset(&self, coarse: InstrumentGenerator, fine: InstrumentGenerator) -> i32 {
         32768 * i32::from(self.generator(coarse)) + i32::from(self.generator(fine))
     }
 
@@ -202,8 +203,8 @@ impl InstrumentRegion {
     #[must_use]
     pub fn start_address_offset(&self) -> i32 {
         self.address_offset(
-            GeneratorType::StartAddressCoarseOffset,
-            GeneratorType::StartAddressOffset,
+            InstrumentGenerator::StartAddressCoarseOffset,
+            InstrumentGenerator::StartAddressOffset,
         )
     }
 
@@ -211,8 +212,8 @@ impl InstrumentRegion {
     #[must_use]
     pub fn end_address_offset(&self) -> i32 {
         self.address_offset(
-            GeneratorType::EndAddressCoarseOffset,
-            GeneratorType::EndAddressOffset,
+            InstrumentGenerator::EndAddressCoarseOffset,
+            InstrumentGenerator::EndAddressOffset,
         )
     }
 
@@ -220,8 +221,8 @@ impl InstrumentRegion {
     #[must_use]
     pub fn start_loop_address_offset(&self) -> i32 {
         self.address_offset(
-            GeneratorType::StartLoopAddressCoarseOffset,
-            GeneratorType::StartLoopAddressOffset,
+            InstrumentGenerator::StartLoopAddressCoarseOffset,
+            InstrumentGenerator::StartLoopAddressOffset,
         )
     }
 
@@ -229,8 +230,8 @@ impl InstrumentRegion {
     #[must_use]
     pub fn end_loop_address_offset(&self) -> i32 {
         self.address_offset(
-            GeneratorType::EndLoopAddressCoarseOffset,
-            GeneratorType::EndLoopAddressOffset,
+            InstrumentGenerator::EndLoopAddressCoarseOffset,
+            InstrumentGenerator::EndLoopAddressOffset,
         )
     }
 
@@ -249,14 +250,14 @@ impl InstrumentRegion {
     /// How the sample loops.
     #[must_use]
     pub fn sample_modes(&self) -> LoopMode {
-        LoopMode::from_i16(self.generator(GeneratorType::SampleModes))
+        LoopMode::from_i16(self.generator(InstrumentGenerator::SampleModes))
     }
 
     /// The exclusive class (generator 57), or `None` for class 0. A value
     /// outside the generator's 0 to 127 reads as none as well.
     #[must_use]
     pub fn exclusive_class(&self) -> Option<NonZeroU8> {
-        let class = self.generator(GeneratorType::ExclusiveClass);
+        let class = self.generator(InstrumentGenerator::ExclusiveClass);
         u8::try_from(class)
             .ok()
             .filter(|c| *c <= 127)
@@ -268,7 +269,7 @@ impl InstrumentRegion {
     /// `NoteNumber`: the header's 255 means unpitched, which is not a key.
     #[must_use]
     pub fn root_key(&self) -> i32 {
-        match self.generator(GeneratorType::OverridingRootKey) {
+        match self.generator(InstrumentGenerator::OverridingRootKey) {
             -1 => self.sample_original_pitch,
             key => i32::from(key),
         }
@@ -286,7 +287,7 @@ impl InstrumentRegion {
     /// the range reads as none.
     #[must_use]
     pub fn forced_key(&self) -> Option<NoteNumber> {
-        u8::try_from(self.generator(GeneratorType::KeyNumber))
+        u8::try_from(self.generator(InstrumentGenerator::KeyNumber))
             .ok()
             .and_then(NoteNumber::new)
     }
@@ -296,7 +297,7 @@ impl InstrumentRegion {
     /// range reads as none.
     #[must_use]
     pub fn forced_velocity(&self) -> Option<U7> {
-        u8::try_from(self.generator(GeneratorType::Velocity))
+        u8::try_from(self.generator(InstrumentGenerator::Velocity))
             .ok()
             .filter(|v| *v >= 1)
             .and_then(U7::new)
@@ -305,6 +306,6 @@ impl InstrumentRegion {
     /// The index of the region's sample header.
     #[must_use]
     pub fn sample_id(&self) -> usize {
-        usize::from(self.generator(GeneratorType::SampleId) as u16)
+        usize::from(self.generator(InstrumentGenerator::SampleId) as u16)
     }
 }

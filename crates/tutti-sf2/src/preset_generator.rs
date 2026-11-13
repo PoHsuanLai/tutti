@@ -1,10 +1,4 @@
-use crate::generator_type::GeneratorType;
-
-/// The error of converting an instrument-only [`GeneratorType`] to a
-/// [`PresetGenerator`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("{0:?} is a generator of instrument zones only")]
-pub struct InstrumentOnlyGenerator(GeneratorType);
+use crate::generator_type::{GeneratorType, WrongLevelGenerator};
 
 macro_rules! preset_generators {
     ($($kind:ident,)*) => {
@@ -32,7 +26,7 @@ macro_rules! preset_generators {
         }
 
         impl TryFrom<GeneratorType> for PresetGenerator {
-            type Error = InstrumentOnlyGenerator;
+            type Error = WrongLevelGenerator;
 
             fn try_from(generator: GeneratorType) -> Result<Self, Self::Error> {
                 match generator {
@@ -50,7 +44,7 @@ macro_rules! preset_generators {
                     GeneratorType::SampleModes |
                     GeneratorType::ExclusiveClass |
                     GeneratorType::OverridingRootKey |
-                    GeneratorType::SampleId => Err(InstrumentOnlyGenerator(generator)),
+                    GeneratorType::SampleId => Err(WrongLevelGenerator::new(generator)),
                 }
             }
         }
@@ -100,8 +94,8 @@ preset_generators! {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstrumentOnlyGenerator, PresetGenerator};
-    use crate::generator_type::GeneratorType;
+    use super::PresetGenerator;
+    use crate::generator_type::{GeneratorType, WrongLevelGenerator};
 
     /// SF2 2.04 sections 8.1.2 and 8.1.3: the sample address offsets (fine and
     /// coarse), `keynum`, `velocity`, `sampleModes`, `exclusiveClass`,
@@ -138,7 +132,7 @@ mod tests {
                 }
                 Err(error) => {
                     assert!(instrument_only.contains(&generator), "{generator:?}");
-                    assert_eq!(error, InstrumentOnlyGenerator(generator));
+                    assert_eq!(error, WrongLevelGenerator::new(generator));
                 }
             }
         }

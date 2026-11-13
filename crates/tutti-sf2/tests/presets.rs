@@ -4,7 +4,7 @@
 use std::io::Cursor;
 
 use tutti_fixtures::sf2::{Inst, Preset, bytes};
-use tutti_sf2::{Bank, GeneratorType, PresetGenerator, SoundFont};
+use tutti_sf2::{Bank, InstrumentGenerator, PresetGenerator, SoundFont};
 use tutti_ump::U7;
 
 fn preset(name: &'static str, bank: u16, program: u16) -> Preset {
@@ -89,7 +89,7 @@ fn an_unused_or_reserved_generator_number_is_ignored() {
     let instrument = &font.instruments()[region.instrument_id()].regions()[0];
     assert_eq!(region.generator(PresetGenerator::Pan), 9);
     assert_eq!(region.generator(PresetGenerator::CoarseTune), 2);
-    assert_eq!(instrument.generator(GeneratorType::Pan), 4);
+    assert_eq!(instrument.generator(InstrumentGenerator::Pan), 4);
     for named in [
         PresetGenerator::ModulationLfoToVolume,
         PresetGenerator::ChorusEffectsSend,
@@ -104,4 +104,28 @@ fn an_unused_or_reserved_generator_number_is_ignored() {
         assert_eq!(region.generator(named), expected, "{named:?}");
     }
     assert_eq!(region.key_range(), 0..=127);
+}
+
+/// 8.1.2: `instrument` (41) is a preset-level generator; in an instrument zone it
+/// is ignored. The zone keeps its other generators, still ends at its `sampleID`,
+/// and is not taken for a global zone nor dropped.
+#[test]
+fn an_instrument_record_in_an_instrument_zone_is_ignored() {
+    let file = bytes(
+        &[Preset {
+            name: "p",
+            bank: 0,
+            program: 0,
+            zones: vec![(vec![], 0)],
+        }],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![(41, 1), (17, 4), (41, 1)]],
+        }],
+    );
+    let font = SoundFont::from_reader(&mut Cursor::new(file)).expect("the font loads");
+    let regions = font.instruments()[0].regions();
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].generator(InstrumentGenerator::Pan), 4);
+    assert_eq!(regions[0].sample_id(), 0);
 }

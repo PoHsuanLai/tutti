@@ -2,7 +2,9 @@
 // MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
 // LICENSE-RUSTYSYNTH.txt, at the root of this crate.
 
-use tutti_sf2::{GeneratorType, InstrumentRegion, LoopMode, PresetGenerator, PresetRegion};
+use tutti_sf2::{
+    GeneratorType, InstrumentGenerator, InstrumentRegion, LoopMode, PresetGenerator, PresetRegion,
+};
 
 use crate::soundfont_math::SoundFontMath;
 
@@ -75,7 +77,8 @@ impl<'a> RegionPair<'a> {
     /// units, before any range.
     fn sum(&self, generator: PresetGenerator) -> i32 {
         i32::from(self.preset.generator(generator))
-            + i32::from(self.instrument.generator(GeneratorType::from(generator)))
+            + InstrumentGenerator::try_from(GeneratorType::from(generator))
+                .map_or(0, |kind| i32::from(self.instrument.generator(kind)))
     }
 
     pub(crate) fn sample_start(&self) -> i32 {

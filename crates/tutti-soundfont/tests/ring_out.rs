@@ -35,9 +35,9 @@ fn release_seconds(
     preset_zone: &tutti_sf2::PresetRegion,
     zone: &tutti_sf2::InstrumentRegion,
 ) -> f64 {
-    use tutti_sf2::{GeneratorType, PresetGenerator};
+    use tutti_sf2::{InstrumentGenerator, PresetGenerator};
     let sum = i32::from(preset_zone.generator(PresetGenerator::ReleaseVolumeEnvelope))
-        + i32::from(zone.generator(GeneratorType::ReleaseVolumeEnvelope));
+        + i32::from(zone.generator(InstrumentGenerator::ReleaseVolumeEnvelope));
     2f64.powf(f64::from(sum.clamp(-12000, 8000)) / 1200.0)
         .max(0.01)
 }

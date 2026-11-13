@@ -287,6 +287,7 @@ impl SessionNode for tutti_sampler::DiskVoice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroUsize;
 
     /// Whether `N`'s impl hands the graph a reclaimer once `node` is split.
     fn keeps_one<N: SessionNode>(node: N) -> bool {
@@ -304,7 +305,9 @@ mod tests {
         {
             assert!(keeps_one(tutti_midi_runtime::MidiClipNode::new([])));
             assert!(keeps_one(tutti_midi_runtime::HarmonyNode::new([])));
-            assert!(keeps_one(tutti_midi_runtime::MidiIngestNode::new(1)));
+            assert!(keeps_one(tutti_midi_runtime::MidiIngestNode::new(
+                NonZeroUsize::new(1).unwrap()
+            )));
         }
         #[cfg(feature = "sampler")]
         {

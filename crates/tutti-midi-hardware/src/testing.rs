@@ -2,6 +2,7 @@
 //! graph that plays the audio thread, so a test sees an event where the graph
 //! would: on its frame, after the inlet has held it for its block.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
@@ -46,7 +47,7 @@ pub(crate) const RATE: f64 = 44_100.0;
 /// A list of ports over `slots` inlets of 64 events, with no lead.
 pub(crate) fn ports(slots: usize) -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(DeviceInlets::new(
-        slots,
+        NonZeroUsize::new(slots).expect("a slot"),
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     )))
@@ -113,7 +114,7 @@ impl Rig {
             Self::SINK,
             "sink",
             Unforkable(Sink {
-                slots: slots as u16,
+                slots: slots.get() as u16,
                 seen: Arc::clone(&seen),
             }),
         );
@@ -135,7 +136,7 @@ impl Rig {
             editor,
             exec,
             frames: 0,
-            inlet_keys: vec![None; slots],
+            inlet_keys: vec![None; slots.get()],
         }
     }
 

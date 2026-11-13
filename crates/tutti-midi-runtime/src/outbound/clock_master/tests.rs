@@ -1,6 +1,7 @@
 use super::*;
 use crate::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 use atomic_float::AtomicF64;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool as StdAtomicBool;
 use tutti_graph::UmpAt;
@@ -87,7 +88,7 @@ fn master(
     sample_rate: impl Into<SampleRate>,
 ) -> (Rig, Arc<TestTransport>, crate::MidiReceiver) {
     let transport = Arc::new(TestTransport::new(tempo));
-    let (out, receiver) = crate::MidiMailbox::with_capacity(4096);
+    let (out, receiver) = crate::MidiMailbox::with_capacity(NonZeroUsize::new(4096).unwrap());
     let (cm, controls) = ClockMaster::new(MidiGroup::FIRST, sample_rate.into());
     controls.set_enabled(true);
     let rig = Rig {

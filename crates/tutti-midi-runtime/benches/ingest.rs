@@ -17,6 +17,7 @@
 //! region.
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi::{m1_cc, m1_note_off, m1_note_on};
 use tutti_graph::{
@@ -48,7 +49,11 @@ fn wire() -> Vec<Ump> {
 /// An executor over an ingest node that follows a one-slot set of inlets, and
 /// the device's end of its inlet.
 fn rig() -> (Executor, DeviceInput) {
-    let inlets = DeviceInlets::new(1, EventCapacity::of(4_096), Duration::ZERO);
+    let inlets = DeviceInlets::new(
+        NonZeroUsize::new(1).unwrap(),
+        EventCapacity::of(4_096),
+        Duration::ZERO,
+    );
     let device = inlets.open().expect("a free slot");
     let (mut editor, exec) = Editor::new(Prepare::new(
         SampleRate::SR_48K,
@@ -57,7 +62,9 @@ fn rig() -> (Executor, DeviceInput) {
     editor.insert(
         NodeKey(1),
         "ingest",
-        MidiIngestNode::new(1).following(&inlets).expect("one slot"),
+        MidiIngestNode::new(NonZeroUsize::new(1).unwrap())
+            .following(&inlets)
+            .expect("one slot"),
     );
     for change in inlets.take_changes() {
         if let InletChange::Attach { node, .. } = change {

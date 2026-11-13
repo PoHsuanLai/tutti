@@ -9,6 +9,7 @@
 //! `tutti_midi_protocol::channel_voice` reads one back as MIDI 2.0, whichever
 //! protocol the port carried it in.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -45,7 +46,7 @@ fn voice(voice: Voice2) -> Message {
 fn main() {
     // One inlet slot, 256 events, each event placed 20 ms after it arrived.
     let inlets = DeviceInlets::new(
-        1,
+        NonZeroUsize::new(1).unwrap(),
         tutti_graph::EventCapacity::of(256),
         Duration::from_millis(20),
     );

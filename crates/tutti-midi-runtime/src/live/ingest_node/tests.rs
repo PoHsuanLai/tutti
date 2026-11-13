@@ -1,10 +1,11 @@
 use super::*;
+use std::num::NonZeroUsize;
 
 /// The controls report the mode last asked for, from the cell, and the
 /// node adopts it on its next block.
 #[test]
 fn the_controls_report_the_mode_last_asked_for() {
-    let parts = MidiIngestNode::new(1).into_parts();
+    let parts = MidiIngestNode::new(NonZeroUsize::new(1).unwrap()).into_parts();
     let controls = parts.controls;
     assert_eq!(controls.pending_mpe_mode(), None);
     let lower = tutti_fixtures::midi::lower_zone(15);
@@ -17,7 +18,7 @@ fn the_controls_report_the_mode_last_asked_for() {
     // own, as the inserted one is.
     let mut node = MidiIngestNode {
         mpe_request: controls.request.reader(),
-        ..MidiIngestNode::new(1)
+        ..MidiIngestNode::new(NonZeroUsize::new(1).unwrap())
     };
     node.adopt_mpe_request();
     assert_eq!(node.mpe_mode, upper, "the node adopts it");
@@ -27,7 +28,7 @@ fn the_controls_report_the_mode_last_asked_for() {
 /// the next `reclaim`**, with no further publish.
 #[test]
 fn reclaim_frees_a_request_a_block_held_across_the_next() {
-    let mut node = MidiIngestNode::new(1);
+    let mut node = MidiIngestNode::new(NonZeroUsize::new(1).unwrap());
     let controls = MidiIngestControls {
         request: Arc::clone(node.mpe_request.cell()),
         dropped: Arc::clone(&node.dropped),

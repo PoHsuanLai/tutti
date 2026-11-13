@@ -5,6 +5,7 @@
 //! Beat Clock on the frames the transport reaches, a start inside a block
 //! included.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tutti_types::MaxBlock;
@@ -195,7 +196,7 @@ impl Ingest {
             })
             .collect();
         Self {
-            node: MidiIngestNode::new(scripts.len()),
+            node: MidiIngestNode::new(NonZeroUsize::new(scripts.len()).expect("a script")),
             inlets,
         }
     }
@@ -408,7 +409,11 @@ fn a_slot_a_new_device_takes_forgets_the_previous_devices_half_sent_run() {
         ])
     };
     for reopened in [false, true] {
-        let inlets = DeviceInlets::new(1, EventCapacity::of(64), Duration::ZERO);
+        let inlets = DeviceInlets::new(
+            NonZeroUsize::new(1).unwrap(),
+            EventCapacity::of(64),
+            Duration::ZERO,
+        );
         let Ingest {
             node,
             inlets: nodes,
@@ -485,7 +490,11 @@ fn heard(seen: &Seen) -> Vec<(u64, String)> {
 #[test]
 fn a_device_that_lets_go_has_what_it_held_released() {
     for replaced in [false, true] {
-        let inlets = DeviceInlets::new(1, EventCapacity::of(64), Duration::ZERO);
+        let inlets = DeviceInlets::new(
+            NonZeroUsize::new(1).unwrap(),
+            EventCapacity::of(64),
+            Duration::ZERO,
+        );
         let device = inlets.open().expect("a free slot");
         let bend = at(30, pitch_bend(G, MidiChannel::of(0), 0xC000_0000));
         let wire = Script::new(vec![
@@ -615,12 +624,25 @@ fn a_system_reset_ends_its_cables_notes_and_runs_and_is_not_echoed() {
 /// A node follows inlets with the slots it has inputs for, and refuses others.
 #[test]
 fn a_node_refuses_inlets_with_another_number_of_slots() {
-    let inlets = DeviceInlets::new(2, EventCapacity::of(64), Duration::ZERO);
-    assert_eq!(
-        MidiIngestNode::new(3).following(&inlets).unwrap_err(),
-        SlotCountMismatch { node: 3, inlets: 2 }
+    let inlets = DeviceInlets::new(
+        NonZeroUsize::new(2).unwrap(),
+        EventCapacity::of(64),
+        Duration::ZERO,
     );
-    assert!(MidiIngestNode::new(2).following(&inlets).is_ok());
+    assert_eq!(
+        MidiIngestNode::new(NonZeroUsize::new(3).unwrap())
+            .following(&inlets)
+            .unwrap_err(),
+        SlotCountMismatch {
+            node: NonZeroUsize::new(3).unwrap(),
+            inlets: NonZeroUsize::new(2).unwrap()
+        }
+    );
+    assert!(
+        MidiIngestNode::new(NonZeroUsize::new(2).unwrap())
+            .following(&inlets)
+            .is_ok()
+    );
 }
 
 /// **The devices merge in the listener's fan-in**: two devices' notes on one

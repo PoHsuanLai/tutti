@@ -4,6 +4,7 @@
 //! time `T` is frame `F`, so an arrival `d` after `T` is frame `F + d * rate`,
 //! plus the lead (doc 017 section 5, "Timing at the edge").
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
@@ -143,7 +144,11 @@ fn after(t: Instant, frames: u64) -> Instant {
 }
 
 fn inlets(lead: Duration) -> Arc<DeviceInlets> {
-    DeviceInlets::new(2, tutti_graph::EventCapacity::of(64), lead)
+    DeviceInlets::new(
+        NonZeroUsize::new(2).unwrap(),
+        tutti_graph::EventCapacity::of(64),
+        lead,
+    )
 }
 
 /// **An arrival is the frame the reading puts it on, plus the lead**: the
@@ -361,7 +366,11 @@ fn draining_changes_holds_no_lock_across_the_owners_work() {
 /// a push into a full inlet is refused and counted as lost.
 #[test]
 fn a_full_inlet_refuses_and_counts() {
-    let inlets = DeviceInlets::new(1, tutti_graph::EventCapacity::of(2), Duration::ZERO);
+    let inlets = DeviceInlets::new(
+        NonZeroUsize::new(1).unwrap(),
+        tutti_graph::EventCapacity::of(2),
+        Duration::ZERO,
+    );
     let mut device = inlets.open().unwrap();
     let counts = device.counts();
     let pushed: Vec<bool> = (0..4)

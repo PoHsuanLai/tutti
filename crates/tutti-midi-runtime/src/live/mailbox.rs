@@ -7,6 +7,7 @@
 //! event tap). Inside the graph MIDI travels on event ports, never through a
 //! mailbox. It goes with the host's outbound path.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tutti_graph::UmpAt;
 
@@ -16,7 +17,7 @@ use tutti_ump::Ump;
 use crate::traits::MidiOut;
 
 /// The ring's default capacity, in events.
-pub const MAILBOX_CAPACITY: usize = 256;
+pub const MAILBOX_CAPACITY: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 
 /// A bounded MIDI ring. Push and pop are lock-free and never allocate, so
 /// either side may be the audio thread.
@@ -42,12 +43,11 @@ impl MidiMailbox {
         Self::with_capacity(MAILBOX_CAPACITY)
     }
 
-    /// A ring of `capacity` events (at least one), as a sender and a
-    /// receiver.
+    /// A ring of `capacity` events, as a sender and a receiver.
     #[must_use]
-    pub fn with_capacity(capacity: usize) -> (MidiSender, MidiReceiver) {
+    pub fn with_capacity(capacity: NonZeroUsize) -> (MidiSender, MidiReceiver) {
         let slot = Arc::new(Self {
-            events: ArrayQueue::new(capacity.max(1)),
+            events: ArrayQueue::new(capacity.get()),
         });
         (
             MidiSender {

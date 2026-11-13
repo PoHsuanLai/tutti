@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +40,7 @@ fn id_of(devices: &Devices, name: &str) -> DeviceId {
 fn ports() -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
-            4,
+            NonZeroUsize::new(4).unwrap(),
             tutti_graph::EventCapacity::of(16),
             std::time::Duration::ZERO,
         ),

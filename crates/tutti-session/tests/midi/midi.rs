@@ -713,7 +713,7 @@ fn keyboards(
     );
     let mut s = Session::builder()
         .midi_hardware_over(backend)
-        .midi_devices(devices)
+        .midi_devices(std::num::NonZeroUsize::new(devices).expect("a device"))
         .build_offline(
             SampleRate::of(RATE),
             ChannelLayout::STEREO,

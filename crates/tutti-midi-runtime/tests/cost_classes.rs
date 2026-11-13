@@ -3,6 +3,7 @@
 //! clip-to-output lanes pack into fewer tasks than undeclared ones, and on a
 //! pool every event leaves on the frame the serial walk sends it on.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
@@ -195,7 +196,12 @@ fn every_midi_node_is_light() {
         EventInletNode::pair(EventCapacity::of(8)).0.shape().cost,
         Cost::Light
     );
-    assert_eq!(MidiIngestNode::new(1).shape().cost, Cost::Light);
+    assert_eq!(
+        MidiIngestNode::new(NonZeroUsize::new(1).unwrap())
+            .shape()
+            .cost,
+        Cost::Light
+    );
 }
 
 /// Sixteen light clip → out lanes beside two heavy ones: the light lanes

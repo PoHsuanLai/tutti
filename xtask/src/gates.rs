@@ -11,12 +11,15 @@
 mod canonical_paths;
 mod decode_boundary;
 mod doc_features;
+mod doc_refs;
 mod ffi;
 mod guards;
 mod hosting;
 mod layout;
 mod lex;
 mod lints;
+mod pointers;
+mod prose;
 mod range_types;
 mod session;
 mod submodule_pins;
@@ -100,6 +103,10 @@ pub(crate) enum Gate {
     Lints,
     /// A fieldless public `Eq` enum is `Hash`.
     ValueTraits,
+    /// Prose names crate paths and design-doc sections that exist.
+    DocRefs,
+    /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
+    Pointers,
 }
 
 impl Gate {
@@ -116,6 +123,8 @@ impl Gate {
             Gate::Session => "gate check-session".to_owned(),
             Gate::Lints => "gate check-lints".to_owned(),
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
+            Gate::DocRefs => "gate check-doc-refs".to_owned(),
+            Gate::Pointers => "gate check-pointers".to_owned(),
         }
     }
 
@@ -138,6 +147,8 @@ impl Gate {
             Gate::ValueTraits => {
                 value_traits::check(&tree, value_traits::ALLOW, value_traits::MIN_FILES)
             }
+            Gate::DocRefs => doc_refs::check(&tree),
+            Gate::Pointers => pointers::check(&tree),
         }
     }
 }

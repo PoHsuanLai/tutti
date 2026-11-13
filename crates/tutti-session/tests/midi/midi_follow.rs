@@ -1,5 +1,4 @@
-//! The session follows a live Flex Set Tempo and Set Time Signature (doc 020,
-//! "Following an outside tempo"; doc 017 L7c): a fake device sends the UMP, the
+//! The session follows a live Flex Set Tempo and Set Time Signature a fake device sends the UMP, the
 //! session reads it from the ingest node's tap in `Phase::Poll`, places it at the
 //! next block start and publishes the overlay maps, and the engine renders under
 //! them.

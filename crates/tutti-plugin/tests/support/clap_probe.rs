@@ -16,7 +16,7 @@
 //!
 //! The probe's switches are process-global statics **inside the cdylib**. This
 //! process links the same crate as an rlib, and an rlib is a separate image with
-//! separate statics — so `tutti_clap_test_plugin::set_render_mode` called
+//! separate statics — so `tutti_clap_test_plugin::tutti_test_plugin_set_render_mode` called
 //! directly would write a static nothing ever reads. Worse here than in the
 //! in-process suites: the plugin is resident in *another process entirely*, so
 //! the switch has to be flipped in that process's copy.

@@ -571,8 +571,8 @@ fn decoded(ingest: &mut MpeIngest, event: &UmpAt) -> Vec<(u8, Voice2)> {
 /// **A bend received before the Note On is the new note's** (M1-100 section
 /// 2.2.6: the pitch of a new note follows the Pitch Bend most recently
 /// received on both the Manager Channel and that note's Member Channel before
-/// Note On, and a receiver keeps tracking Pitch Bend even when no note is
-/// playing; section 2.4, Table 4: the sender's Pitch Bend comes first). The ingest remembers the bend of the member channel with no note,
+/// Note On, and a receiver keeps tracking Pitch Bend while no note
+/// sounds; section 2.4, Table 4: the sender's Pitch Bend comes first). The ingest remembers the bend of the member channel with no note,
 /// and the note that starts there is told it ahead of its Note On; the last of
 /// two bends is the one.
 #[test]
@@ -593,7 +593,7 @@ fn a_member_bend_before_the_note_on_is_the_notes_start() {
 /// **Channel Pressure and Control Change #74 received before the Note On are
 /// the new note's** (M1-100 section 2.2.7: the control of a new note follows the
 /// Channel Pressure most recently received on its Channel before Note On, and
-/// a receiver keeps tracking it even when no note is playing; section 2.2.8 the same of Control
+/// a receiver keeps tracking it while no note sounds; section 2.2.8 the same of Control
 /// Change #74).
 #[test]
 fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
@@ -729,8 +729,8 @@ fn the_receive_table_ignores_what_it_prohibits() {
     }
 }
 
-/// **The MPE Configuration Message is not for a Member Channel** (Table 5:
-/// RPN #6 on Member Channels, "P"): on a member that is not a master's channel
+/// **The MPE Configuration Message is not for a Member Channel** (Table 5
+/// marks RPN #6 prohibited on Member Channels): on a member that is not a master's channel
 /// it is ignored, and the zones stand. On a channel outside every zone, RPN 6
 /// is ordinary traffic.
 #[test]

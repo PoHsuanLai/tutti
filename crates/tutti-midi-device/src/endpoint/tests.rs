@@ -368,8 +368,8 @@ fn a_supported_request_is_honoured_and_reported() {
     assert_eq!(words(&out[0]), [0xF006_0200, 0, 0, 0]);
 }
 
-// §7.1.6.1 step 3: a receiver that cannot change some or all of the
-// configuration replies with its current one.
+// §7.1.6.1 step 3: a receiver that cannot apply part of a request answers
+// with the configuration it has.
 #[test]
 fn what_an_endpoint_cannot_do_is_not_done() {
     let mut midi1_only = Endpoint::midi1_device(None);

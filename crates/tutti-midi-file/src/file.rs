@@ -178,9 +178,9 @@ pub enum Meta {
         /// Notated 32nd notes in a MIDI quarter note (24 clocks): 8 usually.
         thirty_seconds_per_quarter: u8,
         /// The data past the four bytes this reads, as `extra` of
-        /// [`Tempo`](Self::Tempo). A longer Time Signature is real: the
-        /// compound-signature bytes were added at the end so that the
-        /// existing Meta Event could be extended (SMF 1.0 section 3.3).
+        /// [`Tempo`](Self::Tempo). A longer Time Signature is real: compound
+        /// signatures extend the event at its end (`FF 58 06 ...`, SMF 1.0
+        /// section 3.3).
         extra: Box<[u8]>,
     },
     /// `59`: Key Signature.
@@ -955,7 +955,11 @@ impl MidiFile {
     /// Tempo messages), steps at the tick each lands on. A file that sets none
     /// at the start plays at 120 BPM until the first, the MIDI default. Two
     /// at one tick: the later governs, as a sequencer applying them in order
-    /// would.
+    /// would. The map is derived from the events and never set apart from them:
+    /// a Set Tempo stays an event of its track, so a write gives back the exact
+    /// event, and a zero (no valid tempo) is kept but makes no step. A Clip
+    /// File's header Set Tempo is the tempo from the sequence's first tick,
+    /// and a Set Tempo at tick 0 of the sequence overrides it.
     ///
     /// For a format 2 file, which has a timeline per sequence, this is the
     /// first sequence's; [`tempo_map_of`](Self::tempo_map_of) names one.

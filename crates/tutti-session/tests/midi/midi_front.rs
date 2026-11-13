@@ -1,4 +1,4 @@
-//! The session's MIDI front (L1f-a): hardware through `s.midi()`, the session's
+//! The session's MIDI front: hardware through `s.midi()`, the session's
 //! one MPE mode, a take recorded with `s.midi().record`, its placement, and a
 //! saved route rule.
 

@@ -183,6 +183,8 @@ jobs:
       - run: cargo xtask check-lints
       # A fieldless public enum that is `Eq` is `Hash` (source scan, no build).
       - run: cargo xtask check-value-traits
+      - run: cargo xtask check-doc-refs
+      - run: cargo xtask check-pointers
 
   clippy:
     name: clippy

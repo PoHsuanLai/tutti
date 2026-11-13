@@ -23,7 +23,16 @@
 //! A held key is in one of two states, `Sounding` or `Owing` (the port
 //! refused the off, so it goes out at the first frame of a later block).
 //! Independently, a key counts the note-ons the port refused: each such
-//! note's off is withheld and counted rather than written.
+//! note's off is withheld and counted rather than written, so a note lost
+//! whole is two losses, its on and its off. An off the port refused is a loss
+//! that is given back when the off goes out. The count per key saturates at
+//! 255.
+//!
+//! The ledger answers which notes a node has started and not ended on its own
+//! port and what the port owes. It is not `tutti-voicing`'s `Holds` (why one
+//! voice is still sounding) and not the graph executor's per-edge table of
+//! the keys an event output port carries (which lets an edge that ends close
+//! them): the three have different owners, keys and failure modes.
 //!
 //! The table holds at most its capacity in keys, held or refused. A note-on
 //! that finds it full is withheld and counted ([`EventWriter::withhold`])
@@ -415,8 +424,8 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     /// bend the port was told is off its normal position to it, in the
     /// protocol it was sent in; one already at rest sends nothing. MIDI 1.0
     /// Detailed Spec p. 31 (Stop) asks for the return; the pedals come after
-    /// the offs because a Hold or Sustain pedal On takes priority over Note Off
-    /// and All Notes Off until it is released (A-5). An off the port refuses stays owed. Once the port refuses
+    /// the offs because a Hold or Sustain pedal that is on holds a note through
+    /// its Note Off and All Notes Off until it is lifted (A-5). An off the port refuses stays owed. Once the port refuses
     /// one the rest are not tried (it is full), but each is owed and counted:
     /// a note that gets no off is a lost event whether or not its push was
     /// attempted.

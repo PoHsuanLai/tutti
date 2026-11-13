@@ -1,6 +1,7 @@
 # Contributing to tutti
 
 Bug reports, failing tests and pull requests are all welcome.
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Setup
 

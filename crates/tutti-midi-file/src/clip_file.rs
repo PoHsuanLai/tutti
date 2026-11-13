@@ -23,7 +23,7 @@
 //!
 //! Every UMP is governed by a **Delta Clockstamp** (DCS) giving the ticks since
 //! the previous event: a Delta Clockstamp sets the time of all following
-//! messages up to the next one (section 3.2.2), so simultaneous events may share one. The writer gives each
+//! messages up to the next one (section 3.2.2), so events at one time may share a single Clockstamp. The writer gives each
 //! event its own, except the parts of a Lyric or Ruby message, which share the
 //! first's (see [`write`](fn@write)). The tick unit is declared once by the **DCTPQ** (Delta
 //! Clockstamp Ticks Per Quarter Note). The stream is bracketed by Start of Clip
@@ -189,8 +189,8 @@ pub(crate) fn property_exchange(message: &Message) -> bool {
 ///
 /// **One Delta Clockstamp for the parts of a Lyric or Ruby message.**
 /// M2-116 section 3 has a Delta Clockstamp precede every UMP, and
-/// M2-104 sections 7.5.10 and 7.5.12 have all parts of a Lyric Data Message
-/// share a single Delta Clockstamp in a Clip File (the Ruby Data Message
+/// M2-104 sections 7.5.10 and 7.5.12 put all parts of a Lyric Data Message
+/// under one Delta Clockstamp in a Clip File (the Ruby Data Message
 /// likewise). They agree once the Clip File's own definition of a DCS is read:
 /// it sets the time of all following messages up to the next one (M2-116
 /// section 3.2.2; M2-104 section 7.2.3.2 lets simultaneous events share one), so a DCS precedes

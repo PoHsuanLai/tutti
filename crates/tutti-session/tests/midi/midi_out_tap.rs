@@ -1,5 +1,5 @@
-//! The session's hardware MIDI out is an event tap on the clock node's output
-//! (doc 017, stage E3), drained by `Phase::MidiOut` into the output a host set:
+//! The session's hardware MIDI out is an event tap on the clock node's output,
+//! drained by `Phase::MidiOut` into the output a host set:
 //! what reaches the wire, in what order and on which frames, what a full tap
 //! drops, and the tap following the graph to another rate.
 //!

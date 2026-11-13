@@ -187,28 +187,6 @@ impl Stft {
         Amplitude(self.bins.at(frame, bin).norm())
     }
 
-    /// The magnitude a mask would leave at this bin.
-    ///
-    /// Offered because the unmasked accessor alone forces callers to redo the
-    /// multiply; the spectral view currently pools masked magnitudes itself.
-    ///
-    /// # Errors
-    /// Returns [`Error::GridShapeDisagreement`] if `mask` does not
-    /// match this transform's `frames x bins` shape.
-    pub fn masked_magnitude_at(
-        &self,
-        mask: &Grid<Complex32>,
-        frame: FrameIndex,
-        bin: BinIndex,
-    ) -> Result<Amplitude> {
-        if !self.bins.same_shape_as(mask) {
-            return Err(Error::GridShapeDisagreement);
-        }
-        Ok(Amplitude(
-            (self.bins.at(frame, bin) * mask.at(frame, bin)).norm(),
-        ))
-    }
-
     /// Converts to magnitude/phase. Lossless.
     #[must_use]
     pub fn to_polar(&self) -> StftPolar {
@@ -306,13 +284,6 @@ impl StftPolar {
             bins: self.phases.same_shape(bins),
             geometry: self.geometry,
         }
-    }
-
-    /// Moves both grids out without cloning — consumers copy these into their
-    /// own asset types.
-    #[must_use]
-    pub fn into_grids(self) -> (Grid<f32>, Grid<f32>) {
-        (self.magnitudes.into_grid(), self.phases)
     }
 
     /// Resynthesizes to audio, converting back to rectangular first. Lossless

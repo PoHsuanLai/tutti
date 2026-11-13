@@ -254,13 +254,6 @@ impl PolySynth {
         self.voices.iter().filter(|v| v.is_active()).count()
     }
 
-    /// Returns this synth's unison settings, or `None` when it was built
-    /// without a [`UnisonConfig`](crate::UnisonConfig). A synth built without
-    /// one cannot gain unison later: every unison setter is a no-op on it.
-    pub fn unison_config(&self) -> Option<&crate::UnisonConfig> {
-        self.unison.as_ref().map(|u| u.config())
-    }
-
     /// Returns the number of sub-voices stacked per note, or one when this
     /// synth has no unison engine, so the total oscillator count is always
     /// `polyphony * this`.
@@ -268,25 +261,6 @@ impl PolySynth {
         self.unison
             .as_ref()
             .map_or(UnisonVoices::ONE, |u| u.config().voice_count)
-    }
-
-    /// Sets the unison detune in [`Cents`](tutti_types::Cents), applied
-    /// symmetrically either side of the written pitch. Negative values clamp to
-    /// zero. Recomputes the per-sub-voice pitch ratios immediately, so it
-    /// affects sounding notes as well as future ones. No-op without unison.
-    pub fn set_unison_detune(&mut self, cents: impl Into<tutti_types::Cents>) {
-        if let Some(unison) = &mut self.unison {
-            unison.set_detune(cents);
-        }
-    }
-
-    /// Sets how wide the sub-voices are panned: a [`Spread`], 0.0 (all centre)
-    /// to 1.0 (outermost pair hard left and right). Takes effect on sounding
-    /// notes. No-op without unison.
-    pub fn set_unison_stereo_spread(&mut self, spread: Spread) {
-        if let Some(unison) = &mut self.unison {
-            unison.set_stereo_spread(spread);
-        }
     }
 
     /// Sets the number of stacked sub-voices per note.
@@ -299,17 +273,6 @@ impl PolySynth {
     pub fn set_unison_voice_count(&mut self, count: UnisonVoices) {
         if let Some(unison) = &mut self.unison {
             unison.set_voice_count(count);
-            let new_count = unison.voice_count();
-            self.resize_unison(new_count);
-        }
-    }
-
-    /// Replaces all unison settings at once. Carries the same allocation warning
-    /// as [`set_unison_voice_count`](Self::set_unison_voice_count) when the
-    /// count grows. No-op without unison.
-    pub fn set_unison_config(&mut self, config: crate::UnisonConfig) {
-        if let Some(unison) = &mut self.unison {
-            unison.set_config(config);
             let new_count = unison.voice_count();
             self.resize_unison(new_count);
         }
@@ -329,14 +292,6 @@ impl PolySynth {
         if let Some(unison) = &mut self.unison {
             unison.seed_rng(seed);
         }
-    }
-
-    /// Returns the computed per-sub-voice pitch ratio, pan, phase offset and amplitude
-    /// — one entry per active sub-voice. Derived state, recomputed on every
-    /// unison setter; for inspection, not for driving the audio path.
-    /// `None` without unison.
-    pub fn unison_params(&self) -> Option<&[crate::UnisonVoiceParams]> {
-        self.unison.as_ref().map(|u| u.all_params())
     }
 
     /// Reads one packet and applies it. The only place the synth reads the

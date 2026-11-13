@@ -360,13 +360,6 @@ impl SpectrumConfig {
         self.peak_decay
     }
 
-    /// Columns the spectrogram keeps.
-    #[inline]
-    #[must_use]
-    pub fn spectrogram_columns(&self) -> FrameCount {
-        FrameCount(self.columns)
-    }
-
     /// Outputs per frame: bins or bands.
     #[must_use]
     pub fn outputs(&self) -> BinCount {

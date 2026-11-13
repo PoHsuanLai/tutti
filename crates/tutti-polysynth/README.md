@@ -77,8 +77,7 @@ resonance) are modulated live by `FilterModConfig`, CC74, CC71 and MPE slide.
 Nothing else on a synth that is in a graph is live but its `ParamSet`: the
 master volume, and with a unison engine the detune and stereo spread. Before
 insertion, `&mut self` setters take typed values (`set_volume(Amplitude)`,
-`set_unison_detune`, `set_unison_stereo_spread(Spread)`,
-`set_unison_voice_count(UnisonVoices)`, `set_unison_config`, `set_mpe(MpeMode)`),
+`set_unison_voice_count(UnisonVoices)`, `set_mpe(MpeMode)`),
 and a node cannot be reached by them once it is inserted.
 
 `SynthConfig::polyphony` is a `NonZeroUsize` (a synth of no voices cannot be

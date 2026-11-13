@@ -80,19 +80,11 @@ impl UmpCapability {
         }
     }
 
-    /// The capability with `blocks` declared.
-    #[must_use]
-    pub fn with_blocks(mut self, blocks: Vec<FunctionBlock>) -> Self {
-        self.blocks = blocks;
-        self
-    }
-
     /// Whether this endpoint carries MIDI-2-only messages — per-note
     /// controllers, per-note pitch bend, and JR Timestamps — intact.
     ///
     /// A `Midi1` endpoint carries MIDI 1.0 messages, which have none of those:
-    /// the output narrows the graph's MIDI 2.0 messages for it (`OpenOutput`,
-    /// design 017 L6(c)).
+    /// the output narrows the graph's MIDI 2.0 messages for it (`OpenOutput`).
     /// This is the question a caller actually asks, named once so no call site
     /// re-derives it from `protocol` and gets the polarity wrong.
     pub fn carries_midi2_only(&self) -> bool {

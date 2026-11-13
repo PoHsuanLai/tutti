@@ -52,12 +52,12 @@
 //!   out. The watch counts the graph's frames, which are the arrival clock the
 //!   inlets placed each event on, so the node reads no OS clock.
 //! - *System Reset* (FF, p. 33). The Group's held state is released, its
-//!   translator state and MPE state are reset, and its watch is dropped: "turn
-//!   voices off", "reset all controllers", "clear running status" and return
-//!   to the power-up condition.
+//!   translator state and MPE state are reset, and its watch is dropped: voices
+//!   off, controllers reset, running status cleared, back to the power-up
+//!   condition.
 //!
 //! The FE and the FF are the cable's own: the node acts on them and sends
-//! neither on ("under no condition should this message be echoed", p. 33).
+//! neither on (an FF is never echoed, p. 33).
 //!
 //! Its fork is silent: an offline render reads no wire.
 
@@ -143,7 +143,7 @@ impl MidiInputPorts {
 
     /// The last Group the node hears.
     #[must_use]
-    pub const fn last_group(self) -> MidiGroup {
+    pub(crate) const fn last_group(self) -> MidiGroup {
         MidiGroup::masked(self.groups - 1)
     }
 
@@ -232,7 +232,7 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
 /// // Four device slots, none wired yet.
 /// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(NonZeroUsize::new(4).unwrap()));
-/// assert_eq!(controls.pending_mpe_mode(), None);
+/// controls.set_mpe_mode(tutti_midi_protocol::MpeMode::Disabled);
 /// ```
 pub struct MidiIngestNode {
     /// One translation state per device slot.
@@ -504,14 +504,6 @@ impl MidiIngestControls {
     /// ([`DeviceInlets`]).
     pub fn losses(&self) -> Losses {
         Losses::refused(self.dropped.load(Ordering::Relaxed))
-    }
-
-    /// The mode last asked for through [`set_mpe_mode`](Self::set_mpe_mode),
-    /// if any: what was asked, not what is in force (they differ for a block
-    /// after a change, and for good if the graph never runs). Control side:
-    /// the cell's own value ([`ArcLend::current`]), never a lend.
-    pub fn pending_mpe_mode(&self) -> Option<MpeMode> {
-        *self.request.current()
     }
 }
 

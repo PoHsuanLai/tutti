@@ -745,9 +745,8 @@ writing anything**. So:
 - Inspecting the buffer cannot distinguish "unimplemented" from "the plugin really means
   zero". Only the return value can.
 
-Measured against three shipping plugins (TAL-NoiseMaker, TAL-Reverb-4, TDR Nova):
-**all three return 0 from `effGetParameterProperties` for every parameter**. Absence is the
-common case, not an error — fall back to the name/label pair.
+A plugin that does not implement `effGetParameterProperties` returns 0 for every parameter.
+Absence is the common case, not an error — fall back to the name/label pair.
 
 ### 14. `effGetCurrentMidiProgram`'s zero return is irreducibly ambiguous
 

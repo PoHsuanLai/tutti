@@ -158,14 +158,14 @@ pub use atomic_float::{AtomicF32, AtomicF64};
 
 // Value vocabulary.
 pub use value::{
-    Adsr, Amplitude, ArcDegrees, At, AtomicSampleRate, Azimuth, Beat, BeatDuration, Bpm,
-    BpmOutOfRange, Cents, CompressionRatio, Confidence, Correlation, Db, Depth, DepthOutOfRange,
-    Direction, Drive, Elevation, Feedback, Frame, Hz, InvalidMaxBlock, Latency, MaxBlock, Mix,
-    Moment, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, Param64, ParamAddr, ParamCell,
-    ParamKey, ParamRaw, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate, Q, Radians,
-    ReadRate, Resonance, SamplePosition, SampleRate, SampleRateOutOfRange, Samples, Seconds,
-    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitAddr, UnitParam,
-    UnitParamOutOfRange, Velocity,
+    Adsr, Amplitude, ArcDegrees, At, AtomicSampleRate, Azimuth, Beat, BeatDuration, BeatsPerCycle,
+    BeatsPerCycleOutOfRange, Bpm, BpmOutOfRange, Cents, CompressionRatio, Confidence, Correlation,
+    Db, Depth, DepthOutOfRange, Direction, Drive, Elevation, Feedback, Frame, Hz, InvalidMaxBlock,
+    Latency, MaxBlock, Mix, Moment, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param,
+    Param64, ParamAddr, ParamCell, ParamKey, ParamRaw, Phase, PhaseIncrement, PitchClass,
+    PlayReading, PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition, SampleRate,
+    SampleRateOutOfRange, Samples, Seconds, Semitones, Spread, SrcRatio, StereoWidth,
+    StretchFactor, Tail, Unit, UnitAddr, UnitParam, UnitParamOutOfRange, Velocity,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,

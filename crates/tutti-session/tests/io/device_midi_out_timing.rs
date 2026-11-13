@@ -138,9 +138,10 @@ fn an_output_offset_shifts_the_send_times() {
     let newest_after_block = |offset: f64| {
         let wire = Wire::default();
         let (mut s, stream, _device) = rig(&wire);
-        s.midi().set_output_latency(OutputLatency::offset_only(
-            OutputOffset::new(Seconds(offset)).unwrap(),
-        ));
+        s.midi().set_output_latency(
+            OutputLatency::new(Duration::ZERO, OutputOffset::new(Seconds(offset)).unwrap())
+                .unwrap(),
+        );
         let last_block = render(&stream, 100, latency);
         let _ = s.update();
         let ticks = Wire::tick_times(&wire.take());

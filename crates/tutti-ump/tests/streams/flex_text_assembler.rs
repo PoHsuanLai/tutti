@@ -116,7 +116,7 @@ fn a_zero_in_a_start_or_continue_refuses_the_message() {
     }
 }
 
-/// 7.5.9: "the remaining data bytes shall be set to 0x00": a byte after the
+/// 7.5.9: the remaining data bytes are zero: a byte after the
 /// first zero of an End or Complete packet refuses it.
 #[test]
 fn a_byte_after_the_padding_began_refuses_the_message() {

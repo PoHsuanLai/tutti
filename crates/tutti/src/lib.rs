@@ -27,7 +27,7 @@
 //! let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
 //! // A node with parameters also hands back its controls (a `ParamSet`), which
 //! // set those parameters live from the control thread.
-//! let sine = LfoNode::new(LfoShape::Sine).with_frequency(Hz(440.0));
+//! let sine = LfoNode::new(LfoShape::Sine).with_rate(Hz(440.0));
 //! let (tone, _controls) = g.add_with_controls(sine);
 //! g.pipe_output(tone);
 //!

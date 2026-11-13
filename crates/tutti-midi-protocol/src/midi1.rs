@@ -88,10 +88,10 @@ pub fn narrow(voice: Voice2) -> Result<Voice1, NoMidi1Form> {
 ///
 /// ```
 /// use tutti_midi_protocol::{narrow_message, widen_velocity};
-/// use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, Voice1};
+/// use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, Voice1, Voice2};
 ///
 /// let to = Address::new(MidiGroup::of(2), MidiChannel::of(5));
-/// let on2 = Message::note_on2(to, NoteNumber::of(60), widen_velocity(U7::of(100)));
+/// let on2 = Message::Midi2(to, Voice2::note_on(NoteNumber::of(60), widen_velocity(U7::of(100))));
 /// let on1 = narrow_message(on2).unwrap();
 /// assert_eq!(on1, Message::note_on(to, NoteNumber::of(60), U7::of(100)));
 /// ```

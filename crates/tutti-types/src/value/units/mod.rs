@@ -79,8 +79,8 @@ pub use measures::{Confidence, Correlation, Pan, Velocity};
 pub use ratios::{Cents, CompressionRatio, Q, Resonance, Semitones};
 pub use time::{AtomicSampleRate, Hz, SampleRate, SampleRateOutOfRange, Seconds};
 pub use transport::{
-    Beat, BeatDuration, Bpm, BpmOutOfRange, PlaybackRate, ReadRate, SamplePosition, SrcRatio,
-    StretchFactor,
+    Beat, BeatDuration, BeatsPerCycle, BeatsPerCycleOutOfRange, Bpm, BpmOutOfRange, PlaybackRate,
+    ReadRate, SamplePosition, SrcRatio, StretchFactor,
 };
 
 /// Marker trait implemented by every unit newtype.

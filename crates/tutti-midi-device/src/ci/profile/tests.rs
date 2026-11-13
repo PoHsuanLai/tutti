@@ -88,8 +88,8 @@ fn a_standard_profile_id_is_7e_bank_number_version_level() {
 
 #[test]
 fn a_manufacturer_profile_id_is_its_sysex_id_then_two_info_bytes() {
-    // §7.3.1: a three-byte id fills bytes 1 to 3; a one-byte id "is in the first byte
-    // and the remaining two bytes are filled with zeroes".
+    // §7.3.1: a three-byte id fills bytes 1 to 3; a one-byte id is in the first byte
+    // and the remaining two bytes are zeroes.
     let ProfileId::Manufacturer(p) = vendor() else {
         panic!("a manufacturer's")
     };
@@ -222,7 +222,7 @@ fn set_on_is_table_24_with_the_channels_requested_lsb_first() {
 
 #[test]
 fn a_version_1_set_on_has_no_channels_field_and_reads_as_zero() {
-    // §5.3: "Number Channels Requested" was added in Version 2.
+    // §5.3: `Number Channels Requested` was added in Version 2.
     let mut bytes = preamble(0x7F, 0x22, to_dst());
     bytes[4] = 0x01;
     bytes.extend([0x7E, 1, 2, 3, 4]);
@@ -246,7 +246,7 @@ fn set_off_is_table_25_with_two_reserved_bytes_that_are_ignored() {
     want.extend([0x7E, 1, 2, 3, 4, 0, 0]);
     assert_eq!(message.encode(), want);
     assert_eq!(decoded(&want), message);
-    // "Reserved": whatever a sender puts there, the message is the same.
+    // Reserved bytes: whatever a sender puts there, the message is the same.
     let n = want.len();
     want[n - 2..].copy_from_slice(&[0x55, 0x66]);
     assert_eq!(decoded(&want), message);
@@ -274,7 +274,7 @@ fn enabled_and_disabled_reports_are_tables_26_and_27_to_the_broadcast_muid() {
         assert_eq!(message.encode(), want, "{sub:#x}");
         assert_eq!(decoded(&want), message);
         assert_eq!(message.destination(), Destination::Broadcast);
-        // "Shall always have the Destination MUID field set to the Broadcast MUID."
+        // A report always carries the Broadcast MUID as its Destination MUID.
         let mut unicast = want.clone();
         unicast[9..13].copy_from_slice(&to_dst());
         assert_eq!(unread(&unicast).reason, UnreadReason::WrongDestination);
@@ -469,7 +469,7 @@ fn a_malformed_profile_message_is_unread_and_nakked_0x41_on_its_address() {
 
 #[test]
 fn a_nak_for_an_unsupported_profile_carries_status_04_and_the_profile_id() {
-    // §5.11.3: "Profile Configuration - the 5 bytes used here represent the Profile Id".
+    // §5.11.3: for Profile Configuration the 5 detail bytes are the Profile Id.
     let nak = Nak::new(U7::of(0x22), Nak::STATUS_PROFILE_NOT_SUPPORTED)
         .with_details(piano().to_bytes().map(U7::of));
     let message = CiMessage::Nak {

@@ -66,7 +66,7 @@
 //! use tutti_plugin_types::{Loaded, MaxBlock, Prepare, SampleRate, Samples};
 //! use tutti_vst2_host::{Vst2ProcessContext, Vst2Loaded};
 //!
-//! let plugin = Vst2Loaded::load(&main, "/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst")?;
+//! let plugin = Vst2Loaded::load(&main, "path/to/plugin.vst")?;
 //! let (inputs_width, outputs_width) = plugin.pins();
 //!
 //! // The rate, block size and precision are the activation's.

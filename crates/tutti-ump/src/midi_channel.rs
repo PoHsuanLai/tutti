@@ -54,7 +54,7 @@ impl MidiChannel {
     /// ```
     /// use tutti_ump::MidiChannel;
     ///
-    /// assert_eq!(MidiChannel::new(9).map(MidiChannel::display_number), Some(10));
+    /// assert_eq!(MidiChannel::new(9).unwrap().to_string(), "10");
     /// assert_eq!(MidiChannel::new(16), None);
     /// ```
     #[inline]
@@ -140,17 +140,6 @@ impl MidiChannel {
     pub const fn get(self) -> u8 {
         self.0
     }
-
-    /// Returns the 1-based number hardware and DAW UIs display (channel 0
-    /// shows as 1).
-    ///
-    /// Named because the off-by-one is a display convention, and a bare `+ 1`
-    /// at a call site hides that it is one.
-    #[inline]
-    #[must_use]
-    pub const fn display_number(self) -> u8 {
-        self.0 + 1
-    }
 }
 
 /// The 1-based number a person reads ([`numbered`](MidiChannel::numbered)'s): `MidiChannel::of(9)` is
@@ -233,8 +222,8 @@ mod tests {
 
     #[test]
     fn the_display_number_is_one_based() {
-        assert_eq!(MidiChannel::FIRST.display_number(), 1);
-        assert_eq!(MidiChannel::LAST.display_number(), 16);
+        assert_eq!(MidiChannel::FIRST.to_string(), "1");
+        assert_eq!(MidiChannel::LAST.to_string(), "16");
     }
 
     #[test]

@@ -191,8 +191,6 @@
 //! subscribers, so a send/receive pair on one virmidi port receives nothing), and
 //! `Midi Through` is the kernel's actual loopback.
 #![cfg_attr(docsrs, feature(doc_cfg))]
-// Every `unsafe` call into ALSA and CoreMIDI is in `tutti-alsa-ffi` and
-// `tutti-coremidi-ffi` (`cargo xtask check-ffi`).
 #![forbid(unsafe_code)]
 
 // --- Framework-free hardware I/O core ---

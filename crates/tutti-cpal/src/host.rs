@@ -159,12 +159,18 @@ impl DeviceHost {
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let name = |d: cpal::Device| d.name().unwrap_or_default();
+        let name = |d: cpal::Device| device_name(&d).unwrap_or_default();
         let default_output = self.inner.default_output_device().map(name);
         let default_input = self.inner.default_input_device().map(name);
         Ok(Snapshot::from_names(
-            self.inner.output_devices()?.map(name),
-            self.inner.input_devices()?.map(name),
+            self.inner
+                .output_devices()
+                .map_err(Error::DevicesError)?
+                .map(name),
+            self.inner
+                .input_devices()
+                .map_err(Error::DevicesError)?
+                .map(name),
             default_output.as_deref(),
             default_input.as_deref(),
         ))
@@ -178,8 +184,16 @@ impl DeviceHost {
     ) -> Result<cpal::Device> {
         let list = || -> Result<Vec<cpal::Device>> {
             Ok(match direction {
-                Direction::Output => self.inner.output_devices()?.collect(),
-                Direction::Input => self.inner.input_devices()?.collect(),
+                Direction::Output => self
+                    .inner
+                    .output_devices()
+                    .map_err(Error::DevicesError)?
+                    .collect(),
+                Direction::Input => self
+                    .inner
+                    .input_devices()
+                    .map_err(Error::DevicesError)?
+                    .collect(),
             })
         };
         let what = match direction {
@@ -199,11 +213,16 @@ impl DeviceHost {
             // failure this selector exists to prevent.
             DeviceSelector::Id(id) => list()?
                 .into_iter()
-                .filter(|d| d.name().is_ok_and(|n| n == id.name()))
+                .filter(|d| device_name(d).is_ok_and(|n| n == id.name()))
                 .nth(id.ordinal())
                 .ok_or_else(|| Error::InvalidDevice(format!("no {what} device {id}"))),
         }
     }
+}
+
+/// The name the OS gives `device`: the name of its description.
+pub(crate) fn device_name(device: &cpal::Device) -> std::result::Result<String, cpal::Error> {
+    device.description().map(|d| d.name().to_owned())
 }
 
 /// Returns the hosts this build can reach right now, default first.

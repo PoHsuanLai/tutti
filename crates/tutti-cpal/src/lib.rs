@@ -34,7 +34,7 @@ pub use poller::{DevicePoller, MIN_POLL_INTERVAL};
 pub use roster::{DeviceChange, DeviceId, DeviceRoster, Direction, Snapshot, SnapshotSource};
 
 // Re-exported because this crate's public surface already names cpal types (`SampleFormat` in
-// `OutputSpec`, `StreamError` in `ManualStream::fail`, cpal errors inside
+// `OutputSpec`, `Error` in `ManualStream::fail`, cpal errors inside
 // `Error`), so a consumer needs the vocabulary and should not have to pin a
 // matching cpal version of its own.
 pub use cpal;

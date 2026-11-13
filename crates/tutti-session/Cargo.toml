@@ -140,7 +140,7 @@ tutti-cpal = { path = "../tutti-cpal", default-features = false }
 # The reference CLAP plugin `tests/plugin/plugin.rs` loads, in a
 # `plugin-server` (built first: `cargo build -p tutti-plugin-server`; it is
 # not a dev-dependency, which would be a cycle through `tutti-plugin`).
-tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin", features = ["probe"] }
 # `PluginEntry`: a scanned plugin, which `PluginRef::from` reads (`plugin_identity`).
 tutti-plugin-db = { path = "../tutti-plugin-db" }
 # The reference VST2 plugin the `vst2_*` suites load in process (`vst2`), and

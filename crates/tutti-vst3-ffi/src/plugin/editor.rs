@@ -218,8 +218,36 @@ impl Parts {
         }
     }
 
-    /// Pumps the run loop the plugin registered timers and file descriptors on
-    /// (Linux); nothing elsewhere.
+    /// What the run loop wants the host's main loop to wait on (Linux): the
+    /// descriptors a plugin registered event handlers for and the earliest of its
+    /// timers, added to `out`; nothing elsewhere, where the OS has the loop.
+    pub fn editor_wakeups(&self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = main;
+            self.module.run_loop().describe(out);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (main, out);
+    }
+
+    /// Runs what the host's wait found: the run loop's timers due at `now` and
+    /// the handlers of the descriptors `ready` (Linux); nothing elsewhere.
+    pub fn wake_editor_loop(
+        &self,
+        main: &MainThread,
+        ready: &[tutti_plugin_types::Ready],
+        now: std::time::Instant,
+    ) {
+        #[cfg(target_os = "linux")]
+        self.module.run_loop().dispatch(main, ready, now);
+        #[cfg(not(target_os = "linux"))]
+        let _ = (main, ready, now);
+    }
+
+    /// One pass of the run loop without waiting: describes it, looks at its
+    /// descriptors and the clock, and runs what is ready. What a host does where
+    /// it has no main loop of its own to wait in.
     pub fn run_editor_loop_iteration(&self, main: &MainThread) {
         #[cfg(target_os = "linux")]
         self.module.run_loop().run_iteration(main);

@@ -947,19 +947,6 @@ impl SurroundChannel {
     }
 }
 
-/// Event flags of a POSIX file descriptor registered by the plugin
-/// (`CLAP_EXT_POSIX_FD_SUPPORT`). Only available on Unix targets.
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PosixFdFlags {
-    /// The descriptor is readable without blocking.
-    pub read: bool,
-    /// The descriptor is writable without blocking.
-    pub write: bool,
-    /// The descriptor is in an error state.
-    pub error: bool,
-}
-
 /// Description of a trigger parameter from `CLAP_EXT_TRIGGERS` (a stateless
 /// momentary action, like "reset oscillators").
 #[derive(Debug, Clone)]

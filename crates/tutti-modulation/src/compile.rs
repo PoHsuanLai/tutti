@@ -252,7 +252,7 @@ pub struct Declarations<'a> {
 ///
 /// Equality is bitwise, so it is [`Eq`].
 #[derive(Clone, Copy, Debug)]
-pub struct SourceNode {
+pub struct SignalSource {
     /// The address its events carry (`ParamAddr::Id(id.0)`) on each lane's
     /// event input.
     pub id: SourceId,
@@ -302,13 +302,13 @@ impl PartialEq for SignalKind {
 
 impl Eq for SignalKind {}
 
-impl PartialEq for SourceNode {
+impl PartialEq for SignalSource {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.kind == other.kind
     }
 }
 
-impl Eq for SourceNode {}
+impl Eq for SignalSource {}
 
 /// What [`compile`] produces.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -317,7 +317,7 @@ pub struct Compiled {
     pub programs: BTreeMap<TargetKey, ControlProgram>,
     /// A node per signal-driven source declared, with its [`SourceId`];
     /// built by the host.
-    pub nodes: BTreeMap<SourceKey, SourceNode>,
+    pub nodes: BTreeMap<SourceKey, SignalSource>,
     /// Event edges, a source's node → a target's lane.
     pub edges: BTreeSet<(SourceKey, TargetKey)>,
     /// Each LFO's dated clock (its rate anchor, doc 014 §4.3), routed or
@@ -566,7 +566,7 @@ pub fn compile(
         if let Some(kind) = signal_kind(source)
             && let Some(id) = kept(&key)
         {
-            nodes.insert(key, SourceNode { id, kind });
+            nodes.insert(key, SignalSource { id, kind });
         }
     }
     let mut taken: BTreeSet<SourceId> = nodes.values().map(|n| n.id).collect();
@@ -583,7 +583,7 @@ pub fn compile(
             taken.insert(SourceId(next));
             nodes.insert(
                 key,
-                SourceNode {
+                SignalSource {
                     id: SourceId(next),
                     kind,
                 },

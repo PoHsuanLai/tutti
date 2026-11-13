@@ -11,7 +11,7 @@ keywords = ["audio", "real-time", "lock-free"]
 categories = ["multimedia::audio", "concurrency"]
 # Not published: it carries the engine's `unsafe` (the denormals guard, the
 # parallel executor's claims), and whether it is offered as a crate of its own
-# is the maintainer's call. See docs/design/012-unsafe-policy.md.
+# is the maintainer's call. Its `unsafe` is listed in the README's "Safety".
 publish = false
 
 [lints]

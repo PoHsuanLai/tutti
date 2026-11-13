@@ -26,6 +26,8 @@ tutti-tempo = { path = "../tutti-tempo" }
 tutti-types = { path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+# The one OS look at a plugin's descriptors (`service_now`).
+tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 
 # Lock-free f64 cursor for the node's controls.
 atomic_float = "1.1"

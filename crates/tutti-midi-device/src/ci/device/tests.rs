@@ -1,3 +1,4 @@
+use super::super::{DetailsData, InquiryTarget, ProfileChannels, ProfileId, SpecificData};
 use super::super::{Unread, UnreadReason};
 use super::*;
 use tutti_ump::ManufacturerId;
@@ -265,16 +266,16 @@ fn bytes_of(sub_id2: u8, source: u32, destination: [u8; 4]) -> Vec<u8> {
 
 #[test]
 fn a_message_to_us_we_do_not_support_is_nakked_with_0x01_naming_it() {
-    // §5.3, Appendix E: a Profile Inquiry (0x20) is not supported.
+    // §5.3, Appendix E: an Inquiry: Property Exchange Capabilities (0x30) is not supported.
     let (mut device, _, now) = device([OURS]);
-    let decoded = CiMessage::decode(&bytes_of(0x20, PEER, muid(OURS).to_bytes()));
+    let decoded = CiMessage::decode(&bytes_of(0x30, PEER, muid(OURS).to_bytes()));
     let actions = device.on_message(&decoded, now);
     let [CiMessage::Nak { header, to, nak }] = sends(&actions)[..] else {
         panic!("a NAK, got {actions:?}");
     };
     assert_eq!(header.source, muid(OURS));
     assert_eq!(*to, muid(PEER));
-    assert_eq!(nak.nak_sub_id2, U7::of(0x20));
+    assert_eq!(nak.nak_sub_id2, U7::of(0x30));
     assert_eq!(nak.status_code, Nak::STATUS_MESSAGE_NOT_SUPPORTED);
 }
 
@@ -294,9 +295,9 @@ fn a_malformed_message_to_us_is_nakked_with_0x41() {
 #[test]
 fn a_message_for_another_muid_or_for_everyone_is_never_nakked() {
     let (mut device, _, now) = device([OURS]);
-    let to_other = CiMessage::decode(&bytes_of(0x20, PEER, muid(OTHER).to_bytes()));
+    let to_other = CiMessage::decode(&bytes_of(0x30, PEER, muid(OTHER).to_bytes()));
     assert!(device.on_message(&to_other, now).is_empty());
-    let to_all = CiMessage::decode(&bytes_of(0x20, PEER, [0x7F; 4]));
+    let to_all = CiMessage::decode(&bytes_of(0x30, PEER, [0x7F; 4]));
     assert!(device.on_message(&to_all, now).is_empty());
     assert!(device.on_message(&Decoded::NotCi, now).is_empty());
 }
@@ -469,4 +470,164 @@ fn our_own_reply_looped_back_is_an_echo_not_a_collision() {
     let actions = device.on_message(&echo, now + Duration::from_millis(5));
     assert!(actions.is_empty(), "an echo is ignored, got {actions:?}");
     assert_eq!(device.muid(), muid(OURS));
+}
+
+fn piano() -> ProfileId {
+    ProfileId::from_bytes([0x7E, 1, 2, 3, 4]).unwrap()
+}
+
+fn on(
+    device_id: CiDeviceId,
+    source: u32,
+    to: u32,
+    message: impl FnOnce(CiHeader, Muid) -> CiMessage,
+) -> Decoded {
+    let mut header = header(source);
+    header.device_id = device_id;
+    Decoded::Message(message(header, muid(to)))
+}
+
+#[test]
+fn a_profile_inquiry_to_us_is_answered_on_its_address_with_both_lists_empty() {
+    // §7.13: a device with no Profiles replies with 0 enabled and 0 disabled; M2-102
+    // §2.4: the Function Block's Reply "with no Profiles reported" ends the replies.
+    for address in [
+        CiDeviceId::FunctionBlock,
+        CiDeviceId::Group,
+        CiDeviceId::Channel(tutti_ump::MidiChannel::of(5)),
+    ] {
+        let (mut device, _, now) = device([OURS]);
+        let inquiry = on(address, PEER, OURS, |header, to| {
+            CiMessage::ProfileInquiry { header, to }
+        });
+        let actions = device.on_message(&inquiry, now);
+        let [
+            CiMessage::ProfileReply {
+                header,
+                to,
+                profiles,
+            },
+        ] = sends(&actions)[..]
+        else {
+            panic!("one Reply, got {actions:?}");
+        };
+        assert_eq!(header.device_id, address);
+        assert_eq!(header.source, muid(OURS));
+        assert_eq!(*to, muid(PEER));
+        assert_eq!(*profiles, ProfileLists::none());
+    }
+}
+
+#[test]
+fn a_profile_inquiry_for_another_muid_is_not_answered() {
+    let (mut device, _, now) = device([OURS]);
+    let inquiry = on(CiDeviceId::FunctionBlock, PEER, OTHER, |header, to| {
+        CiMessage::ProfileInquiry { header, to }
+    });
+    assert!(device.on_message(&inquiry, now).is_empty());
+}
+
+#[test]
+fn a_set_on_set_off_or_details_inquiry_to_us_is_nakked_0x04_with_the_profile_id() {
+    // M2-101 §5.11.3 (details are the Profile Id), M2-102 §2.4, §2.6, §2.7.
+    let channel = CiDeviceId::Channel(tutti_ump::MidiChannel::of(2));
+    let messages = [
+        (
+            0x22u8,
+            on(channel, PEER, OURS, |header, to| CiMessage::SetProfileOn {
+                header,
+                to,
+                profile: piano(),
+                channels: ProfileChannels::of(1),
+            }),
+        ),
+        (
+            0x23,
+            on(channel, PEER, OURS, |header, to| CiMessage::SetProfileOff {
+                header,
+                to,
+                profile: piano(),
+            }),
+        ),
+        (
+            0x28,
+            on(channel, PEER, OURS, |header, to| {
+                CiMessage::ProfileDetailsInquiry {
+                    header,
+                    to,
+                    profile: piano(),
+                    target: InquiryTarget::NUMBER_OF_CHANNELS,
+                }
+            }),
+        ),
+    ];
+    for (sub, message) in messages {
+        let (mut device, _, now) = device([OURS]);
+        let actions = device.on_message(&message, now);
+        let [CiMessage::Nak { header, to, nak }] = sends(&actions)[..] else {
+            panic!("a NAK, got {actions:?}");
+        };
+        assert_eq!(header.device_id, channel, "{sub:#x}");
+        assert_eq!(*to, muid(PEER));
+        assert_eq!(nak.nak_sub_id2, U7::of(sub));
+        assert_eq!(nak.status_code, Nak::STATUS_PROFILE_NOT_SUPPORTED);
+        assert_eq!(nak.details.map(U7::get), [0x7E, 1, 2, 3, 4]);
+    }
+}
+
+#[test]
+fn a_set_on_for_another_muid_is_not_nakked() {
+    let (mut device, _, now) = device([OURS]);
+    let set = on(CiDeviceId::Group, PEER, OTHER, |header, to| {
+        CiMessage::SetProfileOn {
+            header,
+            to,
+            profile: piano(),
+            channels: ProfileChannels::BY_ADDRESS,
+        }
+    });
+    assert!(device.on_message(&set, now).is_empty());
+}
+
+#[test]
+fn what_an_initiator_reads_is_not_answered_by_the_management_core() {
+    // Replies, reports, a Details Reply and Profile Specific Data are the
+    // Initiator's; answering a reply would trade messages for ever.
+    let (mut device, _, now) = device([OURS]);
+    let messages = [
+        on(CiDeviceId::FunctionBlock, PEER, OURS, |header, to| {
+            CiMessage::ProfileReply {
+                header,
+                to,
+                profiles: ProfileLists::none(),
+            }
+        }),
+        Decoded::Message(CiMessage::ProfileEnabled {
+            header: header(PEER),
+            profile: piano(),
+            channels: ProfileChannels::BY_ADDRESS,
+        }),
+        Decoded::Message(CiMessage::ProfileAdded {
+            header: header(PEER),
+            profile: piano(),
+        }),
+        on(CiDeviceId::Group, PEER, OURS, |header, to| {
+            CiMessage::ProfileDetailsReply {
+                header,
+                to,
+                profile: piano(),
+                target: InquiryTarget::NUMBER_OF_CHANNELS,
+                data: DetailsData::default(),
+            }
+        }),
+        Decoded::Message(CiMessage::ProfileSpecificData {
+            header: header(PEER),
+            to: Destination::Muid(muid(OURS)),
+            profile: piano(),
+            data: SpecificData::default(),
+        }),
+    ];
+    for message in messages {
+        assert!(device.on_message(&message, now).is_empty(), "{message:?}");
+    }
 }

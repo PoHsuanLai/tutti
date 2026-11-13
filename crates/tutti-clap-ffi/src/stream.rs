@@ -53,7 +53,7 @@ impl OutputStream {
     /// A raw `clap_ostream` over this stream, for a caller that drives the
     /// callbacks itself (a test). The pointer's `ctx` addresses `self`, so it
     /// is valid until `self` moves or drops; `raw` is where it is stored.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn raw(&mut self, raw: &mut Option<clap_ostream>) -> *const clap_ostream {
         let stored = raw.insert(clap_ostream {
             ctx: ptr::from_mut(self).cast::<c_void>(),
@@ -135,7 +135,7 @@ impl<'a> InputStream<'a> {
     }
 
     /// As `OutputStream::raw`, for a read stream.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn raw(&mut self, raw: &mut Option<clap_istream>) -> *const clap_istream {
         let stored = raw.insert(clap_istream {
             ctx: ptr::from_mut(self).cast::<c_void>(),
@@ -145,7 +145,7 @@ impl<'a> InputStream<'a> {
     }
 
     /// Test hook: park the cursor, so a callback's bounds check is exercised.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub fn set_position_for_test(&mut self, position: usize) {
         self.position = position;

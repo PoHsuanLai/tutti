@@ -88,7 +88,7 @@ impl Unit {
 
     /// The raw `AudioUnit`, for a call this crate does not wrap. Using it is the
     /// caller's `unsafe`, and it is valid only while a `Unit` clone lives.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn as_raw(&self) -> sys::AudioUnit {
         self.inner.instance
     }

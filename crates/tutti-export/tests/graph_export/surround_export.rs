@@ -11,8 +11,6 @@
 //! `RenderGraph`), and the mix is [`vbap_mix`]: a panner per source, wired to
 //! the output channels (with a [`bass_send`] where the layout has an LFE).
 
-#![cfg(feature = "wav")]
-
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use tutti_export::{RenderGraph, Setup};

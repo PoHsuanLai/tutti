@@ -40,11 +40,7 @@
 //! instead of its own piece's differs. In one piece, with no transport change inside a
 //! block, the two are the same frame, and tutti-sampler's run tests cover that.
 //!
-//! Gated on `wav`, because the assertions decode the exported file through
-//! `hound` — which this crate only links when that feature is on. `wav` is in
-//! `default`, so these run by default.
-
-#![cfg(feature = "wav")]
+//! The assertions decode the exported file through `hound`.
 
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 

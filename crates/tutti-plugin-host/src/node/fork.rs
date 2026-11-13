@@ -232,6 +232,10 @@ where
             ForkMode::Offline => true,
             ForkMode::Live => live_mode.is_offline(),
         };
+        // A format that cannot take the mode live is reactivated in it. The
+        // fork is in no executor yet, so its realtime end is here: the exchange
+        // finishes in this call, and the fork's first block has a Processor
+        // (without it, that block's MIDI would be dropped unplayed).
         fork.inner.lock().set_render_mode(
             main,
             if offline {
@@ -239,6 +243,7 @@ where
             } else {
                 RenderMode::Realtime
             },
+            Some(&mut fork.rt),
         );
 
         fork.params.seed(&delivered);

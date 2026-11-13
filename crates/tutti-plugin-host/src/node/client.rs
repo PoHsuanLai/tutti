@@ -513,7 +513,7 @@ impl<F: Loaded> InProcClient<F> {
     /// call it from a control thread, not the audio thread.
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         match MainThread::current() {
-            Some(main) => self.inner.lock().set_render_mode(&main, mode),
+            Some(main) => self.inner.lock().set_render_mode(&main, mode, None),
             None => false,
         }
     }

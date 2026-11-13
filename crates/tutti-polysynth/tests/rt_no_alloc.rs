@@ -17,7 +17,7 @@
 //! voice finishing in one block, which fills the list to the `max_voices`
 //! capacity it was sized with. `polysynth_all_voices_finishing_together_is_allocation_free`
 //! is the one that fills it, at 64 voices. The constructor puts no upper
-//! bound on `max_voices` (only 0 is refused).
+//! bound on `max_voices`; a count of zero cannot be written.
 
 use assert_no_alloc::AllocDisabler;
 use std::num::NonZeroUsize;

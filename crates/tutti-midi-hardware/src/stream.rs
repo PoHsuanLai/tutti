@@ -71,8 +71,11 @@ use tutti_ump::{
 };
 
 use crate::capability::UmpCapability;
-use crate::ci::{Ci, CiChange, CiPeerInfo, Heard, groups_after_settle, groups_of_a_midi1_port};
+use crate::ci::{
+    Ci, CiChange, CiChanges, CiPeerInfo, Heard, groups_after_settle, groups_of_a_midi1_port,
+};
 use crate::devices::OpenOutput;
+use crate::profiles::{ProfileError, ProfileSwitch, ProfilesChange, Snapshot};
 
 /// The configuration the session asks every Endpoint for (see the module).
 const WANTED: StreamConfig = StreamConfig {
@@ -178,6 +181,8 @@ pub(crate) struct Stepped {
     pub(crate) stream: Option<DeviceStream>,
     /// The MIDI-CI peers that came, changed or went.
     pub(crate) ci: Vec<CiChange>,
+    /// The Profiles of the peers that changed.
+    pub(crate) profiles: Vec<ProfilesChange>,
 }
 
 /// The Identity Request of a MIDI 1.0 port that has an output (the module's
@@ -303,6 +308,16 @@ impl Negotiation {
         self.ci.peers()
     }
 
+    /// The Profiles of the MIDI-CI peers found on this device.
+    pub(crate) fn profiles(&self) -> Snapshot {
+        self.ci.profiles()
+    }
+
+    /// Asks that a peer's Profile be switched at the next poll.
+    pub(crate) fn set_profile(&mut self, switch: ProfileSwitch) -> Result<(), ProfileError> {
+        self.ci.set_profile(switch)
+    }
+
     /// The Identity Request of a MIDI 1.0 port: starts it, or hands it the
     /// packets the port copied (`incoming`) and the time. Returns the stream
     /// when the device answered, with the identity it gave.
@@ -369,12 +384,16 @@ impl Negotiation {
         heard: &Heard<'_>,
         ci: Option<DeviceIdentity>,
     ) -> Stepped {
-        let ci = match &mut self.out {
+        let changes = match &mut self.out {
             Some(out) => self.ci.poll(now, heard, ci, out),
-            None => Vec::new(),
+            None => CiChanges::default(),
         };
         let stream = self.poll_stream(now, heard);
-        Stepped { stream, ci }
+        Stepped {
+            stream,
+            ci: changes.peers,
+            profiles: changes.profiles,
+        }
     }
 
     fn poll_stream(&mut self, now: Instant, heard: &Heard<'_>) -> Option<DeviceStream> {

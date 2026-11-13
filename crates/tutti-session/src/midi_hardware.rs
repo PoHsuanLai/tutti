@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use tutti_midi_hardware::{
-    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, Resolved, SavedDevice,
+    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, PeerProfiles, ProfileSwitch,
+    Resolved, SavedDevice,
 };
 use tutti_ump::DeviceIdentity;
 
@@ -112,6 +113,36 @@ impl Midi<'_> {
     #[must_use]
     pub fn ci_peers(&self, id: &DeviceId) -> Arc<[CiPeerInfo]> {
         self.io.map_or_else(Arc::default, |io| io.ci_peers(id))
+    }
+
+    /// The Profiles the MIDI-CI peers found on the open input `id` support, by
+    /// Group then MUID (M2-101 section 7): only a peer that declared Profile
+    /// Configuration has an entry, and the session asks it for its Profiles when
+    /// it is found. Empty when the input is not open or no peer did; a change is
+    /// a [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles). Shared like
+    /// [`ci_peers`](Self::ci_peers), and as it was when read.
+    ///
+    /// Each Profile is a [`ListedProfile`](tutti_midi_hardware::ListedProfile),
+    /// the handle a [`ProfileSwitch`] is made from, so a request can only name a
+    /// Profile at an address the peer listed.
+    #[must_use]
+    pub fn profiles(&self, id: &DeviceId) -> Arc<[PeerProfiles]> {
+        self.io.map_or_else(Arc::default, |io| io.profiles(id))
+    }
+
+    /// Asks a peer on the open input `id` to enable or disable a Profile it
+    /// lists. The request goes out at the next update, and its end (the peer's
+    /// Enabled or Disabled Report, its NAK, or a timeout with no answer) is a
+    /// [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles) with
+    /// [`ProfilesChange::Resolved`](tutti_midi_hardware::ProfilesChange::Resolved).
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
+    /// [`MidiError::Profile`] when `id` is not an open input, the peer is gone,
+    /// or it no longer lists the Profile there.
+    pub fn set_profile(&mut self, id: &DeviceId, switch: ProfileSwitch) -> Result<()> {
+        Ok(self.hardware()?.set_profile(id, switch)?)
     }
 
     /// Returns what the open input `id` has said about itself so far: its Device

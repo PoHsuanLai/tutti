@@ -40,6 +40,7 @@ use crate::ci::{CiChange, CiPeerInfo, Heard};
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
+use crate::profiles::{PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo, Learned, SavedDevice};
 use tutti_midi_runtime::{DeviceInlets, MidiOut, Outgoing};
@@ -203,6 +204,9 @@ pub enum Polled {
     Stream(DeviceId, Box<DeviceStream>),
     /// A MIDI-CI peer of the device was found, changed or lost.
     Ci(DeviceId, CiChange),
+    /// A MIDI-CI peer's Profiles became known or changed, a switch ended, or
+    /// the peer's Profiles were dropped.
+    Profile(DeviceId, ProfilesChange),
 }
 
 impl MidiSession {
@@ -514,6 +518,12 @@ impl MidiSession {
                     .into_iter()
                     .map(|change| Polled::Ci(id.clone(), change)),
             );
+            polled.extend(
+                stepped
+                    .profiles
+                    .into_iter()
+                    .map(|change| Polled::Profile(id.clone(), change)),
+            );
         }
         // The output the session holds sends in what its device settled.
         if let Some(out) = &mut open.output
@@ -591,6 +601,49 @@ impl MidiSession {
             .inputs
             .get(id)
             .map_or_else(Arc::default, |held| held.stream.ci_peers())
+    }
+
+    /// The Profiles of the MIDI-CI peers found on the open input `id` that
+    /// declared Profile Configuration, by Group then MUID (M2-101 §7): empty when
+    /// it is not open or no peer did. The session asks each such peer for its
+    /// Profiles when it is found, and keeps them as the peer reports. Shared like
+    /// [`ci_peers`](Self::ci_peers): read again after a
+    /// [`Polled::Profile`].
+    #[must_use]
+    pub fn profiles(&self, id: &DeviceId) -> Arc<[PeerProfiles]> {
+        self.inner
+            .open()
+            .inputs
+            .get(id)
+            .map_or_else(Arc::default, |held| held.stream.profiles())
+    }
+
+    /// Asks a peer on the open input `id` to enable or disable a Profile it
+    /// lists, as the Initiator (M2-101 §§7.8, 7.9): the request is sent at the
+    /// next [`poll`](Self::poll), and its end is a [`ProfilesChange::Resolved`]
+    /// (the peer's Enabled or Disabled Report, its NAK, or [`PROFILE_TIMEOUT`]
+    /// with no answer). Make the [`ProfileSwitch`] from a handle in
+    /// [`profiles`](Self::profiles).
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError::NotOpen`] when `id` is not an open input,
+    /// [`ProfileError::NoSuchPeer`] when the peer is gone, and
+    /// [`ProfileError::NotListed`] when it no longer lists the Profile there.
+    ///
+    /// [`PROFILE_TIMEOUT`]: tutti_midi_device::PROFILE_TIMEOUT
+    pub fn set_profile(
+        &self,
+        id: &DeviceId,
+        switch: ProfileSwitch,
+    ) -> std::result::Result<(), ProfileError> {
+        self.inner
+            .open()
+            .inputs
+            .get_mut(id)
+            .ok_or(ProfileError::NotOpen)?
+            .stream
+            .set_profile(switch)
     }
 
     /// What is known of the UMP Stream state of the open input `id`: `None`

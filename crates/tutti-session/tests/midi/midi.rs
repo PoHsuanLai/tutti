@@ -1349,6 +1349,195 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     );
 }
 
+/// **A MIDI-CI peer's Profiles are the session's, and it switches them as the
+/// Initiator** (M2-101 section 7): a peer whose Discovery Reply declares Profile
+/// Configuration is sent a Profile Inquiry by the session's tick; its Replies
+/// make the Profiles `Midi::profiles` lists (`MidiEvent::CiProfiles`, `Known`
+/// at the final Reply on the Function Block); a request made from a listed
+/// handle with `Midi::set_profile` is sent as a Set Profile On (Sub-ID#2
+/// `0x22`) with the Channel count asked, and the peer's Profile Enabled Report
+/// resolves it and updates the list.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
+    use tutti_midi_device::{
+        BlockName, CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiMessage, Decoded,
+        DiscoveryData, MaxSysexSize, Muid, Outcome, ProfileChannels, ProfileId, ProfileLists,
+        ProfileState, StandardProfile,
+    };
+    use tutti_midi_hardware::{
+        Capabilities, ChannelCount, Endpoint, FunctionBlock, ListedProfile, ProfilesChange,
+    };
+    use tutti_ump::{
+        DeviceIdentity, Direction, FirstGroup, FunctionBlockId, GroupSpan, ManufacturerId,
+        SysexAssembler, SysexStep, U7,
+    };
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Wire", PortDirection::Duplex);
+    let _ = s.update();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
+    io.connect_input("wire").expect("connects");
+    let identity = |manufacturer| DeviceIdentity {
+        manufacturer,
+        family: [U7::of(1); 2],
+        model: [U7::of(2); 2],
+        revision: [U7::of(3); 4],
+    };
+    s.midi()
+        .enable_ci(identity(ManufacturerId::NON_COMMERCIAL))
+        .expect("hardware");
+    let block = FunctionBlock::builder(
+        FunctionBlockId::new(0).unwrap(),
+        Direction::Bidirectional,
+        FirstGroup::new(0).unwrap(),
+        GroupSpan::new(1).unwrap(),
+    )
+    .midi_ci(2, 0)
+    .name(BlockName::new("Main").unwrap())
+    .build()
+    .unwrap();
+    let mut device = Endpoint::new(Capabilities {
+        midi1: true,
+        midi2: true,
+        ..Capabilities::default()
+    })
+    .with_function_block(block);
+    let raw = EndpointId::from_raw(7);
+    let peer = Muid::new(0x0012_3456).unwrap();
+    let profile = ProfileId::Standard(StandardProfile::new(
+        U7::of(0x21),
+        U7::of(2),
+        U7::of(1),
+        U7::of(1),
+    ));
+    let at = |device_id| CiHeader {
+        device_id,
+        ci_version: CI_VERSION,
+        source: peer,
+    };
+    let room = SysexAssembler::room_for(256, 1, 16);
+    let mut assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16);
+    let start = Instant::now();
+    let mut seen = Vec::new();
+    let mut set_on = Vec::new();
+    let mut device_id = None;
+    let mut switched = false;
+    for ms in 0..80 {
+        let now = start + Duration::from_millis(ms);
+        for event in update_at(&mut s, now) {
+            match event {
+                SessionEvent::Midi(MidiEvent::CiPeer { device, .. }) => device_id = Some(device),
+                SessionEvent::Midi(MidiEvent::CiProfiles { change, .. }) => seen.push(change),
+                _ => {}
+            }
+        }
+        if !switched
+            && seen
+                .iter()
+                .any(|c| matches!(c, ProfilesChange::Known { .. }))
+            && let Some(id) = &device_id
+        {
+            let peers = s.midi().profiles(id);
+            let listed: Vec<_> = peers[0].listed().collect();
+            let [ListedProfile::Channel(c)] = listed.as_slice() else {
+                panic!("one Profile on a Channel: {listed:?}");
+            };
+            assert_eq!(listed[0].state(), ProfileState::Disabled);
+            s.midi()
+                .set_profile(id, c.enable(ChannelCount::new(2).unwrap()))
+                .expect("the peer lists it");
+            switched = true;
+        }
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(raw) {
+            if let Ok(message @ tutti_ump::Message::Stream(_)) = ump.decode() {
+                device.reply(message, &mut answers);
+                continue;
+            }
+            assembler.begin_block();
+            let SysexStep::Complete(done) = assembler.push(ump) else {
+                continue;
+            };
+            match CiMessage::decode(assembler.message(done).payload()) {
+                Decoded::Message(CiMessage::Discovery { header, .. }) => {
+                    let data = DiscoveryData::new(
+                        identity(ManufacturerId::of(0x41)),
+                        CiCategories::PROFILE_CONFIGURATION,
+                        MaxSysexSize::of(256),
+                    );
+                    answers.extend(
+                        CiMessage::DiscoveryReply {
+                            header: CiHeader::new(peer),
+                            to: header.source,
+                            data,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::ProfileInquiry { header, .. }) => {
+                    for (address, lists) in [
+                        (
+                            CiDeviceId::Channel(MidiChannel::of(0)),
+                            ProfileLists::new(vec![], vec![profile]).unwrap(),
+                        ),
+                        (CiDeviceId::FunctionBlock, ProfileLists::none()),
+                    ] {
+                        answers.extend(
+                            CiMessage::ProfileReply {
+                                header: at(address),
+                                to: header.source,
+                                profiles: lists,
+                            }
+                            .packets(MidiGroup::FIRST),
+                        );
+                    }
+                }
+                Decoded::Message(CiMessage::SetProfileOn {
+                    header, channels, ..
+                }) => {
+                    set_on.push((header.device_id, channels));
+                    answers.extend(
+                        CiMessage::ProfileEnabled {
+                            header: at(header.device_id),
+                            profile,
+                            channels,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                _ => {}
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(raw, ump, now));
+        }
+    }
+    assert_eq!(
+        set_on,
+        [(
+            CiDeviceId::Channel(MidiChannel::of(0)),
+            ProfileChannels::of(2)
+        )],
+        "one Set Profile On, for Channel 1 and two Channels"
+    );
+    assert!(
+        seen.iter().any(|c| matches!(
+            c,
+            ProfilesChange::Resolved {
+                outcome: Outcome::Reported { state: ProfileState::Enabled, channels },
+                ..
+            } if *channels == ProfileChannels::of(2)
+        )),
+        "{seen:?}"
+    );
+    let id = device_id.expect("the peer was found");
+    let peers = s.midi().profiles(&id);
+    let listed: Vec<_> = peers[0].listed().collect();
+    assert_eq!(listed[0].state(), ProfileState::Enabled);
+    assert_eq!(listed[0].channels(), Some(ProfileChannels::of(2)));
+}
+
 /// **The hardware out JR-stamps only as its device's configuration says**
 /// (M2-104 §7.1.6.2: a Sender "shall not send JR Timestamps until after a
 /// Stream Configuration Notification" has said the device receives them). The

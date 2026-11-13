@@ -4,65 +4,18 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::common::{Seen, Tap, blocks, offline};
 use tutti_fixtures::midi;
 use tutti_graph::{
-    Cx, EventCapacity, EventKind, ForkByClone, Instrument, IntoNode, Io, Node, NodeParts, Prepare,
-    Shape, Status,
+    Cx, EventCapacity, ForkByClone, Instrument, IntoNode, Io, Node, NodeParts, Prepare, Shape,
+    Status,
 };
 use tutti_midi_protocol::MpeMode;
 use tutti_session::{MidiError, Session, SessionInstrument, SessionNode, TakePlacement};
-use tutti_types::{ChannelLayout, Frame, InterleavedMut, MaxBlock, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Ump};
+use tutti_types::{ChannelLayout, Frame, MaxBlock, SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
 const RATE: f64 = 48_000.0;
-
-fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
-}
-
-fn blocks(s: &Session, n: usize) {
-    let mut buf = vec![0.0f32; 512 * 2];
-    for _ in 0..n {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-    }
-}
-
-type Seen = Arc<Mutex<Vec<(u64, [u32; 4])>>>;
-
-/// An event sink: what its event input hears, by absolute frame.
-struct Tap(Seen);
-
-impl Node for Tap {
-    fn shape(&self) -> Shape {
-        Shape::EMPTY.with_events(1, 0)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
-        for e in io.events(0) {
-            if let EventKind::Midi(Ump(w)) = e.kind {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((cx.env.frame.get() + u64::from(e.offset.get()), w));
-            }
-        }
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
-impl IntoNode for Tap {
-    type Controls = ();
-    fn into_parts(self) -> NodeParts<()> {
-        IntoNode::into_parts(tutti_graph::Unforkable(self))
-    }
-}
-impl SessionNode for Tap {}
 
 // --- Recording a take --------------------------------------------------------
 

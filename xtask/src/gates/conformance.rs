@@ -1,5 +1,6 @@
 //! `check-conformance`: the spec inventories are well formed, every test tag
-//! names a row, and the CLAP inventory is the set `clap-sys` declares.
+//! names a row, and the CLAP and VST3 inventories are the sets `clap-sys` and
+//! the vendored VST3 SDK declare.
 //!
 //! An inventory is one or more files `testing/conformance/<area>[-<part>].txt`,
 //! one spec item per line, nine columns separated by `|`:
@@ -9,7 +10,7 @@
 //! ```
 //!
 //! Blank lines and lines starting with `#` are skipped. `id` is non-empty and
-//! made of `a-z 0-9 . _ / # -`, unique across every file. `side` is a non-empty
+//! made of `a-z A-Z 0-9 . _ / # -` (a spec's own capitals, `vst3.IComponent.setActive`, stay), unique across every file. `side` is a non-empty
 //! lowercase token (`host`, `plugin`, `core`, `initiator`, ..). `maturity` is
 //! `stable`, `draft` or empty; `kind` is `required`, `recommended`, `permitted`
 //! or empty; `section` is free text or empty; `paraphrase` is the item in our
@@ -33,6 +34,18 @@
 //! maturity)` triples equal the extracted ones. With the source absent the
 //! comparison is skipped and said so, unless `TUTTI_CONFORMANCE=require`.
 //!
+//! The rows whose id starts `vst3.` are held to the SDK headers under
+//! `vendor/vst3-sdk/pluginterfaces` ([`super::vst3_sdk`]): the committed `(id,
+//! side, maturity)` triples equal the extracted ones. The SDK is a submodule,
+//! so a checkout without it skips the comparison and says so, unless
+//! `TUTTI_CONFORMANCE=require` (CI sets it).
+//!
+//! `vst2.txt` (the VST 2.4 surface) and `au.txt` (the AudioUnit v2 surface) are
+//! written by hand and checked by review: no VST 2.4 header is in the repo
+//! (Steinberg no longer distributes the SDK) and the AudioToolbox headers ship
+//! with macOS only, so nothing compares them to a source. They are held to the
+//! same row format and tag rules as the others.
+//!
 //! The rows whose id starts with a MIDI document's prefix (`m2-104/`,
 //! `m2-116/`) are held to that document's spec text in the directory
 //! `TUTTI_MIDI_SPECS` points at ([`super::midi_spec`]): the committed `(id,
@@ -46,6 +59,7 @@
 use super::clap_sys::{self, Item};
 use super::lex::blank_keeping_docs;
 use super::midi_spec;
+use super::vst3_sdk;
 use super::{Report, Tree};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,6 +68,8 @@ const NA_KINDS: [&str; 3] = ["deprecated", "forbidden-for-side", "other-side"];
 const KINDS: [&str; 3] = ["required", "recommended", "permitted"];
 const MATURITIES: [&str; 2] = ["stable", "draft"];
 const TAG: &str = "/// Spec:";
+/// The ids of the VST3 inventory.
+const VST3_PREFIX: &str = "vst3.";
 
 fn skipped(dir: &str) -> bool {
     matches!(dir, "target" | ".git")
@@ -98,7 +114,7 @@ impl Row {
 fn is_id(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
-            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'/' | b'#' | b'-'))
+            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_' | b'/' | b'#' | b'-'))
 }
 
 fn is_token(s: &str, allow_digit_first: bool) -> bool {
@@ -160,7 +176,7 @@ pub(super) fn parse_row(line: &str) -> Result<Row, String> {
     };
     if !is_id(id) {
         return Err(format!(
-            "id `{id}` is empty or has a character outside a-z 0-9 . _ / # -"
+            "id `{id}` is empty or has a character outside a-z A-Z 0-9 . _ / # -"
         ));
     }
     if !is_token(side, false) {
@@ -293,25 +309,35 @@ fn triples(items: &[Item]) -> BTreeSet<(String, String, String)> {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Require {
     pub(super) clap: bool,
+    pub(super) vst3: bool,
     pub(super) midi: bool,
 }
 
 impl Require {
-    /// `require` demands the `clap-sys` source; `require-all` also the MIDI
-    /// spec text.
+    /// `require` demands the `clap-sys` source and the VST3 SDK; `require-all`
+    /// also the MIDI spec text.
     pub(super) fn parse(value: Option<&str>) -> Require {
         match value {
             Some("require") => Require {
                 clap: true,
+                vst3: true,
                 midi: false,
             },
             Some("require-all") => Require {
                 clap: true,
+                vst3: true,
                 midi: true,
             },
             _ => Require::default(),
         }
     }
+}
+
+fn vst3_triples(items: &[vst3_sdk::Item]) -> BTreeSet<(String, String, String)> {
+    items
+        .iter()
+        .map(|i| (i.id.clone(), i.side.to_owned(), i.maturity.to_owned()))
+        .collect()
 }
 
 /// The `(id, kind, section, facts)` of every row whose id starts `prefix`.
@@ -413,6 +439,30 @@ pub(super) fn check(
         Err(why) if require.clap => r.fail(format!("clap inventory not checked: {why}")),
         Err(why) => r.say(format!("clap inventory not checked: {why}")),
     }
+    let committed_vst3: BTreeSet<(String, String, String)> = rows
+        .iter()
+        .filter(|(_, row)| row.id.starts_with(VST3_PREFIX))
+        .map(|(_, row)| (row.id.clone(), row.side.clone(), row.maturity.clone()))
+        .collect();
+    match vst3_sdk::extract(tree) {
+        Ok(items) => {
+            let want = vst3_triples(&items);
+            for t in want.difference(&committed_vst3) {
+                r.fail(format!(
+                    "{DIR}: the VST3 SDK declares `{}` ({}, {}) that no vst3 row matches; run `cargo xtask conformance-inventory vst3`",
+                    t.0, t.1, t.2
+                ));
+            }
+            for t in committed_vst3.difference(&want) {
+                r.fail(format!(
+                    "{DIR}: the vst3 row `{}` ({}, {}) is not what the VST3 SDK declares; run `cargo xtask conformance-inventory vst3`",
+                    t.0, t.1, t.2
+                ));
+            }
+        }
+        Err(why) if require.vst3 => r.fail(format!("vst3 inventory not checked: {why}")),
+        Err(why) => r.say(format!("vst3 inventory not checked: {why}")),
+    }
     for doc in midi_spec::DOCS {
         let label = doc.label;
         match midi(doc).and_then(|text| midi_spec::extract(doc, &text)) {
@@ -501,6 +551,64 @@ pub(super) fn regenerate(existing: Option<&str>, items: &[Item]) -> Result<Strin
         out.push('\n');
     }
     Ok(out)
+}
+
+/// The comment lines that open `vst3.txt`: its columns and id grammar.
+const VST3_HEADER: &str = "\
+# VST3 spec inventory. The spec is the SDK under `vendor/vst3-sdk/pluginterfaces`
+# (base, vst, gui headers). `cargo xtask conformance-inventory vst3` regenerates
+# the id, side, maturity and section columns from the headers; the others are
+# edited by hand. `cargo xtask check-conformance` holds (id, side, maturity) to
+# the headers.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids, one per pure virtual method of an interface (a class the header gives a
+# DECLARE_CLASS_IID): vst3.<Interface>.<method>, e.g. vst3.IComponent.setActive.
+# side: plugin for an interface the doc comment marks [plug imp], host for
+# [host imp], core for both marks or none (an unmarked interface takes the side
+# of the SDK interface it derives from). maturity: stable. section: the header's
+# path under pluginterfaces/, with the [released: x.y.z] mark when it has one.
+";
+
+/// The text of `testing/conformance/vst3.txt` for the extracted `items`: their
+/// id, side, maturity and section, with the other columns kept from `existing`
+/// for an id that is still there. Also the ids added and removed.
+pub(super) fn regenerate_vst3(
+    existing: Option<&str>,
+    items: &[vst3_sdk::Item],
+) -> Result<(String, Vec<String>, Vec<String>), String> {
+    let mut old: BTreeMap<String, Row> = BTreeMap::new();
+    if let Some(text) = existing {
+        let (rows, errs) = parse_file("vst3.txt", text);
+        if !errs.is_empty() {
+            return Err(errs.join("\n"));
+        }
+        old.extend(rows.into_iter().map(|r| (r.id.clone(), r)));
+    }
+    let (mut out, mut added) = (String::from(VST3_HEADER), Vec::new());
+    for it in items {
+        let mut row = old.remove(&it.id).unwrap_or_else(|| {
+            added.push(it.id.clone());
+            Row {
+                id: it.id.clone(),
+                side: String::new(),
+                maturity: String::new(),
+                kind: String::new(),
+                section: String::new(),
+                paraphrase: String::new(),
+                facts: String::new(),
+                na_kind: String::new(),
+                cite: String::new(),
+            }
+        });
+        row.side = it.side.to_owned();
+        row.maturity = it.maturity.to_owned();
+        row.section = it.section.clone();
+        out.push_str(&row.render());
+        out.push('\n');
+    }
+    Ok((out, added, old.into_keys().collect()))
 }
 
 /// The comment lines that open a MIDI inventory file: its columns and id
@@ -614,6 +722,10 @@ mod tests {
     const PARAMS_SRC: &str =
         "pub struct clap_plugin_params { pub flush: Option<unsafe extern \"C\" fn()>, }";
 
+    const VST3_ROW: &str = "vst3.IComponent.setActive | plugin | stable | | vst/ivstcomponent.h | host activates or deactivates the component | | |";
+    const VST3_HEADER_PATH: &str = "vendor/vst3-sdk/pluginterfaces/vst/ivstcomponent.h";
+    const VST3_SRC: &str = "/** [plug imp] */\nclass IComponent : public IPluginBase { public: virtual tresult PLUGIN_API setActive (TBool state) = 0; };\nDECLARE_CLASS_IID (IComponent, 1, 2, 3, 4)\n";
+
     fn inv(rows: &[&str]) -> String {
         rows.join("\n")
     }
@@ -626,6 +738,10 @@ mod tests {
             &|_| Err("no specs".to_owned()),
             Require::default(),
         )
+    }
+
+    fn has_out(r: &Report, needle: &str) -> bool {
+        r.out.iter().any(|l| l.contains(needle))
     }
 
     fn has(r: &Report, needle: &str) -> bool {
@@ -676,7 +792,8 @@ mod tests {
         };
         assert!(parse_row(&base(0, "a.b")).is_ok());
         for (i, v, why) in [
-            (0, "A.b", "id"),
+            (0, "a b", "id"),
+            (0, "a.b!", "id"),
             (0, "", "id"),
             (1, "Host", "side"),
             (1, "", "side"),
@@ -928,7 +1045,12 @@ mod tests {
 
     #[test]
     fn without_the_midi_text_the_check_is_skipped_unless_require_all() {
-        let lock = Mem::with(&[("Cargo.lock", LOCK), ("testing/conformance/clap.txt", ROW)]);
+        let lock = Mem::with(&[
+            ("Cargo.lock", LOCK),
+            ("testing/conformance/clap.txt", ROW),
+            ("testing/conformance/vst3.txt", VST3_ROW),
+            (VST3_HEADER_PATH, VST3_SRC),
+        ]);
         let sys = Mem::with(&[("src/ext/params.rs", PARAMS_SRC)]);
         let run = |v: Option<&str>| {
             check(
@@ -951,6 +1073,46 @@ mod tests {
             &run(Some("require-all")),
             "M2-104 inventory not checked: TUTTI_MIDI_SPECS"
         ));
+    }
+
+    #[test]
+    fn the_vst3_rows_are_held_to_the_sdk_headers() {
+        let go = |row: &str| {
+            check(
+                &Mem::with(&[
+                    ("testing/conformance/vst3.txt", row),
+                    (VST3_HEADER_PATH, VST3_SRC),
+                ]),
+                Err("absent".to_owned()),
+                &|_| Err("no specs".to_owned()),
+                Require::default(),
+            )
+        };
+        assert!(go(VST3_ROW).passed());
+        let wrong_side = VST3_ROW.replace("| plugin |", "| host |");
+        assert!(has(&go(&wrong_side), "is not what the VST3 SDK declares"));
+        assert!(has(&go(""), "declares `vst3.IComponent.setActive`"));
+        let r = run(&[("testing/conformance/vst3.txt", VST3_ROW)]);
+        assert!(r.passed() && has_out(&r, "vst3 inventory not checked"));
+    }
+
+    #[test]
+    fn vst3_regeneration_keeps_hand_columns_and_reports_added_and_removed() {
+        let items = vst3_sdk::extract(&Mem::with(&[(VST3_HEADER_PATH, VST3_SRC)])).unwrap();
+        let kept = format!(
+            "{} | host | draft | required | stale | my words | | |\nvst3.IGone.x | core | stable | | | old | | |\n",
+            items[0].id
+        );
+        let (out, added, removed) = regenerate_vst3(Some(&kept), &items).unwrap();
+        let row = out.lines().find(|l| l.starts_with(&items[0].id)).unwrap();
+        assert_eq!(
+            row,
+            "vst3.IComponent.setActive | plugin | stable | required | vst/ivstcomponent.h | my words |  |  |"
+        );
+        assert!(added.is_empty());
+        assert_eq!(removed, ["vst3.IGone.x"]);
+        let (_, added, _) = regenerate_vst3(None, &items).unwrap();
+        assert_eq!(added, ["vst3.IComponent.setActive"]);
     }
 
     #[test]

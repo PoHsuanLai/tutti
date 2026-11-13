@@ -259,6 +259,7 @@ mod tests {
         }
     }
 
+    /// Spec: vst3.IPlugInterfaceSupport.isPlugInterfaceSupported
     #[test]
     fn reports_installed_host_interfaces_supported() {
         let host = HostApplication::new_for_test("test");
@@ -278,6 +279,7 @@ mod tests {
         }
     }
 
+    /// Spec: vst3.IPlugInterfaceSupport.isPlugInterfaceSupported
     #[test]
     fn reports_uninstalled_interfaces_unsupported() {
         let host = HostApplication::new_for_test("test");
@@ -361,6 +363,7 @@ mod tests {
     /// NUL-terminated string, so a longer host name must be cut at 127 and
     /// still terminated — writing 128 characters would leave the plugin
     /// scanning past the buffer for a NUL that is not there.
+    /// Spec: vst3.IHostApplication.getName
     #[test]
     fn an_over_long_host_name_is_truncated_and_stays_nul_terminated() {
         let host = HostApplication::new_for_test(&"A".repeat(200));

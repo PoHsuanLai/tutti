@@ -205,7 +205,7 @@ One workspace at the root; the `members` list is the source of truth. `crates/` 
 ships (directory name = package name, no nesting), `testing/` is never shipped, `xtask/`
 holds the development commands (std only, no dependencies, `publish = false`), and
 `vendor/` holds the VST3 SDK, which is never edited. No crate depends on Bevy; the Bevy
-adapter is [PoHsuanLai/bevy-tutti](https://github.com/PoHsuanLai/bevy-tutti).
+adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 
 **Layering.** Normal and build dependencies point strictly down this list
 (dev-dependencies may go anywhere); `cargo xtask check-layout` holds it:

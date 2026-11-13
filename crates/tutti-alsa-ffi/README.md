@@ -4,11 +4,11 @@ This crate is a small wrapper that lets tutti call the Linux ALSA sequencer and 
 
 It is an internal building block of `tutti-midi-hardware`. It needs ALSA 1.2.10 or newer and is empty on other systems. Most people will use it through the `tutti` crate rather than directly.
 
-This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
 ### Contribution
 

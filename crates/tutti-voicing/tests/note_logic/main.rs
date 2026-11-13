@@ -6,5 +6,6 @@
 static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 mod step_no_alloc;
+mod support;
 mod tuning;
 mod universal;

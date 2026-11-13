@@ -4,11 +4,11 @@ An audio graph: you add processors, connect them, and the graph renders audio bl
 
 You can use it to host your own audio processors and change the graph while it plays, or to write a processor that runs inside tutti. Most people will reach it through the `tutti` crate.
 
-This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
 ### Contribution
 

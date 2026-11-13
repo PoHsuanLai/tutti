@@ -4,115 +4,26 @@
 //! descriptors and the next tick. A plugin's `request_process` may be called
 //! from its audio thread, which can neither take a lock nor write the control
 //! socket, yet its answer (`ProcessRequested`) must leave the server at once,
-//! not on the next tick. [`Bell::ring`] sets a flag and, on unix, writes one
-//! byte to a non-blocking socket pair whose read end the wait includes
-//! ([`Bell::fd`]): it takes no lock, allocates nothing and never waits. Windows
-//! has no such descriptor; its wait naps in slices of a millisecond and checks
-//! [`Bell::rung`] between them.
+//! not on the next tick. [`Bell::ring`] sets a flag and makes the platform's
+//! wait end; it takes no lock, allocates nothing and never waits. The main
+//! loop clears the flag with [`Bell::take`] after each wait. How the wait ends
+//! is the platform module's: this `mod` line carries the bell's only platform
+//! `cfg`.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The process's bell. See the module docs.
-pub(crate) struct Bell {
-    rung: AtomicBool,
-    #[cfg(unix)]
-    tx: std::os::unix::net::UnixStream,
-    #[cfg(unix)]
-    rx: std::os::unix::net::UnixStream,
-}
+#[cfg(unix)]
+#[path = "bell/unix.rs"]
+mod sys;
+#[cfg(not(unix))]
+#[path = "bell/windows.rs"]
+mod sys;
+
+pub(crate) use sys::Bell;
 
 /// The one bell of this server process: one plugin is served, and the plugin's
 /// host callbacks reach it through no other path.
 pub(crate) fn bell() -> &'static Bell {
     static BELL: OnceLock<Bell> = OnceLock::new();
     BELL.get_or_init(Bell::new)
-}
-
-impl Bell {
-    fn new() -> Self {
-        #[cfg(unix)]
-        {
-            let (tx, rx) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
-            tx.set_nonblocking(true).expect("a non-blocking bell");
-            rx.set_nonblocking(true).expect("a non-blocking bell");
-            Self {
-                rung: AtomicBool::new(false),
-                tx,
-                rx,
-            }
-        }
-        #[cfg(not(unix))]
-        Self {
-            rung: AtomicBool::new(false),
-        }
-    }
-
-    /// Makes the main loop's wait end. Any thread, the audio thread included.
-    pub(crate) fn ring(&self) {
-        self.rung.store(true, Ordering::Release);
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            // A full socket already holds a byte the loop has not read: the
-            // wait ends either way.
-            let _ = (&self.tx).write(&[1]);
-        }
-    }
-
-    /// Whether the bell has rung since the last [`take`](Self::take).
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub(crate) fn rung(&self) -> bool {
-        self.rung.load(Ordering::Acquire)
-    }
-
-    /// Whether it rang since the last call, clearing it. The main loop's.
-    pub(crate) fn take(&self) -> bool {
-        self.rung.swap(false, Ordering::AcqRel)
-    }
-
-    /// The descriptor the main loop's wait watches for readability.
-    #[cfg(unix)]
-    pub(crate) fn fd(&self) -> i32 {
-        use std::os::fd::AsRawFd;
-        self.rx.as_raw_fd()
-    }
-
-    /// Reads the bytes [`ring`](Self::ring) wrote, so the descriptor is quiet
-    /// until the next ring.
-    #[cfg(unix)]
-    pub(crate) fn drain(&self) {
-        use std::io::Read;
-        let mut scratch = [0u8; 64];
-        while matches!((&self.rx).read(&mut scratch), Ok(n) if n > 0) {}
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-
-    /// Whether the bell's descriptor is readable within `ms`.
-    fn readable(b: &Bell, ms: i32) -> bool {
-        use std::os::fd::AsFd;
-        tutti_plugin_ipc_ffi::wait_readable(b.rx.as_fd(), ms).expect("poll")
-    }
-
-    /// **A ring ends a wait on the bell's descriptor at once, and a drain
-    /// quiets it**: the wait the main loop makes returns on a ring from
-    /// another thread, and not again until the next.
-    #[test]
-    fn a_ring_from_another_thread_ends_a_wait_on_the_descriptor() {
-        let b = bell();
-        b.drain();
-        let _ = b.take();
-        assert!(!readable(b, 0));
-        std::thread::spawn(|| bell().ring()).join().expect("ringer");
-        assert!(readable(b, 1000));
-        assert!(b.rung());
-        b.drain();
-        assert!(!readable(b, 0));
-        assert!(b.take());
-        assert!(!b.take());
-    }
 }

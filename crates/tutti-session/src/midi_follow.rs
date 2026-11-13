@@ -1,5 +1,4 @@
-//! Following an outside tempo (feature `midi`; design 020, "Following an outside
-//! tempo"; design 017, L7c): the session's transport takes the tempo and the
+//! Following an outside tempo (feature `midi`): the session's transport takes the tempo and the
 //! meter a MIDI 2.0 source sends as Flex Data Set Tempo and Set Time Signature
 //! (M2-104 §7.5.3, §7.5.4).
 //!

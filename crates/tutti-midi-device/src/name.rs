@@ -183,8 +183,27 @@ impl<const N: usize> FromStr for Name<N> {
 
 /// A Product Instance Id: ASCII `32..=126`, at most 42 bytes, a Start, one
 /// Continue and an End packet of 14 bytes (M2-104 §7.1.5).
+///
+/// With the `serde` feature it is its text, read back through
+/// [`parse`](Self::parse).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct ProductInstanceId(Name<42>);
+
+impl From<ProductInstanceId> for String {
+    fn from(id: ProductInstanceId) -> Self {
+        id.as_str().to_owned()
+    }
+}
+
+impl TryFrom<String> for ProductInstanceId {
+    type Error = NameError;
+
+    fn try_from(text: String) -> Result<Self, NameError> {
+        Self::parse(&text)
+    }
+}
 
 impl ProductInstanceId {
     /// The Id, or `None` when it is longer than 42 bytes or holds a byte

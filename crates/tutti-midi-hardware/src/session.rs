@@ -42,7 +42,7 @@ use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
 use crate::stream::{DeviceStream, Negotiation};
-use tutti_midi_device::{DeviceId, DeviceInfo};
+use tutti_midi_device::{DeviceId, DeviceInfo, Learned, SavedDevice};
 use tutti_midi_runtime::{DeviceInlets, MidiOut, Outgoing};
 use tutti_ump::{DeviceIdentity, StreamConfig};
 
@@ -602,6 +602,55 @@ impl MidiSession {
     #[must_use]
     pub fn stream(&self, id: &DeviceId) -> Option<DeviceStream> {
         self.inner.open().inputs.get(id)?.stream.settled()
+    }
+
+    /// Returns what the open input `id` has said about itself so far: its Device
+    /// Identity and its Product Instance Id, empty when it is not open or has
+    /// said nothing yet (the answers arrive over the first seconds, and
+    /// MIDI-CI's Endpoint Inquiry later: read again after the
+    /// [`Polled`] that carries them).
+    ///
+    /// The UMP Endpoint, or a MIDI 1.0 port's Identity Reply, speaks for the
+    /// whole device and goes first; a MIDI-CI peer (by Group then MUID) fills
+    /// what it left. The OS's description carries neither, so a device that never
+    /// answered says nothing. Compare it with a saved device's
+    /// through [`Learned::compare`](tutti_midi_device::Learned::compare).
+    #[must_use]
+    pub fn learned(&self, id: &DeviceId) -> Learned {
+        let open = self.inner.open();
+        let Some(held) = open.inputs.get(id) else {
+            return Learned::new();
+        };
+        let mut learned = held
+            .stream
+            .settled()
+            .map_or_else(Learned::new, |stream| stream.said());
+        for peer in held.stream.ci_peers().iter() {
+            let peer = peer.peer();
+            let mut said = Learned::new().with_identity(peer.discovery().identity);
+            if let Some(instance) = peer.product_instance_id() {
+                said = said.with_instance_id(*instance);
+            }
+            learned = learned.or(said);
+        }
+        learned
+    }
+
+    /// Returns the open input `id` as an app saves it: the listing's row and what
+    /// [`learned`](Self::learned) says now, `None` when it is not open or no
+    /// longer listed. Save it once the device has spoken; restore it with
+    /// [`Devices::resolve`](crate::Devices::resolve) on
+    /// [`SavedDevice::info`] and check it with [`SavedDevice::confirm`].
+    #[must_use]
+    pub fn saved(&self, id: &DeviceId) -> Option<SavedDevice> {
+        let info = self
+            .inner
+            .devices
+            .list()
+            .into_iter()
+            .find(|d| d.id == *id)?;
+        self.is_input_connected(id)
+            .then(|| SavedDevice::new(info, self.learned(id)))
     }
 
     /// Sends events to the open output, in the wire form of its device (see

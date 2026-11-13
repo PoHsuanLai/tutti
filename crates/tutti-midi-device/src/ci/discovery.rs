@@ -26,11 +26,12 @@ pub const SUB_ID2_NAK: u8 = 0x7F;
 bitflags! {
     /// The CI capability categories a device advertises in Discovery
     /// (M2-101 §5.5.2, the CI Category Supported bitmap).
+    ///
+    /// Bit D1, Protocol Negotiation, is deprecated (Table 7) and has no flag:
+    /// a device built from this type cannot advertise it, and a peer's D1 is
+    /// dropped when its bitmap is read.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct CiCategories: u8 {
-        /// Protocol Negotiation (Table 7, D1: deprecated in CI 1.2). A 1.1 peer may
-        /// set it and the bit is kept as received; this crate never advertises it.
-        const PROTOCOL_NEGOTIATION = 1 << 1;
         /// Supports Profile Configuration.
         const PROFILE_CONFIGURATION = 1 << 2;
         /// Supports Property Exchange.

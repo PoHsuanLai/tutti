@@ -1006,7 +1006,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   35 cells and a band count that varies per instance) (a dynamics node is built from its named
   controls struct: `CompressorNode::new(input, key, CompressorControls { .. })`,
   `GateNode::new(input, key, GateControls { .. })`, `LimiterNode::new(input, lookahead,
-  LimiterControls { .. })`, each with `mono` and `stereo` shorthands; a gate's closed floor is
+  LimiterControls { .. })`, each with `mono` and `stereo` shorthands (a compressor's and a gate's listen to their own signal, `KeySource::Own`; a keyed one is `new(.., KeySource::Sidechain, ..)`); a gate's closed floor is
   the caller's: `GateControls::DEFAULT`'s range is 0 dB), the partitioned
   convolver, the delay line, the feedback delay as a family
   (`DelayFamily`, run by `DelayRecurrence`: a `Grows` family over a checked `MaxDelay` (above zero, at most

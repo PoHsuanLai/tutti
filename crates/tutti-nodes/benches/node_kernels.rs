@@ -352,7 +352,13 @@ fn compressor_controls() -> CompressorControls {
 }
 
 fn dynamics(c: &mut Criterion) {
-    run(c, "gate", "2", || GateNode::stereo(gate_controls()), None);
+    run(
+        c,
+        "gate",
+        "2",
+        || GateNode::new(BusTopology::STEREO, KeySource::Sidechain, gate_controls()),
+        None,
+    );
     run(
         c,
         "gate",
@@ -370,14 +376,20 @@ fn dynamics(c: &mut Criterion) {
         c,
         "gate",
         "2_fed",
-        || GateNode::stereo(gate_controls()),
+        || GateNode::new(BusTopology::STEREO, KeySource::Sidechain, gate_controls()),
         Some(threshold_sweep),
     );
     run(
         c,
         "compressor",
         "2",
-        || CompressorNode::stereo(compressor_controls()),
+        || {
+            CompressorNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                compressor_controls(),
+            )
+        },
         None,
     );
     run(
@@ -397,7 +409,13 @@ fn dynamics(c: &mut Criterion) {
         c,
         "compressor",
         "2_fed",
-        || CompressorNode::stereo(compressor_controls()),
+        || {
+            CompressorNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                compressor_controls(),
+            )
+        },
         Some(threshold_sweep),
     );
 }

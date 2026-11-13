@@ -20,7 +20,7 @@ use tutti_graph::contract::drive;
 use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
     ChannelTimes, CompressorControls, CompressorNode, DelayControls, DelayFamily, DelayNode,
-    GateControls, GateNode, InterpolationMode, LadderFilterNode, LadderType, MaxDelay,
+    GateControls, GateNode, InterpolationMode, KeySource, LadderFilterNode, LadderType, MaxDelay,
     ModDelayNode, PhaserControls, PhaserNode, Stages, SvfFilterNode, SvfType,
 };
 use tutti_types::{
@@ -226,14 +226,18 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     survives_node(
         "compressor",
         || {
-            CompressorNode::stereo(CompressorControls {
-                threshold: Db::new(-20.0),
-                knee: Db::new(6.0),
-                ratio: CompressionRatio::new(4.0),
-                attack: Seconds::new(0.001),
-                release: Seconds::new(0.05),
-                ..CompressorControls::DEFAULT
-            })
+            CompressorNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                CompressorControls {
+                    threshold: Db::new(-20.0),
+                    knee: Db::new(6.0),
+                    ratio: CompressionRatio::new(4.0),
+                    attack: Seconds::new(0.001),
+                    release: Seconds::new(0.05),
+                    ..CompressorControls::DEFAULT
+                },
+            )
         },
         |n| {
             vec![
@@ -265,13 +269,17 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     survives_node(
         "gate",
         || {
-            GateNode::stereo(GateControls {
-                threshold: Db::new(-30.0),
-                attack: Seconds::new(0.001),
-                hold: Seconds::new(0.01),
-                release: Seconds::new(0.05),
-                range: Db::new(-80.0),
-            })
+            GateNode::new(
+                BusTopology::STEREO,
+                KeySource::Sidechain,
+                GateControls {
+                    threshold: Db::new(-30.0),
+                    attack: Seconds::new(0.001),
+                    hold: Seconds::new(0.01),
+                    release: Seconds::new(0.05),
+                    range: Db::new(-80.0),
+                },
+            )
         },
         |n| {
             vec![

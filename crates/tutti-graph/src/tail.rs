@@ -49,11 +49,14 @@ use tutti_types::{Samples, Tail};
 
 /// The upper bound on any single node's reported tail: 60 s at 48 kHz.
 ///
-/// Reported tails are clamped to this rather than trusted, for the reason
-/// [`MAX_NODE_LATENCY`](crate::latency::MAX_NODE_LATENCY) is: a plugin that
-/// returns garbage would otherwise size the render off it. A bad tail is worse
-/// than a bad latency — a latency sizes a buffer, bounded by RAM, while a tail
-/// sizes a file, bounded by the disk.
+/// A finite tail past this is not trusted as a figure: [`graph_tail`] counts
+/// it as [`Tail::Unbounded`], for the reason
+/// [`MAX_NODE_LATENCY`](crate::latency::MAX_NODE_LATENCY) bounds a latency: a
+/// node that declares garbage would otherwise size the render off it. A bad
+/// tail is worse than a bad latency — a latency sizes a buffer, bounded by RAM,
+/// while a tail sizes a file, bounded by the disk. It is counted unbounded, not
+/// clamped: a clamp would cut a longer ring-out that someone meant and say
+/// nothing, while unbounded makes the bounce's caller choose where to stop.
 ///
 /// Six times the latency bound because the quantities differ in scale, not only
 /// in kind. A latency past ~10 s is a bug by construction; a 30 s shimmer tail
@@ -65,14 +68,14 @@ use tutti_types::{Samples, Tail};
 /// bounds 30 s rather than 60 — still past everything measured.
 ///
 /// Applied per node, so a long chain can legitimately sum past it. That is the
-/// same property the latency bound has: the clamp rejects one bad answer, it
+/// same property the latency bound has: the bound rejects one bad answer, it
 /// does not cap the graph.
 ///
 /// **What it protects**: the length of a bounce. `graph_tail`'s `known` figure
 /// sizes an export's tail, and a garbage finite figure would size a file by
 /// it (bounded by the disk, not by an arithmetic overflow: sums saturate), so
-/// `graph_tail` and [`Editor::set_tail`](crate::Editor::set_tail) hold a node's
-/// finite tail to it. It is not a way to declare a longer ring-out: a host that
+/// `graph_tail` counts a node's finite tail past it as unbounded and
+/// [`Editor::set_tail`](crate::Editor::set_tail) refuses one set by hand. It is not a way to declare a longer ring-out: a host that
 /// has one declares `Tail::Unbounded` (the plugin hosts do, for any finite
 /// figure past this), which claims nothing false.
 pub const MAX_NODE_TAIL: Samples = Samples(48_000 * 60);
@@ -237,23 +240,30 @@ pub fn graph_tail<G: TailGraph>(g: &G) -> GraphTail {
             .filter(|n| live.contains(n))
             .any(|n| !matches!(tails.get(n), Some(Tail::None) | None));
 
+    // A finite figure past `MAX_NODE_TAIL` is not trusted as a figure: it
+    // counts as never decaying, so nothing cuts a ring-out to the bound.
     let unbounded = cycle_rings
-        || live
-            .iter()
-            .any(|n| matches!(tails.get(n), Some(Tail::Unbounded)));
+        || live.iter().any(|n| match tails.get(n) {
+            Some(Tail::Unbounded) => true,
+            Some(Tail::Finite(frames)) => *frames > MAX_NODE_TAIL,
+            _ => false,
+        });
 
     let unknown_nodes = live
         .iter()
         .filter(|n| matches!(tails.get(n), Some(Tail::Unknown)))
         .count();
 
-    // Nodes with no finite figure contribute nothing to the sum; `unbounded`
-    // and `unknown_nodes` carry them instead, so the total stays the answer for
-    // the part of the graph that spoke.
+    // Nodes with no finite figure, or one past the bound, contribute nothing
+    // to the sum; `unbounded` and `unknown_nodes` carry them instead, so the
+    // total stays the answer for the part of the graph that spoke.
     let own: HashMap<G::Node, Samples> = tails
         .iter()
         .map(|(&node, &tail)| {
-            let s = tail.samples().unwrap_or(Samples::ZERO).min(MAX_NODE_TAIL);
+            let s = tail
+                .samples()
+                .filter(|&s| s <= MAX_NODE_TAIL)
+                .unwrap_or(Samples::ZERO);
             (node, s)
         })
         .collect();
@@ -287,8 +297,8 @@ pub fn graph_tail<G: TailGraph>(g: &G) -> GraphTail {
 ///
 /// The ring-out definition is what lets this be a plain add — see [`Tail`].
 /// `Samples`' saturating `Add`, for the reason its latency counterpart uses it:
-/// `MAX_NODE_TAIL` clamps each node, so the clamp is what makes the sum safe,
-/// not the arithmetic.
+/// no node's own figure exceeds `MAX_NODE_TAIL` (one past it counts as
+/// unbounded), so the bound is what makes the sum safe, not the arithmetic.
 fn departure<N: Copy + Eq + Hash>(
     node: N,
     arrival: &HashMap<N, Samples>,
@@ -523,15 +533,25 @@ mod tests {
         assert!(!graph_tail(&g).is_unbounded());
     }
 
-    /// A garbage figure sizes the render, so a node's reported tail is clamped
-    /// rather than trusted.
+    /// A finite tail past the bound is not trusted as a figure and not cut to
+    /// it: it counts as unbounded, so no bounce ends a ring-out at the bound.
+    /// One exactly at the bound is still a figure.
     #[test]
-    fn a_reported_tail_is_clamped() {
-        let g = Toy {
-            nodes: vec![(Tail::Finite(Samples(usize::MAX)), vec![])],
+    fn a_tail_past_the_bound_counts_as_unbounded() {
+        let past = Toy {
+            nodes: vec![(Tail::Finite(Samples(MAX_NODE_TAIL.get() + 1)), vec![])],
             outputs: vec![Some(0)],
         };
-        assert_eq!(graph_tail(&g).samples(), Some(MAX_NODE_TAIL));
+        let t = graph_tail(&past);
+        assert!(t.is_unbounded());
+        assert_eq!(t.samples(), None);
+        assert_eq!(t.known(), Samples::ZERO);
+
+        let at = Toy {
+            nodes: vec![(Tail::Finite(MAX_NODE_TAIL), vec![])],
+            outputs: vec![Some(0)],
+        };
+        assert_eq!(graph_tail(&at).samples(), Some(MAX_NODE_TAIL));
     }
 
     /// A node that was never asked has said nothing, which is not the same as

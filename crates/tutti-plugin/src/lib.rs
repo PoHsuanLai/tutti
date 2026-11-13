@@ -7,11 +7,13 @@
 pub mod error {
     pub use tutti_plugin_ipc::PluginRenderFault;
     pub use tutti_plugin_types::{
-        Delivered, EditorError, LoadStage, PluginError, PluginFailure, StateError,
+        Delivered, EditorError, LoadStage, PluginError, PluginFailure, PresetError, StateError,
         TerminationReason,
     };
 }
-pub use error::{EditorError, LoadStage, PluginFailure, PluginRenderFault, TerminationReason};
+pub use error::{
+    EditorError, LoadStage, PluginFailure, PluginRenderFault, PresetError, TerminationReason,
+};
 
 mod format;
 mod host;
@@ -24,13 +26,13 @@ pub use tutti_plugin_types::{MainThread, NotMainThread};
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
 pub use tutti_plugin_types::AutomationMode;
-// Likewise for `PluginHandle::set_render_mode` / `Plugin::set_render_mode`.
+// Likewise for `Plugin::set_render_mode` (a plugin loaded by itself, before a session hosts it).
 pub use tutti_plugin_types::RenderMode;
 // `PluginHandle::loaded()` hands back a `LoadedPlugin` whose `features` field is
 // this type, so a consumer that reads a capability bit — e.g. deciding whether
 // to open an editor floating — must be able to name it.
 pub use tutti_plugin_types::Features;
-// `PluginHandle::presets` hands back these, and `load_preset` takes one, so a
+// A session's `Presets` view hands back these, and `load_preset` takes one, so a
 // caller must be able to name them without depending on tutti-plugin-types.
 pub use tutti_plugin_types::{FeatureReport, Preset, PresetId, PresetSupport};
 // `AnyThread::parameter_descriptors` lists `ParamId`s, and

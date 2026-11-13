@@ -96,7 +96,7 @@ pub use points::{PointBuf, PointPool};
 pub use requests::{Edit, EditDrain, EditQueue, EditSink, edits, taken};
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
-pub use error::{Delivered, PluginError, Result as PluginResult, StateError};
+pub use error::{Delivered, PluginError, PresetError, Result as PluginResult, StateError};
 pub use features::{FeatureReport, Features};
 pub use harmony::{
     ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,

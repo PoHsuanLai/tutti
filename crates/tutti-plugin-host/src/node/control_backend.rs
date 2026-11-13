@@ -454,8 +454,8 @@ mod off_main_tests {
     fn the_render_mode_is_accepted_on_the_main_thread() {
         let _main = main_thread();
         let (_client, handle) = loaded();
-        assert!(handle.set_render_mode(RenderMode::Offline));
-        assert!(handle.set_render_mode(RenderMode::Realtime));
+        assert!(handle.any_thread().set_render_mode(RenderMode::Offline));
+        assert!(handle.any_thread().set_render_mode(RenderMode::Realtime));
     }
 
     /// **No in-process format carries the automation advisory**, and says so
@@ -513,7 +513,7 @@ mod off_main_tests {
                 handle
                     .any_thread()
                     .parameter_value_from_text(ParamId::new(1), "0.5"),
-                handle.set_render_mode(RenderMode::Offline),
+                handle.any_thread().set_render_mode(RenderMode::Offline),
                 handle.set_automation_mode(AutomationMode::Off),
             )
         })

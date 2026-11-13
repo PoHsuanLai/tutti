@@ -73,10 +73,14 @@ fn an_in_process_vst2_plugin_is_given_the_project_meter() {
 
     let hosted = s.plugin(node).expect("hosted");
     assert!(
-        hosted.controls().is_none(),
-        "an in-process VST2 has no out-of-process controls"
+        hosted.diagnostics().follows_project_meter(),
+        "the session gave the in-process node its meter cell"
     );
-    assert!(hosted.meter().is_some(), "its meter cell was captured");
+    assert_eq!(
+        hosted.diagnostics().server_pid(),
+        None,
+        "an in-process plugin has no server"
+    );
 
     // One frame at beat 3.5: bar 2 of 7/8 starts there.
     let mut out = [0.0f32; 2];

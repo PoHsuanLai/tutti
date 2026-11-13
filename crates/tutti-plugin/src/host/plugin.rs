@@ -482,6 +482,14 @@ impl Plugin {
         placed!(&self.placed, served c => c.controls().meter(), in_process c => c.controls().meter())
     }
 
+    /// What the node counts and holds, for either hosting: its meter cell and
+    /// the delivery counters (events it dropped, parameter points it sent,
+    /// merged or refused). The same cells the node writes, so a host keeps
+    /// this to read them after the plugin has moved into a graph.
+    pub fn node_controls(&self) -> tutti_plugin_host::NodeControls {
+        placed!(&self.placed, served c => (*c.controls()).clone(), in_process c => c.controls())
+    }
+
     /// Returns whether the plugin takes chord and scale context (it declared
     /// sequencer context).
     ///

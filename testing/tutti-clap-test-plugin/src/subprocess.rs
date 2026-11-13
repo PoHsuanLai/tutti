@@ -157,6 +157,15 @@ pub(crate) fn configure() {
             .open(path)
             .is_err()
     });
+    // `TUTTI_CLAP_PROBE_PORT_LAYOUT` selects the port layout of every server
+    // (`PortLayoutMode` as a number); a replacement's own comes after it.
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_PRESET_LOAD") {
+        crate::params_state::PRESET_LOAD_ENABLED.store(n != 0, Ordering::SeqCst);
+    }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_PORT_LAYOUT") {
+        // SAFETY: a plain atomic store; `unsafe` is on the signature only.
+        unsafe { crate::tutti_test_plugin_set_port_layout(n) };
+    }
     if replacement && let Some(n) = u32_var("TUTTI_CLAP_PROBE_RESTART_LATENCY") {
         RESTART_LATENCY.store(n, Ordering::SeqCst);
     }

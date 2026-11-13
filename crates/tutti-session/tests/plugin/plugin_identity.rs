@@ -62,7 +62,7 @@ fn the_second_plugin_of_a_bundle_loads_by_its_entry() {
         .add_plugin_blocking(&main, PluginLoadRequest::new(entry_ref(&path, second_id())))
         .expect("the second plugin loads");
     let hosted = s.plugin(second).unwrap();
-    assert_eq!(hosted.handle().descriptor().id, second_id());
+    assert_eq!(hosted.descriptor().id, second_id());
     assert_eq!(hosted.plugin().id(), Some(second_id()));
 
     let first = s
@@ -72,7 +72,7 @@ fn the_second_plugin_of_a_bundle_loads_by_its_entry() {
         )
         .expect("the file's first plugin loads");
     let hosted = s.plugin(first).unwrap();
-    assert_eq!(hosted.handle().descriptor().id, first_id());
+    assert_eq!(hosted.descriptor().id, first_id());
     assert_eq!(
         hosted.plugin().id(),
         Some(first_id()),

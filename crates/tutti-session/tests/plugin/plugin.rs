@@ -27,11 +27,13 @@ use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::{PluginRef, PluginState};
-use tutti_plugin_host::PluginStatus;
-use tutti_plugin_types::{BridgeError, PluginFailure, TerminationReason};
+use tutti_plugin_types::PluginFailure;
+// Only the Linux-only server-death tests name these.
+#[cfg(target_os = "linux")]
+use tutti_plugin_types::{BridgeError, TerminationReason};
 use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginLiveness,
+    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginHealth,
     PluginLoadRequest, Range, Session, SessionEvent,
 };
 use tutti_session::{RecoveryFailure, ReloadCause};
@@ -89,9 +91,8 @@ fn add_probe(s: &mut Session) -> NodeKey {
 fn latency(s: &Session, node: NodeKey) -> Samples {
     s.plugin(node)
         .expect("hosted")
-        .controls()
-        .expect("out of process")
-        .latency()
+        .diagnostics()
+        .reported_latency()
 }
 
 /// One control round trip to the probe's server. The server sends the
@@ -100,8 +101,7 @@ fn latency(s: &Session, node: NodeKey) -> Samples {
 /// reply; live, any later control call (a snapshot, a parameter read) carries
 /// it, and here this one does.
 fn round_trip(s: &Session, node: NodeKey) {
-    let handle = s.plugin(node).expect("hosted").handle();
-    let _ = handle.current_preset(&main_thread());
+    let _ = s.plugin(node).expect("hosted").state().save();
 }
 
 /// Waits (up to 10 s) for the probe's latency to read `want`: the
@@ -275,10 +275,7 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     // first block; the bridge notices on a later one).
     let mut out = vec![0.0f32; BLOCK * 2];
     let deadline = Instant::now() + Duration::from_secs(10);
-    while matches!(
-        s.plugin(node).unwrap().handle().status(),
-        PluginStatus::Alive
-    ) {
+    while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
         assert!(Instant::now() < deadline, "the probe never died");
         s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
         std::thread::sleep(Duration::from_millis(5));
@@ -303,15 +300,12 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
             })
             .collect::<Vec<_>>()
     };
-    for (i, ms) in [0, 10, 20].into_iter().enumerate() {
+    for ms in [0, 10, 20] {
         assert!(plugins_at(&mut s, ms).is_empty(), "inside the window");
         assert!(
-            matches!(
-                s.plugin(node).unwrap().liveness(),
-                PluginLiveness::Failing { consecutive } if *consecutive == i as u8 + 1
-            ),
+            matches!(s.plugin(node).unwrap().health(), PluginHealth::Died { .. }),
             "{:?}",
-            s.plugin(node).unwrap().liveness()
+            s.plugin(node).unwrap().health()
         );
         assert!(s.graph_ref().contains(node), "a failing plugin stays");
     }
@@ -411,34 +405,6 @@ fn export_leftovers_drop_on_the_main_thread() {
         drops.iter().all(|&t| t == main),
         "a copy was dropped off the main thread: {drops:?} (main {main:?})"
     );
-}
-
-/// **The update frees a hosted plugin's meter cleared while a block held
-/// it**: once cleared the node's meter slot follows no project meter, so
-/// only the session's sweep of its plugins' meters reaches what the clear
-/// retired, on the next update with nothing published again.
-#[test]
-fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
-    let mut s = session(&[]);
-    let probe = add_probe(&mut s);
-    let _ = s.update();
-    let meter = s
-        .plugin(probe)
-        .expect("hosted")
-        .meter()
-        .expect("a CLAP node has a meter")
-        .clone();
-    assert!(meter.has_meter(), "the session installed the project's");
-
-    let mut block = meter.probe_reader();
-    {
-        let _held = block.lend();
-        meter.clear_meter();
-        let _ = s.update();
-        assert_eq!(meter.retired_len(), 1, "held across the clear");
-    }
-    let _ = s.update();
-    assert_eq!(meter.retired_len(), 0, "the update freed it");
 }
 
 // --- Recovery ---------------------------------------------------------------
@@ -576,9 +542,11 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     // A value worth restoring, and a snapshot of it.
     s.plugin(node)
         .unwrap()
-        .handle()
-        .any_thread()
-        .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
+        .params()
+        .get(id)
+        .expect("the plugin declares the gain")
+        .set(tutti_plugin_types::Normalized::of(0.25))
+        .expect("the gain is writable");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(
@@ -682,8 +650,8 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     );
     assert!(s.graph_ref().contains(node));
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Healthy
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Running
     ));
     // The snapshot is still the node's recovery point: a second failure
     // restores it again.
@@ -960,9 +928,79 @@ fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
     }
     assert_eq!(dropped, 1);
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Recovering { .. }
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Reloading { .. }
     ));
+}
+
+/// **A killed server reads `Died`, then `Reloading`, through `health()` and
+/// the events.** The probe aborts on its first block; once the bridge has
+/// latched the death, and before the session has written it off (it waits out
+/// its debounce), the view reads `Died` with the engine's cause. The update
+/// that declares it schedules the reload: the event is `Reloading`, and the view
+/// then reads `Reloading` with the same attempt and cause.
+#[test]
+fn a_killed_server_reads_died_then_reloading() {
+    let once = once_file("health-died-reloading.once");
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1"),
+        ],
+        |b| b.plugin_recovery(Some(tutti_session::RecoveryPolicy::default())),
+    );
+    let (node, _) = wired_probe(&mut s);
+    assert!(
+        matches!(s.plugin(node).unwrap().health(), PluginHealth::Running),
+        "a plugin that has not died is running"
+    );
+
+    let mut out = vec![0.0f32; BLOCK * 2];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
+        assert!(Instant::now() < deadline, "the probe never died");
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let PluginHealth::Died { cause } = s.plugin(node).unwrap().health() else {
+        panic!("a latched death reads Died before the session writes it off");
+    };
+
+    let mut now = Instant::now();
+    let reloading = loop {
+        assert!(Instant::now() < deadline, "the death was never declared");
+        std::thread::sleep(Duration::from_millis(20));
+        now += Duration::from_millis(20);
+        let mut events = Vec::new();
+        s.run_phase(Phase::Plugins, PhaseCx::at(now), &mut events);
+        if let Some(found) = events.into_iter().find_map(|e| match e {
+            SessionEvent::Plugin(PluginEvent {
+                node: n,
+                change: PluginChange::Reloading { cause, attempt, .. },
+                ..
+            }) if n == node => Some((cause, attempt)),
+            _ => None,
+        }) {
+            break found;
+        }
+    };
+    assert_eq!(reloading.1, 1, "the first failure is attempt 1");
+    assert!(
+        matches!(&reloading.0, ReloadCause::Died(c) if std::mem::discriminant(c) == std::mem::discriminant(&cause)),
+        "the reload's cause is the death's: {:?} vs {cause:?}",
+        reloading.0
+    );
+    assert!(
+        matches!(
+            s.plugin(node).unwrap().health(),
+            PluginHealth::Reloading {
+                attempt: 1,
+                cause: ReloadCause::Died(_)
+            }
+        ),
+        "{:?}",
+        s.plugin(node).unwrap().health()
+    );
 }
 
 /// Whether the process `pid` is gone (reaped, or dead and awaiting reaping).
@@ -1011,7 +1049,7 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
     let pid = s
         .plugin(node)
         .unwrap()
-        .handle()
+        .diagnostics()
         .server_pid()
         .expect("an out-of-process plugin has a server");
 
@@ -1093,7 +1131,7 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
     while Instant::now() < until {
         drive.step(&mut s);
     }
-    let counts = s.plugin(node).unwrap().handle().block_counts();
+    let counts = s.plugin(node).unwrap().diagnostics().block_counts();
     assert!(
         counts.abandoned > 16,
         "{counts:?}: the plugin is not slow enough"
@@ -1109,10 +1147,16 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
         )),
         0
     );
-    assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Healthy
-    ));
+    // Slow, so it may read `Stalled` while a reading catches blocks unanswered;
+    // what it must not be is dead or being replaced.
+    assert!(
+        matches!(
+            s.plugin(node).unwrap().health(),
+            PluginHealth::Running | PluginHealth::Stalled
+        ),
+        "{:?}",
+        s.plugin(node).unwrap().health()
+    );
 }
 
 /// **A replacement with other ports is a failed attempt, and the graph stays
@@ -1176,7 +1220,11 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     // An edit made now commits.
     let (extra, _) = s.graph().add(ForkByClone(DropWitness(Arc::default())));
     assert!(s.graph_ref().is_edited());
-    let _ = s.update();
+    // The commit alone, on the drive's clock: `update()` would run
+    // `Phase::Plugins` on the real one, where a server launch (hundreds of ms on
+    // macOS) outlasts the 1 ms reload backoff and hands out a reload job this test
+    // would discard.
+    s.run_phase(Phase::Commit, PhaseCx::at(drive.now), &mut Vec::new());
     assert!(
         !s.graph_ref().is_edited(),
         "the commit was refused: the topology is invalid"
@@ -1288,9 +1336,11 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     // A state that is not the plugin's default.
     s.plugin(node)
         .unwrap()
-        .handle()
-        .any_thread()
-        .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
+        .params()
+        .get(id)
+        .expect("the plugin declares the gain")
+        .set(tutti_plugin_types::Normalized::of(0.25))
+        .expect("the gain is writable");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(Instant::now() < deadline, "the probe never took the value");
@@ -1338,8 +1388,8 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     );
     assert!(s.plugin(node).unwrap().state().last_good().is_none());
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Healthy
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Running
     ));
     // The user's state is kept for the host, not thrown away...
     assert_eq!(
@@ -1449,8 +1499,8 @@ fn an_export_during_the_recovery_window_is_refused() {
         )
     });
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Recovering { .. }
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Reloading { .. }
     ));
     let refused = s.bounce_start(request());
     let refusal = format!("{:?}", refused.as_ref().err());

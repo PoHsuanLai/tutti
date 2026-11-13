@@ -114,6 +114,27 @@ impl Delivered {
     }
 }
 
+/// Why a preset call did not do what it was asked (design 029 section 2.4).
+///
+/// Three answers a bare `Option<bool>` kept in one value: the plugin has no
+/// route to presets, it was asked and refused, or it is gone.
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PresetError {
+    /// This plugin cannot do that with presets: it has no preset route, or the
+    /// format has no such operation (CLAP enumerates nothing; VST2, VST3 and AU
+    /// load no file).
+    #[error("this plugin does not support that preset operation")]
+    Unsupported,
+    /// The plugin was asked and declined (an id it does not know, a file it
+    /// cannot read). Leave the selection where it was.
+    #[error("the plugin refused the preset")]
+    Refused,
+    /// The plugin is gone, so nothing was asked.
+    #[error("the plugin is lost")]
+    Lost,
+}
+
 /// Why restoring a plugin's saved state failed.
 ///
 /// Separate from [`PluginError::State`] rather than reusing it, because the two

@@ -525,7 +525,7 @@ mod tests {
 
     // ── Per-block reads ──────────────────────────────────────────────────────
 
-    /// Unprepared: `change_between_node_blocks` prepares each copy at 48 kHz.
+    /// Unprepared: `render_change` prepares each copy at 48 kHz.
     fn ladder_48k() -> LadderFilterNode<f64> {
         LadderFilterNode::<f64>::with_channels(
             ChannelLayout::STEREO,
@@ -535,52 +535,51 @@ mod tests {
         )
     }
 
-    /// A cutoff change made between blocks is read by the next block, ramped
-    /// across it, and the block ends solved at the new cutoff.
+    /// A cutoff written between blocks glides on the stream clock: the render is the
+    /// same at every block length, under way one 64-frame block in, and arrived
+    /// [`GAIN_GLIDE`](tutti_dsp::GAIN_GLIDE) (240 frames at 48 kHz) after the block it
+    /// was first seen in.
     #[test]
-    fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
-        use crate::test_support::{change_between_node_blocks, noise};
-        let x = noise(5, 128);
-        let run = change_between_node_blocks(
-            ladder_48k,
-            |n| {
-                assert!(n.param_set().set(UnitParam::Cutoff, 7_000.0));
-            },
-            &[&x[..64], &x[..64]],
-            &[&x[64..], &x[64..]],
-        );
-        run.assert_ramps_in("ladder cutoff");
-        assert!(
-            run.ramped.applied() == run.jumped.applied(),
-            "the block must end solved at the new cutoff"
-        );
+    fn a_cutoff_written_between_blocks_glides_on_the_stream() {
+        use crate::test_support::{assert_cell_glides, noise, render_change};
+        let x = noise(5, 64 + 512);
+        let change = |n: &LadderFilterNode<f64>| {
+            assert!(n.param_set().set(UnitParam::Cutoff, 7_000.0));
+        };
+        let (before, after) = ([&x[..64], &x[..64]], [&x[64..], &x[64..]]);
+        let node = assert_cell_glides(ladder_48k, change, &before, &after, "ladder cutoff");
+        assert_eq!(node.applied().map(|c| c.freq), Some(Hz(7_000.0)), "arrived");
+        let one = [&x[64..128], &x[64..128]];
+        let (mid, _) = render_change(ladder_48k, change, &before, &one, 64);
+        let f = mid.applied().unwrap().freq.get();
+        assert!(500.0 < f && f < 7_000.0, "under way after 64 frames: {f}");
     }
 
-    /// Drive multiplies straight into the saturator, so a step would click; it
-    /// ramps across the next block and ends on the new value.
+    /// Drive multiplies straight into the saturator, so a step would click: a drive
+    /// written between blocks glides on the stream clock like a cutoff, and arrives.
     #[test]
-    fn a_drive_change_is_read_next_block_and_ramped_across_it() {
-        use crate::test_support::{change_between_node_blocks, noise};
-        let x = noise(6, 128);
-        // A high-pass tap, so the saturator's input reaches the output
-        // unfiltered and the drive step is audible on the first sample.
-        let run = change_between_node_blocks(
-            || {
-                LadderFilterNode::<f64>::with_channels(
-                    ChannelLayout::STEREO,
-                    LadderType::HP24,
-                    Hz::new(500.0),
-                    Resonance::new(0.4),
-                )
-            },
-            |n| {
-                assert!(n.param_set().set(UnitParam::Drive, 9.0));
-            },
-            &[&x[..64], &x[..64]],
-            &[&x[64..], &x[64..]],
-        );
-        run.assert_ramps_in("ladder drive");
-        assert_eq!(run.ramped.applied().map(|c| c.drive), Some(Drive(9.0)));
+    fn a_drive_written_between_blocks_glides_on_the_stream() {
+        use crate::test_support::{assert_cell_glides, noise, render_change};
+        let x = noise(6, 64 + 512);
+        // A high-pass tap, so the saturator's input reaches the output unfiltered.
+        let make = || {
+            LadderFilterNode::<f64>::with_channels(
+                ChannelLayout::STEREO,
+                LadderType::HP24,
+                Hz::new(500.0),
+                Resonance::new(0.4),
+            )
+        };
+        let change = |n: &LadderFilterNode<f64>| {
+            assert!(n.param_set().set(UnitParam::Drive, 9.0));
+        };
+        let (before, after) = ([&x[..64], &x[..64]], [&x[64..], &x[64..]]);
+        let node = assert_cell_glides(make, change, &before, &after, "ladder drive");
+        assert_eq!(node.applied().map(|c| c.drive), Some(Drive(9.0)), "arrived");
+        let one = [&x[64..128], &x[64..128]];
+        let (mid, _) = render_change(make, change, &before, &one, 64);
+        let d = mid.applied().unwrap().drive.get();
+        assert!(1.0 < d && d < 9.0, "under way after 64 frames: {d}");
     }
 
     /// Six channels share one coefficient solve and keep six independent

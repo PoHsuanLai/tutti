@@ -786,3 +786,29 @@ fn a_processor_dropped_last_leaves_the_teardown_to_the_control_side() {
     );
     assert_eq!(Vst3Loaded::reap_retired(), 0);
 }
+
+/// **A full retirement queue leaks the plugin and counts it, never destroying
+/// it on the dropping thread**: 65 Processors outlive their Controllers and
+/// drop on another thread with nothing reaped meanwhile; the queue holds 64,
+/// the 65th is leaked and counted, and the 64 are still there to reap.
+#[test]
+fn a_retirement_past_the_queue_is_leaked_and_counted() {
+    const PAIRS: usize = 65;
+    let probe = Probe::behaving();
+    let mut processors = Vec::with_capacity(PAIRS);
+    for _ in 0..PAIRS {
+        let (mut processor, controller) = probe
+            .load()
+            .activate(&main_thread(), prepare())
+            .expect("activates");
+        render_f32(&mut processor);
+        drop(controller);
+        processors.push(processor);
+    }
+    let leaked = Vst3Loaded::leaked_retirements();
+    std::thread::spawn(move || drop(processors))
+        .join()
+        .expect("the drops do not panic");
+    assert_eq!(Vst3Loaded::leaked_retirements(), leaked + 1, "one leaked");
+    assert_eq!(Vst3Loaded::reap_retired(), PAIRS - 1, "the queue's 64");
+}

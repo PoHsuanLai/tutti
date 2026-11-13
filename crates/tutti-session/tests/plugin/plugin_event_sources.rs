@@ -45,7 +45,7 @@ fn session_with_open_editor(command: u32) -> Session {
     probe.thread_command(command);
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(512)),
         )

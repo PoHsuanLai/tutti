@@ -351,8 +351,11 @@ impl Lerp for LimiterTarget {
 /// (then gains) of the block being run.
 #[derive(Clone, Debug)]
 pub struct LimiterState {
-    /// The envelope gain (linear): instant attack, one-pole release; `+inf` when unset,
-    /// after a prepare or a reset, so the next frame takes its target at once.
+    /// The envelope gain (linear): instant attack, one-pole release. `+inf` is **unset**
+    /// (after a prepare or a reset): the first frame replaces it, through the attack
+    /// branch, before any arithmetic reads it (a target is finite, so it is under `+inf`),
+    /// and it never leaves the recurrence: the window minimum is pushed the replaced value,
+    /// and the recurrence has no reading (`Readout`) to report it through.
     envelope: f32,
     ring: LookaheadRing,
     /// The linked peak of each frame of the block, which becomes its window-minimum gain;

@@ -62,7 +62,7 @@ fn release_takes_one_plain_version() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 44);
+    assert_eq!(RECIPES.len(), 45);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -338,4 +338,17 @@ fn a_dependency_asked_for_twice_runs_once() {
     p.dep("plugin-probe").unwrap();
     p.dep("plugin-probe").unwrap();
     assert_eq!(p.out.len(), 1);
+}
+
+/// Each no_std crate is built bare and once per listed feature, for the bare-metal target.
+#[test]
+fn check_no_std_builds_each_listed_crate_for_the_bare_metal_target() {
+    let steps = dry("check-no-std", &[]);
+    assert_eq!(
+        steps,
+        [
+            "cargo build --locked -p tutti-ump --no-default-features --target thumbv7em-none-eabihf",
+            "cargo build --locked -p tutti-ump --no-default-features --target thumbv7em-none-eabihf --features serde",
+        ]
+    );
 }

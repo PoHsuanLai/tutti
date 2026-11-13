@@ -164,7 +164,8 @@ pub use tutti_midi_file as midi_file;
 /// that play an instrument or a live input (`MidiKeys`, sent with a `Stamp`) and a take read with (`TapEvent`, `EventTapReader`),
 /// the session's route rule, events and errors (`MidiRouteRule`, `MidiEvent`,
 /// `midi::Error`), and under `midi-hardware` a device (`DeviceId`,
-/// `DeviceInfo`) and what a saved one resolves to (`Resolution`). The
+/// `DeviceInfo`), what a saved one resolves to (`Resolution`) and what an
+/// open one said of itself (`Learned`, `SavedDevice`, `Match`). The
 /// lower layers (`Translator`, `Narrower`, `SysexAssembler`, `ClockMap`) are
 /// by path through [`ump`], [`midi_protocol`] and [`midi_runtime`]; the
 /// MIDI-CI codec is `tutti-midi-device`'s. Feature `midi`.
@@ -188,7 +189,9 @@ pub mod midi {
     };
 
     #[cfg(feature = "midi-hardware")]
-    pub use tutti_midi_hardware::{CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery};
+    pub use tutti_midi_hardware::{
+        CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, SavedDevice,
+    };
     #[cfg(all(feature = "session", feature = "midi-hardware"))]
     pub use tutti_session::Resolution;
 }

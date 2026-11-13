@@ -9,7 +9,7 @@ pub(crate) mod sink;
 use tutti_types::Amplitude;
 
 /// The probability density of the noise a [`DitherNoise`] adds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum DitherShape {
     /// One uniform draw, in `[-0.5, 0.5]` LSB.
     Rectangular,

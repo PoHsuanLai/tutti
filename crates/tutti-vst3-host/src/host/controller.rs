@@ -264,7 +264,11 @@ impl Wraps for Vst3Controller {
 
     /// Saves the state, with the writes no block has taken yet beside the
     /// component's stream, which does not hold them.
-    fn save_with_pending(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_with_pending(
+        &mut self,
+        main: &MainThread,
+        _state_use: tutti_plugin_types::StateUse,
+    ) -> PluginResult<Vec<u8>> {
         let undrained = self.undrained();
         self.loaded_mut().save_state_with(main, &undrained)
     }
@@ -579,7 +583,9 @@ impl Loaded for Vst3Loaded {
     /// old instance (`kReloadComponent`). The new instance is built first, so a
     /// refusal leaves the old one in place.
     fn rebuild(mut self, main: &MainThread) -> Result<Self, Refused<Self>> {
-        let state = self.save_state(main).ok();
+        let state = self
+            .save_state(main, tutti_plugin_types::StateUse::Project)
+            .ok();
         let options = match self.origin.load().chosen() {
             Some(class) => super::loaded::LoadOptions::new().class_id(class),
             None => super::loaded::LoadOptions::new(),
@@ -596,7 +602,7 @@ impl Loaded for Vst3Loaded {
         if let Some(state) = state {
             // A plugin that refuses its own state leaves the fresh instance at
             // its defaults.
-            let _ = fresh.load_state(main, &state);
+            let _ = fresh.load_state(main, &state, tutti_plugin_types::StateUse::Project);
         }
         fresh.carried = std::mem::take(&mut self.carried);
         Ok(fresh)

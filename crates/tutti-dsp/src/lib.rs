@@ -7,7 +7,7 @@
 //! By family, as the source is laid out (each family's design, model and kernel side
 //! by side):
 //!
-//! - **The model** (design 024, `model/`): the traits every family answers to. A
+//! - **The model** (`model/`): the traits every family answers to. A
 //!   [`Family`] maps a family's controls to its [`Member`](Family::Member) and states its
 //!   buses ([`Channels`]); a [`System`] is what every member answers (its
 //!   [`latency`](System::latency) and [`tail`](System::tail)), and [`Lti`] the class of

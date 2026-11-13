@@ -1,5 +1,5 @@
-//! [`Realized`]: the one runner of every effect (design 024 section 2.7, amendments
-//! C), over a [`Recurrence`] that holds what differs between effects.
+//! [`Realized`]: the one runner of every effect, over a [`Recurrence`] that holds what differs
+//! between effects.
 //!
 //! A processor is maps. The family is φ
 //! ([`Family::member_into`](crate::Family::member_into)); the recurrence's
@@ -175,7 +175,7 @@ impl<T: Lerp> Approach for Glide<T> {
 }
 
 /// K: an effect's recurrence, the per-frame math over its coefficients and state,
-/// whatever its channel shape (design 024 section 2.7).
+/// whatever its channel shape.
 ///
 /// A recurrence says four things. What coefficient point a member of the family asks
 /// for ([`coefficients_into`](Self::coefficients_into), κ); how the coefficients move
@@ -246,7 +246,7 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
     /// never a pre-delay or a tap spacing (musical delay is not latency). Zero for a
     /// recurrence that adds none, which is every time-domain one: a limiter's lookahead is
     /// the member's ([`System::latency`](crate::System::latency)), and the node declares
-    /// the sum of the two (design 024 section 2.7.2).
+    /// the sum of the two.
     fn latency(&self) -> Samples {
         Samples::ZERO
     }

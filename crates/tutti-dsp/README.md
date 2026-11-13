@@ -55,7 +55,7 @@ independent; every family but the block-sampled ones is on `Cadence::stream(16)`
 
 Each family is laid out as its design (controls to a model), its model (a `System`, and
 an `Lti` where it is linear and time-invariant) and its kernel (the per-frame math that
-`Realized` runs), the split of design 024.
+`Realized` runs).
 
 FFT is `RealFft`, the engine's one real-input FFT: rustfft's
 *scalar* planner under realfft's even-length real passes (an odd size runs a
@@ -76,7 +76,7 @@ plans lazily, per scratch, on the cold path.
 ## Features
 
 - `contract` (off by default): the `contract` module, the cases a `Family` and its
-  `Realized` runner are held to (design 024 section 6). Test support.
+  `Realized` runner are held to. Test support.
 
 The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler` and
 `tutti-export` use it.

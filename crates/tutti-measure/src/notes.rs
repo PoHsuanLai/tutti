@@ -1095,6 +1095,18 @@ mod tests {
         let (hop, half) = (c.hop().get(), c.frame().get() / 2);
         let centre = |f: usize| f * hop + half / 2;
         assert_eq!(fast[0].end.get(), (centre(29) + centre(30)) / 2);
+
+        // The split is the threshold: 80 cents over a span is under 200.
+        let loose = c.with_pitch_split(Cents(200.0)).unwrap();
+        let t: Vec<Option<f32>> = (0..60)
+            .map(|i| Some(440.0 * (8.0 * i as f32 / 1200.0).exp2()))
+            .collect();
+        assert_eq!(
+            notes_from_track(&loose, &track(&t), &loud(60), &[])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// The sliding median agrees with sorting every window, on sequences with

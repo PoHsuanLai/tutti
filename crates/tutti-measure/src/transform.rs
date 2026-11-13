@@ -187,28 +187,6 @@ impl Stft {
         Amplitude(self.bins.at(frame, bin).norm())
     }
 
-    /// The magnitude a mask would leave at this bin.
-    ///
-    /// Offered because the unmasked accessor alone forces callers to redo the
-    /// multiply; the spectral view currently pools masked magnitudes itself.
-    ///
-    /// # Errors
-    /// Returns [`Error::GridShapeDisagreement`] if `mask` does not
-    /// match this transform's `frames x bins` shape.
-    pub fn masked_magnitude_at(
-        &self,
-        mask: &Grid<Complex32>,
-        frame: FrameIndex,
-        bin: BinIndex,
-    ) -> Result<Amplitude> {
-        if !self.bins.same_shape_as(mask) {
-            return Err(Error::GridShapeDisagreement);
-        }
-        Ok(Amplitude(
-            (self.bins.at(frame, bin) * mask.at(frame, bin)).norm(),
-        ))
-    }
-
     /// Converts to magnitude/phase. Lossless.
     #[must_use]
     pub fn to_polar(&self) -> StftPolar {
@@ -235,11 +213,6 @@ impl Stft {
             magnitudes: RawMagnitudes(self.bins.same_shape(magnitudes)),
             geometry: self.geometry,
         }
-    }
-
-    /// Resynthesizes to audio.
-    pub fn resynthesize(&self, fft: &mut FftScratch) -> Vec<f32> {
-        istft(self, fft)
     }
 
     /// Applies a complex mask and resynthesizes — the edit path's whole operation
@@ -307,19 +280,6 @@ impl StftPolar {
             geometry: self.geometry,
         }
     }
-
-    /// Moves both grids out without cloning — consumers copy these into their
-    /// own asset types.
-    #[must_use]
-    pub fn into_grids(self) -> (Grid<f32>, Grid<f32>) {
-        (self.magnitudes.into_grid(), self.phases)
-    }
-
-    /// Resynthesizes to audio, converting back to rectangular first. Lossless
-    /// against the transform this came from.
-    pub fn resynthesize(&self, fft: &mut FftScratch) -> Vec<f32> {
-        istft(&self.to_rectangular(), fft)
-    }
 }
 
 impl StftMagnitude {
@@ -381,7 +341,7 @@ pub enum HopPolicy {
 }
 
 /// Which part of the buffer to analyze.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum SampleRange {
     /// The whole buffer.
     All,
@@ -688,7 +648,7 @@ mod tests {
             &mut fft,
         )
         .unwrap();
-        let resynth = transform.resynthesize(&mut fft);
+        let resynth = istft(&transform, &mut fft);
 
         // Compare the steady-state interior: the edges ramp in and out because
         // fewer windows overlap there.
@@ -746,7 +706,11 @@ mod tests {
 
         // The display path accepts it and yields a type with no inverse.
         let display = stft_magnitude(&samples, request, &mut fft).unwrap();
-        assert!(display.frames().get() > 0);
+        let frames = display.frames().get();
+        assert!(
+            (32..=128).contains(&frames),
+            "{frames} frames for a target of 64"
+        );
     }
 
     /// **The request's window shape reaches the resolved geometry**, on both
@@ -911,7 +875,7 @@ mod tests {
             transform.bins().bins(),
         );
         let masked = transform.resynthesize_masked(&neutral, &mut fft).unwrap();
-        let plain = transform.resynthesize(&mut fft);
+        let plain = istft(&transform, &mut fft);
         for (a, b) in masked.iter().zip(&plain) {
             assert!((a - b).abs() < 1e-6);
         }
@@ -959,6 +923,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.frames(), FrameCount(0));
-        assert!(result.resynthesize(&mut fft).is_empty());
+        assert!(istft(&result, &mut fft).is_empty());
     }
 }

@@ -202,6 +202,11 @@ pub enum MidiError {
     #[error("MIDI hardware: {0}")]
     Hardware(#[from] tutti_midi_hardware::Error),
 
+    /// A Profile switch was refused ([`Midi::set_profile`](crate::Midi::set_profile)).
+    #[cfg(feature = "midi-hardware")]
+    #[error("MIDI-CI Profile: {0}")]
+    Profile(#[from] tutti_midi_hardware::ProfileError),
+
     /// A MIDI file could not be read, built or written.
     #[error("MIDI file: {0}")]
     File(#[from] tutti_midi_file::Error),

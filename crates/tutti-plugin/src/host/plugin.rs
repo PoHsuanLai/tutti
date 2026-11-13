@@ -330,8 +330,13 @@ impl Plugin {
     {
         let mut restore = state.map(|data| {
             move |loaded: &mut F| {
-                tutti_plugin_types::Control::load_state(loaded, main, data)
-                    .map_err(|e| e.to_string())
+                tutti_plugin_types::Control::load_state(
+                    loaded,
+                    main,
+                    data,
+                    tutti_plugin_types::StateUse::Project,
+                )
+                .map_err(|e| e.to_string())
             }
         });
         let (client, handle, restored) = tutti_plugin_host::load_client_restoring(

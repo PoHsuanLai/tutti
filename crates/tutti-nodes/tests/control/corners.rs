@@ -1,5 +1,5 @@
 //! A family node solves at the corners of the lanes that drive its slow
-//! controls (doc 024 §4.5, "Solve at corners"), as well as on its grid.
+//! controls, as well as on its grid.
 
 use tutti_curve::Law;
 use tutti_graph::{

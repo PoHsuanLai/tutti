@@ -195,9 +195,11 @@ where
     /// [`StateError::Unavailable`] if that does not come within the deadline.
     fn save_state(&self) -> Result<Vec<u8>, StateError> {
         match self.on_main(|main, instance| {
-            instance
-                .control()
-                .map(|control| control.save_state(main).map_err(|e| e.to_string()))
+            instance.control().map(|control| {
+                control
+                    .save_state(main, tutti_plugin_types::StateUse::Project)
+                    .map_err(|e| e.to_string())
+            })
         }) {
             Some(Some(state)) => state.map_err(StateError::Rejected),
             Some(None) => Err(StateError::Rejected("the plugin is lost".into())),

@@ -20,9 +20,6 @@
 //! whose beat first reaches it. A start or a stop inside a block gates the
 //! click on its frame too, not at the block's start.
 //!
-//! Until its port to `tutti_graph::Node` the beat arrived on two input ports from a clock
-//! node, and the click had to be wired to one; it now needs no wiring.
-//!
 //! # Meter arrives here, not through the transport
 //!
 //! The metronome is the one audio-thread consumer of musical meter, and it gets
@@ -342,10 +339,7 @@ impl ClickNode {
 
         // `to_samples_ceil`, not a truncating cast: this sizes a buffer, which
         // is the allocating case the three named roundings exist to
-        // distinguish. Measured, the difference is one frame and only at rates
-        // where 30 ms is not whole — 22050 Hz gives 661 vs 662, while 44.1/48/
-        // 88.2/96 k are unchanged. Correctness of the *name*, not a fix for
-        // anything audible.
+        // distinguish.
         let num_samples = CLICK_LEN.to_samples_ceil(sample_rate).get();
 
         let freq = if is_accent { Hz(1200.0) } else { Hz(1000.0) };
@@ -437,11 +431,7 @@ impl ClickNode {
         let position = meter.bar_at(beat);
 
         // Identify the beat by the *onset it belongs to*, not by a running
-        // count. A count would have to be scaled by some `beat_length`, and
-        // `beat_length` changes across a `MeterChange` — so an index computed
-        // with the current segment's scale is only valid within that segment,
-        // and collides with indices from earlier segments (suppressing clicks)
-        // the moment a meter change exists. The onset is unambiguous everywhere
+        // count. The onset is unambiguous everywhere
         // and needs no global numbering.
         let onset = position.bar_start
             + position.signature.beat_length() * (position.beat.get() - 1) as f64;
@@ -577,7 +567,7 @@ impl Node for ClickNode {
             .with_tail(Tail::Unbounded)
             // A beat derived and compared per frame: measured 3.8 ns per
             // frame and channel, against a gain's 0.2 and `SvfFilterNode`'s
-            // 7.2 (doc 013, "The cost model and coarsening").
+            // 7.2.
             .with_cost(tutti_graph::Cost::Moderate)
     }
 

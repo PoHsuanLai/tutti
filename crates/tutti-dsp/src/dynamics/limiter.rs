@@ -1,4 +1,4 @@
-//! [`LimiterFamily`]: the lookahead limiter as a [`Family`] (design 024 section 3, row 7).
+//! [`LimiterFamily`]: the lookahead limiter as a [`Family`].
 //!
 //! A limiter delays its audio by the **lookahead** and runs its gain decision ahead of
 //! the delayed signal, so a peak is already reduced when it arrives. The decision is
@@ -24,18 +24,15 @@
 //! compensates for it. It has no tail, which excludes latency: what the delay holds
 //! comes out within the latency, and gain on silence is silence.
 //!
-//! The threshold and the ceiling are the two controls read **per frame** when the graph
-//! drives them (lanes 0 and 1 of the [`Feed`]; design 024 section 4.5, "Where cadence
-//! stops"); a frame that is not finite falls back to the member's. Every coefficient
-//! lands whole: a glided ceiling would let a sample past the new one.
+//! The threshold and the ceiling are the two controls read **per frame** when the graph drives
+//! them (lanes 0 and 1 of the [`Feed`]); a frame that is not finite falls back to the member's.
+//! Every coefficient lands whole: a glided ceiling would let a sample past the new one.
 //!
 //! A prepare or a reset leaves the envelope **unset** (`+inf`, no history), and the first
 //! frame takes its target at once, whatever it is: the first audio is limited from its
-//! first sample (design 024 section 2.7.4, law 1), as a limiter that had heard silence
+//! first sample, as a limiter that had heard silence
 //! for ever would limit it (on silence the envelope settles at the drive, the target of a
-//! zero peak, which is where an unset envelope meets its first quiet frame). Until this
-//! was fixed the envelope started at 0, and the first audio faded in over about one
-//! release time.
+//! zero peak, which is where an unset envelope meets its first quiet frame).
 
 use core::ops::Range;
 
@@ -93,7 +90,7 @@ impl Default for LimiterControls {
 /// How far ahead a limiter looks: the delay it runs its gain decision ahead of the
 /// audio by, and so the processing latency it declares to PDC.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): finite, above zero and at
+/// A range-checked value: finite, above zero and at
 /// most [`CAP`](Self::CAP). [`new`](Self::new) refuses anything else and never clamps,
 /// since the lookahead is the latency the graph compensates, and a silently different
 /// figure would misalign everything downstream.

@@ -22,9 +22,9 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::contract::Direct;
-use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
+use tutti_graph::{Cx, Io, Node, ParamNode, Prepare, Shape, Status};
 use tutti_nodes::BusStripNode;
-use tutti_types::{Amplitude, ChannelLayout, SampleRate};
+use tutti_types::{Amplitude, BusTopology, ChannelLayout, SampleRate};
 
 const BLOCK: usize = 128;
 const SR: SampleRate = SampleRate::SR_48K;
@@ -90,13 +90,15 @@ fn strip(c: &mut Criterion) {
         g.throughput(Throughput::Elements((BLOCK * width as usize) as u64));
 
         let mut d = Direct::new(
-            BusStripNode::with_channels(ChannelLayout::from(width)),
+            BusStripNode::new(
+                BusTopology::assumed(ChannelLayout::from(width)).expect("a bench width fits a bus"),
+            ),
             SR,
             BLOCK,
         );
         fill_noise(&mut d);
         d.node.set_volume(Amplitude(0.5));
-        d.node.set_pan(tutti_types::Pan(0.25));
+        assert!(d.node.param_set().set(tutti_types::UnitParam::Pan, 0.25));
         d.block();
         g.bench_with_input(BenchmarkId::new("steady", width), &width, |b, _| {
             b.iter(|| {

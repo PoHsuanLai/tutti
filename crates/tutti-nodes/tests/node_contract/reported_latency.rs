@@ -338,9 +338,7 @@ mod convolver {
         let builds: [(&str, Build); 6] = [
             ("mono", || ConvolverNode::shared_ir(2u16, &[1.0], 128)),
             ("stereo", || ConvolverNode::stereo(&[1.0], &[1.0], 128)),
-            ("mono_to_stereo", || {
-                ConvolverNode::mono_to_stereo(&[1.0], &[1.0], 128)
-            }),
+            ("folded", || ConvolverNode::folded(&[&[1.0], &[1.0]], 128)),
             ("shared x6", || ConvolverNode::shared_ir(6u16, &[1.0], 128)),
             ("per_channel x6", || {
                 ConvolverNode::per_channel(&[&[1.0_f32][..]; 6], 128)
@@ -394,9 +392,6 @@ mod convolver {
     /// downstream of it adds nothing on top: convolver → echo on channel 0, the
     /// echo alone on channel 1, dry on channel 2. Only the convolver's block is
     /// latency, so channels 1 and 2 each pre-roll by exactly that block.
-    ///
-    /// This is the half of the property the zero-latency test above cannot
-    /// show — that the fix did not just switch PDC off.
     #[test]
     fn a_delay_after_a_convolver_adds_nothing_to_its_compensation() {
         let conv = ConvolverNode::new(&[1.0], 256);

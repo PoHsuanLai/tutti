@@ -1,4 +1,4 @@
-//! The neutral model module (design 024): the traits every family of processor
+//! The neutral model module: the traits every family of processor
 //! answers to, and the engineering that sizes and schedules what runs it.
 //!
 //! A [`Family`] is a parameter map, a [`System`] (and its class, [`Lti`]) is the

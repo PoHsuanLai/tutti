@@ -14,7 +14,7 @@ use tutti_plugin_ipc::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, StagedState};
 use tutti_plugin_types::{
     BridgeError, BridgeResult, EditorError, EditorSize, Load, MainThread, ParameterQueue,
-    PluginError, Ready, SampleFormat, SampleRate, Wakeups, WindowHandle,
+    PluginError, Ready, SampleFormat, SampleRate, StateUse, Wakeups, WindowHandle,
 };
 
 /// What [`Session::handle`] asks the transport loop to do.
@@ -418,7 +418,7 @@ impl Session {
                 Ok(BridgeMessage::EditorSized { result }.into())
             }
 
-            M::SaveState => Ok(self.handle_save_state(main)),
+            M::SaveState { state_use } => Ok(self.handle_save_state(main, state_use)),
             M::LoadStateChunk { seq, last, bytes } => {
                 Ok(self.handle_load_state_chunk(main, seq, last, &bytes))
             }
@@ -665,7 +665,7 @@ impl Session {
             sample_rate,
             block_size,
             prefer_f64,
-            staged.as_deref(),
+            staged.as_deref().zip(declared.map(|d| d.state_use)),
             &mut restoring,
         ) {
             Ok(loaded) => loaded,
@@ -720,7 +720,7 @@ impl Session {
     /// - A write pending and no block within [`BLOCK_WAIT`]: the host is quiet,
     ///   so the Processor is brought home for the settle, which is silent
     ///   because nothing is playing.
-    fn handle_save_state(&mut self, main: &MainThread) -> Reaction {
+    fn handle_save_state(&mut self, main: &MainThread, state_use: StateUse) -> Reaction {
         let settle = self.write_pending && {
             let id = self.render.barrier();
             !self.render.wait_applied(id, BLOCK_WAIT)
@@ -728,9 +728,9 @@ impl Session {
         self.write_pending = false;
         let data = match self.plugin.as_mut() {
             Some(p) => match if settle {
-                p.plugin_mut().save_state(main)
+                p.plugin_mut().save_state(main, state_use)
             } else {
-                p.plugin_mut().save_state_live(main)
+                p.plugin_mut().save_state_live(main, state_use)
             } {
                 Ok(data) => data,
                 // A plugin that fails to serialise is not a transport problem:
@@ -807,9 +807,10 @@ impl Session {
         &mut self,
         main: &MainThread,
         seq: u32,
-        last: bool,
+        ending: Option<StateUse>,
         bytes: &[u8],
     ) -> Reaction {
+        let last = ending.is_some();
         // **One answer per sequence, on its `last` chunk**, whatever went
         // wrong before it: the host reads one `StateLoaded` per load, and an
         // early answer left every later chunk of the sequence to fail again
@@ -852,7 +853,13 @@ impl Session {
             }
             .into();
         };
-        let error = match plugin.plugin_mut().load_state(main, &data) {
+        let Some(state_use) = ending else {
+            return BridgeMessage::StateLoaded {
+                error: Some("the state sequence ended without naming its use".to_string()),
+            }
+            .into();
+        };
+        let error = match plugin.plugin_mut().load_state(main, &data, state_use) {
             Ok(()) => None,
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
@@ -1261,7 +1268,13 @@ mod tests {
                 },
                 EmptyPayload,
             ),
-            ("SaveState", HostMessage::SaveState, EmptyPayload),
+            (
+                "SaveState",
+                HostMessage::SaveState {
+                    state_use: StateUse::Project,
+                },
+                EmptyPayload,
+            ),
             (
                 "ProcessAudio",
                 HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
@@ -1348,7 +1361,7 @@ mod tests {
                 &main_thread(),
                 HostMessage::LoadStateChunk {
                     seq: 0,
-                    last: true,
+                    last: Some(StateUse::Project),
                     bytes: vec![1, 2, 3],
                 },
             )
@@ -1369,12 +1382,12 @@ mod tests {
     #[test]
     fn a_refused_load_sequence_is_answered_once_at_its_end() {
         let mut s = Rig::new();
-        let mut chunk = |seq, last| {
+        let mut chunk = |seq, last: bool| {
             s.handle(
                 &main_thread(),
                 HostMessage::LoadStateChunk {
                     seq,
-                    last,
+                    last: last.then_some(StateUse::Project),
                     bytes: vec![1, 2, 3],
                 },
             )
@@ -2124,7 +2137,12 @@ mod tests {
         let mut acc = Reassembler::default();
         let mut done = false;
         for m in s
-            .handle(&main_thread(), HostMessage::SaveState)
+            .handle(
+                &main_thread(),
+                HostMessage::SaveState {
+                    state_use: StateUse::Project,
+                },
+            )
             .unwrap()
             .into_replies()
         {
@@ -2157,7 +2175,7 @@ mod tests {
                     &main_thread(),
                     HostMessage::LoadStateChunk {
                         seq,
-                        last,
+                        last: last.then_some(StateUse::Project),
                         bytes: bytes.to_vec(),
                     },
                 )
@@ -2270,7 +2288,13 @@ mod tests {
     #[test]
     fn a_load_restores_only_the_state_it_declares() {
         let mut s = Rig::new();
-        assert_mismatch(load_declaring(&mut s, Some(StagedState { len: 3 })));
+        assert_mismatch(load_declaring(
+            &mut s,
+            Some(StagedState {
+                len: 3,
+                state_use: StateUse::Project,
+            }),
+        ));
 
         let mut s = Rig::new();
         assert_state_loaded_reply(stage(&mut s, 0, true, &[1, 2, 3]));
@@ -2279,7 +2303,13 @@ mod tests {
 
         let mut s = Rig::new();
         assert_state_loaded_reply(stage(&mut s, 0, true, &[1, 2, 3]));
-        assert_mismatch(load_declaring(&mut s, Some(StagedState { len: 4 })));
+        assert_mismatch(load_declaring(
+            &mut s,
+            Some(StagedState {
+                len: 4,
+                state_use: StateUse::Project,
+            }),
+        ));
         assert!(s.staged.is_none());
 
         let mut s = Rig::new();
@@ -2332,7 +2362,8 @@ mod tests {
             load_reply(
                 &mut s,
                 Some(StagedState {
-                    len: own.len() as u64
+                    len: own.len() as u64,
+                    state_use: StateUse::Project,
                 })
             ),
             None,
@@ -2343,7 +2374,14 @@ mod tests {
         let mut s = Rig::new();
         assert_state_loaded(stage_state_bytes(&mut s, &[1, 2, 3]));
         assert!(
-            load_reply(&mut s, Some(StagedState { len: 3 })).is_some(),
+            load_reply(
+                &mut s,
+                Some(StagedState {
+                    len: 3,
+                    state_use: StateUse::Project,
+                })
+            )
+            .is_some(),
             "bytes the plugin cannot parse are refused in the reply"
         );
         assert!(s.plugin.is_some(), "and the plugin is loaded all the same");
@@ -2391,6 +2429,7 @@ mod tests {
             &mut s,
             Some(StagedState {
                 len: own.len() as u64,
+                state_use: StateUse::Project,
             }),
         );
         assert!(

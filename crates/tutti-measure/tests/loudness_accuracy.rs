@@ -100,12 +100,6 @@ fn loudness_tracks_amplitude_in_db() {
 
 /// The same musical signal at different rates must read the same loudness.
 ///
-/// The defect this guards against actually shipped: two true-peak sites
-/// hardcoded 48 kHz while a sibling threaded the real rate, so a 44.1 kHz render
-/// was metered through a filter built for the wrong rate and normalised to a
-/// biased target. `LoudnessConfig` carries the rate to make that
-/// unrepresentable — this asserts the carrying works.
-///
 /// Note this is a *different* claim from `the_configured_rate_is_used` in the
 /// crate's own tests. That one feeds identical *samples* at two rates and checks
 /// the readings differ (they should — it is a different signal). This feeds the

@@ -5,7 +5,8 @@ use crate::field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
 };
 use crate::{
-    BendValue, CCNumber, ControlValue, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump,
+    BendValue, CCNumber, ControlValue, ManufacturerId, MdsChunk, MdsChunkSize, MdsChunks,
+    MdsIdentity, MidiChannel, MidiGroup, NoteVelocity, Ump,
 };
 
 /// One UMP, decoded.
@@ -403,25 +404,21 @@ pub enum Data128 {
     },
 }
 
-/// A Mixed Data Set chunk header (§7.9).
+/// A Mixed Data Set chunk header (§7.9): the first UMP of a chunk, which says
+/// how many payload UMPs follow it ([`MdsChunkSize::payload_umps`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MixedDataHeader {
     /// The set this chunk belongs to.
     pub mds_id: U4,
-    /// Valid bytes in this chunk, header included.
-    pub chunk_bytes: u16,
-    /// Chunks in the set; `0` when unknown.
-    pub chunks: u16,
-    /// This chunk's number, from 1; `0` marks an unverified end.
-    pub chunk: u16,
-    /// The 16-bit manufacturer id (§7.10).
-    pub manufacturer: ManufacturerId,
-    /// The device id.
-    pub device: u16,
-    /// Sub id 1.
-    pub sub_id_1: u16,
-    /// Sub id 2.
-    pub sub_id_2: u16,
+    /// The size of this chunk in bytes, header included.
+    pub chunk_size: MdsChunkSize,
+    /// The chunks in the set; [`MdsChunks::Unknown`] for a stream.
+    pub chunks: MdsChunks,
+    /// This chunk's number, from 1; [`MdsChunk::Unverified`] ends the set
+    /// with its data unverified.
+    pub chunk: MdsChunk,
+    /// Whose data this is: the manufacturer, device and sub ids.
+    pub identity: MdsIdentity,
 }
 
 // ---- MIDI 2.0 channel voice ------------------------------------------------

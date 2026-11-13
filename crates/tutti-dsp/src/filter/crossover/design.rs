@@ -1,5 +1,4 @@
-//! [`CrossoverFamily`]: the Linkwitz-Riley crossover as a [`Family`](crate::Family) (design 024
-//! step 2b).
+//! [`CrossoverFamily`]: the Linkwitz-Riley crossover as a [`Family`](crate::Family).
 //!
 //! The controls are [`CrossoverControls`] (the split frequencies), the model
 //! [`CrossoverModel`] (a multi-output [`Lti`](crate::Lti): one output a band) and

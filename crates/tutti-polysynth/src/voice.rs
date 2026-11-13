@@ -30,7 +30,7 @@ pub use tutti_voicing::VoiceId;
 /// is already releasing or stolen is always preferred over any active one
 /// whatever the strategy says, and among those the quietest goes first — so a
 /// chord fading out is consumed before a held note is cut off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum AllocationStrategy {
     /// Take the voice that started longest ago. The default, and the safe
@@ -56,7 +56,7 @@ pub enum AllocationStrategy {
 
 /// How many notes may sound at once, and whether a new note restarts the
 /// envelope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum VoiceMode {
     /// Polyphonic: notes sound simultaneously up to the polyphony, then the
@@ -199,7 +199,7 @@ impl VoiceSlot {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VoiceAllocatorConfig {
     pub max_voices: NonZeroUsize,
     pub strategy: AllocationStrategy,

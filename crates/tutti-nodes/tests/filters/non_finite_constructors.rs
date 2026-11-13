@@ -1,4 +1,4 @@
-//! Regression sweep (probed 2026-11, nothing to fix): every time, frequency and gain argument of the listed constructors,
+//! Every time, frequency and gain argument of the listed constructors,
 //! at NaN, both infinities and a negative value: building and rendering never
 //! panics and never produces a non-finite sample.
 

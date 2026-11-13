@@ -21,7 +21,7 @@ use tutti_types::{Hz, Resonance, SampleRate};
 /// All four run the same four stages and the same feedback; they differ only in
 /// which tap is read, so the type costs nothing to switch. The 24 dB variants
 /// are the classic Moog sound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum LadderType {
     /// Low-pass at 12 dB/octave — the second stage tap. The default.

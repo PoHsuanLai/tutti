@@ -1,5 +1,5 @@
 //! [`SourceNode`]: the one node that sends a [`ControlSource`]'s legs to
-//! control lanes (doc 024 §4.5a, amendment B3).
+//! control lanes.
 
 use tutti_graph::{
     Cost, Cx, Event, EventKind, Io, Node, Offset, ParamSegment, Prepare, Shape, Status,

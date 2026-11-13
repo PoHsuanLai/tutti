@@ -1,4 +1,4 @@
-//! The contract is public under the `contract` feature (design 024 section 6), and
+//! The contract is public under the `contract` feature, and
 //! a family outside this crate runs it: a gain, the smallest system with a
 //! frequency response, through `family_contract!` and `recurrence_contract!`,
 //! against the `Lti` group (the reverb group is for a `Network`).

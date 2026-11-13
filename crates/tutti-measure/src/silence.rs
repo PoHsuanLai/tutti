@@ -144,12 +144,6 @@ impl SilenceState {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
-
-    /// How many samples have been fed.
-    #[inline]
-    pub fn samples_seen(&self) -> Samples {
-        Samples(self.seen)
-    }
 }
 
 /// Feeds the next chunk of the buffer, in order.
@@ -331,7 +325,6 @@ mod tests {
             for part in x.chunks(chunk) {
                 step_silence(&c, &mut state, part);
             }
-            assert_eq!(state.samples_seen(), Samples(700));
             assert_eq!(finish(&state), batch, "chunk {chunk}");
         }
     }

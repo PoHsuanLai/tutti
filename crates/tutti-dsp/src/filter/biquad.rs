@@ -8,10 +8,9 @@ use crate::{Complex64, Ring};
 /// A second-order section with `a0 = 1`:
 /// `H(z) = (b0 + b1 z^-1 + b2 z^-2) / (1 + a1 z^-1 + a2 z^-2)`.
 ///
-/// A plain value of coefficients. Several structures compute it (the transposed
-/// direct form II the crossover runs, a lattice, the SVF's trapezoidal one), which
-/// is the point of design 024: the coefficients are one *realization's* numbers
-/// for a response, never the response itself.
+/// A plain value of coefficients. Several structures compute it (the transposed direct form II
+/// the crossover runs, a lattice, the SVF's trapezoidal one). The coefficients are one
+/// *realization's* numbers for a response, never the response itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Biquad {
     /// Numerator at `z^0`.

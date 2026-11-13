@@ -1,4 +1,4 @@
-//! A SoundFont unit driven the way the old synthesizer tests drove it: typed
+//! A SoundFont unit driven by typed
 //! messages in, summed magnitudes out. A message is queued as MIDI 1.0 and
 //! applied at the next block, as the node applies it.
 
@@ -22,7 +22,7 @@ pub fn timgm6mb() -> Arc<SoundFont> {
 
 pub use tutti_fixtures::midi::{m1, m2};
 
-/// A unit over a font, with the messages of the old synthesizer's surface.
+/// A unit over a font, with typed messages.
 pub struct Rig {
     pub hand: Hand,
 }

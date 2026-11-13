@@ -80,24 +80,3 @@ pub use meter::{
     BarCount, BarNumber, BarPosition, BeatsPerBar, InvalidBeatsPerBar, InvalidNoteValue, Meter,
     MeterChange, MeterMap, NoteValue, TimeSignature,
 };
-
-/// The names a consumer of this crate actually reaches for, in one import.
-///
-/// Not here, and spelled in full instead: `Unit` (it collides with unrelated
-/// `Unit` types in DSP crates), the `latency`/`tail` graph traits, and the error
-/// types `NotOnMidiScale` / `UnitParamOutOfRange` / `BpmOutOfRange`.
-pub mod prelude {
-    pub use crate::value::{
-        Amplitude, Beat, BeatDuration, Bpm, Cents, Db, Depth, Frame, Hz, MaxBlock, Moment, Note,
-        Param, ParamAddr, Phase, PhaseIncrement, PitchClass, Q, SamplePosition, SampleRate,
-        Samples, Seconds, Semitones, Tail, UnitAddr, UnitParam, Velocity,
-    };
-
-    pub use crate::channels::ChannelLayout;
-    pub use crate::interleaved::{Interleaved, InterleavedMut, StereoPlanes};
-    pub use crate::topology::{ChannelTopology, Speaker};
-
-    pub use crate::io::{FiniteSource, Pull, Sink, SinkFailed, Source, Stop};
-
-    pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
-}

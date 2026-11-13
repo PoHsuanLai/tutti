@@ -81,41 +81,6 @@ pub use tutti_midi_runtime::{
 // and a consumer that wants only the former should not link CoreMIDI. Depend
 // on `tutti-midi-file` directly.
 
-/// The common types for a hardware MIDI app, for
-/// `use tutti_midi_hardware::prelude::*;`.
-///
-/// It holds this crate's I/O and delivery (the packets themselves are
-/// `tutti_ump`'s):
-///
-/// - **Hardware I/O** — [`MidiSession`] (enumerate / connect / send).
-/// - **Delivery** — [`MidiIngestNode`] (the ingest of the input ports as a graph
-///   node), [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] (the lock-free
-///   ring), and [`TimedMidiEvent`] (a clip's events).
-///
-/// The sync decoders (`MidiClockDecoder`, `MtcDecoder`) are
-/// `tutti-midi-runtime`'s, and the MPE zone types `tutti-midi-protocol`'s;
-/// this crate does not re-export them. The SMF / Clip File codecs are not here at all:
-/// they are `tutti-midi-file`'s, and this crate does not re-export them.
-///
-/// ```
-/// use tutti_midi_hardware::prelude::*;
-/// use tutti_fixtures::midi::note_on;
-/// use tutti_graph::Offset;
-/// use tutti_ump::{MidiChannel, MidiGroup, Ump};
-///
-/// // Build an event, and hand it across threads with the delivery types.
-/// let ump = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-/// let (tx, rx) = MidiMailbox::pair();
-/// tx.queue(&[(Offset::ZERO, ump)]);
-/// let mut buf = [(0u32, Ump::default()); 4];
-/// assert_eq!(rx.poll_into(&mut buf), 1);
-/// ```
-pub mod prelude {
-    pub use crate::{MidiIngestNode, MidiMailbox, MidiReceiver, MidiSender, TimedMidiEvent};
-
-    pub use crate::MidiSession;
-}
-
 // This crate is OS MIDI I/O plus the value types a host drives. The ECS
 // bindings that drive them — routing, sequence, scheduled dispatch, clock-out,
 // track-out, metadata, device management, MPE — live in

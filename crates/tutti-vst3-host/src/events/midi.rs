@@ -2,8 +2,8 @@
 
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::{
-    PitchBendSensitivity, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
-    widen, widen_bytes,
+    PitchBendSensitivity, unit_f32_to_value, unit_f32_to_velocity, value_to_unit_f32,
+    velocity_to_unit_f32, widen, widen_bytes,
 };
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi, plugin_note_id};
 use tutti_ump::{
@@ -16,6 +16,7 @@ use super::{
     Data, Event, K_DATA_TYPE_MIDI_SYSEX, NoteOff, NoteOn, Payload, PolyPressure, ToEvent,
     sample_offset,
 };
+use tutti_ump::ControlValue;
 
 /// VST3's tuning expression for `semitones` from the note's key: `0.5 +
 /// semitones / 240` (`kTuningTypeID` spans -120 to +120 semitones over
@@ -366,15 +367,15 @@ fn control_event(
             channel,
             note,
             id,
-            u32_to_unit_f32(value),
+            value_to_unit_f32(ControlValue::new(value)),
         )),
         NoteControl::Registered(controller, value) => expression(
             per_note_controller_expression(controller.number())?,
-            f64::from(u32_to_unit_f32(value)),
+            f64::from(value_to_unit_f32(ControlValue::new(value))),
         ),
         NoteControl::Assignable(index, value) => expression(
             per_note_controller_expression(index)?,
-            f64::from(u32_to_unit_f32(value)),
+            f64::from(value_to_unit_f32(ControlValue::new(value))),
         ),
     }
 }
@@ -391,7 +392,7 @@ fn note_on(
         Payload::NoteOn(NoteOn::new(
             channel.get().into(),
             note.get().into(),
-            u16_to_unit_f32(velocity),
+            velocity_to_unit_f32(NoteVelocity::new(velocity)),
             note_id,
         )),
     )
@@ -404,7 +405,7 @@ fn note_off(offset: i32, channel: MidiChannel, note: NoteNumber, velocity: u16) 
         Payload::NoteOff(NoteOff::new(
             channel.get().into(),
             note.get().into(),
-            u16_to_unit_f32(velocity),
+            velocity_to_unit_f32(NoteVelocity::new(velocity)),
             -1,
         )),
     )
@@ -466,21 +467,21 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
             address(group, e.channel),
             Voice2::note_on(
                 note_number(e.pitch),
-                NoteVelocity::new(unit_f32_to_u16(e.velocity)),
+                NoteVelocity::new(unit_f32_to_velocity(e.velocity).get()),
             ),
         )),
         Payload::NoteOff(e) => Ump::from(Message::Midi2(
             address(group, e.channel),
             Voice2::note_off(
                 note_number(e.pitch),
-                NoteVelocity::new(unit_f32_to_u16(e.velocity)),
+                NoteVelocity::new(unit_f32_to_velocity(e.velocity).get()),
             ),
         )),
         Payload::PolyPressure(e) => Ump::from(Message::Midi2(
             address(group, e.channel),
             Voice2::PolyPressure {
                 note: note_number(e.pitch),
-                value: unit_f32_to_u32(e.pressure),
+                value: unit_f32_to_value(e.pressure),
             },
         )),
         Payload::Data(d) => {
@@ -493,7 +494,7 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
             // single packet; a message too long for one packet is dropped, not truncated,
             // and so is one with a payload byte of 128 or more (malformed).
             if bytes[0] == 0xF0 {
-                let mut packets = SysexMessage::new(bytes)?.packets(group);
+                let mut packets = SysexMessage::from_framed(bytes).ok()?.packets(group);
                 if packets.len() != 1 {
                     return None;
                 }

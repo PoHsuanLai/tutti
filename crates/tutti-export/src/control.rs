@@ -1,8 +1,8 @@
-//! Stopping a render, and watching it (doc 019 section 6).
+//! Stopping a render, and watching it.
 //!
 //! A render is one synchronous call, so a host steps in through one
-//! [`Control`]: a [`CancelToken`] the pipeline checks at every point of doc 019
-//! section 6.2, and an optional callback that is handed a [`Progress`] (a
+//! [`Control`]: a [`CancelToken`] the pipeline checks at the points its docs
+//! list, and an optional callback that is handed a [`Progress`] (a
 //! [`Stage`] and one fraction of the whole render). A render the token
 //! stopped reports [`Outcome::Cancelled`], not an error and not a short file.
 //!
@@ -16,6 +16,15 @@ use tutti_types::Samples;
 
 /// A request to stop a render, shared between the thread that asks and the one
 /// that renders. Cheap to clone; every clone is the same token.
+///
+/// The render checks it before each block, between its stages, in each chunk
+/// (at most one second of audio) of the measurement, the conversion and the
+/// write, before each output's encoder is finalized, and once more after the
+/// last, before the first file is renamed into place; the session's bounce
+/// also checks it between its own steps. A cancelled render removes every
+/// temporary file and leaves each target path as it was. Two waits are not
+/// interruptible: one encoder's finalize (a flush, bounded whatever the file's
+/// length) and the renames.
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken(Arc<AtomicBool>);
 
@@ -26,8 +35,8 @@ impl CancelToken {
         Self::default()
     }
 
-    /// Asks the render to stop. It does at the next point it checks (doc 019
-    /// section 6.2); the request cannot be taken back.
+    /// Asks the render to stop. It does at the next point it checks (see the
+    /// type's docs); the request cannot be taken back.
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
@@ -156,14 +165,14 @@ const fn band(stage: Stage, from: f32, to: f32) -> Band {
     Band { stage, from, to }
 }
 
-/// Doc 019 section 6.1 without normalize: encoding happens during the render.
+/// The bands without normalize: encoding happens during the render.
 const STREAMING: [Band; 3] = [
     band(Stage::Preparing, 0.00, 0.05),
     band(Stage::Rendering, 0.05, 0.95),
     band(Stage::Finalizing, 0.95, 1.00),
 ];
 
-/// Doc 019 section 6.1 with normalize on an output: the render is kept, then
+/// The bands with normalize on an output: the render is kept, then
 /// measured, then encoded.
 const NORMALIZED: [Band; 5] = [
     band(Stage::Preparing, 0.00, 0.03),
@@ -215,10 +224,8 @@ impl Weights {
 
 /// Frames between two deliveries of a stage that counts them.
 ///
-/// Doc 019 section 6.1 also asks for 50 ms of wall time ("whichever is
-/// later"). That would leave a render faster than 80 kHz of audio reporting
-/// less often than every 4096 frames, which the cadence test of the same
-/// section forbids, so the frame bound is the rule and no clock is read.
+/// A frame count, not wall time: a render reports every 4096 frames however
+/// fast it runs, and at every change of stage, and no clock is read.
 pub(crate) const DELIVERY_FRAMES: usize = 4096;
 
 /// What a render is told by, and tells: a [`CancelToken`] it checks and a

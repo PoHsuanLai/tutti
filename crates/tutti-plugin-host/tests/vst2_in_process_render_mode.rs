@@ -157,7 +157,7 @@ fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frame
         .map(|_| &silence[..])
         .collect();
     let env = Env {
-        frame: tutti_types::Frame(0),
+        frame: tutti_types::Frame::new(0),
         sample_rate: rate,
         block_len: tutti_types::Samples(frames),
         transport: TransportPosition::default(),

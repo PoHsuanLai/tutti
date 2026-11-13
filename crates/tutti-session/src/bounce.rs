@@ -1,11 +1,11 @@
-//! The session's bounce (feature `export`; doc 019, design 015 §4.3): the
+//! The session's bounce (feature `export`): the
 //! request ([`Bounce`]), the job ([`BounceJob`]: gathered on the control
 //! thread, built and rendered on any), and its return
 //! ([`Session::finish_bounce`]), which drops what the render leaves on the
 //! main thread and releases the bounce's token.
 //!
 //! A [`Bounce`] is data. Every figure it does not state is derived from the
-//! session when the bounce starts and stored once (doc 019 §3): the range from
+//! session when the bounce starts and stored once: the range from
 //! the transport's loop, the clock from the project's tempo map, the render
 //! rate from the session's, the latency and the tail from the compiled graph,
 //! the master's width from the root. Each has one explicit method.
@@ -114,7 +114,7 @@ impl From<std::ops::Range<Seconds>> for Range {
     }
 }
 
-/// `Frame(0)..Frame(48_000)` is [`Range::Frames`].
+/// `Frame::new(0)..Frame::new(48_000)` is [`Range::Frames`].
 impl From<std::ops::Range<Frame>> for Range {
     fn from(r: std::ops::Range<Frame>) -> Self {
         Self::Frames(r.start, r.end)
@@ -619,8 +619,7 @@ pub struct FileStem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferStem;
 
-/// One node's own output, written beside the master in the same pass (doc 019
-/// section 7): `N` names the node ([`NodeKey`] by default), and `K` is where it
+/// One node's own output, written beside the master in the same pass: `N` names the node ([`NodeKey`] by default), and `K` is where it
 /// goes ([`FileStem`] by default, or [`BufferStem`]).
 ///
 /// A stem is what the node produces, read where it leaves the node and
@@ -1276,7 +1275,7 @@ impl BounceHandle {
     /// Asks the render to stop. It does at the next point the session or the
     /// pipeline checks (between the session's steps, every block, between
     /// stages, during the measurement and the conversion, before each file is
-    /// finalized and before it is put in place: doc 019 section 6.2), or
+    /// finalized and before it is put in place), or
     /// before it starts for a job that has not run. It reports
     /// [`BounceError::Cancelled`] and drops the bounce's token; every temporary
     /// file is removed and the target path is untouched. A cancel after the
@@ -2091,8 +2090,8 @@ mod tests {
             Range::Seconds(Seconds(1.0), Seconds(2.0))
         );
         assert_eq!(
-            Range::from(Frame(0)..Frame(48_000)),
-            Range::Frames(Frame(0), Frame(48_000))
+            Range::from(Frame::new(0)..Frame::new(48_000)),
+            Range::Frames(Frame::new(0), Frame::new(48_000))
         );
     }
 
@@ -2140,7 +2139,7 @@ mod tests {
         let map = TempoMap::constant(Bpm::of(120.0)).unwrap();
         let by_seconds = span(Range::Seconds(Seconds(1.0), Seconds(3.0)), None, &map, RATE);
         let by_frames = span(
-            Range::Frames(Frame(48_000), Frame(144_000)),
+            Range::Frames(Frame::new(48_000), Frame::new(144_000)),
             None,
             &map,
             RATE,
@@ -2342,7 +2341,7 @@ mod tests {
         let request = || {
             Bounce::project()
                 .master_buffers()
-                .range(Range::Frames(Frame(0), Frame(DURATION as u64)))
+                .range(Range::Frames(Frame::new(0), Frame::new(DURATION as u64)))
         };
 
         let untrimmed = planes(session.bounce(request().latency(BounceLatency::Keep)));

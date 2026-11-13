@@ -287,7 +287,7 @@ fn a_live_inputs_keys_send_in_order_and_are_handed_out_once() {
     };
     on(&mut keys, Stamp::NextBlock, 60).unwrap();
     on(&mut keys, Stamp::NextBlock, 62).unwrap();
-    on(&mut keys, Frame(3_000).into(), 64).unwrap();
+    on(&mut keys, Frame::new(3_000).into(), 64).unwrap();
     roll(&s, 4_000);
     let heard = note_ons(&seen);
     assert_eq!(

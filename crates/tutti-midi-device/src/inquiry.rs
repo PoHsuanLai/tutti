@@ -92,7 +92,8 @@ impl IdentityInquiry {
     /// The Identity Request as one SysEx7 packet.
     fn request(&self) -> Ump {
         // Four 7-bit bytes are one complete packet (at most six fit).
-        Sysex7Packets::checked(self.group, &REQUEST)
+        Sysex7Packets::from_payload(self.group, &REQUEST)
+            .ok()
             .and_then(|mut packets| packets.next())
             .expect("the Identity Request is four 7-bit bytes")
     }

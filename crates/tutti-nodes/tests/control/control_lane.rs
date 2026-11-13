@@ -678,7 +678,7 @@ fn a_rate_anchor_holds_two_lanes_in_phase() {
             phase: PhaseIncrement(0.0),
             anchor: Some(RateAnchor {
                 epoch,
-                at: Frame(AT),
+                at: Frame::new(AT),
                 phase: 3.0 * AT as f64 / RATE,
                 prev_rate: Hz(3.0),
             }),

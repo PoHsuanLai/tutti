@@ -31,7 +31,7 @@ fn len(list: &EventList) -> usize {
 #[test]
 fn a_per_note_bend_range_outlives_its_block() {
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_midi_protocol::signed_f32_to_bend_u32;
+    use tutti_midi_protocol::signed_f32_to_bend;
 
     let list = EventList::input();
     let mut stager = Stager::default();
@@ -66,7 +66,7 @@ fn a_per_note_bend_range_outlives_its_block() {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             60,
-            signed_f32_to_bend_u32(0.25),
+            signed_f32_to_bend(0.25).get(),
         ),
     )];
     assert!(stager.stage(
@@ -100,7 +100,7 @@ fn a_per_note_bend_range_outlives_its_block() {
 fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     use tutti_clap_host::{ClapEvent, EventList as _, InputEventList};
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_midi_protocol::signed_f32_to_bend_u32;
+    use tutti_midi_protocol::signed_f32_to_bend;
 
     let bend = |channel: u8| {
         (
@@ -109,7 +109,7 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
                 MidiGroup::FIRST,
                 MidiChannel::of(channel),
                 60,
-                signed_f32_to_bend_u32(0.25),
+                signed_f32_to_bend(0.25).get(),
             ),
         )
     };
@@ -727,7 +727,8 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     let payload: Vec<u8> = (0..20).collect();
     let mut fragments = Vec::new();
     fragments.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+        tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
+            .expect("a 7-bit payload"),
     );
     let packets: Vec<UmpAt> = fragments
         .into_iter()

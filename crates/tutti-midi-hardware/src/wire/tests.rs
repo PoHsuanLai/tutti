@@ -7,6 +7,7 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_runtime::SendAt;
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, MidiChannel, MidiGroup, NoteNumber, Sysex7Packet, SysexStatus, System, U7, Voice1,
     Voice2,
@@ -41,7 +42,7 @@ fn rpn(bank: u8, index: u8, value: u32) -> Ump {
         Voice2::Registered {
             bank: U7::of(bank),
             index: U7::of(index),
-            value,
+            value: ControlValue::new(value),
         },
     ))
 }

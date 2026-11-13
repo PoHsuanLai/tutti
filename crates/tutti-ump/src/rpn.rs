@@ -10,12 +10,12 @@ use crate::U7;
 /// [`new`](Self::new).
 ///
 /// ```
-/// use tutti_ump::{Rpn, U7, Voice2};
+/// use tutti_ump::{ControlValue, Rpn, U7, Voice2};
 ///
 /// let message = Voice2::Registered {
 ///     bank: U7::of(0),
 ///     index: U7::of(7),
-///     value: 24 << 25,
+///     value: ControlValue::new(24 << 25),
 /// };
 /// let Voice2::Registered { bank, index, .. } = message else { unreachable!() };
 /// assert_eq!(Rpn::new(bank, index), Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY);

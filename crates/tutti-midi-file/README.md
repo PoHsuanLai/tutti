@@ -42,15 +42,15 @@ extension. Nothing here touches an OS MIDI API; ports are in
 Build a file, write it, read it back; the tempo map answers in seconds:
 
 ```rust
-use tutti_midi_file::{MidiFile, SmfFormat, Tick, Track};
+use tutti_midi_file::{Meta, MidiFile, SmfFormat, Tick, Track};
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 // 120 BPM, then 60 from beat 4, at 480 ticks per quarter.
 let track = Track::new()
-    .tempo(Tick(0), Bpm::of(120.0))
+    .meta(Tick(0), Meta::tempo(Bpm::of(120.0)))
     .note(Tick(0), 1_440, MidiChannel::FIRST, NoteNumber::of(60), U7::of(100))
-    .tempo(Tick::quarters(4, 480), Bpm::of(60.0));
+    .meta(Tick::quarters(4, 480), Meta::tempo(Bpm::of(60.0)));
 let file = MidiFile::smf(SmfFormat::SingleTrack, 480, vec![track])?;
 
 let read = MidiFile::from_bytes(&file.to_bytes()?)?;

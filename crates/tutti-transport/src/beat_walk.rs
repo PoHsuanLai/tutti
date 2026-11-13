@@ -14,7 +14,7 @@ mod tests {
     /// `f64`.
     fn walked(host: &FrameClock, len: usize, looping: Option<tutti_graph::LoopRange>) -> Vec<Beat> {
         let env = Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: SR,
             block_len: Samples(len),
             transport: TransportPosition::counted(true, host.tempo(), host.origin(), looping),

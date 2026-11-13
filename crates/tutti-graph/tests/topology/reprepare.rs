@@ -635,14 +635,14 @@ fn a_rate_change_keeps_pending_commands_at_their_wall_clock_time() {
     rig.render(&[64, 64, 64]);
     let to = EventIn { node: REC, port: 0 };
     let note = |t: u32| EventKind::Midi(Ump([t, 9, 0, 0]));
-    let old_rate = tutti_types::At::Frame(tutti_types::Frame(1_000));
+    let old_rate = tutti_types::At::Frame(tutti_types::Frame::new(1_000));
     rig.ed.schedule(old_rate, to, note(70_000)).expect("room");
     rig.reference.schedule(old_rate, to, note(70_000));
 
     let p = prep(96_000.0, 64);
     rig.ed.reprepare(p).expect("reprepares");
     rig.reference.suspend(p);
-    let new_rate = tutti_types::At::Frame(tutti_types::Frame(1_500));
+    let new_rate = tutti_types::At::Frame(tutti_types::Frame::new(1_500));
     rig.ed.schedule(new_rate, to, note(70_001)).expect("room");
     rig.reference.schedule(new_rate, to, note(70_001));
     // One block while suspended: silence in both, and the clock counts.
@@ -680,7 +680,7 @@ fn frames_a_rate_change_merges_keep_their_order() {
     rig.render(&[64, 64, 64]);
     let to = EventIn { node: REC, port: 0 };
     for (frame, tag) in [(1_000u64, 80_000u32), (999, 80_001)] {
-        let at = tutti_types::At::Frame(tutti_types::Frame(frame));
+        let at = tutti_types::At::Frame(tutti_types::Frame::new(frame));
         let note = EventKind::Midi(Ump([tag, 9, 0, 0]));
         rig.ed.schedule(at, to, note).expect("room");
         rig.reference.schedule(at, to, note);

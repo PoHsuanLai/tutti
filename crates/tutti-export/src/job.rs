@@ -5,7 +5,7 @@
 //! end), in frames and nothing else: no seconds, no beats, no tempo. Whoever
 //! knows the project's time converts at its own seam and hands a count; the
 //! constructor then refuses what no render can be, so the code after it never
-//! re-checks. Doc 019 section 4.
+//! re-checks.
 
 use tutti_types::{SampleRate, Samples};
 

@@ -577,8 +577,8 @@ s.midi().route(MidiRouteRule::any_channel().to(synth)); // `midi-hardware`
 **Transport.** `s.transport()` returns today's `Transport` handle, and
 `MotionFsm::schedule(At, ..)` is unchanged.
 
-> **Superseded by doc 019 (steps 5 and 6).** The request below is what step 5
-> of this doc's plan built, and doc 019 replaced it: `ExportRequest`,
+> **Superseded by the bounce (`tutti-session`).** The request below is what step 5
+> of this doc's plan built, and the bounce replaced it: `ExportRequest`,
 > `ExportSource`, `ExportTarget`, `ExportOutput`, `ExportJob`, `ExportRendered`,
 > `ExportHandle` and `Error::ExportInFlight` are now `Bounce` (a builder: the
 > master's fork, `stem`s as plan taps, `Range`, `Latency`, `Tail`),
@@ -592,7 +592,7 @@ s.midi().route(MidiRouteRule::any_channel().to(synth)); // `midi-hardware`
 > job at a time holds unchanged under the new names. `ExportClock`,
 > `PrepareEdit` and `PreparedGraph` stay. The Bevy side
 > (`ExportRequest`, `ExportDone`, `ExportInFlight`, `ExportPlugin`) is parked
-> with `bevy-tutti` and becomes `BounceRequest` and the rest in doc 019 step 7.
+> with `bevy-tutti` and becomes `BounceRequest` and the rest when it is un-parked.
 
 **Export.** The session has its own request, free of `Entity` and `World`.
 It is today's `bevy-tutti` request with the two Bevy-bound fields

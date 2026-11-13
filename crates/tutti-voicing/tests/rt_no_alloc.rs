@@ -14,6 +14,7 @@ use tutti_ump::{
     Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, RegisteredPerNoteController, Rpn,
     U7, U14, Voice2,
 };
+use tutti_ump::{BendValue, ControlValue};
 use tutti_voicing::{
     Command, Mode, Order, Patch, PerNoteState, Rules, Steal, TuningCapacity, VoiceId, VoiceSpec,
     Voicing,
@@ -52,7 +53,7 @@ fn step_is_allocation_free_in_every_mode() {
         let ch = |n| MidiChannel::of(n);
         let cc = |n: u8, v: u32| Voice2::ControlChange {
             controller: CCNumber::of(n),
-            value: v << 25,
+            value: ControlValue::new(v << 25),
         };
         assert_no_alloc(|| {
             for round in 0..300u32 {
@@ -80,25 +81,25 @@ fn step_is_allocation_free_in_every_mode() {
                     Voice2::RegisteredPerNote {
                         note: NoteNumber::of(k),
                         controller: RegisteredPerNoteController::Pitch,
-                        value: 60 << 25,
+                        value: ControlValue::new(60 << 25),
                     },
                     Voice2::PerNotePitchBend {
                         note: NoteNumber::of(k),
-                        value: round.wrapping_mul(0x0101_0101),
+                        value: BendValue::new(round.wrapping_mul(0x0101_0101)),
                     },
                     Voice2::PolyPressure {
                         note: NoteNumber::of(k),
-                        value: 1 << 30,
+                        value: ControlValue::new(1 << 30),
                     },
                     Voice2::AssignablePerNote {
                         note: NoteNumber::of(k),
                         controller: 74,
-                        value: 1 << 30,
+                        value: ControlValue::new(1 << 30),
                     },
                     Voice2::Registered {
                         bank: U7::of(0),
                         index: U7::of(7),
-                        value: (round % 48) << 25,
+                        value: ControlValue::new((round % 48) << 25),
                     },
                     Voice2::PerNoteManagement {
                         note: NoteNumber::of(k),
@@ -124,13 +125,13 @@ fn step_is_allocation_free_in_every_mode() {
                     cc(65, round % 2 * 127),
                     cc(68, round % 3 / 2 * 127),
                     cc(84, k.into()),
-                    Voice2::ChannelPressure(round.wrapping_mul(0x0101_0101)),
+                    Voice2::ChannelPressure(ControlValue::new(round.wrapping_mul(0x0101_0101))),
                     Voice2::Registered {
                         bank: U7::of(0),
                         index: U7::of([1, 2, 5][(round % 3) as usize]),
-                        value: (round % 128) << 25,
+                        value: ControlValue::new((round % 128) << 25),
                     },
-                    Voice2::PitchBend(round.wrapping_mul(0x0101_0101)),
+                    Voice2::PitchBend(BendValue::new(round.wrapping_mul(0x0101_0101))),
                     Voice2::NoteOff {
                         note: NoteNumber::of(k),
                         velocity: NoteVelocity::new(0x8000),
@@ -182,20 +183,20 @@ fn per_note_state_is_allocation_free() {
                 Voice2::RegisteredPerNote {
                     note,
                     controller: RegisteredPerNoteController::Pitch,
-                    value: 60 << 25,
+                    value: ControlValue::new(60 << 25),
                 },
                 Voice2::AssignablePerNote {
                     note,
                     controller: (round % 9) as u8,
-                    value: 1 << 30,
+                    value: ControlValue::new(1 << 30),
                 },
                 Voice2::PerNotePitchBend {
                     note,
-                    value: round.wrapping_mul(0x0101_0101),
+                    value: BendValue::new(round.wrapping_mul(0x0101_0101)),
                 },
                 Voice2::PolyPressure {
                     note,
-                    value: 1 << 30,
+                    value: ControlValue::new(1 << 30),
                 },
                 Voice2::NoteOn {
                     note,
@@ -210,7 +211,7 @@ fn per_note_state_is_allocation_free() {
                 Voice2::Registered {
                     bank: U7::of(0),
                     index: U7::of(7),
-                    value: (round % 48) << 25,
+                    value: ControlValue::new((round % 48) << 25),
                 },
             ];
             for &m in &msgs {
@@ -289,7 +290,7 @@ fn mts_is_allocation_free() {
         let select = |rpn: Rpn, v: u8| Voice2::Registered {
             bank: rpn.bank(),
             index: rpn.index(),
-            value: u32::from(v) << 25,
+            value: ControlValue::new(u32::from(v) << 25),
         };
         let name = TuningName::new([U7::of(b'm'); 16]);
         let mut table = KeyTable::equal_temperament();

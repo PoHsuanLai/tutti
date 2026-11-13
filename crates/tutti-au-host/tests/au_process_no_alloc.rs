@@ -326,12 +326,12 @@ fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
     let body: Vec<u8> = (0..3000).map(|i| (i % 0x7F) as u8).collect();
     let mut packets = Vec::new();
     packets.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &body).expect("a 7-bit payload"),
+        tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &body).expect("a 7-bit payload"),
     );
     let long: Vec<UmpAt> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
     let oversized_body = vec![1u8; SYSEX7_MAX_PAYLOAD + 10];
     packets.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &oversized_body)
+        tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &oversized_body)
             .expect("a 7-bit payload"),
     );
     let oversized: Vec<UmpAt> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();

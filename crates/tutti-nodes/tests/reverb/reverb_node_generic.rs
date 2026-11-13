@@ -201,7 +201,7 @@ struct Rig {
 impl Rig {
     fn block(&mut self, input: &[f32]) -> Driven {
         let env = Env {
-            frame: Frame(self.frame),
+            frame: Frame::new(self.frame),
             sample_rate: SR,
             block_len: Samples(input.len()),
             transport: TransportPosition::default(),

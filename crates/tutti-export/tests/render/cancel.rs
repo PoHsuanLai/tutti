@@ -1,5 +1,4 @@
-//! Stopping a render, watching it, and what both leave behind (doc 019
-//! section 6).
+//! Stopping a render, watching it, and what both leave behind.
 //!
 //! No hardware and no sleeps: a progress callback sets a `CancelToken` at a
 //! chosen reading, and the render stops at the check that follows. The graph
@@ -438,8 +437,8 @@ impl Shape {
     }
 }
 
-/// One place in the pipeline at which doc 019 section 6.2 has a render check
-/// its token, as the reading that cancels there.
+/// One place in the pipeline at which a render checks its token (the points
+/// `CancelToken`'s docs list), as the reading that cancels there.
 struct Point {
     name: &'static str,
     /// Whether a render of this shape has the point.
@@ -516,7 +515,7 @@ const POINTS: [Point; 12] = [
     },
 ];
 
-/// A cancel at each point of doc 019 section 6.2 that the pipeline owns, in
+/// A cancel at each point `CancelToken` lists that the pipeline owns, in
 /// each shape of render (with and without normalize, with and without a
 /// conversion, one output or two from the one pass): the render is
 /// `Cancelled`, the next thing it would have done is not done (the cancelling
@@ -596,8 +595,7 @@ fn a_cancel_at_each_pipeline_point_stops_there_and_leaves_the_targets() {
 /// Every reading of a render, in every shape: the fraction never falls; the
 /// first reading is the first stage the pipeline owns, at the start of its
 /// band; the last is `Finalizing` at exactly 1.0, delivered after the file is
-/// in place and not before; each stage's readings stay inside its band of
-/// doc 019 section 6.1; `output` is `None` while rendering and `Some(0)`
+/// in place and not before; each stage's readings stay inside its band; `output` is `None` while rendering and `Some(0)`
 /// after; and no reading is `1.0` but the last.
 ///
 /// Monotonic is the unit test's (`the_fraction_never_falls`).

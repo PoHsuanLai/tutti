@@ -152,8 +152,11 @@ impl Rig {
     /// One block of `frames`, preceded by the engine's clock reading, and
     /// drain what reached the tap.
     fn run(&mut self, frames: usize) {
-        self.clock
-            .write(self.next_block(), Frame(self.frames), SampleRate::of(RATE));
+        self.clock.write(
+            self.next_block(),
+            Frame::new(self.frames),
+            SampleRate::of(RATE),
+        );
         self.exec
             .process(frames, &TransportPosition::default(), &[], &mut []);
         self.frames += frames as u64;

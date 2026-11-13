@@ -77,7 +77,7 @@ let routes = [(
 let targets = [(cutoff, TargetDecl { min: 200.0, max: 1_000.0, automation: None })];
 let decl = Declarations { sources: &sources, routes: &routes, targets: &targets };
 let rate = SampleRate::SR_48K;
-let compiled = compile(&decl, None, PlayReading { epoch: 1, play: Frame(0) }, rate).unwrap();
+let compiled = compile(&decl, None, PlayReading { epoch: 1, play: Frame::new(0) }, rate).unwrap();
 
 // One program, for the cutoff. Its lane evaluates it against the knob (the
 // node's own cell) and the range's span (800): a square, ±200.

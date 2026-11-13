@@ -216,7 +216,7 @@ pub enum Read {
 ///
 /// // Master Volume, all-call, 0x3FFF (lsb first).
 /// let bytes = [0xF0, 0x7F, 0x7F, 0x04, 0x01, 0x7F, 0x7F, 0xF7];
-/// let Read::Universal(heard) = read(SysexMessage::new(&bytes).unwrap()) else { panic!() };
+/// let Read::Universal(heard) = read(SysexMessage::from_framed(&bytes).unwrap()) else { panic!() };
 /// assert_eq!(heard.to, tutti_midi_protocol::Recipient::AllCall);
 /// assert!(matches!(heard.message, Universal::MasterVolume(v) if v.get() == 0x3FFF));
 /// ```

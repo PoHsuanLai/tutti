@@ -12,6 +12,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tutti_ump::{BendValue, ControlValue};
 
 mod common;
 use common::Listener;
@@ -127,7 +128,7 @@ fn main() {
         "cc74",
         voice(Voice2::ControlChange {
             controller: CCNumber::of(74),
-            value: 0xFFFF_FFFF,
+            value: ControlValue::new(0xFFFF_FFFF),
         }),
         &|v| matches!(v, Voice2::ControlChange { controller, .. } if controller.get() == 74),
     );
@@ -135,7 +136,7 @@ fn main() {
     println!("\n=== Test 4: Pitch Bend (center) ===");
     roundtrip(
         "pitch-bend",
-        voice(Voice2::PitchBend(0x8000_0000)), // bipolar center
+        voice(Voice2::PitchBend(BendValue::new(0x8000_0000))), // bipolar center
         &|v| matches!(v, Voice2::PitchBend(_)),
     );
 

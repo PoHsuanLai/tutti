@@ -51,13 +51,13 @@ fn unframed(message: &[u8]) -> &[u8] {
 
 /// The SysEx7 packets (on the first group) of a plugin's `message`, with its
 /// `0xF0` and `0xF7` delimiters or without (the one place the formats'
-/// unchecked byte slices meet [`Sysex7Packets::checked`]; a message known to be
+/// unchecked byte slices meet [`Sysex7Packets::from_payload`]; a message known to be
 /// framed is a `tutti_ump::SysexMessage` and has its own `packets`), or `None` if a payload byte is 128
 /// or more: a plugin emitted a malformed message, which the caller drops
 /// (nothing is masked into a different message).
 #[must_use]
 pub fn sysex_packets(message: &[u8]) -> Option<Sysex7Packets<'_>> {
-    Sysex7Packets::checked(MidiGroup::FIRST, unframed(message))
+    Sysex7Packets::from_payload(MidiGroup::FIRST, unframed(message)).ok()
 }
 
 /// Pushes one complete SysEx message a plugin emitted onto `out` as UMP
@@ -115,7 +115,7 @@ mod tests {
     use tutti_ump::{MidiChannel, SysexStep, Ump, frame};
 
     fn packets(group: MidiGroup, payload: &[u8]) -> Vec<Ump> {
-        Sysex7Packets::checked(group, payload)
+        Sysex7Packets::from_payload(group, payload)
             .expect("a 7-bit payload")
             .collect()
     }

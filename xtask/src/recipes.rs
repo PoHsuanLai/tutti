@@ -30,9 +30,9 @@ pub(crate) enum Step {
     NoBevyInTree(Cmd),
     /// A gate over the repo's files (`gates.rs`), run in this process.
     Gate(Gate),
-    /// `cargo doc` for each feature of the feature-gated crates, one at a
-    /// time (`gates/doc_features.rs`); every run is attempted and the
-    /// failures reported together.
+    /// `cargo doc` for each member's features together and each feature of
+    /// the feature-gated crates alone (`gates/doc_features.rs`); every run is
+    /// attempted and the failures reported together.
     DocFeatures,
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
@@ -49,7 +49,7 @@ impl Step {
                 c.display()
             ),
             Step::Gate(g) => g.display(),
-            Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <f>, for each feature of tutti-session and tutti".to_owned(),
+            Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <fs>, each member with its features together (private items), then each feature of tutti-session and tutti alone".to_owned(),
             Step::RequireCargoDeny => {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
@@ -215,7 +215,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     (
         "check-doc-features",
         "",
-        "rustdoc per feature for tutti-session and tutti",
+        "rustdoc over every member's features together, and per feature for tutti-session and tutti",
     ),
     ("lint", "", "cargo fmt --check and workspace clippy"),
     (

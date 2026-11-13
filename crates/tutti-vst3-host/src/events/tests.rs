@@ -3,7 +3,7 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::{
-    bend_u32_to_signed_f32, channel_voice, narrow_velocity, u16_to_unit_f32, u32_to_unit_f32,
+    bend_to_signed_f32, channel_voice, narrow_velocity, value_to_unit_f32, velocity_to_unit_f32,
 };
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
 use tutti_types::Samples;
@@ -11,6 +11,7 @@ use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity,
     Sysex7Packets, SysexStatus, System, U7, U14, Ump, Voice2,
 };
+use tutti_ump::{BendValue, ControlValue};
 use tutti_vst3_ffi::EventList;
 
 /// A packet from its words, zero-padded to four, at offset 0.
@@ -566,7 +567,7 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
 #[test]
 fn a_per_note_bend_is_tuned_over_its_channels_range() {
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_midi_protocol::signed_f32_to_bend_u32;
+    use tutti_midi_protocol::signed_f32_to_bend;
 
     let bend = |channel: u8, amount: f32| {
         (
@@ -575,7 +576,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
                 MidiGroup::FIRST,
                 MidiChannel::of(channel),
                 60,
-                signed_f32_to_bend_u32(amount),
+                signed_f32_to_bend(amount).get(),
             ),
         )
     };
@@ -698,7 +699,7 @@ fn single_packet_sysex_round_trips_through_data_event() {
     // A short SysEx (identity request) → VST3 Data event with the SysEx
     // subtype and 0xF0 … 0xF7 framing, then back to the same UMP payload.
     let payload = [0x7E, 0x7F, 0x06, 0x01];
-    let single = Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+    let single = Sysex7Packets::from_payload(MidiGroup::FIRST, &payload)
         .unwrap()
         .next()
         .unwrap();
@@ -732,7 +733,7 @@ fn single_packet_sysex_round_trips_through_data_event() {
 fn a_sysex_fragment_does_not_convert_alone() {
     let mut frags = Vec::new();
     frags.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8])
+        tutti_ump::Sysex7Packets::from_payload(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8])
             .expect("a 7-bit payload"),
     );
     assert!(frags.len() > 1);
@@ -758,7 +759,7 @@ fn note_on_velocity_round_trips_at_full_width() {
     let back = vst3.to_midi().expect("round-trips");
     match back.ump.decode().expect("decodes") {
         Message::Midi2(_, Voice2::NoteOn { velocity: raw, .. }) => {
-            let velocity = u16_to_unit_f32(raw.get());
+            let velocity = velocity_to_unit_f32(raw);
             let expected = velocity_u16 as f32 / u16::MAX as f32;
             // f32 velocity carries far more than 7 bits — error stays tiny.
             assert!(
@@ -885,7 +886,7 @@ fn legacy_cc_out_decodes_to_midi() {
     match m.ump.decode().expect("UMP") {
         Message::Midi2(address, Voice2::ControlChange { controller, value }) => {
             assert_eq!((address.channel.get(), controller.get()), (3, 74));
-            let value = u32_to_unit_f32(value);
+            let value = value_to_unit_f32(value);
             assert!((value - 100.0 / 127.0).abs() < 0.01);
         }
         other => panic!("expected CC, got {other:?}"),
@@ -899,7 +900,7 @@ fn legacy_cc_out_decodes_to_midi() {
     let pb_m = pb.to_midi().unwrap();
     match pb_m.ump.decode().expect("UMP") {
         Message::Midi2(_, Voice2::PitchBend(bend)) => {
-            assert!(bend_u32_to_signed_f32(bend).abs() < 0.01)
+            assert!(bend_to_signed_f32(bend).abs() < 0.01)
         }
         other => panic!("expected PitchBend, got {other:?}"),
     }
@@ -919,7 +920,7 @@ fn legacy_cc_out_decodes_to_midi() {
             },
             Voice2::PolyPressure {
                 note: NoteNumber::new(60).unwrap(),
-                value: 0x4200_0000
+                value: ControlValue::new(0x4200_0000)
             }
         ))
     );
@@ -1242,11 +1243,11 @@ mod message {
                 ch,
                 Voice2::ControlChange {
                     controller: CCNumber::new(74).unwrap(),
-                    value: 0xFFFF_FFFF,
+                    value: ControlValue::new(0xFFFF_FFFF),
                 },
             ),
-            Message::Midi2(ch, Voice2::PitchBend(0x8000_0000)),
-            Message::Midi2(ch, Voice2::ChannelPressure(0x8000_0000)),
+            Message::Midi2(ch, Voice2::PitchBend(BendValue::new(0x8000_0000))),
+            Message::Midi2(ch, Voice2::ChannelPressure(ControlValue::new(0x8000_0000))),
             Message::Midi2(
                 ch,
                 Voice2::ProgramChange {
@@ -1320,11 +1321,17 @@ mod message {
             panic!("expected poly pressure");
         };
         assert_eq!((p.channel, p.pitch), (3, 60));
-        assert_eq!(p.pressure, u32_to_unit_f32(0x4000_0000));
+        assert_eq!(
+            p.pressure,
+            value_to_unit_f32(ControlValue::new(0x4000_0000))
+        );
         let Payload::PolyPressure(p) = event(&[0x20A3_3C21]).payload else {
             panic!("expected poly pressure");
         };
-        assert_eq!(p.pressure, u32_to_unit_f32(0x4200_0000));
+        assert_eq!(
+            p.pressure,
+            value_to_unit_f32(ControlValue::new(0x4200_0000))
+        );
     }
 
     /// A MIDI 1.0 message a plugin sends as raw bytes is widened on the way
@@ -1396,7 +1403,7 @@ mod message {
                 ch,
                 Voice2::PerNotePitchBend {
                     note: note(60),
-                    value: 0x9000_0000,
+                    value: BendValue::new(0x9000_0000),
                 },
             ),
             Message::Midi2(
@@ -1404,7 +1411,7 @@ mod message {
                 Voice2::AssignablePerNote {
                     note: note(60),
                     controller: 74,
-                    value: 7,
+                    value: ControlValue::new(7),
                 },
             ),
             Message::Midi2(
@@ -1421,7 +1428,7 @@ mod message {
                 ch,
                 Voice2::ControlChange {
                     controller: CCNumber::new(1).unwrap(),
-                    value: 1,
+                    value: ControlValue::new(1),
                 },
             ),
             Message::Midi2(
@@ -1429,7 +1436,7 @@ mod message {
                 Voice2::Registered {
                     bank: u7(0),
                     index: u7(7),
-                    value: 0x1000_0000,
+                    value: ControlValue::new(0x1000_0000),
                 },
             ),
             Message::Flex(MidiGroup::FIRST, Flex::SetTempo(50_000_000)),
@@ -1563,7 +1570,7 @@ mod message {
         });
         // M2-115 §3.3: 100 widens to 100 << 9 plus its low six bits repeated,
         // 0b110100 << 3 | 0b110100 >> 3 | 0b110100 >> 9.. = 51492.
-        let velocity = u16_to_unit_f32(51492);
+        let velocity = velocity_to_unit_f32(NoteVelocity::new(51492));
         assert_eq!(
             seen,
             vec![(60, velocity, 7), (64, velocity, 7), (67, velocity, 7)]

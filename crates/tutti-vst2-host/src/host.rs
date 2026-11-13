@@ -562,9 +562,17 @@ impl Host for HostState {
     /// `Yes` for `supportShell` and `shellCategory`: the host walks a shell's
     /// sub-plugins (`effShellGetNextPlugin`) and answers `audioMasterCurrentId`.
     ///
+    /// `Yes` for `acceptIOChanges`: `audioMasterIOChanged` is answered 1 and restarts the
+    /// plugin on the pins it reports now; for `startStopProcess`: an activation sends
+    /// `effStartProcess` and a rejoin or reset `effStopProcess`; and for
+    /// `receiveVstSysexEvent`: a `kVstSysExType` event the plugin emits reaches the host
+    /// whole.
+    ///
     /// `No`, because the host does not do it: `supplyIdle`
     /// (`audioMasterIdle` is not routed to anything). Everything else is
-    /// `Maybe`, VST 2.4's "don't know".
+    /// `Maybe`, VST 2.4's "don't know": among them `sendVstMidiEventFlagIsRealtime`, since
+    /// the flag means an event is played live and not in playback, and the engine's events
+    /// carry no such distinction.
     ///
     /// The strings and the reference set are JUCE's host `canDo` answers
     /// (`juce_VSTPluginFormat.cpp`), an open re-implementation of the
@@ -578,7 +586,10 @@ impl Host for HostState {
             | "receiveVstMidiEvent"
             | "sizeWindow"
             | "supportShell"
-            | "shellCategory" => Supported::Yes,
+            | "shellCategory"
+            | "acceptIOChanges"
+            | "startStopProcess"
+            | "receiveVstSysexEvent" => Supported::Yes,
             "supplyIdle" | "openFileSelector" | "closeFileSelector" => Supported::No,
             _ => Supported::Maybe,
         }
@@ -751,12 +762,20 @@ mod tests {
             "sizeWindow",
             "supportShell",
             "shellCategory",
+            "acceptIOChanges",
+            "startStopProcess",
+            "receiveVstSysexEvent",
         ] {
             assert_eq!(host.can_do(yes), Supported::Yes, "{yes}");
         }
         for no in ["supplyIdle", "openFileSelector", "closeFileSelector"] {
             assert_eq!(host.can_do(no), Supported::No, "{no}");
         }
+        // Not claimed: the engine's MIDI has no live/playback distinction to set the flag by.
+        assert_eq!(
+            host.can_do("sendVstMidiEventFlagIsRealtime"),
+            Supported::Maybe
+        );
         assert_eq!(host.can_do("somethingNew"), Supported::Maybe);
     }
 

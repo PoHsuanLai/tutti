@@ -51,7 +51,7 @@ tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # `tests/vst2_shell.rs`: a VST2 file of two plugins.
 tutti-vst2-shell-plugin = { path = "../../testing/tutti-vst2-shell-plugin" }
-libloading = "0.8"
+libloading = "0.9"
 tutti-vst2-host = { path = "../tutti-vst2-host" }
 tutti-types = { path = "../tutti-types" }
 tempfile = "3"

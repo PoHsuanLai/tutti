@@ -22,7 +22,7 @@ testing = []
 
 [dependencies]
 clap-sys = "0.5"
-libloading = "0.8"
+libloading = "0.9"
 bitflags = "2"
 # `WindowHandle`, the one value whose unsafe constructor carries the claim that
 # a parent window is valid; the editor entries take it by reference.

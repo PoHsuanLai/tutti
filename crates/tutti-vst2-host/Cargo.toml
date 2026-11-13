@@ -23,7 +23,7 @@ workspace = true
 # `Pod` for the plain-bytes mirror of `TimeInfo` the transport cell holds.
 bytemuck = { version = "1.16", features = ["derive"] }
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 thiserror = "2"
 tutti-graph = { path = "../tutti-graph" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
@@ -51,7 +51,7 @@ tutti-types = { path = "../tutti-types" }
 # rlib and the cdylib are separate images with separate statics, and the host
 # only ever touches the cdylib's. The rlib is still linked, for the shared
 # `#[repr(C)]` type definitions.
-libloading = "0.8"
+libloading = "0.9"
 tempfile = "3"
 # The reference plugin the conformance harness loads. As a dev-dependency,
 # Cargo builds its cdylib in the same `cargo test` invocation (no nested

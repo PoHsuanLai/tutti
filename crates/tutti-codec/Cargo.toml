@@ -47,17 +47,17 @@ tutti-types = { path = "../tutti-types", default-features = false }
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 # No default features: the encoder drives flacenc's frame encoder on its own
 # workers, so flacenc's `par` (and its `serde`/`log`) are unused.
-flacenc = { version = "0.4", optional = true, default-features = false }
+flacenc = { version = "0.5", optional = true, default-features = false }
 # The FLAC STREAMINFO's MD5, over the samples as written. flacenc computes one
 # only inside its own encode loop, which pads the last block; the FLAC encoder
 # drives flacenc's frame encoder itself, so it hashes the samples here. The
 # same crate and version flacenc already pulls in.
-md-5 = { version = "0.10", optional = true }
+md-5 = { version = "0.11", optional = true }
 vorbis_rs = { version = "0.5", optional = true }
 # File decode for `Wave::read` / `FileIn`. No default features: each codec is a
 # `decode-*` feature above. Used by the `decode` module alone, and named in no
 # public signature.
-symphonia = { version = "0.5.5", optional = true, default-features = false }
+symphonia = { version = "0.6.1", optional = true, default-features = false }
 # AIFF/AIFF-C: its I16/I24/F32 formats match our three depths exactly and it
 # back-patches sizes on finalize, so AIFF streams like the others.
 aifc = { version = "0.7", optional = true }

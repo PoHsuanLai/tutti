@@ -2506,6 +2506,7 @@ dependencies = [
  "tutti-midi-protocol",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-shared-plugin",
  "tutti-types",
  "tutti-ump",
 ]
@@ -2680,6 +2681,7 @@ dependencies = [
 name = "tutti-fixtures"
 version = "0.0.1"
 dependencies = [
+ "coreaudio-sys",
  "hound",
  "raw-window-handle",
  "serde",
@@ -2687,6 +2689,7 @@ dependencies = [
  "tempfile",
  "tutti-midi-protocol",
  "tutti-plugin-types",
+ "tutti-shared-plugin",
  "tutti-shared-plugin-vst3-cpp",
  "tutti-types",
  "tutti-ump",

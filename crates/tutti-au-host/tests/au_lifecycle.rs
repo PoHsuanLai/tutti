@@ -260,13 +260,7 @@ fn a_refused_initialize_leaves_the_instance_usable() {
         componentFlags: 0,
         componentFlagsMask: 0,
     };
-    let Some(comp) = find_component(&desc) else {
-        // Not a silent skip of the invariant: the same guarantee is
-        // asserted below against an AU that *does* initialize, so the state
-        // machine is still exercised. Only the refusal leg needs this unit.
-        eprintln!("AUSoundIsolation not registered; refusal leg not exercised");
-        return;
-    };
+    let comp = find_component(&desc).expect("AUSoundIsolation ships with macOS");
     let mut inst = Au::new(comp, tutti_types::SampleRate::SR_44K1, 512).unwrap();
     let unit_before = inst.unit().clone();
 
@@ -593,25 +587,23 @@ mod halves {
 mod tail {
     use super::*;
     use tutti_au_host::types::K_AUDIO_UNIT_TYPE_MUSIC_DEVICE;
-    use tutti_plugin_types::{Control, PluginTail, SampleRate};
+    use tutti_plugin_types::{Control, PluginTail};
     use tutti_types::Samples;
 
     fn wiring_tail(au: &Au) -> PluginTail {
         Control::wiring(&**au, &main_thread()).tail
     }
 
-    /// An AU that declines `kAudioUnitProperty_TailTime` is `Unknown`, and one
-    /// that reports an unbounded tail is `Unbounded`: never `None`, which is what
-    /// a plain sample count would have collapsed both to. The classification is
-    /// the unit's wiring (`Control::wiring`), the figure PDC and a bounce read.
+    /// An AU that declines `kAudioUnitProperty_TailTime` is `Unknown`, never
+    /// `None`, which is what a plain sample count would have collapsed it to. The
+    /// classification is the unit's wiring (`Control::wiring`), the figure PDC
+    /// and a bounce read.
     ///
-    /// The Apple corpus covers the first half: every Apple instrument, mixer and
-    /// generator rejects the property, and every Apple effect answers it. The
-    /// second half needs a plugin that reports `f64::INFINITY` (TAL Reverb 4 does,
-    /// and no Apple unit exceeds ~21 s), so it runs only when that unit is
-    /// installed and says so when it is skipped.
+    /// Every Apple effect answers the property and every Apple instrument,
+    /// mixer and generator rejects it. The unbounded tail is the contract's
+    /// `tail_markers_reported`, against the shared plugin's AU.
     #[test]
-    fn a_declined_tail_is_unknown_and_an_infinite_one_is_unbounded() {
+    fn a_declined_tail_is_unknown() {
         // An effect answers the property, so it must not be `Unknown`.
         let comp = find_apple_delay().expect("AUDelay should exist");
         let mut inner =
@@ -633,56 +625,21 @@ mod tail {
             componentFlags: 0,
             componentFlagsMask: 0,
         };
-        if let Some(comp) = find_component(&instrument) {
-            let mut inner = Au::new(comp, tutti_types::SampleRate::SR_44K1, 512)
-                .expect("Should create instance");
-            inner.initialize().expect("Should initialize");
-            // Whatever this unit answers, a *refusal* must never surface as a
-            // zero tail: that is the mapping this test exists for.
-            if inner.get_tail_time().is_err() {
-                let mapped = wiring_tail(&inner);
-                assert_eq!(
-                    mapped,
-                    PluginTail::Unknown,
-                    "a refused tail property must be Unknown, not None"
-                );
-                assert_ne!(mapped.samples(), Some(Samples::ZERO));
-            }
-        }
-
-        // The unbounded half. TAL Reverb 4 reports `f64::INFINITY`; when it is
-        // not installed this leg is skipped, and says so rather than passing
-        // silently: a skipped assertion is not a satisfied one.
-        let infinite = AudioComponentDescription {
-            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
-            componentSubType: u32::from_be_bytes(*b"reV4"),
-            componentManufacturer: u32::from_be_bytes(*b"TOGU"),
-            componentFlags: 0,
-            componentFlagsMask: 0,
-        };
-        match find_component(&infinite) {
-            None => {
-                eprintln!("SKIP: TAL Reverb 4 not installed; the Unbounded arm is unexercised here")
-            }
-            Some(comp) => {
-                let mut inner = Au::new(comp, tutti_types::SampleRate::SR_44K1, 512)
-                    .expect("Should create instance");
-                inner.initialize().expect("Should initialize");
-                let seconds = inner
-                    .get_tail_time()
-                    .expect("TAL Reverb 4 answers the tail property");
-                assert!(
-                    !seconds.get().is_finite(),
-                    "TAL Reverb 4 is the corpus's infinite-tail unit; it reported {seconds:?}"
-                );
-
-                let mapped = wiring_tail(&inner);
-                assert_eq!(mapped, PluginTail::Unbounded);
-                // The point of the whole type: converting first would have made
-                // this `None`, and a bounce would truncate the reverb entirely.
-                assert_ne!(mapped, PluginTail::None);
-                assert_eq!(seconds.to_samples_ceil(SampleRate::SR_44K1), Samples::ZERO);
-            }
-        }
+        let comp = find_component(&instrument).expect("DLSMusicDevice ships with macOS");
+        let mut inner =
+            Au::new(comp, tutti_types::SampleRate::SR_44K1, 512).expect("Should create instance");
+        inner.initialize().expect("Should initialize");
+        inner
+            .get_tail_time()
+            .expect_err("DLSMusicDevice rejects the tail property");
+        // A *refusal* must never surface as a zero tail: that is the mapping
+        // this test exists for.
+        let mapped = wiring_tail(&inner);
+        assert_eq!(
+            mapped,
+            PluginTail::Unknown,
+            "a refused tail property must be Unknown, not None"
+        );
+        assert_ne!(mapped.samples(), Some(Samples::ZERO));
     }
 }

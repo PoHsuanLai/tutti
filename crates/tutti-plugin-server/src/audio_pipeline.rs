@@ -1166,9 +1166,9 @@ mod tests {
         assert_sanitized(f32::NEG_INFINITY);
     }
 
-    /// **A shorter block after a longer one does not allocate (doc 027
-    /// D14).** The scratch is sized once, when the slab is set up
-    /// ([`AudioPipeline::reserve`]), and a block uses its first frames. The
+    /// **A shorter block after a longer one does not allocate.** The scratch
+    /// is sized once, when the slab is set up ([`AudioPipeline::reserve`]),
+    /// and a block uses its first frames. The
     /// reshape reallocated whenever the length changed, so a host's ragged
     /// final chunk freed and rebuilt every channel on the audio thread.
     #[test]

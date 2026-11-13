@@ -444,13 +444,11 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
     );
 }
 
-/// **A block longer than the activation promised never reaches the plugin**
-/// (doc 027 D12). `setupProcessing` told the plugin no block exceeds
-/// `maxSamplesPerBlock`, and a plugin sizes its own buffers by that, so the
-/// host refuses the block, as the plugin would (`InvalidArgument`), with its
-/// outputs cleared. A block within the promise still renders. The refusal is
-/// `tutti-vst3-ffi`'s `Processor::process` (the setup's `max_block` and the
-/// bound channels' capacity); this pins it through the host.
+/// **A block longer than the activation promised never reaches the plugin**. `setupProcessing` told
+/// the plugin no block exceeds `maxSamplesPerBlock`, and a plugin sizes its own buffers by that, so
+/// the host refuses the block, as the plugin would (`InvalidArgument`), with its outputs cleared. A
+/// block within the promise still renders. The refusal is `tutti-vst3-ffi`'s `Processor::process`
+/// (the setup's `max_block` and the bound channels' capacity); this pins it through the host.
 #[test]
 fn a_block_past_the_activated_length_is_refused() {
     if !harness_ready() {

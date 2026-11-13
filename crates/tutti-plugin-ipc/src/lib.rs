@@ -15,8 +15,7 @@
 #![forbid(unsafe_code)]
 
 // The test build's allocator: without it every `assert_no_alloc` gate in
-// this crate's tests is inert (they were, from the crate's extraction until
-// doc 027 D9 found it). Normal builds use the system allocator.
+// this crate's tests is inert. Normal builds use the system allocator.
 #[cfg(test)]
 #[global_allocator]
 static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;

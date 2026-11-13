@@ -1,20 +1,18 @@
 //! Host-side IPC to the plugin-server: length-prefixed postcard over a
 //! local socket (Unix domain socket on Unix, named pipe on Windows).
 //!
-//! Wire: `[u32 big-endian length][postcard payload]` both directions, with the
-//! body capped at [`MAX_FRAME_BYTES`](crate::protocol::MAX_FRAME_BYTES) — the length arrives from the peer, so it
-//! is checked before it is believed, in both `send` and `recv`.
-//! EOF at either end surfaces as [`BridgeError::ProcessCrashed`], and so does a
-//! length prefix over the cap: a peer that cannot frame has desynchronised the
-//! stream, and there is no resynchronisation point to recover to.
+//! Wire: `[u32 big-endian length][postcard payload]` both directions, with the body capped at
+//! [`MAX_FRAME_BYTES`](crate::protocol::MAX_FRAME_BYTES) — the length arrives from the peer, so it
+//! is checked before it is believed, in both `send` and `recv`. EOF at either end surfaces as
+//! [`BridgeError::ProcessCrashed`], and so does a length prefix over the cap: a peer that cannot
+//! frame has desynchronised the stream, and there is no resynchronisation point to recover to.
 //!
 //! **Two independent bounds, because they answer different questions.**
-//! [`MAX_FRAME_BYTES`](crate::protocol::MAX_FRAME_BYTES) bounds how *much* a peer can make the host allocate; the
-//! deadline in [`read_exact_by`] bounds how *long* a peer can make it wait. A
-//! size cap alone does not bound time — an under-cap frame delivered one byte
-//! per receive timeout is still unbounded, because `SO_RCVTIMEO` restarts on
-//! every syscall while `read_exact` loops. Both are needed and neither
-//! subsumes the other.
+//! [`MAX_FRAME_BYTES`](crate::protocol::MAX_FRAME_BYTES) bounds how *much* a peer can make the host
+//! allocate; the deadline in [`read_exact_by`] bounds how *long* a peer can make it wait. A size
+//! cap alone does not bound time — an under-cap frame delivered one byte per receive timeout is
+//! still unbounded, because `SO_RCVTIMEO` restarts on every syscall while `read_exact` loops. Both
+//! are needed and neither subsumes the other.
 
 use crate::protocol::frame::{decode_body, decode_prefix, write_frame};
 use crate::protocol::{BridgeMessage, HostMessage};
@@ -76,7 +74,7 @@ pub fn socket_name(socket: &Path) -> std::io::Result<Name<'static>> {
 /// connection means the server has stopped reading: it handles one request
 /// at a time and reads the next as soon as it answers. A server that reads
 /// nothing for this long is hung, and a send that gives up part-way has
-/// unframed the stream, so the bridge crashes on it (doc 027 D8). Generous,
+/// unframed the stream, so the bridge crashes on it. Generous,
 /// because a slow plugin call delays the server's next read by its length.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -754,12 +752,10 @@ mod tests {
         }
     }
 
-    /// **A block's round trip allocates nothing once the buffers are warm**
-    /// (doc 027 P2b): the host sends `ProcessAudio`, the server end reads it
-    /// and answers `AudioProcessed`, and the host reads the answer, over a
-    /// real socket pair, inside `assert_no_alloc`. A block with no parameter
-    /// changes and no MIDI, the common one; a change list that is not empty
-    /// is a `Vec` the decode builds.
+    /// **A block's round trip allocates nothing once the buffers are warm**: the host sends
+    /// `ProcessAudio`, the server end reads it and answers `AudioProcessed`, and the host reads the
+    /// answer, over a real socket pair, inside `assert_no_alloc`. A block with no parameter changes
+    /// and no MIDI, the common one; a change list that is not empty is a `Vec` the decode builds.
     #[test]
     fn a_block_round_trip_allocates_nothing_once_warm() {
         use crate::protocol::ProcessAudioData;
@@ -792,10 +788,9 @@ mod tests {
         assert_no_alloc::assert_no_alloc(&mut round);
     }
 
-    /// **A send to a peer that reads nothing gives up at the send deadline**
-    /// (doc 027 D8), as a `partial` timeout: the frame may be half on the
-    /// wire, so the connection cannot go on. Before, the write blocked until
-    /// the peer read or died.
+    /// **A send to a peer that reads nothing gives up at the send deadline**, as a `partial`
+    /// timeout: the frame may be half on the wire, so the connection cannot go on. Before, the
+    /// write blocked until the peer read or died.
     ///
     /// Unix only: Windows has no send timeout on a named pipe (`connect_within`
     /// says what ends a hung write there).

@@ -1584,7 +1584,7 @@ fn assert_healthy_after_stall(mock: &MockServer, direction: &str) {
 }
 
 /// **A query that times out leaves the bridge healthy, and its late reply is
-/// not the next query's answer** (doc 027 D5, D6). The first `GetParameter` is
+/// not the next query's answer**. The first `GetParameter` is
 /// answered after the 5 s budget; the second at once. The bridge owes the
 /// first reply, takes it off the stream when it lands, and gives the second
 /// query its own value.
@@ -1624,12 +1624,11 @@ fn a_late_query_reply_is_not_the_next_querys_answer() {
     assert!(!mock.bridge.is_crashed(), "a late reply crashed the bridge");
 }
 
-/// **A plugin that keeps sending events does not extend a request's budget**
-/// (doc 027 D7). The first `GetParameter` gets 6 s of `LatencyChanged` events
-/// at 100 ms and no answer. The bridge gives up at its 5 s budget and sends
-/// the next request, so when the events stop it is already waiting at the
-/// peer; with the budget restarting per event the bridge would still be
-/// waiting, until 5 s after the last event.
+/// **A plugin that keeps sending events does not extend a request's budget**. The first
+/// `GetParameter` gets 6 s of `LatencyChanged` events at 100 ms and no answer. The bridge gives up
+/// at its 5 s budget and sends the next request, so when the events stop it is already waiting at
+/// the peer; with the budget restarting per event the bridge would still be waiting, until 5 s
+/// after the last event.
 ///
 /// The peer looks for the waiting request rather than the test timing the
 /// answer: an oversleeping runner only lengthens the events, which widens the
@@ -1706,7 +1705,7 @@ fn a_live_peer_mid_frame_at_the_budget_is_not_a_crash() {
 }
 
 /// **The rest of a stalled state is taken off the stream, not read as the next
-/// answer** (doc 027 D5). `SaveState` stalls before its first chunk; the two
+/// answer**. `SaveState` stalls before its first chunk; the two
 /// chunks land later, ahead of the answer to `GetParameterList`.
 #[test]
 fn the_rest_of_a_stalled_state_is_not_the_next_answer() {

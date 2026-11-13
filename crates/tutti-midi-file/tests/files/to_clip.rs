@@ -8,26 +8,17 @@
 //! tests in `clip_model.rs`, and here it checks that the Flex and SysEx7
 //! packets the conversion makes survive them.
 
+use crate::common::{note, track};
 use tutti_midi_file::{
     DropReason, Error, FileEvent, Meta, MidiFile, SmfFormat, TextKind, Tick, ToClipError, Track,
 };
 use tutti_types::{Beat, Seconds};
 use tutti_ump::{
-    Address, Flex, FlexAddress, FlexTextKind, Form, KeySignature, Letter, Message, Metronome,
-    MidiChannel, MidiGroup, NoteNumber, SharpsFlats, SysexStatus, TimeSignature, U7, Voice1,
+    Flex, FlexAddress, FlexTextKind, Form, KeySignature, Letter, Message, Metronome, MidiGroup,
+    SharpsFlats, SysexStatus, TimeSignature,
 };
 
 const TPQ: u16 = 480;
-
-fn note(channel: u8, key: u8) -> FileEvent {
-    FileEvent::Message(Message::Midi1(
-        Address::first(MidiChannel::new(channel).unwrap()),
-        Voice1::NoteOn {
-            note: NoteNumber::of(key),
-            velocity: U7::of(100),
-        },
-    ))
-}
 
 fn meta(m: Meta) -> FileEvent {
     FileEvent::Meta(m)
@@ -39,10 +30,6 @@ fn text(kind: TextKind, s: &str) -> FileEvent {
 
 fn flex(f: Flex) -> FileEvent {
     FileEvent::Message(Message::Flex(MidiGroup::FIRST, f))
-}
-
-fn track(events: Vec<(u64, FileEvent)>) -> Track {
-    unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
 }
 
 fn format0(events: Vec<(u64, FileEvent)>) -> MidiFile {
@@ -731,14 +718,4 @@ fn the_clip_round_trips_through_its_bytes() {
     let clip = smf.to_clip().unwrap().clip;
     let again = MidiFile::from_bytes(&clip.to_bytes().unwrap()).unwrap();
     assert_eq!(again, clip);
-}
-
-/// A track of `events` exactly as given: not sorted, so a test can hand the
-/// constructor events out of order.
-fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
-    Track {
-        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
-        events,
-        ..Track::new()
-    }
 }

@@ -1,9 +1,59 @@
-//! A test sink for MIDI leaving a graph: one event tap per source port.
+//! What the runtime's integration tests share: a test sink for MIDI leaving a
+//! graph (one event tap per source port), a wire between two event nodes, and the
+//! clock of a clip at 120 BPM and 48 kHz.
 
 #![allow(dead_code)]
 
-use tutti_graph::{Editor, EventOut, EventTapId, EventTapReader, NodeKey, TapAlign, TapEvent};
-use tutti_ump::Ump;
+use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::{
+    Editor, EventEdge, EventIn, EventOut, EventTapId, EventTapReader, NodeKey, TapAlign, TapEvent,
+    TransportPosition,
+};
+use tutti_midi_runtime::TimedMidiEvent;
+use tutti_types::{Beat, Bpm};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
+
+/// Frames in a beat at 120 BPM and 48 kHz, so a frame is exact in beats.
+pub const FRAMES_PER_BEAT: f64 = 24_000.0;
+
+/// The beat `frame` frames in.
+pub fn beat_of(frame: u64) -> Beat {
+    Beat(frame as f64 / FRAMES_PER_BEAT)
+}
+
+/// Rolling at 120 BPM from `frame`.
+pub fn rolling(frame: u64) -> TransportPosition {
+    TransportPosition::new(true, Bpm::of(120.0), beat_of(frame), None)
+}
+
+/// `event` on `frame`.
+pub fn at(frame: u64, event: Ump) -> TimedMidiEvent {
+    TimedMidiEvent::new(beat_of(frame), event).unwrap()
+}
+
+/// A full-velocity Note On of key `n` on the first Group and Channel.
+pub fn on(n: u8) -> Ump {
+    note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
+}
+
+/// A Note Off of key `n` on the first Group and Channel.
+pub fn off(n: u8) -> Ump {
+    note_off(MidiGroup::FIRST, MidiChannel::FIRST, n, 0)
+}
+
+/// Wires event output 0 of node `from` to event input 0 of node `to`.
+pub fn connect(ed: &mut Editor, from: u64, to: u64) {
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(to),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(from),
+            port: 0,
+        }),
+    );
+}
 
 /// The ring's capacity the deleted node had, in events.
 pub const SINK_CAPACITY: tutti_graph::EventCapacity = tutti_graph::EventCapacity::of(1024);

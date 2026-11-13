@@ -4,40 +4,15 @@
 
 use std::num::NonZeroUsize;
 
+use crate::support::{note_on, step};
 use tutti_midi_protocol::{Addressee, GeneralMidi, Heard, Universal};
-use tutti_types::{Amplitude, Semitones};
+use tutti_types::Semitones;
 use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, Rpn, U7, U14, Voice2};
 use tutti_ump::{BendValue, ControlValue};
-use tutti_voicing::{Command, Patch, Rules, VoiceSpec, Voicing};
-
-struct One;
-impl Patch for One {
-    fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
-        spec(VoiceSpec {
-            group: None,
-            scope: 0,
-            tag: 0,
-        });
-    }
-}
+use tutti_voicing::{Command, Rules, Voicing};
 
 fn say(core: &mut Voicing, to: Addressee, message: Universal) -> Vec<Command> {
     core.universal(Heard { to, message }).to_vec()
-}
-
-fn step(core: &mut Voicing, channel: u8, message: Voice2) -> Vec<Command> {
-    core.step(MidiChannel::of(channel), message, &One, |_| {
-        Some(Amplitude(1.0))
-    })
-    .to_vec()
-}
-
-fn note_on(key: u8) -> Voice2 {
-    Voice2::NoteOn {
-        note: NoteNumber::of(key),
-        velocity: NoteVelocity::new(0x8000),
-        attribute: Attribute::None,
-    }
 }
 
 fn cc(n: u8, value7: u32) -> Voice2 {

@@ -526,6 +526,7 @@ mod tests {
 
     /// A handler may unregister itself from its callback without deadlocking,
     /// and is not called again.
+    /// Spec: vst3.IRunLoop.registerTimer, vst3.IRunLoop.unregisterTimer
     #[test]
     fn a_timer_may_unregister_itself_from_its_callback() {
         let run_loop = RunLoop::new();

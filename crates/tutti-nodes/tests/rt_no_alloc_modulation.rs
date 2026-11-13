@@ -632,7 +632,7 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
         Waveform,
     };
     use tutti_nodes::automation::{Breakpoint, Exponent, Trajectory};
-    use tutti_types::{Beat, BeatDuration, Depth, Hz, Phase, PhaseIncrement};
+    use tutti_types::{Beat, BeatsPerCycle, Depth, Hz, Phase, PhaseIncrement};
     let depth = 0.05 + 0.01 * ((k as u32 + generation) % 7) as f32;
     let amount = Amount {
         depth: Depth::of(depth),
@@ -644,7 +644,7 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
         },
     };
     let beats = Clock::Beats {
-        per_cycle: BeatDuration(0.25 + 0.125 * (k % 5) as f64),
+        per_cycle: BeatsPerCycle::new(0.25 + 0.125 * (k % 5) as f64).expect("above zero"),
         phase: PhaseIncrement(0.0),
     };
     let seconds = Clock::Seconds {

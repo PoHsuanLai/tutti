@@ -31,7 +31,9 @@ use tutti_nodes::{
     LimiterControls, LimiterNode, ModDelayNode, PhaserControls, PhaserNode, Stages, SvfFilterNode,
     SvfType,
 };
-use tutti_types::{BeatDuration, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples};
+use tutti_types::{
+    BeatsPerCycle, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples,
+};
 use tutti_types::{BusTopology, ChannelLayout, UnitParam};
 
 /// Writes `value` to `p` through `node`'s set, as a host does; `false` for
@@ -223,7 +225,7 @@ fn render_chorus(
         let layer = Layer {
             id: LayerId(1),
             clock: Clock::Beats {
-                per_cycle: BeatDuration(1.0),
+                per_cycle: BeatsPerCycle::of(1.0),
                 phase: PhaseIncrement(0.0),
             },
             wave: Waveform::Const(1.0),
@@ -381,7 +383,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),
@@ -481,7 +483,7 @@ where
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),
@@ -739,7 +741,7 @@ fn shelf_handed_back(block: usize) -> Vec<f32> {
     let layer = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(1.0),
+            per_cycle: BeatsPerCycle::of(1.0),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Const(1.0),

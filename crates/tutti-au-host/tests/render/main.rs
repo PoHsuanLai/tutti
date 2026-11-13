@@ -2,8 +2,8 @@
 //! against the real corpus (macOS only).
 //!
 //! The binary's global allocator is armed (`AllocDisabler`), so its no-alloc gates bite.
+#![cfg(target_os = "macos")]
 
-#[cfg(target_os = "macos")]
 #[path = "../support/mod.rs"]
 mod support;
 
@@ -13,7 +13,5 @@ mod support;
 #[global_allocator]
 static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-#[cfg(target_os = "macos")]
 mod au_offline;
-#[cfg(target_os = "macos")]
 mod au_process_no_alloc;

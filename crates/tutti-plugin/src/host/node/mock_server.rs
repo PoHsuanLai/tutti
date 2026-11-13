@@ -235,6 +235,7 @@ fn answer(slab: &mut SlabWriter, scratch: &mut [f32], data: ProcessAudioData) ->
         latency_us: 0,
         seq: data.seq,
         midi_out: data.midi_events,
+        status: Default::default(),
     }
 }
 

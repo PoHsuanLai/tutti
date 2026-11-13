@@ -12,3 +12,4 @@ mod replace;
 mod reprepare;
 mod revision;
 mod set_latency;
+mod set_tail;

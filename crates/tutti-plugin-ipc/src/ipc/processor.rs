@@ -16,6 +16,7 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use tutti_plugin_types::BlockStatus;
 use tutti_plugin_types::{
     AudioBufferMut, ParameterChanges, PluginError, PluginIo, PluginResult, ProcessContext,
     ProcessOutput, Processor, SampleRate, Samples, WireMidi,
@@ -72,6 +73,7 @@ impl Processor for IpcProcessor {
             pending: &mut self.pending,
             params: &mut self.params,
             over: 0,
+            said: BlockStatus::Continue,
         };
         self.batcher.process(
             &self.link.bridge,
@@ -81,6 +83,17 @@ impl Processor for IpcProcessor {
             &mut piece,
         );
         let over = piece.over;
+        let said = piece.said;
+        // **A sleep is applied only to a piece that gave the plugin nothing.**
+        // The status is the plugin's word on the chunk collected at this
+        // piece's start, whose input is a chunk behind; this piece's input and
+        // events are in the chunk it begins, which has not been shipped. Idle
+        // would park the node and that chunk with it, so a piece that carries
+        // anything (an event, a parameter, a note expression, a non-silent
+        // input frame) does not get the sleep, and the node stays called.
+        if said == BlockStatus::Sleep && !carries_input(io.ctx, buffer.inputs, buffer.num_samples) {
+            io.out.set_status(BlockStatus::Sleep);
+        }
         if over > 0 {
             // Taken into a chunk already holding the most it can: counted
             // lost, as the served node counts what its cap drops.
@@ -150,6 +163,26 @@ struct Piece<'a, 'c> {
     params: &'a mut ParameterChanges,
     /// MIDI the chunk had no room for.
     over: usize,
+    /// What the plugin said at the end of the chunk collected in this call.
+    said: BlockStatus,
+}
+
+/// Whether a piece hands the plugin anything a sleeping plugin would wake
+/// for: MIDI, parameter changes, note expression, sequencer context, or a
+/// non-silent input frame.
+fn carries_input(ctx: &ProcessContext<'_>, inputs: &[&[f32]], frames: usize) -> bool {
+    !ctx.midi_events.is_empty()
+        || ctx.param_changes.is_some_and(|c| !c.is_empty())
+        || ctx.note_expression.is_some_and(|c| !c.changes.is_empty())
+        || ctx.expressive.as_ref().is_some_and(|e| {
+            e.chords.is_some_and(|c| !c.changes.is_empty())
+                || e.scales.is_some_and(|c| !c.changes.is_empty())
+                || e.expr_texts.is_some_and(|c| !c.changes.is_empty())
+                || e.expr_ints.is_some_and(|c| !c.changes.is_empty())
+        })
+        || inputs
+            .iter()
+            .any(|ch| ch[..frames.min(ch.len())].iter().any(|&x| x != 0.0))
 }
 
 impl Chunks for Piece<'_, '_> {
@@ -245,11 +278,43 @@ impl Chunks for Piece<'_, '_> {
         self.out.count_midi_lost(midi);
     }
 
+    fn status(&mut self, status: BlockStatus) {
+        self.said = status;
+    }
+
     /// Nothing: each event goes out where it plays ([`emit`](Chunks::emit)).
     fn midi_out(&mut self, _events: &tutti_plugin_types::MidiEventVec) {}
 
     fn emit(&mut self, frame: usize, mut event: WireMidi) {
         event.offset = u32::try_from(frame).unwrap_or(u32::MAX);
         let _ = self.out.emit_midi([event]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_plugin_types::ParamId;
+
+    /// **A piece carries input when it holds an event, a parameter change or a non-silent frame,
+    /// and only then**: it is what keeps a collected *sleep* from idling the
+    /// node over a chunk that has a note in it (the chunk it begins is not
+    /// shipped yet, so parking the node would park the note).
+    #[test]
+    fn a_piece_carries_input_only_if_it_holds_something() {
+        let silence = [0.0f32; 8];
+        let mut noisy = silence;
+        noisy[5] = 0.25;
+        let quiet = ProcessContext::new();
+        assert!(!carries_input(&quiet, &[&silence, &silence], 8));
+        assert!(carries_input(&quiet, &[&silence, &noisy], 8), "a sample");
+        assert!(
+            !carries_input(&quiet, &[&noisy], 5),
+            "a sample past the piece is not the piece's"
+        );
+        let mut changes = ParameterChanges::reserved(1, 4);
+        assert!(changes.add_change(ParamId::new(1), 3, 0.5));
+        let with_params = ProcessContext::new().params(&changes);
+        assert!(carries_input(&with_params, &[&silence], 8), "a parameter");
     }
 }

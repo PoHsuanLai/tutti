@@ -122,6 +122,33 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     }
 }
 
+/// **The graph holds the tail ceiling the plugin claims** (`clap.tail`), apart
+/// from its latency (doc 023 step 2): the node's shape declares it through
+/// `Processing::ceiling`, an unmeasured plugin's claim, and the session's
+/// phase leaves it alone while the plugin's figure stands.
+#[test]
+fn a_plugins_tail_ceiling_is_the_plugins_claim() {
+    let mut s = offline();
+    let node = add_probe_on_outputs(&mut s);
+    assert_eq!(
+        s.graph_ref().node_tail(node).unwrap(),
+        tutti_types::Tail::Finite(Samples(
+            tutti_clap_test_plugin::REPORTED_TAIL_SAMPLES as usize
+        )),
+    );
+    let now = Instant::now();
+    let mut out = Vec::new();
+    for &phase in PHASES {
+        s.run_phase(phase, PhaseCx::at(now), &mut out);
+        if phase == Phase::Plugins {
+            assert!(
+                !s.graph_ref().is_edited(),
+                "an unchanged plugin tail marked the graph edited"
+            );
+        }
+    }
+}
+
 /// A short offline bounce into memory: the render mode a plugin is told
 /// Offline for as long as it is in flight.
 fn request() -> Bounce<tutti_graph::NodeKey, BufferMaster> {

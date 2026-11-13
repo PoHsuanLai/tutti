@@ -36,7 +36,7 @@ use crate::unique_socket_path;
 use crate::{AudioSlab, RING_SLOTS, SlabWriter};
 use crate::{BridgeMessage, HostMessage, PROTOCOL_VERSION, SlabLayout};
 use std::sync::Arc;
-use tutti_plugin_types::{ChannelLayout, ChunkCounters, MidiEventVec, SampleFormat};
+use tutti_plugin_types::{BlockStatus, ChannelLayout, ChunkCounters, MidiEventVec, SampleFormat};
 use tutti_types::SampleRate;
 
 /// The bridge's editor loader: these peers never open an editor, and one that
@@ -264,6 +264,7 @@ fn bridge_with_server(
                             latency_us: 0,
                             seq,
                             midi_out: Default::default(),
+                            status: Default::default(),
                         }
                     }
                     _ => continue,
@@ -1462,6 +1463,7 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
                             latency_us: 0,
                             seq,
                             midi_out,
+                            status: status_for(seq),
                         }
                     }
                     _ => continue,
@@ -1480,6 +1482,82 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     (bridge, bridge_thread, server_thread, host_slab)
+}
+
+/// What the stamped server says of its block `seq`: a distinct status for each
+/// of three consecutive blocks, so a mispairing names itself.
+fn status_for(seq: u64) -> BlockStatus {
+    match seq % 3 {
+        0 => BlockStatus::Sleep,
+        1 => BlockStatus::Continue,
+        _ => BlockStatus::Tail,
+    }
+}
+
+/// A host that records the status each collected chunk was handed.
+#[derive(Default)]
+struct StatusProbe {
+    said: Vec<BlockStatus>,
+}
+
+impl crate::Chunks for StatusProbe {
+    fn begin(&mut self, _at: usize, _chunk: usize) {}
+    fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
+
+    fn payload(&mut self, _frames: usize) -> BlockPayload {
+        BlockPayload::default()
+    }
+
+    fn midi_out(&mut self, _events: &MidiEventVec) {}
+
+    fn status(&mut self, status: BlockStatus) {
+        self.said.push(status);
+    }
+
+    fn emit(&mut self, _frame: usize, _event: tutti_plugin_types::WireMidi) {}
+}
+
+/// **The status a server replies with crosses the wire and reaches the host
+/// with the chunk it belongs to** (doc 023 step 2). The server says a
+/// different status for each of blocks 1, 2 and 3 (continue, tail, sleep);
+/// the batcher collects block `n` as it starts chunk `n + 1`, and hands the
+/// host block `n`'s status then: nothing's before any chunk is in flight
+/// (continue), then each block's own, never a neighbour's.
+#[test]
+fn a_blocks_status_reaches_the_host_with_its_chunk() {
+    let _lock = machine_lock();
+    let (bridge, _thread, _server, slab) =
+        bridge_with_first_block_stalled(std::time::Duration::ZERO);
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE, slab);
+    let silence = vec![0.0f32; BATCH_SIZE];
+    let mut out = Planar::new();
+    let mut host = StatusProbe::default();
+    for block in 1..=4u64 {
+        out.clear();
+        batcher.process(
+            &bridge,
+            BATCH_SIZE,
+            &[&silence, &silence],
+            &mut out.outs(),
+            &mut host,
+        );
+        // The reply is read off the socket by the bridge thread, after the
+        // audio is published: wait for it, so the next collect finds it.
+        let deadline = std::time::Instant::now() + WAIT_BUDGET;
+        while bridge.block_counts().replies < block && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        host.said,
+        [
+            BlockStatus::Continue,
+            status_for(1),
+            status_for(2),
+            status_for(3)
+        ]
+    );
 }
 
 /// A host whose every chunk carries `midi` MIDI events, recording what the
@@ -1727,6 +1805,7 @@ fn two_stale_blocks(
                         latency_us: 0,
                         seq: data.seq,
                         midi_out: Default::default(),
+                        status: Default::default(),
                     },
                 );
             }

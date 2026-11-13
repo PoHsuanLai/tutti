@@ -53,11 +53,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::MAX_NODE_LATENCY;
 use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Sink, Source};
 use crate::{EventTapId, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
+use crate::{MAX_NODE_LATENCY, MAX_NODE_TAIL};
 use ringbuf::traits::{Consumer, Producer};
-use tutti_types::{Latency, Samples};
+use tutti_types::{Latency, Samples, Tail};
 
 use tutti_types::At;
 
@@ -207,6 +207,17 @@ pub enum CommitError {
         /// The most PDC compensates.
         limit: Latency,
     },
+    /// A finite tail past what the graph's tail figures bound
+    /// (`crate::MAX_NODE_TAIL`), refused rather than silently clamped
+    /// ([`Editor::set_tail`]).
+    TailTooLong {
+        /// The node.
+        node: NodeKey,
+        /// The tail asked for, in frames.
+        tail: Samples,
+        /// The longest finite tail a node may declare.
+        limit: Samples,
+    },
 }
 
 /// What a re-prepare's second half builds: the plan, the resume delta, every
@@ -325,6 +336,13 @@ impl std::fmt::Display for CommitError {
                 node.0,
                 latency.samples().get(),
                 limit.samples().get()
+            ),
+            Self::TailTooLong { node, tail, limit } => write!(
+                f,
+                "node {}: tail {} frames; a finite tail is at most {}",
+                node.0,
+                tail.get(),
+                limit.get()
             ),
         }
     }
@@ -1651,6 +1669,70 @@ impl Editor {
         // the next commit, and a replace not yet committed lands as a swap.
         self.fades.remove(&key);
         self.latency_cuts.insert(key);
+        Ok(())
+    }
+
+    /// Changes `key`'s declared tail ceiling at runtime — a plugin whose
+    /// ring-out moved (CLAP's tail-changed callback). Takes effect at the
+    /// next [`commit`](Self::commit), like any edit to the spec: it
+    /// recompiles, and the plan's park time, the graph's tail figure and an
+    /// export's length read the new ceiling. **The running unit is not
+    /// touched**: same generation, same state, no replacement.
+    ///
+    /// **The ceiling moves at a commit, as a latency does.** Until then the
+    /// executor's record is the old one: on a shrink while the old ring-out
+    /// still sounds, the plan, an export and the silence skip read the new
+    /// ceiling only from the next commit, and a node's
+    /// [`report_tail`](crate::Io::report_tail) is clamped to whichever
+    /// ceiling the executor holds, so it always fits within it
+    /// (`contract::assert_honest_tail` applies unchanged).
+    ///
+    /// **Who holds the figure.** Between this call and the unit's next
+    /// [`prepare`](crate::Node::prepare) or re-prepare this call is the
+    /// authority: it writes the spec's [`NodeSpec`] tail and the editor's
+    /// shape entry, which is all the compiler reads. A re-prepare asks the
+    /// unit's [`shape`](Node::shape) again and its answer replaces this one;
+    /// so does a [`replace`](Self::replace).
+    ///
+    /// **A crossfade at `key` is not cut.** A tail ceiling feeds neither PDC
+    /// nor the fade's two units' alignment (the latency does), so the fade
+    /// runs on and the new ceiling is the node's from the next commit.
+    ///
+    /// Takes the shape's own [`Tail`], so [`Tail::Unbounded`] and
+    /// [`Tail::Unknown`] can be declared.
+    ///
+    /// # Errors
+    ///
+    /// [`CommitError::NoSuchNode`] for a key with no node,
+    /// [`CommitError::TailTooLong`] for a finite tail past
+    /// [`MAX_NODE_TAIL`] (a probed tail is clamped there, a figure set by
+    /// hand is refused), [`CommitError::Repreparing`] between a re-prepare's
+    /// two commits (its second half re-reads every unit's shape and would
+    /// overwrite this) or [`CommitError::Poisoned`]; nothing changes.
+    pub fn set_tail(&mut self, key: NodeKey, tail: Tail) -> Result<(), CommitError> {
+        self.collect();
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
+        if let Tail::Finite(frames) = tail
+            && frames > MAX_NODE_TAIL
+        {
+            return Err(CommitError::TailTooLong {
+                node: key,
+                tail: frames,
+                limit: MAX_NODE_TAIL,
+            });
+        }
+        let (Some(node), Some(shape)) = (
+            self.spec.topology.nodes.get_mut(&key),
+            self.shapes.get_mut(&key),
+        ) else {
+            return Err(CommitError::NoSuchNode { node: key });
+        };
+        node.tail = tail;
+        shape.tail = tail;
+        self.touch();
         Ok(())
     }
 

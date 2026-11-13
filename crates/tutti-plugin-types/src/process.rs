@@ -120,6 +120,29 @@ impl<'a> ProcessContext<'a> {
     }
 }
 
+/// What a plugin says about itself at the end of a block, in a form every
+/// format that has one shares (doc 023 section 5.3). Only CLAP has a live
+/// per-block status (`clap_process_status`); VST2, VST3 and AU report
+/// [`Continue`](Self::Continue) always, so the node reports nothing for them
+/// and the declared tail ceiling stands.
+///
+/// CLAP's *continue* and *continue if not quiet* are both
+/// [`Continue`](Self::Continue): neither narrows anything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BlockStatus {
+    /// Nothing to report: the declared tail ceiling stands.
+    #[default]
+    Continue,
+    /// The plugin made no new signal and is still ringing out: the node
+    /// reports the ceiling (what it reports when it says nothing, so this
+    /// narrows nothing).
+    Tail,
+    /// The plugin is asleep: its output is silent and it will stay so until
+    /// it is given input. The node reports no tail and is idle.
+    Sleep,
+}
+
 /// Per-block outputs from
 /// [`Processor::process`](crate::Processor::process) beyond the
 /// audio buffer.
@@ -155,6 +178,8 @@ pub struct ProcessOutput {
     midi_lost: usize,
     // Whether a chunk this call completed went without its parameter changes.
     params_unsent: bool,
+    // What the plugin said of itself at the end of the block.
+    status: BlockStatus,
 }
 
 impl ProcessOutput {
@@ -170,6 +195,7 @@ impl ProcessOutput {
         self.params_refused = 0;
         self.midi_lost = 0;
         self.params_unsent = false;
+        self.status = BlockStatus::Continue;
         self.param_changes.clear();
         self.note_expression.changes.clear();
     }
@@ -248,6 +274,19 @@ impl ProcessOutput {
         self.params_unsent
     }
 
+    /// Records what the plugin said of itself at the end of the block (CLAP's
+    /// process status). The last call wins; reset to
+    /// [`BlockStatus::Continue`] by [`clear`](Self::clear).
+    pub fn set_status(&mut self, status: BlockStatus) {
+        self.status = status;
+    }
+
+    /// The status set since the last [`clear`](Self::clear), or
+    /// [`BlockStatus::Continue`].
+    pub fn status(&self) -> BlockStatus {
+        self.status
+    }
+
     /// Appends one automation point within the room
     /// [`reserve_params`](Self::reserve_params) gave
     /// [`param_changes`](Self::param_changes)
@@ -314,5 +353,18 @@ mod tests {
         out.clear();
         assert_eq!(out.midi_lost(), 0);
         assert!(!out.params_unsent());
+    }
+
+    /// **A block's status is the last one set and `clear` resets it**: the
+    /// node reads it after each call, and a status left from the last block
+    /// would idle a node over a block that sounds.
+    #[test]
+    fn the_status_is_set_per_block_and_clear_resets_it() {
+        let mut out = ProcessOutput::default();
+        assert_eq!(out.status(), BlockStatus::Continue);
+        out.set_status(BlockStatus::Sleep);
+        assert_eq!(out.status(), BlockStatus::Sleep);
+        out.clear();
+        assert_eq!(out.status(), BlockStatus::Continue);
     }
 }

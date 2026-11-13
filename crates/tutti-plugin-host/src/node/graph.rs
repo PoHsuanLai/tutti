@@ -32,11 +32,11 @@ use tutti_graph::{
     BusOut, Cx, Event, EventKind, Harmony, HarmonyKind, InBus, IntoNode, Io, MAX_BUSES, Node,
     NodeParts, Offset, OutBus, Prepare, Shape, SortedEvents, Status,
 };
-use tutti_types::Latency;
-use tutti_types::Samples;
+use tutti_types::{Latency, Samples, Tail};
 
 use super::client::{InProcClient, Inputs, PluginNode, Rendered, render_with};
 use crate::{Call, NodeControls, Snapshot, param_input, transport_info};
+use tutti_plugin_types::{BlockStatus, ProcessOutput, Processing};
 use tutti_plugin_types::{
     ChordChanges, ChordValue, ExpressiveContext, Features, InProcess, Loaded, MAX_BLOCK_CHANNELS,
     Processor, ScaleChanges, ScaleValue, TransportInfo, WireMidi,
@@ -82,7 +82,9 @@ where
             .ports
             .with_events(1, midi_out)
             .with_latency(latency)
-            .with_tail(tail)
+            // The ceiling: the plugin's claim, raised by what a probe
+            // measured (nothing yet, doc 023 step 3), never lowered.
+            .with_tail(Processing::new(tail).ceiling())
     }
 
     /// The rate (parked for the plugin, dispatched from the main thread; a
@@ -190,6 +192,9 @@ where
             {
                 out[..size].fill(0.0);
             }
+            // Whether every piece of the block was asleep (`asleep`): one that
+            // was not, or did not run, keeps the node called.
+            let mut slept = true;
             let mut at = 0;
             while at < size {
                 let n = (chunk - phase).min(size - at);
@@ -308,6 +313,7 @@ where
                         out.fill(0.0);
                     }
                 }
+                slept &= rendered == Rendered::Ran && asleep(&this.out, &outs);
                 if rendered == Rendered::Ran {
                     // In the chunk the Processor holds until it ships it.
                     this.chunk_midi += piece_midi as u64;
@@ -361,7 +367,7 @@ where
                     }
                 }
             }
-            return Status::Modified;
+            return slept_status(&io, slept && this.out_events.is_empty());
         }
 
         // The event input: its MIDI, in its (sorted) order, past the cap
@@ -452,8 +458,11 @@ where
                     out.fill(0.0);
                 }
             }
-            rendered
+            // Read with the buffers still lent: a sleep claims silent output.
+            let slept = rendered == Rendered::Ran && asleep(&this.out, &outs);
+            (rendered, slept)
         };
+        let (rendered, slept) = rendered;
         let processed = rendered == Rendered::Ran;
         if processed {
             // The writes the plugin refused, counted dropped.
@@ -488,7 +497,7 @@ where
                 }
             }
         }
-        Status::Modified
+        slept_status(&io, slept && !sends)
     }
 
     fn reset(&mut self) {
@@ -512,6 +521,34 @@ where
         if let Some(processor) = this.rt.held() {
             processor.reset();
         }
+    }
+}
+
+/// Whether the plugin said it is asleep this block, and its audio and MIDI
+/// say so too: CLAP's *sleep* means the output is silent, and the executor
+/// writes silence for a node it parks, so a plugin that sleeps over sound is
+/// not believed.
+fn asleep(out: &ProcessOutput, outs: &[&mut [f32]]) -> bool {
+    out.status() == BlockStatus::Sleep
+        && out.midi_events.is_empty()
+        && outs.iter().all(|c| c.iter().all(|&x| x == 0.0))
+}
+
+/// The status a block ends with (doc 023 section 5.3). A plugin that slept
+/// through the whole block rings out nothing: **no tail, and [`Status::Idle`]**,
+/// which is what lets the executor park a node with an event input (every
+/// instrument): the executor still calls it the moment a note or any input
+/// arrives, at that block, so a sleeping plugin is woken on time. Everything
+/// else reports nothing: *continue*, *continue if not quiet* and *tail* all
+/// leave the declared ceiling standing (a call that reports nothing restores
+/// it, which is what a tail status would report), and a format with no
+/// per-block status never says anything.
+fn slept_status(io: &Io<'_>, slept: bool) -> Status {
+    if slept {
+        io.report_tail(Tail::None);
+        Status::Idle
+    } else {
+        Status::Modified
     }
 }
 

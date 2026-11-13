@@ -1452,6 +1452,14 @@ Seven gaps had to close before the flip:
    A figure past `MAX_NODE_LATENCY` is refused (`LatencyTooLong`), not
    clamped. The reference interpreter reads latency from the spec, as the
    compiler does.
+   **`Editor::set_tail(key, Tail)`** is its twin for the tail ceiling (doc 023
+   step 2): the same guards and the same authority until a re-prepare, but it
+   takes the shape's `Tail` (so `Unbounded` can be declared), refuses a finite
+   tail past `MAX_NODE_TAIL` (`TailTooLong`), and **does not cut a crossfade**:
+   a ceiling feeds no PDC. The ceiling moves at the next commit; on a shrink
+   while the old ring-out still sounds, the plan, export and silence skip read
+   the new one only from then, and `report_tail` is clamped to the ceiling the
+   executor holds.
 5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
    hosts read its `BEAT_PORTS`. `EnvClock` (tutti-transport,
    beside `TransportClock`) is a native `Node` that emits the same

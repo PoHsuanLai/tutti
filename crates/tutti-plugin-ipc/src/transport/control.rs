@@ -755,6 +755,7 @@ mod tests {
             latency_us: 0,
             seq: 1,
             midi_out: Default::default(),
+            status: Default::default(),
         };
         let mut round = || {
             send(&mut p.host, &block).expect("send");

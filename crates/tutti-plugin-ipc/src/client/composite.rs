@@ -264,8 +264,13 @@ impl PluginBridge {
 
     /// Block `seq`'s MIDI-out, and any earlier block's still queued. See
     /// [`AudioBridge::take_replies`].
-    pub fn take_replies(&self, seq: u64, midi_out: &mut MidiEventVec) -> bool {
-        self.audio.take_replies(seq, midi_out)
+    pub fn take_replies(
+        &self,
+        seq: u64,
+        midi_out: &mut MidiEventVec,
+        status: &mut tutti_plugin_types::BlockStatus,
+    ) -> bool {
+        self.audio.take_replies(seq, midi_out, status)
     }
 
     /// Install a listener for plugin-originated unsolicited events

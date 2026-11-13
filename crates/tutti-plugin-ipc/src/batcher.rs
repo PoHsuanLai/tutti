@@ -71,8 +71,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tutti_plugin_types::{
-    BridgeResult, ChunkCounters, MidiEventVec, NoteExpressionChanges, ParameterChanges,
-    SampleFormat, TransportChanges, TransportInfo, WireMidi,
+    BlockStatus, BridgeResult, ChunkCounters, MidiEventVec, NoteExpressionChanges,
+    ParameterChanges, SampleFormat, TransportChanges, TransportInfo, WireMidi,
 };
 use tutti_types::Samples;
 
@@ -218,6 +218,12 @@ pub trait Chunks {
     /// chunk's frames, sorted: handed over once, as its output starts to
     /// play.
     fn midi_out(&mut self, events: &MidiEventVec);
+    /// What the plugin said of itself at the end of the chunk the ring now
+    /// holds (CLAP's process status), handed over with its
+    /// [`midi_out`](Self::midi_out). [`BlockStatus::Continue`] when the reply
+    /// had not arrived by the time the chunk was collected: a status that is
+    /// late is not applied, and the caller errs long.
+    fn status(&mut self, _status: BlockStatus) {}
     /// One of those events, at frame `frame` of this call: where the ring
     /// plays the chunk frame it was emitted at, so it keeps its place against
     /// the plugin's audio. Called in frame order.
@@ -264,6 +270,9 @@ pub struct Batcher {
     /// The plugin's MIDI-out for the chunk the ring holds, at that chunk's
     /// frames, sorted (`collect`). Inline, so the drain never allocates.
     reply: MidiEventVec,
+    /// What the plugin said at the end of the chunk the ring holds
+    /// (`collect`): `Continue` until its reply is read.
+    said: BlockStatus,
     /// What the pipeline reports to its controls.
     counters: Arc<ChunkCounters>,
 }
@@ -304,6 +313,7 @@ impl Batcher {
             expect_seq: None,
             offline_wait: None,
             reply: MidiEventVec::new(),
+            said: BlockStatus::Continue,
             counters: Arc::default(),
         }
     }
@@ -434,7 +444,7 @@ impl Batcher {
         // for the reply too, or an export's MIDI-out would depend on how the
         // two raced. Within the same budget; a reply that never comes costs
         // its MIDI, never the audio (no `give_up`).
-        while !bridge.take_replies(seq, &mut self.reply) {
+        while !bridge.take_replies(seq, &mut self.reply, &mut self.said) {
             if bridge.is_crashed() || Instant::now() >= deadline {
                 return;
             }
@@ -494,6 +504,7 @@ impl Batcher {
     /// to `host` once and then emitted as the ring plays it (`process`).
     fn collect(&mut self, bridge: &PluginBridge, host: &mut impl Chunks) {
         self.reply.clear();
+        self.said = BlockStatus::Continue;
         self.await_output(bridge);
         let chunk = self.chunk;
         match self.collectable(bridge) {
@@ -514,13 +525,18 @@ impl Batcher {
                 }
             }
         }
-        bridge.take_replies(self.expect_seq.unwrap_or(0), &mut self.reply);
+        bridge.take_replies(
+            self.expect_seq.unwrap_or(0),
+            &mut self.reply,
+            &mut self.said,
+        );
         let last = u32::try_from(chunk.saturating_sub(1)).unwrap_or(u32::MAX);
         for e in self.reply.iter_mut() {
             e.offset = e.offset.min(last);
         }
         tutti_plugin_types::insertion_sort_by_key(&mut self.reply, |e| e.offset);
         host.midi_out(&self.reply);
+        host.status(self.said);
         self.expect_seq = None;
         self.counters.in_flight.store(0, Ordering::Release);
     }

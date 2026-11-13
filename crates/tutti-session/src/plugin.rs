@@ -1996,6 +1996,13 @@ impl Session {
                 .controls
                 .as_ref()
                 .map(PluginControls::declared_latency);
+            // Likewise its tail ceiling (the plugin's claim, as the node's shape
+            // declares it): a tail-changed callback re-declares it, and the
+            // next commit moves the plan and the silence skip to it.
+            let declared_tail = hosted
+                .controls
+                .as_ref()
+                .map(|controls| tutti_plugin_types::Processing::new(controls.tail()).ceiling());
             let healthy = matches!(hosted.status, PluginLiveness::Healthy);
             let due = healthy && Arc::strong_count(&hosted.snapshot_token) == 1 && {
                 let since = *hosted.snapshot_at.get_or_insert(now);
@@ -2029,6 +2036,9 @@ impl Session {
                 }
             });
 
+            if let Some(tail) = declared_tail {
+                self.graph.refresh_node_tail(node, tail);
+            }
             if let Some(declared) = declared
                 && self.graph.refresh_node_latency(node, declared)
             {

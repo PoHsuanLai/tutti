@@ -109,7 +109,9 @@ pub use lifecycle::{
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
-pub use metadata::{BusChannels, Layout, LoadedPlugin, PluginBus, PluginBuses, PluginTail};
+pub use metadata::{
+    BusChannels, Layout, LoadedPlugin, Measured, PluginBus, PluginBuses, PluginTail, Processing,
+};
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 pub use midi_intake::MidiIntake;
 pub use tutti_graph::BusRole;
@@ -133,7 +135,7 @@ pub use probe_wire::{
     ProbeOutcome, ResultError, decode_result, encode_result, read_result, result_tmp_path,
     write_result,
 };
-pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
+pub use process::{BlockStatus, ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
 pub use sample_format::{SampleFormat, negotiate};
 pub use sysex::{

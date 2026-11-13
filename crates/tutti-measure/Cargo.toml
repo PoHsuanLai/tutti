@@ -3,10 +3,9 @@ name = "tutti-measure"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Audio measurement for Tutti over plain sample slices: waveform blocks, onsets, pitch, EBU R128 loudness, stereo correlation, spectra, tempo, key and chords, silence regions and the STFT"
+description = "Measures audio: loudness (EBU R128), pitch, onsets, stereo correlation, spectra, tempo, key and chords"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-measure"
 readme = "README.md"
 keywords = ["audio", "analysis", "pitch", "loudness", "onset"]
 categories = ["multimedia::audio"]
@@ -32,7 +31,6 @@ ebur128 = "0.1"
 thiserror.workspace = true
 
 [features]
-# No default features. This crate is a library of measurements over `&[f32]`.
 default = []
 
 [dev-dependencies]
@@ -41,17 +39,12 @@ default = []
 tutti-graph = { path = "../tutti-graph" }
 # Reproducible noise for the correlation tests, which otherwise hand-roll a
 # generator. Seeded, so an uncorrelated-input assertion is not flaky.
-#
-# No `assert_no_alloc` here, unlike most sibling crates: everything this crate
-# does is cold-path batch analysis that legitimately allocates its output.
-rand = "0.8"
+rand = "0.10"
 # The shared sine, impulse and level readings (`signal`).
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # `benches/fft_analyses`.
 criterion.workspace = true
 # An independent YIN, as a second opinion on ours, for `tests/oracle_pitch.rs`.
-# Unmaintained (last release 2022) — see that file's header for why it is still
-# a usable oracle and what is deliberately not compared against it.
 pitch-detection = "0.3"
 
 [[bench]]

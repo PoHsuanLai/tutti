@@ -61,7 +61,8 @@
 use raw_window_handle::HasWindowHandle;
 use tutti_graph::NodeKey;
 use tutti_plugin_types::{
-    ContentScale, EditorError, EditorSize, Features, MainThread, PresetError, WindowHandle,
+    ContentScale, EditorError, EditorSize, Features, KeyEvent, KeyUse, MainThread, PresetError,
+    WindowHandle,
 };
 
 use crate::plugin::HostedPlugin;
@@ -286,6 +287,16 @@ impl EditorView<'_> {
     /// as it is. Another error: no editor is open, or the plugin refused.
     pub fn rescale(&mut self, scale: ContentScale) -> Result<(), EditorError> {
         self.hosted.handle.set_editor_scale(&self.main, scale)
+    }
+
+    /// Forwards a key the host's window received to the open editor.
+    ///
+    /// # Errors
+    ///
+    /// [`EditorError::KeysUnsupported`] where the format takes no keys in its editor.
+    /// Another error: no editor is open, or the plugin refused.
+    pub fn editor_key(&mut self, event: KeyEvent) -> Result<KeyUse, EditorError> {
+        self.hosted.handle.editor_key(&self.main, event)
     }
 
     /// Closes the editor; the plugin stays loaded. Nothing happens when none

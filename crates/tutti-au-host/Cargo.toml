@@ -3,10 +3,9 @@ name = "tutti-au-host"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Audio Unit (AUv2) plugin hosting for macOS via AudioToolbox framework"
+description = "A host for Audio Unit (AUv2) plugins on macOS"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-au-host"
 readme = "README.md"
 keywords = ["audio-unit", "au", "audio", "plugin", "host"]
 categories = ["multimedia::audio", "os::macos-apis"]
@@ -19,13 +18,6 @@ workspace = true
 # calls beside the safe API (the raw `AudioUnit` behind a `Unit`, the packet-list
 # walkers). Off in a production build.
 testing = ["tutti-au-ffi/testing"]
-# `tests/au_midi_map.rs`'s claim about third-party Audio Units that are
-# installed on the machine (TDR Nova, TAL-NoiseMaker, TAL Reverb 4). It fails,
-# never skips, where they are absent, so it is compiled out unless asked for:
-# CI lints it (`clippy (macos)`) and a developer with the units runs it with
-# `cargo xtask test-au-installed`. It gates one test and adds no code to the library.
-installed-units = []
-
 [dependencies]
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # Every raw AudioToolbox, CoreAudio and CoreFoundation call; this crate forbids
@@ -56,10 +48,11 @@ tutti-au-ffi = { path = "../tutti-au-ffi", features = ["testing"] }
 # `mapping_contract!`: the laws `ParamBounds` is held to.
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 tutti-graph = { path = "../tutti-graph" }
-tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin", "au"] }
 assert_no_alloc = { version = "1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
 # The probe AU and a few tests build CoreFoundation objects of their own.
 core-foundation = "0.10"
 core-foundation-sys = "0.8"

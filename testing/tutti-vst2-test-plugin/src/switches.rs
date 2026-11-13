@@ -301,6 +301,18 @@ pub(crate) fn echo_set_parameter() -> bool {
     ECHO_SET_PARAMETER.load(Ordering::SeqCst)
 }
 
+static KEY_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the probe's editor reports an editor key as used.
+#[unsafe(no_mangle)]
+pub extern "C" fn tutti_vst2_probe_set_key_consumed(consumed: bool) {
+    KEY_CONSUMED.store(consumed, Ordering::SeqCst);
+}
+
+pub(crate) fn key_consumed() -> bool {
+    KEY_CONSUMED.load(Ordering::SeqCst)
+}
+
 /// Restore every switch to its well-behaved default.
 ///
 /// Tests share one loaded image, so a switch left set contaminates every
@@ -323,6 +335,8 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     PRESET_TRACE.store(0, Ordering::SeqCst);
     PRESET_TRACE_LEN.store(0, Ordering::SeqCst);
     EDITOR_OPENS.store(false, Ordering::SeqCst);
+    KEY_CONSUMED.store(false, Ordering::SeqCst);
+    ACCEPT_STRING_TO_PARAMETER.store(false, Ordering::SeqCst);
     tutti_vst2_probe_reset_trace();
 }
 
@@ -376,8 +390,7 @@ pub(crate) fn is_resumed() -> bool {
 /// Lives in the probe's image rather than in the host, which is the whole
 /// point: it is readable *after* the host has dropped its instance, and it
 /// survives exactly as long as the image stays mapped. Those two properties are
-/// what let one test separate the two events that
-/// `tutti_vst2_host::handle`'s module docs insist are different — `effClose`
+/// what let one test separate two different events: `effClose`
 /// (release this instance; mandatory) and `dlclose` (unload the module; the
 /// step hosts must not take).
 ///
@@ -474,6 +487,76 @@ unsafe fn call_host(opcode: i32, ptr: *mut std::ffi::c_void) -> Option<isize> {
     let callback: vst::api::HostCallbackProc = unsafe { std::mem::transmute(callback) };
     let effect = HOST_EFFECT.load(Ordering::SeqCst) as *mut vst::api::AEffect;
     Some(unsafe { callback(effect, opcode, 0, 0, ptr, 0.0) })
+}
+
+/// One `audioMaster` call with an index and a value.
+///
+/// # Safety
+/// `ptr` must satisfy the opcode's contract.
+unsafe fn call_host_with(
+    opcode: i32,
+    index: i32,
+    value: isize,
+    ptr: *mut std::ffi::c_void,
+    opt: f32,
+) -> Option<isize> {
+    let callback = HOST_CALLBACK.load(Ordering::SeqCst);
+    if callback == 0 {
+        return None;
+    }
+    let callback: vst::api::HostCallbackProc = unsafe { std::mem::transmute(callback) };
+    let effect = HOST_EFFECT.load(Ordering::SeqCst) as *mut vst::api::AEffect;
+    Some(unsafe { callback(effect, opcode, index, value, ptr, opt) })
+}
+
+/// A query a plugin makes of the host that takes no argument: the host's raw answer to
+/// `audioMaster` `opcode`, or `-2` before a plugin is loaded.
+#[unsafe(no_mangle)]
+pub extern "C" fn tutti_vst2_probe_ask_host(opcode: i32) -> isize {
+    // SAFETY: the opcodes this is called with take no pointer.
+    unsafe { call_host(opcode, std::ptr::null_mut()) }.unwrap_or(-2)
+}
+
+/// A string a plugin asks the host for (`audioMasterGetVendorString` and
+/// `GetProductString`): the host writes into `buffer`, which holds 64 bytes. Returns the
+/// host's answer, or `-2` before a plugin is loaded.
+///
+/// # Safety
+/// `buffer` must be writable for 64 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_vst2_probe_ask_host_string(
+    opcode: i32,
+    buffer: *mut std::os::raw::c_char,
+) -> isize {
+    // SAFETY: the caller guarantees `buffer`.
+    unsafe { call_host(opcode, buffer.cast()) }.unwrap_or(-2)
+}
+
+/// What a plugin's editor does when the user turns a knob: `audioMasterBeginEdit`,
+/// `audioMasterAutomate` with `value`, then `audioMasterEndEdit`, all for `index`.
+#[unsafe(no_mangle)]
+pub extern "C" fn tutti_vst2_probe_fire_edit(index: i32, value: f32) {
+    // SAFETY: none of the three takes a pointer.
+    unsafe {
+        // `audioMasterAutomate` is opcode 0, `BeginEdit` 43 and `EndEdit` 44.
+        call_host_with(43, index, 0, std::ptr::null_mut(), 0.0);
+        call_host_with(0, index, 0, std::ptr::null_mut(), value);
+        call_host_with(44, index, 0, std::ptr::null_mut(), 0.0);
+    }
+}
+
+/// Whether the probe's parameters parse `effString2Parameter` text, rather than declining.
+static ACCEPT_STRING_TO_PARAMETER: AtomicBool = AtomicBool::new(false);
+
+/// Let the probe's parameters take `effString2Parameter`: the text is a number, which is
+/// the new value. Off by default, as for every plugin measured.
+#[unsafe(no_mangle)]
+pub extern "C" fn tutti_vst2_probe_set_accept_string_to_parameter(accept: bool) {
+    ACCEPT_STRING_TO_PARAMETER.store(accept, Ordering::SeqCst);
+}
+
+pub(crate) fn accept_string_to_parameter() -> bool {
+    ACCEPT_STRING_TO_PARAMETER.load(Ordering::SeqCst)
 }
 
 /// What a plugin does when its configuration changes under it: write the new

@@ -451,6 +451,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
         edits: Vec::new(),
         events: Vec::new(),
         refused: false,
+        process_requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let prepare = Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(512)));
     assert!(
@@ -506,10 +507,12 @@ fn direct_parameter_path_is_normalized_end_to_end() {
 fn test_au_state_roundtrip_via_trait() {
     let mut au = delay();
 
-    let state = au.save_state(&main_thread()).expect("save should succeed");
+    let state = au
+        .save_state(&main_thread(), StateUse::Project)
+        .expect("save should succeed");
     assert!(!state.is_empty(), "State should not be empty");
 
-    au.load_state(&main_thread(), &state)
+    au.load_state(&main_thread(), &state, StateUse::Project)
         .expect("restore should succeed");
 }
 

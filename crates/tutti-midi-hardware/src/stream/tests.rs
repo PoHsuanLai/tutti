@@ -709,11 +709,12 @@ fn rpn_ump(value: u32) -> Ump {
     ))
 }
 
-/// M2-104 §3.2: a MIDI 1.0 endpoint "shall not use any messages from Message
-/// Type 0x4". A device the OS describes as a MIDI 1.0 port (no UMP Stream is
+/// M2-104 §3.2: a MIDI 1.0 endpoint uses no message of Message
+/// Type 0x4. A device the OS describes as a MIDI 1.0 port (no UMP Stream is
 /// asked of it) is sent only type 2 whatever the graph carries, and a
 /// Registered Controller arrives as the Control Changes 101, 100, 6 and 38 of
 /// Appendix D.2.3.
+/// Spec: m2-104/3.2#3
 #[test]
 fn a_midi1_port_is_never_sent_type_4() {
     use tutti_fixtures::midi::note_on;
@@ -793,10 +794,11 @@ fn the_output_follows_the_negotiated_protocol() {
     );
 }
 
-/// M2-104 §7.1.6.2: JR Timestamps are sent "until after a Stream Configuration
-/// Notification ... has been received". The session asks for none, so a JR
+/// M2-104 §7.1.6.2: JR Timestamps are sent only after a Stream Configuration
+/// Notification has been received. The session asks for none, so a JR
 /// Clock the output is handed does not reach the device; after the device
 /// notifies that it receives them, it does.
+/// Spec: m2-104/7.1.6.2#3
 #[test]
 fn jr_reaches_a_device_only_after_its_notification_enables_it() {
     let mut wire = session_over(

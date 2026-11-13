@@ -1,5 +1,4 @@
-//! [`HeldState`]: what a source has started and not ended, as a pure value
-//! (design 017, "Layers": the core of "held notes and controllers").
+//! [`HeldState`]: what a source has started and not ended, as a pure value.
 //!
 //! A source that vanishes, falls silent or resets leaves its receiver holding
 //! what it started: sounding notes, a pedal down, a bent wheel. The receiver
@@ -15,12 +14,12 @@
 //! (CC 120, 121, 123): a channel is shared, because several sources merge into
 //! one listener's fan-in, so a channelwide message from one source would end
 //! another's notes and reset another's wheel. MIDI 1.0 Detailed Specification
-//! 4.2.1 also says that recognising All Notes Off "is not required of the
-//! receiver" and that "all notes should first be turned off by transmitting
-//! individual Note-Off messages" (p. 24), so the individual offs are what every
+//! 4.2.1 also says that recognising All Notes Off is not required of a
+//! receiver and that notes should first be turned off by individual Note-Off
+//! messages (p. 24), so the individual offs are what every
 //! receiver understands. The notes come first and the controllers after,
-//! because a pedal that is down "takes priority over Note Off and All Notes
-//! Off until it is released" (Appendix A-5), so the pedal-up lets go of the
+//! because a pedal that is down holds a note through a Note Off or All Notes
+//! Off until it is lifted (Appendix A-5), so the pedal-up lets go of the
 //! notes just ended; p. 31 (Stop) and RP-015 (Reset All Controllers) name the
 //! pedals and the pitch wheel as what returns to its normal position. A
 //! per-note controller (MIDI 2.0) ends with its note (M2-104 section 7.4), so

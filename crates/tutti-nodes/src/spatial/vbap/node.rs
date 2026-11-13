@@ -314,8 +314,7 @@ impl Node for VbapPannerNode {
             // A ramped gain pair per output channel and frame, and the
             // smoother stepped per frame: measured 10.9 ns per frame and
             // channel at stereo, 4.3 at 5.1 while the source moves, against
-            // a gain's 0.2 and `SvfFilterNode`'s 7.2 (doc 013, "The cost
-            // model and coarsening"). A held source costs about 1.5 and 0.6.
+            // a gain's 0.2 and `SvfFilterNode`'s 7.2. A held source costs about 1.5 and 0.6.
             .with_cost(tutti_graph::Cost::Moderate)
     }
 

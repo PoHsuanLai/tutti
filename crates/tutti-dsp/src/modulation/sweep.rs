@@ -12,11 +12,10 @@ use crate::MaxDelay;
 /// flanger at a short one (1 ms) so the copy combs against the original and the sweep
 /// moves the notches.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): [`new`](Self::new) refuses
+/// A range-checked value: [`new`](Self::new) refuses
 /// what the line could not hold, and never clamps. It states the **domain** the family is
 /// grown over ([`Grows`](crate::Grows), the `MaxDelay`): the longest delay the sweep reaches
-/// is `base + depth_max`, which must fit in `max_delay`. The swept delay used to be a bare
-/// `base` and `max` that a transposition made silently clamp at the line's end.
+/// is `base + depth_max`, which must fit in `max_delay`.
 ///
 /// The durations are [`Seconds`], and none is a control but the depth the sweep is told
 /// ([`ModDelayControls::depth`](crate::ModDelayControls::depth)), which the sweep clamps
@@ -196,7 +195,7 @@ impl Sweep {
 
 /// How each channel's sweep is staggered from channel 0's, in LFO cycles.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): every offset is finite, and
+/// A range-checked value: every offset is finite, and
 /// every channel's offset is wrapped into one cycle ([`Phase`]'s own wrap): at construction
 /// for [`each`](Self::each), and in [`offset`](Self::offset) for a [`step`](Self::step), whose
 /// channel `c` is `c` times it. A stagger that names

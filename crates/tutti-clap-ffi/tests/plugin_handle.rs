@@ -18,9 +18,9 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_value,
 };
 use tutti_clap_ffi::{
-    ActivateError, Bundle, CallError, EventRef, EventSink, EventSource, Extension, Host,
-    HostCallbacks, InputStream, OutputStream, Planar, Plugin, PluginEvent, PortScratch,
-    ProcessCall, ProcessError, TaskPool, ThreadRoles, header_size,
+    ActivateError, Bundle, CallError, EventRef, EventSink, EventSource, Host, HostCallbacks,
+    InputStream, OutputStream, Planar, Plugin, PluginEvent, PortScratch, ProcessCall, ProcessError,
+    TaskPool, ThreadRoles, header_size,
 };
 use tutti_clap_test_plugin::{PLUGIN_ID, REPORTED_LATENCY_SAMPLES, probe_tag};
 use tutti_plugin_types::SampleFormat;
@@ -215,7 +215,6 @@ fn the_main_thread_half_reads_the_plugins_extensions() {
     let _g = lock();
     let plugin = load(Arc::default());
     assert_eq!(plugin.latency(&main_thread()), REPORTED_LATENCY_SAMPLES);
-    assert!(plugin.supports(Extension::Params));
     assert!(plugin.param_count(&main_thread()) > 0);
     assert!(plugin.audio_port_count(&main_thread(), false) > 0);
     assert!(plugin.audio_port_info(&main_thread(), 0, false).is_some());
@@ -300,6 +299,7 @@ fn a_short_channel_is_refused_without_calling_the_plugin() {
 
 /// A parameter value the host sends in a block's events is applied by the
 /// plugin, and `params.flush` on an inactive plugin reaches it too.
+/// Spec: clap.ext.params.flush, clap.event.param_value, clap.ext.params.get_value
 #[test]
 fn an_event_list_reaches_the_plugin_through_flush() {
     let _g = lock();
@@ -317,6 +317,7 @@ fn an_event_list_reaches_the_plugin_through_flush() {
 
 /// What `state.save` writes, `state.load` reads back: the streams carry the
 /// plugin's bytes both ways.
+/// Spec: clap.ext.state.save, clap.ext.state.load, clap.stream.istream.read, clap.stream.ostream.write
 #[test]
 fn state_round_trips_through_the_streams() {
     let _g = lock();
@@ -339,7 +340,7 @@ fn a_missing_extension_is_not_a_refusal() {
     let _g = lock();
     let mut plugin = load(Arc::default());
     // The reference plugin has no `preset-load`.
-    assert!(!plugin.supports(Extension::PresetLoad));
+    assert!(!plugin.supports_preset_load());
     assert_eq!(
         plugin.preset_load_file(&main_thread(), Path::new("/nowhere.preset")),
         Err(CallError::NoExtension)
@@ -851,6 +852,7 @@ fn an_active_plugin_is_not_activated_again_even_with_no_audio_half() {
 /// The numbers `activate` hands the plugin are the ones CLAP allows: a rate
 /// that is finite and positive, at least one frame, and a minimum no larger
 /// than the maximum. Anything else is refused with the plugin uncalled.
+/// Spec: clap.plugin.activate
 #[test]
 fn activation_refuses_numbers_clap_forbids() {
     let _g = lock();
@@ -1001,6 +1003,7 @@ fn entry_calls() -> (u32, u32) {
 /// descriptors, drop, open again) must read init, deinit, init, deinit on the
 /// plugin's entry, and two overlapping bundles share one pair. The reference
 /// image stays mapped through `library()`, so its counters see every call.
+/// Spec: clap.entry.init, clap.entry.deinit
 #[test]
 fn the_entry_is_deinitialised_when_the_last_bundle_closes() {
     let _g = lock();

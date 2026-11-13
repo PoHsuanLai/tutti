@@ -41,6 +41,7 @@ fn unknown(words: [u32; 4]) {
 
 const ALL: u32 = 0xFFFF_FFFF;
 
+/// Spec: m2-104/2.1.3#2, m2-104/2.1.3#3, m2-104/2.1.3#4, m2-104/2.1.3#5, m2-104/7.4.9#2
 #[test]
 fn reserved_bits_are_ignored() {
     // Utility: the group nibble and the data of a NOOP are reserved.
@@ -319,7 +320,7 @@ fn reserved_values_are_kept() {
     );
     // Chord Name: an accidental outside Tables 13 and 15, a tonic of 8 and up,
     // a chord type past 0x1B, an alteration type of 5 and up, a bass note with
-    // the "same as tonic" accidental, a bass chord type past 0x1B.
+    // the same-as-tonic accidental, a bass chord type past 0x1B.
     kept(
         [0xD610_0006, 0x3801_0000, 0, 0x8000_0000],
         flex(Flex::SetChordName(

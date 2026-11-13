@@ -161,56 +161,6 @@ extensions! {
     posix_fd_support: clap_plugin_posix_fd_support = [CLAP_EXT_POSIX_FD_SUPPORT];
 }
 
-/// An extension an instance may or may not implement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Extension {
-    /// `clap.audio-ports`.
-    AudioPorts,
-    /// `clap.audio-ports-config`.
-    AudioPortsConfig,
-    /// `clap.audio-ports-config-info`.
-    AudioPortsConfigInfo,
-    /// `clap.audio-ports-activation`.
-    AudioPortsActivation,
-    /// `clap.configurable-ports`.
-    ConfigurableAudioPorts,
-    /// `clap.ambisonic`.
-    Ambisonic,
-    /// `clap.surround`.
-    Surround,
-    /// `clap.params`.
-    Params,
-    /// `clap.param-indication`.
-    ParamIndication,
-    /// `clap.state`.
-    State,
-    /// `clap.state-context`.
-    StateContext,
-    /// `clap.preset-load`.
-    PresetLoad,
-    /// `clap.gui`.
-    Gui,
-    /// `clap.note-ports`.
-    NotePorts,
-    /// `clap.note-name`.
-    NoteName,
-    /// `clap.latency`.
-    Latency,
-    /// `clap.tail`.
-    Tail,
-    /// `clap.render`.
-    Render,
-    /// `clap.voice-info`.
-    VoiceInfo,
-    /// `clap.timer-support`.
-    TimerSupport,
-    /// `clap.thread-pool`.
-    ThreadPool,
-    /// `clap.posix-fd-support`.
-    PosixFdSupport,
-}
-
 /// What `Plugin` and `AudioSide` share.
 pub(crate) struct Core {
     plugin: NonNull<clap_plugin>,
@@ -455,35 +405,22 @@ impl Plugin {
         &self.core.roles
     }
 
-    /// Whether the plugin implements `extension`.
+    /// Whether the plugin implements `clap.state-context`.
     #[must_use]
-    pub fn supports(&self, extension: Extension) -> bool {
-        let e = &self.core.exts;
-        let p: *const c_void = match extension {
-            Extension::AudioPorts => e.audio_ports.cast(),
-            Extension::AudioPortsConfig => e.audio_ports_config.cast(),
-            Extension::AudioPortsConfigInfo => e.audio_ports_config_info.cast(),
-            Extension::AudioPortsActivation => e.audio_ports_activation.cast(),
-            Extension::ConfigurableAudioPorts => e.configurable_ports.cast(),
-            Extension::Ambisonic => e.ambisonic.cast(),
-            Extension::Surround => e.surround.cast(),
-            Extension::Params => e.params.cast(),
-            Extension::ParamIndication => e.param_indication.cast(),
-            Extension::State => e.state.cast(),
-            Extension::StateContext => e.state_context.cast(),
-            Extension::PresetLoad => e.preset_load.cast(),
-            Extension::Gui => e.gui.cast(),
-            Extension::NotePorts => e.note_ports.cast(),
-            Extension::NoteName => e.note_name.cast(),
-            Extension::Latency => e.latency.cast(),
-            Extension::Tail => e.tail.cast(),
-            Extension::Render => e.render.cast(),
-            Extension::VoiceInfo => e.voice_info.cast(),
-            Extension::TimerSupport => e.timer_support.cast(),
-            Extension::ThreadPool => e.thread_pool.cast(),
-            Extension::PosixFdSupport => e.posix_fd_support.cast(),
-        };
-        !p.is_null()
+    pub fn supports_state_context(&self) -> bool {
+        !self.core.exts.state_context.is_null()
+    }
+
+    /// Whether the plugin implements `clap.preset-load`.
+    #[must_use]
+    pub fn supports_preset_load(&self) -> bool {
+        !self.core.exts.preset_load.is_null()
+    }
+
+    /// Whether the plugin implements `clap.render`.
+    #[must_use]
+    pub fn supports_render(&self) -> bool {
+        !self.core.exts.render.is_null()
     }
 
     // ---- lifecycle -------------------------------------------------------
@@ -1399,6 +1336,7 @@ mod param_text_tests {
 
     impl Plain for clap_plugin_params {}
 
+    /// Spec: clap.ext.params.value_to_text
     #[test]
     fn value_to_text_decodes_plugin_string() {
         let params = stub_params(true);
@@ -1406,6 +1344,7 @@ mod param_text_tests {
         assert_eq!(out.as_deref(), Some("42.0 dB"));
     }
 
+    /// Spec: clap.ext.params.text_to_value
     #[test]
     fn text_to_value_parses_plugin_value() {
         let params = stub_params(true);
@@ -1479,6 +1418,7 @@ mod extension_query_tests {
     /// so the query would return null and the host would conclude the plugin
     /// had no surround map at all, identical at every later call site to a
     /// plugin that genuinely lacks the extension.
+    /// Spec: clap.plugin.get_extension
     #[test]
     fn a_plugin_answering_only_the_draft_id_is_still_found() {
         let mut answers = Answers {
@@ -1500,6 +1440,7 @@ mod extension_query_tests {
     /// Order matters beyond tidiness: a plugin implementing *both* must be
     /// bound to its current interface, and a host that asked draft-first would
     /// silently prefer the older spelling for the rest of the session.
+    /// Spec: clap.plugin.get_extension
     #[test]
     fn the_stable_id_is_asked_before_the_draft_id() {
         let mut answers = Answers {

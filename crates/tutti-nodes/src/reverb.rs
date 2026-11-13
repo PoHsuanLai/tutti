@@ -29,10 +29,7 @@ use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 
 // The node measures its tail to `TAIL_FLOOR`: the level the wet signal has fallen to
 // when the declared tail ends, and below which the node parks, 60 dB under what it
-// carried, the figure the General MIDI reverb has always declared. Measured against
-// the old, uncut Freeverb at `input_end + tail`, what the cut discards is more than
-// 100 dB below the rendered peak: about -112 dBFS RMS after a 2 s noise burst,
-// -128 dBFS after a 50 ms one, and nothing after an impulse (already flushed).
+// carried.
 
 /// A tail of this many frames never ends.
 const UNBOUNDED: u64 = u64::MAX;
@@ -62,7 +59,7 @@ pub enum Rings {
 /// The longest a family can ring, as a fixed ceiling ([`Rings::Ceiling`]): a time that is
 /// finite and not negative.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): [`new`](Self::new) refuses a
+/// A range-checked value: [`new`](Self::new) refuses a
 /// NaN, an infinite or a negative time and never clamps, since the ceiling becomes the
 /// [`Tail::Finite`] the graph reads, and an unchecked one would declare a tail no node has.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
@@ -148,6 +145,17 @@ pub trait NodeFamily: Family + 'static {
     /// block (the default), or every `n` frames when a control moves inside the
     /// block. A stream grid is counted from the last reset ([`Cadence::steps`]), so
     /// what it designs does not depend on where the blocks fall.
+    ///
+    /// On a stream grid the node renders a block a step at a time. It stops at each grid
+    /// point, reading the controls at the step's solve frame, and at each corner of a
+    /// port driving a slow control ([`ParamInput::corners`](tutti_graph::ParamInput::corners)),
+    /// read on that frame. A stop that moved a control past its dead-band designs and
+    /// retargets before the frames after it render; stops that did not move render
+    /// together with the model held. A control read every frame (a fast one) has no
+    /// corner. A block cadence designs once per block and takes no corner. The node
+    /// solves on the stream clock (frames since its reset), because audio runs
+    /// through it while the transport is stopped.
+    ///
     /// Separate from [`Family::CADENCE`], the grid the render is a function of: a
     /// reverb whose render is a function of the stream is still designed once per
     /// block.
@@ -365,7 +373,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         // A block cadence's realization glides its own coefficients between the designs of
         // its blocks, so the reader lands a moved cell whole there.
         self.params.retune(rate, F::SAMPLING != Cadence::BLOCK);
-        // Latency has one home per cause (design 024 section 2.7.2): the member's and the
+        // Latency has one home per cause: the member's and the
         // realization's, summed here once. It is the blank member's: a latency that moved
         // with a control would be a shape the graph cannot follow (the contract's `latency`
         // case holds every member to it).
@@ -521,7 +529,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         let size = io.frames();
         // The stops: each grid point (cut at its step's start, read at its solve
         // frame), and each corner of a port driving a slow control (cut and read on
-        // its frame; doc 024 §4.5, "Solve at corners"), in order.
+        // its frame), in order.
         let mut grid = F::SAMPLING
             .steps(position, size, self.applied.is_none())
             .filter(|step| step.grid_point)

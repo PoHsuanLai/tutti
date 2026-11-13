@@ -223,8 +223,7 @@ fn main() {
     }
 
     // Rate independence: the same *musical* signal (1 kHz, 3 s) at three rates
-    // must read the same loudness. This is the axis with a documented bug
-    // history — two true-peak sites hardcoded 48 kHz — so it gets its own cases.
+    // must read the same loudness.
     let mut rate_csv = String::from("rate,tutti_lufs,tutti_true_peak\n");
     for &rate in &[44_100.0f64, 48_000.0, 96_000.0] {
         let n = (rate * 3.0) as usize;

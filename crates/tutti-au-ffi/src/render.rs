@@ -961,7 +961,7 @@ fn check_render(function: &'static str, status: i32, unit: &Unit) -> Result<()> 
 /// Every `mDataByteSize` the AU left on the output buses of the last push
 /// render.
 ///
-/// Exposed for the test suite rather than for hosts: how `tests/au_offline.rs`
+/// Exposed for the test suite rather than for hosts: how `tests/render/au_offline.rs`
 /// observes that the AU wrote for the frame count it was asked for, without
 /// reimplementing the `AudioBufferList` walk. An AU rendering fewer frames than
 /// requested reports the shortfall here and nowhere else — sample values alone

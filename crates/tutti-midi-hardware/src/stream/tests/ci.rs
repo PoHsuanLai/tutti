@@ -1,4 +1,4 @@
-//! MIDI-CI on the wire (design 017 L8 part 3) against a fake device, through
+//! MIDI-CI on the wire against a fake device, through
 //! the session and the fake backend: what is sent is the fake's sink, what the
 //! device says is the input's producer.
 
@@ -124,18 +124,20 @@ fn a_function_block_that_declares_midi_ci_is_sent_discovery_on_its_first_group()
     assert_eq!(payload[..4], [0x7E, 0x7F, 0x0D, 0x70]);
     assert_eq!(payload[4], CI_VERSION.get());
     assert_eq!(payload[9..13], [0x7F; 4], "the Broadcast MUID");
-    assert_eq!(payload.len(), CiHeader::LEN + DiscoveryData::DISCOVERY_LEN);
+    assert_eq!(payload.len(), 13 + 17);
     let Decoded::Message(CiMessage::Discovery { header, data }) = CiMessage::decode(payload) else {
         panic!("a Discovery");
     };
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
     // The body (Table 6): exactly the app's identity (`identity()`: manufacturer
-    // `41 00 00`, family 1 2, model 3 4, revision 5 6 7 8), no categories, 512 as
+    // `41 00 00`, family 1 2, model 3 4, revision 5 6 7 8), Profile Configuration as the one category (bit 2 of
+    // Table 7: the session initiates it), 512 as
     // four 7-bit bytes, Output Path 0.
     assert_eq!(payload[13..16], [0x41, 0x00, 0x00]);
     assert_eq!(payload[16..24], [1, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!(data.identity, identity());
-    assert_eq!(payload[24], 0);
+    assert_eq!(payload[24], 0b100);
+    assert_eq!(data.categories, CiCategories::PROFILE_CONFIGURATION);
     assert_eq!(payload[25..29], [0x00, 0x04, 0x00, 0x00]);
     assert_eq!(payload[29], 0);
     assert_eq!(data.max_sysex_size, MaxSysexSize::of(512));
@@ -968,4 +970,590 @@ fn a_ci_peers_product_instance_id_fills_what_the_device_left() {
         learned.instance_id().map(ProductInstanceId::as_str),
         Some("SN-9")
     );
+}
+
+// --- Profile Configuration (M2-101 section 7, M2-102 section 2) -----------
+
+use crate::{ChannelCount, ListedProfile, ProfileError, ProfilesChange, Whole};
+use tutti_midi_device::{
+    Outcome, PROFILE_TIMEOUT, ProfileChange, ProfileChannels, ProfileId, ProfileLists,
+    ProfileState, Request, StandardProfile,
+};
+use tutti_ump::MidiChannel;
+
+fn profile_peer_data() -> DiscoveryData {
+    DiscoveryData::new(
+        identity(),
+        CiCategories::PROFILE_CONFIGURATION,
+        MaxSysexSize::of(256),
+    )
+}
+
+fn profile(number: u8) -> ProfileId {
+    ProfileId::Standard(StandardProfile::new(
+        U7::of(0x21),
+        U7::of(number),
+        U7::of(1),
+        U7::of(1),
+    ))
+}
+
+fn at(device_id: CiDeviceId, source: Muid) -> CiHeader {
+    CiHeader {
+        device_id,
+        ci_version: CI_VERSION,
+        source,
+    }
+}
+
+fn channel(n: u8) -> CiDeviceId {
+    CiDeviceId::Channel(MidiChannel::of(n))
+}
+
+/// The peer's Reply to Profile Inquiry at `address`.
+fn reply_at_address(
+    wire: &Wire,
+    ours: Muid,
+    address: CiDeviceId,
+    enabled: Vec<ProfileId>,
+    disabled: Vec<ProfileId>,
+    ms: u64,
+) {
+    say(
+        wire,
+        GROUP_0,
+        &CiMessage::ProfileReply {
+            header: at(address, peer()),
+            to: ours,
+            profiles: ProfileLists::new(enabled, disabled).unwrap(),
+        },
+        ms,
+    );
+}
+
+/// A MIDI 1.0 port whose peer declared Profile Configuration and whose Profile
+/// Inquiry went out; the wire's clock is at 50 ms. What was sent is read off.
+fn profile_peer() -> (Wire, Muid) {
+    let (wire, ours) = midi1_running();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data: profile_peer_data(),
+        },
+        40,
+    );
+    let found = polled(&wire, 50);
+    assert!(
+        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(_))]),
+        "{found:?}"
+    );
+    let _ = received(&wire);
+    (wire, ours)
+}
+
+/// Channel 1 lists `enabled` and `disabled`, the Group lists `group`, and the
+/// final Reply on the Function Block ends the inquiry; the wire's clock is at
+/// 100 ms.
+fn known_profiles(
+    wire: &Wire,
+    ours: Muid,
+    enabled: Vec<ProfileId>,
+    disabled: Vec<ProfileId>,
+    group: Vec<ProfileId>,
+) {
+    reply_at_address(wire, ours, channel(0), enabled, disabled, 60);
+    reply_at_address(wire, ours, CiDeviceId::Group, vec![], group, 70);
+    reply_at_address(wire, ours, CiDeviceId::FunctionBlock, vec![], vec![], 80);
+    let changes = polled(wire, 100);
+    assert!(
+        matches!(
+            changes.as_slice(),
+            [Polled::Profile(_, ProfilesChange::Known { .. })]
+        ),
+        "{changes:?}"
+    );
+}
+
+fn profile_events(polled: &[Polled]) -> Vec<&ProfilesChange> {
+    polled
+        .iter()
+        .filter_map(|p| match p {
+            Polled::Profile(_, change) => Some(change),
+            _ => None,
+        })
+        .collect()
+}
+
+/// M2-101 section 7.2: the Initiator asks a peer that declared Profile
+/// Configuration for its Profiles, with a Profile Inquiry (Sub-ID#2 `0x20`) to
+/// the Function Block (`0x7F`), from its own MUID to the peer's. A peer that
+/// declared none is not asked.
+#[test]
+fn a_peer_that_declares_profile_configuration_is_sent_a_profile_inquiry() {
+    let (wire, ours) = midi1_running();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data: profile_peer_data(),
+        },
+        40,
+    );
+    let _ = polled(&wire, 50);
+    let sent = payloads(&received(&wire));
+    let [(group, payload)] = sent.as_slice() else {
+        panic!("one message, the Profile Inquiry: {sent:?}");
+    };
+    assert_eq!(*group, GROUP_0);
+    assert_eq!(payload[..4], [0x7E, 0x7F, 0x0D, 0x20]);
+    assert_eq!(payload[5..9], ours.to_bytes(), "from our MUID");
+    assert_eq!(payload[9..13], peer().to_bytes(), "to the peer's");
+
+    // Another peer, which declares no category, is sent nothing.
+    let other = Muid::new(0x0023_4567).unwrap();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(other),
+            to: ours,
+            data: peer_data(),
+        },
+        60,
+    );
+    let _ = polled(&wire, 70);
+    assert!(ci_sent(&wire).is_empty());
+    assert_eq!(wire.session.profiles(&wire.id).len(), 1);
+}
+
+/// M2-102 section 2.4: the peer answers a Function Block Profile Inquiry with a
+/// Reply per address, and a final one on `0x7F` with no Profiles; that final
+/// Reply makes the table the peer's whole declaration. Each Profile is listed
+/// at the address it replied on, enabled or disabled as its list says, and a
+/// Channel's is a handle that asks for a Channel count where a Group's has none.
+#[test]
+fn the_replies_to_profile_inquiry_become_the_peers_profiles_once_the_final_one_arrives() {
+    let (wire, ours) = profile_peer();
+    reply_at_address(
+        &wire,
+        ours,
+        channel(0),
+        vec![profile(1)],
+        vec![profile(2)],
+        60,
+    );
+    let _ = polled(&wire, 65);
+    assert!(
+        !wire.session.profiles(&wire.id).iter().any(|p| p.is_known()),
+        "not known before the final Reply"
+    );
+    reply_at_address(&wire, ours, CiDeviceId::Group, vec![], vec![profile(3)], 70);
+    reply_at_address(&wire, ours, CiDeviceId::FunctionBlock, vec![], vec![], 80);
+    let changes = polled(&wire, 100);
+    assert_eq!(
+        profile_events(&changes),
+        [&ProfilesChange::Known {
+            group: GROUP_0,
+            muid: peer()
+        }]
+    );
+    let peers = wire.session.profiles(&wire.id);
+    let [held] = &peers[..] else {
+        panic!("one peer: {peers:?}");
+    };
+    assert!(held.is_known());
+    assert_eq!((held.group(), held.muid()), (GROUP_0, peer()));
+    let listed: Vec<_> = held.listed().collect();
+    let [
+        ListedProfile::Channel(one),
+        ListedProfile::Channel(two),
+        ListedProfile::Whole(three),
+    ] = listed.as_slice()
+    else {
+        panic!("two on Channel 1 and one on the Group: {listed:?}");
+    };
+    assert_eq!(one.channel(), MidiChannel::of(0));
+    assert_eq!(
+        (listed[0].profile(), listed[0].state()),
+        (profile(1), ProfileState::Enabled)
+    );
+    assert_eq!(
+        (listed[1].profile(), listed[1].state()),
+        (profile(2), ProfileState::Disabled)
+    );
+    assert_eq!(two.channel(), MidiChannel::of(0));
+    assert_eq!(three.whole(), Whole::Group);
+    assert_eq!(listed[2].state(), ProfileState::Disabled);
+}
+
+/// M2-101 section 7.8 and Table 24: a Set Profile On to a Channel goes to that
+/// Channel's Device ID with Number Channels Requested (Message Version 2, two
+/// bytes, LSB first); the Profile Enabled Report of section 7.10 is its
+/// acknowledgement, resolving the request with the state and Channel count the
+/// peer reports and updating what the session holds.
+#[test]
+fn a_set_profile_on_names_the_channel_and_its_enabled_report_updates_the_table() {
+    let (wire, ours) = profile_peer();
+    known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
+    let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
+    let [ListedProfile::Channel(c)] = listed.as_slice() else {
+        panic!("one Channel Profile: {listed:?}");
+    };
+    let _ = received(&wire);
+    wire.session
+        .set_profile(c.enable(ChannelCount::new(3).unwrap()))
+        .unwrap();
+    assert!(received(&wire).is_empty(), "sent at the next poll");
+    let none = polled(&wire, 110);
+    assert!(none.is_empty(), "{none:?}");
+    let sent = payloads(&received(&wire));
+    let [(group, payload)] = sent.as_slice() else {
+        panic!("one Set Profile On: {sent:?}");
+    };
+    assert_eq!(*group, GROUP_0);
+    // F0 7E <Channel 1> 0D 22 <version> <source> <destination> <Profile Id> <count LSB first>
+    assert_eq!(payload[..4], [0x7E, 0x00, 0x0D, 0x22]);
+    assert_eq!(payload[5..9], ours.to_bytes());
+    assert_eq!(payload[9..13], peer().to_bytes());
+    assert_eq!(payload[13..18], profile(2).to_bytes());
+    assert_eq!(payload[18..], [3, 0]);
+
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::ProfileEnabled {
+            header: at(channel(0), peer()),
+            profile: profile(2),
+            channels: ProfileChannels::of(3),
+        },
+        120,
+    );
+    let changes = polled(&wire, 130);
+    assert_eq!(
+        profile_events(&changes),
+        [
+            &ProfilesChange::Changed {
+                group: GROUP_0,
+                muid: peer(),
+                address: channel(0),
+                profile: profile(2),
+                change: ProfileChange::Enabled,
+            },
+            &ProfilesChange::Resolved {
+                group: GROUP_0,
+                muid: peer(),
+                request: Request::SetOn {
+                    address: channel(0),
+                    profile: profile(2)
+                },
+                outcome: Outcome::Reported {
+                    state: ProfileState::Enabled,
+                    channels: ProfileChannels::of(3),
+                },
+            }
+        ]
+    );
+    let peers = wire.session.profiles(&wire.id);
+    let entry = peers[0].table().get(channel(0), profile(2)).unwrap();
+    assert_eq!(entry.state(), ProfileState::Enabled);
+    assert_eq!(entry.channels(), Some(ProfileChannels::of(3)));
+}
+
+/// M2-101 section 7.8's note and 7.9: on the Group or the Function Block the
+/// Number Channels Requested is 0x0000 (the width of what is addressed), and a
+/// Set Profile Off (Sub-ID#2 `0x23`, Table 25) names only the Profile; the Disabled
+/// Report of section 7.11 resolves it.
+#[test]
+fn a_set_profile_on_a_group_asks_for_no_channels_and_off_is_resolved_by_the_disabled_report() {
+    let (wire, ours) = profile_peer();
+    known_profiles(&wire, ours, vec![], vec![], vec![profile(3)]);
+    let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
+    let [ListedProfile::Whole(whole)] = listed.as_slice() else {
+        panic!("one Group Profile: {listed:?}");
+    };
+    let _ = received(&wire);
+    wire.session.set_profile(whole.enable()).unwrap();
+    let _ = polled(&wire, 110);
+    let sent = payloads(&received(&wire));
+    let [(_, on)] = sent.as_slice() else {
+        panic!("{sent:?}");
+    };
+    assert_eq!(on[..4], [0x7E, 0x7E, 0x0D, 0x22], "to the Group");
+    assert_eq!(on[18..], [0, 0], "no Channels requested");
+
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::ProfileEnabled {
+            header: at(CiDeviceId::Group, peer()),
+            profile: profile(3),
+            channels: ProfileChannels::of(0),
+        },
+        120,
+    );
+    let _ = polled(&wire, 130);
+    let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
+    wire.session.set_profile(listed[0].disable()).unwrap();
+    let _ = polled(&wire, 140);
+    let sent = payloads(&received(&wire));
+    let [(_, off)] = sent.as_slice() else {
+        panic!("{sent:?}");
+    };
+    assert_eq!(off[..4], [0x7E, 0x7E, 0x0D, 0x23]);
+    assert_eq!(off[13..18], profile(3).to_bytes());
+    assert_eq!(off[18..], [0, 0], "the two reserved bytes of Version 2");
+
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::ProfileDisabled {
+            header: at(CiDeviceId::Group, peer()),
+            profile: profile(3),
+            channels: ProfileChannels::of(0),
+        },
+        150,
+    );
+    let changes = polled(&wire, 160);
+    assert!(
+        profile_events(&changes).iter().any(|c| matches!(
+            c,
+            ProfilesChange::Resolved {
+                request: Request::SetOff { .. },
+                outcome: Outcome::Reported {
+                    state: ProfileState::Disabled,
+                    ..
+                },
+                ..
+            }
+        )),
+        "{changes:?}"
+    );
+    assert_eq!(
+        wire.session.profiles(&wire.id)[0]
+            .table()
+            .get(CiDeviceId::Group, profile(3))
+            .unwrap()
+            .state(),
+        ProfileState::Disabled
+    );
+}
+
+/// M2-101 sections 7.4 and 7.5: a Profile Added Report lists a Profile (disabled)
+/// and a Removed Report takes it out, each reported. A handle made before the
+/// removal is then refused, since the peer no longer lists what it names.
+#[test]
+fn added_and_removed_reports_change_the_list_and_a_stale_handle_is_refused() {
+    let (wire, ours) = profile_peer();
+    known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
+    let stale: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::ProfileAdded {
+            header: at(channel(0), peer()),
+            profile: profile(4),
+        },
+        110,
+    );
+    let changes = polled(&wire, 120);
+    assert!(
+        matches!(
+            profile_events(&changes).as_slice(),
+            [ProfilesChange::Changed { profile: p, change: ProfileChange::Added, .. }] if *p == profile(4)
+        ),
+        "{changes:?}"
+    );
+    assert_eq!(wire.session.profiles(&wire.id)[0].listed().count(), 2);
+
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::ProfileRemoved {
+            header: at(channel(0), peer()),
+            profile: profile(2),
+        },
+        130,
+    );
+    let changes = polled(&wire, 140);
+    assert!(
+        matches!(
+            profile_events(&changes).as_slice(),
+            [ProfilesChange::Changed { profile: p, change: ProfileChange::Removed, .. }] if *p == profile(2)
+        ),
+        "{changes:?}"
+    );
+    let ListedProfile::Channel(old) = &stale[0] else {
+        panic!("a Channel Profile");
+    };
+    assert_eq!(
+        wire.session.set_profile(old.enable(ChannelCount::ONE)),
+        Err(ProfileError::NotListed)
+    );
+}
+
+/// M2-101 section 5.9: an Invalidate MUID for the peer discards it, and with it
+/// its Initiator and the Profiles it held: they are reported dropped, the
+/// session holds none, and a handle made before is refused, as is a switch
+/// queued before it that the next poll would have sent.
+#[test]
+fn an_invalidate_muid_drops_the_peers_profiles_and_refuses_its_handles() {
+    let (wire, ours) = profile_peer();
+    known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
+    let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
+    let ListedProfile::Channel(c) = &listed[0] else {
+        panic!("a Channel Profile");
+    };
+    wire.session
+        .set_profile(c.enable(ChannelCount::ONE))
+        .unwrap();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::InvalidateMuid {
+            header: CiHeader::new(Muid::new(0x00AB_CDEF).unwrap()),
+            target: peer(),
+        },
+        110,
+    );
+    let changes = polled(&wire, 120);
+    assert!(
+        profile_events(&changes).contains(&&ProfilesChange::Dropped {
+            group: GROUP_0,
+            muid: peer()
+        }),
+        "{changes:?}"
+    );
+    assert!(wire.session.profiles(&wire.id).is_empty());
+    assert!(
+        payloads(&received(&wire)).iter().all(|(_, p)| p[3] != 0x22),
+        "the queued switch was not sent to a peer that is gone"
+    );
+    assert_eq!(
+        wire.session.set_profile(c.enable(ChannelCount::ONE)),
+        Err(ProfileError::NoSuchPeer)
+    );
+}
+
+/// Disabling MIDI-CI ends every device and its peers; the peers' Profiles are
+/// dropped and reported with them.
+#[test]
+fn disabling_midi_ci_drops_the_profiles() {
+    let (wire, ours) = profile_peer();
+    known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
+    wire.session.disable_ci();
+    let changes = polled(&wire, 110);
+    assert!(
+        profile_events(&changes).contains(&&ProfilesChange::Dropped {
+            group: GROUP_0,
+            muid: peer()
+        }),
+        "{changes:?}"
+    );
+    assert!(wire.session.profiles(&wire.id).is_empty());
+}
+
+/// M2-102 gives an Initiator no time limit; tutti's is [`PROFILE_TIMEOUT`]. A
+/// Set Profile On the peer never answers ends, and is reported, once that long
+/// has passed since it was sent and not before; the table is left as it was.
+#[test]
+fn a_set_profile_nothing_answers_times_out_after_the_profile_timeout() {
+    let (wire, ours) = profile_peer();
+    known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
+    let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
+    let ListedProfile::Channel(c) = &listed[0] else {
+        panic!("a Channel Profile");
+    };
+    wire.session
+        .set_profile(c.enable(ChannelCount::ONE))
+        .unwrap();
+    let sent_at = 200;
+    let _ = polled(&wire, sent_at);
+    let wait = PROFILE_TIMEOUT.as_millis() as u64;
+    let early = polled(&wire, sent_at + wait - 1);
+    assert!(profile_events(&early).is_empty(), "{early:?}");
+    let ended = polled(&wire, sent_at + wait);
+    assert!(
+        matches!(
+            profile_events(&ended).as_slice(),
+            [ProfilesChange::Resolved {
+                outcome: Outcome::TimedOut,
+                ..
+            }]
+        ),
+        "{ended:?}"
+    );
+    assert_eq!(
+        wire.session.profiles(&wire.id)[0]
+            .table()
+            .get(channel(0), profile(2))
+            .unwrap()
+            .state(),
+        ProfileState::Disabled
+    );
+}
+
+/// A peer that answers only part of the Profile Inquiry, never the final Reply,
+/// is given up on after [`PROFILE_TIMEOUT`]: it is reported, the table keeps
+/// what was heard, and it is not known to be whole.
+#[test]
+fn an_inquiry_without_a_final_reply_times_out_keeping_what_was_heard() {
+    let (wire, ours) = profile_peer();
+    reply_at_address(&wire, ours, channel(0), vec![profile(1)], vec![], 60);
+    let _ = polled(&wire, 70);
+    let wait = PROFILE_TIMEOUT.as_millis() as u64;
+    let ended = polled(&wire, 50 + wait);
+    assert_eq!(
+        profile_events(&ended),
+        [&ProfilesChange::InquiryTimedOut {
+            group: GROUP_0,
+            muid: peer()
+        }]
+    );
+    let peers = wire.session.profiles(&wire.id);
+    assert!(!peers[0].is_known());
+    assert_eq!(peers[0].listed().count(), 1);
+}
+
+/// A second request for a Profile at an address whose first is still waiting is
+/// not sent: it is reported as not sent, and only one Set Profile On went out.
+#[test]
+fn a_request_while_one_for_that_profile_waits_is_not_sent() {
+    let (wire, ours) = profile_peer();
+    known_profiles(&wire, ours, vec![], vec![profile(2)], vec![]);
+    let listed: Vec<_> = wire.session.profiles(&wire.id)[0].listed().collect();
+    let ListedProfile::Channel(c) = &listed[0] else {
+        panic!("a Channel Profile");
+    };
+    let _ = received(&wire);
+    for _ in 0..2 {
+        wire.session
+            .set_profile(c.enable(ChannelCount::ONE))
+            .unwrap();
+    }
+    let changes = polled(&wire, 110);
+    assert!(
+        matches!(
+            profile_events(&changes).as_slice(),
+            [ProfilesChange::NotSent { profile: p, .. }] if *p == profile(2)
+        ),
+        "{changes:?}"
+    );
+    assert_eq!(payloads(&received(&wire)).len(), 1);
+}
+
+/// A count of Channels is at least 1 and fits 14 bits (M2-101 section 7.8).
+#[test]
+fn a_channel_count_is_at_least_one_and_fits_fourteen_bits() {
+    assert_eq!(ChannelCount::new(0), None);
+    assert_eq!(ChannelCount::new(1), Some(ChannelCount::ONE));
+    assert_eq!(
+        ChannelCount::new(16_383).map(ChannelCount::get),
+        Some(16_383)
+    );
+    assert_eq!(ChannelCount::new(16_384), None);
 }

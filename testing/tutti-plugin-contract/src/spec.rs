@@ -250,8 +250,9 @@ pub struct Surface {
     /// What `render_mode_support` answers: `Live` where the format takes the
     /// mode while active (VST2: the host's own flag), `OnActivation` where it
     /// is read at activation (VST3), `Unsupported` where the plugin has no
-    /// render mode (the shared CLAP shell exports no `clap.render`, the AU
-    /// shell implements no `kAudioUnitProperty_OfflineRender`).
+    /// render mode (the shared CLAP shell exports no `clap.render`). The AU shell
+    /// keeps `kAudioUnitProperty_OfflineRender`, which the host writes at
+    /// activation (`OnActivation`).
     pub render_mode: tutti_plugin_types::RenderModeSupport,
     /// Whether the shell reads the notice byte ([`NOTICE_ON_LOAD`]): CLAP, VST2
     /// and VST3, which tell the host something on each state load.
@@ -334,14 +335,14 @@ pub const VST3_CPP: Surface = Surface {
 };
 
 /// AU, from the shared plugin's Audio Unit shell: no editor (the shell offers no
-/// Cocoa view), no render mode (the shell refuses
+/// Cocoa view), the render mode on activation (the shell keeps
 /// `kAudioUnitProperty_OfflineRender`), no notice (the shell raises none), the tail
 /// byte read, and the host's own linear map over the declared range for `tone`
 /// (an AU has no normalized value). The infinite marker is `+inf` seconds.
 pub const AU: Surface = Surface {
     selects_editor: false,
     has_editor: false,
-    render_mode: tutti_plugin_types::RenderModeSupport::Unsupported,
+    render_mode: tutti_plugin_types::RenderModeSupport::OnActivation,
     notices: false,
     request: None,
     edits: &[],

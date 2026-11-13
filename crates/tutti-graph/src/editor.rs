@@ -84,6 +84,7 @@ use crate::pass::Pass;
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 use crate::tap::{TapReader, TapWriter};
+use crate::wake::Wake;
 use tutti_types::{Amplitude, Mix, ParamCell};
 
 /// Why [`Editor::commit`] failed.
@@ -231,7 +232,7 @@ type Resumed = (Plan, Delta, BTreeMap<NodeKey, Box<dyn Node>>, BusLanes);
 /// engine's fold scratch holds this many channels, so it bounds its editor's
 /// [`Limits::max_global_outputs`] to it, and the sampler's voice width
 /// equals it. (A device wider than this is fine: the channels past what the
-/// root folds to are silent.)
+/// root folds to are silent.) A size of the scratch, not a property of the graph.
 pub const MAX_ROOT_CHANNELS: usize = 8;
 
 /// What the host that runs an [`Executor`] can take, enforced by its
@@ -538,6 +539,11 @@ pub struct Editor {
     spec: GraphSpec,
     shapes: Shapes,
     pending: BTreeMap<NodeKey, Box<dyn Node>>,
+    /// The [`Wake`] each key's latest placed unit was prepared with. A commit
+    /// hands the executor a clone with the unit, and a re-prepare hands the
+    /// unit this same one again; the executor's clone is dropped with the
+    /// unit, on the control side.
+    wakes: BTreeMap<NodeKey, Wake>,
     /// Crossfades for the pending units [`replace`](Self::replace) placed,
     /// attached to the next commit's delta.
     fades: BTreeMap<NodeKey, Fade>,
@@ -1081,6 +1087,7 @@ impl Editor {
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
             pending: BTreeMap::new(),
+            wakes: BTreeMap::new(),
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
             pending_taps: Vec::new(),
@@ -1369,9 +1376,11 @@ impl Editor {
             controls,
             fork,
         } = node.into_parts();
+        let wake = Wake::new();
+        unit.bind_wake(wake.clone());
         unit.prepare(&self.prepare);
         let shape = unit.shape();
-        self.place(key, kind, unit, shape, fork);
+        self.place(key, kind, unit, wake, shape, fork);
         controls
     }
 
@@ -1379,9 +1388,15 @@ impl Editor {
     /// preparing it again and without a fork source: a pinned unit of a
     /// fork ([`PendingFork::build`](crate::PendingFork::build)), whose
     /// `prepare` ran on the gathering thread.
-    pub(crate) fn insert_prepared(&mut self, key: NodeKey, kind: &str, unit: Box<dyn Node>) {
+    pub(crate) fn insert_prepared(
+        &mut self,
+        key: NodeKey,
+        kind: &str,
+        unit: Box<dyn Node>,
+        wake: Wake,
+    ) {
         let shape = unit.shape();
-        self.place(key, kind, unit, shape, None);
+        self.place(key, kind, unit, wake, shape, None);
     }
 
     /// Replaces the unit running at `key` with `node`, crossfading from one
@@ -1447,6 +1462,8 @@ impl Editor {
             controls,
             fork,
         } = node.into_parts();
+        let wake = Wake::new();
+        unit.bind_wake(wake.clone());
         unit.prepare(&self.prepare);
         let shape = unit.shape();
         // Everything the running plan was compiled from but the tail: the
@@ -1478,7 +1495,7 @@ impl Editor {
         // As `insert`: the new unit's fork source, or none — a replace with
         // an unforkable unit makes the key unforkable. Only past the checks,
         // so a refused replace changes nothing.
-        self.place(key, &kind, unit, shape, fork);
+        self.place(key, &kind, unit, wake, shape, fork);
         self.fades.insert(key, fade);
         Ok(controls)
     }
@@ -1530,6 +1547,8 @@ impl Editor {
             controls,
             fork,
         } = node.into_parts();
+        let wake = Wake::new();
+        unit.bind_wake(wake.clone());
         unit.prepare(&self.prepare);
         let shape = unit.shape();
         let fits = running.is_some_and(|r| {
@@ -1545,7 +1564,7 @@ impl Editor {
                 && shape.event_capacity == r.event_capacity
                 && shape.params == r.params
         });
-        self.place(key, &kind, unit, shape, fork);
+        self.place(key, &kind, unit, wake, shape, fork);
         if fits {
             self.fades.insert(key, fade);
         }
@@ -1559,6 +1578,7 @@ impl Editor {
         key: NodeKey,
         kind: &str,
         unit: Box<dyn Node>,
+        wake: Wake,
         shape: Shape,
         fork: Option<Box<dyn ForkSource>>,
     ) {
@@ -1588,6 +1608,7 @@ impl Editor {
         self.spec.generations.insert(key, generation);
         self.shapes.insert(key, shape);
         self.pending.insert(key, unit);
+        self.wakes.insert(key, wake);
         // The unit's fork source, or none: a unit that hands none over makes
         // the key unforkable, even if the one it supersedes was.
         match fork {
@@ -2554,6 +2575,7 @@ impl Editor {
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);
+        self.wakes.remove(&key);
         self.fades.remove(&key);
         self.latency_cuts.remove(&key);
         self.forks.remove(&key);
@@ -2737,6 +2759,9 @@ impl Editor {
         self.latency_cuts.clear();
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for (&key, unit) in &mut pending {
+                if let Some(wake) = self.wakes.get(&key) {
+                    unit.bind_wake(wake.clone());
+                }
                 unit.prepare(&prepare);
                 refresh(key, unit.shape(), &mut self.spec, &mut self.shapes);
             }
@@ -2826,6 +2851,9 @@ impl Editor {
                     .is_some_and(|u| u.generation == spec.generation(key));
             if !survives {
                 continue;
+            }
+            if let Some(wake) = self.wakes.get(&key) {
+                unit.bind_wake(wake.clone());
             }
             unit.prepare(&prepare);
             let shape = unit.shape();
@@ -3218,6 +3246,10 @@ impl Editor {
             let shape = &plan.unit(key).expect("a placed unit is in its plan").shape;
             ModeState::new(cell.clone(), shape, max_block)
         };
+        let wake_cells = &self.wakes;
+        // A unit handed in whole (`send`'s callers) was never bound: its flag
+        // is a fresh one nothing holds.
+        let wakes = |key: NodeKey| wake_cells.get(&key).cloned().unwrap_or_default();
         let taps = std::mem::take(&mut self.pending_taps);
         let event_taps = std::mem::take(&mut self.pending_event_taps);
         let meters = std::mem::take(&mut self.pending_meters);
@@ -3228,6 +3260,7 @@ impl Editor {
             units,
             params,
             modes,
+            wakes,
             Opened {
                 gains,
                 taps,

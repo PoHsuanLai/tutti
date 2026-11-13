@@ -3,16 +3,12 @@ name = "tutti-polysynth"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Polyphonic subtractive synthesizer as a Tutti graph node: voice allocation, unison, portamento, tuning, MPE"
+description = "A polyphonic synthesizer with unison, portamento, alternative tunings and per-note expression"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-polysynth"
 readme = "README.md"
 keywords = ["audio", "synthesizer", "polyphony", "mpe", "dsp"]
 categories = ["multimedia::audio"]
-# There is no `midi` feature: a voice is addressed by
-# per-note identity, so MIDI is not optional. SoundFont playback is the
-# separate `tutti-soundfont` crate.
 
 [lints]
 workspace = true
@@ -21,12 +17,13 @@ workspace = true
 default = []
 
 [dependencies]
+thiserror = { workspace = true }
 
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 
 # `Node`, `ForkSource`: the synth as a graph node, and its own way into a
 # fork of the graph (an export), as `tutti-plugin`'s `PluginClient` has
-# one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`, `tutti-rt` and `tutti-ump`.
+# one.
 tutti-graph = { path = "../tutti-graph" }
 
 # The SVF and ladder coefficient functions. The voice bank runs those two
@@ -46,11 +43,9 @@ tutti-voicing = { path = "../tutti-voicing" }
 
 [dev-dependencies]
 # The filter nodes the bank is compared against (`bank.rs`), and the mixing and
-# lane nodes of the integration tests. No cycle: `tutti-nodes` names no
-# synth crate.
+# lane nodes of the integration tests.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
-# The graph contract's test harness. No cycle: `tutti-graph` names no tutti
-# crate but `tutti-types`, `tutti-rt` and `tutti-ump`.
+# The graph contract's test harness.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 criterion.workspace = true
 approx = "0.5"
@@ -59,8 +54,7 @@ serde = "1"
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
-# `ControlProgram` for the lane tests (`tests/param_lanes.rs`). No cycle:
-# `tutti-modulation` names no tutti crate but `tutti-types`.
+# `ControlProgram` for the lane tests (`tests/param_lanes.rs`).
 tutti-modulation = { path = "../tutti-modulation", default-features = false }
 
 [[bench]]

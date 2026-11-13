@@ -6,6 +6,7 @@
 #![cfg(feature = "clap")]
 
 use tutti_plugin::catalog::{Catalog, CatalogConfig};
+use tutti_plugin_db::PluginDb;
 
 /// **A scan picks up a file that appeared since the last one**, and counts only
 /// that file as new: the catalog starts empty over an empty directory, a
@@ -16,10 +17,11 @@ fn scan_picks_up_a_new_file() {
     let dir = tempfile::TempDir::new().expect("a scratch directory");
     let scanned_dir = dir.path().join("plugins");
     std::fs::create_dir(&scanned_dir).expect("the scanned directory");
-    let mut catalog = Catalog::empty(CatalogConfig::new(
-        dir.path().join("db.json"),
-        vec![scanned_dir.clone()],
-    ));
+    let mut catalog = Catalog::new(
+        PluginDb::new(),
+        CatalogConfig::new(dir.path(), vec![scanned_dir.clone()]),
+        |_| Ok(()),
+    );
     let files = |catalog: &Catalog| {
         let mut files: Vec<_> = catalog
             .iter()
@@ -61,10 +63,11 @@ fn catalog_with_one_plugin(dir: &tempfile::TempDir) -> (Catalog, std::path::Path
     std::fs::create_dir(&scanned_dir).expect("the scanned directory");
     let file = scanned_dir.join("Only.clap");
     std::fs::copy(tutti_fixtures::clap_probe(), &file).expect("drop a plugin in");
-    let catalog = Catalog::empty(CatalogConfig::new(
-        dir.path().join("db.json"),
-        vec![scanned_dir],
-    ));
+    let catalog = Catalog::new(
+        PluginDb::new(),
+        CatalogConfig::new(dir.path(), vec![scanned_dir]),
+        |_| Ok(()),
+    );
     (catalog, file)
 }
 

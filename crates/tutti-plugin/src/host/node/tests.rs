@@ -351,13 +351,13 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
             BridgeEvent::TailChanged { .. }
             | BridgeEvent::Resync(_)
             | BridgeEvent::RateRefusal(_)
+            | BridgeEvent::ProcessRequested
             | BridgeEvent::Crashed { .. } => {}
         })));
     }
 
-    // First request: receives `ParameterList`. Trailing events sit in
-    // the socket buffer until the next `recv_reply` pulls them — which
-    // happens on the next request.
+    // First request: receives `ParameterList`; the events that follow it are
+    // read as they arrive.
     let params = handle.any_thread().parameter_descriptors().unwrap();
     assert_eq!(params.len(), 1);
     assert_eq!(params[0].name(), "Vol");
@@ -441,7 +441,7 @@ fn a_tail_change_reaches_the_listener() {
 #[test]
 fn handle_save_state_roundtrip() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|msg| match msg {
-        HostMessage::SaveState => Some(BridgeMessage::StateChunk {
+        HostMessage::SaveState { .. } => Some(BridgeMessage::StateChunk {
             seq: 0,
             last: true,
             bytes: vec![0xDE, 0xAD, 0xBE, 0xEF],

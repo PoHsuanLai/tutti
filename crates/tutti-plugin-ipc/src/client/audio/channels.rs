@@ -63,8 +63,10 @@ pub(super) struct Channels {
     /// How many replies the bridge thread has taken from the plugin, ever,
     /// on time or owed. With [`abandoned`](Self::abandoned) the hang
     /// verdict's input (`PluginHandle::block_counts`): a hang is abandoned
-    /// blocks growing while this does not. Written by the bridge thread only;
-    /// a relaxed read is enough, since a host that reads it is polling.
+    /// blocks growing while this does not. Written by the bridge thread only.
+    /// A block's reply is counted after it is queued, `Release` against the
+    /// `Acquire` read in [`block_counts`](Self::block_counts): a reader that
+    /// sees the count finds the reply queued.
     replies: Arc<AtomicU64>,
     /// How many unsolicited parameter events the bridge thread dropped
     /// because more arrived during one command than its inbox holds, ever.
@@ -74,6 +76,11 @@ pub(super) struct Channels {
     /// and the rest of a SysEx that lost packets with it. Shared with the
     /// plugin node's controls, which add it to the node's own count.
     dropped_midi: Arc<AtomicU64>,
+    /// The control connection has something the bridge thread has not read:
+    /// set by the watcher thread, cleared by the bridge thread after it has
+    /// read the lane dry. The bridge's doorbell is rung with it, so a bridge
+    /// parked with no command queued reads the lane when news arrives.
+    news: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Channels {
@@ -89,6 +96,7 @@ impl Channels {
             replies: Arc::new(AtomicU64::new(0)),
             dropped_param_events: Arc::new(AtomicU64::new(0)),
             dropped_midi: Arc::new(AtomicU64::new(0)),
+            news: Arc::default(),
         }
     }
 
@@ -108,6 +116,26 @@ impl Channels {
     /// whoever ends the loop publishes before calling [`wake`](Self::wake).
     pub(super) fn wait_for_command(&self, stop: impl FnOnce() -> bool) {
         self.bell.wait(|| !self.commands.is_empty() || stop());
+    }
+
+    /// The control connection has bytes to read: publishes it and rings the
+    /// bridge thread's doorbell. The watcher thread's call.
+    pub(super) fn set_news(&self) {
+        self.news.store(true, Ordering::Release);
+        self.bell.ring();
+    }
+
+    /// Whether [`set_news`](Self::set_news) was called since the last
+    /// [`clear_news`](Self::clear_news).
+    pub(super) fn news_pending(&self) -> bool {
+        self.news.load(Ordering::Acquire)
+    }
+
+    /// The bridge thread has read the control connection dry. Cleared *after*
+    /// the read: a byte that arrives during it is still readable, so the
+    /// watcher sees it and sets the flag again.
+    pub(super) fn clear_news(&self) {
+        self.news.store(false, Ordering::Release);
     }
 
     /// Wake the bridge thread to re-check its stop condition (shutdown).
@@ -159,18 +187,18 @@ impl Channels {
     }
 
     /// Record that the plugin answered (a reply for a block, on time or
-    /// owed): it is not hung. Bridge thread only.
+    /// owed): it is not hung. Bridge thread only, after the reply is queued.
     pub(super) fn note_replied(&self) {
-        self.replies.fetch_add(1, Ordering::Relaxed);
+        self.replies.fetch_add(1, Ordering::Release);
     }
 
     /// Blocks abandoned and replies taken, over the life of the bridge. Two
-    /// relaxed reads: a reply landing between them shows up on the next call,
-    /// which is all a poller needs.
+    /// reads: a reply landing between them shows up on the next call, which is
+    /// all a poller needs. A counted reply is queued.
     pub(super) fn block_counts(&self) -> (u64, u64) {
         (
             self.abandoned.load(Ordering::Relaxed),
-            self.replies.load(Ordering::Relaxed),
+            self.replies.load(Ordering::Acquire),
         )
     }
 

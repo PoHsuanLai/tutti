@@ -3,8 +3,8 @@
 //! Per M2-104 (Appendix C.3, §7.4.7), classic MPE — spreading notes across
 //! member channels so a channel-wide pitch bend / pressure / CC74 acts *per
 //! note* — is a **MIDI-1 ingestion concern**, not a synthesis concern. A
-//! MIDI-2-native receiver only handles per-note messages; it "does not need to
-//! know that a rotation scheme is used."
+//! MIDI-2-native receiver only handles per-note messages; it needs no
+//! knowledge of the rotation scheme.
 //!
 //! So [`MpeIngest`] sits at the input edge (in [`MidiIngestNode`](crate::MidiIngestNode))
 //! and rewrites the classic-MPE channel-spread into **native MIDI-2 per-note
@@ -18,9 +18,9 @@
 //!
 //! The voices hold the expression of a *sounding* note, derived from the native
 //! per-note messages this emits. What a member channel was told *before* its
-//! Note On is another matter: M1-100 §2.2.6 to 2.2.8 have a receiver "continue
-//! to track" the channel's Pitch Bend, Channel Pressure and CC 74 "even when no
-//! note is playing", and a note's number is not known until its Note On. So the
+//! Note On is another matter: M1-100 §2.2.6 to 2.2.8 have a receiver keep
+//! tracking the channel's Pitch Bend, Channel Pressure and CC 74 while no note
+//! sounds, and a note's number is not known until its Note On. So the
 //! transform keeps the last value of each, per channel, and sends them as
 //! per-note messages ahead of the Note On they belong to (which a per-note
 //! receiver, `tutti_voicing::PerNoteState`, starts the note with). A manager's
@@ -34,19 +34,29 @@
 //! Which message a channel takes (M1-100 Appendix E, Table 5) and what
 //! switches a zone's MIDI Mode is `MpeSpec`'s, one match per rule set, so the
 //! MIDI-CI MPE Profile (M2-120) is another variant and no branch elsewhere.
-//! A message the table prohibits is ignored (§2.3.1: "it should ignore them").
+//! A message the table prohibits is ignored (§2.3.1).
 //! A channel in no zone is conventional and passes whole (§2.2.1).
+//!
+//! A Mono Mode On or Poly Mode On sent to a zone's lowest-numbered member
+//! channel, not to its manager, switches the zone between MIDI Mode 4 and
+//! Mode 3 (§2.2.4.3). The ingest records only that switch; what Mono means for
+//! a note is the instrument's own `tutti_voicing::Rules`. A Poly Key
+//! Pressure on a member channel is not filtered: it cannot be told from a
+//! native per-note pressure message.
+//!
+//! A manager channel's pedals, All Notes Off and Reset All Controllers apply
+//! to the whole zone and a member's to its own channel; the instrument
+//! (`tutti_voicing::Voicing`) applies that, not this transform.
 //!
 //! # Changing the zones
 //!
-//! "When a receiver changes its Zone configurations, the receiver shall stop
-//! all Sounding Notes and reset all controls to reasonable default values on
-//! each Channel entering or leaving MPE control" (§2.2.3): an MCM from the wire
-//! sends, for each such channel, All Sound Off and Reset All Controllers before
-//! the zone's default ranges, and a host-set mode
-//! ([`MpeIngest::set_mode`]) leaves them for
+//! A receiver that changes its zone layout stops the sounding notes and resets
+//! the controllers of every channel that enters or leaves MPE control
+//! (§2.2.3). An MCM from the wire sends, for each such channel, All Sound Off
+//! and Reset All Controllers before the zone's default ranges, and a host-set
+//! mode ([`MpeIngest::set_mode`]) leaves them for
 //! [`zone_defaults`](MpeIngest::zone_defaults), which the host sends. A channel
-//! that did not change keeps its notes.
+//! that did not change keeps its notes and what it was told.
 //!
 //! # Bend ranges
 //!
@@ -59,7 +69,7 @@
 //! (`tutti_voicing::PerNoteState`) follows.
 //!
 //! An MPE Configuration Message resets the zone it configures to MPE's
-//! default ranges (RP-053 / M1-100-UM, "Pitch Bend Sensitivity": a receiver
+//! default ranges (RP-053 / M1-100-UM, Pitch Bend Sensitivity: a receiver
 //! of an MCM sets the master channel to ±2 semitones and every member
 //! channel to ±48). The message is absorbed, so the reset goes on in its
 //! place: RPN #00/00 = 2 on the master and RPN #00/07 = 48 on each member
@@ -109,7 +119,7 @@ fn send_rpns(
 }
 
 /// The pitch-bend ranges a configured zone starts at (MPE, RP-053 /
-/// M1-100-UM, "Pitch Bend Sensitivity"): a receiver of an MPE Configuration
+/// M1-100-UM, Pitch Bend Sensitivity): a receiver of an MPE Configuration
 /// Message sets the master channel to ±2 semitones and every member channel
 /// to ±48. As this transform's output carries them: RPN #00/00 = 2 on the
 /// master, which passes through as a channel bend range, and RPN #00/07 =
@@ -163,10 +173,9 @@ impl MpeSpec {
     /// What a channel of `role` does with `voice`, in a zone that is in MIDI
     /// Mode 4 when `mono`.
     ///
-    /// Table 5 marks a message "P: Prohibited" for a sender, and for a
-    /// receiver on the same row. Section 2.3.1 says what a receiver does with
-    /// a message that is not for the channel it came on: "it should ignore
-    /// them". A prohibited message is therefore ignored, not acted on: acting
+    /// Table 5 marks a message prohibited (P) for a sender, and for a
+    /// receiver on the same row. Section 2.3.1 has a receiver ignore a
+    /// message that is not for the channel it came on. A prohibited message is therefore ignored, not acted on: acting
     /// on a message no conforming sender makes would only give a broken one
     /// something to break the zone with (an All Sound Off on the Manager
     /// Channel silencing every member, say).
@@ -199,26 +208,25 @@ const CC_POLY_ON: u8 = 127;
 /// reads at this edge.
 fn mpe11_receive(role: Role, voice: &Voice2, mono: bool) -> Receive {
     let ignored = match (role, voice) {
-        // "Control Change #120 [All Sounds Off]": prohibited on the Manager
+        // Control Change #120 (All Sounds Off): prohibited on the Manager
         // Channel, optional on a Member Channel.
         (Role::Master, Voice2::ControlChange { controller, .. }) => matches!(
             controller.get(),
             c if c == CCNumber::ALL_SOUND_OFF.get() || c == CC_MONO_ON || c == CC_POLY_ON
         ),
-        // "RPN #6 [MPE Configuration Message]": prohibited on Member
+        // RPN #6 (MPE Configuration Message): prohibited on Member
         // Channels (the Manager Channels' is handled before this).
         (Role::Member, Voice2::Registered { bank, index, .. }) => {
             Rpn::new(*bank, *index) == Rpn::MPE_CONFIGURATION
         }
-        // "Program Change" and "Bank Select": section 2.3.3, "A receiver
-        // operating in MIDI Mode 3 shall ignore Program Change messages
-        // received on Member Channels", and the table, Bank Select
-        // "Prohibited in MIDI Mode 3" on them. (A Bank Select travels in the
+        // Program Change and Bank Select: section 2.3.3 has a receiver in MIDI
+        // Mode 3 ignore Program Change on Member Channels, and the table
+        // prohibits Bank Select there in Mode 3. (A Bank Select travels in the
         // Program Change the translator made of it.)
         (Role::Member, Voice2::ProgramChange { .. }) => !mono,
         _ => false,
     };
-    // "Control Change #125 [Omni On]": prohibited on every channel.
+    // Control Change #125 (Omni On): prohibited on every channel.
     let omni =
         matches!(voice, Voice2::ControlChange { controller, .. } if controller.get() == CC_OMNI_ON);
     if ignored || omni {
@@ -355,10 +363,9 @@ fn control(group: MidiGroup, channel: MidiChannel, controller: CCNumber, offset:
     )
 }
 
-/// M1-100 section 2.2.3: "the receiver shall stop all Sounding Notes and
-/// reset all controls to reasonable default values on each Channel entering
-/// or leaving MPE control". For each channel of `channels` (one bit each),
-/// All Sound Off and Reset All Controllers, at `offset`.
+/// M1-100 section 2.2.3: a channel entering or leaving MPE control has its
+/// notes stopped and its controllers reset. For each channel of `channels`
+/// (one bit each), All Sound Off and Reset All Controllers, at `offset`.
 fn send_stops(group: MidiGroup, offset: Offset, channels: u16, out: &mut impl FnMut(UmpAt)) {
     for c in 0..MidiChannel::COUNT {
         if channels & (1 << c) != 0 {
@@ -395,14 +402,14 @@ impl MpeIngest {
 
     /// The zone layout the host configured, which every Group starts in. A
     /// Group's channel messages are folded to per-note or passed through by
-    /// [`mode_of`](Self::mode_of).
+    /// `mode_of`.
     pub fn mode(&self) -> &MpeMode {
         &self.mode
     }
 
     /// The zone layout in force on `group`: the configured one until an MPE
     /// Configuration Message on that Group changed it.
-    pub fn mode_of(&self, group: MidiGroup) -> &MpeMode {
+    pub(crate) fn mode_of(&self, group: MidiGroup) -> &MpeMode {
         &self.groups[group.index()].mode
     }
 
@@ -414,7 +421,7 @@ impl MpeIngest {
     /// What a channel held or was told is kept where the channel is what it
     /// was, and forgotten where it entered or left MPE control. The sounding
     /// notes of those channels are the instrument's, and M1-100 section 2.2.3
-    /// has the receiver stop them: [`zone_defaults`](Self::zone_defaults),
+    /// has the receiver stop them: `zone_defaults`,
     /// which the host sends downstream after this, carries the All Sound Off
     /// and Reset All Controllers that do.
     pub fn set_mode(&mut self, mode: MpeMode) {
@@ -427,14 +434,18 @@ impl MpeIngest {
     /// What a host-set mode change ([`set_mode`](Self::set_mode)) sends
     /// downstream for `group`, as events at `offset`: for each channel that
     /// entered or left MPE control, All Sound Off and Reset All Controllers
-    /// (M1-100 section 2.2.3, "stop all Sounding Notes and reset all controls
-    /// to reasonable default values"); then, for each zone, RPN #00/00 = ±2
+    /// (M1-100 section 2.2.3); then, for each zone, RPN #00/00 = ±2
     /// on its master channel and RPN #00/07 = ±48 on each member channel,
     /// what an MPE Configuration Message resets a receiver to, so a receiver
     /// that followed the old zones' ranges starts the new ones at their
     /// defaults, as an MCM from the wire would have it. No ranges for
     /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`].
-    pub fn zone_defaults(&self, group: MidiGroup, offset: Offset, mut out: impl FnMut(UmpAt)) {
+    pub(crate) fn zone_defaults(
+        &self,
+        group: MidiGroup,
+        offset: Offset,
+        mut out: impl FnMut(UmpAt),
+    ) {
         send_stops(group, offset, self.groups[group.index()].entered, &mut out);
         if let MpeMode::Zones(zones) = self.mode_of(group) {
             for config in zones.zones() {
@@ -457,7 +468,7 @@ impl MpeIngest {
     /// - an MPE Configuration Message is absorbed, the channels it takes into
     ///   or out of MPE control are stopped and reset (section 2.2.3), and the
     ///   zone it configures is reset to its default ranges
-    ///   ([`zone_defaults`](Self::zone_defaults));
+    ///   (`zone_defaults`);
     /// - a message the specification's receive table prohibits there is
     ///   dropped (`MpeSpec::receive`);
     /// - note-on/off and master-channel messages pass (with the channel
@@ -532,9 +543,8 @@ impl MpeIngest {
     /// sent through `out`; `false`, sending nothing, for anything else (the
     /// master channel's passes through).
     ///
-    /// M1-100 section 2.2.5: "A receiver shall apply the last Pitch Bend
-    /// Sensitivity message received on any Member Channel to all Member
-    /// Channels in the Zone."
+    /// M1-100 section 2.2.5: the last Pitch Bend Sensitivity message received
+    /// on any Member Channel applies to all Member Channels in the Zone.
     fn member_bend_range(
         &self,
         event: &UmpAt,
@@ -625,8 +635,7 @@ impl MpeIngest {
         out: &mut impl FnMut(UmpAt),
     ) -> Option<UmpAt> {
         let Address { group, channel: ch } = address;
-        // M1-100 section 2.2.1: "Any MIDI Channels not assigned to any Zone
-        // remain available for conventional use."
+        // M1-100 section 2.2.1: a channel in no Zone is for conventional use.
         let Some(role) = self.role(address) else {
             return Some(*event);
         };
@@ -650,10 +659,10 @@ impl MpeIngest {
             Voice2::NoteOn { note, .. } => {
                 if role == Role::Member {
                     state.held.bind(ch, note);
-                    // M1-100 section 2.2.6: "The pitch of a new note is
-                    // affected by the Pitch Bend message most recently
-                    // received on both the Manager Channel and that note's
-                    // Member Channel before Note On", and sections 2.2.7 and
+                    // M1-100 section 2.2.6: the pitch of a new note is
+                    // affected by the Pitch Bend most recently received on
+                    // both the Manager Channel and that note's Member
+                    // Channel before Note On, and sections 2.2.7 and
                     // 2.2.8 the same of Channel Pressure and Control Change
                     // #74. The note's Number is known only now, so what the
                     // channel was told goes ahead of the Note On, for the
@@ -688,9 +697,9 @@ impl MpeIngest {
                 Some(*event)
             }
             Voice2::NoteOff { note, .. } => {
-                // "A Released Note shall cease to be affected by Pitch Bend
-                // messages from the Member Channels after the Note Off
-                // message occurs": the channel holds no note, and what it is
+                // A released note ceases to be affected by Pitch Bend from the
+                // Member Channels after its Note Off (M1-100 section 2.2.6):
+                // the channel holds no note, and what it is
                 // told from here on waits for the next one.
                 if role == Role::Member && state.held.note_on(ch) == Some(note) {
                     state.held.release(ch);
@@ -782,8 +791,8 @@ impl MpeIngest {
                 }
             }
             Voice2::ControlChange { controller, .. } => {
-                // Section 2.2.4.3: a Mode message "to the lowest numbered
-                // Member Channel of a zone (not to the Manager Channel)"
+                // Section 2.2.4.3: a Mode message to the lowest numbered
+                // Member Channel of a zone, not to the Manager Channel,
                 // switches the zone between Mode 3 and Mode 4.
                 if let Some(mono) = self.spec.mode_switch(controller)
                     && config.member_channels().map(|c| c.get()).min() == Some(ch.get())

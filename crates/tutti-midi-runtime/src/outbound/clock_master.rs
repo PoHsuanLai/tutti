@@ -532,7 +532,7 @@ impl ClockMaster {
     /// Where playback starts, continues, locates or wraps on a tick boundary,
     /// that tick goes out on the first frame, after the Start / Continue /
     /// Song Position sent for it (same offset, later in the queue). MIDI 1.0
-    /// (MMA, "System Real Time Messages", Start and Continue): a receiver
+    /// (MMA, System Real Time Messages, Start and Continue): a receiver
     /// begins on the first Timing Clock after Start / Continue, so the
     /// clock of the start beat must be sent; skipping it leaves every
     /// receiving device one tick behind. Off a boundary, the first tick is

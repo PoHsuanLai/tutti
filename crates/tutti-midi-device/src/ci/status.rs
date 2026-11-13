@@ -22,10 +22,10 @@ macro_rules! status_message {
             pub $sub: U7,
             /// The status code: why.
             pub status_code: U7,
-            /// Status data, the secondary detail some codes require, 0 when "no
-            /// additional information is needed".
+            /// Status data, the secondary detail some codes require, 0 when no
+            /// additional information is needed.
             pub status_data: U7,
-            /// "Details for each Sub ID Classification": 5 bytes whose meaning
+            /// The details for each Sub ID Classification: 5 bytes whose meaning
             /// depends on the original sub-ID#2 (the Profile ID, or a Property
             /// Exchange stream id and chunk number; reserved for Process
             /// Inquiry). Zero when a transaction has no detail to add.
@@ -89,8 +89,8 @@ macro_rules! status_message {
             ///
             /// Everything past the first byte was added in Message Format
             /// Version 2, and an older device sent a NAK with no body at all, so
-            /// a body that stops before a field defaults it: "the fields
-            /// defined in the received version" (§5.3).
+            /// a body that stops before a field defaults it, as §5.3
+            /// has a receiver read only the fields of the received version.
             pub(crate) fn decode_body(b: &[u8]) -> Option<Self> {
                 let status = super::read::status_body(b)?;
                 Some(Self {
@@ -107,14 +107,13 @@ macro_rules! status_message {
 
 status_message!(
     /// An ACK (M2-101 §5.10, Table 13): the positive answer or the notice of
-    /// an activity under way, such as a Timeout Wait. "This MIDI-CI message is
-    /// defined for new mechanisms which are not published at the time of this
-    /// specification. Look for usage explanations in other specifications which
-    /// reference this message."
+    /// an activity under way, such as a Timeout Wait. The message is
+    /// defined for mechanisms published elsewhere, whose own specifications
+    /// explain its use.
     Ack,
     ack_sub_id2,
     "Table 13",
-    "\"Original Transaction Sub-ID#2 Classification\": the sub-ID#2 of the message this answers (§5.10.1)."
+    "`Original Transaction Sub-ID#2 Classification`: the sub-ID#2 of the message this answers (§5.10.1)."
 );
 
 status_message!(
@@ -125,47 +124,47 @@ status_message!(
     Nak,
     nak_sub_id2,
     "Table 15",
-    "\"Original Transaction Sub-ID#2 Classification\": the sub-ID#2 of the message being NAK'd (0 if unknown); with the other fields it \"is used ... to link the NAK message with the original Transaction\" (§5.11.1)."
+    "`Original Transaction Sub-ID#2 Classification`: the sub-ID#2 of the message being NAK'd (0 if unknown); with the other fields it links the NAK to the original Transaction (§5.11.1)."
 );
 
 impl Ack {
-    /// "ACK", success, do not retry (Table 14).
+    /// ACK: success, do not retry (Table 14).
     pub const STATUS_ACK: U7 = U7::of(0x00);
-    /// "Timeout Wait": the status data is the time to wait in multiples of 100
+    /// Timeout Wait: the status data is the time to wait in multiples of 100
     /// milliseconds (0 to 12.7 seconds).
     pub const STATUS_TIMEOUT_WAIT: U7 = U7::of(0x10);
-    /// "Flow Control: Send next Chunks" (Property Exchange).
+    /// Flow Control, send the next Chunks (Property Exchange).
     pub const STATUS_FLOW_CONTROL_NEXT_CHUNKS: U7 = U7::of(0x11);
 }
 
 impl Nak {
-    /// "NAK": generic failure, do not retry (Table 16, `0x00` to `0x1F`).
+    /// NAK: generic failure, do not retry (Table 16, `0x00` to `0x1F`).
     pub const STATUS_NAK: U7 = U7::of(0x00);
-    /// "MIDI-CI message not supported".
+    /// The MIDI-CI message is not supported.
     pub const STATUS_MESSAGE_NOT_SUPPORTED: U7 = U7::of(0x01);
-    /// "MIDI-CI version not supported".
+    /// The MIDI-CI version is not supported.
     pub const STATUS_VERSION_NOT_SUPPORTED: U7 = U7::of(0x02);
-    /// "Channel/Group/Function Block Not in use".
+    /// The Channel, Group or Function Block is not in use.
     pub const STATUS_NOT_IN_USE: U7 = U7::of(0x03);
-    /// "Profile not supported on the requested Channel, Group, or Function
-    /// Block".
+    /// The Profile is not supported on the requested Channel, Group or Function
+    /// Block.
     pub const STATUS_PROFILE_NOT_SUPPORTED: U7 = U7::of(0x04);
-    /// "Flow Control: Resend the most recent Chunk" (do not retry class).
+    /// Flow Control, resend the most recent Chunk (do not retry class).
     pub const STATUS_RESEND_LAST_CHUNK: U7 = U7::of(0x12);
-    /// "Responder Terminates Transaction" (status data 0) or "Initiator
-    /// Terminates Transaction" (status data 1); `0x20` to `0x3F` are
+    /// The responder terminates the transaction (status data 0) or the initiator
+    /// does (status data 1); `0x20` to `0x3F` are
     /// notifications for which further action is recommended.
     pub const STATUS_TERMINATE: U7 = U7::of(0x20);
-    /// "Property Exchange Chunks are out of sequence (cannot recover)".
+    /// Property Exchange Chunks are out of sequence and cannot be recovered.
     pub const STATUS_CHUNKS_OUT_OF_SEQUENCE: U7 = U7::of(0x21);
-    /// "Error occurred, please retry": unlike `0x00` to `0x1F`, retry is
+    /// An error occurred and a retry is wanted: unlike `0x00` to `0x1F`, retry is
     /// recommended (`0x40` to `0x5F`).
     pub const STATUS_RETRY: U7 = U7::of(0x40);
-    /// "Message was malformed".
+    /// The message was malformed.
     pub const STATUS_MALFORMED: U7 = U7::of(0x41);
-    /// "Timeout has occurred".
+    /// A timeout has occurred.
     pub const STATUS_TIMEOUT: U7 = U7::of(0x42);
-    /// "Busy, try again": the status data is the time to wait in multiples of
+    /// Busy, try again: the status data is the time to wait in multiples of
     /// 100 milliseconds (0 to 12.7 seconds).
     pub const STATUS_BUSY: U7 = U7::of(0x43);
 }

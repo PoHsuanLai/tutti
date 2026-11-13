@@ -1,11 +1,11 @@
 //! The measuring helpers the cases share: a realization built at a model, a
 //! render in blocks, seeded noise, a tone burst and the energy of a span.
 //!
-//! Public so a plugin probe (design 023) can measure a hosted plugin with the
+//! Public so a plugin probe can measure a hosted plugin with the
 //! same ones.
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{MaxBlock, SampleRate, Samples};
 
 use super::FamilyCase;
@@ -91,7 +91,9 @@ pub fn render<R: Recurrence>(
 #[must_use]
 pub fn noise(seed: u64, frames: usize, level: f32) -> Vec<f32> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..frames).map(|_| rng.gen_range(-level..=level)).collect()
+    (0..frames)
+        .map(|_| rng.random_range(-level..=level))
+        .collect()
 }
 
 /// A tone burst at `freq` cycles a frame for `plateau` frames between

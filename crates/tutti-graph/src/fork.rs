@@ -19,6 +19,7 @@ use crate::exec::Executor;
 use crate::gain::EdgeGain;
 use crate::node::{IntoNode, Node, NodeParts, Prepare};
 use crate::spec::{EventIn, GraphSpec};
+use crate::wake::Wake;
 
 /// Produces a fresh unit for a fork of the graph its node was inserted into:
 /// a per-node capability the [`Editor`] keeps from insert on (see
@@ -165,6 +166,9 @@ impl Node for PinnedUnit {
     fn shape(&self) -> crate::Shape {
         self.get().shape()
     }
+    fn bind_wake(&mut self, wake: Wake) {
+        self.get_mut().bind_wake(wake);
+    }
     fn prepare(&mut self, p: &Prepare) {
         self.get_mut().prepare(p);
     }
@@ -192,8 +196,9 @@ impl Drop for PinnedUnit {
 
 /// A unit of a [`PendingFork`], at the stage the gather left it.
 enum Unit {
-    /// Built and prepared on the gathering thread ([`ForkBuild::pinned`]).
-    Prepared(Forked),
+    /// Built and prepared on the gathering thread ([`ForkBuild::pinned`]),
+    /// with the fresh [`Wake`] it was prepared with.
+    Prepared(Forked, Wake),
     /// Built, not prepared ([`ForkBuild::ready`]).
     Built(Forked),
     /// Not built ([`ForkBuild::deferred`]).
@@ -288,7 +293,7 @@ impl PendingFork {
         for (key, unit) in units {
             let unit = match unit {
                 Unit::Deferred(build) if failed.is_none() => match build() {
-                    Ok(forked) => (forked, false),
+                    Ok(forked) => (forked, None),
                     Err(cause) => {
                         failed = Some(ForkError::Source { key, cause });
                         continue;
@@ -296,8 +301,8 @@ impl PendingFork {
                 },
                 // Not run: the fork has already failed.
                 Unit::Deferred(_) => continue,
-                Unit::Built(forked) => (forked, false),
-                Unit::Prepared(forked) => (forked, true),
+                Unit::Built(forked) => (forked, None),
+                Unit::Prepared(forked, wake) => (forked, Some(wake)),
             };
             built.push((key, unit));
         }
@@ -307,11 +312,11 @@ impl PendingFork {
         }
 
         let (mut editor, mut executor) = Editor::with_event_capacity(prepare, event_capacity);
-        for (key, (forked, prepared)) in built {
+        for (key, (forked, wake)) in built {
             let kind = &spec.topology.nodes[&key].kind;
             // Not forkable itself (module docs: a fork is not a fork source).
-            if prepared {
-                editor.insert_prepared(key, kind, forked.node);
+            if let Some(wake) = wake {
+                editor.insert_prepared(key, kind, forked.node, wake);
             } else {
                 editor.insert(key, kind, Unforkable(forked.node));
             }
@@ -393,7 +398,7 @@ pub trait ForkHealth: Send + Sync {
 }
 
 /// How a forked unit failed while rendering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ForkFaultKind {
     /// Its process died.
@@ -493,7 +498,7 @@ impl fmt::Display for ForkCause {
 ///
 /// Neither mode carries a timeline: a forked node reads musical time from
 /// its block's `Env`, which the fork's executor hands it like the live one's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ForkMode {
     /// A live duplicate: isolated and reset.
     Live,
@@ -1060,9 +1065,11 @@ impl Editor {
             let unit = match build.0 {
                 Build::Pinned(mut forked) => {
                     // Here, on the gathering thread: the unit's own rule.
+                    let wake = Wake::new();
+                    forked.node.bind_wake(wake.clone());
                     forked.node.prepare(&prepare);
                     forked.node = Box::new(PinnedUnit::here(forked.node));
-                    Unit::Prepared(forked)
+                    Unit::Prepared(forked, wake)
                 }
                 Build::Ready(forked) => Unit::Built(forked),
                 Build::Deferred(build) => Unit::Deferred(build),

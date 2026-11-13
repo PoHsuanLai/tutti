@@ -990,9 +990,9 @@ mod tests {
     /// does not rest on the seed.
     #[test]
     fn noise_has_a_low_confidence() {
-        use rand::{Rng, SeedableRng, rngs::StdRng};
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
         let mut rng = StdRng::seed_from_u64(7);
-        let x: Vec<f32> = (0..441_000).map(|_| rng.gen_range(-0.5..0.5)).collect();
+        let x: Vec<f32> = (0..441_000).map(|_| rng.random_range(-0.5..0.5)).collect();
         let tempo = tempo_of(&x);
         assert!(tempo.confidence.get() < 0.3, "{:?}", tempo.confidence);
     }
@@ -1053,7 +1053,7 @@ mod tests {
 
     /// A window much wider than the hop still puts beats within one hop of the
     /// clicks: at 4096/512 flux peaks `3 * 4096 / 4 - 256 = 2816` samples after
-    /// a frame starts, where the old `window / 2` was 768 samples off. The
+    /// a frame starts. The
     /// bound is one hop: half for placing the peak on the frame grid, half for
     /// the click's own width (its energy is within the first 300 samples, and
     /// an onset's rise can peak a few hundred samples late at a window this

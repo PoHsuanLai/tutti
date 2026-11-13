@@ -555,7 +555,7 @@ names it directly: **the bevy 0.19 line**, for anything that touches
 There used to be a second pin, `audio-automation`'s rev (two revs were two
 disjoint copies of `Curve`, and the error surfaced at the *consumer's* seam as
 `expected Curve, found Curve`, nowhere near here). The crate is gone from this
-repo (doc 024, Q25): the curve laws and the automation point list are
+repo: the curve laws and the automation point list are
 `tutti-curve`'s, a type of the engine's own, so a consumer converts at its own
 seam and shares no type.
 

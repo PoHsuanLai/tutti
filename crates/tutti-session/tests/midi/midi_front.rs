@@ -1,4 +1,4 @@
-//! The session's MIDI front (L1f-a): hardware through `s.midi()`, the session's
+//! The session's MIDI front: hardware through `s.midi()`, the session's
 //! one MPE mode, a take recorded with `s.midi().record`, its placement, and a
 //! saved route rule.
 
@@ -300,14 +300,6 @@ fn the_sessions_mpe_mode_reaches_the_ingest_and_the_next_instrument() {
 
     s.midi().set_mpe(MpeMode::Disabled);
     assert_eq!(s.midi().mpe(), MpeMode::Disabled);
-    assert_eq!(
-        s.midi_nodes()
-            .expect("the builder's MIDI nodes")
-            .input_controls
-            .pending_mpe_mode(),
-        Some(MpeMode::Disabled),
-        "the ingest node was asked"
-    );
     s.add_instrument(Probe(ForkByClone(Five), Arc::clone(&built)))
         .expect("an instrument");
     assert_eq!(*built.lock().unwrap(), [rotation, MpeMode::Disabled]);

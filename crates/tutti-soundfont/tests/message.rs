@@ -135,8 +135,6 @@ fn a_midi_1_note_on_at_velocity_0_is_a_note_off() {
 /// lifts, so the note keeps sounding; a Note On strikes the key again, which
 /// releases the earlier strike whatever holds it (the retrigger rule), and the
 /// new note at that velocity is below what is rendered, so the note ends.
-/// (The test used to hold the note without a pedal: a key struck again layered
-/// then, and no longer does.)
 #[test]
 fn a_midi_2_note_on_at_a_velocity_that_narrows_to_zero_is_a_note_on() {
     for velocity in [0, 1, 0x01FF] {

@@ -3,10 +3,9 @@ name = "tutti-midi-runtime"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "MIDI runtime for the Tutti audio engine: MIDI graph nodes (input, clip, harmony, clock, out), clock and MTC sync, MPE ingest"
+description = "Carries MIDI through tutti's audio graph: device input, clips, clock and timecode sync, and MPE"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-midi-runtime"
 readme = "README.md"
 keywords = ["audio", "midi", "real-time", "daw"]
 categories = ["multimedia::audio"]
@@ -26,7 +25,6 @@ crossbeam-queue = "0.3"
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-# The input edge's MIDI 1.0 to MIDI 2.0 `Translator` (design 017 §4).
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 [dev-dependencies]
@@ -40,8 +38,7 @@ assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # `tests/clock_tempo_map.rs` renders the clock through the live engine over a
-# published `TempoMap` (doc 020, stage 5). Dev edges only: nothing here
-# depends on the engine.
+# published `TempoMap`. Dev edges only: nothing here depends on the engine.
 tutti-engine = { path = "../tutti-engine" }
 tutti-transport = { path = "../tutti-transport" }
 tutti-tempo = { path = "../tutti-tempo" }

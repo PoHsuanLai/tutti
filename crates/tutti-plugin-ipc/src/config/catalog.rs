@@ -3,32 +3,31 @@
 //! Two structs, because they answer two unrelated questions and change at
 //! different times:
 //!
-//! - [`CatalogConfig`] — *where plugins live*. The database path and the scan
-//!   directories. Set once at startup, read by discovery.
+//! - [`CatalogConfig`] — *where plugins live*. The directory of the scanner's
+//!   crash sentinel and the scan directories. Set once at startup, read by discovery.
 //! - [`AudioConfig`] — *how a loaded plugin runs*. Sample format, block size,
 //!   IPC timeout. Read per `load`, and lowered into a [`BridgeConfig`] for each
 //!   plugin subprocess.
 //!
 //! Two structs rather than one: fused, a caller adjusting the audio block size
-//! must restate the database path, and the combined type appears in discovery
+//! must restate the sentinel directory, and the combined type appears in discovery
 //! signatures that never read a single audio field.
 //!
-//! The caller supplies `db_path` and `scan_dirs` — this library has no opinion
+//! The caller supplies `pedal_dir` and `scan_dirs` — this library has no opinion
 //! on OS conventions or app names.
 
 use super::bridge::BridgeConfig;
 use crate::protocol::SampleFormat;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-/// Where the plugin database lives and which directories to scan.
+/// Where the scanner keeps its crash sentinel and which directories to scan.
 #[derive(Debug, Clone)]
 pub struct CatalogConfig {
-    /// Where the plugin database file lives.
-    ///
-    /// The scanner's crash sentinel (`.scanning`) is kept in the same
-    /// directory, so that directory must be writable.
-    pub db_path: PathBuf,
+    /// The directory of the scanner's crash sentinel (`.scanning`), which must be
+    /// writable. Where the database itself lives is the persistence closure's
+    /// business, not the config's.
+    pub pedal_dir: PathBuf,
 
     /// Directories to scan for plugins.
     pub scan_dirs: Vec<PathBuf>,
@@ -42,25 +41,25 @@ pub struct CatalogConfig {
 pub const NO_SCAN_DIRS: [PathBuf; 0] = [];
 
 impl CatalogConfig {
-    /// Creates a config with the database path and the directories to scan.
+    /// Creates a config with the sentinel directory and the directories to scan.
     ///
     /// Pass [`NO_SCAN_DIRS`] for an empty directory list.
     pub fn new(
-        db_path: impl Into<PathBuf>,
+        pedal_dir: impl Into<PathBuf>,
         scan_dirs: impl IntoIterator<Item = impl Into<PathBuf>>,
     ) -> Self {
         Self {
-            db_path: db_path.into(),
+            pedal_dir: pedal_dir.into(),
             scan_dirs: scan_dirs.into_iter().map(Into::into).collect(),
         }
     }
 
     // --- chainable setters ---
 
-    /// Sets where the plugin database JSON is read from and written to.
+    /// Sets the directory of the scanner's crash sentinel.
     #[must_use]
-    pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.db_path = path.into();
+    pub fn pedal_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.pedal_dir = dir.into();
         self
     }
 
@@ -77,12 +76,9 @@ impl CatalogConfig {
 
     // --- internal resolution ---
 
-    /// Pedal sentinel lives beside the DB file.
+    /// The crash sentinel file, in `pedal_dir`.
     pub fn pedal_path(&self) -> PathBuf {
-        self.db_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(".scanning")
+        self.pedal_dir.join(".scanning")
     }
 }
 
@@ -167,13 +163,13 @@ mod tests {
     /// array below is the case a narrower `Vec<PathBuf>` would reject.
     #[test]
     fn new_takes_the_same_dirs_the_setter_does() {
-        let from_new = CatalogConfig::new("/tmp/db.json", ["/usr/lib/vst3", "/usr/lib/clap"]);
-        let from_setter = CatalogConfig::new("/tmp/db.json", Vec::<PathBuf>::new())
+        let from_new = CatalogConfig::new("/tmp", ["/usr/lib/vst3", "/usr/lib/clap"]);
+        let from_setter = CatalogConfig::new("/tmp", Vec::<PathBuf>::new())
             .scan_dirs(["/usr/lib/vst3", "/usr/lib/clap"]);
 
         assert_eq!(from_new.scan_dirs, from_setter.scan_dirs);
         assert_eq!(from_new.scan_dirs.len(), 2);
-        assert_eq!(from_new.db_path, PathBuf::from("/tmp/db.json"));
+        assert_eq!(from_new.pedal_dir, PathBuf::from("/tmp"));
     }
 
     /// An empty literal still infers. `Vec::new()` and `vec![]` are what the
@@ -181,7 +177,7 @@ mod tests {
     /// element type unconstrained.
     #[test]
     fn an_empty_dir_list_still_infers() {
-        let cfg = CatalogConfig::new("/tmp/db.json", Vec::<PathBuf>::new());
+        let cfg = CatalogConfig::new("/tmp", Vec::<PathBuf>::new());
         assert!(cfg.scan_dirs.is_empty());
     }
 }

@@ -4,13 +4,15 @@ name = "tutti"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The tutti audio engine behind one dependency."
+description = "A type-driven, real-time audio engine for building DAWs in Rust"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti"
 readme = "README.md"
 keywords = ["audio", "dsp", "real-time", "daw", "midi"]
 categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
 
 [dependencies]
 # Always present: the vocabulary, the runtime, the node contract, the DSP.

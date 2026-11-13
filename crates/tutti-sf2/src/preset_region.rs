@@ -3,23 +3,14 @@ use std::ops::RangeInclusive;
 use tutti_ump::{NoteNumber, U7};
 
 use crate::error::Error;
-use crate::generator::Generator;
 use crate::generator_range;
 use crate::generator_type::GeneratorType;
 use crate::instrument::Instrument;
+use crate::preset_generator::PresetGenerator;
 use crate::zone::Zone;
 
-fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
-    let index = generator.generator_type as usize;
-
-    // Unknown generators should be ignored.
-    if index < gs.len() {
-        gs[index] = generator.value as i16;
-    }
-}
-
 /// Indicates how instrument parameters should be modified within a preset.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PresetRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],
@@ -29,20 +20,16 @@ pub struct PresetRegion {
 impl PresetRegion {
     fn new(
         preset_id: usize,
-        global: &Zone,
-        local: &Zone,
+        global: &Zone<PresetGenerator>,
+        local: &Zone<PresetGenerator>,
         samples: &[Instrument],
     ) -> Result<Self, Error> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
         gs[GeneratorType::KeyRange as usize] = 0x7F00;
         gs[GeneratorType::VelocityRange as usize] = 0x7F00;
 
-        for generator in global.generators.iter() {
-            set_parameter(&mut gs, generator);
-        }
-
-        for generator in local.generators.iter() {
-            set_parameter(&mut gs, generator);
+        for &(kind, value) in global.generators.iter().chain(&local.generators) {
+            gs[GeneratorType::from(kind) as usize] = value;
         }
 
         // A 16-bit word holding an index, read as unsigned (see the instrument region).
@@ -62,13 +49,12 @@ impl PresetRegion {
 
     pub(crate) fn create(
         preset_id: usize,
-        zones: &[Zone],
+        zones: &[Zone<PresetGenerator>],
         instruments: &[Instrument],
     ) -> Result<Vec<PresetRegion>, Error> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
-            || zones[0].generators.last().unwrap().generator_type
-                != GeneratorType::Instrument as u16
+            || zones[0].generators.last().unwrap().0 != PresetGenerator::Instrument
         {
             // The first one is the global zone.
             let global = &zones[0];
@@ -111,20 +97,20 @@ impl PresetRegion {
 
     /// The raw value of `generator`, in the unit the SoundFont 2.04 spec gives it.
     #[must_use]
-    pub fn generator(&self, generator: GeneratorType) -> i16 {
-        self.gs[generator as usize]
+    pub fn generator(&self, generator: PresetGenerator) -> i16 {
+        self.gs[GeneratorType::from(generator) as usize]
     }
 
     /// The keys the region applies to.
     #[must_use]
     pub fn key_range(&self) -> RangeInclusive<u8> {
-        generator_range(self.generator(GeneratorType::KeyRange))
+        generator_range(self.generator(PresetGenerator::KeyRange))
     }
 
     /// The velocities the region applies to.
     #[must_use]
     pub fn velocity_range(&self) -> RangeInclusive<u8> {
-        generator_range(self.generator(GeneratorType::VelocityRange))
+        generator_range(self.generator(PresetGenerator::VelocityRange))
     }
 
     /// The index of the region's instrument.

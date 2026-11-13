@@ -8,7 +8,8 @@ use super::{Cadence, Domain, Reach, Realized, Recurrence, System};
 /// The buses a [`Family`] is made for: its input, and its outputs, which are one
 /// topology repeated `bands` times, band-major (a crossover's), or once (every
 /// other family). Its node declares exactly these buses, so the graph's dry path
-/// folds the input onto band 0 by speaker, and the runner's outputs are the
+/// folds the input onto band 0 by speaker (the graph refuses a dry path it would have
+/// to guess), and the runner's outputs are the
 /// bands in order: band `b` is the `b`-th run of [`output`](Self::output)'s width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channels {
@@ -112,9 +113,9 @@ impl Channels {
 }
 
 /// The family of a processor: φ, the pure function from its controls to a member
-/// (design 024 section 2.7.2), and the [`Recurrence`] that runs the members.
+/// and the [`Recurrence`] that runs the members.
 ///
-/// This is φ, the family: controls to a member (design 024 section 2.7.2). The pure half
+/// This is φ, the family: controls to a member. The pure half
 /// is [`member_into`](Self::member_into): no audio, no state and no
 /// graph type. The member is the description the recurrence is held to
 /// ([`Recurrence::coefficients_into`], κ, reads it, and the contract measures the
@@ -176,7 +177,7 @@ pub trait Family: Clone + Send {
 }
 
 /// A [`Family`] whose recurrence allocates from the member it runs, so it must be
-/// built for a worst case (design 024 section 2.7.2): `need`, `reach` and the
+/// built for a worst case: `need`, `reach` and the
 /// condition between them.
 ///
 /// [`Capacity::need`](crate::Capacity::need) is `need : M → 𝒦`, what one member's state

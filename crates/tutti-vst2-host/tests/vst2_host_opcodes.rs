@@ -17,7 +17,7 @@
 //!   `Host::get_plugin_id` was overridden to `'DAWI'` and never consulted.
 //!
 //! `audioMasterGetLanguage` (38) is the third: the fall-through's 0 is not a
-//! valid `HostLanguage`, which is 1-based, so a plugin indexing a string table
+//! valid language (`kVstLangEnglish` is 1), which is 1-based, so a plugin indexing a string table
 //! by it reads slot 0.
 //!
 //! # What is covered here, and what is not

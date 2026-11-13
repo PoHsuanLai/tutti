@@ -4,12 +4,11 @@
 //! [`HeldState`](super::HeldState) hands them to a caller
 //! ([`lift_while`](Controllers::lift_while)).
 //!
-//! MIDI 1.0 Detailed Specification 4.2.1, p. 31 (Stop): "In addition to note
-//! events, any controllers not in their initialized position (pitch wheels,
-//! sustain pedal, etc.) should be returned to their normal positions." A
-//! pedal left down also defeats the note-offs the ledger has just sent: "A
-//! Hold or Sustain pedal 'On' message takes priority over Note Off and All
-//! Notes Off until it is released" (Appendix A-5). So the pedals are lifted
+//! MIDI 1.0 Detailed Specification 4.2.1, p. 31 (Stop): besides note events, controllers
+//! that are off their initial position (the pitch wheels and the sustain
+//! pedal among them) go back to their normal positions. A pedal left down also defeats the note-offs
+//! the ledger has just sent: a Hold or Sustain pedal that is on holds a note
+//! through a Note Off or All Notes Off until it is lifted (Appendix A-5). So the pedals are lifted
 //! after the notes are ended, and only then does the receiver let go of them.
 //!
 //! The table is fixed: one `u16` per lane, 512 lanes (MIDI 1.0 and MIDI 2.0

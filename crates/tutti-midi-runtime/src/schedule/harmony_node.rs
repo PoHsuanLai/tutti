@@ -10,9 +10,7 @@
 //! seek, a loop wrap) or the lanes are replaced, the node re-states the chord
 //! and the scale in force there, on the jump's frame. A change on that frame
 //! is part of that context and sent once, so no chord it replaces goes out
-//! before it. A consumer joining mid-lane therefore always has the context,
-//! which the timeline-polling source this replaces left out
-//! ("priming-on-join").
+//! before it. A consumer joining mid-lane therefore always has the context.
 //!
 //! A loop wrap inside a block re-states only what differs from what the node
 //! last sent: a receiver holds the context until the next change, so a short

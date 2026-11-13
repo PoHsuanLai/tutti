@@ -10,8 +10,8 @@ use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, BlockCounts, ContentScale, Control, Delivered,
     EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Features, Health, LoadedPlugin,
     MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure,
-    PluginResult, Preset, PresetId, RenderMode, RenderModeSupport, Request, SampleRate, StateError,
-    TerminationReason, WindowHandle,
+    PluginResult, Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport, Request,
+    SampleRate, StateError, StateUse, TerminationReason, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -64,7 +64,7 @@ macro_rules! served_control {
             }
 
             fn save_state(&self) -> Result<Vec<u8>, StateError> {
-                self.link.bridge.save_state()
+                self.link.bridge.save_state(StateUse::Project)
             }
 
             /// Queued on the command bus as the blocks around it are, so the
@@ -208,14 +208,26 @@ macro_rules! served_control {
                 AnyThread::parameter_value_from_text(self, id, text)
             }
 
-            fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
-                AnyThread::save_state(self).map_err(PluginError::StateFailed)
-            }
-
-            fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+            fn save_state(
+                &mut self,
+                _main: &MainThread,
+                state_use: StateUse,
+            ) -> PluginResult<Vec<u8>> {
                 self.link
                     .bridge
-                    .load_state(main, bytes)
+                    .save_state(state_use)
+                    .map_err(PluginError::StateFailed)
+            }
+
+            fn load_state(
+                &mut self,
+                main: &MainThread,
+                bytes: &[u8],
+                state_use: StateUse,
+            ) -> PluginResult<()> {
+                self.link
+                    .bridge
+                    .load_state(main, bytes, state_use)
                     .map_err(PluginError::StateFailed)
             }
 
@@ -247,6 +259,12 @@ macro_rules! served_control {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 out.append(&mut asked);
+            }
+
+            /// What the server's `ProcessRequested` raises, from the bridge's
+            /// thread.
+            fn bind_wake(&self, wake: ProcessWake) {
+                let _ = self.link.events.wake.set(wake);
             }
 
             /// `Live` from here wherever the plugin has a mode: the server

@@ -1,24 +1,15 @@
 # tutti-ump
 
-The Universal MIDI Packet (M2-104) for the Tutti engine.
+This crate stores and reads MIDI 2.0's Universal MIDI Packet, the 32-bit-word format that carries both MIDI 1.0 and MIDI 2.0 messages.
 
-- `Ump`: one packet as four `u32` words, `Pod`, with `words()`, `from_words()`,
-  `decode()` and `is_note_off()`; `Display` and hex show its words.
-- `MidiGroup`, `MidiChannel`, `CCNumber`: the addresses a packet carries, as
-  newtypes so a transposed argument does not compile.
-- `Message`, `TryFrom<Ump> for Message`, `From<Message> for Ump`, `Unknown`: every message M2-104
-  defines (Utility, System, MIDI 1.0 and 2.0 channel voice, System Exclusive 7
-  and 8, Mixed Data Set, Flex Data, UMP Stream) as a `Copy` value, with named
-  constructors for the common channel voice messages (`Message::note_on`, and
-  `note_on2` for MIDI 2.0, whose 16-bit `NoteVelocity` and 32-bit
-  `ControlValue` and `BendValue` are not the 7-bit values of the 1.0 form). `Ump::decode`
-  never panics and ignores reserved bits; a packet no definition covers is
-  `Unknown` and keeps its words.
+It has typed values for groups, channels and controller numbers, decodes and encodes messages, parses MIDI 1.0 byte streams and handles SysEx. It does not depend on the rest of tutti, so you can use it on its own.
 
-- `split_stream`: a buffer of concatenated packets (a native-UMP transport's) cut into
-  `Ump`s by message type (M2-104 Table 4); a truncated tail is dropped.
-- `Midi1Parser`, `Voice1::bytes`, `System::bytes`, `Bank::bytes`, `frame`: MIDI
-  1.0 on the wire. The parser reads a byte stream one byte at a time into
-  `Message`s with no allocation, SysEx as `Sysex7Packet`s; the rest write bytes.
+This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
 
-The crate depends on no other tutti crate. Licensed under MIT or Apache-2.0.
+## License
+
+Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

@@ -13,10 +13,13 @@
 /// # Examples
 ///
 /// ```
-/// use tutti_ump::{CCNumber, ControlValue, Message, MidiChannel};
+/// use tutti_ump::{CCNumber, ControlValue, Message, MidiChannel, Voice2};
 ///
 /// let half = ControlValue::new(0x8000_0000);
-/// let cc = Message::control_change2(MidiChannel::FIRST, CCNumber::VOLUME, half);
+/// let cc = Message::Midi2(
+///     MidiChannel::FIRST.into(),
+///     Voice2::ControlChange { controller: CCNumber::VOLUME, value: half },
+/// );
 /// assert!(matches!(cc, Message::Midi2(..)));
 /// assert_eq!(ControlValue::MAX.get(), u32::MAX);
 /// ```

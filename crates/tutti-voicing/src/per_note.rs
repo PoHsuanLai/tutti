@@ -19,7 +19,7 @@
 //!   notes on one number are two ids. The messages of a number address the
 //!   notes started on it that have not been detached or [`end`](PerNoteState::end)ed:
 //!   a Note Off does not end a note, so a tail still responds (section 7.4.5:
-//!   after a Detach, "all currently playing notes and previous notes" stop
+//!   after a Detach, all currently playing notes and previous notes stop
 //!   responding, so before it they respond). A number keeps [`LIVE_NOTES`] of
 //!   them, tutti's bound; past it the oldest is dropped.
 //! - **Per-Note Management** (section 7.4.5): Detach makes the notes of the
@@ -32,13 +32,13 @@
 //! - **A note has one sounding pitch, and it is handed out whole**
 //!   ([`NoteControl::Pitch`]). Section 7.4.15 lists what sets a note's pitch:
 //!   the Note Number is the default; Registered Per-Note Controller #3 and the
-//!   Attribute Pitch override it, the attribute for its one note ("Pitch Bend
-//!   and Per-Note Pitch Bend act as offsets from the Attribute #3: Pitch 7.9",
-//!   and likewise "act as offsets from the pitch set by Registered Per-Note
-//!   Controller #3: Pitch 7.25"). So the sounding pitch is the told pitch (the
+//!   Attribute Pitch override it, the attribute for its one note (Pitch Bend
+//!   and Per-Note Pitch Bend act as offsets from Attribute #3: Pitch 7.9, and
+//!   likewise from the pitch set by Registered Per-Note Controller #3: Pitch
+//!   7.25). So the sounding pitch is the told pitch (the
 //!   attribute, else the number's Pitch 7.25, else the key) plus the Per-Note
 //!   Pitch Bend, the wheel's position over the channel's RPN 0/7 sensitivity
-//!   (section 7.4.13: the range "from the current sounding pitch of a Note").
+//!   (section 7.4.13: the range is from the current sounding pitch of a Note).
 //!   It is sent when a note starts (after the values the number holds, and
 //!   only if it is not the key's: a note told nothing has the instrument's
 //!   default) and whenever the told pitch, the bend or the
@@ -470,12 +470,12 @@ impl PerNoteState {
         }
     }
 
-    /// Reset All Controllers' "Reset polyphonic pressure for all notes to 0"
+    /// Reset All Controllers' reset of polyphonic pressure for all notes to 0
     /// (RP-015) on `address`'s channel: every Note Number whose held Polyphonic
     /// Pressure is not 0 takes 0, and its live notes are told. The other
     /// per-note controllers are left (M2-104 Appendix B.2). The slice is valid
     /// until the next call.
-    pub fn reset_pressure(&mut self, address: Address) -> &[NoteEvent] {
+    pub(crate) fn reset_pressure(&mut self, address: Address) -> &[NoteEvent] {
         self.out.clear();
         let Some(c) = self.channel_index(address) else {
             return &self.out;
@@ -622,6 +622,7 @@ mod tests {
     /// M2-104 section 7.4.5, Detach: the current note stops taking per-note
     /// values, and later ones are for future notes: the Pitch told after the
     /// Detach reaches the next note, under another id.
+    /// Spec: m2-104/7.4.5#1, m2-104/7.4.5#5
     #[test]
     fn a_detach_ends_the_notes_values_and_the_next_note_has_its_own() {
         let mut s = state();
@@ -645,9 +646,10 @@ mod tests {
         );
     }
 
-    /// M2-104 section 7.4.5: only a Detach makes "previous notes on the
-    /// referenced Note Number" stop responding. A Note On on a number whose
+    /// M2-104 section 7.4.5: only a Detach makes previous notes on the
+    /// referenced Note Number stop responding. A Note On on a number whose
     /// earlier note has not been detached leaves both responding.
+    /// Spec: m2-104/7.4.5#1
     #[test]
     fn a_number_moves_every_live_note_until_a_detach() {
         let mut s = state();
@@ -720,6 +722,7 @@ mod tests {
 
     /// M2-104 section 7.4.5: with D and S the Detach is first, so the current
     /// note is not reset (it keeps its values) and the next starts at defaults.
+    /// Spec: m2-104/7.4.5#2, m2-104/7.4.5#4, m2-104/7.4.5#5
     #[test]
     fn detach_and_reset_together_leave_the_note_and_default_the_next() {
         let mut s = state();
@@ -732,6 +735,7 @@ mod tests {
 
     /// M2-104 section 7.4.5, Reset alone: the current note is reset, and the
     /// next note starts at defaults.
+    /// Spec: m2-104/7.4.5#3, m2-104/7.4.5#5
     #[test]
     fn a_reset_resets_the_note_and_defaults_the_next() {
         let mut s = state();
@@ -776,7 +780,7 @@ mod tests {
     }
 
     /// M2-104 section 7.4.15.3: Attribute Pitch 7.9 is that note's pitch, and
-    /// "is not valid for any subsequent Notes".
+    /// is not valid for any subsequent Notes.
     #[test]
     fn an_attribute_pitch_is_for_that_note_alone() {
         let mut s = state();
@@ -787,8 +791,8 @@ mod tests {
         assert_eq!(start(&mut s, a, 0).len(), 1, "the key's");
     }
 
-    /// M2-104 section 7.4.5: a controller addresses the Note Number "on the
-    /// referenced" channel: neither another key nor another channel hears it.
+    /// M2-104 section 7.4.5: a controller addresses the Note Number on the
+    /// referenced channel: neither another key nor another channel hears it.
     #[test]
     fn a_controller_addresses_one_channel_and_key() {
         let mut s = state();
@@ -805,6 +809,7 @@ mod tests {
 
     /// M2-104 section 2.1.2: each Group's channels are separate. A value, a
     /// Detach and a sensitivity told in Group 1 are not Group 0's.
+    /// Spec: m2-104/2.1.2#2
     #[test]
     fn two_groups_are_independent() {
         let mut s = state();
@@ -893,8 +898,8 @@ mod tests {
         );
     }
 
-    /// M2-104 section 7.4.15.2: Per-Note Pitch Bend "acts as an offset from the
-    /// pitch set by Registered Per-Note Controller #3". A pitch told to a live
+    /// M2-104 section 7.4.15.2: Per-Note Pitch Bend acts as an offset from the
+    /// pitch set by Registered Per-Note Controller #3. A pitch told to a live
     /// note and then a bend sounds as their sum.
     #[test]
     fn a_pitch_then_a_bend_sounds_as_the_sum() {
@@ -960,6 +965,7 @@ mod tests {
     /// defaults, so its pitch is its key's: the next note and the one reset
     /// (by the consumer, on the `Reset` event) are at the key; a bend told after
     /// the Reset is an offset from the key.
+    /// Spec: m2-104/7.4.5#3
     #[test]
     fn a_reset_returns_the_sounding_pitch_to_the_key() {
         let mut s = state();
@@ -980,6 +986,7 @@ mod tests {
 
     /// M2-104 section 7.4.5, Detach: the note keeps what it has, so a pitch, a
     /// bend and a sensitivity after it send that note nothing.
+    /// Spec: m2-104/7.4.5#1
     #[test]
     fn a_detached_note_hears_no_pitch_bend_or_sensitivity() {
         let mut s = state();

@@ -552,12 +552,21 @@ macro_rules! fake_control {
                 set(self, id, value);
             }
 
-            fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
+            fn save_state(
+                &mut self,
+                _main: &MainThread,
+                _: $crate::StateUse,
+            ) -> PluginResult<Vec<u8>> {
                 self.shared.log.push(Call::SaveState);
                 Ok(self.shared.state.lock().map_err(|_| poisoned())?.clone())
             }
 
-            fn load_state(&mut self, _main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+            fn load_state(
+                &mut self,
+                _main: &MainThread,
+                bytes: &[u8],
+                _: $crate::StateUse,
+            ) -> PluginResult<()> {
                 self.shared.log.push(Call::LoadState(bytes.len()));
                 *self.shared.state.lock().map_err(|_| poisoned())? = bytes.to_vec();
                 Ok(())

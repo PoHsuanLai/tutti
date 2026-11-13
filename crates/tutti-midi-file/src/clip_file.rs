@@ -15,16 +15,15 @@
 //! receiver (Bank Select, Program Change, volume, System Exclusive), each
 //! behind its own DCS. It holds at most one Set Tempo and one Set Time
 //! Signature (sections 6.1 to 6.1.2), both at delta 0. The DCS before Start
-//! of Clip is the header's last gap, and with the others "determines the total
-//! length of time allocated to the Clip Configuration Header" (section 6.1): it
+//! of Clip is the header's last gap, and with the others sets the total
+//! time allocated to the Clip Configuration Header (section 6.1): it
 //! is kept ([`ParsedClip::header_end`]). The rest, from Start of Clip to End of
 //! Clip, is the Sequence Data (section 7). No Property Exchange message is in
 //! either (sections 6.4 and 7.2).
 //!
 //! Every UMP is governed by a **Delta Clockstamp** (DCS) giving the ticks since
-//! the previous event: "The Delta Clockstamp message declares the time of all
-//! following messages which occur before the next Delta Clockstamp message"
-//! (section 3.2.2), so simultaneous events may share one. The writer gives each
+//! the previous event: a Delta Clockstamp sets the time of all following
+//! messages up to the next one (section 3.2.2), so events at one time may share a single Clockstamp. The writer gives each
 //! event its own, except the parts of a Lyric or Ruby message, which share the
 //! first's (see [`write`](fn@write)). The tick unit is declared once by the **DCTPQ** (Delta
 //! Clockstamp Ticks Per Quarter Note). The stream is bracketed by Start of Clip
@@ -112,28 +111,25 @@ pub enum ClipFileError {
     #[error("clip file has a message before its DCTPQ")]
     DctpqNotFirst,
     /// The DCTPQ has no Delta Clockstamp right before it, or one that is not 0.
-    /// Section 3.2.1 and section 6: "The DCTPQ shall have a preceding Delta
-    /// Clockstamp (see Section 3.2.2) with Number of Ticks Since Last Event set
-    /// to 0x00000."
+    /// Section 3.2.1 and section 6: the DCTPQ has a preceding Delta
+    /// Clockstamp (see Section 3.2.2) of 0 ticks.
     #[error("clip file's DCTPQ has no Delta Clockstamp of 0 before it")]
     DctpqDelta,
     /// A Set Profile On message has a Delta Clockstamp before it. Section 6:
-    /// "Set Profile On messages shall not have a prepended Delta Clockstamp
-    /// (DCS)."
+    /// a Set Profile On has none.
     #[error("clip file's Set Profile On has a Delta Clockstamp before it")]
     ProfileOnDelta,
     /// A MIDI-CI Property Exchange message (Universal System Exclusive `7E`,
-    /// sub-ID#1 `0D`, sub-ID#2 `30` to `3F`). Section 6.4: "Property Data for PE
-    /// Resources shall not be included in a MIDI Clip File"; section 7.2: the
-    /// sequence data holds "any MIDI messages in UMP Format, except Property
-    /// Exchange messages".
+    /// sub-ID#1 `0D`, sub-ID#2 `30` to `3F`). Section 6.4: Property Data for PE
+    /// Resources is not included in a Clip File; section 7.2: the
+    /// sequence data holds any UMP message but Property Exchange.
     #[error("clip file holds a Property Exchange message")]
     PropertyExchange,
     /// A second DCTPQ. The tick unit is declared once.
     #[error("clip file declares its DCTPQ more than once")]
     DuplicateDctpq,
-    /// No Start of Clip message. M2-116 section 7: "A Clip Sequence Data shall
-    /// include one Start of Clip message ... as the first UMP message."
+    /// No Start of Clip message. M2-116 section 7: the sequence data
+    /// has one Start of Clip message, first.
     #[error("clip file has no Start of Clip message")]
     MissingStartOfClip,
     /// A second Start of Clip. Section 7 asks for one.
@@ -147,23 +143,22 @@ pub enum ClipFileError {
     #[error("clip header has more than one Set Time Signature")]
     DuplicateHeaderTimeSignature,
     /// The header's Set Tempo is not the first message after the DCTPQ, or its
-    /// Delta Clockstamp is not 0. Section 6.1.1: "shall" be first, with a DCS
+    /// Delta Clockstamp is not 0. Section 6.1.1: it is first, with a DCS
     /// of 0 or sharing the DCTPQ's.
     #[error("clip header's Set Tempo is not first after the DCTPQ at delta 0")]
     MisplacedHeaderTempo,
     /// The header's Set Time Signature does not immediately follow the Set
     /// Tempo (or the DCTPQ, in a header with no Set Tempo), or its Delta
-    /// Clockstamp is not 0. Section 6.1.2: it "shall use the Delta Clockstamp
-    /// which precedes the DCTPQ message or shall have a preceding Delta
-    /// Clockstamp with Number of Ticks Since Last Event set to 0x00000".
+    /// Clockstamp is not 0. Section 6.1.2: it uses the Delta Clockstamp
+    /// that precedes the DCTPQ or has a preceding one of 0 ticks.
     #[error("clip header's Set Time Signature is not first after the Set Tempo at delta 0")]
     MisplacedHeaderTimeSignature,
-    /// No End of Clip message. Section 7: "A Clip Sequence Data shall include
-    /// one End of Clip message as the last UMP message."
+    /// No End of Clip message. Section 7: the sequence data
+    /// has one End of Clip message, last.
     #[error("clip file has no End of Clip message")]
     MissingEndOfClip,
-    /// Bytes follow the End of Clip, which must be last. Section 7.3: "A MIDI
-    /// Clip File shall not have any data following the End of Clip message."
+    /// Bytes follow the End of Clip, which must be last. Section 7.3: no
+    /// data follows the End of Clip message.
     /// There is no multi-clip clip file: that is what the MIDI Container File
     /// is for.
     #[error("clip file has data following the End of Clip message")]
@@ -172,7 +167,7 @@ pub enum ClipFileError {
 
 /// Whether `message` starts a MIDI-CI Property Exchange message: a System
 /// Exclusive 7 packet, first of its message, that begins `7E <device> 0D` and a
-/// sub-ID#2 of `30` to `3F` (M2-101 Table 5: "Property Exchange Messages"). The
+/// sub-ID#2 of `30` to `3F` (M2-101 Table 5, Property Exchange Messages). The
 /// packets after the first are not told apart, as they say nothing of what the
 /// message is; refusing the first refuses the message.
 pub(crate) fn property_exchange(message: &Message) -> bool {
@@ -193,14 +188,12 @@ pub(crate) fn property_exchange(message: &Message) -> bool {
 /// the gap that makes it so.
 ///
 /// **One Delta Clockstamp for the parts of a Lyric or Ruby message.**
-/// M2-116 section 3 says "A Delta Clockstamp message precedes every UMP", and
-/// M2-104 sections 7.5.10 and 7.5.12 say that "When placed in a MIDI Clip File,
-/// all parts of the Lyric Data Message shall be placed at the same time, sharing
-/// a single Delta Clock Stamp" (the Ruby Data Message likewise). They agree
-/// once the Clip File's own definition of a DCS is read: "The Delta Clockstamp
-/// message declares the time of all following messages which occur before the
-/// next Delta Clockstamp message" (M2-116 section 3.2.2; M2-104 section 7.2.3.2:
-/// "Simultaneous events may share a single Delta Clockstamp"), so a DCS precedes
+/// M2-116 section 3 has a Delta Clockstamp precede every UMP, and
+/// M2-104 sections 7.5.10 and 7.5.12 put all parts of a Lyric Data Message
+/// under one Delta Clockstamp in a Clip File (the Ruby Data Message
+/// likewise). They agree once the Clip File's own definition of a DCS is read:
+/// it sets the time of all following messages up to the next one (M2-116
+/// section 3.2.2; M2-104 section 7.2.3.2 lets simultaneous events share one), so a DCS precedes
 /// every UMP in that it governs it. A zero DCS between the parts would be a
 /// second Delta Clock Stamp, not a shared one. So the parts after the first are
 /// written with none, and every other event keeps its own.
@@ -312,12 +305,10 @@ fn delta_clockstamp(ticks: u64) -> Ump {
 /// Emit `ticks` as Delta Clockstamps, restarting the count with a NOOP each
 /// time a gap exceeds the 20-bit DCS field.
 ///
-/// M2-116 section 3.2.2 (identically M2-104-UM section 7.2.3.2): "If no MIDI
-/// message has occurred during the previous 1,048,575 ticks, then the
-/// application which creates the MIDI Clip File shall insert a Delta Clockstamp
-/// followed by a Null message to restart the delta time count. Then the next
-/// Delta Clockstamp in the file declares the ticks since the previous Null
-/// message."
+/// M2-116 section 3.2.2 (identically M2-104-UM section 7.2.3.2): when no
+/// message has occurred during the previous 1,048,575 ticks, the writer inserts
+/// a Delta Clockstamp followed by a Null message to restart the count, and the
+/// next Delta Clockstamp counts the ticks since that Null message.
 ///
 /// So consecutive DCSs do **not** accumulate: each one is the count since the
 /// last event, and a NOOP is what makes a long gap expressible as a sequence of

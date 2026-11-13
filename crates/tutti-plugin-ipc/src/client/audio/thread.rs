@@ -150,7 +150,42 @@ fn run_thread(
             owed: Owed::default(),
         },
     };
+    // The control connection is also read when the server speaks unprompted
+    // (a request to be processed again, a latency change), whether or not a
+    // command is waiting: a thread that only waits on it tells the bridge.
+    match ipc::Watch::of(&lanes.control.stream) {
+        Ok(watch) => watch_control(watch, channels.clone(), lifecycle.clone()),
+        Err(e) => tracing::warn!("the bridge cannot watch the control connection: {e}"),
+    }
     pump(&channels, &payloads, &lifecycle, &listener, &mut lanes);
+}
+
+/// How long the watcher waits before it re-checks that the bridge still runs.
+/// Only bounds how long a stopped bridge's watcher (and the duplicate of the
+/// socket it holds) lives on; news ends the wait the instant it arrives.
+const WATCH_SLICE: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Spawns the watcher: it waits for the control connection to have bytes and
+/// tells the bridge thread, then waits for the bridge to have read them.
+fn watch_control(watch: ipc::Watch, channels: Channels, lifecycle: Lifecycle) {
+    let spawned = thread::Builder::new()
+        .name("plugin-bridge-news".to_string())
+        .spawn(move || {
+            while lifecycle.is_running() {
+                if !watch.wait_readable(WATCH_SLICE) {
+                    continue;
+                }
+                channels.set_news();
+                // The bytes stay readable until the bridge reads them: wait
+                // for it, so this thread does not spin on them meanwhile.
+                while channels.news_pending() && lifecycle.is_running() {
+                    thread::park_timeout(std::time::Duration::from_millis(1));
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("the bridge cannot watch the control connection: {e}");
+    }
 }
 
 /// Reads a connection's `Ready` and checks its version.
@@ -185,18 +220,14 @@ fn expect_ready(stream: &mut ControlStream) -> Result<(), PluginFailure> {
 
 /// The bridge's command loop.
 ///
-/// **Idle, the bridge reads nothing from the socket, and did not before the
-/// doorbell either.** The old 1 ms park only re-polled an empty queue; the one
-/// place this thread reads the plugin's socket is inside `handle`, while a
-/// command waits for its reply, and unsolicited events (a GUI edit, a changed
-/// parameter) ride in on that read and go to the listener afterwards. So
-/// events and a plugin that died while no command is queued surface with the
-/// next command, as they always did, and no timeout is kept for them. The
-/// audio thread sends a `Process` command every block while an engine runs, a
-/// session with no engine sends none, and the host's control calls (state,
-/// parameters, a GUI edit that `editor_idle` forwards) are commands too. A wake-up for the
-/// socket itself would be a change of design (polling the socket while idle),
-/// not a restored timeout.
+/// **Idle, the bridge sleeps on its doorbell, and a watcher thread rings it
+/// when the control connection has bytes** ([`watch_control`]), so what the
+/// server says unprompted (a request to be processed again, a latency or
+/// parameter change, its own death) is read as it arrives, not with the next
+/// command. While a command waits for its reply, `handle` reads the same lane
+/// and the unsolicited events ride in on that read; either way they go to the
+/// listener after the command. There is no timeout in the sleep: a command, the
+/// watcher and `shutdown` each ring the doorbell, and a spurious return loops.
 fn pump(
     channels: &Channels,
     payloads: &PayloadPool,
@@ -208,18 +239,27 @@ fn pump(
     // buffer for the connection, handed to the listener after each command.
     let mut inbox = Unsolicited::with_lifecycle(lifecycle.clone());
     while lifecycle.is_running() {
-        let Some(cmd) = channels.pop_command() else {
-            // Sleep on the doorbell: `push_command` rings it the instant a
-            // block arrives, so the socket round-trip starts immediately.
-            // The ring cannot be lost and `shutdown` rings it too, so there
-            // is no timeout: nothing else is polled while idle. A spurious
-            // return just loops.
-            channels.wait_for_command(|| !lifecycle.is_running());
-            continue;
+        let cmd = match channels.pop_command() {
+            Some(cmd) => cmd,
+            // News on the control connection, no command queued: read it.
+            None if channels.news_pending() => Command::Drain,
+            None => {
+                // Sleep on the doorbell: `push_command` rings it the instant a
+                // block arrives, so the socket round-trip starts immediately,
+                // and the watcher rings it when the server speaks. The ring
+                // cannot be lost and `shutdown` rings it too, so there is no
+                // timeout. A spurious return just loops.
+                channels.wait_for_command(|| !lifecycle.is_running() || channels.news_pending());
+                continue;
+            }
         };
+        let draining = matches!(cmd, Command::Drain);
 
         let result = handle(cmd, lanes, channels, payloads, &mut inbox, lifecycle);
         drain_unsolicited(&mut inbox, channels, listener);
+        if draining {
+            channels.clear_news();
+        }
 
         if let Err(e) = result {
             // The error is classified here, at the only place it exists.

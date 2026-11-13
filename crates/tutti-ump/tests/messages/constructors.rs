@@ -18,7 +18,8 @@ fn first_is_the_first_group_with_the_channel() {
 }
 
 /// M2-104 section 7.4.2: Note On and Note Off carry a 16-bit velocity and an
-/// attribute type, and "no attribute" is type 0.
+/// attribute type, and no attribute is type 0.
+/// Spec: m2-104/7.4.14#3
 #[test]
 fn note_constructors_are_the_no_attribute_messages() {
     let note = NoteNumber::of(60);
@@ -82,6 +83,7 @@ fn an_address_is_a_group_and_a_channel_and_a_bare_channel_is_in_the_first_group(
 
 /// M2-104 section 7.3 (MIDI 1.0 Channel Voice, type 2): each message's words,
 /// written from the figures, for group 0 channel 2 and for group 3 channel 2.
+/// Spec: m2-104/msg/2/8, m2-104/msg/2/9, m2-104/msg/2/a, m2-104/msg/2/b, m2-104/msg/2/c, m2-104/msg/2/d, m2-104/msg/2/e
 #[test]
 fn the_midi1_constructors_are_the_section_7_3_words() {
     let ch = MidiChannel::of(2);
@@ -111,28 +113,45 @@ fn the_midi2_constructors_are_the_section_7_4_words() {
         (w[0], w[1])
     };
     assert_eq!(
-        words(Message::note_on2(ch, note, NoteVelocity::new(0x8000))),
+        words(Message::Midi2(
+            ch.into(),
+            Voice2::note_on(note, NoteVelocity::new(0x8000))
+        )),
         (0x4092_3C00, 0x8000_0000)
     );
     assert_eq!(
-        words(Message::note_off2(ch, note, NoteVelocity::new(0x1234))),
+        words(Message::Midi2(
+            ch.into(),
+            Voice2::note_off(note, NoteVelocity::new(0x1234))
+        )),
         (0x4082_3C00, 0x1234_0000)
     );
     assert_eq!(
-        words(Message::control_change2(
-            ch,
-            cc,
-            ControlValue::new(0xDEAD_BEEF)
+        words(Message::Midi2(
+            ch.into(),
+            Voice2::ControlChange {
+                controller: cc,
+                value: ControlValue::new(0xDEAD_BEEF)
+            }
         )),
         (0x40B2_0700, 0xDEAD_BEEF)
     );
     // The program is the top byte of the second word; Bank Valid is clear.
     assert_eq!(
-        words(Message::program_change2(ch, U7::of(5))),
+        words(Message::Midi2(
+            ch.into(),
+            Voice2::ProgramChange {
+                program: U7::of(5),
+                bank: None
+            }
+        )),
         (0x40C2_0000, 0x0500_0000)
     );
     assert_eq!(
-        words(Message::pitch_bend2(ch, BendValue::new(0x8000_0000))),
+        words(Message::Midi2(
+            ch.into(),
+            Voice2::PitchBend(BendValue::new(0x8000_0000))
+        )),
         (0x40E2_0000, 0x8000_0000)
     );
 }
@@ -149,11 +168,23 @@ fn a_constructed_message_decodes_back_to_itself() {
         Message::control_change(ch, cc, v),
         Message::program_change(ch, v),
         Message::pitch_bend(ch, U14::MAX),
-        Message::note_on2(ch, note, NoteVelocity::new(0xFFFF)),
-        Message::note_off2(ch, note, NoteVelocity::MIN),
-        Message::control_change2(ch, cc, ControlValue::new(u32::MAX)),
-        Message::program_change2(ch, v),
-        Message::pitch_bend2(ch, BendValue::new(u32::MAX)),
+        Message::Midi2(ch.into(), Voice2::note_on(note, NoteVelocity::new(0xFFFF))),
+        Message::Midi2(ch.into(), Voice2::note_off(note, NoteVelocity::MIN)),
+        Message::Midi2(
+            ch.into(),
+            Voice2::ControlChange {
+                controller: cc,
+                value: ControlValue::new(u32::MAX),
+            },
+        ),
+        Message::Midi2(
+            ch.into(),
+            Voice2::ProgramChange {
+                program: v,
+                bank: None,
+            },
+        ),
+        Message::Midi2(ch.into(), Voice2::PitchBend(BendValue::new(u32::MAX))),
     ] {
         assert_eq!(Message::try_from(Ump::from(m)), Ok(m));
         assert_eq!(Ump::from(m).decode(), Ok(m));

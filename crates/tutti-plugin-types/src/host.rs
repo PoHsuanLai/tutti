@@ -28,12 +28,13 @@ use std::time::Instant;
 use crate::ParamEdit;
 use crate::{
     AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorSize, EditorWindow,
-    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, SampleRate, Samples, WindowHandle,
+    KeyEvent, KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
+    PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
+    ProcessWake, SampleRate, Samples, WindowHandle,
 };
 use crate::{
     FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
-    RestartRules, TimerId, Wakeups,
+    RestartRules, StateUse, TimerId, Wakeups,
 };
 
 /// What the main thread asks of a plugin, in any state that has one.
@@ -105,19 +106,26 @@ pub trait Control: EditorWindow {
         None
     }
 
-    /// The plugin's state as bytes.
+    /// The plugin's state as bytes, saved for `state_use`. A format with one
+    /// state for every use ignores it.
     ///
     /// # Errors
     ///
     /// [`PluginError::State`] when the plugin cannot save.
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
+    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>>;
 
-    /// Restores state saved by [`save_state`](Self::save_state).
+    /// Restores state saved by [`save_state`](Self::save_state) with the same
+    /// `state_use`.
     ///
     /// # Errors
     ///
     /// [`PluginError::State`] when the plugin rejects the bytes.
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()>;
+    fn load_state(
+        &mut self,
+        main: &MainThread,
+        bytes: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()>;
 
     /// The plugin's factory presets. Empty when the format has none.
     fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
@@ -223,6 +231,16 @@ pub trait Control: EditorWindow {
     /// zero is a claim: a format that reports edits in the block's
     /// [`ProcessOutput`] says `0` in its own impl.
     fn dropped_reported_edits(&self) -> u64;
+
+    /// Gives the plugin's host the [`ProcessWake`] to raise when the plugin
+    /// asks to be processed again (CLAP's `request_process`, which a plugin
+    /// that returned `CLAP_PROCESS_SLEEP` calls from any thread). Any thread;
+    /// the plugin's first binding stands, and a host binds one handle for the
+    /// plugin's life. A format with no sleep status keeps the default, which
+    /// drops it.
+    fn bind_wake(&self, wake: ProcessWake) {
+        let _ = wake;
+    }
 }
 
 /// A plugin that is configured but not rendering.
@@ -429,8 +447,12 @@ pub trait Wraps {
     /// # Errors
     ///
     /// As [`Control::save_state`].
-    fn save_with_pending(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.plugin_mut().save_state(main)
+    fn save_with_pending(
+        &mut self,
+        main: &MainThread,
+        state_use: StateUse,
+    ) -> PluginResult<Vec<u8>> {
+        self.plugin_mut().save_state(main, state_use)
     }
 
     /// Appends what the Processor reported to `out`, after the plugin's own,
@@ -511,12 +533,17 @@ impl<W: Wraps> Control for W {
         self.plugin().parameter_value_from_text(main, id, text)
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.save_with_pending(main)
+    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+        self.save_with_pending(main, state_use)
     }
 
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let result = self.plugin_mut().load_state(main, bytes);
+    fn load_state(
+        &mut self,
+        main: &MainThread,
+        bytes: &[u8],
+        state_use: StateUse,
+    ) -> PluginResult<()> {
+        let result = self.plugin_mut().load_state(main, bytes, state_use);
         self.after_restore(main);
         result
     }
@@ -590,6 +617,10 @@ impl<W: Wraps> Control for W {
     fn dropped_reported_edits(&self) -> u64 {
         self.plugin().dropped_reported_edits() + self.lost_reports()
     }
+
+    fn bind_wake(&self, wake: ProcessWake) {
+        self.plugin().bind_wake(wake);
+    }
 }
 
 impl<W: Wraps> EditorWindow for W {
@@ -612,6 +643,10 @@ impl<W: Wraps> EditorWindow for W {
 
     fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
         self.plugin_mut().set_editor_scale(main, scale)
+    }
+
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        self.plugin_mut().editor_key(main, event)
     }
 
     fn close_editor(&mut self, main: &MainThread) {

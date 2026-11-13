@@ -15,6 +15,7 @@ fn wire(numerator: u8, denominator: u8) -> Wire {
 
 /// Section 7.5.3: the field is 10 ns units per quarter note, so 120 bpm (0.5 s)
 /// is 50,000,000 and 60 bpm (one second a quarter) is 100,000,000.
+/// Spec: m2-104/msg/d/00.00
 #[test]
 fn a_tempo_is_ten_ns_units_per_quarter() {
     assert_eq!(flex_tempo(50_000_000), Bpm::new(120.0));
@@ -31,8 +32,9 @@ fn the_field_has_a_slowest_tempo_and_zero_is_none() {
     assert_eq!(flex_tempo(1), Bpm::new(6.0e9));
 }
 
-/// Section 7.5.4: the denominator is a negative power of 2, "2 represents a
-/// quarter note, 3 represents an eighth note".
+/// Section 7.5.4: the denominator is a negative power of 2 (2 is a
+/// quarter note, 3 an eighth note).
+/// Spec: m2-104/msg/d/00.01
 #[test]
 fn the_denominator_is_a_power_of_two_exponent() {
     assert_eq!(
@@ -54,7 +56,7 @@ fn the_denominator_is_a_power_of_two_exponent() {
 }
 
 /// What the meter cannot hold is refused, never clamped: a zero denominator is
-/// "non-standard" (7.5.4), a numerator of 0 is not "1 to 256", and the meter's
+/// non-standard (7.5.4), a numerator of 0 is outside 1 to 256, and the meter's
 /// own ceilings (64 beats, a 64th note) apply.
 #[test]
 fn what_the_meter_cannot_hold_is_refused() {

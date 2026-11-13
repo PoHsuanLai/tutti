@@ -41,7 +41,7 @@ fn lfo(shape: LfoShape, clock: Clock) -> Source {
 
 fn beats(per_cycle: f64) -> Clock {
     Clock::Beats {
-        per_cycle: BeatDuration(per_cycle),
+        per_cycle: BeatsPerCycle::of(per_cycle),
         phase: PhaseIncrement(0.0),
     }
 }
@@ -780,7 +780,7 @@ fn every_declaration_a_host_can_make_compiles_without_a_runtime() {
             anchor: None,
         };
         let synced = Clock::Beats {
-            per_cycle: BeatDuration(2.0),
+            per_cycle: BeatsPerCycle::of(2.0),
             phase,
         };
         sources.push((
@@ -964,7 +964,8 @@ fn a_second_rate_edit_near_its_anchor_reanchors() {
 
 /// A value that is not finite is refused where it would reach the lane: an
 /// infinite constant wave (a route's depth cannot be one: `Depth` is
-/// range-checked), and a clock's infinite rate, period or phase,
+/// range-checked), and a clock's infinite rate or phase (a beat span cannot
+/// be one: `BeatsPerCycle` is range-checked),
 /// on an LFO no route reads (so the source check refuses it, not a
 /// program). An infinite phase after a rate edit would otherwise carry the
 /// live anchor with a jump of `inf − inf`, a NaN in `Compiled::clocks`
@@ -991,16 +992,15 @@ fn a_value_that_is_not_finite_is_refused() {
         phase: PhaseIncrement(phase),
         anchor: None,
     };
-    let beat = |per_cycle: f64, phase: f32| Clock::Beats {
-        per_cycle: BeatDuration(per_cycle),
+    let beat = |phase: f32| Clock::Beats {
+        per_cycle: BeatsPerCycle::of(1.0),
         phase: PhaseIncrement(phase),
     };
     for c in [
         clock(f32::INFINITY, 0.0),
         clock(1.0, f32::INFINITY),
         clock(1.0, f32::NEG_INFINITY),
-        beat(f64::INFINITY, 0.0),
-        beat(1.0, f32::INFINITY),
+        beat(f32::INFINITY),
     ] {
         let unrouted = [(SourceKey(1), lfo(LfoShape::Sine, c))];
         assert_eq!(

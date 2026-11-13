@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use tutti_plugin_types::{Hand, Load, LoadStage, MainThread, PluginError, PluginResult};
+use tutti_plugin_types::{Hand, Load, LoadStage, MainThread, PluginError, PluginResult, StateUse};
 
 use super::{Served, ServedPlugin};
 use crate::render::{End, RenderEnd};
@@ -47,7 +47,7 @@ macro_rules! served {
                 sample_rate: tutti_plugin_types::SampleRate,
                 block_size: usize,
                 prefer_f64: bool,
-                state: Option<&[u8]>,
+                state: Option<(&[u8], StateUse)>,
                 before_restore: &mut dyn FnMut(),
             ) -> PluginResult<(Self, Option<String>, Box<dyn RenderEnd>)> {
                 if !path.exists() {

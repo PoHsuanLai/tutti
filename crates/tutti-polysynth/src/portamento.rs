@@ -1,8 +1,7 @@
 //! Portamento: one pitch glide, stepped per sample.
 //!
 //! Each voice has its own, so a note's glide moves that voice and no other (M1
-//! p.16: a Portamento Control "does not affect the pitch of other currently
-//! sounding voices"). A glide is a factor on the voice's pitch
+//! p.16). A glide is a factor on the voice's pitch
 //! ([`Portamento::ratio`]), not a pitch of its own, so it composes with a
 //! per-note pitch and the channel's bend instead of replacing them.
 //!
@@ -15,7 +14,7 @@ use tutti_types::{Hz, SampleRate, Seconds, Semitones};
 
 /// When a new note glides from the previous pitch rather than jumping to its
 /// own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum PortamentoMode {
     /// Glide into every note, whether or not the previous one is still held.
@@ -34,7 +33,7 @@ pub enum PortamentoMode {
 ///
 /// A [`PolySynth`](crate::PolySynth) built with `None` here has no glide state
 /// at all and cannot gain one later.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PortamentoConfig {
     /// When to glide. [`Off`](PortamentoMode::Off) by default, which makes the
     /// rest of these fields inert.

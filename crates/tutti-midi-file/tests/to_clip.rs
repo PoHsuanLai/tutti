@@ -62,9 +62,9 @@ fn signature_events(n: u8, d: u8, bb: u8, cc: u8) -> [FileEvent; 2] {
             denominator: d,
             thirty_seconds: bb,
         })),
-        // M2-104 section 7.5.5: an undivided bar's Bar Accent Part 1 "shall be
-        // equal to the number of beats in the bar", the other two zero; a
-        // Subdivision Clicks value of 0 is "not use any".
+        // M2-104 section 7.5.5: an undivided bar's Bar Accent Part 1 is
+        // the number of beats in the bar, the other two zero; a
+        // Subdivision Clicks value of 0 means none.
         flex(Flex::SetMetronome(Metronome {
             clocks_per_click: cc,
             accent_1: n,
@@ -621,9 +621,8 @@ fn text_that_flex_cannot_carry_is_reported() {
     );
 }
 
-/// M2-104 section 1.8: "MIDI messages only use normalized UTF-8 encoded
-/// Unicode characters, following the NFC (Normalization Form C) standard" and
-/// "shall not include a Byte Order Mark". A decomposed `e` + combining acute
+/// M2-104 section 1.8: message text is NFC-normalized UTF-8 and has no Byte
+/// Order Mark. A decomposed `e` + combining acute
 /// (`65 CC 81`) is written composed (`C3 A9`), and a leading BOM goes.
 #[test]
 fn text_is_composed_to_nfc_without_a_byte_order_mark() {

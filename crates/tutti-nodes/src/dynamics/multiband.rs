@@ -21,7 +21,7 @@ use tutti_graph::{
     Status,
 };
 use tutti_types::{AtomicF32, CompressionRatio, Db, Hz, MAX_BUS_CHANNELS, Param, SampleRate};
-use tutti_types::{BusTopology, ChannelLayout, Seconds, Tail, UnitAddr, UnitParam};
+use tutti_types::{BusTopology, ChannelLayout, Seconds, Tail, UnitParam};
 
 use crate::filter::Splits;
 use crate::ramp::LastGood;
@@ -94,41 +94,6 @@ pub struct MultibandControls {
 }
 
 impl MultibandControls {
-    /// Bypasses band `band` (see [`UnitParam::Bypass`]); `false` past the last
-    /// band, and nothing is written then.
-    pub fn set_bypass(&self, band: usize, on: bool) -> bool {
-        self.toggle(UnitParam::Bypass, band, on)
-    }
-
-    /// Whether band `band` is bypassed; `false` past the last band.
-    #[must_use]
-    pub fn is_bypassed(&self, band: usize) -> bool {
-        self.is_toggled(UnitParam::Bypass, band)
-    }
-
-    /// Solos band `band` (see [`UnitParam::Solo`]); `false` past the last
-    /// band, and nothing is written then.
-    pub fn set_solo(&self, band: usize, on: bool) -> bool {
-        self.toggle(UnitParam::Solo, band, on)
-    }
-
-    /// Whether band `band` is soloed; `false` past the last band.
-    #[must_use]
-    pub fn is_soloed(&self, band: usize) -> bool {
-        self.is_toggled(UnitParam::Solo, band)
-    }
-
-    fn toggle(&self, kind: UnitParam, band: usize, on: bool) -> bool {
-        u8::try_from(band).is_ok_and(|b| self.params.set(UnitAddr::new(kind, b), f32::from(on)))
-    }
-
-    fn is_toggled(&self, kind: UnitParam, band: usize) -> bool {
-        u8::try_from(band)
-            .ok()
-            .and_then(|b| self.params.get(UnitAddr::new(kind, b)))
-            .is_some_and(|v| v >= 0.5)
-    }
-
     /// The node's params by address (see [`MultibandCompressorNode`]).
     #[must_use]
     pub fn params(&self) -> &ParamSet {
@@ -709,6 +674,7 @@ mod tests {
     use crate::test_support::{RATE, amplitude_at, mean, prepared, render_chunked, sine};
     use core::f64::consts::PI;
     use tutti_graph::contract::drive;
+    use tutti_types::UnitAddr;
 
     const FS: f64 = 48_000.0;
     /// Whole periods of every 5 Hz-grid tone, and of 3 kHz (16 samples).
@@ -1591,25 +1557,6 @@ mod tests {
         c.set_crossover(0, Hz(5_000.0));
         let a = amp(&mut n);
         assert!(a > 0.99, "the consistent set landed: {a}");
-    }
-
-    /// The typed toggles write the band's own cell and read it back; past the
-    /// last band they write nothing and read false.
-    #[test]
-    fn the_controls_toggle_bands_by_type() {
-        let (n, _) = node(3);
-        let c = n.into_parts().controls;
-        assert!(c.set_bypass(1, true) && c.set_solo(2, true));
-        assert!(c.is_bypassed(1) && !c.is_bypassed(0) && !c.is_bypassed(2));
-        assert!(c.is_soloed(2) && !c.is_soloed(1));
-        assert_eq!(
-            c.params().get(UnitAddr::new(UnitParam::Bypass, 1)),
-            Some(1.0)
-        );
-        assert!(!c.set_bypass(3, true) && !c.is_bypassed(3) && !c.set_solo(300, true));
-        c.params().set(UnitAddr::new(UnitParam::Bypass, 0), 0.5);
-        assert!(c.is_bypassed(0));
-        assert!(c.set_bypass(1, false) && !c.is_bypassed(1));
     }
 
     /// A driven make-up port moves its own band: band 1 alone heard (band 0

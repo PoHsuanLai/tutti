@@ -44,7 +44,7 @@ impl MidiFileKind {
     }
 
     /// Identifies the file at `path` by reading only its header, not the whole
-    /// file. `Ok(None)` means "readable, but neither format".
+    /// file. `Ok(None)` means readable, but neither format.
     ///
     /// # Errors
     ///

@@ -40,7 +40,7 @@ use crate::name::{Assembler, BlockName, EndpointName, ProductInstanceId};
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How long Function Block discovery waits for Names once every Info is in. A
-/// block with no name never sends one (§7.1.9: "may"), so a Name is not
+/// block with no name never sends one (§7.1.9 makes the name optional), so a Name is not
 /// something to wait for without end; when every block's Info and Name are in
 /// it settles at once. 100 ms is ours.
 pub const NAME_GRACE: Duration = Duration::from_millis(100);
@@ -189,14 +189,11 @@ impl Connection {
     /// After a [`Negotiated`](Ending::Negotiated) settle the peer may still
     /// change what it said, and the connection follows it, answering
     /// [`Action::Changed`]: a Stream Configuration Notification is the
-    /// Protocol and JR Timestamps in use whenever it comes (§7.1.6.1 step 3:
-    /// the Sender starts "using the Protocol and JR Timestamps configuration
-    /// as declared in the Stream Configuration Notification"), but a Function
-    /// Block Info or Name is read only when the Endpoint did not declare its
-    /// Function Blocks static (§6.1.1: such an Endpoint "will not change any of
-    /// the properties of its Function Blocks after initial discovery", and
-    /// §7.1.8 and §7.1.9 send the Notifications for a change only from one that
-    /// has not). A Function Block outside the count Endpoint Info declared is
+    /// Protocol and JR Timestamps in use whenever it comes (§7.1.6.1 step 3),
+    /// but a Function Block Info or Name is read only when the Endpoint did
+    /// not declare its Function Blocks static (§6.1.1: a static Endpoint's
+    /// blocks never change after discovery, and §7.1.8 and §7.1.9 send
+    /// change Notifications only from an Endpoint that has not declared that). A Function Block outside the count Endpoint Info declared is
     /// never read. After a [`Midi1Fallback`](Ending::Midi1Fallback) settle
     /// everything is ignored: the peer is a MIDI 1.0 device.
     pub fn on_message(&mut self, message: Message, now: Instant) -> Action {
@@ -448,8 +445,8 @@ impl Connection {
 }
 
 /// A Notification's configuration as the connection keeps it: a reserved
-/// Protocol is one it cannot use, so it is MIDI 1.0 (ours; the spec says
-/// "reserved").
+/// Protocol is one it cannot use, so it is MIDI 1.0 (ours; the spec
+/// only calls it reserved).
 const fn settle_protocol(config: StreamConfig) -> StreamConfig {
     match config.protocol {
         Protocol::Reserved(_) => StreamConfig {

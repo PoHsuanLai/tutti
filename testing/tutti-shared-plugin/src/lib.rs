@@ -15,6 +15,6 @@ mod vst3;
 mod au;
 #[cfg(target_os = "macos")]
 pub use au::{
-    AU_ID, AU_MANUFACTURER, AU_NAME, AU_SUBTYPE, AU_TYPE, AU_VERSION, PlugInInterface,
-    TuttiSharedAuFactory, register_au,
+    AU_ASYNC_SUBTYPE, AU_ID, AU_MANUFACTURER, AU_NAME, AU_SUBTYPE, AU_TYPE, AU_VERSION,
+    PlugInInterface, TuttiSharedAuFactory, register_au, register_au_async_only,
 };

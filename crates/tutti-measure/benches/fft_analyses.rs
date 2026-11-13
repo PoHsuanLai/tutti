@@ -11,7 +11,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tutti_dsp::{FftScratch, StftGeometry};
-use tutti_measure::{DetectionFunction, OnsetConfig, StftRequest, YinConfig, detect_onsets, stft};
+use tutti_measure::{
+    DetectionFunction, OnsetConfig, StftRequest, YinConfig, detect_onsets, istft_transform, stft,
+};
 use tutti_types::{SampleRate, Samples};
 
 const SR: SampleRate = SampleRate::SR_48K;
@@ -45,7 +47,7 @@ fn benches(c: &mut Criterion) {
         let req = StftRequest::new(SR, Samples(2048), Samples(512));
         b.iter(|| {
             let s = stft(black_box(&x), req, &mut fft).unwrap();
-            black_box(s.resynthesize(&mut fft))
+            black_box(istft_transform(&s, &mut fft))
         });
     });
 

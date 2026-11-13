@@ -7,7 +7,7 @@ use super::math::{Mat2, Mat3, direction, inverse2, inverse3, mul2, mul3, wrapped
 use super::select;
 
 /// The most speakers a layout holds: twelve, the 7.1.4 Atmos bed's eleven
-/// speakers and its LFE.
+/// speakers and its LFE. A size of the storage, not a property of panning.
 pub const MAX_SPEAKERS: usize = 12;
 
 /// How many times [`SpeakerLayout::gains_into`] may retreat a source's elevation
@@ -40,7 +40,7 @@ const PLANE_TOLERANCE_DEG: f64 = 1e-6;
 const ELEVATION_SNAP_DEG: f64 = 1e-4;
 
 /// Whether a layout pans between pairs of speakers or triplets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum PanningMode {
     /// Every speaker is on the horizontal plane: a source lies between two.
     Horizontal,

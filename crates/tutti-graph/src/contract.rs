@@ -198,7 +198,7 @@ pub enum Detect {
 /// One path through the graph. Each is a separate case (see
 /// [`contract_tests!`](crate::contract_tests)); a node's own rows are in the
 /// node crates' `tests/executor/contract.rs`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Path {
     /// The excitation straight in: an upstream event source, or the global
     /// input. Whole [`MAX_BLOCK`] blocks.
@@ -1511,6 +1511,10 @@ impl Recorder {
 impl Node for Recorder {
     fn shape(&self) -> Shape {
         self.inner.shape()
+    }
+
+    fn bind_wake(&mut self, wake: crate::Wake) {
+        self.inner.bind_wake(wake);
     }
 
     fn prepare(&mut self, p: &Prepare) {

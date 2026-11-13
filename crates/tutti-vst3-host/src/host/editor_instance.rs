@@ -9,8 +9,8 @@ use std::path::Path;
 
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
-    EditorWindow, InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
-    PluginResult, WindowHandle,
+    EditorWindow, InProcess, KeyEvent, KeyUse, Load, MainThread, Normalized, ParamEdit, ParamId,
+    PluginError, PluginResult, WindowHandle,
 };
 
 use super::loaded::Vst3Loaded;
@@ -110,8 +110,13 @@ impl Editor for Vst3Editor {
     }
 
     fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
-        Control::load_state(&mut self.inner, main, data)
-            .map_err(|e| editor_error(format!("VST3 set_state failed: {e}")))?;
+        Control::load_state(
+            &mut self.inner,
+            main,
+            data,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .map_err(|e| editor_error(format!("VST3 set_state failed: {e}")))?;
         Ok(())
     }
 
@@ -121,7 +126,7 @@ impl Editor for Vst3Editor {
     }
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut self.inner, main)
+        Control::save_state(&mut self.inner, main, tutti_plugin_types::StateUse::Project)
     }
 
     fn take_dirty(&mut self, main: &MainThread) -> bool {
@@ -149,6 +154,10 @@ impl EditorWindow for Vst3Editor {
             width: size.width,
             height: size.height,
         })
+    }
+
+    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+        EditorWindow::editor_key(&mut self.inner, main, event)
     }
 
     fn close_editor(&mut self, main: &MainThread) {

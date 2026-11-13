@@ -46,14 +46,14 @@ pub use processor::IpcProcessor;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tutti_plugin_types::{
     BridgeError, BridgeResult, ChunkCounters, Controller, Load, LoadStage, Loaded, LoadedPlugin,
     MainThread, ParameterChanges, ParameterQueue, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Prepare, Refused, Reopen, Request, RestartRules, SampleFormat, SampleRate, Samples,
-    Stuck,
+    PluginTail, Prepare, ProcessWake, Refused, Reopen, Request, RestartRules, SampleFormat,
+    SampleRate, Samples, StateUse, Stuck,
 };
 use tutti_types::AtomicSampleRate;
 
@@ -80,7 +80,8 @@ pub struct IpcOrigin {
 impl IpcOrigin {
     /// A fresh instance of the plugin, from the same file and configuration
     /// in a server of its own (its own socket), at `rate`, with `state`
-    /// restored before it is activated. See [`Ipc::reopen_restoring`].
+    /// restored before it is activated, as the state of a duplicate. See
+    /// [`Ipc::reopen_restoring`].
     ///
     /// # Errors
     ///
@@ -98,6 +99,7 @@ impl IpcOrigin {
             self.load.clone(),
             rate,
             state,
+            StateUse::Duplicate,
             self.load_editor,
         )
     }
@@ -155,6 +157,9 @@ struct Events {
     tail: Mutex<PluginTail>,
     requests: Mutex<Vec<Request>>,
     forward: Mutex<Option<BridgeListener>>,
+    /// What the plugin's request to be processed again raises, from the
+    /// bridge's thread ([`Control::bind_wake`](tutti_plugin_types::Control::bind_wake)).
+    wake: OnceLock<ProcessWake>,
 }
 
 impl Events {
@@ -167,6 +172,11 @@ impl Events {
             BridgeEvent::TailChanged { tail } => {
                 *self.tail.lock().unwrap_or_else(PoisonError::into_inner) = *tail;
                 self.ask(Request::TailChanged);
+            }
+            BridgeEvent::ProcessRequested => {
+                if let Some(wake) = self.wake.get() {
+                    wake.raise();
+                }
             }
             _ => {}
         }
@@ -318,6 +328,7 @@ impl Ipc {
             tail: Mutex::new(loaded.tail),
             requests: Mutex::new(Vec::new()),
             forward: Mutex::new(None),
+            wake: OnceLock::new(),
         });
         let listening = Arc::clone(&events);
         bridge.set_listener(Some(Arc::new(move |event| listening.on(event))));
@@ -346,7 +357,7 @@ impl Ipc {
     /// `rate` and returns the plugin loaded in it, with what became of `state` if one was given: it is
     /// restored **before the plugin is activated**, the order every format
     /// allows and a plugin that takes its mode from the state at activation
-    /// needs.
+    /// needs. `state_use` is what that state was saved for.
     ///
     /// Blocks while the server launches and handshakes. Needs no main thread.
     ///
@@ -365,9 +376,10 @@ impl Ipc {
         load: Load,
         rate: SampleRate,
         state: Option<&[u8]>,
+        state_use: StateUse,
         load_editor: Option<EditorLoader>,
     ) -> BridgeResult<Launched> {
-        let server = launch(&config, &path, &load, rate, state)?;
+        let server = launch(&config, &path, &load, rate, state, state_use)?;
         let restored = server.state_restore.clone();
         // Guarded before the first fallible step below: an `Err` from
         // `PluginBridge::new` would otherwise drop a bare child process.

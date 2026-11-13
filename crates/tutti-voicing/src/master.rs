@@ -8,30 +8,29 @@
 //!
 //! # Volume and balance
 //!
-//! M1 p.57: a device "must internally track three volume and two balance
-//! scalars": the volume "received on its own ID", "received on the 'All Call'
-//! ID", and the channels' (CC 7 and 11, [`ChannelState`](crate::ChannelState)),
+//! M1 p.57: a device internally tracks three volume and two balance
+//! scalars: the volume received on its own ID, the one received on the All
+//! Call ID, and the channels' (CC 7 and 11, [`ChannelState`](crate::ChannelState)),
 //! and for balance the first two. So each is kept separately and the gain is
-//! their product: "all devices could be brought down together without
-//! forgetting their individual levels". The own-ID scalars start at full volume
-//! and centre ("if no knob [...] power up default is set at full volume"), and
+//! their product, so all devices can be brought down together without
+//! forgetting their individual levels. The own-ID scalars start at full volume
+//! and centre (the power-up default is full volume), and
 //! so do the all-call ones (GM2 section 4.1, default 7F/7F).
 //!
-//! **The volume's curve** is GM2 section 4.1's: "the square of the value is
-//! proportional to the volume", as for CC 7 and CC 11, so the amplitude is
+//! **The volume's curve** is GM2 section 4.1's: the volume is proportional to the
+//! square of the value, as for CC 7 and CC 11, so the amplitude is
 //! `(value / 16383)^2` and `0` is off. **The balance's curve** is the one the
-//! spec's "same effect as [...] balance controls on a stereo amplifier" names and
+//! spec names (the effect of a balance control on a stereo amplifier) and
 //! does not give: the knob attenuates the side it turns away from, linearly in
 //! amplitude, and leaves the other at unity: `0x2000`, the centre, is unity on
 //! both sides, `0` is the right side off and `0x3FFF` the left side off.
 //!
 //! # Tuning
 //!
-//! CA-025: Master Fine Tuning is "100/8192 cents" a step with `0x2000` the
+//! CA-025: Master Fine Tuning is 100/8192 cents a step with `0x2000` the
 //! centre, and Master Coarse Tuning a semitone a step with `0x40` the centre;
-//! "the total displacement in cents from A440 for each MIDI channel is \[the\]
-//! summation of the displacement of this Master [...] Tuning and the
-//! displacement of Fine Tuning using RPN".
+//! the total displacement in cents from A440 for each MIDI channel is the sum
+//! of the Master Tuning displacement and that of Fine Tuning using RPN.
 
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{U7, U14};

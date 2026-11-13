@@ -86,7 +86,7 @@ fn a_polyphony_past_the_maximum_is_refused_and_the_maximum_builds() {
     }
 }
 
-/// `Polyphony` keeps the range-checked shape of CLAUDE.md: `new` refuses and
+/// `Polyphony` keeps the range-checked shape: `new` refuses and
 /// never clamps, `TryFrom` agrees and carries the refused raw, `of` panics.
 /// The checked shape is serde's, which the type has none of in the library:
 /// the check runs on the same `try_from` shape written here.
@@ -338,8 +338,8 @@ fn cc_11_and_43_set_the_expression() {
     assert!(level(127) > level(0), "the fine byte raises the expression");
 }
 
-// Arm 0x0A (pan coarse) and 0x2A (fine), by RP-036: "values 0 and 1 both pan
-// hard left", 64 is "true center".
+// Arm 0x0A (pan coarse) and 0x2A (fine), by RP-036: values 0 and 1 both pan hard
+// left, 64 is center.
 #[test]
 fn cc_10_and_42_pan_the_channel() {
     let mut left = violin(|s| cc(s, CCNumber::PAN, 0));
@@ -370,8 +370,8 @@ fn cc_10_and_42_pan_the_channel() {
     assert!(r > 0.0, "the fine byte moves the pan off the wall");
 }
 
-/// RP-036: "64 (40H) is Center", "an equal power distribution", "true center":
-/// the same level in both channels, to the 14-bit step. On a synthetic font
+/// RP-036: 64 (40H) is center, with an equal-power distribution: the same level
+/// in both channels, to the 14-bit step. On a synthetic font
 /// whose one zone has no pan of its own (the reference font's presets are
 /// panned zones, which the SF2 pan generator adds to this).
 #[test]
@@ -383,11 +383,10 @@ fn cc_10_at_64_is_true_centre() {
     assert!(l > 0.0 && (l - r).abs() <= 1e-4 * l, "{l} {r}");
 }
 
-/// RP-036: "if a currently sounding note is panned, the panning shall be done
-/// without audible artifacts, clicks or zipper noise". A pan change from hard
-/// left to hard right on a sounding note is not a step: the left channel, which
-/// the new pan silences, still sounds in the first chunk after the change and
-/// is silent by the end of the next one.
+/// RP-036: panning a sounding note is free of clicks and zipper noise. A pan
+/// change from hard left to hard right on a sounding note is not a step: the
+/// left channel, which the new pan silences, still sounds in the first chunk
+/// after the change and is silent by the end of the next one.
 #[test]
 fn a_pan_change_on_a_sounding_note_ramps() {
     let mut synthesizer = violin(|s| cc(s, CCNumber::PAN, 0));
@@ -489,8 +488,8 @@ fn registered_controller_5_scales_the_modulation_wheel() {
     assert_ne!(default_range, none);
 }
 
-// RP-015: Reset All Controllers does "NOT reset Volume (#7)" nor Pan (#10), and
-// sets Expression to 127 and Modulation to 0.
+// RP-015: Reset All Controllers leaves Volume (#7) and Pan (#10) alone, and sets
+// Expression to 127 and Modulation to 0.
 #[test]
 fn cc_121_keeps_the_volume_and_the_pan() {
     let mut silent = dry();
@@ -508,10 +507,9 @@ fn cc_121_keeps_the_volume_and_the_pan() {
 }
 
 // M1 p.14, Legato Footswitch: the note struck while another sounds moves the
-// sounding voice "without re-attacking"; M1 p.16, Portamento Control: "If there
-// is a currently sounding voice whose note number is coincident with the source
-// note number, the voice's pitch will glide to the new Note-On's pitch [...]
-// Then, no new voice should be assigned."
+// sounding voice without a new attack; M1 p.16, Portamento Control: a sounding
+// voice on the source note glides to the new Note-On's pitch and no new voice is
+// assigned.
 #[test]
 fn a_portamento_control_retunes_the_sounding_voice() {
     let cents = |portamento_time: u8| {
@@ -645,9 +643,7 @@ fn two_bank_soundfont() -> Arc<SoundFont> {
     )
 }
 
-// Bank Select is held until the next Program Change (M1 p.13: "the receiving
-// device must remember that bank number in readiness for the following Program
-// Change").
+// Bank Select is held until the next Program Change (M1 p.13).
 #[test]
 fn bank_select_is_held_until_the_program_change() {
     let font = two_bank_soundfont();
@@ -780,8 +776,8 @@ fn an_unfollowed_controller_leaves_the_note_sounding() {
     assert!(energy(&mut synthesizer, 2048) > 1.0);
 }
 
-// SF2 2.04 section 7.2: a preset whose bank or program is not a MIDI value
-// "cannot be played but should be maintained". It is never the one a channel
+// SF2 2.04 section 7.2: a preset whose bank or program is not a MIDI value is
+// kept but cannot be played. It is never the one a channel
 // plays, not even as the default a channel falls back on when its own bank and
 // program name nothing: the first *playable* preset is.
 //
@@ -848,8 +844,8 @@ fn a_font_with_nothing_playable_is_refused() {
     assert!(matches!(error, Error::NoPlayablePreset), "{error:?}");
 }
 
-// SF2 2.04 section 7.2: of two presets with one bank and program, "the first
-// occurring preset in the PHDR chunk is the active preset".
+// SF2 2.04 section 7.2: of two presets with one bank and program, the first in
+// the PHDR chunk is the active one.
 #[test]
 fn the_first_of_two_presets_with_one_bank_and_program_is_active() {
     use support::font::{Inst, Preset, font};
@@ -922,8 +918,8 @@ fn a_per_note_pitch_sent_before_the_note_on_is_the_pitch_it_sounds_at() {
     assert!((1.9..2.1).contains(&ratio), "an octave up, got {ratio}");
 }
 
-/// M2-104 section 7.4.5, Detach: a note that was detached "shall no longer
-/// respond to any Per-Note Controllers". The control half shows the Pitch
+/// M2-104 section 7.4.5, Detach: a detached note no longer responds to Per-Note
+/// Controllers. The control half shows the Pitch
 /// reaches a sounding note (an octave up); with Detach before it, the note
 /// stays where it was.
 #[test]

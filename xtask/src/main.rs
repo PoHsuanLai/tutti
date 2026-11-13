@@ -153,6 +153,11 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
             eprintln!("xtask: release: {e}");
             1
         }),
+        Step::ConformanceInventory(format) => gates::conformance_inventory(&ctx.root, format)
+            .map_err(|e| {
+                eprintln!("xtask: {e}");
+                1
+            }),
         Step::RequireCargoDeny => {
             let ok = process::Command::new("cargo")
                 .args(["deny", "--version"])

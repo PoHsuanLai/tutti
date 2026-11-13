@@ -7,7 +7,7 @@ use tutti_types::{Db, SampleRate, Seconds};
 /// -60 dB, the reverberation time's definition.
 pub const TAIL_FLOOR: Db = Db(-60.0);
 
-/// A family's own limit on a control, `D ⊆ C` of design 024 section 2.7.2: the part of
+/// A family's own limit on a control, `D ⊆ C`: the part of
 /// a [`Reach`] only the family knows (a reverb's longest decay, a delay's longest
 /// time). Only a [`Grows`](crate::Grows) family has one. A domain is range-checked
 /// where it is made (`MaxDecay::new`), so every value can be built to.

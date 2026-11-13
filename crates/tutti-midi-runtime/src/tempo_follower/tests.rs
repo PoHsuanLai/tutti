@@ -22,6 +22,7 @@ fn follower(group: u8, meter: bool) -> TempoFollower {
 
 /// **A Set Tempo of the followed Group is its tempo**: the field is 10 ns per
 /// quarter note (M2-104 §7.5.3), so 0.5 s is 120 bpm and 1 s is 60 bpm.
+/// Spec: m2-104/msg/d/00.00
 #[test]
 fn a_set_tempo_of_the_followed_group_is_its_tempo() {
     let f = follower(2, false);
@@ -45,8 +46,8 @@ fn another_group_is_ignored() {
     assert_eq!(f.step(meter_in(1, 3, 2)), None);
 }
 
-/// **What the unit values refuse is not followed**: a tempo field of `0` ("no
-/// valid tempo"), a numerator of `0` or above `BeatsPerBar`'s 64, a denominator
+/// **What the unit values refuse is not followed**: a tempo field of `0` (no
+/// valid tempo), a numerator of `0` or above `BeatsPerBar`'s 64, a denominator
 /// field of `0` (non-standard) and one past `NoteValue`'s 64th note.
 #[test]
 fn what_the_unit_values_refuse_is_not_followed() {

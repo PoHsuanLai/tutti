@@ -5,7 +5,8 @@ use crate::field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
 };
 use crate::{
-    BendValue, CCNumber, ControlValue, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump,
+    BendValue, CCNumber, ControlValue, ManufacturerId, MdsChunk, MdsChunkSize, MdsChunks,
+    MdsIdentity, MidiChannel, MidiGroup, NoteVelocity, Ump,
 };
 
 /// One UMP, decoded.
@@ -139,15 +140,20 @@ impl From<MidiChannel> for Address {
 /// ```
 /// use tutti_ump::{
 ///     BendValue, CCNumber, ControlValue, Message, MidiChannel, NoteNumber, NoteVelocity, U7,
+///     Voice2,
 /// };
 ///
 /// let ch = MidiChannel::FIRST;
 /// // MIDI 1.0: 7-bit data.
 /// let note = Message::note_on(ch, NoteNumber::of(60), U7::of(100));
 /// // MIDI 2.0: 16- and 32-bit data, each its own type.
-/// let note2 = Message::note_on2(ch, NoteNumber::of(60), NoteVelocity::new(0xC000));
-/// let cc = Message::control_change2(ch, CCNumber::VOLUME, ControlValue::CENTER);
-/// let bend = Message::pitch_bend2(ch, BendValue::CENTER);
+/// let velocity = NoteVelocity::new(0xC000);
+/// let note2 = Message::Midi2(ch.into(), Voice2::note_on(NoteNumber::of(60), velocity));
+/// let cc = Message::Midi2(
+///     ch.into(),
+///     Voice2::ControlChange { controller: CCNumber::VOLUME, value: ControlValue::CENTER },
+/// );
+/// let bend = Message::Midi2(ch.into(), Voice2::PitchBend(BendValue::CENTER));
 /// # let _ = (note, note2, cc, bend);
 /// ```
 impl Message {
@@ -186,56 +192,6 @@ impl Message {
     pub fn pitch_bend(address: impl Into<Address>, bend: U14) -> Self {
         Self::Midi1(address.into(), Voice1::PitchBend(bend))
     }
-
-    /// A MIDI 2.0 Note On with a 16-bit `velocity` (not a 7-bit one: see
-    /// [`NoteVelocity`]) and no attribute. Velocity 0 is a Note On (§7.4.2).
-    #[inline]
-    #[must_use]
-    pub fn note_on2(address: impl Into<Address>, note: NoteNumber, velocity: NoteVelocity) -> Self {
-        Self::Midi2(address.into(), Voice2::note_on(note, velocity))
-    }
-
-    /// A MIDI 2.0 Note Off with a 16-bit release `velocity` and no attribute.
-    #[inline]
-    #[must_use]
-    pub fn note_off2(
-        address: impl Into<Address>,
-        note: NoteNumber,
-        velocity: NoteVelocity,
-    ) -> Self {
-        Self::Midi2(address.into(), Voice2::note_off(note, velocity))
-    }
-
-    /// A MIDI 2.0 Control Change with a 32-bit `value` ([`ControlValue`]).
-    #[inline]
-    #[must_use]
-    pub fn control_change2(
-        address: impl Into<Address>,
-        controller: CCNumber,
-        value: ControlValue,
-    ) -> Self {
-        Self::Midi2(address.into(), Voice2::ControlChange { controller, value })
-    }
-
-    /// A MIDI 2.0 Program Change with no bank.
-    #[inline]
-    #[must_use]
-    pub fn program_change2(address: impl Into<Address>, program: U7) -> Self {
-        Self::Midi2(
-            address.into(),
-            Voice2::ProgramChange {
-                program,
-                bank: None,
-            },
-        )
-    }
-
-    /// A MIDI 2.0 Pitch Bend, [`BendValue::CENTER`] centred.
-    #[inline]
-    #[must_use]
-    pub fn pitch_bend2(address: impl Into<Address>, bend: BendValue) -> Self {
-        Self::Midi2(address.into(), Voice2::PitchBend(bend))
-    }
 }
 
 // ---- System ----------------------------------------------------------------
@@ -267,7 +223,7 @@ pub enum System {
 
 impl System {
     /// How many Timing Clock messages make a quarter note (MIDI 1.0
-    /// Detailed Specification, "System Real Time Messages").
+    /// Detailed Specification, System Real Time Messages).
     pub const TIMING_CLOCKS_PER_QUARTER: u32 = 24;
 }
 
@@ -448,25 +404,21 @@ pub enum Data128 {
     },
 }
 
-/// A Mixed Data Set chunk header (§7.9).
+/// A Mixed Data Set chunk header (§7.9): the first UMP of a chunk, which says
+/// how many payload UMPs follow it ([`MdsChunkSize::payload_umps`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MixedDataHeader {
     /// The set this chunk belongs to.
     pub mds_id: U4,
-    /// Valid bytes in this chunk, header included.
-    pub chunk_bytes: u16,
-    /// Chunks in the set; `0` when unknown.
-    pub chunks: u16,
-    /// This chunk's number, from 1; `0` marks an unverified end.
-    pub chunk: u16,
-    /// The 16-bit manufacturer id (§7.10).
-    pub manufacturer: ManufacturerId,
-    /// The device id.
-    pub device: u16,
-    /// Sub id 1.
-    pub sub_id_1: u16,
-    /// Sub id 2.
-    pub sub_id_2: u16,
+    /// The size of this chunk in bytes, header included.
+    pub chunk_size: MdsChunkSize,
+    /// The chunks in the set; [`MdsChunks::Unknown`] for a stream.
+    pub chunks: MdsChunks,
+    /// This chunk's number, from 1; [`MdsChunk::Unverified`] ends the set
+    /// with its data unverified.
+    pub chunk: MdsChunk,
+    /// Whose data this is: the manufacturer, device and sub ids.
+    pub identity: MdsIdentity,
 }
 
 // ---- MIDI 2.0 channel voice ------------------------------------------------

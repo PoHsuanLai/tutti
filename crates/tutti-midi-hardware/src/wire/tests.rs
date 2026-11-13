@@ -69,10 +69,11 @@ fn controls(packets: &[Ump]) -> Vec<(u8, u8)> {
         .collect()
 }
 
-/// M2-104 §3.2: "UMP MIDI 1.0 Devices shall not use any messages from Message
-/// Type 0x4". Whatever MIDI 2.0 messages are sent to a MIDI 1.0 endpoint, no
+/// M2-104 §3.2: UMP MIDI 1.0 Devices use no message of Message Type 0x4.
+/// Whatever MIDI 2.0 messages are sent to a MIDI 1.0 endpoint, no
 /// packet of the batch is type 4, and the ones with a MIDI 1.0 form come out as
 /// type 2 on the same Group and Channel.
+/// Spec: m2-104/3.2#3, m2-104/3.2.1.2#2
 #[test]
 fn a_midi1_endpoint_is_never_sent_type_4() {
     let mut wire = Wire::new(MIDI1);
@@ -132,8 +133,8 @@ fn a_midi1_endpoint_is_never_sent_type_4() {
     ));
 }
 
-/// M2-104 Appendix D.2.3: a Registered Controller is "a sequence of four MIDI
-/// 1.0 Protocol messages", CC 101, 100, 6 and 38, and the select is skipped for
+/// M2-104 Appendix D.2.3: a Registered Controller is a sequence of four MIDI
+/// 1.0 Protocol messages, CC 101, 100, 6 and 38, and the select is skipped for
 /// the same parameter on the same channel (MIDI 1.0 rule 6), which is state of
 /// the output's one narrower: the second value of one parameter is two
 /// messages, a value of another is four again.
@@ -184,8 +185,8 @@ fn system_sysex7_and_stream_messages_pass_in_either_protocol() {
     }
 }
 
-/// M2-104 §7.1.6.2 (RXJR): the Sender "shall not send JR Timestamps until after
-/// a Stream Configuration Notification message ... has been received". A JR
+/// M2-104 §7.1.6.2 (RXJR): the Sender sends no JR Timestamps until a Stream
+/// Configuration Notification message has been received. A JR
 /// Clock and a JR Timestamp are dropped while the device's configuration does
 /// not receive them, in either Protocol, and go after one that does; the music
 /// is untouched either way.

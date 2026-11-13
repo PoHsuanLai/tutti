@@ -149,6 +149,11 @@ pub struct InProcClient<F: Loaded> {
     /// a block of a chunked Processor ([`Processor::chunk`]) is cut. Always
     /// zero for one that is not.
     pub(super) phase: Samples,
+    /// The last block of a chunked Processor returned `Status::Idle`: the
+    /// statuses the next block reads are of chunks shipped before the node
+    /// parked, so it cannot say the plugin still sleeps. A woken node runs
+    /// until the plugin's answer to what that block shipped has come back.
+    pub(super) idled: bool,
     /// The walk of the transport across the chunk being filled, between pieces.
     pub(super) walk: TransportWalk,
     /// The transport at the chunk's first frame (final at the piece that
@@ -483,6 +488,7 @@ impl<F: Loaded> InProcClient<F> {
             changes: TransportChanges::default(),
             chunk_midi: 0,
             owed_lost: 0,
+            idled: false,
             chords: ChordChanges::default(),
             scales: ScaleChanges::default(),
             out_events: MidiEventVec::new(),
@@ -563,6 +569,7 @@ impl<F: Loaded> InProcClient<F> {
     /// block.
     pub(super) fn drop_chunk(&mut self) {
         self.walk.clear();
+        self.idled = false;
         let lost = std::mem::take(&mut self.chunk_midi);
         self.params.count_midi_dropped(lost);
         self.owed_lost += lost;

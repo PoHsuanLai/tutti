@@ -424,14 +424,14 @@ fn state_round_trips_through_the_lifecycle() {
     rig.lifecycle
         .control()
         .expect("the plugin is there")
-        .load_state(&main(), b"abc")
+        .load_state(&main(), b"abc", crate::StateUse::Project)
         .unwrap();
     rig.op(HostOp::Activate(prepare(48_000.0)));
     assert_eq!(
         rig.lifecycle
             .control()
             .expect("the plugin is there")
-            .save_state(&main())
+            .save_state(&main(), crate::StateUse::Project)
             .unwrap(),
         b"abc"
     );

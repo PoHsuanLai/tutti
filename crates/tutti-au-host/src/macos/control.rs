@@ -18,7 +18,7 @@ use tutti_plugin_types::{
     EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
     ParamEdit, ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
     PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
-    PresetId, RenderModeSupport, Request, RescanScope, WindowHandle, Wraps, taken,
+    PresetId, RenderModeSupport, Request, RescanScope, StateUse, WindowHandle, Wraps, taken,
 };
 use tutti_types::Samples;
 
@@ -408,12 +408,12 @@ impl Control for AuLoaded {
         Some(self.normalize(id.get(), plain))
     }
 
-    fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, _main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
         self.class_info()
             .map_err(|e| PluginError::State(e.to_string()))
     }
 
-    fn load_state(&mut self, _main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+    fn load_state(&mut self, _main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
         self.set_class_info(bytes)
             .map_err(|e| PluginError::State(e.to_string()))
     }

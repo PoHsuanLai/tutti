@@ -1,0 +1,49 @@
+# Labels every pull request: its kind from the Conventional Commit type in its
+# title (`feat` is feature, `!` is breaking), and its areas from the files it
+# changes (.github/labeler.yml). Runs on the base repository's code only, so
+# no pull request's code runs with the write token.
+name: labels
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v7
+        with:
+          sync-labels: true
+
+      - name: Label the kind from the title
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ github.event.pull_request.title }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          kinds="breaking feature fix docs build test refactor perf"
+          head="${TITLE%%:*}"
+          type="${head%%(*}"
+          type="${type%!}"
+          case "$type" in
+            feat) kind=feature ;;
+            fix|docs|build|test|refactor|perf) kind=$type ;;
+            ci) kind=build ;;
+            *) kind= ;;
+          esac
+          want="$kind"
+          case "$head" in *!) want="$want breaking" ;; esac
+          have=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')
+          for k in $kinds; do
+            if echo " $want " | grep -q " $k "; then
+              echo "$have" | grep -qx "$k" || gh pr edit "$PR" --repo "$REPO" --add-label "$k"
+            elif echo "$have" | grep -qx "$k"; then
+              gh pr edit "$PR" --repo "$REPO" --remove-label "$k"
+            fi
+          done

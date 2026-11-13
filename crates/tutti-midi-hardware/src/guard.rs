@@ -12,11 +12,6 @@
 //! it, so the session retires the device as it does one whose reader failed),
 //! and every call after it does nothing: what the body held when it panicked
 //! (the producer's inlet) may be half-written.
-//!
-//! This is the whole of the check for the input side. `cargo xtask
-//! check-guards` is for the plugin formats' callbacks, where a plugin calls
-//! into the host; an OS driver's callback is one closure per backend, so there
-//! is no table of them to scan.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;

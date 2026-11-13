@@ -101,6 +101,7 @@ fn a_midi2_endpoint_is_covered_by_enumeration() {
 /// §3.1), at most 32 blocks to an endpoint (§7.1.8: five-bit block numbers).
 /// Before macOS 15 the list is absent and no endpoint has a block. This asserts
 /// invariants only: how many endpoints, and what they declare, is the machine's.
+/// Spec: m2-104/6.1.1#1, m2-104/6.1.1#2
 #[test]
 fn the_os_blocks_are_within_the_spec() {
     let backend = CoreMidiEndpoints::new();
@@ -126,7 +127,7 @@ fn the_os_blocks_are_within_the_spec() {
 }
 
 /// **A packet sent `At` a future instant is held by CoreMIDI until then, and
-/// one sent `Now` goes at once** (design 017, "Output"): the send time the
+/// one sent `Now` goes at once**: the send time the
 /// plan gives becomes the packet's host-time stamp, which CoreMIDI schedules.
 /// A virtual UMP destination records when each packet arrives; the note sent
 /// 150 ms ahead arrives after the one sent now, and not before its instant.

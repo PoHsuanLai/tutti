@@ -1,4 +1,4 @@
-//! MIDI in the session (feature `midi`; design 015 §4.3, §5.2): a live
+//! MIDI in the session (feature `midi`): a live
 //! input per target, one clip per target, the hardware input's route rules,
 //! and the hardware out, an event tap on the clock drained by
 //! [`Phase::MidiOut`].
@@ -69,7 +69,7 @@ pub(crate) const MIDI_INPUT_INLET_CAPACITY: tutti_graph::EventCapacity =
 /// How long after an event arrives the hardware inlets place it: one block of
 /// the device's callback (its `quantum` when known, else the largest block), so
 /// an event that arrived between two blocks is on a frame of the next and is
-/// not late (doc 017 stage E5). The spacing between events is kept; the
+/// not late. The spacing between events is kept; the
 /// whole is that much later than the OS delivered it.
 #[cfg(feature = "midi-hardware")]
 pub(crate) fn input_lead(block: Samples, rate: tutti_types::SampleRate) -> Duration {
@@ -491,7 +491,7 @@ pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRoute
 #[error("no MIDI route {0:?}")]
 pub struct NoSuchMidiRoute(pub MidiRouteId);
 
-/// Where a take's events belong on the timeline (doc 030 §5.2): the figure
+/// Where a take's events belong on the timeline: the figure
 /// [`Midi::record`]'s readers are placed by. A note played at graph frame `F`
 /// was answered by output the device played `output` after it was rendered, and
 /// reached the graph `input` plus the inlet's `lead` after it was played, so
@@ -767,7 +767,8 @@ impl MidiState {
 
     /// `Phase::Poll`: steps the UMP Stream negotiation and the MIDI-CI of each
     /// held input and reports those that settled ([`MidiEvent::StreamSettled`])
-    /// and the peers found, changed or lost ([`MidiEvent::CiPeer`]), reports the
+    /// the peers found, changed or lost ([`MidiEvent::CiPeer`]) and their Profiles
+    /// ([`MidiEvent::CiProfiles`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -813,6 +814,9 @@ impl MidiState {
                     }
                     tutti_midi_hardware::Polled::Ci(device, change) => {
                         MidiEvent::CiPeer { device, change }
+                    }
+                    tutti_midi_hardware::Polled::Profile(device, change) => {
+                        MidiEvent::CiProfiles { device, change }
                     }
                     // A kind of report this session does not know is not one.
                     _ => continue,
@@ -983,7 +987,7 @@ fn follow_output_config(out: Option<&mut UmpOut>, io: Option<&tutti_midi_hardwar
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MidiLoad(u64);
 
-/// The session's MIDI (design 015 §4.3): live inputs, clips, the hardware
+/// The session's MIDI: live inputs, clips, the hardware
 /// input's routes and the hardware out. [`Session::midi`](crate::Session::midi)
 /// hands it out; what it edits goes out with the next update's commit.
 #[derive(Debug)]
@@ -1674,8 +1678,7 @@ impl Midi<'_> {
     /// bar line at or after it), at the latest one block and one update after it
     /// was sent; a device that needs a tempo change on a beat sends it ahead,
     /// which Flex allows (a Flex message carries no time of its own). The
-    /// transport's beat stays continuous when a publish lands late (design 020,
-    /// "Following an outside tempo").
+    /// transport's beat stays continuous when a publish lands late.
     ///
     /// **One follower at a time**: following again replaces the first. The
     /// project's maps stay the ones found by the first call, and the tempo in

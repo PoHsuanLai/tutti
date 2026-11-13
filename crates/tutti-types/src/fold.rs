@@ -8,7 +8,7 @@ use crate::{ChannelLayout, ChannelTopology, InterleavedMut, Speaker};
 pub const M3DB: f32 = core::f32::consts::FRAC_1_SQRT_2;
 
 /// Which end of a fold a [`FoldError`] is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FoldEnd {
     /// The topology being read.
     Source,

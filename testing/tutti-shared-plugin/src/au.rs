@@ -29,6 +29,12 @@
 //!   ceiling at the unit's rate is the core's frame count (a host rounds a tail
 //!   up), and the infinite marker is `+inf`.
 //! - **Audio is `f32`**: an AUv2 unit has no 64-bit render.
+//! - **Pushed audio.** `AudioUnitProcess` (in place) and `AudioUnitProcessMultiple`
+//!   (one input list, one output list) render the host's buffers without pulling
+//!   an input.
+//! - **Offline render and element names.** `kAudioUnitProperty_OfflineRender` is
+//!   kept and read back. Each stream element's name is a heap `CFString` the
+//!   instance owns and hands out under the Copy rule.
 //! - **No notice, no gesture, no editor**: the shell does not read the notice
 //!   byte as a report (AudioToolbox coalesces the changes of a gesture), and
 //!   offers no Cocoa view.
@@ -86,6 +92,8 @@ const SEL_ADD_RENDER_NOTIFY: i16 = 0x000F;
 const SEL_REMOVE_RENDER_NOTIFY: i16 = 0x0010;
 const SEL_SCHEDULE_PARAMETERS: i16 = 0x0011;
 const SEL_REMOVE_PROP_LISTENER_UD: i16 = 0x0012;
+const SEL_PROCESS: i16 = 0x0014;
+const SEL_PROCESS_MULTIPLE: i16 = 0x0015;
 const SEL_MIDI_EVENT: i16 = 0x0101;
 const SEL_SYSEX: i16 = 0x0102;
 const SEL_MIDI_EVENT_LIST: i16 = 0x0107;
@@ -189,6 +197,8 @@ struct Ctl {
     notify: [Option<(RenderProc, *mut c_void)>; MAX_NOTIFY],
     listeners: Vec<(u32, ListenerProc, *mut c_void)>,
     buffers: Option<Buffers>,
+    /// `kAudioUnitProperty_OfflineRender`: kept and read back, never acted on.
+    offline: u32,
 }
 
 /// What one render copies out of [`Ctl`] before it calls anything.
@@ -212,6 +222,10 @@ struct Instance {
     core: Arc<Core>,
     dsp: Mutex<Dsp>,
     ctl: Mutex<Ctl>,
+    /// The input and output element's names. Each is a heap `CFString` the
+    /// instance owns for its life, so a read hands out a retained reference and
+    /// the retain count shows whether the host gave it back.
+    names: [CFString; 2],
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -419,6 +433,16 @@ fn property_shape(
             (std::mem::size_of::<HostCallbacks>() as u32, true)
         }
         x if x == sys::kAudioUnitProperty_AudioUnitMIDIProtocol && global => (4, false),
+        x if x == sys::kAudioUnitProperty_OfflineRender && global => (4, true),
+        x if x == sys::kAudioUnitProperty_ElementName => {
+            if !is_stream_scope(scope) {
+                return Err(ERR_INVALID_SCOPE);
+            }
+            if elem != 0 {
+                return Err(ERR_INVALID_ELEMENT);
+            }
+            (std::mem::size_of::<sys::CFStringRef>() as u32, false)
+        }
         _ => {
             let _ = i;
             return Err(ERR_INVALID_PROPERTY);
@@ -598,6 +622,15 @@ unsafe extern "C" fn get_property(
                 x if x == sys::kAudioUnitProperty_AudioUnitMIDIProtocol => {
                     write_property(data, io_size, MIDI_PROTOCOL_2_0)
                 }
+                x if x == sys::kAudioUnitProperty_OfflineRender => {
+                    let offline = lock(&i.ctl).offline;
+                    write_property(data, io_size, offline)
+                }
+                // Copy rule: the caller owns the reference it is given.
+                x if x == sys::kAudioUnitProperty_ElementName => {
+                    let name = &i.names[usize::from(scope == sys::kAudioUnitScope_Output)];
+                    write_property(data, io_size, CFRetain(name.as_CFTypeRef()))
+                }
                 // Write-only properties.
                 _ => ERR_INVALID_PROPERTY,
             }
@@ -678,6 +711,13 @@ unsafe extern "C" fn set_property(
                         return ERR_INVALID_PROPERTY_VALUE;
                     };
                     ctl.host = Some(h);
+                    0
+                }
+                x if x == sys::kAudioUnitProperty_OfflineRender => {
+                    let Some(offline) = read_property::<u32>(data, size) else {
+                        return ERR_INVALID_PROPERTY_VALUE;
+                    };
+                    ctl.offline = u32::from(offline != 0);
                     0
                 }
                 // Accepted and not kept: bypass, and the presentation latency
@@ -1231,6 +1271,100 @@ unsafe extern "C" fn render(
     })
 }
 
+/// Renders `frames` frames from the first `CHANNELS` buffers of `input` into
+/// those of `output`: the push model, where the host hands over the audio and
+/// the unit pulls nothing. `input` may be `output` (`AudioUnitProcess` works in
+/// place), so the input is copied into the unit's scratch first.
+unsafe fn process_lists(
+    i: &Instance,
+    frames: u32,
+    input: *const sys::AudioBufferList,
+    output: *mut sys::AudioBufferList,
+) -> sys::OSStatus {
+    if input.is_null() || output.is_null() {
+        return ERR_PARAM;
+    }
+    let f = i.frame();
+    if !f.initialized {
+        return ERR_UNINITIALIZED;
+    }
+    if frames > f.max_frames {
+        return ERR_TOO_MANY_FRAMES;
+    }
+    let n = frames as usize;
+    // SAFETY: both lists are the host's for this call; every buffer is checked
+    // for a width of `CHANNELS` buffers of `n` frames before it is read or
+    // written, and `f`'s scratch holds `max_frames >= n` frames per channel.
+    unsafe {
+        if (*input).mNumberBuffers as usize != CHANNELS
+            || (*output).mNumberBuffers as usize != CHANNELS
+        {
+            return ERR_FORMAT_NOT_SUPPORTED;
+        }
+        let read = (*input).mBuffers.as_ptr();
+        let write = (*output).mBuffers.as_mut_ptr();
+        for c in 0..CHANNELS {
+            let (src, dst) = (&*read.add(c), &*write.add(c));
+            if src.mData.is_null()
+                || dst.mData.is_null()
+                || (src.mDataByteSize as usize) < n * 4
+                || (dst.mDataByteSize as usize) < n * 4
+            {
+                return ERR_PARAM;
+            }
+            std::ptr::copy_nonoverlapping(src.mData.cast::<f32>(), f.input_ch[c], n);
+        }
+        if let Some(h) = &f.host {
+            ask_transport(&i.core, h);
+        }
+        let ins: [&[f32]; CHANNELS] =
+            std::array::from_fn(|c| std::slice::from_raw_parts(f.input_ch[c], n));
+        let mut outs: [&mut [f32]; CHANNELS] = std::array::from_fn(|c| {
+            std::slice::from_raw_parts_mut((*write.add(c)).mData.cast::<f32>(), n)
+        });
+        i.core.process(&mut lock(&i.dsp), n, 0, &ins, &mut outs);
+    }
+    0
+}
+
+/// `AudioUnitProcess`: one list, in and out.
+unsafe extern "C" fn process(
+    self_: *mut c_void,
+    _flags: *mut u32,
+    _ts: *const sys::AudioTimeStamp,
+    frames: u32,
+    io: *mut sys::AudioBufferList,
+) -> sys::OSStatus {
+    guard(|| {
+        // SAFETY: AudioToolbox's own `self`; `io` is the host's list.
+        unsafe { process_lists(inst(self_), frames, io, io) }
+    })
+}
+
+/// `AudioUnitProcessMultiple`: the unit's one input bus and one output bus.
+unsafe extern "C" fn process_multiple(
+    self_: *mut c_void,
+    _flags: *mut u32,
+    _ts: *const sys::AudioTimeStamp,
+    frames: u32,
+    inputs: u32,
+    input_lists: *const *const sys::AudioBufferList,
+    outputs: u32,
+    output_lists: *const *mut sys::AudioBufferList,
+) -> sys::OSStatus {
+    guard(|| {
+        if inputs != 1 || outputs != 1 {
+            return ERR_INVALID_ELEMENT;
+        }
+        if input_lists.is_null() || output_lists.is_null() {
+            return ERR_PARAM;
+        }
+        // SAFETY: AudioToolbox's own `self`; each array holds the one list
+        // counted above.
+        unsafe { process_lists(inst(self_), frames, *input_lists, *output_lists) }
+    })
+}
+
 // ------------------------------------------------------------ the component
 
 macro_rules! erase {
@@ -1302,6 +1436,29 @@ unsafe extern "C" fn lookup(selector: i16) -> Method {
                 *mut sys::AudioBufferList,
             ) -> sys::OSStatus
         ),
+        SEL_PROCESS => erase!(
+            process,
+            unsafe extern "C" fn(
+                P,
+                *mut u32,
+                *const sys::AudioTimeStamp,
+                u32,
+                *mut sys::AudioBufferList,
+            ) -> sys::OSStatus
+        ),
+        SEL_PROCESS_MULTIPLE => erase!(
+            process_multiple,
+            unsafe extern "C" fn(
+                P,
+                *mut u32,
+                *const sys::AudioTimeStamp,
+                u32,
+                u32,
+                *const *const sys::AudioBufferList,
+                u32,
+                *const *mut sys::AudioBufferList,
+            ) -> sys::OSStatus
+        ),
         SEL_MIDI_EVENT => erase!(
             midi_event,
             unsafe extern "C" fn(P, u32, u32, u32, u32) -> sys::OSStatus
@@ -1349,10 +1506,18 @@ pub unsafe extern "C" fn TuttiSharedAuFactory(
             notify: [None; MAX_NOTIFY],
             listeners: Vec::new(),
             buffers: None,
+            offline: 0,
         }),
+        names: [
+            CFString::new("Shared Plugin Main Input"),
+            CFString::new("Shared Plugin Main Output"),
+        ],
     });
     Box::into_raw(instance).cast()
 }
+
+/// The subtype [`register_au_async_only`] registers under.
+pub const AU_ASYNC_SUBTYPE: [u8; 4] = *b"Tasy";
 
 /// Registers the shared plugin as an Audio Unit of this process: found by
 /// `AudioComponentFindNext` under [`AU_TYPE`], [`AU_SUBTYPE`] and
@@ -1365,28 +1530,48 @@ pub unsafe extern "C" fn TuttiSharedAuFactory(
 /// When AudioToolbox refuses the registration.
 pub fn register_au() {
     static REGISTERED: OnceLock<()> = OnceLock::new();
+    REGISTERED.get_or_init(|| register(AU_SUBTYPE, 0));
+}
+
+/// Registers a second copy of the unit under [`AU_ASYNC_SUBTYPE`] whose
+/// component flags carry `kAudioComponentFlag_RequiresAsyncInstantiation`, the
+/// flag of a component `AudioComponentInstanceNew` must refuse. Once, as
+/// [`register_au`].
+///
+/// # Panics
+///
+/// When AudioToolbox refuses the registration.
+pub fn register_au_async_only() {
+    static REGISTERED: OnceLock<()> = OnceLock::new();
     REGISTERED.get_or_init(|| {
-        let desc = sys::AudioComponentDescription {
-            componentType: u32::from_be_bytes(AU_TYPE),
-            componentSubType: u32::from_be_bytes(AU_SUBTYPE),
-            componentManufacturer: u32::from_be_bytes(AU_MANUFACTURER),
-            componentFlags: 0,
-            componentFlagsMask: 0,
-        };
-        let name = CFString::new(AU_NAME);
-        // SAFETY: `desc` is complete, AudioToolbox copies the name, and the
-        // factory is a `'static` function of the documented signature.
-        let component = unsafe {
-            AudioComponentRegister(
-                &desc,
-                name.as_concrete_TypeRef().cast(),
-                AU_VERSION,
-                TuttiSharedAuFactory,
-            )
-        };
-        assert!(
-            !component.is_null(),
-            "AudioComponentRegister refused the shared plugin"
-        );
+        register(
+            AU_ASYNC_SUBTYPE,
+            sys::kAudioComponentFlag_RequiresAsyncInstantiation,
+        )
     });
+}
+
+fn register(sub_type: [u8; 4], flags: u32) {
+    let desc = sys::AudioComponentDescription {
+        componentType: u32::from_be_bytes(AU_TYPE),
+        componentSubType: u32::from_be_bytes(sub_type),
+        componentManufacturer: u32::from_be_bytes(AU_MANUFACTURER),
+        componentFlags: flags,
+        componentFlagsMask: 0,
+    };
+    let name = CFString::new(AU_NAME);
+    // SAFETY: `desc` is complete, AudioToolbox copies the name, and the factory
+    // is a `'static` function of the documented signature.
+    let component = unsafe {
+        AudioComponentRegister(
+            &desc,
+            name.as_concrete_TypeRef().cast(),
+            AU_VERSION,
+            TuttiSharedAuFactory,
+        )
+    };
+    assert!(
+        !component.is_null(),
+        "AudioComponentRegister refused the shared plugin"
+    );
 }

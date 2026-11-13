@@ -55,7 +55,7 @@ mod bounce {
         .unwrap();
         session
             .midi()
-            .play_clip(node, vec![on])
+            .play_clip(node, Beat(0.0), vec![on])
             .expect("the plugin takes a clip");
         let _ = session.update();
         // 90 BPM: beat 1 is 2/3 s in, inside the 1.5 s bounced.

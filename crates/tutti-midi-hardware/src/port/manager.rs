@@ -70,13 +70,18 @@ impl PortInfo {
 pub struct HardwareMidiInputs {
     inlets: Arc<DeviceInlets>,
     ports: Mutex<Ports>,
-    /// The losses of the ports removed so far, so a retired port's counts stay
-    /// in [`losses`](Self::losses).
-    retired: Mutex<Losses>,
 }
 
-/// The port list, keyed by the slot each port holds (in index order).
-type Ports = BTreeMap<DeviceSlot, Arc<HardwareMidiInput>>;
+/// The port list, keyed by the slot each port holds (in index order), and the
+/// losses of the ports removed so far. They share one lock so a port moves
+/// from the one to the other in one step, and a [`losses`](HardwareMidiInputs::losses)
+/// read never counts it twice or not at all.
+#[derive(Default)]
+struct Ports {
+    live: BTreeMap<DeviceSlot, Arc<HardwareMidiInput>>,
+    /// A retired port's counts stay in [`losses`](HardwareMidiInputs::losses).
+    retired: Losses,
+}
 
 impl HardwareMidiInputs {
     /// A list with no ports, each port an inlet of `inlets`.
@@ -84,8 +89,7 @@ impl HardwareMidiInputs {
     pub fn new(inlets: Arc<DeviceInlets>) -> Self {
         Self {
             inlets,
-            ports: Mutex::new(Ports::new()),
-            retired: Mutex::new(Losses::NONE),
+            ports: Mutex::new(Ports::default()),
         }
     }
 
@@ -107,8 +111,9 @@ impl HardwareMidiInputs {
     /// enough to fill it. Control side.
     #[must_use]
     pub fn losses(&self) -> Losses {
-        let live: Losses = self.ports().values().map(|p| p.losses()).sum();
-        live + *self.retired.lock().unwrap_or_else(PoisonError::into_inner)
+        let ports = self.ports();
+        let live: Losses = ports.live.values().map(|p| p.losses()).sum();
+        live + ports.retired
     }
 
     /// Creates an input port named `name` and returns the **only** producer
@@ -137,7 +142,7 @@ impl HardwareMidiInputs {
         let input = self.inlets.open()?;
         let slot = input.slot();
         let (port, handle) = HardwareMidiInput::new(name, input);
-        ports.insert(slot, Arc::new(port));
+        ports.live.insert(slot, Arc::new(port));
         Ok(handle)
     }
 
@@ -150,10 +155,10 @@ impl HardwareMidiInputs {
     /// slot), so nothing is still pushing; a handle that outlives the port is
     /// harmless, and whatever it pushes is lost. Control side.
     pub fn remove_input_port(&self, id: DeviceSlot) -> bool {
-        let removed = self.ports().remove(&id);
-        match removed {
+        let mut ports = self.ports();
+        match ports.live.remove(&id) {
             Some(port) => {
-                *self.retired.lock().unwrap_or_else(PoisonError::into_inner) += port.losses();
+                ports.retired += port.losses();
                 true
             }
             None => false,
@@ -163,12 +168,12 @@ impl HardwareMidiInputs {
     /// How many ports the list holds.
     #[cfg(test)]
     pub(crate) fn port_count(&self) -> usize {
-        self.ports().len()
+        self.ports().live.len()
     }
 
     /// The live port `id` names, if any: a stale id names none.
     fn port(&self, id: DeviceSlot) -> Option<Arc<HardwareMidiInput>> {
-        self.ports().get(&id).cloned()
+        self.ports().live.get(&id).cloned()
     }
 
     /// A snapshot of one port, or `None` when `id` names no live port.
@@ -179,6 +184,7 @@ impl HardwareMidiInputs {
     /// Every input port, in index order.
     pub fn list_input_ports(&self) -> Vec<PortInfo> {
         self.ports()
+            .live
             .iter()
             .map(|(id, port)| PortInfo::of(*id, port))
             .collect()
@@ -232,7 +238,7 @@ impl HardwareMidiInputs {
 impl core::fmt::Debug for HardwareMidiInputs {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HardwareMidiInputs")
-            .field("num_input_ports", &self.ports().len())
+            .field("num_input_ports", &self.ports().live.len())
             .finish_non_exhaustive()
     }
 }

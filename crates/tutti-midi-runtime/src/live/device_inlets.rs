@@ -47,6 +47,7 @@
 //! takes it.
 
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
@@ -148,6 +149,8 @@ pub struct DeviceInlets {
     /// any), so odd while a device holds the slot; for an ingest node to see
     /// a device come or go by.
     epochs: Arc<[AtomicU64]>,
+    /// How many slots there are: never zero.
+    count: NonZeroUsize,
     capacity: EventCapacity,
     /// Nanoseconds: what each device's thread adds to an arrival's frame.
     lead: Arc<AtomicU64>,
@@ -166,19 +169,19 @@ impl std::fmt::Debug for DeviceInlets {
 }
 
 impl DeviceInlets {
-    /// `slots` device slots (at least one), each device's inlet holding
+    /// `slots` device slots, each device's inlet holding
     /// `capacity` events, and `lead` the time each arrival is placed after its
     /// mapped frame (see the module docs).
     #[must_use]
-    pub fn new(slots: usize, capacity: EventCapacity, lead: Duration) -> Arc<Self> {
-        let slots = slots.max(1);
+    pub fn new(slots: NonZeroUsize, capacity: EventCapacity, lead: Duration) -> Arc<Self> {
         Arc::new_cyclic(|this| Self {
             this: Weak::clone(this),
             state: Mutex::new(State {
-                slots: vec![None; slots],
+                slots: vec![None; slots.get()],
                 ..State::default()
             }),
-            epochs: (0..slots).map(|_| AtomicU64::new(0)).collect(),
+            count: slots,
+            epochs: (0..slots.get()).map(|_| AtomicU64::new(0)).collect(),
             capacity,
             lead: Arc::new(AtomicU64::new(nanos(lead))),
             clock: Arc::new(ArcLend::new(None)),
@@ -197,8 +200,8 @@ impl DeviceInlets {
 
     /// How many device slots there are.
     #[must_use]
-    pub fn slots(&self) -> usize {
-        self.state().slots.len()
+    pub fn slots(&self) -> NonZeroUsize {
+        self.count
     }
 
     /// Sets the engine's block clock the devices' threads place arrivals

@@ -256,6 +256,31 @@ pub enum MidiError {
     #[error("the live input of {0:?} has been taken")]
     InputTaken(tutti_graph::NodeKey),
 
+    /// `Midi::input` was asked for the live input of an instrument made by
+    /// `Session::add_instrument` (or `Session::instrument`): it is played
+    /// through its [`InstrumentHandle`](crate::InstrumentHandle)'s keys.
+    #[error("{0:?} is an instrument: play it through its handle's keys")]
+    InstrumentKeys(tutti_graph::NodeKey),
+
+    /// `Midi::stop_clip` named a target with no clip.
+    #[error("{0:?} has no clip")]
+    NoClip(tutti_graph::NodeKey),
+
+    /// A beat that is not finite (NaN or infinite) names no frame: a clip's
+    /// start, or an event moved by it.
+    #[error("a clip beat must be finite, not {0}")]
+    BeatNotFinite(tutti_types::Beat),
+
+    /// `Midi::disconnect_input` named a device that is not an open input.
+    #[cfg(feature = "midi-hardware")]
+    #[error("no open MIDI input answers to {0:?}")]
+    InputNotOpen(tutti_midi_hardware::DeviceQuery),
+
+    /// `Midi::disconnect_output` with no output open.
+    #[cfg(feature = "midi-hardware")]
+    #[error("no MIDI output is open")]
+    OutputNotOpen,
+
     /// `Midi::retarget_input` named a target with no live input.
     #[error("{0:?} has no live input")]
     NoLiveInput(tutti_graph::NodeKey),

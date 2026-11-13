@@ -276,7 +276,7 @@ fn format_2_keeps_its_sequences_apart() {
         ],
     ));
     assert_eq!(file.smf_format(), Some(SmfFormat::Sequential));
-    assert!(file.events().is_none(), "no common timeline to merge on");
+    assert!(file.events().is_err(), "no common timeline to merge on");
     assert_eq!(file.tracks().len(), 2);
     let tempo = |i| file.tempo_map_of(i).unwrap().tempo_at(Beat(0.0));
     assert_eq!(tempo(0), Bpm::of(120.0));

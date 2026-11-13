@@ -1,4 +1,5 @@
 use super::*;
+use std::num::NonZeroUsize;
 use tutti_graph::{Offset, UmpAt};
 use tutti_ump::MidiGroup;
 
@@ -65,7 +66,7 @@ fn dropped_receiver_keeps_sender_pushable() {
 /// A partial accept reports the prefix that landed, not the count offered.
 #[test]
 fn a_partial_accept_reports_how_many_landed() {
-    let (sender, _receiver) = MidiMailbox::with_capacity(5);
+    let (sender, _receiver) = MidiMailbox::with_capacity(NonZeroUsize::new(5).unwrap());
     assert_eq!(sender.queue(&[note_on(1, 1), note_on(2, 1)]), 2);
     let batch = [
         note_on(60, 100),

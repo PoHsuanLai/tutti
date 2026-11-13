@@ -894,7 +894,7 @@ fn test_velocity_zero_note_on_is_note_off() {
 #[test]
 fn test_legato_mode_no_retrigger() {
     let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(1).unwrap(),
+        polyphony: NonZeroUsize::MIN,
         voice_mode: VoiceMode::Legato,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -940,7 +940,7 @@ fn test_legato_mode_no_retrigger() {
 #[test]
 fn test_mono_mode_retrigger() {
     let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(1).unwrap(),
+        polyphony: NonZeroUsize::MIN,
         voice_mode: VoiceMode::Mono,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1993,7 +1993,7 @@ fn test_mpe_disabled_global_pitch_bend() {
 #[test]
 fn test_mpe_pressure_affects_amplitude() {
     let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(1).unwrap(),
+        polyphony: NonZeroUsize::MIN,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -2324,7 +2324,7 @@ fn unison_grown_under_a_held_note_sounds_immediately() {
 #[test]
 fn process_and_tick_agree_through_a_glide() {
     let config = || SynthConfig {
-        polyphony: NonZeroUsize::new(1).unwrap(),
+        polyphony: NonZeroUsize::MIN,
         voice_mode: VoiceMode::Mono,
         oscillator: OscillatorType::Sine,
         envelope: Adsr::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.1)),
@@ -2442,7 +2442,7 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
 #[test]
 fn a_steal_at_a_different_velocity_does_not_click() {
     let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(1).unwrap(),
+        polyphony: NonZeroUsize::MIN,
         allocation_strategy: crate::AllocationStrategy::Oldest,
         oscillator: OscillatorType::Sine,
         envelope: Adsr::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.1)),
@@ -2486,7 +2486,7 @@ fn a_steal_at_a_different_velocity_does_not_click() {
 #[test]
 fn reset_all_controllers_leaves_the_cutoff_alone() {
     let config = || SynthConfig {
-        polyphony: NonZeroUsize::new(1).unwrap(),
+        polyphony: NonZeroUsize::MIN,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
             cutoff: Hz(600.0),

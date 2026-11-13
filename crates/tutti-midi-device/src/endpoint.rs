@@ -350,7 +350,7 @@ impl Endpoint {
         }
     }
 
-    /// A MIDI 1.0 device (design 017 §5): no Stream messages exist for it, so
+    /// A MIDI 1.0 device: no Stream messages exist for it, so
     /// it is an Endpoint with the MIDI 1.0 Protocol and one inferred Function
     /// Block, number 0, active, bidirectional, Group 0 alone, a MIDI 1.0 port
     /// of unrestricted bandwidth, with a UI hint of both. Its blocks are

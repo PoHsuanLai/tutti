@@ -62,8 +62,7 @@ struct Channel {
 }
 
 /// MIDI 1.0 in, MIDI 2.0 out: the translation an input edge runs once, so
-/// what follows it carries MIDI 2.0 channel voice messages only (design 017
-/// §4).
+/// what follows it carries MIDI 2.0 channel voice messages only.
 ///
 /// State is kept per group and channel, and the group is kept. What it does
 /// (M2-104 Appendix D.3):

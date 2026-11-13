@@ -107,7 +107,6 @@ fn the_limit_is_judged_at_the_output_rate() {
 /// This restores the export-level half of the old
 /// `an_export_at_the_limit_succeeds_and_declares_its_mask`; the limit half
 /// lives in `tutti-codec`, where the limit can be lowered.
-#[cfg(feature = "wav")]
 #[test]
 fn the_topology_reaches_the_file() {
     let dir = tempfile::tempdir().unwrap();

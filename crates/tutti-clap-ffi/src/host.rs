@@ -443,7 +443,7 @@ impl Host {
     }
 
     /// The raw vtable, for a test that drives the callbacks itself.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     #[doc(hidden)]
     #[must_use]
     pub fn raw_for_test(&self) -> *const clap_host {

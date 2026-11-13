@@ -166,7 +166,7 @@ impl Client {
     /// # Errors
     ///
     /// The code of the call that failed.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn publish_ump_endpoint(&self, endpoint: &UmpEndpoint) -> crate::Result<()> {
         use crate::error::check;
         use std::ffi::CString;

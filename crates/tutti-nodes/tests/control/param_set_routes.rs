@@ -341,8 +341,6 @@ fn compressor_makeup_is_addressed_as_gain_db() {
     assert_eq!(makeup.load(Ordering::Acquire), 6.0);
     assert!(!addresses(&node, UnitParam::Makeup));
 }
-
-#[cfg(feature = "convolution")]
 #[test]
 fn convolver_addresses_nothing() {
     // Room size is baked into the IR, the gain has no address and the mix is

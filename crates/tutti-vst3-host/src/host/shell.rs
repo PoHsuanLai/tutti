@@ -52,8 +52,10 @@
 //!    bounded retirement queue ([`retire`]) that a control-side call empties
 //!    ([`reap_retired`](super::Vst3Loaded::reap_retired): `load`, `activate` and
 //!    every `flush_edits` tick). Until it is reaped the plugin stays active,
-//!    unreferenced and idle. Only when the queue is full (64 plugins retired
-//!    and never reaped) does the Processor's drop destroy the plugin in place.
+//!    unreferenced and idle. When the queue is full (64 plugins retired and
+//!    never reaped) the Processor's drop leaks the plugin and counts it
+//!    ([`leaked_retirements`](super::Vst3Loaded::leaked_retirements)) rather
+//!    than destroy it on the thread it renders on.
 //! 5. *Callbacks touch atomics and queues only.* A plugin calling the host from
 //!    either thread reaches the `ComponentHandler`'s word and queue, never the
 //!    `Vst3Loaded`.
@@ -138,27 +140,34 @@ pub(super) fn warm_retirement() {
     let _ = retired();
 }
 
+/// Plugins retirement could not queue, and leaked instead: see [`retire`].
+static LEAKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Takes a plugin no Controller holds off the realtime thread: queued for the
-/// control side, or destroyed in place when the queue is full.
+/// control side, or leaked and counted when the queue is full or was never
+/// built.
 ///
-/// **Known gap (audit S11, deferred).** A full queue (64 plugins retired and
-/// never reaped) or an unwarmed one still destroys the plugin on the calling
-/// thread, which may be the audio thread: a `dlclose` under the process-wide
-/// module lock. Nothing here can refuse the swap that dropped the Processor,
-/// and leaking the plugin instead would trade a glitch for an unbounded leak.
-/// The guard is the control side's: [`reap`] runs on every tick and
-/// [`warm_retirement`] runs before the first Processor, so reaching the cap
-/// means the control side has stopped ticking. The real fix is a swap that asks
-/// for room first, which belongs to the session's node replacement, not to this
-/// crate.
+/// The thread that drops the last Processor may be the audio thread, so this
+/// never destroys the plugin itself: a destroy unloads the module, a `dlclose`
+/// under the process-wide module lock. A full queue means 64 plugins retired
+/// and never reaped, which only happens when the control side has stopped
+/// ticking ([`reap`] runs on every tick, [`warm_retirement`] before the first
+/// Processor); the plugin is then leaked, with its module, and counted by
+/// [`leaked`].
 fn retire(loaded: Vst3Loaded) {
-    if let Some(queue) = RETIRED.get() {
-        if let Err(loaded) = queue.push(loaded) {
-            drop(loaded);
-        }
-    } else {
-        drop(loaded);
+    let refused = match RETIRED.get() {
+        Some(queue) => queue.push(loaded).err(),
+        None => Some(loaded),
+    };
+    if let Some(loaded) = refused {
+        std::mem::forget(loaded);
+        LEAKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// How many plugins [`retire`] leaked because it could not queue them.
+pub(super) fn leaked() -> u64 {
+    LEAKED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Destroys the plugins retirement has queued, on the calling thread, and says

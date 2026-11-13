@@ -17,7 +17,7 @@ mod records;
 mod sys;
 mod ump;
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 pub use client::LegacyEvent;
 pub use client::{Client, QueueClock, Read, UmpVersion};
 pub use error::{Error, Result};

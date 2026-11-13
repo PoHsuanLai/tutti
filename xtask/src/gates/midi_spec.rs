@@ -1,13 +1,16 @@
-//! The M2-104 conformance surface, read from the spec's `pdftotext -layout`
-//! text. The text is never committed; the extraction is a pure function from
+//! The MIDI conformance surface of each document in [`DOCS`], read from the
+//! spec's `pdftotext -layout` text. The text is never committed; the extraction is a pure function from
 //! that text to [`Item`]s, so a test feeds it small in-memory texts.
 //!
-//! Three kinds of item:
+//! Each document has its own prefix (`m2-104`, `m2-116`), its own table of
+//! rows beyond the keyword sentences ([`Tables`]) and its own heading quirks
+//! ([`Doc`]). Three kinds of item:
 //!
-//! - `m2-104/<section>#<n>`: the `n`th sentence (1-based, in document order)
+//! - `<doc>/<section>#<n>`: the `n`th sentence (1-based, in document order)
 //!   under the deepest numbered heading `<section>` (lowercase: `7.4.2`,
-//!   `d.2.1`) that carries a conformance word. The spec's own table of
-//!   conformance words maps `shall` to `required`, `should` to `recommended`
+//!   `d.2.1`) that carries a conformance word. Each spec's own table of
+//!   conformance words (Table 2 in both M2-104 and M2-116, the same three
+//!   rows) maps `shall` to `required`, `should` to `recommended`
 //!   and `may` to `permitted`; the table has no negated forms, so `shall
 //!   not`, `should not` and `may not` keep the kind of the bare word and
 //!   carry the fact `neg=1`. A sentence with several words takes the
@@ -16,12 +19,14 @@
 //!   defines the words). Notes and examples are not set apart: the spec says
 //!   the words are used solely for conformance.
 //! - `m2-104/mt/<mt>`: one per Message Type of the allocation table
-//!   ([`MT_TABLE`]), facts `mt` and `bytes`, the UMP size.
+//!   ([`Tables::Messages`]), facts `mt` and `bytes`, the UMP size.
 //! - `m2-104/msg/<mt>/<status>`: one per defined message of the message
-//!   tables ([`MESSAGE_TABLES`]). `<mt>` is the Message Type in lowercase hex,
+//!   tables ([`Tables::Messages`]). `<mt>` is the Message Type in lowercase hex,
 //!   `<status>` the status in lowercase hex without `0x` and without leading
 //!   zeros; for Message Type 0xD it is `<bank>.<status>`, each two hex
 //!   digits. Facts: `mt`, `status` (and `bank` for 0xD), `bytes`.
+//! - `m2-116/hdr/<n>`: one per byte of the File Header table
+//!   ([`Tables::FileHeader`]), facts `byte` (1-based) and `value`.
 //!
 //! The text is cleaned first: lines that repeat on at least half the pages
 //! (running headers and footers) and a page's last line when it is only
@@ -30,7 +35,10 @@
 //! numbered heading `1` that has no dot leader is the cover and the table of
 //! contents, and is skipped. A heading is a line that is the next sibling or
 //! first child of a heading already seen (`7.4.2` after `7.4.1`, `D.1` after
-//! `Appendix D:`), so a wrapped line that starts with a number is not one.
+//! `Appendix D:`), so a wrapped line that starts with a number is not one. A
+//! document with [`Doc::implicit_levels`] also takes a heading whose missing
+//! ancestors would each be the first of their level (`6.2.1.1` straight after
+//! `6.2`); the missing levels count as seen.
 //!
 //! The extraction never returns half a set: a message row whose Message Type
 //! has no size, two items with one id, or a configured table that is not
@@ -50,20 +58,86 @@ pub(super) struct Item {
     pub(super) text: String,
 }
 
-/// The Message Type allocation table's number.
-const MT_TABLE: u32 = 4;
+/// What a document has besides its keyword sentences.
+#[derive(Clone, Copy)]
+pub(super) enum Tables {
+    /// The Message Type allocation table and the tables of defined messages.
+    Messages {
+        /// The allocation table's number.
+        mt_table: u32,
+        /// `(table number, row shape)` of each table that defines messages.
+        messages: &'static [(u32, Rows)],
+    },
+    /// The table that spells the file header, one byte per column.
+    FileHeader { table: u32 },
+}
+
+/// One spec document the extractor reads.
+pub(super) struct Doc {
+    /// The id prefix: `m2-104`.
+    pub(super) prefix: &'static str,
+    /// The document's name in `section` columns: `M2-104`.
+    pub(super) label: &'static str,
+    /// The title and version in the inventory header.
+    pub(super) title: &'static str,
+    /// The inventory file under `testing/conformance/`.
+    pub(super) file: &'static str,
+    /// The spec's file name starts with this (a `.txt` or a `.pdf`).
+    pub(super) source: &'static str,
+    /// The side column's words in the inventory header.
+    pub(super) sides: &'static str,
+    /// Lines the inventory header adds before the side line.
+    pub(super) note: &'static str,
+    /// Take a heading whose missing ancestors are each the first of their
+    /// level.
+    implicit_levels: bool,
+    pub(super) tables: Tables,
+}
+
+/// The documents, one inventory file each.
+pub(super) const DOCS: &[Doc] = &[M2_104, M2_116];
+
+pub(super) const M2_104: Doc = Doc {
+    prefix: "m2-104",
+    label: "M2-104",
+    title: "MIDI 2.0 UMP and Protocol (M2-104 v1.1.2)",
+    file: "midi-m2-104.txt",
+    source: "M2-104-UM",
+    sides: "sender, receiver or both",
+    note: "",
+    implicit_levels: false,
+    tables: Tables::Messages {
+        mt_table: 4,
+        messages: &[(34, Rows::Formats), (16, Rows::FlexStatus)],
+    },
+};
+
+pub(super) const M2_116: Doc = Doc {
+    prefix: "m2-116",
+    label: "M2-116",
+    title: "MIDI Clip File (M2-116 v1.0)",
+    file: "midi-m2-116.txt",
+    source: "M2-116-U",
+    sides: "writer, reader or both",
+    note: "\
+# M2-116 has its own conformance-word table (its Table 2), the same three
+# rows as M2-104's, and no negated forms either. Section 6.2.1.1 follows 6.2
+# with no 6.2.1 between; it keeps its own number as the section.
+#   m2-116/hdr/<n>                the nth byte of the file header: facts
+#                                 byte (1-based) and value
+",
+    implicit_levels: true,
+    tables: Tables::FileHeader { table: 5 },
+};
 
 /// How a message table's lines read as rows.
 #[derive(Clone, Copy)]
-enum Rows {
+pub(super) enum Rows {
     /// A line with a Message Type, a group cell and a status.
     Formats,
     /// A line with a Flex Data status bank, a status and a name.
     FlexStatus,
 }
-
-/// The tables that define messages: `(table number, row shape)`.
-const MESSAGE_TABLES: &[(u32, Rows)] = &[(34, Rows::Formats), (16, Rows::FlexStatus)];
 
 /// The Message Type of the Flex Data messages, whose status is a bank and a
 /// status.
@@ -200,14 +274,51 @@ fn parse_heading(line: &str) -> Option<Label> {
 
 /// Tracks the headings seen, accepting only the next sibling or first child
 /// of one already seen.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Outline {
+    implicit: bool,
     seen: BTreeSet<String>,
     last_child: BTreeMap<String, u32>,
 }
 
 impl Outline {
+    /// Count the missing ancestors of `label` as seen when each is the first
+    /// of its level and some ancestor is seen.
+    fn fill_implicit(&mut self, label: &Label) {
+        let (app, nums) = label;
+        let up = |n: usize| -> Label { (*app, nums[..n].to_vec()) };
+        let mut depth = nums.len().saturating_sub(1);
+        while depth >= 1 && !self.seen.contains(&render(&up(depth))) {
+            depth -= 1;
+        }
+        // The ancestors of lengths `depth + 1 ..= len - 1` are missing.
+        let missing = depth + 1..nums.len();
+        if depth == 0 || missing.is_empty() || missing.clone().any(|n| nums[n - 1] != 1) {
+            return;
+        }
+        let mut parent = render(&up(depth));
+        for n in missing {
+            let this = render(&up(n));
+            self.last_child.insert(parent, 1);
+            self.seen.insert(this.clone());
+            parent = this;
+        }
+    }
+
     fn accept(&mut self, label: &Label) -> bool {
+        if !self.implicit {
+            return self.accept_next(label);
+        }
+        let mut trial = self.clone();
+        trial.fill_implicit(label);
+        let ok = trial.accept_next(label);
+        if ok {
+            *self = trial;
+        }
+        ok
+    }
+
+    fn accept_next(&mut self, label: &Label) -> bool {
         let (app, nums) = label;
         let (parent, number) = match (app, nums.len()) {
             (true, 1) => ("#".to_owned(), nums[0]),
@@ -249,8 +360,11 @@ fn caption(t: &str) -> Option<(bool, u32)> {
 }
 
 /// The classified lines of the body (from the first real heading `1`).
-fn classify(lines: &[String]) -> Result<Vec<Line>, String> {
-    let mut outline = Outline::default();
+fn classify(lines: &[String], doc: &Doc) -> Result<Vec<Line>, String> {
+    let mut outline = Outline {
+        implicit: doc.implicit_levels,
+        ..Outline::default()
+    };
     let mut out = Vec::new();
     let mut started = false;
     for l in lines {
@@ -463,8 +577,8 @@ fn units(lines: &[Line]) -> Vec<Unit> {
     out
 }
 
-/// The `m2-104/<section>#<n>` rows.
-fn keyword_items(lines: &[Line]) -> Vec<Item> {
+/// The `<doc>/<section>#<n>` rows.
+fn keyword_items(lines: &[Line], doc: &Doc) -> Vec<Item> {
     let mut count: BTreeMap<String, u32> = BTreeMap::new();
     let mut out = Vec::new();
     for unit in units(lines) {
@@ -475,9 +589,9 @@ fn keyword_items(lines: &[Line]) -> Vec<Item> {
             let n = count.entry(unit.section.clone()).or_default();
             *n += 1;
             out.push(Item {
-                id: format!("m2-104/{}#{n}", unit.section),
+                id: format!("{}/{}#{n}", doc.prefix, unit.section),
                 kind,
-                section: format!("M2-104 \u{a7}{}", unit.section.to_ascii_uppercase()),
+                section: format!("{} \u{a7}{}", doc.label, unit.section.to_ascii_uppercase()),
                 facts: if negated {
                     "neg=1".to_owned()
                 } else {
@@ -520,9 +634,9 @@ fn hex(token: &str, max_digits: usize) -> Option<u32> {
 }
 
 /// The size in bytes of each Message Type, from the allocation table.
-fn mt_sizes(lines: &[Line]) -> Result<BTreeMap<u32, u32>, String> {
+fn mt_sizes(lines: &[Line], table: u32) -> Result<BTreeMap<u32, u32>, String> {
     let mut out = BTreeMap::new();
-    for l in table_lines(lines, MT_TABLE)? {
+    for l in table_lines(lines, table)? {
         let t: Vec<&str> = l.split_whitespace().collect();
         if let [mt, bits, "bits", ..] = t[..]
             && let (Some(mt), Ok(bits)) = (hex(mt, 1), bits.parse::<u32>())
@@ -532,7 +646,7 @@ fn mt_sizes(lines: &[Line]) -> Result<BTreeMap<u32, u32>, String> {
     }
     if out.len() != 16 {
         return Err(format!(
-            "Table {MT_TABLE} gives {} Message Type sizes, not 16",
+            "Table {table} gives {} Message Type sizes, not 16",
             out.len()
         ));
     }
@@ -562,7 +676,14 @@ fn flex_status_row(line: &str) -> Option<(u32, u32)> {
     Some((hex(t.first()?, 2)?, hex(t.get(1)?, 2)?))
 }
 
-fn message_item(mt: u32, bank: Option<u32>, status: u32, bytes: u32, table: u32) -> Item {
+fn message_item(
+    doc: &Doc,
+    mt: u32,
+    bank: Option<u32>,
+    status: u32,
+    bytes: u32,
+    table: u32,
+) -> Item {
     let (id_status, facts) = match bank {
         Some(b) => (
             format!("{b:02x}.{status:02x}"),
@@ -574,28 +695,33 @@ fn message_item(mt: u32, bank: Option<u32>, status: u32, bytes: u32, table: u32)
         ),
     };
     Item {
-        id: format!("m2-104/msg/{mt:x}/{id_status}"),
+        id: format!("{}/msg/{mt:x}/{id_status}", doc.prefix),
         kind: "",
-        section: format!("M2-104 Table {table}"),
+        section: format!("{} Table {table}", doc.label),
         facts,
         text: String::new(),
     }
 }
 
 /// The Message Type rows and the defined-message rows.
-fn table_items(lines: &[Line]) -> Result<Vec<Item>, String> {
-    let sizes = mt_sizes(lines)?;
+fn message_items(
+    lines: &[Line],
+    doc: &Doc,
+    mt_table: u32,
+    tables: &[(u32, Rows)],
+) -> Result<Vec<Item>, String> {
+    let sizes = mt_sizes(lines, mt_table)?;
     let mut out: Vec<Item> = sizes
         .iter()
         .map(|(mt, bytes)| Item {
-            id: format!("m2-104/mt/{mt:x}"),
+            id: format!("{}/mt/{mt:x}", doc.prefix),
             kind: "",
-            section: format!("M2-104 Table {MT_TABLE}"),
+            section: format!("{} Table {mt_table}", doc.label),
             facts: format!("mt=0x{mt:x} bytes={bytes}"),
             text: String::new(),
         })
         .collect();
-    for &(table, shape) in MESSAGE_TABLES {
+    for &(table, shape) in tables {
         let mut found = 0;
         for l in table_lines(lines, table)? {
             let row = match shape {
@@ -608,7 +734,7 @@ fn table_items(lines: &[Line]) -> Result<Vec<Item>, String> {
             let bytes = *sizes
                 .get(&mt)
                 .ok_or_else(|| format!("Table {table}: Message Type 0x{mt:x} has no size"))?;
-            out.push(message_item(mt, bank, status, bytes, table));
+            out.push(message_item(doc, mt, bank, status, bytes, table));
             found += 1;
         }
         if found == 0 {
@@ -618,12 +744,50 @@ fn table_items(lines: &[Line]) -> Result<Vec<Item>, String> {
     Ok(out)
 }
 
+/// The `<doc>/hdr/<n>` rows: the `Value` line of the header table, eight
+/// hex bytes.
+fn header_items(lines: &[Line], doc: &Doc, table: u32) -> Result<Vec<Item>, String> {
+    let values: Vec<u32> = table_lines(lines, table)?
+        .into_iter()
+        .find_map(|l| {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            (t.first() == Some(&"Value")).then(|| {
+                t[1..]
+                    .iter()
+                    .map(|x| hex(x, 2))
+                    .collect::<Option<Vec<u32>>>()
+            })
+        })
+        .flatten()
+        .ok_or_else(|| format!("Table {table} has no Value line of hex bytes"))?;
+    if values.len() != 8 {
+        return Err(format!(
+            "Table {table} gives {} header bytes, not 8",
+            values.len()
+        ));
+    }
+    Ok(values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| Item {
+            id: format!("{}/hdr/{}", doc.prefix, i + 1),
+            kind: "",
+            section: format!("{} Table {table}", doc.label),
+            facts: format!("byte={} value=0x{v:x}", i + 1),
+            text: String::new(),
+        })
+        .collect())
+}
+
 /// Every item of the spec text: the keyword rows in document order, then the
-/// Message Type rows, then the message rows in table order.
-pub(super) fn extract(text: &str) -> Result<Vec<Item>, String> {
-    let lines = classify(&clean(text))?;
-    let mut out = keyword_items(&lines);
-    out.extend(table_items(&lines)?);
+/// document's table rows.
+pub(super) fn extract(doc: &Doc, text: &str) -> Result<Vec<Item>, String> {
+    let lines = classify(&clean(text), doc)?;
+    let mut out = keyword_items(&lines, doc);
+    out.extend(match doc.tables {
+        Tables::Messages { mt_table, messages } => message_items(&lines, doc, mt_table, messages)?,
+        Tables::FileHeader { table } => header_items(&lines, doc, table)?,
+    });
     let mut seen = BTreeSet::new();
     for it in &out {
         if !seen.insert(it.id.as_str()) {
@@ -658,7 +822,7 @@ mod tests {
 
     fn sentences_of(body: &str) -> Vec<Item> {
         let text = doc(&[TOC, body, "", ""]);
-        keyword_items(&classify(&clean(&text)).unwrap())
+        keyword_items(&classify(&clean(&text), &M2_104).unwrap(), &M2_104)
     }
 
     #[test]
@@ -704,7 +868,7 @@ mod tests {
             "wheel moves.\n\nAnother frob shall stop.\n",
             "",
         ]);
-        let items = keyword_items(&classify(&clean(&text)).unwrap());
+        let items = keyword_items(&classify(&clean(&text), &M2_104).unwrap(), &M2_104);
         assert_eq!(items.len(), 2);
         assert_eq!(
             items[0].text,
@@ -747,6 +911,47 @@ mod tests {
     }
 
     #[test]
+    fn implicit_levels_take_a_heading_whose_ancestors_are_each_the_first() {
+        let text = doc(&[
+            TOC,
+            "1 Alpha\n1.1 Beta\nA frob shall spin.\n1.1.1.1 Deep\nA frob should hum.\n1.2 Gamma\nA frob may idle.\n\n1.2.2.1 Stray\nA frob shall go.\n",
+            "",
+            "",
+        ]);
+        let lines = classify(&clean(&text), &M2_116).unwrap();
+        assert_eq!(
+            ids(&keyword_items(&lines, &M2_116)),
+            [
+                ("m2-116/1.1#1", "required"),
+                ("m2-116/1.1.1.1#1", "recommended"),
+                ("m2-116/1.2#1", "permitted"),
+                ("m2-116/1.2#2", "required"),
+            ]
+        );
+        // Without the flag a heading with a missing parent is text.
+        let lines = classify(&clean(&text), &M2_104).unwrap();
+        let plain = keyword_items(&lines, &M2_104);
+        assert!(plain.iter().all(|i| !i.id.contains("1.1.1.1")));
+        assert_eq!(plain[1].id, "m2-104/1.2#1");
+    }
+
+    #[test]
+    fn the_file_header_rows_come_from_the_value_line() {
+        let text = doc(&[
+            TOC,
+            "1 Alpha\nTable 5 Header\nByte 1  Byte 2\nValue  0x53 0x4D 0x46 0x32 0x43 0x4C 0x49 0x50\nText  S M F 2 C L I P\nFigure 1 End\n",
+            "",
+            "",
+        ]);
+        let items = extract(&M2_116, &text).unwrap();
+        let by = |id: &str| items.iter().find(|i| i.id == id).map(|i| i.facts.as_str());
+        assert_eq!(by("m2-116/hdr/1"), Some("byte=1 value=0x53"));
+        assert_eq!(by("m2-116/hdr/8"), Some("byte=8 value=0x50"));
+        let short = text.replace(" 0x50", "");
+        assert!(extract(&M2_116, &short).unwrap_err().contains("not 8"));
+    }
+
+    #[test]
     fn the_cover_and_contents_are_skipped() {
         let text = doc(&[
             "Cover. A frob shall spin.\n1 Alpha ........ 3\n",
@@ -754,9 +959,9 @@ mod tests {
             "",
             "",
         ]);
-        let items = keyword_items(&classify(&clean(&text)).unwrap());
+        let items = keyword_items(&classify(&clean(&text), &M2_104).unwrap(), &M2_104);
         assert_eq!(ids(&items), [("m2-104/1#1", "required")]);
-        assert!(classify(&clean("no headings here")).is_err());
+        assert!(classify(&clean("no headings here"), &M2_104).is_err());
     }
 
     const TABLES: &str = "Table 4 Allocation\n  0x0   32 bits   Utility\n  0x1   32 bits   Real Time\n  0x2   32 bits\n  0x3   64 bits\n  0x4   64 bits\n  0x5   128 bits\n  0x6   32 bits   Reserved\n  0x7   32 bits\n  0x8   64 bits\n  0x9   64 bits\n  0xA   64 bits\n  0xB   96 bits\n  0xC   96 bits\n  0xD   128 bits   Flex\n  0xE   128 bits\n  0xF   128 bits   Stream\nFigure 4 Example\n";
@@ -774,7 +979,7 @@ mod tests {
 
     #[test]
     fn message_type_and_message_rows_come_from_the_configured_tables() {
-        let items = extract(&spec("")).unwrap();
+        let items = extract(&M2_104, &spec("")).unwrap();
         let by = |id: &str| items.iter().find(|i| i.id == id).map(|i| i.facts.as_str());
         assert_eq!(by("m2-104/mt/b"), Some("mt=0xb bytes=12"));
         assert_eq!(by("m2-104/msg/0/0"), Some("mt=0x0 status=0x0 bytes=4"));
@@ -813,17 +1018,20 @@ mod tests {
     fn a_missing_table_or_size_is_an_error() {
         let no_msgs = doc(&[TOC, &format!("1 Alpha\n{TABLES}"), "", ""]);
         assert!(
-            extract(&no_msgs)
+            extract(&M2_104, &no_msgs)
                 .unwrap_err()
                 .contains("Table 34 not found")
         );
         let short = spec("").replace("  0xE   128 bits\n", "");
-        assert!(extract(&short).unwrap_err().contains("not 16"));
+        assert!(extract(&M2_104, &short).unwrap_err().contains("not 16"));
     }
 
     #[test]
     fn extraction_is_deterministic() {
         let text = spec("1.1 Beta\nA bar should ring.\n");
-        assert_eq!(extract(&text).unwrap(), extract(&text).unwrap());
+        assert_eq!(
+            extract(&M2_104, &text).unwrap(),
+            extract(&M2_104, &text).unwrap()
+        );
     }
 }

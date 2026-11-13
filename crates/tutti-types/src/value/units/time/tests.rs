@@ -223,3 +223,48 @@ fn a_seconds_round_trip_is_exact_for_every_frame_a_project_holds() {
         }
     }
 }
+
+/// A rate is finite and above zero: `new` refuses every other raw, and keeps
+/// the smallest positive and the largest finite ones.
+#[test]
+fn sample_rate_new_refuses_what_is_not_a_finite_positive_rate() {
+    for bad in [
+        0.0,
+        -0.0,
+        -1.0,
+        -48_000.0,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ] {
+        assert_eq!(SampleRate::new(bad), None, "{bad}");
+    }
+    for good in [f64::MIN_POSITIVE, 1e-300, 44_100.0, f64::MAX] {
+        assert_eq!(SampleRate::new(good).map(SampleRate::get), Some(good));
+    }
+}
+
+/// `of` is `new` that panics, so a literal that is no rate cannot compile into
+/// a constant.
+#[test]
+#[should_panic(expected = "a sample rate is finite and above zero")]
+fn sample_rate_of_panics_on_zero() {
+    let _ = SampleRate::of(0.0);
+}
+
+/// The named rates are the figures they are named for.
+#[test]
+fn the_named_sample_rates_are_their_figures() {
+    let named = [
+        (SampleRate::SR_8K, 8_000.0),
+        (SampleRate::SR_22K05, 22_050.0),
+        (SampleRate::SR_44K1, 44_100.0),
+        (SampleRate::SR_48K, 48_000.0),
+        (SampleRate::SR_88K2, 88_200.0),
+        (SampleRate::SR_96K, 96_000.0),
+        (SampleRate::SR_192K, 192_000.0),
+    ];
+    for (rate, hz) in named {
+        assert_eq!(rate.get(), hz);
+    }
+}

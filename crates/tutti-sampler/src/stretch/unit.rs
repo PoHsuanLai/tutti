@@ -201,8 +201,8 @@ impl Unit {
     /// a nominal rate.
     pub(super) fn geometry(sample_rate: impl Into<SampleRate>, fft_size: FftSize) -> StftGeometry {
         // At least 1 Hz; an infinite rate stands at the largest finite one.
-        let rate = SampleRate::new(sample_rate.into().get().max(1.0))
-            .unwrap_or(SampleRate::of(f64::MAX));
+        let rate =
+            SampleRate::new(sample_rate.into().get().max(1.0)).unwrap_or(SampleRate::of(f64::MAX));
         StftGeometry::cola(rate, fft_size.size(), fft_size.hop())
             .expect("BUG: FftSize hop is size/4, which is COLA-valid at a positive rate")
     }

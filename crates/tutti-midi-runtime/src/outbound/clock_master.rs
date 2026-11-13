@@ -40,10 +40,9 @@
 //!   (when `send_mtc` is set).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use tutti_graph::{Losses, Offset, TransportPosition, UmpAt};
-use tutti_rt::PackedAtomic;
 use tutti_types::{
     AtomicSampleRate, Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples,
     first_frame_at_or_after,
@@ -61,7 +60,7 @@ const START_EPSILON_BEATS: f64 = 1e-6;
 const SEEK_EPSILON_BEATS: f64 = 1e-3;
 
 /// What a control thread sets on a clock: enabled, MTC on or off, and the
-/// SMPTE frame rate. One value in one word ([`PackedAtomic`]), so the audio
+/// SMPTE frame rate. One value in one word (an `AtomicU32`), so the audio
 /// thread reads the three of one store, never a mix of two.
 ///
 /// Layout of the word: bit 0 is enabled, bit 1 is MTC, bits 8 to 15 are the
@@ -112,7 +111,7 @@ impl Settings {
 /// word, the rate the master last prepared at, and the count of what it lost.
 #[derive(Debug)]
 struct Shared {
-    settings: PackedAtomic<u32>,
+    settings: AtomicU32,
     /// The rate the master was last given. Written by the audio half
     /// ([`ClockMaster::set_sample_rate`]), read by [`ClockControls`].
     sample_rate: AtomicSampleRate,
@@ -199,16 +198,19 @@ impl ClockControls {
     }
 
     fn settings(&self) -> Settings {
-        Settings::from_bits(self.shared.settings.load())
+        Settings::from_bits(self.shared.settings.load(Ordering::Acquire))
     }
 
-    /// Replaces one field of the settings. A read-modify-write of the whole
-    /// word, so two control threads setting two fields at once can lose one:
-    /// a clock has one control thread.
-    fn update(&self, change: impl FnOnce(&mut Settings)) {
-        let mut settings = self.settings();
-        change(&mut settings);
-        self.shared.settings.store(settings.bits());
+    /// Replaces one field of the settings: one atomic read-modify-write of
+    /// the whole word, so two control threads setting two fields both land.
+    fn update(&self, change: impl Fn(&mut Settings)) {
+        self.shared
+            .settings
+            .update(Ordering::Release, Ordering::Acquire, |word| {
+                let mut settings = Settings::from_bits(word);
+                change(&mut settings);
+                settings.bits()
+            });
     }
 }
 
@@ -306,7 +308,7 @@ impl ClockMaster {
     #[must_use]
     pub fn new(group: MidiGroup, sample_rate: SampleRate) -> (Self, ClockControls) {
         let shared = Arc::new(Shared {
-            settings: PackedAtomic::new(Settings::OFF.bits()),
+            settings: AtomicU32::new(Settings::OFF.bits()),
             sample_rate: AtomicSampleRate::new(sample_rate),
             dropped: AtomicU64::new(0),
         });
@@ -420,7 +422,7 @@ impl ClockMaster {
             .map_or(self.sample_rate, |o| o.sample_rate);
         // What the control side set, as of one store. A frame rate it moved
         // is a new MTC grid segment, started here on the audio thread.
-        let settings = Settings::from_bits(self.shared.settings.load());
+        let settings = Settings::from_bits(self.shared.settings.load(Ordering::Acquire));
         if settings.fps != self.fps {
             self.rebase_mtc(self.sample_rate, self.fps, self.sample_rate);
             self.fps = settings.fps;

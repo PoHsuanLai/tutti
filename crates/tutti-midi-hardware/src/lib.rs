@@ -54,7 +54,8 @@ pub use session::{DeviceQuery, MidiSession, OutputInfo, Polled};
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{
     BindPolicy, Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId,
-    FunctionBlock, Identity, OsChange, OsDevice, PortDirection, Resolved,
+    FunctionBlock, Identity, Learned, Match, OsChange, OsDevice, PortDirection, Resolved,
+    SavedDevice,
 };
 
 #[cfg(target_os = "macos")]

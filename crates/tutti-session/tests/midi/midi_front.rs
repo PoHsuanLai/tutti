@@ -422,4 +422,25 @@ mod hardware {
             Resolution::Missing
         );
     }
+
+    /// **What a device says of itself is read through the session's front**:
+    /// nothing for a device that is not open, and a saved device of an open one
+    /// that has said nothing knows nothing, so it confirms as `Unknown` (never
+    /// as the same unit).
+    #[test]
+    fn a_device_that_has_said_nothing_is_unknown() {
+        use tutti_midi_hardware::{Learned, Match};
+        let (mut s, fake) = session();
+        fake.plug(endpoint(3, "Keys"), PortDirection::Input);
+        let _ = s.update();
+        let keys = s.midi().devices().into_iter().next().unwrap();
+        assert!(s.midi().learned(&keys.id).is_empty());
+        assert!(s.midi().saved(&keys.id).is_none(), "not open");
+
+        s.midi().connect_input(&keys.id).unwrap();
+        let saved = s.midi().saved(&keys.id).expect("open");
+        assert_eq!(saved.info(), &keys);
+        assert_eq!(saved.learned(), &Learned::new());
+        assert_eq!(s.midi().confirm(&keys.id, &saved), Match::Unknown);
+    }
 }

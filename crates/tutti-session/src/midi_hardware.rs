@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use tutti_midi_hardware::{CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Resolved};
+use tutti_midi_hardware::{
+    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, Resolved, SavedDevice,
+};
 use tutti_ump::DeviceIdentity;
 
 use crate::MidiError;
@@ -110,6 +112,45 @@ impl Midi<'_> {
     #[must_use]
     pub fn ci_peers(&self, id: &DeviceId) -> Arc<[CiPeerInfo]> {
         self.io.map_or_else(Arc::default, |io| io.ci_peers(id))
+    }
+
+    /// Returns what the open input `id` has said about itself so far: its Device
+    /// Identity and Product Instance Id (the UMP Endpoint's or the MIDI 1.0
+    /// Identity Reply, then a MIDI-CI peer's for what those left). Empty when
+    /// the input is not open, has not answered yet, or never will: the answers
+    /// arrive over the first seconds after a connect, and a
+    /// [`MidiEvent::StreamSettled`](crate::MidiEvent::StreamSettled) or
+    /// [`CiPeer`](crate::MidiEvent::CiPeer) reports that something did. A
+    /// device identity names a model and a Product Instance Id one unit
+    /// (M2-101 §5.8.3.1).
+    #[must_use]
+    pub fn learned(&self, id: &DeviceId) -> Learned {
+        self.io.map_or_else(Learned::new, |io| io.learned(id))
+    }
+
+    /// Returns the open input `id` as an app keeps it: the listing's row with what it
+    /// has said ([`learned`](Self::learned)), for the app's own file (with the
+    /// `serde` feature of `tutti-midi-device`). `None` when it is not open.
+    /// Save it once the device has spoken; restore it with
+    /// [`reconnect_saved`](Self::reconnect_saved) on
+    /// [`SavedDevice::info`] and, once the device has spoken again,
+    /// [`confirm`](Self::confirm).
+    #[must_use]
+    pub fn saved(&self, id: &DeviceId) -> Option<SavedDevice> {
+        self.io.and_then(|io| io.saved(id))
+    }
+
+    /// Compares the open input `id` with the device `saved` describes, by what it
+    /// has said: [`Match::SameUnit`] only on an equal Product Instance Id, never
+    /// on a Device Identity (two units of a model share it);
+    /// [`Match::Different`] when something known on both sides differs, which
+    /// is the app's cue to unbind a device that
+    /// [`reconnect_saved`](Self::reconnect_saved) opened by name. Run it again
+    /// when [`learned`](Self::learned) changes: until then it is
+    /// [`Match::Unknown`].
+    #[must_use]
+    pub fn confirm(&self, id: &DeviceId, saved: &SavedDevice) -> Match {
+        saved.confirm(&self.learned(id))
     }
 
     /// Closes an input, by id or name. Whether one was open.

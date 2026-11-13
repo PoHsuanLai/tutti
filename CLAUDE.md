@@ -490,7 +490,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  block start and restored on unfollow; off by default, one follower, doc 020
                  section 11) and, with
                  `midi-hardware`, the devices (`devices`, `connect_input`/`connect_output`,
-                 `reconnect_saved -> Resolution`), and `load_file` and (`soundfont`)
+                 `reconnect_saved -> Resolution`; `learned(&id)`, `saved(&id) -> Option<SavedDevice>` and
+                 `confirm(&id, &saved) -> Match` check a saved device against what the open one said), and `load_file` and (`soundfont`)
                  `load_soundfont`, jobs on the session's spawner that return a `MidiLoad`
                  and land `FileLoaded` / `SoundFontLoaded` in `update()`, and `enable_ci(DeviceIdentity)` / `disable_ci()` (both `Result<(), MidiError>`), `ci_peers(&DeviceId)` (the MIDI-CI peers found on an open input; each change is `MidiEvent::CiPeer { device, change }`). Its events are `SessionEvent::Midi(MidiEvent)`
                  and its error `Error::Midi(MidiError)`, each cause (hardware, file, send,
@@ -864,6 +865,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the saved name is `SameName` (bind or ask), and an ordinal above 0 or several
   alike devices are `Ambiguous`. Comparing a saved id with a listed one by hand
   can bind another keyboard of the same model.
+  **A Device Identity never promotes** `SameName` to `Exact` (units of a model share it); once the
+  device is open, `Learned` (what it said: Device Identity and Product Instance Id, `MidiSession::learned`)
+  is checked against a `SavedDevice` (`DeviceInfo` + `Learned`) with `Learned::compare -> Match`
+  (`SameUnit` only on an equal Product Instance Id, `SameModel`, `Different`, `Unknown`).
 - `tutti-transport`, `tutti-metering` and `tutti-engine` keep every module
   private (`tutti_transport::Transport`, never `tutti_transport::handle::Transport`;
   CI runs the per-module path gate on each), are `publish = false`,

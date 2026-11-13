@@ -5,6 +5,8 @@
 //! loop should do next. Because it has no `async` and no `Transport`
 //! dependency, it's unit-testable without tokio or sockets.
 
+use std::time::Instant;
+
 use crate::audio_pipeline::Clock;
 use crate::render::{RenderConfig, RenderLink, RenderSide, ToRender, link};
 use crate::served::AnyServed;
@@ -12,7 +14,7 @@ use tutti_plugin_ipc::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, StagedState};
 use tutti_plugin_types::{
     BridgeError, BridgeResult, EditorError, EditorSize, Load, MainThread, ParameterQueue,
-    PluginError, SampleFormat, SampleRate, WindowHandle,
+    PluginError, Ready, SampleFormat, SampleRate, Wakeups, WindowHandle,
 };
 
 /// What [`Session::handle`] asks the transport loop to do.
@@ -464,6 +466,39 @@ impl Session {
         }
         self.publish();
         events
+    }
+
+    /// What the loaded plugin wants the main loop to wait on: its descriptors
+    /// and the earliest of its timers, added to `out`. Read before every wait,
+    /// since registrations change as the plugin runs.
+    pub(crate) fn wakeups(&mut self, main: &MainThread, out: &mut Wakeups) {
+        if let Some(control) = self
+            .plugin
+            .as_mut()
+            .and_then(|p| p.plugin_mut().control_mut())
+        {
+            control.wakeups(main, out);
+        }
+    }
+
+    /// Hands the plugin what a wait found (the descriptors in `ready`, the
+    /// timers due at `now`) and serves it at once: what the plugin asked of the
+    /// host in answer is what [`drain_async_events`](Self::drain_async_events)
+    /// tells, so it is told in this pass and not at the next tick.
+    pub(crate) fn wake(
+        &mut self,
+        main: &MainThread,
+        ready: &[Ready],
+        now: Instant,
+    ) -> Vec<BridgeMessage> {
+        if let Some(control) = self
+            .plugin
+            .as_mut()
+            .and_then(|p| p.plugin_mut().control_mut())
+        {
+            control.wake(main, ready, now);
+        }
+        self.drain_async_events(main)
     }
 
     /// One idle tick, between messages, on the thread that loaded the plugin:

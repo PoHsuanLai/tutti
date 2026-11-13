@@ -176,6 +176,15 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
   no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
+- **A platform difference sits behind one seam**: the `cfg` is only
+  where a platform module is chosen (the server's `main_loop/{unix,windows,fallback}.rs`,
+  `tutti-au-host`'s `src/macos/`, `tutti-plugin-host`'s `wakeups`), never on each item of a
+  format host, the loop or the session; a one-platform test is one `cfg`'d submodule. A
+  plugin's own event sources (CLAP `posix-fd-support`/`timer-support`, VST3 `IRunLoop`)
+  are `EditorWindow::wakeups` / `wake`: the server's loop waits on them, an in-process host
+  services them in `editor_idle` (`tutti_plugin_host::service_now`). `tutti-plugin-types` holds the
+  plain values and makes no OS call; the poll is the waiting crate's, through `tutti-plugin-ipc-ffi`'s
+  `Poller`/`poll_now`, which take a descriptor as a plain number and own the one `unsafe` borrow.
 - Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
   `activate` splits a plugin into a realtime `Processor` and a main-thread
   `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are) per
@@ -648,11 +657,12 @@ crates/          everything shipped; directory name = package name; no nesting
                  process (`ProcessGuard`) and the served plugin as a `Loaded`
                  (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
                  design 021 §6.1; `#![forbid(unsafe_code)]`),
-  tutti-plugin-ipc-ffi (the process edge's `unsafe` behind safe calls: the
+  tutti-plugin-ipc-ffi (the plugin layer's OS edge, its `unsafe` behind safe calls: the
                  audio slab's file, mapping and header (`MappingWriter`, the
-                 mapping's one writer, `SharedMapping`, `SlabHeader`), and the
-                 OS calls of the host's pipe peek and the server's host
-                 watchdog; names no tutti crate),
+                 mapping's one writer, `SharedMapping`, `SlabHeader`), the
+                 pipe peek, the watchdog, and the readiness poll (`Poller`,
+                 `poll_now`) a host waits on a plugin's descriptors with, which
+                 takes each as a plain number and owns the borrow; names no tutti crate),
   tutti-plugin-host (the format-generic half of hosting, not a format host: the
                  `PluginHandle` control surface over a hosting's `AnyThread`,
                  `Health` and `MainThreadControl`,
@@ -1152,7 +1162,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
 - `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
-  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt` and `tutti-ump`
+  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` and
+  `tutti-plugin-ipc-ffi` (the descriptor poll of `service_now`)
   alone among workspace crates (`cargo xtask check-layout`): no `tutti-plugin-ipc`,
   no format host as a normal dependency, and not `tutti-plugin`. It keeps every
   module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path

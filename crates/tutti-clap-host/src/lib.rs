@@ -25,12 +25,6 @@ pub use instance::ParamMapping;
 // caller converting a layout does not have to name the module.
 pub use topology::topology_of;
 
-// `cfg`-gated to match the item: `PosixFdFlags` is `#[cfg(unix)]` (it models
-// `CLAP_EXT_POSIX_FD_SUPPORT`, which has no Windows counterpart), so an
-// unconditional re-export is an unresolved import on Windows and nothing at
-// all on Unix. Same shape as the `tutti-au-host` topology re-export.
-#[cfg(unix)]
-pub use types::PosixFdFlags;
 // The CLAP-native, voice-addressed note expression is re-exported under its
 // own distinct name (it does NOT shadow the shared
 // `tutti_plugin_types::NoteExpressionValue`). The native parameter types

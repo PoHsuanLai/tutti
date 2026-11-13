@@ -8,8 +8,6 @@
 //! extension a request came from.
 
 use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
-#[cfg(unix)]
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -22,9 +20,24 @@ pub(crate) struct TimerEntry {
     pub last_fire: Instant,
 }
 
+/// The least a timer's deadline is put after its last fire, whatever period it
+/// asked for. `timer-support.h` lets the host adjust a period it finds too
+/// short (30 Hz must be allowed), and a deadline at "now" for a period of zero
+/// would have the main loop wake again at once, for ever. A timer that asks for
+/// less still fires at its own period, whenever the loop is woken by anything.
+pub(crate) const TIMER_FLOOR: std::time::Duration = std::time::Duration::from_millis(10);
+
+impl TimerEntry {
+    /// When the loop should wake for this timer: its period after the last
+    /// fire, at least [`TIMER_FLOOR`].
+    pub(crate) fn wake_at(&self) -> Instant {
+        self.last_fire
+            + std::time::Duration::from_millis(u64::from(self.period_ms)).max(TIMER_FLOOR)
+    }
+}
+
 /// One POSIX file descriptor the plugin asked the host to watch
 /// (`CLAP_EXT_POSIX_FD_SUPPORT`).
-#[cfg(unix)]
 #[derive(Debug)]
 pub struct PosixFdEntry {
     /// The descriptor to poll. Owned by the plugin — the host watches it but
@@ -468,12 +481,7 @@ pub struct ResourceState {
     /// The plugin's trigger list changed and must be re-enumerated.
     pub triggers_rescan_requested: AtomicBool,
     /// Descriptors the plugin asked the host to watch, in registration order.
-    #[cfg(unix)]
     pub posix_fds: Mutex<Vec<PosixFdEntry>>,
-    /// How many descriptors `posix_fds` holds, kept beside it so the per-block
-    /// pass can ask without the lock.
-    #[cfg(unix)]
-    pub(crate) posix_fd_count: AtomicUsize,
 }
 
 impl ResourceState {
@@ -484,10 +492,7 @@ impl ResourceState {
             directory_shared: Mutex::new(None),
             directory_private: Mutex::new(None),
             triggers_rescan_requested: AtomicBool::new(false),
-            #[cfg(unix)]
             posix_fds: Mutex::new(Vec::new()),
-            #[cfg(unix)]
-            posix_fd_count: AtomicUsize::new(0),
         }
     }
 }

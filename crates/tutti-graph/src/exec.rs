@@ -1443,12 +1443,7 @@ impl Executor {
         // none: the same figure the source's writer enforces.
         // The rate is what the port can hold, note-off room included: the
         // FIFO takes every event the port wrote.
-        let rate = |from: crate::EventTapSource| {
-            crate::event::note_off_room(
-                plan.event_tap_capacity(from)
-                    .map_or(cap, |n| n.get() as usize),
-            )
-        };
+        let rate = |from: crate::EventTapSource| plan.event_tap_rate(from, cap);
         let mut rings: Vec<Option<Ring>> = plan
             .delays
             .iter()

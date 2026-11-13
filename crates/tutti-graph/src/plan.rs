@@ -311,6 +311,18 @@ impl EventSlotCapacity {
         }
     }
 
+    /// The FIFO of a stream merged from ports declaring `caps`: each one's
+    /// [`fifo`](Self::fifo) bound, added.
+    pub(crate) fn fifo_sum(
+        caps: impl IntoIterator<Item = Option<NonZeroU32>>,
+        len: Samples,
+        max_block: usize,
+    ) -> Self {
+        caps.into_iter().fold(Self::NONE, |acc, cap| {
+            acc.plus(Self::fifo(cap, len, max_block))
+        })
+    }
+
     /// Room for both: a merge of the two.
     #[must_use]
     pub const fn plus(self, other: Self) -> Self {
@@ -1188,16 +1200,39 @@ impl Plan {
             .and_then(|u| u.shape.event_capacity)
     }
 
-    /// The capacity an event tap's source declares: an output's own, or, for
-    /// an input, its node's.
-    pub(crate) fn event_tap_capacity(&self, source: crate::EventTapSource) -> Option<NonZeroU32> {
+    /// The declared capacity of each output port that writes what an event
+    /// tap's source carries: the port itself, or, for an input, every port
+    /// with an edge into it (what the node can receive there, summed).
+    pub(crate) fn event_tap_ports(&self, source: crate::EventTapSource) -> Vec<Option<NonZeroU32>> {
         match source {
-            crate::EventTapSource::Out(port) => self.event_port_capacity(port),
+            crate::EventTapSource::Out(port) => vec![self.event_port_capacity(port)],
             crate::EventTapSource::In(at) => self
-                .unit(at.node)
-                .filter(|u| at.port < u.shape.event_in)
-                .and_then(|u| u.shape.event_capacity),
+                .event_edges
+                .iter()
+                .filter(|&&(_, to)| to == at)
+                .map(|&(from, _)| self.event_port_capacity(from))
+                .collect(),
         }
+    }
+
+    /// What the delay FIFO of an event tap's source holds: the `fifo` bound of
+    /// each writing port, added.
+    pub(crate) fn event_tap_fifo(
+        &self,
+        source: crate::EventTapSource,
+        len: Samples,
+        block: usize,
+    ) -> EventSlotCapacity {
+        EventSlotCapacity::fifo_sum(self.event_tap_ports(source), len, block)
+    }
+
+    /// The rate an event tap's delay ring is sized from: the note-off room of
+    /// each writing port's capacity (or `default`), added.
+    pub(crate) fn event_tap_rate(&self, source: crate::EventTapSource, default: usize) -> usize {
+        self.event_tap_ports(source)
+            .into_iter()
+            .map(|c| crate::event::note_off_room(c.map_or(default, |n| n.get() as usize)))
+            .sum()
     }
 
     /// Feedback slots of `kind`.

@@ -721,11 +721,18 @@ fn opening_refuses_a_port_that_does_not_exist_now() {
 struct Probe {
     heard: Arc<Mutex<Vec<TapEvent>>>,
     ports: usize,
+    /// The event capacity the probe declares; 0 declares none.
+    capacity: u32,
 }
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::EMPTY.with_events(self.ports as u16, 0)
+        let shape = Shape::EMPTY.with_events(self.ports as u16, 0);
+        if self.capacity > 0 {
+            shape.with_event_capacity(self.capacity)
+        } else {
+            shape
+        }
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -762,6 +769,7 @@ fn fan_in(r: &mut Rig, probe_ports: usize) -> Arc<Mutex<Vec<TapEvent>>> {
         ForkByClone(Probe {
             heard: Arc::clone(&heard),
             ports: probe_ports,
+            capacity: 0,
         }),
     );
     for from in [1, 2] {
@@ -864,6 +872,62 @@ fn an_input_tap_of_one_source_and_of_none() {
     assert_eq!(drain(&mut one), node_heard);
     assert!(drain(&mut none).is_empty());
     assert_eq!(none.take_lost(), 0);
+}
+
+/// What an aligned input tap holds is what the node can receive, not what one
+/// port writes: two sources declaring 16 events each, writing 16 on one frame,
+/// feed a probe that declares 1, and the delayed tap loses none of the 32
+/// the probe heard.
+#[test]
+fn an_aligned_input_tap_is_sized_for_every_source_of_the_input() {
+    let mut r = rig(1, false, 40);
+    let burst: Vec<(u64, Ump)> = (0..16).map(|k| (10, on(k))).collect();
+    for key in [1, 2] {
+        let mut s = Script::new(burst.clone());
+        s.cap = 16;
+        script(&mut r, key, s);
+    }
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    r.ed.insert(
+        NodeKey(3),
+        "probe",
+        ForkByClone(Probe {
+            heard: Arc::clone(&heard),
+            ports: 1,
+            capacity: 1,
+        }),
+    );
+    for from in [1, 2] {
+        r.ed.spec_mut().connect_events(
+            EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            EventEdge::Direct(port(from, 0)),
+        );
+    }
+    let mut tap =
+        r.ed.open_event_tap(
+            EventTapId(1),
+            EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            TapAlign::ToOutput,
+            EventCapacity::of(64),
+        )
+        .expect("the input exists");
+    commit(&mut r);
+    assert_eq!(event_delays(&r), 1, "the aligned tap is delayed");
+    render(&mut r, &[64], 200);
+    let node_heard = heard.lock().unwrap().clone();
+    assert_eq!(node_heard.len(), 32);
+    let later: Vec<TapEvent> = node_heard
+        .iter()
+        .map(|e| at(e.frame.get() + 40, e.ump))
+        .collect();
+    assert_eq!(drain(&mut tap), later);
+    assert_eq!(tap.take_lost(), 0);
 }
 
 /// Opening an input tap refuses a node that is not there and a port past the

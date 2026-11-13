@@ -909,7 +909,7 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
                         "event delay {delay} is not keyed as events"
                     )));
                 };
-                EventSlotCapacity::fifo(plan.event_tap_capacity(from), d.len, block)
+                plan.event_tap_fifo(from, d.len, block)
             }
             Op::EventMerge { srcs, .. } => {
                 let mut need = EventSlotCapacity::NONE;

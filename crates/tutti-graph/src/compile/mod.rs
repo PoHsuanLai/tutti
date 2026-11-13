@@ -1452,8 +1452,20 @@ pub fn compile(
                 let Some(from) = d.key.event_origin() else {
                     unreachable!("an event delay is keyed as events")
                 };
-                value_cap[*dst as usize] = EventSlotCapacity::fifo(
-                    node_shapes[dense[&from.node()]].event_capacity,
+                // An output's own capacity, or, for an input, every port with an
+                // edge into it.
+                let ports: Vec<EventOut> = match from {
+                    crate::EventTapSource::Out(port) => vec![port],
+                    crate::EventTapSource::In(at) => graph
+                        .events()
+                        .get(&at)
+                        .map(|edges| edges.iter().map(|e| e.from()).collect())
+                        .unwrap_or_default(),
+                };
+                value_cap[*dst as usize] = EventSlotCapacity::fifo_sum(
+                    ports
+                        .iter()
+                        .map(|p| node_shapes[dense[&p.node]].event_capacity),
                     d.len,
                     block,
                 );

@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! A tempo map: where beats fall in time.
 //!
 //! A [`TempoMap`] is an immutable value built on the control side from sorted

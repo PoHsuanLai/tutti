@@ -482,6 +482,7 @@ fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
 /// not the note a bend on channel 2 of Group 1 is for (that bend holds no note
 /// in its Group and is dropped), and the per-note message built for Group 2's
 /// bend stays in Group 2.
+/// Spec: m2-104/2.1.2#2
 #[test]
 fn a_groups_member_channels_hold_notes_of_their_own() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));

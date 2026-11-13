@@ -19,6 +19,7 @@ fn first_is_the_first_group_with_the_channel() {
 
 /// M2-104 section 7.4.2: Note On and Note Off carry a 16-bit velocity and an
 /// attribute type, and no attribute is type 0.
+/// Spec: m2-104/7.4.14#3
 #[test]
 fn note_constructors_are_the_no_attribute_messages() {
     let note = NoteNumber::of(60);
@@ -82,6 +83,7 @@ fn an_address_is_a_group_and_a_channel_and_a_bare_channel_is_in_the_first_group(
 
 /// M2-104 section 7.3 (MIDI 1.0 Channel Voice, type 2): each message's words,
 /// written from the figures, for group 0 channel 2 and for group 3 channel 2.
+/// Spec: m2-104/msg/2/8, m2-104/msg/2/9, m2-104/msg/2/a, m2-104/msg/2/b, m2-104/msg/2/c, m2-104/msg/2/d, m2-104/msg/2/e
 #[test]
 fn the_midi1_constructors_are_the_section_7_3_words() {
     let ch = MidiChannel::of(2);

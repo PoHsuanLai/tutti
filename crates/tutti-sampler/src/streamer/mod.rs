@@ -399,7 +399,7 @@ impl<D> DiskStreamer<D> {
 // `driver` has its own `Drop` impl (a thread's stop); auto-drop handles cleanup.
 
 /// Configuration for [`DiskStreamer::new`]. `Default` + struct-update.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DiskStreamerConfig {
     /// Streamer buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.

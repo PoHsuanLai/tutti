@@ -38,7 +38,7 @@ pub(crate) const STALL_GRACE: Duration = Duration::from_millis(500);
 /// error may be transient.
 ///
 /// [`AudioEngine::is_running`]: crate::AudioEngine::is_running
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum StreamFaultKind {
     /// The device went away: unplugged, or taken by an exclusive-mode client.

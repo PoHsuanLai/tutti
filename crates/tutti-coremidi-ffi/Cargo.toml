@@ -3,10 +3,9 @@ name = "tutti-coremidi-ffi"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The unsafe half of the macOS MIDI backend: a native-UMP virtual source and destination, the UMP Endpoints and Function Blocks the OS reports, and the host clock, behind safe handles"
+description = "Safe bindings to Apple's CoreMIDI for MIDI 2.0 virtual ports and device endpoints, for tutti"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-coremidi-ffi"
 readme = "README.md"
 keywords = ["coremidi", "ump", "midi", "ffi"]
 categories = ["external-ffi-bindings", "multimedia::audio", "os::macos-apis"]
@@ -20,7 +19,7 @@ coremidi-sys = { workspace = true }
 thiserror = { workspace = true }
 block2 = "0.6"
 core-foundation = { workspace = true }
-mach2 = "0.4"
+mach2 = "0.7"
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-core-midi = { workspace = true }

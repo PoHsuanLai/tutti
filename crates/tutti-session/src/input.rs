@@ -49,7 +49,7 @@ const REOPEN_FADE: Seconds = Seconds(0.01);
 ///     .channels(&[2, 3]);
 /// assert_eq!(config.channels.as_deref(), Some(&[2, 3][..]));
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct InputConfig {
     /// The input device, on the session's host
     /// ([`SessionBuilder::host`](crate::SessionBuilder::host)).

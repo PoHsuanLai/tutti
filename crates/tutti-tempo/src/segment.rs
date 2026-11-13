@@ -21,7 +21,7 @@
 use crate::point::Transition;
 use tutti_types::{Beat, BeatDuration, Bpm, Seconds};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Seg {
     /// Where the segment starts.
     pub beat0: Beat,

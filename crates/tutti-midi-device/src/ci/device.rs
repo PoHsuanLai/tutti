@@ -47,8 +47,20 @@
 //!   ([`CiAction::Lost`]). It is never answered.
 //! - **NAK** (§5.3, §5.11, Appendix E): a message addressed to the device's MUID that it
 //!   cannot handle (one the codec could not read, which includes every kind it does
-//!   not model, Profile and Property Exchange among them) is answered with a NAK carrying Table 16's status. A message for
+//!   not model, Property Exchange among them) is answered with a NAK carrying Table 16's status. A message for
 //!   another MUID, one to the Broadcast MUID, an ACK and a NAK are never NAK'd.
+//! - **Profile Configuration as Responder** (§7, M2-102 §2.4 to §2.7): tutti has no Profiles, and
+//!   its Discovery does not declare the category. A **Profile Inquiry** to the device is
+//!   still answered, "may" for a device that declares no Profile Configuration (§7.13): a Reply
+//!   on the address the Inquiry used, with both lists empty, so an Initiator that asked the
+//!   Function Block gets the final Reply on `0x7F` "to indicate that no further replies will
+//!   follow" (M2-102 §2.4). A **Set Profile On**, **Set Profile Off** or **Profile Details
+//!   Inquiry** is a Profile the device does not support: a NAK with Status `0x04`, whose
+//!   details are the Profile Id (M2-101 §5.11.3, M2-102 §2.4, §2.6, §2.7: "should reply with
+//!   a MIDI-CI NAK"), on the address it came on. A Reply, Report, Details Reply or Profile
+//!   Specific Data is the Initiator's to read ([`ProfileInitiator`](super::ProfileInitiator))
+//!   and is ignored here; Profile Specific Data to a device with no Profiles is not answered,
+//!   as nothing requires it and a NAK of data would invite one back.
 //! - **Endpoint Inquiry as Initiator** (§5.7): once, for each found peer that declared
 //!   a Function Block, status `0x00`. The reply sets the peer's Product Instance Id
 //!   ([`CiAction::Updated`]); a NAK from it leaves it `None`. **No retry and no timeout**:
@@ -70,7 +82,8 @@ use tutti_ump::{DeviceIdentity, U7};
 
 use super::{
     CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiInstanceId, CiMessage, Decoded, Destination,
-    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, Muid, Nak, SUB_ID2_ENDPOINT_INQUIRY,
+    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, Muid, Nak, ProfileLists,
+    SUB_ID2_ENDPOINT_INQUIRY,
 };
 use tutti_ump::FunctionBlockId;
 
@@ -312,6 +325,62 @@ impl<R: FnMut() -> u32> CiDevice<R> {
                     peer.asked = false;
                 }
             }
+            CiMessage::ProfileInquiry { header, to } => {
+                if *to == self.muid {
+                    // §7.13: "Number of Currently Enabled Profiles set to 0x00 and ...
+                    // Disabled Profiles Supported set to 0x00", on the address asked.
+                    actions.push(CiAction::Send(CiMessage::ProfileReply {
+                        header: CiHeader {
+                            device_id: header.device_id,
+                            ..self.header()
+                        },
+                        to: header.source,
+                        profiles: ProfileLists::none(),
+                    }));
+                }
+            }
+            CiMessage::SetProfileOn {
+                header,
+                to,
+                profile,
+                ..
+            }
+            | CiMessage::SetProfileOff {
+                header,
+                to,
+                profile,
+                ..
+            }
+            | CiMessage::ProfileDetailsInquiry {
+                header,
+                to,
+                profile,
+                ..
+            } => {
+                if *to == self.muid {
+                    let nak = Nak::new(
+                        U7::new(message.sub_id2()).unwrap_or_default(),
+                        Nak::STATUS_PROFILE_NOT_SUPPORTED,
+                    )
+                    .with_details(profile.to_bytes().map(U7::masked));
+                    actions.push(CiAction::Send(CiMessage::Nak {
+                        header: CiHeader {
+                            device_id: header.device_id,
+                            ..self.header()
+                        },
+                        to: header.source,
+                        nak,
+                    }));
+                }
+            }
+            // The Initiator's to read, not the Management core's.
+            CiMessage::ProfileReply { .. }
+            | CiMessage::ProfileEnabled { .. }
+            | CiMessage::ProfileDisabled { .. }
+            | CiMessage::ProfileAdded { .. }
+            | CiMessage::ProfileRemoved { .. }
+            | CiMessage::ProfileDetailsReply { .. }
+            | CiMessage::ProfileSpecificData { .. } => {}
             // Never answered: a pair of devices would trade NAKs for ever.
             CiMessage::Ack { .. } => {}
         }

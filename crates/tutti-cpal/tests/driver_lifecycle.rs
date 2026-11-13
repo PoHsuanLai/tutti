@@ -12,10 +12,14 @@
 mod support;
 
 use std::sync::Arc;
-use support::{rolling_state, spec};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use support::{SAMPLE_RATE, fan, graph_engine, rolling_state, spec};
 use tutti_cpal::{
     AudioCallbackState, AudioEngine, ManualStreamDriver, StreamFaultKind, TuttiDriver,
 };
+use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
+use tutti_transport::Transport;
+use tutti_types::{ChannelLayout, SampleRate};
 
 fn engine_and_state() -> (AudioEngine, Arc<AudioCallbackState>) {
     let (_transport, state) = rolling_state(2);
@@ -314,4 +318,102 @@ fn a_restart_whose_hook_fails_stays_stopped() {
     assert!(matches!(err, tutti_cpal::Error::InvalidConfig(_)));
     assert!(!driver.engine().is_running());
     assert!(!s2.is_open());
+}
+
+/// A source that counts its renders and panics in `process` on the `panic_at`th.
+#[derive(Clone)]
+struct PanicsAt {
+    calls: Arc<AtomicUsize>,
+    panic_at: usize,
+}
+
+impl Node for PanicsAt {
+    fn shape(&self) -> Shape {
+        Shape::source_unassigned(ChannelLayout::MONO)
+    }
+
+    fn prepare(&mut self, _: &Prepare) {}
+
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        io.output(0).fill(0.5);
+        assert!(n != self.panic_at, "the node fails on call {n}");
+        Status::Modified
+    }
+
+    fn reset(&mut self) {}
+}
+
+fn panicking_state(calls: &Arc<AtomicUsize>, panic_at: usize) -> Arc<AudioCallbackState> {
+    let engine = graph_engine(&Transport::new(SampleRate::of(SAMPLE_RATE)), |ed| {
+        ed.insert(
+            NodeKey(1),
+            "panics",
+            ForkByClone(PanicsAt {
+                calls: Arc::clone(calls),
+                panic_at,
+            }),
+        );
+        fan(ed, NodeKey(1), 2);
+    });
+    Arc::new(AudioCallbackState::new(engine))
+}
+
+/// **A panic in the render does not leave the callback.**
+///
+/// The callback is called from a C frame, and unwinding through one aborts or
+/// is undefined behaviour. The panicking block must return normally with a
+/// silent buffer, record `CallbackPanicked`, and read as no longer running;
+/// every later block is silent and never calls the engine again (its state may
+/// be torn), until a new stream starts and renders afresh.
+#[test]
+fn a_panic_in_the_render_is_caught_latched_and_cleared_by_a_restart() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let state = panicking_state(&calls, 2);
+    let mut engine = AudioEngine::from_spec(spec(2, cpal::SampleFormat::F32));
+    let faults = engine.faults();
+    let (driver, stream) = ManualStreamDriver::new();
+    engine.start_with(Arc::clone(&state), driver).unwrap();
+
+    let first = stream.render_block(64).unwrap();
+    assert!(first.iter().all(|&s| s == 0.5), "the first block renders");
+    assert!(!faults.is_faulted());
+
+    let mut dirty = vec![1.0f32; 64 * 2];
+    stream
+        .callback_once(&mut dirty)
+        .expect("the callback returns normally on a panic");
+    assert!(
+        dirty.iter().all(|&s| s == 0.0),
+        "the panicked block is silent"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let fault = faults.last().expect("the panic is recorded");
+    assert_eq!(fault.kind, StreamFaultKind::CallbackPanicked);
+    assert!(faults.is_disconnected());
+    assert!(!engine.is_running(), "a panicked stream needs a restart");
+
+    for _ in 0..3 {
+        let mut later = vec![1.0f32; 64 * 2];
+        stream.callback_once(&mut later).unwrap();
+        assert!(later.iter().all(|&s| s == 0.0), "later blocks are silent");
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the engine is never called again after a panic"
+    );
+    assert_eq!(faults.count(), 1, "the latch records the panic once");
+
+    engine.stop();
+    let (driver, stream) = ManualStreamDriver::new();
+    engine.start_with(state, driver).unwrap();
+    assert!(!faults.is_faulted(), "a new stream reads clear");
+    assert!(engine.is_running());
+    let again = stream.render_block(64).unwrap();
+    assert!(
+        again.iter().all(|&s| s == 0.5),
+        "a new stream renders again"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
 }

@@ -1,8 +1,9 @@
 //! `check-ffi`: `unsafe` lives only in the crates that exist to hold it.
 //!
 //! The compiler does the work a script would repeat: a crate that carries
-//! `#![forbid(unsafe_code)]` cannot hold an `unsafe` token (not in a test inside `src/` either), so what is left to
-//! check is that the attribute is there.
+//! `#![forbid(unsafe_code)]` cannot hold an `unsafe` token (not in a test
+//! inside `src/` either), so what is left to check is that the attribute is
+//! there.
 //!
 //! - **Every crate root forbids `unsafe`**, `src/lib.rs` and `src/main.rs`
 //!   alike, except the crates in [`HOMES`]: the `-ffi` crates, `tutti-rt`,

@@ -95,7 +95,7 @@ base(t)  = automation(t)  where the lane's automation has a value at t
 ## 3. Where things live
 
 Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
-`tutti-types`; `tutti-modulation` names `tutti-types` and `tutti-curve` (it named `audio-automation` until Q25 of doc 024 replaced it);
+`tutti-types`; `tutti-modulation` names `tutti-types` and `tutti-curve` (it once named `audio-automation`);
 `tutti-nodes` names `tutti-modulation` and `tutti-graph`; `tutti-plugin` names
 `tutti-nodes`; `bevy-tutti` names `tutti-modulation` (optional) and `tutti-nodes`.
 

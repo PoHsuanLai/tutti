@@ -9,6 +9,19 @@ use crate::Complex64;
 /// gain matrix). The queries are the system's invariants, answered from its
 /// structure and never from its realization.
 ///
+/// A response `H` exists if and only if the system is linear and commutes with the
+/// unit delay. A nonlinear member (the ladder's `tanh`, a compressor) has none; one that
+/// has a small-signal model implements `Lti` for that model, as
+/// [`LadderModel`](crate::LadderModel) does, and the analysis applies to it.
+///
+/// The queries describe a member at fixed controls, not the system while its controls
+/// move, and two limits follow. The frozen response
+/// overstates decay near Nyquist under a delay modulated with linear interpolation: a
+/// fractional delay of one half cancels a tone there and the modulation visits every
+/// fraction, so the contract holds the queries on static probes only. And a frozen
+/// [`spectral_radius`](Self::spectral_radius) below 1 does not imply that the system is
+/// stable while its controls move.
+///
 /// `spectral_radius`, `l1_norm` and `hinf_norm` are **sufficient bounds**: they
 /// never fall under the true figure, and the contract measures that the
 /// realization is under them.

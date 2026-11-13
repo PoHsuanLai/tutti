@@ -40,6 +40,7 @@ use crate::ci::{CiChange, CiPeerInfo, Heard};
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
+use crate::process::{ProcessChange, ReportAsk, ReportError, ReportPeer};
 use crate::profiles::{PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo, Learned, SavedDevice};
@@ -207,6 +208,9 @@ pub enum Polled {
     /// A MIDI-CI peer's Profiles became known or changed, a switch ended, or
     /// the peer's Profiles were dropped.
     Profile(DeviceId, ProfilesChange),
+    /// A MIDI-CI peer answered Process Inquiry, a MIDI Message Report began or
+    /// ended, or the peer's Process Inquiry was dropped.
+    Process(DeviceId, ProcessChange),
 }
 
 impl MidiSession {
@@ -525,6 +529,12 @@ impl MidiSession {
                     .into_iter()
                     .map(|change| Polled::Profile(id.clone(), change)),
             );
+            polled.extend(
+                stepped
+                    .process
+                    .into_iter()
+                    .map(|change| Polled::Process(id.clone(), change)),
+            );
         }
         // The output the session holds sends in what its device settled.
         if let Some(out) = &mut open.output
@@ -641,6 +651,43 @@ impl MidiSession {
             .ok_or(ProfileError::NotOpen)?
             .stream
             .set_profile(switch)
+    }
+
+    /// The MIDI-CI peers of the open input `id` that declared Process Inquiry and
+    /// answered that they support MIDI Message Report (M2-101 §9), by Group then
+    /// MUID: empty when it is not open or no peer did. The session asks each such
+    /// peer for its capabilities when it is found. Shared like
+    /// [`ci_peers`](Self::ci_peers): read again after a
+    /// [`Polled::Process`] that says `Capabilities`.
+    #[must_use]
+    pub fn report_peers(&self, id: &DeviceId) -> Arc<[ReportPeer]> {
+        self.inner
+            .open()
+            .inputs
+            .get(id)
+            .map_or_else(Arc::default, |held| held.stream.report_peers())
+    }
+
+    /// Asks a peer for a MIDI Message Report, as the Initiator (M2-101 §9.5): the
+    /// request is sent at the next [`poll`](Self::poll), and the peer's Reply and
+    /// End are a [`ProcessChange::ReportBegan`] and a
+    /// [`ProcessChange::ReportEnded`] (or its NAK, or the wait running out, which
+    /// are [`ProcessChange::ReportRefused`] and [`ProcessChange::ReportTimedOut`]). The
+    /// MIDI messages of the report arrive on the input between them, as MIDI.
+    /// Make the [`ReportAsk`] from a handle in [`report_peers`](Self::report_peers).
+    ///
+    /// # Errors
+    ///
+    /// [`ReportError::NotOpen`] when that input has since closed, and
+    /// [`ReportError::NoSuchPeer`] when the peer is gone.
+    pub fn report(&self, ask: ReportAsk) -> std::result::Result<(), ReportError> {
+        self.inner
+            .open()
+            .inputs
+            .get_mut(&ask.peer.device)
+            .ok_or(ReportError::NotOpen)?
+            .stream
+            .report(ask)
     }
 
     /// What is known of the UMP Stream state of the open input `id`: `None`

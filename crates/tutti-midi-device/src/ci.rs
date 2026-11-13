@@ -1,7 +1,8 @@
 //! The MIDI-CI message codec (M2-101): the header, the MUID, and Discovery,
-//! Invalidate MUID, Inquiry: Endpoint, ACK and NAK, and the Profile Configuration
-//! messages; [`CiDevice`], the Management core over it; and [`ProfileInitiator`],
-//! the Initiator's side of Profile Configuration.
+//! Invalidate MUID, Inquiry: Endpoint, ACK and NAK, the Profile Configuration
+//! messages and the Process Inquiry messages; [`CiDevice`], the Management core over
+//! it; [`ProfileInitiator`], the Initiator's side of Profile Configuration; and
+//! [`ProcessInitiator`], the Initiator's side of Process Inquiry.
 //!
 //! MIDI-CI lets two MIDI devices discover each other before either knows what the
 //! other speaks. It is **not** a UMP message type: a CI message is a byte payload
@@ -29,6 +30,8 @@ mod discovery;
 mod endpoint;
 mod initiator;
 mod pe;
+mod process;
+mod process_initiator;
 mod profile;
 mod read;
 mod status;
@@ -50,6 +53,14 @@ pub use pe::{
     PeHeaderError, PeHeaderTooLong, PeMessage, PePage, PeReply, PeRequest, PeReservedProperty,
     PeStatus, PeSubscription, PeUpdateCommand, PeValue, PropertyName, ResourceId, ResourceName,
     SubscribeId, mcoded7,
+};
+pub use process::{
+    ChannelControllers, DataControl, NotADataControl, NoteData, ProcessFeatures, ReportScope,
+    SUB_ID2_MESSAGE_REPORT_END, SUB_ID2_MESSAGE_REPORT_INQUIRY, SUB_ID2_MESSAGE_REPORT_REPLY,
+    SUB_ID2_PROCESS_CAPABILITIES_INQUIRY, SUB_ID2_PROCESS_CAPABILITIES_REPLY, SystemMessages,
+};
+pub use process_initiator::{
+    PROCESS_TIMEOUT, ProcessAction, ProcessError, ProcessInitiator, ReportRequest,
 };
 pub use profile::{
     ChannelsDetail, DetailsData, InquiryTarget, ListTooLong, ManufacturerProfile, ProfileChannels,
@@ -467,6 +478,56 @@ pub enum CiMessage {
         /// Which message was rejected, and why.
         nak: Nak,
     },
+    /// Inquiry: Process Inquiry Capabilities (§9.2): asks which Process Inquiry
+    /// features a device supports. To one device, on the Function Block: its Device
+    /// ID is `0x7F` on the wire whatever the header says.
+    ProcessCapabilitiesInquiry {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The device asked.
+        to: Muid,
+    },
+    /// Reply to Process Inquiry Capabilities (§9.3), on the Function Block.
+    ProcessCapabilitiesReply {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The device that asked.
+        to: Muid,
+        /// The features supported.
+        features: ProcessFeatures,
+    },
+    /// Inquiry: MIDI Message Report (§9.5): asks a device to report the state of
+    /// its parameters as MIDI messages. Its Device ID on the wire is the scope's
+    /// address, whatever the header says.
+    MessageReportInquiry {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The device asked.
+        to: Muid,
+        /// How much to report.
+        control: DataControl,
+        /// Where, and which kinds of message.
+        scope: ReportScope,
+    },
+    /// Reply to MIDI Message Report (§9.6): begins the report, declaring the kinds
+    /// of message the Responder is about to send. Its Device ID on the wire is the
+    /// scope's address, which is the Inquiry's.
+    MessageReportReply {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The device that asked.
+        to: Muid,
+        /// What the Responder will report.
+        scope: ReportScope,
+    },
+    /// End of MIDI Message Report (§9.8): the report is complete. Its Device ID, in
+    /// the header, is the Inquiry's.
+    MessageReportEnd {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The device that asked.
+        to: Muid,
+    },
     /// Profile Inquiry (M2-101 §7.2): asks which Profiles a device supports at
     /// the address in the header. To one device.
     ProfileInquiry {
@@ -594,6 +655,11 @@ impl CiMessage {
             | CiMessage::EndpointReply { header, .. }
             | CiMessage::Ack { header, .. }
             | CiMessage::Nak { header, .. }
+            | CiMessage::ProcessCapabilitiesInquiry { header, .. }
+            | CiMessage::ProcessCapabilitiesReply { header, .. }
+            | CiMessage::MessageReportInquiry { header, .. }
+            | CiMessage::MessageReportReply { header, .. }
+            | CiMessage::MessageReportEnd { header, .. }
             | CiMessage::ProfileInquiry { header, .. }
             | CiMessage::ProfileReply { header, .. }
             | CiMessage::SetProfileOn { header, .. }
@@ -626,6 +692,11 @@ impl CiMessage {
             | CiMessage::EndpointReply { to, .. }
             | CiMessage::Ack { to, .. }
             | CiMessage::Nak { to, .. }
+            | CiMessage::ProcessCapabilitiesInquiry { to, .. }
+            | CiMessage::ProcessCapabilitiesReply { to, .. }
+            | CiMessage::MessageReportInquiry { to, .. }
+            | CiMessage::MessageReportReply { to, .. }
+            | CiMessage::MessageReportEnd { to, .. }
             | CiMessage::ProfileInquiry { to, .. }
             | CiMessage::ProfileReply { to, .. }
             | CiMessage::SetProfileOn { to, .. }
@@ -646,6 +717,11 @@ impl CiMessage {
             CiMessage::EndpointReply { .. } => SUB_ID2_ENDPOINT_REPLY,
             CiMessage::Ack { .. } => SUB_ID2_ACK,
             CiMessage::Nak { .. } => SUB_ID2_NAK,
+            CiMessage::ProcessCapabilitiesInquiry { .. } => SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
+            CiMessage::ProcessCapabilitiesReply { .. } => SUB_ID2_PROCESS_CAPABILITIES_REPLY,
+            CiMessage::MessageReportInquiry { .. } => SUB_ID2_MESSAGE_REPORT_INQUIRY,
+            CiMessage::MessageReportReply { .. } => SUB_ID2_MESSAGE_REPORT_REPLY,
+            CiMessage::MessageReportEnd { .. } => SUB_ID2_MESSAGE_REPORT_END,
             CiMessage::ProfileInquiry { .. } => SUB_ID2_PROFILE_INQUIRY,
             CiMessage::ProfileReply { .. } => SUB_ID2_PROFILE_REPLY,
             CiMessage::SetProfileOn { .. } => SUB_ID2_SET_PROFILE_ON,
@@ -675,8 +751,19 @@ impl CiMessage {
     /// Appends the CI byte payload (what [`encode`](Self::encode) returns) to
     /// `out`: a `Vec<u8>`, a `VecDeque`, any collection of bytes.
     pub fn encode_into(&self, out: &mut impl Extend<u8>) {
-        self.header()
-            .encode(self.sub_id2(), self.destination(), out);
+        let mut header = *self.header();
+        // The Device ID of a Process Inquiry message is the one the message or its
+        // scope fixes (Tables 40, 41, 43 and 45), never the header's.
+        match self {
+            CiMessage::ProcessCapabilitiesInquiry { .. }
+            | CiMessage::ProcessCapabilitiesReply { .. } => {
+                header.device_id = CiDeviceId::FunctionBlock;
+            }
+            CiMessage::MessageReportInquiry { scope, .. }
+            | CiMessage::MessageReportReply { scope, .. } => header.device_id = scope.address(),
+            _ => {}
+        }
+        header.encode(self.sub_id2(), self.destination(), out);
         match self {
             CiMessage::Discovery { data, .. } => data.encode_body(false, out),
             CiMessage::DiscoveryReply { data, .. } => data.encode_body(true, out),
@@ -685,7 +772,15 @@ impl CiMessage {
             CiMessage::EndpointReply { info, .. } => info.encode_body(out),
             CiMessage::Ack { ack, .. } => ack.encode_body(out),
             CiMessage::Nak { nak, .. } => nak.encode_body(out),
-            CiMessage::ProfileInquiry { .. } => {}
+            CiMessage::ProcessCapabilitiesInquiry { .. }
+            | CiMessage::MessageReportEnd { .. }
+            | CiMessage::ProfileInquiry { .. } => {}
+            CiMessage::ProcessCapabilitiesReply { features, .. } => out.extend([features.bits()]),
+            CiMessage::MessageReportInquiry { control, scope, .. } => {
+                out.extend([control.get()]);
+                out.extend(scope.bitmap_bytes());
+            }
+            CiMessage::MessageReportReply { scope, .. } => out.extend(scope.bitmap_bytes()),
             CiMessage::ProfileReply { profiles, .. } => profiles.encode_body(out),
             CiMessage::SetProfileOn {
                 profile, channels, ..
@@ -837,6 +932,39 @@ impl CiMessage {
                         None => return unread(UnreadReason::ReservedStatus),
                     },
                 },
+                (SUB_ID2_PROCESS_CAPABILITIES_INQUIRY, Some(to)) => {
+                    if header.device_id != CiDeviceId::FunctionBlock {
+                        return unread(UnreadReason::Malformed);
+                    }
+                    Some(CiMessage::ProcessCapabilitiesInquiry { header, to })
+                }
+                (SUB_ID2_PROCESS_CAPABILITIES_REPLY, Some(to)) => {
+                    if header.device_id != CiDeviceId::FunctionBlock {
+                        return unread(UnreadReason::Malformed);
+                    }
+                    read::features_body(body).map(|features| CiMessage::ProcessCapabilitiesReply {
+                        header,
+                        to,
+                        features,
+                    })
+                }
+                (SUB_ID2_MESSAGE_REPORT_INQUIRY, Some(to)) => {
+                    read::report_inquiry_body(header.device_id, body).map(|(control, scope)| {
+                        CiMessage::MessageReportInquiry {
+                            header,
+                            to,
+                            control,
+                            scope,
+                        }
+                    })
+                }
+                (SUB_ID2_MESSAGE_REPORT_REPLY, Some(to)) => {
+                    read::report_reply_body(header.device_id, body)
+                        .map(|scope| CiMessage::MessageReportReply { header, to, scope })
+                }
+                (SUB_ID2_MESSAGE_REPORT_END, Some(to)) => {
+                    Some(CiMessage::MessageReportEnd { header, to })
+                }
                 (SUB_ID2_PROFILE_INQUIRY, Some(to)) => {
                     Some(CiMessage::ProfileInquiry { header, to })
                 }
@@ -931,6 +1059,11 @@ impl CiMessage {
                     | SUB_ID2_ENDPOINT_REPLY
                     | SUB_ID2_ACK
                     | SUB_ID2_NAK
+                    | SUB_ID2_PROCESS_CAPABILITIES_INQUIRY
+                    | SUB_ID2_PROCESS_CAPABILITIES_REPLY
+                    | SUB_ID2_MESSAGE_REPORT_INQUIRY
+                    | SUB_ID2_MESSAGE_REPORT_REPLY
+                    | SUB_ID2_MESSAGE_REPORT_END
                     | SUB_ID2_PROFILE_INQUIRY
                     | SUB_ID2_PROFILE_REPLY
                     | SUB_ID2_SET_PROFILE_ON

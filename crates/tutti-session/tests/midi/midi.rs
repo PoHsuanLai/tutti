@@ -1537,6 +1537,189 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     assert_eq!(listed[0].channels(), Some(ProfileChannels::of(2)));
 }
 
+/// **A MIDI-CI peer's MIDI Message Report is asked for through the session**
+/// (M2-101 section 9): a peer whose Discovery Reply declares Process Inquiry is
+/// sent an Inquiry: Process Inquiry Capabilities by the session's tick; its reply
+/// with MIDI Message Report makes it a `Midi::report_peers` handle
+/// (`MidiEvent::CiProcess`); `Midi::report` sends an Inquiry: MIDI Message Report
+/// (Sub-ID#2 `0x42`) with the bitmaps asked, and the peer's Reply and End are
+/// reported as `ReportBegan` and `ReportEnded`.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
+    use tutti_midi_device::{
+        BlockName, CI_VERSION, ChannelControllers, CiCategories, CiDeviceId, CiHeader, CiMessage,
+        DataControl, Decoded, DiscoveryData, MaxSysexSize, Muid, NoteData, ProcessFeatures,
+        ReportRequest, ReportScope, SystemMessages,
+    };
+    use tutti_midi_hardware::{Capabilities, Endpoint, FunctionBlock, ProcessChange};
+    use tutti_ump::{
+        DeviceIdentity, Direction, FirstGroup, FunctionBlockId, GroupSpan, ManufacturerId,
+        SysexAssembler, SysexStep, U7,
+    };
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Wire", PortDirection::Duplex);
+    let _ = s.update();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
+    io.connect_input("wire").expect("connects");
+    let identity = |manufacturer| DeviceIdentity {
+        manufacturer,
+        family: [U7::of(1); 2],
+        model: [U7::of(2); 2],
+        revision: [U7::of(3); 4],
+    };
+    s.midi()
+        .enable_ci(identity(ManufacturerId::NON_COMMERCIAL))
+        .expect("hardware");
+    let block = FunctionBlock::builder(
+        FunctionBlockId::new(0).unwrap(),
+        Direction::Bidirectional,
+        FirstGroup::new(0).unwrap(),
+        GroupSpan::new(1).unwrap(),
+    )
+    .midi_ci(2, 0)
+    .name(BlockName::new("Main").unwrap())
+    .build()
+    .unwrap();
+    let mut device = Endpoint::new(Capabilities {
+        midi1: true,
+        midi2: true,
+        ..Capabilities::default()
+    })
+    .with_function_block(block);
+    let raw = EndpointId::from_raw(7);
+    let peer = Muid::new(0x0012_3456).unwrap();
+    let at = |device_id| CiHeader {
+        device_id,
+        ci_version: CI_VERSION,
+        source: peer,
+    };
+    let asked = ReportScope::FunctionBlock {
+        system: SystemMessages::SONG_POSITION,
+        controllers: ChannelControllers::CONTROL_CHANGE,
+        notes: NoteData::empty(),
+    };
+    let room = SysexAssembler::room_for(256, 1, 16);
+    let mut assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16);
+    let start = Instant::now();
+    let mut seen = Vec::new();
+    let mut inquiries = Vec::new();
+    let mut device_id = None;
+    let mut asked_for = false;
+    for ms in 0..80 {
+        let now = start + Duration::from_millis(ms);
+        for event in update_at(&mut s, now) {
+            match event {
+                SessionEvent::Midi(MidiEvent::CiPeer { device, .. }) => device_id = Some(device),
+                SessionEvent::Midi(MidiEvent::CiProcess { change, .. }) => seen.push(change),
+                _ => {}
+            }
+        }
+        if !asked_for
+            && seen
+                .iter()
+                .any(|c| matches!(c, ProcessChange::Capabilities { .. }))
+            && let Some(id) = &device_id
+        {
+            let peers = s.midi().report_peers(id);
+            let [handle] = &peers[..] else {
+                panic!("one peer that can be asked: {peers:?}");
+            };
+            s.midi()
+                .report(handle.ask(ReportRequest::new(DataControl::Full, asked)))
+                .expect("the peer supports it");
+            asked_for = true;
+        }
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(raw) {
+            if let Ok(message @ tutti_ump::Message::Stream(_)) = ump.decode() {
+                device.reply(message, &mut answers);
+                continue;
+            }
+            assembler.begin_block();
+            let SysexStep::Complete(done) = assembler.push(ump) else {
+                continue;
+            };
+            match CiMessage::decode(assembler.message(done).payload()) {
+                Decoded::Message(CiMessage::Discovery { header, .. }) => {
+                    let data = DiscoveryData::new(
+                        identity(ManufacturerId::of(0x41)),
+                        CiCategories::PROCESS_INQUIRY,
+                        MaxSysexSize::of(256),
+                    );
+                    answers.extend(
+                        CiMessage::DiscoveryReply {
+                            header: CiHeader::new(peer),
+                            to: header.source,
+                            data,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::ProcessCapabilitiesInquiry { header, .. }) => {
+                    answers.extend(
+                        CiMessage::ProcessCapabilitiesReply {
+                            header: at(CiDeviceId::FunctionBlock),
+                            to: header.source,
+                            features: ProcessFeatures::MIDI_MESSAGE_REPORT,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::MessageReportInquiry {
+                    header,
+                    control,
+                    scope,
+                    ..
+                }) => {
+                    inquiries.push((header.device_id, control, scope));
+                    answers.extend(
+                        CiMessage::MessageReportReply {
+                            header: at(header.device_id),
+                            to: header.source,
+                            scope,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                    answers.extend(
+                        CiMessage::MessageReportEnd {
+                            header: at(header.device_id),
+                            to: header.source,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                _ => {}
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(raw, ump, now));
+        }
+    }
+    assert_eq!(
+        inquiries,
+        [(CiDeviceId::FunctionBlock, DataControl::Full, asked)],
+        "one Inquiry: MIDI Message Report, on the Function Block, as asked"
+    );
+    let ended = [
+        ProcessChange::ReportBegan {
+            group: MidiGroup::FIRST,
+            muid: peer,
+            declared: asked,
+        },
+        ProcessChange::ReportEnded {
+            group: MidiGroup::FIRST,
+            muid: peer,
+        },
+    ];
+    let report: Vec<_> = seen
+        .iter()
+        .filter(|c| !matches!(c, ProcessChange::Capabilities { .. }))
+        .collect();
+    assert_eq!(report, ended.iter().collect::<Vec<_>>());
+}
+
 /// **The hardware out JR-stamps only as its device's configuration says**
 /// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
 /// Configuration Notification has said it receives them). The

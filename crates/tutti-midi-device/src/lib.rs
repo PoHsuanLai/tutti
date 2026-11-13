@@ -1,12 +1,13 @@
 //! The pure core of MIDI device detection and the MIDI-CI codec.
 //!
 //! The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])
-//! turns Discovery, Invalidate MUID, Inquiry: Endpoint, ACK, NAK and the Profile Configuration messages
+//! turns Discovery, Invalidate MUID, Inquiry: Endpoint, ACK, NAK, the Profile Configuration messages
+//! and the Process Inquiry messages
 //! into SysEx payload bytes and back;
 //! it holds no state and no transport. [`CiDevice`] is the Management state
 //! machine over it (Discovery, MUID collisions, Invalidate MUID, NAK, Endpoint
 //! Inquiry), shaped as [`Connection`] is, and [`ProfileInitiator`] the Initiator of Profile
-//! Configuration with one peer.
+//! Configuration with one peer, and [`ProcessInitiator`] the Initiator of Process Inquiry.
 //!
 //! A backend reports what the OS says as an [`OsChange`]; [`DeviceTable::apply`]
 //! returns the [`DeviceEvent`] that change causes, or `None` when it alters
@@ -70,23 +71,26 @@ mod name;
 mod table;
 
 pub use ci::{
-    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, ChannelsDetail, CiAction, CiCategories,
-    CiDevice, CiDeviceId, CiHeader, CiInstanceId, CiMessage, CiPeer, CiVersion, DISCOVERY_WINDOW,
-    Decoded, Destination, DetailsData, DiscoveryData, EndpointInfo, EndpointStatus, InquiryTarget,
-    ListTooLong, ManufacturerProfile, MaxSysexSize, MediaType, MessageText, Muid, Nak,
-    NotADeviceId, NotAMuid, NotASysexSize, NotAVersion, NotValid, Outcome, PE_MAX_HEADER_LEN,
-    PROFILE_TIMEOUT, PeDecimal, PeEncoding, PeEndedBy, PeExtra, PeHeader, PeHeaderError,
-    PeHeaderTooLong, PeMessage, PePage, PeReply, PeRequest, PeReservedProperty, PeStatus,
-    PeSubscription, PeUpdateCommand, PeValue, ProfileAction, ProfileChange, ProfileChannels,
-    ProfileDataError, ProfileEntry, ProfileId, ProfileInitiator, ProfileLists, ProfileState,
-    ProfileTable, ProfileTarget, PropertyName, Request, RequestError, ResourceId, ResourceName,
-    SUB_ID2_ACK, SUB_ID2_DISCOVERY, SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY,
-    SUB_ID2_ENDPOINT_REPLY, SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, SUB_ID2_PROFILE_ADDED,
-    SUB_ID2_PROFILE_DETAILS_INQUIRY, SUB_ID2_PROFILE_DETAILS_REPLY, SUB_ID2_PROFILE_DISABLED,
-    SUB_ID2_PROFILE_ENABLED, SUB_ID2_PROFILE_INQUIRY, SUB_ID2_PROFILE_REMOVED,
-    SUB_ID2_PROFILE_REPLY, SUB_ID2_PROFILE_SPECIFIC_DATA, SUB_ID2_SET_PROFILE_OFF,
-    SUB_ID2_SET_PROFILE_ON, SpecificData, StandardProfile, SubscribeId, Unread, UnreadReason,
-    mcoded7,
+    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, ChannelControllers, ChannelsDetail, CiAction,
+    CiCategories, CiDevice, CiDeviceId, CiHeader, CiInstanceId, CiMessage, CiPeer, CiVersion,
+    DISCOVERY_WINDOW, DataControl, Decoded, Destination, DetailsData, DiscoveryData, EndpointInfo,
+    EndpointStatus, InquiryTarget, ListTooLong, ManufacturerProfile, MaxSysexSize, MediaType,
+    MessageText, Muid, Nak, NotADataControl, NotADeviceId, NotAMuid, NotASysexSize, NotAVersion,
+    NotValid, NoteData, Outcome, PE_MAX_HEADER_LEN, PROCESS_TIMEOUT, PROFILE_TIMEOUT, PeDecimal,
+    PeEncoding, PeEndedBy, PeExtra, PeHeader, PeHeaderError, PeHeaderTooLong, PeMessage, PePage,
+    PeReply, PeRequest, PeReservedProperty, PeStatus, PeSubscription, PeUpdateCommand, PeValue,
+    ProcessAction, ProcessError, ProcessFeatures, ProcessInitiator, ProfileAction, ProfileChange,
+    ProfileChannels, ProfileDataError, ProfileEntry, ProfileId, ProfileInitiator, ProfileLists,
+    ProfileState, ProfileTable, ProfileTarget, PropertyName, ReportRequest, ReportScope, Request,
+    RequestError, ResourceId, ResourceName, SUB_ID2_ACK, SUB_ID2_DISCOVERY,
+    SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY, SUB_ID2_ENDPOINT_REPLY,
+    SUB_ID2_INVALIDATE_MUID, SUB_ID2_MESSAGE_REPORT_END, SUB_ID2_MESSAGE_REPORT_INQUIRY,
+    SUB_ID2_MESSAGE_REPORT_REPLY, SUB_ID2_NAK, SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
+    SUB_ID2_PROCESS_CAPABILITIES_REPLY, SUB_ID2_PROFILE_ADDED, SUB_ID2_PROFILE_DETAILS_INQUIRY,
+    SUB_ID2_PROFILE_DETAILS_REPLY, SUB_ID2_PROFILE_DISABLED, SUB_ID2_PROFILE_ENABLED,
+    SUB_ID2_PROFILE_INQUIRY, SUB_ID2_PROFILE_REMOVED, SUB_ID2_PROFILE_REPLY,
+    SUB_ID2_PROFILE_SPECIFIC_DATA, SUB_ID2_SET_PROFILE_OFF, SUB_ID2_SET_PROFILE_ON, SpecificData,
+    StandardProfile, SubscribeId, SystemMessages, Unread, UnreadReason, mcoded7,
 };
 
 pub use connection::{Action, Connection, Ending, MAX_ATTEMPTS, NAME_GRACE, STEP_TIMEOUT};

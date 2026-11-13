@@ -1,3 +1,7 @@
+use super::super::{
+    DataControl, ProcessFeatures, ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY,
+    SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
+};
 use super::super::{DetailsData, InquiryTarget, ProfileChannels, ProfileId, SpecificData};
 use super::super::{Unread, UnreadReason};
 use super::*;
@@ -630,4 +634,145 @@ fn what_an_initiator_reads_is_not_answered_by_the_management_core() {
     for message in messages {
         assert!(device.on_message(&message, now).is_empty(), "{message:?}");
     }
+}
+
+/// A device that declares Process Inquiry.
+fn process_device() -> (CiDevice<impl FnMut() -> u32>, Instant) {
+    let now = Instant::now();
+    let (device, _) = CiDevice::new(
+        identity(),
+        CiCategories::PROCESS_INQUIRY,
+        MaxSysexSize::of(512),
+        || OURS,
+        now,
+    );
+    (device, now)
+}
+
+fn report_inquiry(scope: ReportScope, to: u32) -> Decoded {
+    on(scope.address(), PEER, to, |header, to| {
+        CiMessage::MessageReportInquiry {
+            header,
+            to,
+            control: DataControl::Full,
+            scope,
+        }
+    })
+}
+
+#[test]
+fn a_device_declaring_process_inquiry_reports_midi_message_report_supported() {
+    // §9.3, Table 42: D0, MIDI Message Report, which the empty report below is.
+    let (mut device, now) = process_device();
+    let inquiry = on(CiDeviceId::FunctionBlock, PEER, OURS, |header, to| {
+        CiMessage::ProcessCapabilitiesInquiry { header, to }
+    });
+    let actions = device.on_message(&inquiry, now);
+    let [
+        CiMessage::ProcessCapabilitiesReply {
+            header,
+            to,
+            features,
+        },
+    ] = sends(&actions)[..]
+    else {
+        panic!("one Reply, got {actions:?}");
+    };
+    assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
+    assert_eq!(header.source, muid(OURS));
+    assert_eq!(*to, muid(PEER));
+    assert_eq!(*features, ProcessFeatures::MIDI_MESSAGE_REPORT);
+}
+
+#[test]
+fn a_report_of_the_function_block_or_group_is_an_empty_reply_and_the_end_on_that_address() {
+    // §9.6: a bit is 0 for a kind the Responder cannot provide, and the Device ID is
+    // the Inquiry's; §9.8: the End completes the reply.
+    for address in [CiDeviceId::FunctionBlock, CiDeviceId::Group] {
+        let (mut device, now) = process_device();
+        let scope = ReportScope::from_wire(address, 0, 0x3F, 0x1F).unwrap();
+        let actions = device.on_message(&report_inquiry(scope, OURS), now);
+        let [
+            CiMessage::MessageReportReply {
+                header: begin,
+                to,
+                scope: declared,
+            },
+            CiMessage::MessageReportEnd {
+                header: end,
+                to: to_end,
+            },
+        ] = sends(&actions)[..]
+        else {
+            panic!("a Reply and an End, got {actions:?}");
+        };
+        assert_eq!((begin.device_id, end.device_id), (address, address));
+        assert_eq!((*to, *to_end), (muid(PEER), muid(PEER)));
+        assert_eq!(*declared, ReportScope::none(address));
+        assert!(declared.is_empty());
+    }
+}
+
+#[test]
+fn a_report_of_a_channel_is_nakked_0x03_as_no_channel_is_in_use() {
+    // §9.5: a NAK when the Channel is not in use.
+    let (mut device, now) = process_device();
+    let channel = CiDeviceId::Channel(tutti_ump::MidiChannel::of(3));
+    let actions = device.on_message(&report_inquiry(ReportScope::none(channel), OURS), now);
+    let [CiMessage::Nak { header, to, nak }] = sends(&actions)[..] else {
+        panic!("one NAK, got {actions:?}");
+    };
+    assert_eq!(header.device_id, channel);
+    assert_eq!(*to, muid(PEER));
+    assert_eq!(nak.nak_sub_id2, U7::of(SUB_ID2_MESSAGE_REPORT_INQUIRY));
+    assert_eq!(nak.status_code, Nak::STATUS_NOT_IN_USE);
+}
+
+#[test]
+fn a_process_inquiry_for_another_muid_is_not_answered() {
+    let (mut device, now) = process_device();
+    let scope = ReportScope::none(CiDeviceId::FunctionBlock);
+    assert!(
+        device
+            .on_message(&report_inquiry(scope, OTHER), now)
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_device_not_declaring_process_inquiry_nakks_both_inquiries_0x01() {
+    let (mut device, _, now) = device([OURS]);
+    let capabilities = on(CiDeviceId::FunctionBlock, PEER, OURS, |header, to| {
+        CiMessage::ProcessCapabilitiesInquiry { header, to }
+    });
+    let report = report_inquiry(ReportScope::none(CiDeviceId::Group), OURS);
+    for (inquiry, original) in [
+        (capabilities, SUB_ID2_PROCESS_CAPABILITIES_INQUIRY),
+        (report, SUB_ID2_MESSAGE_REPORT_INQUIRY),
+    ] {
+        let actions = device.on_message(&inquiry, now);
+        let [CiMessage::Nak { to, nak, .. }] = sends(&actions)[..] else {
+            panic!("one NAK, got {actions:?}");
+        };
+        assert_eq!(*to, muid(PEER));
+        assert_eq!(nak.nak_sub_id2, U7::of(original));
+        assert_eq!(nak.status_code, Nak::STATUS_MESSAGE_NOT_SUPPORTED);
+    }
+}
+
+#[test]
+fn a_process_reply_or_end_is_the_initiators_and_is_not_answered() {
+    let (mut device, now) = process_device();
+    let reply = on(CiDeviceId::FunctionBlock, PEER, OURS, |header, to| {
+        CiMessage::ProcessCapabilitiesReply {
+            header,
+            to,
+            features: ProcessFeatures::MIDI_MESSAGE_REPORT,
+        }
+    });
+    let end = on(CiDeviceId::Group, PEER, OURS, |header, to| {
+        CiMessage::MessageReportEnd { header, to }
+    });
+    assert!(device.on_message(&reply, now).is_empty());
+    assert!(device.on_message(&end, now).is_empty());
 }

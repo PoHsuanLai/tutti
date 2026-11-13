@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tutti_midi_hardware::{
     CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, PeerProfiles, ProfileSwitch,
-    Resolved, SavedDevice,
+    ReportAsk, ReportPeer, Resolved, SavedDevice,
 };
 use tutti_ump::DeviceIdentity;
 
@@ -143,6 +143,35 @@ impl Midi<'_> {
     /// or it no longer lists the Profile there.
     pub fn set_profile(&mut self, switch: ProfileSwitch) -> Result<()> {
         Ok(self.hardware()?.set_profile(switch)?)
+    }
+
+    /// The MIDI-CI peers of the open input `id` that declared Process Inquiry and
+    /// answered that they support MIDI Message Report, by Group then MUID (M2-101
+    /// section 9): empty when the input is not open or no peer did. The session
+    /// asks each such peer for its capabilities when it is found; a
+    /// [`MidiEvent::CiProcess`](crate::MidiEvent::CiProcess) says one answered.
+    /// Shared like [`ci_peers`](Self::ci_peers), and as it was when read.
+    ///
+    /// Each is a [`ReportPeer`], the handle a [`ReportAsk`] is made from, so a
+    /// report can only be asked of a peer that supports it.
+    #[must_use]
+    pub fn report_peers(&self, id: &DeviceId) -> Arc<[ReportPeer]> {
+        self.io.map_or_else(Arc::default, |io| io.report_peers(id))
+    }
+
+    /// Asks a peer for a MIDI Message Report, on the input the request was made
+    /// from. The request goes out at the next update; the peer's Reply and End, its
+    /// NAK, or a timeout are [`MidiEvent::CiProcess`](crate::MidiEvent::CiProcess)
+    /// events, and the report's MIDI messages reach the graph between the first
+    /// and the last as the input's MIDI.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
+    /// [`MidiError::Report`] when the input the request was made from has closed or
+    /// the peer is gone.
+    pub fn report(&mut self, ask: ReportAsk) -> Result<()> {
+        Ok(self.hardware()?.report(ask)?)
     }
 
     /// Returns what the open input `id` has said about itself so far: its Device

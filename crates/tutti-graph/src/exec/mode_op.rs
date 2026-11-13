@@ -116,6 +116,9 @@ fn park<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     [ain, aout, ein, eout]: [&[u32]; 4],
 ) {
     let rec = head.rec;
+    // A parked node is not called, so a wake raised meanwhile is consumed
+    // here, as its discarded events are.
+    u.node.take_wake();
     // Its params go on stepping, as a skipped node's do: their ramps and
     // declick follow the timeline while it is out.
     if rec.params.len != 0 || u.params.busy() {

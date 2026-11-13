@@ -65,7 +65,7 @@
 
 // The reference CLAP probe. `clap_probe` is the same module the out-of-process
 // CLAP suites use; it resolves the cdylib (a dev-dependency) and the
-// `plugin-server` binary (built first, see `CLAUDE.md`) beside the test binary.
+// `plugin-server` binary beside the test binary.
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
 

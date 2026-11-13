@@ -301,6 +301,18 @@ pub(crate) fn echo_set_parameter() -> bool {
     ECHO_SET_PARAMETER.load(Ordering::SeqCst)
 }
 
+static KEY_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the probe's editor reports an editor key as used.
+#[unsafe(no_mangle)]
+pub extern "C" fn tutti_vst2_probe_set_key_consumed(consumed: bool) {
+    KEY_CONSUMED.store(consumed, Ordering::SeqCst);
+}
+
+pub(crate) fn key_consumed() -> bool {
+    KEY_CONSUMED.load(Ordering::SeqCst)
+}
+
 /// Restore every switch to its well-behaved default.
 ///
 /// Tests share one loaded image, so a switch left set contaminates every

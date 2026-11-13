@@ -389,27 +389,27 @@ fn dispatch_inner(
         //OpCode::GetParamInfo => { /*TODO*/ }
         Ok(OpCode::GetApiVersion) => return 2400,
 
+        // `index` is the ASCII character, `value` the virtual key, and `opt`'s bits the
+        // modifier mask; the answer is 1 when the editor used the key.
         Ok(OpCode::EditorKeyDown) => {
-            if let Some(editor) = get_editor()
-                && let Ok(key) = Key::try_from(value)
-            {
-                editor.key_down(KeyCode {
+            return match (get_editor(), Key::try_from(value)) {
+                (Some(editor), Ok(key)) => isize::from(editor.key_down(KeyCode {
                     character: index as u8 as char,
                     key,
                     modifier: opt.to_bits() as u8,
-                });
-            }
+                })),
+                _ => 0,
+            };
         }
         Ok(OpCode::EditorKeyUp) => {
-            if let Some(editor) = get_editor()
-                && let Ok(key) = Key::try_from(value)
-            {
-                editor.key_up(KeyCode {
+            return match (get_editor(), Key::try_from(value)) {
+                (Some(editor), Ok(key)) => isize::from(editor.key_up(KeyCode {
                     character: index as u8 as char,
                     key,
                     modifier: opt.to_bits() as u8,
-                });
-            }
+                })),
+                _ => 0,
+            };
         }
         Ok(OpCode::StartProcess) => get_plugin().start_process(),
         Ok(OpCode::StopProcess) => get_plugin().stop_process(),

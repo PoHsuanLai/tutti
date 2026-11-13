@@ -2146,6 +2146,38 @@ impl PluginInstance {
         });
     }
 
+    /// `effEditKeyDown` for `key`, to the open editor: whether the plugin used the key.
+    /// `false` with no call when no editor is open.
+    pub fn editor_key_down(&mut self, _main: &MainThread, key: KeyCode) -> bool {
+        self.editor_key(plugin::OpCode::EditorKeyDown, key)
+    }
+
+    /// `effEditKeyUp`, as [`editor_key_down`](Self::editor_key_down).
+    pub fn editor_key_up(&mut self, _main: &MainThread, key: KeyCode) -> bool {
+        self.editor_key(plugin::OpCode::EditorKeyUp, key)
+    }
+
+    /// The key opcodes carry the ASCII character in `index`, the virtual key in `value` and
+    /// the modifier mask in `opt`, whose `f32` bits are the mask (the receiver reads
+    /// `opt.to_bits()`).
+    fn editor_key(&self, opcode: plugin::OpCode, key: KeyCode) -> bool {
+        if !self.editor_open {
+            return false;
+        }
+        self.dispatch(
+            opcode,
+            // The ASCII character, or 0 for a key with none.
+            if key.character.is_ascii() {
+                key.character as i32
+            } else {
+                0
+            },
+            isize::from(key.key),
+            ptr::null_mut(),
+            f32::from_bits(u32::from(key.modifier)),
+        ) == 1
+    }
+
     /// `effCanDo`.
     pub fn can_do(&self, _main: &MainThread, can_do: plugin::CanDo) -> Supported {
         let s: String = can_do.into();

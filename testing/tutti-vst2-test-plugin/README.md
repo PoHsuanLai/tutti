@@ -72,7 +72,6 @@ Call these across the dlopen seam on the image the host loaded. Reset with
 | `tutti_vst2_probe_set_write_extra_output(true)` | writes one channel past `numOutputs` — a genuine out-of-bounds write, off by default |
 | `tutti_vst2_probe_set_read_extra_input(true)` | reads one channel past `numInputs` |
 | `tutti_vst2_probe_set_refuse_chunk_load(true)` | `effSetChunk` refuses every blob — armed after a first instance stored its chunk, only a later instance refuses |
-| `tutti_vst2_probe_set_arrangement_mode(mode)` | `effSetSpeakerArrangement` is accepted and held (0), refused with 0 (1), or answered 1 while the plugin keeps its own layout (2); the capture records what the host proposed |
 | `tutti_vst2_probe_set_key_consumed(true)` | the editor reports an `effEditKeyDown` / `effEditKeyUp` as used; the capture records the key the host sent |
 | `tutti_vst2_probe_set_accept_string_to_parameter(true)` | `effString2Parameter` takes a number as the new value instead of declining |
 | `tutti_vst2_probe_ask_host(opcode)` / `_ask_host_string(opcode, buffer)` | the plugin makes the `audioMaster` query and the host's answer comes back |

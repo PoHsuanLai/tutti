@@ -5,7 +5,7 @@ use crate::error::{ClapError, Result};
 use crate::host::{InputStream, OutputStream};
 use crate::types::StateContext;
 use std::path::Path;
-use tutti_clap_ffi::{CallError, Extension};
+use tutti_clap_ffi::CallError;
 use tutti_plugin_types::MainThread;
 
 impl ClapLoaded {
@@ -133,7 +133,7 @@ impl ClapLoaded {
     /// Whether the plugin implements `CLAP_EXT_STATE_CONTEXT`.
     #[must_use]
     pub fn supports_state_context(&self) -> bool {
-        self.plugin.supports(Extension::StateContext)
+        self.plugin.supports_state_context()
     }
 
     /// Whether the plugin implements `CLAP_EXT_PRESET_LOAD`, i.e. whether
@@ -145,7 +145,7 @@ impl ClapLoaded {
     /// already knows.
     #[must_use]
     pub fn supports_preset_load(&self) -> bool {
-        self.plugin.supports(Extension::PresetLoad)
+        self.plugin.supports_preset_load()
     }
 
     /// Asks the plugin to load a preset from the file at `path` via

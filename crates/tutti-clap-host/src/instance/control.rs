@@ -409,7 +409,7 @@ impl Control for ClapLoaded {
     /// active plugin), `Unsupported` without: the extension is optional, and a
     /// plugin whose rendering does not depend on the mode leaves it out.
     fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
-        if self.plugin.supports(tutti_clap_ffi::Extension::Render) {
+        if self.plugin.supports_render() {
             RenderModeSupport::Live
         } else {
             RenderModeSupport::Unsupported

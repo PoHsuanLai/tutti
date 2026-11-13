@@ -2,6 +2,7 @@
 //! run in ([`PHASES`]).
 
 use std::any::Any;
+#[cfg(feature = "midi")]
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

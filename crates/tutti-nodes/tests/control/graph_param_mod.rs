@@ -493,8 +493,11 @@ fn cases() -> Vec<Case> {
             name: "strip volume",
             param: UnitParam::Volume,
             make: |w, v| {
-                let n = BusStripNode::with_channels(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
+                let n = BusStripNode::new(
+                    ChannelLayout::try_from(w)
+                        .ok()
+                        .and_then(BusTopology::assumed)
+                        .expect("a test width fits a bus"),
                 );
                 if let Some(v) = v {
                     n.set_volume(Amplitude(v));
@@ -509,8 +512,11 @@ fn cases() -> Vec<Case> {
             name: "strip pan",
             param: UnitParam::Pan,
             make: |w, v| {
-                let n = BusStripNode::with_channels(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
+                let n = BusStripNode::new(
+                    ChannelLayout::try_from(w)
+                        .ok()
+                        .and_then(BusTopology::assumed)
+                        .expect("a test width fits a bus"),
                 );
                 if let Some(v) = v {
                     assert!(n.param_set().set(UnitParam::Pan, v));

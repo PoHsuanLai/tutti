@@ -24,7 +24,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::contract::Direct;
 use tutti_graph::{Cx, Io, Node, ParamNode, Prepare, Shape, Status};
 use tutti_nodes::BusStripNode;
-use tutti_types::{Amplitude, ChannelLayout, SampleRate};
+use tutti_types::{Amplitude, BusTopology, ChannelLayout, SampleRate};
 
 const BLOCK: usize = 128;
 const SR: SampleRate = SampleRate::SR_48K;
@@ -90,7 +90,9 @@ fn strip(c: &mut Criterion) {
         g.throughput(Throughput::Elements((BLOCK * width as usize) as u64));
 
         let mut d = Direct::new(
-            BusStripNode::with_channels(ChannelLayout::from(width)),
+            BusStripNode::new(
+                BusTopology::assumed(ChannelLayout::from(width)).expect("a bench width fits a bus"),
+            ),
             SR,
             BLOCK,
         );

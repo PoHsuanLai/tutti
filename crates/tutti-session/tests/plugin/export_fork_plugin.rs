@@ -268,7 +268,7 @@ fn instrument_at(rate: f64) {
     };
     session
         .midi()
-        .play_clip(probe, vec![note(1.0, true), note(2.0, false)])
+        .play_clip(probe, Beat(0.0), vec![note(1.0, true), note(2.0, false)])
         .expect("the plugin takes a clip");
     let _ = session.update();
 

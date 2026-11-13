@@ -250,7 +250,7 @@ fn a_format_2_file_has_no_timeline_but_each_track_has() {
         U7::of(100),
     );
     let f = MidiFile::smf(SmfFormat::Sequential, TPQ, vec![a, Track::new()]).unwrap();
-    assert!(f.timeline().is_none());
+    assert!(f.timeline().is_err());
     let beats: Vec<Beat> = f.tracks()[0]
         .timeline(f.ticks_per_quarter())
         .map(|(b, _)| b)

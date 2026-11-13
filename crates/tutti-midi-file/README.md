@@ -63,9 +63,10 @@ assert_eq!((notes[0].start, notes[0].end), (Tick(0), Tick(1_440)));
 
 A clip plays a file's messages as they are: `file.timeline()` is `(Beat, Ump)`
 pairs (channel messages as their packets, SysEx as SysEx7 packets, meta events
-dropped: the tempo is [`MidiFile::tempo_map`]), which a caller turns into
-`tutti-midi-runtime`'s `TimedMidiEvent`s (`TimedMidiEvent::new(beat, ump)`) for
-`play_clip`.
+dropped: the tempo is [`MidiFile::tempo_map`]), which the session's
+`Midi::play_file` plays as a clip (or a caller turns into `tutti-midi-runtime`'s
+`TimedMidiEvent`s for `play_clip`). A format 2 file has no one timeline and is
+refused with `NoCommonTimeline`.
 
 ### Tempo is the wire's
 

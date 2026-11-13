@@ -184,8 +184,8 @@ pub mod midi {
     pub use tutti_session::RouteDeclarer;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        AddedInstrument, FollowTempo, InstrumentHandle, Midi, MidiEvent, MidiLoad, MidiRouteRule,
-        SessionInstrument, TakePlacement,
+        AddedInstrument, AnyNode, FollowTempo, InstrumentHandle, Midi, MidiEvent, MidiLoad,
+        MidiRouteRule, SessionInstrument, TakePlacement,
     };
 
     #[cfg(feature = "midi-hardware")]

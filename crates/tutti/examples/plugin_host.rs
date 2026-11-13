@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         session
             .midi()
-            .play_clip(node, [note(0.0, true), note(2.0, false)])?;
+            .play_clip(node, Beat(0.0), [note(0.0, true), note(2.0, false)])?;
     }
 
     // 6. Set a parameter: the first one it lists, to the middle of its range.

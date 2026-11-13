@@ -11,8 +11,8 @@ mod smf;
 pub use clip_file::ClipFileError;
 pub use config::{ConfigError, OutOfOrder, Refusal};
 pub use file::{
-    Converted, DropReason, Dropped, FileEvent, Meta, MidiFile, PairedNote, SmfFormat, TextKind,
-    Tick, ToClipError, Track,
+    Converted, DropReason, Dropped, FileEvent, Meta, MidiFile, NoCommonTimeline, PairedNote,
+    SmfFormat, TextKind, Tick, ToClipError, Track,
 };
 pub use kind::MidiFileKind;
 
@@ -75,6 +75,10 @@ pub enum Error {
     /// The file cannot be converted to a Clip File ([`MidiFile::to_clip`]).
     #[error(transparent)]
     ToClip(#[from] ToClipError),
+
+    /// A format 2 file has no common timeline ([`MidiFile::timeline`]).
+    #[error(transparent)]
+    NoCommonTimeline(#[from] NoCommonTimeline),
 
     /// The leading bytes match neither container's magic, so no decoder ran
     /// ([`MidiFile::from_bytes`]). Distinct from a parse failure: "this is not

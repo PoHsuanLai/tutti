@@ -19,6 +19,12 @@ pub const LIVE_INLET_CAPACITY: EventCapacity = EventCapacity::of(256);
 
 /// An [`EventInletWriter`] with the key helpers. One producer, as the writer
 /// is: share it behind a lock on the control side if it must be `Clone`.
+///
+/// **Keys are a performance, not part of a bounce.** What they send plays in
+/// the live graph and reaches the device output, but an event inlet's fork is
+/// silent, so a bounce renders the instrument with none of it. Notes an export
+/// must hold are a clip on the timeline (`MidiClipNode`, through the
+/// session's `play_clip`).
 #[derive(Debug)]
 pub struct MidiKeys {
     writer: EventInletWriter,

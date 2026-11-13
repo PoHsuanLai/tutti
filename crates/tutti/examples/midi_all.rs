@@ -92,25 +92,21 @@ fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
     s.midi().set_mpe(MpeMode::Zones(zone));
 
     // A synth as an instrument: its strip is wired to the master.
-    let AddedInstrument { handle: synth, .. } =
-        s.add_instrument(PolySynth::new(SynthConfig::default()))?;
+    let AddedInstrument {
+        handle: mut synth, ..
+    } = s.add_instrument(PolySynth::new(SynthConfig::default()))?;
 
-    // A take: an event tap on the target's live input, read with `drain`.
+    // A take: an event tap on what the instrument's handle plays, read with `drain`.
     let mut take = s.midi().record(synth.node(), EventCapacity::of(256))?;
 
     // A clip from a file's timeline: the packets it holds at their beats.
     let file = file()?;
-    let timeline = file
-        .timeline()
-        .ok_or("a format 0 file has one timeline")?
-        .map(|(beat, packet)| TimedMidiEvent::new(beat, packet).ok_or("a finite beat"))
-        .collect::<Result<Vec<_>, _>>()?;
-    s.midi().play_clip(synth.node(), timeline)?;
+    s.midi().play_file(synth.node(), Beat(0.0), &file)?;
 
-    // Live notes, through the live input's keys: a MIDI 2.0 note with its
+    // Live notes, through the handle's keys: a MIDI 2.0 note with its
     // 16-bit velocity, and a decoded `Message`, which `push` takes as it takes
     // a packet.
-    let mut live = s.midi().input(synth.node())?;
+    let live = synth.keys_mut();
     live.note_on(
         Stamp::NextBlock,
         MidiChannel::of(1),

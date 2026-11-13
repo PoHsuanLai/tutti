@@ -451,6 +451,7 @@ pub fn a_fork_starts_silent_and_plays<S: Subject>() {
         .midi()
         .play_clip(
             rig.node,
+            tutti_types::Beat(0.0),
             [TimedMidiEvent::new(
                 tutti_types::Beat(0.01),
                 midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, midi::MID_VELOCITY),

@@ -143,7 +143,7 @@ fn clip_note_on() -> Ump {
 fn install_clip(session: &mut Session, synth: NodeKey) {
     session
         .midi()
-        .play_clip(synth, clip())
+        .play_clip(synth, Beat(0.0), clip())
         .expect("the synth takes a clip");
     let _ = session.update();
 }

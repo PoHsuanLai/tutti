@@ -81,7 +81,9 @@ fn velocity_keeps_its_full_width() {
     let (tap, ()) = s.graph().add(Tap(Arc::clone(&seen)));
     let mut events = note(60, MF).to_vec();
     events.extend(note(64, MF + 1));
-    s.midi().play_clip(tap, events).expect("a tap takes a clip");
+    s.midi()
+        .play_clip(tap, Beat(0.0), events)
+        .expect("a tap takes a clip");
     let _ = s.update();
     s.transport()
         .motion()

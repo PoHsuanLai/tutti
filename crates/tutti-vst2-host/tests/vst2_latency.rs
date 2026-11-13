@@ -150,6 +150,7 @@ fn a_plugin_with_no_latency_reports_none() {
 /// may alter `initialDelay` on a sample-rate change and tell nobody, so the
 /// host has to ask again. Agreeing with the wiring here is what shows both read
 /// the same live field.
+/// Spec: vst2.field.initialDelay
 #[test]
 fn the_latency_accessor_reads_the_live_field() {
     let probe = Probe::acquire();

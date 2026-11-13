@@ -203,12 +203,12 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     (
         "check-conformance",
         "",
-        "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys",
+        "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
     ),
     (
         "conformance-inventory",
-        "[clap|midi]",
-        "regenerate an inventory's generated columns from the spec source (midi: TUTTI_MIDI_SPECS)",
+        "[clap|vst3|midi]",
+        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS)",
     ),
     (
         "check-range-types",

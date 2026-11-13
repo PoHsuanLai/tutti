@@ -92,6 +92,9 @@ struct Probe {
     /// The params it declares, in port order (`Cutoff, Q` unless
     /// [`reversed`](Self::reversed)).
     declared: [UnitParam; 2],
+    /// A third readout: its params' corners ([`ParamInput::corners`]), 1 on
+    /// each of port 0's corner frames plus 2 on each of port 1's.
+    corners: bool,
 }
 
 impl Probe {
@@ -100,7 +103,14 @@ impl Probe {
             bases: [cutoff.clone(), q.clone()],
             answers: true,
             declared: [UnitParam::Cutoff, UnitParam::Q],
+            corners: false,
         }
+    }
+
+    /// With the corners readout.
+    fn with_corners(mut self) -> Self {
+        self.corners = true;
+        self
     }
 
     /// Declaring `Q, Cutoff`: port 0 is `Q`, read from `q`, and written to
@@ -110,6 +120,7 @@ impl Probe {
             bases: [q.clone(), cutoff.clone()],
             answers: true,
             declared: [UnitParam::Q, UnitParam::Cutoff],
+            corners: false,
         }
     }
 }
@@ -122,7 +133,10 @@ impl Node for Probe {
             tutti_graph::Buses::unassigned(ChannelLayout::MONO),
             tutti_graph::Buses::unassigned(ChannelLayout::MONO),
         )
-        .with_ports(ChannelLayout::MONO, ChannelLayout::from_count(3))
+        .with_ports(
+            ChannelLayout::MONO,
+            ChannelLayout::from_count(if self.corners { 4 } else { 3 }),
+        )
         .with_params(&self.declared)
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -136,7 +150,7 @@ impl Node for Probe {
                 out.fill(base);
                 false
             }
-            ParamInput::Frames(v) => {
+            ParamInput::Frames { values: v, .. } => {
                 out.copy_from_slice(v);
                 true
             }
@@ -145,6 +159,16 @@ impl Node for Probe {
         let mut framed = u32::from(write(io.output(0), p0, self.bases[0].get()));
         framed |= u32::from(write(io.bus_out(readouts).get(0), p1, self.bases[1].get())) << 1;
         io.bus_out(readouts).get(1).fill(framed as f32);
+        if self.corners {
+            let mut bus = io.bus_out(readouts);
+            let out = bus.get(2);
+            out.fill(0.0);
+            for (k, p) in [p0, p1].into_iter().enumerate() {
+                for &c in p.corners() {
+                    out[c as usize] += (1 << k) as f32;
+                }
+            }
+        }
         Status::Modified
     }
     fn reset(&mut self) {}
@@ -2281,7 +2305,8 @@ fn run_differential(g: &Gen) {
             ]
         })
         .collect();
-    let probe = |i: usize, side: usize| Probe::new(&cells[i][side][0], &cells[i][side][1]);
+    let probe =
+        |i: usize, side: usize| Probe::new(&cells[i][side][0], &cells[i][side][1]).with_corners();
 
     let mut fresh: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
     let mut outputs = Vec::new();
@@ -2316,7 +2341,7 @@ fn run_differential(g: &Gen) {
         let k = NodeKey(300 + i as u64);
         ed.insert(k, "probe", Unforkable(probe(i, 0)));
         fresh.insert(k, Box::new(probe(i, 1)));
-        for c in 0..3 {
+        for c in 0..4 {
             outputs.push(Source::Node(OutPort { node: k, port: c }));
         }
         // Every probe has a sibling (of latency 0 when it adds none), so a
@@ -2440,7 +2465,8 @@ proptest! {
     /// PDC-delayed sources, connections made and broken mid-stream
     /// (declicks), base moves, latency changes (param delays appearing,
     /// growing, shrinking), regenerated probes and ranges moved without a
-    /// commit — and on every param source's PDC delay.
+    /// commit — on every param source's PDC delay, and on every port's corners
+    /// (`ParamInput::corners`, the probes' third readout).
     ///
     /// A param source left out of the node's arrival does not diverge (the reference reads
     /// the compiler's arrival); `a_param_source_counts_toward_arrival_in_both_solves` pins
@@ -2504,4 +2530,85 @@ fn a_range_cell_handle_is_the_ports_own() {
     }
     // Q's port keeps its own (unbounded) range.
     assert!(out[1].iter().any(|v| v.abs() > 0.25), "Q is not clamped");
+}
+
+/// **A port's corners are where its trajectory changes piece, and a re-send
+/// is none, whatever the blocks** (`ParamInput::corners`). A source sends a
+/// 40-frame segment at 10 (one step in, so it lands on 49), the same piece
+/// resumed at 20 and at 30 (a source's re-send, a resync), the piece at rest
+/// on its end at 70, then a new 8-frame segment at 80 (landing on 87). The
+/// corners are 10, 49, 80 and 87 at blocks of 1, 64 and 100 frames, and the
+/// reference interpreter, written apart from the port, reports the same.
+#[test]
+fn corners_skip_a_resend_at_any_block_size() {
+    let key = ParamKey::<Hz>::CUTOFF;
+    let a = ParamSegment::new(key, Hz(100.0), Hz(500.0), Samples(40), Law::Linear);
+    let along = |frames: f64| a.resumed(a.position() + SamplePosition(frames), a.length());
+    let b = ParamSegment::new(key, Hz(500.0), Hz(200.0), Samples(8), Law::Linear);
+    let source = || Ramps {
+        plan: Vec::new(),
+        segs: vec![
+            (10, a),
+            (20, along(10.0)),
+            (30, along(20.0)),
+            (70, along(60.0)),
+            (80, b),
+        ],
+        shaped: Vec::new(),
+    };
+    let render = |block: usize, side: Side| -> Vec<u32> {
+        let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+        let prep = prepare(128);
+        let (mut ed, mut exec) = Editor::new(prep);
+        let mut reference = Reference::new(prep);
+        let probe = Probe::new(&cutoff, &q).with_corners();
+        ed.insert(NodeKey(PROBE), "probe", Unforkable(probe.clone()));
+        ed.insert(NodeKey(1), "src", Unforkable(source()));
+        ed.spec_mut()
+            .topology
+            .set_outputs((0..4).map(|c| Source::Node(port(PROBE, c))));
+        ed.spec_mut()
+            .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
+        ed.commit().expect("commits");
+        let mut fresh: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
+        fresh.insert(NodeKey(PROBE), Box::new(probe));
+        fresh.insert(NodeKey(1), Box::new(source()));
+        reference.set_graph(&ed.spec().validate().expect("valid"), fresh);
+        let mut corners = Vec::new();
+        let mut done = 0;
+        while done < 128 {
+            let n = block.min(128 - done);
+            let mut out = vec![vec![0.0f32; n]; 4];
+            let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+            match side {
+                Side::Executor => exec.process(n, &TransportPosition::default(), &[], &mut refs),
+                Side::Reference => {
+                    reference.process(n, &TransportPosition::default(), &[], &mut refs)
+                }
+            }
+            ed.collect();
+            corners.extend(
+                (0..n)
+                    .filter(|&i| out[3][i] != 0.0)
+                    .map(|i| (done + i) as u32),
+            );
+            done += n;
+        }
+        corners
+    };
+    for side in [Side::Executor, Side::Reference] {
+        for block in [1, 64, 100] {
+            assert_eq!(
+                render(block, side),
+                [10, 49, 80, 87],
+                "{side:?}, blocks of {block}"
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Side {
+    Executor,
+    Reference,
 }

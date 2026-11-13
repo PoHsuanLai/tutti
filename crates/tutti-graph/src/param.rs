@@ -325,8 +325,14 @@ pub enum ParamInput<'a> {
     /// Nothing modulates it: use the param's own control (the base), as the
     /// node would with no graph around it. The fast path.
     Base,
-    /// The param's value at each frame of the block.
-    Frames(&'a [f32]),
+    /// The param's value at each frame of the block, and its corners.
+    Frames {
+        /// The value at each frame.
+        values: &'a [f32],
+        /// The block offsets where the delivered trajectory changes piece,
+        /// ascending, at most one per frame (see [`corners`](Self::corners)).
+        corners: &'a [u32],
+    },
 }
 
 impl<'a> ParamInput<'a> {
@@ -345,8 +351,61 @@ impl<'a> ParamInput<'a> {
     pub fn frames(self) -> Option<&'a [f32]> {
         match self {
             Self::Base => None,
-            Self::Frames(f) => Some(f),
+            Self::Frames { values, .. } => Some(values),
         }
+    }
+
+    /// The block offsets, ascending, where the trajectory its event source
+    /// delivered **changes piece** (doc 024 §4.5, "Solve at corners"):
+    ///
+    /// - a ramp event's frame;
+    /// - a segment event's frame, unless it continues the piece in flight:
+    ///   the same `from`, `to` and law, bit for bit, arriving on the same
+    ///   frame (a source's resumed re-send, a resync), which is no corner, so
+    ///   corners do not depend on where blocks or commits fell;
+    /// - the frame a ramp or segment in flight arrives on (from there it
+    ///   holds its end).
+    ///
+    /// Read after the port's delay, as the values are. A base's glide, a
+    /// connection's declick and the range clamp make none. Empty when nothing
+    /// modulates it. At most one per frame, so never more than the block's
+    /// length.
+    #[inline]
+    #[must_use]
+    pub fn corners(self) -> &'a [u32] {
+        match self {
+            Self::Base => &[],
+            Self::Frames { corners, .. } => corners,
+        }
+    }
+}
+
+/// A block's corners as the port writes them: at most one per frame, so a
+/// buffer the block's length never overflows.
+pub(crate) struct Corners<'a> {
+    buf: &'a mut [u32],
+    len: usize,
+}
+
+impl<'a> Corners<'a> {
+    /// Writes into `buf`, at least as long as the block.
+    pub(crate) fn new(buf: &'a mut [u32]) -> Self {
+        Self { buf, len: 0 }
+    }
+
+    /// A corner at block offset `i`, at or after the last one.
+    #[inline]
+    fn mark(&mut self, i: usize) {
+        let i = i as u32;
+        if self.len == 0 || self.buf[self.len - 1] != i {
+            self.buf[self.len] = i;
+            self.len += 1;
+        }
+    }
+
+    /// How many were written.
+    pub(crate) fn len(&self) -> usize {
+        self.len
     }
 }
 
@@ -381,9 +440,28 @@ pub(crate) struct Ramp {
     /// Whether the source has sent its first event: from then on its value
     /// replaces the port's base.
     started: bool,
+    /// Frames after its event the move arrives on (`None`: not within
+    /// `u32::MAX`).
+    arrive: Option<u32>,
 }
 
 impl Ramp {
+    /// Whether a segment of `piece` and `curve` on this frame continues the
+    /// move in flight: the same piece, bit for bit, arriving on the same
+    /// frame (or both at rest on it).
+    fn continues(&self, piece: Piece, curve: Curve) -> bool {
+        let bits = |p: Piece| (p.from.to_bits(), p.to.to_bits(), p.law);
+        if !self.started || self.curve.is_none() || bits(self.piece()) != bits(piece) {
+            return false;
+        }
+        let arrive = crate::event::arrival(curve.position, curve.length);
+        if self.active {
+            self.arrive.map(|a| a.checked_sub(self.done)) == arrive.map(Some)
+        } else {
+            arrive == Some(0)
+        }
+    }
+
     /// Start a ramp to `target` along `shape` over `len` frames from this
     /// frame on, from the value the last frame had. A second ramp on the
     /// same frame replaces the first, from the same value.
@@ -396,6 +474,7 @@ impl Ramp {
         self.active = true;
         self.curve = None;
         self.started = true;
+        self.arrive = Some(self.len.saturating_sub(1));
     }
 
     /// Start a curve segment from this frame on: its own endpoints, so the
@@ -410,6 +489,7 @@ impl Ramp {
         self.active = true;
         self.curve = Some(curve);
         self.started = true;
+        self.arrive = crate::event::arrival(curve.position, curve.length);
     }
 
     /// The move's endpoints and law: a ramp's or a segment's.
@@ -466,10 +546,14 @@ pub(crate) fn render_ramps(
     param: UnitAddr,
     out: &mut [f32],
     base: impl Fn(usize) -> f32,
+    corners: &mut Corners<'_>,
 ) {
     let want = ParamAddr::unit(param);
     let mut next = events.iter().peekable();
     for (i, o) in out.iter_mut().enumerate() {
+        // A re-send of a piece already at rest arrives again on its own
+        // frame, which is no corner.
+        let mut at_rest = false;
         while let Some(e) = next.next_if(|e| e.offset.index() <= i) {
             match e.kind {
                 EventKind::Ramp(r) if r.addr() == want => {
@@ -477,6 +561,7 @@ pub(crate) fn render_ramps(
                         ramp.value = base(i);
                     }
                     ramp.start(r.raw_target(), r.duration().get(), r.shape());
+                    corners.mark(i);
                 }
                 EventKind::Segment(s) if s.is_for(want) => {
                     // A segment never reads the value it interrupts, but a
@@ -486,7 +571,15 @@ pub(crate) fn render_ramps(
                         ramp.value = base(i);
                     }
                     let (position, length) = s.timing();
-                    ramp.start_segment(s.piece(), Curve { position, length });
+                    let curve = Curve { position, length };
+                    // A re-send of the piece in flight is no corner; the
+                    // port still takes it, as it always has.
+                    let continues = ramp.continues(s.piece(), curve);
+                    at_rest = continues && !ramp.active;
+                    ramp.start_segment(s.piece(), curve);
+                    if !continues {
+                        corners.mark(i);
+                    }
                 }
                 // Another param's, MIDI, a chord, or a resync: a port re-sends
                 // nothing.
@@ -497,7 +590,17 @@ pub(crate) fn render_ramps(
                 | EventKind::Resync => {}
             }
         }
-        *o = if ramp.started { ramp.step() } else { base(i) };
+        *o = if ramp.started {
+            let moving = ramp.active;
+            let v = ramp.step();
+            if moving && !ramp.active && !at_rest {
+                // It arrived on this frame and holds its end from here.
+                corners.mark(i);
+            }
+            v
+        } else {
+            base(i)
+        };
     }
 }
 
@@ -646,6 +749,11 @@ impl Default for PortState {
 pub(crate) struct ParamState {
     ports: Vec<PortState>,
     scratch: Vec<f32>,
+    /// Each port's corners this block, `max` slots a port: at most one a
+    /// frame, so a port's slots never run out.
+    corners: Vec<u32>,
+    /// How many of each port's corner slots this block wrote.
+    corner_count: [usize; MAX_PARAM_PORTS],
     max: usize,
     /// Per port: whether this block's step delivered frames.
     framed: [bool; MAX_PARAM_PORTS],
@@ -668,6 +776,8 @@ impl ParamState {
         Self {
             ports: vec![PortState::default(); ports],
             scratch: vec![0.0; ports * max],
+            corners: vec![0; ports * max],
+            corner_count: [0; MAX_PARAM_PORTS],
             max,
             framed: [false; MAX_PARAM_PORTS],
             // Its first block runs the step whatever the plan says, to
@@ -716,7 +826,11 @@ impl ParamState {
         let mut out = [ParamInput::Base; MAX_PARAM_PORTS];
         for (k, o) in out.iter_mut().enumerate().take(self.ports.len()) {
             if self.framed[k] {
-                *o = ParamInput::Frames(&self.scratch[k * self.max..k * self.max + frames]);
+                let at = k * self.max;
+                *o = ParamInput::Frames {
+                    values: &self.scratch[at..at + frames],
+                    corners: &self.corners[at..at + self.corner_count[k]],
+                };
             }
         }
         out
@@ -732,6 +846,7 @@ impl ParamState {
     #[inline]
     pub(crate) fn begin(&mut self) {
         self.framed = [false; MAX_PARAM_PORTS];
+        self.corner_count = [0; MAX_PARAM_PORTS];
         self.busy = false;
     }
 
@@ -780,9 +895,16 @@ impl ParamState {
         let n = frames as f32;
         match m {
             Some((_, events)) => {
-                render_ramps(&mut st.ramp, events, param, out, |i| {
-                    base_at(from, b1, i, frames, n)
-                });
+                let mut corners = Corners::new(&mut self.corners[k * self.max..(k + 1) * self.max]);
+                render_ramps(
+                    &mut st.ramp,
+                    events,
+                    param,
+                    out,
+                    |i| base_at(from, b1, i, frames, n),
+                    &mut corners,
+                );
+                self.corner_count[k] = corners.len();
                 // The live range, read once per block: a move lands on the
                 // next block, and the stored base and the source's ramp are
                 // never rewritten, so a range that widens again releases
@@ -848,7 +970,7 @@ mod tests {
     use super::*;
     use crate::event::ParamRamp;
     use crate::time::Offset;
-    use tutti_types::{Hz, ParamKey};
+    use tutti_types::{Hz, ParamKey, SamplePosition};
 
     /// A ramp event starts on its frame and lands on its target on its last
     /// frame; a zero-length one is a step on its frame.
@@ -863,7 +985,14 @@ mod tests {
         let events = [ev(4, 100.0, 4), ev(12, -5.0, 0)];
         let mut r = Ramp::default();
         let mut out = [0.0f32; 16];
-        render_ramps(&mut r, &events, UnitParam::Cutoff.into(), &mut out, |_| 0.0);
+        render_ramps(
+            &mut r,
+            &events,
+            UnitParam::Cutoff.into(),
+            &mut out,
+            |_| 0.0,
+            &mut Corners::new(&mut [0; 4096]),
+        );
         assert_eq!(&out[..4], &[0.0; 4], "nothing before the event");
         assert_eq!(out[4], 25.0);
         assert_eq!(out[7], 100.0, "on target at the ramp's last frame");
@@ -871,7 +1000,14 @@ mod tests {
         assert_eq!(out[12], -5.0, "a step lands on its frame");
         // Another param's ramp is not this port's.
         let mut r = Ramp::default();
-        render_ramps(&mut r, &events, UnitParam::Q.into(), &mut out, |_| 0.0);
+        render_ramps(
+            &mut r,
+            &events,
+            UnitParam::Q.into(),
+            &mut out,
+            |_| 0.0,
+            &mut Corners::new(&mut [0; 4096]),
+        );
         assert!(out.iter().all(|&x| x == 0.0));
     }
 
@@ -899,6 +1035,7 @@ mod tests {
             UnitParam::Cutoff.into(),
             &mut after_segment,
             base,
+            &mut Corners::new(&mut [0; 4096]),
         );
         let mut alone = [0.0f32; 8];
         let events = [Event::ramp(at, ramp)];
@@ -908,6 +1045,7 @@ mod tests {
             UnitParam::Cutoff.into(),
             &mut alone,
             base,
+            &mut Corners::new(&mut [0; 4096]),
         );
         assert_eq!(after_segment, [1.0, 2.0, 3.0, 4.0, 2.5, 0.0, 0.0, 0.0]);
         assert_eq!(after_segment, alone, "as the ramp alone");
@@ -927,9 +1065,14 @@ mod tests {
                 )];
                 let mut r = Ramp::default();
                 let mut out = vec![0.0f32; frames];
-                render_ramps(&mut r, &events, UnitParam::Cutoff.into(), &mut out, |_| {
-                    from
-                });
+                render_ramps(
+                    &mut r,
+                    &events,
+                    UnitParam::Cutoff.into(),
+                    &mut out,
+                    |_| from,
+                    &mut Corners::new(&mut vec![0; frames]),
+                );
                 for (j, &v) in out[1..].iter().enumerate() {
                     let done = j + 1;
                     let want = if done >= len {
@@ -965,5 +1108,60 @@ mod tests {
             ParamPorts::try_new(&[Q, Cutoff, Q]),
             Err(ParamPortsError::Duplicate(Q.into()))
         );
+    }
+
+    /// The port's corners follow `ParamInput::corners`' rule: a new
+    /// segment's frame and its arrival are corners; the piece in flight sent
+    /// again, resumed (a source's re-send, a resync), is none; a step is one
+    /// corner; a ramp's frame and the frame it lands on are corners.
+    #[test]
+    fn corners_are_where_the_trajectory_changes_piece() {
+        use crate::event::ParamSegment;
+        let key = ParamKey::<Hz>::CUTOFF;
+        let at = |i: usize| Offset::new(i, Samples(64)).expect("in block");
+        let seg = |from: f32, to: f32, len: usize| {
+            ParamSegment::new(key, Hz(from), Hz(to), Samples(len), Law::Linear)
+        };
+        let corners = |events: &[Event]| {
+            let mut buf = [0u32; 64];
+            let mut c = Corners::new(&mut buf);
+            render_ramps(
+                &mut Ramp::default(),
+                events,
+                UnitParam::Cutoff.into(),
+                &mut [0.0; 64],
+                |_| 0.0,
+                &mut c,
+            );
+            let n = c.len();
+            buf[..n].to_vec()
+        };
+        // A segment at 4 over 10 frames, in the ramp convention (its frame
+        // one step in): its frame and the frame it lands on, 13.
+        let a = seg(1.0, 2.0, 10);
+        assert_eq!(corners(&[Event::segment(at(4), a)]), [4, 13]);
+        // The same piece re-sent resumed at 9, five frames on: still 4, 13.
+        let resent = a.resumed(a.position() + SamplePosition(5.0), a.length());
+        assert_eq!(
+            corners(&[Event::segment(at(4), a), Event::segment(at(9), resent)]),
+            [4, 13]
+        );
+        // Re-sent after it arrived, at rest on its end: no corner either.
+        let rested = a.resumed(a.length(), a.length());
+        assert_eq!(
+            corners(&[Event::segment(at(4), a), Event::segment(at(30), rested)]),
+            [4, 13]
+        );
+        // A different piece at 9 is a corner, and so is its own arrival.
+        let b = seg(1.5, 3.0, 4);
+        assert_eq!(
+            corners(&[Event::segment(at(4), a), Event::segment(at(9), b)]),
+            [4, 9, 12]
+        );
+        // A step is one corner on its frame.
+        assert_eq!(corners(&[Event::segment(at(7), seg(0.0, 5.0, 0))]), [7]);
+        // A ramp of 3 frames at 20: its frame and the frame it lands on, 22.
+        let ramp = ParamRamp::new(key, Hz(8.0), Samples(3));
+        assert_eq!(corners(&[Event::ramp(at(20), ramp)]), [20, 22]);
     }
 }

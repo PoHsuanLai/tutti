@@ -520,13 +520,33 @@ impl<F: NodeFamily> FamilyNode<F> {
             .map(|step| step.solve_at + 1)
             .last()
             .unwrap_or(size);
+        // The stops: each grid point (cut at its step's start, read at its solve
+        // frame), and each corner of a port driving a slow control (cut and read on
+        // its frame; doc 024 §4.5, "Solve at corners"), in order.
+        let mut grid = F::SAMPLING
+            .steps(position, size, applied.is_none())
+            .filter(|step| step.grid_point)
+            .map(|step| (step.frames.start, step.solve_at))
+            .peekable();
         let mut held = 0;
-        for step in F::SAMPLING.steps(position, size, applied.is_none()) {
-            if !step.grid_point {
-                continue;
-            }
+        let mut from = 0;
+        loop {
+            let corner = self.params.corner_from(io, from);
+            let (cut, solve_at) = match (grid.peek().copied(), corner) {
+                (Some((cut, solve)), Some(c)) if cut <= c => {
+                    grid.next();
+                    (cut, solve)
+                }
+                (_, Some(c)) => (c, c),
+                (Some(g), None) => {
+                    grid.next();
+                    g
+                }
+                (None, None) => break,
+            };
+            from = cut + 1;
             let at = At {
-                frame: step.solve_at,
+                frame: solve_at,
                 block: span,
                 applied,
                 rate: self.rate,
@@ -537,10 +557,9 @@ impl<F: NodeFamily> FamilyNode<F> {
                 .as_ref()
                 .is_none_or(|applied| self.params.moved(applied, &target))
             {
-                self.render(io, held..step.frames.start);
+                self.render(io, held..cut);
                 self.apply(target);
-                self.render(io, step.frames.clone());
-                held = step.frames.end;
+                held = cut;
             }
         }
         self.render(io, held..size);

@@ -1433,6 +1433,24 @@ changes.
 With corners so defined they are data on the stream, so the render stays a function of the stream:
 block independence holds.
 
+*As built (the control-sources lane, PR 4, 2026-11-13).* The port reports them:
+`ParamInput::Frames { values, corners }` and `ParamInput::corners() -> &[u32]`, block offsets in
+order, at most one per frame (so each port's buffer, the block's length, allocated with the port's
+state on the control side, never overflows, by construction). A corner is a ramp event's frame, a
+segment's frame unless it continues the piece in flight (the same `from`, `to` and law, bit for bit,
+and the same arrival frame, or both already at rest on their end), and the frame a ramp or segment in
+flight lands on. The port still takes a re-send (its values are rendered from the re-send's own
+position, as before); it only marks no corner. The arrival is one function, `arrival(position,
+length)`, which the port, the reference interpreter and `ParamSegment::arrives_after` share; a re-send
+whose arrival rounds to another frame (Q28, past 2^24 frames) is a different trajectory to the port and
+so a corner. The base's glide, a connection's declick and the range clamp make none. The reference
+interpreter derives the same corners from its own absolute-frame state, and the param differential suite
+compares them through a probe's readout. `FamilyNode::render_steps` merges the grid's stops with the
+corners of every port that drives a slow control (`Params::corner_from`; a fast control is read every
+frame and needs none): a corner cuts and solves on its frame. A control that lands whole (a compressor's
+ratio, the delay's cross-feedback) is then exact on its frame; a gliding one has its target read there
+and starts gliding at the runner's next step, so nothing jumps inside a step.
+
 **Two clocks, one rule.** An effect solves on the **stream** clock (frames since its reset), because
 audio runs through it while the transport is stopped. A control source produces on the clock it
 follows: the **play** clock (transport frames: automation, a beat-synced LFO, the note envelope) or the

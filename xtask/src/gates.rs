@@ -10,6 +10,7 @@
 
 mod canonical_paths;
 mod clap_sys;
+mod comments;
 mod conformance;
 mod decode_boundary;
 mod doc_features;
@@ -111,6 +112,9 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// No comment holds more citations of design docs, audits, pull requests,
+    /// commits, mutation runs or `CLAUDE.md` than its baseline.
+    Comments,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
 }
@@ -131,6 +135,7 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::Comments => "gate check-comments".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
@@ -156,6 +161,7 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::Comments => comments::check(&tree),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
                 let require =

@@ -201,6 +201,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-comments",
+        "",
+        "no comment gains a citation of a design doc, audit, pull request, commit or CLAUDE.md",
+    ),
+    (
         "check-conformance",
         "",
         "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
@@ -438,6 +443,7 @@ impl Planner<'_> {
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-comments" => self.out.push(Step::Gate(Gate::Comments)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance-inventory" => {
                 let [f] = Self::params(name, args, ["clap"])?;
@@ -501,7 +507,7 @@ impl Planner<'_> {
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
                     "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-conformance",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-comments", "check-conformance",
                     "check-features", "package",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

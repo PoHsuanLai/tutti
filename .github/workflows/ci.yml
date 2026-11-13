@@ -191,6 +191,7 @@ jobs:
       - run: cargo xtask check-value-traits
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
+      - run: cargo xtask check-comments
       # The spec inventories under `testing/conformance/` are well formed, every
       # `/// Spec:` test tag names a row, and the CLAP rows are the items the
       # locked `clap-sys` declares (its source is fetched, not built).

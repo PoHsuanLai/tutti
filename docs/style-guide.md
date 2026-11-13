@@ -175,10 +175,15 @@ until it is un-parked. `vendor/` is third-party and never restyled.
 - **D5. Links** (`C-LINK`): types and methods are intra-doc links; a link
   rustdoc cannot resolve, a redundant explicit target, or a public doc linking
   a private item fails CI (`cargo xtask doc`, `check-doc-features`).
-- **D6. Comments say why** (`M-NO-META-DESIGN-DOCUMENTATION`). A comment that
-  restates the code, narrates a change ("now", "previously", "moved from"), or
-  records a mutation run is a finding. Crate and module docs describe the end
-  state, not the design journey: history belongs in the commit message.
+- **D6. A comment states what the code does and the invariant it holds**
+  (`M-NO-META-DESIGN-DOCUMENTATION`): safety, ordering, real-time, in the
+  present tense; rustdoc documents the item. Everything else is deleted, not
+  rewritten: history, why something was added, past failures, removed names,
+  transitional notes ("for now", "not yet", "until"), citations of design docs
+  or audits, restatements of a gate or `CLAUDE.md`, and rationale for a
+  default. Git holds the history. A finding on this rule is fixed by deleting
+  the text, never by rewording it. `cargo xtask check-comments` holds the
+  citations it can see to a per-file baseline that only falls.
 - **D7. Docs agree with the code** (`CLAUDE.md`: "a comment or doc that
   disagrees with the code is the bug"), and are updated in the PR that changes
   the code.

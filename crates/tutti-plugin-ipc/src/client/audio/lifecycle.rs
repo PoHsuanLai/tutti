@@ -31,7 +31,7 @@ pub(super) struct Lifecycle {
     /// change, which clears this when it takes one.
     refusal: Arc<Mutex<Option<(SampleRate, String)>>>,
     /// Whether `refusal` holds one: the audio thread's question, answered
-    /// without the lock or the reason's clone (doc 027 D9). Stored after the
+    /// without the lock or the reason's clone. Stored after the
     /// slot, so a reader that sees it set finds the reason.
     refused: Arc<AtomicBool>,
     /// How long a rate change is waited on, in milliseconds.
@@ -201,7 +201,7 @@ mod tests {
     }
 
     /// **The audio thread's flag follows the refusal**, set with it and
-    /// cleared with it, and answering never allocates (doc 027 D9).
+    /// cleared with it, and answering never allocates.
     #[test]
     fn the_refused_flag_follows_the_refusal_without_allocating() {
         let life = Lifecycle::new();

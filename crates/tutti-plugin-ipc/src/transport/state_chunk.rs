@@ -78,7 +78,7 @@ pub enum ChunkError {
     },
     /// A chunk before `last` carried no bytes. [`split`] never sends one, and
     /// a sequence of them makes no progress: a peer could keep a reader taking
-    /// them forever while the byte limit never trips (doc 027 D8). Refusing
+    /// them forever while the byte limit never trips. Refusing
     /// them bounds a sequence by its bytes.
     Empty {
         /// The `seq` of the empty chunk.
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(r.into_inner().len(), 10);
     }
 
-    /// **An empty chunk before `last` is refused** (doc 027 D8): it makes no
+    /// **An empty chunk before `last` is refused**: it makes no
     /// progress, so a peer sending them could hold a reader forever under the
     /// byte limit. An empty `last` chunk is the empty state, and stays valid.
     #[test]

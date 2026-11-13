@@ -40,7 +40,7 @@ use tutti::session::Master;
 use tutti::{
     Beat, Bounce, Bpm, ChannelLayout, Format, MaxBlock, MidiChannel, MidiFile, NodeKey, NoteNumber,
     Pcm, PluginLoadRequest, PluginRef, PluginState, Range, Root, SampleRate, Samples, Session,
-    SessionEvent, Tick, TimedMidiEvent, Track,
+    SessionEvent, Tick, Track,
 };
 
 const RATE: SampleRate = SampleRate::SR_48K;

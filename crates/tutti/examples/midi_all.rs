@@ -25,9 +25,9 @@ use tutti::midi_protocol::{MpeMode, MpeZoneConfig, MpeZones};
 use tutti::polysynth::{PolySynth, SynthConfig};
 use tutti::ump::U7;
 use tutti::{
-    AddedInstrument, ChannelLayout, Error, EventCapacity, Frame, InterleavedMut, MaxBlock, Message,
-    MidiChannel, MidiFile, MidiGroup, NoteNumber, NoteVelocity, SampleRate, Samples, Session,
-    SessionEvent, Stamp, Tick, TimedMidiEvent, Track,
+    AddedInstrument, Beat, ChannelLayout, Error, EventCapacity, Frame, InterleavedMut, MaxBlock,
+    Message, MidiChannel, MidiFile, MidiGroup, NoteNumber, NoteVelocity, SampleRate, Samples,
+    Session, SessionEvent, Stamp, Tick, Track,
 };
 
 const RATE: SampleRate = SampleRate::SR_48K;

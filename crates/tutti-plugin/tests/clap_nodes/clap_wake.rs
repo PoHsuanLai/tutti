@@ -11,7 +11,7 @@
 //! plugin-server's request reaches the client as `ProcessRequested`, which the
 //! node's wake answers once the control tick has read it.
 //!
-//! Needs `cargo build -p tutti-plugin-server` first (see `CLAUDE.md`).
+//! Needs `cargo build -p tutti-plugin-server` first.
 
 #![cfg(feature = "clap")]
 

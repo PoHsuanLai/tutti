@@ -3,7 +3,7 @@
 //! A disk voice reads its ring at the file's own width and order, and the
 //! `Place` built from the file's topology when the stream opens puts the
 //! channels where the engine has them: a WAV 7.1 (rears before sides) is
-//! permuted, a channel no speaker names is refused, and a narrowing with an
+//! permuted, and a narrowing with an
 //! unordered end is refused, all as `OpenError::Placement` from the open that
 //! would have made the stream. A file already in the engine's order is read as
 //! it was.
@@ -27,7 +27,7 @@ use tutti_sampler::{
     ByHand, Direction, DiskStreamer, DiskVoice, Loop, OpenError, PlaceError, Placement, Stream,
     StreamReader,
 };
-use tutti_types::{Beat, Bpm, ChannelLayout, ChannelTopology, FoldEnd, FoldError, SampleRate};
+use tutti_types::{Beat, Bpm, ChannelLayout, ChannelTopology, FoldError, SampleRate};
 
 /// Only inside an `assert_no_alloc` region does this abort.
 #[global_allocator]
@@ -184,33 +184,17 @@ fn a_wav_order_seven_one_is_permuted_to_the_engines_order() {
     assert_channels(&settled_block(voice), &want, "7.1 in WAV order");
 }
 
-/// A file with a channel no speaker names (bit 25 is a second LFE) is refused
-/// when the stream is opened, at any width: the open fails with the placement's
-/// refusal, where it used to open and fail at the voice.
+/// A file whose channel mask names a speaker past the standard 18 is refused
+/// by the decoder when the stream is opened, at any width: the open fails with
+/// `Format`.
 #[test]
-fn a_file_with_a_second_lfe_is_refused() {
+fn a_mask_naming_a_speaker_past_the_standard_ones_is_refused() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("placed.wav");
     write_wav(&path, 2, 0x0200_0001);
-    // The fixture is what it says: bit 25 is the decoder's second LFE
-    // (`tutti-codec`'s `a_flag_with_no_speaker_keeps_its_slot_as_unknown`).
-    assert_eq!(
-        tutti_codec::FileIn::open(&path)
-            .expect("opens")
-            .topology()
-            .positions(),
-        [
-            tutti_types::Speaker::FrontLeft,
-            tutti_types::Speaker::Unknown(25)
-        ]
-    );
-    let refused = OpenError::Placement(PlaceError::Fold(FoldError::Unnamed {
-        end: FoldEnd::Source,
-        channel: 1,
-    }));
     for width in [None, Some(ChannelLayout::STEREO)] {
         let (_streamer, answer) = open(&path, width);
-        assert_eq!(answer.err(), Some(refused.clone()), "width {width:?}");
+        assert_eq!(answer.err(), Some(OpenError::Format), "width {width:?}");
     }
 }
 

@@ -160,57 +160,6 @@ fn a_file_that_is_not_audio_fails_with_format() {
     );
 }
 
-/// Variant `Placement`: a wave with a channel no speaker names (bit 25 of the
-/// channel mask is a second LFE) fails the open with the placement's refusal,
-/// at the file's own width and at stereo. (`tests/disk_placement.rs` has the
-/// rest of the placements, through the same open.)
-#[test]
-fn a_wave_with_an_unnamed_channel_fails_with_placement() {
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("second_lfe.wav");
-    write_extensible_wav(&path, 2, 0x0200_0001);
-    let refused = OpenError::Placement(PlaceError::Fold(tutti_types::FoldError::Unnamed {
-        end: tutti_types::FoldEnd::Source,
-        channel: 1,
-    }));
-    let mut streamer = manual();
-    let opening = streamer.open(&path, Placement::HEAD);
-    assert_eq!(settle(&mut streamer, opening).err(), Some(refused.clone()));
-    let opening = streamer.open_into(&path, Placement::HEAD, tutti_types::ChannelLayout::STEREO);
-    assert_eq!(settle(&mut streamer, opening).err(), Some(refused));
-}
-
-/// A float32 `WAVE_FORMAT_EXTENSIBLE` WAV, `channels` wide, declaring `mask`.
-fn write_extensible_wav(path: &Path, channels: u16, mask: u32) {
-    let mut fmt = Vec::new();
-    fmt.extend(0xFFFEu16.to_le_bytes());
-    fmt.extend(channels.to_le_bytes());
-    fmt.extend((RATE as u32).to_le_bytes());
-    fmt.extend((RATE as u32 * 4 * u32::from(channels)).to_le_bytes());
-    fmt.extend((4 * channels).to_le_bytes());
-    fmt.extend(32u16.to_le_bytes());
-    fmt.extend(22u16.to_le_bytes());
-    fmt.extend(32u16.to_le_bytes());
-    fmt.extend(mask.to_le_bytes());
-    // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
-    fmt.extend([
-        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b,
-        0x71,
-    ]);
-    let data: Vec<u8> = (0..8_192 * usize::from(channels))
-        .flat_map(|_| 0.25f32.to_le_bytes())
-        .collect();
-    let mut out = b"RIFF".to_vec();
-    out.extend((4 + 8 + fmt.len() as u32 + 8 + data.len() as u32).to_le_bytes());
-    out.extend(b"WAVEfmt ");
-    out.extend((fmt.len() as u32).to_le_bytes());
-    out.extend(&fmt);
-    out.extend(b"data");
-    out.extend((data.len() as u32).to_le_bytes());
-    out.extend(&data);
-    std::fs::write(path, out).expect("writes the file");
-}
-
 /// Variant `StreamerGone`: an open on a streamer whose thread is gone is never
 /// answered, and says so at the first poll rather than staying `Pending` for
 /// ever.

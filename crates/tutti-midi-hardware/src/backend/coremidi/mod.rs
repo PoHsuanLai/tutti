@@ -19,7 +19,7 @@
 //! An input port opens in the protocol of its source (one port per opened
 //! input): `Protocol::Midi10` for a source whose [`UmpCapability`] is MIDI 1.0,
 //! so CoreMIDI hands it MIDI 1.0 UMP (type 2) and the ingest node's `Translator`
-//! widens it, never the OS (design 017 L6d); `Protocol::Midi20` otherwise.
+//! widens it, never the OS; `Protocol::Midi20` otherwise.
 //! A MIDI 1.0 source is not a device speaking MIDI 2.0, so [`UmpCapability`] records `kMIDIPropertyProtocolID` as
 //! the OS reports it — and falls back to `Midi1` when the property is absent,
 //! which is the conservative direction (see `UmpCapability::default`).
@@ -128,7 +128,7 @@ fn endpoint_capability(object: &coremidi::Object, ump: Option<&UmpEndpointInfo>)
 }
 
 /// The protocol an input port on `source` is created with, as ALSA chooses
-/// its client's version (design 017 L6d): MIDI 1.0 for a source that cannot
+/// its client's version: MIDI 1.0 for a source that cannot
 /// speak the MIDI 2.0 Protocol, so CoreMIDI hands it MIDI 1.0 UMP (type 2)
 /// and the ingest node's `Translator` widens it, never the OS. A UMP Endpoint
 /// that supports MIDI 2.0 opens as MIDI 2.0 even while it is in MIDI 1.0:

@@ -278,9 +278,8 @@ fn class_of(timed: &TimedMidiEvent) -> Class {
     Class::of(timed.event())
 }
 
-/// `events` through one [`Translator`], in beat order (design 017 §4: a clip
-/// is translated as it is loaded, so the graph carries MIDI 2.0 from it as
-/// from a wire), each translated event at its source's beat and in its
+/// `events` through one [`Translator`], in beat order (a clip is translated as it is loaded, so the graph carries MIDI 2.0 from it
+/// as from a wire), each translated event at its source's beat and in its
 /// source's place in the list, which the note pairing below reads. An event
 /// the translator absorbs (an RPN select, Data Entry, Bank Select) is gone; a
 /// select or Data Entry that ends a run is replaced by the run's controller,
@@ -547,8 +546,7 @@ impl Visit<ClipEvent> for Playing<'_, '_, '_> {
     /// Ends what is held, then sends, for each state the clip set before
     /// `beat`, the last message that set it: playback starting there (a
     /// seek, a loop wrap, a start, a bounce's first block) hears the
-    /// programs and controllers the timeline holds at that beat (the chase,
-    /// design 017). An event on `beat` itself, or less than a frame behind
+    /// programs and controllers the timeline holds at that beat (the chase). An event on `beat` itself, or less than a frame behind
     /// it, the walk plays as well; that repeats a state, which is harmless.
     ///
     /// A port without room for the whole chase refuses the rest, counted as

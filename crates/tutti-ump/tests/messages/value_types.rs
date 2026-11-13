@@ -10,7 +10,13 @@ fn the_bend_centre_is_the_middle_of_the_word() {
     assert_eq!(BendValue::MIN.get(), 0);
     assert_eq!(BendValue::CENTER.get(), 0x8000_0000);
     assert_eq!(BendValue::MAX.get(), u32::MAX);
-    let word = |bend| Ump::from(Message::pitch_bend2(MidiChannel::FIRST, bend)).0[1];
+    let word = |bend| {
+        Ump::from(Message::Midi2(
+            MidiChannel::FIRST.into(),
+            Voice2::PitchBend(bend),
+        ))
+        .0[1]
+    };
     assert_eq!(word(BendValue::CENTER), 0x8000_0000);
 }
 
@@ -19,10 +25,12 @@ fn the_bend_centre_is_the_middle_of_the_word() {
 #[test]
 fn every_word_is_a_control_value() {
     for raw in [0, 1, 0x7FFF_FFFF, 0x8000_0000, u32::MAX] {
-        let packet = Ump::from(Message::control_change2(
-            MidiChannel::FIRST,
-            CCNumber::VOLUME,
-            ControlValue::new(raw),
+        let packet = Ump::from(Message::Midi2(
+            MidiChannel::FIRST.into(),
+            Voice2::ControlChange {
+                controller: CCNumber::VOLUME,
+                value: ControlValue::new(raw),
+            },
         ));
         assert_eq!(packet.0[1], raw);
         let Ok(Message::Midi2(_, Voice2::ControlChange { value, .. })) = packet.decode() else {

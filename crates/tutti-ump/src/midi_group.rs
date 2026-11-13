@@ -163,9 +163,6 @@ impl MidiGroup {
     }
 }
 
-// Deliberately no `display_number`: `numbered` and `Display` are the 1-based door, as for a
-// channel; MIDI 2.0 itself numbers groups 0-15 throughout, so the wire number stays `get`.
-
 /// The 1-based number a person reads ([`numbered`](MidiGroup::numbered)'s): `MidiGroup::of(9)` is
 /// `10`. [`Debug`](core::fmt::Debug) keeps the wire number.
 impl core::fmt::Display for MidiGroup {

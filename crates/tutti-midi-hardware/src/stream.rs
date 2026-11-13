@@ -14,7 +14,7 @@
 //! 3. It ends as a [`DeviceStream`].
 //!
 //! MIDI-CI then runs beside it for the life of the input: see the `ci` module's
-//! docs (design 017 L8 part 3). It is stepped by the same
+//! docs. It is stepped by the same
 //! [`poll`](Negotiation::poll), and what it finds is returned with the stream.
 //!
 //! Time is an argument. Nothing here reads a clock, waits or blocks: a device
@@ -108,7 +108,7 @@ pub enum Basis {
 ///
 /// The output side follows [`config`](Self::config): the device's output is
 /// sent in the Protocol it names, with JR Timestamps when it receives them
-/// (`OpenOutput`'s wire form, design 017 L6(c)).
+/// (`OpenOutput`'s wire form).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceStream {
     endpoint: Endpoint,

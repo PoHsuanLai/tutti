@@ -19,7 +19,6 @@ use tutti_types::{Depth, Phase};
 /// Owned here rather than re-using a host's own polarity type: this crate sits
 /// below any host and cannot see one. A host with its own spelling writes the
 /// boundary `From` on its side.
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Polarity {
     /// Preserve sign, curve the magnitude: `x ∈ [-1, 1] → [-1, 1]` for a
@@ -42,7 +41,6 @@ pub enum Polarity {
 /// depends on the cycle index, so a caller must branch on
 /// [`LfoShape::is_random`] first, or evaluate any shape at an unwrapped
 /// position through [`Waveform::raw_at`](crate::Waveform::raw_at).
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LfoShape {
     /// Sine over the cycle: `sin(phase · 2π)`.

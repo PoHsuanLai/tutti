@@ -256,7 +256,7 @@ mod tests {
     use crate::streamer::command::StreamId;
     use crate::streamer::stream::StreamerPort;
 
-    /// Both drivers are `Sync` (a Bevy resource holds a `DiskStreamer`), with
+    /// Both drivers are `Sync` (a host may hold a `DiskStreamer` as a shared resource), with
     /// the hand-stepped cycle held plainly: a compile-time check.
     const _: () = {
         fn sync<T: Sync>() {}

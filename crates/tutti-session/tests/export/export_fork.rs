@@ -1,4 +1,4 @@
-//! What a session bounce renders, and what it forks: no Bevy, no pool, a
+//! What a session bounce renders, and what it forks: no pool, a
 //! [`Session`] and its [`BounceJob`](tutti_session::BounceJob) driven by hand.
 //!
 //! An export forks the live graph (`Editor::fork`). The exports are held to
@@ -9,8 +9,7 @@
 //! built wherever the job runs, and everything it held is dropped on the
 //! main thread.
 //!
-//! These suites held the same properties through `bevy-tutti`'s export
-//! systems before that crate was parked; the instruments, the disk voice and
+//! The instruments, the disk voice and
 //! the hosted plugin are `export_fork_synth.rs`, `export_fork_sampler.rs` and
 //! `export_fork_plugin.rs`.
 

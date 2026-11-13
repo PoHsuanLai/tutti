@@ -67,11 +67,11 @@
 //! fork (`Editor::fork_gather`, then `PendingFork::build` on a worker) the
 //! source declares itself **pinned** (`ForkBuild::pinned`): the whole of the
 //! above, and the fork's `prepare` (its rate, `RateDelivery::InPrepare`),
-//! runs in the gather, which bevy-tutti's export calls from its exclusive
-//! `start_exports`; the worker's build only places the prepared unit. Drop
+//! runs in the gather, which a host calls from its main thread; the worker's
+//! build only places the prepared unit. Drop
 //! the fork on the main thread too: dropping it closes its instance, which
 //! debug builds assert is on the main thread once one is marked. A fork may *render* on any thread, as the
-//! live node does; bevy-tutti renders on its compute pool and sends the graph
+//! live node does; a host may render on a compute pool and send the graph
 //! (or, when the export fails or is cancelled, whatever of it was built) back
 //! to the main thread to drop.
 //!

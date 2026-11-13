@@ -7,12 +7,11 @@ plugin hosting for VST3, CLAP, Audio Units and VST2.
 The engine is a set of focused crates rather than one package. Depend on the
 ones you need, or take an umbrella:
 
-- [`tutti`](crates/tutti) — the whole engine behind one dependency, **no
-  Bevy**. For a CLI, a renderer, a server, a test.
-- [`bevy-tutti`](crates/bevy-tutti) — the same engine plus the Bevy adapter
-  (ECS, assets, systems).
+- [`tutti`](crates/tutti) — the whole engine behind one dependency. For a CLI,
+  a renderer, a server, a test. It is a re-export crate, enforced to contain no
+  code at all.
 
-Both are re-export crates; `tutti` is enforced to contain no code at all.
+A Bevy adapter lives at https://github.com/PoHsuanLai/bevy-tutti.
 
 > **Status: pre-release.** Nothing here is published to crates.io yet, so every
 > dependency is a path dependency. Names and signatures still move between
@@ -23,8 +22,7 @@ Both are re-export crates; `tutti` is enforced to contain no code at all.
 Every crate sits in one of four tiers, and the arrows only ever point down.
 
 ```
-         tutti  ·  bevy-tutti          the two umbrellas: Bevy-free, and the
-                                           Bevy adapter (ECS, assets, systems)
+         tutti                         the umbrella
                             │
    ┌──────────┬─────────────┼──────────────┬─────────────┐
   dsp/       midi/        plugin/         io            export
@@ -64,7 +62,7 @@ real time (a project's bounce, `tutti-session`'s `Bounce`, drives it).
 | [`tutti-polysynth`](crates/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
 | [`tutti-soundfont`](crates/tutti-soundfont) | SoundFont (`.sf2`) playback |
 | [`tutti-dsp`](crates/tutti-dsp) | Waveform summaries, onset detection, pitch, correlation, loudness |
-| [`tutti-modulation`](crates/tutti-modulation) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free and Bevy-free |
+| [`tutti-modulation`](crates/tutti-modulation) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free |
 | [`tutti-midi-runtime`](crates/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |
 | [`tutti-midi-file`](crates/tutti-midi-file) | SMF and MIDI 2.0 clip codecs — OS-free, so reading a `.mid` links no CoreMIDI |
 | [`tutti-midi-hardware`](crates/tutti-midi-hardware) | The OS MIDI edge: CoreMIDI and ALSA seq-UMP |
@@ -78,39 +76,14 @@ is what you use, and each host speaks one plugin ABI.
 
 ## Quick start
 
-The engine is Bevy-free at its core, but the shortest path to audible output is
-the adapter. This spawns an oscillator and wires it to the master out:
-
-```rust,ignore
-use bevy_app::prelude::*;
-use bevy_ecs::prelude::*;
-use bevy_tutti::prelude::*;
-use tutti_types::Hz;
-use tutti_nodes::testing::Osc;
-
-fn build_chain(mut commands: Commands) {
-    let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
-    // Wiring is *declared*, never called: the resource names what feeds each
-    // global output channel, so two nodes cannot both claim the master.
-    commands.insert_resource(MasterSources::mono_from(osc));
-}
-
-App::new()
-    .add_plugins(DefaultPlugins)
-    .add_plugins(TuttiPlugin::default())
-    .add_systems(Startup, build_chain)
-    .run();
-```
-
-Every crate's own documentation carries a runnable example for that subsystem;
+`crates/tutti/README.md` has the dependency line and the feature table. Every crate's own documentation carries a runnable example for that subsystem;
 those are doctests, so they are checked on every build.
 
 ## Two rules worth knowing before you read further
 
-**Wiring is declared, not called.** A node is spawned unwired; a resource names
+**Wiring is declared, not called.** A node is added unwired; a connection names
 what feeds each input port. The graph holds a set of sources per input and
-sums them (doc 013, "Audio fan-in sums"); the parked Bevy adapter's declaration
-still names one source per port.
+sums them (doc 013, "Audio fan-in sums").
 
 **Quantities carry their units.** `Hz`, `Db`, `Beat`, `Samples` and the rest are
 newtypes, not `f32` aliases, and the conversions between them are named methods
@@ -131,9 +104,6 @@ the feature suites, benches); `cargo xtask ci` runs all of CI's checks.
 Cloning needs `--recursive`: `tutti-vst3-host` compiles a reference plugin
 against the vendored VST3 SDK, which is a submodule. Without it the build stops
 with instructions.
-
-`bevy` is an optional, off-by-default feature on every engine crate that has
-one, so the engine compiles without Bevy unless a consumer asks for it.
 
 ## License
 

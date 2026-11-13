@@ -52,8 +52,7 @@ pub const RATE_ANCHOR_MARGIN: Samples = Samples(12_288);
 /// re-anchors at [`RATE_ANCHOR_MARGIN`] instead (see `anchored`).
 const ANCHOR_REUSE_MIN: Samples = Samples(8_192);
 
-/// A source's key: the host's identity for it (a Bevy host: the entity's
-/// bits). Only compared. The session's own declarations name a source with a
+/// A source's key: the host's identity for it. Only compared. The session's own declarations name a source with a
 /// minted `ModSourceId` instead, and a host's keys are for `ModInput`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SourceKey(pub u64);
@@ -62,7 +61,7 @@ pub struct SourceKey(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct RouteKey(pub u64);
 
-/// A target: one param of one node (a Bevy host: the node entity's bits), one
+/// A target: one param of one node, one
 /// edge's gain, or one node's mix. A plugin parameter is `ParamAddr::Id`.
 ///
 /// An edge is named by the host's own key for it (`Edge`): what it stands for

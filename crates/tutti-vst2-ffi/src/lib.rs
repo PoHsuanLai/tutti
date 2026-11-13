@@ -1,22 +1,13 @@
 // Forked from vst-rs 0.3.0. This is *owned* code, not a read-only vendor drop:
 // the fork already diverges deliberately (host-side audioMaster callbacks, plus
 // the host-safety fixes documented in `host.rs`), so its lints are chased like
-// any other crate here. The blanket `allow(clippy::all)` that used to sit at the
-// top of this file is what kept those bugs invisible.
+// any other crate here.
 //
 // The remaining allows are narrow and each has a reason:
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![allow(missing_docs)]
 // Elided-lifetime style across a 2021-edition port of a 2018-edition crate.
 #![allow(mismatched_lifetime_syntaxes)]
-//
-// `allow(useless_ptr_null_checks)` used to sit here, justified as "the null
-// checks on FFI function pointers in `host.rs` are load-bearing even though
-// rustc believes an `extern "C" fn` is non-null by type". rustc was right and
-// the justification was backwards: the checks compiled to `false` under `-O`,
-// so the guard shipped only in debug builds while release jumped to address 0.
-// The nullable slots are `Option<...>` now and the lint has nothing left
-// to fire on — if it ever fires again, that is a real bug, not noise.
 
 //! The host half of the VST2.4 API: the ABI types, the plugin loader and the host callback.
 //!

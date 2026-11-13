@@ -1043,8 +1043,7 @@ fn the_display_string_describes_only_the_current_value() {
 /// probe's echo on, `setParameter` calls `audioMasterAutomate` with the value
 /// it was just set to, from inside the call. That report is the host's own
 /// value coming back, and `drain_param_changes` must not hand it on: a host
-/// that takes reported values as the user's (a modulation lane's knob in
-/// `bevy-tutti`) would adopt the modulated value as its base and ratchet it.
+/// that takes reported values as the user's (a modulation lane's knob) would adopt the modulated value as its base and ratchet it.
 #[test]
 fn a_plugins_echo_of_a_host_write_is_not_reported() {
     let _guard = lock_probe();

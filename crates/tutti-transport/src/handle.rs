@@ -113,7 +113,7 @@ impl Transport {
     /// move; the engine's clock follows the graph's own rate when the engine
     /// adopts it (`Engine::process`), which is where a frame count turns into
     /// beats. A host changing device rate calls this beside re-rating the
-    /// graph — `bevy_tutti`'s device restart does both.
+    /// graph.
     ///
     /// A change also marks the boundary for the transport's frame-timed
     /// commands: one scheduled (`MotionFsm::schedule`) after this call is

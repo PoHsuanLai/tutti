@@ -126,7 +126,7 @@ pub enum Feeder {
     /// The timed queue of an instrument's handle
     /// (`Session::add_instrument`, feature `midi`).
     Instrument,
-    /// A host's declarations (bevy-tutti's `EventSources`).
+    /// A host's declarations.
     Declared,
 }
 
@@ -3076,8 +3076,8 @@ fn render(
 /// Resolves a host's modulation keys to graph nodes.
 ///
 /// `tutti_modulation`'s declarations key a target by `TargetKey { node: u64, param }`
-/// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (a
-/// Bevy entity's bits, say), and this is how the session's
+/// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (an
+/// entity's bits, say), and this is how the session's
 /// [`Modulation`](crate::Phase::Modulation) phase reads it ([`ModInput`](crate::ModInput)).
 #[cfg(feature = "modulation")]
 pub trait ModKeys {

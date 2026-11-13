@@ -171,10 +171,9 @@ impl PluginStatus {
 ///
 /// The last group is why this type is `Send + Sync + Clone`: clone the handle
 /// into whatever the host already uses for off-thread work and call it there.
-/// Under Bevy that is one line —
-/// `AsyncComputeTaskPool::get().spawn(async move { handle.any_thread().save_state() })`
-/// — held in a component and polled next frame, the shape `bevy_tutti`'s plugin
-/// load and state snapshot both use.
+/// With a task pool that is one line —
+/// `pool.spawn(async move { handle.any_thread().save_state() })` — polled next
+/// frame.
 ///
 /// These are deliberately **not** `async` and do not return futures. That would
 /// put an executor choice inside a library that needs none, and would not save
@@ -537,9 +536,9 @@ impl PluginHandle {
     /// Embeds the plugin's editor into `parent` and returns the size the editor
     /// asked for.
     ///
-    /// `parent` is [`WindowHandle::from_window`] of a Bevy or winit window or a
+    /// `parent` is [`WindowHandle::from_window`] of a winit window or a
     /// wgpu surface. `scale` is that window's backing-store scale
-    /// (`winit::Window::scale_factor`, Bevy's `Window::scale_factor`): a
+    /// (`winit::Window::scale_factor`): a
     /// window handle carries none, and a plugin on Windows or X11 cannot
     /// read it itself. Call on the main thread. A session's host opens an
     /// editor through `tutti_session::EditorView::open`, which this serves.
@@ -802,6 +801,9 @@ mod tests {
 
     impl Control for FakePresets {
         fn info(&self) -> &PluginDescriptor {
+            unreachable!("the preset tests never ask")
+        }
+        fn render_mode_support(&self, _main: &MainThread) -> tutti_plugin_types::RenderModeSupport {
             unreachable!("the preset tests never ask")
         }
         fn wiring(&self, _main: &MainThread) -> LoadedPlugin {

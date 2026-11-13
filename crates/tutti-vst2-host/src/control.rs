@@ -6,8 +6,8 @@ use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
     LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginClass,
-    PluginDescriptor, PluginError, PluginResult, Preset, PresetId, RenderMode, Request,
-    WindowHandle,
+    PluginDescriptor, PluginError, PluginResult, Preset, PresetId, RenderMode, RenderModeSupport,
+    Request, WindowHandle,
 };
 
 use crate::error::Vst2Error;
@@ -60,6 +60,8 @@ impl Vst2Loaded {
         // sample-accurate automation, note-expression, sequencer context, or
         // host-driven editor resize (fused AEffect editor, no sizeWindow).
         features.insert(Features::TRANSPORT);
+        // The host answers the process level, so every plugin takes the mode.
+        features.insert(Features::RENDER_MODE);
         features
     }
 }
@@ -213,6 +215,12 @@ impl Control for Vst2Loaded {
         // is logged here.
         let _ = self.instance.report_pin_refusals();
         out.extend(tutti_plugin_types::taken(self.host.requests()));
+    }
+
+    /// `Live`: the plugin reads the mode by asking the host
+    /// (`audioMasterGetCurrentProcessLevel`), whose answer changes at once.
+    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+        RenderModeSupport::Live
     }
 
     /// Sets whether the host reports itself as rendering offline.

@@ -9,9 +9,8 @@
 //! # Why it is exported rather than `#[cfg(test)]`
 //!
 //! It began as a private fixture in `session.rs`, which covered this crate's own
-//! tests and nothing above it. `bevy-tutti` wires a `MidiSession` into the ECS
-//! and had no way to test that wiring — a headless CI box has no MIDI port, so
-//! every path through it was either untested or asserted against "no device
+//! tests and nothing above it. A headless CI box has no MIDI port, so a consumer's
+//! tests of its session wiring were either absent or asserted against "no device
 //! found". The fixture is the *only* thing standing between those tests and a
 //! real device, and it is small, so exporting it is cheaper than each consumer
 //! writing its own subtly different one.

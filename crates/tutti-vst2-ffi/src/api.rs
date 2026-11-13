@@ -6,9 +6,7 @@ use std::os::raw::c_void;
 /// Why an `effGetChunk` produced no usable buffer.
 ///
 /// Distinct from an empty chunk, because "nothing saved" and "the save failed"
-/// call for opposite host behaviour: `copy_chunk` used to fold both into an
-/// empty `Vec`, which let a host downgrade a failed chunk save to a parameter
-/// snapshot and drop the plugin's non-parameter state.
+/// call for opposite host behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkError {
     /// The plugin returned a negative length: an explicit error return.
@@ -895,7 +893,7 @@ pub struct MidiEvent {
     /// Offset in samples into note from start if available, otherwise 0.
     pub note_offset: i32,
 
-    /// 1 to 3 midi bytes. TODO: Doc
+    /// 1 to 3 midi bytes.
     pub midi_data: [u8; 3],
 
     /// Reserved midi byte (0).
@@ -1246,7 +1244,6 @@ mod tests {
         };
     }
 
-    // This is a regression test for a bug fixed in PR #93
     // We check here that calling events() on an api::Events object
     // does not mutate the underlying events.
     #[test]

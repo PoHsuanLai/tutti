@@ -1,5 +1,4 @@
-//! The repo's static gates (they began as `scripts/check-*.sh`; the one script left
-//! is the parked adapter's, `scripts/parked/check-bevy-tutti.sh`).
+//! The repo's static gates (they began as `scripts/check-*.sh`).
 //!
 //! A gate is a pure function from the repo's files to a [`Report`]. The files
 //! come through [`Tree`] (and `git`'s answers through [`Git`]), so a test hands
@@ -93,7 +92,7 @@ pub(crate) enum Gate {
     Guards,
     /// Every hosting impl is listed in the plugin contract.
     Hosting,
-    /// `tutti-session` is Bevy-free and re-exports no crate whole.
+    /// `tutti-session` reaches no Bevy crate and re-exports no crate whole.
     Session,
 }
 

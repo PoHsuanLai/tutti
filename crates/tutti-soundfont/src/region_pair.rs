@@ -367,4 +367,53 @@ mod tests {
         assert!((with(&font, |p| p.pan()) + 50.0).abs() < 1e-4);
         assert_eq!(with(&font, |p| p.reverb_effects_send()), 250);
     }
+
+    /// Section 8.1.2: a generator that is instrument level only is ignored at the
+    /// preset level, never summed. A preset zone that sets every one of them (the
+    /// sample address offsets, fine and coarse, the sample modes, the overriding
+    /// root key, the exclusive class, the forced key and velocity) leaves the voice
+    /// where the instrument zone puts it: the fixture's sample, frames 0 to 2000
+    /// looped over 100 to 1900, at its own root key 69, with no exclusive class and
+    /// nothing forced.
+    #[test]
+    fn an_instrument_only_generator_at_the_preset_level_is_ignored() {
+        const START: u16 = 0;
+        const END: u16 = 1;
+        const START_LOOP: u16 = 2;
+        const END_LOOP: u16 = 3;
+        const START_COARSE: u16 = 4;
+        const END_COARSE: u16 = 12;
+        const START_LOOP_COARSE: u16 = 45;
+        const END_LOOP_COARSE: u16 = 50;
+        const OVERRIDING_ROOT_KEY: u16 = 58;
+        let font = pair(
+            vec![
+                (START, 10),
+                (END, -10),
+                (START_LOOP, 5),
+                (END_LOOP, -5),
+                (START_COARSE, 1),
+                (END_COARSE, 1),
+                (START_LOOP_COARSE, 1),
+                (END_LOOP_COARSE, 1),
+                (generator::SAMPLE_MODES, 0),
+                (OVERRIDING_ROOT_KEY, 40),
+                (generator::EXCLUSIVE_CLASS, 3),
+                (generator::KEY_NUM, 60),
+                (generator::VELOCITY, 100),
+            ],
+            vec![],
+        );
+        with(&font, |p| {
+            assert_eq!(p.sample_start(), 0);
+            assert_eq!(p.sample_end(), 2000);
+            assert_eq!(p.sample_start_loop(), 100);
+            assert_eq!(p.sample_end_loop(), 1900);
+            assert_eq!(p.sample_modes(), tutti_sf2::LoopMode::Continuous);
+            assert_eq!(p.root_key(), 69);
+            assert_eq!(p.instrument.exclusive_class(), None);
+            assert_eq!(p.instrument.forced_key(), None);
+            assert_eq!(p.instrument.forced_velocity(), None);
+        });
+    }
 }

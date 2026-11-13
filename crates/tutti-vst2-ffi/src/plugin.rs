@@ -117,7 +117,7 @@ pub enum OpCode {
     /// [index]: 0 for bank, 1 for program
     SetData,
 
-    /// [ptr]: VstEvents* TODO: Events
+    /// [ptr]: VstEvents*
     ProcessEvents,
     /// [index]: param index
     /// [return]: 1=true, 0=false
@@ -172,7 +172,6 @@ pub enum OpCode {
     /// [ptr]: `VstVariableIo`
     /// [use]: used for variable I/O processing (offline e.g. timestretching)
     ProcessVarIo,
-    /// TODO: implement
     /// [value]: input `*mut VstSpeakerArrangement`.
     /// [ptr]: output `*mut VstSpeakerArrangement`.
     SetSpeakerArrangement,
@@ -211,7 +210,7 @@ pub enum OpCode {
     _SetVewPosition,
 
     /// [index]: param index
-    /// [ptr]: `*mut VstParamInfo` //TODO: Implement
+    /// [ptr]: `*mut VstParamInfo`
     /// [return]: 1 if supported
     GetParamInfo,
 
@@ -235,22 +234,22 @@ pub enum OpCode {
     EditorSetKnobMode,
 
     /// [index]: MIDI channel.
-    /// [ptr]: `*mut MidiProgramName`. //TODO: Implement
+    /// [ptr]: `*mut MidiProgramName`.
     /// [return]: number of used programs, 0 = unsupported.
     GetMidiProgramName,
     /// [index]: MIDI channel.
-    /// [ptr]: `*mut MidiProgramName`. //TODO: Implement
+    /// [ptr]: `*mut MidiProgramName`.
     /// [return]: index of current program.
     GetCurrentMidiProgram,
     /// [index]: MIDI channel.
-    /// [ptr]: `*mut MidiProgramCategory`. //TODO: Implement
+    /// [ptr]: `*mut MidiProgramCategory`.
     /// [return]: number of used categories.
     GetMidiProgramCategory,
     /// [index]: MIDI channel.
-    /// [return]: 1 if `MidiProgramName` or `MidiKeyName` has changed. //TODO: Implement
+    /// [return]: 1 if `MidiProgramName` or `MidiKeyName` has changed.
     HasMidiProgramsChanged,
     /// [index]: MIDI channel.
-    /// [ptr]: `*mut MidiKeyName`. //TODO: Implement
+    /// [ptr]: `*mut MidiKeyName`.
     /// [return]: 1 = supported 0 = not.
     GetMidiKeyName,
 
@@ -259,7 +258,7 @@ pub enum OpCode {
     /// Called after a preset is loaded.
     EndSetPreset,
 
-    /// [value]: inputs `*mut VstSpeakerArrangement` //TODO: Implement
+    /// [value]: inputs `*mut VstSpeakerArrangement`
     /// [ptr]: Outputs `*mut VstSpeakerArrangement`
     GetSpeakerArrangement,
     /// [ptr]: buffer for plugin name, limited to `consts::MAX_PRODUCT_STR_LEN`.
@@ -274,14 +273,14 @@ pub enum OpCode {
     StopProcess,
     /// [value]: number of samples to process. Called in offline mode before process.
     SetTotalSampleToProcess,
-    /// [value]: pan law `PanLaw`. //TODO: Implement
+    /// [value]: pan law `PanLaw`.
     /// [opt]: gain.
     SetPanLaw,
 
-    /// [ptr]: `*mut VstPatchChunkInfo`. //TODO: Implement
+    /// [ptr]: `*mut VstPatchChunkInfo`.
     /// [return]: -1 = bank cant be loaded, 1 = can be loaded, 0 = unsupported.
     BeginLoadBank,
-    /// [ptr]: `*mut VstPatchChunkInfo`. //TODO: Implement
+    /// [ptr]: `*mut VstPatchChunkInfo`.
     /// [return]: -1 = bank cant be loaded, 1 = can be loaded, 0 = unsupported.
     BeginLoadPreset,
 
@@ -424,7 +423,6 @@ pub enum CanDo {
 }
 
 impl CanDo {
-    // TODO: implement FromStr
     #![allow(clippy::should_implement_trait)]
     /// Converts a string to a `CanDo` instance. Any given string that does not match the predefined
     /// values will return a `CanDo::Other` value.
@@ -852,8 +850,7 @@ pub trait PluginParameters: Send + Sync {
     ///
     /// This method can be called on the processing thread for automation.
     ///
-    /// **Fork divergence from upstream vst-rs**, which returns `()`. `false`
-    /// means the write went nowhere — the host-side counterpart of
+    /// `false` means the write went nowhere — the host-side counterpart of
     /// [`get_parameter`](Self::get_parameter)'s `None`, and the case that
     /// matters on a preset-restore path, where the entire point is that the
     /// values arrive. A dropped write and a successful one are otherwise
@@ -1054,7 +1051,6 @@ impl Host for HostCallback {
     /// if a user interaction is happening and the automation should be recorded.
     fn automate(&self, index: i32, value: f32) {
         if self.is_effect_valid() {
-            // TODO: Investigate removing this check, should be up to host
             self.callback(
                 self.effect,
                 host::OpCode::Automate,

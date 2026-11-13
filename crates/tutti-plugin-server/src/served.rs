@@ -23,7 +23,8 @@ use tutti_plugin_types::{
     Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized,
     Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
     PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor,
-    RenderMode, Request, Sample, SampleFormat, SampleRate, Samples, Seat, Stage, State,
+    RenderMode, RenderModeSupport, Request, Sample, SampleFormat, SampleRate, Samples, Seat, Stage,
+    State,
 };
 
 mod any;
@@ -713,12 +714,14 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
             })
     }
 
-    /// A format that takes the mode live (CLAP's `render.set`, VST2's callback)
-    /// is told through [`Control::set_render_mode`]; one that reads it only at
-    /// activation (VST3's `setupProcessing`, AU's `AudioUnitInitialize`) is
-    /// activated again in the mode, keeping its instance and state. A refusal
-    /// is rolled back to the mode the plugin was running in, and answers
-    /// `false`.
+    /// What happens is the plugin's [`Control::render_mode_support`]: a `Live`
+    /// plugin (CLAP's `render.set`, VST2's callback) is told; an
+    /// `OnActivation` one (VST3's `setupProcessing`, AU's
+    /// `AudioUnitInitialize`) is activated again in the mode, keeping its
+    /// instance and state, and a refusal is rolled back to the mode it was
+    /// running in; an `Unsupported` one is left running and answers `false`.
+    /// The mode is kept for every later activation (a restart, a rate change)
+    /// either way.
     fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
         let Some(previous) = self.state.prepare() else {
             return false;
@@ -726,18 +729,25 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         if previous.mode() == mode && self.is_active() {
             return true;
         }
-        let live = self
-            .lifecycle
-            .control()
-            .is_some_and(|control| control.set_render_mode(main, mode));
-        if live {
-            // The mode is a field of the `Prepare` every later activation (a
-            // restart, a rate change) applies, so the core holds the new one.
-            self.state.set_mode(mode);
-            return true;
+        let Some(control) = self.lifecycle.control() else {
+            return false;
+        };
+        match control.render_mode_support(main) {
+            RenderModeSupport::Live => {
+                let took = control.set_render_mode(main, mode);
+                if took {
+                    self.state.set_mode(mode);
+                }
+                took
+            }
+            RenderModeSupport::Unsupported => {
+                self.state.set_mode(mode);
+                false
+            }
+            RenderModeSupport::OnActivation => self
+                .reconfigure(main, previous, previous.with_mode(mode))
+                .is_ok(),
         }
-        self.reconfigure(main, previous, previous.with_mode(mode))
-            .is_ok()
     }
 
     fn parameter_count(&self, main: &MainThread) -> usize {

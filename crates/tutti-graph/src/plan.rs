@@ -1123,11 +1123,6 @@ impl Plan {
         &self.task_ops
     }
 
-    /// Successors of each task.
-    pub fn task_successors(&self) -> &Csr {
-        &self.task_succ
-    }
-
     /// Distinct predecessor tasks of each task — the initial activation count
     /// a parallel executor's per-task counter starts from.
     pub fn task_activation(&self) -> &[u32] {
@@ -1138,14 +1133,6 @@ impl Plan {
     /// (see [`Work`] and [`Shape::cost`](crate::Shape::cost)).
     pub fn work(&self) -> Work {
         self.work
-    }
-
-    /// The cost model's estimate of the costliest path through the task
-    /// DAG, each hand-over to a successor charged by its place in the
-    /// queue: no number of participants renders a block faster than this.
-    /// Coarsening never makes it longer than chain fusion alone would.
-    pub fn critical_path(&self) -> Work {
-        self.critical
     }
 
     /// The most tasks on one level of the task DAG (a task's level is its
@@ -1161,10 +1148,9 @@ impl Plan {
 
     /// How this plan's blocks run on a pool of `participants` (the caller
     /// included): serially, or spread from some block length up over some
-    /// number of participants. Pure arithmetic on [`work`](Self::work),
-    /// [`critical_path`](Self::critical_path) and the task count, the cost
-    /// model of doc 013 ("The cost model and coarsening"); the executor asks it when a
-    /// plan meets a pool, never per block.
+    /// number of participants. Pure arithmetic on [`work`](Self::work), the
+    /// costliest path through the task DAG and the task count; the executor
+    /// asks it when a plan meets a pool, never per block.
     ///
     /// A speed decision only: the parallel render is bit for bit the
     /// serial one.

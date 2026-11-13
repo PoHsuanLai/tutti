@@ -35,7 +35,7 @@ use tutti_clap_test_plugin::{
     PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture,
     ProcessCapture, STATE_MAGIC,
 };
-use tutti_plugin_types::Control;
+use tutti_plugin_types::{AutomationMode, Control};
 use tutti_plugin_types::{Normalized, ParamFlags, ParamId, ParamSteps, Request, RescanScope};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
@@ -1141,4 +1141,40 @@ fn host_loads_state_with_the_requested_context() {
         Some(3.0),
         "the context load must restore the value"
     );
+}
+
+/// The host's automation mode reaches the plugin as `param-indication`'s raw
+/// states, per `clap_param_indication` (NONE 0, PLAYING 2, RECORDING 3,
+/// OVERRIDING 4): once for every automatable parameter.
+#[test]
+fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    let automatable: Vec<u32> = probe_params()
+        .iter()
+        .filter(|p| p.flags & clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE != 0)
+        .map(|p| p.id)
+        .collect();
+    assert!(!automatable.is_empty());
+
+    let cases = [
+        (AutomationMode::Reading, 2u32),
+        (AutomationMode::Writing, 3),
+        (AutomationMode::ReadWriting, 4),
+        (AutomationMode::Off, 0),
+    ];
+    for (mode, raw) in cases {
+        param_reset();
+        Control::set_automation_state(&mut loaded, &main_thread(), mode);
+        let cap = probe.capture();
+        let got: Vec<(u32, u32)> = cap.indications[..cap.indication_calls as usize]
+            .iter()
+            .map(|i| (i.param_id, i.state))
+            .collect();
+        let want: Vec<(u32, u32)> = automatable.iter().map(|&id| (id, raw)).collect();
+        assert_eq!(
+            got, want,
+            "{mode:?} must reach every automatable parameter as {raw}"
+        );
+    }
 }

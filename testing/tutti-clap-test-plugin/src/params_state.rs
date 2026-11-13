@@ -26,11 +26,13 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use clap_sys::color::clap_color;
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
     CLAP_EVENT_PARAM_MOD, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
     clap_event_param_mod, clap_event_param_value, clap_input_events, clap_output_events,
 };
+use clap_sys::ext::param_indication::clap_plugin_param_indication;
 use clap_sys::ext::params::{
     CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_MODULATABLE, CLAP_PARAM_IS_READONLY,
     CLAP_PARAM_IS_STEPPED, CLAP_PARAM_RESCAN_VALUES, clap_param_info, clap_plugin_params,
@@ -341,6 +343,21 @@ pub const MAX_CAPTURED_PARAM_EVENTS: usize = 32;
 /// Maximum state payload bytes recorded per save/load.
 pub const MAX_CAPTURED_STATE: usize = 64;
 
+/// Maximum `param-indication.set_automation` calls recorded.
+pub const MAX_CAPTURED_INDICATIONS: usize = 16;
+
+/// One `clap_plugin_param_indication.set_automation` call as the plugin
+/// received it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapturedIndication {
+    pub param_id: u32,
+    /// The raw `CLAP_PARAM_INDICATION_AUTOMATION_*` value.
+    pub state: u32,
+    /// Whether the host passed a colour.
+    pub has_color: bool,
+}
+
 /// What the probe observed on the parameter and state paths. `#[repr(C)]` so
 /// the test can read it across the `dlopen` seam.
 #[repr(C)]
@@ -376,6 +393,11 @@ pub struct ParamStateCapture {
     /// Whether the most recent `state.load` read to EOF — i.e. the host's
     /// istream returned 0 only after the payload was exhausted, never early.
     pub load_hit_clean_eof: bool,
+    /// Number of `param-indication.set_automation` calls, which may exceed
+    /// [`MAX_CAPTURED_INDICATIONS`]; `indications` holds the first ones in
+    /// call order.
+    pub indication_calls: u32,
+    pub indications: [CapturedIndication; MAX_CAPTURED_INDICATIONS],
 }
 
 impl Default for ParamStateCapture {
@@ -399,9 +421,17 @@ impl Default for ParamStateCapture {
             saved_len: 0,
             save_write_calls: 0,
             load_hit_clean_eof: false,
+            indication_calls: 0,
+            indications: [NO_INDICATION; MAX_CAPTURED_INDICATIONS],
         }
     }
 }
+
+const NO_INDICATION: CapturedIndication = CapturedIndication {
+    param_id: 0,
+    state: 0,
+    has_color: false,
+};
 
 static PARAM_CAPTURE: Mutex<ParamStateCapture> = Mutex::new(ParamStateCapture {
     flush_calls: 0,
@@ -422,6 +452,8 @@ static PARAM_CAPTURE: Mutex<ParamStateCapture> = Mutex::new(ParamStateCapture {
     saved_len: 0,
     save_write_calls: 0,
     load_hit_clean_eof: false,
+    indication_calls: 0,
+    indications: [NO_INDICATION; MAX_CAPTURED_INDICATIONS],
 });
 
 fn with_capture<R>(f: impl FnOnce(&mut ParamStateCapture) -> R) -> R {
@@ -951,6 +983,9 @@ pub unsafe fn get_extension(id: &CStr) -> *const std::ffi::c_void {
     if id == clap_sys::ext::state_context::CLAP_EXT_STATE_CONTEXT {
         return &STATE_CONTEXT_EXT as *const _ as *const std::ffi::c_void;
     }
+    if id == clap_sys::ext::param_indication::CLAP_EXT_PARAM_INDICATION {
+        return &PARAM_INDICATION_EXT as *const _ as *const std::ffi::c_void;
+    }
     if id == clap_sys::ext::preset_load::CLAP_EXT_PRESET_LOAD
         && PRESET_LOAD_ENABLED.load(Ordering::SeqCst)
     {
@@ -1023,6 +1058,30 @@ pub(crate) static STATE_CONTEXT_EXT: clap_plugin_state_context = clap_plugin_sta
     save: Some(state_context_save),
     load: Some(state_context_load),
 };
+
+pub(crate) static PARAM_INDICATION_EXT: clap_plugin_param_indication =
+    clap_plugin_param_indication {
+        set_mapping: None,
+        set_automation: Some(indication_set_automation),
+    };
+
+unsafe extern "C" fn indication_set_automation(
+    _plugin: *const clap_plugin,
+    param_id: u32,
+    automation_state: u32,
+    color: *const clap_color,
+) {
+    with_capture(|cap| {
+        if let Some(slot) = cap.indications.get_mut(cap.indication_calls as usize) {
+            *slot = CapturedIndication {
+                param_id,
+                state: automation_state,
+                has_color: !color.is_null(),
+            };
+        }
+        cap.indication_calls += 1;
+    });
+}
 
 /// The bytes a save emits: the magic, the context byte, then each parameter's
 /// id and value. Fixed layout so the test can compute the expected length and

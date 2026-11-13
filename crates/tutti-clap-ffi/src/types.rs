@@ -191,6 +191,23 @@ impl AutomationState {
     }
 }
 
+impl From<tutti_plugin_types::AutomationMode> for AutomationState {
+    /// The indication for a parameter while the host is in `mode`: reading is
+    /// `Playing`, writing is `Recording`, and reading while writing is
+    /// `Overriding` (the user's writes take over a playing automation).
+    /// `Present` has no mode of its own: the host holds automation that is not
+    /// playing only per parameter, which `AutomationMode` does not name.
+    fn from(mode: tutti_plugin_types::AutomationMode) -> Self {
+        use tutti_plugin_types::AutomationMode;
+        match mode {
+            AutomationMode::Off => Self::None,
+            AutomationMode::Reading => Self::Playing,
+            AutomationMode::Writing => Self::Recording,
+            AutomationMode::ReadWriting => Self::Overriding,
+        }
+    }
+}
+
 bitflags! {
     /// Which parts of its parameters a plugin asks the host to rescan
     /// (`clap_param_rescan_flags`).

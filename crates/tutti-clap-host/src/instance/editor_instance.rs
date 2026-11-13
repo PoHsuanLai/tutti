@@ -8,9 +8,9 @@
 use std::path::Path;
 
 use tutti_plugin_types::{
-    ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, EditorWindow,
-    InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
-    Request, RescanScope, WindowHandle,
+    AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
+    EditorWindow, InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
+    PluginResult, Request, RescanScope, WindowHandle,
 };
 
 use super::ClapLoaded;
@@ -148,6 +148,11 @@ impl Editor for ClapEditor {
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         Control::save_state(&mut self.inner, main)
+    }
+
+    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+        // The editor instance is the one whose UI shows the indication.
+        Control::set_automation_state(&mut self.inner, main, mode);
     }
 
     fn take_dirty(&mut self, _main: &MainThread) -> bool {

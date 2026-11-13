@@ -55,7 +55,7 @@ Evidence for "no map anywhere": `grep TempoMap crates` hits only `tutti-tempo`;
 | `tutti-plugin` `transport_source.rs` | Counts a plugin's steady time across chunks by segment; its own docs state "the engine has no tempo map" and that a ramp is counted at the faster tempo. |
 | `tutti-plugin-types`, `tutti-clap-host`, `tutti-vst3-host`, `tutti-vst2-host`, `tutti-au-host` | `timing.tempo` into `ProcessContext` / CLAP `transport` / VST2 `VstTimeInfo` / AU callbacks. CLAP's `tempo_inc` was always `0.0` until stage 5a (`clap-host/instance/audio.rs`). |
 | `bevy-tutti`, `tutti-export` | `transport.settings.tempo()` seeds an `OfflineTimelineConfig` (examples); `beats_to_seconds` and `duration_to_frames` convert export ranges. |
-| `tutti-midi-file` | `MidiFile::seconds_at`, now `TempoMap::seconds_at` over the file's own map (017 stage 6). |
+| `tutti-midi-file` | `MidiFile::seconds_at`, now `TempoMap::seconds_at` over the file's own map. |
 
 Why `plugin_midi_export` passes today: its test pins the file length in frames
 (the length comes from `MidiFile::seconds_at`, which is tempo-aware), and
@@ -254,7 +254,7 @@ both relative to the same origin as the timeline. The session supplies the map
 | `OfflineTimelineConfig::tempo: Bpm` | `tempo_map: Arc<TempoMap>`; a `Bpm` shorthand builds `TempoMap::constant` |
 | `OfflineTimeline::tempo()`, `Timeline::tempo()` | A tempo at a beat: `Timeline` exposes the map or `tempo_at(beat)` |
 
-`MidiFile::seconds_at` is pointed at `TempoMap` (done, [017](017-midi.md) stage 6): the
+`MidiFile::seconds_at` is pointed at `TempoMap` (done): the
 file builds a step-only `TempoMap` (`TempoPoint::step`) from its tempo events
 in its constructors, and `seconds_at` is `map.seconds_at`. A file's tempo track is the
 file's data, not the project's, so the file builds its own map and the project adopts it
@@ -322,7 +322,7 @@ render bit-identical (stage 0 adds the guards first).
 | 3 | Steps | Non-constant maps in the walker; step cells push `TransportChanges`; the block split at the 8th entry. `OfflineTimelineConfig` takes a map. | New step tests of §8. |
 | 4 | Ramps | Ramp cells, the grid bound, `tempo_at` slope on `TempoMap` if missing. | Ramp tests; block-size independence. |
 | 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the map (5a: the plugin hosts, below; 5b: a transport event at each change inside a chunk, below). | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
-| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds` and `duration_to_frames` (the last two retired by the bounce); `MidiFile::seconds_at` over `TempoMap` (done, 017 stage 6); `plugin_midi_export` pins the note frames, not only the length (its bounce already adopts the file's map). | The bounce API is built (the session derives range and clock from the map); docs 013 updated. **Done** (below). |
+| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds` and `duration_to_frames` (the last two retired by the bounce); `MidiFile::seconds_at` over `TempoMap` (done); `plugin_midi_export` pins the note frames, not only the length (its bounce already adopts the file's map). | The bounce API is built (the session derives range and clock from the map); docs 013 updated. **Done** (below). |
 
 **As built, stages 0 to 2 (publish a constant map).** Stage 0's guards already
 exist (the closed-form `FrameClock` property, `offline_timeline_agrees_with_transport_clock_sample_for_sample`,
@@ -711,8 +711,7 @@ Added with MIDI L7c, agreed with the transport's owner. The transport can take
 its tempo and meter from a MIDI 2.0 source (Flex Data Set Tempo, M2-104 §7.5.3,
 and Set Time Signature, §7.5.4) while a `TempoMap` is published. It is built in
 `tutti-session` (`midi_follow.rs`, `Midi::follow_tempo`) over a pure core in
-`tutti-midi-runtime` (`TempoFollower`, the `ClockFollower` row of doc 017's layer
-table, scoped to Flex). `tutti-transport` and `tutti-tempo` needed no change:
+`tutti-midi-runtime` (`TempoFollower`, scoped to Flex). `tutti-transport` and `tutti-tempo` needed no change:
 the model of §3 (an edit republishes the map) is all it uses.
 
 ### 11.1 Where a received tempo becomes a map edit
@@ -721,7 +720,7 @@ The audio thread never sees a map edit.
 
 - **What the follower hears.** An event tap (`Op::EventTap`, `Raw`) on the ingest
   node's channelless port of the followed Group, which carries that Group's Flex
-  Data (doc 017 L3). It is drained in `Phase::Poll`, after the devices'.
+  Data. It is drained in `Phase::Poll`, after the devices'.
 - **What the core decides.** `TempoFollower::step(Ump) -> Option<Followed>`
   decodes a Set Tempo with `flex_tempo` and (when the meter is followed) a Set Time
   Signature with `flex_time_signature`, and answers *what*: a `Bpm` or a

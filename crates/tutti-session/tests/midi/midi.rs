@@ -1,4 +1,4 @@
-//! MIDI in the session (design 015 §4.3): clips, live inputs, the hardware
+//! MIDI in the session: clips, live inputs, the hardware
 //! input's routes and the hardware out, on an offline session the test
 //! renders. A [`Tap`] stands in for a synth: it logs every MIDI event its
 //! event input receives with its absolute frame.
@@ -743,8 +743,7 @@ fn a_device_that_comes_and_goes_is_a_session_event() {
     );
 }
 
-/// **A held input whose device vanishes is retired** (audit #4): before this
-/// the device stayed listed as connected and nothing fired. Now the update
+/// **A held input whose device vanishes is retired**: the update
 /// reports the removal and then the lost input, the connection is closed and
 /// its port is gone.
 #[cfg(feature = "midi-hardware")]
@@ -828,7 +827,7 @@ fn key(channel: u8, n: u8) -> Ump {
 
 /// **A connected device's note reaches the synth its channel routes to**
 /// through the device's own event inlet, once: the update after the connection
-/// wires the inlet to the ingest node (doc 017 stage E5), the device's thread
+/// wires the inlet to the ingest node, the device's thread
 /// pushes, and the synth hears it.
 #[cfg(feature = "midi-hardware")]
 #[test]
@@ -1177,7 +1176,7 @@ fn a_port_that_loses_events_is_reported() {
 }
 
 /// **A UMP Endpoint the session holds open is negotiated from `Phase::Poll`,
-/// and the outcome is a session event** (design 017 §5, M2-104 §7.1.6.1): the
+/// and the outcome is a session event** (M2-104 §7.1.6.1): the
 /// update that follows the connect sends the Endpoint Discovery on the
 /// device's output, the device (here the fake's, answering as an Endpoint
 /// does) replies into the input, and a later update reports
@@ -1234,7 +1233,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
 }
 
 /// **A MIDI-CI peer of an input the session holds open is a session event**
-/// (design 017 L8, M2-101 §5.5 and §5.6): once the UMP Endpoint settles, a
+/// (M2-101 §5.5 and §5.6): once the UMP Endpoint settles, a
 /// Function Block that declares MIDI-CI is sent a Discovery by the session's
 /// tick; the device's Reply to Discovery is reported as one
 /// `MidiEvent::CiPeer` (`CiChange::Found`) naming the device, and the peer is
@@ -1539,8 +1538,8 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
 }
 
 /// **The hardware out JR-stamps only as its device's configuration says**
-/// (M2-104 §7.1.6.2: a Sender "shall not send JR Timestamps until after a
-/// Stream Configuration Notification" has said the device receives them). The
+/// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
+/// Configuration Notification has said it receives them). The
 /// session asks for JR off, so the output is unstamped when the device
 /// settles; when the device notifies that it receives JR the next `MidiOut`
 /// phase stamps, and the wire carries the JR messages; when it notifies the

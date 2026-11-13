@@ -57,8 +57,7 @@ while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
   held on it; `Changed` is for backends whose identity survives a rename.
 - **macOS:** one process-wide CoreMIDI client runs its run loop on one thread
   for setup notifications, and each [`Devices`] registers with it. A
-  [`DeviceId`] is the endpoint's `MIDIUniqueID`. Untested by the author; see
-  doc 017.
+  [`DeviceId`] is the endpoint's `MIDIUniqueID`. Untested by the author.
 - If the watch ends on its own, [`DeviceEvents::recv_timeout`] says why, once the events the watch reported are taken, and the list
   stays as it was.
 - **Windows (and Linux without alsa-lib 1.2.10):** the list is empty and stays
@@ -111,6 +110,22 @@ let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
 assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 # Ok::<(), tutti_midi_hardware::Error>(())
 ```
+
+## Timestamps
+
+Input events carry the OS's own arrival time, never the instant a thread got
+round to reading them. ALSA stamps each event in the real time of a queue the
+port owns; CoreMIDI stamps each packet with mach host time. A backend reads
+that clock and `Instant::now()` together and puts every event as far before
+the reading as its stamp is before the clock's, so a pump that wakes late
+keeps the spacing of what it reads. The device's thread then places the
+arrival on a frame (see "Quick start").
+
+Output is scheduled by the OS, not flushed when the host runs. `MidiOut::queue_timed`
+takes each event with a `SendAt`: `Now`, or an `Instant` that the backend turns
+into its own clock (an ALSA queue time on the output's own started queue,
+paired when the output opens, or CoreMIDI host time). A sink with no wire
+clock sends at once.
 
 ## Main types
 
@@ -171,6 +186,11 @@ backend.
   `snd-seq` module and a readable `/dev/snd/seq`. Off by default.
 
 ## Where it sits
+
+Every decision here is a pure value in `tutti-midi-device` (`DeviceTable`,
+`Connection`, `IdentityInquiry`, `CiDevice`) or `tutti-midi-runtime` (`ClockMap`,
+`OutputPlan`) that takes time as an argument; this crate feeds them from the OS
+and carries out what they return.
 
 Builds on `tutti-ump` (the wire vocabulary and its decoded `Message`) and `tutti-midi-runtime`
 (the graph's MIDI nodes and mailbox), and re-exports the parts of both a

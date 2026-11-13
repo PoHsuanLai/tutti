@@ -176,7 +176,10 @@ const ONLY: &[(&str, &[&str])] = &[
     ),
     ("tutti-dsp", &["tutti-types"]),
     ("tutti-curve", &["tutti-types"]),
-    ("tutti-modulation", &["tutti-types", "tutti-curve"]),
+    (
+        "tutti-modulation",
+        &["tutti-types", "tutti-curve", "tutti-ump"],
+    ),
     ("tutti-measure", &["tutti-types", "tutti-dsp"]),
     (
         "tutti-graph",

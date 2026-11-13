@@ -38,6 +38,9 @@ tutti-curve = { path = "../tutti-curve" }
 # target's param), `PlayReading`. A leaf crate: Bevy-free.
 tutti-types = { path = "../tutti-types", default-features = false }
 
+# The MIDI a note envelope hears (`Ump`, its held `Key`). Layer 0.
+tutti-ump = { path = "../tutti-ump" }
+
 # Bevy derives, gated on the `bevy` feature.
 bevy_reflect = { workspace = true, optional = true }
 

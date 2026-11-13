@@ -20,8 +20,8 @@ use tutti_graph::{
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
-    Adsr, Amount, ControlProgram, InputLayer, Law, LayerId, Polarity, SignalKind, SourceId,
-    SourceNode,
+    Adsr, Amount, ControlProgram, InputLayer, Law, LayerId, Polarity, SignalKind, SignalSource,
+    SourceId,
 };
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
 use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
@@ -712,7 +712,7 @@ fn a_note_envelopes_stages_land_on_their_frames() {
     let render = |sizes: &[usize]| {
         let (mut ed, mut exec) = editor(128);
         ed.insert(NodeKey(1), "midi", ForkByClone(Midi { plan: plan.clone() }));
-        let decl = SourceNode {
+        let decl = SignalSource {
             id: SourceId(3),
             kind: SignalKind::NoteEnvelope {
                 adsr: adsr(0.01, 0.02, 0.5, 0.03),
@@ -784,14 +784,14 @@ fn a_note_envelopes_stages_land_on_their_frames() {
 /// **`from_decl` builds the kind it is given, and refuses the other.**
 #[test]
 fn from_decl_builds_its_own_kind() {
-    let f = SourceNode {
+    let f = SignalSource {
         id: SourceId(9),
         kind: SignalKind::Follower {
             attack: Seconds(0.01),
             release: Seconds(0.1),
         },
     };
-    let n = SourceNode {
+    let n = SignalSource {
         id: SourceId(4),
         kind: SignalKind::NoteEnvelope {
             adsr: adsr(0.01, 0.1, 0.5, 0.2),
@@ -1224,4 +1224,59 @@ fn an_infinite_release_holds_the_peak() {
     }
     assert!(pieces > 0, "it keeps sending the held level");
     assert_eq!(all[0][1_199], 0.6, "a lane reads the peak at the end");
+}
+
+/// **Past its event capacity a follower thins its grid, and drops no
+/// stop.** One 16 384-frame block holds 512 points of the 32-frame grid,
+/// past the 256 events a source node sends per block. The follower sends
+/// its pieces on one coarser grid instead (a power-of-two multiple of 32,
+/// the same stride all block), up to the block's end: each piece starts
+/// where the one before it ended and ends at the envelope on its frame,
+/// `env(g) = 1 − c^g` for full scale from frame 0 (analytic, within 1e-5).
+/// Before, the pieces past the 256th were dropped, and a lane held the
+/// 8192nd frame's value to the end of the block.
+#[test]
+fn past_its_capacity_a_follower_thins_its_grid() {
+    const LEN: usize = 16_384;
+    let (mut ed, mut exec) = editor(LEN);
+    ed.insert(
+        NodeKey(1),
+        "pulse",
+        ForkByClone(Pulse {
+            width: ChannelLayout::MONO,
+            on: vec![(0, u64::MAX, 1.0)],
+        }),
+    );
+    ed.insert(
+        NodeKey(2),
+        "follower",
+        ForkByClone(follower(1, 0.5, 1.0, ChannelLayout::MONO)),
+    );
+    wire_audio(&mut ed, 1, 2, 1);
+    tap(&mut ed, 2, 3);
+    ed.commit().expect("commits");
+    let all = render_stopped(&mut ed, &mut exec, &[LEN], LEN);
+    let m = marks(&all);
+    assert!(
+        m.len() <= tutti_nodes::SOURCE_EVENT_CAPACITY as usize,
+        "{} pieces",
+        m.len()
+    );
+    let stride = m[1] - m[0];
+    assert!(
+        stride > STEP && stride.is_power_of_two(),
+        "a coarser grid: {stride}"
+    );
+    assert_eq!(m[0], stride, "the first point past the silent one at 0");
+    assert!(m.windows(2).all(|w| w[1] - w[0] == stride), "one stride");
+    assert!(m[m.len() - 1] + stride >= LEN, "up to the block's end");
+    let c = pole(0.5);
+    let mut before = 0.0f32;
+    for &g in &m {
+        let (from, to) = piece(&all, g);
+        assert_eq!(from.to_bits(), before.to_bits(), "contiguous at {g}");
+        let want = 1.0 - c.powi(g as i32);
+        assert!((f64::from(to) - want).abs() < 1e-5, "{g}: {to} vs {want}");
+        before = to;
+    }
 }

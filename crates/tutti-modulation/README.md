@@ -29,10 +29,14 @@ signal-driven source's node, and the event edges between them. The
 
 ## What this crate does not own
 
-- **A runtime.** Nothing here runs per frame or holds a cell. The control
-  lane that evaluates a program (`ControlLaneNode`), the signal-source nodes
-  (`EnvelopeFollowerNode`, `NoteEnvelopeNode`) and the reconcile that wires
-  them into a graph (`Modulation`) are `tutti-nodes`'.
+- **A graph runtime.** Nothing here holds a cell or knows the graph. The
+  control sources' math is here (`ControlSource`: a value as legs on the play
+  clock, `PlayGrid`; the follower's detector `LevelFollower` and the note
+  envelope's `NoteAdsr`), but the node that walks the play clock and sends
+  them (`SourceNode<S>`, aliased `EnvelopeFollowerNode` and
+  `NoteEnvelopeNode`), the control lane that evaluates a program
+  (`ControlLaneNode`) and the reconcile that wires them into a graph
+  (`Modulation`) are `tutti-nodes`'.
 - **The ECS.** The Bevy declarations (`Mods`, `ModRoute`, `ModRange`) are
   `bevy_tutti::modulation`'s, one layer up.
 

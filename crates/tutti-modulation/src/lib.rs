@@ -6,11 +6,12 @@ mod compile;
 mod curve;
 mod program;
 mod shape;
+mod source;
 mod sources;
 
 pub use compile::{
     CompileError, Compiled, Declarations, RATE_ANCHOR_MARGIN, RouteDecl, RouteKey, RouteTarget,
-    SignalKind, Source, SourceKey, SourceNode, TargetDecl, TargetKey, compile, layer_id,
+    SignalKind, SignalSource, Source, SourceKey, TargetDecl, TargetKey, compile, layer_id,
 };
 pub use curve::{Curve, CurveSegment};
 pub use program::{
@@ -18,6 +19,7 @@ pub use program::{
     MAX_LANE_LAYERS, PeriodPoint, ProgramError, ProgramTime, RateAnchor, SourceId, Waveform,
 };
 pub use shape::{LfoShape, Polarity, shape};
+pub use source::{CONTROL_GRID, ControlSource, Leg, LevelFollower, NoteAdsr, PlayGrid};
 pub use sources::{Follower, Lfo, LfoRate, Macro, NoteEnvelope};
 pub use tutti_curve::{Curvature, Exponent, Law};
 pub use tutti_types::Adsr;

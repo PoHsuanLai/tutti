@@ -578,7 +578,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  and the minimal `Trajectory` / `Breakpoint` (breakpoints in
                  `Beat`, each with its `Law`, read at a beat). Layer 1, depends on
                  `tutti-types` alone; replaced the external `audio-automation`
-  tutti-modulation modulation compiler
+  tutti-modulation modulation compiler, and the control sources (`ControlSource`: a value
+                 produced as legs on the play clock, `PlayGrid`; `LevelFollower`, `NoteAdsr`), which
+                 `tutti-nodes`' one `SourceNode<S>` sends
   tutti-measure  the analyzers, measurements over slices that read audio and return
                  numbers: loudness (EBU R128, windowed momentary and short-term), peaks
                  and waveform blocks, pitch (`yin`), onsets, spectra, spectral shape,
@@ -1723,7 +1725,12 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `TempoPoint::shape` → `TempoMap::view(rate)` and `TempoView`'s methods, and
   `TempoPoint::transition`; `tutti_graph::Transport` → `tutti_graph::TransportPosition`
   (`tutti_transport::Transport` is the handle); `tutti_modulation::Wave` → `Waveform`
-  (`tutti_codec::Wave` is the buffer); `LoopRange::new` as the only check →
+  (`tutti_codec::Wave` is the buffer); `tutti_modulation::SourceNode` (the declaration `{ id, kind }`) → `SignalSource`,
+  and the hand-written `EnvelopeFollowerNode` and `NoteEnvelopeNode` → `tutti_nodes::SourceNode<S:
+  ControlSource>` (`SourceNode<LevelFollower>`, `SourceNode<NoteAdsr>`: the sources' math is
+  `tutti_modulation`'s, the node walks the play clock and sends, doc 024 B3), their
+  `FOLLOWER_EVENT_CAPACITY` and `NOTE_ENVELOPE_EVENT_CAPACITY` → `SOURCE_EVENT_CAPACITY` (one overflow
+  rule: the grid thins, then what is dropped is re-sent); `LoopRange::new` as the only check →
   `LoopRange::try_from(a..b)` (a `LoopRangeError`; `new` is the same check as an `Option`);
   `Session::schedule -> Result<(), ScheduleFull>` → `Result<(), ScheduleError>`
   (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). A comment or doc that

@@ -55,18 +55,6 @@ pub(super) const ALLOWED: &[(&str, &str)] = &[
         "temporary: tutti-plugins folds it into its area binary",
     ),
     (
-        "crates/tutti-midi-hardware/tests/rt_no_alloc_hardware_poll.rs",
-        "temporary: tutti-midi folds it into its area binary",
-    ),
-    (
-        "crates/tutti-midi-runtime/tests/rt_no_alloc.rs",
-        "temporary: tutti-midi folds it into its area binary",
-    ),
-    (
-        "crates/tutti-midi-runtime/tests/sync_no_alloc.rs",
-        "temporary: tutti-midi folds it into its area binary",
-    ),
-    (
         "crates/tutti-plugin-host/tests/chunked_node.rs",
         "temporary: tutti-plugins folds it into its area binary",
     ),
@@ -101,10 +89,6 @@ pub(super) const ALLOWED: &[(&str, &str)] = &[
     (
         "crates/tutti-soundfont/tests/rt_no_alloc.rs",
         "temporary: tutti-dsp folds it into its area binary",
-    ),
-    (
-        "crates/tutti-voicing/tests/rt_no_alloc.rs",
-        "temporary: tutti-midi folds it into its area binary",
     ),
     (
         "crates/tutti-vst2-host/tests/vst2_host_process_no_alloc.rs",

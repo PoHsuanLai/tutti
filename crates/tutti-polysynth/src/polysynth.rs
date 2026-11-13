@@ -23,7 +23,7 @@ use tutti_graph::{EventKind, SubBlocks};
 use tutti_midi_protocol::{MpeMode, MpeZones, UniversalReader};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_protocol::{value_to_unit_f32, velocity_to_unit_f32};
-use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Spread, Tail};
+use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Tail};
 use tutti_ump::ControlValue;
 use tutti_ump::NoteId;
 use tutti_ump::{

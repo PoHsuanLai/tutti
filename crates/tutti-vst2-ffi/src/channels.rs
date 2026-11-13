@@ -80,24 +80,6 @@ impl From<ChannelInfo> for api::ChannelProperties {
     }
 }
 
-impl From<api::ChannelProperties> for ChannelInfo {
-    fn from(api: api::ChannelProperties) -> ChannelInfo {
-        ChannelInfo {
-            name: String::from_utf8_lossy(&api.name).to_string(),
-            short_name: String::from_utf8_lossy(&api.short_name).to_string(),
-            // `from_bits_truncate`, not `from_bits().expect()`: `flags` is an
-            // `i32` a plugin filled in over FFI. VST2.4 defines three bits and
-            // says nothing about the other 29, so a plugin setting a private or
-            // reserved bit is legal. Panicking on an unrecognised bit turns a
-            // benign plugin quirk into a host crash — and does so from inside
-            // an `extern "C"` call chain.
-            active: api::ChannelFlags::from_bits_truncate(api.flags)
-                .intersects(api::ChannelFlags::ACTIVE),
-            arrangement_type: SpeakerArrangementType::from(api),
-        }
-    }
-}
-
 /// Target for Speaker arrangement type. Can be a cinema configuration or music configuration. Both
 /// are technically identical but this provides extra information to the host.
 #[derive(Debug)]
@@ -279,76 +261,6 @@ impl From<SpeakerArrangementType> for api::SpeakerArrangementType {
                     SurroundConfig::S10_2 => Raw::Surround102,
                 }
             }
-        }
-    }
-}
-
-/// Convert the VST API equivalent struct into something more usable.
-///
-/// We implement `From<ChannelProperties>` as `SpeakerArrangementType` contains extra info about
-/// stereo speakers found in the channel flags.
-impl From<api::ChannelProperties> for SpeakerArrangementType {
-    fn from(api: api::ChannelProperties) -> SpeakerArrangementType {
-        use self::ArrangementTarget::{Cinema, Music};
-        use self::SpeakerArrangementType::*;
-        use self::SurroundConfig::*;
-        use api::SpeakerArrangementType as Raw;
-
-        // Truncating for the same reason as `ChannelInfo::from`: undefined bits
-        // in a plugin-written `i32` must not crash the host.
-        let stereo = if api::ChannelFlags::from_bits_truncate(api.flags)
-            .intersects(api::ChannelFlags::STEREO)
-        {
-            StereoChannel::Left
-        } else {
-            StereoChannel::Right
-        };
-
-        match api.arrangement_type {
-            Raw::Custom => Custom,
-            Raw::Empty => Empty,
-            Raw::Mono => Mono,
-
-            Raw::Stereo => Stereo(StereoConfig::L_R, stereo),
-            Raw::StereoSurround => Stereo(StereoConfig::Ls_Rs, stereo),
-            Raw::StereoCenter => Stereo(StereoConfig::Lc_Rc, stereo),
-            Raw::StereoSide => Stereo(StereoConfig::Sl_Sr, stereo),
-            Raw::StereoCLfe => Stereo(StereoConfig::C_Lfe, stereo),
-
-            Raw::Music30 => Surround(S3_0(Music)),
-            Raw::Cinema30 => Surround(S3_0(Cinema)),
-
-            Raw::Music31 => Surround(S3_1(Music)),
-            Raw::Cinema31 => Surround(S3_1(Cinema)),
-
-            Raw::Music40 => Surround(S4_0(Music)),
-            Raw::Cinema40 => Surround(S4_0(Cinema)),
-
-            Raw::Music41 => Surround(S4_1(Music)),
-            Raw::Cinema41 => Surround(S4_1(Cinema)),
-
-            Raw::Surround50 => Surround(S5_0),
-            Raw::Surround51 => Surround(S5_1),
-
-            Raw::Music60 => Surround(S6_0(Music)),
-            Raw::Cinema60 => Surround(S6_0(Cinema)),
-
-            Raw::Music61 => Surround(S6_1(Music)),
-            Raw::Cinema61 => Surround(S6_1(Cinema)),
-
-            Raw::Music70 => Surround(S7_0(Music)),
-            Raw::Cinema70 => Surround(S7_0(Cinema)),
-
-            Raw::Music71 => Surround(S7_1(Music)),
-            Raw::Cinema71 => Surround(S7_1(Cinema)),
-
-            Raw::Music80 => Surround(S8_0(Music)),
-            Raw::Cinema80 => Surround(S8_0(Cinema)),
-
-            Raw::Music81 => Surround(S8_1(Music)),
-            Raw::Cinema81 => Surround(S8_1(Cinema)),
-
-            Raw::Surround102 => Surround(S10_2),
         }
     }
 }

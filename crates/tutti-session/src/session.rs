@@ -321,7 +321,7 @@ pub struct MidiNodes {
     /// The clock's node.
     pub clock: NodeKey,
     /// The clock master: enable it, pick MTC and its frame rate.
-    pub clock_master: Arc<tutti_midi_runtime::ClockMaster>,
+    pub clock_master: tutti_midi_runtime::ClockControls,
 }
 
 /// Whether the root is as it was asked to be

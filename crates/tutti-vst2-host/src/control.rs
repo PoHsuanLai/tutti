@@ -5,7 +5,7 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    KeyEvent, KeyPhase, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
+    KeyEvent, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
     ParameterInfo, PluginBus, PluginClass, PluginDescriptor, PluginError, PluginResult, Preset,
     PresetId, RenderMode, RenderModeSupport, Request, StateUse, WindowHandle,
 };
@@ -15,6 +15,7 @@ use crate::host::ParameterChange;
 use crate::keys::key_code_of;
 use crate::loaded::Vst2Loaded;
 use crate::types::PluginInfo;
+use keyboard_types::KeyState;
 
 /// A `Vst2Error` as the shared vocabulary's error.
 pub(crate) fn plugin_error(error: Vst2Error) -> PluginError {
@@ -295,9 +296,9 @@ impl EditorWindow for Vst2Loaded {
         let Some(code) = key_code_of(&event, ModifierConvention::HOST) else {
             return Ok(KeyUse::Ignored);
         };
-        let used = match event.phase {
-            KeyPhase::Down => self.instance.editor_key_down(main, code),
-            KeyPhase::Up => self.instance.editor_key_up(main, code),
+        let used = match event.state {
+            KeyState::Down => self.instance.editor_key_down(main, code),
+            KeyState::Up => self.instance.editor_key_up(main, code),
         };
         Ok(if used { KeyUse::Used } else { KeyUse::Ignored })
     }

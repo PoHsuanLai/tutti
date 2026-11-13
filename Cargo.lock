@@ -1133,6 +1133,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2987,6 +2997,7 @@ dependencies = [
  "arrayvec",
  "assert_no_alloc",
  "bitflags 2.13.2",
+ "keyboard-types",
  "postcard",
  "proptest",
  "raw-window-handle",
@@ -3274,6 +3285,7 @@ dependencies = [
  "assert_no_alloc",
  "bytemuck",
  "crossbeam-queue",
+ "keyboard-types",
  "libloading 0.8.9",
  "parking_lot",
  "raw-window-handle",
@@ -3333,6 +3345,7 @@ dependencies = [
  "cc",
  "crossbeam-channel",
  "crossbeam-queue",
+ "keyboard-types",
  "parking_lot",
  "raw-window-handle",
  "tempfile",

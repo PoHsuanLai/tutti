@@ -1,6 +1,20 @@
 # CLAP spec inventory. `cargo xtask conformance-inventory clap` regenerates the
 # id, side and maturity columns from clap-sys; the others are edited by hand.
-# id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids, one per function pointer of a clap-sys vtable struct, event type or flag:
+#   clap.ext.<ext>.<fn>                 plugin side of an extension (stable or draft)
+#   clap.ext.<ext>.host.<fn>            host side of an extension
+#   clap.ext.<ext>.<part>.<fn>          a sub-table: audio_ports_config.info,
+#                                       context_menu.builder, undo.context, undo.delta, tuning.t
+#   clap.factory.<name>[.<part>].<fn>   factories and what they hand out (core;
+#                                       provider is plugin, indexer and
+#                                       metadata_receiver are host)
+#   clap.entry.<fn>, clap.plugin.<fn>, clap.host.<fn>   the core tables (core)
+#   clap.stream.<istream|ostream>.<fn>, clap.events.<input|output>.<fn>   (core)
+#   clap.event.<type>                   an event type, e.g. clap.event.note_on
+#   clap.event.flag.<flag>              an event header flag, e.g. clap.event.flag.is_live
 clap.entry.deinit | core | stable |  | entry.h | library-level teardown after the last use |  |  |
 clap.entry.get_factory | core | stable |  | entry.h | look up a factory by its id string |  |  |
 clap.entry.init | core | stable |  | entry.h | library-level setup, called once with the bundle path |  |  |

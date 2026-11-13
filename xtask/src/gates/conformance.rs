@@ -21,7 +21,8 @@
 //! nothing is half-read.
 //!
 //! A test claims rows with a last rustdoc line `/// Spec: id, id` on its `fn`
-//! (or above a case in the plugin contract's list). A tag naming an id no
+//! (or above a case in the plugin contract's list; a contract case runs on
+//! every format, so its tag lists every format's ids). A tag naming an id no
 //! inventory holds, an empty tag, or a tag that is not the last doc line is a
 //! finding. Rows no test claims are Missing, which is the work list and never
 //! a finding.
@@ -348,6 +349,27 @@ pub(super) fn check(tree: &dyn Tree, clap: Result<&dyn Tree, String>, require: b
     r
 }
 
+/// The comment lines that open `clap.txt`: its columns and id grammar.
+const HEADER: &str = "\
+# CLAP spec inventory. `cargo xtask conformance-inventory clap` regenerates the
+# id, side and maturity columns from clap-sys; the others are edited by hand.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids, one per function pointer of a clap-sys vtable struct, event type or flag:
+#   clap.ext.<ext>.<fn>                 plugin side of an extension (stable or draft)
+#   clap.ext.<ext>.host.<fn>            host side of an extension
+#   clap.ext.<ext>.<part>.<fn>          a sub-table: audio_ports_config.info,
+#                                       context_menu.builder, undo.context, undo.delta, tuning.t
+#   clap.factory.<name>[.<part>].<fn>   factories and what they hand out (core;
+#                                       provider is plugin, indexer and
+#                                       metadata_receiver are host)
+#   clap.entry.<fn>, clap.plugin.<fn>, clap.host.<fn>   the core tables (core)
+#   clap.stream.<istream|ostream>.<fn>, clap.events.<input|output>.<fn>   (core)
+#   clap.event.<type>                   an event type, e.g. clap.event.note_on
+#   clap.event.flag.<flag>              an event header flag, e.g. clap.event.flag.is_live
+";
+
 /// The text of `testing/conformance/clap.txt` for the extracted `items`: their
 /// id, side and maturity, with every other column kept from `existing` for an
 /// id that is still there; the rows keep the order of `items`.
@@ -360,11 +382,7 @@ pub(super) fn regenerate(existing: Option<&str>, items: &[Item]) -> Result<Strin
         }
         old.extend(rows.into_iter().map(|r| (r.id.clone(), r)));
     }
-    let mut out = String::from(
-        "# CLAP spec inventory. `cargo xtask conformance-inventory clap` regenerates the\n\
-         # id, side and maturity columns from clap-sys; the others are edited by hand.\n\
-         # id | side | maturity | kind | section | paraphrase | facts | na-kind | cite\n",
-    );
+    let mut out = String::from(HEADER);
     for it in items {
         let row = match old.remove(&it.id) {
             Some(mut r) => {

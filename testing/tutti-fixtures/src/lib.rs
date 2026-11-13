@@ -54,6 +54,8 @@ mod plugin;
 mod range_contract;
 pub mod sf2;
 pub mod signal;
+#[cfg(feature = "vst3-cpp")]
+mod vst3_cpp;
 
 pub use alloc_count::{ThreadCounting, allocations};
 pub use digest::{Fnv, Noise, digest, digest_planes, noise};
@@ -63,6 +65,8 @@ pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
 pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread};
 pub use range_contract::{RangeContract, check_range_contract};
+#[cfg(feature = "vst3-cpp")]
+pub use vst3_cpp::{bundle_of, vst3_cpp_bundle, vst3_cpp_module};
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

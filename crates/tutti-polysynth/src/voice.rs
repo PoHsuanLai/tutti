@@ -8,6 +8,8 @@
 //! the id is `NoteId::from_channel_note(channel, note)`, so behaviour is unchanged;
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
+use std::num::NonZeroUsize;
+
 use crate::note_id::PerNoteMap;
 use tutti_midi_protocol::{Heard, MpeZones, unit_f32_to_velocity, velocity_to_unit_f32};
 use tutti_types::{Amplitude, Semitones};
@@ -199,7 +201,7 @@ impl VoiceSlot {
 
 #[derive(Debug, Clone)]
 pub struct VoiceAllocatorConfig {
-    pub max_voices: usize,
+    pub max_voices: NonZeroUsize,
     pub strategy: AllocationStrategy,
     pub mode: VoiceMode,
     /// What a full pitch bend spans on a channel until RPN 0 says otherwise.
@@ -212,7 +214,7 @@ pub struct VoiceAllocatorConfig {
 impl Default for VoiceAllocatorConfig {
     fn default() -> Self {
         Self {
-            max_voices: 16,
+            max_voices: NonZeroUsize::new(16).unwrap(),
             strategy: AllocationStrategy::Oldest,
             mode: VoiceMode::Poly,
             bend_range: Semitones(2.0),
@@ -335,13 +337,13 @@ impl VoiceAllocator {
 
     pub fn new(config: VoiceAllocatorConfig) -> Self {
         let rules = config.rules();
-        let slots = (0..config.max_voices)
+        let slots = (0..config.max_voices.get())
             .map(|_| VoiceSlot::default())
             .collect();
         Self {
             core: Voicing::new(rules),
-            commands: Vec::with_capacity(2 * config.max_voices + 64),
-            gates: Vec::with_capacity(2 * config.max_voices + 64),
+            commands: Vec::with_capacity(2 * config.max_voices.get() + 64),
+            gates: Vec::with_capacity(2 * config.max_voices.get() + 64),
             config,
             slots,
             id_to_slot: PerNoteMap::new(),
@@ -707,8 +709,8 @@ impl Clone for VoiceAllocator {
             core: self.core.clone(),
             slots: self.slots.clone(),
             id_to_slot: self.id_to_slot.clone(),
-            commands: Vec::with_capacity(2 * self.config.max_voices + 64),
-            gates: Vec::with_capacity(2 * self.config.max_voices + 64),
+            commands: Vec::with_capacity(2 * self.config.max_voices.get() + 64),
+            gates: Vec::with_capacity(2 * self.config.max_voices.get() + 64),
         }
     }
 }

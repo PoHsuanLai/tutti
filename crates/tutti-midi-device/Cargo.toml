@@ -8,8 +8,6 @@ license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-midi-device"
 readme = "README.md"
-# Not published: whether and when this goes to crates.io is the maintainer's
-# call, not a side effect of a workspace change. Remove this line to publish.
 publish = false
 keywords = ["midi", "audio", "hot-plug"]
 categories = ["multimedia::audio"]
@@ -19,8 +17,7 @@ workspace = true
 
 [features]
 default = []
-# `Serialize`/`Deserialize` on `DeviceId`, `Identity`, `SavedDevice` and `Learned`, so a document can
-# remember a device. Restore one through `DeviceTable::resolve`.
+# `Serialize`/`Deserialize` on `DeviceId`, `Identity`, `SavedDevice` and `Learned`.
 serde = ["dep:serde", "tutti-ump/serde"]
 
 [dependencies]

@@ -4,6 +4,7 @@ use crate::capability::EndpointInfo;
 use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{DeviceOut, InputConnection, NoWatch, Watch};
 use crate::test_support::FakeBackend;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_graph::{Offset, UmpAt};
 use tutti_midi_device::EndpointId;
@@ -19,7 +20,7 @@ use tutti_midi_device::EndpointId;
 /// Inlets for four devices of 64 events, with no lead.
 fn inlets() -> Arc<DeviceInlets> {
     DeviceInlets::new(
-        4,
+        NonZeroUsize::new(4).unwrap(),
         tutti_graph::EventCapacity::of(64),
         std::time::Duration::ZERO,
     )

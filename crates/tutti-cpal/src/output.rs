@@ -57,6 +57,14 @@ impl AudioCallbackState {
 /// buffer it touches is sized once at stream build to [`MAX_FRAMES`]; a longer
 /// callback is clamped and its tail silenced rather than reallocating here.
 /// `tests/rt_no_alloc.rs` gates this against a disabled allocator.
+///
+/// # Panics
+///
+/// If a node, the executor or the engine panics, the panic propagates from
+/// here: this function is not a guard. A stream's callback runs it through
+/// [`OutputBlock::render`], which catches the panic, writes silence and stops
+/// rendering (see there); a caller on a thread of its own that a C frame
+/// called must do the same.
 #[inline]
 pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>) {
     with_no_denormals(|| state.engine.process(output));
@@ -279,8 +287,9 @@ impl AudioEngine {
         self.faults.clear();
         // The new stream has reported no delay yet.
         self.latency.reset();
-        let block =
-            OutputBlock::new(state, self.spec.channels).with_latency(Arc::clone(&self.latency));
+        let block = OutputBlock::new(state, self.spec.channels)
+            .with_latency(Arc::clone(&self.latency))
+            .with_faults(Arc::clone(&self.faults));
         let running = driver.open(&self.spec, block, Arc::clone(&self.faults))?;
         self.running = Some(Box::new(running));
         Ok(())

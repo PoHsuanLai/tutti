@@ -5,6 +5,7 @@
 //! How a unit is built.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 
 use tutti_midi_protocol::SysexDeviceId;
 use tutti_ump::MidiGroup;
@@ -15,21 +16,20 @@ use tutti_ump::MidiGroup;
 /// is refused rather than tried; 4096 is far beyond what a SoundFont plays.
 /// `new` refuses and never clamps; `of` is for a literal or a constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Polyphony(usize);
+pub struct Polyphony(NonZeroUsize);
 
 impl Polyphony {
     /// The most voices a unit can be built with.
     pub const MAX: usize = 4096;
     /// The polyphony of [`Settings::new`]: 64 voices.
-    pub const DEFAULT: Self = Self(64);
+    pub const DEFAULT: Self = Self(NonZeroUsize::new(64).unwrap());
 
     /// `voices` voices, or `None` for none or more than [`MAX`](Self::MAX).
     #[must_use]
     pub const fn new(voices: usize) -> Option<Self> {
-        if voices == 0 || voices > Self::MAX {
-            None
-        } else {
-            Some(Self(voices))
+        match NonZeroUsize::new(voices) {
+            Some(voices) if voices.get() <= Self::MAX => Some(Self(voices)),
+            _ => None,
         }
     }
 
@@ -49,6 +49,13 @@ impl Polyphony {
     /// The number of voices.
     #[must_use]
     pub const fn get(self) -> usize {
+        self.0.get()
+    }
+
+    /// The number of voices, as the count the note logic
+    /// ([`tutti_voicing::Rules::poly`]) takes.
+    #[must_use]
+    pub const fn voices(self) -> NonZeroUsize {
         self.0
     }
 }
@@ -84,9 +91,15 @@ impl TryFrom<usize> for Polyphony {
     }
 }
 
+impl From<Polyphony> for NonZeroUsize {
+    fn from(polyphony: Polyphony) -> NonZeroUsize {
+        polyphony.0
+    }
+}
+
 impl From<Polyphony> for usize {
     fn from(polyphony: Polyphony) -> usize {
-        polyphony.0
+        polyphony.get()
     }
 }
 

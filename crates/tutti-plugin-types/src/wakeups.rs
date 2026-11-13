@@ -11,34 +11,27 @@
 //!
 //! The description is plain data and the same for every format
 //! ([`Wakeups`]: descriptors with an [`Interest`] each, and the earliest
-//! deadline of the timers). A descriptor is a platform's; the one place that
-//! knows how to wait on it is the `sys` module below, selected by the one `cfg`
-//! this module carries. Where a platform has no descriptors to wait on (CLAP's
-//! posix fds are POSIX's, VST3's run loop is Linux's) no plugin ever registers
-//! one, and the wait is timers alone.
-//!
-//! Two waits use it: the plugin server's main loop blocks on its control
-//! socket, the plugin's descriptors and the earliest deadline together
+//! deadline of the timers). This crate makes no OS call: the one that waits
+//! does. The plugin server's main loop blocks on its control socket, the
+//! plugin's descriptors and the earliest deadline together
 //! (`tutti-plugin-server`'s `main_loop`), and an in-process host looks without
-//! blocking ([`service_now`], which the handle's `editor_idle` runs).
+//! blocking (`tutti-plugin-host`'s `service_now`, which the handle's
+//! `editor_idle` runs). Where a platform has no descriptors (CLAP's posix fds
+//! are POSIX's, VST3's run loop is Linux's) no plugin registers one, and the
+//! wait is timers alone.
 
 use std::time::{Duration, Instant};
 
-use crate::{EditorWindow, FdId, MainThread};
-
-#[cfg(unix)]
-#[path = "wakeups/unix.rs"]
-mod sys;
-#[cfg(not(unix))]
-#[path = "wakeups/other.rs"]
-mod sys;
+#[cfg(doc)]
+use crate::EditorWindow;
+use crate::FdId;
 
 /// Which events on a descriptor a plugin asked to hear about, or which of
 /// them are ready.
 ///
 /// A set of three: readable, writable, in an error state. Its bits are the
-/// OS layer's ([`tutti_plugin_ipc_ffi`]'s), so a format's own flag values are
-/// converted at the format.
+/// the OS layer's poll's (read 1, write 2, error 4), so a format's own flag
+/// values are converted at the format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Interest(u8);
 
@@ -46,22 +39,10 @@ impl Interest {
     /// No event.
     pub const NONE: Self = Self(0);
     /// The descriptor is readable without blocking.
-    #[cfg(unix)]
-    pub const READ: Self = Self(tutti_plugin_ipc_ffi::READ);
-    /// The descriptor is writable without blocking.
-    #[cfg(unix)]
-    pub const WRITE: Self = Self(tutti_plugin_ipc_ffi::WRITE);
-    /// The descriptor is in an error state.
-    #[cfg(unix)]
-    pub const ERROR: Self = Self(tutti_plugin_ipc_ffi::ERROR);
-    /// The descriptor is readable without blocking.
-    #[cfg(not(unix))]
     pub const READ: Self = Self(1 << 0);
     /// The descriptor is writable without blocking.
-    #[cfg(not(unix))]
     pub const WRITE: Self = Self(1 << 1);
     /// The descriptor is in an error state.
-    #[cfg(not(unix))]
     pub const ERROR: Self = Self(1 << 2);
 
     /// The events of both.
@@ -88,13 +69,13 @@ impl Interest {
         self.0 == 0
     }
 
-    /// The bits the OS layer speaks.
+    /// The set as bits (read 1, write 2, error 4), for a host that waits.
     #[must_use]
     pub const fn bits(self) -> u8 {
         self.0
     }
 
-    /// The set of the OS layer's `bits`; bits it has no event for are dropped.
+    /// The set of `bits` (see [`bits`](Self::bits)); bits with no event are dropped.
     #[must_use]
     pub const fn from_bits(bits: u8) -> Self {
         Self(bits & (Self::READ.0 | Self::WRITE.0 | Self::ERROR.0))
@@ -190,45 +171,6 @@ impl Wakeups {
     pub fn until_due(&self, now: Instant) -> Option<Duration> {
         self.deadline.map(|d| d.saturating_duration_since(now))
     }
-
-    /// Looks, without waiting, for which watched descriptors are ready, into
-    /// `ready` (replacing its contents). Where the platform has no descriptors
-    /// to look at, nothing is.
-    pub fn poll_now(&self, ready: &mut Vec<Ready>) {
-        ready.clear();
-        sys::poll_now(&self.watches, ready);
-    }
-}
-
-thread_local! {
-    /// The buffers [`service_now`] reuses, so a plugin with descriptors costs no
-    /// allocation per pass. Main thread only: `service_now` takes the token.
-    static SCRATCH: std::cell::Cell<Option<Box<(Wakeups, Vec<Ready>)>>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// One non-blocking pass over what `plugin` wants waited on: asks it
-/// ([`EditorWindow::wakeups`]), looks at its descriptors and the clock without
-/// waiting, and hands it what fired ([`EditorWindow::wake`]).
-///
-/// What an in-process host does where the plugin server's main loop would
-/// block: the handle's `editor_idle` calls it each frame. Cheap when the plugin
-/// has nothing registered: one empty description and no clock read.
-pub fn service_now(plugin: &mut dyn EditorWindow, main: &MainThread) {
-    // Taken out for the pass, so a handler that re-enters finds it empty and
-    // works on a fresh pair.
-    let mut scratch = SCRATCH.take().unwrap_or_default();
-    let (wakeups, ready) = &mut *scratch;
-    wakeups.clear();
-    plugin.wakeups(main, wakeups);
-    if !wakeups.is_empty() {
-        wakeups.poll_now(ready);
-        let now = Instant::now();
-        if !ready.is_empty() || wakeups.is_due(now) {
-            plugin.wake(main, ready, now);
-        }
-    }
-    SCRATCH.set(Some(scratch));
 }
 
 #[cfg(test)]
@@ -272,91 +214,5 @@ mod tests {
         assert_eq!(rw.intersection(Interest::WRITE), Interest::WRITE);
         assert_eq!(Interest::from_bits(rw.bits() | 0x80), rw);
         assert!(Interest::NONE.is_empty() && !rw.is_empty());
-    }
-
-    /// Descriptors are POSIX's: the pass over a real one is one `cfg` here.
-    #[cfg(unix)]
-    mod service {
-        use super::*;
-
-        /// A plugin that asks for one descriptor and a timer, and records what it
-        /// is woken with.
-        struct Asks {
-            fd: FdId,
-            deadline: Instant,
-            woken: Vec<(Vec<Ready>, Instant)>,
-        }
-
-        impl EditorWindow for Asks {
-            fn has_editor(&self, _: &MainThread) -> bool {
-                false
-            }
-            fn open_editor(
-                &mut self,
-                _: &MainThread,
-                _: crate::WindowHandle,
-                _: crate::ContentScale,
-            ) -> crate::PluginResult<crate::EditorSize> {
-                unreachable!("no editor")
-            }
-            fn close_editor(&mut self, _: &MainThread) {}
-            fn editor_idle(&mut self, _: &MainThread) {}
-            fn editor_capabilities(&mut self, _: &MainThread) -> crate::EditorCapabilities {
-                crate::EditorCapabilities::default()
-            }
-            fn set_editor_size(
-                &mut self,
-                _: &MainThread,
-                _: crate::EditorSize,
-            ) -> crate::PluginResult<crate::EditorSize> {
-                unreachable!("no editor")
-            }
-            fn poll_editor_resize_request(&mut self, _: &MainThread) -> Option<crate::EditorSize> {
-                None
-            }
-            fn wakeups(&mut self, _: &MainThread, out: &mut Wakeups) {
-                out.watch(self.fd, Interest::READ);
-                out.due_at(self.deadline);
-            }
-            fn wake(&mut self, _: &MainThread, ready: &[Ready], now: Instant) {
-                self.woken.push((ready.to_vec(), now));
-            }
-        }
-
-        /// **A pass wakes the plugin when a descriptor it asked for is readable or
-        /// its timer is due, and only then.**
-        #[test]
-        fn a_pass_wakes_the_plugin_with_what_fired_and_not_otherwise() {
-            use std::io::Write;
-            use std::os::fd::AsRawFd;
-            let main = MainThread::claim().expect("one test, one process");
-            let (reader, mut writer) = std::io::pipe().unwrap();
-            let mut plugin = Asks {
-                fd: FdId(reader.as_raw_fd()),
-                deadline: Instant::now() + Duration::from_secs(3600),
-                woken: Vec::new(),
-            };
-            service_now(&mut plugin, &main);
-            assert!(plugin.woken.is_empty(), "nothing readable, nothing due");
-            writer.write_all(b"x").unwrap();
-            service_now(&mut plugin, &main);
-            let (ready, _) = &plugin.woken[0];
-            assert_eq!(
-                ready,
-                &[Ready {
-                    fd: plugin.fd,
-                    events: Interest::READ
-                }]
-            );
-            // Drained, and its timer due: it is woken with nothing ready.
-            let mut byte = [0u8; 1];
-            std::io::Read::read_exact(&mut &reader, &mut byte).unwrap();
-            service_now(&mut plugin, &main);
-            assert_eq!(plugin.woken.len(), 1, "drained and not due");
-            plugin.deadline = Instant::now();
-            service_now(&mut plugin, &main);
-            assert_eq!(plugin.woken.len(), 2, "a due timer wakes it too");
-            assert!(plugin.woken[1].0.is_empty());
-        }
     }
 }

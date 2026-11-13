@@ -61,7 +61,18 @@ impl Native {
             self.wait_on(stream, wakeups, timeout, ready)?
         } else {
             let readable = transport.wait_readable(timeout.min(NO_DESCRIPTOR_SLICE))?;
-            wakeups.poll_now(ready);
+            self.asked.clear();
+            self.asked.extend(
+                wakeups
+                    .watches()
+                    .iter()
+                    .map(|w| (w.fd.0, w.interest.bits())),
+            );
+            tutti_plugin_ipc_ffi::poll_now(&self.asked, &mut self.got);
+            ready.extend(self.got.iter().map(|&(fd, bits)| Ready {
+                fd: FdId(fd),
+                events: Interest::from_bits(bits),
+            }));
             readable
         };
         self.pump(main);

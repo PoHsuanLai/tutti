@@ -48,12 +48,12 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
 
     // Before the floor has passed the loop is not woken for it, and the timer
     // is not latched.
-    tutti_plugin_types::service_now(&mut editor, &main);
+    EditorWindow::wake(&mut editor, &main, &[], std::time::Instant::now());
     editor.editor_idle(&main);
     assert_eq!(read().sites[tick].visits, 0, "not before its wake-up");
 
     std::thread::sleep(std::time::Duration::from_millis(30));
-    tutti_plugin_types::service_now(&mut editor, &main);
+    EditorWindow::wake(&mut editor, &main, &[], std::time::Instant::now());
     editor.editor_idle(&main);
     assert_eq!(read().sites[tick].visits, 1, "a period-0 timer is due");
 }

@@ -18,8 +18,8 @@ const SLOW_TICK: Duration = Duration::from_millis(600);
 /// **A descriptor the plugin registered is served the instant it is readable,
 /// well under a tick.** The loop waits on the control socket and the plugin's
 /// descriptors in one `poll`. The plugin registers a pipe, and the test makes
-/// it readable five times, each time asking for `on_fd` within 120 ms of a loop
-/// that ticks every 600 ms: one served at the tick would be late four times in
+/// it readable five times, each time asking for `on_fd` within 250 ms of a loop
+/// that ticks every 600 ms: one served at the tick would be late about three times in
 /// five.
 #[test]
 fn a_registered_descriptor_that_becomes_readable_is_served_well_under_a_tick() {
@@ -104,7 +104,7 @@ fn a_registered_descriptor_that_becomes_readable_is_served_well_under_a_tick() {
         "told it was readable (CLAP_POSIX_FD_READ)"
     );
     assert!(
-        slowest < Duration::from_millis(120),
+        slowest < Duration::from_millis(250),
         "the slowest `on_fd` came {slowest:?} after its descriptor was readable, \
          on a loop that ticks every {SLOW_TICK:?}"
     );

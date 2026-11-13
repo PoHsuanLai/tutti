@@ -141,6 +141,7 @@ const ONLY: &[(&str, &[&str])] = &[
             "tutti-types",
             "tutti-rt",
             "tutti-ump",
+            "tutti-plugin-ipc-ffi",
         ],
     ),
     // The server is `Ipc` hosting over the served formats (design 021 sections

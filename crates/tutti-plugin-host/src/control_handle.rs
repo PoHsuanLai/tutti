@@ -40,11 +40,11 @@ pub trait MainThreadControl: Send + Sync {
     /// One non-blocking pass over what the plugin asked the host to wait on:
     /// its descriptors looked at and its timers checked against the clock, and
     /// what is ready handed back
-    /// ([`service_now`](tutti_plugin_types::service_now)). The wait the plugin
+    /// ([`service_now`](crate::service_now)). The wait the plugin
     /// server's main loop blocks in, as an in-process host without a loop of its
     /// own can make it, between frames. A plugin that is lost is not asked.
     fn service_wakeups(&self, main: &MainThread) {
-        self.lend(&mut |control| tutti_plugin_types::service_now(control, main));
+        self.lend(&mut |control| crate::service_now(control, main));
     }
 }
 

@@ -203,8 +203,20 @@ impl RunLoop {
     pub(crate) fn run_iteration(&self, main: &MainThread) {
         let mut wakeups = Wakeups::new();
         self.describe(&mut wakeups);
-        let mut ready = Vec::new();
-        wakeups.poll_now(&mut ready);
+        let asked: Vec<(i32, u8)> = wakeups
+            .watches()
+            .iter()
+            .map(|w| (w.fd.0, w.interest.bits()))
+            .collect();
+        let mut got = Vec::new();
+        tutti_plugin_ipc_ffi::poll_now(&asked, &mut got);
+        let ready: Vec<Ready> = got
+            .into_iter()
+            .map(|(fd, bits)| Ready {
+                fd: FdId(fd),
+                events: Interest::from_bits(bits),
+            })
+            .collect();
         self.dispatch(main, &ready, Instant::now());
     }
 

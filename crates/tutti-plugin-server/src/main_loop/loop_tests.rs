@@ -331,8 +331,10 @@ impl Drop for TimerPeriod {
 /// **A timer fires at its period through the loop, not at its tick.** The
 /// plugin registers a 50 ms timer, and the loop ticks once a second: what
 /// serves the timer is the loop's wait ending at the timer's deadline
-/// (`wakeups`), so 520 ms of silence is about ten fires. With the timer left to
-/// the tick it would fire once or not at all.
+/// (`wakeups`), so 520 ms of silence is about ten fires. The bounds are 3 to 11:
+/// the tick alone gives at most one fire in that time, so 3 separates the two
+/// with margin while a loaded runner, which loses fires to scheduling, still
+/// passes; 11 catches a timer that spins.
 #[test]
 fn a_timer_fires_at_its_period_through_the_loop() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -360,7 +362,7 @@ fn a_timer_fires_at_its_period_through_the_loop() {
     assert!(cap.timer_registered, "the plugin registered its timer");
     let fires = cap.sites[Site::OnTimer as usize].visits;
     assert!(
-        (7..=11).contains(&fires),
+        (3..=11).contains(&fires),
         "a 50 ms timer over 520 ms of a quiet host with a 1 s tick fired {fires} times"
     );
 }

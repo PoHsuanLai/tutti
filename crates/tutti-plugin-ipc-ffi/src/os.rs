@@ -6,7 +6,9 @@
 //! it (what a failure to ask means, how long to wait) stays with the caller.
 
 #[cfg(unix)]
-use std::os::fd::{AsRawFd, BorrowedFd};
+use rustix::event::{PollFd, PollFlags};
+#[cfg(unix)]
+use std::os::fd::BorrowedFd;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, BorrowedHandle};
 
@@ -19,18 +21,17 @@ use std::os::windows::io::{AsRawHandle, BorrowedHandle};
 /// included: a signal during the wait is the caller's to retry.
 #[cfg(unix)]
 pub fn wait_readable(fd: BorrowedFd<'_>, timeout_ms: i32) -> std::io::Result<bool> {
-    let mut pollfd = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: `pollfd` is a live, correctly initialised single-element array,
-    // and `fd` is borrowed for the duration of this call.
-    let n = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-    if n < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(n > 0)
+    let mut polls = [PollFd::from_borrowed_fd(fd, PollFlags::IN)];
+    Ok(rustix::event::poll(&mut polls, timeout(timeout_ms).as_ref())? > 0)
+}
+
+/// A millisecond timeout as `poll`'s: negative waits for ever.
+#[cfg(unix)]
+fn timeout(ms: i32) -> Option<rustix::event::Timespec> {
+    u64::try_from(ms).ok().map(|ms| rustix::event::Timespec {
+        tv_sec: (ms / 1000) as _,
+        tv_nsec: ((ms % 1000) * 1_000_000) as _,
+    })
 }
 
 /// The readiness bit for "readable" in [`Poller`]'s interest and answers.
@@ -45,15 +46,15 @@ pub const WRITE: u8 = 1 << 1;
 pub const ERROR: u8 = 1 << 2;
 
 /// Waits on one descriptor of the caller's own and any number of others a
-/// plugin asked to have watched, in one `poll(2)`, reusing its scratch so a
-/// steady watch set allocates nothing.
+/// plugin asked to have watched, in one `poll(2)`.
+///
+/// A plugin's descriptor arrives as a plain number, and borrowing it is the one
+/// `unsafe` of this type.
 ///
 /// Interest and answers are the [`READ`], [`WRITE`] and [`ERROR`] bits.
 #[cfg(unix)]
 #[derive(Debug, Default)]
-pub struct Poller {
-    polls: Vec<libc::pollfd>,
-}
+pub struct Poller;
 
 #[cfg(unix)]
 impl Poller {
@@ -78,70 +79,67 @@ impl Poller {
         ready: &mut Vec<(i32, u8)>,
     ) -> std::io::Result<bool> {
         ready.clear();
-        self.polls.clear();
-        if let Some(own) = own {
-            self.polls.push(libc::pollfd {
-                fd: own.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            });
-        }
-        let skip = self.polls.len();
-        self.polls.extend(watched.iter().map(|&(fd, interest)| {
-            let mut events = 0;
-            if interest & READ != 0 {
-                events |= libc::POLLIN;
-            }
-            if interest & WRITE != 0 {
-                events |= libc::POLLOUT;
-            }
-            libc::pollfd {
-                fd,
-                events,
-                revents: 0,
-            }
-        }));
-        if self.polls.is_empty() {
+        if own.is_none() && watched.is_empty() {
             std::thread::sleep(std::time::Duration::from_millis(
                 u64::try_from(timeout_ms).unwrap_or(0),
             ));
             return Ok(false);
         }
-        // SAFETY: `polls` is a live, initialised array of `polls.len()`
-        // `pollfd`s that `poll` reads and writes only within that length; `own`
-        // is borrowed for the call. A descriptor that is not open answers
-        // `POLLNVAL` rather than faulting.
-        let n = unsafe {
-            libc::poll(
-                self.polls.as_mut_ptr(),
-                self.polls.len() as libc::nfds_t,
-                timeout_ms,
-            )
-        };
-        if n < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if n == 0 {
+        let mut polls: Vec<PollFd<'_>> = Vec::with_capacity(watched.len() + 1);
+        polls.extend(own.map(|own| PollFd::from_borrowed_fd(own, PollFlags::IN)));
+        let skip = polls.len();
+        polls.extend(watched.iter().map(|&(fd, interest)| {
+            let mut events = PollFlags::empty();
+            if interest & READ != 0 {
+                events |= PollFlags::IN;
+            }
+            if interest & WRITE != 0 {
+                events |= PollFlags::OUT;
+            }
+            // SAFETY: the descriptor is a plain number the plugin registered
+            // with the host, borrowed only for this one `poll` call, which its
+            // registration keeps open; if it is not open `poll` answers
+            // `NVAL` and nothing is read from or written to it.
+            let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+            PollFd::from_borrowed_fd(fd, events)
+        }));
+        if rustix::event::poll(&mut polls, timeout(timeout_ms).as_ref())? == 0 {
             return Ok(false);
         }
-        let own_ready = skip == 1 && self.polls[0].revents != 0;
-        ready.extend(self.polls[skip..].iter().zip(watched).filter_map(
-            |(poll, &(fd, interest))| {
-                let mut now = 0;
-                if poll.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
-                    now |= READ;
-                }
-                if poll.revents & libc::POLLOUT != 0 {
-                    now |= WRITE;
-                }
-                if poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-                    now |= ERROR;
-                }
-                let now = now & interest;
-                (now != 0).then_some((fd, now))
-            },
-        ));
+        let own_ready = skip == 1 && !polls[0].revents().is_empty();
+        ready.extend(
+            polls[skip..]
+                .iter()
+                .zip(watched)
+                .filter_map(|(poll, &(fd, interest))| {
+                    let got = poll.revents();
+                    let mut now = 0;
+                    if got.intersects(PollFlags::IN | PollFlags::HUP) {
+                        now |= READ;
+                    }
+                    if got.contains(PollFlags::OUT) {
+                        now |= WRITE;
+                    }
+                    if got.intersects(PollFlags::ERR | PollFlags::NVAL) {
+                        now |= ERROR;
+                    }
+                    let now = now & interest;
+                    (now != 0).then_some((fd, now))
+                }),
+        );
         Ok(own_ready)
+    }
+}
+
+/// Looks, without waiting, at which of `watched` (descriptor, interest bits)
+/// are ready, into `ready` (replacing its contents), through a [`Poller`] whose
+/// scratch the calling thread keeps. A failed look is none ready: the
+/// descriptors are looked at again on the next call.
+#[cfg(unix)]
+pub fn poll_now(watched: &[(i32, u8)], ready: &mut Vec<(i32, u8)>) {
+    ready.clear();
+    if !watched.is_empty() && Poller.wait(None, watched, 0, ready).is_err() {
+        ready.clear();
     }
 }
 
@@ -155,12 +153,12 @@ impl Poller {
 #[cfg(unix)]
 #[must_use]
 pub fn process_exists(pid: i32) -> bool {
-    // SAFETY: signal 0 sends nothing; `kill` only performs its checks. Scalar
-    // arguments, no memory touched.
-    if unsafe { libc::kill(pid, 0) } == 0 {
+    use rustix::io::Errno;
+    // A number that is no process id (zero, negative) is a failure to ask.
+    let Some(pid) = rustix::process::Pid::from_raw(pid) else {
         return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    };
+    !matches!(rustix::process::test_kill_process(pid), Err(Errno::SRCH))
 }
 
 /// Whether the process `pid` is still running, on Windows.
@@ -304,7 +302,7 @@ mod tests {
         use std::os::fd::{AsFd, AsRawFd};
         let (watched, mut writer) = std::io::pipe().unwrap();
         let (own, _own_writer) = std::io::pipe().unwrap();
-        let mut poller = Poller::default();
+        let mut poller = Poller;
         let mut ready = Vec::new();
         let fd = watched.as_raw_fd();
         let own_ready = poller

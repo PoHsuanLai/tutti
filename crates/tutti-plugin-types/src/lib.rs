@@ -120,7 +120,7 @@ pub use metadata::{
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 pub use midi_intake::MidiIntake;
 pub use tutti_graph::BusRole;
-pub use wakeups::{Interest, Ready, Wakeups, Watch, service_now};
+pub use wakeups::{Interest, Ready, Wakeups, Watch};
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use locate::{Helper, Locator};

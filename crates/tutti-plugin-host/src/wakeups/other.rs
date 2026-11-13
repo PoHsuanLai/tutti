@@ -2,7 +2,9 @@
 //! VST3's run loop are POSIX and Linux), a plugin registers none, and a look
 //! finds nothing ready.
 
-use super::{Ready, Watch};
+use tutti_plugin_types::{Ready, Wakeups};
 
 /// Nothing to look at.
-pub(super) fn poll_now(_watches: &[Watch], _ready: &mut Vec<Ready>) {}
+pub(super) fn poll_now(_wakeups: &Wakeups, ready: &mut Vec<Ready>) {
+    ready.clear();
+}

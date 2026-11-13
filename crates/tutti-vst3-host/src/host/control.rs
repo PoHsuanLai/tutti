@@ -555,7 +555,7 @@ impl EditorWindow for Vst3Loaded {
     /// together ([`wakeups`](EditorWindow::wakeups)) and hands back what fired
     /// ([`wake`](EditorWindow::wake)); the plugin server's loop blocks on them,
     /// and an in-process host's `editor_idle` looks without blocking
-    /// ([`service_now`](tutti_plugin_types::service_now)). A format that scanned
+    /// (`tutti-plugin-host`'s `service_now`). A format that scanned
     /// them from this tick would run a loop of its own beside the host's.
     ///
     /// The handlers are plugin GUI code reaching into its X connection, and the

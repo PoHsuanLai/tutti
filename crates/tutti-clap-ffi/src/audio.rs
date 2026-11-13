@@ -435,8 +435,15 @@ impl AudioSide {
     }
 
     /// `plugin.stop_processing` if processing; a no-op once retired.
+    ///
+    /// Never waits: a recall runs this on the audio thread, and the main
+    /// thread may hold the instance then (a parameter flush). The plugin is
+    /// left processing in that case, and the next deactivation stops it under
+    /// its own claim, as CLAP requires before `deactivate`.
     pub fn stop(&mut self) {
-        let _claim = self.core.roles.claim();
+        let Some(_claim) = self.core.roles.try_claim() else {
+            return;
+        };
         if self.is_retired() || !self.core.processing.swap(false, Ordering::Relaxed) {
             return;
         }

@@ -544,7 +544,7 @@ fn the_controller_serves_reads_while_the_processor_renders() {
 /// takes), a block is refused at once and the plugin is not called; a `reset`
 /// asked for meanwhile is not lost, and the next block runs it first.
 #[test]
-fn a_block_the_main_thread_holds_is_refused_and_a_reset_meanwhile_is_owed() {
+fn a_block_the_main_thread_holds_is_refused_a_reset_meanwhile_is_owed_and_a_stop_does_not_wait() {
     let probe = Probe::acquire();
     let (mut processor, controller) = probe
         .load()
@@ -560,11 +560,14 @@ fn a_block_the_main_thread_holds_is_refused_and_a_reset_meanwhile_is_owed() {
         processor.reset();
         assert_eq!(visits(Site::Process), process, "the plugin was not called");
         assert_eq!(visits(Site::Reset), reset, "the reset waits for the claim");
+        processor.stop();
+        assert!(processor.is_processing(), "a stop meanwhile does not wait");
     }
     render(&mut processor, SampleFormat::Float32).expect("the next block runs");
     assert_eq!(visits(Site::Reset), reset + 1, "the owed reset ran");
     assert_eq!(visits(Site::Process), process + 1);
     processor.stop();
+    assert!(!processor.is_processing(), "an uncontended stop stops");
 }
 
 fn peek_param(id: u32) -> Option<f64> {

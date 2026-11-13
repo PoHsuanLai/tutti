@@ -153,13 +153,15 @@ impl ClapProcessor {
     }
 
     /// Ends processing (`stop_processing`) if it started, under the audio
-    /// claim. The next `process` starts it again.
+    /// claim. The next `process` starts it again. Never waits: while the main
+    /// thread holds the instance the plugin stays processing, and the next
+    /// deactivation stops it.
     pub fn stop(&mut self) {
         let was_processing = self.audio_side.is_processing();
         self.audio_side.stop();
         // The CLAP steady_time counter is per start/stop cycle — reset it so
         // the next start_processing begins the monotonic sequence at 0.
-        if was_processing && !self.audio_side.is_retired() {
+        if was_processing && !self.audio_side.is_processing() && !self.audio_side.is_retired() {
             self.scratch.steady_time = 0;
         }
     }

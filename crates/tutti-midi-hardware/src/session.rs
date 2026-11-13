@@ -37,14 +37,14 @@ use tutti_graph::UmpAt;
 
 use crate::HardwareMidiInputs;
 use crate::backend;
-use crate::ci::{CiChange, CiPeerInfo};
+use crate::ci::{CiChange, CiPeerInfo, Heard};
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo};
 use tutti_midi_runtime::{DeviceInlets, MidiOut, Outgoing};
-use tutti_ump::StreamConfig;
+use tutti_ump::{DeviceIdentity, StreamConfig};
 
 /// The set of open MIDI connections, and the endpoints available to open.
 ///
@@ -77,6 +77,9 @@ struct Inner {
     ports: Arc<HardwareMidiInputs>,
     /// The devices present, and the backend that opens them.
     devices: Devices,
+    /// The identity MIDI-CI is enabled with; none while it is off, which is
+    /// the default ([`MidiSession::enable_ci`]).
+    ci_identity: Mutex<Option<DeviceIdentity>>,
 }
 
 /// What is currently connected.
@@ -97,6 +100,8 @@ struct Held {
     /// Whether the port's input edge is copying SysEx7 packets to the stream
     /// ring, for the Identity Request or MIDI-CI.
     hearing: bool,
+    /// How many stream-ring packets the port had lost when it was last read.
+    lost_seen: u64,
     input: OpenInput,
 }
 
@@ -229,6 +234,7 @@ impl MidiSession {
                 open: Mutex::new(Open::default()),
                 ports: Arc::new(HardwareMidiInputs::new(inlets)),
                 devices: Devices::open_over(backend)?,
+                ci_identity: Mutex::new(None),
             }),
         })
     }
@@ -278,7 +284,7 @@ impl MidiSession {
     ///
     /// The device's output, if it has one, is opened too, for discovery alone
     /// (the UMP Stream negotiation, or a MIDI 1.0 port's Identity Request, then
-    /// MIDI-CI, all stepped by [`poll`](Self::poll)): it is not the session's output, which
+    /// MIDI-CI once enabled, all stepped by [`poll`](Self::poll)): it is not the session's output, which
     /// [`output`](Self::output) reports and [`connect_output`](Self::connect_output)
     /// chooses, and it closes with the input. An output that will not open
     /// leaves the input connected and the device as the OS describes it.
@@ -317,6 +323,7 @@ impl MidiSession {
             Held {
                 stream: Negotiation::new(os, out),
                 hearing: false,
+                lost_seen: 0,
                 input,
             },
         );
@@ -459,15 +466,33 @@ impl MidiSession {
     /// rings and sends.
     pub fn poll(&self, now: Instant) -> std::vec::IntoIter<Polled> {
         let mut polled = Vec::new();
+        let ci = self.ci_identity();
         let mut open = self.inner.open();
         for (id, held) in &mut open.inputs {
             let slot = held.input.slot();
             // The copy of the SysEx7 packets is on before a request goes out
             // and before MIDI-CI starts, which a step decides a poll ahead
             // (`Ci::Idle`), and off once nothing listens.
-            self.sync_hearing(held);
+            self.sync_hearing(held, ci.is_some());
+            // The ring's loss is read either side of the drain (`Heard`).
+            let lost = || {
+                self.inner
+                    .ports
+                    .port_info(slot)
+                    .map_or(0, |p| p.stream_lost)
+            };
+            let before = lost();
             let said: Vec<_> = self.inner.ports.drain_stream(slot).collect();
-            let stepped = held.stream.poll(now, &said);
+            let after = lost();
+            let heard = Heard {
+                packets: &said,
+                lost_before: before > held.lost_seen,
+                lost_during: after > before,
+            };
+            held.lost_seen = after;
+            let stepped = held.stream.poll(now, &heard, ci);
+            // Off the moment nothing listens, so no packet is kept for no one.
+            self.sync_hearing(held, ci.is_some());
             if let Some(stream) = stepped.stream {
                 polled.push(Polled::Stream(id.clone(), Box::new(stream)));
             }
@@ -491,15 +516,51 @@ impl MidiSession {
     }
 
     /// Makes the port's copy of SysEx7 packets what the negotiation wants.
-    fn sync_hearing(&self, held: &mut Held) {
+    fn sync_hearing(&self, held: &mut Held, ci: bool) {
         let slot = held.input.slot();
-        let want = held.stream.hears_sysex();
+        let want = held.stream.hears_sysex(ci);
         if want && !held.hearing {
             held.hearing = self.inner.ports.hear_sysex(slot, true);
         } else if !want && held.hearing {
             self.inner.ports.hear_sysex(slot, false);
             held.hearing = false;
         }
+    }
+
+    /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off until
+    /// this is called**: a Discovery carries a System Exclusive manufacturer
+    /// id, tutti has none, and the one MIDI 1.0 sets aside for non-commercial use
+    /// (`7D`) "is not to be used on any product released to the public". So
+    /// the app says who it is, with the id it registered.
+    ///
+    /// It reaches every open input (a device on one starts at the next
+    /// [`poll`](Self::poll), after any Identity Request in progress has ended)
+    /// and every input opened later. Calling it again with another identity
+    /// restarts the devices under it, the old ones announcing their end as
+    /// [`disable_ci`](Self::disable_ci) does.
+    pub fn enable_ci(&self, identity: DeviceIdentity) {
+        *self.ci_identity_lock() = Some(identity);
+    }
+
+    /// Turns MIDI-CI off: at the next [`poll`](Self::poll) every running device
+    /// sends an Invalidate MUID for its own MUID (M2-101 §5.9 lists a shutdown
+    /// among its reasons: its peers learn at once, not by silence), its peers
+    /// are reported as lost, and the ports copy no more SysEx for it.
+    pub fn disable_ci(&self) {
+        *self.ci_identity_lock() = None;
+    }
+
+    /// The identity MIDI-CI is enabled with, or `None` while it is off.
+    #[must_use]
+    pub fn ci_identity(&self) -> Option<DeviceIdentity> {
+        *self.ci_identity_lock()
+    }
+
+    fn ci_identity_lock(&self) -> std::sync::MutexGuard<'_, Option<DeviceIdentity>> {
+        self.inner
+            .ci_identity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The MIDI-CI peers found on the open input `id`, by Group then MUID:

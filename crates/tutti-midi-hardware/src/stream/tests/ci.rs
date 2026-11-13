@@ -8,7 +8,7 @@ use tutti_midi_device::{
     CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiMessage, Decoded, Destination, DiscoveryData,
     INQUIRY_TIMEOUT, MaxSysexSize, Muid,
 };
-use tutti_ump::{ManufacturerId, MidiGroup, U7};
+use tutti_ump::{MidiGroup, U7};
 
 const GROUP_0: MidiGroup = MidiGroup::of(0);
 
@@ -75,6 +75,7 @@ fn endpoint_wire(blocks: &[FunctionBlock]) -> Wire {
         PortDirection::Duplex,
         endpoint_of(blocks),
     );
+    wire.session.enable_ci(identity());
     wire.session.connect_input(&wire.id.clone()).unwrap();
     // One Function Block Discovery per declared block takes a few ticks.
     let settled = (0..32).any(|ms| !wire.tick(ms).1.is_empty());
@@ -91,6 +92,7 @@ fn endpoint_wire(blocks: &[FunctionBlock]) -> Wire {
 /// started, with the MUID it drew; what was sent so far is read off.
 fn midi1_running() -> (Wire, Muid) {
     let wire = midi1_wire();
+    wire.session.enable_ci(identity());
     let _ = polled(&wire, 0);
     reply_at(&wire, identity_reply(0), 10);
     let _ = polled(&wire, 20);
@@ -127,10 +129,12 @@ fn a_function_block_that_declares_midi_ci_is_sent_discovery_on_its_first_group()
         panic!("a Discovery");
     };
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
-    // The body (Table 6): the Non-Commercial id `7D 00 00` and zeros (family,
-    // model, revision), no categories, 512 as four 7-bit bytes, Output Path 0.
-    assert_eq!(payload[13..16], [0x7D, 0x00, 0x00]);
-    assert_eq!(payload[16..24], [0; 8]);
+    // The body (Table 6): exactly the app's identity (`identity()`: manufacturer
+    // `41 00 00`, family 1 2, model 3 4, revision 5 6 7 8), no categories, 512 as
+    // four 7-bit bytes, Output Path 0.
+    assert_eq!(payload[13..16], [0x41, 0x00, 0x00]);
+    assert_eq!(payload[16..24], [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(data.identity, identity());
     assert_eq!(payload[24], 0);
     assert_eq!(payload[25..29], [0x00, 0x04, 0x00, 0x00]);
     assert_eq!(payload[29], 0);
@@ -170,6 +174,7 @@ fn an_endpoint_with_no_blocks_or_no_answer_gets_discovery_on_group_0() {
         PortDirection::Duplex,
         Endpoint::new(Capabilities::default()),
     );
+    wire.session.enable_ci(identity());
     wire.session.connect_input(&wire.id.clone()).unwrap();
     let step = STEP_TIMEOUT.as_millis() as u64;
     for ms in [0, step, 2 * step, 3 * step + 1, 3 * step + 2] {
@@ -212,6 +217,7 @@ fn a_midi1_port_is_sent_discovery_only_after_the_identity_inquiry_ended() {
     let ms = INQUIRY_TIMEOUT.as_millis() as u64;
     for answered in [true, false] {
         let wire = midi1_wire();
+        wire.session.enable_ci(identity());
         let mut order = String::new();
         for step in 0..8 {
             if answered && step == 1 {
@@ -289,7 +295,7 @@ fn a_discovery_a_peer_sends_is_answered_long_after_the_window_closed() {
     assert_eq!((header.source, *to), (ours, peer()));
     assert_eq!(data.output_path_id, U7::of(5));
     assert_eq!(data.function_block, None);
-    assert_eq!(data.identity.manufacturer, ManufacturerId::NON_COMMERCIAL);
+    assert_eq!(data.identity, identity());
     assert!(wire.session.ci_peers(&wire.id).is_empty());
 }
 
@@ -348,6 +354,7 @@ fn a_sysex_that_is_not_midi_ci_is_ignored() {
 fn nothing_midi_ci_reaches_the_sessions_output_and_the_graph_still_hears_sysex() {
     use crate::testing::Rig;
     let wire = midi1_wire();
+    wire.session.enable_ci(identity());
     let other = EndpointId::from_raw(8);
     wire.counters.plug(
         crate::test_support::endpoint(8, "Other"),
@@ -435,5 +442,196 @@ fn a_reply_to_discovery_is_addressed_to_one_device() {
     assert_eq!(
         sent.first().map(|(_, m)| m.destination()),
         Some(Destination::Muid(peer()))
+    );
+}
+
+/// Once the inquiry has given up on a silent device, an enabled MIDI-CI takes over the
+/// port's copy of the device's SysEx7 packets (it stays on, and the graph still
+/// hears them, the next test), and no Identity Request is sent again: what
+/// goes out is MIDI-CI's.
+#[test]
+fn after_giving_up_the_sysex_copy_stays_on_for_midi_ci_and_no_request_is_sent() {
+    use tutti_midi_device::INQUIRY_ATTEMPTS;
+    let wire = midi1_wire();
+    wire.session.enable_ci(identity());
+    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
+    // The request, its one retry, then the poll that gives up, then the one
+    // that starts MIDI-CI.
+    for step in 0..=u64::from(INQUIRY_ATTEMPTS) + 1 {
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+    }
+    let slot = wire.session.ports().list_input_ports()[0].id;
+    let _ = received(&wire);
+    // Whatever the ring holds from the inquiry is read off.
+    let _ = wire.session.ports().drain_stream(slot).count();
+
+    reply_at(&wire, identity_reply(0), 10 * ms);
+    assert_eq!(
+        wire.session.ports().drain_stream(slot).count(),
+        identity_reply(0).len(),
+        "the copy is on while MIDI-CI runs"
+    );
+    for step in 10..13 {
+        let _ = wire.session.poll(wire.at(step * ms)).count();
+    }
+    assert_eq!(identity_requests(&received(&wire)), 0);
+}
+
+/// MIDI-CI is off until the app gives an identity: a settled block that declares
+/// MIDI-CI and a MIDI 1.0 port are sent no Discovery, and the port's SysEx copy
+/// is off after the Identity Request (which is sent all the same).
+#[test]
+fn midi_ci_is_off_by_default() {
+    let mut wire = session_over(
+        UmpCapability::midi2(),
+        PortDirection::Duplex,
+        endpoint_of(&[ci_block(0, 2, 2)]),
+    );
+    wire.session.connect_input(&wire.id.clone()).unwrap();
+    let settled = (0..32).any(|ms| !wire.tick(ms).1.is_empty());
+    assert!(settled);
+    for ms in [100, 5_000, 20_000] {
+        let _ = polled(&wire, ms);
+    }
+    assert!(
+        received(&wire).is_empty(),
+        "a block that declares MIDI-CI, unasked"
+    );
+    assert_eq!(wire.session.ci_identity(), None);
+
+    use tutti_midi_device::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT};
+    let wire = midi1_wire();
+    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
+    let mut requests = 0;
+    for step in 0..=u64::from(INQUIRY_ATTEMPTS) + 2 {
+        let _ = polled(&wire, step * ms);
+        let sent = received(&wire);
+        requests += identity_requests(&sent);
+        assert_eq!(
+            payloads(&sent).len(),
+            identity_requests(&sent),
+            "nothing but requests"
+        );
+    }
+    assert_eq!(requests, usize::from(INQUIRY_ATTEMPTS));
+    let slot = wire.session.ports().list_input_ports()[0].id;
+    let _ = wire.session.ports().drain_stream(slot).count();
+    reply_at(&wire, sysex(&[0x7E, 0x7F, 0x09, 0x01]), 20 * ms);
+    assert_eq!(
+        wire.session.ports().drain_stream(slot).count(),
+        0,
+        "the copy is off"
+    );
+}
+
+/// Enabling reaches an input already open and says exactly the app's identity;
+/// disabling sends each device's Invalidate MUID for its own MUID (§5.9),
+/// reports its peers lost, stops the copy and answers nothing after.
+#[test]
+fn disabling_ends_midi_ci_with_an_invalidate_muid_and_the_loss_of_its_peers() {
+    let (wire, ours) = midi1_running();
+    assert_eq!(wire.session.ci_identity(), Some(identity()));
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data: peer_data(),
+        },
+        40,
+    );
+    let _ = polled(&wire, 50);
+    assert_eq!(wire.session.ci_peers(&wire.id).len(), 1);
+
+    wire.session.disable_ci();
+    let ended = polled(&wire, 60);
+    assert!(
+        matches!(
+            ended.as_slice(),
+            [Polled::Ci(_, CiChange::Lost { group, muid })] if *group == GROUP_0 && *muid == peer()
+        ),
+        "{ended:?}"
+    );
+    let sent = ci_sent(&wire);
+    let [(group, CiMessage::InvalidateMuid { header, target })] = sent.as_slice() else {
+        panic!("one Invalidate MUID, got {sent:?}");
+    };
+    assert_eq!((*group, header.source, *target), (GROUP_0, ours, ours));
+    assert!(wire.session.ci_peers(&wire.id).is_empty());
+
+    // Nothing more: a Discovery is not answered and the copy is off.
+    let slot = wire.session.ports().list_input_ports()[0].id;
+    let _ = wire.session.ports().drain_stream(slot).count();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::Discovery {
+            header: CiHeader::new(peer()),
+            data: peer_data(),
+        },
+        70,
+    );
+    assert_eq!(wire.session.ports().drain_stream(slot).count(), 0);
+    let _ = polled(&wire, 80);
+    assert!(received(&wire).is_empty());
+}
+
+/// A message is cut where the stream ring overflowed: the packets before the gap
+/// and the ones after it are not one message. The payload is a valid Reply to
+/// Discovery with padding after it (bytes past the last field are ignored), cut
+/// in the padding, so joined it would be read and its sender found.
+#[test]
+fn a_gap_in_the_stream_ring_never_joins_a_midi_ci_message() {
+    let (wire, ours) = midi1_running();
+    let reply = |source: Muid| {
+        let mut payload = CiMessage::DiscoveryReply {
+            header: CiHeader::new(source),
+            to: ours,
+            data: peer_data(),
+        }
+        .encode();
+        payload.extend([0u8; 24]);
+        tutti_ump::Sysex7Packets::checked(GROUP_0, &payload)
+            .unwrap()
+            .collect::<Vec<_>>()
+    };
+    let cut = reply(peer());
+    assert!(cut.len() >= 9, "{}", cut.len());
+    let filler = Ump::from(Message::Stream(Stream::EndpointDiscovery {
+        version: tutti_midi_device::UMP_VERSION,
+        filter: tutti_ump::DiscoveryFilter {
+            endpoint_info: true,
+            device_identity: false,
+            endpoint_name: false,
+            product_instance_id: false,
+            stream_configuration: false,
+        },
+    }));
+    // The first six packets (the whole Reply, 36 bytes), then the ring is
+    // filled to overflowing, so the next two are lost ...
+    let (head, rest) = cut.split_at(6);
+    reply_at(&wire, head.to_vec(), 40);
+    for _ in 0..crate::port::async_port::STREAM_CAPACITY + 8 {
+        reply_at(&wire, vec![filler], 41);
+    }
+    reply_at(&wire, rest[..2].to_vec(), 42);
+    let _ = polled(&wire, 50);
+    // ... and the End arrives after the gap.
+    reply_at(&wire, rest[2..].to_vec(), 60);
+    let spliced = polled(&wire, 70);
+    assert!(
+        spliced.is_empty(),
+        "a message with a hole is no message: {spliced:?}"
+    );
+    assert!(wire.session.ci_peers(&wire.id).is_empty());
+
+    // A whole message after it is read.
+    let other = Muid::new(0x0065_4321).unwrap();
+    reply_at(&wire, reply(other), 80);
+    let found = polled(&wire, 90);
+    assert!(
+        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(info))] if info.muid() == other),
+        "{found:?}"
     );
 }

@@ -1165,6 +1165,15 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     let _ = s.update();
     let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     io.connect_input("wire").expect("connects");
+    // Off by default: the app says who it is, with an id it registered.
+    s.midi()
+        .enable_ci(tutti_ump::DeviceIdentity {
+            manufacturer: tutti_ump::ManufacturerId::NON_COMMERCIAL,
+            family: [tutti_ump::U7::of(1); 2],
+            model: [tutti_ump::U7::of(2); 2],
+            revision: [tutti_ump::U7::of(3); 4],
+        })
+        .expect("hardware");
 
     let block = FunctionBlock::builder(
         FunctionBlockId::new(0).unwrap(),

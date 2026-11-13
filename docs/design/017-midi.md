@@ -3528,8 +3528,22 @@ What the decoded messages are consumed by, one item each.
 
 ### L8 part 3: MIDI-CI on the wire: as built
 
-`tutti-midi-hardware`'s `ci.rs` runs `CiDevice` for the life of an open input; `tutti-session`
-reports what it finds.
+`tutti-midi-hardware`'s `ci.rs` runs `CiDevice` on an open input once the app enables it;
+`tutti-session` reports what it finds.
+
+- **Off by default; on with the app's identity.** `MidiSession::enable_ci(DeviceIdentity)` /
+  `disable_ci()` / `ci_identity()` (through `s.midi()`: `enable_ci`, `disable_ci`, both
+  `Result<(), MidiError>`). A Discovery announces a System Exclusive manufacturer id and tutti has
+  none; M1 reserves `7D` for non-commercial use and says it "is not to be used on any product
+  released to the public", and tutti is a library apps ship, so it never announces itself with `7D`
+  unasked: no `CiDevice` starts, and the port keeps no SysEx copy for CI, until the app gives the id
+  it registered. Enabling reaches the inputs already open (their devices start at the next poll,
+  after any Identity Request in progress has ended, the copy turned on first) and later ones;
+  enabling again with another identity restarts the devices under it. **Disabling** ends every
+  running device at the next poll: each sends an Invalidate MUID from and for its own MUID (§5.9
+  lists a shutdown among its reasons, so peers learn at once and not by silence), its peers are
+  reported `Lost`, and the copy is turned off. The Identity Request of part 1 carries no identity of
+  ours and is unaffected. The state is one `Mutex<Option<DeviceIdentity>>` of the session.
 
 - **Where it runs** (every input whose device has an output, the negotiation's own): (1) a UMP
   Endpoint that answered the Stream negotiation gets one `CiDevice` per Function Block that declares
@@ -3550,14 +3564,21 @@ reports what it finds.
   sized for the declared maximum, reassembles per Group; only a Group with a device is read; the
   payload is decoded with `CiMessage::decode` and routed to that Group's device. `Decoded::NotCi` is
   ignored. A MIDI 1.0 port's SysEx is already group-0 type 3 UMPs by the time it is in the ring.
+- **A gap never joins a message.** The stream ring is 512 packets, and a packet is lost when it is
+  full (`PortInfo::stream_lost`). The session reads that count either side of each drain and hands
+  the readers a `Heard` (`lost_before`, `lost_during`). A packet lost on a full ring is after
+  everything the ring held, so a loss counted before the drain is a gap at the end of its packets:
+  the readers take them, then `SysexAssembler::lost_tail()` drops the messages still open (counted),
+  so the packets after the gap find none to continue. A loss counted during the drain (a pop made room
+  for a packet that followed the gap) is somewhere inside, so the readers take none of those packets
+  and drop what is open. Part 1's Identity Request reader (`Asking`) had the same hole and is fixed
+  the same way.
 - **Sending.** `CiAction::Send(msg)` goes out as `msg.packets(group)` through `OpenOutput::queue` on
   the input's own output, never the session's MIDI output. A refused queue is logged at debug and
   not retried; the core's protocol tolerates loss.
-- **What it declares.** *Identity*: `ManufacturerId::NON_COMMERCIAL` (`7D`, M2-104 Table 20 and M1:
-  "non-commercial use ... not to be used on any product released to the public"); family, model and
-  revision are zero. tutti has no System Exclusive ID of its own, and the spec text we hold names
-  only `7D` (a later M2-101 draft adds `7C`, usable in a released product only for Discovery and
-  free of gain); registering an ID is the owner's decision, and one constant changes it. *Categories*:
+- **What it declares.** *Identity*: the app's, as given to `enable_ci` (a later M2-101 draft adds a
+  `7C` special id, usable in a released product only for Discovery and free of gain; whether to use
+  it is the app's). *Categories*:
   none. *Receivable Maximum SysEx Message Size*: 512, `MaxSysexSize::INITIATOR_MIN` (§5.5.3: the
   floor of a device that will initiate Profile Configuration or Property Exchange), which the
   assembler's `max_message` is too (delimiters included, so conservative). *MUIDs*: std's
@@ -3572,12 +3593,8 @@ reports what it finds.
   `CiPeerInfo`. A change of the device's own MUID reaches the app as every peer `Lost`, and the new
   round finds them again.
 - **Open.** (1) Function Blocks that change after the settle (a Function Block Info Change) are not
-  followed: the devices are decided at the settle. (2) The stream ring is 512 packets: a SysEx dump
-  that overflows it while MIDI-CI listens loses packets, counted (`PortInfo::stream_lost`), and the
-  assembler is not told (`lost_tail`), so a message cut in the middle could in theory be read as a
-  whole one; the CI preamble check makes that unlikely, not impossible. (3) No Invalidate MUID is
-  sent when an input closes (§5.9 does not require one for a clean close), so a peer learns of it by
-  silence. (4) Profile Configuration and Property Exchange, and the answer to Endpoint Inquiry
+  followed: the devices are decided at the settle. (2) No Invalidate MUID is sent when an input
+  closes (only on `disable_ci`), so a peer learns of that by silence. (3) Profile Configuration and Property Exchange, and the answer to Endpoint Inquiry
   (tutti has no Product Instance Id), are later parts.
 
 ### L7b: the MIDI Tuning Standard: as built (part 2)

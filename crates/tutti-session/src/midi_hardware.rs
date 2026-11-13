@@ -6,6 +6,7 @@
 //! `Session::update`.
 
 use tutti_midi_hardware::{CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Resolved};
+use tutti_ump::DeviceIdentity;
 
 use crate::MidiError;
 use crate::midi::{Midi, UmpOut};
@@ -62,6 +63,35 @@ impl Midi<'_> {
     /// an input, the device has no free slot, or the OS refuses it.
     pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
         Ok(self.hardware()?.connect_input(device)?)
+    }
+
+    /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off by
+    /// default**: a Discovery carries a System Exclusive manufacturer id, tutti
+    /// has none, and MIDI 1.0's `7D` is "not to be used on any product released
+    /// to the public", so the app gives the id it registered. It reaches the
+    /// inputs already open (at the next update, after any Identity Request in
+    /// progress) and later ones; found peers are
+    /// [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer) and
+    /// [`ci_peers`](Self::ci_peers).
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer.
+    pub fn enable_ci(&mut self, identity: DeviceIdentity) -> Result<()> {
+        self.hardware()?.enable_ci(identity);
+        Ok(())
+    }
+
+    /// Turns MIDI-CI off: every running device sends an Invalidate MUID for its
+    /// own MUID at the next update (M2-101 §5.9: a shutdown is a reason), and
+    /// its peers are reported lost.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoHardware`] on a session with no OS MIDI layer.
+    pub fn disable_ci(&mut self) -> Result<()> {
+        self.hardware()?.disable_ci();
+        Ok(())
     }
 
     /// The MIDI-CI peers found on the open input `id`, by Group then MUID: what

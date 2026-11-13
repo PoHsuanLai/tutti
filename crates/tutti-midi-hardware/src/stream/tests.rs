@@ -390,18 +390,16 @@ fn a_silent_midi1_device_is_asked_twice_and_stays_described() {
     assert_eq!(stream.endpoint().identity(), None);
 }
 
-/// Once the inquiry has given up on a silent device, MIDI-CI takes over the
-/// port's copy of the device's SysEx7 packets (it stays on, and the graph still
-/// hears them, the next test), and no Identity Request is sent again: what
-/// goes out is MIDI-CI's.
+/// Once the inquiry has given up on a silent device, its copy of the device's
+/// SysEx7 packets is off (a packet that arrives is not kept in the stream ring,
+/// though it still reaches the graph, the next test) and nothing more is sent.
 #[test]
-fn after_giving_up_the_sysex_copy_stays_on_for_midi_ci_and_no_request_is_sent() {
+fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
     use tutti_midi_device::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT};
     let wire = midi1_wire();
     let ms = INQUIRY_TIMEOUT.as_millis() as u64;
-    // The request, its one retry, then the poll that gives up, then the one
-    // that starts MIDI-CI.
-    for step in 0..=u64::from(INQUIRY_ATTEMPTS) + 1 {
+    // The request, its one retry, then the poll that gives up.
+    for step in 0..=u64::from(INQUIRY_ATTEMPTS) {
         assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
     }
     let slot = wire.session.ports().list_input_ports()[0].id;
@@ -412,13 +410,16 @@ fn after_giving_up_the_sysex_copy_stays_on_for_midi_ci_and_no_request_is_sent() 
     reply_at(&wire, identity_reply(0), 10 * ms);
     assert_eq!(
         wire.session.ports().drain_stream(slot).count(),
-        identity_reply(0).len(),
-        "the copy is on while MIDI-CI runs"
+        0,
+        "the copy is off once the inquiry is over"
     );
     for step in 10..13 {
-        let _ = wire.session.poll(wire.at(step * ms)).count();
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
     }
-    assert_eq!(identity_requests(&received(&wire)), 0);
+    assert!(
+        received(&wire).is_empty(),
+        "nothing is sent after giving up"
+    );
 }
 
 /// An output the session cannot open (another app holds it) does not fail the
@@ -472,6 +473,53 @@ fn the_asking_output_is_the_inputs_own_and_closes_with_it() {
 
     wire.session.connect_output(&wire.id.clone()).unwrap();
     assert_eq!(wire.session.output().map(|o| o.id), Some(wire.id.clone()));
+}
+
+/// A gap in the stream ring never joins an Identity Reply. The message sent is
+/// 21 bytes: the first six and the last nine of a valid reply with a packet of
+/// six between them. The ring loses that packet, so joined, what is left is a
+/// valid 15-byte reply (and would be taken); it is no reply, and a whole one
+/// after it answers.
+#[test]
+fn a_gap_in_the_stream_ring_never_joins_an_identity_reply() {
+    let wire = midi1_wire();
+    assert!(wire.session.poll(wire.at(0)).next().is_none());
+    let valid = [
+        0x7E, 0x7F, 0x06, 0x02, 0x41, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    ];
+    let payload: Vec<u8> = [&valid[..6], &[0x11; 6], &valid[6..]].concat();
+    let packets: Vec<Ump> =
+        tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, &payload)
+            .unwrap()
+            .collect();
+    assert_eq!(packets.len(), 4, "Start, Continue, Continue, End");
+    let filler = Ump::from(Message::Stream(Stream::EndpointDiscovery {
+        version: tutti_midi_device::UMP_VERSION,
+        filter: tutti_ump::DiscoveryFilter {
+            endpoint_info: true,
+            device_identity: false,
+            endpoint_name: false,
+            product_instance_id: false,
+            stream_configuration: false,
+        },
+    }));
+    // The Start, then the ring fills to overflowing: the first Continue is lost.
+    reply_at(&wire, vec![packets[0]], 1);
+    for _ in 0..crate::port::async_port::STREAM_CAPACITY + 8 {
+        reply_at(&wire, vec![filler], 2);
+    }
+    reply_at(&wire, vec![packets[1]], 3);
+    assert!(wire.session.poll(wire.at(4)).next().is_none());
+    reply_at(&wire, packets[2..].to_vec(), 5);
+    assert!(wire.session.poll(wire.at(6)).next().is_none());
+    assert_eq!(
+        wire.session.stream(&wire.id).unwrap().basis(),
+        Basis::Described,
+        "a reply with a hole is no reply"
+    );
+    reply_at(&wire, identity_reply(0), 7);
+    let answered = streams(wire.session.poll(wire.at(8)));
+    assert!(matches!(answered.as_slice(), [(_, s)] if s.basis() == Basis::Inquired));
 }
 
 /// A late reply (after the inquiry gave up) and a SysEx that is not an Identity

@@ -26,7 +26,7 @@ use tutti_plugin_types::{
     Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
     PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, ProcessWake,
     Processor, RenderMode, RenderModeSupport, Request, Sample, SampleFormat, SampleRate, Samples,
-    Seat, Stage, State, StateUse,
+    Seat, Stage, State, StateUse, TrackInfo,
 };
 
 mod any;
@@ -116,6 +116,8 @@ pub(crate) trait ServedPlugin: Render {
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
     /// The host's automation mode.
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode);
+    /// What the host says of the plugin's track.
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo);
     /// The plain value of `value`, by the plugin's format.
     fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64>;
     /// The normalized value of a plain one, by the plugin's format.
@@ -457,6 +459,10 @@ impl<F: ServerSide> Served<F> {
                 self.events.push(BridgeMessage::PluginParamTitlesChanged);
             }
             Notice::Reloaded => self.events.push(BridgeMessage::PluginReloaded),
+            Notice::Transport(request) => {
+                self.events
+                    .push(BridgeMessage::TransportRequested { request });
+            }
             // The wire carries no note-expression change, and nothing here acts
             // on one: the host reads the list when it opens a session.
             Notice::NoteExpressionChanged => {}
@@ -804,6 +810,12 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
         if let Some(control) = self.lifecycle.control() {
             control.set_automation_state(main, mode);
+        }
+    }
+
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
+        if let Some(control) = self.lifecycle.control() {
+            control.set_track_info(main, info);
         }
     }
 

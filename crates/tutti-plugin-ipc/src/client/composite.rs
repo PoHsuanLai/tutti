@@ -318,6 +318,12 @@ impl PluginBridge {
         self.audio.set_automation_state_rt(mode)
     }
 
+    /// See [`AudioBridge::set_track_info`]. The audio instance only: the
+    /// editor's instance has no track.
+    pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> bool {
+        self.audio.set_track_info(info)
+    }
+
     /// See [`AudioBridge::set_sample_rate_rt`].
     pub fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
         self.audio.set_sample_rate_rt(rate)

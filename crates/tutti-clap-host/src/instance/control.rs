@@ -12,7 +12,8 @@ use tutti_plugin_types::{
     EditorSize, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit,
     ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass,
     PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake, RenderMode,
-    RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, WindowHandle, Wraps,
+    RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, TrackInfo, WindowHandle,
+    Wraps,
 };
 
 use super::ClapLoaded;
@@ -206,6 +207,22 @@ impl ClapLoaded {
     /// itself have asked for more.
     pub fn take_raised(&self, out: &mut Vec<Request>) {
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
+        self.take_transport(out);
+    }
+
+    /// How many transport requests the plugin made that were dropped because
+    /// the host did not take them in time.
+    #[must_use]
+    pub fn transport_requests_dropped(&self) -> u32 {
+        self.host_state.transport.dropped()
+    }
+
+    /// The transport requests the plugin made since the last take, oldest
+    /// first.
+    fn take_transport(&self, out: &mut Vec<Request>) {
+        let mut asked = Vec::new();
+        self.host_state.transport.drain_into(&mut asked);
+        out.extend(asked.into_iter().map(Request::Transport));
     }
 
     /// [`Control::take_requests`]: what the plugin raised from any thread, and
@@ -221,6 +238,7 @@ impl ClapLoaded {
             self.destroy_editor(main);
         }
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
+        self.take_transport(out);
         out.extend(
             self.woken
                 .timers
@@ -290,6 +308,23 @@ impl Control for ClapLoaded {
                 self.set_param_automation(main, info.id().get(), state, None);
             }
         }
+    }
+
+    /// What the plugin's `track-info.get` answers from now on; the plugin is
+    /// told (`track-info.changed`) when it differs from the last. A plugin
+    /// without `clap.track-info` is told nothing, and its host callback still
+    /// answers.
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
+        {
+            let Ok(mut held) = self.host_state.track.info.lock() else {
+                return;
+            };
+            if held.as_ref() == Some(info) {
+                return;
+            }
+            *held = Some(info.clone());
+        }
+        self.plugin.track_info_changed(main);
     }
 
     /// Normalized `0..=1`; CLAP has no normalization concept, so the plugin

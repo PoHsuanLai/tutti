@@ -191,6 +191,45 @@ impl ClapProbe {
         }
     }
 
+    /// `tutti_test_plugin_hostext_command(cmd, a, b)` in every image: make the
+    /// plugin call the host's `track-info` or `transport-control` as a
+    /// `HOSTEXT_CMD_*` says, at its next `on_main_thread`.
+    pub fn hostext_command(&self, cmd: u32, a: i64, b: i64) {
+        for lib in [&self.artifact, &self.dot_clap] {
+            // SAFETY: `tutti_test_plugin_hostext_command` is `#[no_mangle] pub
+            // unsafe extern "C" fn(cmd: u32, a: i64, b: i64)` in `host_ext.rs`.
+            unsafe {
+                let f = get::<unsafe extern "C" fn(u32, i64, i64)>(
+                    lib,
+                    b"tutti_test_plugin_hostext_command\0",
+                );
+                f(cmd, a, b);
+            }
+        }
+    }
+
+    /// The host-extension probe's capture, from the cargo artifact's image.
+    #[must_use]
+    pub fn hostext_capture(&self) -> crate::HostExtCapture {
+        let mut out = std::mem::MaybeUninit::<crate::HostExtCapture>::zeroed();
+        // SAFETY: `tutti_test_plugin_hostext_capture` is `#[no_mangle] pub
+        // unsafe extern "C" fn(*mut HostExtCapture) -> bool` in `host_ext.rs`,
+        // and fills a whole capture.
+        unsafe {
+            let f = get::<unsafe extern "C" fn(*mut crate::HostExtCapture) -> bool>(
+                &self.artifact,
+                b"tutti_test_plugin_hostext_capture\0",
+            );
+            assert!(f(out.as_mut_ptr()), "the capture is read");
+            out.assume_init()
+        }
+    }
+
+    /// Clears the host-extension probe, in the cargo artifact's image.
+    pub fn hostext_reset(&self) {
+        call_unit(&self.artifact, b"tutti_test_plugin_hostext_reset\0");
+    }
+
     /// Arms (or, with 0, disarms) the thread-pool probe to request `tasks`
     /// tasks, in the cargo artifact's image only: the one a loader opens by
     /// that path.

@@ -105,12 +105,14 @@ where
     })?;
     let param_sink = ParameterChangeSink::new();
     let invalidate_sink = crate::InvalidateSink::new();
+    let transport_sink = crate::TransportSink::new();
 
     let backend = Arc::new(ControlBackend {
         inner: Arc::clone(&inner),
         param_sink: param_sink.clone(),
         pending_sample_rate: Arc::clone(&pending_sample_rate),
         invalidate_sink: invalidate_sink.clone(),
+        transport_sink: transport_sink.clone(),
         format: descriptor.class.format_name(),
     });
 
@@ -118,7 +120,8 @@ where
     // reaches the very instance the node renders.
     let control: Arc<dyn crate::MainThreadControl> = backend.clone();
     let handle = PluginHandle::from_backend(backend, Some(control), descriptor, loaded, param_sink)
-        .with_invalidate_sink(invalidate_sink);
+        .with_invalidate_sink(invalidate_sink)
+        .with_transport_sink(transport_sink);
 
     Ok((client, handle, restored))
 }

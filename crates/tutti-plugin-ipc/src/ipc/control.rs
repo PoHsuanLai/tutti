@@ -11,7 +11,7 @@ use tutti_plugin_types::{
     EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Features, Health, LoadedPlugin,
     MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure,
     PluginResult, Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport, Request,
-    SampleRate, StateError, StateUse, TerminationReason, WindowHandle,
+    SampleRate, StateError, StateUse, TerminationReason, TrackInfo, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -259,6 +259,13 @@ macro_rules! served_control {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 out.append(&mut asked);
+            }
+
+            /// Sent to the server, whose format answers the plugin's reads
+            /// from it. Fire-and-forget: a plugin that is gone has nobody to
+            /// tell.
+            fn set_track_info(&mut self, _main: &MainThread, info: &TrackInfo) {
+                let _ = self.link.bridge.set_track_info(info);
             }
 
             /// What the server's `ProcessRequested` raises, from the bridge's

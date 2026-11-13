@@ -14,7 +14,7 @@ use crate::types::{AudioPortsRescan, ParamRescan};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tutti_clap_ffi::{AudioPortsRescanFlags, HostCallbacks, LogSeverity, ParamsRescanFlags};
-use tutti_plugin_types::{Request, RescanScope};
+use tutti_plugin_types::{Request, RescanScope, TrackInfo, TransportRequest};
 
 /// The stderr tag for each CLAP severity. Split out of the log method so the
 /// mapping is testable: inline, its seven arms were reachable only through
@@ -205,6 +205,14 @@ impl HostCallbacks for HostState {
         self.audio_ports
             .surround_changed
             .store(true, Ordering::Release);
+    }
+
+    fn track_info(&self) -> Option<TrackInfo> {
+        self.track.info.lock().ok()?.clone()
+    }
+
+    fn transport_request(&self, request: TransportRequest) {
+        self.transport.push(request);
     }
 
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {

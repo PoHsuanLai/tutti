@@ -654,7 +654,8 @@ fn a_port_cannot_be_activated_while_processing_unless_the_plugin_allows() {
     let (mut side, mut scratch) = start(&mut plugin, 512);
     assert_eq!(
         plugin.set_audio_port_active(&main_thread(), true, 0, true, 32),
-        Ok(false)
+        Ok(true),
+        "an active plugin that is not processing takes it"
     );
     let mut left = vec![0.0f32; FRAMES];
     let mut right = vec![0.0f32; FRAMES];

@@ -34,7 +34,7 @@ use crate::{
 };
 use crate::{
     FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
-    RestartRules, StateUse, TimerId, Wakeups,
+    RestartRules, StateUse, TimerId, TrackInfo, Wakeups,
 };
 
 /// What the main thread asks of a plugin, in any state that has one.
@@ -148,6 +148,14 @@ pub trait Control: EditorWindow {
     /// Tells the plugin how the host is automating it.
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
         let _ = (main, mode);
+    }
+
+    /// Tells the plugin's host what the host says of the track the plugin sits
+    /// on. A format that can answer the plugin's reads (CLAP `track-info`)
+    /// keeps it and tells the plugin when it differs from the last; a format
+    /// without one keeps this default and drops it.
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
+        let _ = (main, info);
     }
 
     /// Reads parameters again after a rescan the plugin asked for.
@@ -573,6 +581,10 @@ impl<W: Wraps> Control for W {
         if matches!(scope, RescanScope::Info | RescanScope::All) {
             self.republish_ranges(main);
         }
+    }
+
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
+        self.plugin_mut().set_track_info(main, info);
     }
 
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {

@@ -326,6 +326,15 @@ impl AudioBridge {
         }
     }
 
+    /// Queues what the host says of the plugin's track. Main thread: the value
+    /// is boxed here, off the audio thread; `false` when it was not queued.
+    pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> bool {
+        !self.lifecycle.is_crashed()
+            && self.channels.push_command(Command::SetTrackInfo {
+                info: Box::new(info.clone()),
+            })
+    }
+
     /// Queues a rate change. Realtime-safe; `false` when it was not queued.
     pub fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
         // Publish before queueing, so both the staleness bound and

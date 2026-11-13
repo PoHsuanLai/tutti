@@ -217,7 +217,9 @@ mod requests;
 mod sample_format;
 mod state_use;
 mod sysex;
+mod track_info;
 mod transport;
+mod transport_request;
 mod wakeups;
 
 // Test-only global allocator for the no-alloc gates: panics on any heap
@@ -265,6 +267,8 @@ pub use points::{PointBuf, PointPool};
 pub use process_wake::ProcessWake;
 pub use requests::{Edit, EditDrain, EditQueue, EditSink, edits, taken};
 pub use state_use::StateUse;
+pub use track_info::{TrackColor, TrackInfo, TrackKind};
+pub use transport_request::TransportRequest;
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
 pub use error::{Delivered, PluginError, PresetError, Result as PluginResult, StateError};

@@ -4,10 +4,13 @@
 //! capability the backend lacks reads as `None` rather than erroring at the call.
 //! Audio never travels through here; this is the off-RT half.
 
-use crate::{InvalidateSink, Notice, ParameterChangeSink, RefreshSink, Subscription};
+use crate::{
+    InvalidateSink, Notice, ParameterChangeSink, RefreshSink, Subscription, TransportSink,
+};
 use std::sync::Arc;
 use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::TrackInfo;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, Control, EditorCapabilities, EditorError,
     Health, PluginError, PluginFailure, StateError, TerminationReason, WindowHandle,
@@ -18,7 +21,7 @@ use tutti_plugin_types::{
     PresetSupport,
 };
 #[cfg(doc)]
-use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
+use tutti_plugin_types::{PluginInvalidation, PluginRefresh, TransportRequest};
 
 /// How a [`PluginHandle`] reaches a plugin's main-thread [`Control`].
 ///
@@ -190,6 +193,7 @@ pub struct PluginHandle {
     param_sink: ParameterChangeSink,
     refresh_sink: RefreshSink,
     invalidate_sink: InvalidateSink,
+    transport_sink: TransportSink,
     server_pid: Option<u32>,
 }
 
@@ -201,6 +205,7 @@ impl std::fmt::Debug for PluginHandle {
             .field("param_sink", &self.param_sink)
             .field("refresh_sink", &self.refresh_sink)
             .field("invalidate_sink", &self.invalidate_sink)
+            .field("transport_sink", &self.transport_sink)
             .field("server_pid", &self.server_pid)
             .finish_non_exhaustive()
     }
@@ -232,6 +237,7 @@ impl PluginHandle {
             // and raises invalidations through `with_invalidate_sink`.
             refresh_sink: RefreshSink::default(),
             invalidate_sink: InvalidateSink::default(),
+            transport_sink: TransportSink::default(),
             // No subprocess to name unless `with_server_pid` says so.
             server_pid: None,
         }
@@ -244,6 +250,15 @@ impl PluginHandle {
     /// Public for `tutti-plugin`'s served-plugin handle, which also hears invalidations over its wire.
     pub fn with_invalidate_sink(mut self, sink: InvalidateSink) -> Self {
         self.invalidate_sink = sink;
+        self
+    }
+
+    /// This handle with `sink` as the one `subscribe` hears: how a backend
+    /// delivers the plugin's [`TransportRequest`]s.
+    ///
+    /// Public for `tutti-plugin`'s served-plugin handle, which hears them over its wire.
+    pub fn with_transport_sink(mut self, sink: TransportSink) -> Self {
+        self.transport_sink = sink;
         self
     }
 
@@ -730,6 +745,17 @@ impl PluginHandle {
         self.any_thread.set_automation_mode(mode)
     }
 
+    /// Tells the plugin what the host says of the track it sits on (its name,
+    /// colour and width). The plugin is told when it differs from the last
+    /// call. `false` when the handle has no route to the plugin or the plugin
+    /// is lost; a format with no place for it takes it and drops it.
+    pub fn set_track_info(&self, main: &MainThread, info: &TrackInfo) -> bool {
+        let Some(control) = self.control.as_deref() else {
+            return false;
+        };
+        lent(control, |c| c.set_track_info(main, info)).is_some()
+    }
+
     // ---- Notices (plugin -> host) -------------------------------------------
 
     /// Calls `f` with everything the plugin reports (a [`Notice`]) until the
@@ -743,12 +769,14 @@ impl PluginHandle {
     /// a push of its own subscribes through the session.
     pub fn subscribe<F: Fn(Notice) + Send + Sync + 'static>(&self, f: F) -> Subscription {
         let f = Arc::new(f);
-        let (a, b, c) = (f.clone(), f.clone(), f);
+        let (a, b, c, d) = (f.clone(), f.clone(), f.clone(), f);
         Subscription::all([
             self.param_sink.subscribe(move |e| a(Notice::Param(e))),
             self.refresh_sink.subscribe(move |e| b(Notice::Refresh(e))),
             self.invalidate_sink
                 .subscribe(move |e| c(Notice::Invalidate(e))),
+            self.transport_sink
+                .subscribe(move |e| d(Notice::Transport(e))),
         ])
     }
 }

@@ -107,7 +107,7 @@ fn in_process_the_next_block_after_a_request_from_another_thread_runs_the_plugin
 /// **Served, a `request_process` the plugin-server's plugin makes while its
 /// node is parked reaches the node's wake.** The server sends `ProcessRequested`
 /// on its control connection; the client reads it on the control tick
-/// (`PluginHandle::editor_idle`) and raises the wake, so the node runs again and
+/// (`PluginHandle::read_news`) and raises the wake, so the node runs again and
 /// the plugin's sound arrives through the pipeline.
 #[test]
 fn served_a_request_while_parked_wakes_the_node() {
@@ -129,7 +129,7 @@ fn served_a_request_while_parked_wakes_the_node() {
     );
     let main = main_thread();
     let step = |renderer: &mut Renderer| {
-        handle.editor_idle(&main);
+        handle.read_news(&main);
         let out = renderer.render(BLOCK);
         std::thread::sleep(PACE);
         out

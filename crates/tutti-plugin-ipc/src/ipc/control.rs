@@ -261,6 +261,13 @@ macro_rules! served_control {
                 out.append(&mut asked);
             }
 
+            /// Has the bridge read what the server said while no command was
+            /// waiting (its `ProcessRequested` among it); the listener hears it
+            /// from the bridge's thread within a few milliseconds.
+            fn read_news(&mut self, _main: &MainThread) {
+                self.link.bridge.drain_unsolicited();
+            }
+
             /// What the server's `ProcessRequested` raises, from the bridge's
             /// thread.
             fn bind_wake(&self, wake: ProcessWake) {

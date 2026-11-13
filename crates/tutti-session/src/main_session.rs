@@ -116,8 +116,8 @@ impl MainSession<'_> {
 
     /// [`Session::update`], and then the main thread's share of it: drops the
     /// plugins the session retired since the last call, runs the work other
-    /// threads handed to the main thread, and services every plugin
-    /// (the format's idle tick for each open editor: VST2's `effEditIdle`, VST3's run loop on
+    /// threads handed to the main thread, and services every open editor
+    /// (the format's idle tick: VST2's `effEditIdle`, VST3's run loop on
     /// Linux), so a host calls no `editor_idle` of its own. An editor that
     /// asks for a size is [`PluginChange::EditorWantsSize`] in the events.
     #[must_use = "the events carry faults and dropouts (a refused commit, a plugin that died, a lost block): handle them, or bind `let _events` with a reason"]
@@ -129,13 +129,13 @@ impl MainSession<'_> {
         self.session.graph.graveyard.exhume(&main);
         tutti_plugin_types::run_deferred(&main);
         for (&node, hosted) in &self.session.graph.plugins {
-            // Every plugin, editor or not: the tick is also what reads a served
-            // plugin's unsolicited news (a request to be processed again, which
-            // wakes its parked node) and pumps an in-process plugin's requests.
-            hosted.handle.editor_idle(&main);
+            // Every plugin, editor or not: a served plugin's request to be
+            // processed again wakes its parked node.
+            hosted.handle.read_news(&main);
             if !hosted.editor_open {
                 continue;
             }
+            hosted.handle.editor_idle(&main);
             if let Some(size) = hosted.handle.poll_editor_resize_request(&main) {
                 out.push(SessionEvent::Plugin(PluginEvent {
                     node,

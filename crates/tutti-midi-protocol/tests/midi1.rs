@@ -24,6 +24,7 @@ fn bytes(message: Message) -> Vec<Vec<u8>> {
 /// M2-104 section 7.4.2: a translated velocity that would be
 /// zero is replaced by 1. Every
 /// 16-bit velocity that narrows to 0, and 0 itself.
+/// Spec: m2-104/7.4.2#1
 #[test]
 fn a_note_on_never_narrows_to_velocity_zero() {
     for velocity in 0..=u16::MAX {
@@ -221,6 +222,7 @@ fn messages_without_a_midi1_form_send_nothing() {
 /// Widening a MIDI 1.0 voice message and narrowing it back returns it, for
 /// every value on every channel, except the Note On at velocity 0 that
 /// `widen` turns into a Note Off (Appendix D.3.1).
+/// Spec: m2-104/d.1.1#2, m2-104/d.1.2#1
 #[test]
 fn narrow_returns_what_widen_was_given() {
     for d1 in 0..128u8 {

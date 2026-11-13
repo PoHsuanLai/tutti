@@ -29,6 +29,7 @@ fn bundle() -> &'static Path {
 ///
 /// The count is the assertion that matters: `probe` alone answers for the first
 /// descriptor, which is indistinguishable from "the bundle has one plugin".
+/// Spec: clap.factory.plugin.get_plugin_count, clap.factory.plugin.get_plugin_descriptor
 #[test]
 fn probe_all_reports_every_plugin_in_the_bundle() {
     let all = ClapLoaded::probe_all(bundle(), Some(bundle())).expect("probe_all");
@@ -65,6 +66,7 @@ fn probe_still_answers_for_the_first_plugin() {
 /// This is the finding end to end: not just enumerated, but instantiated. The
 /// id reaches `create_plugin`, so a host asking for the companion effect gets
 /// the companion effect.
+/// Spec: clap.factory.plugin.create_plugin
 #[test]
 fn a_plugin_past_index_zero_can_be_loaded() {
     let loaded = ClapLoaded::load(

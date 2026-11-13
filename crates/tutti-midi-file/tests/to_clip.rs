@@ -338,6 +338,7 @@ fn a_clip_is_not_converted_again() {
 
 /// M2-116 sections 7.1.1 and 7.1.2: the first Set Tempo, then the first Set
 /// Time Signature, lead the sequence at its start, whatever order the SMF had.
+/// Spec: m2-116/7.1.1#1, m2-116/7.1.2#1
 #[test]
 fn the_first_tempo_and_signature_lead_the_clip() {
     let smf = MidiFile::smf(
@@ -381,6 +382,7 @@ fn the_first_tempo_and_signature_lead_the_clip() {
 
 /// SMF 1.0 section 3.3: with no Set Tempo 120 bpm is assumed, and with no Time
 /// Signature 4/4 (24 clocks, 8 32nds). The clip says it (section 7.1.1).
+/// Spec: m2-116/7.1.1#1, m2-116/7.1.2#1
 #[test]
 fn a_file_with_no_tempo_or_signature_gets_the_smf_defaults() {
     let smf = format0(vec![
@@ -653,6 +655,7 @@ fn text_is_composed_to_nfc_without_a_byte_order_mark() {
 /// (MIDI-CI sub-ID#2 `0x30` to `0x3F`, M2-101 Table 4); another MIDI-CI
 /// message (Discovery, `0x70`) is not PE and is carried. M2-104 section
 /// 7.5.10.1: an empty Lyric would be a melisma, which SMF never said.
+/// Spec: m2-116/6.4#1, m2-116/7.2#1
 #[test]
 fn property_exchange_and_empty_text_are_reported() {
     // F0 7E 7F 0D <sub-ID#2> ... F7, the bytes after the F0.

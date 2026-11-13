@@ -218,6 +218,7 @@ fn read_process_capture() -> ProcessCapture {
 ///
 /// The point of the `101, 4242, 9` id table: a host returning `0, 1, 2`
 /// (index-as-id) or `9, 101, 4242` (sorted) fails here.
+/// Spec: clap.ext.params.count, clap.ext.params.get_info
 #[test]
 fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     let probe = Probe::acquire();
@@ -241,6 +242,7 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
 
 /// Every field of the CLAP `clap_param_info` the shared `ParameterInfo` models
 /// must survive the projection with its exact value.
+/// Spec: clap.ext.params.get_info
 #[test]
 fn host_projects_parameter_metadata_exactly() {
     let probe = Probe::acquire();
@@ -390,6 +392,7 @@ fn host_projects_parameter_flags() {
 /// The probe's `get_value` rejects an unknown id rather than clamping, so a
 /// host passing an index gets `None` for 0 and 1 — and the *wrong parameter*
 /// for 2, since id 9 sits at index 2.
+/// Spec: clap.ext.params.get_value
 #[test]
 fn host_reads_parameter_values_by_id_not_index() {
     let probe = Probe::acquire();
@@ -451,6 +454,7 @@ fn parameter_range_is_keyed_by_id_and_refuses_unknown_ids() {
 
 /// `set_parameter` on an inactive instance must reach the plugin's own value
 /// table through `params.flush`, and the value must come back on the next read.
+/// Spec: clap.ext.params.flush, clap.ext.params.get_value
 #[test]
 fn host_sets_parameter_through_flush_on_an_inactive_instance() {
     let probe = Probe::acquire();
@@ -494,6 +498,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
 ///
 /// `set_parameter` takes a *plain* value, so unlike the `ClapProcessContext::params`
 /// path there is no range scaling to apply.
+/// Spec: clap.ext.params.flush, clap.event.param_value
 #[test]
 fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
     let probe = Probe::acquire();
@@ -720,6 +725,7 @@ fn set_parameter_does_not_write_a_read_only_parameter() {
 
 /// A plugin's output `PARAM_VALUE` events must reach the caller as parameter
 /// changes, grouped by id and with the sample offset preserved.
+/// Spec: clap.event.param_value, clap.events.output.try_push
 #[test]
 fn host_decodes_plugin_emitted_param_values() {
     let probe = Probe::acquire();
@@ -746,6 +752,7 @@ fn host_decodes_plugin_emitted_param_values() {
 /// `fill_param_changes` matches only `ParamValue`; the rest go through
 /// `fill_gestures`. A host that collapses all four kinds into `PARAM_VALUE`, or
 /// drops the two gesture types, fails here.
+/// Spec: clap.event.param_gesture_begin, clap.event.param_gesture_end, clap.event.param_value, clap.event.param_mod, clap.events.output.try_push
 #[test]
 fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
     let probe = Probe::acquire();
@@ -788,6 +795,7 @@ fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
 
 /// `params.rescan(RESCAN_VALUES)` must reach the host as a *values* rescan that
 /// does not demand a restart.
+/// Spec: clap.ext.params.host.rescan
 #[test]
 fn host_records_a_values_rescan_as_not_needing_deactivation() {
     let probe = Probe::acquire();
@@ -815,6 +823,7 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
 /// The reason the scopes are separate requests rather than a bare boolean:
 /// conflating the two either restarts on every value tweak, or re-reads the
 /// parameter list underneath a running plugin.
+/// Spec: clap.ext.params.host.rescan
 #[test]
 fn host_records_a_full_rescan_as_needing_deactivation() {
     let probe = Probe::acquire();
@@ -883,6 +892,7 @@ fn taking_a_rescan_consumes_it() {
 /// `request_flush` must reach the host as a pending flush, and that flush must
 /// then actually deliver parameters **outside `process`**. Asserting only the
 /// flag would leave the second half — the part a plugin depends on — untested.
+/// Spec: clap.ext.params.host.request_flush, clap.ext.params.flush
 #[test]
 fn request_flush_round_trips_into_a_real_out_of_band_flush() {
     let probe = Probe::acquire();
@@ -928,6 +938,7 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
 /// The probe chunks its I/O and rejects a payload whose magic or length is
 /// wrong, so a host whose ostream honours only the first `write` — or whose
 /// istream restarts its offset — produces a `load` the *plugin* refuses.
+/// Spec: clap.ext.state.save, clap.ext.state.load, clap.stream.istream.read, clap.stream.ostream.write
 #[test]
 fn host_round_trips_plugin_state_through_its_streams() {
     let probe = Probe::acquire();
@@ -980,6 +991,7 @@ fn host_round_trips_plugin_state_through_its_streams() {
 
 /// The restore must be keyed on parameter *id*, not on position — a payload
 /// carrying several parameters must land each value on its own parameter.
+/// Spec: clap.ext.state.save, clap.ext.state.load
 #[test]
 fn state_load_restores_every_parameter_to_its_own_value() {
     let probe = Probe::acquire();
@@ -1022,6 +1034,7 @@ fn state_load_restores_every_parameter_to_its_own_value() {
 /// The plugin must see the whole payload and a clean end-of-stream — the host's
 /// `InputStream` must report exhaustion as 0, never as an error or a short read
 /// that leaves bytes behind.
+/// Spec: clap.ext.state.load, clap.stream.istream.read
 #[test]
 fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
     let probe = Probe::acquire();
@@ -1113,6 +1126,7 @@ fn empty_state_is_a_no_op() {
 /// value that crossed the FFI rather than merely that *a* save happened. CLAP
 /// numbers the contexts 1 (preset), 2 (duplicate), 3 (project); a host passing
 /// its own enum discriminant lands on the wrong one.
+/// Spec: clap.ext.state_context.save
 #[test]
 fn host_passes_the_state_context_through_to_the_plugin() {
     let probe = Probe::acquire();
@@ -1147,6 +1161,7 @@ fn host_passes_the_state_context_through_to_the_plugin() {
 
 /// Loading with a context must use the context entry point too, and the payload
 /// must still round-trip.
+/// Spec: clap.ext.state_context.load
 #[test]
 fn host_loads_state_with_the_requested_context() {
     let probe = Probe::acquire();
@@ -1178,6 +1193,7 @@ fn host_loads_state_with_the_requested_context() {
 /// The host's automation mode reaches the plugin as `param-indication`'s raw
 /// states, per `clap_param_indication` (NONE 0, PLAYING 2, RECORDING 3):
 /// once for every automatable parameter, and never for one that is not.
+/// Spec: clap.ext.param_indication.set_automation
 #[test]
 fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
     let probe = Probe::acquire();

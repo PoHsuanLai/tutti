@@ -6,7 +6,7 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    KeyEvent, KeyPhase, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
+    KeyEvent, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
     ParamMapping, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
     PluginTail, Preset, PresetId, RenderModeSupport, Request, RescanScope, Samples, StateUse,
     Vst3SubCategories, WindowHandle,
@@ -18,6 +18,7 @@ use crate::types::PluginInfo;
 use super::keys::view_key_of;
 use super::loaded::Vst3Loaded;
 use crate::BusDirection;
+use keyboard_types::KeyState;
 
 /// A `Vst3Error` as the shared vocabulary's error.
 pub(crate) fn plugin_error(error: Vst3Error) -> PluginError {
@@ -502,12 +503,12 @@ impl EditorWindow for Vst3Loaded {
         let Some(key) = view_key_of(&event, ModifierConvention::HOST) else {
             return Ok(KeyUse::Ignored);
         };
-        let used = match event.phase {
-            KeyPhase::Down => {
+        let used = match event.state {
+            KeyState::Down => {
                 self.plugin
                     .editor_key_down(main, key.character, key.virtual_key, key.modifiers)
             }
-            KeyPhase::Up => {
+            KeyState::Up => {
                 self.plugin
                     .editor_key_up(main, key.character, key.virtual_key, key.modifiers)
             }

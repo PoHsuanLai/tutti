@@ -130,6 +130,7 @@ fn a_full_discovery_is_answered_in_the_order_of_the_spec() {
 }
 
 // §7.1.1: each bit set in the filter yields its own reply.
+/// Spec: m2-104/7.1.2#1, m2-104/7.1.3#1, m2-104/7.1.4#1, m2-104/7.1.5#3
 #[test]
 fn each_filter_bit_asks_for_its_own_reply() {
     let rows = [
@@ -191,6 +192,7 @@ fn a_part_an_endpoint_lacks_is_left_out() {
 
 // §7.1.1: a higher version's appended fields are ignored and the reply is the
 // same.
+/// Spec: m2-104/7.1.1#3
 #[test]
 fn a_discovery_of_another_version_is_answered() {
     let newer = Stream::EndpointDiscovery {
@@ -242,6 +244,7 @@ fn function_block_info_and_name_words() {
 }
 
 // A 30 byte block name: 13 bytes a packet, so Start, Continue, End with 4.
+/// Spec: m2-104/7.1.9#5, m2-104/7.1.9#6, m2-104/7.1.9#7
 #[test]
 fn a_long_block_name_splits_at_thirteen_bytes() {
     let name = BlockName::new("0123456789abcdefghijklmnopqrst").unwrap();
@@ -261,6 +264,7 @@ fn a_long_block_name_splits_at_thirteen_bytes() {
 }
 
 // §7.1.7: 0xFF is every block, a number one block.
+/// Spec: m2-104/7.1.8#2, m2-104/7.1.9#2
 #[test]
 fn function_block_discovery_answers_one_block_or_all() {
     let all = ask(
@@ -285,6 +289,7 @@ fn function_block_discovery_answers_one_block_or_all() {
 }
 
 // The info and name filter bits are separate bits, and for 0xFF all infos come before the names.
+/// Spec: m2-104/7.1.8#1, m2-104/7.1.9#1
 #[test]
 fn function_block_filter_bits_pick_info_and_name() {
     let both = ask(&mut device(), block_discovery(BlockSelect::All, true, true));
@@ -349,6 +354,7 @@ fn notified(out: &[Ump]) -> StreamConfig {
 
 // §7.1.6.2 and §7.1.6.3: the reply reports what is now active, and the new
 // configuration is kept.
+/// Spec: m2-104/7.1.6.3#1
 #[test]
 fn a_supported_request_is_honoured_and_reported() {
     let mut e = device();
@@ -370,6 +376,7 @@ fn a_supported_request_is_honoured_and_reported() {
 
 // §7.1.6.1 step 3: a receiver that cannot apply part of a request answers
 // with the configuration it has.
+/// Spec: m2-104/7.1.6.3#1
 #[test]
 fn what_an_endpoint_cannot_do_is_not_done() {
     let mut midi1_only = Endpoint::midi1_device(None);
@@ -445,6 +452,7 @@ fn a_midi1_device_has_one_inferred_block() {
 // direction and the port are not the reserved values, and each refusal says
 // which. They span several fields, not one raw's range, so they do not fit
 // `check_range_contract`; the field types' own ranges are `tutti-ump`'s tests.
+/// Spec: m2-104/6.1.1#1, m2-104/7.1.8#6
 #[test]
 fn a_function_block_stays_inside_the_groups() {
     let new = |first, span, dir| {

@@ -161,7 +161,7 @@ pub enum Due {
 /// playhead is not crossed, even though an earlier pass went through it,
 /// because this pass will reach it again: a beat there waits for that,
 /// rather than firing now as late.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Playhead {
     prev: Option<Env>,
     /// Where the current continuous run started.
@@ -226,7 +226,7 @@ impl Playhead {
 
 /// How a transport read some frames after another got there; see
 /// [`TransportPosition::continuity`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Continuity {
     /// By continuous playback, without wrapping the loop: the earlier
     /// transport was playing.

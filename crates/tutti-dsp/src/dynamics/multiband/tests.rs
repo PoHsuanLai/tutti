@@ -1,7 +1,7 @@
 use core::f64::consts::PI;
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tutti_types::{BusTopology, CompressionRatio, Seconds};
 
 use super::*;
@@ -82,21 +82,21 @@ impl FamilyCase for MultibandFamily {
         let mut rng = StdRng::seed_from_u64(9);
         for _ in 0..48 {
             let mut set = unity(&[
-                rng.gen_range(60.0..300.0),
-                rng.gen_range(400.0..3_000.0),
-                rng.gen_range(4_000.0..12_000.0),
+                rng.random_range(60.0..300.0),
+                rng.random_range(400.0..3_000.0),
+                rng.random_range(4_000.0..12_000.0),
             ]);
             for b in &mut set.bands {
                 *b = BandSettings {
-                    bypass: rng.gen_bool(0.3),
-                    solo: rng.gen_bool(0.3),
+                    bypass: rng.random_bool(0.3),
+                    solo: rng.random_bool(0.3),
                     ..band(
-                        rng.gen_range(-60.0..0.0),
-                        rng.gen_range(0.0..12.0),
-                        rng.gen_range(1.0..20.0),
-                        rng.gen_range(0.0..0.05),
-                        rng.gen_range(0.0..0.5),
-                        rng.gen_range(-12.0..12.0),
+                        rng.random_range(-60.0..0.0),
+                        rng.random_range(0.0..12.0),
+                        rng.random_range(1.0..20.0),
+                        rng.random_range(0.0..0.05),
+                        rng.random_range(0.0..0.5),
+                        rng.random_range(-12.0..12.0),
                     )
                 };
             }

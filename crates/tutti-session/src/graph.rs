@@ -389,7 +389,7 @@ impl std::fmt::Debug for Graph {
 }
 
 /// What a commit came to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Committed {
     /// Sent.
     Sent,

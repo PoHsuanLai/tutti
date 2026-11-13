@@ -3,10 +3,9 @@ name = "tutti-plugin"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Plugin hosting for Tutti: loads VST3, CLAP and AU plugins in isolated subprocesses (VST2 in-process) as audio-graph nodes"
+description = "Hosts VST3, CLAP, Audio Unit and VST2 plugins in a tutti audio graph, out of process where the format allows"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-plugin"
 readme = "README.md"
 keywords = ["audio", "plugin", "vst3", "clap", "host"]
 categories = ["multimedia::audio"]
@@ -87,7 +86,7 @@ tempfile = "3"
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # The tests' mock listeners.
-parking_lot = "0.12"
+parking_lot = "0.13"
 # The node tests' mock plugin-server speaks the wire by hand.
 interprocess = { version = "2" }
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
@@ -121,7 +120,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # globals see the host's calls. The same pair, for the same reasons, as
 # `tutti-vst2-host`'s dev-dependencies; here it lets a test assert what the
 # *node* dispatched rather than what the instance API does.
-libloading = "0.8"
+libloading.workspace = true
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # The reference CLAP plugin the OUT-OF-PROCESS correctness suites drive. A
 # dev-dependency for the artifact, not the API: cargo builds its cdylib in this
@@ -141,7 +140,7 @@ libc = "0.2"
 
 # The Windows half of the pid probe: `OpenProcess` and its exit code.
 [target.'cfg(windows)'.dev-dependencies]
-windows = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 
 # NOTE: the `loom` model of this crate's shared-memory header protocol lives in

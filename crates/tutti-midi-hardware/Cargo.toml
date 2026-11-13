@@ -13,7 +13,7 @@ categories = ["multimedia::audio", "hardware-support"]
 
 [features]
 # Exports `test_support::FakeBackend`, a device list with no OS behind it.
-test-support = []
+testing = []
 # The suites that need a real ALSA sequencer (`/dev/snd/seq`); Linux only.
 sequencer-tests = []
 
@@ -44,10 +44,10 @@ coremidi = { workspace = true }
 core-foundation = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tutti-alsa-ffi = { path = "../tutti-alsa-ffi", features = ["test-support"] }
+tutti-alsa-ffi = { path = "../tutti-alsa-ffi", features = ["testing"] }
 
 [dev-dependencies]
-tutti-midi-hardware = { path = ".", features = ["test-support"] }
+tutti-midi-hardware = { path = ".", features = ["testing"] }
 
 assert_no_alloc = { version = "1", default-features = false }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }

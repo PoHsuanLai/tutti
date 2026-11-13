@@ -46,7 +46,6 @@ fn lufs_defaults_to_a_minus_one_dbtp_ceiling() {
     );
 }
 
-#[cfg(feature = "wav")]
 mod headroom {
     use super::*;
     use tutti_codec::{Format, Pcm};

@@ -21,7 +21,7 @@ mod types;
 
 pub use audio::{AudioSide, Planar, PortScratch, ProcessCall, ProcessError};
 pub use events::{EventRef, EventSink, EventSource, PluginEvent, header_size};
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 #[doc(hidden)]
 pub use events::{input_raw_for_test, output_raw_for_test};
 pub use gui::{EmbedOutcome, GuiError, GuiHints};
@@ -29,7 +29,7 @@ pub use host::{
     Host, HostCallbacks, TrackInfoWriter, TrackPortKind, TransportCommand, TuningInfoWriter,
 };
 pub use library::{Bundle, DescriptorInfo, LoadError, Stage, chars_to_string};
-#[cfg(all(feature = "test-support", feature = "clap-extras"))]
+#[cfg(all(feature = "testing", feature = "clap-extras"))]
 #[doc(hidden)]
 pub use menu::builder_for_test;
 #[cfg(feature = "clap-extras")]

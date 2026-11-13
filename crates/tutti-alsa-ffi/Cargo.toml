@@ -18,7 +18,7 @@ workspace = true
 
 [features]
 # Hooks that rename a client and change a port's capabilities.
-test-support = []
+testing = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

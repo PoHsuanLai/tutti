@@ -539,6 +539,34 @@ fn the_controller_serves_reads_while_the_processor_renders() {
     assert!(process.observed && process.is_audio && !process.is_main);
 }
 
+/// **A block never waits on the main thread.** While a main-thread call holds
+/// the instance (the roles claim a lifecycle change or a parameter flush
+/// takes), a block is refused at once and the plugin is not called; a `reset`
+/// asked for meanwhile is not lost, and the next block runs it first.
+#[test]
+fn a_block_the_main_thread_holds_is_refused_and_a_reset_meanwhile_is_owed() {
+    let probe = Probe::acquire();
+    let (mut processor, controller) = probe
+        .load()
+        .activate(&main_thread(), prepare())
+        .expect("activates");
+    render(&mut processor, SampleFormat::Float32).expect("warm up");
+    let visits = |site: Site| thread_capture().sites[site as usize].visits;
+    let (process, reset) = (visits(Site::Process), visits(Site::Reset));
+    {
+        let _held = controller.loaded().host_state().claim_audio_thread();
+        let error = render(&mut processor, SampleFormat::Float32).expect_err("refused");
+        assert!(matches!(error, PluginError::Block(_)), "{error:?}");
+        processor.reset();
+        assert_eq!(visits(Site::Process), process, "the plugin was not called");
+        assert_eq!(visits(Site::Reset), reset, "the reset waits for the claim");
+    }
+    render(&mut processor, SampleFormat::Float32).expect("the next block runs");
+    assert_eq!(visits(Site::Reset), reset + 1, "the owed reset ran");
+    assert_eq!(visits(Site::Process), process + 1);
+    processor.stop();
+}
+
 fn peek_param(id: u32) -> Option<f64> {
     type F = unsafe extern "C" fn(u32, *mut f64) -> bool;
     let mut v = 0.0f64;

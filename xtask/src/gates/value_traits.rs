@@ -254,37 +254,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "SampleWidth",
         "temporary: the plugins session adds Hash",
     ),
-    // errors (6)
-    (
-        "crates/tutti-engine/src/hearing.rs",
-        "HeardTapError",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-graph/src/event_inlet.rs",
-        "Refused",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-graph/src/node.rs",
-        "TransportChangeRejected",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-sampler/src/voice/command.rs",
-        "SendError",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-session/src/error.rs",
-        "HeardTapError",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-session/src/error.rs",
-        "TempoError",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
 ];
 
 fn skipped(dir: &str) -> bool {

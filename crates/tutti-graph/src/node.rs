@@ -1094,7 +1094,7 @@ pub struct TransportChange {
 }
 
 /// Why [`TransportChanges::push`] refused a change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum TransportChangeRejected {
     /// At [`Offset::ZERO`]. A change at the block's first frame is the

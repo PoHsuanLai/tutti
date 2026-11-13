@@ -326,7 +326,7 @@ pub(crate) struct Queued {
 ///
 /// A dropped add is a note that never sounds; a dropped remove is a voice
 /// that never stops.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum SendError {
     /// The 64-slot command queue was full. Transient: the audio thread drains

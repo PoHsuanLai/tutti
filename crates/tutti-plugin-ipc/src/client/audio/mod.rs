@@ -4,8 +4,9 @@
 //! Composition:
 //! - [`Channels`] — the two lock-free queues (commands, audio responses)
 //!   plus the shared newest-sequence and sample-rate cells. Unsolicited
-//!   events never cross threads: the bridge thread buffers them itself. Payload recycling lives in [`PayloadPool`]; the buffer-id counter
-//!   is gone, the batcher owns the block sequence.
+//!   events never cross threads: the bridge thread buffers them itself.
+//!   Payload recycling lives in [`PayloadPool`]; the batcher owns the block
+//!   sequence.
 //! - [`Lifecycle`] — running/crashed flags.
 //! - [`AudioSlab`] — bulk audio transport (created elsewhere; held as Arc).
 //!
@@ -553,9 +554,8 @@ impl AudioBridge {
         progress.wait(ask_resp)
     }
 
-    /// Why the command queue refused a state request: a crashed bridge (its
-    /// queue is drained with errors, and nothing reads it again) or a full one
-    /// (doc 027 D6), which is not a crash.
+    /// Why the command queue refused a state request: a crashed bridge (its queue is drained with
+    /// errors, and nothing reads it again) or a full one, which is not a crash.
     fn refused(&self) -> StateError {
         if self.lifecycle.is_crashed() {
             StateError::PluginCrashed
@@ -837,7 +837,7 @@ impl AudioBridge {
 mod tests {
     use super::*;
 
-    /// **A full command queue is `Busy`, not a crash** (doc 027 D6). A bridge
+    /// **A full command queue is `Busy`, not a crash**. A bridge
     /// whose queue nothing drains (no thread) refuses a state request once
     /// the queue is full; the plugin is not dead and a retry is reasonable.
     /// Once the bridge is crashed, the same refusal is `PluginCrashed`.

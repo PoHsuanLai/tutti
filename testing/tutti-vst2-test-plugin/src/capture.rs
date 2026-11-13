@@ -25,36 +25,6 @@ pub struct CapturedEvent {
     pub _pad: u8,
 }
 
-/// A `VstSpeakerArrangement` as the host sent it: the type, the channel count and the
-/// `kSpeaker*` number of each channel.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CapturedArrangement {
-    /// `VstSpeakerArrangement::type`.
-    pub kind: i32,
-    /// `VstSpeakerArrangement::numChannels`.
-    pub channels: i32,
-    /// `VstSpeakerProperties::type` of the first [`MAX_CAPTURED_SPEAKERS`] channels.
-    pub speakers: [i32; MAX_CAPTURED_SPEAKERS],
-}
-
-/// Cap on the channels of an arrangement stored.
-pub const MAX_CAPTURED_SPEAKERS: usize = 16;
-
-/// An editor key event as the host sent it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CapturedKey {
-    /// `effEditKeyDown` (true) or `effEditKeyUp`.
-    pub down: bool,
-    /// `[index]`, the ASCII character.
-    pub character: i32,
-    /// `[value]`, the virtual key.
-    pub key: i32,
-    /// The bits of `[opt]`, the modifier mask.
-    pub modifier_bits: u32,
-}
-
 /// Cap on events stored per block. `event_count` records the true count
 /// even when it exceeds this, so an overflow is visible rather than
 /// silently truncated into a passing assertion.
@@ -175,23 +145,6 @@ pub struct ProcessCapture {
     /// The first [`MAX_CAPTURED_EVENTS`] of the most recent batch, in the
     /// order the host presented them.
     pub events: [CapturedEvent; MAX_CAPTURED_EVENTS],
-
-    /// Count of `effSetSpeakerArrangement` dispatches.
-    pub arrangement_sets: u32,
-    /// The input arrangement of the last `effSetSpeakerArrangement`: what the host
-    /// proposed, recorded before the plugin accepts or refuses it.
-    pub arrangement_input: CapturedArrangement,
-    /// The output arrangement of the last `effSetSpeakerArrangement`.
-    pub arrangement_output: CapturedArrangement,
-    /// Whether the plugin was resumed when the last `effSetSpeakerArrangement` arrived.
-    pub arrangement_while_resumed: bool,
-    /// Count of `effGetSpeakerArrangement` dispatches.
-    pub arrangement_gets: u32,
-
-    /// Count of `effEditKeyDown` and `effEditKeyUp` dispatches.
-    pub key_events: u32,
-    /// The last key event.
-    pub last_key: CapturedKey,
 }
 
 impl ProcessCapture {
@@ -237,26 +190,6 @@ impl ProcessCapture {
                 midi_data: [0; 3],
                 _pad: 0,
             }; MAX_CAPTURED_EVENTS],
-            arrangement_sets: 0,
-            arrangement_input: CapturedArrangement {
-                kind: 0,
-                channels: 0,
-                speakers: [0; MAX_CAPTURED_SPEAKERS],
-            },
-            arrangement_output: CapturedArrangement {
-                kind: 0,
-                channels: 0,
-                speakers: [0; MAX_CAPTURED_SPEAKERS],
-            },
-            arrangement_while_resumed: false,
-            arrangement_gets: 0,
-            key_events: 0,
-            last_key: CapturedKey {
-                down: false,
-                character: 0,
-                key: 0,
-                modifier_bits: 0,
-            },
         }
     }
 }

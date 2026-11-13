@@ -92,7 +92,6 @@ pub mod interfaces;
 pub mod midi;
 pub mod plugin;
 pub mod scratch;
-pub mod speaker;
 
 // Test-only global allocator for the RT-safety test of the render refusal; it aborts on
 // any allocation inside an `assert_no_alloc` scope.

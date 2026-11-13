@@ -29,7 +29,6 @@ tutti-graph = { path = "../tutti-graph" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # `SeqWriter` / `SeqReader`, the sequence lock the transport snapshot lives in.
 tutti-rt = { path = "../tutti-rt" }
-tutti-types = { path = "../tutti-types" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # Tutti fork of the `vst` crate: adds the host-side audioMaster callbacks
 # (get_sample_rate / size_window / io_changed / latency / process_level /
@@ -45,6 +44,8 @@ tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }
+# An unchecked `SampleRate` (`Unit::from_raw`), for the tests of a prepare that refuses it.
+tutti-types = { path = "../tutti-types" }
 # Used by the conformance harness to re-open the reference plugin and read
 # its capture. The test cannot use the linked rlib's globals for this: the
 # rlib and the cdylib are separate images with separate statics, and the host

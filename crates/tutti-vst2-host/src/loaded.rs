@@ -195,8 +195,6 @@ pub struct Vst2Loaded {
     /// The audio side's state, which a Processor owns while the plugin is
     /// active and which a rejoin gives back. `None` while a Processor holds it.
     pub(crate) audio: Option<AudioSide>,
-    /// What the plugin held after the last [`negotiate_arrangement`](Vst2Loaded::negotiate_arrangement); `None` before one.
-    pub(crate) kept: Option<crate::arrangement::Kept>,
     metadata: PluginInfo,
     descriptor: PluginDescriptor,
     /// The module opened and the choice of plugin in it (a shell's sub-plugin, as
@@ -459,7 +457,6 @@ impl Vst2Loaded {
                 time_info,
                 midi: MidiIo::new(midi_out_q),
             }),
-            kept: None,
             metadata,
             descriptor,
             origin: tutti_plugin_types::Origin::new(resolved, load),

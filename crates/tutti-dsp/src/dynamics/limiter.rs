@@ -29,10 +29,18 @@
 //! stops"); a frame that is not finite falls back to the member's. Every coefficient
 //! lands whole: a glided ceiling would let a sample past the new one.
 //!
-//! The envelope **starts at 0**, so the first audio after a prepare or a reset fades in
-//! over about one release time.
+//! A prepare or a reset leaves the envelope **unset** (`+inf`, no history), and the first
+//! frame takes its target at once, whatever it is: the first audio is limited from its
+//! first sample (design 024 section 2.7.4, law 1), as a limiter that had heard silence
+//! for ever would limit it (on silence the envelope settles at the drive, the target of a
+//! zero peak, which is where an unset envelope meets its first quiet frame). Until this
+//! was fixed the envelope started at 0, and the first audio faded in over about one
+//! release time.
 
 use core::ops::Range;
+
+/// The envelope with no history: the next frame takes its target at once.
+const UNSET: f32 = f32::INFINITY;
 
 use tutti_types::{Amplitude, BusTopology, Db, SampleRate, Samples, Seconds};
 
@@ -343,7 +351,8 @@ impl Lerp for LimiterTarget {
 /// (then gains) of the block being run.
 #[derive(Clone, Debug)]
 pub struct LimiterState {
-    /// The envelope gain (linear): instant attack, one-pole release.
+    /// The envelope gain (linear): instant attack, one-pole release; `+inf` when unset,
+    /// after a prepare or a reset, so the next frame takes its target at once.
     envelope: f32,
     ring: LookaheadRing,
     /// The linked peak of each frame of the block, which becomes its window-minimum gain;
@@ -408,7 +417,7 @@ impl Recurrence for LimiterRecurrence {
         Start {
             coeffs: Glide::landed(target).by(0),
             state: LimiterState {
-                envelope: 0.0,
+                envelope: UNSET,
                 ring: LookaheadRing::new(self.channels, member.lookahead),
                 peaks: Vec::new(),
             },
@@ -442,7 +451,7 @@ impl Recurrence for LimiterRecurrence {
     }
 
     fn clear(&self, state: &mut LimiterState) {
-        state.envelope = 0.0;
+        state.envelope = UNSET;
         state.ring.clear();
     }
 
@@ -476,6 +485,7 @@ impl Recurrence for LimiterRecurrence {
         // each frame's peak becomes its window-minimum gain.
         for (p, i) in peaks.iter_mut().zip(frames.clone()) {
             let gain = Self::target_gain(&target, feed, i, *p);
+            // The instant attack: an unset envelope (`+inf`) takes its first target here.
             if gain < *envelope {
                 *envelope = gain;
             } else {

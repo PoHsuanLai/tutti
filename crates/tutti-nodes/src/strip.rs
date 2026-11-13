@@ -5,8 +5,7 @@
 //! the [`ParamSet`] it is inserted with, so a host sets it with the same
 //! generic machinery it uses for a filter cutoff and needs no downcast. A
 //! strip's mute is not here: muting is graph state, `NodeMode::Muted`
-//! (`Graph::set_mode`), the same for every node (doc 013, "Bypass and mute
-//! are graph state").
+//! (`Graph::set_mode`), the same for every node.
 //!
 //! Every scalar lives in a cell the node's [`ParamSet`] addresses by
 //! [`UnitParam`] — the same shape every other node in this crate uses — so a
@@ -37,7 +36,7 @@ use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::UnitParam;
-use tutti_types::{Amplitude, BusTopology, ChannelLayout, Pan, Param, Tail};
+use tutti_types::{Amplitude, BusTopology, Pan, Param, Tail};
 
 // The params a [`BusStripNode`] lets the graph modulate, in port order.
 tutti_graph::declare_params!([] BusStripNode, n {
@@ -151,15 +150,10 @@ impl BusStripNode {
         self.topology
     }
 
-    /// The width this strip runs at, as the engine's channel vocabulary.
-    pub fn layout(&self) -> ChannelLayout {
-        self.topology.layout()
-    }
-
     /// The audio channel count (its output count).
     #[inline]
-    pub fn channels(&self) -> usize {
-        self.layout().count() as usize
+    fn channels(&self) -> usize {
+        self.topology.layout().count() as usize
     }
 
     /// Atomic handle for the UI / automation to share the volume cell.
@@ -379,7 +373,7 @@ impl Node for BusStripNode {
     /// with its input.
     fn shape(&self) -> Shape {
         Shape::through(self.topology)
-            // Measured (doc 013, "The cost model and coarsening"): steady
+            // Measured: steady
             // and ramping are far under the `Light`/`Moderate` boundary.
             // With the volume fed per frame it is borderline: about 0.7 of
             // the way from a gain to `SvfFilterNode` on a log scale, the
@@ -450,6 +444,7 @@ mod tests {
     use super::*;
     use crate::test_support::{RATE, tick};
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_types::ChannelLayout;
     use tutti_types::UnitParam;
 
     /// The engine's bus at `n` channels.

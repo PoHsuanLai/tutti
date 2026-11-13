@@ -319,15 +319,15 @@ impl TimerState {
 /// File descriptors the plugin asked the host to watch
 /// (`CLAP_EXT_POSIX_FD_SUPPORT`).
 #[derive(Debug)]
-pub struct ResourceState {
+pub struct PosixFdState {
     /// Descriptors the plugin asked the host to watch, in registration order.
-    pub posix_fds: Mutex<Vec<PosixFdEntry>>,
+    pub entries: Mutex<Vec<PosixFdEntry>>,
 }
 
-impl ResourceState {
+impl PosixFdState {
     fn new() -> Self {
         Self {
-            posix_fds: Mutex::new(Vec::new()),
+            entries: Mutex::new(Vec::new()),
         }
     }
 }
@@ -361,7 +361,7 @@ pub struct HostState {
     /// Timers the plugin registered for the host to fire.
     pub timer: TimerState,
     /// Descriptors the plugin registered for the host to watch.
-    pub resources: ResourceState,
+    pub posix_fds: PosixFdState,
 }
 
 impl HostState {
@@ -381,7 +381,7 @@ impl HostState {
             notes: NoteState::new(),
             log: LogState::new(),
             timer: TimerState::new(),
-            resources: ResourceState::new(),
+            posix_fds: PosixFdState::new(),
         }
     }
 

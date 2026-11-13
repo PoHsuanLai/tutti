@@ -208,7 +208,7 @@ impl HostCallbacks for HostState {
     }
 
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {
-        let Ok(mut fds) = self.resources.posix_fds.lock() else {
+        let Ok(mut fds) = self.posix_fds.entries.lock() else {
             return false;
         };
         if fds.iter().any(|e| e.fd == fd) {
@@ -219,7 +219,7 @@ impl HostCallbacks for HostState {
     }
 
     fn posix_fd_modify(&self, fd: i32, flags: u32) -> bool {
-        let Ok(mut fds) = self.resources.posix_fds.lock() else {
+        let Ok(mut fds) = self.posix_fds.entries.lock() else {
             return false;
         };
         match fds.iter_mut().find(|e| e.fd == fd) {
@@ -232,7 +232,7 @@ impl HostCallbacks for HostState {
     }
 
     fn posix_fd_unregister(&self, fd: i32) -> bool {
-        let Ok(mut fds) = self.resources.posix_fds.lock() else {
+        let Ok(mut fds) = self.posix_fds.entries.lock() else {
             return false;
         };
         let len_before = fds.len();

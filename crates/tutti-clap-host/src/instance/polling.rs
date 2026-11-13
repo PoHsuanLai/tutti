@@ -403,8 +403,8 @@ impl ClapLoaded {
         let (_, ready) = self.woken.fds.remove(at);
         let registered = self
             .host_state
-            .resources
             .posix_fds
+            .entries
             .lock()
             .is_ok_and(|fds| fds.iter().any(|e| e.fd == fd));
         if registered {
@@ -436,7 +436,7 @@ impl ClapLoaded {
     /// would serve it. Added to `out`.
     pub(crate) fn describe_wakeups(&mut self, out: &mut Wakeups) {
         if self.plugin.has_on_fd()
-            && let Ok(fds) = self.host_state.resources.posix_fds.lock()
+            && let Ok(fds) = self.host_state.posix_fds.entries.lock()
         {
             for entry in fds.iter() {
                 out.watch(FdId(entry.fd), interest_of(entry.flags));
@@ -455,7 +455,7 @@ impl ClapLoaded {
     /// them when [`take_requests_now`](Self::take_requests_now) hands them to
     /// the lifecycle, which serves them within its budget.
     pub(crate) fn latch_wakeups(&mut self, ready: &[Ready], now: std::time::Instant) {
-        if let Ok(registered) = self.host_state.resources.posix_fds.lock() {
+        if let Ok(registered) = self.host_state.posix_fds.entries.lock() {
             for r in ready {
                 let Some(entry) = registered.iter().find(|e| e.fd == r.fd.0) else {
                     continue;

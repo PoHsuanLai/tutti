@@ -1552,7 +1552,7 @@ fn test_host_posix_fd_register_and_unregister() {
 
     // Verify it was stored
     {
-        let fds = state.resources.posix_fds.lock().unwrap();
+        let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds.len(), 1);
         assert_eq!(fds[0].fd, 42);
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ);
@@ -1563,7 +1563,7 @@ fn test_host_posix_fd_register_and_unregister() {
 
     // Verify removed
     {
-        let fds = state.resources.posix_fds.lock().unwrap();
+        let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds.len(), 0);
     }
 
@@ -1597,7 +1597,7 @@ fn test_host_posix_fd_modify() {
     });
 
     {
-        let fds = state.resources.posix_fds.lock().unwrap();
+        let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE);
     }
 }

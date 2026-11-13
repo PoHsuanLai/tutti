@@ -1,11 +1,8 @@
 # VST 2.4 spec inventory. The names are the VST 2.4 SDK surface (aeffect.h,
 # aeffectx.h), checked by review: no SDK header is in the repo and none was
-# available to compare against, so the facts column is empty except where a number
-# is also pinned by a test against the VST2 plugin built in this repo
-# (testing/tutti-vst2-test-plugin, which spells its opcodes out as literals):
-# op = opcode, mask = bit mask. Paraphrases are in our own words. Numbers are
-# deliberately omitted where no spec source is available; a row's number is added
-# when an SDK header is checked, not from memory.
+# available to compare against, so the facts column is empty: a row's number is
+# added when an SDK header is checked, never from memory or from a plug-in this
+# repo builds. Paraphrases are in our own words.
 #
 # Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
 #
@@ -26,7 +23,7 @@
 # (declared only without VST_FORCE_DEPRECATED, or under the 2.4 deprecation block).
 vst2.eff.Open | plugin | stable |  | aeffect.h | host opens the plug-in instance, once after the entry point returns the effect |  |  |
 vst2.eff.Close | plugin | stable |  | aeffect.h | host closes the instance before dropping it |  |  |
-vst2.eff.SetProgram | plugin | stable |  | aeffect.h | host selects a program by number in the value argument | op=2 |  |
+vst2.eff.SetProgram | plugin | stable |  | aeffect.h | host selects a program by number in the value argument |  |  |
 vst2.eff.GetProgram | plugin | stable |  | aeffect.h | host reads the number of the current program |  |  |
 vst2.eff.SetProgramName | plugin | stable |  | aeffect.h | host renames the current program |  |  |
 vst2.eff.GetProgramName | plugin | stable |  | aeffect.h | host reads the current program's name |  |  |
@@ -34,21 +31,21 @@ vst2.eff.GetParamLabel | plugin | stable |  | aeffect.h | host reads a parameter
 vst2.eff.GetParamDisplay | plugin | stable |  | aeffect.h | host reads a parameter's value as display text |  |  |
 vst2.eff.GetParamName | plugin | stable |  | aeffect.h | host reads a parameter's name |  |  |
 vst2.eff.GetVu | plugin | stable |  | aeffect.h | host reads a level meter value |  | deprecated | VST 2.4 SDK aeffect.h: marked deprecated
-vst2.eff.SetSampleRate | plugin | stable |  | aeffect.h | host sets the sample rate, passed as a float in opt | op=10 |  |
-vst2.eff.SetBlockSize | plugin | stable |  | aeffect.h | host sets the largest block the plug-in will see, in value | op=11 |  |
-vst2.eff.MainsChanged | plugin | stable |  | aeffect.h | host switches the plug-in on or off (resume or suspend) | op=12 |  |
+vst2.eff.SetSampleRate | plugin | stable |  | aeffect.h | host sets the sample rate, passed as a float in opt |  |  |
+vst2.eff.SetBlockSize | plugin | stable |  | aeffect.h | host sets the largest block the plug-in will see, in value |  |  |
+vst2.eff.MainsChanged | plugin | stable |  | aeffect.h | host switches the plug-in on or off (resume or suspend) |  |  |
 vst2.eff.EditGetRect | plugin | stable |  | aeffect.h | host asks for the editor's rectangle |  |  |
 vst2.eff.EditOpen | plugin | stable |  | aeffect.h | host opens the editor inside a parent window handle |  |  |
 vst2.eff.EditClose | plugin | stable |  | aeffect.h | host closes the editor |  |  |
 vst2.eff.EditDraw | plugin | stable |  | aeffect.h | host asks the editor to redraw a region |  | deprecated | VST 2.4 SDK aeffect.h: marked deprecated
 vst2.eff.EditMouse | plugin | stable |  | aeffect.h | host sends a mouse event to the editor |  | deprecated | VST 2.4 SDK aeffect.h: marked deprecated
 vst2.eff.EditKey | plugin | stable |  | aeffect.h | host sends a key to the editor |  | deprecated | VST 2.4 SDK aeffect.h: marked deprecated
-vst2.eff.EditIdle | plugin | stable |  | aeffect.h | host gives the open editor a time slice | op=19 |  |
+vst2.eff.EditIdle | plugin | stable |  | aeffect.h | host gives the open editor a time slice |  |  |
 vst2.eff.EditTop | plugin | stable |  | aeffect.h | host tells the editor it is on top |  | deprecated | VST 2.4 SDK aeffect.h: marked deprecated
 vst2.eff.EditSleep | plugin | stable |  | aeffect.h | host tells the editor it is hidden |  | deprecated | VST 2.4 SDK aeffect.h: marked deprecated
 vst2.eff.Identify | plugin | stable |  | aeffect.h | host checks the plug-in answers with the NvEf identifier |  | deprecated | VST 2.4 SDK aeffect.h: marked deprecated
 vst2.eff.GetChunk | plugin | stable |  | aeffect.h | host reads the whole bank (index 0) or one program (index 1) as an opaque chunk |  |  |
-vst2.eff.SetChunk | plugin | stable |  | aeffect.h | host restores a bank or program chunk | op=24 |  |
+vst2.eff.SetChunk | plugin | stable |  | aeffect.h | host restores a bank or program chunk |  |  |
 vst2.eff.ProcessEvents | plugin | stable |  | aeffectx.h | host delivers a block's MIDI and SysEx events to the plug-in |  |  |
 vst2.eff.CanBeAutomated | plugin | stable |  | aeffectx.h | host asks whether a parameter may be automated |  |  |
 vst2.eff.String2Parameter | plugin | stable |  | aeffectx.h | host sets a parameter from typed text |  |  |
@@ -80,28 +77,28 @@ vst2.eff.GetTailSize | plugin | stable |  | aeffectx.h | host reads how many sam
 vst2.eff.Idle | plugin | stable |  | aeffectx.h | host gives the plug-in a time slice |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
 vst2.eff.GetIcon | plugin | stable |  | aeffectx.h | host asks for the plug-in's icon |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
 vst2.eff.SetViewPosition | plugin | stable |  | aeffectx.h | host moves the editor's view |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
-vst2.eff.GetParameterProperties | plugin | stable |  | aeffectx.h | host reads a parameter's description: steps, ranges, display hints | op=56 |  |
+vst2.eff.GetParameterProperties | plugin | stable |  | aeffectx.h | host reads a parameter's description: steps, ranges, display hints |  |  |
 vst2.eff.KeysRequired | plugin | stable |  | aeffectx.h | host asks whether the plug-in wants the keyboard |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
 vst2.eff.GetVstVersion | plugin | stable |  | aeffectx.h | host reads the VST version the plug-in implements |  |  |
 vst2.eff.EditKeyDown | plugin | stable |  | aeffectx.h | host sends a key press to the editor, ASCII in index, virtual key in value |  |  |
 vst2.eff.EditKeyUp | plugin | stable |  | aeffectx.h | host sends a key release to the editor |  |  |
 vst2.eff.SetEditKnobMode | plugin | stable |  | aeffectx.h | host sets how the editor's knobs follow the mouse |  |  |
-vst2.eff.GetMidiProgramName | plugin | stable |  | aeffectx.h | host reads a MIDI program's name for a channel | op=62 |  |
-vst2.eff.GetCurrentMidiProgram | plugin | stable |  | aeffectx.h | host reads the current MIDI program of a channel | op=63 |  |
-vst2.eff.GetMidiProgramCategory | plugin | stable |  | aeffectx.h | host reads the category of a MIDI program | op=64 |  |
-vst2.eff.HasMidiProgramsChanged | plugin | stable |  | aeffectx.h | host asks whether the MIDI program names changed | op=65 |  |
-vst2.eff.GetMidiKeyName | plugin | stable |  | aeffectx.h | host reads the name of a key for a MIDI program | op=66 |  |
+vst2.eff.GetMidiProgramName | plugin | stable |  | aeffectx.h | host reads a MIDI program's name for a channel |  |  |
+vst2.eff.GetCurrentMidiProgram | plugin | stable |  | aeffectx.h | host reads the current MIDI program of a channel |  |  |
+vst2.eff.GetMidiProgramCategory | plugin | stable |  | aeffectx.h | host reads the category of a MIDI program |  |  |
+vst2.eff.HasMidiProgramsChanged | plugin | stable |  | aeffectx.h | host asks whether the MIDI program names changed |  |  |
+vst2.eff.GetMidiKeyName | plugin | stable |  | aeffectx.h | host reads the name of a key for a MIDI program |  |  |
 vst2.eff.BeginSetProgram | plugin | stable |  | aeffectx.h | host opens a program change |  |  |
 vst2.eff.EndSetProgram | plugin | stable |  | aeffectx.h | host closes a program change |  |  |
 vst2.eff.GetSpeakerArrangement | plugin | stable |  | aeffectx.h | host reads the plug-in's current speaker arrangements |  |  |
 vst2.eff.ShellGetNextPlugin | plugin | stable |  | aeffectx.h | host enumerates the plug-ins a shell holds, one id at a time |  |  |
-vst2.eff.StartProcess | plugin | stable |  | aeffectx.h | host says processing is about to begin | op=71 |  |
-vst2.eff.StopProcess | plugin | stable |  | aeffectx.h | host says processing has stopped | op=72 |  |
+vst2.eff.StartProcess | plugin | stable |  | aeffectx.h | host says processing is about to begin |  |  |
+vst2.eff.StopProcess | plugin | stable |  | aeffectx.h | host says processing has stopped |  |  |
 vst2.eff.SetTotalSampleToProcess | plugin | stable |  | aeffectx.h | host announces how many samples an offline run will process |  |  |
 vst2.eff.SetPanLaw | plugin | stable |  | aeffectx.h | host sets the pan law type and gain |  |  |
 vst2.eff.BeginLoadBank | plugin | stable |  | aeffectx.h | host announces a bank is about to be loaded, with its patch chunk info |  |  |
 vst2.eff.BeginLoadProgram | plugin | stable |  | aeffectx.h | host announces a program is about to be loaded, with its patch chunk info |  |  |
-vst2.eff.SetProcessPrecision | plugin | stable |  | aeffectx.h | host picks 32-bit or 64-bit processing | op=77 |  |
+vst2.eff.SetProcessPrecision | plugin | stable |  | aeffectx.h | host picks 32-bit or 64-bit processing |  |  |
 vst2.eff.GetNumMidiInputChannels | plugin | stable |  | aeffectx.h | host reads how many MIDI input channels the plug-in uses |  |  |
 vst2.eff.GetNumMidiOutputChannels | plugin | stable |  | aeffectx.h | host reads how many MIDI output channels the plug-in uses |  |  |
 vst2.audioMaster.Automate | host | stable |  | aeffectx.h | plug-in reports a parameter change made in its editor |  |  |
@@ -135,9 +132,9 @@ vst2.audioMaster.OfflineGetCurrentPass | host | stable |  | aeffectx.h | plug-in
 vst2.audioMaster.OfflineGetCurrentMetaPass | host | stable |  | aeffectx.h | plug-in asks which offline meta pass is running |  |  |
 vst2.audioMaster.SetOutputSampleRate | host | stable |  | aeffectx.h | plug-in sets the output sample rate |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
 vst2.audioMaster.GetOutputSpeakerArrangement | host | stable |  | aeffectx.h | plug-in reads the output speaker arrangement |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
-vst2.audioMaster.GetVendorString | host | stable |  | aeffectx.h | plug-in reads the host vendor's name | op=32 |  |
-vst2.audioMaster.GetProductString | host | stable |  | aeffectx.h | plug-in reads the host's product name | op=33 |  |
-vst2.audioMaster.GetVendorVersion | host | stable |  | aeffectx.h | plug-in reads the host's version | op=34 |  |
+vst2.audioMaster.GetVendorString | host | stable |  | aeffectx.h | plug-in reads the host vendor's name |  |  |
+vst2.audioMaster.GetProductString | host | stable |  | aeffectx.h | plug-in reads the host's product name |  |  |
+vst2.audioMaster.GetVendorVersion | host | stable |  | aeffectx.h | plug-in reads the host's version |  |  |
 vst2.audioMaster.VendorSpecific | host | stable |  | aeffectx.h | plug-in sends a host-vendor-defined request |  |  |
 vst2.audioMaster.SetIcon | host | stable |  | aeffectx.h | plug-in gives the host an icon |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
 vst2.audioMaster.CanDo | host | stable |  | aeffectx.h | plug-in asks about a host capability by string |  |  |
@@ -195,7 +192,7 @@ vst2.event.kVstVideoType | core | stable |  | aeffectx.h | a video event |  | de
 vst2.event.kVstParameterType | core | stable |  | aeffectx.h | a parameter event |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
 vst2.event.kVstTriggerType | core | stable |  | aeffectx.h | a trigger event |  | deprecated | VST 2.4 SDK aeffectx.h: marked deprecated
 vst2.event.kVstSysExType | core | stable |  | aeffectx.h | a system-exclusive message with its bytes and delta frames |  |  |
-vst2.timeinfo.kVstTransportChanged | host | stable |  | aeffectx.h | the transport changed since the last call | mask=0x1 |  |
+vst2.timeinfo.kVstTransportChanged | host | stable |  | aeffectx.h | the transport changed since the last call |  |  |
 vst2.timeinfo.kVstTransportPlaying | host | stable |  | aeffectx.h | the transport is playing |  |  |
 vst2.timeinfo.kVstTransportCycleActive | host | stable |  | aeffectx.h | the cycle (loop) is on |  |  |
 vst2.timeinfo.kVstTransportRecording | host | stable |  | aeffectx.h | the transport is recording |  |  |
@@ -295,7 +292,7 @@ vst2.cando.plugin.mixDryWet | plugin | stable |  | aeffectx.h | the plug-in has 
 vst2.cando.plugin.noRealTime | plugin | stable |  | aeffectx.h | the plug-in cannot run in real time |  |  |
 vst2.cando.plugin.multipass | plugin | stable |  | aeffectx.h | the plug-in needs several passes |  |  |
 vst2.cando.plugin.metapass | plugin | stable |  | aeffectx.h | the plug-in needs several meta passes |  |  |
-vst2.flag.kVstMidiEventIsRealtime | core | stable |  | aeffectx.h | a MIDI event flag: the event was played live | mask=0x1 |  |
+vst2.flag.kVstMidiEventIsRealtime | core | stable |  | aeffectx.h | a MIDI event flag: the event was played live |  |  |
 vst2.flag.kVstParameterIsSwitch | plugin | stable |  | aeffectx.h | the parameter is an on/off switch |  |  |
 vst2.flag.kVstParameterUsesIntegerMinMax | plugin | stable |  | aeffectx.h | the parameter has an integer range |  |  |
 vst2.flag.kVstParameterUsesFloatStep | plugin | stable |  | aeffectx.h | the parameter has float step sizes |  |  |

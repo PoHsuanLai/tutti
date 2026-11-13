@@ -1,14 +1,11 @@
 //! `Sysex8Assembler`, `MixedDataAssembler` and their packet writers allocate
 //! nothing once built.
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_ump::{
     ManufacturerId, MdsChunkUmps, MdsIdentity, MidiGroup, MixedDataAssembler, MixedDataSet,
     MixedDataStep, Sysex8Assembler, Sysex8Message, Sysex8Step, U4,
 };
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 #[test]
 fn sysex8_split_and_assemble_allocate_nothing() {

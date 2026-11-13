@@ -15,6 +15,7 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 use tutti_plugin_types::MAX_CHUNK;
+use tutti_plugin_types::StateUse;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{Helper, Load, Locator};
 use tutti_types::SampleRate;
@@ -106,6 +107,7 @@ pub fn launch(
     load: &Load,
     sample_rate: SampleRate,
     state: Option<&[u8]>,
+    state_use: StateUse,
 ) -> BridgeResult<LaunchedServer> {
     launch_with_state(
         &Locator::Search,
@@ -114,6 +116,7 @@ pub fn launch(
         load,
         sample_rate,
         state,
+        state_use,
         STATE_RESTORE_TIMEOUT,
     )
 }
@@ -141,6 +144,7 @@ pub(super) fn launch_with(
         &Load::new(),
         sample_rate,
         None,
+        StateUse::Project,
         STATE_RESTORE_TIMEOUT,
     )
 }
@@ -148,7 +152,8 @@ pub(super) fn launch_with(
 /// `launch_with`, restoring `state` into the plugin before it is activated:
 /// staged ahead of the load (`HostMessage::StageStateChunk`), applied by the
 /// server between opening the plugin and activating it, so the activation, and
-/// the reply's buses and latency, are the state's.
+/// the reply's buses and latency, are the state's. `state_use` is what the
+/// state was saved for.
 pub(super) fn launch_with_state(
     locator: &Locator,
     config: &BridgeConfig,
@@ -156,6 +161,7 @@ pub(super) fn launch_with_state(
     load: &Load,
     sample_rate: SampleRate,
     state: Option<&[u8]>,
+    state_use: StateUse,
     restore_timeout: Duration,
 ) -> BridgeResult<LaunchedServer> {
     let mut process = Reaped::new(spawn_process(locator, config)?);
@@ -177,6 +183,7 @@ pub(super) fn launch_with_state(
         let declared = match (&staged, state) {
             (Some(Ok(())), Some(state)) => Some(StagedState {
                 len: state.len() as u64,
+                state_use,
             }),
             _ => None,
         };
@@ -613,6 +620,7 @@ mod tests {
             &Load::new(),
             SampleRate::SR_48K,
             Some(&[0u8; 16]),
+            StateUse::Project,
             restore_timeout,
         );
         (launched, started.elapsed())

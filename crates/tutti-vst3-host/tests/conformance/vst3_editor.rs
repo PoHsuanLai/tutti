@@ -44,7 +44,9 @@ fn plugin_with_editor(editor: u32) -> Vst3Loaded {
     let module = tutti_fixtures::vst3_module();
     let mut plugin = Vst3Loaded::load(&main, &module, LoadOptions::new())
         .unwrap_or_else(|e| panic!("the shared plugin at {} loads: {e:?}", module.display()));
-    let mut state = plugin.save_state(&main).expect("the plugin saves");
+    let mut state = plugin
+        .save_state(&main, tutti_plugin_types::StateUse::Project)
+        .expect("the plugin saves");
     // The plugin's blob is in the state verbatim; the second byte of its mode
     // word, 4 bytes after the magic, is the editor behaviour.
     let at = state
@@ -54,7 +56,7 @@ fn plugin_with_editor(editor: u32) -> Vst3Loaded {
         + 4;
     state[at..at + 4].copy_from_slice(&(editor << 8).to_le_bytes());
     plugin
-        .load_state(&main, &state)
+        .load_state(&main, &state, tutti_plugin_types::StateUse::Project)
         .expect("the plugin takes its configuration");
     plugin
 }

@@ -616,10 +616,18 @@ pub fn state_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);
     write(&mut loaded, Param::Aux, 0.5);
-    let saved = loaded.save_state(&main_thread()).expect("saves");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("saves");
     write(&mut loaded, Param::Level, 0.125);
     write(&mut loaded, Param::Aux, 0.0);
-    loaded.load_state(&main_thread(), &saved).expect("loads");
+    loaded
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("loads");
     assert_reads::<F>(read(&loaded, Param::Level), 0.75, "level");
     assert_reads::<F>(read(&loaded, Param::Aux), 0.5, "aux");
 }
@@ -639,9 +647,17 @@ pub fn loaded_write_survives_a_save<F: Format>() {
     let mut loaded = F::load();
     set_mode::<F, _>(&mut loaded, Mode::Level);
     write(&mut loaded, Param::Level, 0.75);
-    let saved = loaded.save_state(&main_thread()).expect("saves");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("saves");
     let mut other = F::load();
-    other.load_state(&main_thread(), &saved).expect("loads");
+    other
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("loads");
     assert_eq!(read(&other, Param::Level), Some(0.75), "read");
     let out = activate(other, BLOCK).silent(BLOCK);
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
@@ -683,7 +699,11 @@ pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
     let mut loaded = F::load();
     set_mode::<F, _>(&mut loaded, Mode::Level);
     set_level::<F, _>(&mut loaded, 0.75);
-    let _refused = loaded.load_state(&main_thread(), b"not the plugin's state");
+    let _refused = loaded.load_state(
+        &main_thread(),
+        b"not the plugin's state",
+        tutti_plugin_types::StateUse::Project,
+    );
     assert_eq!(read(&loaded, Param::Level), Some(0.75));
     let out = activate(loaded, BLOCK).silent(BLOCK);
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);

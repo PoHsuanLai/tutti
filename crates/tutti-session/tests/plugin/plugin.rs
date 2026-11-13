@@ -1220,7 +1220,11 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     // An edit made now commits.
     let (extra, _) = s.graph().add(ForkByClone(DropWitness(Arc::default())));
     assert!(s.graph_ref().is_edited());
-    let _ = s.update();
+    // The commit alone, on the drive's clock: `update()` would run
+    // `Phase::Plugins` on the real one, where a server launch (hundreds of ms on
+    // macOS) outlasts the 1 ms reload backoff and hands out a reload job this test
+    // would discard.
+    s.run_phase(Phase::Commit, PhaseCx::at(drive.now), &mut Vec::new());
     assert!(
         !s.graph_ref().is_edited(),
         "the commit was refused: the topology is invalid"

@@ -141,7 +141,7 @@ libc = "0.2"
 
 # The Windows half of the pid probe: `OpenProcess` and its exit code.
 [target.'cfg(windows)'.dev-dependencies]
-windows = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 
 # NOTE: the `loom` model of this crate's shared-memory header protocol lives in

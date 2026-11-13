@@ -75,22 +75,6 @@ pub(super) const ALLOWED: &[(&str, &str)] = &[
         "temporary: tutti-plugins folds it into its area binary",
     ),
     (
-        "crates/tutti-polysynth/tests/rt_no_alloc.rs",
-        "temporary: tutti-dsp folds it into its area binary",
-    ),
-    (
-        "crates/tutti-sampler/tests/disk_placement.rs",
-        "temporary: tutti-dsp folds it into its area binary",
-    ),
-    (
-        "crates/tutti-sampler/tests/rt_no_alloc.rs",
-        "temporary: tutti-dsp folds it into its area binary",
-    ),
-    (
-        "crates/tutti-soundfont/tests/rt_no_alloc.rs",
-        "temporary: tutti-dsp folds it into its area binary",
-    ),
-    (
         "crates/tutti-vst2-host/tests/vst2_host_process_no_alloc.rs",
         "temporary: tutti-plugins folds it into its area binary",
     ),

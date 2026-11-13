@@ -23,7 +23,7 @@ workspace = true
 # `Pod` for the plain-bytes mirror of `TimeInfo` the transport cell holds.
 bytemuck = { version = "1.16", features = ["derive"] }
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 thiserror = "2"
 tutti-graph = { path = "../tutti-graph" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }

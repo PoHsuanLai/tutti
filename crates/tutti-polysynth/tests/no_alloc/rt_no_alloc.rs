@@ -19,23 +19,17 @@
 //! is the one that fills it, at 64 voices. The constructor puts no upper
 //! bound on `max_voices`; a count of zero cannot be written.
 
-use assert_no_alloc::AllocDisabler;
+use crate::support::Hand;
 use std::num::NonZeroUsize;
-use tutti_types::MaxBlock;
-use tutti_ump::{BendValue, ControlValue};
-mod support;
-
-use support::Hand;
 use tutti_fixtures::midi;
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
+use tutti_types::MaxBlock;
 use tutti_types::{Hz, Q, SampleRate};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
     RegisteredPerNoteController, Rpn, U7, U14, Ump, Voice1, Voice2,
 };
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
+use tutti_ump::{BendValue, ControlValue};
 
 fn note_on(channel: u8, note: u8, vel: u8) -> Ump {
     midi::note_on(
@@ -173,7 +167,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 fn polysynth_every_decoded_message_is_allocation_free() {
     let mut synth = Hand::new(PolySynth::new(SynthConfig {
         polyphony: NonZeroUsize::new(8).unwrap(),
-        mpe: support::lower_zone(),
+        mpe: crate::support::lower_zone(),
         ..Default::default()
     }));
     let address = Address {

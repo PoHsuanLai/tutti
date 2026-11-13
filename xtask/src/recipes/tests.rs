@@ -37,7 +37,7 @@ fn every_recipe_plans_with_no_arguments() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 39);
+    assert_eq!(RECIPES.len(), 41);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -70,6 +70,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         ("check-doc-refs", "gate check-doc-refs"),
         ("check-pointers", "gate check-pointers"),
         ("check-alloc-binaries", "gate check-alloc-binaries"),
+        ("check-conformance", "gate check-conformance"),
     ] {
         assert_eq!(dry(recipe, &[]), [gate]);
     }
@@ -87,6 +88,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-doc-refs",
         "gate check-pointers",
         "gate check-alloc-binaries",
+        "gate check-conformance",
     ] {
         assert!(ci.iter().any(|l| l == want), "{want}");
     }

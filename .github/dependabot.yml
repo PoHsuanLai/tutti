@@ -1,0 +1,21 @@
+# Weekly dependency updates, one grouped pull request per ecosystem. The Rust
+# toolchain (rust-toolchain.toml) and the VST3 SDK submodules are bumped by
+# hand, each in a pull request of its own.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+    open-pull-requests-limit: 1
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 1

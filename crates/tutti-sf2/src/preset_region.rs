@@ -19,7 +19,7 @@ fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
 }
 
 /// Indicates how instrument parameters should be modified within a preset.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PresetRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],

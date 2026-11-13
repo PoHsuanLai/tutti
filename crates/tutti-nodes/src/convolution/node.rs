@@ -52,7 +52,7 @@ pub(super) fn ring_out(ir_length: usize) -> Tail {
 /// Mirrors Ardour's convolution-reverb wiring options, generalised from a
 /// stereo pair to any width. Every configuration has as many inputs as
 /// outputs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Eq)]
 pub enum IrChannelConfig {
     /// One IR applied independently to every channel — the same room heard
     /// from each channel's own position, with no cross-coupling. A 1-channel

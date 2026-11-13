@@ -61,7 +61,7 @@ impl core::fmt::Display for Key {
 }
 
 /// The ratings a chroma is correlated with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum KeyProfile {
     /// Krumhansl & Kessler (1982).

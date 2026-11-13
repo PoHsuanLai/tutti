@@ -23,9 +23,10 @@
 //!    thread; the main-thread entries it lets run beside `process`
 //!    (`params.get_value`, text conversion, `state.save/load`, `gui`,
 //!    `latency.get`, `tail.get`, `on_main_thread`) are all `Plugin` can call
-//!    while an `AudioSide` exists. The `[!active]` entry
-//!    (`audio-ports-config.select`) refuses with [`CallError::WrongState`]
-//!    while the plugin is active. The `clap.gui` entries follow `create` and
+//!    while an `AudioSide` exists. The `[!active]` entries (port
+//!    configuration) refuse with [`CallError::WrongState`] while the plugin
+//!    is active, and `audio-ports-activation.set_active` takes the claim
+//!    then, as CLAP's `[active ? audio-thread : main-thread]` says. The `clap.gui` entries follow `create` and
 //!    precede `destroy`, which `Plugin` tracks.
 //! 2. *Audio entries never overlap.* Every audio-side entry runs under the
 //!    instance's [`AudioClaim`](crate::AudioClaim), so two audio-side calls never overlap even
@@ -57,10 +58,18 @@ use clap_sys::ext::ambisonic::{
     CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT, clap_plugin_ambisonic,
 };
 use clap_sys::ext::audio_ports::{CLAP_EXT_AUDIO_PORTS, clap_plugin_audio_ports};
+use clap_sys::ext::audio_ports_activation::{
+    CLAP_EXT_AUDIO_PORTS_ACTIVATION, CLAP_EXT_AUDIO_PORTS_ACTIVATION_COMPAT,
+    clap_plugin_audio_ports_activation,
+};
 use clap_sys::ext::audio_ports_config::{
     CLAP_EXT_AUDIO_PORTS_CONFIG, CLAP_EXT_AUDIO_PORTS_CONFIG_INFO,
     CLAP_EXT_AUDIO_PORTS_CONFIG_INFO_COMPAT, clap_plugin_audio_ports_config,
     clap_plugin_audio_ports_config_info,
+};
+use clap_sys::ext::configurable_audio_ports::{
+    CLAP_EXT_CONFIGURABLE_AUDIO_PORTS, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS_COMPAT,
+    clap_plugin_configurable_audio_ports,
 };
 use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_plugin_gui};
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_plugin_latency};
@@ -131,6 +140,8 @@ extensions! {
     audio_ports: clap_plugin_audio_ports = [CLAP_EXT_AUDIO_PORTS];
     audio_ports_config: clap_plugin_audio_ports_config = [CLAP_EXT_AUDIO_PORTS_CONFIG];
     audio_ports_config_info: clap_plugin_audio_ports_config_info = [CLAP_EXT_AUDIO_PORTS_CONFIG_INFO, CLAP_EXT_AUDIO_PORTS_CONFIG_INFO_COMPAT];
+    audio_ports_activation: clap_plugin_audio_ports_activation = [CLAP_EXT_AUDIO_PORTS_ACTIVATION, CLAP_EXT_AUDIO_PORTS_ACTIVATION_COMPAT];
+    configurable_ports: clap_plugin_configurable_audio_ports = [CLAP_EXT_CONFIGURABLE_AUDIO_PORTS, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS_COMPAT];
     ambisonic: clap_plugin_ambisonic = [CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT];
     surround: clap_plugin_surround = [CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT];
     params: clap_plugin_params = [CLAP_EXT_PARAMS];
@@ -160,6 +171,10 @@ pub enum Extension {
     AudioPortsConfig,
     /// `clap.audio-ports-config-info`.
     AudioPortsConfigInfo,
+    /// `clap.audio-ports-activation`.
+    AudioPortsActivation,
+    /// `clap.configurable-ports`.
+    ConfigurableAudioPorts,
     /// `clap.ambisonic`.
     Ambisonic,
     /// `clap.surround`.
@@ -448,6 +463,8 @@ impl Plugin {
             Extension::AudioPorts => e.audio_ports.cast(),
             Extension::AudioPortsConfig => e.audio_ports_config.cast(),
             Extension::AudioPortsConfigInfo => e.audio_ports_config_info.cast(),
+            Extension::AudioPortsActivation => e.audio_ports_activation.cast(),
+            Extension::ConfigurableAudioPorts => e.configurable_ports.cast(),
             Extension::Ambisonic => e.ambisonic.cast(),
             Extension::Surround => e.surround.cast(),
             Extension::Params => e.params.cast(),
@@ -942,6 +959,72 @@ impl Plugin {
             .then(|| AudioPortInfo::from_raw(&info))
     }
 
+    /// `configurable-audio-ports.can_apply_configuration`, `[main-thread &&
+    /// !active]`.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] while the plugin is active.
+    pub fn can_apply_audio_port_configuration(
+        &self,
+        _main: &MainThread,
+        requests: &[PortConfigRequest],
+    ) -> Result<bool, CallError> {
+        self.require_inactive()?;
+        let raw = PortConfigRequest::to_raw(requests);
+        Ok(
+            call!(self.configurable_ports.can_apply_configuration(raw.as_ptr(), raw.len() as u32) else false),
+        )
+    }
+
+    /// `configurable-audio-ports.apply_configuration`, `[main-thread &&
+    /// !active]`.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] while the plugin is active.
+    pub fn apply_audio_port_configuration(
+        &mut self,
+        _main: &MainThread,
+        requests: &[PortConfigRequest],
+    ) -> Result<bool, CallError> {
+        self.require_inactive()?;
+        let raw = PortConfigRequest::to_raw(requests);
+        Ok(
+            call!(self.configurable_ports.apply_configuration(raw.as_ptr(), raw.len() as u32) else false),
+        )
+    }
+
+    /// `audio-ports-activation.can_activate_while_processing`.
+    #[must_use]
+    pub fn can_activate_audio_port_while_processing(&self, _main: &MainThread) -> bool {
+        call!(self.audio_ports_activation.can_activate_while_processing() else false)
+    }
+
+    /// `audio-ports-activation.set_active`, `[active ? audio-thread :
+    /// main-thread]`: on an active plugin it takes the audio claim, and while
+    /// the plugin is processing it is refused unless the plugin said it can
+    /// activate a port then.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] for a processing plugin that cannot.
+    pub fn set_audio_port_active(
+        &mut self,
+        _main: &MainThread,
+        is_input: bool,
+        port_index: u32,
+        is_active: bool,
+        sample_size: u32,
+    ) -> Result<bool, CallError> {
+        let _claim = self.is_active().then(|| self.core.roles.claim());
+        if self.core.processing.load(Ordering::Relaxed)
+            && !call!(self.audio_ports_activation.can_activate_while_processing() else false)
+        {
+            return Err(CallError::WrongState);
+        }
+        Ok(
+            call!(self.audio_ports_activation.set_active(is_input, port_index, is_active, sample_size) else false),
+        )
+    }
+
     /// `ambisonic.is_config_supported`.
     #[must_use]
     pub fn is_ambisonic_config_supported(
@@ -1229,6 +1312,36 @@ impl AudioPortInfo {
             port_type,
             in_place_pair: info.in_place_pair,
         }
+    }
+}
+
+/// One entry of a `configurable-audio-ports` request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortConfigRequest {
+    /// Input or output.
+    pub is_input: bool,
+    /// The port's index.
+    pub port_index: u32,
+    /// The channel count wanted.
+    pub channel_count: u32,
+}
+
+impl PortConfigRequest {
+    fn to_raw(
+        requests: &[Self],
+    ) -> Vec<clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request> {
+        requests
+            .iter()
+            .map(|r| {
+                clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request {
+                    is_input: r.is_input,
+                    port_index: r.port_index,
+                    channel_count: r.channel_count,
+                    port_type: ptr::null(),
+                    port_details: ptr::null(),
+                }
+            })
+            .collect()
     }
 }
 

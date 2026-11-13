@@ -25,6 +25,7 @@ pub use events::{input_raw_for_test, output_raw_for_test};
 pub use gui::{EmbedOutcome, GuiError, GuiHints};
 pub use host::{Host, HostCallbacks};
 pub use library::{Bundle, DescriptorInfo, LoadError, Stage, chars_to_string};
+pub use plugin::PortConfigRequest;
 pub use plugin::{
     ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortKind, off_thread_drops,
 };

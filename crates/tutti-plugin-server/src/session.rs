@@ -12,8 +12,8 @@ use tutti_plugin_ipc::{
     AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, SlabWriter, StagedState,
 };
 use tutti_plugin_types::{
-    BlockStatus, BridgeResult, Load, MainThread, MidiEventVec, ParameterQueue, PluginError,
-    SampleFormat,
+    BlockStatus, BridgeResult, EditorError, EditorSize, Load, MainThread, MidiEventVec,
+    ParameterQueue, PluginError, SampleFormat, WindowHandle,
 };
 
 /// A block's plugin MIDI-out for the wire. Already capped at
@@ -126,6 +126,12 @@ pub(crate) struct Session {
     /// A state received and waiting for the next load, which restores it into
     /// the plugin before activating it.
     pub(crate) staged: Option<Vec<u8>>,
+    /// Whether the plugin's editor is open in this process (doc 029 section
+    /// 6.5): what the idle tick serves.
+    pub(crate) editor_open: bool,
+    /// The editor was closed here on the server's own account (its plugin was
+    /// unloaded or replaced): the host is told at the next tick.
+    pub(crate) editor_closed_unasked: bool,
 }
 
 impl Session {
@@ -145,6 +151,8 @@ impl Session {
             state_in_refused: None,
             stage_in: None,
             staged: None,
+            editor_open: false,
+            editor_closed_unasked: false,
         }
     }
 
@@ -196,7 +204,7 @@ impl Session {
             ),
             M::UnloadPlugin => {
                 self.discard_staged();
-                self.plugin = None;
+                self.drop_plugin(main);
                 self.rate_refused = None;
                 self.shm = None;
                 Ok(Reaction::None)
@@ -380,6 +388,19 @@ impl Session {
                 Ok(Reaction::None)
             }
 
+            M::OpenEditor { parent, scale } => {
+                let result = self.open_editor(main, parent, scale);
+                Ok(BridgeMessage::EditorOpened { result }.into())
+            }
+            M::CloseEditor => {
+                self.close_editor(main);
+                Ok(Reaction::None)
+            }
+            M::SetEditorSize { size } => {
+                let result = self.set_editor_size(main, size);
+                Ok(BridgeMessage::EditorSized { result }.into())
+            }
+
             M::SaveState => Ok(self.handle_save_state(main)),
             M::LoadStateChunk { seq, last, bytes } => {
                 Ok(self.handle_load_state_chunk(main, seq, last, &bytes))
@@ -435,6 +456,105 @@ impl Session {
         events
     }
 
+    /// One idle tick, between messages, on the thread that loaded the plugin:
+    /// what the plugin asked of the host ([`drain_async_events`](Self::drain_async_events)),
+    /// the open editor's idle (VST2's `effEditIdle`, VST3's run loop), a size
+    /// the plugin asked its window to take, and the news that the editor was
+    /// closed here. Allocates only to hold what it tells the host.
+    pub(crate) fn tick(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
+        let mut told = self.drain_async_events(main);
+        if self.editor_open
+            && let Some(control) = self
+                .plugin
+                .as_mut()
+                .and_then(|p| p.plugin_mut().control_mut())
+        {
+            control.editor_idle(main);
+            if let Some(size) = control.poll_editor_resize_request(main) {
+                told.push(BridgeMessage::EditorWantsSize { size });
+            }
+        }
+        if std::mem::take(&mut self.editor_closed_unasked) {
+            told.push(BridgeMessage::EditorClosed);
+        }
+        told
+    }
+
+    /// Opens the plugin's editor on the served instance itself: embedded in
+    /// `parent` (the host's window, as a number that means the same here), or
+    /// the plugin's own window for `None`. The editor's size when embedded.
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: Option<u64>,
+        scale: tutti_plugin_types::ContentScale,
+    ) -> Result<Option<EditorSize>, String> {
+        if self.editor_open {
+            return Err("an editor is already open".into());
+        }
+        let Some(control) = self
+            .plugin
+            .as_mut()
+            .and_then(|p| p.plugin_mut().control_mut())
+        else {
+            return Err("no plugin is loaded".into());
+        };
+        let opened = match parent {
+            Some(raw) => match WindowHandle::from_remote(raw) {
+                Some(window) => control.open_editor(main, window, scale).map(Some),
+                None => Err(PluginError::Editor(EditorError::UnsupportedPlatform {
+                    got: "a window of the host's cannot be embedded into by this process".into(),
+                })),
+            },
+            None => control.open_floating_editor(main).map(|()| None),
+        };
+        self.editor_open = opened.is_ok();
+        opened.map_err(|e| e.to_string())
+    }
+
+    /// Closes the editor, if one is open.
+    fn close_editor(&mut self, main: &MainThread) {
+        if std::mem::take(&mut self.editor_open)
+            && let Some(control) = self
+                .plugin
+                .as_mut()
+                .and_then(|p| p.plugin_mut().control_mut())
+        {
+            control.close_editor(main);
+        }
+    }
+
+    /// Asks the open editor to take `size`; the size it took.
+    fn set_editor_size(
+        &mut self,
+        main: &MainThread,
+        size: EditorSize,
+    ) -> Result<EditorSize, String> {
+        if !self.editor_open {
+            return Err("editor not open".into());
+        }
+        let Some(control) = self
+            .plugin
+            .as_mut()
+            .and_then(|p| p.plugin_mut().control_mut())
+        else {
+            return Err("no plugin is loaded".into());
+        };
+        control
+            .set_editor_size(main, size)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Lets the plugin go (an unload, or a load that replaces it), closing its
+    /// editor first and telling the host it did.
+    fn drop_plugin(&mut self, main: &MainThread) {
+        if self.editor_open {
+            self.close_editor(main);
+            self.editor_closed_unasked = true;
+        }
+        self.plugin = None;
+    }
+
     /// Forgets a state staged for a load that has not come: the stage belongs to
     /// the one load that declares it.
     fn discard_staged(&mut self) {
@@ -464,7 +584,7 @@ impl Session {
         // a refused one must not leave the old plugin answering a host that
         // was told the load failed (and holding its instance while the next
         // one loads).
-        self.plugin = None;
+        self.drop_plugin(main);
         self.rate_refused = None;
         match (&declared, &staged) {
             (None, None) => {}

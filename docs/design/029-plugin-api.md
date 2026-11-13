@@ -858,11 +858,21 @@ The choice is the served client's, made at launch. The editor loader `Ipc::launc
 
 What changes:
 
-1. **The server's main thread runs an event loop:** socket reads, an idle timer (VST2's `effEditIdle`, about 30 Hz) and the window system's events, in one loop. Today it blocks in a socket read. This is shared work: the served AU needs a pumped main queue (§6.2), and AUv3's asynchronous load needs it too (§6.4). Whichever of the three comes first builds it.
-2. **Editor messages on the wire.**
-   - Host to server: `OpenEditor { parent, scale }`, `CloseEditor` and `SetEditorSize`. The protocol carried an `OpenEditor` until version 25.
-   - Server to host: `EditorWantsSize`, `EditorClosed` and the shared `ParamEdit { id, value, gesture }` (§6.1). For VST2, `ParamEdit` carries `audioMasterAutomate` and `BeginEdit`/`EndEdit`.
-3. **A remote editor in `Ipc`.** It is an `EditorWindow` that forwards open, close and resize over the wire, and it is what step 2's editor view holds for such a plugin.
+1. **The server's main thread runs an event loop:** socket reads, an idle timer (VST2's `effEditIdle`, about 30 Hz) and the window system's events, in one loop. Today it blocks in a socket read. This is shared work: the served AU needs a pumped main queue (§6.2), and AUv3's asynchronous load needs it too (§6.4). Whichever of the three comes first builds it. **Built** (PR 1).
+   - `tutti-plugin-server`'s `event_loop::serve` is the audio phase. It waits on the socket with `Transport::wait_readable(timeout)` (`poll(2)` on unix, `PeekNamedPipe` with a back-off on Windows) until the next tick is due. Audio rides the slab and is signalled by the request on this socket, so the wait ends the instant a byte arrives: the cost to a block's path is one `poll` per request. Nothing about the shared-memory slab changed.
+   - The tick (`TICK_PERIOD`, 33 ms) is `Session::tick`: the plugin's own asks (`drain_async_events`, which serves CLAP's timers and callbacks that were served only at the next message before), the open editor's `editor_idle`, a size the plugin asked its window to take, and the news that the server closed the editor. A late tick is not made up for (`Ticker::take_due`). It runs even with no editor open, so a plugin's timers run while the host is quiet.
+   - The handshake phase keeps its blocking read: no editor opens before the audio connection.
+   - The window system's events are `pump_window_system`, an empty seam. A served AU's main dispatch queue needs a safe wrapper that does not exist yet, and building it is that format's work (§6.2, §6.4). X11 needs none.
+2. **Editor messages on the wire.** **Built** (PR 1; `PROTOCOL_VERSION` is 33).
+   - Host to server: `OpenEditor { parent: Option<u64>, scale }`, `CloseEditor` and `SetEditorSize { size }`. The protocol carried an `OpenEditor` until version 25. `parent` is the platform number of the host window (`WindowHandle::as_u64`), and `None` asks for the plugin's own floating window.
+   - Server to host: `EditorOpened { result }` and `EditorSized { result }` (the answers to the open and the resize, each carrying the plugin's refusal as text), `EditorWantsSize { size }` and `EditorClosed`. `EditorClosed` is the server closing the editor on its own account (its plugin was unloaded or replaced); a `CloseEditor` has no answer. The plugin closing its own window is not reported yet: no format's `Control` raises it.
+   - The shared `ParamEdit { id, value, gesture }` (§6.1) already travels as `ParameterChanged`; the server forwards what the served instance's editor makes, so there is no editor-specific edit message.
+   - **The parent window crosses as plain data, and the server rebuilds it only where the number means the same there.** `WindowHandle::from_remote(raw)` is a safe constructor that answers `Some` only where `WindowHandle::embeds_across_processes()` (an X11 id, which the window system checks) and `None` for an AppKit view pointer or, until item 4 builds it, a Windows window. The client refuses an embedded open on such a platform with `EditorError::UnsupportedPlatform`, and asks for the floating editor instead.
+3. **A remote editor in `Ipc`.** It is an `EditorWindow` that forwards open, close and resize over the wire, and it is what step 2's editor view holds for such a plugin. **Built** (PR 1).
+   - `EditorLoader` is `Option<EditorLoader>` in `Ipc::launch`, `IpcOrigin` and `PluginBridge::new`. `Some` is today's editor-only second instance; `None` makes `PluginBridge` use `RemoteEditor` (`tutti-plugin-ipc`'s `client/remote_editor.rs`). A runtime value, as designed.
+   - The server opens the editor through the served instance's own `Control::open_editor` / `open_floating_editor` (`Session::open_editor`), so no format gained code.
+   - What the server says unprompted (`EditorWantsSize`, `EditorClosed`) is read off the stream with the next reply, as the plugin's edits are, and latched in the bridge's lifecycle for `poll_editor_resize_request`. `set_editor_scale` is the default refusal.
+   - Not covered end to end with a plugin that opens: the reference CLAP plugin's gui shape is a switch in the process that loaded it, which a test cannot set in a spawned server. The server's loop is tested with the real plugin in this process (`event_loop`'s `loop_tests`), the client against a mock server (`ipc::tests`), and the real server with the plugin's refusal (`served_control_tests`).
 4. **The parent window, per OS:**
    - **X11:** the window id is valid in another process, so the editor embeds. The server opens its own display connection and passes it in `effEditOpen`'s `value`, as LXVST hosts do.
    - **Windows:** a parent across processes (`SetParent`) works, but it joins the two input queues, so a stalled server could freeze the host's UI. The first version is a floating owned window; embedding follows.
@@ -880,7 +890,7 @@ What VST2 needs no work for:
 - **Audio, parameters and state.** These already work served: the server hosted VST2 audio before #625, and the experiment's served tests pass.
 
 About 1.5–2k lines, in three PRs:
-1. The event loop, the editor messages and the remote editor, with no VST2 in them.
+1. The event loop, the editor messages and the remote editor, with no VST2 in them. **Built.**
 2. VST2's row, the client and the contract.
 3. Windows: floating, then embedded.
 

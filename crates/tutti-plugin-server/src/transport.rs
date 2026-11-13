@@ -42,6 +42,20 @@ pub(crate) trait Transport: Send {
     /// `Ready` handshake failed to catch.
     fn recv(&mut self) -> BridgeResult<HostMessage>;
 
+    /// Wait up to `timeout` for the host to have something to read: `Ok(true)`
+    /// when a [`recv`](Self::recv) now will find a frame begun (or the host gone,
+    /// which `recv` reports as the error it is), `Ok(false)` on a timeout.
+    ///
+    /// This is what lets one thread serve the socket and the editor's idle tick
+    /// ([`crate::event_loop`]): it returns **the instant** a byte arrives, so a
+    /// block's request is read as soon as it was when the loop blocked in
+    /// `recv`.
+    ///
+    /// # Errors
+    ///
+    /// The OS refuses the wait.
+    fn wait_readable(&mut self, timeout: std::time::Duration) -> BridgeResult<bool>;
+
     /// Write one length-prefixed message. Returns once it is handed to the OS,
     /// which is not a guarantee the host has read it.
     ///
@@ -78,6 +92,64 @@ impl Transport for SocketTransport {
         // which has not crashed, so the error names the frame and the session
         // ends on it either way.
         read_frame(&mut self.stream)
+    }
+
+    #[cfg(unix)]
+    fn wait_readable(&mut self, timeout: std::time::Duration) -> BridgeResult<bool> {
+        use std::os::fd::AsFd;
+
+        // Rounded up: a wait of 0.3 ms must not become a busy `poll(0)` loop.
+        let ms = i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
+        loop {
+            match tutti_plugin_ipc_ffi::wait_readable(self.stream.as_fd(), ms) {
+                // A signal during the wait is not a failure; wait again.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => return Ok(other?),
+            }
+        }
+    }
+
+    /// A named pipe has no `poll`: ask it how many bytes it holds
+    /// (`PeekNamedPipe`, which never consumes any), spinning politely at first
+    /// (a block's request arrives within a block period) and napping longer
+    /// the quieter the pipe has been, never past `timeout`. **A failed peek is
+    /// "go and read"**, never a verdict: the read is the authority on a closed
+    /// pipe.
+    #[cfg(windows)]
+    fn wait_readable(&mut self, timeout: std::time::Duration) -> BridgeResult<bool> {
+        use std::os::windows::io::AsHandle;
+        use std::time::{Duration, Instant};
+
+        /// Polls served by `yield_now` before any sleeping starts.
+        const SPIN_POLLS: u32 = 64;
+        /// The longest nap: an idle server wakes this often.
+        const LONGEST_NAP: Duration = Duration::from_millis(1);
+
+        let interprocess::local_socket::Stream::NamedPipe(pipe) = &self.stream;
+        let deadline = Instant::now() + timeout;
+        let mut empty = 0u32;
+        loop {
+            match tutti_plugin_ipc_ffi::pipe_bytes_available(pipe.as_handle()) {
+                Ok(0) => {}
+                Ok(_) | Err(_) => return Ok(true),
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+            empty = empty.saturating_add(1);
+            if empty <= SPIN_POLLS {
+                std::thread::yield_now();
+            } else {
+                std::thread::sleep(LONGEST_NAP.min(left));
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn wait_readable(&mut self, _timeout: std::time::Duration) -> BridgeResult<bool> {
+        // Nothing to wait on: let the read block, as before.
+        Ok(true)
     }
 
     fn send(&mut self, msg: &BridgeMessage) -> BridgeResult<()> {
@@ -401,6 +473,58 @@ mod recv_tests {
             }
             other => panic!("expected ConnectionFailed, got {other:?}"),
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod wait_tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    fn pair() -> (UnixStream, SocketTransport) {
+        let (host, server) = UnixStream::pair().expect("socket pair");
+        (
+            host,
+            SocketTransport::new(PlatformStream::from(OwnedFd::from(server))),
+        )
+    }
+
+    /// **A quiet socket is waited on for the whole timeout, and a byte ends the
+    /// wait at once.** The loop's idle tick is the first; a block's request
+    /// reaching the plugin as fast as it did before the loop is the second.
+    #[test]
+    fn the_wait_lasts_the_timeout_and_a_byte_ends_it_at_once() {
+        let (mut host, mut transport) = pair();
+
+        let start = Instant::now();
+        assert!(!transport.wait_readable(Duration::from_millis(40)).unwrap());
+        assert!(
+            start.elapsed() >= Duration::from_millis(40),
+            "a quiet socket was not waited on: {:?}",
+            start.elapsed()
+        );
+
+        host.write_all(&[0]).expect("write");
+        let start = Instant::now();
+        assert!(transport.wait_readable(Duration::from_secs(10)).unwrap());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "a readable socket waited out its timeout: {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A host that hangs up is readable: `recv` reports the end as the error
+    /// it is, rather than the loop ticking on for ever.
+    #[test]
+    fn a_closed_host_is_readable() {
+        let (host, mut transport) = pair();
+        drop(host);
+        assert!(transport.wait_readable(Duration::from_secs(10)).unwrap());
+        assert!(transport.recv().is_err());
     }
 }
 

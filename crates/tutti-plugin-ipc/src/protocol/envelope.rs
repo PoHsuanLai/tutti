@@ -17,7 +17,7 @@ use super::Samples;
 use super::process::ProcessAudioData;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
-use tutti_plugin_types::{BlockStatus, Load};
+use tutti_plugin_types::{BlockStatus, ContentScale, EditorSize, Load};
 use tutti_types::SampleRate;
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
@@ -244,6 +244,31 @@ pub enum HostMessage {
         param_id: crate::protocol::ParamId,
         /// The plain value, in the parameter's own unit.
         plain: f64,
+    },
+    /// Open the plugin's editor on the served instance itself, in this server
+    /// process (doc 029 section 6.5), answered by
+    /// [`BridgeMessage::EditorOpened`].
+    ///
+    /// `parent` is the host window's platform number
+    /// (`WindowHandle::as_u64`), where a window can be embedded across
+    /// processes (`WindowHandle::embeds_across_processes`: an X11 window id),
+    /// and `None` for the plugin's own floating window. A number the server
+    /// cannot embed into is refused in the answer.
+    OpenEditor {
+        /// The host window to embed into, or `None` for a floating editor.
+        parent: Option<u64>,
+        /// The parent's backing-store scale; the format takes it where it
+        /// can.
+        scale: ContentScale,
+    },
+    /// Close the editor. Nothing happens when none is open; there is no
+    /// answer.
+    CloseEditor,
+    /// Ask the open editor to take `size`, answered by
+    /// [`BridgeMessage::EditorSized`].
+    SetEditorSize {
+        /// The size the host's window has, in pixels.
+        size: EditorSize,
     },
 }
 
@@ -490,4 +515,27 @@ pub enum BridgeMessage {
         #[serde(with = "super::wire::normalized_opt")]
         value: Option<Normalized>,
     },
+    /// Answers a [`HostMessage::OpenEditor`]: the editor's size when it
+    /// embedded, `None` for a floating one, or why it did not open.
+    EditorOpened {
+        /// The size, or the refusal as the server formatted it.
+        result: Result<Option<EditorSize>, String>,
+    },
+    /// Answers a [`HostMessage::SetEditorSize`]: the size the editor took, or
+    /// why it did not.
+    EditorSized {
+        /// The size taken, or the refusal as the server formatted it.
+        result: Result<EditorSize, String>,
+    },
+    /// The plugin asked its window to take `size` (CLAP's
+    /// `gui.request_resize`): the host resizes the window it gave the editor
+    /// and answers with [`HostMessage::SetEditorSize`].
+    EditorWantsSize {
+        /// The size the plugin asked for, in pixels.
+        size: EditorSize,
+    },
+    /// The server closed the editor on its own account: the plugin it belongs
+    /// to was unloaded or replaced. Not an answer to a
+    /// [`HostMessage::CloseEditor`].
+    EditorClosed,
 }

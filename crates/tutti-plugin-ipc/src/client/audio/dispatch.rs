@@ -53,6 +53,11 @@ const MAX_PROCESS_TIMEOUT: Duration = Duration::from_millis(50);
 
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long the bridge waits for the server to open its editor or resize it:
+/// a plugin builds its window in the call, which a large one takes seconds to
+/// do.
+pub(super) const EDITOR_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long the bridge waits for a plugin to re-activate at a new rate.
 /// Longer than [`PARAM_TIMEOUT`]: it tears down and rebuilds the plugin's
 /// processing, which a large instrument can take seconds to do.
@@ -751,6 +756,51 @@ pub(super) fn handle(
             };
             reply.send(plain);
         }
+        Command::OpenEditor {
+            parent,
+            scale,
+            reply,
+        } => {
+            ipc::send(stream, &HostMessage::OpenEditor { parent, scale })?;
+            let value = match answer(
+                stream,
+                inbox,
+                owed,
+                channels,
+                EDITOR_TIMEOUT,
+                Late::Answer(|m| matches!(m, BridgeMessage::EditorOpened { .. })),
+            )? {
+                Some(BridgeMessage::EditorOpened { result }) => result,
+                Some(BridgeMessage::Error { message }) => Err(message),
+                Some(other) => Err(format!("unexpected reply to OpenEditor: {other:?}")),
+                None => Err(format!(
+                    "the server did not open the editor within {EDITOR_TIMEOUT:?}"
+                )),
+            };
+            reply.send(value);
+        }
+        Command::CloseEditor => {
+            ipc::send(stream, &HostMessage::CloseEditor)?;
+        }
+        Command::SetEditorSize { size, reply } => {
+            ipc::send(stream, &HostMessage::SetEditorSize { size })?;
+            let value = match answer(
+                stream,
+                inbox,
+                owed,
+                channels,
+                EDITOR_TIMEOUT,
+                Late::Answer(|m| matches!(m, BridgeMessage::EditorSized { .. })),
+            )? {
+                Some(BridgeMessage::EditorSized { result }) => result,
+                Some(BridgeMessage::Error { message }) => Err(message),
+                Some(other) => Err(format!("unexpected reply to SetEditorSize: {other:?}")),
+                None => Err(format!(
+                    "the server did not resize the editor within {EDITOR_TIMEOUT:?}"
+                )),
+            };
+            reply.send(value);
+        }
         Command::GetParameterNormalized {
             param_id,
             plain,
@@ -906,6 +956,10 @@ fn absorb(inbox: &mut Unsolicited, msg: BridgeMessage) -> Option<BridgeMessage> 
         BridgeMessage::PluginParamTitlesChanged => inbox.resync(ResyncKind::ParamTitles),
         BridgeMessage::PluginIoChanged => inbox.resync(ResyncKind::Io),
         BridgeMessage::PluginReloaded => inbox.resync(ResyncKind::Reloaded),
+        // The server's editor is the remote editor's to hear of: no event of
+        // the plugin's, so the lifecycle holds them.
+        BridgeMessage::EditorWantsSize { size } => inbox.editor_wants_size(size),
+        BridgeMessage::EditorClosed => inbox.editor_closed(),
         // The answer to a rate change the bridge stopped waiting for: it
         // belongs to no request now, so it is held for the thread to apply,
         // and never read as another request's reply.

@@ -619,6 +619,8 @@ and only VST2 would use. Recommendation (Q2, Q4): the rule stands as stated;
 25, with the server's `forbid(unsafe_code)`; git has it). If a user needs isolated VST2, it returns as a marker
 of its own, floating window only, with the macOS and Wayland rows documented.
 
+**Reversed (design 029 §6.5).** The editor in the server is a runtime choice of the served client, not a marker: `Ipc::launch` takes an `Option<EditorLoader>` and `None` opens the editor on the served instance, over `OpenEditor`, `CloseEditor` and `SetEditorSize` (protocol 33). The server's main thread is an event loop for it (`event_loop`: the socket and a 33 ms idle tick). The rows above still hold: it embeds on X11 only, and floats elsewhere.
+
 ## 5. Editor placement
 
 Editor placement is a property of the `OutOfProcess` marker's `Editor`, not of the node.

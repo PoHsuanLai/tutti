@@ -1,6 +1,6 @@
 [package]
 name = "tutti-midi-hardware"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "MIDI 2.0 device input and output through CoreMIDI on macOS and ALSA on Linux, for tutti"
@@ -23,22 +23,22 @@ workspace = true
 thiserror = { workspace = true }
 tracing = "0.1"
 
-tutti-midi-device = { path = "../tutti-midi-device" }
-tutti-graph = { path = "../tutti-graph" }
-tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+tutti-midi-device = { version = "0.0.1", path = "../tutti-midi-device" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-midi-runtime = { version = "0.0.1", path = "../tutti-midi-runtime", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 
 ringbuf = "0.6"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tutti-alsa-ffi = { path = "../tutti-alsa-ffi" }
+tutti-alsa-ffi = { version = "0.0.1", path = "../tutti-alsa-ffi" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tutti-coremidi-ffi = { path = "../tutti-coremidi-ffi" }
+tutti-coremidi-ffi = { version = "0.0.1", path = "../tutti-coremidi-ffi" }
 coremidi = { workspace = true }
 core-foundation = { workspace = true }
 

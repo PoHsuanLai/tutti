@@ -62,7 +62,7 @@ fn release_takes_one_plain_version() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 43);
+    assert_eq!(RECIPES.len(), 44);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -237,6 +237,19 @@ fn check_windows_stubs_under_the_target_dir() {
         ), "{l}");
         assert!(l.ends_with(" -- -D warnings"));
     }
+}
+
+#[test]
+fn package_packages_without_building_and_ci_runs_it() {
+    assert_eq!(
+        dry("package", &[]),
+        ["cargo package --locked --no-verify -p <each crate under crates/>"]
+    );
+    assert!(
+        dry("ci", &[])
+            .iter()
+            .any(|l| l.starts_with("cargo package --locked --no-verify"))
+    );
 }
 
 #[test]

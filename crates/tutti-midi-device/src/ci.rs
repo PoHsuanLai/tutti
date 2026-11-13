@@ -1,6 +1,7 @@
 //! The MIDI-CI message codec (M2-101): the header, the MUID, and Discovery,
-//! Invalidate MUID, Inquiry: Endpoint, ACK and NAK; and [`CiDevice`], the
-//! Management core over it.
+//! Invalidate MUID, Inquiry: Endpoint, ACK and NAK, and the Profile Configuration
+//! messages; [`CiDevice`], the Management core over it; and [`ProfileInitiator`],
+//! the Initiator's side of Profile Configuration.
 //!
 //! MIDI-CI lets two MIDI devices discover each other before either knows what the
 //! other speaks. It is **not** a UMP message type: a CI message is a byte payload
@@ -27,6 +28,8 @@ use tutti_ump::{MidiChannel, MidiGroup, Sysex7Packets, U7, Ump};
 mod device;
 mod discovery;
 mod endpoint;
+mod initiator;
+mod profile;
 mod read;
 mod status;
 mod text;
@@ -38,6 +41,18 @@ pub use discovery::{
     SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK,
 };
 pub use endpoint::{CiInstanceId, EndpointInfo, EndpointStatus};
+pub use initiator::{
+    Outcome, PROFILE_TIMEOUT, ProfileAction, ProfileChange, ProfileEntry, ProfileInitiator,
+    ProfileTable, ProfileTarget, Request, RequestError,
+};
+pub use profile::{
+    ChannelsDetail, DetailsData, InquiryTarget, ListTooLong, ManufacturerProfile, ProfileChannels,
+    ProfileDataError, ProfileId, ProfileLists, ProfileState, SUB_ID2_PROFILE_ADDED,
+    SUB_ID2_PROFILE_DETAILS_INQUIRY, SUB_ID2_PROFILE_DETAILS_REPLY, SUB_ID2_PROFILE_DISABLED,
+    SUB_ID2_PROFILE_ENABLED, SUB_ID2_PROFILE_INQUIRY, SUB_ID2_PROFILE_REMOVED,
+    SUB_ID2_PROFILE_REPLY, SUB_ID2_PROFILE_SPECIFIC_DATA, SUB_ID2_SET_PROFILE_OFF,
+    SUB_ID2_SET_PROFILE_ON, SpecificData, StandardProfile,
+};
 pub use status::{Ack, Nak};
 pub use text::MessageText;
 
@@ -148,7 +163,7 @@ impl From<CiVersion> for u8 {
 ///
 /// "00-0F: To/from MIDI Channels 1-16; 10-7D: Reserved; 7E: To/from Group; 7F:
 /// To/from Function Block." A reserved value is not one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
 pub enum CiDeviceId {
@@ -328,6 +343,11 @@ impl Destination {
     }
 }
 
+/// A 14-bit value as two 7-bit bytes, least significant first.
+fn wire_u14(raw: u16) -> [u8; 2] {
+    [(raw & 0x7F) as u8, ((raw >> 7) & 0x7F) as u8]
+}
+
 /// A 28-bit value as four little-endian 7-bit bytes.
 fn wire_bytes(raw: u32) -> [u8; 4] {
     [
@@ -474,6 +494,119 @@ pub enum CiMessage {
         /// Which message was rejected, and why.
         nak: Nak,
     },
+    /// Profile Inquiry (M2-101 §7.2): asks which Profiles a device supports at
+    /// the address in the header. To one device.
+    ProfileInquiry {
+        /// Addressing preamble; its Device ID is the address asked.
+        header: CiHeader,
+        /// The device asked.
+        to: Muid,
+    },
+    /// Reply to Profile Inquiry (§7.3): the Profiles enabled and disabled at the
+    /// address in the header.
+    ProfileReply {
+        /// Addressing preamble; its Device ID is the address described.
+        header: CiHeader,
+        /// The device that asked.
+        to: Muid,
+        /// The two lists.
+        profiles: ProfileLists,
+    },
+    /// Set Profile On (§7.8): enables a Profile at the address in the header.
+    SetProfileOn {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The device asked.
+        to: Muid,
+        /// The Profile to enable.
+        profile: ProfileId,
+        /// "Number Channels Requested": 0 for a Group or Function Block address.
+        /// A Version 1 sender has no such field and it reads as 0.
+        channels: ProfileChannels,
+    },
+    /// Set Profile Off (§7.9): disables a Profile at the address in the header.
+    SetProfileOff {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The device asked.
+        to: Muid,
+        /// The Profile to disable.
+        profile: ProfileId,
+    },
+    /// Profile Enabled Report (§7.10): a Profile is now enabled. "Always" to the
+    /// Broadcast MUID.
+    ProfileEnabled {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The Profile.
+        profile: ProfileId,
+        /// "Number Channels enabled": 0 for a Group or Function Block address,
+        /// and for a Version 1 sender, which has no such field.
+        channels: ProfileChannels,
+    },
+    /// Profile Disabled Report (§7.11): a Profile is now disabled. "Always" to the
+    /// Broadcast MUID.
+    ProfileDisabled {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The Profile.
+        profile: ProfileId,
+        /// "Number Channels disabled": as [`ProfileEnabled`](Self::ProfileEnabled).
+        channels: ProfileChannels,
+    },
+    /// Profile Added Report (§7.4): a Profile is newly supported. To the
+    /// Broadcast MUID.
+    ProfileAdded {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The Profile.
+        profile: ProfileId,
+    },
+    /// Profile Removed Report (§7.5): a Profile is no longer supported. To the
+    /// Broadcast MUID.
+    ProfileRemoved {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The Profile.
+        profile: ProfileId,
+    },
+    /// Profile Details Inquiry (§7.6): asks for a detail of a Profile's
+    /// implementation.
+    ProfileDetailsInquiry {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The device asked.
+        to: Muid,
+        /// The Profile.
+        profile: ProfileId,
+        /// What is asked.
+        target: InquiryTarget,
+    },
+    /// Reply to Profile Details Inquiry (§7.7).
+    ProfileDetailsReply {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// The device that asked.
+        to: Muid,
+        /// The Profile.
+        profile: ProfileId,
+        /// The target answered, "the same as in the Profile Details Inquiry".
+        target: InquiryTarget,
+        /// The data of that target.
+        data: DetailsData,
+    },
+    /// Profile Specific Data (§7.12): data the Profile's specification defines.
+    /// To one device or, when the Profile says so, to the Broadcast MUID.
+    ProfileSpecificData {
+        /// Addressing preamble; its Device ID is the address.
+        header: CiHeader,
+        /// To one device or to all.
+        to: Destination,
+        /// The Profile.
+        profile: ProfileId,
+        /// The data.
+        data: SpecificData,
+    },
 }
 
 impl CiMessage {
@@ -487,23 +620,45 @@ impl CiMessage {
             | CiMessage::EndpointInquiry { header, .. }
             | CiMessage::EndpointReply { header, .. }
             | CiMessage::Ack { header, .. }
-            | CiMessage::Nak { header, .. } => header,
+            | CiMessage::Nak { header, .. }
+            | CiMessage::ProfileInquiry { header, .. }
+            | CiMessage::ProfileReply { header, .. }
+            | CiMessage::SetProfileOn { header, .. }
+            | CiMessage::SetProfileOff { header, .. }
+            | CiMessage::ProfileEnabled { header, .. }
+            | CiMessage::ProfileDisabled { header, .. }
+            | CiMessage::ProfileAdded { header, .. }
+            | CiMessage::ProfileRemoved { header, .. }
+            | CiMessage::ProfileDetailsInquiry { header, .. }
+            | CiMessage::ProfileDetailsReply { header, .. }
+            | CiMessage::ProfileSpecificData { header, .. } => header,
         }
     }
 
-    /// The Destination MUID: the Broadcast MUID for Discovery and Invalidate
-    /// MUID, the one device for the rest.
+    /// The Destination MUID: the Broadcast MUID for Discovery, Invalidate MUID and
+    /// the Profile reports, the one device for the rest (Profile Specific Data
+    /// either).
     #[must_use]
     pub fn destination(&self) -> Destination {
         match self {
-            CiMessage::Discovery { .. } | CiMessage::InvalidateMuid { .. } => {
-                Destination::Broadcast
-            }
+            CiMessage::Discovery { .. }
+            | CiMessage::InvalidateMuid { .. }
+            | CiMessage::ProfileEnabled { .. }
+            | CiMessage::ProfileDisabled { .. }
+            | CiMessage::ProfileAdded { .. }
+            | CiMessage::ProfileRemoved { .. } => Destination::Broadcast,
+            CiMessage::ProfileSpecificData { to, .. } => *to,
             CiMessage::DiscoveryReply { to, .. }
             | CiMessage::EndpointInquiry { to, .. }
             | CiMessage::EndpointReply { to, .. }
             | CiMessage::Ack { to, .. }
-            | CiMessage::Nak { to, .. } => Destination::Muid(*to),
+            | CiMessage::Nak { to, .. }
+            | CiMessage::ProfileInquiry { to, .. }
+            | CiMessage::ProfileReply { to, .. }
+            | CiMessage::SetProfileOn { to, .. }
+            | CiMessage::SetProfileOff { to, .. }
+            | CiMessage::ProfileDetailsInquiry { to, .. }
+            | CiMessage::ProfileDetailsReply { to, .. } => Destination::Muid(*to),
         }
     }
 
@@ -518,6 +673,17 @@ impl CiMessage {
             CiMessage::EndpointReply { .. } => SUB_ID2_ENDPOINT_REPLY,
             CiMessage::Ack { .. } => SUB_ID2_ACK,
             CiMessage::Nak { .. } => SUB_ID2_NAK,
+            CiMessage::ProfileInquiry { .. } => SUB_ID2_PROFILE_INQUIRY,
+            CiMessage::ProfileReply { .. } => SUB_ID2_PROFILE_REPLY,
+            CiMessage::SetProfileOn { .. } => SUB_ID2_SET_PROFILE_ON,
+            CiMessage::SetProfileOff { .. } => SUB_ID2_SET_PROFILE_OFF,
+            CiMessage::ProfileEnabled { .. } => SUB_ID2_PROFILE_ENABLED,
+            CiMessage::ProfileDisabled { .. } => SUB_ID2_PROFILE_DISABLED,
+            CiMessage::ProfileAdded { .. } => SUB_ID2_PROFILE_ADDED,
+            CiMessage::ProfileRemoved { .. } => SUB_ID2_PROFILE_REMOVED,
+            CiMessage::ProfileDetailsInquiry { .. } => SUB_ID2_PROFILE_DETAILS_INQUIRY,
+            CiMessage::ProfileDetailsReply { .. } => SUB_ID2_PROFILE_DETAILS_REPLY,
+            CiMessage::ProfileSpecificData { .. } => SUB_ID2_PROFILE_SPECIFIC_DATA,
         }
     }
 
@@ -546,6 +712,55 @@ impl CiMessage {
             CiMessage::EndpointReply { info, .. } => info.encode_body(out),
             CiMessage::Ack { ack, .. } => ack.encode_body(out),
             CiMessage::Nak { nak, .. } => nak.encode_body(out),
+            CiMessage::ProfileInquiry { .. } => {}
+            CiMessage::ProfileReply { profiles, .. } => profiles.encode_body(out),
+            CiMessage::SetProfileOn {
+                profile, channels, ..
+            } => {
+                out.extend(profile.to_bytes());
+                out.extend(wire_u14(channels.get()));
+            }
+            // "2 bytes Reserved" (Table 25).
+            CiMessage::SetProfileOff { profile, .. } => {
+                out.extend(profile.to_bytes());
+                out.extend([0, 0]);
+            }
+            CiMessage::ProfileEnabled {
+                profile, channels, ..
+            }
+            | CiMessage::ProfileDisabled {
+                profile, channels, ..
+            } => {
+                out.extend(profile.to_bytes());
+                out.extend(wire_u14(channels.get()));
+            }
+            CiMessage::ProfileAdded { profile, .. } | CiMessage::ProfileRemoved { profile, .. } => {
+                out.extend(profile.to_bytes());
+            }
+            CiMessage::ProfileDetailsInquiry {
+                profile, target, ..
+            } => {
+                out.extend(profile.to_bytes());
+                out.extend([target.get().get()]);
+            }
+            CiMessage::ProfileDetailsReply {
+                profile,
+                target,
+                data,
+                ..
+            } => {
+                out.extend(profile.to_bytes());
+                out.extend([target.get().get()]);
+                // Table 23: 14-bit length, least significant byte first.
+                out.extend(wire_u14(data.as_bytes().len() as u16));
+                out.extend(data.as_bytes().iter().copied());
+            }
+            CiMessage::ProfileSpecificData { profile, data, .. } => {
+                out.extend(profile.to_bytes());
+                // Table 28: "4 bytes Length of Following Profile Specific Data (LSB first)".
+                out.extend(wire_bytes(data.as_bytes().len() as u32));
+                out.extend(data.as_bytes().iter().copied());
+            }
         }
     }
 
@@ -649,6 +864,83 @@ impl CiMessage {
                         None => return unread(UnreadReason::ReservedStatus),
                     },
                 },
+                (SUB_ID2_PROFILE_INQUIRY, Some(to)) => {
+                    Some(CiMessage::ProfileInquiry { header, to })
+                }
+                (SUB_ID2_PROFILE_REPLY, Some(to)) => {
+                    read::profile_reply_body(body).map(|profiles| CiMessage::ProfileReply {
+                        header,
+                        to,
+                        profiles,
+                    })
+                }
+                (SUB_ID2_SET_PROFILE_ON, Some(to)) => {
+                    read::profile_with_count_body(body).map(|(profile, channels)| {
+                        CiMessage::SetProfileOn {
+                            header,
+                            to,
+                            profile,
+                            channels,
+                        }
+                    })
+                }
+                (SUB_ID2_SET_PROFILE_OFF, Some(to)) => {
+                    read::profile_body(body).map(|profile| CiMessage::SetProfileOff {
+                        header,
+                        to,
+                        profile,
+                    })
+                }
+                (SUB_ID2_PROFILE_ENABLED, None) => {
+                    read::profile_with_count_body(body).map(|(profile, channels)| {
+                        CiMessage::ProfileEnabled {
+                            header,
+                            profile,
+                            channels,
+                        }
+                    })
+                }
+                (SUB_ID2_PROFILE_DISABLED, None) => {
+                    read::profile_with_count_body(body).map(|(profile, channels)| {
+                        CiMessage::ProfileDisabled {
+                            header,
+                            profile,
+                            channels,
+                        }
+                    })
+                }
+                (SUB_ID2_PROFILE_ADDED, None) => read::profile_body(body)
+                    .map(|profile| CiMessage::ProfileAdded { header, profile }),
+                (SUB_ID2_PROFILE_REMOVED, None) => read::profile_body(body)
+                    .map(|profile| CiMessage::ProfileRemoved { header, profile }),
+                (SUB_ID2_PROFILE_DETAILS_INQUIRY, Some(to)) => read::details_inquiry_body(body)
+                    .map(|(profile, target)| CiMessage::ProfileDetailsInquiry {
+                        header,
+                        to,
+                        profile,
+                        target,
+                    }),
+                (SUB_ID2_PROFILE_DETAILS_REPLY, Some(to)) => {
+                    read::details_reply_body(body).map(|(profile, target, data)| {
+                        CiMessage::ProfileDetailsReply {
+                            header,
+                            to,
+                            profile,
+                            target,
+                            data,
+                        }
+                    })
+                }
+                (SUB_ID2_PROFILE_SPECIFIC_DATA, _) => {
+                    read::specific_data_body(body).map(|(profile, data)| {
+                        CiMessage::ProfileSpecificData {
+                            header,
+                            to: destination,
+                            profile,
+                            data,
+                        }
+                    })
+                }
                 (SUB_ID2_ACK, Some(to)) => {
                     Ack::decode_body(body).map(|ack| CiMessage::Ack { header, to, ack })
                 }
@@ -665,7 +957,17 @@ impl CiMessage {
                     | SUB_ID2_ENDPOINT_INQUIRY
                     | SUB_ID2_ENDPOINT_REPLY
                     | SUB_ID2_ACK
-                    | SUB_ID2_NAK,
+                    | SUB_ID2_NAK
+                    | SUB_ID2_PROFILE_INQUIRY
+                    | SUB_ID2_PROFILE_REPLY
+                    | SUB_ID2_SET_PROFILE_ON
+                    | SUB_ID2_SET_PROFILE_OFF
+                    | SUB_ID2_PROFILE_ENABLED
+                    | SUB_ID2_PROFILE_DISABLED
+                    | SUB_ID2_PROFILE_ADDED
+                    | SUB_ID2_PROFILE_REMOVED
+                    | SUB_ID2_PROFILE_DETAILS_INQUIRY
+                    | SUB_ID2_PROFILE_DETAILS_REPLY,
                     _,
                 ) => return unread(UnreadReason::WrongDestination),
                 _ => return unread(UnreadReason::UnsupportedMessage),
@@ -739,8 +1041,9 @@ pub enum UnreadReason {
     /// (`0x01..=0x7F`, Table 10): the Device cannot give that information.
     ReservedStatus,
     /// A message of a kind it models, sent to the wrong kind of destination
-    /// (§3.3.3): Discovery or Invalidate MUID to one device, or a reply, an
-    /// Endpoint message, ACK or NAK to the Broadcast MUID.
+    /// (§3.3.3): Discovery, Invalidate MUID or a Profile report to one device, or a
+    /// reply, an Endpoint message, a Profile inquiry or Set, ACK or NAK to the
+    /// Broadcast MUID.
     WrongDestination,
     /// The body is malformed: too short, a byte with its top bit set, or a field
     /// out of range (a Receivable Maximum SysEx Message Size under 128, a

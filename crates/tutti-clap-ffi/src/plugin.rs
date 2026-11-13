@@ -94,7 +94,6 @@ use clap_sys::ext::param_indication::{
     CLAP_EXT_PARAM_INDICATION, CLAP_EXT_PARAM_INDICATION_COMPAT, clap_plugin_param_indication,
 };
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_plugin_params};
-#[cfg(unix)]
 use clap_sys::ext::posix_fd_support::{CLAP_EXT_POSIX_FD_SUPPORT, clap_plugin_posix_fd_support};
 use clap_sys::ext::preset_load::{
     CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_plugin_preset_load,
@@ -189,7 +188,6 @@ extensions! {
     triggers: clap_plugin_triggers = [CLAP_EXT_TRIGGERS];
     tuning: clap_plugin_tuning_t = [CLAP_EXT_TUNING];
     resource_directory: clap_plugin_resource_directory = [CLAP_EXT_RESOURCE_DIRECTORY];
-    #[cfg(unix)]
     posix_fd_support: clap_plugin_posix_fd_support = [CLAP_EXT_POSIX_FD_SUPPORT];
 }
 
@@ -539,10 +537,7 @@ impl Plugin {
             Extension::Triggers => e.triggers.cast(),
             Extension::Tuning => e.tuning.cast(),
             Extension::ResourceDirectory => e.resource_directory.cast(),
-            #[cfg(unix)]
             Extension::PosixFdSupport => e.posix_fd_support.cast(),
-            #[cfg(not(unix))]
-            Extension::PosixFdSupport => ptr::null(),
         };
         !p.is_null()
     }
@@ -1210,7 +1205,6 @@ impl Plugin {
     }
 
     /// `posix-fd-support.on_fd`; `false` when the plugin has none.
-    #[cfg(unix)]
     pub fn fire_fd(&mut self, _main: &MainThread, fd: i32, ready: u32) -> bool {
         match self
             .ext(self.core.exts.posix_fd_support)
@@ -1226,7 +1220,6 @@ impl Plugin {
     }
 
     /// Whether the plugin implements `posix-fd-support` with an `on_fd`.
-    #[cfg(unix)]
     #[must_use]
     pub fn has_on_fd(&self) -> bool {
         self.ext(self.core.exts.posix_fd_support)

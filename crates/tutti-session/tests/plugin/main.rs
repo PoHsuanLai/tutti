@@ -43,6 +43,10 @@ mod export_fork_plugin;
 // for, and the graveyard it empties; a fake plugin with an editor.
 #[cfg(feature = "plugin")]
 mod main_view;
+// A hosted plugin's own event sources, served by the view's update: the
+// reference CLAP plugin in process, with an editor open (an X11 window id).
+#[cfg(all(feature = "clap", unix, not(target_os = "macos")))]
+mod plugin_event_sources;
 // A hosted plugin's parameters through the session's views (design 029
 // step 3): gestures, typed units, rescans; a fake backend.
 #[cfg(feature = "plugin")]

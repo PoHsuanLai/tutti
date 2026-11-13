@@ -176,6 +176,15 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
   no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
+- **A platform difference sits behind one seam**: the `cfg` is only
+  where a platform module is chosen (the server's `main_loop/{unix,windows,fallback}.rs`,
+  `tutti-au-host`'s `src/macos/`, `tutti-plugin-host`'s `wakeups`), never on each item of a
+  format host, the loop or the session; a one-platform test is one `cfg`'d submodule. A
+  plugin's own event sources (CLAP `posix-fd-support`/`timer-support`, VST3 `IRunLoop`)
+  are `EditorWindow::wakeups` / `wake`: the server's loop waits on them, an in-process host
+  services them in `editor_idle` (`tutti_plugin_host::service_now`). `tutti-plugin-types` holds the
+  plain values and makes no OS call; the poll is the waiting crate's, through `tutti-plugin-ipc-ffi`'s
+  `Poller`/`poll_now`, which take a descriptor as a plain number and own the one `unsafe` borrow.
 - Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
   `activate` splits a plugin into a realtime `Processor` and a main-thread
   `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are) per
@@ -648,11 +657,12 @@ crates/          everything shipped; directory name = package name; no nesting
                  process (`ProcessGuard`) and the served plugin as a `Loaded`
                  (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
                  design 021 §6.1; `#![forbid(unsafe_code)]`),
-  tutti-plugin-ipc-ffi (the process edge's `unsafe` behind safe calls: the
+  tutti-plugin-ipc-ffi (the plugin layer's OS edge, its `unsafe` behind safe calls: the
                  audio slab's file, mapping and header (`MappingWriter`, the
-                 mapping's one writer, `SharedMapping`, `SlabHeader`), and the
-                 OS calls of the host's pipe peek and the server's host
-                 watchdog; names no tutti crate),
+                 mapping's one writer, `SharedMapping`, `SlabHeader`), the
+                 pipe peek, the watchdog, and the readiness poll (`Poller`,
+                 `poll_now`) a host waits on a plugin's descriptors with, which
+                 takes each as a plain number and owns the borrow; names no tutti crate),
   tutti-plugin-host (the format-generic half of hosting, not a format host: the
                  `PluginHandle` control surface over a hosting's `AnyThread`,
                  `Health` and `MainThreadControl`,
@@ -841,7 +851,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   and is not an ACK or a NAK, asks a peer's Endpoint for its Product Instance Id once (no retry) and
   NAKs that inquiry itself; its MUIDs come from a caller's entropy (`Muid::from_entropy`). A
   Product Instance Id on the CI wire is a `CiInstanceId` (at most 16 bytes, §5.8.3.1, where
-  `ProductInstanceId` allows M2-104's 42). `CiMessage::decode` is a `winnow`
+  `ProductInstanceId` allows M2-104's 42). **The Profile Configuration messages (M2-101 §7) are `CiMessage` variants** (`ProfileInquiry`, `ProfileReply`, `SetProfileOn`/`Off`, the four reports `ProfileEnabled`/`Disabled`/`Added`/`Removed`, which carry no `to` because they always go to the Broadcast MUID, the two Details messages and `ProfileSpecificData`; the Device ID of the header is the address, a `CiDeviceId`), over typed values: `ProfileId` (`Standard` or `Manufacturer`, a `ManufacturerId` in bytes 1 to 3; `from_bytes` refuses a one-byte id followed by a non-zero byte), `ProfileChannels` (14 bits, 0 `BY_ADDRESS`), `ProfileLists` (at most 16383 Ids each, `ListTooLong`) and 7-bit `DetailsData`/`SpecificData`. `ProfileInitiator` is the pure Initiator core for one found peer, shaped as `CiDevice` is: it sends a Profile Inquiry to the Function Block, takes the Replies per address and is complete at the **final Reply on `7F`** (M2-102 §2.4; `PROFILE_TIMEOUT`, tutti's 3 s, ends a peer that never sends it), keeps a `ProfileTable` the four reports update, and resolves `set_on(ProfileTarget, ..)`, `set_off` and `details` on the matching report or Reply, a NAK (status `0x04`, details the Profile Id) or the timeout (`ProfileAction::Resolved`); `CiDevice` as Responder answers a Profile Inquiry with both lists empty and NAKs `0x04` a Set On, Set Off or Details Inquiry, and declares no category. `CiMessage::decode` is a `winnow`
   grammar in `src/ci/read.rs` (the crate's one parser module, listed in `check-layout`'s
   `WINNOW_HOMES`; no `winnow` type is in a public signature, field or error: the bodies are
   read through `DiscoveryData::decode_body` and `Nak`/`Ack::decode_body`, which answer `Option`).
@@ -1152,7 +1162,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
 - `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
-  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt` and `tutti-ump`
+  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` and
+  `tutti-plugin-ipc-ffi` (the descriptor poll of `service_now`)
   alone among workspace crates (`cargo xtask check-layout`): no `tutti-plugin-ipc`,
   no format host as a normal dependency, and not `tutti-plugin`. It keeps every
   module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path

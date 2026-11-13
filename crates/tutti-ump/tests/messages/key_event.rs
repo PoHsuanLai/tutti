@@ -7,6 +7,7 @@
 use crate::common;
 
 use proptest::prelude::*;
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, Key, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Protocol, Ump, Voice1,
     Voice2,
@@ -43,7 +44,7 @@ fn expected(message: Message) -> Option<KeyEvent> {
                     Some(KeyEvent::Sustain {
                         protocol: Protocol::Midi2,
                         address: a,
-                        down: value >= 0x8000_0000,
+                        down: value >= ControlValue::new(0x8000_0000),
                     })
                 }
                 _ => None,

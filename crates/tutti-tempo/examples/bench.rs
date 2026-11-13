@@ -42,7 +42,11 @@ fn main() {
                 .get()
                 .max(1);
             let mut view = map.view(RATE);
-            let random = per_call(|i| map.view(RATE).beat_at_frame(Frame(i * 977 % total)).get());
+            let random = per_call(|i| {
+                map.view(RATE)
+                    .beat_at_frame(Frame::new(i * 977 % total))
+                    .get()
+            });
             let hinted = per_call(|i| {
                 view.beat_at_seconds(Seconds((i * 3 % total) as f64 / RATE.get()))
                     .get()
@@ -54,7 +58,7 @@ fn main() {
             });
             let cell = per_call(|i| {
                 map.view(RATE)
-                    .chord_cell(Frame(i * 977 % total), grid)
+                    .chord_cell(Frame::new(i * 977 % total), grid)
                     .tempo
                     .get()
             });

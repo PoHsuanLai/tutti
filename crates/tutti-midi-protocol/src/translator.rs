@@ -4,8 +4,8 @@
 use crate::scale;
 use crate::voice::{widen, widen_velocity};
 use tutti_ump::{
-    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteVelocity, U7, Ump,
-    Voice1, Voice2,
+    Address, Attribute, Bank, CCNumber, ControlValue, Message, MidiChannel, MidiGroup,
+    NoteVelocity, U7, Ump, Voice1, Voice2,
 };
 
 /// The byte that, in both halves of a parameter number, is the Null Function.
@@ -145,7 +145,7 @@ struct Channel {
 ///     unreachable!()
 /// };
 /// // Zero-extended: the semitones are the top 7 bits.
-/// assert_eq!(value, 12 << 25);
+/// assert_eq!(value.get(), 12 << 25);
 /// ```
 #[derive(Clone, Debug)]
 pub struct Translator {
@@ -398,11 +398,11 @@ fn emit(channel: &mut Channel, lsb: Option<U7>, send: &mut impl FnMut(Voice2)) {
         Kind::None => return,
         Kind::Registered => {
             let Number { bank, index } = channel.rpn;
-            let value = if scale::zero_extended(bank, index) {
+            let value = ControlValue::new(if scale::zero_extended(bank, index) {
                 data << 18
             } else {
                 scale::upscale(data, 14, 32)
-            };
+            });
             Voice2::Registered { bank, index, value }
         }
         Kind::Assignable => {
@@ -410,7 +410,7 @@ fn emit(channel: &mut Channel, lsb: Option<U7>, send: &mut impl FnMut(Voice2)) {
             Voice2::Assignable {
                 bank,
                 index,
-                value: scale::upscale(data, 14, 32),
+                value: ControlValue::new(scale::upscale(data, 14, 32)),
             }
         }
     };

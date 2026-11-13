@@ -48,20 +48,33 @@
 //! 14-bit value it started with. Unlike `widen`, these are not transitional: a
 //! consumer such as a SoundFont synth works at MIDI 1.0 resolution and nothing
 //! upstream of it translates down, so it narrows for as long as it exists.
+//! The widening of one value is [`widen_velocity`], [`widen_value`] and
+//! [`widen_bend`]: they build a [`NoteVelocity`](tutti_ump::NoteVelocity), a
+//! [`ControlValue`](tutti_ump::ControlValue) or a
+//! [`BendValue`](tutti_ump::BendValue) from a 7-bit or 14-bit one, which a
+//! MIDI 2.0 constructor such as `Message::note_on2` wants.
 //!
-//! [`narrow()`](fn@narrow) does the same for a whole [`Voice2`](tutti_ump::Voice2): the
-//! [`Voice1`](tutti_ump::Voice1) that means it, or the [`NoMidi1Form`] for a message
-//! MIDI 1.0 has no single message for. A Note On that narrows to velocity 0 becomes 1
-//! (M2-104 section 7.4.2), and a note's attribute is not read, whatever its type.
-//! [`midi1()`](fn@midi1) is the step before the wire: the MIDI 1.0 bytes of a
-//! [`Message`](tutti_ump::Message), three messages for a Program Change with a
-//! bank.
+//! Going down has four entry points; pick by what you hold and what you need.
 //!
-//! The float scaling is here too: [`u7_to_unit_f32`], [`u16_to_unit_f32`],
-//! [`u32_to_unit_f32`], [`bend_u14_to_signed_f32`], [`bend_u32_to_signed_f32`]
-//! and the inverses [`unit_f32_to_u16`], [`unit_f32_to_u32`] and
-//! [`signed_f32_to_bend_u32`], a native integer as the `[0, 1]` or `[-1, 1]`
-//! float a DSP node wants. Lossy by design; not the MIDI 1.0 to 2.0 path.
+//! - [`narrow_message()`](fn@narrow_message) for one stateless
+//!   [`Message`](tutti_ump::Message) to its MIDI 1.0 [`Message`](tutti_ump::Message),
+//!   the group and channel kept (the inverse of [`widen_message`]).
+//! - [`narrow()`](fn@narrow) for one [`Voice2`](tutti_ump::Voice2) to its
+//!   [`Voice1`](tutti_ump::Voice1), when you already hold the voice message.
+//! - [`Narrower`] for a stream of packets that must keep Registered and
+//!   Assignable Controllers and Bank Select: it is the only one with state,
+//!   and the only one that does not refuse them.
+//! - [`midi1()`](fn@midi1) for the bytes of the wire, a Program Change with a
+//!   bank as its three messages.
+//!
+//! The float scaling is here too: [`u7_to_unit_f32`], [`velocity_to_unit_f32`],
+//! [`value_to_unit_f32`], [`bend_u14_to_signed_f32`], [`bend_to_signed_f32`]
+//! and the inverses [`unit_f32_to_velocity`], [`unit_f32_to_value`] and
+//! [`signed_f32_to_bend`], a native value as the `[0, 1]` or `[-1, 1]`
+//! float a DSP node wants. Lossy by design; not the MIDI 1.0 to 2.0 path. A
+//! velocity as a level goes through [`unit_f32_to_velocity`] rather than a
+//! `tutti_types` unit: a normalised value is a velocity, a pressure or a
+//! controller position depending on who reads it.
 //!
 //! What the widening does and does not do:
 //!
@@ -118,7 +131,7 @@ mod universal;
 mod voice;
 
 pub use flex::{flex_tempo, flex_time_signature};
-pub use midi1::{NoMidi1Form, midi1, narrow};
+pub use midi1::{NoMidi1Form, midi1, narrow, narrow_message};
 pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use narrower::Narrower;
@@ -129,11 +142,13 @@ pub use tuning::{
     Timing, TuningFrequency, TuningMessage, TuningName,
 };
 pub use unit::{
-    bend_u14_to_signed_f32, bend_u32_to_signed_f32, signed_f32_to_bend_u32, u7_to_unit_f32,
-    u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
+    bend_to_signed_f32, bend_u14_to_signed_f32, signed_f32_to_bend, u7_to_unit_f32,
+    unit_f32_to_value, unit_f32_to_velocity, value_to_unit_f32, velocity_to_unit_f32,
 };
 pub use universal::{
     Addressed, Addressee, BadChecksum, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient,
     SysexDeviceId, Universal, UniversalReader, read,
 };
-pub use voice::{channel_voice, widen, widen_bytes, widen_message, widen_velocity};
+pub use voice::{
+    channel_voice, widen, widen_bend, widen_bytes, widen_message, widen_value, widen_velocity,
+};

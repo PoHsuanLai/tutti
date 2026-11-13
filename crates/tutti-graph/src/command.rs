@@ -461,7 +461,7 @@ impl CommandRx {
                 && let At::Frame(_) = cmd.at
             {
                 cmd.pos *= ratio;
-                cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
+                cmd.at = At::Frame(tutti_types::Frame::new(cmd.pos.round() as u64));
             }
         }
     }
@@ -655,7 +655,7 @@ mod tests {
     fn send(tx: &mut CommandTx, frame: u64) -> CommandId {
         tx.send(
             0,
-            At::Frame(Frame(frame)),
+            At::Frame(Frame::new(frame)),
             EventIn {
                 node: NodeKey(1),
                 port: 0,

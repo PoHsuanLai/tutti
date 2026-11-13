@@ -513,7 +513,7 @@ impl<F: Loaded> InProcClient<F> {
     /// call it from a control thread, not the audio thread.
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         match MainThread::current() {
-            Some(main) => self.inner.lock().set_render_mode(&main, mode),
+            Some(main) => self.inner.lock().set_render_mode(&main, mode, None),
             None => false,
         }
     }
@@ -785,7 +785,7 @@ mod transport_tests {
     /// apart from the "nothing" answer.
     fn env() -> Env {
         Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: SampleRate::SR_48K,
             block_len: Samples(64),
             transport: TransportPosition::new(true, Bpm::of(132.0), Beat(4.0), None),

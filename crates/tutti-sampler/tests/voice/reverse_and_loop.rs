@@ -91,7 +91,7 @@ impl Clock {
     /// One block of `node` under this clock (not moved); planar.
     fn block(&self, node: &mut dyn Node) -> Vec<Vec<f32>> {
         let env = Env {
-            frame: Frame(0),
+            frame: Frame::new(0),
             sample_rate: SampleRate::of(SR),
             block_len: Samples(BLOCK),
             transport: tutti_graph::TransportPosition::new(

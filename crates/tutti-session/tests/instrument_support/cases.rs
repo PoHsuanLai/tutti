@@ -152,7 +152,7 @@ pub fn a_frame_already_past_plays_at_the_next_block<S: Subject>() {
     assert!(
         rig.handle
             .keys_mut()
-            .push(Frame(1), note_on(0, 60, 100))
+            .push(Frame::new(1), note_on(0, 60, 100))
             .is_ok()
     );
     rig.render_to(next + 4_000);
@@ -362,7 +362,7 @@ fn rate_change_instant<S: Subject>(send_after_the_change: bool) {
         send(&mut rig);
     }
     // The instant, at the new rate: the executor's own arithmetic.
-    let target = Frame(read.frame().get() + AHEAD as u64)
+    let target = Frame::new(read.frame().get() + AHEAD as u64)
         .rescaled(super::rig::RATE, tutti_types::SampleRate::SR_44K1);
     let now = rig.handle.keys().clock().expect("the queue is prepared");
     assert_eq!(now.rate(), tutti_types::SampleRate::SR_44K1);

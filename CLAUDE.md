@@ -1,1839 +1,235 @@
 # CLAUDE.md
 
-Guidance for Claude Code working in the tutti audio engine. This file is rules
-and commands. The reasoning and history behind them is in
-[`docs/engineering-notes.md`](docs/engineering-notes.md): read the matching
-section there before you relax or work around a rule.
-
-## Direction: the graph is `tutti-graph`
-
-**fundsp is gone; the audio graph is `tutti-graph`**, per
-[`docs/design/013-native-graph.md`](docs/design/013-native-graph.md) (the
-filename keeps the design's old "native graph" name; it is just the graph): a
-`Topology` value, a pure compiler producing an immutable plan, units stored
-once, and events as ports. `Engine` renders only the graph
-(`Engine::new(&transport, &mut editor, executor)`), it is `bevy-tutti`'s
-(parked, below) only runtime (`AudioGraphRes` wraps a `tutti_session::Session`, whose graph
-holds the `Editor`; PDC is the compiler's, export forks the live graph with
-`Editor::fork`), and every node is a `tutti_graph::Node`. fundsp's `Net`,
-the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
-the numeric tower are deleted; the engine and `tutti-session` key a node by
-`NodeKey` (`AudioNode` is `bevy-tutti`'s component, wrapping one), and
-`Topology` and its passes live here (`tutti_graph::delays` is a pure pass and the
-compiler's own solve, one copy; `latency_plan` and `graph_tail` fold the same value). A block's tasks can run on a worker pool (below); a cost model decides when
-that pays, and the compiler packs tasks too cheap to dispatch alone.
-
-- Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
-  `reset`: declared latency and tail in the shape). A node with params is a
-  `Node` + `ParamNode`, inserted as `Params(node)` (never `ForkByClone`: it
-  compiles and forks onto the live cell, and no type can refuse it), its params
-  declared once with `tutti_graph::declare_params!` next to its `Param<U>` fields
-  (the `ParamSet`, the shape's ports and the key's units come from it), and
-  **`process` reads a driven param through the declaration**
-  (`self.declared_param::<{ UnitParam::Cutoff as u16 }>(&io)`, `declared_param_at`
-  for a group's index), never `io.param(<port index>)`; a plain node is
-  inserted `ForkByClone` or `Unforkable`. `tutti-graph`'s crate docs ("Writing a
-  node") are the guide, every example a running doctest. An internal filter that is never a
-  graph node (the sampler's `stretch::Unit`) has plain methods, not a trait.
-- Do not compare a render against another reference render in a new test:
-  pin an analytic figure, an invariant of the render, or (for samples that
-  call libm) a golden digest asserted only on the target it was recorded on.
-- Musical delay is not latency. Report only processing latency to PDC.
-- `Shape::tail` is a node's **ceiling**. A node whose ring-out follows its
-  params narrows it each block with `Io::report_tail` (silence skip only; the
-  plan, PDC and export read the ceiling); the report must cover the ring-out
-  and err long, measured from the last non-quiet input (not from the call);
-  only a node without event inputs is parked on it (doc 013, "A tail excludes
-  latency"; `contract::assert_honest_tail` checks it). A finite ceiling past
-  `MAX_NODE_TAIL` is not a figure: `graph_tail` counts it unbounded, never
-  clamps it (a clamp would end a bounce inside a ring-out someone meant).
-- Transport commands meant for playback take an `At`
-  (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
-  graph node that needs the transport at a frame reads `Env::transport_at`
-  (the block's own time), or, behind a latent path, `Cx::transport_at` (the
-  transport its input was rendered at): a start or seek inside a block is in
-  `Env`, never a split block.
-  The session's loop is `Session::set_loop(LoopRange)` and `clear_loop()` (a `LoopEdit` at
-  `At::NextBlock`; a range is `LoopRange::try_from(a..b)`), and a play timed at a beat while
-  the transport is stopped can never fire, so `Session::schedule` refuses it
-  (`ScheduleError::BeatWhileStopped`).
-- Copying audio out of the graph is a **tap**, read through one `TapReader`
-  (it is a `Source` as it is: `impl Source for TapReader`), and there are two
-  kinds:
-  - **The plan tap** (`Graph::taps().open`, `.open_output`: taps and meters are
-    two facets of the session graph, `g.taps()` and `g.meters()`; opening refuses a
-    source that does not exist then with `MissingSource`, and a lane whose port
-    goes missing later reads silence, never failing a commit): `Topology.taps`,
-    one `Op::Tap` per tap in the plan, any port and width, aligned by the
-    compiler or raw (`TapSpec::Ports`), or the outputs form
-    (`TapSpec::Outputs`, `Taps::open_output`: each output channel post-sum and
-    aligned, so a fan-in channel is heard whole, and it follows re-wiring), a `ringbuf` ring per lane written together (the lanes
-    cannot tear), the writer riding the commit queue. A closed tap compiles to
-    no op; a fork carries none. It sees the graph's signal **before the
-    engine's declick fader** and the fold to the device width, so a
-    transport-gated source steps at a stop.
-  - **The heard tap** (`Session::open_heard_tap`, the default for recording
-    what the output sounds like; it is the session's, not `g.taps()`'s, since the
-    writer lives in the engine's output buffer. An audio thread that is behind is
-    `HeardOpen::Retry`, an outcome and not a `HeardTapError`): `Engine` writes each chunk of its output
-    buffer after the fader, every device channel, from `process` and
-    `process_segment` (a device callback and an offline `render`, silence for
-    a refused block); an export forks without the engine and never writes to
-    it. One at a time; the writer reaches the audio thread over `ringbuf`
-    queues and the one it replaces goes back to the control side
-    (`tutti-engine/src/hearing.rs`).
-  Both count what a slow reader loses (`TapReader::take_lost`, and
-  `Source::take_lost` through `Recorder::lost`). A reader also keeps the graph's
-  clock: `TapReader::next_frame` is the graph frame of the next frame it hands
-  out (each block of a plan tap is stamped with its start, a lost block advances
-  it, a `pair` writer numbers its frames from zero), and `TapReader::contiguous`
-  is what can be read before the first gap, for a consumer that places every
-  frame (a take).
-- Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
-  and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
-  `Editor::open_event_tap` / `Graph::taps().open_event` on one event output, read
-  through `EventTapReader` (its own type, not a `TapReader`: no lanes, no
-  layout). MIDI only, each event a `TapEvent { frame, ump }` on the graph's
-  absolute clock (a `u64`, after any `TapAlign` delay), the ring `note_off_room`
-  of the capacity named at open so a note-off outlives the others, loss counted
-  in events (`take_lost`), read with `EventTapReader::drain()` (an allocation-free
-  iterator over what is there when it is called; it counts no loss). A port that goes missing later reads nothing and
-  counts nothing; a closed tap compiles to no op and a fork carries none. Its
-  frames are on the rate the reader was opened at (`EventTapReader::rate`), so
-  whoever re-prepares at another rate reopens its own (`Taps::reopen_event`, one id;
-  `reopen_events` replaces every reader, a caller's too). The session's hardware MIDI
-  out is such a tap, on the clock node, `ToOutput`, drained in `Phase::MidiOut`.
-- Copying audio into the graph is an **inlet**, the inverse of the tap:
-  `InletNode` (`tutti-graph`) copies a ring (`InletRing::pair`, which states
-  the rate its producer fills it at)
-  a thread of your own fills (a capture callback) into the graph, and
-  `Graph::open_inlet` / `add_inlet` (`tutti-session`) refuse a producer whose
-  rate is not the graph's with `InletError::RateMismatch`. An inlet does not
-  resample and two clocks drift; what fills or empties the ring is counted,
-  never blocked on. Gain is a node downstream, not the inlet's. A capture
-  device is an **input**: `Session::add_input(InputConfig)` opens a
-  `tutti_cpal::MicIn` (on the builder's `host`, by a `MicConfig`) and its inlet
-  in one call, `Input::node()` names the node, and a device restart
-  (`LiveSession::restart`) reopens every input at the new rate into the same
-  node. A **take** (`Session::record(&Input, Punch, TakeTarget) -> Take<Armed>`,
-  features `device` and `audio-io`, doc 030 §5) records a plan tap on the input's
-  inlet through a pump on the session's spawner, so it is on the graph's clock; it
-  states where it belongs term by term (`Terms`: the capture's and playback's
-  latency, `None` while unreported and never 0, the ring's lead, the input's
-  `Trim`) and `SessionEvent::Take` reports it started and ended once. A gap the
-  tap lost is silence in place, counted; a plain `Recorder` closes up over it. A restart is one `DeviceRestart` value through the `LiveSession` (the
-  pair), and device events are `SessionEvent::Device(DeviceEvent)` with typed
-  errors (a panic in the output or capture callback is caught there, never unwound into the device's C frame: the block writes silence and renders no more, reported as `StreamFaultKind::CallbackPanicked` and cleared by a restart); `Device::latency` is what the streams' callback timestamps report, per
-  direction, `None` until reported.
-- Copying events into the graph is the **event inlet**: `EventInletNode`
-  (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
-  `push(impl Into<Stamp>, Ump)` (a `Stamp` is `NextBlock`, a `Frame` or a `Moment`: a beat is unwritable; `push_all` takes a run), held on `Env::due` until its frame
-  (late lands at offset 0 and is counted), `Graph::open_event_inlet` /
-  `add_event_inlet` (`tutti-session`; the capacity is an `EventCapacity`, 1 to
-  `u32::MAX`, so neither it nor `EventInletNode::pair` panics). No rate to refuse: a `Moment` carries
-  its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
-  over any other event; its four counts are one `tutti_graph::Losses` (`lost`, `evicted`, `refused`, `late`, in events, never frames; `InletCounts::losses`, and every event holder answers its own `losses()`: `MidiIngestControls`, `ClockMaster`, `HardwareMidiInputs`, `MidiKeys`);
-  its fork is silent, unlike the audio inlet's. A producer holding an OS time gets
-  its `Moment` from `tutti_midi_runtime::ClockMap` (pure: readings of the OS
-  `Instant` and the graph's `Frame` in, `frame_at`/`moment_at`/`os_at` out; doc 017
-  §5, "Timing at the edge", has the rule and its bound).
-  The hardware MIDI input is such a producer, one inlet per device
-  (`tutti_midi_runtime::DeviceInlets`, `DeviceInput`): the engine writes each
-  render call's `monotonic_ns` and frame (`Engine::block_clock`,
-  `tutti_engine::BlockClockReader`, a `tutti-rt` sequence cell; the session
-  turns it into the runtime's `ArrivalClock`), the device's thread holds a `ClockMap` fed those
-  readings, places each arrival on a frame plus a fixed lead (one block) and
-  pushes it with `push` (a `Moment` stamp); the audio thread converts no time. A
-  `DeviceInput` **holds its slot until it drops** (the drop gives it back and queues the
-  inlet's removal: nothing closes a slot by hand; `DeviceInlets::new` returns the `Arc` the
-  inputs give the slot back to). The graph side
-  is `MidiIngestNode`, one event input per device slot with a translator and
-  MPE state each, and the session wires a device's inlet to its slot in
-  `Phase::Poll` from `DeviceInlets::take_changes`, an iterator that drains a change per step
-  with no lock held across the caller's work (doc 017 E5, open question 8). A node built
-  `.following(&DeviceInlets)` watches each slot's epoch (odd while a device holds the slot) per block, and
-  when a device takes the slot or lets go of it releases what the device held (`HeldState`: Note Offs, then
-  pedal-ups and centred bends, never a channelwide CC 120/121/123, a channel being shared) and restarts the
-  slot's translator and MPE state; no one calls it. The same release ends a Group at an Active Sensing lapse
-  (`ActiveSensing`, 330 ms in the graph's frames, no OS clock) and at a System Reset (FF), which also resets
-  that Group's translator and MPE state; the node acts on an FE or FF and sends neither on. A port's one id
-  is `tutti_midi_runtime::DeviceSlot` (slot index and generation; ephemeral, no serde), which
-  `tutti-midi-hardware`'s `HardwareMidiInputs`, `PortInfo`, `InputProducerHandle::slot` and
-  `OpenInput::slot` all use.
-- **The playhead is one read** (doc 030 R2): `Session::playhead() -> Playhead`
-  (`tutti-engine`) is the block clock's one `tutti-rt` sequence cell, written once
-  per render call from the transport of the call's first frame, so `beat`,
-  `frame`, `seconds` and `playing` are one instant; `at` is that call's
-  `tutti_rt::monotonic_ns`. `Playhead::beat_now(now)` extrapolates at the tempo
-  in force, clamped to one call's length past `at`. An app reads this, not
-  `TransportSettings::beat` or `MotionFsm::is_playing` (crate-private; the
-  transport's own `Timeline` reads stay for code that is the transport's).
-- Doc 013 records the defects found and the types that address them. Update
-  it when the code it describes or a decision changes.
-- **Main-thread entries take a token.** An editor, timer, run-loop, state or
-  controller call a format requires on the UI thread takes
-  `&tutti_plugin_types::MainThread` (`!Send`, from `MainThread::claim()`, once
-  per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
-  no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
-  `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
-- **A platform difference sits behind one seam**: the `cfg` is only
-  where a platform module is chosen (the server's `main_loop/{unix,windows,fallback}.rs`,
-  `tutti-au-host`'s `src/macos/`, `tutti-plugin-host`'s `wakeups`), never on each item of a
-  format host, the loop or the session; a one-platform test is one `cfg`'d submodule. A
-  plugin's own event sources (CLAP `posix-fd-support`/`timer-support`, VST3 `IRunLoop`)
-  are `EditorWindow::wakeups` / `wake`: the server's loop waits on them, an in-process host
-  services them in `editor_idle` (`tutti_plugin_host::service_now`). `tutti-plugin-types` holds the
-  plain values and makes no OS call; the poll is the waiting crate's, through `tutti-plugin-ipc-ffi`'s
-  `Poller`/`poll_now`, which take a descriptor as a plain number and own the one `unsafe` borrow.
-- Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
-  `activate` splits a plugin into a realtime `Processor` and a main-thread
-  `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are) per
-  [`docs/design/016-plugin-hosts.md`](docs/design/016-plugin-hosts.md).
-- **The plugin-server is one `Served<F: OutOfProcess>`** (doc 021 step 5): it loads
-  through `F::load_served(main, path, &Load)`, activates through `Loaded::activate`, and
-  a format is a row of its `served!` table (CLAP, VST3, AU on macOS), so a row for a
-  format that is not `OutOfProcess` does not compile. What the server still does around a
-  format is `ServerSide`'s, defaulted (`served/format.rs`). **VST2 is not served**: its
-  `AEffect` fuses editor and audio, so it runs in the host's process and a VST2 path
-  refuses out-of-process hosting (`BridgeError::NotOutOfProcess`). `LoadPlugin` carries
-  the `Load` that chooses the plugin of a file that exports several.
-  **The server renders on a thread of its own** (`render`, doc 029 §6.5): the host connects
-  three times (handshake, audio, control; protocol 34), the render thread owns the
-  `Processor` and the audio connection (`ProcessAudio` and `Reset` only) and shares with the
-  main thread nothing but a `tutti_rt::handoff` (the Processor, which `Served` lends with
-  `Hand::threaded` and recalls before a deactivation) and `ringbuf` queues (`ToRender` and
-  `Back`), so an editor's paint never delays a block. The main thread is one **event loop**
-  (`tutti-plugin-server`'s `event_loop`) over the control connection (`Transport::wait_readable`),
-  and a 33 ms idle tick (`Session::tick`: the plugin's
-  asks, the open editor's `editor_idle`, a resize request). An editor can live in the server:
-  `Ipc::launch` takes an `Option<EditorLoader>`, and `None` opens it on the served instance
-  (`OpenEditor`, `CloseEditor`, `SetEditorSize` on the wire, `RemoteEditor` in the client). A
-  parent window crosses as a number and is rebuilt only by the safe
-  `WindowHandle::from_remote`, which refuses where the number is not a window id (macOS).
-
-## The parallel executor (doc 013)
-
-A block's tasks may run on several threads (`Executor::set_pool`,
-`tutti_graph::WorkerPool`), and the render must stay bit-identical to the
-serial one.
-
-- **A cheap node declares its cost** (`Shape::with_cost`: `Cost::Light`
-  or `Moderate`); one that declares nothing is `Heavy`, worth a thread.
-- **Nodes communicate only through ports.** Two nodes sharing mutable state
-  outside the graph (one `Arc<Mutex<_>>`, a shared cursor) are unordered in
-  parallel. Share through an edge, or make it one node.
-  A node's state for its successor travels the same way: `Node::chase`
-  (declared by `Shape::with_chase`) is a port write the executor makes once, at
-  the swap, and behind a running fade holds until that fade ends, then delivers
-  with no allocation (doc 013, "Nodes communicate only through ports").
-- **Op code is written once**, generic over `AudioSlots`/`EventSlots`
-  (`tutti-graph/src/slots.rs`). Do not add an op path that reaches the arena,
-  the event slots, a unit, a ring or an output except through them or a
-  claim: that is what keeps `tutti-graph` `#![forbid(unsafe_code)]`.
-- **New lock-free or `unsafe` runtime structure goes in `tutti-rt`**, with
-  a loom model beside `pos_ring_loom.rs` that runs the shipped code, and a
-  mutation record in it. The one exception is the publish cell, which is its
-  own crate, `crates/arc-lend` (`ArcLend`/`Loan`; its loom model is
-  `arc-lend/tests/loom.rs`). It names nothing of tutti's; keep it that way.
-- **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
-  models fences exactly; see `tutti-rt/src/job_gate.rs`).
-- **Level metering is an op in the plan** (`Editor::open_meter`, doc 013
-  "Meters"), not an engine pass: per channel, on the outputs or any node
-  port, before the engine's fold and declick; the master is aligned to the
-  outputs' time. Each lane is a `tutti_rt::level_cell` (two slots and a
-  flip, with a loom model), so a block lands in one read, peak and energy
-  together; a read takes what was held since the last read, so a reader is
-  one consumer (`&mut self`, not `Clone`) and a second consumer opens a
-  second meter. Opening refuses a source that does not exist then (`MissingSource`); a lane whose port goes missing later reads silence.
-  Ballistics are the reader's.
-  `LoadMeter` stays in `Engine`: it times the block and is not audio. Like a level
-  meter it has one reader (`take(&mut self)`, not `Clone`; `Engine::take_load_meter`
-  hands it over, `peek` reads without taking).
-- **Nodes run inside `with_no_denormals`**: never make memory safety depend
-  on an exact float result (its `# Soundness` docs say why).
-- A parallel test compares against the **serial render, bit for bit**
-  (`tests/executor/parallel.rs`, the differential suite's `modes`), and a gate on the
-  parallel path runs every participant inside `assert_no_alloc`, helpers
-  included (`TestPool::no_alloc`, the `GatedPool` in `tutti-engine`'s `rt_no_alloc_engine`, `tutti-nodes`'s
-  `rt_no_alloc_modulation` and `tutti-clap-host`'s `clap_thread_pool`).
+Rules and commands for working in tutti. What an item does is in its rustdoc; read the
+crate docs of what you touch. The reasoning behind a rule is in
+[`docs/engineering-notes.md`](docs/engineering-notes.md); the library style is
+[`docs/style-guide.md`](docs/style-guide.md).
 
 ## Commands
 
-`cargo xtask <recipe>` wraps these (the `xtask` crate; `.cargo/config.toml` aliases it);
-`cargo xtask help` lists them, and `cargo xtask --dry-run <recipe>` prints what a recipe would
-run. `cargo xtask ci` runs what CI runs.
+`cargo xtask <recipe>` wraps everything (`cargo xtask help`; `--dry-run` prints the
+commands). `cargo xtask ci` runs what CI runs.
 
 ```bash
 cargo build
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt
-cargo xtask check-paths [<crate> <module>...]  # the import-path gate (also searches *.md)
-cargo xtask check-submodule-pins   # VST3 SDK pins, asserted by SHA
-cargo xtask check-session          # tutti-session reaches no Bevy, has no bevy feature, re-exports no crate whole
-cargo xtask check-doc-features     # rustdoc per feature for tutti-session, tutti
-cargo xtask check-guards           # every host callback runs under the panic guard
-cargo xtask check-ffi              # every crate root forbids unsafe but the -ffi crates (plugin formats, MIDI), rt and arc-lend; the -ffi lints
-cargo xtask check-layout           # flat crates/ and testing/, layering, codec boundary, depth-free test paths, no C library in `export`
-cargo xtask check-range-types      # no plain derived Deserialize on a private tuple field
-cargo xtask check-hosting          # every InProcess/OutOfProcess impl is in the contract's hostings
-cargo xtask deny                   # RustSec advisories, yanked and unmaintained crates (deny.toml)
+cargo nextest run --workspace              # not `cargo test`: nextest isolates each test
+cargo nextest run -p tutti-engine -E 'test(name)'
+cargo test --doc --workspace               # nextest does not run doctests
+cargo xtask test-all                       # every test tier CI runs
+cargo xtask doc                            # rustdoc as CI runs it
+cargo xtask check-loom                     # clippy under --cfg loom
+cargo xtask check-windows                  # Windows lints from Linux
+cargo xtask deny                           # needs cargo-deny 0.20.2 (`cargo install --locked`)
 ```
 
-Every static gate (`check-paths`, `check-submodule-pins`, `check-doc-features`,
-`check-range-types`, `check-session`, `check-guards`, `check-ffi`, `check-layout` and
-`check-hosting`) is a Rust gate in `xtask/src/gates/`: a pure function from the files, read
-through `Tree`, to a `Report` (what it asks of `git` or `cargo tree` comes through `Git` and
-`Cargo`), with tests over in-memory trees. xtask is std only, so the parsing is by hand.
-A rule the compiler already enforces is not a gate: `check-ffi` checks that a crate root
-carries `#![forbid(unsafe_code)]` and lets the compiler refuse the token. The one script left
-is `scripts/parked/check-bevy-tutti.sh` (the parked adapter's composition and policy scans:
-nothing runs it, and it is ported to a gate with un-parking).
+The static gates (`cargo xtask check-*`) are Rust in `xtask/src/gates/`: a pure function
+from the files, read through `Tree`, to a `Report`, tested over in-memory trees. xtask is
+std only. A rule the compiler already enforces is not a gate.
 
-`cargo xtask deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
-the same version) and fails with that command when it is missing.
+- **Toolchain:** `rust-toolchain.toml` pins it and `Cargo.lock` is committed (`--locked`).
+  A bump is its own PR that fixes the new lints.
+- **Setup:** `git submodule update --init --recursive` (the VST3 SDK under
+  `vendor/vst3-sdk/`; the gate asserts SHAs). Linux needs ALSA headers (`libasound2-dev
+  pkg-config`).
+- **Windows:** `cargo xtask check-windows` lints for MSVC from Linux; CI's `clippy
+  (windows)` lints natively, and no CI job runs tests on Windows. A vst3 SDK enum constant
+  is `c_uint` on unix and `c_int` on Windows: cast it with `helpers::sdk_enum_i32`. Read
+  the engineering notes before touching `tutti-plugin-ipc`'s transport or plugin loading.
 
-`cargo xtask doc` runs rustdoc as CI does (`--document-private-items`, per feature,
-and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy under
-`--cfg loom`.
+## Testing
 
-- **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
-  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
-  `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
-  `unsafe` (`cargo xtask check-ffi`, design 016 §2.9). A higher crate calls a
-  safe wrapper and forbids `unsafe`: a parent window is
-  `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
-  `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
-  `WindowHandle::from_u64`, is for a host holding only a bare platform handle. Test-only
-  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`), and a reference
-  plugin's probe exports are reached through its own crate's typed door
-  (`tutti_clap_test_plugin::ClapProbe`, `tutti_vst2_test_plugin::Vst2Probe`, feature
-  `probe`): `tutti-fixtures` depends on no plugin, since a plugin's rlib carries its
-  entry point and two in one test binary do not link.
-  `tutti-plugin-ipc` and `tutti-plugin-server` forbid `unsafe` too: the process
-  edge's is `tutti-plugin-ipc-ffi`'s.
-  MIDI's OS `unsafe` lives only in `tutti-alsa-ffi` (Linux) and `tutti-coremidi-ffi`
-  (macOS), which `deny` `undocumented_unsafe_blocks` and `missing_safety_doc`;
-  `tutti-midi-hardware` forbids `unsafe` and names no raw-binding crate
-  (`cargo xtask check-ffi`, design 017 stage 4d).
-- **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
-  and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
-  `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.
+- **Build `plugin-server` and `plugin-probe` first** (`cargo build -p tutti-plugin-server
+  -p tutti-plugin-probe`). A suite that spawns one fails with that command when it is
+  missing; it never skips.
+- **A test finds a repo file through `tutti_fixtures`** (`asset`, `repo_root`, `cdylib`,
+  `plugin_server`, `plugin_probe`), never a relative `..` path. Absence is a failure.
+- **A feature-gated suite runs only where its feature is on.** Add a new one to CI's dark
+  features job and to `cargo xtask test-features`, or it never runs.
+  `tutti-midi-hardware --features sequencer-tests` needs the kernel's `snd-seq`; CI only
+  lints it, so run it locally before changing `backend/alsa`.
+- **Golden digests** go through `tutti_fixtures::assert_golden`: asserted on the recorded
+  libm (x86_64, glibc 2.39), skipped elsewhere, required in CI (`TUTTI_GOLDEN=require`).
+  Re-record only for an argued libm move, with the owner.
+- **One integration binary per area**: `tests/<area>/main.rs`, one `mod` per file. A file
+  is its own binary only when it must be (a `#[global_allocator]`, `harness = false`,
+  `cfg(loom)`).
+- **A test must be able to fail.** It asserts a spec property, an analytic figure or an
+  invariant, and its name says which. Delete a test that cannot fail: one that is always
+  true, asserts only that nothing panicked, or compares a value with the function that
+  computed it.
+- **Never weaken a test to make it pass.** Fix the bug, or report the failure and its
+  cause.
+- **Never compare a render against another render.** Pin an analytic figure, an invariant
+  or a golden digest. No migration tests (old against new) and no test-only seams.
+- The spec is the oracle: nothing is pinned against another implementation.
 
-### Testing
+## Code rules
 
-**Use `cargo nextest run`, not `cargo test`.** The audio tests touch device
-and global state; nextest isolates each test in its own process.
+### The graph
 
-```bash
-cargo nextest run --workspace
-cargo nextest run -p tutti-engine -E 'test(my_test_name)'
-cargo test --doc --workspace       # nextest does NOT run doctests, silently
-cargo xtask test-all              # test, test-features, test-editor, test-au-installed, test-doc, test-release
-```
+- Every node is a `tutti_graph::Node` (`shape`, `prepare`, `process`, `reset`). A node with
+  params also implements `ParamNode`, declares them with `tutti_graph::declare_params!`
+  next to its `Param<U>` fields, is inserted as `Params(node)` (never `ForkByClone`), and
+  reads a driven param through the declaration (`declared_param`), never by port index. A
+  plain node is `ForkByClone` or `Unforkable`. The crate docs' "Writing a node" is the
+  guide.
+- `Shape::tail` is a ceiling. A node whose ring-out follows its params narrows it per block
+  with `Io::report_tail`, covering the ring-out and erring long. A finite ceiling past
+  `MAX_NODE_TAIL` counts as unbounded; nothing clamps it.
+- Musical delay is not latency: report only processing latency.
+- Nodes communicate only through ports. Two nodes sharing mutable state outside the graph
+  are unordered on the parallel executor: share through an edge, or make it one node.
+- A cheap node declares its cost (`Shape::with_cost`); one that declares none is `Heavy`.
+- Op code reaches the arena, event slots, units, rings and outputs only through
+  `AudioSlots`/`EventSlots` or a claim, which keeps `tutti-graph` `#![forbid(unsafe_code)]`.
+- A parallel render is bit-identical to the serial one; a parallel test compares against
+  the serial render bit for bit.
+- Never make memory safety depend on an exact float result (nodes run inside
+  `with_no_denormals`).
+- A node that changes width declares its buses; the graph never guesses a dry path. A node
+  reads a non-main bus through the handle its shape issued.
+- Summing is the graph's: several sources into one port sum. Never add a node to sum.
+- A transport command meant for playback takes an `At`. A node reads the transport at a
+  frame through `Env::transport_at`; a block is never split for it.
 
-- **A test finds a repo file through `tutti_fixtures`, never a relative `..`
-  path:** `asset("audio/stereo.flac")` and `repo_root()` for the repo's files
-  (`cargo xtask check-layout` greps for depth-dependent paths), and `cdylib`
-  and `plugin_server` for the reference plugins and `plugin-server`, which it
-  finds in the test binary's own profile directory (no build script or env
-  var, so it holds under `CARGO_TARGET_DIR` and `--target`). It is a
-  dev-dependency and absence is a failure, never a skip. A crate-local file
-  (`tutti-sf2`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
-  `..`.
-- **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
-  Without it, `tutti-plugin`'s `clap_nodes` binary (`clap_pdc_alignment`,
-  `clap_crash_recovery`) and `real_stall_tests`, `tutti-plugin-ipc`'s `subprocess::launch` tests,
-  `tutti`'s §5.2
-  example (`plugin_midi_export`, `--features clap,export`), and `tutti-session`'s
-  `plugin` binary (the `plugin`, `export_fork_plugin`, `plugin_latency` and
-  `plugin_modulation` modules, ported from `bevy-tutti`;
-  `--features clap,export,modulation,device`) fail with that
-  exact command, and
-  `tutti-plugin-contract`'s `server` suite (`--features server`) needs
-  `--no-default-features --features clap,vst3`. They must fail
-  rather than skip, and they cannot use a dev-dependency because that would
-  be a cycle.
-- **Build `plugin-probe` first** for a suite that scans: `cargo build -p
-  tutti-plugin-probe` (`tutti_fixtures::plugin_probe()`, the same rules as
-  `plugin_server`: a dev-dependency builds a library, not a binary, and a
-  missing one is a failure, never a skip). `tutti-plugin-contract`'s `probe`
-  suite (`--features server`) spawns it, and so does `tutti-plugin`'s opt-in
-  `db_probe` test (`TUTTI_PROBE_PLUGIN`); its measuring cases (`--measure`,
-  `--state`, doc 023 section 6) render the shared plugin in the probe's process,
-  which a plugin configured only through its state steers with `--state <file>`
-  (the shared plugin's mode word also selects a crash or hang in `process`).
-  `tutti-session`'s `plugin` suite loads
-  through the server and does not scan, so it needs the server alone. A scan
-  with no `plugin-probe` on hand degrades to filename metadata
-  (`ProbeNotFound`), so a suite that must see a real probe uses the fixture.
-- **Feature-gated suites** run only where a feature is on. A workspace run
-  enables just what some member's dependency edge turns on (for example
-  `tutti-nodes/convolution`), not a crate's own optional features. The rest
-  (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
-  `dark features` job and `cargo xtask test-features`. Name the feature when testing
-  one crate, and add a new gated suite to both lists, or it never runs.
-  **`tutti-midi-hardware --features sequencer-tests` is the exception:** it runs
-  `Devices` against the real ALSA sequencer, which needs the kernel's `snd-seq`
-  module and a readable `/dev/snd/seq`. CI's runner kernel (Azure) ships
-  neither the module nor a package for it, so CI only lints the feature and the
-  suite runs locally (`cargo xtask test-features`). It fails, never skips, where the
-  sequencer is missing. Run it before changing `backend/alsa`.
-- **Golden digests** go through `tutti_fixtures::assert_golden`: asserted
-  on x86_64 with glibc 2.39 (`RECORDED_ARCH`, `RECORDED_GLIBC`, Ubuntu 24.04),
-  skipped with a printed note on any other libm or architecture (nextest shows
-  the note only under `--no-capture`). CI's Linux jobs set
-  `TUTTI_GOLDEN=require`, so a runner image that moves glibc fails instead of
-  skipping; an unknown value panics, and `record` is refused when `CI` is set. To re-record, bump
-  `RECORDED_GLIBC` and the runner pin, run
-  `TUTTI_GOLDEN=record cargo nextest run --workspace --no-capture`, and copy the
-  `GOLDEN <what> <digest>` lines into the tests; only for an argued libm move.
+### The session
 
-### Setup
+- `Graph::add` is the one way a node enters, and keys are typed (`Key<N>`). Wiring is
+  `Graph::connect(from, to)` over ports taken from keys; params are methods of the key.
+- **One failure rule:** a call that names a node or port that does not exist fails at the
+  call with a named error, never later and never as a default. A port that goes missing
+  after a successful call reads silence. Removal returns a `#[must_use] Result`.
+- The session graph declicks wiring (`connect` fades in unless `.hard()`); a test that
+  renders a session wire for another reason wires `.hard()`.
+- An inlet whose rate is not the graph's is refused, never resampled.
+- An app reads the playhead through `Session::playhead()`.
 
-- **Submodules:** `git clone --recursive`, or
-  `git submodule update --init --recursive`. The VST3 SDK (three Steinberg
-  repos pinned at `v3.8.0_build_66` under `vendor/vst3-sdk/`) is
-  otherwise empty. `git describe` reports `v3.7.3_build_20-NN`; that is
-  expected, and the gate asserts SHAs.
-- **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or
-  `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
-  `alsa-sys`'s build script.
-- **Bevy-free floor:** three engine crates have an optional, off-by-default
-  `bevy` feature (`tutti-types`, `tutti-modulation`, `tutti-sampler`); the
-  rest have none, and `tutti-session`, `tutti-graph`, `tutti-ump`
-  and `tutti-codec` must never grow one (`WaveAsset`, the Bevy wrapper of a
-  decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
-  requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
-  `--features bevy`. `--no-default-features` is *not* this check.
-- **Import paths:** import engine types from a crate's root, never
-  through its modules. Only `cargo xtask check-paths` enforces this.
+### The audio thread
 
-### Check Windows before you push
+- Never allocate, free, lock or wait on the audio thread. A full queue is counted, never
+  waited on.
+- Non-scalar state reaches the audio thread through `tutti_rt::{ArcLend, Reader, Loan}`;
+  scalars use `Param<U>`. Nothing the audio thread reads is an `ArcSwap`.
+- The audio thread never holds an owning handle to published state and never frees it.
+  `publish` and `reclaim` are control-thread only.
+- Register a `Reader` on the control side where the reader is built, and store it in the
+  node. Lend once per block, never per sample, and never keep a `Loan` across blocks.
+- Every cell's publisher calls `reclaim()` on a control-side tick it already has; a new
+  cell joins its owner's sweep in the same change.
 
-No Windows machine is needed:
+### Unsafe and runtime structure
 
-```bash
-rustup target add x86_64-pc-windows-msvc
-cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D warnings
-zig c++ -target x86_64-windows-gnu -std=c++17 -c -o /tmp/o.obj tu.cpp -I <sdk>
-```
+- A library with no `unsafe` carries `#![forbid(unsafe_code)]` (`cargo xtask check-ffi`).
+- Plugin FFI `unsafe` lives only in `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi` and
+  `tutti-vst2-ffi`; the process edge's in `tutti-plugin-ipc-ffi`; MIDI's OS calls in
+  `tutti-alsa-ffi` and `tutti-coremidi-ffi`. Everything above them forbids `unsafe`.
+  Test-only `unsafe` is `tutti-fixtures`'.
+- New lock-free or `unsafe` runtime structure goes in `tutti-rt`, with a loom model that
+  runs the shipped code. The publish cell is its own crate, `arc-lend`, which names
+  nothing of tutti's.
+- Store-load pairs use `SeqCst` fences, not `SeqCst` accesses.
+- A platform difference sits behind one seam: the `cfg` chooses a platform module, never
+  each item.
 
-**`--all-targets` fails on Linux at criterion's `alloca` build script.**
-cc picks gcc, and gcc cannot target MSVC; `--lib --tests` fails the same way,
-because criterion is a dev-dependency. Give the build script clang and a
-one-line stub for the one header it wants. Clippy never links, so the stub
-only has to let the C compile, and every Rust target is still checked in full:
+### Unit types
 
-```bash
-mkdir -p /tmp/winstub
-printf '#include <stddef.h>\nvoid *_alloca(size_t);\n' > /tmp/winstub/malloc.h
-CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
-  CFLAGS_x86_64_pc_windows_msvc=-I/tmp/winstub \
-  cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D warnings
-```
+- Use a `tutti_types` unit, never a bare float, for any quantity one covers: fields,
+  signatures, `Param<U>`, returns.
+- A unit's operators are its whole algebra. Read the omission ledgers in `value/units/`'s
+  tests before adding one, and ship a replacement with any omission.
+- A number becomes a unit with `new` and leaves with `get`; there is no `From` between a
+  unit and its raw. Convert between units with the named converters.
+- Measurements are not controls: `Confidence`, `Correlation` and `Pan` are readings.
+- Types stop at C ABI, IPC and wire boundaries; say why in a comment there.
+- Add a unit only for a distinct range or a distinct algebra.
+### Range-checked values
 
-`cargo xtask check-windows` runs this over the workspace and over the plugin crates
-with every format feature. It leaves out the members that cannot
-cross-compile: `ogg_next_sys` (reached through `tutti-codec`'s `encode-vorbis`
-feature, which `tutti-export` turns on) and `tutti-vst3-host`'s `conformance` probe need
-real Windows C headers. `tutti-codec` itself is linted with its other formats
-(`encode-wav,encode-aiff,encode-flac` and every `decode-*`). CI's `clippy (windows)` job
-runs everything natively on a `windows-latest` runner. It only lints: no CI job
-runs the tests on Windows.
-**A cast from a vst3 SDK enum constant differs by platform.** The bindings
-type those constants as `c_uint` on unix and `c_int` on Windows, so
-`kFoo as i32` passes Linux clippy and fails `unnecessary_cast` on Windows.
-Use `helpers::sdk_enum_i32`.
+- A range-checked type has the `MidiChannel` shape: `new(raw) -> Option` (never clamps),
+  a const `of` that panics for literals, `get` and `From<Self> for Raw`, `TryFrom<Raw>`
+  agreeing with `new`, serde through `try_from`, and named `clamped`/`masked` only where a
+  hot path or the wire needs them. No public field, no infallible `From<Raw>`. Test it with
+  `tutti_fixtures::check_range_contract`.
+- Make a wrong value unwritable before adding a runtime check for it.
 
-These catch compile errors only. `nm` the object to confirm the branch you
-meant was taken. Windows behaviour that surprised us before (named-pipe
-timeouts, the MSVC CRT environment, VST3 UID layouts, `USERPROFILE`, bundle
-by-products) is in the engineering notes; read it before touching
-`tutti-plugin-ipc`'s `transport` or plugin loading.
+### Edges and buffers
+
+- `Source`/`Sink` are edges: interleaved `&[f32]`, a runtime `ChannelLayout`, every count
+  in frames (`Samples`). Cross to a slice length only with `Samples::interleaved_len` /
+  `from_interleaved_len`.
+- Width is runtime: never a const-generic channel count. A channel fold goes through
+  `tutti_types::Fold`, built on the control side; a narrowing by index is refused, never
+  truncated.
+- Every `Source::pull` answers `Starved` (not yet) or `Ended` (never again) correctly, and
+  `Failed` only after the frames before it.
+- A copy out of the graph is a tap (`TapReader`, `EventTapReader`), a copy in is an inlet.
+  Both count what they lose and never block.
+
+### Plugins
+
+- A main-thread entry takes `&tutti_plugin_types::MainThread`; holding one is the proof.
+- A format host is a `Loaded` typestate whose `activate` splits a plugin into a realtime
+  `Processor` and a main-thread `Controller`.
+- The plugin-server is one `Served<F: OutOfProcess>`; VST2 is not served.
+- `tutti_plugin_types::bundle` is the only code that knows a bundle's layout. Build a VST3
+  UID with `inline_uid`.
+- **The plugin contract** (`testing/tutti-plugin-contract`) runs the same cases against
+  every format with the one test plugin, `testing/tutti-shared-plugin`, and its C++ VST3
+  twin. Expected figures live in the contract's `spec`, never asked of the plugin. The
+  plugin records what the host sent before it orders or repairs anything, and is
+  configured only through its state. A case a format cannot pass is a `Gap` that must fail
+  with its text; `gaps = N` is a ratchet. Never `#[ignore]`.
+
+### Style
+
+- Import from a crate's root, never through its modules. There are no preludes, and no
+  crate re-exports another crate whole.
+- An umbrella holds no logic: a piece with one owner goes to that crate, a piece composing
+  several goes to `tutti-session`.
+- A pure algorithm over slices goes in `tutti-dsp` (a measurement in `tutti-measure`); a
+  node file holds only the `Node` adapter.
+- A new trait states its boundary in one sentence without "and".
+- Naming: an algorithm uses the theory name, a spec keeps its own, a *frame* is one value
+  per channel, a *sample* is one value. A user-facing node API keeps the control word.
+- A comment states what the code does and the invariant it holds, in the present tense;
+  rustdoc documents the item. No history, no "why it was added", no removed names, no
+  design-doc citations. A comment or doc that disagrees with the code is a bug.
+- Before working around a constraint, name it in one sentence and verify it (read the
+  manifest, grep, run the probe). An indirection whose only job is to avoid a change is
+  the finding: make the change.
 
 ## Workspace
 
-**`bevy-tutti` is parked** (2026-11, `docs/engineering-notes.md`, "bevy-tutti is
-parked"). It is in `crates/bevy-tutti` but out of the workspace (`exclude`, and
-its own `[workspace]` root): no workspace command builds Bevy, and CI does not
-build it, except a weekly drift check (`.github/workflows/parked-bevy.yml`) that
-measures and gates nothing. **Lanes do not update it**: an engine change that
-breaks it is not a reason to touch it. Build it on demand with
-`cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features full,plugin
---all-targets` (no committed lock file; it resolves fresh). Un-parking is one
-migration PR: put it back in `members`, drop the `exclude`, restore its
-`workspace = true` inheritance, the CI/xtask lines, and port
-`scripts/parked/check-bevy-tutti.sh` (checks 3 and 5 of design 015 §8: the adapter names
-no engine composition and holds no policy) to a gate that CI runs. Its engine-path tests were ported to
-Bevy-free suites in `tutti-session` first. The rules below that name it
-describe the adapter as it was parked.
+One workspace at the root; the `members` list is the source of truth. `crates/` is what
+ships (directory name = package name, no nesting), `testing/` is never shipped, `xtask/`
+holds the development commands (std only, no dependencies, `publish = false`), and
+`vendor/` holds the VST3 SDK, which is never edited. No crate depends on Bevy; the Bevy
+adapter is [PoHsuanLai/bevy-tutti](https://github.com/PoHsuanLai/bevy-tutti).
 
-One workspace at the repo root. The member list in `Cargo.toml` is the source
-of truth.
+**Layering.** Normal and build dependencies point strictly down this list
+(dev-dependencies may go anywhere); `cargo xtask check-layout` holds it:
 
-```
-xtask/           the development commands (`cargo xtask help`): std only, no
-                 dependency of any kind, `publish = false`, the one member outside
-                 crates/ and testing/; no layer, nothing depends on it
-crates/          everything shipped; directory name = package name; no nesting
-  tutti          Bevy-free umbrella. Every item is a `pub use` (tests/no_logic.rs).
-  bevy-tutti     PARKED (out of the workspace, see above): Bevy umbrella + adapter; the only Bevy-mandatory crate.
-  tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
-                 (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
-                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
-                 recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`), and
-                 the bounce (feature `export`): `Bounce` (the master's fork, a
-                 `Range`, `BounceLatency`, `BounceTail`, `stem`s, each a plan tap) through
-                 `Session::{bounce, bounce_start, finish_bounce}`, `BounceJob`,
-                 `BounceHandle` and `BounceError`; it derives the figures and
-                 `tutti-export` renders them. Its MIDI front is `Session::midi()`
-                 (`Midi`, feature `midi`): clips, live inputs, routes, the one `MpeMode`
-                 (`set_mpe`; a synth added through `add_instrument` follows it over its own
-                 `SynthConfig::mpe`: `SessionInstrument::bind_mpe`, which every instrument
-                 `add_instrument` takes states), `record(target, capacity)` (a
-                 take: an event tap on the live input, placed by `TakePlacement`),
-                 `follow_tempo(FollowTempo { group, meter })` / `unfollow_tempo` (a Flex
-                 Set Tempo and Set Time Signature of one Group, read from an event tap on the
-                 ingest node in `Phase::Poll` through `tutti-midi-runtime`'s pure
-                 `TempoFollower`, overlaid on the project's tempo map and meter at the next
-                 block start and restored on unfollow; off by default, one follower, doc 020
-                 section 11) and, with
-                 `midi-hardware`, the devices (`devices`, `connect_input`/`connect_output`,
-                 `reconnect_saved -> Resolution`; `learned(&id)`, `saved(&id) -> Option<SavedDevice>` and
-                 `confirm(&id, &saved) -> Match` check a saved device against what the open one said), and `load_file` and (`soundfont`)
-                 `load_soundfont`, jobs on the session's spawner that return a `MidiLoad`
-                 and land `FileLoaded` / `SoundFontLoaded` in `update()`, and `enable_ci(DeviceIdentity)` / `disable_ci()` (both `Result<(), MidiError>`), `ci_peers(&DeviceId)` (the MIDI-CI peers found on an open input; each change is `MidiEvent::CiPeer { device, change }`). Its events are `SessionEvent::Midi(MidiEvent)`
-                 and its error `Error::Midi(MidiError)`, each cause (hardware, file, send,
-                 route) the source of one variant; `MidiRouteRule<T>` has `serde` behind the
-                 `serde` feature, keyed by the app's own stable id, never a `NodeKey`.
-  arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
-                 no dependencies, `publish = false`, re-exported by tutti-rt.
-  tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
-                 `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
-                 the parallel executor's claims and job gate, `with_no_denormals`,
-                 `handoff` (a Processor's way to the audio thread and back, doc
-                 016 §2.6), and the `ArcLend`/`Loan`/`Reader` re-export. Holds the
-                 lock-free and `unsafe` runtime structure, with every loom model, the one
-                 thread-priority call (`request_priority`, which reports what the OS
-                 granted) and the one OS clock read (`monotonic_ns`, the clock a
-                 plugin's system time is on); depends on `arc-lend` alone (and
-                 `thread-priority`, and `libc` / `windows` for the clock),
-                 `publish = false`
-  tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
-                 `CCNumber`, and `Message` with `Ump::decode` and `From<Message> for Ump`,
-                 which hold every message's bit positions (`Ump::words` and
-                 `is_note_off` read the type, status and velocity bits a queue
-                 needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
-                 `frame`, `Midi1Parser` (the stream reader of MIDI 1.0 bytes, framing and
-                 completing them into `Message`s) and `parse_exact` (the stateless
-                 one-message read), the status bytes the hosts use,
-                 `NoteId` (`channel * 128 + note`),
-                 `split_stream` (a buffer of concatenated packets into `Ump`s by
-                 Table 4, the one walker), and
-                 `ManufacturerId` (the 16-bit MfrID of M2-104 section 7.10, with the SysEx
-                 byte forms), `FlexTextAssembler` (Flex text packets to whole texts, the
-                 reader of `flex_text_packets`), and
-                 SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
-                 (SysEx7 packets to whole messages over a caller's buffer) and its
-                 inverse `SysexMessage::packets` (`Sysex7Packets::checked` for a payload of plain bytes), with
-                 `Sysex7Packet::data` and `SysexRef::new`; no
-                 dependencies but `bytemuck` (and optional `serde`)
-  tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen`, `narrow` (refusing with a `NoMidi1Form`) and `midi1`, the stateful `Translator` (`translate`, `flush`, `finish`) and `Narrower`, the M2-115 scaling, and the
-                 float converters (`u32_to_unit_f32` and kin), the Flex values as units
-                 (`flex_tempo` to `Bpm`, `flex_time_signature` to `tutti_types::TimeSignature`), and the MPE zone
-                 values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
-                 `tutti-ump` and `tutti-types`
-  tutti-voicing  what a note-driven instrument decides before it makes sound, as one
-                 pure step: `Voicing::step(channel, message, patch, level) -> &[Command]`
-                 (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
-                 note table and the note gate (`Holds`, whose `*_up` return a `Release`), with the differences between
-                 instruments as values (`Rules::poly(n)`, `mono()`, `legato()`, `with_*`) and a `Patch`; no audio, no voice, no
-                 allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and
-                 `tutti-types`; `publish = false`
-  tutti-midi-device  MIDI device core (design 017 §5): `DeviceId`, `OsChange`, the pure
-                 `DeviceTable`, the UMP `Endpoint` (what one endpoint declares, and its
-                 `reply` to Discovery, Function Block Discovery and a Stream
-                 Configuration Request) and `Connection` (the discoverer's steps, time
-                 as an `Instant` value), and the MIDI-CI codec (`CiMessage`: Discovery
-                 and its Reply, Inquiry: Endpoint and its Reply, Invalidate MUID, ACK, NAK, over
-                 SysEx payload bytes) and its Management core (`CiDevice`);
-                 the Device Inquiry initiator of a MIDI 1.0 port (`IdentityInquiry`);
-                 no OS, no thread, and no dependency but `tutti-ump`, `bitflags`,
-                 `unicode-normalization` (names are NFC), `winnow` (the CI decode,
-                 `ci/read.rs` alone) and optional `serde`
-  tutti-types    vocabulary only: units, channel layouts, io edge traits;
-                 no FFT and no new algorithms but `Fold` (topology to
-                 topology, built on the control side). `#![forbid(unsafe_code)]`.
-                 The width folds are gone (every caller builds a `Fold`)
-  tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
-                 `Flac { depth, level }`, `Vorbis { quality }`), `Spec` (a format, a
-                 topology, a rate: the topology is the one statement of the width, and
-                 the constructors take `(spec, target)`), and `Encoder`
-                 over a `Write + Seek` sink, and `FileOut` (the file sink: the
-                 `Sink` over an `Encoder`, any `Format`); the `Pcm` widths and
-                 their one quantization. In: `Wave` (the resident sample buffer, which saves itself with
-                 `Wave::write(path, format)`), `Wave::read`,
-                 `Wave::read_metadata`, `FileIn` (the streaming `Source`, `FileOut`'s mirror),
-                 `DecodeError`, `can_decode`. Depends on `tutti-types` alone
-  tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
-                 executor + reference interpreter, the `WorkerPool` and the
-                 `PrerollTable`, `MAX_ROOT_CHANNELS`, the tap (`TapReader`, a
-                 `Source`) and its inverse the inlet (`InletNode`); `Engine` renders it
-  tutti-dsp      pure algorithms over slices: the real FFT, the cosine windows and `StftGeometry`, filters,
-                 dynamics, convolver, delay lines, reverb, waveshapers, the export
-                 resampler
-  tutti-curve    the easing laws and the automation point list: `Law` (`Linear`, `Hold`,
-                 `PowerIn(p)`, `PowerOut(p)`, `PowerInOut(p)`, `Exp(k)`; `eval`, `interpolate`),
-                 and the minimal `Trajectory` / `Breakpoint` (breakpoints in
-                 `Beat`, each with its `Law`, read at a beat). Layer 1, depends on
-                 `tutti-types` alone; replaced the external `audio-automation`
-  tutti-modulation modulation compiler, and the control sources (`ControlSource`: a value
-                 produced as legs on the play clock, `PlayGrid`; `LevelFollower`, `NoteAdsr`), which
-                 `tutti-nodes`' one `SourceNode<S>` sends
-  tutti-measure  the analyzers, measurements over slices that read audio and return
-                 numbers: loudness (EBU R128, windowed momentary and short-term), peaks
-                 and waveform blocks, pitch (`yin`), onsets, spectra, spectral shape,
-                 stereo correlation and ballistics, the vectorscope, silence regions,
-                 cross-correlation and take alignment, tempo and beats, notes, chroma, key
-                 and chords, and the STFT transforms; depends on `tutti-types`
-                 and `tutti-dsp` (the FFT, the windows, `StftGeometry`)
-  tutti-transport `Transport`, the motion state machine, timed commands, the
-                 offline timeline, `ProjectMeter`
-  tutti-metering `LoadMeter` (level meters are plan ops: `tutti-graph`'s `MeterReader`)
-  tutti-tempo    `TempoMap`: step and ramp tempo segments, beat <-> seconds <-> frame
-                 conversion in `f64`, and constant-tempo cells for a ramp
-  tutti-engine   `Engine`, the per-block graph render, over a transport and
-                 the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
-  tutti-cpal     device
-  tutti-export   the offline render pipeline, which a `Bounce` drives: a `Job`
-                 (rate, length, latency trim) and a list of `Output`s (a `Feed`, the
-                 graph's outputs or a plan tap, into a `FileTarget` or `BufferTarget`),
-                 `render` / `render_one` with a `Control` (`CancelToken`, `Progress`,
-                 `Stage`), and `RenderGraph::assemble` over a forked `Editor`/`Executor`
-                 pair. It re-exports no other crate's type: `Format` and `Pcm` are
-                 `tutti_codec`'s, `ChannelLayout` `tutti_types`', `RenderClock` and
-                 `FrozenClock` `tutti_transport`'s (the `tutti` umbrella's `export` feature
-                 implies `codec`). It asks the owner for a figure and
-                 builds no other crate's error: the frame limit is the encoder's
-                 (`Encoder::create_file_planned`), a resampled length the resampler's
-                 (`StreamingResampler::output_frames`), the clamp count the encoder's
-  tutti-nodes (the `Node` adapters, the VBAP and HRTF panners among them), tutti-sampler
-                 (a placed sample is a `Clip`, itself a graph node, resident or streamed from disk
-                 and a `VoiceNode` underneath; `memory_voice` is for pools; **a loop is one checked
-                 `Loop`**, a span of whole frames in `Samples` with a crossfade that fits it, refused
-                 where it is made, taken by every tier (`MemorySource::set_loop`,
-                 `Stream::set_loop`, a pool's and a node's handles); **a window is one `VoiceWindow`**,
-                 memory and disk voices alike; **`VoicePoolHandle` is methods, not commands**
-                 (`add` takes a `MemorySource`, `add_streaming` a `DiskVoice` with the `Stream`
-                 that steers its loop and direction, so a disk voice cannot be added without its
-                 stream), and **`VoiceNodeHandle` owns a streaming node's `Stream`**
-                 (`VoiceNode::streaming`): the stream lives as long as the last clone of the handle,
-                 which the session's graph keeps for as long as the node is in it. The tier decision
-                 is the caller's or the session's, never the sampler's alone: `Session::open_stream`
-                 opens a stream on the spawner and `Session::load_clip` a `Clip` by `Residency`
-                 (`Auto` streams past `STREAM_ABOVE_BYTES`), each landing in `update()` as
-                 `SessionEvent::Sampler(SamplerEvent)` with the id the call returned; `tutti_sampler`'s
-                 modules are private but `stretch` and `testing`, and the per-module path gate covers
-                 them), tutti-polysynth,
-  tutti-soundfont (the SoundFont player: the node, the voices, the patch that
-                 turns a note into voices; it executes `tutti-voicing`'s
-                 commands), tutti-sf2 (the SoundFont 2 file as data)
-  tutti-midi-{runtime,hardware,file}, tutti-alsa-ffi (all ALSA unsafe, the raw UMP
-                 bindings that alsa-sys lacks folded in as a private module; Linux
-                 only, empty elsewhere), tutti-coremidi-ffi (all CoreMIDI and Mach
-                 clock unsafe; macOS only, empty elsewhere). The Clip File codec
-                 (both halves) is `tutti-midi-file`'s; the inbound sync decoders
-                 (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`) are
-                 `tutti-midi-runtime`'s, beside `ClockMaster`. `tutti-midi-types` and the
-                 `midi2` dependency are gone (design 017 stage 5b): the decoded message
-                 is `tutti_ump::Message`, MIDI 1.0 bytes in are `Midi1Parser`, bytes out
-                 are `tutti_midi_protocol::midi1`, and no crate re-exports `midi2`,
-                 `midly`, `ArcLend` or the units
-  tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
-  tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
-                 control socket, the plugin-server's launch, and the
-                 client of a served plugin, `PluginBridge`, with the pipeline
-                 that feeds it (`Batcher`, `OfflineWait`), the server's
-                 process (`ProcessGuard`) and the served plugin as a `Loaded`
-                 (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
-                 design 021 §6.1; `#![forbid(unsafe_code)]`),
-  tutti-plugin-ipc-ffi (the plugin layer's OS edge, its `unsafe` behind safe calls: the
-                 audio slab's file, mapping and header (`MappingWriter`, the
-                 mapping's one writer, `SharedMapping`, `SlabHeader`), the
-                 pipe peek, the watchdog, and the readiness poll (`Poller`,
-                 `poll_now`) a host waits on a plugin's descriptors with, which
-                 takes each as a plain number and owns the borrow; names no tutti crate),
-  tutti-plugin-host (the format-generic half of hosting, not a format host: the
-                 `PluginHandle` control surface over a hosting's `AnyThread`,
-                 `Health` and `MainThreadControl`,
-                 the node's controls, meter, transport and parameter delivery, the
-                 host policy (`Liveness`, `PluginParamValues`) and the plugin node
-                 over any `Loaded` hosting (`PluginNode`: in-process through
-                 `load_client`, served through `client_over`, which takes an
-                 already-activated plugin and needs no main thread); no wire,
-                 design 021 §6.1),
-  tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
-                 into a result file, `tutti-plugin-types`' `probe_wire`, and with
-                 `--measure` renders it and holds its tail and latency to what it
-                 reports (`Measured`, `Verdict`; doc 023 section 6); the format
-                 hosts and no hosting; nothing depends on it, design 021 §2.5),
-  tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
-  tutti-au-ffi (all AU unsafe; macOS only, empty elsewhere),
-  tutti-vst2-ffi (all VST2 unsafe: the host half of our fork of the vst crate; the plugin
-  is a main-thread `PluginInstance` that closes it and an audio `RenderHandle` that never does)
-testing/         never shipped
-  tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
-  tutti-vst2-author (the plugin-authoring half of the vst fork: `plugin_main!`, the
-  `AEffect` builder, the plugin-side dispatcher; only the VST2 test plugins use it),
-  tutti-shared-plugin (the test plugin: a format-free core, a shell per
-  format), tutti-shared-plugin-vst3-cpp (the same spec on the Steinberg SDK), tutti-plugin-contract (the cases every format's host runs against
-  it), tutti-shm-model (loom), arc-lend-compare
-vendor/          third-party code we never edit
-  vst3-sdk/      the three Steinberg submodules
-```
-
-**Layering.** Dependencies between workspace crates point strictly down this
-list (normal and build edges; dev-dependencies may go anywhere).
-`cargo xtask check-layout` holds the table and fails on an unplaced crate:
-
-0. `arc-lend`, `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`, `tutti-plugin-ipc-ffi`
+0. `arc-lend`, `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
+   `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
-2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`,
-   `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
+2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`, `tutti-codec`,
+   `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
-4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
-   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
-   `tutti-plugin-db`, `tutti-plugin-ipc`
-5. `tutti-cpal`, `tutti-export`, `tutti-sampler`,
-   `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
-   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`,
-   `tutti-plugin-host`
+4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`, `tutti-clap-ffi`,
+   `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`, `tutti-plugin-db`, `tutti-plugin-ipc`
+5. `tutti-cpal`, `tutti-export`, `tutti-sampler`, `tutti-polysynth`, `tutti-soundfont`,
+   `tutti-midi-hardware`, `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`,
+   `tutti-vst2-host`, `tutti-plugin-host`
 6. `tutti-plugin`, `tutti-plugin-probe`
 7. `tutti-plugin-server`, `tutti-session`
-8. `tutti` (and `bevy-tutti`, when it is unparked)
+8. `tutti`
 
-- A member is directly `crates/<package-name>` or `testing/<dir>`, except
-  `xtask` (a named exception, the top-level directory); a nested directory is
-  refused. Nothing under `crates/` has a normal or build
-  dependency on `testing/`; a test reaches `testing/` through a
-  dev-dependency.
-- `xtask` is in no layer: it depends on no workspace crate (of any kind, and
-  on no outside crate: std only), nothing depends on it, it is
-  `#![forbid(unsafe_code)]` and `publish = false` (`cargo xtask check-layout`).
-  A recipe is its planning in `xtask/src/recipes.rs`; keep the commands there
-  the commands CI runs.
-- `vendor/` holds third-party code we never edit and no workspace member.
-  Our own forks (`tutti-sf2`, `tutti-vst2-ffi`) are crates, not vendored.
-- Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
-  them.
-
-- `tutti-ump` depends on no workspace crate, keeps every module private
-  (`tutti_ump::Ump`; CI runs the per-module path gate on it), is
-  `#![forbid(unsafe_code)]` and has no `bevy` feature. A consumer names
-  `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`. The
-  `tutti` root and the `bevy-tutti` prelude export all three, and `tutti-session`
-  exports `MidiChannel` behind `midi`. A consumer that persists one with serde
-  depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
-  `MidiChannel::index`/`MidiGroup::index` (`usize`), `all()`, `Address::index` and the 1-based
-  `numbered(n)` (which `Display` writes; `Debug` is the wire raw) are the table and display doors.
-  `Key::new(Protocol, Address, NoteNumber)` and `Ump::sustain_up(Protocol, Address)` return `Option` (a reserved protocol has no channel voice packet).
-  `MidiGroup::new`, `MidiChannel::new` and `CCNumber::new` return `Option` and
-  refuse out of range, like the field types (`U7`, `U14`, `NoteNumber`, ...),
-  which have the same shape. `of` is for a literal or a constant (it panics out
-  of range), and `masked` is the one constructor that masks, for bits the wire
-  has just framed. A packet's Group and Channel are `Ump::group`,
-  `Ump::address` and `Ump::channel`: nothing outside `tutti-ump` shifts a
-  header by hand. `NoteVelocity` is the M2 note velocity, the whole `u16` (0 is a Note On,
-  §7.4.2); `widen_velocity` / `narrow_velocity` are `tutti-midi-protocol`'s. A note's identity is `NoteId`, `channel * 128 + note` (the
-  plugin formats' wire value, one formula); an id above `NoteId::MAX_CHANNEL_NOTE`
-  is one an allocator minted and `channel_note()` is `None`. A complete SysEx is a
-  `SysexMessage` (checked once: `F0`, 7-bit bytes, `F7`), and the one SysEx7
-  reassembler is `SysexAssembler<B>` over a buffer the caller sizes
-  (`SysexAssembler::room_for`): it allocates nothing, holds one open message
-  per Group (up to the `lanes` it is built with), ends a Group's message on that
-  Group's next non-Continue, non-real-time UMP (M2-104 §7.7.1: `push` takes every
-  UMP of the stream, not only SysEx7) and counts what it drops; `SYSEX7_MAX_PAYLOAD` is tutti's
-  64 KiB cap on one message (the spec sets none), for sizing an assembler. An RPN
-  address is `Rpn` (`bank`, `index`, and the named `PITCH_BEND_SENSITIVITY`,
-  `MPE_CONFIGURATION`, `PER_NOTE_PITCH_BEND_SENSITIVITY`), never a bare `u8` pair.
-  A manufacturer is a `ManufacturerId` (`new -> Option`, the 16-bit word of section 7.10;
-  `from_sysex_bytes([U7; 3]) -> Option` and `sysex_bytes`: `xx 00 00` or `00 xx yy`), never
-  three loose `U7`s or a bare `u16` (`DeviceIdentity::manufacturer` and
-  `MixedDataHeader::manufacturer` are one). Flex text is read by
-  `FlexTextAssembler<B>` (a buffer the caller sizes, one open message per Group, UTF-8
-  without a BOM, zero only as padding in a Complete or End packet; it lends the text from the
-  `push` that completes it and counts `dropped` and `invalid` apart).
-- `tutti-midi-protocol` depends on `tutti-ump`, `tutti-types` (layer 0, for `Semitones`) and `winnow` (named only in `universal/read.rs`, a listed parser module: `check-layout`), keeps every module
-  private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
-  it) and is `#![forbid(unsafe_code)]`. Its functions (`widen`, `narrow`,
-  `midi1`) hold no state, and take a packet as `impl Into<Ump>` (one input type: `Translator::translate`, `Narrower::feed`, `midi1`, `channel_voice`); `narrow` refuses with a `NoMidi1Form`, and `widen`/`narrow` are free functions because `From`/`TryFrom` between the voice types would sit in `tutti-ump` with the M2-115 scaling; its two translators, `Translator` (MIDI 1.0 in) and
-  `Narrower` (MIDI 2.0 out, per group and channel: RPN/NRPN selects, Bank
-  Select), are fixed-size values, hold no clock, and allocate nothing after
-  `new`. A consumer's call to `widen` is transitional: the stage 3 translator
-  calls it at the input edge and consumers drop theirs. It also holds
-  `PitchBendSensitivity`, the 7.25 fixed-point range of RPN #00/07 (its `serde`
-  feature is optional and carries the bits, for `MpeZoneConfig`), and the MPE
-  zone values (RP-053): `MpeZoneConfig` has private fields and `new(zone, members) ->
-  Option` (1 to 15 members, no clamping), `MpeZones::new` refuses a zone in the wrong role
-  and two zones that share a member channel (more than 14 members between them), and
-  `MpeMode` holds only a checked `MpeZones`; their `serde` forms read back through the same
-  checks. The state that drives a zone from incoming MIDI is `tutti-midi-runtime`'s
-  `MpeIngest`.
-  **Universal System Exclusive is read here** (doc 017, "L7b"): `read(SysexMessage) -> Read`
-  (a `winnow` grammar: `Read::Universal(Addressed { device, message })`, `Unread` for a Universal
-  message it does not read or that is malformed, `Foreign` for a manufacturer's; never an error)
-  over `Universal` (`#[non_exhaustive]`: Identity Request and Reply, General MIDI On and Off,
-  Master Volume, Balance, Fine and Coarse Tuning, and the MIDI Tuning Standard as
-  `Universal::Tuning(TuningMessage)`: dump requests, key-based and Scale/Octave dumps, Single Note
-  Tuning Change and Scale/Octave Tuning in both timings, frequency data as the 21-bit range-checked
-  `TuningFrequency` whose `NO_CHANGE` (`7F 7F 7F`) is a value of it, a dump whose checksum fails as
-  `Read::BadChecksum`, counted by the reader as `UniversalReader::corrupt`, a Bulk Tuning Dump's own
-  checksum ignored as the spec allows), and `UniversalReader::new(group, SysexDeviceId)` (a device's own id, `00` to `7E`: `7F` is the all-call, a header's `Recipient::AllCall`, and no device's own),
-  an instrument's edge (every UMP of one Group in, `Heard { to: Addressee::{All, Own}, message }`
-  out for the all-call `7F` and its own id only, M1 p.40). MIDI-CI's decode stays
-  `tutti-midi-device`'s and reads none of this.
-- `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types`
-  only, keeps every module private (`tutti_voicing::Voicing`; CI runs the
-  per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`
-  and has no `bevy` feature. **The note logic of an instrument is one pure step
-  here, and an instrument keeps its voices and its render:** it builds a
-  `level` lookup (`impl Fn(VoiceId) -> Option<Amplitude>`, `None` for a voice it no
-  longer has: no list, no order, no copy), calls `step` with the message by value, and
-  does what the `Command`s say (`PolySynth`
-  does, in `tutti-polysynth`'s `VoiceAllocator`, which is now its slot table).
-  What differs between instruments is a value of `Rules` or a `Patch`, never a
-  branch in the core; a difference only one instrument has and the spec does not
-  require is a reason to look again. `step` allocates nothing: its tables are
-  sized in `new` and a `Clone` keeps their capacity; the core calls `level`
-  only for a note message (liveness is read there). `VoiceId` has a private
-  field (`new`, `get`: every `u64` is a voice) and `VoiceSpec::group` is an
-  `Option<NonZeroU16>`.
-  **The MIDI Tuning Standard is the core's** (doc 017, "L7b ... as built (part 2)"): the tuning
-  programs (a `TuningCapacity` of banks and programs in `Rules::tuning`, default 1 x 128, sized in
-  `new`; a message for one beyond it is ignored and counted, `Voicing::tuning_refused`), the channels'
-  RPN 3 and 4 selection (`ChannelState::tuning_program`, `tuning_bank`) and Scale/Octave offsets. A
-  key's tuning is its offset from equal temperament in semitones, which a voice is told as
-  `Command::Start::tune`, `Retarget::tune`, `Glide::from_tune` and, when a real-time message or a
-  program select moves a sounding note, `Command::Tune` (never for a non-real-time one); the channel's
-  own pitch stays `Retune` and the two add. An instrument holds no tuning table of its own
-  (`tutti-polysynth`'s `Tuning` only builds the initial table, `Tuning::table`, stored as program 0 of
-  bank 0 by `Voicing::store_tuning`).
-  **Universal System Exclusive is the core's too** (doc 017, "L7b"): `Voicing::universal(Heard)
-  -> &[Command]` reads Master Fine and Coarse Tuning into every channel's pitch (a `Retune` each;
-  `Rules::percussion` names the key-based channel it leaves), General MIDI On and Off (cuts the
-  notes, fresh channels, `Retune`s), and holds Master Volume and Balance as
-  `Voicing::master_gain() -> MasterGain`, which an instrument multiplies into its output; the
-  instrument keeps a `tutti_midi_protocol::UniversalReader` and its own device id
-  (`SynthConfig::device`, `Settings::with_device`) and never parses SysEx itself.
-  The spec is the only oracle: a rule gets a test from the spec and a mutation,
-  and nothing is pinned against another implementation. A Relative Registered Controller (section 7.4.8) is added to the word the channel state reads back for RPN 0 to 5, saturating (`ChannelState::registered_word`); any other relative message is ignored. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
-  Group's sixteen channels** (`SynthConfig::with_group`, `Settings::with_group`, the one builder
-  spelling both instruments share with `with_polyphony`; a message of
-  another Group is not read, M2-104 section 2.1.2, Appendix B.1), so `step` never sees a
-  Group; the ingest node routes by (Group, channel) (`MidiInputPorts`, doc 017 L3). Mono and legato follow
-  tutti's named rule (last-note priority over a per-channel stack of held keys),
-  which MIDI 1.0 does not specify.
-- `tutti-midi-device` depends on `tutti-ump` alone, keeps every module private
-  (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
-  is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
-  feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
-  threads and the OS. It also holds the MIDI-CI codec (`CiMessage::encode`,
-  `encode_into(&mut impl Extend<u8>)` and `decode` over the bytes between `F0` and
-  `F7`, `packets(group)` for a UMP stream, or `tutti_ump::frame` for a byte stream,
-  and `tutti_ump::SysexAssembler` to reassemble; `DiscoveryData::new` takes a
-  `tutti_ump::DeviceIdentity`; `Muid::new`
-  refuses the reserved range and broadcast, which is a `Destination`). The codec holds no state;
-  `CiDevice` is the pure Management core over it, shaped as `Connection` is (`new(.., entropy, now)
-  -> (Self, Vec<CiAction>)`, `on_message(&Decoded, now)`, `on_timeout`, `deadline`; no clock, no OS,
-  one Group, no Function Block so Device ID and Function Block `7F`): it discovers (a 3 s window,
-  `DISCOVERY_WINDOW`), answers Discovery echoing the Output Path ID, resolves a MUID collision always
-  by §5.9.1 Option B and §5.9.2 (its own Discovery or Reply looped back by a Thru is an echo, never a collision: Appendix A.1.1), honours Invalidate MUID, NAKs only what is addressed to its own MUID
-  and is not an ACK or a NAK, asks a peer's Endpoint for its Product Instance Id once (no retry) and
-  NAKs that inquiry itself; its MUIDs come from a caller's entropy (`Muid::from_entropy`). A
-  Product Instance Id on the CI wire is a `CiInstanceId` (at most 16 bytes, §5.8.3.1, where
-  `ProductInstanceId` allows M2-104's 42). **The Profile Configuration messages (M2-101 §7) are `CiMessage` variants** (`ProfileInquiry`, `ProfileReply`, `SetProfileOn`/`Off`, the four reports `ProfileEnabled`/`Disabled`/`Added`/`Removed`, which carry no `to` because they always go to the Broadcast MUID, the two Details messages and `ProfileSpecificData`; the Device ID of the header is the address, a `CiDeviceId`), over typed values: `ProfileId` (`Standard` or `Manufacturer`, a `ManufacturerId` in bytes 1 to 3; `from_bytes` refuses a one-byte id followed by a non-zero byte), `ProfileChannels` (14 bits, 0 `BY_ADDRESS`), `ProfileLists` (at most 16383 Ids each, `ListTooLong`) and 7-bit `DetailsData`/`SpecificData`. `ProfileInitiator` is the pure Initiator core for one found peer, shaped as `CiDevice` is: it sends a Profile Inquiry to the Function Block, takes the Replies per address and is complete at the **final Reply on `7F`** (M2-102 §2.4; `PROFILE_TIMEOUT`, tutti's 3 s, ends a peer that never sends it), keeps a `ProfileTable` the four reports update, and resolves `set_on(ProfileTarget, ..)`, `set_off` and `details` on the matching report or Reply, a NAK (status `0x04`, details the Profile Id) or the timeout (`ProfileAction::Resolved`); `CiDevice` as Responder answers a Profile Inquiry with both lists empty and NAKs `0x04` a Set On, Set Off or Details Inquiry, and declares no category. `CiMessage::decode` is a `winnow`
-  grammar in `src/ci/read.rs` (the crate's one parser module, listed in `check-layout`'s
-  `WINNOW_HOMES`; no `winnow` type is in a public signature, field or error: the bodies are
-  read through `DiscoveryData::decode_body` and `Nak`/`Ack::decode_body`, which answer `Option`).
-  It returns
-  a `Decoded`, and a message it cannot read is an `Unread` that keeps its header so the
-  NAK can be addressed (`Unread::nak`); a message carries its own destination (Discovery
-  and Invalidate MUID are broadcast, the rest go to one `Muid`), and a value the spec
-  bounds is a checked type (`CiVersion`, `CiDeviceId`, `MaxSysexSize`, `MessageText`).
-  A name (`EndpointName`, `BlockName`; with `ProductInstanceId` and `MessageText` it has `new -> Option` and `TryFrom<&str>`/`FromStr` with a `NameError`, `Display` and `AsRef<str>`) is held in NFC and has no leading BOM (M2-104
-  §1.8).
-  Its `tutti-ump` edge is for the UMP Endpoint and Connection (doc 017 stage 4b):
-  `Endpoint::reply` answers a received Stream message into a caller's
-  `Extend<Ump>` and allocates nothing, `Connection` (`new` returns `(Self, Action)`, the first `Action::Send`) is Table 4 steps 2 to 4 as a
-  state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
-  `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` (an iterator of `Polled`: a device that settled or changed, `Polled::Stream`, and a MIDI-CI peer found, changed or lost, `Polled::Ci`) from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which answers `Pushed::{Sent, Diverted, Full}` and also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); **the send time is `tutti_midi_runtime::OutputPlan`'s** (the frame's instant on `ClockMap::os_at` + the audio output's latency, `None` while unreported and never a zero, - the device's MIDI latency + the user's `OutputOffset`; now or past is `SendAt::Now`, more than `MAX_OUTPUT_AHEAD` is refused and counted) and every send time is an `Instant` the backend converts to its own clock in one function (`MidiOut::queue_timed`); `Endpoint::reply` has no caller, since tutti publishes no endpoint. **A MIDI 1.0 port with an output is sent an Identity Request** (M1 p.40, `F0 7E 7F 06 01 F7`) by the same first `poll` (`tutti_midi_device::IdentityInquiry`: sent again once after `INQUIRY_TIMEOUT`, then given up, nothing waits on it); while it is out the input edge copies the port's SysEx7 packets to its stream ring (`HardwareMidiInputs::hear_sysex`; a copy, the graph still hears them) and the reply, read with `tutti_midi_protocol::read`, gives the device's `Endpoint` its `identity` (a `DeviceStream` of `Basis::Inquired`). **MIDI-CI is off until the app calls `MidiSession::enable_ci(DeviceIdentity)` (`Midi::enable_ci`; `disable_ci` ends it with an Invalidate MUID per device, as does closing an input, and a settled block's change is followed)**, because a Discovery announces a manufacturer id, tutti has none, and M1's `7D` is "not to be used on any product released to the public": the app gives the id it registered. Enabled, it runs on every input that has an output (design 017 L8 part 3, `tutti-midi-hardware`'s `ci.rs`): one `CiDevice` per Function Block that declares MIDI-CI (`midi_ci_version() != 0`) on its first Group, one on Group 0 for an Endpoint with no blocks or no answer, one on Group 0 for a MIDI 1.0 port once its Identity Request has ended; Management only (no category), the app's identity, 512-byte receivable size, MUIDs from std's `RandomState`; the port copies SysEx7 to the stream ring while any runs (`hears_sysex`, the graph still hears it), a `SysexAssembler` reads it (a gap the port counted in the stream ring drops the open message, `lost_tail`, so a lost packet never joins one: `Heard`), a message is routed by Group, and what a device sends goes out on the input's own output, never the session's; the peers are `MidiSession::ci_peers(&DeviceId) -> Vec<CiPeerInfo>` and each change a `CiChange`. **A MIDI 1.0 source is opened as MIDI 1.0 and widened by the ingest node's `Translator`, never by the OS** (ALSA's `UmpVersion`, CoreMIDI's `Midi10` port). A consumer that persists a `DeviceInfo` depends on it with
-  its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
-  breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
-  is safe to bind unasked: an ALSA identity is a name, so a lone device with
-  the saved name is `SameName` (bind or ask), and an ordinal above 0 or several
-  alike devices are `Ambiguous`. Comparing a saved id with a listed one by hand
-  can bind another keyboard of the same model.
-  **A Device Identity never promotes** `SameName` to `Exact` (units of a model share it); once the
-  device is open, `Learned` (what it said: Device Identity and Product Instance Id, `MidiSession::learned`)
-  is checked against a `SavedDevice` (`DeviceInfo` + `Learned`) with `Learned::compare -> Match`
-  (`SameUnit` only on an equal Product Instance Id, `SameModel`, `Different`, `Unknown`).
-- `tutti-transport`, `tutti-metering` and `tutti-engine` keep every module
-  private (`tutti_transport::Transport`, never `tutti_transport::handle::Transport`;
-  CI runs the per-module path gate on each), are `publish = false`,
-  `#![forbid(unsafe_code)]` and have no `bevy` feature. `tutti-metering`
-  depends on `tutti-types` alone; `tutti-transport` on `tutti-types`,
-  `tutti-rt`, `tutti-graph` and `tutti-tempo` (the project's tempo is a
-  `TempoMap` that `TransportSettings` publishes through an `ArcLend`, swept by
-  the session's `Reclaim` phase: `reclaim_tempo`); `tutti-engine` on those and the two crates
-  above, with a dev edge to `tutti-nodes` for the `ClickNode` tests.
-  `TransportAudio` (`Transport::audio`, taken once) is the audio side the
-  engine drives across the crate edge; the clock, control inputs and pending
-  list behind it are crate-private.
-- `tutti-tempo` depends on `tutti-types` alone (and `libm`, so a ramp's figures
-  do not depend on the platform's libm), keeps every module private
-  (`tutti_tempo::TempoMap`; CI runs the per-module path gate on it), is
-  `#![forbid(unsafe_code)]` and has no `bevy` feature; `serde` is optional and
-  only on `CellGrid`. A `TempoMap` is an immutable value built on the control
-  side: its constructors refuse a tempo that is not finite and positive
-  themselves, whatever `Bpm` accepts, and no query allocates. Time is `Seconds`,
-  an `f64`. The map answers the rate-free queries (beats and seconds); a reader
-  that walks it by frame takes a `TempoView` (`TempoMap::view(rate)`: the map, the
-  rate and a lookup hint it owns, made per block because it borrows the lent map),
-  whose methods are the frame queries (`frame_at_or_after`, `beat_at_frame`,
-  `tempo_at_frame`, `tempo_slope`, `next_change`, `chord_cell`): there is no
-  `_with(&mut Cursor)` twin and no query that takes a `rate`. A segment's law is
-  `Transition` (`Step`, `RampTime`, `RampBeats`), a `TempoPoint` is made with
-  `step`, `ramp_time` or `ramp_beats`, and `TempoMap::builder` writes a map whose
-  last point cannot ramp. A map reaches a constant-tempo reader as `Cell`s on one
-  fixed `CellGrid`, also cut at every point's frame (`TempoView::next_change`);
-  `TempoView::chord_cell` is a pure function of the absolute frame, a cell inside a step
-  has that step's tempo to the bit, and the crate derives no grid from a block.
-  The transport follows a map, steps and ramps, with one walker
-  (`tutti-transport`'s `TempoWalk`, doc 020 stages 3 and 4) on one engine grid
-  of 128 frames: a step or a ramp cell is a `TransportChanges` entry, the engine splits a block that needs more than 8, and
-  a constant map never reaches the walker, so its render is bit-identical.
-- `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
-  nothing audio-specific belongs in it beyond its vocabulary.
-- `tutti-codec` depends on `tutti-types` alone, keeps every module private
-  (`tutti_codec::Encoder`; CI runs the per-module path gate on it), is
-  `#![forbid(unsafe_code)]`, is `publish = false` and has no `bevy` feature.
-  Each format is a cargo feature, none on by default: `encode-wav`,
-  `encode-aiff`, `encode-flac`, `encode-vorbis` for writing and `decode-wav`,
-  `decode-flac`, `decode-mp3`, `decode-ogg` for reading. A decode feature pulls
-  exactly one `symphonia` container and no encoder library, an encode feature
-  pulls no decoder, and the C Vorbis library is `encode-vorbis`'s alone, so a
-  build that only reads never needs it (`cargo xtask check-layout` holds both).
-  A `Format` variant exists only with its `encode-*` feature: no `cfg(not)`
-  arm refuses a format. An `Encoder` takes blocks already at the
-  `Spec`'s rate and width; it does not pull, resample or dither, and nothing in
-  the crate stops a caller from handing it blocks that were not. Pulling,
-  resampling and dithering are the pipeline's, and `tutti-export` has one path
-  through its own (`pump_blocks`, private). `write` is fallible; the file
-  `create_file` makes is removed unless `finish` moved it into place (and
-  `finish` after a failed `write` removes it and returns the first error). The
-  sink is `Write + Seek + Send + 'static` on `Encoder` whatever the features,
-  because bounds that followed the features would be worse; a `FormatWriter`
-  asks only for what its own format needs. The
-  WAV writer is one: `tutti-export` and `FileOut` (the codec's `Sink`, the
-  mirror of `FileIn`) both write
-  through it. Each format's writer implements `FormatWriter` (its boundary: it writes
-  blocks of interleaved samples into a sink as one file of its format), with
-  the sink bounds on the `impl`, not the trait; `Encoder` is the one type over
-  them. A new format is a `Format` variant, a writer type, a `contract!` line in
-  `src/contract.rs` and a row in `tests/bytes.rs`.
-  Decoding has no trait: it is plain functions and types of our own over
-  `symphonia`, all in `src/decode.rs` and `src/decode/`, so the library is
-  swapped by editing that module. No `symphonia` type is in a public signature,
-  field or error (`DecodeError` is ours), and no file outside that module names
-  it (`cargo xtask check-layout`). `Wave` is here because decoding produces it and
-  `tutti-sampler`, `tutti-export` and `bevy-tutti` consume it; it needs no
-  feature. `FileIn` is here because it is the decoder's streaming state.
-- `tutti-rt` names no tutti crate. Its one workspace-member dependency is
-  `arc-lend`, which depends on nothing at all. It holds the engine's lock-free and
-  `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates), and
-  the one thread-priority call, `request_priority` (a request for an ordinary-
-  scheduler raise, never real time, whose `PriorityOutcome` is what a caller
-  logs; the plugin server and the sampler's streamer both use it), and the
-  one OS clock read, `monotonic_ns` (the OS's monotonic clock in nanoseconds,
-  on the OS's epoch so a plugin server reads the same timebase; not
-  `Instant`, which is process-local). Keep
-  every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
-  the per-module path gate on it).
-- `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, libm, `wide` (the `f32x8` lanes its filter steps run over: `Lanes`, which the
-  polysynth's lane bank calls `svf_step` and `ladder_step` with, so there is one copy of
-  each) and thiserror, and `rand` under the `contract` feature only), keeps every
-  module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
-  the per-module path gate on it; `contract`, behind the off-by-default `contract`
-  feature, is the one public module: the cases a `Family` and its `Realized` runner are
-  held to, `family_contract!` and `recurrence_contract!`, doc 024 section 6: **the contract reads the
-  member's own tail declaration**, so the `Lti` cases that measure a finite tail (`tail_covers`,
-  `decay`, `tail_tight`) do not apply to a probe whose `System::tail` is `Ring::Unbounded` and pass
-  vacuously when every probe is, a family writes no opt-out, and `response` renders an unbounded
-  member for the length its `spectral_radius` gives and adds what that cuts off to its tolerance), is `#![forbid(unsafe_code)]` and has no
-  graph or runtime, no `Arc`-published state and no atomics for control: every
-  control arrives per call as a plain typed value. It holds the real FFT, the
-  cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
-  `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
-  pairs and triplets, selected from the published method, doc 028 section 4; `VbapKernel`, the
-  block's gains with the mono fold and the last-solve cache, and `VbapGains`, a ramp's end point,
-  whose `render_channel` ramps one output channel), the HRTF
-  convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`
-  and the sphere-rate constants; it takes the aimed direction per call, `HRTF_STEP` frames at a
-  time, so the de-zipper is the caller's; the nodes, the `Param` reads and the smoother stay in `tutti-nodes`' `spatial` module), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
-  float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
-  `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
-  multi-output `Lti`; `Biquad`, the shared second-order section; the filters' one
-  `Family`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
-  `SvfFamily<F>`, `LadderFamily<F>` and `CrossoverFamily` its aliases), whose channels run
-  alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
-  written once), the dynamics curves, the brickwall clipper
-  (`BrickwallFamily`, `BrickwallRecurrence`: the first dynamics family on the model, its
-  ceiling a fast lane) the compressor (`CompressorFamily`, `CompressorRecurrence`: its threshold a fast lane,
-  its makeup gliding over `GAIN_GLIDE`; its frame step, `Detector::frame`, is the one copy the
-  multiband's bands run too) and the noise gate (`GateFamily`, `GateRecurrence`: threshold a fast lane, the
-  range gliding over `GAIN_GLIDE`), both on a typed `KeySource` (`KeySource::Sidechain`, a key bus that
-  must be wired, `Channels::keyed`; `KeySource::Own`, the signal itself, `Channels::same`), the
-  lookahead limiter (`LimiterFamily`, `LimiterRecurrence`: threshold and ceiling fast lanes,
-  every coefficient landing whole; the lookahead a constructor constant that is the member's
-  latency, a checked `Lookahead` (above zero, at most 1 s, never clamped), `LimiterFamily::new(input, Lookahead)`) and the
-  multiband compressor (`MultibandFamily`, `MultibandRecurrence`: a `CrossoverState` per channel and
-  the compressor's frame step per band, each band's makeup, bypass and solo gliding over `GAIN_GLIDE`,
-  each band's deepest reduction in the state for the node's meter; `MultibandCompressorNode` stays
-  a hand-written node over `Realized<MultibandRecurrence>`, since `FamilyNode` has no room for its
-  35 cells and a band count that varies per instance) (a dynamics node is built from its named
-  controls struct: `CompressorNode::new(input, key, CompressorControls { .. })`,
-  `GateNode::new(input, key, GateControls { .. })`, `LimiterNode::new(input, lookahead,
-  LimiterControls { .. })`, each with `mono` and `stereo` shorthands; a gate's closed floor is
-  the caller's: `GateControls::DEFAULT`'s range is 0 dB), the partitioned
-  convolver, the delay line, the feedback delay as a family
-  (`DelayFamily`, run by `DelayRecurrence`: a `Grows` family over a checked `MaxDelay` (above zero, at most
-  10 s, default 2 s: a delay line is allocated from it), its channels' routing a checked `Routing` (square, finite,
-  every row's absolute sum at most 1, or the named `Routing::normalized`; `swap` at width 2, `none` otherwise)
-  and its channels past the first `ChannelTimes` (`linked` to the control, or `each` a constant of its own);
-  the time (lane 0, seconds) and the feedback (lane 1) are read per frame when driven, a cell's time glides at
-  most `DELAY_SLEW` (1/8) frames of delay per frame and its feedbacks over `GAIN_GLIDE`; `DelayFamily::with_routing`
-  and `with_times` are consuming value constructors that refuse a bus or a length that does not fit),
-  the chorus and flanger as a family (`ModDelayFamily`, run by `ModDelayRecurrence`: a `Grows` family over the
-  sweep's own `MaxDelay`; its `Sweep` (base delay, line, depth range, most feedback: `Sweep::new` refuses a base and
-  depth that reach past the line, a transposed range, or a non-finite value; `CHORUS`, `FLANGER` and
-  `GENERAL_MIDI_CHORUS`, the last with no feedback) and its `Stagger` (`step`, channel `c` that many cycles ahead,
-  or `each`, one offset per channel: `ModDelayFamily::new` refuses a length that is not the bus's) are checked
-  construction constants, and the controls are three (`ModDelayControls`: rate, depth, feedback), all read on the
-  stream's 16-frame grid; **the LFO's phase is recurrence state on the stream clock**, an `f32` `Phase` counted
-  from `clear`, so `prepare` restarts the sweep, and its sine is solved at control points every 16 frames and
-  joined by chords; a rate lands whole at its grid point with the phase continuous (**floored at 0.01 Hz, a lane's
-  value and a cell's alike**, `MIN_RATE`), the depth glides at most `DELAY_SLEW` frames of delay per frame, the
-  feedback over `GAIN_GLIDE`; the swept loop is `delay_step`'s, so its period is the delay), the cubic Hermite
-  kernel, the phaser
-  as a family (`PhaserFamily`, run by `PhaserRecurrence`: not `Grows`, its capacity `()`; its `Stages` (2 to 12,
-  refused not clamped), `SweepRange` (finite, bottom at least 20 Hz and not above the top; the 0.90-of-Nyquist
-  cap on the top is the member's and the authored top is kept, so a higher rate restores it) and `Stagger` (the
-  chorus's, `Stagger::NONE` for none) are checked construction constants, and the controls are three
-  (`PhaserControls`: rate, unitless `Depth`, feedback), all read on the stream's 16-frame grid; **the LFO's phase
-  is recurrence state on the stream clock** like the chorus's, so `prepare` restarts the sweep, and the all-pass
-  coefficient is solved at control points every 16 frames counted from `clear` and joined by chords, so the render
-  does not depend on the blocks; a rate lands whole at its grid point (**floored at 0.01 Hz, a lane's value and a
-  cell's alike**, `MIN_RATE`), the depth and the feedback glide over `GAIN_GLIDE`; its member is `Lti` frozen at a
-  sweep position (`PhaserMember::at`: `A / (1 - g z^-1 A)`, flat at no feedback), with a spectral radius that is a
-  sufficient bound under 1 (the maximum principle on the loop, no rate) and a tail that is `Ring::Unbounded`, so
-  the node declares `Rings::Unknown`), the allpass coefficient and chain (`allpass_coeff`, `allpass_chain`,
-  `sweep_hz`, the pure pieces of K), the
-  block ramps, the export resampler and its streaming
-  bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the
-  one figure of a resampled length; `ChunkSize`), the dither noise
-  (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
-  the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
-  `FreeverbRecurrence`, the `Recurrence` of `FreeverbFamily`), the feedback delay network
-  (`FdnFamily`, `FdnRecurrence`: both run by `Realized`, whose glides step between
-  `retarget`s in 32-frame chunks counted from the last reset, so the output does
-  not depend on the block length), the
-  model of doc 024 (the `model` module, exported at the root: a `Family` maps controls
-  (φ, `member_into`) to a `Member`, a `System` (`latency`, `tail`) and, for a linear time-invariant
-  one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
-  and a stability test, all bounds stated as such); a `Recurrence` is one
-  realization of a member (its `coefficients_into` writes the coefficient point a member asks for,
-  its `Approach` glides to it, its `run` is the per-frame math), and `Realized<R>` is the one
-  runner over it, with the planar block shape `process(&Feed, output, frames)`, where
-  `Feed` is the effect input (the main audio, the side-chain key channels of a
-  `Channels::keyed` family, and up to `MAX_LANES` = 4 per-frame control lanes (the multiband's four band thresholds), doc 024
-  section 2.7.3; a recurrence that keeps a measurement for its node implements `Readout`,
-  and `Realized::take_reading` is the one way out of a runner's state);
-  the coefficients approach each new point by an `Approach` (a `Glide` of a `Lerp`
-  set, or the FDN's own, a glide a field); prepared from a
-  `Setup` and the recurrence's `Capacity`, moved to each member by `retarget`; a family whose
-  state grows with its member is also `Grows`, whose `reach` over a `Reach<D>` (the
-  family's `Domain`, `MaxDecay` for a reverb) is a `Capacity` (`need` of a member, the lattice
-  `dominates`; the one condition is `need(φ(c)) ≤ reach(D)`), and a family that does not
-  grow has capacity `()`; `Effort` and `Cadence` (an enum: `Block`, or
-  `Stream { period, offset }` on the stream clock, the only block independent one;
-  `Cadence::BLOCK` and `Cadence::stream(n)` are the constructors) are the
-  engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
-  a `System` and an `Lti`, with `NetworkCapacity` and `FreeverbFamily`: a plain
-  fixed-capacity description with analytic queries, never an instruction stream
-  a realization must follow; a `Family` writes its member in place, `member_into`, because a
-  `Network` is too large to build on an audio thread), the
-  ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
-  them (shape, prepare, process, params, fork; `FamilyNode<F: NodeFamily>` is
-  the one node over every reverb, filter and brickwall `Family` (`NodeFamily::rings(&self)`, the
-  instance's, is a `Rings`: `Tracks` parks on the tail, `Unknown` never narrows it, `Silent` declares
-  `Tail::None`, `Ceiling(TailCeiling)`, a checked finite non-negative time, declares a fixed finite ceiling and never narrows or parks; each `control_set!` row declares how its control is read, a `Control`
-  (`{ whole }`, `{ fast }`: read per frame into `Feed.lanes`, the cell the base, at most
-  `MAX_LANES` or it does not compile; `{ not_nan }`: accepts `+-inf`); a keyed
-  family's key bus is read into `Feed.key`), with `FreeverbNode` and `FdnNode`
-  its two reverb instances and `ReverbKind` the choice between them; a family node is
-  the wet signal alone, and its dry/wet is the graph's mix, `Editor::set_mix`), and re-exports only the
-  algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
-  `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
-  `FdnFamily`, `FreeverbControls`, `FreeverbFamily`).
-- `tutti-measure` depends on `tutti-types` and `tutti-dsp` alone among workspace
-  crates (its outside deps are `ebur128`, the only place it is pulled, and
-  `thiserror`; `tutti-graph` is a dev-dependency only, for the README's tap
-  example), keeps every module private (`tutti_measure::Loudness`, never
-  `tutti_measure::loudness::Loudness`; CI runs the per-module path gate on it), is
-  `#![forbid(unsafe_code)]` and has no `bevy` feature or other feature. Like
-  `tutti-dsp` it has no graph, runtime or `Arc`-published state: every control
-  arrives per call as a plain config value, and a measurement that runs a
-  stream is a `Config`/`State`/`step` triple. It reuses `tutti-dsp`'s
-  `RealFft`/`FftScratch`, `Complex32`, `StftGeometry`, `Grid`, `Error` and
-  `CosineWindow` and does not copy them: those serve the processors too (the
-  sampler's vocoder builds on `StftGeometry`). `tutti_dsp::Error` is only what
-  the geometry and the grid refuse; the analysers' own `tutti_measure::Error`
-  carries it as `Dsp` and raises its own variant for its own validation.
-  A processor goes in `tutti-dsp`, a measurement in `tutti-measure`.
-- **A pure algorithm over slices goes in `tutti-dsp` (or, if it only reads audio and
-  returns a measurement, `tutti-measure`); a node file holds only
-  the `Node` adapter.** Where an algorithm needs a `Param<U>` read, an atomic or
-  a non-finite guard (`LastGood`), the node reads and guards it and hands the
-  algorithm plain values (the compressor's `Detector::frame` takes the level, the threshold and
-  the makeup).
-  A loop that indexes the graph's `Inputs`/`Outputs`, or reads a `Param` cell,
-  stays in the node.
-- `tutti-curve` depends on `tutti-types` alone (no `libm`: the laws evaluate with
-  `std`, so their bits are what the graph's `Law` rendered before the move), keeps
-  every module private (`tutti_curve::Law`; CI runs the per-module path gate on it),
-  is `#![forbid(unsafe_code)]`, `publish = false`, and has no features (no `bevy`: a
-  `Law` is a plain `Copy` value; no `serde`: nothing in tutti persists a curve, and a
-  consumer that does converts at its own seam). **The curve laws are one set here:**
-  the graph's param segments and ramps, modulation's `Amount.curve` and `shape()`, and
-  the automation lanes and recorder all use `Law`. A law nothing in tutti uses is not
-  added (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Circular` and cubic `Bezier`
-  were dropped). `tutti-polysynth`'s portamento takes a `Law` (`PortamentoCurve` is gone),
-  and the graph's crossfade is `Law::Smootherstep`.
-- `tutti-graph` depends on no tutti crate but `tutti-types`, `tutti-rt`, `tutti-ump` and `tutti-curve` (its outside
-  deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
-  module private but `contract`, the sample-accuracy suite's harness behind the
-  off-by-default `contract` feature (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
-  the per-module path gate on it) and is `#![forbid(unsafe_code)]`. `Reference`, the naive
-  interpreter the differential suites check the executor against, is behind the
-  off-by-default `testing` feature; the crate's own tests turn both on through a self
-  dev-dependency.
-- `tutti-session` keeps every module private too (`tutti_session::Graph`;
-  CI runs the per-module path gate on it), has no `bevy` feature and
-  re-exports no crate whole (`cargo xtask check-session`).
-- `tutti-plugin-db` depends on `tutti-plugin-types` alone among workspace
-  crates, keeps every module private (`tutti_plugin_db::Scanner`; CI runs
-  the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
-  `bevy` feature. It holds plugin discovery (the directory walk, the scanner,
-  the pedal, and the file table `PluginDb` with its versioned file) and never
-  loads a plugin: the probe is a parameter, and `tutti-plugin` supplies the
-  out-of-process one. The table has one owning thread; a scan works on a
-  snapshot and sends `Delta`s, and `PluginDb::apply` is the only code that
-  changes a row. Consumers
-  name its types from it, not through `tutti-plugin`.
-- `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
-  `tutti-plugin-types` and `tutti-plugin-ipc-ffi` alone among workspace crates (no `tutti-graph`: the
-  `Batcher` takes the plain values it reads from a `Prepare`; `Ipc` is a
-  `tutti_plugin_types::Loaded`, one for every format by path until AU has its own),
-  keeps every module private but `state_chunk` (the namespace both ends chunk
-  a state with; CI runs the per-module path gate on the rest) and has no
-  `bevy` feature. **The served control is thread-agnostic:** `Ipc`'s and
-  `IpcController`'s `Control` methods take a `MainThread` and ignore it, and
-  nothing in `-ipc` hops to the main thread; a rate, block and quantum are
-  taken through `Processor::retune`, a reopen with `Ipc::reopen_restoring`
-  (or `IpcOrigin::reopen`), an activation with no token with
-  `Ipc::activate_anywhere`, and a fork's watch (`Ipc::watch`: its retune
-  settles the server and records the plan) with `OfflineWait`.
-  It is `#![forbid(unsafe_code)]`: the process edge's `unsafe` (the slab's
-  mapping and header, the Windows pipe peek, the server's watchdog calls) is
-  `tutti-plugin-ipc-ffi`'s, which depends on no workspace crate and hands out
-  only safe calls (a mapping is made with its one `MappingWriter`, so its
-  copies cannot race in this process). It knows no format:
-  the editor-only instance a `PluginBridge` opens is loaded by the host's
-  `EditorLoader`, and no `tutti-*-host` depends on it
-  (`cargo xtask check-layout`). Its test-only knobs (`set_rate_timeout`,
-  `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
-  dev-dependency turns on.
-- `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
-  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` and
-  `tutti-plugin-ipc-ffi` (the descriptor poll of `service_now`)
-  alone among workspace crates (`cargo xtask check-layout`): no `tutti-plugin-ipc`,
-  no format host as a normal dependency, and not `tutti-plugin`. It keeps every
-  module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
-  gate on it), is `publish = false`, has no `bevy` feature and is
-  `#![forbid(unsafe_code)]`. What it
-  exports for the served node in `tutti-plugin` (`ParamDelivery`,
-  `TransportSource`, `TransportWalk`, ...) says who it is for. Its in-process
-  tests load the reference VST2 plugin through a dev-dependency on
-  `tutti-vst2-host`, so they run in the workspace with no feature. Consumers
-  name its items from it, not through `tutti-plugin`.
-- `tutti-midi-file` is OS-free and keeps every module private
-  (`tutti_midi_file::MidiFile`; the per-module path gate is not in CI because the
-  parked `bevy-tutti` still names `tutti_midi_file::smf::`). It is **one file model for
-  both containers** (doc 017, "Files"): a `MidiFile` of `Track`s of `(Tick, FileEvent)`
-  with integer ticks, read losslessly (SysEx, `Escape` and meta kept, a Clip File's
-  unknown packet as its words) and written back from the model. Its `TempoMap`
-  (`tutti-tempo`) is derived from the tracks' Set Tempo events, never set apart from
-  them, and `seconds_at` is its. The Clip File reader and `MidiFile::clip` hold M2-116's
-  "shall"s on the header (the DCS before the DCTPQ and the Set Time Signature at 0, none
-  before a Set Profile On), refuse Property Exchange, and keep the header's duration
-  (`Track::header_end`). Format 2 keeps its sequences apart (`events()` is
-  `None`, `tempo_map_of(track)`); SMPTE division is refused
-  (`Error::MidiUnsupportedTiming`); a cut-off file is `Error::Truncated`. The file layer
-  does not translate (an SMF message is `Midi1` on group 0, a velocity-0 Note On stays
-  one). The Clip File codec under it (`clip_file.rs`) is private; its structure rules
-  (M2-116 sections 6 to 7.3: Set Profile On then the DCTPQ once, a configuration header
-  kept as `Track::header` with at most one Set Tempo and one Set Time Signature placed as
-  the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. The SMF reader is our own (doc 017 stage 6b): `winnow` combinators for the
-  framing (chunks, variable-length quantities, meta and sysex lengths) with running status threaded as a
-  value, in `src/smf/read.rs`; `tutti-ump` decodes a channel message (`Voice1::data_len`,
-  `parse_exact`); the writer (`src/smf/write.rs`) is a fold of pure functions. The Clip File reader
-  (`src/clip_file/read.rs`, doc 017 L1b) is a `winnow` grammar over the packets `split_stream` and `Ump::decode`
-  made, each M2-116 placement rule one rule of it. No winnow type is in a
-  public signature, field or error, and no file but those two `read.rs` names `winnow`
-  (`cargo xtask check-layout` holds it per crate, like symphonia in `tutti-codec`). A test builds files from
-  `tests/support`'s encoder written from the spec, not from the crate's own writer.
-  `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
-- `tutti-midi-hardware`'s `MidiSession::open(inlets)` owns its `HardwareMidiInputs`
-  (`ports()` reads it); `connect_input`, `disconnect_input` and `connect_output` take a
-  `DeviceQuery` (`From<&DeviceId>`, `From<&str>`: a name is a case-insensitive substring, the
-  lowest id wins), `output() -> Option<OutputInfo>` reads the open output, a name that matches
-  nothing is `Error::NoDeviceNamed { name, searched }`, and `Error::{MidiPort, MidiDevice}`
-  keep the error under them as `source` (`Error::{port, port_from, device, device_from}`).
-  `Resolved::bind(BindPolicy)` takes a saved device unasked and `Resolved::into_candidates`
-  lists what an app asks about.
-- `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
-  per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
-  types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.
-- `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
-  sample headers, sample data, raw generators) and holds nothing that plays.
-  Its workspace dependencies are `tutti-ump` and `tutti-types` (the units its
-  accessors return: `Samples`, `SampleRate`, `Cents`) and no others; `serde` is
-  an optional feature, on `Bank` only. It keeps every module private
-  (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
-  `#![forbid(unsafe_code)]`. It has one error type, `tutti_sf2::Error`, with a
-  `Result` alias (a font is read by `SoundFont::open(path)` or `SoundFont::from_reader(impl Read)`),
-  and no public four-character-code type. `tutti-soundfont`
-  does not re-export `SoundFont`: its one path is `tutti_sf2::SoundFont` (the
-  umbrella `tutti` offers it as `tutti::sf2`). `tutti-soundfont` is the player over it: the
-  note logic is `tutti-voicing`'s (`Voicing::step` and its `Rules`, with a
-  `Patch` that starts one voice for each matching preset zone and instrument
-  zone), and the crate keeps what renders a voice (the oscillator, the
-  filter's SF2 cutoff and Q mapping (the biquad itself is `tutti-dsp`'s,
-  `SvfModel::biquad` run in `DirectForm1`; the crate depends on `tutti-dsp`), envelopes, LFOs, the generator summing of SF2 section 9.4 and the unit
-  conversions of 9.3). That voice render derives from Nobuaki Tanaka's
-  rustysynth (the former `tutti-rustysynth`, folded in): every file derived from
-  it carries the MIT notice in its header and `LICENSE-RUSTYSYNTH.txt` is the
-  licence text. `tutti-sf2` keeps the original author's MIT license and
-  copyright (`LICENSE.txt`) likewise.
-- (While `bevy-tutti` is parked a Bevy app has no maintained adapter.) A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
-  `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
-  holds only code that names two or more engine crates, or the order they
-  run in, has no `bevy` feature (`cargo xtask check-session`) and
-  re-exports no crate whole. `bevy-tutti` reaches the engine's composition
-  only through it, reads no clock but as a session phase's argument and holds
-  no `usize`/`Duration` limit const (`scripts/parked/check-bevy-tutti.sh`, whose short
-  exception list names the lane that removes each), and does not re-export it.
-
-## Unit types (MANDATORY)
-
-Use the `tutti_types::value::units` newtype, never a bare float, for any
-quantity one covers: fields, signatures, `Param<U>` and return types.
-
-- **Operators are opt-in per type, and every omission is deliberate.** Read
-  the omission ledgers in `value/units/`'s tests (one per family) before
-  adding one; a unit's `unit!` ability list is its whole algebra. If it is
-  listed there, write a named method instead.
-- **An omission must ship with its replacement in the same change.**
-- **A bare number becomes a unit with `new` and leaves with `get`** (`Unit::from_raw`
-  and `to_raw` in generic code). The `unit!` macro emits no `From<raw>` and no
-  `From<Unit> for raw`, so `.into()` never crosses between a unit and its raw: the
-  quantity is named where the number is written. A signature takes the unit type
-  (or `impl Into<Unit>` for a conversion between units, such as `Amplitude` to `Db`),
-  never `impl Into<f32>`.
-- **Convert with the named converters** (`Db::to_amplitude`,
-  `Seconds::to_samples{,_floor,_ceil}`, `Cents::to_semitones`), never by hand.
-- **Measurements are not controls.** `Confidence`, `Correlation` and `Pan`
-  are readings. Do not swap them for `Mix` or `Depth`.
-- **Where the types stop:** C ABI, IPC and WIT boundaries, and precision the
-  unit cannot carry. Say why in a comment. `Seconds` is `f64` (short or long);
-  a DSP kernel that runs in `f32` narrows once at its edge (`Seconds::to_f32`),
-  and a modulation lane's value is an `f32` (`ParamCell`). A frame count or a
-  coefficient is computed from the exact `Seconds`, never from a value rounded
-  through `f32` first.
-- **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
-  names for the same behaviour is not a type.
-- **Naming:** a pure algorithm or model (`tutti-dsp`, `tutti-curve`, `tutti-measure`) uses
-  the theory name, a spec keeps its own, a *frame* is one value per channel at an instant
-  (an analysis block is a *window*, a step a *hop*), a *sample* is one value (a recording
-  is a *wave*), and a user-facing node API keeps the control word (attack, mix, tail) and
-  names the theory term once in its doc. Glossary: doc 024 section 2.6.
-
-## Range-checked values
-
-A type that refuses some raws of its representation is hand-written to one
-shape (`MidiChannel` is the reference). No macro.
-
-| Item | Rule |
-|---|---|
-| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds. `const fn` when the check is const. |
-| `of(raw) -> Self` | `const fn` that panics, for a literal or a constant. Omit it when named constants cover the literals. |
-| `get(self) -> Raw`, `From<Self> for Raw` | Always. |
-| `TryFrom<Raw>` | Agrees with `new`; its error carries the refused raw. |
-| serde | `serde(try_from = "Raw", into = "Raw")` or a hand impl through `TryFrom`; never a plain derive on the private field. |
-| `clamped(raw)` / `nearest(raw)` | Saturation, named, only where a hot path or a lenient import needs it. A float maps NaN to a documented value. |
-| `masked(raw)` | Only for bits the wire has just framed. |
-| `Default` | Only if the default is in range. |
-
-- No public field, no infallible `From<Raw>`, no `unsafe` constructor.
-- A type whose range is the whole raw (`ChannelLayout`, the RPN word of
-  `PitchBendSensitivity`) has no `new -> Option`, no `TryFrom` and no refusing
-  serde; its plain derived serde is on the lint's exception list by name.
-- A type with two raws (whole units and wire bits) says in its docs which raw
-  `new`, `of` and serde each take (`PitchBendSensitivity`: `new` and `of` take
-  whole semitones, serde the bits) and gives the other a named constructor
-  (`from_rpn_bits`).
-- `BeatsPerBar` and `NoteValue` keep the shape: `new` refuses and serde
-  refuses. Only `BeatsPerBar::clamped` saturates (the beat index in `bar_at`);
-  `NoteValue` has no saturating constructor until a lenient importer needs one.
-- **A new type is checked by `tutti_fixtures::check_range_contract`** in a
-  test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
-  `cargo xtask check-range-types` fails a private tuple field with a derived
-  `Deserialize` that is not `serde(try_from)` (`transparent` and `from` are
-  flagged too). Its exception list names what removes each entry.
-- `tutti-ump` does not dev-depend on `tutti-fixtures` (`cargo xtask check-layout`: it
-  depends on no workspace crate, of any kind), so its types keep their own
-  tests.
-
-## Publishing to the audio thread (MANDATORY)
-
-Non-scalar state handed to the audio thread goes through
-`tutti_rt::{ArcLend, Reader, Loan}` (the `arc-lend` crate, re-exported).
-Scalars use `Param<U>`.
-
-- **The audio thread never holds an owning handle to published state, and
-  never frees it.** A reading thread lends through a `Reader`;
-  `Reader::lend` returns a `Loan`, a `!Send` borrow, and is wait-free.
-  `publish()` is control-thread only and frees retired values there. This is
-  structural (one slot per registered reader, and a retirement list only the
-  publisher touches), and the loom model `arc-lend/tests/loom.rs` checks it.
-- **Register on the control side, where the reader is built**
-  (`ArcLend::reader`, from an `Arc` of the cell: it takes the publisher's
-  lock and may allocate), and store the `Reader` in the node or structure
-  that reads. A fork builds over a new cell and registers there.
-  `Reader::clone` registers a new reader on the same cell.
-- Lend once per block, never per sample. Never park a `Loan` across blocks
-  (it pins the value it holds). One `Reader` per nesting level: `lend` takes
-  `&mut self`.
-- **The design's cost is memory, not waiting:** a publish never waits on a
-  reader, and a value a block holds when it is replaced (or one a reader
-  preempted mid-lend might load) stays retired until the next scan after
-  the block. **Every cell's publisher calls `reclaim()` on a control-side
-  tick it already has**, so a cell that goes quiet still gets that scan:
-  the session's `Phase::Reclaim` (which `bevy-tutti`'s `reclaim_graph`
-  runs, and nothing more), the streamer's cycle (its rings' maps). The
-  session's sweep is decided in `tutti-session` alone: a node whose
-  controls publish (they implement `tutti_rt::Reclaim`) returns a `Reclaimer::of(&controls)` from `SessionNode::reclaimer`,
-  which the graph keeps by node from `add`/`crossfade` until the node goes;
-  the graph sweeps its hosted plugins' meters and closes the level meters
-  whose readers were dropped (`Graph::reap_meters`); the session sweeps its own
-  cells (project meter, modulation lanes, hardware ports). A
-  new cell joins its owner's sweep in the same change. `reclaim()` is a
-  lock and a length check when nothing is retired; it is control-thread
-  only, like `publish`.
-- Never `publish` from the audio thread.
-- Do not try to prove the race with a no-alloc test. The loom model and miri
-  cover it; a single-threaded gate can only pin the reader's code path.
-- Nullable hot-swap slots go through `ArcLend` too, as
-  `ArcLend<Option<Arc<_>>>` (the plugin nodes' `PluginMeter`). Nothing the
-  audio thread reads is an `ArcSwap`: a store settles a held guard's debt
-  into a strong count, and the guard's drop can then free on the audio thread.
-  Control-thread-only cells stay plain. (The sampler's `SharedReader` is a
-  plain `Arc` of a position-indexed ring of atomics; nothing swaps it.)
-
-## Buffers: edges vs graph nodes
-
-- **`Source` / `Sink`** (`tutti-types::io`) are engine **edges** (`MicIn`,
-  `FileIn`, a `TapReader`; `FileOut`): a stream on a clock the graph does not
-  keep, not the disk streamer's positional ring. They take flat
-  interleaved `&[f32]` with a runtime `ChannelLayout`. **Every count on this
-  boundary is in frames**, typed as `Samples` (the frame count). Cross to a
-  slice length only with `Samples::interleaved_len` /
-  `Samples::from_interleaved_len`.
-- **`tutti_graph::Node::process`** is for anything that is a node in the
-  graph (including sampler voices): planar `f32` through `Io`, any block
-  length up to `Prepare::max_block`, the transport from `Env`.
-- **A channel fold goes through `tutti_types::Fold`**, built on the control side
-  and applied without allocating. A width is not a placement: an edge reports a
-  topology (a channel with no speaker is `Speaker::Unassigned`), and an edge that
-  knows only a width (a device, an export file, the graph root) builds
-  `Fold::widths` / `Fold::to_width`: the engine's order where the width has one
-  (`ChannelTopology::assumed`: mono, stereo, quad at 4, 5.1, 7.1, 7.1.4), channels
-  by index (`Fold::by_index`, widening only: a narrowing there is
-  `FoldError::Unplaced`, never a truncation; `Fold::select` truncates on purpose)
-  where it has none. The width-only `fold_frame` is
-  gone; do not add another. `Engine::new` builds the folds from every root width to every device
-  width up to 16 (`OutputFolds`, published through an `ArcLend` and lent once per
-  call) and `Engine::support_output` adds a wider one; a buffer of an unsupported
-  width is a silent counted block, and `OutputBlock::new` makes the call. Export folds the graph onto the file in `GraphSource::new`.
-  The sampler builds a `Place` from `Wave::topology()` when it builds a source
-  (`MemorySource::with_channels`, `memory_voice`), and a wave with a channel
-  no speaker names (`FoldError::Unnamed`) is refused there as a `PlaceError`;
-  the streaming tier reads a file at its own width and order. The input edges
-  report a topology: a decoded file (`Wave::topology`, `FileIn::topology`,
-  `WaveMetadata::topology`), a capture device (its inputs are `Unassigned`;
-  `MicConfig::inputs` chooses them with `Fold::select`). The quad spelling is
-  WAVE's (`FL FR BL BR`); `Fold` treats the side-surround spelling the plugin
-  hosts decode as the same four feeds.
-- **Width is runtime.** Do not reintroduce a const-generic channel count. The
-  two runtime width checks that replaced it (`pump`'s `debug_assert` and
-  `Recorder::start`'s error, in `tutti-session`) are mandatory.
-- **Every `Source::pull` must answer `Starved` (live "not yet") or `Ended`
-  (finite "never again") correctly**, and `Failed` only after the frames
-  before it (a live source reads its fault flag before its ring:
-  `tutti_rt::FaultLatch`). `Pull` is `#[must_use]`; getting it wrong ends a
-  recording with no error.
-- **A new trait must state its boundary in one sentence without "and".**
-
-## Wiring is declared, not called
-
-`bevy-tutti` (parked) runs on `tutti-graph` only (doc 013, "Flip the adapter").
-
-- `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
-  `MasterSources` resource declare what feeds each port. The rebuild builds a
-  `Topology` value from them (`LiveGraph` holds the last one), writes the
-  declared ports that differ into the session graph's spec, and the frame's
-  commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
-  the compiler's, and nothing is spliced into the graph.
-- **The session graph has typed keys and one wiring vocabulary** (doc 013, "The
-  session graph's surface"). `Graph::add` (the one way a node enters) returns a `Key<N>` (a `Copy`
-  `NodeKey` with its node type; every call that takes a node takes
-  `impl Into<NodeKey>`, `Key::erase` gives the plain key). Ports come from keys:
-  `key.out(i)` is an `OutPort`, `key.input(i)` an `InPort`; the root is `Root`
-  (`Root::output(i)` a sink channel, `Root::input(i)` a global input), a value so
-  naming a root channel borrows nothing. `Graph::connect(from, to)` takes two ends
-  of one kind of wire: an `OutPort` into an `InPort` (one channel), a key into a
-  key or into `Root` (a main bus, channel by channel: a width mismatch is
-  `ConnectError::Width`, never a truncation) or a `BusSource` (`key.bus_out(i)`)
-  into a `BusRef` (`key.bus_in(i)`) or `Root` (a bus edge: a width change is one,
-  and into the root it folds to the declared topology, `BusError::RootUndeclared`
-  otherwise). `Graph::chain` does a main bus down a list. All refuse with
-  `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
-- **One failure rule** (doc 013, "The session graph's surface"): a `Graph` or
-  `Session` call that names a key or port that does not exist fails at the call with
-  a named error (`ConnectError`, `NoSuchNode`, `MissingSource`, `RemoveError`), never
-  later at the commit and never as a default (a count of 0, `Mix::WET`); a port that
-  goes missing after a successful call still reads silence. A feed (`set_feed`) and a
-  modulation declaration are declarations, resolved when their nodes exist, and are
-  the exception. What only the session drives (`take_audio_side`, `AudioSide`, the
-  sent plan, `Graph::testing()`) is behind tutti-session's off-by-default `testing`
-  feature, which its own tests turn on through a dev-dependency on itself.
-- **Removal is a `#[must_use]` `Result` that names what was not there** (doc 030
-  step 2d, doc 013 "As built (removal)"): `Graph::remove` / `Session::remove`
-  (`RemoveError`, declicked), `Taps::close` / `close_event` and `Meters::close`
-  (`CloseError`), `close_heard_tap` (`HeardTapError::NotOpen`), the session's
-  modulation `remove_source` / `remove_route` and `Midi::unroute`; never a `bool`.
-  A refusal changes nothing. **`Graph::add` is the one way a node enters** and
-  takes a `SessionNode`, so a node with params cannot be added unaddressed; the
-  unaddressed insert is private.
-- **Event ports are keys' too, and params are typed** (doc 030 step 2c).
-  `key.events_out()` / `key.events_in()` are the main event ports (index 0;
-  **event input 0 is the main event input, where the chase delivers**),
-  `events_out_at(i)` / `events_in_at(i)` take an index. `connect`, `disconnect`,
-  `sources`, `set_sources` and `disconnect_all` cover the `Event` wire (never
-  faded); `set_event_sources`, `event_sources` and `EventSource` are gone, and
-  `taps().open_event(key.events_out(), ..)` takes the port. A node's params are
-  methods of its key (`lp.cutoff()`, `mb.threshold_at(1)`), a `TypedParamRef<U>`
-  that converts into `ParamRef`, generated from the node's own declaration of
-  its params (`tutti_graph::declare_params!` next to its `Param<U>` cells, doc 030
-  N1: the unit is checked against the cell's type, and the same table gives its
-  `ParamSet` and shape's ports; a `FamilyNode` family declares them in its
-  `ControlSet`, `control_set!`; a host's node uses the graph's macro, and
-  `param_session_node!` only lists the engine's nodes as `SessionNode`s):
-  `Graph::set_param(lp.cutoff(),
-  Hz(..))` is `#[must_use]` and returns `ParamError`, `Mods::range(target, a..b)`
-  takes a range of the unit (`RangeError` on min > max; `range_raw` for a plugin
-  param). A host's `ParamNode` is inserted as `Params(node)`; `set_node_params`
-  is crate-private. `ForkByClone(param node)` still compiles (Rust cannot refuse
-  it by type): use `Params`.
-- **The session's own modulation** (doc 030 T4, T5, T9; the feature `modulation`):
-  `Session::mods()` reads (`&self`, a `ModsView`: `routes()`, `routes_to(target)`,
-  `sources()`) and `Session::mods_mut()` edits (`Mods`, which marks the declarations
-  edited). A source and a route are named by `ModSourceId` and `ModRouteId`,
-  minted by `Mods` and never built (`tutti_modulation::{SourceKey, RouteKey}` are
-  the compiler's and a host's own minting, for `ModInput`). A route is
-  `Mods::route(RouteSpec::new(source, target, depth).polarity(..).curve(..))` and is
-  edited in place by `route_of(id)?`'s named setters. `Mods::record` is a
-  `#[must_use]` `Result`. **Why nothing modulates has one answer,
-  `ModState::problems()`**: a `Problem` each for a refusal, an unresolved target and
-  an unfed follower, whose `Display` names the node and the param; the event is
-  the same type (`SessionEvent::Modulation(Problem)`). A route's `Depth` is
-  range-checked (`Depth::new -> Option`, `of` for a literal, `clamped` for a lane's
-  value), so the compiler has no refusal for it.
-- A headless `Session` declares through its own spec, keyed by
-  `NodeKey`, and `Session::update()` commits iff the graph was edited.
-- **The session graph declicks its wiring** (doc 030 §4, doc 013 "As built
-  (declicked wiring)"): `connect` fades the new edge in over `EDGE_DECLICK`
-  (= `MODE_DECLICK`, 256 frames) unless `.hard()`; `disconnect`, `disconnect_all`,
-  `set_sources` removals and `remove` fade out, and the edge leaves the spec
-  when its lane reports the fade over (`Editor::settle_fades`, from
-  `Phase::Collect`); `disconnect_hard` and `set_sources_hard` cut.
-  `tutti_graph::Editor` fades nothing unless a host sets `EdgeFade`, so the
-  engine's tests and the differential suite keep hard steps; event edges are
-  never faded. A test that renders a session wire for some other reason wires
-  `.hard()`.
-- **The root's channels are declared too** (`MasterTopology`, a pure
-  translation into `Session::declare_root_topology` /
-  `SessionBuilder::root_topology`): `Unassigned` for independent buses, a named
-  topology for speaker feeds, nothing for the engine's `assumed` order. A
-  declaration sets the root's width (no device floor) and the width cannot
-  leave it: `Graph::widen_outputs` refuses to widen a declared root, and a
-  declaration the device or file cannot place is `FoldError`, never a silent
-  drop (doc 013, "Channel placement"). A declared root is also a bus sink:
-  `connect(key.bus_out(i), Root)` folds a node's output bus to it (an undeclared
-  root refuses, `BusError::RootUndeclared`).
-- A declaration may be partial: a port a short `PortSources` leaves out, and
-  every output channel while `MasterSources` is empty, belong to whoever
-  wires them through `AudioGraphRes`. The rebuild's debug check
-  (`topology::disagreements`) compares only declared ports; never compare a
-  whole-graph fold (a latency plan) against the value.
-- A declaration names an *entity*, the graph keys a `NodeKey`, which `bevy-tutti`'s `AudioNode` component holds; re-binding
-  an entity to a new node re-derives its wires (`Changed<AudioNode>`).
-- Keys are sink ports and the value is the set of sources feeding the port
-  (`Topology::edges`: `BTreeMap<InPort, Vec<Edge>>`; `outputs`: one set per
-  global output channel). Several sources into one audio input or output
-  channel sum, in source order (`NodeKey`, then port), bit-identically on every
-  executor (`Op::Sum`); one source is aliased and none is silence. Summing is
-  the graph's job: never add a node to sum (doc 013 "Audio fan-in sums"). The call that wires
-  **adds** a source (`GraphBuilder::connect`, `Graph::connect`); `Graph::set_sources(to, from)` replaces
-  the set, and `Graph::disconnect(from, to)` / `disconnect_all(to)` take one or all
-  out. Silence is the empty set: there is no silence value to store, and the topology
-  never holds a `Source::Zero`. A source's weight is an edge's, not a node's (doc 013,
-  "Edge gain"): `connect(..)?.gain(amp)` adds a source with its weight, an `Edge`
-  (what `Connection::edges` hands back, and what a modulation target names) carries
-  `set_gain` / `gain` / `clear_gain`, and a routed modulation moves around
-  that same gain (its cell is the lane's knob: one writer).
-- `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
-  The session's phases run in `SessionPhaseSystems(Phase)`, chained from
-  `PHASES` (`Collect` before `Spawn`, `Commit` in `Commit`); schedule a
-  system that runs a phase in its set. Node removal is an
-  `On<Remove, AudioNode>` observer.
-- Every spawn path takes a `SessionNode`: `spawn_audio_node`,
-  `insert_audio_node`, `crossfade_audio_node` (and `Graph::add` /
-  `replace`, reached through `AudioGraphRes::graph`). A host's plain node goes in as
-  `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
-  registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
-- Params are `AudioParam<U, const P: u16>`, registered with
-  `App::add_audio_param::<U, P>()`. `P` is a packed `UnitAddr` (a
-  `UnitParam` kind in the low byte, an index among the node's params of
-  that kind in the high byte; index 0 is the plain `UnitParam as u16`, so
-  `{ UnitParam::Cutoff as u16 }` still names a node's only cutoff). They reach
-  a node through its `ParamSet` (`SessionNode::params`): a node without the
-  param takes nothing. A node with several params of a kind adds each with
-  `ParamSetBuilder::param` and declares each modulatable with
-  `Shape::with_param_addrs`; a route names one with `ParamRef::unit_at`.
-  Modulation is declared too (`Mods`, `ModRoute`, `ModRange` naming a
-  `ParamRef`): each modulated param gets a control lane on its port, whose
-  knob is the node's own cell (a plugin parameter's lane, its own knob on
-  the plugin's event input). One writer per knob: `write_param` for a
-  native one, the plugin's GUI or `AudioGraphRes::modulation().set_knob`
-  for a plugin's.
-  `ModulationSystems::Apply` runs between `GraphReconcileSystems::Spawn` and
-  `Params`; `ModulationSystems::AfterCommit` runs after `Commit`.
-
-## Testing policy
-
-- **One integration binary per area.** Each `tests/*.rs` is its own binary and
-  link step, so a crate's public-API tests are `tests/<area>/main.rs` with one
-  `mod` per file; a file stays its own binary only when it must (a
-  `#[global_allocator]`, `harness = false`, `cfg(loom)`, the graph's differential
-  suite). A feature-gated file is a `#[cfg(feature = ..)] mod` line, not a
-  `required-features` entry. A `support` module that another binary or an
-  example includes by path stays in `tests/support` and the area reaches it
-  with `#[path]`.
-- **Never simplify, skip or modify tests to make them pass.** Fix the bug.
-- **Report failing tests and their root causes.** Never silently remove one.
-- **A test must be able to fail.** It asserts a property from the spec, an
-  analytic figure or an invariant, and its name and doc state that property.
-  When you add one, check once, locally, that breaking the code makes it fail,
-  and say how in the PR. Do not record the mutation in the source. A test that
-  cannot fail is deleted: one that is always true, that asserts only that
-  nothing panicked, or that compares a value with the function that computed it.
-  If a property cannot be covered here, say so in a comment rather than
-  asserting something that always passes.
-- **No migration tests.** A move does not get an old-against-new equivalence
-  test or a digest pinning the old render; such a test goes with the old path.
-- **No test-only seams for mutations.** A fault-injection hook stays only if it
-  is the one way to produce a behaviour the product must handle.
-
-## The plugin contract
-
-`testing/tutti-plugin-contract` runs the same cases against each format's host
-through `Loaded`, `Processor`, `Controller` and `Control`, with the one test
-plugin `testing/tutti-shared-plugin` (a format-free `core` and a shell per
-format: CLAP, VST2 and VST3, each in `tutti-shared-plugin/src/<format>.rs`).
-A format is a `Format` impl and `contract!(Fmt, gaps = N)`. The C++ plugin
-`testing/tutti-shared-plugin-vst3-cpp` is the same spec on the Steinberg SDK
-classes, a separate component and controller, and runs the same cases as the
-`Vst3Cpp` format: the Rust VST3 shell shares the `vst3` crate with the host, so
-only the C++ one checks the bindings. `ParamTiming` and `Gap` are a format's
-only ways out of a case.
-
-- **The expected figures live in the contract's `spec`**, never imported from
-  the plugin: a case that asked the plugin could not fail when it is wrong.
-- **The core records what the host sent before it orders or repairs
-  anything.** A core that repairs first hides the host bug it should show.
-- **The plugin is configured and read through its state** (a mode word in the
-  blob, the transcript behind it): no environment variable, symbol or process
-  global, so the same calls work through the plugin-server.
-- **A case a format cannot pass is a `Gap { why, fails_with }`**: the case
-  runs and must fail with that text, so a stale gap fails. `gaps = N` in the
-  test file is the ratchet; raising it is a reviewed edit. Never `#[ignore]`.
-- **A new case must be able to fail**: check once that breaking the property
-  in the host or the plugin fails it, and say how in the PR, not on the case.
-- A plugin that cannot share the core (the C++ VST3 plugin, an in-process AU
-  unit) follows the spec in `core`'s docs (and `core.hpp` mirrors it) and runs
-  the same cases. A change to the spec changes both cores.
-- The VST2 shell uses `testing/tutti-vst2-author` (the plugin-authoring half of the
-  old `vst-tutti`, re-exporting `tutti-vst2-ffi`'s ABI modules) as a dependency.
-
-## Check the constraint before designing around it
-
-Before working around an obstacle, name it in one sentence and verify it:
-read the `Cargo.toml`, grep for the type, run the probe.
-
-- An existing dependency edge is not evidence it points the right way.
-- An indirection whose only job is to avoid a change is the finding, not the
-  design. Make the change.
-- When the constraint is real, derive at the point of use rather than mirror
-  and reconcile.
-
-## Rules that came from bugs
-
-- **A node that changes width declares its buses.** The graph never guesses a
-  dry path (a bypass, a mix, a lane on the mix): main buses of different widths
-  that name no placement have no pass and are refused (`PassError`,
-  `Editor::check_pass`; doc 013 "As built (B3)"). By index, the reverbs' mono dry
-  was heard on the left alone. A node reads its ports through the value it
-  declares, so the two cannot drift: `Io::input(c)` and `output(c)` cover the
-  main bus only, and every other bus is read through the handle its shape
-  issued (`Shape::input_bus`, `spare_in`, `Io::bus_in`; doc 013 "As built
-  (T2)"): a key is a `Sidechain` bus after the main one, and a crossover's
-  bands are one repeated main bus (`Bus::banded`) whose band 0 is the main
-  output, as its design's `Channels` says (doc 013 "As built (T3)").
-- **One bundle walk:** `tutti_plugin_types::bundle` is the only code that
-  knows the `Contents/<arch>/` layout.
-  - `native_module_in_bundle` is for hosts.
-  - `any_module_in_bundle` is for corpus scans.
-  - Never write another copy.
-- **VST3 UIDs:** build them with `inline_uid(l1, l2, l3, l4)`, never a
-  hardcoded `[u8; 16]`.
-- **Neither umbrella holds engine logic.** A piece with one owner goes to
-  that crate; a piece composing several goes to `tutti-session`.
-- **The engine must not reference `dawai`.** Every workspace crate is clear of
-  it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
-  the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
-  to a new app-side path.
-- **Dead crate names:** `Session::{add_plugin, add_plugin_blocking}` and `Graph::insert_plugin` returning a `NodeKey` → `Key<PluginNode>` (the marker of a plugin's key; `erase()` and `Into<NodeKey>` as for any key, and with `modulation` `key.param(ParamId)` is `Param::target()`'s `ParamRef`; doc 029 "the plugin's key"), `Graph::host_plugin -> bool` → `Result<Key<PluginNode>, NoSuchNode>`, A plugin's cause of death as a `String` (doc 029, "the typed cause") → `tutti_plugin_types::PluginFailure` (`Health::crash_cause -> Option<PluginFailure>`, `PluginStatus::Dead { cause: PluginFailure }` and `PluginStatus::cause() -> Option<&PluginFailure>`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed`, `PluginChange::{Died, Reloading}`, `PluginLiveness::{Recovering, Dead}`, `PluginRenderFault::Crashed`, `OfflineWait::{death, latch_crash}`, `mark_crashed(PluginFailure)`; `RecoveryEvent::Died { cause }`, `RecoveryEvent::LoadFailed { reason: String }` → `LoadFailed { cause: RecoveryFailure }`, `GiveUp::last: String` → `ReloadCause` (`Died(PluginFailure)` or `Attempt(RecoveryFailure)`, which `PluginChange::Reloading` and `PluginLiveness::Recovering` carry too); the error behind a failure is its `source`, and `PluginFailure::from_stream` is the one place a stream's `BridgeError` is classified), `Health::terminate(&str)` and `PluginHandle::terminate(&str)` → `terminate(TerminationReason)` (`TerminationReason::Hung`; the cause reads `PluginFailure::Terminated`), `RecoveryAction::Terminate { cause: String }` → `Terminate { reason: TerminationReason }`, a failed attempt's `String` reason (the replacement's ports, an in-process open, a dropped job) → `tutti_session::RecoveryFailure::{ReloadFailed, ReplacementDied, ReplacementPorts, ReplacementRefused, ReplacementInProcess, ReloadDropped, ReloadPanicked, ReloadTimedOut}` (the session's own; `PluginFailure` holds only what a backend or the host latches), and `tutti_plugin_types::PortCounts` → `tutti_session::PortCounts`, `Reload::cause` (the session's private field) → deleted; "no cause latched" and "the backend reported a crash without a cause" → `PluginFailure::Unreported`, `tutti_plugin::catalog::Plugins` → `Catalog` (`Plugins::load` → `Catalog::open_db`, `rescan` / `spawn_rescan` / `poll_rescan` → `scan` / `spawn_scan` / `poll_scan`, `with_fresh_scan` → deleted: call `scan()`, `Plugins::open` → deleted: the catalog opens nothing, its refusal is `Catalog::check` and `Session::plugin_load(..).with_catalog(&catalog)` refuses a blacklisted plugin at load), `Plugin::opens_in_process(path)` → `Plugin::hosting_of(&PluginRef)` (the ref's `Hosting`: `Auto`, `InProcess`, `OutOfProcess`; doc 029 step 6b), `SessionEvent::{MidiOutDropped, MidiInputDropped, MidiDevice, MidiInputLost, MidiStream, MidiOutputLost, MidiWatchFailed}` → `SessionEvent::Midi(MidiEvent::{OutputDropped { total }, InputsDropped { total }, Added | Removed | Changed | InputLost | OutputLost { info } (`info.id` is the device), StreamSettled { device, stream }, WatchFailed})`, `tutti_session::Error::{NoEventInput, NoMidiInput, NotSessionMidi, TwoRouteDeclarers}` and `Error::Midi(tutti_midi_hardware::Error)` → `Error::Midi(MidiError)` (`MidiError::{Hardware, File, Send, NoSuchRoute, NoEventInput, NoMidiInput, NoHardware, NotSessionMidi, InputTaken, NoLiveInput, TwoRouteDeclarers(RouteDeclarer)}`, each cause its `source`; `Midi`'s calls return `Result<_, MidiError>`, and `?` converts into the session's `Error`; the umbrella's is `tutti::midi::Error`), `Midi::unroute -> Result<(), NoSuchMidiRoute>` → `Result<(), MidiError>` (`MidiError::NoSuchRoute`), `LiveInput`, `Midi::live_input` and `SharedKeys` → `Midi::input(target) -> MidiKeys` (handed out once, `MidiError::InputTaken`; `Midi::retarget` of a live input → `Midi::retarget_input(from, to)`, `MidiError::NoLiveInput`), `InstrumentHandle::{send, note_on, note_off, clock, losses}` and its `Clone` → `keys()` / `keys_mut()`, a `MidiKeys` (not `Clone`: the inlet's one producer), `remove_instrument(&handle)` and `GeneralMidi::remove(&self, ..)` → by value (a handle is spent by its removal), `tutti_session::SendError` → `tutti_graph::Refused` (`MidiError::Send`), `Session::add_instrument`'s `(handle, controls)` tuple → `AddedInstrument { handle, controls }`, which also wires the strip to the master (`add_instrument_unwired` does not), a bare `u16` note velocity (`Voice2::NoteOn`/`NoteOff`, `Voice2::note_on`/`note_off`, `Message::note_on2`/`note_off2`, `MidiKeys::note_on`, `narrow_velocity`) → `tutti_ump::NoteVelocity`, `Session::midi_io()` → `s.midi().{devices, connect_input, disconnect_input, connect_output, disconnect_output, reconnect_saved}` (the raw `MidiSession` is `Session::testing_midi_io`, behind `testing`), `EventInletWriter::push(at, Ump)` / `push_all` / `TimedMidiEvent::new(beat, Ump)` taking only an `Ump` → `impl Into<Ump>` (a decoded `Message` goes as it is), `DeviceInlets::close` and a hand-called slot close → `DeviceInput`'s drop, `MidiIngestControls::restart_slot` → deleted (`MidiIngestNode::following(&DeviceInlets)` restarts a slot by epoch), `DeviceInlets::take_changes() -> Vec` → a draining `Changes` iterator, `tutti_midi_hardware::PortId` and its `port_id()` → `tutti_midi_runtime::DeviceSlot` and `slot()`, `HardwareMidiInputs::drain_stream(id, closure)` → `drain_stream(id) -> StreamDrain`, `MidiSession::open(Arc<HardwareMidiInputs>)` and `open_over(backend, ports)` → `open(Arc<DeviceInlets>)` and `open_over(backend, inlets)`, `MidiSession::{connect_input_by_name, disconnect_input_by_name, connect_output_by_name}` → `connect_input`, `disconnect_input`, `connect_output` over a `DeviceQuery`, `MidiSession::{is_output_connected, output_device_name, output_device, output_config}` → `output() -> Option<OutputInfo>`, `InputProducerHandle::push -> bool` → `Pushed`, `MidiSession::poll -> Vec` → an iterator (of `(DeviceId, DeviceStream)`, then `Polled::{Stream(DeviceId, Box<DeviceStream>), Ci(DeviceId, CiChange)}`), `Error::NoDeviceNamed(String)`, `Error::MidiPort(String)` and `Error::MidiDevice(String)` → struct variants (`searched`; `what` and `source`), `DeviceEvents::try_iter -> impl Iterator` → `Pending` (and `for e in &events`), `MtcDecoder::feed(u8)` → `feed(&Ump)`, `MidiClockDecoder::{feed, tick}(.., u64 microseconds)` → an `Instant`, `MidiClockDecoder::beat_position() -> f64` → `Beat`, `SmpteFrameRate::from_u8` → `TryFrom<u8>` (`UnknownFrameRate`), `ClockMap::set_rate -> bool` → `set_rate` (infallible: a `SampleRate` is a rate; `InvalidRate` and `ClockMap::new -> Option` are gone), `ClockMaster::new(rate)` and `ClockNode::new()` (a zero-rate master, and `Default`) → `new(MidiGroup, SampleRate)`, `tutti_midi_runtime::outbound::MpeIngest` → `live` (inbound state; still exported at the crate root), `TimedMidiEvent`'s public fields, `From<(f64, Ump)>` and `From<(Beat, Ump)>` → private fields with `beat()`/`event()` and `TimedMidiEvent::new -> Option` (a non-finite beat is refused; `Midi::play_clip` takes `TimedMidiEvent`s), `MidiClipControls::{set_events, event_count}` → `set`, `len` (and `is_empty`), `EventInletWriter::push_at` and `push(At, ..)` → `push(impl Into<Stamp>, ..)` (`At::Beat` and `Refused::Beat` and `SendError::Beat` are unwritable), `InstrumentHandle::send_at` and `LiveInput::send_at` → `MidiKeys::push` with a `Moment`, `EventInletWriter::{lost, evicted, refused, late}` and `InletCounts::{lost, evicted, refused, late}` → `InletCounts::losses() -> Losses`, `MidiIngestControls::dropped_events` and `ClockMaster::dropped_events` → `losses()` (all `refused`), `HardwareMidiInputs::dropped_events` and `PortInfo::{dropped, late}` → `losses()` / `PortInfo::losses`, `InstrumentHandle::dropped` and `LiveInput::dropped` → `MidiKeys::losses()`, `MidiKeys::new(writer)` → `MidiKeys::new(writer, MidiGroup)`, `Reclaimer::new(closure)` → `Reclaimer::of(&controls)` over `tutti_rt::Reclaim` (the inherent `reclaim` of `MidiClipControls`, `HarmonyControls`, `MidiIngestControls` and `VoiceNodeHandle` is that trait's), `tutti_polysynth::{Error, Result}` and `tutti_session::Error::Synth` → deleted (`PolySynth::new` is infallible: `SynthConfig::polyphony` is a `NonZeroUsize`), `SynthConfig::{sample_rate, max_voices, mpe_enabled, mpe_pitch_bend_range}` → deleted (the rate is `Node::prepare`'s), `polyphony` and `mpe: MpeMode` (a zone's member range is the per-note range), `PolySynth::{volume_atomic, detune_atomic, spread_atomic}` and `UnisonEngine`'s → the synth's `ParamSet` (`ParamSet::cell`), `PolySynth::{mpe_enabled, set_mpe_enabled}` → `mpe` / `set_mpe(MpeMode)`, `set_volume(f32)`, `set_unison_stereo_spread(f32)`, `set_unison_voice_count(u8)` and `UnisonConfig::voice_count: u8` → `Amplitude`, `Spread` and `UnisonVoices` (1 to 16, refused not clamped), `tutti_sf2::SoundFont::new(&mut R)` → `SoundFont::from_reader(R)` / `SoundFont::open(path)`, `Settings::new(rate)`, `Settings::with_sample_rate` and `Settings::{MAX_POLYPHONY, DEFAULT_POLYPHONY}` → `Settings::new()` and `Polyphony::{MAX, DEFAULT}` (`Polyphony::new -> Option`), `SoundFontUnit::{with_preset, with_sample_rate}` → `select(channel, &Preset)` and `prepare`, `tutti_soundfont::Error::{Io, SampleRateOutOfRange, PolyphonyOutOfRange}` → deleted (`Error::UnplayablePreset` is `select`'s), `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `DeviceIdentity::manufacturer: [U7; 3]` and `MixedDataHeader::manufacturer: u16` → `ManufacturerId` (`from_sysex_bytes` / `sysex_bytes`, `get`), `tutti-midi-file`'s private `flex::tempo` → `tutti_midi_protocol::flex_tempo`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
-  channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DelayLineNode` and its `with_channels`, `stereo(l, r, ..)`, `with_interpolation`, `with_cross_feedback_matrix`, cell accessors and setters (`delay_time_r`, `set_cross_feedback`, ...) → `DelayNode = FamilyNode<DelayFamily>` (`new(BusTopology, MaxDelay, InterpolationMode, DelayControls)`, `mono`, `stereo`; routing and per-channel times through `DelayNode::live(DelayFamily::new(..).with_routing(..)?.with_times(..)?, controls)`; the `ParamSet`, ports time, feedback, cross-feedback, is the one route), `DelayLineNode`'s unaddressed cross-feedback and right-channel time cells → the `CrossFeedback` port and a `ChannelTimes` constant, a maximum delay that was clamped to an empty line → `MaxDelay::new -> Option`, a routing matrix that was scaled down silently → `Routing::new` refusing or `Routing::normalized`; `PhaserNode`'s `new(stages)`, `with_channels(layout, stages)`, `with_phase_offsets`, `set_frequency_range`, `FrequencyRange` and its cell accessors and setters (`rate()`, `depth()`, `feedback()`, `set_rate`, `set_depth`, `set_feedback`) → `PhaserNode = FamilyNode<PhaserFamily>` (`new(BusTopology, Stages, SweepRange, Stagger, PhaserControls) -> Result`, `mono(Stages, PhaserControls)`, `stereo(Stages, PhaserControls)`; the `ParamSet`, ports rate, depth, feedback, is the one route), `FrequencyRange` → `SweepRange` (checked: `new` refuses a bottom under 20 Hz, a transposed pair and a non-finite bound, where `set_frequency_range` floored and capped silently), a stage count clamped into `2..=12` → `Stages::new -> Option`, `with_phase_offsets` → `Stagger`, a raw feedback written to the cell that bypassed the stability clamp → the member clamps into `0..=MAX_STABLE`, the phaser's block-anchored coefficient points (the render depended on the block length) → the stream grid (the first block's points are where they were, so a held render is bit-identical at depth 0 and moves by the chord error at depth above 0), `COEFF_CADENCE` and `Cadence::every` → deleted (every family solves on the stream grid: `Cadence::stream`; `Cadence::Block` is `Cadence::BLOCK`'s alone), `Cadence { period, anchor }`, `Period`, `Anchor` and `Cadence::{period, anchor}` → `Cadence` the enum `Block` / `Stream { period: NonZeroU32, offset: Samples }` (a frame period counted from the block's start is unwritable), `DelayLine::from_seconds` → deleted (a line is sized by `MaxDelay` in `DelayFamily`; `DelayLine::new(frames)`), the phaser's contract exemptions (its direct `linear` and `stability` calls and the side test `the_frozen_member_is_the_renders_impulse_response`) → the `Lti` group, whose finite-tail cases (`tail_covers`, `decay`, `tail_tight`) do not apply to a member that declares `Ring::Unbounded` and whose `response` renders such a member for the length its `spectral_radius` bound gives, `LfoDrive`, `LinearMod` and `nodes/src/modulation/shared.rs` → deleted (the LFO is recurrence state, the cells are `control_set!` rows, `PhaserSet`); `ModDelayNode`'s `new(channels, ModDelayConfig)`, `chorus(layout)`, `flanger(layout)`, `with_phase_offsets`, `config()`, and its cell accessors and setters (`rate()`, `depth()`, `feedback()`, `set_rate`, `set_depth`, `set_feedback`) → `ModDelayNode = FamilyNode<ModDelayFamily>` (`new(BusTopology, Sweep, Stagger, ModDelayControls) -> Result`, `chorus(BusTopology)`, `flanger(BusTopology)`, `general_midi_chorus(BusTopology)`; the `ParamSet`, ports rate, depth, feedback, is the one route), `ModDelayConfig` → `Sweep` (checked: `new` refuses what the line cannot hold, where the config's transposed base and maximum were clamped silently) with `Stagger` (the config's `channel_phase_offset` and `with_phase_offsets`) and `ModDelayControls` (its `rate`, `depth`, `feedback`; `ModDelayConfig::{CHORUS, FLANGER, GENERAL_MIDI_CHORUS}` → `Sweep::{..}` and `ModDelayControls::{..}`), `tutti_dsp::SweptLines` → `ModDelayFamily` and `ModDelayRecurrence`, a negative rate written to the cell that ran the LFO backwards → `MIN_RATE`, `TimeMod` → deleted (the cells are `control_set!` rows, `ModDelaySet`), the General MIDI chorus's `Tail::Finite(max_delay)` set by its config → `Rings::Ceiling`; `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti_sampler::LoopSetting` (`Off`/`On { start, end, crossfade_frames }`), `MemorySource::{set_looping, is_looping, set_loop_range, clear_loop_range, loop_range, set_loop_setting, loop_setting}` and `MemorySourceConfig::loop_setting` → `Loop` (`Loop::new(Samples..Samples)?.with_crossfade(Samples)?`) and `Option<Loop>`: `MemorySource::{set_loop, loop_}`, `MemorySourceConfig::loop_`, `Playback::loop_`, `Stream::{set_loop, loop_}`; the streamer's old `LoopError::{Position, StreamerGone}` → `Stream::set_loop -> Result<(), StreamerGone>` (a position that is not a frame is unwritable) and `LoopError` is now `Loop`'s (`EmptySpan`, `CrossfadeTooLong`); `VoiceCommand`, `VoicePoolHandle::send` and `SendError::{Full, Disconnected}(VoiceCommand)` with `into_command` → `VoicePoolHandle::{add, add_streaming, remove, replace_wave, set_window, set_gain, set_speed, set_loop, set_direction, set_stretch}` (`SendError` carries nothing); `VoicePool::{insert_voice, insert_voice_with_stretch}` → `VoicePool::insert(id, MemorySource, Playback)`; `VoicePoolHandle::add_streaming(id, Voice, stream, stretch)` → `add_streaming(id, DiskVoice, stream, Playback)` (the never-`Some` `stretch` argument is gone, and `PoolDrops::loops_no_streamer` with the add that dropped a disk voice's loop and direction); `VoiceNodeHandle::set_placement(Beat, Option<BeatDuration>)`, `DiskVoice::set_placement`, `DiskVoice::from_reader(reader, Beat, Option<BeatDuration>)` and `MemorySource::placed(wave, Beat, Option<BeatDuration>)` → `VoiceWindow` (`set_window`, `from_reader(reader, VoiceWindow)`, `placed(wave, VoiceWindow)`); a disk voice node whose `Stream` the caller kept apart → `VoiceNode::streaming(DiskVoice, Stream, Playback)`; `tutti_sampler::{Source, Status}` and `DiskStreamer::status()` → deleted (`DiskStreamer::sample_rate()`; the tier is the caller's, see `probe`); `Clip::into_source` and `Clip`'s `ParamSet` controls → `VoiceNodeHandle`; `Session::disk_streamer()` → `Session::open_stream` / `load_clip` (`take_disk_streamer` stays for a host that holds the streamer); `tutti_session::Error::Sampler(tutti_sampler::Error)` → `Error::Sampler(SamplerError)`; `tutti::prelude::LoopSetting` → `Loop`; `DiskVoice::new`, `DiskSource` and `DiskVoiceConfig` and the public `tutti_sampler::voice::*` paths → private (a voice is built from a `StreamReader`, `DiskVoice::from_reader`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
-  and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
-  `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output
-  channels, the graph sums the fan-in); `tutti_types::{Topology, NodeKey, Valid, TapId, TapSpec, TapAlign,
-  MeterId, MeterSpec, graph, latency, tail, Compensation, Delays, Feed, LatencyGraph, delays,
-  GraphTail, TailGraph, graph_tail}` → `tutti_graph::` (`latency::plan` is
-  `tutti_graph::latency_plan`), `tutti-io` → dissolved: `TapIn` is gone (`TapReader` is a
-  `Source`), `WavOut` → `tutti_codec::FileOut` (any `Format`, beside `FileIn`),
-  `MicMonitorNode` and `MicRing` → `tutti_graph::InletNode` (opened by
-  `Graph::open_inlet`), `Recorder` and `PumpLoop` → `tutti-session` (feature
-  `record`, implied by `audio-io`), `AudioIn` → `Source`, `AudioOut` → `Sink`, `OnEmpty`/`ON_EMPTY` → the `Pull` a
-  `Source::pull` answers (`Starved`, `Ended`, `Failed`), `tutti_types::pump` → a private
-  step of `PumpLoop`, `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
-  host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
-  render; the note logic went to `tutti-voicing`), `butler` → disk streamer (`tutti-sampler`'s `streamer/`: `ButlerCommand` → `StreamerCommand`, `ButlerThread` → `StreamerThread`, `ButlerSender` → `StreamerSender`, `ButlerGone` → `StreamerGone`, `ButlerCycle` → `StreamerCycle`; the thread is `tutti-streamer`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
-  `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → `tutti-midi-{runtime,hardware,file}`
-  (and `tutti-midi-types`, since gone), `tutti-analysis` → `tutti-dsp`, whose analyzers are now `tutti-measure`, `tutti-core` → `tutti-transport`
-  (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;
-  the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
-  is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
-  deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
-  `tutti-nodes`'), `BusStripNode`'s mute (`set_muted`, `is_muted`, `UnitParam::Mute`, `GeneralMidi::set_muted`) and `EqBandNode`'s `BandState`, `set_enabled` and `set_state` → `NodeMode` (`Graph::set_mode`; a General MIDI setup's mute is `set_mode(gm.out(), NodeMode::Muted)`), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
-  `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
-  a `ControlLaneNode` per param), `tutti_plugin::{handles, host::node, format::in_process}`'s
-  format-generic items (`PluginHandle`, `NodeControls`, `PluginMeter`, `TransportSource`,
-  `ParamDelivery`, `Liveness`, `PluginParamValues`, `PluginNode`, `InProcClient`, `load_client`)
-  → `tutti_plugin_host::` (doc 021 step 4a-4b; `PluginHandle::from_client` →
-  `tutti_plugin::PluginClient::handle`), `tutti-plugin-host`'s `Host*` capability traits
-  (`HostParams`, `HostState`, `HostEditor`, `HostPresets`, `HostRenderMode`, `HostAutomationState`),
-  `OptionalCapabilities` and `tutti-plugin`'s `SubprocessBackend` → deleted (doc 021 step 4b, PR 4: a
-  hosting's token-free calls are `tutti_plugin_types::AnyThread` (in-process `ControlBackend` hops to
-  the main thread; served `IpcController` answers from the bridge), its liveness is `Health`, and
-  the token-taking calls (state restore, presets, the editor) are the format's `Control` /
-  `EditorWindow`, lent by `MainThreadControl`; the handle's `params()`, `state()`, `editor()`,
-  `presets()` accessors are `any_thread()` and methods on the handle), `tutti-plugin`'s served node (`PluginClient<Bound>`'s own
-  `tutti_graph::Node`, `host::node::graph_node`, its `PluginChunks`, the served `fork.rs`'s
-  `PluginFork` and `Origin`, the `Bound` typestate's `Batcher`, `BlockPayload`, `TransportWalk`
-  and `ParamDelivery` fields, and `migration_old_and_new_served_nodes_agree`) → deleted (doc 021
-  step 4b, PR 3b: the node is `tutti_plugin_host::PluginNode<tutti_plugin_ipc::Ipc>`, which
-  `PluginClient<Bound>` holds and boxes (a test drives it with `contract::Direct::boxed`); the chunk walk
-  is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). `TransportCommand::Tempo`,
-  `TransportSettings::tempo`, `Transport::samples_per_beat`, `Timeline::tempo`,
-  `OfflineTimeline::{tempo, beats_per_sample, with_tempo_map}` and
-  `OfflineTimelineConfig::tempo` → deleted (doc 020 stage 6: the project's tempo is one
-  `TempoMap`: `TransportSettings::set_tempo` / `set_tempo_map` publish it, `Timeline::tempo_map`
-  and `OfflineTimelineConfig::tempo_map` carry it, and a tempo is `TempoMap::tempo_at` a beat).
-  `Depth(x)` and `Depth::new_clamped` → `Depth::of(x)` / `Depth::new(x)` /
-  `Depth::clamped(x)` (doc 030 T9: `Depth` is range-checked, and has no `+` or `*`);
-  `Lfo::hz(rate)` → `Lfo::rate(Hz)` (`rate` takes a `BeatDuration` or an `Hz`);
-  `ClickSettings::set_volume` clamping → `Result<(), VolumeOutOfRange>`;
-  `OfflineTimeline::advance(usize)` → `advance(Samples)`;
-  `TransportSettings::in_preroll` (a public cell) and `is_in_preroll` → the method
-  `in_preroll()` (`in_preroll_cell()` for the node that reads it);
-  A host's per-frame `PluginHandle::editor_idle` and `poll_editor_resize_request` calls, and
-  a `debug_assert!` on `MainThread::claimed_elsewhere` in `Session`'s freeing paths
-  (`crate::main_thread`, gone) → `Session::main(main).update()` (`MainSession`: the
-  graveyard, `run_deferred` and the editors it opened, `PluginChange::EditorWantsSize`;
-  `Session::update`, `commit`, `remove` and `replace` stay on `Session` and free no plugin:
-  what they retire waits in the graveyard, `Session::retired_plugins`), and
-  `PluginHandle::open_editor(.., impl HasWindowHandle)` → `open_editor(.., WindowHandle)`
-  (a host's own path is `ui.plugin(node)?.editor().open(&window, scale)` → `Opened`, and `rescale(scale)` → `EditorWindow::set_editor_scale`);
-  A host's `session.plugin(node)?.handle().any_thread().parameter_descriptors()`,
-  `parameter_value`, `set_parameter_value`, `parameter_text`, `parameter_value_from_text`,
-  `parameter_plain` and `parameter_normalized` (doc 029 step 3) →
-  `session.plugin(node)?.params()` (`Params`: `get(id)? -> Param`, `typed::<U>(id)? ->
-  TypedParam<U>`, `iter`; `Param::{normalized, set, text, set_text, plain, set_plain, edit}`,
-  `edit()` a `ParamGesture` guard that ends on drop, `Param::target` the modulation `ParamRef`;
-  the errors are `PluginParamError`, the descriptors the session's own, read at load and again
-  on a rescan through the spawner's parameter read; `AnyThread` and `PluginHandle` stay the low layer
-  and are not in the prelude), `Plugin::param_values()` → deleted (`params().get(id)?.normalized()`;
-  `PluginParamValues` holds the descriptors too, and a read is a `ParamSnapshot`),
-  `ParameterInfo`'s public fields (`id`, `name`, `unit`, `range`, `steps`, `flags`, `known`, `group`,
-  `measures`, `role`) → private, read through `id()`, `name()`, `unit()`, `range()`, `steps()`,
-  `group()`, `measures()`, `role()`, `flag(f)` and built with `ParameterInfo::new(..).with_unit` /
-  `with_range` / `with_plain_range` / `with_steps` / `with_flags` / `with_group` / `with_measures` /
-  `with_role` (a format host never builds a struct literal), `tutti_plugin_types::FromPlain` →
-  `PlainUnit` (`reads`, `from_plain`, `to_plain`), `AnyThread::set_automation_mode`,
-  `PluginHandle::set_automation_mode` and their `Result<(), EditorError>` →
-  `Result<(), AutomationModeError>` (`Unsupported { format }`, `Dropped`, `PluginDead`; a host
-  calls `params().set_automation_mode(mode)`), the parameter read's job loses its `modulation`
-  gate (the mirror is every plugin's);
-  `Session::mods()` as the editor → `mods_mut()`; `Mods::route(source, target,
-  depth)` → `route(RouteSpec)`; `Mods::route_mut` and its public `RouteDecl` fields →
-  `route_of(id)?` setters; `ModState::{refusal, unresolved_targets,
-  unresolved_sources}` → `problems()`; `SessionEvent::{ModulationRefused,
-  ModulationUnresolved}` → `SessionEvent::Modulation(Problem)`; `Mods` returning
-  `tutti_modulation::{SourceKey, RouteKey}` → `ModSourceId` and `ModRouteId`;
-  `CompileError::BadRoute` → deleted (a `Depth` is never NaN)., `SampleRate(pub f64)` (the tuple, its `Default`, its `Unit` impl and `From<u32>`) → a private field: `SampleRate::new(f64) -> Option` (finite and above zero), `SampleRate::of` (a literal), `SampleRate::from_hz(u32) -> Option`, `get`, `TryFrom<f64>` (`SampleRateOutOfRange`) and the named constants (`SR_44K1`, `SR_48K`, ...; `DEFAULT` is the placeholder before a device's rate is known); a rate another thread reads is `tutti_types::AtomicSampleRate` (a load needs no check and has no fallback); the re-checks that guarded a rate (`tutti_export::{JobError, RenderedError, ConfigError}::InvalidRate`, `tutti_dsp::Error::NonPositiveSampleRate`, `tutti_measure::Error::NonPositiveSampleRate`, `CrossoverError::SampleRate`, `tutti_midi_runtime::InvalidRate`) → deleted, `Reach::at -> Option` and `Prepare::{new, with_rate} -> Option` (`tutti_plugin_types`) → infallible, `WaveMetadata::sample_rate: u32` → `SampleRate`, `Wave::len() -> usize` and `Wave::with_capacity(.., usize)` → `Samples`, `UmpOut::send_frames(events)` and `MidiOutRouter { out, drops }` → `send_frames(events, Option<&OutputTiming>) -> usize` (the refused count) and a `timing` field (an offset-only send was the defect: the OS never scheduled it), `AlsaOutput::send_ump(words)` → `send_ump_at(words, SendAt)`. `tutti_tempo::Shape` → `Transition`;
-  `TempoMap::{seconds_at_with, beat_at_seconds_with, tempo_at_with, tempo_at_seconds_with,
-  tempo_slope_with, tempo_at_frame{,_with}, beat_at_frame{,_with}, frame_at_or_after{,_with},
-  next_change{,_with}}`, `tutti_tempo::{Cursor, chord_cell, chord_cell_with}` and
-  `TempoPoint::shape` → `TempoMap::view(rate)` and `TempoView`'s methods, and
-  `TempoPoint::transition`; `tutti_graph::Transport` → `tutti_graph::TransportPosition`
-  (`tutti_transport::Transport` is the handle); `tutti_modulation::Wave` → `Waveform`
-  (`tutti_codec::Wave` is the buffer); `tutti_modulation::SourceNode` (the declaration `{ id, kind }`) → `SignalSource`,
-  and the hand-written `EnvelopeFollowerNode` and `NoteEnvelopeNode` → `tutti_nodes::SourceNode<S:
-  ControlSource>` (`SourceNode<LevelFollower>`, `SourceNode<NoteAdsr>`: the sources' math is
-  `tutti_modulation`'s, the node walks the play clock and sends, doc 024 B3), their
-  `FOLLOWER_EVENT_CAPACITY` and `NOTE_ENVELOPE_EVENT_CAPACITY` → `SOURCE_EVENT_CAPACITY` (one overflow
-  rule: the grid thins, then what is dropped is re-sent); `LoopRange::new` as the only check →
-  `LoopRange::try_from(a..b)` (a `LoopRangeError`; `new` is the same check as an `Option`);
-  `Session::schedule -> Result<(), ScheduleFull>` → `Result<(), ScheduleError>`
-  (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). A comment or doc that
-  disagrees with the code is the bug.
-- **Dead plugin names** (doc 029 step 4): `PluginHandle::presets(&main) -> Option<Vec<Preset>>` and `load_preset -> Option<bool>` → `-> Result<_, PresetError>` (`Unsupported`, `Refused`, `Lost`), and for a host the session's view, `MainSession::plugin(node)?.presets() -> Result<Presets, PresetError>` (`Presets::{kind, iter, get, current, load_file}`, `PresetEntry::load`; a main-thread call, so not on `Plugin<'_>`), `Plugin::liveness()` and the public `PluginLiveness` (the session's debounce is crate-private now) → `Plugin::health() -> PluginHealth` (`Running`, `Stalled`, `Died { cause }`, `Reloading { attempt, cause }`; the verdicts that remove the node are the events `PluginChange::{Died, GaveUp}`), `Plugin::{controls, meter}` and the handle's `server_pid`, `block_counts`, `dropped_parameter_events`, `terminate` as a host's calls → `Plugin::diagnostics()` (`server_pid`, `block_counts`, `missed_chunks`, `latency`, `tail`, `follows_project_meter`, `reported_latency`, `chunk_in_flight_answered`, `terminate`, and the counts as `tutti_graph::Losses`: `midi_in`, `parameter_points`, `parameter_edits`; the same in either hosting), `Plugin::handle()` → behind `tutti-session`'s `testing` feature (a host uses the views), `Plugin::controls()` / `meter()` → deleted (`Diagnostics::{reported_latency, chunk_in_flight_answered, missed_chunks, follows_project_meter}`), `PluginHandle::set_render_mode` → deleted (the session's `Phase::RenderMode`; `AnyThread::set_render_mode` is the backend's), a plugin's `input_buses()` / `output_buses()` as a host's wiring vocabulary → `Plugin::buses() -> PluginBuses` (`main_input`, `input(i)`, `output(i)`; no `sidechain()`, since no loader marks one and an app wires a key input by index: the graph's `BusRef` and `BusSource`).
-- **Dead prelude names**: `tutti::prelude::*`, `tutti_engine::prelude`,
-  `tutti_types::prelude`, `tutti_midi_hardware::prelude` and
-  `tutti_vst2_author::prelude` → deleted (no crate defines a prelude: name items
-  at the crate's root, `use tutti::{Session, Samples, ..}`; the session's
-  `Phase` is `tutti::Phase`, the types' one stays `tutti::types::Phase`).
-- **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
-  restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook
-  `LiveSession::on_restart`; `restart_on`, `Session::watch_devices` with four
-  arguments and `SessionBuilder::build_device_on` are behind `testing`);
-  `Device::select_device` → the request's device; `MicIn::{open_inputs,
-  open_inputs_with_monitor}` → `MicIn::open(&MicConfig, rate)`;
-  `Graph::add_inlet(ring, rate)` → `add_inlet(InletRing)`;
-  `SessionEvent::{DeviceFault, DeviceLost, DeviceAppeared, DefaultChanged,
-  RestartWanted, DeviceRestarted, RestartFailed, OutputsListed, OutputsListFailed,
-  OutputsListSlow}` → `SessionEvent::Device(DeviceEvent::..)`; `render_workers(usize)`
-  (0 for per core) → `Workers`; `inputs`/`outputs_floor` of a bare `usize` →
-  `ChannelLayout`.
-- **Dead export names**: `tutti-export`'s `ExportConfig`, `RenderConfig`,
-  `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,
-  `render_to_buffers`, `render_normalized_to_file` and their `_with` twins → `render` /
-  `render_one` with a `Control`; `Flow`, `Pass` → `Control` and `CancelToken`;
-  `Normalized` → `Written::{gain, measured}`; `resample_rendered` and
-  `tutti_export::Dither` → one streamed chain and `tutti_dsp::DitherShape`;
-  `beats_to_seconds`, `duration_to_frames` → the session's range over the project's
-  `TempoMap`; `RenderGraph::{new, fork, gather, build, set_pool, set_root_topology,
-  root_topology, editor, editor_mut, commit, is_parallel}` → `RenderGraph::assemble` (the
-  session's private `Fork` edits first); `tutti_export::{Format, Pcm, IntDepth, FlacLevel,
-  Quality, ChannelLayout, RenderClock, FrozenClock}` → `tutti_codec::`, `tutti_types::` and
-  `tutti_transport::`; `tutti-session`'s `ExportRequest`, `ExportSource`, `ExportTarget`,
-  `ExportOutput`, `ExportJob`, `ExportRendered`, `ExportHandle`, `ExportConfigError`,
-  `Error::{Export, ExportConfig, ExportInFlight}`, `Session::{export, export_blocking,
-  finish_export{,_unannounced}, drop_export_leftovers, export_in_flight}`,
-  `EXPORT_STALL_WARNING` and `ExportClock`'s `Default` → `Bounce`, `BounceJob`,
-  `BounceRendered`, `BounceHandle`, `BounceConfigError`, `BounceError`,
-  `Session::{bounce, bounce_start, finish_bounce{,_unannounced}, drop_bounce_leftovers,
-  bounce_in_flight}` and `BOUNCE_STALL_WARNING` (a clock is named, never defaulted);
-  `Bounce::node` → a `stem` of the master's fork; `Field::Master`, `Bounced::{targets, into_targets}`
-  and the session's `Outcome<Bounced>` → `Bounce<N, M>` over a `Master` kind (`FileMaster`,
-  `BufferMaster`), `Bounced<M>::{master, stems, into_master, into_parts}` and
-  `BounceError::Cancelled`; the bounce's `Latency` and `Tail` → `BounceLatency` and `BounceTail` (the graph's `tutti_types::{Latency, Tail}` keep their names); `Transport`'s public `settings` and `motion` fields → `Transport::settings()` and
-  `Transport::motion()` (and the session's `play`, `stop`, `locate`, `schedule`, `set_tempo`). `bevy-tutti`'s `ExportRequest`,
-  `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
-  Core lane step 10 (doc 030 C2, C3, E1, E2): `tutti_codec::Spec`'s public `format`, `layout`,
-  `rate` and optional `topology` fields and `SpecError::TopologyWidth` → private fields with
-  `Spec::new(format, topology, rate)` / `Spec::of_width(format, layout, rate)` and the getters
-  `format()`, `topology()`, `layout()`, `rate()`; `FileOut::create(path, &spec) -> io::Result` →
-  `FileOut::create(&spec, path) -> tutti_codec::Result` (`MicIn::matching_sink` the same,
-  `TakeError::Open` carries the codec's `Error`); `Bounce::format(..)` and
-  `BounceConfigError::Missing(Field)` (and `Field`) → `Bounce::master(path, format)`; `.normalize`,
-  `.dither`, `.resample` on a `master_buffers` bounce and `BounceConfigError::NormalizeBuffers` for a
-  master → unwritable (they are `Bounce<_, FileMaster>`'s); `BounceConfigError::NormalizeBuffers`
-  for a stem and `Bounce::normalize_stems(StemGain)` → `Stem<N, FileStem>::gain(StemGain)` (a
-  `Stem::buffers` stem, a `Stem<N, BufferStem>`, has none); `Stem::new(node, path)` and
-  `Stem::format(..)` → `Stem::new(node, path, format)`; `FileTarget::with_topology(Option<_>)` and
-  `BufferTarget::with_topology(Option<_>)` → `with_topology(topology)`, which replaces the width
-  (the render-start refusal of a topology of another width is deleted); `Bounce::stem` is a `FileMaster`'s (the master's format), and
-  `stem_with` is any bounce's; `Produced::{file, buffers}(self)` and `Outcome::finished(self)` →
-  borrowing `file`, `buffers`, `finished` and owning `into_file`, `into_buffers`, `into_finished`.
-
-- **Dead plugin-event and callback names** (doc 029 step 5): `SessionEvent::{PluginSnapshotDue,
-  PluginParamsDue, PluginReloadDue}`, `Session::{land_snapshot, land_params, land_reload}` and the job
-  types `PluginSnapshot`, `PluginSnapshotTaken`, `PluginParamRead`, `PluginParamsRead`,
-  `PluginReload` and `PluginReloaded` → the session's spawner (`SessionBuilder::spawn_with`, default
-  `std::thread`): `Phase::Plugins` submits the snapshot, the parameter read and the reload as jobs, and
-  their results land in `update()` (`Phase::Collect`); a job the spawner drops is
-  `RecoveryFailure::ReloadDropped`, one that panics `ReloadPanicked`, and a reload's landing takes no
-  `MainThread`. (Doc 029 step 2:) `SessionEvent::{PluginDied,
-  PluginLatencyChanged, PluginReloading, PluginRecovered, PluginGaveUp}` →
-  `SessionEvent::Plugin(PluginEvent { node, change, .. })` with `PluginChange::{Died, LatencyChanged,
-  Reloading, Recovered, GaveUp}` (the three `*Due` job events went in step 5);
-  `PluginHandle::{on_parameter_changed, on_refresh, on_invalidate, clear_parameter_callback,
-  clear_refresh_callback, clear_invalidate_callback}` → `PluginHandle::subscribe(f) -> Subscription`
-  (the low layer; a host reads `SessionEvent::Plugin`); `Listener::{set, clear}` (one slot, last writer wins) → `Listener::subscribe`
-  (a fan-out); `HostedPlugin` (public) → the `Plugin<'_>` view of `Session::plugin(node) ->
-  Result<Plugin<'_>, NoSuchNode>` (`Option<&HostedPlugin>` before), `Session::plugins()` yielding
-  `Plugin<'_>`.
-
-## Consumers: the pin that must stay in step
-
-Consumers pin this repo as a git dependency. Keep **the bevy 0.19 line** in step
-with them, for anything that touches `bevy-tutti` (its pins now live in
-`crates/bevy-tutti/Cargo.toml`, while it is parked; `bevy_reflect` is in
-`[workspace.dependencies]`). The curve types (`tutti_curve::Law`, the automation
-point list) are the engine's own, so a consumer holds no second copy of them to
-keep in step: it converts at its own seam.
+- Nothing under `crates/` has a normal or build dependency on `testing/`.
+- Only `tutti` depends on `tutti-session`, and nothing depends on `tutti`.
+- A crate keeps its modules private and is named from its root; `check-paths` enforces it.
+- `check-layout` also holds each crate's limits on its own dependencies: which workspace
+  crates it may name, and which modules alone may name a wrapped library (`symphonia` in
+  `tutti-codec`'s decode module, `winnow` in the listed parser modules).
+- A codec format is a cargo feature (`encode-*`, `decode-*`), none on by default; a decode
+  feature pulls no encoder, and the C Vorbis library is `encode-vorbis`'s alone.

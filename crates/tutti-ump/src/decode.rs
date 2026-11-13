@@ -27,7 +27,9 @@ use crate::message::{
     StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System, TimeSignature, UiHint,
     UmpVersion, Unknown, Utility, Voice1, Voice2,
 };
-use crate::{CCNumber, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump};
+use crate::{
+    BendValue, CCNumber, ControlValue, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump,
+};
 
 impl Ump {
     /// Decodes this packet into the [`Message`] it holds.
@@ -284,22 +286,22 @@ fn voice2(w: [u32; 4]) -> Option<Voice2> {
         0x0 => Some(Voice2::RegisteredPerNote {
             note: note(w0, 1),
             controller: index.into(),
-            value: data,
+            value: ControlValue::new(data),
         }),
         0x1 => Some(Voice2::AssignablePerNote {
             note: note(w0, 1),
             controller: index,
-            value: data,
+            value: ControlValue::new(data),
         }),
         0x2 => Some(Voice2::Registered {
             bank: u7(w0, 1),
             index: u7(w0, 0),
-            value: data,
+            value: ControlValue::new(data),
         }),
         0x3 => Some(Voice2::Assignable {
             bank: u7(w0, 1),
             index: u7(w0, 0),
-            value: data,
+            value: ControlValue::new(data),
         }),
         0x4 => Some(Voice2::RelativeRegistered {
             bank: u7(w0, 1),
@@ -313,7 +315,7 @@ fn voice2(w: [u32; 4]) -> Option<Voice2> {
         }),
         0x6 => Some(Voice2::PerNotePitchBend {
             note: note(w0, 1),
-            value: data,
+            value: BendValue::new(data),
         }),
         0x8 => Some(Voice2::NoteOff {
             note: note(w0, 1),
@@ -327,11 +329,11 @@ fn voice2(w: [u32; 4]) -> Option<Voice2> {
         }),
         0xA => Some(Voice2::PolyPressure {
             note: note(w0, 1),
-            value: data,
+            value: ControlValue::new(data),
         }),
         0xB => Some(Voice2::ControlChange {
             controller: CCNumber::masked(byte(w0, 1)),
-            value: data,
+            value: ControlValue::new(data),
         }),
         0xC => Some(Voice2::ProgramChange {
             program: u7(data, 3),
@@ -340,8 +342,8 @@ fn voice2(w: [u32; 4]) -> Option<Voice2> {
                 lsb: u7(data, 0),
             }),
         }),
-        0xD => Some(Voice2::ChannelPressure(data)),
-        0xE => Some(Voice2::PitchBend(data)),
+        0xD => Some(Voice2::ChannelPressure(ControlValue::new(data))),
+        0xE => Some(Voice2::PitchBend(BendValue::new(data))),
         0xF => Some(Voice2::PerNoteManagement {
             note: note(w0, 1),
             detach: flag(w0, 1),

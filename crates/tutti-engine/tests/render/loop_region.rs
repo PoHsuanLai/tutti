@@ -115,7 +115,7 @@ fn every_frame_sees_one_whole_region() {
     for &(frame, edit) in &schedule {
         transport
             .motion()
-            .schedule(At::Frame(Frame(frame)), edit)
+            .schedule(At::Frame(Frame::new(frame)), edit)
             .expect("room");
     }
     let total = 5_400;
@@ -155,9 +155,9 @@ fn a_scheduled_edit_lands_on_its_frame() {
     let (engine, _ed, log) = engine(&transport);
     let m = &transport.motion();
 
-    m.schedule(At::Frame(Frame(0)), LoopEdit::over(a))
+    m.schedule(At::Frame(Frame::new(0)), LoopEdit::over(a))
         .expect("room");
-    m.schedule(At::Frame(Frame(1_300)), LoopEdit::over(b))
+    m.schedule(At::Frame(Frame::new(1_300)), LoopEdit::over(b))
         .expect("room");
     for _ in 0..3 {
         render(&engine, 512); // frames 0..1 536
@@ -227,7 +227,7 @@ fn the_snapshot_follows_the_engine() {
     assert_eq!(m.loop_region().bounds(), range(0.0, 16.0));
     assert!(!m.loop_region().is_armed());
 
-    m.schedule(At::Frame(Frame(700)), LoopEdit::over(a))
+    m.schedule(At::Frame(Frame::new(700)), LoopEdit::over(a))
         .expect("room");
     assert_eq!(m.loop_region(), LoopRegion::default(), "sent, not applied");
     render(&engine, 512);

@@ -4,6 +4,7 @@
 //! 16,384 fourteen-bit values).
 
 use tutti_midi_protocol::{narrow_velocity, widen, widen_velocity};
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, NoteNumber, NoteVelocity, U7, U14, Ump, Voice1, Voice2,
 };
@@ -42,13 +43,13 @@ fn value(v: u8) -> u32 {
         controller: CCNumber::of(74),
         value: U7::of(v),
     }) {
-        Voice2::ControlChange { value, .. } => value,
+        Voice2::ControlChange { value, .. } => value.get(),
         other => panic!("{other:?}"),
     }
 }
 fn bend(v: u16) -> u32 {
     match widen(Voice1::PitchBend(U14::of(v))) {
-        Voice2::PitchBend(b) => b,
+        Voice2::PitchBend(b) => b.get(),
         other => panic!("{other:?}"),
     }
 }
@@ -212,12 +213,12 @@ fn every_variant_widens_and_keeps_its_fields() {
         }),
         Voice2::PolyPressure {
             note: n,
-            value: 0xC104_1041
+            value: ControlValue::new(0xC104_1041)
         }
     );
     assert_eq!(
         widen(Voice1::ChannelPressure(U7::of(120))),
-        Voice2::ChannelPressure(0xF1C7_1C71)
+        Voice2::ChannelPressure(ControlValue::new(0xF1C7_1C71))
     );
     // No bank: choosing one needs the latched Bank Select.
     assert_eq!(
@@ -238,7 +239,7 @@ fn every_variant_widens_and_keeps_its_fields() {
                 }),
                 Voice2::ControlChange {
                     controller: CCNumber::of(c),
-                    value: value(v)
+                    value: ControlValue::new(value(v))
                 },
                 "CC {c} = {v}"
             );
@@ -262,4 +263,25 @@ fn the_widened_message_is_a_message() {
     // Group 5, channel 9, Note On, note 60, velocity 0x8000, no attribute.
     assert_eq!(ump, Ump([0x4599_3C00, 0x8000_0000, 0, 0]));
     assert_eq!(ump.decode(), Ok(Message::Midi2(address, voice)));
+}
+
+/// `widen_value` and `widen_bend` are M2-115 section 3's Min-Center-Max
+/// scaling of the one value: the minimum, the centre and the maximum land on
+/// the 32-bit minimum, centre and maximum, and the repeat rule fills the rest.
+#[test]
+fn widen_value_and_bend_land_on_the_32_bit_corners() {
+    use tutti_midi_protocol::{widen_bend, widen_value};
+    assert_eq!(widen_value(U7::of(0)), ControlValue::MIN);
+    assert_eq!(widen_value(U7::of(64)), ControlValue::CENTER);
+    assert_eq!(widen_value(U7::of(127)), ControlValue::MAX);
+    assert_eq!(widen_bend(U14::of(0)), tutti_ump::BendValue::MIN);
+    assert_eq!(widen_bend(U14::of(0x2000)), tutti_ump::BendValue::CENTER);
+    assert_eq!(widen_bend(U14::MAX), tutti_ump::BendValue::MAX);
+    for v in 0..=127u8 {
+        assert_eq!(
+            widen_value(U7::of(v)).get(),
+            repeat_rule(u32::from(v), 7, 32),
+            "{v}"
+        );
+    }
 }

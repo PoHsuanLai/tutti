@@ -163,8 +163,8 @@ pub fn snap_to_whole_frame(position: f64) -> f64 {
 /// use tutti_types::{Beat, Bpm, Frame, SampleRate, TimelineSegment};
 /// let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SampleRate::of(48_000.0));
 /// // Exact, not 2.999999999999891: no accumulation.
-/// assert_eq!(seg.beat_at(Frame(96_000)), Beat(3.0));
-/// assert_eq!(seg.frame_of(Beat(3.0)), Some(Frame(96_000)));
+/// assert_eq!(seg.beat_at(Frame::new(96_000)), Beat(3.0));
+/// assert_eq!(seg.frame_of(Beat(3.0)), Some(Frame::new(96_000)));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TimelineSegment {
@@ -239,7 +239,7 @@ impl TimelineSegment {
     pub fn frame_of(&self, beat: Beat) -> Option<Frame> {
         let k = self.offset_of(beat)?;
         let at = i128::from(self.origin_frame.get()) + i128::from(k);
-        u64::try_from(at).ok().map(Frame)
+        u64::try_from(at).ok().map(Frame::new)
     }
 
     /// Returns whether playback along this segment has reached `beat` by
@@ -300,22 +300,26 @@ mod tests {
     #[test]
     fn a_frame_on_a_beat_is_that_beat_exactly() {
         let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR);
-        assert_eq!(seg.beat_at(Frame(96_000)), Beat(3.0));
+        assert_eq!(seg.beat_at(Frame::new(96_000)), Beat(3.0));
         // Every whole beat, where the step `tempo / 60 / rate` rounded and
         // scaled misses some.
         let fast = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(140.0), SR);
         for k in 1..=2_000u64 {
             let frame = k * 60 * 48_000;
             if frame % 140 == 0 {
-                assert_eq!(fast.beat_at(Frame(frame / 140)), Beat(k as f64), "beat {k}");
+                assert_eq!(
+                    fast.beat_at(Frame::new(frame / 140)),
+                    Beat(k as f64),
+                    "beat {k}"
+                );
             }
         }
-        assert_eq!(seg.beat_at(Frame(32_000)), Beat(1.0));
-        assert_eq!(seg.frame_of(Beat(3.0)), Some(Frame(96_000)));
-        assert_eq!(seg.frame_of(Beat(1.0)), Some(Frame(32_000)));
+        assert_eq!(seg.beat_at(Frame::new(32_000)), Beat(1.0));
+        assert_eq!(seg.frame_of(Beat(3.0)), Some(Frame::new(96_000)));
+        assert_eq!(seg.frame_of(Beat(1.0)), Some(Frame::new(32_000)));
         // From a later origin, the same frames by their distance.
-        let later = TimelineSegment::new(Frame(1_000), Beat(0.5), Bpm::of(90.0), SR);
-        assert_eq!(later.beat_at(Frame(1_000 + 80_000)), Beat(3.0));
+        let later = TimelineSegment::new(Frame::new(1_000), Beat(0.5), Bpm::of(90.0), SR);
+        assert_eq!(later.beat_at(Frame::new(1_000 + 80_000)), Beat(3.0));
     }
 
     /// A beat a hair past a frame lands on it; one more than the tolerance
@@ -325,11 +329,11 @@ mod tests {
         let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR);
         let ulp_past = Beat(f64::from_bits(1.0f64.to_bits() + 1));
         let ulp_before = Beat(f64::from_bits(1.0f64.to_bits() - 1));
-        assert_eq!(seg.frame_of(ulp_past), Some(Frame(32_000)));
-        assert_eq!(seg.frame_of(ulp_before), Some(Frame(32_000)));
+        assert_eq!(seg.frame_of(ulp_past), Some(Frame::new(32_000)));
+        assert_eq!(seg.frame_of(ulp_before), Some(Frame::new(32_000)));
         // A tenth of a frame past is the next frame.
         let tenth = Beat(1.0 + 0.1 / 32_000.0);
-        assert_eq!(seg.frame_of(tenth), Some(Frame(32_001)));
+        assert_eq!(seg.frame_of(tenth), Some(Frame::new(32_001)));
         assert_eq!(first_frame_at_or_after(0.0), 0);
         assert_eq!(first_frame_at_or_after(1e-7), 0);
         assert_eq!(first_frame_at_or_after(2e-6), 1);
@@ -350,7 +354,7 @@ mod tests {
                 let seg = TimelineSegment::new(
                     Frame::ZERO,
                     TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR)
-                        .beat_at(Frame(start)),
+                        .beat_at(Frame::new(start)),
                     Bpm::of(90.0),
                     SR,
                 );
@@ -380,21 +384,21 @@ mod tests {
     fn a_segment_that_does_not_move_places_nothing() {
         let seg = TimelineSegment::new(Frame::ZERO, Beat(1.0), Bpm::of(f64::from_bits(1)), SR);
         assert_eq!(seg.frame_of(Beat(2.0)), None);
-        assert!(!seg.reached_by(Frame(10), Beat(0.5)));
-        assert_eq!(seg.beat_at(Frame(1_000)), Beat(1.0));
+        assert!(!seg.reached_by(Frame::new(10), Beat(0.5)));
+        assert_eq!(seg.beat_at(Frame::new(1_000)), Beat(1.0));
     }
 
     #[test]
     fn reached_by_is_the_frame_rule() {
-        let seg = TimelineSegment::new(Frame(100), Beat(3.0), Bpm::of(90.0), SR);
+        let seg = TimelineSegment::new(Frame::new(100), Beat(3.0), Bpm::of(90.0), SR);
         // Behind the origin: reached.
-        assert!(seg.reached_by(Frame(100), Beat(2.5)));
+        assert!(seg.reached_by(Frame::new(100), Beat(2.5)));
         // On it, and an ulp past it: reached.
-        assert!(seg.reached_by(Frame(100), Beat(3.0)));
-        assert!(seg.reached_by(Frame(100), Beat(f64::from_bits(3.0f64.to_bits() + 1))));
+        assert!(seg.reached_by(Frame::new(100), Beat(3.0)));
+        assert!(seg.reached_by(Frame::new(100), Beat(f64::from_bits(3.0f64.to_bits() + 1))));
         // A frame on: not yet at the origin, reached a frame later.
         let next = Beat(3.0 + 1.0 / 32_000.0);
-        assert!(!seg.reached_by(Frame(100), next));
-        assert!(seg.reached_by(Frame(101), next));
+        assert!(!seg.reached_by(Frame::new(100), next));
+        assert!(seg.reached_by(Frame::new(101), next));
     }
 }

@@ -165,7 +165,7 @@ mod tests {
     }
 
     /// The socket's name carries sixty-four random bits, so another local user
-    /// cannot predict it and bind it first (doc 027 D3). The pid and the
+    /// cannot predict it and bind it first. The pid and the
     /// counter alone keep names unique, which is why
     /// `each_default_config_gets_its_own_socket_path` cannot see this.
     #[test]

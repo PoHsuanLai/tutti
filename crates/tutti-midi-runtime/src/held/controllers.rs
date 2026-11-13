@@ -19,6 +19,7 @@
 
 use tutti_graph::{Event, EventWriter, Offset};
 use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, U14, Ump, Voice1, Voice2};
+use tutti_ump::{BendValue, ControlValue};
 
 const LANES: usize = 512;
 /// The hold controllers: sustain, sostenuto, soft pedal, hold 2.
@@ -70,9 +71,11 @@ impl Controllers {
                 let Some(bit) = pedal_bit(controller) else {
                     return;
                 };
-                (true, a, bit, value >= CENTRE_32)
+                (true, a, bit, value >= ControlValue::new(CENTRE_32))
             }
-            Ok(Message::Midi2(a, Voice2::PitchBend(v))) => (true, a, BEND, v != CENTRE_32),
+            Ok(Message::Midi2(a, Voice2::PitchBend(v))) => {
+                (true, a, BEND, v != BendValue::new(CENTRE_32))
+            }
             _ => return,
         };
         let lane = &mut self.lanes[Self::lane(m2, address)];
@@ -95,9 +98,9 @@ impl Controllers {
                 match PEDALS.get(usize::from(bit)) {
                     Some(&cc) => Voice2::ControlChange {
                         controller: CCNumber::new(cc).expect("a controller"),
-                        value: 0,
+                        value: ControlValue::new(0),
                     },
-                    None => Voice2::PitchBend(CENTRE_32),
+                    None => Voice2::PitchBend(BendValue::new(CENTRE_32)),
                 },
             )
         } else {

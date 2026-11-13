@@ -40,8 +40,10 @@ use tutti_plugin_types::{
 
 use crate::types::RtNoteExpressions;
 use tutti_midi_protocol::{
-    Narrower, PitchBendSensitivity, narrow, u16_to_unit_f32, u32_to_unit_f32, widen, widen_bytes,
+    Narrower, PitchBendSensitivity, narrow, value_to_unit_f32, velocity_to_unit_f32, widen,
+    widen_bytes,
 };
+use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity, Rpn,
     SysexAssembler, SysexStep, U7, Ump, Voice1, Voice2,
@@ -664,7 +666,7 @@ impl ClapEvent {
     )]
     #[must_use]
     pub fn to_midi(&self) -> Option<WireMidi> {
-        use tutti_midi_protocol::unit_f32_to_u16;
+        use tutti_midi_protocol::unit_f32_to_velocity;
         match self {
             ClapEvent::NoteOn(e) => {
                 let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
@@ -674,7 +676,7 @@ impl ClapEvent {
                         channel,
                         Voice2::note_on(
                             note,
-                            NoteVelocity::new(unit_f32_to_u16(e.velocity as f32)),
+                            NoteVelocity::new(unit_f32_to_velocity(e.velocity as f32).get()),
                         ),
                     ),
                 })
@@ -689,7 +691,7 @@ impl ClapEvent {
                         channel,
                         Voice2::note_off(
                             note,
-                            NoteVelocity::new(unit_f32_to_u16(e.velocity as f32)),
+                            NoteVelocity::new(unit_f32_to_velocity(e.velocity as f32).get()),
                         ),
                     ),
                 })
@@ -717,7 +719,7 @@ impl ClapEvent {
         reason = "CLAP expression values are f64; the MIDI-2 helpers take f32"
     )]
     fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<WireMidi> {
-        use tutti_midi_protocol::{signed_f32_to_bend_u32, unit_f32_to_u32};
+        use tutti_midi_protocol::{signed_f32_to_bend, unit_f32_to_value};
 
         let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
         let time = e.header.time;
@@ -738,7 +740,7 @@ impl ClapEvent {
                     channel,
                     Voice2::PerNotePitchBend {
                         note,
-                        value: signed_f32_to_bend_u32(signed),
+                        value: signed_f32_to_bend(signed),
                     },
                 )
             }
@@ -746,7 +748,7 @@ impl ClapEvent {
                 channel,
                 Voice2::PolyPressure {
                     note,
-                    value: unit_f32_to_u32(e.value as f32),
+                    value: unit_f32_to_value(e.value as f32),
                 },
             ),
             other => {
@@ -760,7 +762,7 @@ impl ClapEvent {
                         // unit fraction — convert before the unit encoding, or a
                         // plugin's unity 1.0 and its +12 dB 4.0 both saturate to
                         // MIDI full scale indistinguishably.
-                        value: unit_f32_to_u32(expression_value_to_unit(other, e.value)),
+                        value: unit_f32_to_value(expression_value_to_unit(other, e.value)),
                     },
                 )
             }
@@ -807,15 +809,21 @@ fn control_expression(
         )),
         NoteControl::Pressure(value) => Some((
             NoteExpressionType::Pressure,
-            f64::from(u32_to_unit_f32(value)),
+            f64::from(value_to_unit_f32(ControlValue::new(value))),
         )),
         NoteControl::Registered(controller, value) => {
             let ty = per_note_controller_expression(controller.number())?;
-            Some((ty, expression_value_from_unit(ty, u32_to_unit_f32(value))))
+            Some((
+                ty,
+                expression_value_from_unit(ty, value_to_unit_f32(ControlValue::new(value))),
+            ))
         }
         NoteControl::Assignable(index, value) => {
             let ty = per_note_controller_expression(index)?;
-            Some((ty, expression_value_from_unit(ty, u32_to_unit_f32(value))))
+            Some((
+                ty,
+                expression_value_from_unit(ty, value_to_unit_f32(ControlValue::new(value))),
+            ))
         }
     }
 }
@@ -1292,7 +1300,7 @@ impl InputEventList {
                     time,
                     i16::from(address.channel.get()),
                     i16::from(note.get()),
-                    f64::from(u16_to_unit_f32(velocity.get())),
+                    f64::from(velocity_to_unit_f32(velocity)),
                 )
                 .addressed(port, -1);
                 let off = if self.midi_ports >> port & 1 != 0 {
@@ -1395,7 +1403,7 @@ impl InputEventList {
                     time,
                     i16::from(channel.get()),
                     i16::from(note.get()),
-                    velocity.map_or(0.0, |v| f64::from(u16_to_unit_f32(v.get()))),
+                    velocity.map_or(0.0, |v| f64::from(velocity_to_unit_f32(v))),
                 )
                 .into_midi_dialect(port, None),
                 (Voice2::PolyPressure { .. }, _) => narrow(voice)
@@ -1426,7 +1434,7 @@ impl InputEventList {
                         time,
                         i16::from(channel.get()),
                         i16::from(note.get()),
-                        velocity.map_or(0.0, |v| f64::from(u16_to_unit_f32(v.get()))),
+                        velocity.map_or(0.0, |v| f64::from(velocity_to_unit_f32(v))),
                     )
                     .addressed(port, plugin_note_id(id));
                     push(&mut self.events, Some(on));
@@ -2396,7 +2404,7 @@ mod tests {
     }
 
     // (`use super::*` is already in scope from the top of this module.)
-    use tutti_midi_protocol::{signed_f32_to_bend_u32, unit_f32_to_u32};
+    use tutti_midi_protocol::{signed_f32_to_bend, unit_f32_to_value};
 
     // --- Param-change denormalization (host 0..1 → CLAP plain) ---
 
@@ -3147,7 +3155,7 @@ mod tests {
         let sysex = |group: u8| -> UmpAt {
             let payload = [0x7E, 0x09, 0x01];
             let packets =
-                tutti_ump::Sysex7Packets::checked(MidiGroup::new(group).unwrap(), &payload)
+                tutti_ump::Sysex7Packets::from_payload(MidiGroup::new(group).unwrap(), &payload)
                     .expect("seven-bit bytes");
             let ump = packets.into_iter().next().expect("one packet");
             (Offset::new(0, Samples(64)).expect("inside the block"), ump)
@@ -3427,7 +3435,7 @@ mod tests {
 
     #[test]
     fn clap_volume_round_trips_and_saturates_boost_l6() {
-        use tutti_midi_protocol::u32_to_unit_f32;
+        use tutti_midi_protocol::value_to_unit_f32;
 
         let unit_of = |gain: f64| -> f32 {
             let clap = per_note_expression(
@@ -3441,7 +3449,7 @@ mod tests {
             let midi = clap.to_midi().expect("volume -> midi");
             match message(&midi) {
                 Message::Midi2(_, Voice2::AssignablePerNote { value, .. }) => {
-                    u32_to_unit_f32(value)
+                    value_to_unit_f32(value)
                 }
                 other => panic!("expected a per-note controller, got {other:?}"),
             }
@@ -3460,10 +3468,10 @@ mod tests {
 
     #[test]
     fn per_note_pitch_bend_becomes_tuning_note_expression() {
-        let bend = signed_f32_to_bend_u32(0.5);
+        let bend = signed_f32_to_bend(0.5);
         let midi = (
             at(11),
-            fx::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(3), 60, bend),
+            fx::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(3), 60, bend.get()),
         );
         match from_midi_live(&midi).expect("per-note bend converts") {
             ClapEvent::NoteExpression(e) => {
@@ -3489,11 +3497,11 @@ mod tests {
     /// in this block and after a `clear`, while channel 4 stays at ±48 (24).
     #[test]
     fn the_input_list_follows_the_per_note_bend_range() {
-        let half = signed_f32_to_bend_u32(0.5);
+        let half = signed_f32_to_bend(0.5);
         let bend = |channel: u8| {
             (
                 at(0),
-                fx::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), 60, half),
+                fx::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), 60, half.get()),
             )
         };
         let tunings = |list: &InputEventList| -> Vec<(i16, f64)> {
@@ -3549,7 +3557,7 @@ mod tests {
 
     #[test]
     fn tuning_note_expression_round_trips_to_per_note_pitch_bend() {
-        use tutti_midi_protocol::bend_u32_to_signed_f32;
+        use tutti_midi_protocol::bend_to_signed_f32;
 
         let value_semitones = 0.5 * emitted_bend_range_semitones();
         let clap = per_note_expression(
@@ -3566,7 +3574,7 @@ mod tests {
             Message::Midi2(address, Voice2::PerNotePitchBend { note, value }) => {
                 assert_eq!(address.channel.get(), 5);
                 assert_eq!(note.get(), 67);
-                let value = bend_u32_to_signed_f32(value);
+                let value = bend_to_signed_f32(value);
                 assert!((value - 0.5).abs() < 0.01, "bend {value}");
             }
             other => panic!("expected PerNotePitchBend, got {other:?}"),
@@ -3581,7 +3589,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(2),
                 48,
-                unit_f32_to_u32(0.75),
+                unit_f32_to_value(0.75).get(),
             ),
         );
         match from_midi_live(&midi).expect("poly pressure converts") {
@@ -3604,7 +3612,7 @@ mod tests {
                 MidiChannel::of(1),
                 64,
                 74,
-                unit_f32_to_u32(0.6),
+                unit_f32_to_value(0.6).get(),
                 false,
             ),
         );
@@ -3629,7 +3637,7 @@ mod tests {
                 MidiChannel::FIRST,
                 60,
                 20,
-                unit_f32_to_u32(0.5),
+                unit_f32_to_value(0.5).get(),
                 false,
             ),
         );
@@ -3682,7 +3690,7 @@ mod tests {
                 MidiGroup::FIRST,
                 MidiChannel::of(CH),
                 KEY,
-                unit_f32_to_u32(0.5),
+                unit_f32_to_value(0.5).get(),
             ),
         ));
         list.add_midi(&(
@@ -3739,7 +3747,7 @@ mod tests {
     fn note_off_release_velocity_is_threaded_through() {
         // A MIDI-2 NoteOff carries a release velocity; it must reach the
         // CLAP NoteOff's `velocity`, and round-trip back.
-        use tutti_midi_protocol::u16_to_unit_f32;
+        use tutti_midi_protocol::velocity_to_unit_f32;
         let rel = 0x6000u16; // ~0.375 of full scale
         let midi = (
             at(9),
@@ -3748,7 +3756,7 @@ mod tests {
         match from_midi(&midi).expect("note off converts") {
             ClapEvent::NoteOff(e) => {
                 assert_eq!(e.key, 55);
-                let expected = f64::from(u16_to_unit_f32(rel));
+                let expected = f64::from(velocity_to_unit_f32(NoteVelocity::new(rel)));
                 assert!(
                     (e.velocity - expected).abs() < 0.01,
                     "release velocity {} vs {expected}",
@@ -3763,13 +3771,13 @@ mod tests {
     #[test]
     fn note_off_release_velocity_round_trips() {
         // The CLAP → MIDI-2 direction must preserve release velocity too.
-        use tutti_midi_protocol::u16_to_unit_f32;
+        use tutti_midi_protocol::velocity_to_unit_f32;
 
         let clap = ClapEvent::note_off(2, 1, 48, 0.5);
         let midi = clap.to_midi().expect("note off -> midi");
         match message(&midi) {
             Message::Midi2(_, Voice2::NoteOff { velocity, .. }) => {
-                let vel = u16_to_unit_f32(velocity.get());
+                let vel = velocity_to_unit_f32(velocity);
                 assert!((vel - 0.5).abs() < 0.01, "release velocity {vel}");
             }
             other => panic!("expected CV2 NoteOff, got {other:?}"),
@@ -3822,7 +3830,10 @@ mod tests {
             Message::Midi2(address, Voice2::ControlChange { controller, value }) => {
                 assert_eq!(address.channel.get(), 1);
                 assert_eq!(controller.get(), 74);
-                assert_eq!(value, tutti_fixtures::midi::wide_value(100));
+                assert_eq!(
+                    value,
+                    ControlValue::new(tutti_fixtures::midi::wide_value(100))
+                );
             }
             other => panic!("expected CV2 ControlChange, got {other:?}"),
         }
@@ -3844,7 +3855,7 @@ mod tests {
     fn note_event_round_trips_to_full_width_cv2() {
         // ClapEvent::NoteOn -> WireMidi builds a native MIDI-2 NoteOn preserving
         // the note and full-width velocity (no 7-bit squash).
-        use tutti_midi_protocol::u16_to_unit_f32;
+        use tutti_midi_protocol::velocity_to_unit_f32;
 
         let clap = ClapEvent::note_on(3, 2, 64, 0.75);
         let midi = clap.to_midi().expect("note on -> midi");
@@ -3853,7 +3864,7 @@ mod tests {
             Message::Midi2(address, Voice2::NoteOn { note, velocity, .. }) => {
                 assert_eq!(address.channel.get(), 2);
                 assert_eq!(note.get(), 64);
-                let velocity = u16_to_unit_f32(velocity.get());
+                let velocity = velocity_to_unit_f32(velocity);
                 assert!((velocity - 0.75).abs() < 0.01, "velocity {velocity}");
             }
             other => panic!("expected CV2 NoteOn, got {other:?}"),

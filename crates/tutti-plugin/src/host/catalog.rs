@@ -7,7 +7,6 @@
 //! this crate has no opinion on OS conventions or app names.
 //!
 //! ```no_run
-//! # #[cfg(feature = "json")]
 //! # fn ex() -> Result<(), tutti_plugin_db::ScanBusy> {
 //! use tutti_plugin::catalog::{Catalog, CatalogConfig};
 //! use std::path::PathBuf;
@@ -24,7 +23,7 @@
 //!
 //! The database is a plain [`PluginDb`]; a host that
 //! keeps its rows elsewhere (a CRDT, an application database) builds one from
-//! them and persists it itself, without the `json` feature:
+//! them and persists it itself through [`Catalog::with_saver`]:
 //!
 //! ```no_run
 //! use std::path::PathBuf;
@@ -70,21 +69,17 @@ type Saver = Arc<dyn Fn(&PluginDb) -> std::io::Result<()> + Send + Sync>;
 /// whether a load may open one ([`check`](Self::check)).
 ///
 /// Wraps a [`PluginDb`]; [`Catalog::with_db`] takes your own, and
-/// `Catalog::open_db` reads the versioned JSON file when the `json` feature is
-/// enabled. Every change is in memory until [`save`](Self::save) is called.
+/// [`Catalog::open_db`] reads the versioned JSON file. Every change is in memory
+/// until [`save`](Self::save) is called.
 ///
-/// With the `json` feature the store is the JSON file at `config.db_path`.
-/// Without it there is no store until the host gives one
-/// ([`with_saver`](Self::with_saver)); until then `save` fails with
-/// [`Unsupported`](std::io::ErrorKind::Unsupported), and so does the save a
-/// crash recovery needs, which keeps the pedal armed (see
-/// [`recover_crash`](Self::recover_crash)).
+/// The store is the JSON file at `config.db_path`, or the host's own
+/// ([`with_saver`](Self::with_saver)).
 pub struct Catalog {
     db: PluginDb,
     scanner: Scanner,
     config: CatalogConfig,
     audio: AudioConfig,
-    saver: Option<Saver>,
+    saver: Saver,
     /// The write a finished rescan started on its own thread.
     pending_save: Option<std::thread::JoinHandle<()>>,
 }
@@ -105,25 +100,9 @@ impl Drop for Catalog {
 }
 
 /// The saver `with_db` installs: the JSON file at the config's path.
-#[cfg(feature = "json")]
-fn file_saver(config: &CatalogConfig) -> Option<Saver> {
+fn file_saver(config: &CatalogConfig) -> Saver {
     let path = config.db_path.clone();
-    Some(Arc::new(move |db| tutti_plugin_db::save(db, &path)))
-}
-
-#[cfg(not(feature = "json"))]
-fn file_saver(_config: &CatalogConfig) -> Option<Saver> {
-    None
-}
-
-fn write_through(saver: Option<&Saver>, db: &PluginDb) -> std::io::Result<()> {
-    match saver {
-        Some(save) => save(db),
-        None => Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "this catalog has no store: enable `json` or call `Catalog::with_saver`",
-        )),
-    }
+    Arc::new(move |db| tutti_plugin_db::save(db, &path))
 }
 
 /// The key a path has in the database: what a scan keys the file by, so an
@@ -166,8 +145,8 @@ impl Catalog {
         self
     }
 
-    /// Sets how this catalog persists its database, replacing the JSON file
-    /// (or the absence of one). It runs on the owning thread for `save` and for
+    /// Sets how this catalog persists its database, replacing the JSON file.
+    /// It runs on the owning thread for `save` and for
     /// a crash recovery, and on a short-lived thread for the save after a
     /// rescan, which gets a copy of the table.
     #[must_use]
@@ -175,13 +154,12 @@ impl Catalog {
         mut self,
         saver: impl Fn(&PluginDb) -> std::io::Result<()> + Send + Sync + 'static,
     ) -> Self {
-        self.saver = Some(Arc::new(saver));
+        self.saver = Arc::new(saver);
         self
     }
 
-    /// Creates an empty catalog without reading `config.db_path`.
-    ///
-    /// With the `json` feature, `save` writes to `config.db_path`.
+    /// Creates an empty catalog without reading `config.db_path`; `save` writes
+    /// to it.
     #[must_use]
     pub fn empty(config: CatalogConfig) -> Self {
         Self::with_db(PluginDb::new(), config)
@@ -190,8 +168,7 @@ impl Catalog {
     /// Creates a catalog loaded from the JSON file at `config.db_path`.
     ///
     /// See [`tutti_plugin_db::load`] for how a missing, corrupt or
-    /// other-version file is handled. Requires the `json` feature.
-    #[cfg(feature = "json")]
+    /// other-version file is handled.
     #[must_use]
     pub fn open_db(config: CatalogConfig) -> Self {
         let db = tutti_plugin_db::load(&config.db_path);
@@ -264,11 +241,9 @@ impl Catalog {
     /// ```
     pub fn spawn_scan(&mut self) -> std::result::Result<Scan, ScanBusy> {
         self.finish_pending_save();
-        let saver = self.saver.as_ref();
+        let saver = &self.saver;
         self.scanner
-            .spawn(&mut self.db, &self.config.scan_dirs, |db| {
-                write_through(saver, db)
-            })
+            .spawn(&mut self.db, &self.config.scan_dirs, |db| saver(db))
     }
 
     /// Applies what a rescan has found so far and reports where it stands.
@@ -298,13 +273,11 @@ impl Catalog {
     /// [`ScanBusy`], as for [`spawn_scan`](Self::spawn_scan).
     pub fn scan(&mut self) -> std::result::Result<ScanResult, ScanBusy> {
         self.finish_pending_save();
-        let saver = self.saver.as_ref();
+        let saver = &self.saver;
         let result = self
             .scanner
-            .scan(&mut self.db, &self.config.scan_dirs, |db| {
-                write_through(saver, db)
-            })?;
-        if let Err(e) = write_through(self.saver.as_ref(), &self.db) {
+            .scan(&mut self.db, &self.config.scan_dirs, |db| saver(db))?;
+        if let Err(e) = (self.saver)(&self.db) {
             tracing::warn!("failed to save the plugin database after a scan: {e}");
         }
         Ok(result)
@@ -315,10 +288,7 @@ impl Catalog {
     /// writes never race and the newer table is the one on disk.
     fn save_in_background(&mut self) {
         self.finish_pending_save();
-        let Some(saver) = self.saver.clone() else {
-            tracing::warn!("a rescan finished but this catalog has no store to save to");
-            return;
-        };
+        let saver = Arc::clone(&self.saver);
         let copy = Arc::new(self.db.clone());
         let for_thread = (Arc::clone(&copy), Arc::clone(&saver));
         let spawned = std::thread::Builder::new()
@@ -355,8 +325,7 @@ impl Catalog {
     ///
     /// Useful when another process may have rewritten the file. Unsaved
     /// in-memory changes are lost. A rescan in flight still applies its deltas
-    /// to the reloaded catalog. Requires the `json` feature.
-    #[cfg(feature = "json")]
+    /// to the reloaded catalog.
     pub fn reload(&mut self) {
         self.finish_pending_save();
         self.db = tutti_plugin_db::load(&self.config.db_path);
@@ -557,23 +526,21 @@ impl Catalog {
     ///
     /// The non-blocking half of [`register_path`](Self::register_path): run
     /// [`probe_record`] on any thread (it needs no catalog) and pass the result
-    /// here. Call `save` (feature `json`) to persist.
+    /// here. Call `save` to persist.
     pub fn apply(&mut self, delta: Delta) {
         self.db.apply(delta);
     }
 
     /// Writes the in-memory catalog to its store: the JSON file at
-    /// `config.db_path` (atomically; feature `json`), or the host's own saver
+    /// `config.db_path` (atomically), or the host's own saver
     /// ([`with_saver`](Self::with_saver)).
     ///
     /// # Errors
     ///
-    /// Returns the store's I/O error; the previous file is then intact. With no
-    /// store (no `json`, no saver) returns
-    /// [`Unsupported`](std::io::ErrorKind::Unsupported).
+    /// Returns the store's I/O error; the previous file is then intact.
     pub fn save(&mut self) -> std::io::Result<()> {
         self.finish_pending_save();
-        write_through(self.saver.as_ref(), &self.db)
+        (self.saver)(&self.db)
     }
 
     /// Blacklists the plugin a previous scan was probing when it died.
@@ -589,11 +556,9 @@ impl Catalog {
     /// Idempotent, and a no-op when no sentinel is present. Returns the files
     /// that were blacklisted.
     ///
-    /// The sentinel is removed only after the blacklist is saved. A catalog with
-    /// no store (no `json`, no [`with_saver`](Self::with_saver)) cannot save, so
-    /// the blacklist lives in memory and the sentinel stays armed: the next
-    /// start blacklists the plugin again rather than forgetting it. Give such a
-    /// catalog a saver to let the sentinel go.
+    /// The sentinel is removed only after the blacklist is saved. A save that
+    /// fails leaves the sentinel armed: the next start blacklists the plugin
+    /// again rather than forgetting it.
     ///
     /// # Errors
     ///
@@ -601,9 +566,8 @@ impl Catalog {
     /// probe, not a crash.
     pub fn recover_crash(&mut self) -> std::result::Result<Vec<PathBuf>, ScanBusy> {
         self.finish_pending_save();
-        let saver = self.saver.as_ref();
-        self.scanner
-            .recover_crash(&mut self.db, |db| write_through(saver, db))
+        let saver = &self.saver;
+        self.scanner.recover_crash(&mut self.db, |db| saver(db))
     }
 
     /// Removes rows whose plugin file does not exist and returns their paths.
@@ -842,7 +806,6 @@ mod tests {
 
     /// A crash recovered through the catalog is on disk before the pedal is
     /// gone, and a fresh `load` sees it. The pedal sits beside the database.
-    #[cfg(feature = "json")]
     #[test]
     fn a_recovered_crash_is_saved_and_survives_a_restart() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -883,30 +846,6 @@ mod tests {
 
         assert_eq!(*seen.lock().unwrap(), vec![(true, true)]);
         assert!(!plugins.config.pedal_path().exists());
-    }
-
-    /// A catalog with no store cannot have saved the blacklist, so the pedal
-    /// stays armed and the blacklist is in memory only.
-    #[cfg(not(feature = "json"))]
-    #[test]
-    fn a_catalog_with_no_store_keeps_the_pedal_armed() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let config = CatalogConfig::new(dir.path().join("db.json"), crate::catalog::NO_SCAN_DIRS);
-        let crashy = dir.path().join("Crashy.vst3");
-        std::fs::write(&crashy, b"x").unwrap();
-        std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
-
-        let mut plugins = Catalog::empty(config.clone());
-        assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
-        // A rescan recovers first; it must not delete what it could not save.
-        plugins.scan().unwrap();
-
-        assert!(plugins.db().is_blacklisted(&key(&crashy)));
-        assert!(config.pedal_path().exists());
-        assert_eq!(
-            plugins.save().unwrap_err().kind(),
-            std::io::ErrorKind::Unsupported
-        );
     }
 
     /// The save after a rescan is off the owner's thread: `poll_scan` reports

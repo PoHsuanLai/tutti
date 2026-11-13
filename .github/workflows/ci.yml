@@ -254,7 +254,7 @@ jobs:
       - name: Plugin formats
         shell: bash
         run: |
-          cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2 --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
@@ -467,7 +467,7 @@ jobs:
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-plugin --features clap,vst2 --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
 
@@ -539,7 +539,7 @@ jobs:
           cargo build --locked -p tutti-plugin-server
           cargo build --locked -p tutti-plugin-probe
       - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
-        run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
+        run: cargo nextest run --locked -p tutti-plugin --features clap,vst2
 
   # Benchmarks: proved to RUN, never compared.
   #

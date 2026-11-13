@@ -68,9 +68,9 @@ pub use tutti_plugin_types::{Normalized, ParamId};
 /// between a multi-minute startup and an instant one) and crash recovery (a
 /// plugin that hard-crashes the scanner is auto-blacklisted on the next run).
 ///
-/// With the opt-in `json` feature, `Catalog::open_db` and `Catalog::save` keep the
-/// table in a versioned JSON file. Without it, build the `PluginDb` from your
-/// own store and pass it to `Catalog::with_db`.
+/// `Catalog::open_db` and `Catalog::save` keep the table in a versioned JSON
+/// file; a host with its own store builds the `PluginDb` from it, passes it to
+/// `Catalog::with_db` and saves through `Catalog::with_saver`.
 pub mod catalog {
     pub use crate::host::db_probe::{
         DEFAULT_MEASURE_TIMEOUT, DEFAULT_PROBE_TIMEOUT, measure_record, measure_record_with,

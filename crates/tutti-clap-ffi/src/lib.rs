@@ -11,7 +11,6 @@ mod guard;
 mod gui;
 mod host;
 mod library;
-#[cfg(feature = "clap-extras")]
 mod menu;
 mod plugin;
 mod pool;
@@ -29,12 +28,10 @@ pub use host::{
     Host, HostCallbacks, TrackInfoWriter, TrackPortKind, TransportCommand, TuningInfoWriter,
 };
 pub use library::{Bundle, DescriptorInfo, LoadError, Stage, chars_to_string};
-#[cfg(all(feature = "testing", feature = "clap-extras"))]
+#[cfg(feature = "testing")]
 #[doc(hidden)]
 pub use menu::builder_for_test;
-#[cfg(feature = "clap-extras")]
 pub use menu::{MenuItem, MenuTarget};
-#[cfg(feature = "clap-extras")]
 pub use plugin::PortConfigRequest;
 pub use plugin::{
     ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortKind, off_thread_drops,
@@ -47,7 +44,6 @@ pub use types::{
     LogSeverity, NoteName, NotePortDecl, ParamInfo, ParamsRescanFlags, ProcessStatus, StateContext,
     VoiceInfo,
 };
-#[cfg(feature = "clap-extras")]
 pub use types::{RemoteControlsPageDecl, TriggerDecl, UndoDeltaDecl};
 
 // Test-only global allocator for the no-allocation gates.

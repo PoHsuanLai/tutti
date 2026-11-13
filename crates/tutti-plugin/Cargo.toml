@@ -15,15 +15,9 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# Nothing on by default. This is a library: persistence and format support are
-# the embedding app's choices, so every one of them is opt-in and the default
-# build pulls no `serde_json` and no format FFI.
+# Nothing on by default: format support is the embedding app's choice, and the
+# default build pulls no format FFI.
 default = []
-
-# Opt-in versioned JSON database file (`tutti-plugin-db`'s `save` and `load`)
-# behind `Catalog::open_db` and `Catalog::save`. Leave it off and build a
-# `PluginDb` from your own store.
-json = ["tutti-plugin-db/json"]
 
 # `PluginRef` and `PluginState` derive `Serialize` and `Deserialize`: a project
 # file keeps them.
@@ -68,7 +62,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "pro
 
 # Discovery: the scanner, the catalog and its records. This crate supplies the
 # subprocess probe.
-tutti-plugin-db = { path = "../tutti-plugin-db" }
+tutti-plugin-db = { path = "../tutti-plugin-db", features = ["json"] }
 
 # Logging
 tracing = "0.1"

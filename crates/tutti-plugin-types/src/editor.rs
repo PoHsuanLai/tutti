@@ -11,10 +11,12 @@ use std::ffi::c_void;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModifierConvention {
     /// The Apple convention: the command role is the Command key
-    /// ([`Modifiers::META`]), and the Control key is the separate control role.
+    /// ([`Modifiers::META`] or [`Modifiers::SUPER`], which both name that key), and the
+    /// Control key is the separate control role.
     Mac,
     /// The PC convention: the command role is the Control key
-    /// ([`Modifiers::CONTROL`]), and the Windows key has no role.
+    /// ([`Modifiers::CONTROL`]), and the Windows key ([`Modifiers::META`] or
+    /// [`Modifiers::SUPER`], which both name it) has no role.
     Pc,
 }
 
@@ -51,6 +53,19 @@ pub struct KeyEvent {
     pub code: Code,
     /// The modifiers held.
     pub modifiers: Modifiers,
+}
+
+impl KeyEvent {
+    /// Whether the Command key (Apple) or the Windows key (PC) is held.
+    ///
+    /// Frontends disagree on which flag that one physical key sets, so
+    /// [`Modifiers::META`] and the legacy [`Modifiers::SUPER`] both name it.
+    #[must_use]
+    #[allow(deprecated)] // `SUPER` is how winit reports the key.
+    pub fn meta_held(&self) -> bool {
+        self.modifiers
+            .intersects(Modifiers::META | Modifiers::SUPER)
+    }
 }
 
 /// What an editor did with a forwarded [`KeyEvent`].

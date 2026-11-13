@@ -48,13 +48,13 @@ pub(crate) fn view_key_of(event: &KeyEvent, convention: ModifierConvention) -> O
         (M::kCommandKey, M::kControlKey)
     };
     let mut modifiers = 0;
-    for (flag, bit) in [
-        (Modifiers::SHIFT, M::kShiftKey),
-        (Modifiers::ALT, M::kAlternateKey),
-        (Modifiers::CONTROL, control),
-        (Modifiers::META, command),
+    for (held, bit) in [
+        (event.modifiers.contains(Modifiers::SHIFT), M::kShiftKey),
+        (event.modifiers.contains(Modifiers::ALT), M::kAlternateKey),
+        (event.modifiers.contains(Modifiers::CONTROL), control),
+        (event.meta_held(), command),
     ] {
-        if event.modifiers.contains(flag) {
+        if held {
             modifiers |= sdk_enum_i32(bit) as i16;
         }
     }
@@ -308,6 +308,12 @@ mod tests {
         assert_eq!(bits(Modifiers::META, ModifierConvention::Pc), Some(8));
         assert_eq!(bits(Modifiers::CONTROL, ModifierConvention::Mac), Some(8));
         assert_eq!(bits(Modifiers::META, ModifierConvention::Mac), Some(4));
+        // winit reports the Command and Windows key as `SUPER`.
+        #[allow(deprecated)]
+        {
+            assert_eq!(bits(Modifiers::SUPER, ModifierConvention::Mac), Some(4));
+            assert_eq!(bits(Modifiers::SUPER, ModifierConvention::Pc), Some(8));
+        }
         let held = Modifiers::SHIFT | Modifiers::ALT | Modifiers::CONTROL | Modifiers::META;
         assert_eq!(bits(held, ModifierConvention::Mac), Some(15));
         assert_eq!(

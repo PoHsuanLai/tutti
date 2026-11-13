@@ -33,20 +33,26 @@ pub(crate) fn key_code_of(event: &KeyEvent, convention: ModifierConvention) -> O
     };
     let apple = convention == ModifierConvention::Mac;
     let mut modifier = ModifierKey::empty();
-    for (flag, bit) in [
-        (Modifiers::SHIFT, Some(ModifierKey::SHIFT)),
-        (Modifiers::ALT, Some(ModifierKey::ALT)),
+    for (held, bit) in [
         (
-            Modifiers::CONTROL,
+            event.modifiers.contains(Modifiers::SHIFT),
+            Some(ModifierKey::SHIFT),
+        ),
+        (
+            event.modifiers.contains(Modifiers::ALT),
+            Some(ModifierKey::ALT),
+        ),
+        (
+            event.modifiers.contains(Modifiers::CONTROL),
             Some(if apple {
                 ModifierKey::COMMAND
             } else {
                 ModifierKey::CONTROL
             }),
         ),
-        (Modifiers::META, apple.then_some(ModifierKey::CONTROL)),
+        (event.meta_held(), apple.then_some(ModifierKey::CONTROL)),
     ] {
-        if event.modifiers.contains(flag) {
+        if held {
             modifier |= bit?;
         }
     }
@@ -284,6 +290,12 @@ mod tests {
         assert_eq!(bits(Modifiers::META, ModifierConvention::Pc), None);
         assert_eq!(bits(Modifiers::CONTROL, ModifierConvention::Mac), Some(4));
         assert_eq!(bits(Modifiers::META, ModifierConvention::Mac), Some(8));
+        // winit reports the Command and Windows key as `SUPER`.
+        #[allow(deprecated)]
+        {
+            assert_eq!(bits(Modifiers::SUPER, ModifierConvention::Mac), Some(8));
+            assert_eq!(bits(Modifiers::SUPER, ModifierConvention::Pc), None);
+        }
         assert_eq!(
             bits(
                 Modifiers::SHIFT | Modifiers::ALT | Modifiers::CONTROL | Modifiers::META,

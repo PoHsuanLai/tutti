@@ -18,7 +18,7 @@ use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, Elevation, SampleRate
 
 const BLOCK: usize = 64;
 const EDGE_TOL: f32 = 1e-5;
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A two-channel block, one `Vec` per input.
 type Block = [Vec<f32>; 2];

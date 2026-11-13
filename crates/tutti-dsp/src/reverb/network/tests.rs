@@ -6,7 +6,7 @@ use crate::{Lti as _, System as _};
 /// frame rounds up, and a negative or NaN span is none.
 #[test]
 fn the_pre_delay_is_rounded_to_whole_frames() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     assert_eq!(pre_delay_frames(Seconds(0.001), rate), Samples(48));
     assert_eq!(pre_delay_frames(Seconds(0.6 / 48_000.0), rate), Samples(1));
     assert_eq!(
@@ -30,7 +30,7 @@ fn a_network_fits_the_audio_thread_stack() {
 /// An empty network recirculates nothing: no decay, no tail, stable.
 #[test]
 fn an_empty_network_is_silent_and_stable() {
-    let n = Network::new(SampleRate(44_100.0));
+    let n = Network::new(SampleRate::SR_44K1);
     assert_eq!(n.rt60(Band::Mid), Seconds(0.0));
     assert_eq!(n.tail(Db(-60.0)), Ring::Finite(Seconds(0.0)));
     assert!(n.is_stable() && !n.is_lossless());

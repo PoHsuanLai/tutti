@@ -40,7 +40,7 @@ use tutti::export::Written;
 use tutti::prelude::*;
 use tutti::session::Master;
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// What `Session::update` found: faults and dropouts (a refused commit, a
 /// plugin that died, a lost block). A host logs them; here they are printed.

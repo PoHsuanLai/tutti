@@ -176,7 +176,7 @@ mod tests {
     use tutti_graph::{Node, ParamNode};
     use tutti_types::{ChannelLayout, Latency, PhaseIncrement, Samples, Tail, UnitParam};
 
-    const RATE: SampleRate = SampleRate(48_000.0);
+    const RATE: SampleRate = SampleRate::SR_48K;
 
     fn bus(width: u16) -> BusTopology {
         BusTopology::assumed(ChannelLayout::from(width)).expect("a test width is one bus")

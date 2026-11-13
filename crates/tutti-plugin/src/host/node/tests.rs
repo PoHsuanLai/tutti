@@ -40,7 +40,7 @@ fn handle_over(
         format: SampleFormat::Float32,
         ceiling: 512,
         slab,
-        rate: SampleRate(48_000.0),
+        rate: SampleRate::SR_48K,
         parameters: 0,
         timeout: std::time::Duration::from_secs(5),
         origin: None,
@@ -159,7 +159,7 @@ fn handle_with_mock_server(
         buffer,
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         Some(crate::format::gui::load_gui_instance),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
     )
     .unwrap();
 
@@ -245,7 +245,7 @@ fn handle_with_multi_reply_server(
         buffer,
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         Some(crate::format::gui::load_gui_instance),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
     )
     .unwrap();
 

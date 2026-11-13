@@ -47,7 +47,7 @@ fn tap_with(frames: &[(f32, f32)]) -> TapReader {
 /// [`tap_with`], the rings holding `ring` frames.
 fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
     let (mut ed, mut exec): (Editor, Executor) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxBlock::of(Samples(BLOCK)),
     ));
     ed.insert(
@@ -162,7 +162,7 @@ fn a_tap_is_accepted_where_a_live_source_is_required() {
 #[test]
 fn the_layout_follows_the_taps_width() {
     let (mut ed, _exec): (Editor, Executor) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxBlock::of(Samples(BLOCK)),
     ));
     for width in [1usize, 2, 6] {

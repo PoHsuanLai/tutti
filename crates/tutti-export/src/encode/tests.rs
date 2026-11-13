@@ -28,7 +28,7 @@ impl Case {
 
 fn config(channels: u16, pcm: Pcm) -> Case {
     Case {
-        rate: SampleRate::new(1_000.0),
+        rate: SampleRate::of(1_000.0),
         channels: ChannelLayout::from(channels),
         pcm,
         topology: None,
@@ -90,7 +90,7 @@ fn the_limit_is_judged_at_the_output_rate() {
     open_file(&config.target(&path), &plan, rate)
         .map(drop)
         .expect("2^31 - 1000 mono 16-bit frames fit");
-    config.resample = Some(Resample::to(SampleRate::new(2_000.0)));
+    config.resample = Some(Resample::to(SampleRate::of(2_000.0)));
     let err = open_file(&config.target(&path), &plan, rate)
         .map(drop)
         .expect_err("twice the frames do not");

@@ -535,7 +535,7 @@ mod tests {
         let mut fft = FftScratch::new();
         let open = AlignConfig::new(Samples(500));
         let banded = open
-            .with_band(SampleRate::new(1.0), Hz::new(0.03), Hz::new(0.09))
+            .with_band(SampleRate::of(1.0), Hz::new(0.03), Hz::new(0.09))
             .unwrap();
         assert_eq!(banded.band(), Some((Hz(0.03), Hz(0.09))));
         let open = align(&reference, &take, &open, &mut fft).unwrap();
@@ -558,7 +558,7 @@ mod tests {
         let mut bins = vec![Complex32::new(3.0, -4.0); 9];
         bins[1] = Complex32::new(5.0e6, 0.0);
         let band = AlignConfig::new(Samples(1))
-            .with_band(SampleRate::new(16.0), Hz::new(4.0), Hz::new(6.0))
+            .with_band(SampleRate::of(16.0), Hz::new(4.0), Hz::new(6.0))
             .unwrap()
             .band;
         assert!(phase_transform(&mut bins, band));
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn a_wide_peak_is_not_its_own_runner_up() {
         let cfg = AlignConfig::new(Samples(300))
-            .with_band(SampleRate::new(48_000.0), Hz::new(1000.0), Hz::new(4000.0))
+            .with_band(SampleRate::SR_48K, Hz::new(1000.0), Hz::new(4000.0))
             .unwrap();
         let x = band_noise(4096, 5, 1000.0 / 48_000.0, 4000.0 / 48_000.0);
         let mut fft = FftScratch::new();
@@ -711,7 +711,7 @@ mod tests {
             confidence: Confidence::CERTAIN,
         };
         assert_eq!(a.delay_samples(), 48.25);
-        assert!((a.delay(SampleRate::new(48_000.0)).get() - 48.25 / 48_000.0).abs() < 1e-9);
+        assert!((a.delay(SampleRate::SR_48K).get() - 48.25 / 48_000.0).abs() < 1e-9);
 
         let mut fft = FftScratch::new();
         let cfg = AlignConfig::new(Samples(10));
@@ -736,23 +736,27 @@ mod tests {
         assert_eq!(align(&x, &quiet, &cfg, &mut fft), Err(Error::NoSignal));
         assert_eq!(align(&quiet, &x, &cfg, &mut fft), Err(Error::NoSignal));
         let gap = cfg
-            .with_band(SampleRate::new(48_000.0), Hz::new(100.0), Hz::new(200.0))
+            .with_band(SampleRate::SR_48K, Hz::new(100.0), Hz::new(200.0))
             .unwrap();
         assert_eq!(align(&x, &x, &gap, &mut fft), Err(Error::NoSignal));
 
         assert_eq!(
-            cfg.with_band(SampleRate::new(48_000.0), Hz::new(100.0), Hz::new(30_000.0)),
+            cfg.with_band(SampleRate::SR_48K, Hz::new(100.0), Hz::new(30_000.0)),
             Err(Error::AboveNyquist {
                 freq: Hz(30_000.0),
                 nyquist: Hz(24_000.0)
             })
         );
         assert!(matches!(
-            cfg.with_band(SampleRate::new(48_000.0), Hz::new(500.0), Hz::new(100.0)),
+            cfg.with_band(SampleRate::SR_48K, Hz::new(500.0), Hz::new(100.0)),
             Err(Error::EmptyFrequencyRange { .. })
         ));
         assert_eq!(
-            cfg.with_band(SampleRate::new(0.0), Hz::new(100.0), Hz::new(200.0)),
+            cfg.with_band(
+                <SampleRate as tutti_types::Unit>::from_raw(0.0),
+                Hz::new(100.0),
+                Hz::new(200.0)
+            ),
             Err(Error::NonPositiveSampleRate)
         );
     }

@@ -39,7 +39,7 @@
 //!     TempoPoint::ramp_time(Beat(0.0), Bpm::of(120.0)),
 //!     TempoPoint::step(Beat(4.0), Bpm::of(180.0)),
 //! ])?;
-//! let rate = SampleRate(48_000.0);
+//! let rate = SampleRate::SR_48K;
 //! assert_eq!(map.view(rate).frame_at_or_after(Beat(4.0)), Frame(76_800));
 //! # Ok::<(), tutti_tempo::TempoError>(())
 //! ```

@@ -60,7 +60,7 @@ fn engine(transport: &Transport) -> (Engine, Editor, Arc<Mutex<Vec<Seen>>>) {
 }
 
 fn engine_logging(transport: &Transport, log: Option<Arc<Mutex<Vec<Seen>>>>) -> (Engine, Editor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(512))));
     ed.insert(NodeKey(1), "probe", Unforkable(LoopProbe(log)));
     ed.spec_mut()
         .topology
@@ -97,7 +97,7 @@ fn pair(r: LoopRange) -> (f64, f64) {
 fn every_frame_sees_one_whole_region() {
     let a = range(0.0, 4.0);
     let b = range(8.0, 12.0);
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed, log) = engine(&transport);
 
     // (frame, edit): alternating bounds, arming toggled between them.
@@ -151,7 +151,7 @@ fn every_frame_sees_one_whole_region() {
 fn a_scheduled_edit_lands_on_its_frame() {
     let a = range(0.0, 4.0);
     let b = range(8.0, 12.0);
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed, log) = engine(&transport);
     let m = &transport.motion();
 
@@ -180,7 +180,7 @@ fn a_scheduled_edit_lands_on_its_frame() {
 fn disarming_keeps_the_bounds() {
     let a = range(2.0, 6.0);
     let b = range(10.0, 14.0);
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed, log) = engine(&transport);
     let m = &transport.motion();
 
@@ -219,7 +219,7 @@ fn disarming_keeps_the_bounds() {
 #[test]
 fn the_snapshot_follows_the_engine() {
     let a = range(1.0, 3.0);
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let (engine, _ed, _log) = engine(&transport);
     let m = &transport.motion();
 
@@ -246,7 +246,7 @@ fn the_snapshot_follows_the_engine() {
 fn a_reader_thread_never_sees_a_torn_region() {
     let a = range(0.0, 4.0);
     let b = range(8.0, 12.0);
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     // No log: the probe would append for every frame of this many blocks.
     let (engine, _ed) = engine_logging(&transport, None);
     let done = AtomicBool::new(false);

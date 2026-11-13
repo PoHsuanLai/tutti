@@ -258,7 +258,7 @@ impl EventInletWriter {
     #[must_use]
     pub fn clock(&self) -> Option<Moment> {
         self.reading()
-            .map(|r| Moment::new(Frame(r.frame), SampleRate(r.rate)))
+            .and_then(|r| Some(Moment::new(Frame(r.frame), SampleRate::new(r.rate)?)))
     }
 
     /// Queues `ump` (an [`Ump`], or a decoded `tutti_ump::Message`, which
@@ -528,8 +528,9 @@ impl Node for EventInletNode {
     /// wall-clock time at the new rate, as the executor moves its own.
     fn prepare(&mut self, p: &Prepare) {
         let rate = p.sample_rate().get();
-        if self.rate > 0.0 && (self.rate - rate).abs() > f64::EPSILON {
-            let (from, to) = (SampleRate(self.rate), SampleRate(rate));
+        if let (Some(from), Some(to)) = (SampleRate::new(self.rate), SampleRate::new(rate))
+            && (self.rate - rate).abs() > f64::EPSILON
+        {
             for w in &mut self.waiting {
                 w.frame = Frame(w.frame).rescaled(from, to).get();
             }
@@ -573,12 +574,11 @@ impl Node for EventInletNode {
                     }
                 }
                 When::Moment { frame, rate } => {
-                    let frame = if rate > 0.0 && (rate - self.rate).abs() > f64::EPSILON {
-                        Frame(frame)
-                            .rescaled(SampleRate(rate), SampleRate(self.rate))
-                            .get()
-                    } else {
-                        frame
+                    let frame = match (SampleRate::new(rate), SampleRate::new(self.rate)) {
+                        (Some(from), Some(to)) if (rate - self.rate).abs() > f64::EPSILON => {
+                            Frame(frame).rescaled(from, to).get()
+                        }
+                        _ => frame,
                     };
                     if env.due(At::Frame(Frame(frame))) == Due::Late {
                         self.counts.late.fetch_add(1, Ordering::Relaxed);

@@ -26,13 +26,13 @@ fn value(i: usize) -> f32 {
 
 fn write_ramp(path: &Path) {
     let samples: Vec<f32> = (0..LEN).map(value).collect();
-    tutti_fixtures::signal::write_wav_f32(path, SampleRate(RATE), 1, &samples);
+    tutti_fixtures::signal::write_wav_f32(path, SampleRate::of(RATE), 1, &samples);
 }
 
 fn session() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

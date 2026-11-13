@@ -145,7 +145,7 @@ mod tests {
     const WINDOW: usize = 2048;
 
     fn magnitudes_of(samples: &[f32]) -> StftMagnitude {
-        let request = StftRequest::new(SampleRate::new(RATE), Samples(WINDOW), Samples(WINDOW / 2));
+        let request = StftRequest::new(SampleRate::of(RATE), Samples(WINDOW), Samples(WINDOW / 2));
         stft_magnitude(samples, request, &mut FftScratch::new()).unwrap()
     }
 
@@ -157,7 +157,7 @@ mod tests {
         tutti_fixtures::signal::sine(
             tutti_types::Hz(hz),
             tutti_types::Amplitude(1.0),
-            tutti_types::SampleRate(RATE),
+            tutti_types::SampleRate::of(RATE),
             tutti_types::Samples(len),
         )
     }

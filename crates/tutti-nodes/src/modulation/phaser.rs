@@ -154,7 +154,7 @@ mod tests {
     use tutti_graph::{Node, ParamNode};
     use tutti_types::{ChannelLayout, Latency, PhaseIncrement, Samples, Tail, UnitParam};
 
-    const RATE: SampleRate = SampleRate(48_000.0);
+    const RATE: SampleRate = SampleRate::SR_48K;
 
     fn bus(width: u16) -> BusTopology {
         BusTopology::assumed(ChannelLayout::from(width)).expect("a test width is one bus")
@@ -404,10 +404,10 @@ mod tests {
                     ..PhaserControls::DEFAULT
                 },
             );
-            let mut node = prepared(node, SampleRate(44_100.0), 1_024);
+            let mut node = prepared(node, SampleRate::SR_44K1, 1_024);
             let mut x = [0.0f32; 1_024];
             x[0] = 1.0;
-            let y = drive(&mut node, SampleRate(44_100.0), &[&x], &[]).remove(0);
+            let y = drive(&mut node, SampleRate::SR_44K1, &[&x], &[]).remove(0);
             y[500..].iter().fold(0.0f32, |m, s| m.max(s.abs()))
         };
         assert!(ring(0.9) > 1e-3, "feedback rings: {}", ring(0.9));

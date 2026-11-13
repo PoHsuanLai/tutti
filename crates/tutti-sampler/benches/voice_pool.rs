@@ -72,7 +72,7 @@ impl Rig {
     /// A rig whose blocks (and `max_block`) are `block` frames.
     fn with_block(pool: VoicePool, block: usize) -> Self {
         Self {
-            direct: Direct::new(pool, SampleRate(SR), block),
+            direct: Direct::new(pool, SampleRate::of(SR), block),
             t: MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
             block,
         }
@@ -82,8 +82,8 @@ impl Rig {
     /// channel 0.
     fn block(&mut self) -> f32 {
         self.direct
-            .block_in(&self.t.env(self.block, SampleRate::new(SR)));
-        self.t.advance(self.block as i64, SampleRate::new(SR));
+            .block_in(&self.t.env(self.block, SampleRate::of(SR)));
+        self.t.advance(self.block as i64, SampleRate::of(SR));
         if self.t.beat().get() >= WRAP_BEATS {
             self.t.seek(Beat::new(0.0));
         }
@@ -95,7 +95,7 @@ impl Rig {
 }
 
 fn tone(freq: f32, frames: usize) -> Arc<Wave> {
-    let mut w = Wave::new(1, SampleRate::new(SR));
+    let mut w = Wave::new(1, SampleRate::of(SR));
     for i in 0..frames {
         w.push_frame(&[(TAU * freq * i as f32 / SR as f32).sin()]);
     }
@@ -292,7 +292,7 @@ fn pool_knobs(
     let mut streamer = None;
     let sources: Vec<Built> = match tier {
         Tier::Memory => {
-            let mut wave = Wave::new(2, SampleRate::new(SR));
+            let mut wave = Wave::new(2, SampleRate::of(SR));
             for i in 0..frames {
                 wave.push_frame(&tone_frame(i));
             }
@@ -320,7 +320,7 @@ fn pool_knobs(
                 }
             }
             w.finalize().expect("finalize wav");
-            let mut s = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+            let mut s = DiskStreamer::manual(SampleRate::of(SR), DiskStreamerConfig::default())
                 .expect("streamer builds");
             let openings: Vec<_> = (0..n).map(|_| s.open(&path, Placement::HEAD)).collect();
             for _ in 0..4096 {
@@ -469,7 +469,7 @@ struct Clips {
 
 impl Clips {
     fn new(n: usize, block: usize) -> Self {
-        let mut wave = Wave::new(2, SampleRate::new(SR));
+        let mut wave = Wave::new(2, SampleRate::of(SR));
         for i in 0..(SR * FILE_SECS) as usize {
             wave.push_frame(&tone_frame(i));
         }
@@ -483,7 +483,7 @@ impl Clips {
                     source: VoiceSource::Memory(source),
                     play: Playback::default(),
                 });
-                Direct::new(node, SampleRate(SR), block)
+                Direct::new(node, SampleRate::of(SR), block)
             })
             .collect();
         Self {
@@ -494,13 +494,13 @@ impl Clips {
     }
 
     fn block(&mut self) -> f32 {
-        let env = self.t.env(self.block, SampleRate::new(SR));
+        let env = self.t.env(self.block, SampleRate::of(SR));
         let mut peak = 0.0f32;
         for d in &mut self.nodes {
             d.block_in(&env);
             peak = peak.max(d.output(0)[self.block - 1].abs());
         }
-        self.t.advance(self.block as i64, SampleRate::new(SR));
+        self.t.advance(self.block as i64, SampleRate::of(SR));
         if self.t.beat().get() >= WRAP_BEATS {
             self.t.seek(Beat::new(0.0));
         }
@@ -532,7 +532,7 @@ fn bench_clips(c: &mut Criterion) {
 fn bench_sources(c: &mut Criterion) {
     let mut group = c.benchmark_group("sources");
     group.throughput(Throughput::Elements(BLOCK as u64));
-    let mut wave = Wave::new(2, SampleRate::new(SR));
+    let mut wave = Wave::new(2, SampleRate::of(SR));
     for i in 0..(SR * FILE_SECS) as usize {
         wave.push_frame(&tone_frame(i));
     }
@@ -541,18 +541,18 @@ fn bench_sources(c: &mut Criterion) {
         .map(|_| {
             let source = MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
                 .expect("a placeable wave");
-            Direct::new(source, SampleRate(SR), BLOCK)
+            Direct::new(source, SampleRate::of(SR), BLOCK)
         })
         .collect();
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut block = || {
-        let env = t.env(BLOCK, SampleRate::new(SR));
+        let env = t.env(BLOCK, SampleRate::of(SR));
         let mut peak = 0.0f32;
         for d in &mut nodes {
             d.block_in(&env);
             peak = peak.max(d.output(0)[BLOCK - 1].abs());
         }
-        t.advance(BLOCK as i64, SampleRate::new(SR));
+        t.advance(BLOCK as i64, SampleRate::of(SR));
         if t.beat().get() >= WRAP_BEATS {
             t.seek(Beat::new(0.0));
         }

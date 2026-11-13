@@ -81,11 +81,11 @@ impl Node for Beats {
     fn reset(&mut self) {}
 }
 
-let transport = Transport::new(SampleRate(48_000.0));
+let transport = Transport::new(SampleRate::SR_48K);
 
 // The editor is the control thread's half of the graph; the executor goes to
 // the engine. Every edit reaches it through a `commit`.
-let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))));
+let (mut editor, executor) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256))));
 
 // Every insert says whether the node forks (for an export): `Beats` reads
 // only its block's `Env`, so a clone of it is a fork.

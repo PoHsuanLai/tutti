@@ -17,7 +17,7 @@ use tutti_nodes::{ControlSet, FamilyNode, NodeFamily, Rings, TailCeiling};
 use tutti_types::MaxBlock;
 use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 64;
 
 /// A mono echo. The **network** says an echo `claimed` frames after the input

@@ -479,7 +479,7 @@ fn test_basic_dsp_chain() {
         OscillatorType::Saw,
         &FilterType::None,
         &Adsr::new(Seconds(0.001), Seconds(0.1), Amplitude(0.8), Seconds(0.1)),
-        tutti_types::SampleRate(44100.0),
+        tutti_types::SampleRate::SR_44K1,
         1,
         1,
     );

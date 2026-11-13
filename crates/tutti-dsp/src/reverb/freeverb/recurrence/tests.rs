@@ -53,7 +53,7 @@ fn the_all_pass_is_the_freeverb_form_not_the_lattice() {
 fn a_moving_room_glides_its_combs() {
     use crate::{Family, FreeverbControls, FreeverbFamily, Grows, Reach};
     use tutti_types::{MaxBlock, Mix};
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let d = FreeverbFamily;
     let mut r = d.realized();
     r.prepare(

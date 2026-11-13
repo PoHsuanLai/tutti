@@ -9,7 +9,7 @@ use std::time::Instant;
 use tutti_tempo::{CellGrid, TempoMap, TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, Frame, SampleRate, Seconds};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const ITERS: u64 = 2_000_000;
 
 fn per_call(mut f: impl FnMut(u64) -> f64) -> f64 {

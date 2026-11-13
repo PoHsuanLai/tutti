@@ -26,7 +26,7 @@ use tutti_types::{ChannelLayout, ChannelTopology, SampleRate};
 /// let _ = Spec {
 ///     format: Format::Wav(Pcm::Int16),
 ///     topology: ChannelTopology::quad(),
-///     rate: SampleRate(48_000.0),
+///     rate: SampleRate::SR_48K,
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq)]

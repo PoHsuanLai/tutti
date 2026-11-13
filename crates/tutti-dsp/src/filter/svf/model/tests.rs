@@ -8,7 +8,7 @@ fn model(ty: SvfType, freq: f32, q: f32, gain: f32, rate: f64) -> SvfModel {
             q: Q(q),
             gain: Db(gain),
         },
-        SampleRate(rate),
+        SampleRate::of(rate),
     )
 }
 
@@ -256,7 +256,7 @@ fn the_radius_is_the_slowest_root_of_the_denominator() {
 /// radius under 1.
 #[test]
 fn a_hostile_control_still_gives_a_stable_model() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     for (f, q, g) in [
         (f32::NAN, 1.0, 0.0),
         (1_000.0, f32::NAN, 0.0),

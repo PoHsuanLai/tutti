@@ -31,7 +31,7 @@ fn tetrahedron(rate: u32) -> Vec<u8> {
 /// and a re-prepare at the same rate keeps the one it has.
 #[test]
 fn a_clone_shares_the_sphere_and_its_spectra() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let front = Direction::new(Azimuth::FRONT, Elevation::LEVEL);
     let mut a = HrtfBinaural::new(&tetrahedron(48_000), rate, front).expect("parses");
     let b = a.fresh(front);
@@ -40,7 +40,7 @@ fn a_clone_shares_the_sphere_and_its_spectra() {
 
     a.set_sample_rate(rate, || front);
     assert!(Arc::ptr_eq(&a.set, &b.set), "a same-rate prepare rebuilt");
-    a.set_sample_rate(SampleRate(96_000.0), || front);
+    a.set_sample_rate(SampleRate::SR_96K, || front);
     assert!(Arc::ptr_eq(&a.sphere, &b.sphere));
     assert!(!Arc::ptr_eq(&a.set, &b.set));
     assert_eq!(a.set.rate, 96_000);
@@ -51,10 +51,10 @@ fn a_clone_shares_the_sphere_and_its_spectra() {
 #[test]
 fn a_prepare_above_the_ceiling_keeps_one_set() {
     let front = Direction::new(Azimuth::FRONT, Elevation::LEVEL);
-    let mut a =
-        HrtfBinaural::new(&tetrahedron(48_000), SampleRate(1_536_000.0), front).expect("parses");
+    let mut a = HrtfBinaural::new(&tetrahedron(48_000), SampleRate::of(1_536_000.0), front)
+        .expect("parses");
     let set = a.set.clone();
-    a.set_sample_rate(SampleRate(1_024_000.0), || front);
+    a.set_sample_rate(SampleRate::of(1_024_000.0), || front);
     assert!(Arc::ptr_eq(&a.set, &set), "both rates key to one set");
     assert_eq!(a.set.rate, MAX_PREPARED_RATE);
 }
@@ -68,7 +68,7 @@ fn a_prepare_above_the_ceiling_keeps_one_set() {
 /// deltas pass the constant input through at every vertex.
 #[test]
 fn a_degenerate_direction_takes_a_real_vertex_and_renders_finite_audio() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let mut p = HrtfBinaural::new(
         &tetrahedron(48_000),
         rate,

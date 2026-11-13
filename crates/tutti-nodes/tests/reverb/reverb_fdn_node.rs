@@ -21,7 +21,7 @@ use tutti_types::{
     UnitParam,
 };
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 64;
 
 fn plain() -> FdnFamily {

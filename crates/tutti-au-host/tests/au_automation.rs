@@ -38,7 +38,7 @@ fn delay_loaded() -> AuLoaded {
 
 fn activate(au: AuLoaded) -> (AuProcessor, AuController) {
     let prepare = Prepare::new(
-        SampleRate(RATE),
+        SampleRate::of(RATE),
         MaxBlock::of(tutti_types::Samples(BLOCK as _)),
     )
     .unwrap();

@@ -9,7 +9,7 @@ use tutti_ump::{MidiGroup, NoteVelocity, Ump};
 fn rig() -> (Direct<EventInletNode>, MidiKeys) {
     let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     (
-        Direct::new(node, SampleRate(48_000.0), 64),
+        Direct::new(node, SampleRate::SR_48K, 64),
         MidiKeys::new(writer, MidiGroup::FIRST),
     )
 }
@@ -93,7 +93,7 @@ fn a_full_ring_refuses_through_the_helper() {
 fn the_helpers_send_on_the_keys_group() {
     let group = MidiGroup::new(2).expect("in range");
     let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
-    let mut d = Direct::new(node, SampleRate(48_000.0), 64);
+    let mut d = Direct::new(node, SampleRate::SR_48K, 64);
     let mut keys = MidiKeys::new(writer, group);
     assert_eq!(keys.group(), group);
     keys.note_on(

@@ -42,7 +42,7 @@ fn a_dropped_writer_has_stopped_its_thread() {
             quality: Quality::LOWEST,
         },
         ChannelLayout::STEREO,
-        SampleRate(44_100.0),
+        SampleRate::SR_44K1,
     );
     let sink = Watched {
         inner: Cursor::new(Vec::new()),
@@ -69,7 +69,7 @@ fn vorbis_spec(width: u16, topology: Option<ChannelTopology>) -> Spec {
     let format = crate::Format::Vorbis {
         quality: Quality::HIGHEST,
     };
-    let rate = SampleRate(44_100.0);
+    let rate = SampleRate::SR_44K1;
     match topology {
         Some(topology) => Spec::new(format, topology, rate),
         None => Spec::of_width(format, ChannelLayout::from(width), rate),

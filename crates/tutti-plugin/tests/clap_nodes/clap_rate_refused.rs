@@ -51,7 +51,10 @@ fn drive_block(unit: &mut Rig) -> Vec<f32> {
 fn reprepare(unit: &mut Rig, rate: f64) {
     unit.renderer()
         .editor_mut()
-        .reprepare(Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK))))
+        .reprepare(Prepare::new(
+            SampleRate::of(rate),
+            MaxBlock::of(Samples(BLOCK)),
+        ))
         .expect("the graph re-prepares");
 }
 
@@ -73,7 +76,7 @@ fn wait_for(
 }
 
 fn refused_at(status: &PluginStatus, rate: f64) -> bool {
-    matches!(status, PluginStatus::RateRefused { rate: r, reason } if r.0 == rate && !reason.is_empty())
+    matches!(status, PluginStatus::RateRefused { rate: r, reason } if r.get() == rate && !reason.is_empty())
 }
 
 /// Drive until `blocks` consecutive blocks are live, within a bounded budget.
@@ -147,7 +150,7 @@ fn a_refused_rate_is_silent_visible_and_retried() {
     );
     assert!(
         events.lock().unwrap().iter().any(
-            |e| matches!(e, PluginInvalidation::RateRefused { rate, .. } if rate.0 == REFUSED_RATE)
+            |e| matches!(e, PluginInvalidation::RateRefused { rate, .. } if rate.get() == REFUSED_RATE)
         ),
         "{:?}",
         events.lock().unwrap()

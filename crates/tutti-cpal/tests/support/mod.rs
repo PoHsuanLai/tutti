@@ -34,7 +34,7 @@ pub const SAMPLE_RATE: f64 = 48_000.0;
 /// commits again.
 pub fn graph_engine(transport: &Transport, build: impl FnOnce(&mut Editor)) -> Engine {
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
         MaxBlock::of(Samples(512)),
     ));
     build(&mut ed);
@@ -56,7 +56,7 @@ pub fn fan(ed: &mut Editor, node: NodeKey, outputs: usize) {
 /// The graph has to actually render: a graph with nothing wired renders
 /// silence, and any assertion over it is vacuous.
 pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
-    let transport = Transport::new(SampleRate::new(SAMPLE_RATE));
+    let transport = Transport::new(SampleRate::of(SAMPLE_RATE));
     let engine = graph_engine(&transport, |ed| {
         let (source, filter) = (NodeKey(1), NodeKey(2));
         ed.insert(source, "sine", Osc::sine(Hz(220.0)));
@@ -92,7 +92,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
 /// in closed form instead of sampled. That is what makes the sample-format
 /// matrix assertable.
 pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
-    let engine = graph_engine(&Transport::new(SampleRate::new(SAMPLE_RATE)), |ed| {
+    let engine = graph_engine(&Transport::new(SampleRate::of(SAMPLE_RATE)), |ed| {
         ed.insert(NodeKey(1), "dc", Const::mono(level));
         fan(ed, NodeKey(1), outputs);
     });
@@ -102,7 +102,7 @@ pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
 /// A spec with no device behind it, at `channels` width and `format`.
 pub fn spec(channels: usize, format: cpal::SampleFormat) -> OutputSpec {
     OutputSpec::new(
-        SampleRate(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
         ChannelLayout::try_from(channels).expect("a test width is small"),
         format,
     )

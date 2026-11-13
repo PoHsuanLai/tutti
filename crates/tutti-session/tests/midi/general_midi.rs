@@ -11,7 +11,7 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{ChannelLayout, SampleRate, Samples, Tail};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn offline_session() -> Session {
     Session::builder()

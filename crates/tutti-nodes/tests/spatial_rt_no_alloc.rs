@@ -24,7 +24,7 @@ static A: AllocDisabler = AllocDisabler;
 /// The inputs carry signal, and the gate checks it came out, so a gate over a node that renders nothing cannot pass
 /// having walked no DSP.
 fn gate<N: IntoNode>(node: N, warm: usize) {
-    let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
     for c in rig.inputs_mut() {
         c.fill(0.5);
     }
@@ -146,8 +146,7 @@ fn hrtf_binaural_process_is_allocation_free() {
     use tutti_nodes::HrtfBinauralNode;
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
-    let node =
-        HrtfBinauralNode::new(&bytes, SampleRate::new(48_000.0)).expect("synthetic sphere parses");
+    let node = HrtfBinauralNode::new(&bytes, SampleRate::SR_48K).expect("synthetic sphere parses");
     aim(&node.param_set(), Azimuth::new(30.0), Elevation::new(0.0));
     // Three blocks: past the first step's latency, so the gate sees signal.
     // Nothing grows lazily, so nothing needs to warm before the window.
@@ -163,9 +162,8 @@ fn hrtf_binaural_moving_source_is_allocation_free() {
     use tutti_nodes::HrtfBinauralNode;
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
-    let node =
-        HrtfBinauralNode::new(&bytes, SampleRate::new(48_000.0)).expect("synthetic sphere parses");
-    let (mut rig, controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    let node = HrtfBinauralNode::new(&bytes, SampleRate::SR_48K).expect("synthetic sphere parses");
+    let (mut rig, controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
     for c in rig.inputs_mut() {
         c.fill(0.5);
     }
@@ -201,7 +199,7 @@ fn hrtf_binaural_nearest_vertex_fallback_is_allocation_free() {
         [0.0, 0.0, 1.0],
     ];
     let bytes = sphere_bytes(48_000, 64, &verts, &[[0, 1, 2]]);
-    let node = HrtfBinauralNode::new(&bytes, SampleRate::new(48_000.0)).expect("the sphere parses");
+    let node = HrtfBinauralNode::new(&bytes, SampleRate::SR_48K).expect("the sphere parses");
     aim(&node.param_set(), Azimuth::new(180.0), Elevation::new(0.0));
     gate(node, 3);
 }
@@ -215,9 +213,9 @@ fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let mut node =
-        HrtfBinauralNode::new(&bytes, SampleRate::new(48_000.0)).expect("synthetic sphere parses");
+        HrtfBinauralNode::new(&bytes, SampleRate::SR_48K).expect("synthetic sphere parses");
     let prepare = Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         tutti_types::MaxBlock::of(tutti_types::Samples(256)),
     );
     assert_no_alloc::assert_no_alloc(|| node.prepare(&prepare));
@@ -235,17 +233,17 @@ fn hrtf_binaural_resampled_set_in_split_blocks_is_allocation_free() {
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let mut node =
-        HrtfBinauralNode::new(&bytes, SampleRate::new(48_000.0)).expect("synthetic sphere parses");
+        HrtfBinauralNode::new(&bytes, SampleRate::SR_48K).expect("synthetic sphere parses");
     aim(&node.param_set(), Azimuth::new(30.0), Elevation::new(0.0));
     node.prepare(&Prepare::new(
-        SampleRate(44_100.0),
+        SampleRate::SR_44K1,
         MaxBlock::of(Samples(100)),
     ));
     // 64 taps at 48 kHz are ceil(64 * 44 100 / 48 000) = 59 at 44.1 kHz:
     // the set was resampled, not reused.
     assert_eq!(node.shape().tail, Tail::Finite(Samples(59 - 1)));
 
-    let (mut rig, _controls) = BlockRig::new(node, SampleRate(44_100.0), 100);
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate::SR_44K1, 100);
     for c in rig.inputs_mut() {
         c.fill(0.5);
     }

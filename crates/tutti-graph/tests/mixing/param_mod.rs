@@ -57,7 +57,7 @@ use tutti_types::{
     ChannelLayout, Hz, Latency, ParamKey, Q, SamplePosition, SampleRate, Samples, UnitParam,
 };
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn prepare(max: usize) -> Prepare {
     Prepare::new(RATE, MaxBlock::of(Samples(max)))

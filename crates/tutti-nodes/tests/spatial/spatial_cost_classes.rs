@@ -69,7 +69,7 @@ fn wire(ed: &mut Editor, to: NodeKey, port: u16, from: Source) {
 /// shipped, or every one wrapped to declare nothing.
 fn graph(workers: usize, declared: bool) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     if workers > 1 {

@@ -166,7 +166,7 @@ mod tests {
     const RATE: f64 = 48_000.0;
 
     fn envelope(decay: f32, sustain: f32, release: f32) -> VolumeEnvelope {
-        let mut envelope = VolumeEnvelope::new(&Render::new(SampleRate(RATE)));
+        let mut envelope = VolumeEnvelope::new(&Render::new(SampleRate::of(RATE)));
         // No delay, a 1 ms attack, no hold.
         envelope.start(0.0, 0.001, 0.0, decay, sustain, release);
         envelope

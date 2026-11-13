@@ -30,7 +30,7 @@ fn a_device_range_gives_a_fixed_quantum() {
         Some(MaxBlock::of(Samples(512)))
     );
     let spec = OutputSpec::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         ChannelLayout::STEREO,
         cpal::SampleFormat::F32,
     )
@@ -40,7 +40,7 @@ fn a_device_range_gives_a_fixed_quantum() {
         cpal::BufferSize::Fixed(480)
     ));
     let spec = OutputSpec::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         ChannelLayout::STEREO,
         cpal::SampleFormat::F32,
     );

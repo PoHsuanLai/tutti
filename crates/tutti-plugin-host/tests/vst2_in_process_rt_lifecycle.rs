@@ -117,7 +117,7 @@ fn load() -> Loaded {
         &main_thread(),
         &path,
         &Load::new(),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded {
@@ -145,7 +145,7 @@ fn drive_block(unit: &mut PluginNode<Vst2Loaded>) {
 /// One block of `frames` through `unit` prepared for blocks of up to `max`.
 fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
     use tutti_graph::{Node, Prepare};
-    let rate = SampleRate(SAMPLE_RATE);
+    let rate = SampleRate::of(SAMPLE_RATE);
     Node::prepare(
         unit,
         &Prepare::new(rate, tutti_types::MaxBlock::of(tutti_types::Samples(max))),
@@ -156,7 +156,7 @@ fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
 /// One block of `frames` through `unit` as it is prepared now: no prepare.
 fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
     use tutti_graph::{Env, Node, TransportChanges, TransportPosition};
-    let rate = SampleRate(SAMPLE_RATE);
+    let rate = SampleRate::of(SAMPLE_RATE);
     let silence = vec![0.0f32; frames];
     let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in().count())
         .map(|_| &silence[..])
@@ -276,7 +276,7 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
         "load must have told the plugin the rate it was loaded at"
     );
 
-    prepare_off_main_thread(&mut loaded.unit, SampleRate(96_000.0));
+    prepare_off_main_thread(&mut loaded.unit, SampleRate::SR_96K);
 
     let after = read_capture(&loaded.path);
     assert_eq!(
@@ -315,7 +315,7 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let before = read_capture(&loaded.path);
     assert_eq!(before.sample_rate, SAMPLE_RATE as f32);
 
-    prepare_off_main_thread(&mut loaded.unit, SampleRate(96_000.0));
+    prepare_off_main_thread(&mut loaded.unit, SampleRate::SR_96K);
     // The drain point: `editor_idle` is the per-frame main-thread call, and it
     // is reached through the handle rather than the node — the two ends of the
     // deferral are deliberately on opposite sides of the audio/control split.
@@ -363,7 +363,7 @@ fn a_prepare_on_the_main_thread_tells_the_plugin_at_once() {
     assert_eq!(before.sample_rate, SAMPLE_RATE as f32);
 
     let _main = main_thread();
-    prepare_at(&mut loaded.unit, SampleRate(96_000.0));
+    prepare_at(&mut loaded.unit, SampleRate::SR_96K);
 
     let after = read_capture(&loaded.path);
     assert_eq!(after.sample_rate, 96_000.0, "told in the prepare");
@@ -418,7 +418,7 @@ fn the_output_is_what_the_plugin_wrote() {
 
     let _guard = lock_probe();
     let mut loaded = load();
-    let rate = SampleRate(SAMPLE_RATE);
+    let rate = SampleRate::of(SAMPLE_RATE);
     Node::prepare(
         &mut loaded.unit,
         &Prepare::new(rate, tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK))),
@@ -517,7 +517,7 @@ fn outputs_past_the_tables_are_silent() {
         &main_thread(),
         &path,
         &Load::new(),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     );
     unsafe {
         std::env::remove_var("TUTTI_VST2_PROBE_INPUTS");
@@ -544,7 +544,7 @@ fn outputs_past_the_tables_are_silent() {
     g.pipe_output(key);
     let mut r = g
         .renderer(Prepare::new(
-            SampleRate(SAMPLE_RATE),
+            SampleRate::of(SAMPLE_RATE),
             MaxBlock::of(Samples(BLOCK)),
         ))
         .expect("the graph compiles");

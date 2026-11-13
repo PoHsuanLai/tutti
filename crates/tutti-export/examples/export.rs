@@ -24,7 +24,7 @@ use tutti_types::{Amplitude, Hz, SampleRate, Samples, Seconds};
 use tutti_types::{Db, Interleaved};
 
 /// The rate every render below runs at.
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// `g`, ready to export: built (every unit prepared) at the render's rate. A
 /// graph prepared at another rate is refused rather than re-rated, so a graph

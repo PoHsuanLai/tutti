@@ -6,7 +6,7 @@ use super::*;
 use crate::contract::{FamilyCase, Hook, RecurrenceCase, built};
 use crate::{Realized, System};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 /// 5 ms at 48 kHz: 240 frames.
 const LOOKAHEAD: Lookahead = Lookahead::of(Seconds(0.005));
 const L: usize = 240;
@@ -181,7 +181,7 @@ fn amplitude(db: f64) -> f64 {
 fn the_member_holds_the_figures_of_its_definition() {
     // 5 ms is 220.5 frames at 44.1 kHz, rounded up; exact at the others.
     for (rate, frames) in [(44_100.0, 221), (48_000.0, 240), (96_000.0, 480)] {
-        let m = design().member(&LimiterControls::DEFAULT, SampleRate(rate));
+        let m = design().member(&LimiterControls::DEFAULT, SampleRate::of(rate));
         assert_eq!(m.latency().get(), frames, "at {rate}");
         assert_eq!(m.tail(Db(-60.0)), Ring::Finite(Seconds(0.0)));
     }

@@ -135,7 +135,7 @@ impl ChannelRecurrence for CrossoverTree {
     /// A model at splits an octave apart from 0.2% of the rate up: increasing and
     /// under Nyquist at any rate.
     fn blank(&self, rate: SampleRate) -> CrossoverModel {
-        let mut model = CrossoverModel::unsolved(self.bands, rate.get());
+        let mut model = CrossoverModel::unsolved(self.bands, rate);
         let frequencies =
             core::array::from_fn(|i| Hz((rate.get() * 0.002 * (1 << i) as f64) as f32));
         self.member_into(&CrossoverControls { frequencies }, rate, &mut model);
@@ -153,7 +153,7 @@ impl ChannelRecurrence for CrossoverTree {
         rate: SampleRate,
         out: &mut CrossoverModel,
     ) {
-        out.rate = rate.get();
+        out.rate = rate;
         out.bands = self.bands;
         let cap = SOLVE_CEILING * rate.get();
         let mut floor = 1.0;

@@ -83,7 +83,7 @@ pub(super) mod test_utils {
         signal::sine(
             Hz(freq),
             Amplitude(1.0),
-            SampleRate(f64::from(sample_rate)),
+            SampleRate::of(f64::from(sample_rate)),
             Samples(num_samples),
         )
     }

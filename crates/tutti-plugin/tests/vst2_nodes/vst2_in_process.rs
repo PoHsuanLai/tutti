@@ -73,7 +73,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         &main_thread(),
         &path,
         &Load::new(),
-        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+        tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.
@@ -245,7 +245,7 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
         &tutti_plugin::catalog::PluginRef::file(staged.clone()).expect("a plugin file"),
-        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+        tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
     )
     .expect("Plugin::open should load a .vst in-process");
     clear_probe_env();
@@ -338,7 +338,7 @@ fn the_node_carries_midi_on_its_event_ports() {
         let plugin = tutti_plugin::catalog::Plugin::open(
             Some(&main_thread()),
             &tutti_plugin::catalog::PluginRef::file(staged.clone()).expect("a plugin file"),
-            tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+            tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
         )
         .unwrap_or_else(|e| panic!("in-process VST2 load failed for {staged:?}: {e:?}"));
         clear_probe_env();
@@ -399,7 +399,7 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
             &main_thread(),
             &path,
             &Load::new(),
-            tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+            tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
         )
         .unwrap_or_else(|e| panic!("in-process VST2 load failed: {e:?}"));
         clear_probe_env();
@@ -438,7 +438,7 @@ fn midi_past_the_blocks_capacity_is_counted() {
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
-        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+        tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
     )
     .expect("load the probe");
     let controls = unit.controls();
@@ -446,7 +446,7 @@ fn midi_past_the_blocks_capacity_is_counted() {
         unit.bind(
             tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
         ),
-        SampleRate(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
         512,
     );
     let notes = |n: usize| -> Vec<Event> {

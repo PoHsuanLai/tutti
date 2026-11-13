@@ -29,7 +29,7 @@ use tutti_session::{
 use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples, Seconds};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BRANCHES: usize = 8;
 
 type Threads = Arc<Mutex<HashSet<ThreadId>>>;

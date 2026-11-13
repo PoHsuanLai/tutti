@@ -32,7 +32,7 @@ use tutti_transport::MotionEvent;
 use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A note-on/note-off pair at full velocity, which is what a clip holds.
 ///

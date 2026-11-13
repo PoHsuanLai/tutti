@@ -19,7 +19,7 @@ const RATE: f64 = 48_000.0;
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -199,7 +199,7 @@ fn the_sessions_mpe_mode_reaches_the_ingest_and_the_next_instrument() {
     let mut s = Session::builder()
         .mpe_mode(rotation)
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -296,7 +296,7 @@ mod hardware {
         let s = Session::builder()
             .midi_hardware_over(backend)
             .build_offline(
-                SampleRate(RATE),
+                SampleRate::of(RATE),
                 ChannelLayout::STEREO,
                 MaxBlock::of(Samples(1_024)),
             )

@@ -369,7 +369,10 @@ fn envelope() -> ModSource {
 // ---------------------------------------------------------------- rigs ---
 
 fn editor(max: usize) -> (Editor, Executor) {
-    Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))))
+    Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(max)),
+    ))
 }
 
 /// A probe at `key(id)` with knob `knob`, its output appended to the
@@ -1373,7 +1376,7 @@ struct Playhead(FrameClock);
 
 impl Playhead {
     fn new() -> Self {
-        Self(FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE)))
+        Self(FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE)))
     }
     fn roll(&mut self, ed: &mut Editor, exec: &mut Executor, n: usize, all: &mut Vec<Vec<f32>>) {
         let t = TransportPosition::counted(true, TEMPO, self.0.origin(), None);
@@ -1419,7 +1422,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
         .fork(
             ForkTarget::Master,
             ForkMode::Offline,
-            Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(1024))),
+            Prepare::new(SampleRate::of(RATE), MaxBlock::of(Samples(1024))),
         )
         .expect("forks");
     let total = 48_000;
@@ -1469,7 +1472,7 @@ fn for_param_and_for_unit_send_the_same_segments() {
             &decl.get(),
             None,
             tutti_graph::PlayReading::default(),
-            SampleRate(RATE),
+            SampleRate::of(RATE),
         )
         .expect("compiles");
         c.programs[&cutoff_of(1)].clone()
@@ -1902,7 +1905,7 @@ fn a_rate_change_after_a_steady_state_is_not_skipped() {
     let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
     let skipped = r.m.skipped();
     r.ed.reprepare(Prepare::new(
-        SampleRate(RATE * 2.0),
+        SampleRate::of(RATE * 2.0),
         MaxBlock::of(Samples(128)),
     ))
     .expect("reprepares");

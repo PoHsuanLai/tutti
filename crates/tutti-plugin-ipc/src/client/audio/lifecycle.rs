@@ -206,7 +206,7 @@ mod tests {
     fn the_refused_flag_follows_the_refusal_without_allocating() {
         let life = Lifecycle::new();
         assert!(!life.is_rate_refused());
-        life.set_rate_refusal(Some((SampleRate(44_100.0), "no".into())));
+        life.set_rate_refusal(Some((SampleRate::SR_44K1, "no".into())));
         let refused = assert_no_alloc::assert_no_alloc(|| life.is_rate_refused());
         assert!(refused);
         life.set_rate_refusal(None);

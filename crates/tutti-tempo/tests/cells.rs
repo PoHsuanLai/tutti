@@ -367,7 +367,7 @@ fn cells_over_sub_frame_segments_stay_inside_the_map() {
         }
         cells
     }
-    let r44 = tutti_types::SampleRate(44_100.0);
+    let r44 = tutti_types::SampleRate::SR_44K1;
     // A 105 BPM beat ramp of 4.3e-6 beats (0.1 frame), then 351 BPM.
     let map = TempoMap::new([
         pt(0.0, 105.0, Transition::RampBeats),

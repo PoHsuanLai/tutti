@@ -76,7 +76,7 @@ fn interleave(planes: &[Vec<f32>]) -> Vec<f32> {
 fn wav(dir: &Path, name: &str, rate: f64, planes: &[Vec<f32>]) {
     write_wav_f32(
         &dir.join(format!("{name}.wav")),
-        SampleRate(rate),
+        SampleRate::of(rate),
         planes.len() as u16,
         &interleave(planes),
     );
@@ -94,7 +94,7 @@ impl Cases {
 }
 
 fn svf(dir: &Path, cases: &mut Cases) {
-    let rate = SampleRate(RATE);
+    let rate = SampleRate::of(RATE);
     let settings: [(SvfType, &str, f32, f32, f32); 24] = [
         (SvfType::LowPass, "lowpass", 200.0, 0.707, 0.0),
         (SvfType::LowPass, "lowpass", 1_000.0, 2.0, 0.0),
@@ -143,7 +143,7 @@ fn svf(dir: &Path, cases: &mut Cases) {
 }
 
 fn ladder(dir: &Path, cases: &mut Cases) {
-    let rate = SampleRate(RATE);
+    let rate = SampleRate::of(RATE);
     let d = LadderFamily::<f64>::new(BusTopology::MONO);
     // The impulse is small so the saturator (tanh) stays in its linear region:
     // the case judges the small-signal response, and the Python half divides the
@@ -178,7 +178,7 @@ fn ladder(dir: &Path, cases: &mut Cases) {
 }
 
 fn crossover(dir: &Path, cases: &mut Cases) {
-    let rate = SampleRate(RATE);
+    let rate = SampleRate::of(RATE);
     for (name, splits) in [
         ("lr4_2band", vec![1_000.0f32]),
         ("lr4_3band", vec![300.0, 3_000.0]),
@@ -258,8 +258,13 @@ fn resample(dir: &Path, cases: &mut Cases) {
             let secs = 1.0;
             let input = multisine(from, secs, &freqs, 0.5);
             let (mut rs, out) = (
-                StreamingResampler::new(1, SampleRate(from), SampleRate(to), ChunkSize::N1024)
-                    .expect("resampler"),
+                StreamingResampler::new(
+                    1,
+                    SampleRate::of(from),
+                    SampleRate::of(to),
+                    ChunkSize::N1024,
+                )
+                .expect("resampler"),
                 &mut vec![Vec::<f32>::new()],
             );
             for block in input.chunks(4_096) {

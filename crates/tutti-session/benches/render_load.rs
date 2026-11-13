@@ -186,7 +186,7 @@ fn noise(state: &mut u32) -> f32 {
 /// A 2 s exponentially decaying noise tail: a plain reverb IR.
 fn ir(seed: u32) -> Vec<f32> {
     let mut s = seed;
-    let len = Seconds(2.0).to_samples(SampleRate(RATE)).get();
+    let len = Seconds(2.0).to_samples(SampleRate::of(RATE)).get();
     (0..len)
         .map(|i| noise(&mut s) * (-6.9 * i as f32 / len as f32).exp() * 0.05)
         .collect()
@@ -227,7 +227,7 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     let mut s = Session::builder()
         .render_workers(workers)
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(block)),
         )
@@ -258,9 +258,9 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
         strips.push(synth.erase());
     }
 
-    let mut tone = tutti_codec::Wave::new(1, SampleRate(RATE));
+    let mut tone = tutti_codec::Wave::new(1, SampleRate::of(RATE));
     let mut seed = 0x1234_5678;
-    let frames = Seconds(20.0).to_samples(SampleRate(RATE)).get();
+    let frames = Seconds(20.0).to_samples(SampleRate::of(RATE)).get();
     for i in 0..frames {
         let t = i as f32 / RATE as f32;
         let x = (std::f32::consts::TAU * 220.0 * t).sin() * 0.3 + noise(&mut seed) * 0.05;
@@ -376,7 +376,7 @@ fn measure(block: usize, workers: Workers, variant: Variant) -> Figures {
     let s = scene(block, workers, variant);
     let meter = s.load_meter().expect("an offline engine");
     let mut out = vec![0.0f32; block * 2];
-    let blocks = |span: Seconds| span.to_samples(SampleRate(RATE)).get().div_ceil(block);
+    let blocks = |span: Seconds| span.to_samples(SampleRate::of(RATE)).get().div_ceil(block);
     let warm = blocks(WARM);
     for _ in 0..warm {
         s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));

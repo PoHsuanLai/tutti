@@ -17,7 +17,7 @@ use tutti_types::{Beat, SampleRate};
 /// ```
 /// # use tutti_types::{At, Bpm};
 /// # use tutti_transport::{LoopEdit, MotionEvent, Transport};
-/// # let transport = Transport::new(tutti_types::SampleRate(48_000.0));
+/// # let transport = Transport::new(tutti_types::SampleRate::SR_48K);
 /// transport.motion().try_send(MotionEvent::Play)?; // a request; may be refused
 /// transport.settings().set_tempo(Bpm::of(140.0));      // a value; cannot fail
 /// // Loop beats 0 to 4 from the next block; the engine owns the region.
@@ -104,7 +104,7 @@ impl Transport {
     /// The device rate this transport converts musical time against: the
     /// one it was built at, until [`set_sample_rate`](Self::set_sample_rate).
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(self.sample_rate.load(Ordering::Acquire))
+        SampleRate::new(self.sample_rate.load(Ordering::Acquire)).unwrap_or(SampleRate::DEFAULT)
     }
 
     /// The device now runs at `sample_rate`: every clone of this transport
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn clone_shares_both_halves() {
-        let a = Transport::new(SampleRate::new(48000.0));
+        let a = Transport::new(SampleRate::SR_48K);
         let b = a.clone();
 
         a.settings.set_tempo(Bpm::of(140.0));
@@ -176,10 +176,10 @@ mod tests {
     /// the host's copy.
     #[test]
     fn a_rate_change_reaches_every_clone() {
-        let a = Transport::new(SampleRate::new(44_100.0));
+        let a = Transport::new(SampleRate::SR_44K1);
         let b = a.clone();
-        a.set_sample_rate(SampleRate::new(48_000.0));
-        assert_eq!(b.sample_rate(), SampleRate(48_000.0));
+        a.set_sample_rate(SampleRate::SR_48K);
+        assert_eq!(b.sample_rate(), SampleRate::SR_48K);
         let beat = b
             .settings
             .tempo_map()
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn read_view_spans_both_halves() {
-        let t = Transport::new(SampleRate::new(48000.0));
+        let t = Transport::new(SampleRate::SR_48K);
         t.settings.set_beat(Beat::new(8.0));
         t.settings.set_tempo(Bpm::of(90.0));
         let _ = t.motion.try_send(MotionEvent::Play);
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn clock_inputs_track_live_edits() {
-        let t = Transport::new(SampleRate::new(48000.0));
+        let t = Transport::new(SampleRate::SR_48K);
         let inputs = t.links();
 
         let _ = t.motion.try_send(MotionEvent::locate(Beat(4.0)));
@@ -218,7 +218,7 @@ mod tests {
     /// follows stays where it was.
     #[test]
     fn a_refused_tempo_never_reaches_the_clock() {
-        let t = Transport::new(SampleRate::new(44100.0));
+        let t = Transport::new(SampleRate::SR_44K1);
         t.settings.set_tempo(Bpm::of(90.0));
         for raw in [0.0, -120.0, f64::NAN, f64::INFINITY] {
             let asked = Bpm::try_from(raw);

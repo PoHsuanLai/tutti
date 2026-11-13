@@ -31,10 +31,10 @@ fn solve_block_follows_the_exact_one_pole_response() {
         ),
     ] {
         let tol = 0.005 * rate as f32 / 48_000.0;
-        let coeff = f64::from(Seconds(0.05).one_pole_coeff(SampleRate(rate)));
+        let coeff = f64::from(Seconds(0.05).one_pole_coeff(SampleRate::of(rate)));
         let arc = f64::from(Azimuth(start.0).shortest_arc_to(target.azimuth).get());
         let mut panner = VbapPanner::new(SpeakerLayout::stereo());
-        panner.set_sample_rate(SampleRate(rate));
+        panner.set_sample_rate(SampleRate::of(rate));
         panner
             .smoother
             .reset_to_target(Direction::new(Azimuth(start.0), Elevation(start.1)));
@@ -168,9 +168,9 @@ fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
 
     // rate: the larger coefficient moves a state the smaller one held.
     let mut panner = VbapPanner::new(SpeakerLayout::stereo());
-    panner.set_sample_rate(SampleRate(192_000.0));
+    panner.set_sample_rate(SampleRate::SR_192K);
     settle(&mut panner, target, 64);
-    panner.set_sample_rate(SampleRate(8_000.0));
+    panner.set_sample_rate(SampleRate::SR_8K);
     solve_matches_an_unconditional_advance(&mut panner, target, 64);
 
     // reset: reseeded away from a target it had settled on.

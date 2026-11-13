@@ -375,7 +375,7 @@ impl Produced {
     /// # use tutti_export::{Produced, Rendered};
     /// # use tutti_types::SampleRate;
     /// let all = vec![Produced::Buffers(
-    ///     Rendered::new(vec![vec![0.0; 4]], SampleRate(48_000.0), 0)?,
+    ///     Rendered::new(vec![vec![0.0; 4]], SampleRate::SR_48K, 0)?,
     /// )];
     /// // Borrowed, so an output in a list is read in place.
     /// assert!(all[0].file().is_none());

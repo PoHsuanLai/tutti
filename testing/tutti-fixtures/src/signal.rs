@@ -127,18 +127,13 @@ mod tests {
     #[test]
     fn a_sine_is_the_analytic_one() {
         // 12 kHz at 48 kHz: four samples a period, 0, A, 0, -A.
-        let x = sine(
-            Hz(12_000.0),
-            Amplitude(0.5),
-            SampleRate(48_000.0),
-            Samples(8),
-        );
+        let x = sine(Hz(12_000.0), Amplitude(0.5), SampleRate::SR_48K, Samples(8));
         assert_eq!(x[0], 0.0);
         assert!((x[1] - 0.5).abs() < 1e-6 && (x[3] + 0.5).abs() < 1e-6);
         let y = sine(
             Hz(1_000.0),
             Amplitude(0.5),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             Samples(48_000),
         );
         assert!((rms(&y) - 0.5 / 2f32.sqrt()).abs() < 1e-6);
@@ -176,7 +171,7 @@ mod tests {
     fn a_wav_reads_back_what_was_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.wav");
-        write_wav_f32(&path, SampleRate(48_000.0), 2, &[0.1, 0.2, 0.3, 0.4]);
+        write_wav_f32(&path, SampleRate::SR_48K, 2, &[0.1, 0.2, 0.3, 0.4]);
         assert_eq!(read_wav_f32(&path), [vec![0.1, 0.3], vec![0.2, 0.4]]);
     }
 }

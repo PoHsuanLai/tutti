@@ -2208,7 +2208,7 @@ mod tests {
         let mut session = Session::builder()
             .snapshot_interval(Duration::from_secs(1))
             .spawn_with(move |job| locked(&queue).push(job))
-            .build_detached(SampleRate(48_000.0))
+            .build_detached(SampleRate::SR_48K)
             .unwrap();
         let saves = Arc::new(AtomicUsize::new(0));
         let dead = Arc::new(AtomicBool::new(false));
@@ -2409,7 +2409,7 @@ mod tests {
     #[test]
     fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
         let mut rig = rig(None);
-        let controls = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(48_000.0));
+        let controls = PluginControls::new(Samples(0), PluginTail::default(), SampleRate::SR_48K);
         let project = rig.session.click_settings().project_meter();
         controls.set_meter(project);
         let meter = controls.meter();
@@ -2447,7 +2447,7 @@ mod tests {
             .controls = Some(PluginControls::new(
             Samples(10_000_000),
             PluginTail::default(),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ));
         rig.plugins_at(0);
         assert_eq!(

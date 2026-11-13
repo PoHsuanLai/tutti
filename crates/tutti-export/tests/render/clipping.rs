@@ -13,7 +13,7 @@ use tutti_transport::FrozenClock;
 use tutti_types::Seconds;
 use tutti_types::{ChannelLayout, Db, Hz, SampleRate};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn config(pcm: Pcm, dither: Option<DitherShape>) -> ExportConfig {
     ExportConfig {

@@ -232,7 +232,7 @@ mod tests {
     /// 0.1 would make 4801).
     #[test]
     fn lookahead_frames_are_the_ceil_of_the_exact_product() {
-        let device = SampleRate(48_000.0);
+        let device = SampleRate::SR_48K;
         let mut lim = LimiterNode::new(
             BusTopology::STEREO,
             Lookahead::of(Seconds(0.1)),
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn lookahead_is_a_duration_and_prepare_is_what_preserves_it() {
         const LOOKAHEAD: Seconds = Seconds(0.005);
-        let device = SampleRate(48_000.0);
+        let device = SampleRate::SR_48K;
         let mut lim = limiter(Db::new(-6.0), Db::new(-0.3));
 
         let frames = |lim: &LimiterNode| lim.shape().latency.samples().get();

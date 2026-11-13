@@ -6,7 +6,7 @@ use tutti_session::{InletError, OutPort, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn offline() -> Session {
     Session::builder()
@@ -60,12 +60,12 @@ fn a_producer_at_another_rate_is_refused() {
     let _ = s.update();
     let err = s
         .graph()
-        .open_inlet(ChannelLayout::STEREO, Samples(256), SampleRate(44_100.0))
+        .open_inlet(ChannelLayout::STEREO, Samples(256), SampleRate::SR_44K1)
         .expect_err("an inlet does not resample");
     assert_eq!(
         err,
         InletError::RateMismatch {
-            producer: SampleRate(44_100.0),
+            producer: SampleRate::SR_44K1,
             graph: RATE
         }
     );
@@ -83,11 +83,11 @@ fn a_producer_at_another_rate_is_refused() {
 fn add_inlet_checks_the_rate_the_ring_carries() {
     let mut s = offline();
     let _ = s.update();
-    let (ring, _writer) = InletRing::pair(ChannelLayout::STEREO, Samples(64), SampleRate(44_100.0));
+    let (ring, _writer) = InletRing::pair(ChannelLayout::STEREO, Samples(64), SampleRate::SR_44K1);
     assert_eq!(
         s.graph().add_inlet(ring).expect_err("another rate"),
         InletError::RateMismatch {
-            producer: SampleRate(44_100.0),
+            producer: SampleRate::SR_44K1,
             graph: RATE
         }
     );

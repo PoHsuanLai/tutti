@@ -563,7 +563,7 @@ mod tests {
 
     fn reader(path: std::path::PathBuf) -> OfflineRead {
         OfflineRead::new(
-            Arc::new(StreamFile::new(path, SampleRate(48_000.0), None)),
+            Arc::new(StreamFile::new(path, SampleRate::SR_48K, None)),
             None,
             Arc::default(),
         )
@@ -611,7 +611,7 @@ mod tests {
         let mut read = OfflineRead::new(
             Arc::new(StreamFile::new(
                 ramp_file(dir.path()),
-                SampleRate(48_000.0),
+                SampleRate::SR_48K,
                 None,
             )),
             Some(loop_frames(10, 20, 0)),
@@ -680,7 +680,7 @@ mod tests {
 
         let fault = Arc::<FaultLatch>::default();
         let mut read = OfflineRead::new(
-            Arc::new(StreamFile::new(path, SampleRate(44_100.0), None)),
+            Arc::new(StreamFile::new(path, SampleRate::SR_44K1, None)),
             None,
             Arc::clone(&fault),
         );
@@ -711,7 +711,7 @@ mod tests {
             for direction in [Direction::Forward, Direction::Reverse] {
                 for pos in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
                     let mut read = OfflineRead::new(
-                        Arc::new(StreamFile::new(path.clone(), SampleRate(48_000.0), None)),
+                        Arc::new(StreamFile::new(path.clone(), SampleRate::SR_48K, None)),
                         loop_,
                         Arc::default(),
                     );

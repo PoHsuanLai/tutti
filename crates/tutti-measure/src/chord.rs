@@ -350,7 +350,7 @@ mod tests {
     use tutti_types::SampleRate;
 
     fn geometry(window: usize, hop: usize) -> StftGeometry {
-        StftGeometry::new(SampleRate::new(22_050.0), Samples(window), Samples(hop)).unwrap()
+        StftGeometry::new(SampleRate::SR_22K05, Samples(window), Samples(hop)).unwrap()
     }
 
     fn cfg() -> ChordConfig {
@@ -699,12 +699,7 @@ mod tests {
         let empty = Grid::new(Vec::new(), FrameCount(0), BinCount(CLASSES)).unwrap();
         assert!(detect_chords(&empty, &cfg()).unwrap().is_empty());
         let far = ChordConfig::new(
-            StftGeometry::new(
-                SampleRate::new(22_050.0),
-                Samples(1024),
-                Samples(usize::MAX),
-            )
-            .unwrap(),
+            StftGeometry::new(SampleRate::SR_22K05, Samples(1024), Samples(usize::MAX)).unwrap(),
         );
         assert!(matches!(
             detect_chords(&grid(&[triad(0, false); 3]), &far),

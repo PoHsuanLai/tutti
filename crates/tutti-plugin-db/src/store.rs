@@ -566,7 +566,7 @@ mod tests {
             tail: Some(Samples(8191)),
             latency: Some(Samples(64)),
             config: ProbeConfig {
-                rate: SampleRate(44_100.0),
+                rate: SampleRate::SR_44K1,
                 block: MaxBlock::new(Samples(64)).unwrap(),
                 floor: PROBE_FLOOR,
                 state: StateHash::of(b"patch"),

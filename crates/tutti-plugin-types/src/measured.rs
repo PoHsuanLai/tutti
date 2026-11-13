@@ -266,7 +266,7 @@ mod tests {
 
     fn config(rate: f64, block: usize) -> ProbeConfig {
         ProbeConfig {
-            rate: SampleRate(rate),
+            rate: SampleRate::of(rate),
             block: MaxBlock::new(Samples(block)).unwrap(),
             floor: PROBE_FLOOR,
             state: StateHash::of(b"state"),

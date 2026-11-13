@@ -822,7 +822,7 @@ mod tests {
     fn a_position_a_hair_under_a_frame_reads_that_frame() {
         let below = 5.0 - 1e-12;
         assert_eq!(tap_indices(100, below), ([4, 5, 6, 7], 0.0));
-        let mut wave = Wave::new(1, SampleRate::new(48_000.0));
+        let mut wave = Wave::new(1, SampleRate::SR_48K);
         for i in 0..16 {
             wave.push_frame(&[(i as f32 + 1.0) * 0.1234567]);
         }
@@ -860,7 +860,7 @@ mod tests {
             (22_050.0, 2.0),
             (96_000.0, 0.25),
         ] {
-            let src = SrcRatio::for_rates(SampleRate::new(file_rate), SampleRate::new(session));
+            let src = SrcRatio::for_rates(SampleRate::of(file_rate), SampleRate::of(session));
             let rate = PlaybackRate::new(speed);
             let transport = TransportPosition::new(true, Bpm::of(120.0), Beat(4.0), None);
 
@@ -869,7 +869,7 @@ mod tests {
                 &transport,
                 Beat::new(0.0),
                 None,
-                SampleRate::new(file_rate),
+                SampleRate::of(file_rate),
                 rate.read_rate(SrcRatio::UNITY),
             )
             .expect("inside the window");
@@ -880,7 +880,7 @@ mod tests {
                 &transport,
                 Beat::new(0.0),
                 None,
-                SampleRate::new(session * src.get()),
+                SampleRate::of(session * src.get()),
                 rate.read_rate(SrcRatio::UNITY),
             )
             .expect("inside the window");
@@ -912,7 +912,7 @@ mod tests {
                 &stopped,
                 Beat::new(0.0),
                 None,
-                SampleRate::new(44_100.0),
+                SampleRate::SR_44K1,
                 ReadRate::UNITY
             )
             .is_none(),
@@ -925,7 +925,7 @@ mod tests {
                 &rolling,
                 Beat::new(8.0),
                 None,
-                SampleRate::new(44_100.0),
+                SampleRate::SR_44K1,
                 ReadRate::UNITY
             )
             .is_none(),
@@ -936,7 +936,7 @@ mod tests {
                 &rolling,
                 Beat::new(0.0),
                 Some(BeatDuration::new(1.0)),
-                SampleRate::new(44_100.0),
+                SampleRate::SR_44K1,
                 ReadRate::UNITY
             )
             .is_none(),
@@ -948,7 +948,7 @@ mod tests {
                 &rolling,
                 Beat::new(0.0),
                 Some(BeatDuration::new(2.0)),
-                SampleRate::new(44_100.0),
+                SampleRate::SR_44K1,
                 ReadRate::UNITY
             )
             .is_none(),
@@ -959,7 +959,7 @@ mod tests {
     /// ch0 = (i+1)*0.01, ch1 = -(i+1)*0.01 — every sample distinct and the two
     /// channels distinguishable by sign, so a channel swap is visible.
     fn stereo_ramp() -> Arc<Wave> {
-        let mut w = Wave::zero(2, SampleRate::new(44_100.0), Seconds::new(64.0) / 44_100.0);
+        let mut w = Wave::zero(2, SampleRate::SR_44K1, Seconds::new(64.0) / 44_100.0);
         for i in 0..w.len() {
             w.set(0, i, (i as f32 + 1.0) * 0.01);
             w.set(1, i, -((i as f32 + 1.0) * 0.01));
@@ -968,7 +968,7 @@ mod tests {
     }
 
     fn mono_ramp() -> Arc<Wave> {
-        let mut w = Wave::zero(1, SampleRate::new(44_100.0), Seconds::new(64.0) / 44_100.0);
+        let mut w = Wave::zero(1, SampleRate::SR_44K1, Seconds::new(64.0) / 44_100.0);
         for i in 0..w.len() {
             w.set(0, i, (i as f32 + 1.0) * 0.01);
         }
@@ -978,11 +978,7 @@ mod tests {
     /// `channel c` carries the constant `c + 1`, so a wrong-channel read yields a
     /// wrong *value* rather than a plausible one.
     fn indexed_wave(channels: usize) -> Arc<Wave> {
-        let mut w = Wave::zero(
-            channels,
-            SampleRate::new(44_100.0),
-            Seconds::new(32.0) / 44_100.0,
-        );
+        let mut w = Wave::zero(channels, SampleRate::SR_44K1, Seconds::new(32.0) / 44_100.0);
         for i in 0..w.len() {
             for c in 0..channels {
                 w.set(c, i, (c + 1) as f32);
@@ -1128,7 +1124,7 @@ mod tests {
     #[test]
     fn six_channel_wave_on_a_stereo_frame_folds_through_the_itu_matrix() {
         // 5.1 order: L R C LFE Ls Rs — centre only.
-        let mut w = Wave::zero(6, SampleRate::new(44_100.0), Seconds::new(32.0) / 44_100.0);
+        let mut w = Wave::zero(6, SampleRate::SR_44K1, Seconds::new(32.0) / 44_100.0);
         for i in 0..w.len() {
             w.set(2, i, 1.0);
         }
@@ -1147,7 +1143,7 @@ mod tests {
     /// A wave of `topology` with `frames` copies of `frame`, so an interpolated
     /// read at any position is the frame itself (a cubic through equal taps).
     fn constant_wave(topology: tutti_types::ChannelTopology, frame: &[f32]) -> Wave {
-        let mut w = Wave::with_topology(topology, SampleRate::new(48_000.0));
+        let mut w = Wave::with_topology(topology, SampleRate::SR_48K);
         for _ in 0..16 {
             w.push_frame(frame);
         }
@@ -1244,7 +1240,7 @@ mod tests {
         assert!((out[0] - tutti_types::M3DB).abs() < 1e-6, "{out:?}");
         assert!(out[1..].iter().all(|&s| s.abs() < 1e-6), "{out:?}");
 
-        let mut quad = Wave::new(4, SampleRate::new(48_000.0));
+        let mut quad = Wave::new(4, SampleRate::SR_48K);
         for _ in 0..16 {
             quad.push_frame(&[1.0, 2.0, 4.0, 8.0]);
         }
@@ -1265,12 +1261,12 @@ mod tests {
     /// frame of eight, a 5.1 file into five.
     #[test]
     fn a_wave_with_no_place_for_its_extra_channels_is_refused() {
-        let ten = Wave::new(10, SampleRate::new(48_000.0));
+        let ten = Wave::new(10, SampleRate::SR_48K);
         assert!(matches!(
             Place::for_wave(&ten, ChannelLayout::from(8u16)),
             Err(PlaceError::Fold(FoldError::Unplaced { channel: 8, .. }))
         ));
-        let mut six = Wave::new(6, SampleRate::new(48_000.0));
+        let mut six = Wave::new(6, SampleRate::SR_48K);
         six.push_frame(&[0.0; 6]);
         assert!(matches!(
             Place::for_wave(&six, ChannelLayout::from(5u16)),
@@ -1308,7 +1304,7 @@ mod tests {
 
     #[test]
     fn empty_wave_and_zero_width_frame_are_silent() {
-        let w = Arc::new(Wave::zero(2, SampleRate::new(44_100.0), Seconds::new(0.0)));
+        let w = Arc::new(Wave::zero(2, SampleRate::SR_44K1, Seconds::new(0.0)));
         let mut out = [7.0f32; 2];
         read_frame(&w, 0.0, &mut out);
         assert_eq!(out, [0.0, 0.0], "empty wave must produce silence");
@@ -1346,7 +1342,7 @@ mod tests {
         }
         Env {
             frame: Frame(0),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             block_len: Samples(len),
             transport,
             changes: c,
@@ -1365,7 +1361,7 @@ mod tests {
     fn gate(window: VoiceWindow) -> Gate {
         Gate {
             window,
-            source_rate: SampleRate(48_000.0),
+            source_rate: SampleRate::SR_48K,
             rate: ReadRate::UNITY,
         }
     }

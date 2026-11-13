@@ -64,7 +64,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         &main_thread(),
         &path,
         &Load::new(),
-        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+        tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.

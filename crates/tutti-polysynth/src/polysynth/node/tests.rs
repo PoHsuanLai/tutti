@@ -52,7 +52,10 @@ fn the_release_tail_is_in_frames_at_the_prepared_rate() {
         ..Default::default()
     });
     for (rate, frames) in [(48_000.0, 24_000), (96_000.0, 48_000)] {
-        synth.prepare(&Prepare::new(SampleRate(rate), MaxBlock::of(Samples(64))));
+        synth.prepare(&Prepare::new(
+            SampleRate::of(rate),
+            MaxBlock::of(Samples(64)),
+        ));
         assert_eq!(
             synth.shape().tail,
             Tail::Finite(Samples(frames)),

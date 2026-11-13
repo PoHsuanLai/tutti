@@ -636,7 +636,7 @@ mod tests {
         tutti_fixtures::signal::sine(
             tutti_types::Hz(freq),
             tutti_types::Amplitude(0.5),
-            tutti_types::SampleRate(f64::from(sample_rate)),
+            tutti_types::SampleRate::of(f64::from(sample_rate)),
             tutti_types::Samples(len),
         )
     }
@@ -648,7 +648,7 @@ mod tests {
         let result = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             ),
@@ -681,7 +681,7 @@ mod tests {
         let transform = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             ),
@@ -710,7 +710,7 @@ mod tests {
         let rect = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(1024usize),
                 Samples::new(256usize),
             ),
@@ -731,7 +731,7 @@ mod tests {
         let samples = tone(200_000, 440.0, 44100.0);
         let mut fft = FftScratch::new();
         let request = StftRequest::new(
-            SampleRate::new(44100.0),
+            SampleRate::SR_44K1,
             Samples::new(2048usize),
             Samples::new(512usize),
         )
@@ -756,7 +756,7 @@ mod tests {
     fn a_requests_window_shape_reaches_its_geometry() {
         let len = Samples(200_000);
         let request = StftRequest::new(
-            SampleRate::new(44100.0),
+            SampleRate::SR_44K1,
             Samples::new(2048usize),
             Samples::new(512usize),
         )
@@ -785,7 +785,7 @@ mod tests {
         let samples = tone(200_000, 440.0, 44100.0);
         let mut fft = FftScratch::new();
         let request = StftRequest::new(
-            SampleRate::new(44100.0),
+            SampleRate::SR_44K1,
             Samples::new(2048usize),
             Samples::new(512usize),
         )
@@ -804,7 +804,7 @@ mod tests {
 
         // And at the overlap Blackman asks for, it inverts.
         let deeper = StftRequest::new(
-            SampleRate::new(44100.0),
+            SampleRate::SR_44K1,
             Samples::new(2048usize),
             Samples::new(256usize),
         )
@@ -819,7 +819,7 @@ mod tests {
         let polar = stft_polar(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(1024usize),
                 Samples::new(256usize),
             ),
@@ -848,7 +848,7 @@ mod tests {
         let whole = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             ),
@@ -858,7 +858,7 @@ mod tests {
         let part = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             )
@@ -872,7 +872,7 @@ mod tests {
         let clamped = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             )
@@ -890,7 +890,7 @@ mod tests {
         let transform = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             ),
@@ -924,7 +924,7 @@ mod tests {
         let transform = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             ),
@@ -950,7 +950,7 @@ mod tests {
         let result = stft(
             &samples,
             StftRequest::new(
-                SampleRate::new(44100.0),
+                SampleRate::SR_44K1,
                 Samples::new(2048usize),
                 Samples::new(512usize),
             ),

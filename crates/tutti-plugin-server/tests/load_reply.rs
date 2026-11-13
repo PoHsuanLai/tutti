@@ -55,7 +55,7 @@ fn load_choosing(stream: &mut Stream, path: &Path, load: Load) -> BridgeMessage 
         &HostMessage::LoadPlugin {
             path: path.to_path_buf(),
             load,
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: "load-reply".into(),

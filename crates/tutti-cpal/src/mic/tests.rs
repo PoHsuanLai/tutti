@@ -34,7 +34,7 @@ fn a_device_covering_the_graph_rate_is_opened_at_it() {
     let chosen = choose_input_config(
         [range(8_000, 96_000, cpal::SampleFormat::F32)].into_iter(),
         fallback(44_100),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         "Wide Range Mic",
     )
     .expect("48k is inside [8k, 96k]");
@@ -54,7 +54,7 @@ fn f32_is_preferred_over_an_integer_format_at_the_same_rate() {
         ]
         .into_iter(),
         fallback(44_100),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         "Dual Format Mic",
     )
     .expect("both ranges cover 48k");
@@ -69,7 +69,7 @@ fn an_integer_only_device_is_accepted_at_the_graph_rate() {
     let chosen = choose_input_config(
         [range(44_100, 48_000, cpal::SampleFormat::I16)].into_iter(),
         fallback(44_100),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         "I16 Mic",
     )
     .expect("the range covers 48k");
@@ -86,7 +86,7 @@ fn a_device_that_cannot_reach_the_graph_rate_is_refused() {
     let err = choose_input_config(
         [range(44_100, 44_100, cpal::SampleFormat::F32)].into_iter(),
         fallback(44_100),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         "Fixed 44k1 Mic",
     )
     .expect_err("44.1k-only cannot serve a 48k graph");
@@ -112,7 +112,7 @@ fn a_default_that_already_matches_is_accepted_with_no_ranges() {
     let chosen = choose_input_config(
         std::iter::empty(),
         fallback(48_000),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         "Silent About Its Configs",
     )
     .expect("the default already runs at the graph rate");
@@ -130,7 +130,7 @@ fn mic_with_ring(width: u16, frames: usize) -> (MicIn, TapWriter) {
     let (reader, writer) = TapReader::pair(TapId(0), usize::from(width), Samples(frames));
     let mic = MicIn {
         tap: reader,
-        sample_rate: SampleRate(48_000.0),
+        sample_rate: SampleRate::SR_48K,
         device_inputs: ChannelLayout::from(width),
         faults: Arc::new(StreamFaults::new()),
         latency: Arc::new(crate::StreamLatency::new()),
@@ -162,7 +162,7 @@ fn capture(device: u16, inputs: &[usize], frames: usize) -> (Capture, MicIn, Tap
     let capture = Capture::new(select, ChannelLayout::from(device), rec, Some(mon));
     let mic = MicIn {
         tap: reader,
-        sample_rate: SampleRate(48_000.0),
+        sample_rate: SampleRate::SR_48K,
         device_inputs: ChannelLayout::from(device),
         faults: Arc::new(StreamFaults::new()),
         latency: Arc::new(crate::StreamLatency::new()),
@@ -194,14 +194,11 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
     assert_eq!(mic.pull(&mut out), Pull::Frames(Samples(3)));
     assert_eq!(out[..6], [2.0, 3.0, 102.0, 103.0, 202.0, 203.0]);
 
-    let mut node = tutti_graph::contract::prepared(
-        tutti_graph::InletNode::new(ring),
-        SampleRate(48_000.0),
-        64,
-    );
+    let mut node =
+        tutti_graph::contract::prepared(tutti_graph::InletNode::new(ring), SampleRate::SR_48K, 64);
     let env = tutti_graph::Env {
         frame: tutti_types::Frame(0),
-        sample_rate: SampleRate(48_000.0),
+        sample_rate: SampleRate::SR_48K,
         block_len: Samples(3),
         transport: tutti_graph::TransportPosition::default(),
         changes: tutti_graph::TransportChanges::NONE,

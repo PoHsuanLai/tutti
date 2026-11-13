@@ -24,7 +24,7 @@ impl Node for Wide {
 }
 
 fn prep(max: usize) -> Prepare {
-    Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(max)))
+    Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(max)))
 }
 
 fn wire(ed: &mut Editor, width: u16) {

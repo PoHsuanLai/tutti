@@ -73,7 +73,7 @@ fn pad() -> Vec<TimedMidiEvent> {
 
 fn rig(events: Vec<TimedMidiEvent>) -> Executor {
     let (mut editor, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxBlock::of(Samples(BLOCK)),
     ));
     editor.insert(NodeKey(1), "clip", MidiClipNode::new(events));

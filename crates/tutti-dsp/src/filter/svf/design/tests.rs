@@ -79,7 +79,7 @@ impl FamilyCase for SvfFamily<f64> {
 /// gain at the far end, and a low-pass at DC is unity.
 impl LtiCase for SvfFamily<f64> {
     fn figures(&self) -> Vec<Figure<SvfControls>> {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let at = |c: SvfControls, freq: f32, gain: f64| Figure {
             controls: c,
             rate,
@@ -190,7 +190,7 @@ fn a_control_moves_the_design_only_past_its_dead_band() {
 #[test]
 fn a_blend_arrives_on_the_new_set_at_its_last_frame() {
     let d = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let model = |hz| d.member(&controls(SvfType::LowPass, hz, 0.707, 0.0), rate);
     let mut blended = d.realized();
     blended.retarget(&model(500.0));

@@ -24,10 +24,10 @@ use tutti_types::{SampleRate, Samples};
 /// gates need a `#[global_allocator]` that only a test binary root can
 /// declare.
 fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
-    let transport = Transport::new(SampleRate::new(sample_rate));
+    let transport = Transport::new(SampleRate::of(sample_rate));
 
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(sample_rate),
+        SampleRate::of(sample_rate),
         MaxBlock::of(Samples(512)),
     ));
     let (source, filter) = (NodeKey(1), NodeKey(2));
@@ -123,18 +123,15 @@ fn test_transport_loop_wrapping() {
 
 fn manual_spec() -> OutputSpec {
     OutputSpec::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         tutti_types::ChannelLayout::STEREO,
         cpal::SampleFormat::F32,
     )
 }
 
 fn driver_over(engine: AudioEngine) -> crate::TuttiDriver {
-    let transport = Transport::new(SampleRate::new(48_000.0));
-    let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
-        MaxBlock::of(Samples(512)),
-    ));
+    let transport = Transport::new(SampleRate::SR_48K);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
     let graph = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
     crate::TuttiDriver::new(engine, Arc::new(AudioCallbackState::new(graph)))
 }
@@ -193,7 +190,7 @@ fn starting_a_running_engine_is_an_error() {
     let (_transport, state) = build_callback_state(44_100.0);
     let state = Arc::new(state);
     let mut engine = AudioEngine::from_spec(OutputSpec::new(
-        SampleRate(44_100.0),
+        SampleRate::SR_44K1,
         tutti_types::ChannelLayout::STEREO,
         cpal::SampleFormat::F32,
     ));

@@ -83,7 +83,7 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
         .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("builds");
-    session.graph().set_sample_rate(SampleRate(RATE));
+    session.graph().set_sample_rate(SampleRate::of(RATE));
     let side = session.graph().take_audio_side();
 
     let g = session.graph();
@@ -125,7 +125,10 @@ fn render(side: &mut AudioSide, frames: usize, block: usize) -> Vec<Vec<f32>> {
 /// `frames` of a hand-wired graph (`GraphBuilder`), in 256-frame blocks.
 fn render_builder(g: GraphBuilder, frames: usize) -> Vec<Vec<f32>> {
     let mut r = g
-        .renderer(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(256))))
+        .renderer(Prepare::new(
+            SampleRate::of(RATE),
+            MaxBlock::of(Samples(256)),
+        ))
         .expect("builds");
     r.render(frames)
 }

@@ -72,7 +72,10 @@ fn rig(clip: MidiClipNode, max: usize) -> (Editor, Executor, MidiClipControls, S
 }
 
 fn rig_with<N: IntoNode>(clip: N, max: usize) -> (Editor, Executor, N::Controls, Seen) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(max)),
+    ));
     let controls = ed.insert(NodeKey(1), "clip", clip);
     let seen = Seen::default();
     ed.insert(NodeKey(2), "sink", Unforkable(Sink(Arc::clone(&seen))));
@@ -582,7 +585,11 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     );
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     let region = Region::new(start, end).unwrap();
-    let mut clock = FrameClock::new(Beat(2.999), tutti_types::Bpm::of(TEMPO), SampleRate(RATE));
+    let mut clock = FrameClock::new(
+        Beat(2.999),
+        tutti_types::Bpm::of(TEMPO),
+        SampleRate::of(RATE),
+    );
     for _ in 0..4 {
         exec.process(
             512,
@@ -596,7 +603,11 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     // The reference walk.
     let tol = FRAME_TOLERANCE / fpb;
     let mut want = Vec::new();
-    let mut walk = FrameClock::new(Beat(2.999), tutti_types::Bpm::of(TEMPO), SampleRate(RATE));
+    let mut walk = FrameClock::new(
+        Beat(2.999),
+        tutti_types::Bpm::of(TEMPO),
+        SampleRate::of(RATE),
+    );
     let mut prev: Option<f64> = None;
     for f in 0..4 * 512u64 {
         let b = walk.beat().get();
@@ -644,7 +655,7 @@ fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, Ump)>> {
         let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60)).unwrap()]);
         let (_ed, mut exec, _c, seen) = rig(clip, 64);
         let mut clock =
-            tutti_types::FrameClock::new(start, tutti_types::Bpm::of(120.0), SampleRate(RATE));
+            tutti_types::FrameClock::new(start, tutti_types::Bpm::of(120.0), SampleRate::of(RATE));
         let region = tutti_types::LoopRange::new(start, end).unwrap();
         for _ in 0..4 {
             exec.process(

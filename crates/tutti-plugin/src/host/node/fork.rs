@@ -473,8 +473,7 @@ mod tests {
     /// both figures — and nothing before `plan` or while the figure holds.
     #[test]
     fn a_latency_moved_after_the_plan_is_a_fault() {
-        let controls =
-            PluginControls::new(Samples(137), PluginTail::default(), SampleRate(48_000.0));
+        let controls = PluginControls::new(Samples(137), PluginTail::default(), SampleRate::SR_48K);
         let watch = ForkWatch {
             controls: controls.clone(),
             bridge: Weak::new(),

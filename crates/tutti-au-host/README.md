@@ -82,7 +82,7 @@ let effects = enumerate_components_of_type(AuType::Effect);
 if let Some(info) = effects.first() {
     let main = MainThread::claim().unwrap();
     let au = AuLoaded::new(info.component, 44100.0, 512).unwrap();
-    let prepare = Prepare::new(SampleRate(44100.0), MaxBlock::of(Samples(512))).unwrap();
+    let prepare = Prepare::new(SampleRate::SR_44K1, MaxBlock::of(Samples(512))).unwrap();
     let Ok((mut processor, _controller)) = au.activate(&main, prepare) else {
         return;
     };

@@ -108,7 +108,7 @@ impl Default for Playhead {
             seconds: Seconds(0.0),
             playing: false,
             tempo: Bpm::default(),
-            rate: SampleRate(48_000.0),
+            rate: SampleRate::SR_48K,
             span: Samples(0),
             at: None,
         }
@@ -256,7 +256,7 @@ impl BlockClockReader {
         Some(BlockReading {
             os_ns: wire.nanos,
             frame: Frame(wire.frame),
-            rate: SampleRate(wire.rate),
+            rate: SampleRate::new(wire.rate)?,
         })
     }
 
@@ -269,13 +269,16 @@ impl BlockClockReader {
         let Some(wire) = self.cell.read(RETRIES).ok().flatten() else {
             return Playhead::default();
         };
+        let Some(rate) = SampleRate::new(wire.rate) else {
+            return Playhead::default();
+        };
         Playhead {
             beat: Beat(wire.beat),
             frame: Frame(wire.frame),
             seconds: Seconds(wire.seconds),
             playing: wire.playing != 0,
             tempo: Bpm::new(wire.tempo).unwrap_or_default(),
-            rate: SampleRate(wire.rate),
+            rate,
             span: Samples(wire.span as usize),
             at: Some(wire.nanos),
         }

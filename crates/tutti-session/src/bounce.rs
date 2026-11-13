@@ -2039,7 +2039,7 @@ mod tests {
     use tutti_tempo::{TempoPoint, Transition};
     use tutti_types::{Bpm, SampleRate};
 
-    const RATE: SampleRate = SampleRate(48_000.0);
+    const RATE: SampleRate = SampleRate::SR_48K;
 
     /// A render of a few blocks into memory.
     fn short() -> Bounce<NodeKey, BufferMaster> {

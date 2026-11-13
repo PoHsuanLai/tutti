@@ -166,7 +166,7 @@ impl LtiCase for GainFamily {
             .into_iter()
             .map(|g| Figure {
                 controls: g,
-                rate: SampleRate(48_000.0),
+                rate: SampleRate::SR_48K,
                 output: 0,
                 freq: Hz(1_000.0),
                 gain: f64::from(g),

@@ -9,7 +9,7 @@ use tutti_types::{Beat, Bpm, SampleRate};
 use tutti_types::{ChannelLayout, Interleaved};
 use tutti_ump::Ump;
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A mono graph whose one output carries a constant.
 fn mono_dc(v: f32) -> RenderGraph {

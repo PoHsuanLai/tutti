@@ -76,7 +76,7 @@ impl SessionNode for Tap {}
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -369,7 +369,7 @@ fn a_route_rule_names_a_group() {
     let mut s = Session::builder()
         .midi_groups(MidiGroup::of(1))
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -491,7 +491,7 @@ fn the_hardware_out_drains_with_stamping_off() {
     let count = Arc::new(AtomicUsize::new(0));
     s.midi().set_hardware_out(Some(UmpOut::new(
         Box::new(CountingSink(Arc::clone(&count))),
-        SampleRate::new(RATE),
+        SampleRate::of(RATE),
     )));
     let events = s.update();
     assert!(
@@ -603,7 +603,7 @@ fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounte
     let s = Session::builder()
         .midi_hardware_over(backend)
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -715,7 +715,7 @@ fn keyboards(
         .midi_hardware_over(backend)
         .midi_devices(devices)
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
@@ -1165,8 +1165,10 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     io.connect_input("dev").expect("connects");
     io.connect_output("dev").expect("connects");
-    s.midi()
-        .set_hardware_out(Some(UmpOut::new(Box::new(io.clone()), SampleRate(RATE))));
+    s.midi().set_hardware_out(Some(UmpOut::new(
+        Box::new(io.clone()),
+        SampleRate::of(RATE),
+    )));
 
     // The device answers the session's Stream messages as an Endpoint does.
     let mut device = Endpoint::new(Capabilities {

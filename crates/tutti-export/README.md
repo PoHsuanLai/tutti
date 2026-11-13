@@ -97,7 +97,7 @@ use tutti_codec::{FlacLevel, Format, IntDepth, Pcm};
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
 
-let rate = SampleRate(48_000.0);
+let rate = SampleRate::SR_48K;
 // A render borrows its graph; build one per render.
 let tone = || {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);

@@ -334,7 +334,7 @@ mod off_main_tests {
             &main_thread(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         )
         .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
         handle

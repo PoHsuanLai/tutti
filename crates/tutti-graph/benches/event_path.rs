@@ -69,7 +69,7 @@ impl Node for Sink {
 
 fn rig(source: Source) -> Executor {
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         MaxBlock::of(Samples(BLOCK)),
     ));
     ed.insert(NodeKey(1), "source", Unforkable(source));
@@ -112,7 +112,7 @@ fn bench(c: &mut Criterion) {
     // each into a port of 64 (nothing refused), no consumer.
     for k in [1u64, 8, 32] {
         let (mut ed, mut exec) = Editor::new(Prepare::new(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             MaxBlock::of(Samples(BLOCK)),
         ));
         for i in 0..k {

@@ -21,7 +21,7 @@ use tutti_types::{
     UnitParam,
 };
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 const LEN: usize = 2_048;
 const WIDTH: u16 = 6;
 /// Ragged on purpose: full blocks, odd sizes, and a block of one.

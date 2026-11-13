@@ -71,7 +71,7 @@ let plugin = Vst2Loaded::load(&main, "/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker
 let (inputs_width, outputs_width) = plugin.pins();
 
 // The rate, block size and precision are the activation's.
-let Ok((mut processor, controller)) = plugin.activate(&main, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
+let Ok((mut processor, controller)) = plugin.activate(&main, Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)))
     .expect("a real rate")) else {
     panic!("the plugin refused to run");
 };

@@ -6,7 +6,7 @@ use super::*;
 use crate::contract::{FamilyCase, Hook, RecurrenceCase, built};
 use crate::{Realized, Setup};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 /// The longest block `run` hands the runner.
 const CHUNK: usize = 256;
 

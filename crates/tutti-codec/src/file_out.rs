@@ -61,7 +61,7 @@ use crate::spec::Spec;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let dir = tempfile::tempdir()?;
-/// let spec = Spec::of_width(Format::Wav(Pcm::Int24), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let spec = Spec::of_width(Format::Wav(Pcm::Int24), ChannelLayout::STEREO, SampleRate::SR_48K);
 /// let mut out = FileOut::create(&spec, dir.path().join("tone.wav"))?;
 /// out.write(&[0.5, -0.5, 0.25, -0.25]).expect("the write lands"); // two stereo frames
 /// out.finalize()?;

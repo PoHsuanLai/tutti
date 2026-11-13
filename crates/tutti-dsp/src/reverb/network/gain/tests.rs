@@ -1,6 +1,6 @@
 use super::*;
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A 1 s loop (48 000 frames) at RT60 1 s loses 60 dB per trip: the gain is
 /// 10^-3 exactly. At RT60 2 s it loses 30 dB: 10^-1.5.
@@ -17,11 +17,11 @@ fn rt60_from_gain_inverts_loop_gain() {
     for rate in [44_100.0, 48_000.0, 96_000.0] {
         for delay in [1.0f32, 37.5, 1116.0, 40_000.0] {
             for rt60 in [0.05f32, 0.5, 2.0, 8.0] {
-                let g = loop_gain(delay, Seconds::from_f32(rt60), SampleRate(rate));
+                let g = loop_gain(delay, Seconds::from_f32(rt60), SampleRate::of(rate));
                 if g.get() <= 1e-6 {
                     continue; // below f32's resolution of a gain
                 }
-                let back = rt60_from_gain(g, delay, SampleRate(rate)).to_f32();
+                let back = rt60_from_gain(g, delay, SampleRate::of(rate)).to_f32();
                 assert!((back - rt60).abs() <= 2e-3 * rt60, "{back} vs {rt60}");
             }
         }
@@ -35,7 +35,7 @@ fn rt60_from_gain_inverts_loop_gain() {
 fn rt60_from_gain_is_exact() {
     let want = -3.0 * 100.0 / (48_000.0 * libm::log10(0.5));
     assert_eq!(
-        rt60_from_gain(Amplitude(0.5), 100.0, SampleRate(48_000.0)),
+        rt60_from_gain(Amplitude(0.5), 100.0, SampleRate::SR_48K),
         Seconds(want)
     );
 }

@@ -323,7 +323,7 @@ impl MotionFsm {
     /// use tutti_types::{At, Beat, Frame};
     /// use tutti_transport::{MotionEvent, Transport};
     ///
-    /// let transport = Transport::new(tutti_types::SampleRate(48_000.0));
+    /// let transport = Transport::new(tutti_types::SampleRate::SR_48K);
     /// // Start rolling one second into the stream, stop at beat 16.
     /// transport.motion().schedule(At::Frame(Frame(48_000)), MotionEvent::Play)?;
     /// transport.motion().schedule(At::Beat(Beat(16.0)), MotionEvent::stop())?;

@@ -16,8 +16,7 @@ static A: ThreadCounting = ThreadCounting;
 /// for bins and for bands, with smoothing, peaks and a wrapping spectrogram.
 #[test]
 fn a_spectrum_step_does_not_allocate() {
-    let geometry =
-        StftGeometry::new(SampleRate::new(48_000.0), Samples(1024), Samples(256)).unwrap();
+    let geometry = StftGeometry::new(SampleRate::SR_48K, Samples(1024), Samples(256)).unwrap();
     let plain = SpectrumConfig::new(geometry).unwrap();
     let banded = plain
         .with_banding(Banding::Octave {

@@ -61,7 +61,7 @@ const HAND: usize = 77;
 /// A pool with one voice placed at `start`, playing a constant (so its first
 /// frame is already non-zero).
 fn pool(start: Beat) -> VoicePool {
-    let mut wave = Wave::new(1, SampleRate::new(SR));
+    let mut wave = Wave::new(1, SampleRate::of(SR));
     for _ in 0..SR as usize {
         wave.push_frame(&[0.5]);
     }
@@ -98,7 +98,7 @@ struct Run {
 }
 
 fn transport() -> Transport {
-    let t = Transport::new(SampleRate::new(SR));
+    let t = Transport::new(SampleRate::of(SR));
     t.settings().set_tempo(TEMPO);
     t
 }
@@ -118,7 +118,10 @@ fn play(engine: &Engine, t: &Transport) -> Vec<f32> {
 
 /// The pool on the outputs, and a probe beside it.
 fn graph_with(pool: VoicePool, probe: Arc<Mutex<Option<Beat>>>) -> (Editor, tutti_graph::Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(1024))));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(SR),
+        MaxBlock::of(Samples(1024)),
+    ));
     ed.insert(NodeKey(1), "voice", pool);
     ed.insert(NodeKey(2), "probe", tutti_graph::Unforkable(Probe(probe)));
     ed.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -145,7 +148,7 @@ fn offline_graph(start: Beat) -> Run {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo_map: Arc::new(TempoMap::constant(TEMPO).expect("a tempo")),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         loop_range: None,
     });
     let probe = Arc::default();
@@ -163,14 +166,14 @@ fn offline_graph(start: Beat) -> Run {
 /// The pool driven by hand in [`HAND`]-frame blocks, its `Env` from a host frame
 /// clock (counted, as an engine's).
 fn by_hand(start: Beat) -> Run {
-    let mut node = contract::prepared(pool(start), SampleRate(SR), HAND);
+    let mut node = contract::prepared(pool(start), SampleRate::of(SR), HAND);
     let mut probe = Probe(Arc::default());
-    let mut host = FrameClock::new(Beat(0.0), TEMPO, SampleRate(SR));
+    let mut host = FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(SR));
     let mut left = Vec::with_capacity(FRAMES);
     while left.len() < FRAMES {
         let env = Env {
             frame: Frame(left.len() as u64),
-            sample_rate: SampleRate(SR),
+            sample_rate: SampleRate::of(SR),
             block_len: Samples(HAND),
             transport: tutti_graph::TransportPosition::counted(true, TEMPO, host.origin(), None),
             changes: TransportChanges::NONE,

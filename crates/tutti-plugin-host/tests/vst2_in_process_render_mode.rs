@@ -122,7 +122,7 @@ fn load() -> Loaded {
         &main_thread(),
         &path,
         &Load::new(),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded {
@@ -147,7 +147,7 @@ fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
 /// [`drive_blocks`] at `hz`: the node is prepared at that rate.
 fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, TransportChanges, TransportPosition};
-    let rate = SampleRate(hz);
+    let rate = SampleRate::of(hz);
     Node::prepare(
         unit,
         &Prepare::new(rate, tutti_types::MaxBlock::of(tutti_types::Samples(max))),

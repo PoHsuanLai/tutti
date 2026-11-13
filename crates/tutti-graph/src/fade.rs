@@ -244,13 +244,13 @@ mod tests {
     fn seconds_round_to_the_nearest_frame() {
         let f = Fade::seconds(
             Seconds(0.005),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             CrossfadeCurve::EqualPower,
         );
         assert_eq!(f.duration, Samples(240));
         let f = Fade::seconds(
             Seconds(1.5 / 1000.0),
-            SampleRate(1000.0),
+            SampleRate::of(1000.0),
             CrossfadeCurve::EqualPower,
         );
         assert_eq!(f.duration, Samples(2));

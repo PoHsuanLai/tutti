@@ -10,7 +10,7 @@ use tutti_graph::{Node, Prepare};
 use tutti_nodes::*;
 use tutti_types::{BusTopology, ChannelLayout, Db, Feedback, Hz, Q, SampleRate, Samples, Seconds};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 // A huge finite value (1e30) is left out on purpose: it is a valid number that
 // asks for an allocation no machine has (a delay line, a lookahead ring).
 const BAD: [f32; 5] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, -1e30];

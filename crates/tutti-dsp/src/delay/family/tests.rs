@@ -10,7 +10,7 @@ use crate::{Realized, TAIL_FLOOR};
 
 /// A rate at which a time of `n / 1024` seconds is exactly `n` frames, in `f64` and in the
 /// `f32` a control is held in.
-const BINARY: SampleRate = SampleRate(1024.0);
+const BINARY: SampleRate = SampleRate::of(1024.0);
 const MAX: MaxDelay = MaxDelay::of(Seconds(1.0));
 
 fn controls(time: f64, feedback: f32, cross: f32) -> DelayControls {
@@ -51,11 +51,7 @@ impl FamilyCase for DelayFamily {
     }
 
     fn rates(&self) -> Vec<SampleRate> {
-        vec![
-            SampleRate(48_000.0),
-            SampleRate(96_000.0),
-            SampleRate(44_100.0),
-        ]
+        vec![SampleRate::SR_48K, SampleRate::SR_96K, SampleRate::SR_44K1]
     }
 
     /// The family's own longest delay is the domain it is built to.
@@ -203,7 +199,7 @@ impl LtiCase for DelayFamily {
     fn figures(&self) -> Vec<Figure<DelayControls>> {
         let (g, c) = (0.5f32, if self.routing().is_none() { 0.0 } else { 0.2 });
         let mut all = Vec::new();
-        for rate in [SampleRate(48_000.0), SampleRate(96_000.0)] {
+        for rate in [SampleRate::SR_48K, SampleRate::SR_96K] {
             let d = DelayFamily::WHOLE * rate.get();
             let q = f64::from(g + c);
             for (freq, sign) in [
@@ -476,10 +472,10 @@ fn a_time_glide_is_bounded_by_the_slew_and_lands_exactly() {
     let mut k = built(
         &family,
         &controls(100.0 / 1000.0, 0.0, 0.0),
-        SampleRate(1000.0),
+        SampleRate::of(1000.0),
     )
     .0;
-    k.retarget(&family.member(&controls(400.0 / 1000.0, 0.0, 0.0), SampleRate(1000.0)));
+    k.retarget(&family.member(&controls(400.0 / 1000.0, 0.0, 0.0), SampleRate::of(1000.0)));
     let len = 4_000;
     let ramp: Vec<f32> = (0..len).map(|n| n as f32).collect();
     let y = run(&mut k, &[ramp]).remove(0);
@@ -597,7 +593,7 @@ fn a_feedback_lane_is_the_feedback_of_each_frame() {
 /// the 240 steps from 0.2 to 0.8 is `0.2 + 0.6 * 101 / 240`, and one past the glide, `D = 300`, is 0.8.
 #[test]
 fn a_feedback_glides_over_five_milliseconds_counted_on_the_stream() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let family = mono(InterpolationMode::Linear);
     for (d, want) in [(100usize, 0.2 + 0.6 * 101.0 / 240.0), (300, 0.8)] {
         let c = |fb| controls(d as f64 / rate.get(), fb, 0.0);
@@ -655,14 +651,14 @@ fn a_max_delay_keeps_the_range_checked_shape() {
 #[test]
 fn a_max_delay_is_a_line_of_the_exact_ceiling_of_its_frames() {
     let max = MaxDelay::of(Seconds(0.1));
-    assert_eq!(max.frames(SampleRate(48_000.0)), 4800);
-    assert_eq!(max.frames(SampleRate(44_100.0)), 4410);
+    assert_eq!(max.frames(SampleRate::SR_48K), 4800);
+    assert_eq!(max.frames(SampleRate::SR_44K1), 4410);
     assert_eq!(
-        MaxDelay::of(MaxDelay::CAP).frames(SampleRate(192_000.0)),
+        MaxDelay::of(MaxDelay::CAP).frames(SampleRate::SR_192K),
         1_920_000
     );
     assert_eq!(
-        max.frames(SampleRate(1e15)),
+        max.frames(SampleRate::of(1e15)),
         super::super::max_delay::MAX_FRAMES
     );
 }
@@ -857,7 +853,7 @@ fn the_cubic_taps_sum_to_one_and_are_bounded_by_the_l1_gain() {
 /// the delay time ("musical delay is not latency").
 #[test]
 fn the_member_declares_its_echoes_as_the_tail_and_no_latency() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let f = mono(InterpolationMode::Linear);
     // No feedback: the first echo is the whole ring, a delay of 480 frames plus the spread.
     let m = f.member(&controls(0.01, 0.0, 0.0), rate);
@@ -881,7 +877,7 @@ fn the_member_declares_its_echoes_as_the_tail_and_no_latency() {
 /// longest, and as the default's.
 #[test]
 fn a_hostile_time_is_a_member_within_the_line() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let f = mono(InterpolationMode::Linear);
     let cap = MAX.frames(rate) as f32;
     for (time, want) in [

@@ -7,7 +7,7 @@ fn test_svf_coeffs_lowpass_m_values() {
         Hz::new(1000.0),
         Q::new(0.707),
         Db::new(0.0),
-        SampleRate::new(44100.0),
+        SampleRate::SR_44K1,
     );
     assert!((c.m0 - 0.0).abs() < 1e-10);
     assert!((c.m1 - 0.0).abs() < 1e-10);
@@ -22,7 +22,7 @@ fn test_svf_coeffs_highpass_m_values() {
         Hz::new(1000.0),
         Q::new(0.707),
         Db::new(0.0),
-        SampleRate::new(44100.0),
+        SampleRate::SR_44K1,
     );
     assert!((c.m0 - 1.0).abs() < 1e-10);
     assert!((c.m2 - (-1.0)).abs() < 1e-10);
@@ -83,7 +83,7 @@ fn measured_db(ty: SvfType, fc: f64, q: f64, gain_db: f64, rate: f64, f: f64) ->
         Hz(fc as f32),
         Q(q as f32),
         Db(gain_db as f32),
-        SampleRate::new(rate),
+        SampleRate::of(rate),
     ));
     let mut st = [0.0f64; 2];
     let n = rate as usize;
@@ -137,7 +137,7 @@ fn an_absurd_gain_solves_finite_and_saturates() {
                 Hz::new(1000.0),
                 Q::new(1.0),
                 Db::new(db),
-                SampleRate::new(48_000.0),
+                SampleRate::SR_48K,
             );
             for v in [c.a1, c.a2, c.a3, c.m0, c.m1, c.m2] {
                 assert!(v.is_finite(), "{ty:?} at {db} dB: {c:?}");
@@ -148,14 +148,14 @@ fn an_absurd_gain_solves_finite_and_saturates() {
             Hz::new(1000.0),
             Q::new(1.0),
             Db::new(SvfCoeffs::MAX_GAIN_DB),
-            SampleRate::new(48_000.0),
+            SampleRate::SR_48K,
         );
         let past = SvfCoeffs::new(
             ty,
             Hz::new(1000.0),
             Q::new(1.0),
             Db::new(1e30),
-            SampleRate::new(48_000.0),
+            SampleRate::SR_48K,
         );
         assert_eq!((cap.m0, cap.m1, cap.m2), (past.m0, past.m1, past.m2));
     }
@@ -164,14 +164,14 @@ fn an_absurd_gain_solves_finite_and_saturates() {
         Hz::new(1000.0),
         Q::new(1.0),
         Db::new(f32::NAN),
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
     );
     let flat = SvfCoeffs::new(
         SvfType::Bell,
         Hz::new(1000.0),
         Q::new(1.0),
         Db::new(0.0),
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
     );
     assert_eq!(nan.m1, flat.m1);
 }
@@ -183,7 +183,7 @@ fn test_svf_coeffs_bell_zero_gain_is_unity() {
         Hz::new(1000.0),
         Q::new(1.0),
         Db::new(0.0),
-        SampleRate::new(44100.0),
+        SampleRate::SR_44K1,
     );
     assert!(
         (c.m1).abs() < 1e-10,
@@ -205,7 +205,7 @@ fn cutoff_and_q_are_not_interchangeable() {
         Hz(1000.0),
         Q(0.707),
         Db(0.0),
-        SampleRate::new(44100.0),
+        SampleRate::SR_44K1,
     );
     // What the transposed call computes: a 0.707 Hz cutoff at Q 1000.
     let swapped = SvfCoeffs::new(
@@ -213,7 +213,7 @@ fn cutoff_and_q_are_not_interchangeable() {
         Hz(0.707),
         Q(1000.0),
         Db(0.0),
-        SampleRate::new(44100.0),
+        SampleRate::SR_44K1,
     );
     assert!(
         (right.a2 - swapped.a2).abs() > 1e-6,
@@ -228,14 +228,14 @@ fn test_svf_coeffs_deterministic() {
         Hz::new(500.0),
         Q::new(0.707),
         Db::new(0.0),
-        SampleRate::new(44100.0),
+        SampleRate::SR_44K1,
     );
     let c2 = SvfCoeffs::new(
         SvfType::LowPass,
         Hz::new(500.0),
         Q::new(0.707),
         Db::new(0.0),
-        SampleRate::new(44100.0),
+        SampleRate::SR_44K1,
     );
     assert_eq!(c1.a1, c2.a1);
     assert_eq!(c1.a2, c2.a2);

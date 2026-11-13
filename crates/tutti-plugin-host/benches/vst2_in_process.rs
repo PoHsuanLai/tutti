@@ -46,12 +46,12 @@ fn unit() -> Direct<PluginNode<Vst2Loaded>> {
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
-        SampleRate::new(SR),
+        SampleRate::of(SR),
     )
     .expect("the reference VST2 plugin must be built — see tutti-fixtures");
     let tempo =
         tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo");
-    Direct::new(unit.bind(tempo), SampleRate(SR), BLOCK)
+    Direct::new(unit.bind(tempo), SampleRate::of(SR), BLOCK)
 }
 
 fn drive(unit: &mut Direct<PluginNode<Vst2Loaded>>) {

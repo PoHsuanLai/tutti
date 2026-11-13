@@ -15,7 +15,7 @@ fn io_reaches_a_wav_sink_without_a_format_feature() {
     let spec = Spec::of_width(
         Format::Wav(Pcm::Int16),
         ChannelLayout::STEREO,
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
     );
     let sink = FileOut::create(&spec, dir.path().join("take.wav"));
     sink.expect("a WAV sink opens").finalize().expect("closes");

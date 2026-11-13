@@ -14,8 +14,11 @@ use tutti_types::{ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
 const RATE: f64 = 48_000.0;
 
 fn engine() -> Engine {
-    let transport = Transport::new(SampleRate::new(RATE));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
+    let transport = Transport::new(SampleRate::of(RATE));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(512)),
+    ));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within limits");
     Box::leak(Box::new(ed));
@@ -65,7 +68,7 @@ fn each_call_publishes_where_it_began() {
         render(&engine, 256, segment);
         let first = reader.read().expect("published by the first call");
         assert_eq!(first.frame, Frame(0));
-        assert_eq!(first.rate, SampleRate(RATE));
+        assert_eq!(first.rate, SampleRate::of(RATE));
         assert!(first.os_ns >= before && first.os_ns <= tutti_rt::monotonic_ns());
 
         render(&engine, 512, segment);

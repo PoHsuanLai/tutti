@@ -5,7 +5,7 @@ use tutti_types::{ChannelTopology, UnitParam};
 
 use crate::testing::aim;
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// `node`, prepared at 48 kHz for blocks of up to 64 frames.
 fn prep(node: VbapPannerNode) -> VbapPannerNode {
@@ -279,7 +279,7 @@ fn vbap_clone_shares_atomics() {
 /// sweep to a new bearing identically.
 #[test]
 fn a_clone_ramps_at_the_originals_sample_rate() {
-    let rate = SampleRate(96_000.0);
+    let rate = SampleRate::SR_96K;
     let mut original = prepared(VbapPannerNode::stereo(), rate, 64);
     let mut clone = original.clone();
     aim(&original.param_set(), Azimuth(60.0), Elevation::LEVEL);

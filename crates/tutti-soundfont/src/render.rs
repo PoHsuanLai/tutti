@@ -22,11 +22,17 @@ impl Render {
     /// made at: 0.18 ms at 44.1 kHz.
     pub(crate) const BLOCK: usize = 8;
 
-    /// The grid at `rate`, in whole hertz.
+    /// The grid at `rate`, in whole hertz, at least 1 (a rate below half a
+    /// hertz is no rate a voice can run at).
     pub(crate) fn new(rate: SampleRate) -> Self {
         Self {
-            hz: rate.get().round() as i32,
+            hz: rate.get().round().max(1.0) as i32,
         }
+    }
+
+    /// The rate the grid runs at: whole hertz, as [`hz`](Self::hz).
+    pub(crate) fn rate(&self) -> SampleRate {
+        SampleRate::of(f64::from(self.hz))
     }
 
     /// The rate in whole hertz.

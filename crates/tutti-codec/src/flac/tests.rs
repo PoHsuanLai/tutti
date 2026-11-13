@@ -76,7 +76,7 @@ fn a_writer_that_lost_a_frame_fails_promptly() {
                 level: FlacLevel::Standard,
             },
             ChannelLayout::STEREO,
-            SampleRate(44_100.0),
+            SampleRate::SR_44K1,
         );
         let mut w = FlacWriter::create(
             &spec,

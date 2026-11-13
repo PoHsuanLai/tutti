@@ -10,10 +10,18 @@
 //! refuses what RP-053 does at its constructor, and a persisted one is read
 //! back through the same check.
 //!
+//! The MIDI-CI MPE Profile (M2-120) replaces the Configuration Message with a
+//! zone per enabled Profile: the same [`MpeZoneConfig`] and [`MpeZones`], built
+//! with [`MpeZoneConfig::profile`], with the Profile's two Specific Data values
+//! ([`ChannelResponse`], [`MpeFeatures`]). [`MpeSpec`] names which
+//! specification a zone follows.
+//!
 //! These are values. The state machine that drives a zone from incoming MIDI
 //! (which member channel holds which note) is `tutti-midi-runtime`'s
 //! `MpeIngest`.
 
+mod profile;
 mod zone;
 
-pub use zone::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
+pub use profile::{ChannelResponse, ControllerSupport, MpeFeatures, PitchBendSupport};
+pub use zone::{MpeMode, MpeSpec, MpeZone, MpeZoneConfig, MpeZones};

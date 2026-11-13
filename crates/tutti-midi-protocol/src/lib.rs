@@ -106,7 +106,8 @@
 //! [`flex_tempo`] and [`flex_time_signature`] read a Flex Set Tempo and Set Time
 //! Signature as a `Bpm` and a project meter (`None` for a field the type cannot
 //! hold, never clamped); [`MpeZoneConfig`], [`MpeZones`] and [`MpeMode`] are the
-//! MPE zone layout (RP-053), checked at construction; and [`TuningMessage`] and
+//! MPE zone layout (RP-053, and the MIDI-CI MPE Profile's, M2-120), checked
+//! at construction; and [`TuningMessage`] and
 //! its types are the MIDI Tuning Standard's wire values.
 //!
 //! [`PitchBendSensitivity`] is the 7.25 fixed-point range of RPN #00/07 (M2-104
@@ -143,7 +144,10 @@ mod voice;
 
 pub use flex::{flex_tempo, flex_time_signature};
 pub use midi1::{NoMidi1Form, midi1, narrow, narrow_message};
-pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
+pub use mpe::{
+    ChannelResponse, ControllerSupport, MpeFeatures, MpeMode, MpeSpec, MpeZone, MpeZoneConfig,
+    MpeZones, PitchBendSupport,
+};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use narrower::Narrower;
 pub use sensitivity::PitchBendSensitivity;

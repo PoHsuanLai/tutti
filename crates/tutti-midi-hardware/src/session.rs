@@ -41,7 +41,7 @@ use crate::error::{Error, Result};
 use crate::profiles::{PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo, Learned, SavedDevice};
-use tutti_midi_runtime::DeviceInlets;
+use tutti_midi_runtime::{DeviceInlets, DeviceSlot};
 use tutti_ump::DeviceIdentity;
 
 /// The set of open MIDI inputs, and the endpoints available to open.
@@ -500,6 +500,13 @@ impl MidiSession {
         self.inputs
             .get(id)
             .map_or_else(Arc::default, |held| held.stream.ci_peers())
+    }
+
+    /// The inlet slot the open input `id` holds, `None` when it is not open: the
+    /// event input of the ingest node its events go to.
+    #[must_use]
+    pub fn slot(&self, id: &DeviceId) -> Option<DeviceSlot> {
+        self.inputs.get(id).map(|held| held.input.slot())
     }
 
     /// The Profiles of the MIDI-CI peers found on the open input `id` that

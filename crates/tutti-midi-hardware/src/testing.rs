@@ -146,6 +146,7 @@ impl Rig {
         for change in self.inlets.take_changes() {
             match change {
                 InletChange::Attach { slot, node } => {
+                    let slot = slot.index();
                     let key = NodeKey(100 + slot as u64);
                     self.editor.insert(key, "inlet", node);
                     self.editor.spec_mut().connect_events(
@@ -158,6 +159,7 @@ impl Rig {
                     self.inlet_keys[slot] = Some(key);
                 }
                 InletChange::Detach { slot } => {
+                    let slot = slot.index();
                     if let Some(key) = self.inlet_keys[slot].take() {
                         self.editor.remove(key);
                     }

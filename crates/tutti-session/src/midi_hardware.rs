@@ -130,6 +130,14 @@ impl Midi<'_> {
     /// a [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles). Shared like
     /// [`ci_peers`](Self::ci_peers), and as it was when read.
     ///
+    /// A peer that has the MPE Profile (M2-120) enabled puts that input's ingest
+    /// on the Profile's rules in its zones: the Manager Channel of each is the
+    /// Channel it is enabled on, and the Members the Channels the Enabled
+    /// Report counted above it
+    /// ([`PeerProfiles::mpe_zones`](tutti_midi_hardware::PeerProfiles::mpe_zones)).
+    /// Disabling it, or the peer's going, puts the input back on
+    /// [`Midi::mpe`](crate::Midi::mpe)'s.
+    ///
     /// Each Profile is a [`ListedProfile`](tutti_midi_hardware::ListedProfile),
     /// the handle a [`ProfileSwitch`] is made from, so a request can only name a
     /// Profile at an address the peer listed.

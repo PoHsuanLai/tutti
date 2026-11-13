@@ -1,5 +1,5 @@
 use super::*;
-use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
+use tutti_midi_protocol::{MpeZoneConfig, MpeZones, PitchBendSensitivity};
 use tutti_ump::BendValue;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 
@@ -773,8 +773,16 @@ fn random_streams_keep_their_invariants() {
         });
         if stream % 5 == 0 {
             alloc.set_zones(MpeZones::new(
-                MpeZoneConfig::lower(3),
-                MpeZoneConfig::upper(2),
+                MpeZoneConfig::lower(
+                    3,
+                    PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                    PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+                ),
+                MpeZoneConfig::upper(
+                    2,
+                    PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                    PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+                ),
             ));
         }
         // A zone master's pedal, panic and reset are its zone's (M1-100

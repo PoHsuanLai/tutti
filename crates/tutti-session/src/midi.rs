@@ -872,6 +872,7 @@ impl MidiState {
         }
         // The devices' UMP Stream negotiations take their step at `now`: the
         // session's control tick is their timer.
+        let mut profile_peers: Vec<tutti_midi_hardware::DeviceId> = Vec::new();
         for polled in io.poll(now) {
             // The output follows what its device settled, at once: the
             // `MidiOut` phase that drains next stamps by it.
@@ -891,6 +892,9 @@ impl MidiState {
                         MidiEvent::CiPeer { device, change }
                     }
                     tutti_midi_hardware::Polled::Profile(device, change) => {
+                        if !profile_peers.contains(&device) {
+                            profile_peers.push(device.clone());
+                        }
                         MidiEvent::CiProfiles { device, change }
                     }
                     // A kind of report this session does not know is not one.
@@ -898,6 +902,9 @@ impl MidiState {
                 }
                 .into(),
             );
+        }
+        for device in &profile_peers {
+            sync_mpe_profiles(io, nodes, device);
         }
         let wired = wire_inlets(&mut self.inlet_keys, io.ports().inlets(), nodes, graph);
         if !self.watch_failure_reported
@@ -1059,6 +1066,44 @@ pub struct Midi<'a> {
     pub(crate) io: Option<&'a mut tutti_midi_hardware::MidiSession>,
 }
 
+/// Takes the MPE Profile zones `device`'s peers have enabled (M2-120) as what its
+/// ingest slot follows: the zones of every peer on a Group together, or none
+/// where no peer has the Profile enabled. A device that is not open has no
+/// slot to set; closing one clears its zones with its inlet
+/// (`wire_inlets`).
+#[cfg(feature = "midi-hardware")]
+fn sync_mpe_profiles(
+    io: &tutti_midi_hardware::MidiSession,
+    nodes: Option<&MidiNodes>,
+    device: &tutti_midi_hardware::DeviceId,
+) {
+    let (Some(nodes), Some(slot)) = (nodes, io.slot(device)) else {
+        return;
+    };
+    let mut zones = [None; tutti_ump::MidiGroup::COUNT as usize];
+    for peer in io.profiles(device).iter() {
+        let Some(enabled) = peer.mpe_zones() else {
+            continue;
+        };
+        let held: &mut Option<tutti_midi_protocol::MpeZones> = &mut zones[peer.group().index()];
+        *held = match *held {
+            None => Some(enabled),
+            // A zone that shares a Channel with one held is left out (M2-120
+            // section 3.4).
+            Some(held) => Some(
+                enabled
+                    .zones()
+                    .fold(held, |all, zone| all.with(*zone).unwrap_or(all)),
+            ),
+        };
+    }
+    for group in tutti_ump::MidiGroup::all() {
+        nodes
+            .input_controls
+            .set_mpe_profile(slot, group, zones[group.index()]);
+    }
+}
+
 /// Applies the devices' inlet changes: an inlet added to the graph and
 /// wired to its slot's event input of the ingest node (which starts the
 /// slot over by itself when a new device takes it, so the device before it
@@ -1083,6 +1128,7 @@ fn wire_inlets(
         edited = true;
         match change {
             InletChange::Attach { slot, node } => {
+                let slot = slot.index();
                 let key = graph.add_event_inlet(node).erase();
                 if let Err(e) = graph.set_sources(
                     crate::EventInPort::new(nodes.input, slot),
@@ -1096,6 +1142,10 @@ fn wire_inlets(
                 inlet_keys[slot] = Some(key);
             }
             InletChange::Detach { slot } => {
+                // The device's Profiles went with it: the next to take the slot
+                // has enabled none.
+                nodes.input_controls.clear_mpe_profiles(slot);
+                let slot = slot.index();
                 if let Some(key) = inlet_keys.get_mut(slot).and_then(Option::take) {
                     let _ = graph.set_sources(crate::EventInPort::new(nodes.input, slot), []); // a slot with no port has no source to take out
                     let _ = graph.remove(key); // a host that removed the inlet itself leaves nothing to take
@@ -1640,6 +1690,14 @@ impl Midi<'_> {
     ///   node in a graph cannot be reached from here); add it again to move
     ///   it. A synth inserted with `Graph::add` is the caller's own and keeps
     ///   its config.
+    ///
+    /// A device that enables the MIDI-CI MPE Profile (M2-120) is not under this
+    /// mode: its input follows the Profile's zones and rules, in the Groups it
+    /// enabled them on, until it disables the Profile or goes. The session
+    /// does that from the peer's Profile reports
+    /// (`MidiEvent::CiProfiles`); the voices of a synth keep the mode they
+    /// were added with, which can name a Profile's zones as well as MPE 1.1's
+    /// (`MpeZones` holds either).
     pub fn set_mpe(&mut self, mode: MpeMode) {
         self.state.mpe = mode;
         if let Some(nodes) = self.nodes {

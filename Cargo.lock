@@ -3393,6 +3393,7 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-queue",
  "parking_lot",
+ "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-clap-host",

@@ -4,11 +4,13 @@
 //! answers:
 //!
 //! - [`Stft`] — complex bins, as the transform produces them.
-//! - [`StftPolar`] — the same information in magnitude/phase form. Lossless.
+//! - [`StftPolar`] — the same information in magnitude/phase form, read through
+//!   its magnitude and phase grids. Not invertible.
 //! - [`StftMagnitude`] — phase **discarded**. Lossy, and has no inverse.
 //!
-//! The first two are the same data in two coordinate systems and both
-//! reconstruct exactly. The third is a real capability boundary. Collapsing all
+//! Only the first reconstructs, through [`istft_transform`](crate::istft_transform); the
+//! other two are for reading, and the phase-less third is a real capability
+//! boundary. Collapsing all
 //! three into one struct is how a phase-less result reached the inverse and
 //! panicked, and how a decimated display transform reached it and produced a
 //! comb of islands separated by silence.
@@ -42,13 +44,6 @@ impl RawMagnitudes {
     #[inline]
     pub fn grid(&self) -> &Grid<f32> {
         &self.0
-    }
-
-    /// Moves the grid out, dropping the "raw" marker with it.
-    #[inline]
-    #[must_use]
-    pub fn into_grid(self) -> Grid<f32> {
-        self.0
     }
 
     /// The largest magnitude anywhere in the grid.
@@ -95,13 +90,6 @@ impl NormalizedMagnitudes {
     #[inline]
     pub fn grid(&self) -> &Grid<f32> {
         &self.values
-    }
-
-    /// Moves the `0..1` grid out, dropping the peak that scaled it.
-    #[inline]
-    #[must_use]
-    pub fn into_grid(self) -> Grid<f32> {
-        self.values
     }
 
     /// The peak the values were scaled against — enough to recover the raw
@@ -189,7 +177,7 @@ impl Stft {
 
     /// Converts to magnitude/phase. Lossless.
     #[must_use]
-    pub fn to_polar(&self) -> StftPolar {
+    pub(crate) fn to_polar(&self) -> StftPolar {
         let (mut magnitudes, mut phases) = (
             Vec::with_capacity(self.bins.as_slice().len()),
             Vec::with_capacity(self.bins.as_slice().len()),
@@ -207,7 +195,7 @@ impl Stft {
 
     /// Discards phase. One-way, and the return type says so.
     #[must_use]
-    pub fn to_magnitude(&self) -> StftMagnitude {
+    pub(crate) fn to_magnitude(&self) -> StftMagnitude {
         let magnitudes: Vec<f32> = self.bins.as_slice().iter().map(|b| b.norm()).collect();
         StftMagnitude {
             magnitudes: RawMagnitudes(self.bins.same_shape(magnitudes)),
@@ -252,7 +240,7 @@ impl StftPolar {
     }
 
     /// The phase half, in radians — same `frames x bins` shape as the
-    /// magnitudes, and required to reconstruct.
+    /// magnitudes.
     #[inline]
     pub fn phases(&self) -> &Grid<f32> {
         &self.phases
@@ -262,23 +250,6 @@ impl StftPolar {
     #[inline]
     pub fn geometry(&self) -> StftGeometry {
         self.geometry
-    }
-
-    /// Back to complex bins. Lossless.
-    #[must_use]
-    pub fn to_rectangular(&self) -> Stft {
-        let bins: Vec<Complex32> = self
-            .magnitudes
-            .grid()
-            .as_slice()
-            .iter()
-            .zip(self.phases.as_slice())
-            .map(|(&m, &p)| Complex32::from_polar(m, p))
-            .collect();
-        Stft {
-            bins: self.phases.same_shape(bins),
-            geometry: self.geometry,
-        }
     }
 }
 
@@ -660,27 +631,6 @@ mod tests {
                 samples[i],
                 resynth[i]
             );
-        }
-    }
-
-    #[test]
-    fn polar_and_rectangular_are_the_same_information() {
-        let samples = tone(4096, 300.0, 44100.0);
-        let mut fft = FftScratch::new();
-        let rect = stft(
-            &samples,
-            StftRequest::new(
-                SampleRate::SR_44K1,
-                Samples::new(1024usize),
-                Samples::new(256usize),
-            ),
-            &mut fft,
-        )
-        .unwrap();
-        let back = rect.to_polar().to_rectangular();
-
-        for (a, b) in rect.bins().as_slice().iter().zip(back.bins().as_slice()) {
-            assert!((a.re - b.re).abs() < 1e-3 && (a.im - b.im).abs() < 1e-3);
         }
     }
 

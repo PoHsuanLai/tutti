@@ -163,28 +163,14 @@ pub struct Note {
 
 /// The error converting a [`Note`] outside MIDI's `0..=127` range to a note
 /// number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0} has no MIDI note number")]
 pub struct NotOnMidiScale(pub Note);
 
-impl core::fmt::Display for NotOnMidiScale {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} has no MIDI note number", self.0)
-    }
-}
-
-impl core::error::Error for NotOnMidiScale {}
-
 /// The error converting a MIDI note number above 127 to a [`Note`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("MIDI note number {0} is above 127")]
 pub struct NoteNumberOutOfRange(pub u8);
-
-impl core::fmt::Display for NoteNumberOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "MIDI note number {} is above 127", self.0)
-    }
-}
-
-impl core::error::Error for NoteNumberOutOfRange {}
 
 impl Note {
     /// Concert A — 440 Hz by definition.

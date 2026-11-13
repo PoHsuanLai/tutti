@@ -336,6 +336,7 @@ fn a_reserved_protocol_in_a_notification_is_midi1() {
 }
 
 // Only a Notification answers the Request (§7.1.6.2: not before it arrives).
+/// Spec: m2-104/7.1.6.2#1
 #[test]
 fn another_message_does_not_answer_the_request() {
     let t0 = Instant::now();

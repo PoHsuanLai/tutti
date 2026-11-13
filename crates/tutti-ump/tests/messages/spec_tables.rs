@@ -30,6 +30,7 @@ fn pin(words: [u32; 4], message: Message) {
 
 // Table 16, as (Status Bank, Status, Message). Complete (Format 0), Address 1
 // (Group), group 0, no text: word 1 is `0xD010_bbss` for bank `bb`, status `ss`.
+/// Spec: m2-104/msg/d/01.00, m2-104/msg/d/01.01, m2-104/msg/d/01.02, m2-104/msg/d/01.03, m2-104/msg/d/01.04, m2-104/msg/d/01.05, m2-104/msg/d/01.06, m2-104/msg/d/01.07, m2-104/msg/d/01.08, m2-104/msg/d/01.09, m2-104/msg/d/01.0a, m2-104/msg/d/01.0b, m2-104/msg/d/01.0c, m2-104/msg/d/02.00, m2-104/msg/d/02.01, m2-104/msg/d/02.02, m2-104/msg/d/02.03, m2-104/msg/d/02.04
 #[test]
 fn flex_text_statuses_are_table_16() {
     use FlexTextKind as K;

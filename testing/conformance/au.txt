@@ -1,0 +1,166 @@
+# AudioUnit v2 spec inventory. Hand-written from the AudioToolbox surface
+# (AudioComponent.h, AudioUnit.h, AudioUnitProperties.h, AUComponent.h,
+# MusicDevice.h, AudioToolbox/AudioUnitUtilities.h): the headers ship with macOS
+# only and are not in the repo, so nothing compares this file to a source and
+# review is the check. The seed names were cross-read with tutti-au-ffi only as a
+# checklist; what exists is what Apple's headers declare. Paraphrases are in our
+# own words; prop = the property's number, the scope of use is in the paraphrase.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids (side plugin: the audio unit implements it; host: the host supplies it;
+# core: both sides name it):
+#   au.select.<name>      a C entry point of the audio unit (AudioComponent*,
+#                         AudioUnit*, AudioOutputUnit*, AUEventListener*, AUParameter*)
+#   au.prop.<name>        kAudioUnitProperty_<name>
+#   au.render.<flag>      kAudioUnitRenderAction_<flag>
+#   au.param.event.<k>    kParameterEvent_<k> of AudioUnitScheduleParameters
+#   au.param.flag.<k>     kAudioUnitParameterFlag_<k>
+#   au.host.<cb>          a HostCallbackInfo member, or a kAUHostTransportState_ flag
+#   au.midi.<fn>          a MusicDevice entry point
+# na-kind deprecated rows cite the header that marks the item deprecated.
+au.select.AudioComponentFindNext | core | stable |  | AudioComponent.h | find an audio unit component matching a description, one at a time |  |  |
+au.select.AudioComponentGetDescription | core | stable |  | AudioComponent.h | read a component's type, subtype and manufacturer |  |  |
+au.select.AudioComponentCopyName | core | stable |  | AudioComponent.h | read a component's display name |  |  |
+au.select.AudioComponentGetVersion | core | stable |  | AudioComponent.h | read a component's version |  |  |
+au.select.AudioComponentCount | core | stable |  | AudioComponent.h | count the components matching a description |  |  |
+au.select.AudioComponentInstanceNew | core | stable |  | AudioComponent.h | create an instance of a component |  |  |
+au.select.AudioComponentInstanceDispose | core | stable |  | AudioComponent.h | destroy an instance |  |  |
+au.select.AudioComponentInstantiate | core | stable |  | AudioComponent.h | create an instance asynchronously, for components that require it |  |  |
+au.select.AudioComponentCopyIcon | core | stable |  | AudioComponent.h | read a component's icon |  |  |
+au.select.AudioComponentValidate | core | stable |  | AudioComponent.h | run Apple's validation on a component |  |  |
+au.select.AudioComponentCopyConfigurationInfo | core | stable |  | AudioComponent.h | read a component's configuration info |  |  |
+au.select.AudioComponentGetLastActiveTime | core | stable |  | AudioComponent.h | read when a component last ran |  |  |
+au.select.AudioUnitInitialize | plugin | stable |  | AudioUnit.h | allocate resources and make the unit ready to render |  |  |
+au.select.AudioUnitUninitialize | plugin | stable |  | AudioUnit.h | release the resources of an initialized unit |  |  |
+au.select.AudioUnitReset | plugin | stable |  | AudioUnit.h | clear the unit's internal state, such as tails and filters |  |  |
+au.select.AudioUnitGetPropertyInfo | plugin | stable |  | AudioUnit.h | read a property's size and writability for a scope and element |  |  |
+au.select.AudioUnitGetProperty | plugin | stable |  | AudioUnit.h | read a property for a scope and element |  |  |
+au.select.AudioUnitSetProperty | plugin | stable |  | AudioUnit.h | write a property for a scope and element |  |  |
+au.select.AudioUnitAddPropertyListener | plugin | stable |  | AudioUnit.h | be called when a property changes |  |  |
+au.select.AudioUnitRemovePropertyListener | plugin | stable |  | AudioUnit.h | stop a property listener |  |  |
+au.select.AudioUnitRemovePropertyListenerWithUserData | plugin | stable |  | AudioUnit.h | stop a property listener identified by its user data too |  |  |
+au.select.AudioUnitGetParameter | plugin | stable |  | AudioUnit.h | read a parameter's value for a scope and element |  |  |
+au.select.AudioUnitSetParameter | plugin | stable |  | AudioUnit.h | set a parameter's value at once, with a buffer offset |  |  |
+au.select.AudioUnitScheduleParameters | plugin | stable |  | AudioUnit.h | schedule parameter events, immediate or ramped, at sample times |  |  |
+au.select.AudioUnitRender | plugin | stable |  | AudioUnit.h | pull one block of audio from an output bus |  |  |
+au.select.AudioUnitProcess | plugin | stable |  | AudioUnit.h | push a block through the unit in place |  |  |
+au.select.AudioUnitProcessMultiple | plugin | stable |  | AudioUnit.h | push several input buffer lists through the unit at once |  |  |
+au.select.AudioUnitComplexRender | plugin | stable |  | AUComponent.h | the old render selector with extra arguments; internal |  |  |
+au.select.AudioUnitAddRenderNotify | plugin | stable |  | AudioUnit.h | be called before and after each render |  |  |
+au.select.AudioUnitRemoveRenderNotify | plugin | stable |  | AudioUnit.h | stop a render notification |  |  |
+au.select.AudioOutputUnitStart | plugin | stable |  | AudioOutputUnit.h | start an output unit's hardware |  |  |
+au.select.AudioOutputUnitStop | plugin | stable |  | AudioOutputUnit.h | stop an output unit's hardware |  |  |
+au.select.AUParameterSet | core | stable |  | AudioUnitUtilities.h | set a parameter and tell the other listeners |  |  |
+au.select.AUParameterListenerNotify | core | stable |  | AudioUnitUtilities.h | tell listeners a parameter changed without writing it |  |  |
+au.select.AUEventListenerNotify | core | stable |  | AudioUnitUtilities.h | tell event listeners of a parameter or property event |  |  |
+au.select.AUEventListenerCreateWithDispatchQueue | core | stable |  | AudioUnitUtilities.h | create an event listener that calls back on a dispatch queue |  |  |
+au.select.AUEventListenerAddEventType | core | stable |  | AudioUnitUtilities.h | register an event type for a listener |  |  |
+au.select.AUListenerDispose | core | stable |  | AudioUnitUtilities.h | destroy a listener |  |  |
+au.prop.ClassInfo | plugin | stable |  | AudioUnitProperties.h | global scope: the unit's whole state as a property list, read and written | prop=0 |  |
+au.prop.MakeConnection | plugin | stable |  | AudioUnitProperties.h | input scope: wire another unit's output directly to an input | prop=1 |  |
+au.prop.SampleRate | plugin | stable |  | AudioUnitProperties.h | input and output scopes: the sample rate of a bus | prop=2 |  |
+au.prop.ParameterList | plugin | stable |  | AudioUnitProperties.h | any scope: the ids of the parameters of that scope | prop=3 |  |
+au.prop.ParameterInfo | plugin | stable |  | AudioUnitProperties.h | any scope: one parameter's name, unit, range, default and flags | prop=4 |  |
+au.prop.FastDispatch | plugin | stable |  | AudioUnitProperties.h | global scope: direct function pointers for a selector | prop=5 |  |
+au.prop.CPULoad | plugin | stable |  | AudioUnitProperties.h | global scope: the unit's processing load | prop=6 |  |
+au.prop.StreamFormat | plugin | stable |  | AudioUnitProperties.h | input and output scopes, per element: the audio stream description of a bus | prop=8 |  |
+au.prop.ElementCount | plugin | stable |  | AudioUnitProperties.h | input and output scopes: the number of buses | prop=11 |  |
+au.prop.Latency | plugin | stable |  | AudioUnitProperties.h | global scope: the unit's latency in seconds | prop=12 |  |
+au.prop.SupportedNumChannels | plugin | stable |  | AudioUnitProperties.h | global scope: the table of supported input and output channel counts | prop=13 |  |
+au.prop.MaximumFramesPerSlice | plugin | stable |  | AudioUnitProperties.h | global scope: the largest frame count of one render call | prop=14 |  |
+au.prop.SetExternalBuffer | plugin | stable |  | AudioUnitProperties.h | input scope: supply the unit's input buffer | prop=15 |  |
+au.prop.ParameterValueStrings | plugin | stable |  | AudioUnitProperties.h | any scope: the names of an indexed parameter's values | prop=16 |  |
+au.prop.MIDIControlMapping | plugin | stable |  | AudioUnitProperties.h | global scope: the older MIDI controller to parameter map | prop=17 | deprecated | AudioToolbox AudioUnitProperties.h: marked deprecated
+au.prop.GetUIComponentList | plugin | stable |  | AudioUnitProperties.h | global scope: Carbon editor components | prop=18 | deprecated | AudioToolbox AudioUnitProperties.h: marked deprecated
+au.prop.AudioChannelLayout | plugin | stable |  | AudioUnitProperties.h | input and output scopes: the channel layout of a bus | prop=19 |  |
+au.prop.TailTime | plugin | stable |  | AudioUnitProperties.h | global scope: the seconds the unit rings on after silence | prop=20 |  |
+au.prop.BypassEffect | plugin | stable |  | AudioUnitProperties.h | global scope: switch the effect's bypass | prop=21 |  |
+au.prop.LastRenderError | plugin | stable |  | AudioUnitProperties.h | global scope: the error of the last failed render | prop=22 |  |
+au.prop.SetRenderCallback | plugin | stable |  | AudioUnitProperties.h | input scope, per element: the function the unit pulls its input from | prop=23 |  |
+au.prop.FactoryPresets | plugin | stable |  | AudioUnitProperties.h | global scope: the list of built-in presets | prop=24 |  |
+au.prop.ContextName | plugin | stable |  | AudioUnitProperties.h | global scope: the host's name for where the unit sits, such as the track | prop=25 |  |
+au.prop.RenderQuality | plugin | stable |  | AudioUnitProperties.h | global scope: a quality setting for rendering | prop=26 |  |
+au.prop.HostCallbacks | plugin | stable |  | AudioUnitProperties.h | global scope: the host's transport and tempo callbacks | prop=27 |  |
+au.prop.CurrentPreset | plugin | stable |  | AudioUnitProperties.h | global scope: the older preset property | prop=28 | deprecated | AudioToolbox AudioUnitProperties.h: marked deprecated
+au.prop.InPlaceProcessing | plugin | stable |  | AudioUnitProperties.h | global scope: whether the unit renders in place | prop=29 |  |
+au.prop.ElementName | plugin | stable |  | AudioUnitProperties.h | input and output scopes: the display name of a bus | prop=30 |  |
+au.prop.CocoaUI | plugin | stable |  | AudioUnitProperties.h | global scope: where the unit's AppKit view factory is | prop=31 |  |
+au.prop.SupportedChannelLayoutTags | plugin | stable |  | AudioUnitProperties.h | input and output scopes: the channel layout tags a bus supports | prop=32 |  |
+au.prop.ParameterStringFromValue | plugin | stable |  | AudioUnitProperties.h | any scope: the display text of a parameter value | prop=33 |  |
+au.prop.ParameterIDName | plugin | stable |  | AudioUnitProperties.h | any scope: a parameter's name cut to a length | prop=34 |  |
+au.prop.ParameterClumpName | plugin | stable |  | AudioUnitProperties.h | global scope: the name of a group of parameters | prop=35 |  |
+au.prop.PresentPreset | plugin | stable |  | AudioUnitProperties.h | global scope: the preset in effect | prop=36 |  |
+au.prop.OfflineRender | plugin | stable |  | AudioUnitProperties.h | global scope: whether the unit is rendering offline | prop=37 |  |
+au.prop.ParameterValueFromString | plugin | stable |  | AudioUnitProperties.h | any scope: the parameter value for typed text | prop=38 |  |
+au.prop.IconLocation | plugin | stable |  | AudioUnitProperties.h | global scope: where the unit's icon file is | prop=39 |  |
+au.prop.PresentationLatency | plugin | stable |  | AudioUnitProperties.h | output scope: the downstream latency the host tells the unit | prop=40 |  |
+au.prop.AllParameterMIDIMappings | plugin | stable |  | AudioUnitProperties.h | global scope: every MIDI to parameter mapping | prop=41 |  |
+au.prop.AddParameterMIDIMapping | plugin | stable |  | AudioUnitProperties.h | global scope: add MIDI to parameter mappings | prop=42 |  |
+au.prop.RemoveParameterMIDIMapping | plugin | stable |  | AudioUnitProperties.h | global scope: remove MIDI to parameter mappings | prop=43 |  |
+au.prop.HotMapParameterMIDIMapping | plugin | stable |  | AudioUnitProperties.h | global scope: map the next incoming MIDI to a parameter | prop=44 |  |
+au.prop.DependentParameters | plugin | stable |  | AudioUnitProperties.h | any scope: the parameters that change when one does | prop=45 |  |
+au.prop.AUHostIdentifier | plugin | stable |  | AudioUnitProperties.h | global scope: the host's name and version, told to the unit | prop=46 |  |
+au.prop.MIDIOutputCallbackInfo | plugin | stable |  | AudioUnitProperties.h | global scope: the names of the unit's MIDI output streams | prop=47 |  |
+au.prop.MIDIOutputCallback | plugin | stable |  | AudioUnitProperties.h | global scope: the host function that takes the unit's MIDI packets | prop=48 |  |
+au.prop.InputSamplesInOutput | plugin | stable |  | AudioUnitProperties.h | global scope: how many input samples the output lags | prop=49 |  |
+au.prop.ClassInfoFromDocument | plugin | stable |  | AudioUnitProperties.h | global scope: the state as a document carried it | prop=50 |  |
+au.prop.ShouldAllocateBuffer | plugin | stable |  | AudioUnitProperties.h | input and output scopes: whether the unit allocates its buffers | prop=51 |  |
+au.prop.FrequencyResponse | plugin | stable |  | AudioUnitProperties.h | global scope: the unit's response at given frequencies | prop=52 |  |
+au.prop.ParameterHistoryInfo | plugin | stable |  | AudioUnitProperties.h | global scope: how a parameter's history is kept for plots | prop=53 |  |
+au.prop.NickName | plugin | stable |  | AudioUnitProperties.h | global scope: the user's name for the instance | prop=54 |  |
+au.prop.RequestViewController | plugin | stable |  | AudioUnitProperties.h | global scope: the host hands a callback to request a view controller | prop=56 |  |
+au.prop.ParametersForOverview | plugin | stable |  | AudioUnitProperties.h | global scope: the parameters to show in a compact view | prop=57 |  |
+au.prop.SupportsMPE | plugin | stable |  | AudioUnitProperties.h | global scope: whether the unit takes MPE | prop=58 |  |
+au.prop.LastRenderSampleTime | plugin | stable |  | AudioUnitProperties.h | global scope: the sample time of the last render | prop=61 |  |
+au.prop.LoadedOutOfProcess | plugin | stable |  | AudioUnitProperties.h | global scope: whether the unit runs in another process | prop=62 |  |
+au.prop.MIDIOutputEventListCallback | plugin | stable |  | AudioUnitProperties.h | global scope: the host function that takes the unit's MIDI 2.0 event lists | prop=63 |  |
+au.prop.AudioUnitMIDIProtocol | plugin | stable |  | AudioUnitProperties.h | global scope: the MIDI protocol the unit wants, 1.0 or 2.0 | prop=64 |  |
+au.prop.HostMIDIProtocol | plugin | stable |  | AudioUnitProperties.h | global scope: the MIDI protocol the host sends | prop=65 |  |
+au.prop.MIDIOutputBufferSizeHint | plugin | stable |  | AudioUnitProperties.h | global scope: the largest MIDI output buffer the unit will use | prop=66 |  |
+au.render.PreRender | core | stable |  | AUComponent.h | a notify call before the unit renders | bit=2 |  |
+au.render.PostRender | core | stable |  | AUComponent.h | a notify call after the unit rendered | bit=3 |  |
+au.render.OutputIsSilence | core | stable |  | AUComponent.h | the rendered output is all silence | bit=4 |  |
+au.render.OfflineUnitRenderAction_Preflight | core | stable |  | AUComponent.h | offline render: preflight pass | bit=5 |  |
+au.render.OfflineUnitRenderAction_Render | core | stable |  | AUComponent.h | offline render: the render pass | bit=6 |  |
+au.render.OfflineUnitRenderAction_Complete | core | stable |  | AUComponent.h | offline render: complete | bit=7 |  |
+au.render.PostRenderError | core | stable |  | AUComponent.h | a notify call after a render that failed | bit=8 |  |
+au.render.DoNotCheckRenderArgs | core | stable |  | AUComponent.h | skip the unit's argument checks | bit=9 |  |
+au.param.event.Immediate | core | stable |  | AudioUnitProperties.h | a scheduled event that sets a value at its sample offset | value=1 |  |
+au.param.event.Ramped | core | stable |  | AudioUnitProperties.h | a scheduled event that moves a value linearly over a span of samples | value=2 |  |
+au.param.flag.NonRealTime | plugin | stable |  | AudioUnitProperties.h | the parameter is not changed during a render |  |  |
+au.param.flag.MeterReadOnly | plugin | stable |  | AudioUnitProperties.h | a meter the unit writes |  |  |
+au.param.flag.DisplayLogarithmic | plugin | stable |  | AudioUnitProperties.h | show on a logarithmic scale |  |  |
+au.param.flag.DisplaySquareRoot | plugin | stable |  | AudioUnitProperties.h | show on a square-root scale |  |  |
+au.param.flag.DisplaySquared | plugin | stable |  | AudioUnitProperties.h | show on a squared scale |  |  |
+au.param.flag.DisplayCubed | plugin | stable |  | AudioUnitProperties.h | show on a cubed scale |  |  |
+au.param.flag.DisplayCubeRoot | plugin | stable |  | AudioUnitProperties.h | show on a cube-root scale |  |  |
+au.param.flag.DisplayExponential | plugin | stable |  | AudioUnitProperties.h | show on an exponential scale |  |  |
+au.param.flag.HasClump | plugin | stable |  | AudioUnitProperties.h | the parameter belongs to a clump |  |  |
+au.param.flag.ValuesHaveStrings | plugin | stable |  | AudioUnitProperties.h | the values have names |  |  |
+au.param.flag.IsGlobalMeta | plugin | stable |  | AudioUnitProperties.h | a meta parameter for the whole unit |  |  |
+au.param.flag.IsElementMeta | plugin | stable |  | AudioUnitProperties.h | a meta parameter for an element |  |  |
+au.param.flag.IsReadable | plugin | stable |  | AudioUnitProperties.h | the host may read it |  |  |
+au.param.flag.IsWritable | plugin | stable |  | AudioUnitProperties.h | the host may write it |  |  |
+au.param.flag.CanRamp | plugin | stable |  | AudioUnitProperties.h | the unit supports ramped events |  |  |
+au.param.flag.ExpertMode | plugin | stable |  | AudioUnitProperties.h | hidden unless expert mode is on |  |  |
+au.param.flag.HasCFNameString | plugin | stable |  | AudioUnitProperties.h | the name is a string object |  |  |
+au.param.flag.OmitFromPresets | plugin | stable |  | AudioUnitProperties.h | left out of presets |  |  |
+au.param.flag.IsHighResolution | plugin | stable |  | AudioUnitProperties.h | a high-resolution parameter |  |  |
+au.param.flag.CFNameRelease | plugin | stable |  | AudioUnitProperties.h | the host frees the name string |  |  |
+au.host.beatAndTempoProc | host | stable |  | AudioUnitProperties.h | the host tells the current beat and tempo |  |  |
+au.host.musicalTimeLocationProc | host | stable |  | AudioUnitProperties.h | the host tells the time signature and the next downbeat |  |  |
+au.host.transportStateProc | host | stable |  | AudioUnitProperties.h | the host tells the transport state and position |  |  |
+au.host.transportStateProc2 | host | stable |  | AudioUnitProperties.h | the same with the cycle range as well |  |  |
+au.host.hostUserData | host | stable |  | AudioUnitProperties.h | the host's pointer handed back in each callback |  |  |
+au.host.transport.Changed | host | stable |  | AudioUnitProperties.h | the transport changed since the last call | mask=0x1 |  |
+au.host.transport.Moving | host | stable |  | AudioUnitProperties.h | the transport is moving | mask=0x2 |  |
+au.host.transport.Recording | host | stable |  | AudioUnitProperties.h | the transport is recording | mask=0x4 |  |
+au.host.transport.Cycling | host | stable |  | AudioUnitProperties.h | the transport is cycling | mask=0x8 |  |
+au.midi.MusicDeviceMIDIEvent | plugin | stable |  | MusicDevice.h | send one MIDI 1.0 channel message with a sample offset |  |  |
+au.midi.MusicDeviceSysEx | plugin | stable |  | MusicDevice.h | send a system-exclusive message |  |  |
+au.midi.MusicDeviceMIDIEventList | plugin | stable |  | MusicDevice.h | send a MIDI 2.0 universal packet event list |  |  |
+au.midi.MusicDeviceStartNote | plugin | stable |  | MusicDevice.h | start a note with a note id and extra controls |  |  |
+au.midi.MusicDeviceStopNote | plugin | stable |  | MusicDevice.h | stop a note by its id |  |  |
+au.midi.MusicDevicePrepareInstrument | plugin | stable |  | MusicDevice.h | load an instrument ahead of use |  | deprecated | AudioToolbox MusicDevice.h: marked deprecated
+au.midi.MusicDeviceReleaseInstrument | plugin | stable |  | MusicDevice.h | free an instrument |  | deprecated | AudioToolbox MusicDevice.h: marked deprecated

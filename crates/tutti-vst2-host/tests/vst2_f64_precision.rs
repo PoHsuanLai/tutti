@@ -168,6 +168,7 @@ fn render_f64(instance: &mut Active, input_value: f64) -> Vec<Vec<f64>> {
 ///
 /// A host that built an `AudioBuffer<f32>` for both public entry points would
 /// read `Replacing` here.
+/// Spec: vst2.field.processDoubleReplacing, vst2.eff.SetProcessPrecision, vst2.flag.effFlagsCanDoubleReplacing
 #[test]
 fn f64_capable_plugin_is_entered_through_the_f64_slot() {
     let _guard = lock_probe();
@@ -276,6 +277,7 @@ fn plugin_without_f64_support_falls_back_to_the_f32_slot() {
 /// `effSetProcessPrecision` is dispatched once at load, carrying the width the
 /// host will call the plugin at: 64 only for a plugin that declared
 /// `effFlagsCanDoubleReplacing` and a caller that asked for `Double`.
+/// Spec: vst2.eff.SetProcessPrecision, vst2.precision.kVstProcessPrecision32, vst2.precision.kVstProcessPrecision64
 #[test]
 fn set_process_precision_announces_the_width_the_host_will_use() {
     let _guard = lock_probe();
@@ -316,6 +318,7 @@ fn set_process_precision_announces_the_width_the_host_will_use() {
 
 /// A plugin told 32 is not entered at 64: `process_f64` narrows through the
 /// f32 slot even for a plugin that declared the f64 flag.
+/// Spec: vst2.field.processReplacing
 #[test]
 fn a_plugin_told_32_bit_is_entered_through_the_f32_slot() {
     let _guard = lock_probe();

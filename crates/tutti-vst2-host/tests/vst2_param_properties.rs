@@ -210,6 +210,7 @@ fn a_default_plugin_declines_these_opcodes() {
 /// The numbers are the probe's, not invented here: a wrong `#[repr(C)]` field
 /// order makes the plugin write `flags` where the host reads `min_integer`, and
 /// this is what detects it end to end rather than only in the offset unit test.
+/// Spec: vst2.eff.GetParameterProperties, vst2.struct.VstParameterProperties
 #[test]
 fn an_answering_plugin_round_trips_every_property_field() {
     let _guard = lock_probe();
@@ -328,6 +329,7 @@ fn an_out_of_range_parameter_index_is_refused_before_dispatch() {
 
 /// The MIDI-program family decodes name, program number, bank pair and the
 /// drum-kit flag across the FFI.
+/// Spec: vst2.eff.GetMidiProgramName, vst2.struct.VstMidiProgramName
 #[test]
 fn midi_program_metadata_round_trips() {
     let _guard = lock_probe();
@@ -560,6 +562,7 @@ fn out_of_range_midi_coordinates_are_refused() {
 
 /// `effHasMidiProgramsChanged` and `effGetMidiProgramCategory` reach the plugin
 /// and their answers are decoded.
+/// Spec: vst2.eff.HasMidiProgramsChanged, vst2.eff.GetMidiProgramCategory, vst2.struct.VstMidiProgramCategory
 #[test]
 fn the_change_flag_and_category_query_reach_the_plugin() {
     let _guard = lock_probe();
@@ -765,6 +768,7 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
 /// the probe decline a specific index would need a new switch; the value path
 /// is one branch on the forked bool, and `known` is the part most easily
 /// lost.
+/// Spec: vst2.eff.CanBeAutomated
 #[test]
 fn the_automatable_flag_is_probed_rather_than_left_unasked() {
     let _guard = lock_probe();
@@ -876,6 +880,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
 ///   catches a host handing back one shared buffer for every index — the
 ///   failure the probe's non-uniform labels exist to expose.
 /// - The two are **joined**, not one silently dropped.
+/// Spec: vst2.eff.GetParamDisplay, vst2.eff.GetParamLabel
 #[test]
 fn a_parameter_display_carries_the_current_value_and_its_unit() {
     let _guard = lock_probe();
@@ -940,6 +945,7 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
 /// A plugin that takes `effString2Parameter` text reports the value it parsed, and the
 /// parameter holds it: the opcode is a setter, so what the host reads is what the plugin set.
 /// Text it cannot parse is a refusal that leaves the parameter where it was.
+/// Spec: vst2.eff.String2Parameter
 #[test]
 fn an_accepted_string_parse_reports_the_parsed_value_and_writes_it() {
     let _guard = lock_probe();

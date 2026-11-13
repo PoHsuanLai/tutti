@@ -44,7 +44,7 @@ use crate::preset::AuPreset;
 use crate::ranges::RangeTable;
 use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport;
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 use crate::types::AudioUnit;
 use crate::watch::PropertyWatch;
 
@@ -320,7 +320,7 @@ impl AuLoaded {
     /// # Errors
     /// As the activation's: the stream-configuration errors, or
     /// [`AuError::BlockSizeRejected`](crate::AuError::BlockSizeRejected).
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn reconfigure_stream(&mut self, sample_rate: SampleRate, block_size: u32) -> Result<()> {
         self.apply_stream(sample_rate, block_size)
     }
@@ -333,7 +333,7 @@ impl AuLoaded {
 
     /// The raw `AudioUnit` pointer, for a test that makes an AudioToolbox call
     /// this crate does not wrap. Using it is the caller's `unsafe`.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn raw_unit(&self) -> AudioUnit {
         self.unit().as_raw()
     }

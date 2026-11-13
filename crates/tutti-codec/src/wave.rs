@@ -116,7 +116,7 @@ impl Wave {
 
     /// Returns which speaker each channel feeds.
     ///
-    /// A decoded file states its own (see [`Wave::read`]); a wave built from a
+    /// A decoded file states its own (see `Wave::read`); a wave built from a
     /// count carries the assumption [`new`](Self::new) describes. Its length is
     /// [`channels`](Self::channels).
     #[inline]

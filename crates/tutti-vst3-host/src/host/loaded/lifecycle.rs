@@ -378,6 +378,15 @@ impl Vst3Loaded {
         crate::host::shell::reap()
     }
 
+    /// Returns how many plugins a dropped [`Vst3Processor`](crate::Vst3Processor)
+    /// leaked in this process because the retirement queue was full or never
+    /// built: 64 plugins retired and not yet reaped, which means the control
+    /// side stopped ticking. A leaked plugin is never destroyed; leaking it is
+    /// what keeps its teardown off the audio thread.
+    pub fn leaked_retirements() -> u64 {
+        crate::host::shell::leaked()
+    }
+
     /// Whether the plugin is activated: `setActive(1)` has run and
     /// `setActive(0)` has not.
     #[must_use]

@@ -713,8 +713,8 @@ impl<'a> PluginEvents<'a> {
     /// negative counts and short events.
     ///
     /// Not sound for arbitrary input: the caller must point every entry at memory it owns.
-    /// It exists behind `test-support` only, as the other FFI crates' raw builders do.
-    #[cfg(feature = "test-support")]
+    /// It exists behind `testing` only, as the other FFI crates' raw builders do.
+    #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub fn for_test(events: &'a Events) -> Self {
         Self::new(events)

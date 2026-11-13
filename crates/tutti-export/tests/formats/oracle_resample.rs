@@ -40,8 +40,6 @@
 //! with no anti-alias filter at all leaves the 23 kHz image at nearly the
 //! source's full 0.5 amplitude, i.e. 0 dB of rejection.
 
-#![cfg(feature = "wav")]
-
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::render_to_file;

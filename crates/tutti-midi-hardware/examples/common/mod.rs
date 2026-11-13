@@ -98,7 +98,7 @@ impl Listener {
             SINK,
             "sink",
             Unforkable(Sink {
-                slots: slots as u16,
+                slots: slots.get() as u16,
                 seen: Arc::clone(&seen),
             }),
         );

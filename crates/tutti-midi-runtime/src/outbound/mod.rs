@@ -1,6 +1,6 @@
 //! MIDI the engine *produces*, as opposed to plumbing it moves.
 //!
-//! - [`ClockMaster`] generates outbound Beat Clock and MTC from the
+//! - [`ClockMaster`] (and its [`ClockControls`]) generates outbound Beat Clock and MTC from the
 //!   transport; [`ClockNode`] ticks it in the graph and sends it out of an
 //!   event port.
 //! - [`jr_timestamp`] stamps outbound packets with JR Timestamps (M2-104 §7.6),
@@ -11,7 +11,7 @@ pub mod clock_master;
 pub mod clock_node;
 pub mod jr_timestamp;
 
-pub use clock_master::ClockMaster;
+pub use clock_master::{ClockControls, ClockMaster};
 pub use clock_node::{CLOCK_EVENT_CAPACITY, ClockNode};
 pub use jr_timestamp::{
     JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL, JrClock, JrClockEmitter, JrReceiver, JrStamper,

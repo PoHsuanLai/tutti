@@ -89,7 +89,11 @@ pub(crate) mod wire;
 ///   `LoadStateChunk` of a sequence and the `StagedState` a load declares carry a
 ///   `StateUse` (the project's own, or a duplicate's),
 ///   which a format that distinguishes them (CLAP's `state-context`) acts on.
-pub const PROTOCOL_VERSION: u32 = 35;
+/// - **Version 36** appends the server's `ProcessRequested`: the plugin asked
+///   to be processed again (CLAP's `request_process`), so a host that parked
+///   the node on the plugin's *sleep* wakes it. It follows every earlier
+///   variant, which keep their numbers.
+pub const PROTOCOL_VERSION: u32 = 36;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

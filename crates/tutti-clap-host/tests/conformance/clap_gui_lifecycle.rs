@@ -358,6 +358,7 @@ fn expected_embed_sequence() -> Vec<u32> {
 /// `polling.rs`'s in-crate test asserts this order against a hand-written
 /// vtable; what it cannot show is that the host reaches that code with a
 /// correctly-built `clap_window`, which the `set_parent` assertions add.
+/// Spec: clap.ext.gui.is_api_supported, clap.ext.gui.create, clap.ext.gui.get_size, clap.ext.gui.set_parent, clap.ext.gui.show
 #[test]
 fn open_editor_runs_the_spec_embed_sequence() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -535,6 +536,7 @@ fn open_editor_refuses_floating_only_before_create() {
 /// Asserted through the probe's create/destroy balance rather than a flag,
 /// because "created twice, destroyed once" and "created once" look identical to
 /// any boolean.
+/// Spec: clap.ext.gui.destroy
 #[test]
 fn close_editor_destroys_exactly_once() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -587,6 +589,7 @@ fn close_editor_destroys_exactly_once() {
 ///
 /// `hide` is the one call that *is* skipped: it acts on a window, and the
 /// window is gone.
+/// Spec: clap.ext.gui.host.closed, clap.ext.gui.destroy
 #[test]
 fn close_editor_destroys_after_plugin_window_was_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -701,6 +704,7 @@ fn close_editor_destroys_after_window_was_destroyed_during_show() {
 /// The `hide` assertion is what keeps the two halves apart: `destroy` alone is
 /// common to both, so a host that skipped the `was_destroyed` branch
 /// entirely would satisfy every other assertion here.
+/// Spec: clap.ext.gui.host.closed, clap.ext.gui.hide, clap.ext.gui.destroy
 #[test]
 fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -746,6 +750,7 @@ fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
 
 /// Capabilities read off a created editor reach the plugin and come back
 /// refined by its resize hints.
+/// Spec: clap.ext.gui.can_resize, clap.ext.gui.get_resize_hints
 #[test]
 fn editor_capabilities_reports_plugin_hints() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -812,6 +817,7 @@ fn editor_capabilities_touches_nothing_before_create() {
 /// The probe snaps down to a 10px grid and then refuses any `set_size` that is
 /// off-grid, so a host that skipped `adjust_size` or discarded its out-params
 /// fails on the plugin's own refusal rather than on a cosmetic mismatch.
+/// Spec: clap.ext.gui.adjust_size, clap.ext.gui.set_size
 #[test]
 fn resize_editor_forwards_the_adjusted_size() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -951,6 +957,7 @@ fn editor_capabilities_reports_fixed_size_as_not_resizable() {
 /// A plugin-initiated `request_resize` reaches the host and is delivered once.
 /// A poll that kept returning the last request would make the host resize the
 /// editor on every UI frame.
+/// Spec: clap.ext.gui.host.request_resize
 #[test]
 fn take_editor_resize_request_delivers_once() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -1046,6 +1053,7 @@ fn suggested_title(cap: &GuiCapture) -> String {
 /// Without this path the only way into a CLAP editor would be the embed
 /// sequence, which such a plugin refuses at its first gate, so it could never
 /// show a UI.
+/// Spec: clap.ext.gui.is_api_supported, clap.ext.gui.create, clap.ext.gui.set_transient, clap.ext.gui.suggest_title, clap.ext.gui.show
 #[test]
 fn open_floating_editor_runs_the_spec_sequence() {
     let probe = Probe::acquire(GuiMode::FloatingOnly);
@@ -1178,6 +1186,7 @@ fn a_floating_editor_is_asked_for_no_geometry() {
 /// Asserted on content, not on the call having happened: a host that called
 /// `suggest_title(NULL)` or sent an empty string would satisfy a call-order
 /// check while telling the plugin nothing.
+/// Spec: clap.ext.gui.suggest_title
 #[test]
 fn the_host_suggests_a_window_title() {
     let probe = Probe::acquire(GuiMode::FloatingOnly);

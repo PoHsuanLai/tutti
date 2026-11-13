@@ -46,6 +46,7 @@ mod presets;
 #[cfg(feature = "probe-wire")]
 mod probe_wire;
 mod process;
+mod process_wake;
 mod render_mode;
 mod requests;
 mod sample_format;
@@ -88,7 +89,8 @@ pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescrip
 pub use driver::{Hand, Lifecycle, Seat};
 pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
-    ResizeHints, WindowHandle,
+    KeyCode, KeyEvent, KeyModifiers, KeyPhase, KeyUse, ModifierConvention, NamedKey, ResizeHints,
+    WindowHandle,
 };
 pub use failure::{PluginFailure, TerminationReason};
 pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck, Wraps};
@@ -96,6 +98,7 @@ pub use hosting::{Editor, EditorWindow, InProcess, Load, Origin, OutOfProcess, R
 pub use invalidation::{PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind};
 pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
+pub use process_wake::ProcessWake;
 pub use requests::{Edit, EditDrain, EditQueue, EditSink, edits, taken};
 pub use state_use::StateUse;
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a

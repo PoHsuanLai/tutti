@@ -168,6 +168,7 @@ fn a_pool_of_one_is_refused() {
 
 /// With a pool, every request is accepted; when `request_exec` returns,
 /// every task index has run exactly once; and the pool's helpers take part.
+/// Spec: clap.ext.thread_pool.host.request_exec, clap.ext.thread_pool.exec
 #[test]
 #[cfg_attr(miri, ignore = "threads and a dlopen'd plugin")]
 fn a_pool_runs_every_task_once_before_the_request_returns() {
@@ -272,6 +273,7 @@ fn a_request_naming_another_instance_is_refused() {
 /// A request made after `process` returned is refused, even on the thread
 /// that called `process` and with the instance's own host: the request is
 /// served only for the span of the call.
+/// Spec: clap.ext.thread_pool.host.request_exec
 #[test]
 fn a_request_after_process_returns_is_refused() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());

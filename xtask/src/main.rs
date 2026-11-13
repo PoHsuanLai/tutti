@@ -148,6 +148,11 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
             if report.passed() { Ok(()) } else { Err(1) }
         }
         Step::DocFeatures => doc_features(ctx),
+        Step::ConformanceInventory(format) => gates::conformance_inventory(&ctx.root, format)
+            .map_err(|e| {
+                eprintln!("xtask: {e}");
+                1
+            }),
         Step::RequireCargoDeny => {
             let ok = process::Command::new("cargo")
                 .args(["deny", "--version"])

@@ -12,7 +12,7 @@ use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, Control, EditorCapabilities, EditorError,
     Health, PluginError, PluginFailure, StateError, TerminationReason, WindowHandle,
 };
-use tutti_plugin_types::{ContentScale, EditorSize};
+use tutti_plugin_types::{ContentScale, EditorSize, KeyEvent, KeyUse};
 use tutti_plugin_types::{
     LayoutSupport, LoadedPlugin, PluginBus, PluginDescriptor, Preset, PresetError, PresetId,
     PresetSupport,
@@ -594,6 +594,19 @@ impl PluginHandle {
     ) -> Result<(), EditorError> {
         let control = self.editor_route()?;
         Self::editor_call(control, |c| c.set_editor_scale(main, scale))
+    }
+
+    /// Forwards a key to the open editor and reports whether it used it.
+    ///
+    /// # Errors
+    ///
+    /// [`EditorError::GuiNotSupported`] when this handle has no editor route,
+    /// [`EditorError::KeysUnsupported`] for a format that takes no keys in its editor, and
+    /// otherwise any error of
+    /// [`EditorWindow::editor_key`](tutti_plugin_types::EditorWindow::editor_key).
+    pub fn editor_key(&self, main: &MainThread, event: KeyEvent) -> Result<KeyUse, EditorError> {
+        let control = self.editor_route()?;
+        Self::editor_call(control, |c| c.editor_key(main, event))
     }
 
     /// Closes the editor, if one is open.

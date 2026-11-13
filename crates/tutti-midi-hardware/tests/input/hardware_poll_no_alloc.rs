@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
-use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -65,9 +64,6 @@ impl BlockClock {
         *self.0.lock().unwrap() = Some((os, tutti_types::Moment::new(frame, rate)));
     }
 }
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 const RATE: f64 = 48_000.0;
 const INGEST: NodeKey = NodeKey(1);

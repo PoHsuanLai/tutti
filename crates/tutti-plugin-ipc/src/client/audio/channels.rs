@@ -76,6 +76,11 @@ pub(super) struct Channels {
     /// and the rest of a SysEx that lost packets with it. Shared with the
     /// plugin node's controls, which add it to the node's own count.
     dropped_midi: Arc<AtomicU64>,
+    /// The control connection has something the bridge thread has not read:
+    /// set by the watcher thread, cleared by the bridge thread after it has
+    /// read the lane dry. The bridge's doorbell is rung with it, so a bridge
+    /// parked with no command queued reads the lane when news arrives.
+    news: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Channels {
@@ -91,6 +96,7 @@ impl Channels {
             replies: Arc::new(AtomicU64::new(0)),
             dropped_param_events: Arc::new(AtomicU64::new(0)),
             dropped_midi: Arc::new(AtomicU64::new(0)),
+            news: Arc::default(),
         }
     }
 
@@ -110,6 +116,26 @@ impl Channels {
     /// whoever ends the loop publishes before calling [`wake`](Self::wake).
     pub(super) fn wait_for_command(&self, stop: impl FnOnce() -> bool) {
         self.bell.wait(|| !self.commands.is_empty() || stop());
+    }
+
+    /// The control connection has bytes to read: publishes it and rings the
+    /// bridge thread's doorbell. The watcher thread's call.
+    pub(super) fn set_news(&self) {
+        self.news.store(true, Ordering::Release);
+        self.bell.ring();
+    }
+
+    /// Whether [`set_news`](Self::set_news) was called since the last
+    /// [`clear_news`](Self::clear_news).
+    pub(super) fn news_pending(&self) -> bool {
+        self.news.load(Ordering::Acquire)
+    }
+
+    /// The bridge thread has read the control connection dry. Cleared *after*
+    /// the read: a byte that arrives during it is still readable, so the
+    /// watcher sees it and sets the flag again.
+    pub(super) fn clear_news(&self) {
+        self.news.store(false, Ordering::Release);
     }
 
     /// Wake the bridge thread to re-check its stop condition (shutdown).

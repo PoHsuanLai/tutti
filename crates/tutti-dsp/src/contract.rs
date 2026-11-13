@@ -2,7 +2,11 @@
 //! [`Realized`](crate::Realized) runner are held to.
 //!
 //! Written once per class of system, behind the `contract` feature (off by
-//! default; it pulls `rand` for seeded noise). This is the one public module of
+//! default; it pulls `rand` for seeded noise). It is a feature of the crate, not a
+//! crate of its own: a separate test crate that depended on `tutti-dsp` while
+//! `tutti-dsp`'s own unit tests depended on it would give those tests two copies of
+//! `tutti-dsp`, whose [`Family`](crate::Family) types would not be the same type.
+//! This is the one public module of
 //! the crate: everything else is exported at the root, and this module is a
 //! harness a family's own tests run, so it has paths of its own.
 //!
@@ -80,8 +84,7 @@ pub mod cases {
         pub use crate::contract::reverb::design::*;
     }
 
-    /// The recurrence cases, measured on the output, by the three laws of design
-    /// 024 section 2.7.4:
+    /// The recurrence cases, measured on the output, by three laws:
     ///
     /// 1. the recurrence **realizes the member**: `latency`, `arrival`, `vacuity`,
     ///    and with `Lti` `tail_covers`, `tail_tight`, `stability`, `linear`,

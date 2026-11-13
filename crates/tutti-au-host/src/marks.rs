@@ -86,6 +86,11 @@ impl Marks {
     }
 
     /// The render's call: this `NonRealTime` parameter should become `value`.
+    ///
+    /// The last writer wins: two writes to one parameter between ticks deliver
+    /// only the later value, which is what a parameter means (its state is its
+    /// latest value, never a history). The value is stored before the bit is
+    /// set (Release), so a tick that takes the bit (Acquire) reads it.
     pub(crate) fn defer(&self, slot: Slot, value: f32) {
         self.values[slot.0.get()].store(value.to_bits(), Ordering::Relaxed);
         self.deferred.set(slot.0);

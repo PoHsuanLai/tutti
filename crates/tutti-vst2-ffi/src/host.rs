@@ -282,9 +282,9 @@ pub trait Host {
     }
 
     /// Report the host's automation state (`audioMasterGetAutomationState`,
-    /// `VstAutomationStates`): 0 = unsupported / not applicable.
-    fn get_automation_state(&self) -> isize {
-        0
+    /// `VstAutomationStates`). The default is `Unsupported`: the host does not say.
+    fn get_automation_state(&self) -> api::AutomationState {
+        api::AutomationState::Unsupported
     }
 
     /// Answer the plugin's `audioMasterCanDo` query for the capability named

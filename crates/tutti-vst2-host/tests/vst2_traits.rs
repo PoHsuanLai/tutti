@@ -12,10 +12,10 @@ use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Control, Controller, EditorSize, EditorWindow, Event, Hand,
-    HostOp, Lifecycle, Loaded, MaxBlock, Normalized, Notice, ParamId, ParameterChanges,
-    PluginError, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor, RenderMode,
-    SampleFormat, SampleRate, Samples, Stage,
+    AudioBuffer, AudioBufferMut, AutomationMode, Control, Controller, EditorSize, EditorWindow,
+    Event, Hand, HostOp, Lifecycle, Loaded, MaxBlock, Normalized, Notice, ParamId,
+    ParameterChanges, PluginError, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor,
+    RenderMode, SampleFormat, SampleRate, Samples, Stage,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Vst2Controller, Vst2Loaded, Vst2Processor};
@@ -582,6 +582,50 @@ fn the_render_mode_changes_live_without_a_restart() {
     assert!(controller.set_render_mode(&main_thread(), RenderMode::Realtime));
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 2, "realtime");
+    let cap = capture();
+    assert_eq!((cap.resume_count, cap.suspend_count), (1, 0), "no restart");
+    drop(rejoin(processor, controller));
+}
+
+/// **The automation mode reaches the plugin both ways it can ask**: the session's mode
+/// answers `audioMasterGetAutomationState` (off 1, read 2, write 3, read and write 4) and
+/// sets `kVstAutomationReading` (bit 7) and `kVstAutomationWriting` (bit 6) in the next
+/// block's time info, with no restart.
+#[test]
+fn the_automation_mode_reaches_the_plugin_as_state_and_time_info_flags() {
+    const AUTOMATION_WRITING: i32 = 1 << 6;
+    const AUTOMATION_READING: i32 = 1 << 7;
+    let probe = Probe::acquire();
+    let (mut processor, mut controller) = probe.activate();
+    let transport = tutti_vst2_host::TransportInfo::new();
+    let ctx = ProcessContext {
+        transport: Some(&transport),
+        ..ProcessContext::new()
+    };
+    render_f32(&mut processor, &ctx);
+    assert_eq!(capture().automation_state, 1, "off before any mode is set");
+
+    for (mode, state, reading, writing) in [
+        (AutomationMode::Reading, 2, true, false),
+        (AutomationMode::Writing, 3, false, true),
+        (AutomationMode::ReadWriting, 4, true, true),
+        (AutomationMode::Off, 1, false, false),
+    ] {
+        controller.set_automation_state(&main_thread(), mode);
+        render_f32(&mut processor, &ctx);
+        let cap = capture();
+        assert_eq!(cap.automation_state, state, "{mode:?} state");
+        assert_eq!(
+            cap.time_flags & AUTOMATION_READING != 0,
+            reading,
+            "{mode:?}"
+        );
+        assert_eq!(
+            cap.time_flags & AUTOMATION_WRITING != 0,
+            writing,
+            "{mode:?}"
+        );
+    }
     let cap = capture();
     assert_eq!((cap.resume_count, cap.suspend_count), (1, 0), "no restart");
     drop(rejoin(processor, controller));

@@ -33,7 +33,7 @@
 
 use crate::types::TransportInfo;
 // Shared with the VST3 path so the two cannot drift apart.
-use tutti_plugin_types::is_usable;
+use tutti_plugin_types::{AutomationMode, is_usable};
 
 /// The transport bits whose transition defines `TRANSPORT_CHANGED`.
 ///
@@ -50,11 +50,12 @@ fn transport_bits(flags: vst::api::TimeInfoFlags) -> i32 {
 ///
 /// `previous` is the snapshot last served to this plugin (`None` before the
 /// first block). It is used only to compute the `TRANSPORT_CHANGED` edge; every
-/// other bit is a function of `transport` alone.
+/// other bit is a function of `transport` and `automation` alone.
 pub(crate) fn build_vst2_time_info(
     transport: &TransportInfo,
     sample_rate: f64,
     previous: Option<&vst::api::TimeInfo>,
+    automation: AutomationMode,
 ) -> vst::api::TimeInfo {
     use vst::api::TimeInfoFlags as F;
 
@@ -106,6 +107,20 @@ pub(crate) fn build_vst2_time_info(
         {
             flags |= F::CYCLE_POS_VALID;
         }
+    }
+
+    // The host's automation mode: `kVstAutomationReading` and `kVstAutomationWriting`.
+    if matches!(
+        automation,
+        AutomationMode::Reading | AutomationMode::ReadWriting
+    ) {
+        flags |= F::AUTOMATION_READING;
+    }
+    if matches!(
+        automation,
+        AutomationMode::Writing | AutomationMode::ReadWriting
+    ) {
+        flags |= F::AUTOMATION_WRITING;
     }
 
     // The edge. Set only when the transport bits differ from the snapshot the
@@ -166,7 +181,7 @@ mod tests {
             .with_bar(4.0, Default::default());
 
         // First block: no previous snapshot, so no transition to report.
-        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        let info = build_vst2_time_info(&transport, 48_000.0, None, AutomationMode::Off);
 
         let expected = (F::PPQ_POS_VALID
             | F::TEMPO_VALID
@@ -187,9 +202,37 @@ mod tests {
         // Spot-check the easily-mistranscribed bits are actually set.
         assert_ne!(info.flags & F::TRANSPORT_RECORDING.bits(), 0);
         assert_ne!(info.flags & F::CYCLE_POS_VALID.bits(), 0);
-        // AUTOMATION_WRITING (bit 6) must NOT be set — a hand-rolled flag
-        // table can put TRANSPORT_RECORDING there by mistake.
+        // Automation off: AUTOMATION_WRITING (bit 6) is not TRANSPORT_RECORDING
+        // (bit 3), which a hand-rolled flag table can confuse, and READING is clear.
         assert_eq!(info.flags & F::AUTOMATION_WRITING.bits(), 0);
+        assert_eq!(info.flags & F::AUTOMATION_READING.bits(), 0);
+    }
+
+    /// The host's automation mode reaches the snapshot as `kVstAutomationReading` (bit 7) and
+    /// `kVstAutomationWriting` (bit 6), each set only by a mode that reads or writes, and
+    /// no transport bit moves with it.
+    #[test]
+    fn automation_mode_sets_exactly_its_flags() {
+        use vst::api::TimeInfoFlags as F;
+        let transport = playing_transport();
+        let off = build_vst2_time_info(&transport, 48_000.0, None, AutomationMode::Off);
+        for (mode, reading, writing) in [
+            (AutomationMode::Off, false, false),
+            (AutomationMode::Reading, true, false),
+            (AutomationMode::Writing, false, true),
+            (AutomationMode::ReadWriting, true, true),
+        ] {
+            let info = build_vst2_time_info(&transport, 48_000.0, None, mode);
+            let flags = F::from_bits_truncate(info.flags);
+            assert_eq!(flags.contains(F::AUTOMATION_READING), reading, "{mode:?}");
+            assert_eq!(flags.contains(F::AUTOMATION_WRITING), writing, "{mode:?}");
+            let automation = F::AUTOMATION_READING | F::AUTOMATION_WRITING;
+            assert_eq!(
+                flags - automation,
+                F::from_bits_truncate(off.flags),
+                "{mode:?} moves no other bit"
+            );
+        }
     }
 
     #[test]
@@ -200,7 +243,7 @@ mod tests {
         // MIDI clock is measured at the snapshot's rate (not the instance's),
         // so it is not claimed; nor is `nanoSeconds`, with no host clock.
         let transport = TransportInfo::new();
-        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        let info = build_vst2_time_info(&transport, 48_000.0, None, AutomationMode::Off);
 
         let expected =
             (F::PPQ_POS_VALID | F::TEMPO_VALID | F::TIME_SIG_VALID | F::BARS_VALID).bits();
@@ -224,15 +267,15 @@ mod tests {
         let playing = TransportInfo::new().with_playing(true);
 
         // Stopped → playing: an edge.
-        let first = build_vst2_time_info(&stopped, 48_000.0, None);
-        let start = build_vst2_time_info(&playing, 48_000.0, Some(&first));
+        let first = build_vst2_time_info(&stopped, 48_000.0, None, AutomationMode::Off);
+        let start = build_vst2_time_info(&playing, 48_000.0, Some(&first), AutomationMode::Off);
         assert_ne!(start.flags & F::TRANSPORT_CHANGED.bits(), 0);
 
         // Playing → still playing, over and over: no edge. A level-triggered
         // implementation would keep asserting the bit here.
         let mut prev = start;
         for _ in 0..8 {
-            let next = build_vst2_time_info(&playing, 48_000.0, Some(&prev));
+            let next = build_vst2_time_info(&playing, 48_000.0, Some(&prev), AutomationMode::Off);
             assert_eq!(
                 next.flags & F::TRANSPORT_CHANGED.bits(),
                 0,
@@ -242,7 +285,7 @@ mod tests {
         }
 
         // Playing → stopped: an edge again.
-        let stop = build_vst2_time_info(&stopped, 48_000.0, Some(&prev));
+        let stop = build_vst2_time_info(&stopped, 48_000.0, Some(&prev), AutomationMode::Off);
         assert_ne!(stop.flags & F::TRANSPORT_CHANGED.bits(), 0);
     }
 
@@ -250,7 +293,7 @@ mod tests {
     /// transition to announce.
     #[test]
     fn transport_changed_is_clear_on_the_first_snapshot() {
-        let info = build_vst2_time_info(&playing_transport(), 48_000.0, None);
+        let info = build_vst2_time_info(&playing_transport(), 48_000.0, None, AutomationMode::Off);
         assert_eq!(info.flags & F::TRANSPORT_CHANGED.bits(), 0);
     }
 
@@ -259,14 +302,14 @@ mod tests {
     #[test]
     fn transport_changed_fires_for_recording_and_cycle_transitions() {
         let playing = TransportInfo::new().with_playing(true);
-        let base = build_vst2_time_info(&playing, 48_000.0, None);
+        let base = build_vst2_time_info(&playing, 48_000.0, None, AutomationMode::Off);
 
         let armed = playing.with_recording(true);
-        let rec = build_vst2_time_info(&armed, 48_000.0, Some(&base));
+        let rec = build_vst2_time_info(&armed, 48_000.0, Some(&base), AutomationMode::Off);
         assert_ne!(rec.flags & F::TRANSPORT_CHANGED.bits(), 0);
 
         let looped = armed.with_loop(true, 0.0, 8.0);
-        let cyc = build_vst2_time_info(&looped, 48_000.0, Some(&rec));
+        let cyc = build_vst2_time_info(&looped, 48_000.0, Some(&rec), AutomationMode::Off);
         assert_ne!(cyc.flags & F::TRANSPORT_CHANGED.bits(), 0);
     }
 
@@ -280,8 +323,8 @@ mod tests {
             .with_playing(true)
             .with_position_quarters(2.0);
 
-        let first = build_vst2_time_info(&a, 48_000.0, None);
-        let second = build_vst2_time_info(&b, 48_000.0, Some(&first));
+        let first = build_vst2_time_info(&a, 48_000.0, None, AutomationMode::Off);
+        let second = build_vst2_time_info(&b, 48_000.0, Some(&first), AutomationMode::Off);
         assert_eq!(second.flags & F::TRANSPORT_CHANGED.bits(), 0);
     }
 
@@ -291,7 +334,7 @@ mod tests {
     #[test]
     fn the_snapshots_tempo_is_what_the_plugin_reads() {
         let transport = TransportInfo::new().with_tempo(97.5).with_tempo_inc(0.001);
-        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        let info = build_vst2_time_info(&transport, 48_000.0, None, AutomationMode::Off);
         assert_eq!(info.tempo, 97.5);
         assert_ne!(info.flags & F::TEMPO_VALID.bits(), 0);
     }
@@ -302,7 +345,7 @@ mod tests {
     #[test]
     fn tempo_valid_is_withheld_for_a_zero_tempo() {
         let transport = TransportInfo::new().with_tempo(0.0);
-        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        let info = build_vst2_time_info(&transport, 48_000.0, None, AutomationMode::Off);
         assert_eq!(
             info.flags & F::TEMPO_VALID.bits(),
             0,
@@ -319,7 +362,7 @@ mod tests {
             .with_tempo(f64::NAN)
             .with_position_quarters(f64::INFINITY)
             .with_bar(f64::NAN, Default::default());
-        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        let info = build_vst2_time_info(&transport, 48_000.0, None, AutomationMode::Off);
 
         assert_eq!(info.flags & F::TEMPO_VALID.bits(), 0);
         assert_eq!(info.flags & F::PPQ_POS_VALID.bits(), 0);
@@ -331,7 +374,12 @@ mod tests {
     /// A negative tempo is as unusable as a zero one.
     #[test]
     fn negative_tempo_is_withheld() {
-        let info = build_vst2_time_info(&TransportInfo::new().with_tempo(-120.0), 48_000.0, None);
+        let info = build_vst2_time_info(
+            &TransportInfo::new().with_tempo(-120.0),
+            48_000.0,
+            None,
+            AutomationMode::Off,
+        );
         assert_eq!(info.flags & F::TEMPO_VALID.bits(), 0);
     }
 
@@ -340,7 +388,7 @@ mod tests {
     #[test]
     fn cycle_pos_valid_requires_usable_boundaries() {
         let bad = TransportInfo::new().with_loop(true, 0.0, f64::NAN);
-        let info = build_vst2_time_info(&bad, 48_000.0, None);
+        let info = build_vst2_time_info(&bad, 48_000.0, None, AutomationMode::Off);
         assert_ne!(info.flags & F::TRANSPORT_CYCLE_ACTIVE.bits(), 0);
         assert_eq!(info.flags & F::CYCLE_POS_VALID.bits(), 0);
     }
@@ -360,20 +408,20 @@ mod tests {
             .with_position_quarters(2.0 + 0.25 / 24.0)
             .with_position_samples(48_250)
             .with_system_time_ns(5_000_000_000);
-        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        let info = build_vst2_time_info(&transport, 48_000.0, None, AutomationMode::Off);
         assert_eq!(info.sample_pos, 48_250.0);
         assert_eq!(info.nanoseconds, 5_000_000_000.0);
         assert_ne!(info.flags & F::NANOSECONDS_VALID.bits(), 0);
         assert_eq!(info.samples_to_next_clock, -250);
         assert_ne!(info.flags & F::VST_CLOCK_VALID.bits(), 0);
-        let other_rate = build_vst2_time_info(&transport, 96_000.0, None);
+        let other_rate = build_vst2_time_info(&transport, 96_000.0, None, AutomationMode::Off);
         assert_eq!(other_rate.samples_to_next_clock, -250);
 
         // No host clock, no usable tempo: neither field is claimed.
         let bare = TransportInfo::new()
             .with_tempo(0.0)
             .with_sample_rate(48_000.0);
-        let info = build_vst2_time_info(&bare, 48_000.0, None);
+        let info = build_vst2_time_info(&bare, 48_000.0, None, AutomationMode::Off);
         assert_eq!(info.flags & F::NANOSECONDS_VALID.bits(), 0);
         assert_eq!(info.flags & F::VST_CLOCK_VALID.bits(), 0);
         assert_eq!(info.nanoseconds, 0.0);

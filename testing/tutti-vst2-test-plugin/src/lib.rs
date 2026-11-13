@@ -310,6 +310,8 @@ impl ProbePlugin {
         });
         self.capture_time_info();
         self.capture_process_level();
+        let automation = self.host.get_automation_state() as i32;
+        capture::with_capture(|cap| cap.automation_state = automation);
         for _ in 0..switches::automate_burst() {
             self.host.automate(0, 0.5);
         }

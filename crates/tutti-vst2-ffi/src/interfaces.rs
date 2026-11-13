@@ -138,7 +138,10 @@ pub fn host_dispatch(
             // The ABI carries the level as an integer: the typed `ProcessLevel` stops here.
             return host.get_process_level() as isize;
         }
-        Ok(OpCode::GetAutomationState) => return host.get_automation_state(),
+        Ok(OpCode::GetAutomationState) => {
+            // The ABI carries the state as an integer: the typed `AutomationState` stops here.
+            return host.get_automation_state() as isize;
+        }
 
         // `audioMasterUpdateDisplay`. A plugin fires this after changing preset
         // or program from its own editor: the parameter set the host is showing

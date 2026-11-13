@@ -338,7 +338,12 @@ impl Vst2Processor {
     fn update_transport(&mut self, ctx: &Vst2ProcessContext) {
         if let Some(t) = ctx.transport {
             let previous = self.time_info.last();
-            let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref());
+            let next = build_vst2_time_info(
+                t,
+                ctx.sample_rate,
+                previous.as_ref(),
+                self.host.automation(),
+            );
             self.time_info.write(next);
         }
     }

@@ -108,6 +108,9 @@ pub struct ProcessCapture {
     /// The host's answer to the most recent query: `2` realtime, `4` offline.
     /// Meaningless while `process_level_queries` is 0.
     pub process_level: i32,
+    /// The host's answer to `audioMasterGetAutomationState` at the most recent block:
+    /// `1` off, `2` read, `3` write, `4` read and write. `0` until a block runs.
+    pub automation_state: i32,
 
     /// Whether `audioMasterGetTime` returned a non-null `VstTimeInfo`.
     /// A host that never answers the transport query is a distinct failure
@@ -167,6 +170,7 @@ impl ProcessCapture {
             host_block_in_set_block: 0,
             process_level_queries: 0,
             process_level: 0,
+            automation_state: 0,
             time_info_present: false,
             time_sample_pos: 0.0,
             time_tempo: 0.0,

@@ -520,6 +520,23 @@ pub enum ProcessLevel {
     Offline,
 }
 
+/// The host's automation state, answered to `audioMasterGetAutomationState`
+/// (`VstAutomationStates`).
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+pub enum AutomationState {
+    /// The host does not say (`kVstAutomationUnsupported`).
+    Unsupported = 0,
+    /// Automation is off (`kVstAutomationOff`).
+    Off,
+    /// The host plays automation back (`kVstAutomationRead`).
+    Read,
+    /// The host records automation (`kVstAutomationWrite`).
+    Write,
+    /// The host plays back and records (`kVstAutomationReadWrite`).
+    ReadWrite,
+}
+
 /// A struct which contains events.
 #[repr(C)]
 #[derive(Debug)]

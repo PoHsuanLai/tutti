@@ -4,9 +4,10 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin,
-    Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, Preset, PresetId, RenderMode, Request, WindowHandle,
+    AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
+    LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginClass,
+    PluginDescriptor, PluginError, PluginResult, Preset, PresetId, RenderMode, Request,
+    WindowHandle,
 };
 
 use crate::error::Vst2Error;
@@ -226,6 +227,14 @@ impl Control for Vst2Loaded {
     fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
         self.set_offline_render(mode.is_offline());
         true
+    }
+
+    /// Stores the mode the plugin is told: `audioMasterGetAutomationState` answers it from
+    /// now on, and the time info of each block carries it in its automation flags. VST2
+    /// has no push to the plugin, so there is nothing to refuse. The store is atomic: the
+    /// plugin may ask from its audio thread while the control thread sets it.
+    fn set_automation_state(&mut self, _main: &MainThread, mode: AutomationMode) {
+        self.host.set_automation(mode);
     }
 
     /// The reports of `audioMasterBeginEdit`, `audioMasterAutomate` and

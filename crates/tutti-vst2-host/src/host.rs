@@ -43,7 +43,9 @@
 //!   supports.
 //! - `size_window` keeps the plugin's requested editor size for the main thread
 //!   (`poll_editor_resize_request`) and answers 1.
-//! - `get_input_latency`, `get_output_latency`, `get_automation_state` return
+//! - `get_automation_state` answers the mode the session set, and the time info
+//!   carries it in its automation flags.
+//! - `get_input_latency` and `get_output_latency` return
 //!   honest neutral defaults — `HostState` has no reference to the value each
 //!   would need (see each method's note). The fork owns the answer rather than
 //!   falling through to vst-rs's swallowed 0.
@@ -52,10 +54,12 @@ use crate::midi::to_midi;
 use crate::transport_cell::TransportReader;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tutti_plugin_types::{MainThread, Request, RescanScope, WireMidi, sysex_packets};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use tutti_plugin_types::{
+    AutomationMode, MainThread, Request, RescanScope, WireMidi, sysex_packets,
+};
 use tutti_rt::RequestWord;
-use vst::api::{ProcessLevel, Supported};
+use vst::api::{AutomationState, ProcessLevel, Supported};
 use vst::host::Host;
 
 /// What the plugin reported of a parameter edit: `audioMasterBeginEdit`,
@@ -98,6 +102,11 @@ pub(crate) const PARAM_QUEUE_CAPACITY: usize = 512;
 /// (also 256) — that number bounds a *wire message*, and the two would drift
 /// apart for unrelated reasons.
 pub(crate) const MIDI_OUT_QUEUE_CAPACITY: usize = 256;
+
+/// [`HostState::automation`]'s read bit: the host plays automation back.
+const AUTOMATION_READ: u8 = 1;
+/// [`HostState::automation`]'s write bit: the host records automation.
+const AUTOMATION_WRITE: u8 = 2;
 
 /// An address unique to the calling thread while it lives: that of a thread-local byte.
 /// Reading it neither allocates nor locks, so the audio thread may.
@@ -162,6 +171,11 @@ pub(crate) struct HostState {
     /// Answers `audioMasterGetCurrentProcessLevel` by caller: written by the process
     /// thread's [`ProcessScope`], read from whichever thread the plugin calls from.
     process_thread: AtomicUsize,
+    /// The host's automation mode ([`AutomationMode`] as two bits: [`AUTOMATION_READ`],
+    /// [`AUTOMATION_WRITE`]), answered through `audioMasterGetAutomationState` and
+    /// served in the time info's flags. Written by the control thread, read from
+    /// whichever thread the plugin calls from and by the process thread's snapshot.
+    automation: AtomicU8,
     /// What the plugin asked of the host through `audioMasterIOChanged` and
     /// `audioMasterUpdateDisplay`: bits for the main thread to take, because
     /// the plugin may call from its audio thread, where a re-read dispatching
@@ -210,6 +224,7 @@ impl HostState {
             sample_rate_bits: AtomicU64::new(default_sample_rate.to_bits()),
             offline: std::sync::atomic::AtomicBool::new(false),
             process_thread: AtomicUsize::new(0),
+            automation: AtomicU8::new(0),
             requests: RequestWord::new(),
             size_request: AtomicU64::new(0),
             current_id,
@@ -259,6 +274,27 @@ impl HostState {
     pub(crate) fn enter_process(&self) -> ProcessScope<'_> {
         self.process_thread.store(thread_token(), Ordering::Release);
         ProcessScope(self)
+    }
+
+    /// Records the automation mode the plugin is told from now on.
+    pub(crate) fn set_automation(&self, mode: AutomationMode) {
+        let bits = match mode {
+            AutomationMode::Off => 0,
+            AutomationMode::Reading => AUTOMATION_READ,
+            AutomationMode::Writing => AUTOMATION_WRITE,
+            AutomationMode::ReadWriting => AUTOMATION_READ | AUTOMATION_WRITE,
+        };
+        self.automation.store(bits, Ordering::Release);
+    }
+
+    /// The automation mode last recorded: `Off` until one is.
+    pub(crate) fn automation(&self) -> AutomationMode {
+        match self.automation.load(Ordering::Acquire) {
+            AUTOMATION_READ => AutomationMode::Reading,
+            AUTOMATION_WRITE => AutomationMode::Writing,
+            bits if bits == AUTOMATION_READ | AUTOMATION_WRITE => AutomationMode::ReadWriting,
+            _ => AutomationMode::Off,
+        }
     }
 
     pub(crate) fn is_offline(&self) -> bool {
@@ -548,10 +584,16 @@ impl Host for HostState {
         }
     }
 
-    /// Neutral default: the host does not expose an automation-read/write
-    /// state to VST2 plugins today. 0 = unsupported.
-    fn get_automation_state(&self) -> isize {
-        0
+    /// `audioMasterGetAutomationState`: the mode the session last set through
+    /// `Control::set_automation_state` (`Off` until one is), as
+    /// `kVstAutomationOff`, `Read`, `Write` or `ReadWrite`.
+    fn get_automation_state(&self) -> AutomationState {
+        match self.automation() {
+            AutomationMode::Off => AutomationState::Off,
+            AutomationMode::Reading => AutomationState::Read,
+            AutomationMode::Writing => AutomationState::Write,
+            AutomationMode::ReadWriting => AutomationState::ReadWrite,
+        }
     }
 }
 
@@ -803,6 +845,24 @@ mod tests {
             .unwrap()
         };
         assert_eq!(answers, (ProcessLevel::Offline, ProcessLevel::Unknown));
+    }
+
+    /// `audioMasterGetAutomationState` answers each mode with its `VstAutomationStates` value
+    /// (`aeffectx.h`: off 1, read 2, write 3, read/write 4), 1 before any mode is set.
+    #[test]
+    fn automation_state_answers_each_mode_with_its_header_value() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert_eq!(host.get_automation_state() as i32, 1, "off before any set");
+        for (mode, value) in [
+            (AutomationMode::Reading, 2),
+            (AutomationMode::Writing, 3),
+            (AutomationMode::ReadWriting, 4),
+            (AutomationMode::Off, 1),
+        ] {
+            host.set_automation(mode);
+            assert_eq!(host.get_automation_state() as i32, value, "{mode:?}");
+            assert_eq!(host.automation(), mode, "{mode:?} round-trips");
+        }
     }
 
     /// The automation queue is bounded, and overflowing it is *reported*.

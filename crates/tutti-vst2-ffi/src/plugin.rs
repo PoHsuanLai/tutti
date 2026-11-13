@@ -1183,6 +1183,23 @@ impl Host for HostCallback {
             .unwrap_or(api::ProcessLevel::Unknown)
     }
 
+    /// Get the host's automation state (`audioMasterGetAutomationState`). A value outside
+    /// `VstAutomationStates` reads as `Unsupported`.
+    fn get_automation_state(&self) -> api::AutomationState {
+        let raw = self.callback(
+            self.effect,
+            host::OpCode::GetAutomationState,
+            0,
+            0,
+            ptr::null_mut(),
+            0.0,
+        );
+        i32::try_from(raw)
+            .ok()
+            .and_then(|v| api::AutomationState::try_from(v).ok())
+            .unwrap_or(api::AutomationState::Unsupported)
+    }
+
     /// Get block size.
     fn get_block_size(&self) -> isize {
         self.callback(

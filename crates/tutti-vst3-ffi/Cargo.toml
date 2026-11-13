@@ -20,7 +20,7 @@ workspace = true
 conformance = []
 
 [dependencies]
-libloading = "0.9"
+libloading.workspace = true
 parking_lot = "0.13"
 crossbeam-queue = "0.3"
 arrayvec = "0.7"

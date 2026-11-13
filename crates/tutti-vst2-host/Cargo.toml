@@ -52,7 +52,7 @@ tutti-types = { path = "../tutti-types" }
 # rlib and the cdylib are separate images with separate statics, and the host
 # only ever touches the cdylib's. The rlib is still linked, for the shared
 # `#[repr(C)]` type definitions.
-libloading = "0.8"
+libloading.workspace = true
 tempfile = "3"
 # The reference plugin the conformance harness loads. As a dev-dependency,
 # Cargo builds its cdylib in the same `cargo test` invocation (no nested

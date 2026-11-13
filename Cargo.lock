@@ -2407,7 +2407,7 @@ dependencies = [
  "bitflags 2.13.2",
  "clap-sys",
  "libc",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "log",
  "tutti-clap-test-plugin",
  "tutti-fixtures",
@@ -2423,7 +2423,7 @@ dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
  "clap-sys",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
@@ -2445,7 +2445,7 @@ version = "0.1.0"
 dependencies = [
  "clap-sys",
  "libc",
- "libloading 0.8.9",
+ "libloading 0.9.0",
 ]
 
 [[package]]
@@ -2753,7 +2753,7 @@ dependencies = [
  "crossbeam-channel",
  "interprocess",
  "libc",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "parking_lot",
  "postcard",
  "serde",
@@ -2830,7 +2830,7 @@ dependencies = [
  "assert_no_alloc",
  "atomic_float",
  "criterion",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "parking_lot",
  "tracing",
  "tutti-fixtures",
@@ -2888,7 +2888,7 @@ dependencies = [
 name = "tutti-plugin-probe"
 version = "0.0.1"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "tempfile",
  "tutti-au-host",
  "tutti-clap-host",
@@ -3031,7 +3031,7 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "hound",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "raw-window-handle",
  "serde",
  "serde_json",
@@ -3207,7 +3207,7 @@ dependencies = [
  "bitflags 2.13.2",
  "crossbeam-queue",
  "libc",
- "libloading 0.7.4",
+ "libloading 0.9.0",
  "log",
  "num-traits",
  "num_enum",
@@ -3226,7 +3226,7 @@ dependencies = [
  "bytemuck",
  "crossbeam-queue",
  "keyboard-types",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "parking_lot",
  "raw-window-handle",
  "tempfile",
@@ -3252,7 +3252,7 @@ dependencies = [
 name = "tutti-vst2-test-plugin"
 version = "0.1.0"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "num-traits",
  "tutti-vst2-author",
 ]

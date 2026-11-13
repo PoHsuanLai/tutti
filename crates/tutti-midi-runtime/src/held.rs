@@ -93,7 +93,8 @@ impl HeldState {
     /// note off ends it, a MIDI 1.0 Note On at velocity 0 included); a pedal
     /// or bend off its normal position is held, and back at it is let go.
     /// Anything else changes nothing.
-    pub fn observe(&mut self, ump: Ump) {
+    pub fn observe(&mut self, ump: impl Into<Ump>) {
+        let ump = ump.into();
         match ump.key_event() {
             Some(KeyEvent::On(key)) => self.set(key, true),
             Some(KeyEvent::Off(key)) => self.set(key, false),

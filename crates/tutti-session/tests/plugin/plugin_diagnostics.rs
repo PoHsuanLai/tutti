@@ -181,10 +181,11 @@ mod clap {
 #[cfg(feature = "vst2")]
 mod vst2 {
     use super::*;
-    use tutti_fixtures::midi::note_on;
+
+    use tutti_fixtures::midi;
     use tutti_graph::EventCapacity;
     use tutti_session::Losses;
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     /// **Lost MIDI is counted as the MIDI inlets count theirs.** A block with 300
     /// notes holds 256 (`MIDI_STACK_CAPACITY`): the 44 past it are `lost` and
@@ -221,16 +222,8 @@ mod vst2 {
             "the VST2 probe reports no tail"
         );
 
-        let notes = |n: usize| {
-            (0..n).map(|i| {
-                note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    (i % 128) as u8,
-                    0xFFFF,
-                )
-            })
-        };
+        let notes =
+            |n: usize| (0..n).map(|i| midi::note_on(MidiChannel::FIRST, (i % 128) as u8, 0xFFFF));
         writer.push_all(notes(300).map(|n| (tutti_session::Stamp::NextBlock, n)));
         render_block(&s);
         assert_eq!(

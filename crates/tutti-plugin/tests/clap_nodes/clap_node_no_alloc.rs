@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use tutti_fixtures::midi;
 use tutti_graph::{Offset, TransportChanges, TransportPosition};
+use tutti_midi_protocol::widen_velocity;
 use tutti_modulation::{
     Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Waveform,
 };
@@ -33,7 +34,7 @@ use tutti_nodes::automation::{Breakpoint, ControlLaneNode, Law, Trajectory};
 use tutti_types::{Beat, BeatsPerCycle, Bpm, Samples};
 use tutti_types::{BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 use tutti_types::{Depth, PhaseIncrement};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, U7};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -153,13 +154,8 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let mut block = |b: usize, outs: &mut [&mut [f32]]| {
         if b.is_multiple_of(4) {
             let note = 60 + (b % 12) as u8;
-            let on = midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                note,
-                tutti_fixtures::midi::wide_velocity(100),
-            );
-            let off = midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), note, 0);
+            let on = midi::note_on(MidiChannel::of(1), note, widen_velocity(U7::of(100)).get());
+            let off = midi::note_off(MidiChannel::of(1), note, 0);
             sender.push(tutti_graph::Stamp::NextBlock, on).unwrap();
             sender.push(tutti_graph::Stamp::NextBlock, off).unwrap();
         }

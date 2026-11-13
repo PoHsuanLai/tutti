@@ -16,16 +16,16 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{ContentScale, Control, EditorWindow, Normalized, ParamId};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext};
 
 #[path = "support/active.rs"]
 mod active;
 
 use active::{Active, ActiveExt};
+use tutti_fixtures::midi;
 
 /// The id of the parameter at `index`.
 fn pid(index: i32) -> ParamId {
@@ -1258,16 +1258,10 @@ fn process_forwards_midi_without_panicking() {
     let _guard = lock_probe();
     let mut instance = load_probe();
 
-    let note_on = [(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 100),
-    )];
+    let note_on = [(Offset::ZERO, midi::note_on(MidiChannel::of(1), 60, 100))];
     render_block(&mut instance, &note_on);
 
-    let note_off = [(
-        Offset::ZERO,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
-    )];
+    let note_off = [(Offset::ZERO, midi::note_off(MidiChannel::of(1), 60, 0))];
     render_block(&mut instance, &note_off);
 }
 
@@ -1314,7 +1308,7 @@ fn many_midi_events_in_one_block() {
         .map(|i| {
             (
                 Offset::new(i, Samples(BLOCK)).unwrap(),
-                midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 100),
+                midi::note_on(MidiChannel::of(1), 60 + i as u8, 100),
             )
         })
         .collect();
@@ -1324,7 +1318,7 @@ fn many_midi_events_in_one_block() {
         .map(|i| {
             (
                 Offset::ZERO,
-                midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 0),
+                midi::note_off(MidiChannel::of(1), 60 + i as u8, 0),
             )
         })
         .collect();

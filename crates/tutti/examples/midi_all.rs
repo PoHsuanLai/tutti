@@ -28,6 +28,7 @@ use tutti::{
     Message, MidiChannel, MidiFile, MidiGroup, NoteNumber, NoteVelocity, SampleRate, Samples,
     Session, SessionEvent, Stamp, Tick, Track,
 };
+use tutti_ump::Voice1;
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
@@ -75,8 +76,8 @@ fn file() -> Result<MidiFile, Box<dyn std::error::Error>> {
             let at = Tick::quarters(n.into(), TPQ);
             let key = NoteNumber::of(60 + 2 * n);
             let (on, off): (FileEvent, FileEvent) = (
-                Message::note_on(MidiChannel::FIRST, key, U7::of(100)).into(),
-                Message::note_off(MidiChannel::FIRST, key, U7::of(64)).into(),
+                Message::midi1(MidiChannel::FIRST, Voice1::note_on(key, U7::of(100))).into(),
+                Message::midi1(MidiChannel::FIRST, Voice1::note_off(key, U7::of(64))).into(),
             );
             [(at, on), (at + 240, off)]
         })
@@ -118,7 +119,10 @@ fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
     )?;
     live.push(
         Stamp::NextBlock,
-        Message::note_on(MidiChannel::of(1), NoteNumber::of(76), U7::of(90)),
+        Message::midi1(
+            MidiChannel::of(1),
+            Voice1::note_on(NoteNumber::of(76), U7::of(90)),
+        ),
     )?;
 
     // The hardware input, routed by Group: Group 2's channel 3 to the synth. A

@@ -9,19 +9,21 @@
 //! `reset`. The node waits offline for each chunk, so the audio is a function
 //! of the input and not of scheduling.
 
-use tutti_fixtures::{machine_lock, midi};
+use tutti_fixtures::machine_lock;
 use tutti_graph::{
     Env, Event, Harmony, Node, Offset, ParamRamp, PlayClock, TransportChanges, TransportPosition,
 };
 use tutti_plugin_ipc::{HostMessage, ProcessAudioData};
 use tutti_plugin_types::ParamId;
 use tutti_types::{Beat, Bpm, Frame, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 
 use super::mock_server::{
     BEATS_PER_FRAME_120, CHUNK, PARAMS, Record, SR, STEP_BEAT, STEP_FRAME, at, beat_at, new_node,
     rig, tempo,
 };
+use tutti_midi_protocol::widen_velocity;
+use tutti_ump::{Message, NoteNumber, U7, Voice2};
 
 /// What the server was sent, in order.
 enum Sent {
@@ -125,11 +127,9 @@ struct Item {
 fn note_on(o: Offset) -> Event {
     Event::midi(
         o,
-        midi::note_on(
-            MidiGroup::FIRST,
+        Message::midi2(
             MidiChannel::of(1),
-            60,
-            midi::wide_velocity(100),
+            Voice2::note_on(NoteNumber::of(60), widen_velocity(U7::of(100))),
         ),
     )
 }

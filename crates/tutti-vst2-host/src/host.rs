@@ -619,14 +619,10 @@ mod tests {
     fn a_note_on() -> WireMidi {
         WireMidi {
             offset: 0,
-            ump: tutti_fixtures::midi::note_on(
-                tutti_ump::MidiGroup::FIRST,
-                tutti_ump::MidiChannel::FIRST,
-                60,
-                tutti_fixtures::midi::MID_VELOCITY,
-            ),
+            ump: tutti_fixtures::midi::note_on(tutti_ump::MidiChannel::FIRST, 60, 0x8000),
         }
     }
+
     use vst::host::Host;
 
     fn make_host(time_info: TransportReader, default_sample_rate: f64) -> HostState {

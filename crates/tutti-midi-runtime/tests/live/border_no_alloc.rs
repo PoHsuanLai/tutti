@@ -4,8 +4,7 @@
 //! inlet into the event tap's ring, and the clock's ticks.
 
 use std::num::NonZeroUsize;
-use tutti_fixtures::midi;
-use tutti_fixtures::midi::{note_off, registered_rpn};
+
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventInletNode, EventInletWriter, EventOut, Harmony, LoopRange,
     Prepare, TransportPosition,
@@ -20,13 +19,10 @@ use tutti_types::{Beat, Bpm, Frame, FrameClock, Moment, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump};
 
 use crate::common;
+use tutti_fixtures::midi;
+use tutti_ump::{Address, BendValue, ControlValue, Message, Voice2};
 fn note_on(ch: u8, note: u8) -> Ump {
-    midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(ch),
-        note,
-        midi::MID_VELOCITY,
-    )
+    midi::note_on(MidiChannel::of(ch), note, 0x8000)
 }
 
 /// A device's inlet (key `inlet`) feeding the first event input of the ingest
@@ -121,8 +117,7 @@ fn bend_range(device: &mut EventInletWriter, block: u64) {
     device
         .push(
             frame_of(block, 0),
-            registered_rpn(
-                MidiGroup::FIRST,
+            midi::registered(
                 MidiChannel::of(2),
                 tutti_ump::Rpn::PITCH_BEND_SENSITIVITY,
                 tutti_midi_protocol::PitchBendSensitivity::of(12).to_rpn_bits(),
@@ -168,13 +163,21 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
 fn gesture(device: &mut EventInletWriter, block: u64) {
     let (g, ch) = (MidiGroup::FIRST, MidiChannel::of(2));
     for ev in [
-        midi::pitch_bend(g, ch, 0xC000_0000),
-        midi::channel_pressure(g, ch, 0x4000_0000),
-        midi::cc(g, ch, tutti_ump::CCNumber::BRIGHTNESS, 0x2000_0000),
+        midi::pitch_bend(Address::new(g, ch), 0xC000_0000),
+        midi::channel_pressure(Address::new(g, ch), 0x4000_0000),
+        midi::cc(
+            Address::new(g, ch),
+            tutti_ump::CCNumber::BRIGHTNESS,
+            0x2000_0000,
+        ),
         note_on(2, 60),
-        midi::channel_pressure(g, MidiChannel::FIRST, 0x6000_0000),
-        midi::cc(g, MidiChannel::FIRST, tutti_ump::CCNumber::BRIGHTNESS, 7),
-        note_off(g, ch, 60, 0),
+        midi::channel_pressure(Address::new(g, MidiChannel::FIRST), 0x6000_0000),
+        midi::cc(
+            Address::new(g, MidiChannel::FIRST),
+            tutti_ump::CCNumber::BRIGHTNESS,
+            7,
+        ),
+        midi::note_off(Address::new(g, ch), 60, 0),
     ] {
         device.push(frame_of(block, 0), ev).unwrap();
     }
@@ -287,17 +290,18 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
             // centres the bend.
             TimedMidiEvent::new(
                 beat(1_020.0),
-                midi::cc(
-                    MidiGroup::FIRST,
+                Message::midi2(
                     MidiChannel::FIRST,
-                    tutti_ump::CCNumber::SUSTAIN,
-                    u32::MAX,
+                    Voice2::control_change(tutti_ump::CCNumber::SUSTAIN, ControlValue::MAX),
                 ),
             )
             .unwrap(),
             TimedMidiEvent::new(
                 beat(1_030.0),
-                midi::pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 0xA000_0000),
+                Message::midi2(
+                    MidiChannel::FIRST,
+                    Voice2::PitchBend(BendValue::new(0xA000_0000)),
+                ),
             )
             .unwrap(),
         ]),
@@ -354,14 +358,7 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     const RATE: f64 = 48_000.0;
     let beat = |frame: f64| Beat(frame / 24_000.0);
     let note = |i: u32| note_on((i / 128 % 16) as u8, (i % 128) as u8);
-    let off = |i: u32| {
-        note_off(
-            MidiGroup::FIRST,
-            MidiChannel::of((i / 128 % 16) as u8),
-            (i % 128) as u8,
-            0,
-        )
-    };
+    let off = |i: u32| midi::note_off(MidiChannel::of((i / 128 % 16) as u8), (i % 128) as u8, 0);
     let mut events = Vec::new();
     for i in 0..300 {
         events.push(TimedMidiEvent::new(beat(10.0), note(i)).unwrap());
@@ -431,10 +428,20 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
         [
             TimedMidiEvent::new(
                 beat(u64::from(i)),
-                tutti_fixtures::midi::note_on(g, c, n, tutti_fixtures::midi::MID_VELOCITY),
+                Message::midi2(
+                    Address::new(g, c),
+                    Voice2::note_on(NoteNumber::of(n), NoteVelocity::CENTER),
+                ),
             )
             .unwrap(),
-            TimedMidiEvent::new(beat(4_000), note_off(g, c, n, 0)).unwrap(),
+            TimedMidiEvent::new(
+                beat(4_000),
+                Message::midi2(
+                    Address::new(g, c),
+                    Voice2::note_off(NoteNumber::of(n), NoteVelocity::MIN),
+                ),
+            )
+            .unwrap(),
         ]
     });
     let (mut ed, mut exec) =
@@ -505,7 +512,7 @@ fn the_event_inlet_processes_without_allocating() {
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
-    let msg = midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
+    let msg = midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100));
     let mut heard = 0;
     for b in 1..200u64 {
         // Control side, outside the gate: one for this block's middle, one
@@ -539,8 +546,8 @@ fn the_event_inlet_with_a_full_list_processes_without_allocating() {
     ed.commit().unwrap();
     let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
-    let on = midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
-    let off = midi::m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0));
+    let on = midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100));
+    let off = midi::m1_note_off(MidiChannel::FIRST, 60, U7::of(0));
     // Outside the gate: fill the list with events for frames far ahead.
     for k in 0..256u64 {
         tx.push(Stamp::Frame(Frame::new(10_000_000 + k)), on)

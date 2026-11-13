@@ -20,8 +20,8 @@
 //! ```
 //! use tutti_graph::contract::{Detect, Excite, Path, Pulse, Row};
 //! use tutti_graph::EventKind;
-//! use tutti_fixtures::midi::note_on;
-//! use tutti_ump::{MidiChannel, MidiGroup};
+//! use tutti_fixtures::midi;
+//! use tutti_ump::{MidiChannel, NoteVelocity};
 //! use tutti_types::{Latency, Samples};
 //!
 //! let row = Row::new(
@@ -29,7 +29,7 @@
 //!     || Box::new(Pulse::new(Latency::new(Samples(37)))),
 //!     Excite::Event {
 //!         port: 0,
-//!         kind: EventKind::Midi(note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC800)),
+//!         kind: EventKind::Midi(midi::note_on(MidiChannel::FIRST, 60, 0xC800)),
 //!     },
 //!     Detect::Exact(vec![1.0]),
 //! );
@@ -1659,8 +1659,8 @@ impl Node for Sum {
 /// ```
 /// use tutti_graph::contract::{Detect, Excite, Lookahead, Pulse, Row};
 /// use tutti_graph::EventKind;
-/// use tutti_fixtures::midi::note_on;
-/// use tutti_ump::{MidiChannel, MidiGroup};
+/// use tutti_fixtures::midi;
+/// use tutti_ump::{MidiChannel, NoteVelocity};
 /// use tutti_types::{Latency, Samples};
 ///
 /// fn pulse_row() -> Row {
@@ -1669,7 +1669,7 @@ impl Node for Sum {
 ///         || Box::new(Pulse::new(Latency::ZERO)),
 ///         Excite::Event {
 ///             port: 0,
-///             kind: EventKind::Midi(note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC800)),
+///             kind: EventKind::Midi(midi::note_on(MidiChannel::FIRST, 60, 0xC800)),
 ///         },
 ///         Detect::Exact(vec![1.0]),
 ///     )

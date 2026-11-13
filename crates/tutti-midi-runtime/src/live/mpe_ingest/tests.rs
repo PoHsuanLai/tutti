@@ -2,8 +2,8 @@ use super::*;
 use crate::test_support::at;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::MpeZoneConfig;
-use tutti_ump::{Address, CCNumber, KeyEvent, Message, Voice2};
+use tutti_midi_protocol::{MpeZoneConfig, widen_bend, widen_value, widen_velocity};
+use tutti_ump::{Address, CCNumber, KeyEvent, Message, U7, U14, Voice2};
 
 /// What the ingest sends, collected: the tests read it as a list.
 trait Collected {
@@ -34,31 +34,25 @@ fn note_on(channel: u8, note: u8, vel_u7: u8) -> UmpAt {
     at(
         0,
         midi::note_on(
-            MidiGroup::FIRST,
             MidiChannel::of(channel),
             note,
-            tutti_fixtures::midi::wide_velocity(vel_u7),
+            widen_velocity(U7::of(vel_u7)).get(),
         ),
     )
 }
 fn pitch_bend14(channel: u8, bend14: u16) -> UmpAt {
     at(
         0,
-        midi::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(channel),
-            tutti_fixtures::midi::wide_bend(bend14),
-        ),
+        midi::pitch_bend(MidiChannel::of(channel), widen_bend(U14::of(bend14)).get()),
     )
 }
 fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> UmpAt {
     at(
         0,
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::of(channel),
             cc_num,
-            tutti_fixtures::midi::wide_value(value_u7),
+            widen_value(U7::of(value_u7)).get(),
         ),
     )
 }
@@ -130,10 +124,7 @@ fn member_channel_pressure_becomes_per_note_pressure() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     ingest.translated(&note_on(2, 60, 100));
     let out = ingest
-        .translated(&at(
-            0,
-            midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(2), 0xFFFF_FFFF),
-        ))
+        .translated(&at(0, midi::channel_pressure(MidiChannel::of(2), u32::MAX)))
         .next()
         .expect("emits");
     assert_cv2!(out, _, Voice2::PolyPressure { note, .. } if note.get() == 60);
@@ -151,7 +142,7 @@ fn native_per_note_passes_through() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     let native = at(
         0,
-        midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF),
+        midi::per_note_pitch_bend(MidiChannel::FIRST, 60, u32::MAX),
     );
     let out = ingest.translated(&native).next().expect("passes");
     assert_cv2!(out, _, Voice2::PerNotePitchBend { .. });
@@ -242,12 +233,14 @@ fn mcm_with_zero_members_disables_the_zone() {
     // only come off the wire: build it directly.)
     let disable = at(
         0,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST, // lower-zone master channel
-            Rpn::MPE_CONFIGURATION,
-            0, // 0 members → disable
-        ),
+        Ump::from(Message::midi2(
+            MidiChannel::FIRST,
+            Voice2::registered(
+                // lower-zone master channel
+                Rpn::MPE_CONFIGURATION,
+                ControlValue::MIN,
+            ),
+        )),
     );
     assert_eq!(
         ranges_only(ingest.translated(&disable)).len(),
@@ -366,12 +359,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 
     let disable = at(
         0,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::of(15),
-            Rpn::MPE_CONFIGURATION,
-            0,
-        ),
+        midi::registered(MidiChannel::of(15), Rpn::MPE_CONFIGURATION, 0),
     );
     assert_eq!(
         ranges_only(ingest.translated(&disable)).len(),
@@ -403,8 +391,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
     at(
         17,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
+        midi::registered(
             MidiChannel::of(channel),
             Rpn::PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(semitones).to_rpn_bits(),
@@ -460,10 +447,7 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
 #[test]
 fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
-    let on0 = at(
-        0,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::of(2), 60, 0),
-    );
+    let on0 = at(0, midi::note_on(MidiChannel::of(2), 60, 0));
     assert_eq!(ingest.translated(&on0).collect::<Vec<_>>(), vec![on0]);
     let out = ingest
         .translated(&pitch_bend14(2, 16383))
@@ -483,18 +467,22 @@ fn a_groups_member_channels_hold_notes_of_their_own() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     let group2 = MidiGroup::of(1);
     let channel = MidiChannel::of(2);
-    let bend = tutti_fixtures::midi::wide_bend(16383);
+    let bend = widen_bend(U14::of(16383)).get();
     ingest.translated(&at(
         0,
-        midi::note_on(group2, channel, 60, midi::wide_velocity(100)),
+        midi::note_on(
+            Address::new(group2, channel),
+            60,
+            widen_velocity(U7::of(100)).get(),
+        ),
     ));
-    let first_group = at(0, midi::pitch_bend(MidiGroup::FIRST, channel, bend));
+    let first_group = at(0, midi::pitch_bend(channel, bend));
     assert_eq!(
         ingest.translated(&first_group).count(),
         0,
         "Group 1's channel 2 holds no note"
     );
-    let second_group = at(0, midi::pitch_bend(group2, channel, bend));
+    let second_group = at(0, midi::pitch_bend(Address::new(group2, channel), bend));
     let out = ingest.translated(&second_group).next().expect("emits");
     assert_cv2!(
         out,
@@ -513,11 +501,10 @@ fn an_mcm_configures_its_own_group_only() {
     let group2 = MidiGroup::of(1);
     let mcm = at(
         0,
-        midi::registered_rpn(
-            group2,
-            MidiChannel::FIRST,
+        midi::registered(
+            Address::new(group2, MidiChannel::FIRST),
             Rpn::MPE_CONFIGURATION,
-            7 << 25, // seven members
+            7 << 25,
         ),
     );
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
@@ -540,17 +527,11 @@ fn an_mcm_configures_its_own_group_only() {
 // ---- the state a note starts with (M1-100 sections 2.2.6 to 2.2.8) ----------
 
 fn note_off(channel: u8, note: u8) -> UmpAt {
-    at(
-        0,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0),
-    )
+    at(0, midi::note_off(MidiChannel::of(channel), note, 0))
 }
 
 fn pressure(channel: u8, value: u32) -> UmpAt {
-    at(
-        0,
-        midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(channel), value),
-    )
+    at(0, midi::channel_pressure(MidiChannel::of(channel), value))
 }
 
 /// What `ingest` sends for `event`, as decoded `(channel, message)` pairs.
@@ -581,7 +562,7 @@ fn a_member_bend_before_the_note_on_is_the_notes_start() {
     assert!(matches!(
         out[0],
         (2, Voice2::PerNotePitchBend { note, value })
-            if note.get() == 60 && value == BendValue::new(tutti_fixtures::midi::wide_bend(16383))
+            if note.get() == 60 && value == widen_bend(U14::of(16383))
     ));
     assert!(matches!(out[1], (2, Voice2::NoteOn { .. })));
 }
@@ -605,7 +586,7 @@ fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
     assert!(matches!(
         out[1],
         (3, Voice2::AssignablePerNote { note, controller: 74, value })
-            if note.get() == 64 && value == ControlValue::new(tutti_fixtures::midi::wide_value(64))
+            if note.get() == 64 && value == widen_value(U7::of(64))
     ));
     assert!(matches!(out[2], (3, Voice2::NoteOn { .. })));
 }
@@ -735,12 +716,7 @@ fn an_mcm_on_a_member_channel_is_ignored() {
     let mcm_on = |channel: u8| {
         at(
             0,
-            midi::registered_rpn(
-                MidiGroup::FIRST,
-                MidiChannel::of(channel),
-                Rpn::MPE_CONFIGURATION,
-                3 << 25,
-            ),
+            midi::registered(MidiChannel::of(channel), Rpn::MPE_CONFIGURATION, 3 << 25),
         )
     };
     assert_eq!(ingest.translated(&mcm_on(3)).count(), 0);
@@ -764,12 +740,7 @@ fn an_mcm_on_a_member_channel_is_ignored() {
 #[test]
 fn program_change_on_a_member_follows_the_zones_midi_mode() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
-    let program = |channel: u8| {
-        at(
-            0,
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(channel), 5, None),
-        )
-    };
+    let program = |channel: u8| at(0, midi::program_change(MidiChannel::of(channel), 5, None));
     assert_eq!(ingest.translated(&program(3)).count(), 0, "Mode 3");
     assert_eq!(ingest.translated(&program(0)).count(), 1, "the manager's");
     ingest.translated(&cc(0, CCNumber::of(126), 0));
@@ -878,12 +849,7 @@ fn a_disabling_mcm_stops_every_channel_of_the_zone() {
     ingest.translated(&note_on(1, 60, 100));
     let disable = at(
         0,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            Rpn::MPE_CONFIGURATION,
-            0,
-        ),
+        midi::registered(MidiChannel::FIRST, Rpn::MPE_CONFIGURATION, 0),
     );
     assert_eq!(stopped(ingest.translated(&disable)), [0, 1, 2]);
     // Channel 1 is conventional again: nothing of the zone is left to fold.

@@ -18,7 +18,7 @@ use tutti_ump::{BendValue, ControlValue};
 mod common;
 use common::Listener;
 
-use tutti_fixtures::midi::note_on;
+use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_midi_hardware::{DeviceInlets, MidiSession};
 use tutti_midi_protocol::channel_voice;
@@ -129,7 +129,7 @@ fn main() {
         "cc74",
         voice(Voice2::ControlChange {
             controller: CCNumber::of(74),
-            value: ControlValue::new(0xFFFF_FFFF),
+            value: ControlValue::MAX,
         }),
         &|v| matches!(v, Voice2::ControlChange { controller, .. } if controller.get() == 74),
     );
@@ -137,16 +137,13 @@ fn main() {
     println!("\n=== Test 4: Pitch Bend (center) ===");
     roundtrip(
         "pitch-bend",
-        voice(Voice2::PitchBend(BendValue::new(0x8000_0000))), // bipolar center
+        voice(Voice2::PitchBend(BendValue::CENTER)), // bipolar center
         &|v| matches!(v, Voice2::PitchBend(_)),
     );
 
     println!("\n=== Test 5: Rapid burst (10 notes) ===");
     for n in 60..70u8 {
-        out.queue(&[(
-            Offset::ZERO,
-            note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
-        )]);
+        out.queue(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, n, 0xA000))]);
     }
     let heard = graph.listen(Duration::from_millis(200));
     let count = heard.len();

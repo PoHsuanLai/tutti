@@ -702,7 +702,7 @@ impl Voicing {
             if self.sustain[i] {
                 send(Voice2::ControlChange {
                     controller: CCNumber::SUSTAIN,
-                    value: ControlValue::new(u32::MAX),
+                    value: ControlValue::MAX,
                 });
             }
         }
@@ -1867,7 +1867,7 @@ mod tests {
                 c,
                 Voice2::NoteOn {
                     note: NoteNumber::of(k),
-                    velocity: NoteVelocity::new(0x8000),
+                    velocity: NoteVelocity::CENTER,
                     attribute: Attribute::None,
                 },
                 p,
@@ -3447,11 +3447,7 @@ mod tests {
             s.cc(c, 10, 20);
             s.cc(c, 11, 30);
             s.cc(c, 65, 127);
-            s.send(
-                c,
-                Voice2::ChannelPressure(ControlValue::new(u32::MAX)),
-                &One,
-            );
+            s.send(c, Voice2::ChannelPressure(ControlValue::MAX), &One);
             s.send(c, registered(5, 1 << 25), &One);
             s.send(c, registered(2, 66 << 25), &One);
         }

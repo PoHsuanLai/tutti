@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi::{noop, note_on};
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, EventTapId, EventTapReader, Executor, Prepare, TapAlign,
@@ -31,7 +31,7 @@ use tutti_graph::{
 use tutti_midi_hardware::{HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{DeviceInlets, InletChange, MidiIngestNode};
 use tutti_types::{Frame, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Message, MidiChannel, Ump, Utility};
 
 /// A block clock a test writes by hand, as the engine does each render call.
 struct BlockClock(
@@ -128,7 +128,7 @@ impl Rig {
             drain: vec![
                 TapEvent {
                     frame: Frame::ZERO,
-                    ump: noop()
+                    ump: Ump::from(Message::Utility(Utility::Noop))
                 };
                 2048
             ],
@@ -170,7 +170,7 @@ fn inputs(slots: usize, capacity: u32) -> Arc<HardwareMidiInputs> {
 }
 
 fn note() -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+    midi::note_on(MidiChannel::FIRST, 60, 0x8000)
 }
 
 /// Feed `count` events through a port's producer, as a driver callback

@@ -1,10 +1,10 @@
-use tutti_fixtures::midi;
 use tutti_graph::contract::{Direct, assert_param_fork};
 use tutti_graph::{Event, Offset, ParamFork};
 use tutti_types::{SampleRate, Seconds, UnitParam};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, Ump};
 
 use crate::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
+use tutti_fixtures::midi;
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -22,7 +22,7 @@ fn saw() -> PolySynth {
 }
 
 fn note_on() -> Ump {
-    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+    midi::note_on(MidiChannel::FIRST, 60, 0xFFFF)
 }
 
 /// The peak of channel 0 over `frames` of `synth` with a note on at

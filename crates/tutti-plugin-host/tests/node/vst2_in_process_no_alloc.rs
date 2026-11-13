@@ -20,8 +20,9 @@ use tutti_vst2_host::Vst2Loaded;
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
+use tutti_midi_protocol::widen_velocity;
 use tutti_types::{SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, U7, Ump};
 
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -114,15 +115,10 @@ fn process_with_midi_does_not_allocate() {
 
     // Pre-warm MIDI codec — first event triggers any one-shot
     // allocations inside vst2-host's MidiSendBuffer.
-    let warm_event = midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(1),
-        60,
-        tutti_fixtures::midi::wide_velocity(100),
-    );
+    let warm_event = midi::note_on(MidiChannel::of(1), 60, widen_velocity(U7::of(100)).get());
     unit.events(0, &[at_start(warm_event)]);
     unit.block();
-    let warm_off = midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0);
+    let warm_off = midi::note_off(MidiChannel::of(1), 60, 0);
     unit.events(0, &[at_start(warm_off)]);
     unit.block();
 
@@ -131,16 +127,14 @@ fn process_with_midi_does_not_allocate() {
         for i in 0..128 {
             if i % 16 == 0 {
                 let ev = midi::note_on(
-                    MidiGroup::FIRST,
                     MidiChannel::of(1),
                     60 + (i as u8 % 12),
-                    tutti_fixtures::midi::wide_velocity(100),
+                    widen_velocity(U7::of(100)).get(),
                 );
                 unit.events(0, &[at_start(ev)]);
             }
             if i % 16 == 8 {
-                let ev =
-                    midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60 + (i as u8 % 12), 0);
+                let ev = midi::note_off(MidiChannel::of(1), 60 + (i as u8 % 12), 0);
                 unit.events(0, &[at_start(ev)]);
             }
             unit.block();

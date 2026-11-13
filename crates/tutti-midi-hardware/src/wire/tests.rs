@@ -7,6 +7,7 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_runtime::SendAt;
+use tutti_ump::Bank;
 use tutti_ump::ControlValue;
 use tutti_ump::{
     Address, MidiChannel, MidiGroup, NoteNumber, Sysex7Packet, SysexStatus, System, U7, Voice1,
@@ -82,12 +83,19 @@ fn a_midi1_endpoint_is_never_sent_type_4() {
     let out = convert(
         &mut wire,
         &[
-            midi::note_on(g, c, 60, 0xFFFF),
-            midi::note_off(g, c, 60, 0),
-            midi::pitch_bend(g, c, 0x8000_0000),
-            midi::per_note_pitch_bend(g, c, 60, 0x9000_0000),
+            midi::note_on(Address::new(g, c), 60, 0xFFFF),
+            midi::note_off(Address::new(g, c), 60, 0),
+            midi::pitch_bend(Address::new(g, c), 0x8000_0000),
+            midi::per_note_pitch_bend(Address::new(g, c), 60, 0x9000_0000),
             rpn(0, 0, 12 << 25),
-            midi::program_change(g, c, 5, Some(0x0081)),
+            midi::program_change(
+                Address::new(g, c),
+                5,
+                Some(Bank {
+                    msb: U7::of(1),
+                    lsb: U7::of(1),
+                }),
+            ),
         ],
     );
     assert!(out.iter().all(|u| u.message_type() != 4), "{out:?}");
@@ -158,13 +166,13 @@ fn a_midi2_endpoint_is_sent_the_packets_as_they_are() {
     let g = MidiGroup::FIRST;
     let c = MidiChannel::FIRST;
     let events = [
-        midi::note_on(g, c, 60, 0xFFFF),
+        midi::note_on(Address::new(g, c), 60, 0xFFFF),
         rpn(0, 0, 12 << 25),
-        midi::per_note_pitch_bend(g, c, 60, 0x9000_0000),
+        midi::per_note_pitch_bend(Address::new(g, c), 60, 0x9000_0000),
     ];
     assert_eq!(convert(&mut wire, &events), events);
     let mut wire = Wire::new(MIDI1);
-    let m1 = midi::m1_note_on(c, NoteNumber::of(60), U7::of(100));
+    let m1 = midi::m1_note_on(c, 60, U7::of(100));
     assert_eq!(convert(&mut wire, &[m1]), [m1]);
 }
 
@@ -196,7 +204,7 @@ fn jr_goes_only_where_the_configuration_enables_it() {
         Ump::from(Message::Utility(Utility::JrClock(100))),
         Ump::from(Message::Utility(Utility::JrTimestamp(200))),
     ];
-    let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+    let note = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
     for protocol in [Protocol::Midi1, Protocol::Midi2] {
         let off = StreamConfig {
             protocol,
@@ -248,7 +256,7 @@ fn a_clips_utility_messages_are_never_sent() {
 fn the_accepted_count_is_in_the_callers_events() {
     let mut wire = Wire::new(MIDI1);
     let jr = Ump::from(Message::Utility(Utility::JrClock(1)));
-    let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+    let note = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
     let events: Vec<UmpAt> = [jr, rpn(0, 0, 0), note].into_iter().map(at).collect();
     wire.convert(&Outgoing::now_batch(&events));
     assert_eq!(wire.batch().len(), 5, "no JR, four for the RPN, one note");

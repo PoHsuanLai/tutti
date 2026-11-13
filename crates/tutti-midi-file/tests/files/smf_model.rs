@@ -13,8 +13,9 @@ use tutti_midi_file::{
     Error, FileEvent, Meta, MidiFile, MidiFileKind, PairedNote, SmfFormat, TextKind, Tick, Track,
 };
 use tutti_types::{Beat, Bpm, Seconds};
-use tutti_ump::ControlValue;
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Voice1};
+use tutti_ump::{
+    Address, ControlValue, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Voice1,
+};
 
 const TPQ: u16 = 480;
 const BEAT: u32 = TPQ as u32;
@@ -31,11 +32,19 @@ fn voice(channel: u8, voice: Voice1) -> FileEvent {
 }
 
 fn on(channel: u8, key: u8, vel: u8) -> FileEvent {
-    Message::note_on(MidiChannel::of(channel), NoteNumber::of(key), U7::of(vel)).into()
+    Message::midi1(
+        MidiChannel::of(channel),
+        Voice1::note_on(NoteNumber::of(key), U7::of(vel)),
+    )
+    .into()
 }
 
 fn off(channel: u8, key: u8, vel: u8) -> FileEvent {
-    Message::note_off(MidiChannel::of(channel), NoteNumber::of(key), U7::of(vel)).into()
+    Message::midi1(
+        MidiChannel::of(channel),
+        Voice1::note_off(NoteNumber::of(key), U7::of(vel)),
+    )
+    .into()
 }
 
 fn read(bytes: &[u8]) -> MidiFile {
@@ -740,7 +749,7 @@ fn what_an_smf_cannot_hold_is_refused() {
     assert!(matches!(one(group_1), Err(Error::Config(_))));
     let midi2 = FileEvent::Message(Message::Midi2(
         Address::first(MidiChannel::FIRST),
-        tutti_ump::Voice2::ChannelPressure(ControlValue::new(0)),
+        tutti_ump::Voice2::ChannelPressure(ControlValue::MIN),
     ));
     assert!(matches!(one(midi2), Err(Error::Config(_))));
     let slow = FileEvent::Meta(Meta::Tempo {

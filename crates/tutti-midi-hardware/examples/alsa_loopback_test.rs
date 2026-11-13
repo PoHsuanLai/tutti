@@ -23,11 +23,11 @@ use std::time::Duration;
 mod common;
 use common::Listener;
 
-use tutti_fixtures::midi::{note_off, note_on};
+use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_midi_hardware::{DeviceInlets, MidiSession};
 use tutti_midi_protocol::channel_voice;
-use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, Ump};
+use tutti_ump::{KeyEvent, MidiChannel, Ump};
 
 /// Whether `ev` starts a note, in either protocol.
 fn is_note_on(ev: Ump) -> bool {
@@ -92,23 +92,20 @@ fn main() {
     println!("\n=== Test 1: Note On ===");
     roundtrip(
         "note-on",
-        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        midi::note_on(MidiChannel::FIRST, 60, 0x8000),
         &is_note_on,
     );
 
     println!("\n=== Test 2: Note Off ===");
     roundtrip(
         "note-off",
-        note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+        midi::note_off(MidiChannel::FIRST, 60, 0x4000),
         &|ev| ev.is_note_off(),
     );
 
     println!("\n=== Test 3: Burst (10 notes) ===");
     for n in 60..70u8 {
-        sink.queue(&[(
-            Offset::ZERO,
-            note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
-        )]);
+        sink.queue(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, n, 0xA000))]);
     }
     let heard = graph.listen(Duration::from_millis(250));
     let count = heard.len();

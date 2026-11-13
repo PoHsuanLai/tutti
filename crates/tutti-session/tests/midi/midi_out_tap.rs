@@ -9,7 +9,6 @@
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi;
 use tutti_graph::{EventCapacity, TapAlign, UmpAt};
 use tutti_midi_runtime::MidiOut;
 use tutti_transport::MotionEvent;
@@ -17,6 +16,7 @@ use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiGroup, Ump};
 
 use tutti_session::{EventOutPort, MidiEvent, Session, SessionEvent, UmpOut};
+use tutti_ump::{Message, System};
 
 const RATE: f64 = 48_000.0;
 
@@ -69,7 +69,9 @@ fn render(s: &Session, frames: usize) {
 fn ticks(batch: &[UmpAt]) -> Vec<u32> {
     batch
         .iter()
-        .filter(|(_, ump)| *ump == midi::timing_clock(MidiGroup::FIRST))
+        .filter(|(_, ump)| {
+            *ump == Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock))
+        })
         .map(|(at, _)| at.get())
         .collect()
 }

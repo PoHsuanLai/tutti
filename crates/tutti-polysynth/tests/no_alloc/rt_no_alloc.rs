@@ -22,6 +22,7 @@
 use crate::support::Hand;
 use std::num::NonZeroUsize;
 use tutti_fixtures::midi;
+use tutti_midi_protocol::widen_velocity;
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::MaxBlock;
 use tutti_types::{Hz, Q, SampleRate};
@@ -33,15 +34,14 @@ use tutti_ump::{BendValue, ControlValue};
 
 fn note_on(channel: u8, note: u8, vel: u8) -> Ump {
     midi::note_on(
-        MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
-        tutti_fixtures::midi::wide_velocity(vel),
+        widen_velocity(U7::of(vel)).get(),
     )
 }
 
 fn note_off(channel: u8, note: u8) -> Ump {
-    midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
+    midi::note_off(MidiChannel::of(channel), note, 0)
 }
 
 #[test]
@@ -208,12 +208,12 @@ fn polysynth_every_decoded_message_is_allocation_free() {
         }),
         m2(Voice2::NoteOn {
             note,
-            velocity: NoteVelocity::new(0x8000),
+            velocity: NoteVelocity::CENTER,
             attribute: Attribute::Pitch(60 << 9),
         }),
         m2(Voice2::NoteOn {
             note,
-            velocity: NoteVelocity::new(0x8000),
+            velocity: NoteVelocity::CENTER,
             attribute: Attribute::Reserved { kind: 5, data: 1 },
         }),
         m2(Voice2::PerNotePitchBend {
@@ -557,14 +557,7 @@ fn mono_and_legato_event_paths_are_allocation_free() {
         }
         assert_no_alloc::assert_no_alloc(|| {
             for round in 0..200u8 {
-                let cc = |n: u8, v: u32| {
-                    midi::cc(
-                        MidiGroup::FIRST,
-                        MidiChannel::of(0),
-                        CCNumber::of(n),
-                        v << 25,
-                    )
-                };
+                let cc = |n: u8, v: u32| midi::cc(MidiChannel::of(0), CCNumber::of(n), v << 25);
                 // 60 held, 64 over it, 64 let go: the return to 60.
                 synth.queue_midi(&[
                     note_on(0, 60, 100),
@@ -584,13 +577,8 @@ fn mono_and_legato_event_paths_are_allocation_free() {
                     cc(65, u32::from(round % 2) * 127),
                     cc(68, u32::from(round % 3 == 0) * 127),
                     cc(84, 60),
-                    midi::channel_pressure(
-                        MidiGroup::FIRST,
-                        MidiChannel::of(0),
-                        u32::from(round) << 24,
-                    ),
-                    midi::registered_rpn(
-                        MidiGroup::FIRST,
+                    midi::channel_pressure(MidiChannel::of(0), u32::from(round) << 24),
+                    midi::registered(
                         MidiChannel::of(0),
                         Rpn::new(U7::of(0), U7::of([1, 2, 5][usize::from(round % 3)])),
                         u32::from(round % 128) << 25,
@@ -695,8 +683,7 @@ fn polysynth_mts_is_allocation_free() {
     ] {
         round.extend(message(bytes));
     }
-    round.push(midi::registered_rpn(
-        MidiGroup::FIRST,
+    round.push(midi::registered(
         MidiChannel::of(0),
         Rpn::new(U7::of(0), U7::of(3)),
         1 << 25,

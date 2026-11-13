@@ -382,7 +382,8 @@ impl DeviceInput {
     /// [`Losses::lost`](tutti_graph::Losses::lost). Lock-free and allocation-free, so safe to
     /// call from a driver callback.
     #[inline]
-    pub fn push(&mut self, ump: Ump, arrival: Instant) -> bool {
+    pub fn push(&mut self, ump: impl Into<Ump>, arrival: Instant) -> bool {
+        let ump = ump.into();
         let sent = match self.moment_of(arrival) {
             Some(at) => self.writer.push(at, ump),
             None => self.writer.push(Stamp::NextBlock, ump),

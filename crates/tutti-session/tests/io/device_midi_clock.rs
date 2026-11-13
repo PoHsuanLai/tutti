@@ -4,7 +4,6 @@
 use std::sync::{Arc, Mutex};
 
 use tutti_cpal::{ManualStream, ManualStreamDriver, OutputSpec};
-use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_runtime::MidiOut;
 use tutti_session::{Session, UmpOut};
@@ -91,7 +90,9 @@ fn a_restart_re_rates_the_midi_clock() {
     let ticks = |events: &[(Ump, u64)]| -> f64 {
         let at: Vec<u64> = events
             .iter()
-            .filter(|(ump, _)| *ump == midi::timing_clock(MidiGroup::FIRST))
+            .filter(|(ump, _)| {
+                *ump == Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock))
+            })
             .map(|&(_, at)| at)
             .collect();
         assert!(at.len() > 20, "ticks to measure");

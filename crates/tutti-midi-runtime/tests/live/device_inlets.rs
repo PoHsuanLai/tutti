@@ -9,14 +9,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi::note_on;
+use tutti_fixtures::midi;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey, OutPort,
     Prepare, Shape, Source, Status, TransportPosition, Unforkable,
 };
 use tutti_midi_runtime::{DeviceInlets, DeviceInput, InletChange, NoFreeSlot};
 use tutti_types::{ChannelLayout, Frame, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, Ump};
 
 /// A block clock a test writes by hand, as the engine does each render call.
 struct BlockClock(
@@ -47,7 +47,7 @@ const RATE: f64 = 48_000.0;
 const BLOCK: usize = 512;
 
 fn note(n: u8) -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0x8000)
+    midi::note_on(MidiChannel::FIRST, n, 0x8000)
 }
 
 type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;

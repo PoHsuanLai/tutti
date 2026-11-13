@@ -13,12 +13,13 @@ mod support;
 
 use support::Hand;
 use tutti_fixtures::assert_golden;
-use tutti_fixtures::midi::{self, wide_velocity};
+use tutti_fixtures::midi;
 use tutti_graph::Offset;
+use tutti_midi_protocol::widen_velocity;
 use tutti_sf2::{Bank, SoundFont};
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::Samples;
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7};
+use tutti_ump::{MidiChannel, NoteNumber, NoteVelocity, U7};
 
 /// Path to the committed test SoundFont.
 fn test_soundfont_path() -> PathBuf {
@@ -102,10 +103,10 @@ fn process_honors_frame_offset_within_block() {
     const OFFSETS: [usize; 3] = [16, 32, 48];
 
     let note = |offset: u32| {
-        let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
+        let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
         (
             Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
+            midi::note_on(MidiChannel::FIRST, 60, velocity),
         )
     };
 
@@ -189,10 +190,10 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     const SECOND_OFFSET: u32 = 32;
 
     let note = |key: u8, offset: u32| {
-        let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
+        let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
         (
             Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, velocity),
+            midi::note_on(MidiChannel::FIRST, key, velocity),
         )
     };
 
@@ -278,10 +279,10 @@ fn event_at_last_frame_of_block_still_applies() {
     const LAST: u32 = BLOCK as u32 - 1;
 
     let note = |offset: u32| {
-        let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
+        let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
         (
             Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
+            midi::note_on(MidiChannel::FIRST, 60, velocity),
         )
     };
 
@@ -339,10 +340,10 @@ fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     const BLOCKS: usize = 6;
 
     let note = || {
-        let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
+        let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
         (
             Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity),
+            midi::note_on(MidiChannel::FIRST, 60, velocity),
         )
     };
 
@@ -381,11 +382,11 @@ fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
 #[test]
 fn midi1_boundary_uses_spec_downscalers() {
     use tutti_midi_protocol::{narrow_value, narrow_velocity};
-    assert_eq!(narrow_velocity(NoteVelocity::new(0xFFFF)).get(), 127);
-    assert_eq!(narrow_velocity(NoteVelocity::new(0x8000)).get(), 64); // center → center
-    assert_eq!(narrow_velocity(NoteVelocity::new(0x0000)).get(), 0);
-    assert_eq!(narrow_value(ControlValue::new(0xFFFF_FFFF)).get(), 127);
-    assert_eq!(narrow_value(ControlValue::new(0x8000_0000)).get(), 64); // center → center
+    assert_eq!(narrow_velocity(NoteVelocity::MAX).get(), 127);
+    assert_eq!(narrow_velocity(NoteVelocity::CENTER).get(), 64); // center → center
+    assert_eq!(narrow_velocity(NoteVelocity::MIN).get(), 0);
+    assert_eq!(narrow_value(ControlValue::MAX).get(), 127);
+    assert_eq!(narrow_value(ControlValue::CENTER).get(), 64); // center → center
 }
 
 #[test]
@@ -400,7 +401,7 @@ fn test_note_on_produces_audio() {
     unit.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
 
     let samples = render_samples(&mut unit, 2000);
@@ -421,7 +422,7 @@ fn test_velocity_affects_volume() {
     unit_soft.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(30)),
+        NoteVelocity::new(widen_velocity(U7::of(30)).get()),
     );
     let samples_soft = render_samples(&mut unit_soft, 2000);
     let rms_soft = rms(&samples_soft);
@@ -432,7 +433,7 @@ fn test_velocity_affects_volume() {
     unit_loud.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(127)),
+        NoteVelocity::new(widen_velocity(U7::of(127)).get()),
     );
     let samples_loud = render_samples(&mut unit_loud, 2000);
     let rms_loud = rms(&samples_loud);
@@ -457,7 +458,7 @@ fn test_note_off_stops_sound() {
     unit.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
     let samples_playing = render_samples(&mut unit, 500);
     let rms_playing = rms(&samples_playing);
@@ -493,7 +494,7 @@ fn test_polyphony_multiple_notes() {
     unit_single.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(80)),
+        NoteVelocity::new(widen_velocity(U7::of(80)).get()),
     );
     let samples_single = render_samples(&mut unit_single, 2000);
     let rms_single = rms(&samples_single);
@@ -504,17 +505,17 @@ fn test_polyphony_multiple_notes() {
     unit_chord.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(80)),
+        NoteVelocity::new(widen_velocity(U7::of(80)).get()),
     ); // C
     unit_chord.note_on(
         MidiChannel::of(0),
         NoteNumber::of(64),
-        NoteVelocity::new(wide_velocity(80)),
+        NoteVelocity::new(widen_velocity(U7::of(80)).get()),
     ); // E
     unit_chord.note_on(
         MidiChannel::of(0),
         NoteNumber::of(67),
-        NoteVelocity::new(wide_velocity(80)),
+        NoteVelocity::new(widen_velocity(U7::of(80)).get()),
     ); // G
     let samples_chord = render_samples(&mut unit_chord, 2000);
     let rms_chord = rms(&samples_chord);
@@ -539,17 +540,17 @@ fn test_reset_silences_all_notes() {
     unit.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
     unit.note_on(
         MidiChannel::of(0),
         NoteNumber::of(64),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
     unit.note_on(
         MidiChannel::of(0),
         NoteNumber::of(67),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
 
     // Confirm audio is playing
@@ -586,7 +587,7 @@ fn test_clone_creates_independent_instance() {
     unit.note_on(
         MidiChannel::of(0),
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
     let _ = render_samples(&mut unit, 100);
 
@@ -600,7 +601,7 @@ fn test_clone_creates_independent_instance() {
     clone.note_on(
         MidiChannel::of(0),
         NoteNumber::of(72),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
 
     let samples_original = render_samples(&mut unit, 1000);
@@ -648,7 +649,7 @@ fn a_selected_presets_first_note_on_renders_that_preset() {
     hand.note_on(
         CHANNEL,
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     );
     let out = render_process_blocks(&mut hand, support::BLOCK, 2048 / support::BLOCK, &[]);
     assert!(rms(&out) > 1e-3, "the note sounds: rms {}", rms(&out));

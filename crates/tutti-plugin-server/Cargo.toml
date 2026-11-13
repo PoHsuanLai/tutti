@@ -75,6 +75,7 @@ tutti-au-host = { version = "0.0.1", path = "../tutti-au-host", optional = true 
 tutti-plugin-ipc-ffi = { version = "0.0.1", path = "../tutti-plugin-ipc-ffi" }
 
 [dev-dependencies]
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # The slab's sample bound (`Pod`) on the generic round-trip helper.
 bytemuck = "1"
 # Finds the reference plugins and the plugin-server beside the test binary.

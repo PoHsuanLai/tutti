@@ -36,6 +36,7 @@ parking_lot = "0.13"
 tracing = "0.1"
 
 [dev-dependencies]
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # `fake`: the plugin that implements `Loaded` with no format behind it, which
 # the block-status tests drive through `client_over`.
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["testing"] }

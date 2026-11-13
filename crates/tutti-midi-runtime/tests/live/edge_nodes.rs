@@ -13,23 +13,23 @@ use tutti_types::MaxBlock;
 use crate::common;
 use tutti_graph::{Stamp, UmpAt};
 
-use tutti_fixtures::midi::{
-    continue_msg, m1_cc, note_off, note_on, pitch_bend, registered_rpn, song_position, start,
-    timing_clock,
-};
+use tutti_fixtures::midi;
 use tutti_graph::{
     Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode, EventKind, EventOut, Executor,
     ForkMode, ForkTarget, Io, Node, Offset, Prepare, Shape, Status, TransportChanges,
     TransportPosition,
 };
 use tutti_graph::{IntoNode as _, NodeKey};
-use tutti_midi_protocol::channel_voice;
+use tutti_midi_protocol::{channel_voice, widen_velocity};
 use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, DeviceInlets, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
     MidiIngestNode, MidiInputPorts, SlotCountMismatch,
 };
 use tutti_types::{Beat, Bpm, Frame, SampleRate, Samples};
-use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
+use tutti_ump::{
+    Address, CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, System, U7, U14, Ump,
+    Voice2,
+};
 
 /// The note a channel voice message addresses, either protocol.
 fn note_of(ump: Ump) -> Option<u8> {
@@ -222,11 +222,10 @@ fn at(offset: u32, ump: Ump) -> UmpAt {
 fn note(channel: u8, note: u8, offset: u32) -> UmpAt {
     at(
         offset,
-        note_on(
-            MidiGroup::FIRST,
+        midi::note_on(
             MidiChannel::of(channel),
             note,
-            tutti_fixtures::midi::wide_velocity(100),
+            widen_velocity(U7::of(100)).get(),
         ),
     )
 }
@@ -240,7 +239,7 @@ fn cc_ev(channel: u8, control: CCNumber, value: u8) -> UmpAt {
 fn cc_at(offset: u32, channel: u8, control: CCNumber, value: u8) -> UmpAt {
     at(
         offset,
-        m1_cc(MidiChannel::of(channel), control, U7::of(value)),
+        midi::m1_cc(MidiChannel::of(channel), control, U7::of(value)),
     )
 }
 
@@ -250,7 +249,10 @@ fn cc_at(offset: u32, channel: u8, control: CCNumber, value: u8) -> UmpAt {
 /// 9's on port 9 at 40, the clock on the channelless port at 20.
 #[test]
 fn each_event_leaves_on_its_channels_port() {
-    let clock = at(20, timing_clock(MidiGroup::FIRST));
+    let clock = at(
+        20,
+        Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock)),
+    );
     let wire = Script::new(vec![vec![note(9, 64, 40), note(0, 60, 10), clock]]);
     let (_ed, mut exec, _c, seen) = ingest(Ingest::new(wire), MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
@@ -269,11 +271,10 @@ fn a_groups_channels_leave_on_their_own_ports() {
     let group = |g: u8, channel: u8, n: u8| {
         at(
             0,
-            note_on(
-                MidiGroup::of(g),
-                MidiChannel::of(channel),
+            midi::note_on(
+                Address::new(MidiGroup::of(g), MidiChannel::of(channel)),
                 n,
-                tutti_fixtures::midi::wide_velocity(100),
+                widen_velocity(U7::of(100)).get(),
             ),
         )
     };
@@ -489,7 +490,10 @@ fn a_device_that_lets_go_has_what_it_held_released() {
     for replaced in [false, true] {
         let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(64), Duration::ZERO);
         let device = inlets.open().expect("a free slot");
-        let bend = at(30, pitch_bend(G, MidiChannel::of(0), 0xC000_0000));
+        let bend = at(
+            30,
+            midi::pitch_bend(Address::new(G, MidiChannel::of(0)), 0xC000_0000),
+        );
         let wire = Script::new(vec![
             vec![note(0, 60, 10), cc_at(20, 0, CCNumber::SUSTAIN, 127), bend],
             vec![note(0, 61, 5)],
@@ -578,11 +582,10 @@ fn a_system_reset_ends_its_cables_notes_and_runs_and_is_not_echoed() {
     let reset = at(100, Ump::from(Message::System(G, tutti_ump::System::Reset)));
     let other_note = at(
         15,
-        note_on(
-            g2,
-            MidiChannel::of(0),
+        midi::note_on(
+            Address::new(g2, MidiChannel::of(0)),
             70,
-            tutti_fixtures::midi::wide_velocity(100),
+            widen_velocity(U7::of(100)).get(),
         ),
     );
     let wire = Script::new(vec![vec![
@@ -671,16 +674,11 @@ fn two_devices_notes_merge_on_the_channels_port() {
 #[test]
 fn a_requested_mpe_mode_is_adopted_once() {
     let member = MidiChannel::of(1);
-    let bend = at(0, pitch_bend(MidiGroup::FIRST, member, 0xC000_0000));
+    let bend = at(0, midi::pitch_bend(member, 0xC000_0000));
     let wire = Script::new(vec![
         vec![at(
             0,
-            note_on(
-                MidiGroup::FIRST,
-                member,
-                60,
-                tutti_fixtures::midi::wide_velocity(100),
-            ),
+            midi::note_on(member, 60, widen_velocity(U7::of(100)).get()),
         )],
         vec![bend],
         vec![bend],
@@ -731,8 +729,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
     use tutti_ump::Rpn;
     let range = at(
         0,
-        registered_rpn(
-            MidiGroup::FIRST,
+        midi::registered(
             MidiChannel::of(2),
             Rpn::PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(12).to_rpn_bits(),
@@ -856,12 +853,7 @@ fn a_note_off_has_room_past_the_capacity() {
         cc_ev(2, CCNumber::DATA_ENTRY, 12),
         cc_ev(2, CCNumber::DATA_ENTRY_LSB, 0),
     ]);
-    batch.extend((0..4).map(|k| {
-        at(
-            508 + k,
-            note_off(MidiGroup::FIRST, MidiChannel::of(1), 61 + k as u8, 0),
-        )
-    }));
+    batch.extend((0..4).map(|k| at(508 + k, midi::note_off(MidiChannel::of(1), 61 + k as u8, 0))));
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
     let node = Ingest::new(Script::new(vec![batch])).with_mpe(tutti_fixtures::midi::lower_zone(7));
     let (_ed, mut exec, controls, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
@@ -941,9 +933,9 @@ fn a_start_inside_a_block_clocks_from_its_frame() {
     assert_eq!(
         got,
         vec![
-            (100, start(G)),
-            (100, timing_clock(G)),
-            (1_100, timing_clock(G))
+            (100, Ump::from(Message::System(G, System::Start))),
+            (100, Ump::from(Message::System(G, System::TimingClock))),
+            (1_100, Ump::from(Message::System(G, System::TimingClock)))
         ]
     );
 }
@@ -1056,14 +1048,26 @@ fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
     assert_eq!(
         got,
         vec![
-            (0, song_position(G, LOOP_START)),
-            (0, continue_msg(G)),
-            (0, timing_clock(G)),
-            (1_000, timing_clock(G)),
-            (2_000, timing_clock(G)),
-            (2_400, song_position(G, LOOP_START)),
-            (2_400, timing_clock(G)),
-            (3_400, timing_clock(G)),
+            (
+                0,
+                Ump::from(Message::System(
+                    G,
+                    System::SongPosition(U14::of(LOOP_START))
+                ))
+            ),
+            (0, Ump::from(Message::System(G, System::Continue))),
+            (0, Ump::from(Message::System(G, System::TimingClock))),
+            (1_000, Ump::from(Message::System(G, System::TimingClock))),
+            (2_000, Ump::from(Message::System(G, System::TimingClock))),
+            (
+                2_400,
+                Ump::from(Message::System(
+                    G,
+                    System::SongPosition(U14::of(LOOP_START))
+                ))
+            ),
+            (2_400, Ump::from(Message::System(G, System::TimingClock))),
+            (3_400, Ump::from(Message::System(G, System::TimingClock))),
         ]
     );
 }

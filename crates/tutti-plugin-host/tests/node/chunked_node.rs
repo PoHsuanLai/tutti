@@ -16,11 +16,11 @@ use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::main_thread;
-use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{
     Env, Event, Harmony, Node, Offset, ParamRamp, PlayClock, TransportChanges, TransportPosition,
 };
+use tutti_midi_protocol::widen_velocity;
 use tutti_plugin_host::{InProcClient, NodeControls, PluginNode, load_client};
 use tutti_plugin_types::{
     AudioBufferMut, BusRole, ChannelLayout, ChannelTopology, ContentScale, Control, Controller,
@@ -32,7 +32,7 @@ use tutti_plugin_types::{
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
 use tutti_types::{Beat, Bpm, Frame, SampleRate};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Message, MidiChannel, MidiGroup, NoteNumber, U7, Voice2};
 
 const SR: SampleRate = SampleRate::SR_48K;
 /// Quarter notes per frame at 120 BPM and 48 kHz.
@@ -433,11 +433,9 @@ fn at(frame: usize, len: usize) -> Offset {
 fn note_on(frame: usize, len: usize) -> Event {
     Event::midi(
         at(frame, len),
-        midi::note_on(
-            MidiGroup::FIRST,
+        Message::midi2(
             MidiChannel::of(1),
-            60,
-            midi::wide_velocity(100),
+            Voice2::note_on(NoteNumber::of(60), widen_velocity(U7::of(100))),
         ),
     )
 }

@@ -7,13 +7,12 @@ use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
 use crate::common::{Seen, blocks, offline, tap};
-use tutti_fixtures::midi;
 use tutti_graph::{Cx, Event, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status};
 use tutti_midi_runtime::{MIDI_INPUT_PORTS, MidiInputPorts, TimedMidiEvent};
 use tutti_session::{MidiRouteRule, Session, SessionNode};
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, BeatDuration, ChannelLayout, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Ump, Voice2};
 
 const MF: u16 = 0x8000;
 /// Stands in for the hardware input: sends what it is mailed on port 0.
@@ -70,12 +69,18 @@ fn retarget_with_a_held_clip_note() {
             [
                 TimedMidiEvent::new(
                     Beat(1.0 / 3.0),
-                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, MF),
+                    Message::midi2(
+                        MidiChannel::FIRST,
+                        Voice2::note_on(NoteNumber::of(60), NoteVelocity::new(MF)),
+                    ),
                 )
                 .unwrap(),
                 TimedMidiEvent::new(
                     Beat(1.0 / 3.0) + BeatDuration(8.0),
-                    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+                    Message::midi2(
+                        MidiChannel::FIRST,
+                        Voice2::note_off(NoteNumber::of(60), NoteVelocity::MIN),
+                    ),
                 )
                 .unwrap(),
             ],

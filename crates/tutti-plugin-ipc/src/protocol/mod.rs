@@ -210,12 +210,14 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use tutti_fixtures::midi;
+    use tutti_midi_protocol::{widen_value, widen_velocity};
     use tutti_plugin_types::{
         ChordValue, Load, NoteExpressionIntValue, NoteExpressionTextValue, ScaleValue, WireMidi,
     };
     use tutti_types::SampleRate;
-    use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2};
+    use tutti_ump::{CCNumber, Message, MidiChannel, U7, Ump, Voice2};
+
+    use tutti_fixtures::midi;
 
     /// Every preset frame survives the wire in both directions.
     ///
@@ -608,20 +610,14 @@ mod tests {
         let midi_out: MidiEventVec = [
             at(
                 0,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    60,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 64,
                 midi::cc(
-                    MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    tutti_fixtures::midi::wide_value(64),
+                    widen_value(U7::of(64)).get(),
                 ),
             ),
         ]
@@ -737,29 +733,18 @@ mod tests {
         let midi_events: MidiEventVec = [
             at(
                 0,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    60,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 128,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    64,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 64, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 256,
                 midi::cc(
-                    MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    tutti_fixtures::midi::wide_value(64),
+                    widen_value(U7::of(64)).get(),
                 ),
             ),
         ]

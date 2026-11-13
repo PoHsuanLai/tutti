@@ -47,6 +47,7 @@ thiserror = "2"
 tracing = "0.1"
 
 [dev-dependencies]
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tempfile = "3"
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }

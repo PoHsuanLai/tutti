@@ -3,8 +3,9 @@ use super::*;
 use crate::endpoints::MidiEndpoints;
 use std::sync::mpsc;
 use std::time::Duration;
+use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_ump::{DiscoveryFilter, Message, MidiChannel, MidiGroup, Protocol, Stream, UmpVersion};
+use tutti_ump::{DiscoveryFilter, Message, MidiChannel, Protocol, Stream, Ump, UmpVersion};
 
 /// **A packet sent to the destination reaches its callback, every message of
 /// it, in order** (M2-104 §7.1: a UMP Stream message has no MIDI 1.0 form, so
@@ -40,7 +41,7 @@ fn a_packet_sent_to_the_destination_reaches_its_callback() {
             stream_configuration: true,
         },
     }));
-    let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
+    let note = midi::note_on(MidiChannel::of(3), 60, 0x8000);
     assert_eq!(
         out.queue(&[(Offset::ZERO, discovery), (Offset::ZERO, note)]),
         2

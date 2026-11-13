@@ -55,7 +55,7 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
     let mut live = s.midi().input(target).expect("the take left the keys");
     let _ = s.update();
     let (c, k) = (MidiChannel::of(2), NoteNumber::of(60));
-    live.note_on(Frame::new(600), c, k, NoteVelocity::new(0x8000))
+    live.note_on(Frame::new(600), c, k, NoteVelocity::CENTER)
         .unwrap();
     live.note_off(Frame::new(900), c, k).unwrap();
     blocks(&s, 3);
@@ -64,11 +64,8 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
     assert_eq!(
         got,
         [
-            (
-                Frame::new(600),
-                midi::note_on(MidiGroup::FIRST, c, 60, 0x8000)
-            ),
-            (Frame::new(900), midi::note_off(MidiGroup::FIRST, c, 60, 0)),
+            (Frame::new(600), midi::note_on(c, 60, 0x8000)),
+            (Frame::new(900), midi::note_off(c, 60, 0)),
         ]
     );
     assert_eq!(take.drain().count(), 0, "a second drain is empty");
@@ -95,7 +92,7 @@ fn a_take_of_an_instrument_records_what_its_handle_plays() {
     let (c, k) = (MidiChannel::of(2), NoteNumber::of(60));
     synth
         .keys_mut()
-        .note_on(Frame::new(600), c, k, NoteVelocity::new(0x8000))
+        .note_on(Frame::new(600), c, k, NoteVelocity::CENTER)
         .unwrap();
     synth.keys_mut().note_off(Frame::new(900), c, k).unwrap();
     blocks(&s, 3);
@@ -103,11 +100,8 @@ fn a_take_of_an_instrument_records_what_its_handle_plays() {
     assert_eq!(
         got,
         [
-            (
-                Frame::new(600),
-                midi::note_on(MidiGroup::FIRST, c, 60, 0x8000)
-            ),
-            (Frame::new(900), midi::note_off(MidiGroup::FIRST, c, 60, 0)),
+            (Frame::new(600), midi::note_on(c, 60, 0x8000)),
+            (Frame::new(900), midi::note_off(c, 60, 0)),
         ]
     );
 }

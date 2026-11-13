@@ -15,7 +15,7 @@ use tutti_ump::{
 const A: Address = Address::first(MidiChannel::FIRST);
 
 fn cc_on(address: Address, controller: CCNumber, value: u8) -> Ump {
-    Message::control_change(address, controller, U7::of(value)).into()
+    Message::midi1(address, Voice1::control_change(controller, U7::of(value))).into()
 }
 
 fn cc(controller: CCNumber, value: u8) -> Ump {

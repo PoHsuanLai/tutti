@@ -356,7 +356,7 @@ fn control(group: MidiGroup, channel: MidiChannel, controller: CCNumber, offset:
             Address { group, channel },
             Voice2::ControlChange {
                 controller,
-                value: ControlValue::new(0),
+                value: ControlValue::MIN,
             },
         )
         .into(),

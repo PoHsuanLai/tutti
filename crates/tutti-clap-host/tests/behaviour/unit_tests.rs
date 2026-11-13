@@ -13,11 +13,10 @@ use tutti_clap_host::{
     ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, NoteExpressionType,
     OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
 };
-use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_midi_protocol::{channel_voice, midi1};
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2};
+use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, NoteNumber, Voice2};
 
 /// A block long enough for every offset these tests use.
 const BLOCK: usize = 1_000;
@@ -38,6 +37,9 @@ use crate::support;
 use support::main_thread;
 #[allow(unused_imports)]
 use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputStreamRaw};
+use tutti_fixtures::midi;
+use tutti_midi_protocol::{widen_bend, widen_value};
+use tutti_ump::{U7, U14};
 
 // ── MIDI conversion via `(Offset, Ump)` and `WireMidi` ──
 //
@@ -49,10 +51,7 @@ use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputS
 #[test]
 fn test_note_on_roundtrip() {
     // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
-    let event = (
-        at(10),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, fx::MID_VELOCITY),
-    );
+    let event = (at(10), midi::note_on(MidiChannel::of(3), 60, 0x8000));
     let clap = first(&event).expect("NoteOn should convert");
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
@@ -66,10 +65,7 @@ fn test_note_on_roundtrip() {
 /// NoteOff maps to CLAP's typed `note` event (NoteOff variant).
 #[test]
 fn test_note_off_roundtrip() {
-    let event = (
-        at(20),
-        fx::note_off(MidiGroup::FIRST, MidiChannel::of(5), 72, 0x4000),
-    );
+    let event = (at(20), midi::note_off(MidiChannel::of(5), 72, 0x4000));
     let clap = first(&event).expect("NoteOff should convert");
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
@@ -85,11 +81,10 @@ fn test_note_off_roundtrip() {
 fn test_control_change_roundtrip() {
     let event = (
         at(5),
-        fx::cc(
-            MidiGroup::FIRST,
+        midi::cc(
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
-            tutti_fixtures::midi::wide_value(100),
+            widen_value(U7::of(100)).get(),
         ),
     );
     let clap = first(&event).expect("CC should convert");
@@ -111,11 +106,7 @@ fn test_pitch_bend_roundtrip() {
     // MIDI-1 center = 8192 (0x2000).
     let event = (
         at(0),
-        fx::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            tutti_fixtures::midi::wide_bend(8192),
-        ),
+        midi::pitch_bend(MidiChannel::FIRST, widen_bend(U14::of(8192)).get()),
     );
     let clap = first(&event).expect("PitchBend should convert");
     match clap {
@@ -132,10 +123,7 @@ fn test_pitch_bend_roundtrip() {
 /// ProgramChange is a 2-byte MIDI-1 event, passed through as generic `Midi`.
 #[test]
 fn test_program_change_roundtrip() {
-    let event = (
-        at(100),
-        fx::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None),
-    );
+    let event = (at(100), midi::program_change(MidiChannel::of(9), 42, None));
     let clap = first(&event).expect("ProgramChange should convert");
     match clap {
         ClapEvent::Midi(e) => {
@@ -151,14 +139,8 @@ fn test_program_change_roundtrip() {
 #[test]
 fn test_input_event_list_add_midi_counts_correctly() {
     let mut list = InputEventList::new();
-    list.add_midi(&(
-        at(0),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-    ));
-    list.add_midi(&(
-        at(100),
-        fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-    ));
+    list.add_midi(&(at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)));
+    list.add_midi(&(at(100), midi::note_off(MidiChannel::FIRST, 60, 0)));
 
     let raw = list.as_raw();
     unsafe {
@@ -361,18 +343,9 @@ fn test_output_event_list_push_midi_cc() {
 #[test]
 fn test_input_event_list_sort_by_time() {
     let mut list = InputEventList::new();
-    list.add_midi(&(
-        at(200),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-    ));
-    list.add_midi(&(
-        at(50),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000),
-    ));
-    list.add_midi(&(
-        at(100),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000),
-    ));
+    list.add_midi(&(at(200), midi::note_on(MidiChannel::FIRST, 60, 0x8000)));
+    list.add_midi(&(at(50), midi::note_on(MidiChannel::FIRST, 64, 0x5000)));
+    list.add_midi(&(at(100), midi::note_on(MidiChannel::FIRST, 67, 0x7000)));
     list.sort_by_time();
 
     let events = list.events();

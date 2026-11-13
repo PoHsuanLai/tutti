@@ -1,5 +1,5 @@
 //! The feedback delay network as a [`FamilyNode`], and [`ReverbKind`], which
-//! spawns the node of either reverb (design 022 step 1c).
+//! spawns the node of either reverb.
 
 use tutti_dsp::{FdnControls, FdnFamily, FreeverbControls, FreeverbFamily, NetworkCapacity};
 use tutti_types::{Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};

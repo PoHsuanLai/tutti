@@ -1070,7 +1070,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   grow has capacity `()`; `Effort` and `Cadence` (an enum: `Block`, or
   `Stream { period, offset }` on the stream clock, the only block independent one;
   `Cadence::BLOCK` and `Cadence::stream(n)` are the constructors) are the
-  engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
+  engineering that sizes and schedules it), the reverb model (`Network`,
   a `System` and an `Lti`, with `NetworkCapacity` and `FreeverbFamily`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
   a realization must follow; a `Family` writes its member in place, `member_into`, because a

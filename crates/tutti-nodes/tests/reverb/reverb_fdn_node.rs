@@ -1,4 +1,4 @@
-//! `FamilyNode<FdnFamily>` as the graph runs it (design 022 step 1c): its ports
+//! `FamilyNode<FdnFamily>` as the graph runs it: its ports
 //! (the freeze only where the design can freeze), its tail (the network's own,
 //! unbounded while frozen), the freeze itself, a modulated decay, and
 //! `ReverbKind`. Every figure is from the network's own queries or the

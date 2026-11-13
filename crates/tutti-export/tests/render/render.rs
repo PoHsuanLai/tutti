@@ -1411,8 +1411,8 @@ impl Node for Narrowing {
     fn reset(&mut self) {}
 }
 
-/// **Export spends a node's ceiling, not what it reports each block** (doc
-/// 022 section 12.4's fallback). `RenderConfig::tail` is a frame count fixed
+/// **Export spends a node's ceiling, not what it reports each block** (the
+/// fallback when a tail is only known per block). `RenderConfig::tail` is a frame count fixed
 /// before the render (`RenderPlan::new` sizes `output_length` and `total`
 /// from it, and the sink, the progress total, the resampler and the
 /// normalized two-pass render all read it), so a tail the graph reports

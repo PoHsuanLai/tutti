@@ -301,7 +301,7 @@ the interpreter.
   `hrtf_render.rs` `the_tail_is_the_ring_out_after_the_latency`, and
   `tutti-export`'s `a_limiter_adds_no_tail_to_the_render` and
   `the_tail_extends_the_render_by_the_ring_out`.
-  **`Shape::tail` is a ceiling, and a node may narrow it per block** (doc 022
+  **`Shape::tail` is a ceiling, and a node may narrow it per block** (the retired reverb design
   step 0b). A node whose ring-out follows its params (a reverb's RT60) calls
   `Io::report_tail(Tail)`: one store into its unit's executor record
   (`Unit::reported`, beside `quiet` and `last_quiet`), a `Cell` on the call's
@@ -332,7 +332,7 @@ the interpreter.
   pooled). **Export still spends the ceiling**: `RenderConfig::tail` is a
   frame count fixed before the render, which the plan, the sink, progress,
   the resampler and the normalized two-pass render all read, so the tail a
-  graph reports at the programme's end (doc 022 section 12.4's second
+  graph reports at the programme's end (the retired reverb design's second
   phase) needs a config mode across `tutti-export`, `tutti-session` and
   `bevy-tutti`. That is not built; `tutti-export`'s
   `export_spends_the_ceiling_of_a_node_that_narrows_its_tail` pins the
@@ -10494,7 +10494,7 @@ Decided 2026-11-08 (SoundFont stage 3b). The reverb and chorus left
   old, so such a config declares `Tail::Finite(max_delay)`; any other config is
   `Tail::Unknown`, as before.
 - **Reverb** is `FreeverbNode::general_midi()`, a `DesignNode<FreeverbDesign>`
-  (doc 022 step 1b) over `tutti_dsp::Freeverb` (the Freeverb of rustysynth, MIT
+  (the retired reverb design) over `tutti_dsp::Freeverb` (the Freeverb of rustysynth, MIT
   header kept in `tutti-dsp`, the `Realization` of its design): mono in, stereo wet
   out, its controls fixed at room 0.5 and damping 0.5, a tail that is the
   network's own to -60 dB (it parks and cuts there), `Moderate` at about 18 ns

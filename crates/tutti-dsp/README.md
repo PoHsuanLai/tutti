@@ -41,7 +41,7 @@ ramps and the graph shape. Here they take plain typed values per call.
   on the same stream grid and clock, its member `Lti` frozen at a sweep position, its tail
   `Ring::Unbounded`).
 - **Waveshaping** — `ShapeKind`, six memoryless curves with block kernels.
-- **Reverb** — the reverb model of design 022, a `Network` with analytic queries
+- **Reverb** — the reverb model, a `Network` with analytic queries
   (RT60, tail, stability, densities), and two families over it: `FreeverbFamily` and
   `FdnFamily`, the feedback delay network.
 - **Spatial** — vector base amplitude panning (`SpeakerLayout`, `VbapKernel`) and the

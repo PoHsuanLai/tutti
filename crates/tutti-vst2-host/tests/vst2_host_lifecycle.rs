@@ -13,6 +13,7 @@
 //!   from inside the setter;
 //! - pin and parameter counts are read after `effOpen`;
 //! - `audioMasterCanDo` answers what the host supports;
+//! - the plugin's queries of the host (vendor strings, latencies) and its editor's edits;
 //! - `effEditIdle` reaches an open editor;
 //! - editor keys reach an open editor, and its answer is reported;
 //! - a speaker arrangement is proposed to a suspended plugin and read back;
@@ -26,7 +27,7 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
     ContentScale, Control, Controller, EditorWindow, KeyEvent, KeyModifiers, KeyPhase, KeyUse,
-    NamedKey, Request,
+    NamedKey, Normalized, ParamEdit, ParamId, Request,
 };
 use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -437,12 +438,107 @@ fn can_do_answers_reach_the_plugin() {
     assert_eq!(ask("receiveVstEvents"), 1);
     assert_eq!(ask("receiveVstMidiEvent"), 1);
     assert_eq!(ask("sizeWindow"), 1);
-    assert_eq!(ask("supplyIdle"), -1);
     assert_eq!(ask("acceptIOChanges"), 1);
     assert_eq!(ask("startStopProcess"), 1);
     assert_eq!(ask("receiveVstSysexEvent"), 1);
     assert_eq!(ask("sendVstMidiEventFlagIsRealtime"), 0);
+    assert_eq!(ask("supplyIdle"), -1);
     assert_eq!(ask("a string no host knows"), 0);
+}
+
+// ---------------------------------------------------------------------------
+// What a plugin asks of the host
+// ---------------------------------------------------------------------------
+
+// The `audioMaster` opcodes asked below, as the SDK numbers them.
+const MASTER_GET_INPUT_LATENCY: i32 = 18;
+const MASTER_GET_OUTPUT_LATENCY: i32 = 19;
+const MASTER_GET_VENDOR_STRING: i32 = 32;
+const MASTER_GET_PRODUCT_STRING: i32 = 33;
+const MASTER_GET_VENDOR_VERSION: i32 = 34;
+
+fn ask_host(opcode: i32) -> isize {
+    probe_call(b"tutti_vst2_probe_ask_host\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(i32) -> isize = unsafe { std::mem::transmute(*sym) };
+        f(opcode)
+    })
+}
+
+fn ask_host_string(opcode: i32) -> (isize, String) {
+    let mut buffer = [0 as std::os::raw::c_char; 64];
+    let answer = probe_call(b"tutti_vst2_probe_ask_host_string\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: unsafe extern "C" fn(i32, *mut std::os::raw::c_char) -> isize =
+            unsafe { std::mem::transmute(*sym) };
+        // SAFETY: `buffer` is writable for the 64 bytes the opcode's contract gives.
+        unsafe { f(opcode, buffer.as_mut_ptr()) }
+    });
+    // SAFETY: the host NUL-terminates what it writes into the zeroed buffer.
+    let text = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+    (answer, text.to_string_lossy().into_owned())
+}
+
+/// A plugin asking who the host is reads "Tutti" and "Tutti VST2 Host", version 1, and the
+/// strings are the ones the host wrote, not a placeholder of the bindings.
+#[test]
+fn the_host_names_itself_to_a_plugin_that_asks() {
+    let _guard = lock_probe();
+    let _instance = load(512);
+
+    assert_eq!(
+        ask_host_string(MASTER_GET_VENDOR_STRING),
+        (1, "Tutti".into())
+    );
+    assert_eq!(
+        ask_host_string(MASTER_GET_PRODUCT_STRING),
+        (1, "Tutti VST2 Host".into())
+    );
+    assert_eq!(ask_host(MASTER_GET_VENDOR_VERSION), 1);
+}
+
+/// The host reports no input or output latency of its own (`audioMasterGetInputLatency` and
+/// `GetOutputLatency` answer 0): the engine's delay compensation is applied outside the
+/// plugin, and a plugin told another figure would compensate twice.
+#[test]
+fn the_host_reports_no_io_latency_of_its_own() {
+    let _guard = lock_probe();
+    let _instance = load(512);
+
+    assert_eq!(ask_host(MASTER_GET_INPUT_LATENCY), 0);
+    assert_eq!(ask_host(MASTER_GET_OUTPUT_LATENCY), 0);
+}
+
+/// A knob turned in the plugin's own editor is reported as the gesture it is: begin, the
+/// value, end, in the order the plugin made the calls, for the parameter it named.
+#[test]
+fn an_editor_gesture_is_reported_in_order() {
+    let _guard = lock_probe();
+    let mut instance = load(512);
+    let mut drained = Vec::new();
+    instance
+        .loaded_mut()
+        .take_reported_edits(&main_thread(), &mut drained);
+    drained.clear();
+
+    probe_call(b"tutti_vst2_probe_fire_edit\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(i32, f32) = unsafe { std::mem::transmute(*sym) };
+        f(2, 0.25);
+    });
+
+    instance
+        .loaded_mut()
+        .take_reported_edits(&main_thread(), &mut drained);
+    let id = ParamId::new(2);
+    assert_eq!(
+        drained,
+        [
+            ParamEdit::Begin(id),
+            ParamEdit::change(id, Normalized::of(0.25)),
+            ParamEdit::End(id),
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -467,10 +563,12 @@ fn editor_idle_reaches_an_open_editor() {
 
     // The probe's editor never touches the parent.
     let parent = tutti_fixtures::StandInWindow.handle();
-    instance
+    let size = instance
         .loaded_mut()
         .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
         .expect("the probe opens");
+    // `effEditGetRect` is the probe's 320 by 240, read before `effEditOpen`.
+    assert_eq!((size.width, size.height), (320, 240));
     instance.loaded_mut().editor_idle(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());

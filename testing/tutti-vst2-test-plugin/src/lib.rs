@@ -166,6 +166,17 @@ impl PluginParameters for ProbeParameters {
         ["dB", "Hz", "%", "ms"][(index as usize) % 4].to_string()
     }
 
+    /// Takes the text as the new value when a test enabled it, and declines otherwise.
+    fn string_to_parameter(&self, index: i32, text: String) -> bool {
+        if !switches::accept_string_to_parameter() {
+            return false;
+        }
+        match text.trim().parse::<f32>() {
+            Ok(value) => self.set_parameter(index, value),
+            Err(_) => false,
+        }
+    }
+
     fn get_parameter_text(&self, index: i32) -> String {
         match self.get_parameter(index) {
             Some(v) => format!("{v:.3}"),

@@ -41,7 +41,7 @@
 //! The three no-alloc tests run against the shared test plugin
 //! (`testing/tutti-shared-plugin`) registered as an Audio Unit, because its
 //! render allocates nothing: an allocation under the guard is the host's. The
-//! global allocator is swapped for `AllocDisabler` binary-wide and an allocation
+//! binary's global allocator is `AllocDisabler` (in `main.rs`) and an allocation
 //! in a guarded region **aborts the process**, so nextest (one process per test)
 //! reports an abort as the failure of that case. The unit is built by the same
 //! `cargo` invocation as the tests; a missing one is a panic, never a skip.
@@ -49,17 +49,14 @@
 //! ## Running
 //!
 //! ```bash
-//! cargo nextest run -p tutti-au-host --test au_offline
+//! cargo nextest run -p tutti-au-host --test render
 //! ```
 //!
 //! A missing corpus unit **fails** rather than skipping — see `support/corpus.rs`.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::Mutex;
 
-mod support;
-use support::corpus::{
+use crate::support::corpus::{
     DELAY, ENFORCES_RENDER_QUALITY_RANGE, IMPLEMENTS_PROCESS_MULTIPLE, PARAM_ERR, TOO_MANY_FRAMES,
     UNIMP_ERR, WITH_IN_PLACE, WITH_OFFLINE_RENDER, WITH_PUSH_RENDER, WITH_RENDER_QUALITY,
     WITHOUT_IN_PLACE, WITHOUT_OFFLINE_RENDER, WITHOUT_PUSH_RENDER, WITHOUT_RENDER_QUALITY,
@@ -443,7 +440,7 @@ fn an_out_of_range_render_quality_is_refused_by_the_host() {
     );
 
     // AUMatrixReverb: the non-enforcing case, which is the majority.
-    let lax = support::corpus::MATRIX_REVERB.open(RATE, BLOCK);
+    let lax = crate::support::corpus::MATRIX_REVERB.open(RATE, BLOCK);
     let st = unsafe { raw_set_render_quality(lax.raw_unit(), 999) };
     let read_back = lax.render_quality().unwrap();
     assert_eq!(
@@ -787,7 +784,7 @@ fn process_multiple_is_unimplemented_across_the_corpus() {
 #[test]
 fn a_real_multi_element_unit_still_refuses_process_multiple() {
     let _g = lock();
-    let mixer = support::corpus::MULTI_CHANNEL_MIXER;
+    let mixer = crate::support::corpus::MULTI_CHANNEL_MIXER;
     let mut au = mixer.open(RATE, BLOCK);
     let elements = au.bus_count(tutti_au_host::BusDirection::Input);
     assert!(
@@ -1040,13 +1037,6 @@ fn unfed_channels_and_short_sources_are_zeroed() {
 }
 
 // ------------------------------------------------------------------ no-alloc
-
-// The `assert_no_alloc` checks are inert unless `AllocDisabler` is this binary's
-// global allocator — the `#[cfg(test)]` declaration in `src/lib.rs` does not
-// apply to integration tests. Declared here for the same reason
-// `au_process_no_alloc.rs` declares its own.
-#[global_allocator]
-static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 /// Block size the no-alloc tests render at — small, so a per-block allocation has
 /// the shortest possible period in which to hide.

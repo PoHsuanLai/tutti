@@ -21,7 +21,6 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
-use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{MaxBlock, Samples};
@@ -29,16 +28,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 
-#[path = "support/active.rs"]
-mod active;
-
-use active::{Active, ActiveExt};
-
-// Not redundant with `src/lib.rs`: that declaration is `#[cfg(test)]`, which
-// covers unit tests only, not integration-test binaries. Without this the
-// `assert_no_alloc` gates below are silent no-ops that pass unconditionally.
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
+use crate::active::{self, Active, ActiveExt};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;

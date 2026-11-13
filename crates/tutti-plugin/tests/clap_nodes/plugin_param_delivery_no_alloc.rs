@@ -12,21 +12,12 @@
 
 #![cfg(feature = "clap")]
 
-use assert_no_alloc::AllocDisabler;
 use tutti_types::MaxBlock;
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
-
-#[path = "support/clap_probe.rs"]
-mod clap_probe;
-#[path = "support/param_probe.rs"]
-mod param_probe;
 
 use std::time::Duration;
 
-use clap_probe::Rig;
-use param_probe::{knobs, load_param_probe};
+use crate::clap_probe::Rig;
+use crate::param_probe::{knobs, load_param_probe};
 use tutti_fixtures::machine_lock;
 use tutti_graph::{Prepare, TransportChanges, TransportPosition};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};

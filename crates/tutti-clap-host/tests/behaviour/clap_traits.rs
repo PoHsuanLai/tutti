@@ -7,10 +7,9 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-mod support;
-use support::main_thread;
+use crate::support::main_thread;
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_clap_host::{ClapLoaded, ClapProcessor, LoadOptions};
 use tutti_clap_test_plugin::params_state::probe_params;
 use tutti_clap_test_plugin::{
@@ -21,9 +20,6 @@ use tutti_plugin_types::{
     PluginError, PluginIo, PluginTail, Prepare, ProcessContext, ProcessOutput, Processor,
     SampleFormat, SampleRate, Samples,
 };
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 

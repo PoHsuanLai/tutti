@@ -69,6 +69,27 @@ impl Au {
         Ok(Self::of(AuLoaded::new_with_config(component, config)?))
     }
 
+    /// The shared test plugin's Audio Unit at `rate`/`block`, loaded the way a
+    /// host loads an installed unit and not initialized.
+    ///
+    /// # Panics
+    ///
+    /// When the unit does not load or refuses the stream configuration.
+    pub fn shared(rate: SampleRate, block: u32) -> Self {
+        let loaded = AuLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::au_bundle(),
+            &tutti_plugin_types::Load::new().plugin(tutti_shared_plugin::AU_ID),
+        )
+        .expect("the shared AU loads");
+        let mut au = Self::of(loaded);
+        au.set_sample_rate(rate)
+            .expect("the shared AU takes the rate");
+        au.set_block_size(block)
+            .expect("the shared AU takes the block size");
+        au
+    }
+
     /// A unit from a scan result, not initialized.
     pub fn from_info(
         info: &AuComponentInfo,

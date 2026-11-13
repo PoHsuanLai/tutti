@@ -814,10 +814,10 @@ mod embed_sequence_tests {
     ///
     /// The hazard is a missing precondition, not a wrong call sequence: the
     /// vtable calls below are correct *once `create()` has run*. CLAP orders
-    /// every `clap_plugin_gui` method after `create`, and plugins check —
-    /// TAL-Reverb-4 prints `[clap-plugin HOST-MISBEHAVING]
-    /// clap_plugin_gui.can_resize() was called without a prior call to
-    /// clap_plugin_gui.create()` if the guard tests only the extension pointer.
+    /// every `clap_plugin_gui` method after `create`, and plugins check,
+    /// reporting `clap_plugin_gui.can_resize() was called without a prior call
+    /// to clap_plugin_gui.create()` if the guard tests only the extension
+    /// pointer.
     #[test]
     fn capability_query_reads_both_gui_fns() {
         let mut order: Vec<&'static str> = Vec::new();

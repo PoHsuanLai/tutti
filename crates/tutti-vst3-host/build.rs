@@ -137,15 +137,10 @@ fn platform_sources() -> &'static [&'static str] {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=VST3_SDK_DIR");
-    println!("cargo:rerun-if-env-changed=VST3_SAMPLE_PLUGIN_DIR");
 
     if std::env::var_os("CARGO_FEATURE_CONFORMANCE").is_none() {
         return;
     }
-
-    // Forward the sample-plugin dir to the test, empty if unset.
-    let plugin_dir = std::env::var("VST3_SAMPLE_PLUGIN_DIR").unwrap_or_default();
-    println!("cargo:rustc-env=VST3_SAMPLE_PLUGIN_DIR={plugin_dir}");
 
     let sdk = resolve_sdk();
 

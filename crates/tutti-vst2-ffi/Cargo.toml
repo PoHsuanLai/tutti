@@ -9,8 +9,8 @@ description = "VST 2.4 host FFI: the ABI types, the plugin loader and the audioM
 readme = "README.md"
 keywords = ["vst", "vst2", "plugin"]
 license = "MIT"
-homepage = "https://github.com/PoHsuanLai/Tutti"
-repository = "https://github.com/PoHsuanLai/Tutti"
+homepage = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/PoHsuanLai/tutti"
 authors = [
     "Marko Mijalkovic <marko.mijalkovic97@gmail.com>",
     "Boscop",

@@ -364,7 +364,7 @@ fn convolver_addresses_nothing() {
 fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32) {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let lfo = LfoNode::new(LfoShape::Sine)
-        .with_frequency(Hz(1.0))
+        .with_rate(Hz(1.0))
         .with_depth(Depth::of(0.25));
     let (n, params) = g.add_with_controls(lfo);
     g.connect_output(n, 0, 0);
@@ -668,6 +668,45 @@ fn a_chorus_rate_lane_below_its_range_is_held_at_the_floor() {
             "frame {n}: a delay of {got} frames, the 0.01 Hz sweep has {want}"
         );
     }
+}
+
+/// **An `LfoNode` reads a driven depth per frame.** A square wave (full scale
+/// for the first half of its 1 Hz cycle) at depth 0.25, its depth port driven
+/// by a one-frame pulse to 1 at frame 37 and back to 0 at frame 38, in one
+/// 128-frame block: the output is the depth there, so frame 37 is 1 and frame
+/// 38 is 0. A node that read the port once a block would give every frame the
+/// same value.
+#[test]
+fn an_lfo_reads_a_driven_depth_per_frame() {
+    use tutti_graph::contract::ParamPulse;
+    use tutti_types::{Frame, UnitAddr};
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let lfo = LfoNode::new(LfoShape::Square)
+        .with_rate(Hz(1.0))
+        .with_depth(Depth::of(0.25));
+    let (n, _) = g.add_with_controls(lfo);
+    g.connect_output(n, 0, 0);
+    let pulse = g.add(Unforkable(ParamPulse::new(
+        Frame::new(37),
+        UnitAddr::first(UnitParam::Depth),
+        1.0,
+    )));
+    g.spec_mut().connect_param(
+        ParamIn {
+            node: n,
+            param: UnitParam::Depth.into(),
+        },
+        EventOut {
+            node: pulse,
+            port: 0,
+        },
+    );
+    let mut r = g
+        .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(128))))
+        .expect("builds");
+    let out = r.render(128).swap_remove(0);
+    assert_eq!(out[37], 1.0, "the pulse's frame");
+    assert_eq!(out[38], 0.0, "the frame after it");
 }
 
 /// A low shelf at +12 dB held by a lane for 512 frames of DC, then the lane's

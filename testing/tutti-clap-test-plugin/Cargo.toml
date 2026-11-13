@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Reference CLAP plugin used as a host-conformance probe in tutti-clap-host tests"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+repository = "https://github.com/PoHsuanLai/tutti"
 publish = false
 
 # A real loadable .clap binary (bare dylib) the host dlopens. It records

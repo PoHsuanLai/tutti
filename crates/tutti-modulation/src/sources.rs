@@ -6,7 +6,7 @@
 //! (the audio or the MIDI that feeds their node) is the host's to wire, keyed
 //! by whatever the host keys its nodes by, so it is not here.
 
-use tutti_types::{BeatDuration, Hz, PhaseIncrement, Seconds};
+use tutti_types::{BeatsPerCycle, Hz, PhaseIncrement, Seconds};
 
 use crate::{Adsr, Clock, LfoShape, Source, Waveform};
 
@@ -15,14 +15,14 @@ use crate::{Adsr, Clock, LfoShape, Source, Waveform};
 pub enum LfoRate {
     /// One cycle per this many beats: bar-locked, follows seeks, holds while
     /// the transport is stopped.
-    Beats(BeatDuration),
+    Beats(BeatsPerCycle),
     /// Cycles per second on the graph's play clock, running while stopped.
     Hz(Hz),
 }
 
-impl From<BeatDuration> for LfoRate {
+impl From<BeatsPerCycle> for LfoRate {
     /// One cycle per this many beats.
-    fn from(per_cycle: BeatDuration) -> Self {
+    fn from(per_cycle: BeatsPerCycle) -> Self {
         Self::Beats(per_cycle)
     }
 }
@@ -79,8 +79,8 @@ impl Lfo {
         Self::new(LfoShape::Sawtooth)
     }
 
-    /// Its rate: a `BeatDuration` (one cycle per that many beats, bar-locked)
-    /// or an `Hz` (cycles per second): `lfo.rate(BeatDuration(4.0))`,
+    /// Its rate: a [`BeatsPerCycle`] (one cycle per that many beats, bar-locked)
+    /// or an `Hz` (cycles per second): `lfo.rate(BeatsPerCycle::of(4.0))`,
     /// `lfo.rate(Hz(0.5))`.
     #[must_use]
     pub fn rate(mut self, rate: impl Into<LfoRate>) -> Self {
@@ -109,7 +109,7 @@ impl From<Lfo> for Source {
     fn from(lfo: Lfo) -> Self {
         let clock = match lfo.rate {
             LfoRate::Beats(per_cycle) => Clock::Beats {
-                per_cycle,
+                per_cycle: per_cycle.span(),
                 phase: lfo.phase,
             },
             LfoRate::Hz(rate) => Clock::Seconds {

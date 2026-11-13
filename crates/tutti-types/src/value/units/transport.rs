@@ -206,6 +206,14 @@ impl Beat {
     pub fn cycles_of(self, beats_per_cycle: BeatDuration) -> Option<f64> {
         (beats_per_cycle.0 > 0.0).then(|| self.0 / beats_per_cycle.0)
     }
+
+    /// Returns where this beat falls on a clock of `span`, in unwrapped cycles: the
+    /// beat divided by the span, in `f64`.
+    #[inline]
+    #[must_use]
+    pub fn cycles_in(self, span: BeatsPerCycle) -> f64 {
+        self.0 / span.0
+    }
 }
 
 // ── Playback rates ──────────────────────────────────────────────────────────
@@ -555,6 +563,102 @@ impl BeatDuration {
         BeatDuration(if r >= span { span.next_down() } else { r })
     }
 }
+
+/// A cycle's length in beats, for a clock that follows the transport: finite
+/// and above zero, so a cycle position is always the beat divided by it.
+///
+/// A larger span is slower. `new` and `of` take beats, and serde reads and writes
+/// the bare `f64` and refuses what `new` refuses.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
+pub struct BeatsPerCycle(f64);
+
+impl BeatsPerCycle {
+    /// Returns the span, or `None` when `beats` is NaN, infinite, zero or negative.
+    #[inline]
+    #[must_use]
+    pub const fn new(beats: f64) -> Option<Self> {
+        if beats.is_finite() && beats > 0.0 {
+            Some(Self(beats))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the span for a literal or a constant. For a value that arrives from
+    /// outside, use [`new`](Self::new).
+    ///
+    /// # Panics
+    ///
+    /// When `beats` is not finite and above zero; in a `const` that is a compile
+    /// error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(beats: f64) -> Self {
+        match Self::new(beats) {
+            Some(span) => span,
+            None => panic!("a cycle's span is finite and above zero beats"),
+        }
+    }
+
+    /// Returns the beats.
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+
+    /// Returns the span as a [`BeatDuration`].
+    #[inline]
+    #[must_use]
+    pub const fn span(self) -> BeatDuration {
+        BeatDuration(self.0)
+    }
+}
+
+impl From<BeatsPerCycle> for f64 {
+    #[inline]
+    fn from(span: BeatsPerCycle) -> Self {
+        span.0
+    }
+}
+
+impl TryFrom<f64> for BeatsPerCycle {
+    type Error = BeatsPerCycleOutOfRange;
+
+    #[inline]
+    fn try_from(beats: f64) -> Result<Self, BeatsPerCycleOutOfRange> {
+        Self::new(beats).ok_or(BeatsPerCycleOutOfRange(beats))
+    }
+}
+
+impl TryFrom<BeatDuration> for BeatsPerCycle {
+    type Error = BeatsPerCycleOutOfRange;
+
+    #[inline]
+    fn try_from(span: BeatDuration) -> Result<Self, BeatsPerCycleOutOfRange> {
+        Self::try_from(span.0)
+    }
+}
+
+/// The span [`BeatsPerCycle`] refused: not finite and above zero.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatsPerCycleOutOfRange(pub f64);
+
+impl core::fmt::Display for BeatsPerCycleOutOfRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "a cycle's span is finite and above zero beats, got {}",
+            self.0
+        )
+    }
+}
+
+impl core::error::Error for BeatsPerCycleOutOfRange {}
 
 #[cfg(test)]
 mod tests;

@@ -40,7 +40,7 @@ const PLANE_TOLERANCE_DEG: f64 = 1e-6;
 const ELEVATION_SNAP_DEG: f64 = 1e-4;
 
 /// Whether a layout pans between pairs of speakers or triplets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum PanningMode {
     /// Every speaker is on the horizontal plane: a source lies between two.
     Horizontal,

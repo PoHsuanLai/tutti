@@ -53,7 +53,7 @@ tutti-curve = { path = "../tutti-curve" }
 tutti-transport = { path = "../tutti-transport" }
 
 # `VbapError`.
-thiserror = { version = "2", default-features = false }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call

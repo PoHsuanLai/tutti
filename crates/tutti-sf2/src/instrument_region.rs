@@ -23,7 +23,7 @@ fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
 }
 
 /// Contains all SoundFont generator parameters needed to synthesize a note.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct InstrumentRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],

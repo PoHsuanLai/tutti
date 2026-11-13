@@ -4,7 +4,7 @@ use std::io::Read;
 use crate::binary_reader::ReadExt;
 
 /// Reperesents the version of a SoundFont.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SoundFontVersion {
     pub(crate) major: i16,

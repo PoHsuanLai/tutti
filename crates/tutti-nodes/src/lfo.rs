@@ -44,7 +44,7 @@ fn beat_cycles(beat: tutti_types::Beat, beats_per_cycle: BeatDuration) -> f64 {
 /// Whether the adapter derives phase from a free-running oscillator or from the
 /// transport beat. This is an *adapter* concern (transport wiring), not
 /// modulation math — hence it lives here, not in `tutti-modulation`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum LfoMode {
     /// Phase advances from the node's own sample clock at a rate in [`Hz`],
     /// independent of the transport. The node takes no inputs, so it needs no

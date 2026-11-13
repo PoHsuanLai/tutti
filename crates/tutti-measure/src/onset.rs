@@ -23,7 +23,7 @@ use tutti_dsp::StftGeometry;
 ///
 /// Each is sensitive to a different kind of change, and the differences are
 /// audible in what they miss — see the per-function docs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum DetectionFunction {
     /// Positive-rectified magnitude change. The general-purpose default.
     SpectralFlux,

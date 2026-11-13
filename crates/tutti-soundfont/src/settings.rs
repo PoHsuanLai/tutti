@@ -4,8 +4,6 @@
 
 //! How a unit is built.
 
-use std::fmt;
-
 use tutti_midi_protocol::SysexDeviceId;
 use tutti_ump::MidiGroup;
 
@@ -60,21 +58,9 @@ impl Default for Polyphony {
 }
 
 /// The refused voice count of [`Polyphony`]'s `TryFrom<usize>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the polyphony must be between 1 and {} voices, but was {}", Polyphony::MAX, .0)]
 pub struct PolyphonyError(pub usize);
-
-impl fmt::Display for PolyphonyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the polyphony must be between 1 and {} voices, but was {}",
-            Polyphony::MAX,
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for PolyphonyError {}
 
 impl TryFrom<usize> for Polyphony {
     type Error = PolyphonyError;

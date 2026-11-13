@@ -1,0 +1,217 @@
+# CLAP spec inventory. `cargo xtask conformance-inventory clap` regenerates the
+# id, side and maturity columns from clap-sys; the others are edited by hand.
+# id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+clap.entry.deinit | core | stable |  | entry.h | library-level teardown after the last use |  |  |
+clap.entry.get_factory | core | stable |  | entry.h | look up a factory by its id string |  |  |
+clap.entry.init | core | stable |  | entry.h | library-level setup, called once with the bundle path |  |  |
+clap.event.flag.dont_record | core | stable |  | events.h | event flag: do not record this change as automation |  |  |
+clap.event.flag.is_live | core | stable |  | events.h | event flag: the event comes from live user input |  |  |
+clap.event.midi | core | stable |  | events.h | MIDI 1.0 short message event |  |  |
+clap.event.midi2 | core | stable |  | events.h | MIDI 2.0 UMP packet event |  |  |
+clap.event.midi_sysex | core | stable |  | events.h | MIDI system-exclusive buffer event |  |  |
+clap.event.note_choke | core | stable |  | events.h | cut matching voices at once, no release |  |  |
+clap.event.note_end | core | stable |  | events.h | plugin tells the host a voice has finished |  |  |
+clap.event.note_expression | core | stable |  | events.h | per-note expression value (volume, pan, tuning, ...) |  |  |
+clap.event.note_off | core | stable |  | events.h | note released, with a release velocity |  |  |
+clap.event.note_on | core | stable |  | events.h | note started, with note id, port, channel, key, velocity |  |  |
+clap.event.param_gesture_begin | core | stable |  | events.h | a parameter edit gesture opens |  |  |
+clap.event.param_gesture_end | core | stable |  | events.h | a parameter edit gesture closes |  |  |
+clap.event.param_mod | core | stable |  | events.h | non-destructive parameter modulation amount |  |  |
+clap.event.param_value | core | stable |  | events.h | parameter value change at a sample offset |  |  |
+clap.event.transport | core | stable |  | events.h | transport state and position for the block |  |  |
+clap.events.input.get | core | stable |  | events.h | read one incoming event by index |  |  |
+clap.events.input.size | core | stable |  | events.h | count of incoming events in the block |  |  |
+clap.events.output.try_push | core | stable |  | events.h | plugin pushes an outgoing event, host may refuse |  |  |
+clap.ext.ambisonic.get_config | plugin | stable |  | ext/ambisonic.h | plugin reports its ambisonic layout for a port |  |  |
+clap.ext.ambisonic.host.changed | host | stable |  | ext/ambisonic.h | plugin says its ambisonic layout changed |  |  |
+clap.ext.ambisonic.is_config_supported | plugin | stable |  | ext/ambisonic.h | host asks whether an ambisonic layout works |  |  |
+clap.ext.audio_ports.count | plugin | stable |  | ext/audio_ports.h | number of audio ports |  |  |
+clap.ext.audio_ports.get | plugin | stable |  | ext/audio_ports.h | info for one audio port |  |  |
+clap.ext.audio_ports.host.is_rescan_flag_supported | host | stable |  | ext/audio_ports.h | plugin asks which rescan flags the host honours |  |  |
+clap.ext.audio_ports.host.rescan | host | stable |  | ext/audio_ports.h | plugin asks the host to re-read its audio ports |  |  |
+clap.ext.audio_ports_activation.can_activate_while_processing | plugin | stable |  | ext/audio_ports_activation.h | whether a port can toggle while processing |  |  |
+clap.ext.audio_ports_activation.set_active | plugin | stable |  | ext/audio_ports_activation.h | switch one audio port on or off |  |  |
+clap.ext.audio_ports_config.count | plugin | stable |  | ext/audio_ports_config.h | number of port configurations |  |  |
+clap.ext.audio_ports_config.get | plugin | stable |  | ext/audio_ports_config.h | details of one port configuration |  |  |
+clap.ext.audio_ports_config.host.rescan | host | stable |  | ext/audio_ports_config.h | plugin asks the host to re-read configurations |  |  |
+clap.ext.audio_ports_config.info.current_config | plugin | stable |  | ext/audio_ports_config.h | id of the active configuration |  |  |
+clap.ext.audio_ports_config.info.get | plugin | stable |  | ext/audio_ports_config.h | audio port info under a given configuration |  |  |
+clap.ext.audio_ports_config.select | plugin | stable |  | ext/audio_ports_config.h | choose a port configuration |  |  |
+clap.ext.configurable_audio_ports.apply_configuration | plugin | stable |  | ext/configurable_audio_ports.h | apply a requested port layout |  |  |
+clap.ext.configurable_audio_ports.can_apply_configuration | plugin | stable |  | ext/configurable_audio_ports.h | test a requested port layout without applying |  |  |
+clap.ext.context_menu.builder.add_item | host | stable |  | ext/context_menu.h | menu builder takes one entry |  |  |
+clap.ext.context_menu.builder.supports | host | stable |  | ext/context_menu.h | menu builder says which entry kinds it takes |  |  |
+clap.ext.context_menu.host.can_popup | host | stable |  | ext/context_menu.h | whether the host can show a context menu |  |  |
+clap.ext.context_menu.host.perform | host | stable |  | ext/context_menu.h | plugin asks the host to run a host item |  |  |
+clap.ext.context_menu.host.populate | host | stable |  | ext/context_menu.h | plugin asks the host to add host items |  |  |
+clap.ext.context_menu.host.popup | host | stable |  | ext/context_menu.h | plugin asks the host to show a menu |  |  |
+clap.ext.context_menu.perform | plugin | stable |  | ext/context_menu.h | plugin runs a chosen menu item |  |  |
+clap.ext.context_menu.populate | plugin | stable |  | ext/context_menu.h | plugin adds its items to a host menu |  |  |
+clap.ext.event_registry.host.query | host | stable |  | ext/event_registry.h | plugin looks up the id of a custom event space |  |  |
+clap.ext.extensible_audio_ports.add_port | plugin | draft |  | ext/draft/extensible_audio_ports.h | host adds an audio port to the plugin |  |  |
+clap.ext.extensible_audio_ports.remove_port | plugin | draft |  | ext/draft/extensible_audio_ports.h | host removes an audio port from the plugin |  |  |
+clap.ext.gui.adjust_size | plugin | stable |  | ext/gui.h | plugin rounds a proposed size |  |  |
+clap.ext.gui.can_resize | plugin | stable |  | ext/gui.h | whether the editor can be resized |  |  |
+clap.ext.gui.create | plugin | stable |  | ext/gui.h | make the editor for an API |  |  |
+clap.ext.gui.destroy | plugin | stable |  | ext/gui.h | free the editor |  |  |
+clap.ext.gui.get_preferred_api | plugin | stable |  | ext/gui.h | plugin's preferred windowing API |  |  |
+clap.ext.gui.get_resize_hints | plugin | stable |  | ext/gui.h | how the editor resizes |  |  |
+clap.ext.gui.get_size | plugin | stable |  | ext/gui.h | editor's current size |  |  |
+clap.ext.gui.hide | plugin | stable |  | ext/gui.h | hide the editor |  |  |
+clap.ext.gui.host.closed | host | stable |  | ext/gui.h | editor was closed from its own window |  |  |
+clap.ext.gui.host.request_hide | host | stable |  | ext/gui.h | plugin asks the host to hide the editor |  |  |
+clap.ext.gui.host.request_resize | host | stable |  | ext/gui.h | plugin asks the host for a new size |  |  |
+clap.ext.gui.host.request_show | host | stable |  | ext/gui.h | plugin asks the host to show the editor |  |  |
+clap.ext.gui.host.resize_hints_changed | host | stable |  | ext/gui.h | plugin says its resize hints changed |  |  |
+clap.ext.gui.is_api_supported | plugin | stable |  | ext/gui.h | whether a windowing API is usable |  |  |
+clap.ext.gui.set_parent | plugin | stable |  | ext/gui.h | embed the editor in a host window |  |  |
+clap.ext.gui.set_scale | plugin | stable |  | ext/gui.h | tell the editor the display scale |  |  |
+clap.ext.gui.set_size | plugin | stable |  | ext/gui.h | resize the editor |  |  |
+clap.ext.gui.set_transient | plugin | stable |  | ext/gui.h | set the window the editor floats over |  |  |
+clap.ext.gui.show | plugin | stable |  | ext/gui.h | show the editor |  |  |
+clap.ext.gui.suggest_title | plugin | stable |  | ext/gui.h | host proposes a floating window title |  |  |
+clap.ext.latency.get | plugin | stable |  | ext/latency.h | plugin's latency in samples |  |  |
+clap.ext.latency.host.changed | host | stable |  | ext/latency.h | plugin says its latency changed |  |  |
+clap.ext.log.host.log | host | stable |  | ext/log.h | plugin writes a message to the host log |  |  |
+clap.ext.note_name.count | plugin | stable |  | ext/note_name.h | number of named notes |  |  |
+clap.ext.note_name.get | plugin | stable |  | ext/note_name.h | name of one note |  |  |
+clap.ext.note_name.host.changed | host | stable |  | ext/note_name.h | plugin says note names changed |  |  |
+clap.ext.note_ports.count | plugin | stable |  | ext/note_ports.h | number of note ports |  |  |
+clap.ext.note_ports.get | plugin | stable |  | ext/note_ports.h | info for one note port |  |  |
+clap.ext.note_ports.host.rescan | host | stable |  | ext/note_ports.h | plugin asks the host to re-read its note ports |  |  |
+clap.ext.note_ports.host.supported_dialects | host | stable |  | ext/note_ports.h | note dialects the host speaks |  |  |
+clap.ext.param_indication.set_automation | plugin | stable |  | ext/param_indication.h | host shows automation state on a parameter |  |  |
+clap.ext.param_indication.set_mapping | plugin | stable |  | ext/param_indication.h | host shows a controller mapping on a parameter |  |  |
+clap.ext.params.count | plugin | stable |  | ext/params.h | number of parameters |  |  |
+clap.ext.params.flush | plugin | stable |  | ext/params.h | apply parameter events while not processing |  |  |
+clap.ext.params.get_info | plugin | stable |  | ext/params.h | info for one parameter |  |  |
+clap.ext.params.get_value | plugin | stable |  | ext/params.h | current value of a parameter |  |  |
+clap.ext.params.host.clear | host | stable |  | ext/params.h | plugin asks the host to clear automation or modulation |  |  |
+clap.ext.params.host.request_flush | host | stable |  | ext/params.h | plugin asks for a flush call |  |  |
+clap.ext.params.host.rescan | host | stable |  | ext/params.h | plugin asks the host to re-read parameters |  |  |
+clap.ext.params.text_to_value | plugin | stable |  | ext/params.h | parse text into a value |  |  |
+clap.ext.params.value_to_text | plugin | stable |  | ext/params.h | format a value as text |  |  |
+clap.ext.posix_fd_support.host.modify_fd | host | stable |  | ext/posix_fd_support.h | plugin changes the events it watches |  |  |
+clap.ext.posix_fd_support.host.register_fd | host | stable |  | ext/posix_fd_support.h | plugin watches a file descriptor |  |  |
+clap.ext.posix_fd_support.host.unregister_fd | host | stable |  | ext/posix_fd_support.h | plugin stops watching a descriptor |  |  |
+clap.ext.posix_fd_support.on_fd | plugin | stable |  | ext/posix_fd_support.h | a registered file descriptor became ready |  |  |
+clap.ext.preset_load.from_location | plugin | stable |  | ext/preset_load.h | load a preset from a location |  |  |
+clap.ext.preset_load.host.loaded | host | stable |  | ext/preset_load.h | plugin reports a preset loaded |  |  |
+clap.ext.preset_load.host.on_error | host | stable |  | ext/preset_load.h | plugin reports a preset load failure |  |  |
+clap.ext.remote_controls.count | plugin | stable |  | ext/remote_controls.h | number of control pages |  |  |
+clap.ext.remote_controls.get | plugin | stable |  | ext/remote_controls.h | one page of remote controls |  |  |
+clap.ext.remote_controls.host.changed | host | stable |  | ext/remote_controls.h | plugin says its pages changed |  |  |
+clap.ext.remote_controls.host.suggest_page | host | stable |  | ext/remote_controls.h | plugin suggests the page to show |  |  |
+clap.ext.render.has_hard_realtime_requirement | plugin | stable |  | ext/render.h | whether the plugin must run in real time |  |  |
+clap.ext.render.set | plugin | stable |  | ext/render.h | switch realtime or offline rendering |  |  |
+clap.ext.resource_directory.collect | plugin | draft |  | ext/draft/resource_directory.h | host asks the plugin to copy resources into it |  |  |
+clap.ext.resource_directory.get_file_path | plugin | draft |  | ext/draft/resource_directory.h | path of one held file |  |  |
+clap.ext.resource_directory.get_files_count | plugin | draft |  | ext/draft/resource_directory.h | number of files the plugin holds |  |  |
+clap.ext.resource_directory.host.release_directory | host | draft |  | ext/draft/resource_directory.h | plugin gives its resource directory back |  |  |
+clap.ext.resource_directory.host.request_directory | host | draft |  | ext/draft/resource_directory.h | plugin asks for a resource directory |  |  |
+clap.ext.resource_directory.set_directory | plugin | draft |  | ext/draft/resource_directory.h | host gives the plugin a directory to use |  |  |
+clap.ext.state.host.mark_dirty | host | stable |  | ext/state.h | plugin says its state changed since the last save |  |  |
+clap.ext.state.load | plugin | stable |  | ext/state.h | read plugin state from a stream |  |  |
+clap.ext.state.save | plugin | stable |  | ext/state.h | write plugin state to a stream |  |  |
+clap.ext.state_context.load | plugin | stable |  | ext/state_context.h | read state for a given purpose |  |  |
+clap.ext.state_context.save | plugin | stable |  | ext/state_context.h | write state for a given purpose (preset, duplicate, project) |  |  |
+clap.ext.surround.get_channel_map | plugin | stable |  | ext/surround.h | channel map of a port |  |  |
+clap.ext.surround.host.changed | host | stable |  | ext/surround.h | plugin says its surround layout changed |  |  |
+clap.ext.surround.is_channel_mask_supported | plugin | stable |  | ext/surround.h | whether a surround mask is accepted |  |  |
+clap.ext.tail.get | plugin | stable |  | ext/tail.h | plugin's tail length in samples |  |  |
+clap.ext.tail.host.changed | host | stable |  | ext/tail.h | plugin says its tail changed |  |  |
+clap.ext.thread_check.host.is_audio_thread | host | stable |  | ext/thread_check.h | whether the caller is an audio thread |  |  |
+clap.ext.thread_check.host.is_main_thread | host | stable |  | ext/thread_check.h | whether the caller is the main thread |  |  |
+clap.ext.thread_pool.exec | plugin | stable |  | ext/thread_pool.h | run one task of the pool |  |  |
+clap.ext.thread_pool.host.request_exec | host | stable |  | ext/thread_pool.h | plugin asks the host to run tasks in parallel |  |  |
+clap.ext.timer_support.host.register_timer | host | stable |  | ext/timer_support.h | plugin starts a timer |  |  |
+clap.ext.timer_support.host.unregister_timer | host | stable |  | ext/timer_support.h | plugin stops a timer |  |  |
+clap.ext.timer_support.on_timer | plugin | stable |  | ext/timer_support.h | a registered timer fired |  |  |
+clap.ext.track_info.changed | plugin | stable |  | ext/track_info.h | the plugin's track information changed |  |  |
+clap.ext.track_info.host.get | host | stable |  | ext/track_info.h | plugin reads its track information |  |  |
+clap.ext.transport_control.host.request_continue | host | draft |  | ext/draft/transport_control.h | plugin asks to resume playback |  |  |
+clap.ext.transport_control.host.request_enable_loop | host | draft |  | ext/draft/transport_control.h | plugin asks to switch looping |  |  |
+clap.ext.transport_control.host.request_jump | host | draft |  | ext/draft/transport_control.h | plugin asks to jump to a position |  |  |
+clap.ext.transport_control.host.request_loop_region | host | draft |  | ext/draft/transport_control.h | plugin asks to set the loop region |  |  |
+clap.ext.transport_control.host.request_pause | host | draft |  | ext/draft/transport_control.h | plugin asks to pause playback |  |  |
+clap.ext.transport_control.host.request_record | host | draft |  | ext/draft/transport_control.h | plugin asks to switch recording |  |  |
+clap.ext.transport_control.host.request_start | host | draft |  | ext/draft/transport_control.h | plugin asks to start playback |  |  |
+clap.ext.transport_control.host.request_stop | host | draft |  | ext/draft/transport_control.h | plugin asks to stop playback |  |  |
+clap.ext.transport_control.host.request_toggle_loop | host | draft |  | ext/draft/transport_control.h | plugin asks to toggle looping |  |  |
+clap.ext.transport_control.host.request_toggle_play | host | draft |  | ext/draft/transport_control.h | plugin asks to toggle playback |  |  |
+clap.ext.transport_control.host.request_toggle_record | host | draft |  | ext/draft/transport_control.h | plugin asks to toggle recording |  |  |
+clap.ext.triggers.count | plugin | draft |  | ext/draft/triggers.h | number of triggers |  |  |
+clap.ext.triggers.get_info | plugin | draft |  | ext/draft/triggers.h | info for one trigger |  |  |
+clap.ext.triggers.host.clear | host | draft |  | ext/draft/triggers.h | plugin asks the host to clear trigger automation |  |  |
+clap.ext.triggers.host.rescan | host | draft |  | ext/draft/triggers.h | plugin asks the host to re-read triggers |  |  |
+clap.ext.tuning.host.get_info | host | draft |  | ext/draft/tuning.h | info for one tuning |  |  |
+clap.ext.tuning.host.get_relative | host | draft |  | ext/draft/tuning.h | host gives the pitch offset of a key under a tuning |  |  |
+clap.ext.tuning.host.get_tuning_count | host | draft |  | ext/draft/tuning.h | number of tunings the host holds |  |  |
+clap.ext.tuning.host.should_play | host | draft |  | ext/draft/tuning.h | host says whether a key sounds under a tuning |  |  |
+clap.ext.tuning.t.changed | plugin | draft |  | ext/draft/tuning.h | the tuning table changed |  |  |
+clap.ext.undo.context.set_can_redo | plugin | draft |  | ext/draft/undo.h | host says whether redo is possible |  |  |
+clap.ext.undo.context.set_can_undo | plugin | draft |  | ext/draft/undo.h | host says whether undo is possible |  |  |
+clap.ext.undo.context.set_redo_name | plugin | draft |  | ext/draft/undo.h | host gives the next redo step's name |  |  |
+clap.ext.undo.context.set_undo_name | plugin | draft |  | ext/draft/undo.h | host gives the next undo step's name |  |  |
+clap.ext.undo.delta.can_use_delta_format_version | plugin | draft |  | ext/draft/undo.h | whether a delta format version is understood |  |  |
+clap.ext.undo.delta.get_delta_properties | plugin | draft |  | ext/draft/undo.h | properties of the plugin's undo delta format |  |  |
+clap.ext.undo.delta.redo | plugin | draft |  | ext/draft/undo.h | apply a delta forwards |  |  |
+clap.ext.undo.delta.undo | plugin | draft |  | ext/draft/undo.h | apply a delta backwards |  |  |
+clap.ext.undo.host.begin_change | host | draft |  | ext/draft/undo.h | plugin opens an undoable change |  |  |
+clap.ext.undo.host.cancel_change | host | draft |  | ext/draft/undo.h | plugin abandons the open change |  |  |
+clap.ext.undo.host.change_made | host | draft |  | ext/draft/undo.h | plugin records a finished undoable change |  |  |
+clap.ext.undo.host.request_redo | host | draft |  | ext/draft/undo.h | plugin asks the host to redo |  |  |
+clap.ext.undo.host.request_undo | host | draft |  | ext/draft/undo.h | plugin asks the host to undo |  |  |
+clap.ext.undo.host.set_wants_context_updates | host | draft |  | ext/draft/undo.h | plugin asks for undo context updates |  |  |
+clap.ext.voice_info.get | plugin | stable |  | ext/voice_info.h | voice count and capacity |  |  |
+clap.ext.voice_info.host.changed | host | stable |  | ext/voice_info.h | plugin says its voice info changed |  |  |
+clap.factory.plugin.create_plugin | core | stable |  | factory/plugin-factory.h | make a plugin instance by id |  |  |
+clap.factory.plugin.get_plugin_count | core | stable |  | factory/plugin-factory.h | number of plugins in the bundle |  |  |
+clap.factory.plugin.get_plugin_descriptor | core | stable |  | factory/plugin-factory.h | descriptor of the plugin at an index |  |  |
+clap.factory.plugin_invalidation.count | core | draft |  | factory/draft/plugin-invalidation.h | number of invalidation sources |  |  |
+clap.factory.plugin_invalidation.get | core | draft |  | factory/draft/plugin-invalidation.h | one invalidation source |  |  |
+clap.factory.plugin_invalidation.refresh | core | draft |  | factory/draft/plugin-invalidation.h | re-scan the plugin locations |  |  |
+clap.factory.plugin_state_converter.converter.convert_normalized_value | plugin | draft |  | factory/draft/plugin-state-converter.h | convert a normalized parameter value |  |  |
+clap.factory.plugin_state_converter.converter.convert_plain_value | plugin | draft |  | factory/draft/plugin-state-converter.h | convert a plain parameter value |  |  |
+clap.factory.plugin_state_converter.converter.convert_state | plugin | draft |  | factory/draft/plugin-state-converter.h | convert a saved state between plugins |  |  |
+clap.factory.plugin_state_converter.converter.destroy | plugin | draft |  | factory/draft/plugin-state-converter.h | free a converter |  |  |
+clap.factory.plugin_state_converter.count | core | draft |  | factory/draft/plugin-state-converter.h | number of converters |  |  |
+clap.factory.plugin_state_converter.create | core | draft |  | factory/draft/plugin-state-converter.h | make a converter |  |  |
+clap.factory.plugin_state_converter.get_descriptor | core | draft |  | factory/draft/plugin-state-converter.h | describe one converter |  |  |
+clap.factory.preset_discovery.count | core | stable |  | factory/preset-discovery.h | number of preset providers |  |  |
+clap.factory.preset_discovery.create | core | stable |  | factory/preset-discovery.h | make a provider |  |  |
+clap.factory.preset_discovery.get_descriptor | core | stable |  | factory/preset-discovery.h | describe one provider |  |  |
+clap.factory.preset_discovery.indexer.declare_filetype | host | stable |  | factory/preset-discovery.h | provider declares a preset file type |  |  |
+clap.factory.preset_discovery.indexer.declare_location | host | stable |  | factory/preset-discovery.h | provider declares a preset location |  |  |
+clap.factory.preset_discovery.indexer.declare_soundpack | host | stable |  | factory/preset-discovery.h | provider declares a soundpack |  |  |
+clap.factory.preset_discovery.indexer.get_extension | host | stable |  | factory/preset-discovery.h | provider asks the indexer for an extension |  |  |
+clap.factory.preset_discovery.metadata_receiver.add_creator | host | stable |  | factory/preset-discovery.h | preset creator |  |  |
+clap.factory.preset_discovery.metadata_receiver.add_extra_info | host | stable |  | factory/preset-discovery.h | preset extra key-value info |  |  |
+clap.factory.preset_discovery.metadata_receiver.add_feature | host | stable |  | factory/preset-discovery.h | preset feature tag |  |  |
+clap.factory.preset_discovery.metadata_receiver.add_plugin_id | host | stable |  | factory/preset-discovery.h | preset names a plugin it targets |  |  |
+clap.factory.preset_discovery.metadata_receiver.begin_preset | host | stable |  | factory/preset-discovery.h | a preset's metadata starts |  |  |
+clap.factory.preset_discovery.metadata_receiver.on_error | host | stable |  | factory/preset-discovery.h | provider reports a read error |  |  |
+clap.factory.preset_discovery.metadata_receiver.set_description | host | stable |  | factory/preset-discovery.h | preset description |  |  |
+clap.factory.preset_discovery.metadata_receiver.set_flags | host | stable |  | factory/preset-discovery.h | preset flags |  |  |
+clap.factory.preset_discovery.metadata_receiver.set_soundpack_id | host | stable |  | factory/preset-discovery.h | preset names its soundpack |  |  |
+clap.factory.preset_discovery.metadata_receiver.set_timestamps | host | stable |  | factory/preset-discovery.h | preset creation and modification times |  |  |
+clap.factory.preset_discovery.provider.destroy | plugin | stable |  | factory/preset-discovery.h | free the provider |  |  |
+clap.factory.preset_discovery.provider.get_extension | plugin | stable |  | factory/preset-discovery.h | host asks the provider for an extension |  |  |
+clap.factory.preset_discovery.provider.get_metadata | plugin | stable |  | factory/preset-discovery.h | provider reads presets at a location |  |  |
+clap.factory.preset_discovery.provider.init | plugin | stable |  | factory/preset-discovery.h | set the provider up |  |  |
+clap.host.get_extension | core | stable |  | host.h | plugin asks the host for an extension by id |  |  |
+clap.host.request_callback | core | stable |  | host.h | plugin asks for an on_main_thread call |  |  |
+clap.host.request_process | core | stable |  | host.h | plugin asks to be processed again after sleeping |  |  |
+clap.host.request_restart | core | stable |  | host.h | plugin asks for deactivate then activate |  |  |
+clap.plugin.activate | core | stable |  | plugin.h | prepare with sample rate and frame bounds |  |  |
+clap.plugin.deactivate | core | stable |  | plugin.h | release the resources activate took |  |  |
+clap.plugin.destroy | core | stable |  | plugin.h | free the plugin instance |  |  |
+clap.plugin.get_extension | core | stable |  | plugin.h | host asks the plugin for an extension by id |  |  |
+clap.plugin.init | core | stable |  | plugin.h | first call on a new instance, main thread |  |  |
+clap.plugin.on_main_thread | core | stable |  | plugin.h | callback on the main thread after request_callback |  |  |
+clap.plugin.process | core | stable |  | plugin.h | render one block of audio and events |  |  |
+clap.plugin.reset | core | stable |  | plugin.h | clear voices, delay lines and other audio state |  |  |
+clap.plugin.start_processing | core | stable |  | plugin.h | audio thread begins calling process |  |  |
+clap.plugin.stop_processing | core | stable |  | plugin.h | audio thread stops calling process |  |  |
+clap.stream.istream.read | core | stable |  | stream.h | read bytes from a state stream |  |  |
+clap.stream.ostream.write | core | stable |  | stream.h | write bytes to a state stream |  |  |

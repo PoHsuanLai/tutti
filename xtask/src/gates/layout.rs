@@ -39,6 +39,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const SKIPPED_DIRS: &[&str] = &["target", ".git"];
 
+/// Directories under `crates/` or `testing/` that hold data, not a package: the
+/// spec inventories `check-conformance` reads.
+const DATA_DIRS: &[&str] = &["testing/conformance"];
+
 fn skipped(dir: &str) -> bool {
     SKIPPED_DIRS.contains(&dir)
 }
@@ -296,7 +300,7 @@ pub(super) fn check(tree: &dyn Tree, cargo: &dyn Cargo) -> Report {
             }
         }
         for dir in entries {
-            if member_dirs.contains(dir.as_str()) {
+            if member_dirs.contains(dir.as_str()) || DATA_DIRS.contains(&dir.as_str()) {
                 continue;
             }
             bad.push(format!("{dir} is not a workspace member"));
@@ -710,6 +714,22 @@ mod tests {
         m.files
             .insert("crates/stray/Cargo.toml".into(), String::new());
         assert!(check(&m, &NoCargo).findings[1].contains("crates/stray is not a workspace member"));
+    }
+
+    #[test]
+    fn the_conformance_data_directory_is_not_a_member_and_not_a_stray() {
+        let mut m = ws(&base());
+        m.files
+            .insert("testing/conformance/clap.txt".into(), String::new());
+        assert!(check(&m, &NoCargo).passed());
+        m.files
+            .insert("testing/conformance-other/x.txt".into(), String::new());
+        assert!(
+            check(&m, &NoCargo)
+                .findings
+                .iter()
+                .any(|l| l.contains("testing/conformance-other is not a workspace member"))
+        );
     }
 
     #[test]

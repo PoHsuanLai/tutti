@@ -20,7 +20,6 @@
 //! its header said, so the NAK that §5.3 and §5.11 require can be addressed.
 //! The codec holds no state; the state machine over it is [`CiDevice`].
 
-use std::fmt;
 use std::vec::Vec;
 
 use tutti_ump::{MidiChannel, MidiGroup, Sysex7Packets, U7, Ump};
@@ -133,16 +132,9 @@ impl CiVersion {
 }
 
 /// A raw value that is not a Message Format Version.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#04x} is not a MIDI-CI message format version", .0)]
 pub struct NotAVersion(pub u8);
-
-impl fmt::Display for NotAVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#04x} is not a MIDI-CI message format version", self.0)
-    }
-}
-
-impl std::error::Error for NotAVersion {}
 
 impl TryFrom<u8> for CiVersion {
     type Error = NotAVersion;
@@ -203,16 +195,9 @@ impl CiDeviceId {
 }
 
 /// A raw value that is not a Device ID.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#04x} is not a MIDI-CI Device ID (reserved)", .0)]
 pub struct NotADeviceId(pub u8);
-
-impl fmt::Display for NotADeviceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#04x} is not a MIDI-CI Device ID (reserved)", self.0)
-    }
-}
-
-impl std::error::Error for NotADeviceId {}
 
 impl TryFrom<u8> for CiDeviceId {
     type Error = NotADeviceId;
@@ -287,20 +272,9 @@ impl Muid {
 }
 
 /// A raw value that is not a MUID a device can own ([`Muid::new`] refused it).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#010x} is not a MUID (past 28 bits, reserved, or broadcast)", .0)]
 pub struct NotAMuid(pub u32);
-
-impl fmt::Display for NotAMuid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:#010x} is not a MUID (past 28 bits, reserved, or broadcast)",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for NotAMuid {}
 
 impl TryFrom<u32> for Muid {
     type Error = NotAMuid;
@@ -1021,7 +995,7 @@ pub struct Unread {
 }
 
 /// Why a MIDI-CI message was not read ([`Unread::reason`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum UnreadReason {
     /// A reserved bit (7 to 5) of the Message Format Version is set (§5.3).

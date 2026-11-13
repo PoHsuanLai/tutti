@@ -241,15 +241,14 @@ jobs:
       - name: Workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The workspace run builds each crate with the features the workspace
-      # unifies to, which leaves tutti-plugin's format features and
-      # clap-extras dark. `au` is macOS-only and compiles to nothing here.
+      # unifies to, which leaves tutti-plugin's format features dark. `au` is macOS-only and
+      # compiles to nothing here.
       - name: Plugin formats
         shell: bash
         run: |
           cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
-          cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
       # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
@@ -390,8 +389,6 @@ jobs:
       #                         never skips, without `/dev/snd/seq`
       #   tutti-plugin-types/testing — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
-      #   tutti-clap-host/clap-extras — tests/behaviour/unit_tests.rs's 5 extension tests
-      #                         and the extension code they cover
       #   tutti-plugin-db/json — `save`, `load` and their tests
       #   tutti-plugin/clap,vst2 — the CLAP tests (the `clap_*` and
       #                         `plugin_param_delivery*` suites, and the
@@ -451,7 +448,6 @@ jobs:
           cargo clippy --locked -p tutti-plugin-types --lib --features contract -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
-          cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
@@ -487,7 +483,6 @@ jobs:
           cargo nextest run --locked -p tutti-midi-protocol --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
           cargo nextest run --locked -p tutti-tempo --features serde
-          cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features testing
           cargo nextest run --locked -p tutti-plugin-db --features json
           cargo nextest run --locked -p tutti-plugin-contract --features server

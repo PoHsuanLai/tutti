@@ -21,6 +21,7 @@ tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # Lock-free / concurrent
 atomic_float = "1.1"
+thiserror = { workspace = true }
 crossbeam-queue = "0.3"
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }

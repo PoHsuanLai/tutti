@@ -20,7 +20,7 @@ const TEMPO_WINDOW: usize = 24;
 /// Only two states: MIDI Beat Clock has no "paused" — a Stop followed by a
 /// Continue is how a sender expresses one, and the position is held in the tick
 /// count rather than in this enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClockTransportState {
     /// Not advancing. Incoming clocks still refine the tempo estimate but do not
     /// move the beat position.

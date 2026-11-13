@@ -32,16 +32,9 @@ const FRACTION_STEPS: u32 = 1 << 14;
 pub struct TuningFrequency(u32);
 
 /// A raw refused by [`TuningFrequency::try_from`]: it has a bit above the 21st.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#x} is more than 21 bits", .0)]
 pub struct NotFrequencyData(pub u32);
-
-impl core::fmt::Display for NotFrequencyData {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:#x} is more than 21 bits", self.0)
-    }
-}
-
-impl core::error::Error for NotFrequencyData {}
 
 impl TuningFrequency {
     /// `7F 7F 7F`: "no change" (the instrument keeps what it has for the key).
@@ -221,7 +214,7 @@ impl TuningName {
 /// When a tuning change takes hold of a note that sounds: the real-time
 /// messages "WILL affect currently sounding notes", the non-real-time ones
 /// "will NOT update the currently sounding notes" (CA-020).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Timing {
     /// Universal Real Time (`7F`): sounding notes follow at once.
     RealTime,

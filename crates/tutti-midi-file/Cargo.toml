@@ -15,7 +15,7 @@ categories = ["multimedia::audio", "parser-implementations"]
 workspace = true
 
 [dependencies]
-thiserror = "2"
+thiserror = { workspace = true }
 
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 

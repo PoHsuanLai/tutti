@@ -57,7 +57,10 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 /// environment.
 fn detached() -> Session {
     set_env("TUTTI_PLUGIN_SERVER", plugin_server());
+    // Jobs run inline, in the phase that submits them, and land in the next
+    // update's `Collect`.
     Session::builder()
+        .spawn_with(|job| job.run())
         .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("a detached session builds")
@@ -75,9 +78,9 @@ fn add_probe(s: &mut Session) -> tutti_session::Key<tutti_session::PluginNode> {
     node
 }
 
-/// A virtual clock for the session's phases, and the events the update
-/// events asked the host for run as a host would: a parameter read, a
-/// reload.
+/// A virtual clock for the session's phases, and the plugin changes they
+/// reported: a parameter read or a reload is a job on the session's (inline)
+/// spawner, landed in the next frame's collect.
 struct Drive {
     now: Instant,
     told: Vec<&'static str>,
@@ -91,26 +94,14 @@ impl Drive {
         }
     }
 
-    /// One frame: every phase at the clock 20 ms on, the jobs it hands out run
-    /// and landed at once.
+    /// One frame: every phase at the clock 20 ms on.
     fn update(&mut self, s: &mut Session) {
         self.now += Duration::from_millis(20);
         let mut out = Vec::new();
         for &phase in PHASES {
             s.run_phase(phase, PhaseCx::at(self.now), &mut out);
         }
-        for event in out {
-            match event {
-                SessionEvent::PluginParamsDue(job) => {
-                    assert!(s.land_params(job.run()), "the read lands");
-                }
-                SessionEvent::PluginReloadDue(job) => {
-                    let landed = s.land_reload(&main_thread(), job.run());
-                    self.told_of(&landed);
-                }
-                other => self.told_of(&[other]),
-            }
-        }
+        self.told_of(&out);
     }
 
     fn told_of(&mut self, events: &[SessionEvent]) {
@@ -263,8 +254,8 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
 
 /// **A crossfaded plugin keeps its gain's lane, and the lane follows the
 /// plugin out.** A lane on the probe's gain feeds its event input. The
-/// incoming plugin's parameter mirror is read by a job (`PluginParamsDue`,
-/// run and landed by the host, never on the update's thread), and until it
+/// incoming plugin's parameter mirror is read by a job (a job on the
+/// session's spawner, landed by a later update), and until it
 /// lands a lane on the plugin would wait; then the lane feeds whichever plugin
 /// the node holds now, the incoming one (a crossfade keeps the key and its
 /// edges). When the node goes, the lane's target no longer resolves and the

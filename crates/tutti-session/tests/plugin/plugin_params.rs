@@ -155,6 +155,7 @@ fn session_keyed() -> (Session, Key<PluginNode>, Arc<Fake>, RefreshSink) {
     )
     .with_refresh_sink(refresh.clone());
     let mut s = Session::builder()
+        .spawn_with(|job| job.run())
         .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
@@ -171,17 +172,22 @@ fn session_keyed() -> (Session, Key<PluginNode>, Arc<Fake>, RefreshSink) {
     (s, key, fake, refresh)
 }
 
-/// One update, running every parameter read the session hands out and landing
-/// it, as a host's spawner does; the plugin events it reported.
+/// The plugin events among `events`.
+fn plugin_events(events: Vec<SessionEvent>) -> Vec<PluginEvent> {
+    events
+        .into_iter()
+        .filter_map(|event| match event {
+            SessionEvent::Plugin(event) => Some(event),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An update that submits a parameter read (the spawner runs it inline) and
+/// one that lands it; the plugin events both reported.
 fn update(s: &mut Session) -> Vec<PluginEvent> {
-    let mut reported = Vec::new();
-    for event in s.update() {
-        match event {
-            SessionEvent::PluginParamsDue(job) => assert!(s.land_params(job.run()), "it lands"),
-            SessionEvent::Plugin(event) => reported.push(event),
-            _ => {}
-        }
-    }
+    let mut reported = plugin_events(s.update());
+    reported.extend(plugin_events(s.update()));
     reported
 }
 
@@ -373,22 +379,14 @@ fn a_rescan_replaces_the_declarations_and_the_values_with_them() {
     locked(&fake.values).insert(shape, Normalized::of(0.5));
     refresh.fire(PluginRefresh::ParamTitles);
 
-    // The notice is heard by this update, which hands the read out; the old
-    // declarations stand until the read lands, and it lands in `update`'s
-    // helper.
-    let mut events = Vec::new();
-    let heard = s.update();
+    // The notice is heard by this update, which submits the read; the old
+    // declarations stand until the read lands, in the next update.
+    let mut events = plugin_events(s.update());
     assert!(
         s.plugin(node).unwrap().params().get(MODE).is_ok(),
         "not yet"
     );
-    for event in heard {
-        match event {
-            SessionEvent::PluginParamsDue(job) => assert!(s.land_params(job.run())),
-            SessionEvent::Plugin(e) => events.push(e),
-            _ => {}
-        }
-    }
+    events.extend(plugin_events(s.update()));
     assert!(
         changes(events)
             .iter()

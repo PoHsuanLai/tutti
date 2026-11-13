@@ -355,7 +355,7 @@ impl SessionBuilder {
 
     /// How often a healthy hosted plugin's state is captured, measured on
     /// [`PhaseCx::now`](crate::PhaseCx::now)
-    /// ([`SessionEvent::PluginSnapshotDue`](crate::SessionEvent::PluginSnapshotDue)).
+    /// (a job on the session's spawner, [`spawn_with`](Self::spawn_with)).
     /// Default [`SNAPSHOT_INTERVAL`](crate::SNAPSHOT_INTERVAL), 8 s.
     #[cfg(feature = "plugin")]
     #[must_use]

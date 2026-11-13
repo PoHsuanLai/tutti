@@ -59,17 +59,15 @@
 //!   its mirror, and (`modulation`) into the knob of the lane on that
 //!   parameter when it has one (doc 014 §8.2). A mirror rebuilt by a crossfade
 //!   to another plugin, or by a rescan the plugin announced, is read as a job
-//!   the host places:
-//!   [`SessionEvent::PluginParamsDue`],
-//!   whose [`run`](PluginParamRead::run) makes one round trip per
-//!   parameter, landed with [`Session::land_params`]. Until then the
+//!   on the session's spawner (`SessionBuilder::spawn_with`): one round trip
+//!   per parameter, landed in a later [`Session::update`]. Until then the
 //!   mirror is not ready, and a lane on the plugin waits for it.
 //! - **Snapshots.** A healthy plugin's state is captured every
 //!   [`SNAPSHOT_INTERVAL`] of `now` (`SessionBuilder::snapshot_interval`),
-//!   as a job the host places: [`SessionEvent::PluginSnapshotDue`],
-//!   whose [`run`](PluginSnapshot::run) is a blocking round trip, landed
-//!   with [`Session::land_snapshot`]. One is in flight per plugin at most:
-//!   the job holds the plugin's snapshot token, and a dropped job frees it.
+//!   as a job on the same spawner (a blocking round trip), landed in a later
+//!   update. One is in flight per plugin at most: the landing holds the
+//!   plugin's snapshot token until it lands, whether the job ran, panicked or
+//!   was dropped.
 //!
 //! # Recovery
 //!
@@ -83,11 +81,15 @@
 //!   dies like a crashed one, and the load below never races a live server.
 //! - **Death.** The node stays in the graph, silent, with its wiring and
 //!   every lane fed to it; [`PluginChange::Reloading`].
-//! - **Load.** When the backoff passes, [`SessionEvent::PluginReloadDue`]
-//!   hands the host a [`PluginReload`] job: the existing [`PluginLoad`] with
-//!   the last good state as its state. [`Session::land_reload`] swaps the
-//!   loaded plugin in at the same node (`Graph::replace_plugin`) and keeps
-//!   the record: the last good state, its age, the failure history.
+//! - **Load.** When the backoff passes, the existing [`PluginLoad`] (with
+//!   the last good state as its state) is submitted to the spawner as a job.
+//!   Its landing, in a later `Session::update` and on whatever thread runs it
+//!   (no main-thread proof: a served replacement opens off the main thread,
+//!   and one that came back unopened for the main thread is a failed attempt),
+//!   swaps the loaded plugin in at the same node (`Graph::replace_plugin`)
+//!   and keeps the record: the last good state, its age, the failure
+//!   history. A job the spawner drops is [`RecoveryFailure::ReloadDropped`],
+//!   one that panics [`RecoveryFailure::ReloadPanicked`]: a failed attempt.
 //! - **Reported.** [`PluginChange::Recovered`] says whether the state
 //!   came back and how old it was; a spent budget is
 //!   [`PluginChange::GaveUp`] and the node is removed.
@@ -124,7 +126,7 @@ use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::plugin_diagnostics::Figures;
 use crate::{
-    Diagnostics, GiveUp, Key, Params, PluginBuses, PortCounts, Recovery, RecoveryAction,
+    Diagnostics, GiveUp, JobFailed, Key, Params, PluginBuses, PortCounts, Recovery, RecoveryAction,
     RecoveryEvent, RecoveryFailure, RecoveryPolicy, ReloadCause, Session, SessionEvent,
 };
 
@@ -305,7 +307,7 @@ impl PluginLoad {
             // The server died, or stopped answering, inside the step that
             // restores the state it was staged (`StateRestoreError`; a failure
             // before that step is a load failure and blames nothing): the state
-            // is what the load is held against (`land_reload` withholds it).
+            // is what the load is held against (the reload's landing withholds it).
             Err(e @ tutti_plugin_types::BridgeError::StateRestoreError(_))
                 if self.state.is_some() =>
             {
@@ -369,6 +371,10 @@ impl Open {
         }
     }
 }
+
+/// What a parameter read gave: the values, or the read itself back to be run
+/// again (the plugin's list was unavailable).
+type ParamValues = Result<tutti_plugin_host::ParamSnapshot, Box<tutti_plugin_host::ParamRead>>;
 
 /// What a [`PluginLoad`]'s run did.
 enum Opened {
@@ -909,15 +915,13 @@ impl HostedPlugin {
     /// controls, a fresh debounce, and not yet told the render mode. Nothing
     /// of the outgoing plugin's state carries over: its last good state is
     /// cleared (its bytes would restore the wrong plugin), a fresh snapshot token
-    /// makes a job of the outgoing plugin still in flight land nowhere
-    /// ([`Session::land_snapshot`]), and the snapshot clock restarts.
+    /// makes a job of the outgoing plugin still in flight land nowhere, and the snapshot clock restarts.
     ///
     /// (`modulation`) A record that kept a parameter mirror gets one for
     /// the incoming plugin, from its handle (where its reports now arrive),
     /// not yet ready: its values are read by a job (one round trip per
     /// parameter, so not on the calling thread), which the next
-    /// `Phase::Plugins` hands to the host
-    /// ([`SessionEvent::PluginParamsDue`]).
+    /// `Phase::Plugins` submits to the session's spawner.
     /// The outgoing mirror's report callback was on the outgoing handle,
     /// which reports nothing here once it is gone.
     ///
@@ -1208,197 +1212,6 @@ impl<'a> StateView<'a> {
     }
 }
 
-/// A healthy plugin's state capture, as a job: `Send`, and
-/// [`run`](Self::run) is a blocking round trip (ten seconds at worst), so
-/// the host runs it off its control thread and lands the result with
-/// [`Session::land_snapshot`]. Dropping it unrun frees the plugin for the
-/// next one.
-#[must_use = "a snapshot does nothing until it is run and landed"]
-pub struct PluginSnapshot {
-    node: NodeKey,
-    /// Boxed: a `SessionEvent` carries the job, and a handle is large.
-    handle: Box<PluginHandle>,
-    token: Arc<()>,
-    asked: Instant,
-}
-
-impl PluginSnapshot {
-    /// The plugin's node.
-    pub fn node(&self) -> NodeKey {
-        self.node
-    }
-
-    /// Asks the plugin for its state. Any thread; it blocks.
-    pub fn run(self) -> PluginSnapshotTaken {
-        PluginSnapshotTaken {
-            node: self.node,
-            state: self.handle.any_thread().save_state(),
-            token: self.token,
-            asked: self.asked,
-        }
-    }
-}
-
-impl std::fmt::Debug for PluginSnapshot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginSnapshot")
-            .field("node", &self.node)
-            .finish_non_exhaustive()
-    }
-}
-
-/// A finished [`PluginSnapshot`], for [`Session::land_snapshot`].
-#[must_use = "land it with `Session::land_snapshot`"]
-pub struct PluginSnapshotTaken {
-    node: NodeKey,
-    state: Result<Vec<u8>, StateError>,
-    /// The record's token when the job was asked for: a crossfade to
-    /// another plugin mints a new one, and the job no longer lands.
-    token: Arc<()>,
-    asked: Instant,
-}
-
-impl std::fmt::Debug for PluginSnapshotTaken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginSnapshotTaken")
-            .field("node", &self.node)
-            .field("token", &self.token)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PluginSnapshotTaken {
-    /// The plugin's node.
-    pub fn node(&self) -> NodeKey {
-        self.node
-    }
-}
-
-/// A replacement for a dead or hung plugin, as a job: `Send`, and
-/// [`run`](Self::run) blocks like [`PluginLoad::run`] (it is one), so the host
-/// runs it off its control thread and lands the result with
-/// [`Session::land_reload`]. Dropped unrun, the attempt counts as failed.
-#[must_use = "a reload does nothing until it is run and landed"]
-pub struct PluginReload {
-    node: NodeKey,
-    load: PluginLoad,
-    token: Arc<()>,
-    /// How old the snapshot it restores is, if it restores one.
-    snapshot_age: Option<Duration>,
-}
-
-impl PluginReload {
-    /// The plugin's node.
-    pub fn node(&self) -> NodeKey {
-        self.node
-    }
-
-    /// Launches the replacement and restores the snapshot. Any thread; it
-    /// blocks.
-    pub fn run(self) -> PluginReloaded {
-        PluginReloaded {
-            node: self.node,
-            loaded: self.load.run(),
-            token: self.token,
-            snapshot_age: self.snapshot_age,
-        }
-    }
-}
-
-impl std::fmt::Debug for PluginReload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginReload")
-            .field("node", &self.node)
-            .field("load", &self.load)
-            .finish_non_exhaustive()
-    }
-}
-
-/// A finished [`PluginReload`], for [`Session::land_reload`].
-#[must_use = "land it with `Session::land_reload`"]
-pub struct PluginReloaded {
-    node: NodeKey,
-    loaded: PluginLoaded,
-    token: Arc<()>,
-    snapshot_age: Option<Duration>,
-}
-
-impl std::fmt::Debug for PluginReloaded {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginReloaded")
-            .field("node", &self.node)
-            .field("loaded", &self.loaded)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PluginReloaded {
-    /// The plugin's node.
-    pub fn node(&self) -> NodeKey {
-        self.node
-    }
-}
-
-/// The read of a parameter mirror a crossfade rebuilt, or a load's read that
-/// was not answered, as a job (`modulation`): `Send`, and [`run`](Self::run)
-/// makes one round trip per parameter, so the host runs it off its control
-/// thread and lands the result with [`Session::land_params`]. Dropped unrun,
-/// the mirror stays not ready (a lane on the plugin keeps waiting) until the
-/// next crossfade.
-#[must_use = "a parameter read does nothing until it is run and landed"]
-pub struct PluginParamRead {
-    node: NodeKey,
-    /// Boxed: a `SessionEvent` carries the job, and a handle is large.
-    read: Box<tutti_plugin_host::ParamRead>,
-    token: Arc<()>,
-}
-
-impl PluginParamRead {
-    /// The plugin's node.
-    pub fn node(&self) -> NodeKey {
-        self.node
-    }
-
-    /// Reads every parameter the plugin lists. Any thread; it blocks. If the
-    /// plugin's list is unavailable (an in-process plugin's main thread did not
-    /// answer in time) the finished job carries the read back:
-    /// [`Session::land_params`] does not land it, and the next
-    /// [`Phase::Plugins`](crate::Phase::Plugins) hands it out again.
-    pub fn run(self) -> PluginParamsRead {
-        PluginParamsRead {
-            node: self.node,
-            values: self.read.run(),
-            token: self.token,
-        }
-    }
-}
-
-impl std::fmt::Debug for PluginParamRead {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginParamRead")
-            .field("node", &self.node)
-            .finish_non_exhaustive()
-    }
-}
-
-/// A finished [`PluginParamRead`], for [`Session::land_params`].
-#[must_use = "land it with `Session::land_params`"]
-#[derive(Debug)]
-pub struct PluginParamsRead {
-    node: NodeKey,
-    /// The values read, or the read itself given back to be run again.
-    values: Result<tutti_plugin_host::ParamSnapshot, Box<tutti_plugin_host::ParamRead>>,
-    /// The record's mirror token when the job was asked for.
-    token: Arc<()>,
-}
-
-impl PluginParamsRead {
-    /// The plugin's node.
-    pub fn node(&self) -> NodeKey {
-        self.node
-    }
-}
-
 /// `Phase::RenderMode`'s record: the mode last announced.
 #[derive(Debug)]
 pub(crate) struct RenderModeState {
@@ -1543,22 +1356,22 @@ impl Session {
     /// Lands a finished snapshot: the plugin's last snapshot becomes it. A
     /// refused one is logged and keeps the previous snapshot (a good
     /// recovery point beats none). Returns whether it was stored. Frees the
-    /// plugin for its next snapshot.
+    /// plugin for its next snapshot (the landing's own `token` clone drops).
     ///
     /// A snapshot of a plugin no longer at its node (removed, or crossfaded
     /// to another plugin since the job was asked for) lands nowhere: it is
     /// the outgoing plugin's state, not a recovery point for the node.
-    pub fn land_snapshot(&mut self, taken: PluginSnapshotTaken) -> bool {
-        let PluginSnapshotTaken {
-            node,
-            state,
-            token,
-            asked,
-        } = taken;
+    fn land_snapshot(
+        &mut self,
+        node: NodeKey,
+        token: &Arc<()>,
+        asked: Instant,
+        state: Result<Vec<u8>, StateError>,
+    ) -> bool {
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
             return false;
         };
-        if !Arc::ptr_eq(&token, &hosted.snapshot_token) {
+        if !Arc::ptr_eq(token, &hosted.snapshot_token) {
             tracing::debug!("plugin {node:?}: a snapshot of its previous plugin was discarded");
             return false;
         }
@@ -1580,18 +1393,12 @@ impl Session {
     /// longer at its node (removed, or crossfaded again since) lands
     /// nowhere. A read the plugin did not answer (its list unavailable) does
     /// not land either: the mirror stays not ready, the read goes back to the
-    /// plugin's record, and the next `Phase::Plugins` hands it out again as
-    /// [`SessionEvent::PluginParamsDue`].
-    pub fn land_params(&mut self, read: PluginParamsRead) -> bool {
-        let PluginParamsRead {
-            node,
-            values,
-            token,
-        } = read;
+    /// plugin's record, and the next `Phase::Plugins` submits it again.
+    fn land_params(&mut self, node: NodeKey, token: &Arc<()>, values: ParamValues) -> bool {
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
             return false;
         };
-        if !Arc::ptr_eq(&token, &hosted.mirror_token) {
+        if !Arc::ptr_eq(token, &hosted.mirror_token) {
             tracing::debug!(
                 "plugin {node:?}: a parameter read of its previous plugin was discarded"
             );
@@ -1632,45 +1439,54 @@ impl Session {
         }
     }
 
-    /// Lands a finished reload, at the time of the last `Phase::Plugins`: the replacement takes the dead
-    /// plugin's node, with its wiring (`Graph::replace_plugin`), its snapshot
-    /// and failure history. Returns what happened, as the events
-    /// `Phase::Plugins` would have reported.
+    /// Lands a finished reload, at the time of the last `Phase::Plugins`: the
+    /// replacement takes the dead plugin's node, with its wiring
+    /// (`Graph::replace_plugin`), its snapshot and failure history. What
+    /// happened is pushed to `out` as the events `Phase::Plugins` would have
+    /// reported.
     ///
     /// A reload of a node no longer being recovered (removed, replaced by
-    /// another plugin, or an earlier attempt's) lands nowhere and returns
-    /// nothing; the loaded plugin is dropped, which ends its server. A
-    /// failed load is the next attempt's backoff, or
-    /// [`PluginChange::GaveUp`] and the node's removal.
+    /// another plugin, or an earlier attempt's) lands nowhere; the loaded
+    /// plugin is dropped, which ends its server. A failed load is the next
+    /// attempt's backoff, or [`PluginChange::GaveUp`] and the node's removal.
     ///
-    /// A main-thread call.
-    pub fn land_reload(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
-        self.land_reload_inner(main, done)
-    }
-
-    fn land_reload_inner(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
+    /// Takes no main-thread proof: only an in-process plugin is opened on the
+    /// main thread, and a served plugin's replacement must not be one, so a
+    /// load that came back unopened is a failed attempt
+    /// ([`RecoveryFailure::ReplacementInProcess`]) without opening it.
+    fn land_reload(
+        &mut self,
+        node: NodeKey,
+        token: &Arc<()>,
+        snapshot_age: Option<Duration>,
+        loaded: PluginLoaded,
+        out: &mut Vec<SessionEvent>,
+    ) {
         let now = self.plugins_now;
-        let PluginReloaded {
-            node,
-            loaded,
-            token,
-            snapshot_age,
-        } = done;
-        let mut out = Vec::new();
         let mut gave_up = Vec::new();
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
-            return out;
+            return;
         };
-        if !Arc::ptr_eq(&token, &hosted.reload.token)
+        if !Arc::ptr_eq(token, &hosted.reload.token)
             || !matches!(hosted.status, PluginLiveness::Recovering { .. })
         {
             tracing::debug!("plugin {node:?}: a reload that no longer applies was discarded");
-            return out;
+            return;
         }
         hosted.reload.in_flight = false;
         let opened = match loaded.opened {
             Opened::Done(open) => *open,
-            Opened::OnMain(load) => load.open(Some(main)),
+            Opened::OnMain(_) => {
+                self.fail_reload(
+                    node,
+                    RecoveryFailure::ReplacementInProcess,
+                    now,
+                    out,
+                    &mut gave_up,
+                );
+                self.finish_gave_up(gave_up, out);
+                return;
+            }
         };
         let Open {
             plugin,
@@ -1684,11 +1500,11 @@ impl Session {
                     node,
                     RecoveryFailure::ReplacementInProcess,
                     now,
-                    &mut out,
+                    out,
                     &mut gave_up,
                 );
-                self.finish_gave_up(gave_up, &mut out);
-                return out;
+                self.finish_gave_up(gave_up, out);
+                return;
             }
             Err(e) => {
                 // A load that died restoring the snapshot is held against the
@@ -1705,11 +1521,11 @@ impl Session {
                         source: Arc::new(e),
                     },
                     now,
-                    &mut out,
+                    out,
                     &mut gave_up,
                 );
-                self.finish_gave_up(gave_up, &mut out);
-                return out;
+                self.finish_gave_up(gave_up, out);
+                return;
             }
         };
         let restore = match (restore, snapshot_age) {
@@ -1722,8 +1538,7 @@ impl Session {
             restore,
             mirror,
         };
-        self.install_reload(node, ready, now, &mut out);
-        out
+        self.install_reload(node, ready, now, out);
     }
 
     /// Puts a loaded replacement into the graph at `node`, or keeps it until
@@ -1966,14 +1781,6 @@ impl Session {
             self.install_reload(node, ready, now, out);
             return;
         }
-        if hosted.reload.in_flight {
-            // The token is the job's alone while it is out: sole owner means
-            // the job was dropped.
-            if Arc::strong_count(&hosted.reload.token) == 1 {
-                self.fail_reload(node, RecoveryFailure::ReloadDropped, now, out, gave_up);
-                return;
-            }
-        }
         let (tick, load_timeout) = hosted
             .recovery
             .as_mut()
@@ -2003,14 +1810,46 @@ impl Session {
             state: hosted.snapshot.clone(),
             refusal: None,
         };
-        out.push(SessionEvent::PluginReloadDue(PluginReload {
-            node,
-            load,
-            token: Arc::clone(&hosted.reload.token),
-            snapshot_age: hosted
-                .snapshot_from
-                .map(|t| now.saturating_duration_since(t)),
-        }));
+        let token = Arc::clone(&hosted.reload.token);
+        let snapshot_age = hosted
+            .snapshot_from
+            .map(|t| now.saturating_duration_since(t));
+        self.jobs.submit(
+            move || load.run(),
+            move |session, ended, out| match ended {
+                Ok(loaded) => session.land_reload(node, &token, snapshot_age, loaded, out),
+                Err(failed) => session.reload_job_failed(node, &token, failed, out),
+            },
+        );
+    }
+
+    /// The reload's job ended without a result (the spawner dropped it, or it
+    /// panicked): a failed attempt, unless the attempt no longer applies.
+    fn reload_job_failed(
+        &mut self,
+        node: NodeKey,
+        token: &Arc<()>,
+        failed: JobFailed,
+        out: &mut Vec<SessionEvent>,
+    ) {
+        let now = self.plugins_now;
+        let Some(hosted) = self.graph.plugins.get(&node) else {
+            return;
+        };
+        if !Arc::ptr_eq(token, &hosted.reload.token)
+            || !matches!(hosted.status, PluginLiveness::Recovering { .. })
+        {
+            return;
+        }
+        let cause = match failed {
+            JobFailed::Panicked { message } => RecoveryFailure::ReloadPanicked { message },
+            // `Dropped`, and any end a later version names: no replacement
+            // came of the job.
+            _ => RecoveryFailure::ReloadDropped,
+        };
+        let mut gave_up = Vec::new();
+        self.fail_reload(node, cause, now, out, &mut gave_up);
+        self.finish_gave_up(gave_up, out);
     }
 
     /// The render mode last announced to the hosted plugins.
@@ -2164,20 +2003,22 @@ impl Session {
             };
             let snapshot = due.then(|| {
                 hosted.snapshot_at = Some(now);
-                PluginSnapshot {
-                    node,
-                    handle: Box::new(hosted.handle.clone()),
-                    token: Arc::clone(&hosted.snapshot_token),
-                    asked: now,
-                }
+                (hosted.handle.clone(), Arc::clone(&hosted.snapshot_token))
             });
 
             if let Some(read) = hosted.param_read.take() {
-                out.push(SessionEvent::PluginParamsDue(PluginParamRead {
-                    node,
-                    read: Box::new(read),
-                    token: Arc::clone(&hosted.mirror_token),
-                }));
+                let token = Arc::clone(&hosted.mirror_token);
+                self.jobs.submit(
+                    move || read.run(),
+                    move |session, ended, _| match ended {
+                        Ok(values) => {
+                            session.land_params(node, &token, values);
+                        }
+                        Err(failed) => {
+                            tracing::warn!("plugin {node:?}: its parameter read ended: {failed}");
+                        }
+                    },
+                );
             }
             #[cfg(feature = "modulation")]
             let state = &self.mods.state;
@@ -2198,8 +2039,19 @@ impl Session {
                     },
                 ));
             }
-            if let Some(snapshot) = snapshot {
-                out.push(SessionEvent::PluginSnapshotDue(snapshot));
+            if let Some((handle, token)) = snapshot {
+                let asked = now;
+                self.jobs.submit(
+                    move || handle.any_thread().save_state(),
+                    move |session, ended, _| match ended {
+                        Ok(state) => {
+                            session.land_snapshot(node, &token, asked, state);
+                        }
+                        Err(failed) => {
+                            tracing::warn!("plugin {node:?}: its state snapshot ended: {failed}");
+                        }
+                    },
+                );
             }
         }
         for (node, cause) in dead {
@@ -2240,11 +2092,13 @@ impl Session {
 mod tests {
     //! The record's own rules over a fake backend (no `plugin-server`):
     //! the snapshot cadence and its one-in-flight token, a declined save,
-    //! and a failing plugin's skipped snapshot. The death, the render mode
+    //! and a failing plugin's skipped snapshot. The session's spawner is a
+    //! queue the test drains, so it runs, drops or holds each job. The death, the render mode
     //! and the export are pinned end to end over the CLAP test plugin, in
     //! `tests/plugin/plugin.rs`.
 
     use super::*;
+    use crate::Job;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tutti_plugin_types::{Normalized, ParamId, ParameterInfo};
 
@@ -2332,13 +2186,18 @@ mod tests {
         saves: Arc<AtomicUsize>,
         dead: Arc<AtomicBool>,
         t0: Instant,
+        /// What the session's spawner was handed and nobody has taken.
+        held: Arc<Mutex<Vec<Job>>>,
     }
 
     /// A detached session snapshotting every second, hosting a fake that
     /// answers `state` at a dc node.
     fn rig(state: Option<Vec<u8>>) -> Rig {
+        let held: Arc<Mutex<Vec<Job>>> = Arc::default();
+        let queue = Arc::clone(&held);
         let mut session = Session::builder()
             .snapshot_interval(Duration::from_secs(1))
+            .spawn_with(move |job| locked(&queue).push(job))
             .build_detached(SampleRate(48_000.0))
             .unwrap();
         let saves = Arc::new(AtomicUsize::new(0));
@@ -2371,12 +2230,20 @@ mod tests {
             )
             .expect("the node is in the graph");
         let node = node.erase();
+        // The load's parameter read is not what these tests count jobs of.
+        session
+            .graph
+            .plugins
+            .get_mut(&node)
+            .expect("hosted")
+            .param_read = None;
         Rig {
             session,
             node,
             saves,
             dead,
             t0: Instant::now(),
+            held,
         }
     }
 
@@ -2412,15 +2279,23 @@ mod tests {
             out
         }
 
-        /// `Phase::Plugins` at `t0 + ms`: the snapshot jobs it asked for.
-        fn plugins_at(&mut self, ms: u64) -> Vec<PluginSnapshot> {
-            self.events_at(ms)
-                .into_iter()
-                .filter_map(|e| match e {
-                    SessionEvent::PluginSnapshotDue(job) => Some(job),
-                    _ => None,
-                })
-                .collect()
+        /// `Phase::Plugins` at `t0 + ms`: the jobs it submitted.
+        fn plugins_at(&mut self, ms: u64) -> Vec<Job> {
+            let _ = self.events_at(ms);
+            std::mem::take(&mut *locked(&self.held))
+        }
+
+        /// `Phase::Collect`: what the jobs sent lands.
+        fn land(&mut self) {
+            let mut out = Vec::new();
+            let cx = crate::PhaseCx::at(self.t0);
+            self.session.run_phase(crate::Phase::Collect, cx, &mut out);
+        }
+
+        /// Runs `job` on another thread, and lands its end.
+        fn run_and_land(&mut self, job: Job) {
+            std::thread::spawn(move || job.run()).join().unwrap();
+            self.land();
         }
     }
 
@@ -2441,13 +2316,11 @@ mod tests {
         let mut jobs = rig.plugins_at(1_000);
         assert_eq!(jobs.len(), 1, "one job at the interval");
         let job = jobs.pop().unwrap();
-        assert_eq!(job.node(), rig.node);
         assert!(
             rig.plugins_at(5_000).is_empty(),
             "nothing more while the job is in flight"
         );
-        let taken = std::thread::spawn(move || job.run()).join().unwrap();
-        assert!(rig.session.land_snapshot(taken));
+        rig.run_and_land(job);
         assert_eq!(
             rig.session
                 .plugin(rig.node)
@@ -2463,8 +2336,9 @@ mod tests {
             1,
             "the cadence restarted when the last job was asked for (at 1 s)"
         );
-        // That job is dropped unrun (a cancelled task): the plugin is free
-        // again, on the interval.
+        // That job was dropped unrun (a cancelled task) and its end landed:
+        // the plugin is free again, on the interval.
+        rig.land();
         assert!(rig.plugins_at(6_000).is_empty(), "inside the interval");
         assert_eq!(rig.plugins_at(6_500).len(), 1, "a dropped job frees it");
     }
@@ -2479,7 +2353,7 @@ mod tests {
         hosted.snapshot = Some(PluginState::new(hosted.plugin.clone(), vec![4, 2]));
         rig.plugins_at(0);
         let job = rig.plugins_at(1_000).pop().expect("a job at the interval");
-        assert!(!rig.session.land_snapshot(job.run()), "declined");
+        rig.run_and_land(job);
         assert_eq!(
             rig.session
                 .plugin(rig.node)
@@ -2624,7 +2498,7 @@ mod tests {
         let mut rig = rig(Some(vec![1, 2, 3]));
         rig.plugins_at(0);
         let first = rig.plugins_at(1_000).pop().expect("a job at the interval");
-        assert!(rig.session.land_snapshot(first.run()));
+        rig.run_and_land(first);
         let in_flight = rig.plugins_at(2_000).pop().expect("the next job");
 
         let (incoming, _) = fake_handle(Some(vec![9]), Vec::new());
@@ -2634,6 +2508,13 @@ mod tests {
             .get_mut(&rig.node)
             .unwrap()
             .adopt(incoming);
+        // The incoming plugin's parameter read is not what this counts jobs of.
+        rig.session
+            .graph
+            .plugins
+            .get_mut(&rig.node)
+            .unwrap()
+            .param_read = None;
         assert_eq!(
             rig.session
                 .plugin(rig.node)
@@ -2644,10 +2525,7 @@ mod tests {
             None,
             "the outgoing plugin's snapshot is not the incoming one's"
         );
-        assert!(
-            !rig.session.land_snapshot(in_flight.run()),
-            "the outgoing plugin's job must not land on the incoming plugin"
-        );
+        rig.run_and_land(in_flight);
         assert_eq!(
             rig.session
                 .plugin(rig.node)
@@ -2655,12 +2533,13 @@ mod tests {
                 .state()
                 .last_good()
                 .map(PluginState::bytes),
-            None
+            None,
+            "the outgoing plugin's job must not land on the incoming plugin"
         );
 
         assert!(rig.plugins_at(2_000).is_empty(), "its clock starts here");
         let own = rig.plugins_at(3_000).pop().expect("its own job");
-        assert!(rig.session.land_snapshot(own.run()));
+        rig.run_and_land(own);
         assert_eq!(
             rig.session
                 .plugin(rig.node)
@@ -2675,9 +2554,9 @@ mod tests {
     /// **A crossfade to another plugin rebuilds the parameter mirror from
     /// the incoming plugin, read off the control thread.** Right after the
     /// crossfade the mirror is not ready (a lane waits rather than start
-    /// from the outgoing plugin's value); the next `Phase::Plugins` hands
-    /// the read to the host as a job, once; the job runs on another thread
-    /// and lands the incoming plugin's values. A read asked for before a
+    /// from the outgoing plugin's value); the next `Phase::Plugins` submits
+    /// the read to the spawner as a job, once; the job runs on another thread
+    /// and lands the incoming plugin's values in a later update. A read asked for before a
     /// second crossfade lands nowhere. The read goes through the incoming
     /// handle, which `PluginParamValues::start` also gives the mirror's
     /// report callback; a fake's reports cannot be fired from outside
@@ -2701,22 +2580,11 @@ mod tests {
             "not ready until the read lands: nothing was read on this thread"
         );
 
-        let reads = |events: Vec<SessionEvent>| -> Vec<PluginParamRead> {
-            events
-                .into_iter()
-                .filter_map(|e| match e {
-                    SessionEvent::PluginParamsDue(job) => Some(job),
-                    _ => None,
-                })
-                .collect()
-        };
-        let mut jobs = reads(rig.events_at(0));
-        assert_eq!(jobs.len(), 1, "the read is handed out as a job");
-        assert!(reads(rig.events_at(10)).is_empty(), "once");
+        let mut jobs = rig.plugins_at(0);
+        assert_eq!(jobs.len(), 1, "the read is submitted as a job");
+        assert!(rig.plugins_at(10).is_empty(), "once");
         let job = jobs.pop().unwrap();
-        assert_eq!(job.node(), rig.node);
-        let done = std::thread::spawn(move || job.run()).join().unwrap();
-        assert!(rig.session.land_params(done));
+        rig.run_and_land(job);
         assert_eq!(
             rig.session.graph.plugins[&rig.node].param_value(3),
             Some(Some(0.75)),
@@ -2727,17 +2595,18 @@ mod tests {
         let (second, _) = fake_handle(None, vec![(param, 0.5)]);
         let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
         hosted.adopt(second);
-        let stale = reads(rig.events_at(20)).pop().expect("its read");
+        let stale = rig.plugins_at(20).pop().expect("its read");
         let (third, _) = fake_handle(None, vec![(param, 0.125)]);
         let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
         hosted.adopt(third);
-        assert!(
-            !rig.session.land_params(stale.run()),
+        rig.run_and_land(stale);
+        assert_eq!(
+            rig.session.graph.plugins[&rig.node].param_value(3),
+            None,
             "a read of the previous plugin must not land"
         );
-        assert_eq!(rig.session.graph.plugins[&rig.node].param_value(3), None);
-        let own = reads(rig.events_at(30)).pop().expect("its own read");
-        assert!(rig.session.land_params(own.run()));
+        let own = rig.plugins_at(30).pop().expect("its own read");
+        rig.run_and_land(own);
         assert_eq!(
             rig.session.graph.plugins[&rig.node].param_value(3),
             Some(Some(0.125))
@@ -2745,12 +2614,12 @@ mod tests {
     }
 
     /// **A read whose parameter list is unavailable does not make the mirror
-    /// ready, and is handed out again.** The job lands as not landed (the
-    /// mirror stays not ready), the next phase emits `PluginParamsDue` for the
+    /// ready, and is submitted again.** The job lands as not landed (the
+    /// mirror stays not ready), the next phase submits the read for the
     /// same plugin once more, and once the list answers the re-run read lands
     /// the values.
     #[test]
-    fn a_read_whose_parameter_list_is_unavailable_is_handed_out_again() {
+    fn a_read_whose_parameter_list_is_unavailable_is_submitted_again() {
         let param = ParamId::new(3);
         let mut rig = rig(None);
         let (outgoing, _) = fake_handle(None, vec![(param, 0.25)]);
@@ -2775,37 +2644,86 @@ mod tests {
         );
         hosted.adopt(incoming);
 
-        let reads = |events: Vec<SessionEvent>| -> Vec<PluginParamRead> {
-            events
-                .into_iter()
-                .filter_map(|e| match e {
-                    SessionEvent::PluginParamsDue(job) => Some(job),
-                    _ => None,
-                })
-                .collect()
-        };
-        let job = reads(rig.events_at(0))
-            .pop()
-            .expect("the read is handed out");
-        let done = std::thread::spawn(move || job.run()).join().unwrap();
-        assert!(!rig.session.land_params(done), "nothing was read");
+        let job = rig.plugins_at(0).pop().expect("the read is submitted");
+        rig.run_and_land(job);
         assert_eq!(
             rig.session.graph.plugins[&rig.node].param_value(3),
             None,
             "the mirror is not ready"
         );
 
-        let job = reads(rig.events_at(10))
+        let job = rig
+            .plugins_at(10)
             .pop()
             .expect("the read comes round again");
         unlisted.store(false, Ordering::SeqCst);
-        let done = std::thread::spawn(move || job.run()).join().unwrap();
-        assert!(rig.session.land_params(done));
+        rig.run_and_land(job);
         assert_eq!(
             rig.session.graph.plugins[&rig.node].param_value(3),
             Some(Some(0.75)),
             "the re-run read filled the mirror"
         );
-        assert!(reads(rig.events_at(20)).is_empty(), "and it is done");
+        assert!(rig.plugins_at(20).is_empty(), "and it is done");
+    }
+
+    /// **A reload job that ends without a result is a failed attempt, named by
+    /// how it ended.** A job the spawner dropped is `ReloadDropped`, one that
+    /// panicked `ReloadPanicked` with its message; either schedules the next
+    /// attempt (`Reloading`). The end of an attempt that was already replaced
+    /// (its token is not the record's any more) changes nothing.
+    #[test]
+    fn a_reload_job_that_ends_without_a_result_is_a_failed_attempt() {
+        for failed in [
+            JobFailed::Dropped,
+            JobFailed::Panicked {
+                message: "boom".into(),
+            },
+        ] {
+            let mut rig = rig(None);
+            let now = rig.t0;
+            let node = rig.node;
+            let hosted = rig.session.graph.plugins.get_mut(&node).unwrap();
+            let mut recovery = Recovery::new(RecoveryPolicy::default());
+            let _ = recovery.step(
+                RecoveryEvent::Died {
+                    cause: PluginFailure::StreamClosed,
+                },
+                now,
+            );
+            hosted.recovery = Some(recovery);
+            hosted.status = PluginLiveness::Recovering {
+                cause: ReloadCause::Died(PluginFailure::StreamClosed),
+            };
+            hosted.reload.in_flight = true;
+            let token = Arc::clone(&hosted.reload.token);
+            rig.session.plugins_now = now;
+
+            let mut out = Vec::new();
+            rig.session
+                .reload_job_failed(node, &token, failed.clone(), &mut out);
+            let [
+                SessionEvent::Plugin(PluginEvent {
+                    change: PluginChange::Reloading { cause, .. },
+                    ..
+                }),
+            ] = &out[..]
+            else {
+                panic!("the next attempt is scheduled: {out:?}");
+            };
+            match (&failed, cause) {
+                (JobFailed::Dropped, ReloadCause::Attempt(RecoveryFailure::ReloadDropped)) => {}
+                (
+                    JobFailed::Panicked { message },
+                    ReloadCause::Attempt(RecoveryFailure::ReloadPanicked { message: got }),
+                ) => assert_eq!(got, message),
+                other => panic!("{other:?}"),
+            }
+
+            // The same end again, with the attempt's old token: nothing.
+            let mut again = Vec::new();
+            rig.session
+                .reload_job_failed(node, &token, failed, &mut again);
+            assert!(again.is_empty(), "a replaced attempt's end is stale");
+        }
     }
 }

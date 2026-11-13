@@ -18,6 +18,7 @@ use tutti_session::InPort;
 use tutti_session::Root;
 use tutti_session::{PluginChange, PluginEvent};
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
@@ -71,7 +72,10 @@ fn session_built(
     for (key, value) in extra {
         set_env(key, value);
     }
-    build(Session::builder())
+    // Jobs run inline, in the phase that submits them: what they report lands
+    // in the next `Collect`, in a deterministic order. A test that wants another
+    // spawner says so in `build`.
+    build(Session::builder().spawn_with(|job| job.run()))
         .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
         .expect("an offline session builds")
 }
@@ -452,13 +456,15 @@ fn renders_sound(s: &mut Session) -> bool {
     out.iter().any(|&x| x != 0.0)
 }
 
-/// A virtual clock for the session's phases, and every event they and the
-/// reload jobs reported.
+/// A virtual clock for the session's phases, and every event they reported
+/// (the jobs' landings included: the session's spawner runs them inline, so a
+/// job submitted in a frame lands in that frame's `Phase::Collect`).
 struct Drive {
     now: Instant,
     events: Vec<SessionEvent>,
-    /// Run when a reload job is handed out, before it is run.
-    on_reload_due: Option<Box<dyn Fn()>>,
+    /// Set once a `Reloading` has been reported, for a spawner that checks
+    /// something at the load.
+    reloading: Option<Arc<AtomicBool>>,
 }
 
 impl Drive {
@@ -466,34 +472,38 @@ impl Drive {
         Self {
             now: Instant::now(),
             events: Vec::new(),
-            on_reload_due: None,
+            reloading: None,
         }
     }
 
     /// One frame: a block rendered (the server gets real time to act), the
-    /// plugins' phase at the clock 20 ms on, and any reload job run and
-    /// landed at once, as a host would on a worker.
+    /// plugins' phase at the clock 20 ms on, and what its jobs sent landing.
     fn step(&mut self, s: &mut Session) {
         let _ = renders_sound(s);
         std::thread::sleep(Duration::from_millis(5));
         self.now += Duration::from_millis(20);
         let mut out = Vec::new();
         s.run_phase(Phase::Plugins, PhaseCx::at(self.now), &mut out);
-        for event in out {
-            if let SessionEvent::PluginReloadDue(job) = event {
-                if let Some(check) = &self.on_reload_due {
-                    check();
-                }
-                let landed = s.land_reload(&main_thread(), job.run());
-                self.events.extend(landed);
-            } else {
-                self.events.push(event);
-            }
+        if let Some(flag) = &self.reloading
+            && out.iter().any(|e| {
+                matches!(
+                    e,
+                    SessionEvent::Plugin(PluginEvent {
+                        change: PluginChange::Reloading { .. },
+                        ..
+                    })
+                )
+            })
+        {
+            flag.store(true, Ordering::SeqCst);
         }
+        self.events.extend(out);
+        // What the jobs it submitted sent (they ran inline) lands.
+        s.run_phase(Phase::Collect, PhaseCx::at(self.now), &mut self.events);
         // The commit that puts a replacement into the executor's plan, and the
         // collect that frees the plan's old unit on this thread.
         s.run_phase(Phase::Commit, PhaseCx::at(self.now), &mut Vec::new());
-        s.run_phase(Phase::Collect, PhaseCx::at(self.now), &mut Vec::new());
+        s.run_phase(Phase::Collect, PhaseCx::at(self.now), &mut self.events);
     }
 
     /// Steps until an event satisfies `stop` (10 s of wall time at most).
@@ -560,17 +570,10 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     }
     let t0 = Instant::now();
     for at in [0, 2_000] {
-        let mut out = Vec::new();
-        s.run_phase(
-            Phase::Plugins,
-            PhaseCx::at(t0 + Duration::from_millis(at)),
-            &mut out,
-        );
-        for event in out {
-            if let SessionEvent::PluginSnapshotDue(job) = event {
-                assert!(s.land_snapshot(job.run()), "the snapshot is stored");
-            }
-        }
+        let cx = PhaseCx::at(t0 + Duration::from_millis(at));
+        // The snapshot job runs inline, and lands in the next collect.
+        s.run_phase(Phase::Plugins, cx, &mut Vec::new());
+        s.run_phase(Phase::Collect, cx, &mut Vec::new());
     }
     assert!(s.plugin(node).unwrap().state().last_good().is_some());
     let total_before = s.latency();
@@ -878,11 +881,85 @@ fn a_reload_that_fails_to_load_carries_the_bridge_error_as_its_source() {
     );
 }
 
-/// **A reload job dropped unrun is a failed attempt**, and the next one is
-/// handed out: nothing waits on a job that will never land.
+/// **A reload completes with no host code but `update()`.** The probe's first
+/// server aborts on its first block. The host does nothing with jobs: it renders
+/// and calls `update()`, on the real clock, under a spawner that gives each job
+/// a thread of its own. The death is declared, the reload is submitted to the
+/// spawner, runs off this thread, and lands in a later `update()`: the node is
+/// `Recovered`, and renders again.
 #[test]
-fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
+fn a_reload_completes_with_no_host_code_but_update() {
+    let once = once_file("recovery-update-only.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1"),
+        ],
+        |b| {
+            b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                backoff: Duration::from_millis(1),
+                ..Default::default()
+            }))
+            // A thread per job, the way a host without a pool of its own runs
+            // them: nothing here touches a job but to start it.
+            .spawn_with(|job| {
+                std::thread::spawn(move || job.run());
+            })
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+
+    let mut events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !events.iter().any(|e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Recovered { .. },
+                ..
+            })
+        )
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "the reload never completed: {events:?}"
+        );
+        let _ = renders_sound(&mut s);
+        events.extend(s.update());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Reloading { .. },
+                ..
+            })
+        )),
+        "the death was reported before the recovery: {events:?}"
+    );
+    assert!(matches!(
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Running
+    ));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !renders_sound(&mut s) {
+        assert!(Instant::now() < deadline, "the replacement renders nothing");
+        let _ = s.update();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// **A reload job the spawner drops is a failed attempt**, and the next one
+/// is submitted: nothing waits on a job that will never land. The spawner here
+/// drops every job it is handed, so the first reload ends as
+/// `RecoveryFailure::ReloadDropped`, which the second `Reloading` carries.
+#[test]
+fn a_reload_job_the_spawner_drops_is_a_failed_attempt() {
     let once = once_file("recovery-dropped.once");
+    let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&dropped);
     let mut s = session_built(
         &[
             ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
@@ -893,40 +970,27 @@ fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
                 backoff: Duration::from_millis(1),
                 ..Default::default()
             }))
+            .spawn_with(move |job| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                drop(job);
+            })
         },
     );
     let (node, _) = wired_probe(&mut s);
-    let mut now = Instant::now();
-    let mut reloadings = 0;
-    let mut dropped = 0;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while reloadings < 2 {
-        assert!(Instant::now() < deadline, "no second attempt");
-        let _ = renders_sound(&mut s);
-        std::thread::sleep(Duration::from_millis(5));
-        now += Duration::from_millis(20);
-        let mut out = Vec::new();
-        s.run_phase(Phase::Plugins, PhaseCx::at(now), &mut out);
-        for event in out {
-            match event {
-                SessionEvent::Plugin(PluginEvent {
-                    node: n,
-                    change: PluginChange::Reloading { .. },
+    let mut drive = Drive::new();
+    drive.until(&mut s, "a second attempt", |e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Reloading {
+                    cause: ReloadCause::Attempt(RecoveryFailure::ReloadDropped),
                     ..
-                }) => {
-                    assert_eq!(n, node);
-                    reloadings += 1;
-                }
-                // Dropped: the host never ran it.
-                SessionEvent::PluginReloadDue(job) => {
-                    dropped += 1;
-                    drop(job);
-                }
-                _ => {}
-            }
-        }
-    }
-    assert_eq!(dropped, 1);
+                },
+                ..
+            })
+        )
+    });
+    assert!(dropped.load(Ordering::SeqCst) >= 1, "the spawner was asked");
     assert!(matches!(
         s.plugin(node).unwrap().health(),
         PluginHealth::Reloading { .. }
@@ -1030,20 +1094,37 @@ fn quick_hang_policy() -> tutti_session::RecoveryPolicy {
 /// first server parks in `process()` for good (the once-file: a replacement
 /// does not): it never crashes, so only the abandoned-block count shows it.
 /// The session ends its server (the death reads "stopped answering"), the
-/// node is kept, and when the replacement's load is handed out the hung
+/// node is kept, and when the replacement's load is submitted the hung
 /// server is already gone: a live server is never left beside its
 /// replacement. The replacement renders.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_plugin_that_stops_answering_is_ended_and_replaced() {
     let once = once_file("recovery-hang.once");
+    // The spawner is the load's moment: once the death is reported, a job it
+    // is handed (the reload) finds the hung server gone.
+    let reloading = Arc::new(AtomicBool::new(false));
+    let hung_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let (seen, pid_cell) = (Arc::clone(&reloading), Arc::clone(&hung_pid));
     let mut s = session_built(
         &[
             PASSTHROUGH,
             ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
             ("TUTTI_CLAP_PROBE_BLOCK_FROM", "20"),
         ],
-        |b| b.plugin_recovery(Some(quick_hang_policy())),
+        |b| {
+            b.plugin_recovery(Some(quick_hang_policy()))
+                .spawn_with(move |job| {
+                    if seen.load(Ordering::SeqCst) {
+                        let pid = pid_cell.load(Ordering::SeqCst);
+                        assert!(
+                            process_ended(pid),
+                            "the hung server {pid} was still alive when its replacement was loaded"
+                        );
+                    }
+                    job.run();
+                })
+        },
     );
     let (node, _) = wired_probe(&mut s);
     let pid = s
@@ -1053,13 +1134,10 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
         .server_pid()
         .expect("an out-of-process plugin has a server");
 
+    hung_pid.store(pid, Ordering::SeqCst);
+
     let mut drive = Drive::new();
-    drive.on_reload_due = Some(Box::new(move || {
-        assert!(
-            process_ended(pid),
-            "the hung server {pid} was still alive when its replacement was loaded"
-        );
-    }));
+    drive.reloading = Some(reloading);
     drive.until(&mut s, "recovered", |e| {
         matches!(
             e,
@@ -1277,17 +1355,10 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
 fn snapshot_now(s: &mut Session, node: NodeKey) {
     let t0 = Instant::now();
     for at in [0, 2_000] {
-        let mut out = Vec::new();
-        s.run_phase(
-            Phase::Plugins,
-            PhaseCx::at(t0 + Duration::from_millis(at)),
-            &mut out,
-        );
-        for event in out {
-            if let SessionEvent::PluginSnapshotDue(job) = event {
-                assert!(s.land_snapshot(job.run()), "the snapshot is stored");
-            }
-        }
+        let cx = PhaseCx::at(t0 + Duration::from_millis(at));
+        // The snapshot job runs inline, and lands in the next collect.
+        s.run_phase(Phase::Plugins, cx, &mut Vec::new());
+        s.run_phase(Phase::Collect, cx, &mut Vec::new());
     }
     assert!(s.plugin(node).unwrap().state().last_good().is_some());
 }

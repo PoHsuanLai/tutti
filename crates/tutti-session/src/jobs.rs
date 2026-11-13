@@ -251,10 +251,10 @@ impl Jobs {
     /// [`Session::update`], on the control thread.
     ///
     /// `land` (and every lander of [`submit_stream`](Self::submit_stream))
-    /// runs on the thread that calls `update()`. A landing that needs the
-    /// main thread, such as a plugin reload taking `MainThread::current()`,
-    /// relies on `update()` running on the claiming thread, as a plugin host's
-    /// does.
+    /// runs on the thread that calls `update()`, which need not be the main
+    /// thread: a landing takes no main-thread proof (the plugin reload's does
+    /// not), and what must be done on the main
+    /// thread is posted to it (`tutti_plugin_types::defer_to_main`).
     #[cfg_attr(
         not(any(test, feature = "midi", feature = "sampler")),
         expect(

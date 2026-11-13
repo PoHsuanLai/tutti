@@ -79,6 +79,7 @@
 mod cell;
 mod clock;
 mod denormals;
+mod dirty_set;
 mod doorbell;
 mod drain_clock;
 mod edits;
@@ -101,6 +102,7 @@ mod vec;
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use clock::monotonic_ns;
 pub use denormals::with_no_denormals;
+pub use dirty_set::{DirtyIndex, DirtySet, Taken};
 pub use doorbell::Doorbell;
 pub use drain_clock::{DrainBeat, DrainMark, DrainWatch, drain_clock};
 pub use edits::{EditReader, EditWriter, RingFull, edit_ring};

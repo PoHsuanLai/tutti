@@ -1121,6 +1121,9 @@ jobs:
       # preceded it) and `edit_ring` (each edit applied once, in order, no torn
       # slot), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test request_word_loom
+      # `DirtySet` (a flag set during a take is in that take or the next,
+      # never lost, each set taken once), against the shipped code.
+      - run: cargo test --locked -p tutti-rt --release --test dirty_set_loom
       - run: cargo test --locked -p tutti-rt --release --test edit_ring_loom
       # `level_cell` (a block lands whole in one take, none lost or twice),
       # against the shipped code.

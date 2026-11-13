@@ -16,8 +16,9 @@ taking the unit vocabulary.
 - **`PosRing`** — frames a writer thread places ahead of the audio thread,
   indexed by position (a disk stream's ring).
 - **`PackedAtomic`**, **`SeqWriter`/`SeqReader`**, **`RequestWord`**,
-  **`edit_ring`** — a value in one atomic word, a sequence lock, a request
-  bitset, and a bounded single-producer single-consumer queue.
+  **`edit_ring`**, **`DirtySet`** — a value in one atomic word, a sequence lock, a request
+  bitset, a bounded single-producer single-consumer queue, and a sized set of
+  dirty flags (an atomic bit per index) with no capacity to overflow.
 - **`RtScope`** — a per-thread "inside a block" marker that a `Drop` impl checks.
 - **`SplitMut`/`SplitRw`**, **`TaskGraph`**, **`JobGate`**, **`BlockWaits`** — the
   parallel executor's claims, task list, job lending and wait settings.

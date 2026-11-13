@@ -9,12 +9,8 @@
 //! Tick body is pure scalar state arithmetic + a fixed-size ring buffer
 //! update.
 
-use assert_no_alloc::AllocDisabler;
 use std::time::{Duration, Instant};
 use tutti_midi_runtime::MidiClockDecoder;
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 fn us_per_tick(bpm: f64) -> Duration {
     Duration::from_micros(

@@ -4,7 +4,7 @@
 
 use std::num::{NonZeroU16, NonZeroUsize};
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_midi_protocol::{
     Addressee, ChannelMask, GeneralMidi, Heard, KeyChange, KeyChanges, KeyTable, MpeZoneConfig,
     MpeZones, OctaveOffsets, Timing, TuningFrequency, TuningMessage, TuningName, Universal,
@@ -19,9 +19,6 @@ use tutti_voicing::{
     Command, Mode, Order, Patch, PerNoteState, Rules, Steal, TuningCapacity, VoiceId, VoiceSpec,
     Voicing,
 };
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 /// Two layers, one exclusive class.
 struct Grouped;

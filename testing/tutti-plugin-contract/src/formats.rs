@@ -108,7 +108,7 @@ impl Format for Au {
     /// `AUParameterSet`.
     const PARAM_TIMING: ParamTiming = ParamTiming::Echoed;
     /// An AU holds a parameter as an `f32`.
-    const TOLERANCE: f64 = f32::EPSILON as f64;
+    const PARAM_VALUE_TOLERANCE: f64 = f32::EPSILON as f64;
     const GAPS: &'static [(&'static str, Gap)] = &[
         NO_TRANSPORT_EVENT,
         (

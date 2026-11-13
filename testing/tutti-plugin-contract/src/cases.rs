@@ -236,11 +236,11 @@ pub fn parameters_listed<F: Format>() {
     }
 }
 
-/// `got` is `want` to the format's own representation (`Format::TOLERANCE`,
+/// `got` is `want` to the format's own representation (`Format::PARAM_VALUE_TOLERANCE`,
 /// relative) and, at most, to the double's last places.
 fn assert_close<F: Format>(got: f64, want: f64, what: &str) {
     assert!(
-        (got - want).abs() <= want.abs() * (1e-12 + F::TOLERANCE),
+        (got - want).abs() <= want.abs() * (1e-12 + F::PARAM_VALUE_TOLERANCE),
         "{what}: got {got}, want {want}"
     );
 }

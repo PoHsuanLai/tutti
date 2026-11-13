@@ -577,6 +577,60 @@ fn disabling_ends_midi_ci_with_an_invalidate_muid_and_the_loss_of_its_peers() {
     assert!(received(&wire).is_empty());
 }
 
+/// `enable_ci` again: with the identity already in use it changes nothing; with
+/// another, the running devices end as on a disable (an Invalidate MUID for
+/// their own MUID, M2-101 §5.9, and their peers lost) and start again under a
+/// new MUID, whose Discovery carries the new identity.
+#[test]
+fn enabling_again_with_another_identity_restarts_midi_ci_under_a_new_muid() {
+    let (wire, ours) = midi1_running();
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data: peer_data(),
+        },
+        40,
+    );
+    let _ = polled(&wire, 50);
+    assert_eq!(wire.session.ci_peers(&wire.id).len(), 1);
+
+    wire.session.enable_ci(identity());
+    assert!(
+        polled(&wire, 60).is_empty(),
+        "the same identity changes nothing"
+    );
+    assert!(ci_sent(&wire).is_empty());
+    assert_eq!(wire.session.ci_peers(&wire.id).len(), 1);
+
+    let mut other = identity();
+    other.family = [U7::of(9), U7::of(9)];
+    wire.session.enable_ci(other);
+    let mut changes = polled(&wire, 70);
+    changes.extend(polled(&wire, 80));
+    assert!(
+        changes.iter().any(|c| matches!(
+            c,
+            Polled::Ci(_, CiChange::Lost { muid, .. }) if *muid == peer()
+        )),
+        "{changes:?}"
+    );
+    let sent = ci_sent(&wire);
+    let [
+        (_, CiMessage::InvalidateMuid { header, target }),
+        (_, CiMessage::Discovery { header: dh, data }),
+    ] = sent.as_slice()
+    else {
+        panic!("an Invalidate MUID then a Discovery, got {sent:?}");
+    };
+    assert_eq!((header.source, *target), (ours, ours));
+    assert_ne!(dh.source, ours, "a new MUID");
+    assert_eq!(data.identity, other);
+    assert!(wire.session.ci_peers(&wire.id).is_empty());
+}
+
 /// A message is cut where the stream ring overflowed: the packets before the gap
 /// and the ones after it are not one message. The payload is a valid Reply to
 /// Discovery with padding after it (bytes past the last field are ignored), cut

@@ -531,13 +531,16 @@ impl MidiSession {
     /// this is called**: a Discovery carries a System Exclusive manufacturer
     /// id, tutti has none, and the one MIDI 1.0 sets aside for non-commercial use
     /// (`7D`) "is not to be used on any product released to the public". So
-    /// the app says who it is, with the id it registered.
+    /// the app says who it is, with the id it registered. An identity under
+    /// [`ManufacturerId::NON_COMMERCIAL`](tutti_ump::ManufacturerId::NON_COMMERCIAL)
+    /// is for development and research only, never for a released product.
     ///
     /// It reaches every open input (a device on one starts at the next
     /// [`poll`](Self::poll), after any Identity Request in progress has ended)
-    /// and every input opened later. Calling it again with another identity
-    /// restarts the devices under it, the old ones announcing their end as
-    /// [`disable_ci`](Self::disable_ci) does.
+    /// and every input opened later. Calling it again with the identity already
+    /// in use changes nothing; with another, the running devices end as
+    /// [`disable_ci`](Self::disable_ci) ends them (an Invalidate MUID for their
+    /// own MUID, their peers lost) and start again under a new MUID.
     pub fn enable_ci(&self, identity: DeviceIdentity) {
         *self.ci_identity_lock() = Some(identity);
     }

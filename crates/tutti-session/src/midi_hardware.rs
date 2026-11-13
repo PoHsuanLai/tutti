@@ -68,9 +68,13 @@ impl Midi<'_> {
     /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off by
     /// default**: a Discovery carries a System Exclusive manufacturer id, tutti
     /// has none, and MIDI 1.0's `7D` is "not to be used on any product released
-    /// to the public", so the app gives the id it registered. It reaches the
-    /// inputs already open (at the next update, after any Identity Request in
-    /// progress) and later ones; found peers are
+    /// to the public", so the app gives the id it registered (an identity
+    /// under `ManufacturerId::NON_COMMERCIAL` is for development and research
+    /// only). It reaches the inputs already open (at the next update, after any
+    /// Identity Request in progress) and later ones. Called again with the
+    /// identity in use it changes nothing; with another, the running devices end
+    /// as [`disable_ci`](Self::disable_ci) ends them and start again under a new
+    /// MUID. Found peers are
     /// [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer) and
     /// [`ci_peers`](Self::ci_peers).
     ///

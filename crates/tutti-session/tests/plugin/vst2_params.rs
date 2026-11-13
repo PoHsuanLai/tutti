@@ -24,7 +24,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 fn probe_answering_properties() -> (libloading::Library, std::path::PathBuf) {
     let path = tutti_fixtures::vst2_probe();
     // SAFETY: the probe is our own test plugin, whose load runs no constructor.
-    let lib = unsafe { libloading::Library::new(&path) }.expect("the probe image opens");
+    let lib = unsafe { libloading::Library::new(path) }.expect("the probe image opens");
     // SAFETY: the probe exports this as `extern "C" fn(bool)`.
     unsafe {
         let switch: libloading::Symbol<extern "C" fn(bool)> = lib

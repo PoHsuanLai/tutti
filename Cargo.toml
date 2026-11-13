@@ -153,6 +153,9 @@ missing_panics_doc = "warn"
 # Shared-dep pins the members inherit via `workspace = true`.
 [workspace.dependencies]
 thiserror = "2"
+# The W3C UI Events key vocabulary (`Key`, `Code`, `Modifiers`, `KeyState`) a plugin editor's
+# key events are written in, so a windowing frontend converts name for name.
+keyboard-types = { version = "0.8.3", default-features = false }
 
 # Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —
 # dead, never with a `[[bench]]` — while the vendored fundsp fork was already

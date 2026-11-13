@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The easing laws of the engine, and the automation trajectory built on them.
 //!
 //! A [`Law`] is a function `g` of progress `t` in `[0, 1]` with `g(0) = 0` and

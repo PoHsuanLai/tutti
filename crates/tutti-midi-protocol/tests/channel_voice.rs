@@ -72,6 +72,7 @@ fn other_messages_pass_through_widen_message() {
 /// three-byte MIDI field is, comes out as the MIDI 2.0 packet; a velocity-0 one
 /// is a Note Off at release velocity 0x8000 (App. D.3.1); a System message is
 /// the System packet.
+/// Spec: m2-104/d.3.1#1, m2-104/d.3.1#2
 #[test]
 fn bytes_widen_to_a_packet() {
     let group = MidiGroup::of(5);

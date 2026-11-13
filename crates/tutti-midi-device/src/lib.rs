@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The pure core of MIDI device detection and the MIDI-CI codec.
 //!
 //! The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])
@@ -70,23 +71,27 @@ mod name;
 mod table;
 
 pub use ci::{
-    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, ChannelsDetail, CiAction, CiCategories,
-    CiDevice, CiDeviceId, CiHeader, CiInstanceId, CiMessage, CiPeer, CiVersion, DISCOVERY_WINDOW,
-    Decoded, Destination, DetailsData, DiscoveryData, EndpointInfo, EndpointStatus, InquiryTarget,
-    ListTooLong, ManufacturerProfile, MaxSysexSize, MediaType, MessageText, Muid, Nak,
-    NotADeviceId, NotAMuid, NotASysexSize, NotAVersion, NotValid, Outcome, PE_MAX_HEADER_LEN,
-    PROFILE_TIMEOUT, PeDecimal, PeEncoding, PeEndedBy, PeExtra, PeHeader, PeHeaderError,
-    PeHeaderTooLong, PeMessage, PePage, PeReply, PeRequest, PeReservedProperty, PeStatus,
-    PeSubscription, PeUpdateCommand, PeValue, ProfileAction, ProfileChange, ProfileChannels,
-    ProfileDataError, ProfileEntry, ProfileId, ProfileInitiator, ProfileLists, ProfileState,
-    ProfileTable, ProfileTarget, PropertyName, Request, RequestError, ResourceId, ResourceName,
-    SUB_ID2_ACK, SUB_ID2_DISCOVERY, SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY,
-    SUB_ID2_ENDPOINT_REPLY, SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, SUB_ID2_PROFILE_ADDED,
-    SUB_ID2_PROFILE_DETAILS_INQUIRY, SUB_ID2_PROFILE_DETAILS_REPLY, SUB_ID2_PROFILE_DISABLED,
-    SUB_ID2_PROFILE_ENABLED, SUB_ID2_PROFILE_INQUIRY, SUB_ID2_PROFILE_REMOVED,
-    SUB_ID2_PROFILE_REPLY, SUB_ID2_PROFILE_SPECIFIC_DATA, SUB_ID2_SET_PROFILE_OFF,
-    SUB_ID2_SET_PROFILE_ON, SpecificData, StandardProfile, SubscribeId, Unread, UnreadReason,
-    mcoded7,
+    Ack, BodyLimit, BufferLimit, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, ChannelsDetail,
+    ChunkNo, ChunkPosition, ChunkTotal, CiAction, CiCategories, CiDevice, CiDeviceId, CiHeader,
+    CiInstanceId, CiMessage, CiPeer, CiVersion, DISCOVERY_WINDOW, Decoded, Destination,
+    DetailsData, DiscoveryData, EndpointInfo, EndpointStatus, InquiryTarget, ListTooLong,
+    ManufacturerProfile, MaxSysexSize, MediaType, MessageText, Muid, Nak, NotADeviceId, NotAMuid,
+    NotASysexSize, NotAVersion, NotInRange, NotValid, Outcome, PE_MAX_CHUNK_DATA_LEN,
+    PE_MAX_HEADER_LEN, PE_TIMEOUT, PROFILE_TIMEOUT, PeAnswer, PeBodyError, PeBuffered, PeChunk,
+    PeChunkError, PeDecimal, PeEncoding, PeEndedBy, PeExpired, PeExtra, PeFlowControl, PeHeader,
+    PeHeaderError, PeHeaderTooLong, PeMessage, PeMessageKind, PePage, PeReassembler,
+    PeReassemblyError, PeReassemblyLimits, PeReceived, PeRefused, PeReply, PeRequest, PeRequestId,
+    PeReservedProperty, PeSignal, PeStatus, PeStep, PeSubscription, PeTerminator, PeTransaction,
+    PeUpdateCommand, PeValue, ProfileAction, ProfileChange, ProfileChannels, ProfileDataError,
+    ProfileEntry, ProfileId, ProfileInitiator, ProfileLists, ProfileState, ProfileTable,
+    ProfileTarget, PropertyName, Request, RequestError, ResourceId, ResourceName, SUB_ID2_ACK,
+    SUB_ID2_DISCOVERY, SUB_ID2_DISCOVERY_REPLY, SUB_ID2_ENDPOINT_INQUIRY, SUB_ID2_ENDPOINT_REPLY,
+    SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, SUB_ID2_PROFILE_ADDED, SUB_ID2_PROFILE_DETAILS_INQUIRY,
+    SUB_ID2_PROFILE_DETAILS_REPLY, SUB_ID2_PROFILE_DISABLED, SUB_ID2_PROFILE_ENABLED,
+    SUB_ID2_PROFILE_INQUIRY, SUB_ID2_PROFILE_REMOVED, SUB_ID2_PROFILE_REPLY,
+    SUB_ID2_PROFILE_SPECIFIC_DATA, SUB_ID2_SET_PROFILE_OFF, SUB_ID2_SET_PROFILE_ON, SpecificData,
+    StandardProfile, StreamLimit, SubscribeId, TimeoutWait, Unread, UnreadReason, decode_body,
+    encode_body, mcoded7, split_message,
 };
 
 pub use connection::{Action, Connection, Ending, MAX_ATTEMPTS, NAME_GRACE, STEP_TIMEOUT};

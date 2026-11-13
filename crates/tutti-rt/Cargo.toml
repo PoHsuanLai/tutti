@@ -3,7 +3,7 @@ name = "tutti-rt"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Real-time-safe shared-memory primitives for the audio thread, and the one thread-priority call"
+description = "Small data structures safe to use from an audio callback, which must never wait, allocate or lock"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
@@ -19,7 +19,7 @@ workspace = true
 
 [dependencies]
 # `request_priority`: the OS thread-priority call, behind one outcome type.
-thread-priority = "1.1"
+thread-priority = "3.1"
 # `ArcLend`/`Loan`/`Reader`, re-exported at the root: the cell non-scalar state
 # reaches the audio thread through. A general-purpose crate that names no tutti
 # crate.

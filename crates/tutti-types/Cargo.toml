@@ -5,12 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 # The name is an unrelated project's on crates.io; publishing is the owner's call.
 publish = false
-description = "Typed quantities and shapes shared by every engine crate: units, channel layouts, the Source/Sink I/O traits, meter and graph values"
+description = "Shared building blocks for audio code: units such as hertz and decibels, channel layouts and audio streams"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-types"
 readme = "README.md"
-keywords = ["audio", "real-time"]
+keywords = ["audio", "units", "real-time"]
 categories = ["multimedia::audio"]
 
 [lints]

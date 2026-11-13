@@ -1039,6 +1039,7 @@ pub enum SmpteFrameRate {
 
 bitflags! {
     /// Flags for VST channels.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ChannelFlags: i32 {
         /// Indicates channel is active. Ignored by host.
         const ACTIVE = 1;
@@ -1059,6 +1060,7 @@ bitflags! {
     /// `max_integer` without checking `USES_INTEGER_MIN_MAX` reads whatever the
     /// plugin happened to leave there. The range and the integer step are
     /// separate bits: a plugin may declare either without the other.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ParameterFlags: i32 {
         /// `kVstParameterIsSwitch` (`1 << 0`): the parameter is a switch
         /// (on/off).
@@ -1089,6 +1091,7 @@ bitflags! {
 
 bitflags! {
     /// Flags in [`MidiProgramName::flags`] — VST 2.4's `VstMidiProgramNameFlags`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct MidiProgramFlags: i32 {
         /// The program is a General MIDI drum kit rather than a melodic sound,
         /// so its keys are individual instruments and `effGetMidiKeyName` is
@@ -1099,6 +1102,7 @@ bitflags! {
 
 bitflags! {
     /// Flags for VST plugins.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct PluginFlags: i32 {
         /// Plugin has an editor.
         const HAS_EDITOR = 1;
@@ -1117,6 +1121,7 @@ bitflags! {
 
 bitflags! {
     /// Cross platform modifier key flags.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ModifierKey: u8 {
         /// Shift key.
         const SHIFT = 1;
@@ -1131,6 +1136,7 @@ bitflags! {
 
 bitflags! {
     /// MIDI event flags.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct MidiEventFlags: i32 {
         /// This event is played live (not in playback from a sequencer track). This allows the
         /// plugin to handle these flagged events with higher priority, especially when the
@@ -1141,6 +1147,7 @@ bitflags! {
 
 bitflags! {
     /// Used in the `flags` field of `TimeInfo`, and for querying the host for specific values
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct TimeInfoFlags : i32 {
         /// Indicates that play, cycle or record state has changed.
         const TRANSPORT_CHANGED = 1;

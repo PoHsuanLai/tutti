@@ -7,6 +7,8 @@
 use tutti_graph::BusRole;
 use tutti_types::Samples;
 
+use crate::Measured;
+
 use crate::{ChannelLayout, ChannelTopology, FeatureReport, Features};
 
 #[cfg(feature = "serde")]
@@ -147,24 +149,10 @@ use tutti_graph::MAX_NODE_TAIL;
 /// the constructor that performs it.
 pub use tutti_types::Tail as PluginTail;
 
-/// What a probe measured of a plugin (doc 023 section 6): the figures a
-/// plugin's own claim is checked against. **Empty until the probe exists**
-/// (doc 023 step 3): nothing produces one yet, so every field is `None` and a
-/// [`Processing`] holding one behaves as its claim alone.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Measured {
-    /// The last frame above the probe's floor after an impulse, counted from
-    /// the impulse: what the plugin was measured to keep sounding.
-    pub tail: Option<Samples>,
-    /// The first frame above the floor: the processing latency measured.
-    pub latency: Option<Samples>,
-}
-
 /// How a plugin processes: the tail it claims, and what a probe measured of
 /// it ([`Measured`]). The one place the tail ceiling the graph parks a plugin
 /// node on is decided ([`ceiling`](Self::ceiling)).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Processing {
     tail: PluginTail,
     measured: Option<Measured>,
@@ -339,6 +327,8 @@ impl LoadedPlugin {
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
+    use crate::{LatencyVerdict, PROBE_FLOOR, ProbeConfig, StateHash, TailVerdict, Verdict};
+    use tutti_types::{MaxBlock, SampleRate};
 
     fn stereo() -> ChannelTopology {
         ChannelTopology::smpte(ChannelLayout::STEREO).expect("stereo has an order")
@@ -488,11 +478,29 @@ mod tests {
         }
     }
 
-    fn measured(tail: usize) -> Measured {
-        Measured {
-            tail: Some(Samples(tail)),
-            latency: None,
+    fn config() -> ProbeConfig {
+        ProbeConfig {
+            rate: SampleRate(48_000.0),
+            block: MaxBlock::new(Samples(512)).unwrap(),
+            floor: PROBE_FLOOR,
+            state: StateHash::of(&[]),
         }
+    }
+
+    fn measured_with(tail: Option<usize>) -> Measured {
+        Measured {
+            tail: tail.map(Samples),
+            latency: None,
+            config: config(),
+            verdict: Verdict {
+                tail: TailVerdict::Honest,
+                latency: LatencyVerdict::Honest,
+            },
+        }
+    }
+
+    fn measured(tail: usize) -> Measured {
+        measured_with(Some(tail))
     }
 
     /// **A measured tail above a finite claim raises the ceiling to it**: a
@@ -529,7 +537,7 @@ mod tests {
     }
 
     /// Unmeasured, the ceiling is the claim: what every plugin is until the
-    /// probe (doc 023 step 3) has a producer.
+    /// probe has measured it (an empty measurement included).
     #[test]
     fn an_unmeasured_plugin_is_its_claim() {
         for claim in [
@@ -539,7 +547,7 @@ mod tests {
             PluginTail::Finite(Samples(7)),
         ] {
             assert_eq!(Processing::new(claim).ceiling(), claim);
-            let empty = Processing::new(claim).with_measured(Measured::default());
+            let empty = Processing::new(claim).with_measured(measured_with(None));
             assert_eq!(empty.ceiling(), claim);
         }
     }

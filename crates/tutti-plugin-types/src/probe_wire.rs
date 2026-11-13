@@ -15,10 +15,12 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Leads every result file; the last byte is the format version (3: a file's
-/// outcome is every plugin it holds; 2 held one descriptor, and its payload was
-/// postcard as this is; 1 was bincode).
-const MAGIC: [u8; 5] = *b"TPRB\x03";
+/// Leads every result file; the last byte is the format version (4: a
+/// descriptor carries what a measuring probe found, `measured`, and postcard has
+/// no defaults, so a version 3 file is refused; 3: a file's outcome is every
+/// plugin it holds; 2 held one descriptor, and its payload was postcard as this
+/// is; 1 was bincode).
+const MAGIC: [u8; 5] = *b"TPRB\x04";
 /// Magic, then the payload length as a little-endian `u64`.
 const HEADER: usize = MAGIC.len() + 8;
 
@@ -256,15 +258,68 @@ mod tests {
         ));
     }
 
-    /// A file from an older probe (format 1, bincode; format 2, one descriptor)
+    /// A file from an older probe (format 1, bincode; format 2, one descriptor;
+    /// format 3, a descriptor without `measured`)
     /// is refused by its magic, not decoded as the current payload.
     #[test]
     fn an_older_format_file_is_refused_by_its_magic() {
-        for version in [1, 2] {
+        for version in [1, 2, 3] {
             let mut old = encode_result(&described());
             old[MAGIC.len() - 1] = version;
             assert_eq!(decode_result(&old), Err(ResultError::BadMagic), "{version}");
         }
+    }
+
+    /// **A measuring probe's figures survive the file**: the descriptor's
+    /// `measured` is a payload of postcard, which has no defaults, so a reader
+    /// of the same version sees every verdict a probe can write.
+    #[test]
+    fn a_measurement_survives_the_result_file() {
+        use crate::{
+            LatencyVerdict, MaxBlock, Measured, NotChecked, PROBE_FLOOR, ProbeConfig, SampleRate,
+            Samples, StateHash, TailVerdict, Verdict,
+        };
+        let measured = |tail, latency| Measured {
+            tail: Some(Samples(8191)),
+            latency: None,
+            config: ProbeConfig {
+                rate: SampleRate(44_100.0),
+                block: MaxBlock::new(Samples(64)).unwrap(),
+                floor: PROBE_FLOOR,
+                state: StateHash::of(b"state"),
+            },
+            verdict: Verdict { tail, latency },
+        };
+        let verdicts = [
+            (TailVerdict::Honest, LatencyVerdict::Honest),
+            (
+                TailVerdict::TailLonger {
+                    reported: Samples(1),
+                    measured: Samples(2),
+                },
+                LatencyVerdict::LatencyDiffers {
+                    reported: Samples(0),
+                    measured: Samples(64),
+                },
+            ),
+            (
+                TailVerdict::NeverSettles {
+                    level: tutti_types::Db(-60.0),
+                },
+                LatencyVerdict::NotChecked(NotChecked::NoOnset),
+            ),
+        ];
+        let plugins = verdicts
+            .into_iter()
+            .enumerate()
+            .map(|(k, (tail, latency))| PluginDescriptor {
+                id: format!("plugin{k}"),
+                measured: Some(measured(tail, latency)),
+                ..PluginDescriptor::default()
+            })
+            .collect();
+        let outcome = ProbeOutcome::Described(plugins);
+        assert_eq!(decode_result(&encode_result(&outcome)), Ok(outcome));
     }
 
     /// Every plugin of a file, in order, is in the file: the list is the outcome.

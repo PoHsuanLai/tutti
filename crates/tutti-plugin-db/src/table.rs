@@ -371,6 +371,45 @@ mod tests {
         assert!(db.needs_rescan(Path::new("/p/a.vst3"), &facts(T + 1)));
     }
 
+    /// **A measurement goes with its row**: a file whose time changed needs a
+    /// rescan, and the delta that probes it again replaces the row whole, so the
+    /// old figures are never beside the new file (doc 023 section 6).
+    #[test]
+    fn a_changed_file_drops_its_measurement_with_its_row() {
+        let measured = |m: bool| {
+            let mut row = row(T);
+            let FileState::Probed(plugins) = &mut row.state else {
+                unreachable!("a probed row");
+            };
+            if m {
+                plugins[0].measured = Some(tutti_plugin_types::Measured {
+                    tail: None,
+                    latency: None,
+                    config: tutti_plugin_types::ProbeConfig {
+                        rate: tutti_plugin_types::SampleRate(48_000.0),
+                        block: tutti_plugin_types::MaxBlock::new(tutti_plugin_types::Samples(512))
+                            .unwrap(),
+                        floor: tutti_plugin_types::PROBE_FLOOR,
+                        state: tutti_plugin_types::StateHash::of(&[]),
+                    },
+                    verdict: tutti_plugin_types::Verdict {
+                        tail: tutti_plugin_types::TailVerdict::Honest,
+                        latency: tutti_plugin_types::LatencyVerdict::Honest,
+                    },
+                });
+            }
+            row
+        };
+        let mut db = db_with("/p/a.vst3", measured(true));
+        assert!(!db.needs_rescan(Path::new("/p/a.vst3"), &facts(T)));
+        assert!(db.needs_rescan(Path::new("/p/a.vst3"), &facts(T + 1)));
+        let mut again = measured(false);
+        again.mtime = Some(T + 1);
+        db.apply(Delta::put("/p/a.vst3", again));
+        let after = db.plugins().next().expect("a plugin");
+        assert_eq!(after.descriptor.measured, None);
+    }
+
     #[test]
     fn a_blacklist_holds_only_while_the_file_is_unchanged() {
         let mut db = PluginDb::new();

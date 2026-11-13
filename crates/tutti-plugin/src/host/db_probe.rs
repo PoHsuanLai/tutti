@@ -1,7 +1,7 @@
 //! The subprocess probe, as the probe `tutti-plugin-db` scans with.
 
 pub use super::probe::DEFAULT_PROBE_TIMEOUT;
-use super::probe::probe_metadata_with;
+use super::probe::{measure_metadata_with, probe_metadata_with};
 use std::path::Path;
 use std::time::Duration;
 use tracing::debug;
@@ -12,6 +12,11 @@ use tutti_plugin_types::BridgeError;
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::Locator;
 use tutti_plugin_types::PluginDescriptor;
+
+/// How long a measuring probe may take, spawn, load and both renders included
+/// (doc 023 section 6: two configurations, each up to the render budget of 65 s of
+/// audio, which a plugin slower than real time cannot meet in 15 s).
+pub const DEFAULT_MEASURE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The blacklist decision for a failed probe: whether the scan may blacklist
 /// the plugin, and why. One function, so the tests exercise this code rather
@@ -58,6 +63,21 @@ pub(crate) fn probe_plugin(
 ) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
     interpret_probe(
         probe_metadata_with(&Locator::Search, path, DEFAULT_PROBE_TIMEOUT),
+        path,
+        format,
+    )
+}
+
+/// [`probe_plugin`] that also measures: what a catalog scans with once it has
+/// opted in ([`Catalog::with_measuring`](crate::catalog::Catalog::with_measuring)).
+/// A plugin that crashes or hangs while rendering is blacklisted as it is for
+/// one that crashes in its load.
+pub(crate) fn probe_plugin_measured(
+    path: &Path,
+    format: PluginFormat,
+) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
+    interpret_probe(
+        measure_metadata_with(&Locator::Search, path, DEFAULT_MEASURE_TIMEOUT, None),
         path,
         format,
     )
@@ -132,6 +152,50 @@ pub fn probe_record_with(
 
     // Keyed like a scan keys it, by canonical path, so an alias and the real
     // path are one row.
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    Ok(Delta::put(key, FileRow::probed(format, &facts, plugins)))
+}
+
+/// [`probe_record`] that also **measures** each plugin the file holds (doc 023
+/// section 6): the delta's row carries every descriptor's
+/// [`measured`](PluginDescriptor::measured), the tail and latency the plugin
+/// reports against what it renders. The way to measure one file, or one a scan
+/// already probed without measuring (a scan skips a file whose time has not
+/// changed). The row replaces the file's old one, as a probe's does.
+///
+/// Renders the plugin at two configurations, so it takes longer
+/// ([`DEFAULT_MEASURE_TIMEOUT`]); call it off the audio and UI threads.
+///
+/// # Errors
+///
+/// As [`probe_record`]; a plugin that crashes or hangs while rendering is
+/// [`BridgeError::ProcessCrashed`] or [`BridgeError::Timeout`].
+pub fn measure_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
+    measure_record_with(path, &Locator::Search, DEFAULT_MEASURE_TIMEOUT, None)
+}
+
+/// [`measure_record`] with the `plugin-probe` binary named by `locator`, the
+/// deadline `timeout`, and, if `state` is given, the file of bytes a plugin's own
+/// `save_state` wrote, which the plugin is put in before it is measured (for a
+/// file of one plugin; the record's `ProbeConfig::state` hashes it).
+///
+/// # Errors
+///
+/// As [`measure_record`].
+pub fn measure_record_with(
+    path: impl AsRef<Path>,
+    locator: &Locator,
+    timeout: Duration,
+    state: Option<&Path>,
+) -> Result<Delta, BridgeError> {
+    let path = path.as_ref();
+    let facts = FileFacts::read(path);
+    let format = facts.format.ok_or_else(|| BridgeError::LoadFailed {
+        path: path.to_path_buf(),
+        stage: LoadStage::Opening,
+        reason: "unrecognized plugin extension".to_string(),
+    })?;
+    let plugins = measure_metadata_with(locator, path, timeout, state)?;
     let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     Ok(Delta::put(key, FileRow::probed(format, &facts, plugins)))
 }

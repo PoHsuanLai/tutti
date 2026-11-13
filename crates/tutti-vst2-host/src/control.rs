@@ -37,6 +37,7 @@ pub(crate) fn descriptor_of(info: &PluginInfo) -> PluginDescriptor {
             category: info.category,
         },
         editor: EditorPresence::measured(info.has_editor),
+        measured: None,
     }
 }
 

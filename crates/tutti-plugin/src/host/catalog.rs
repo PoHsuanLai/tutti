@@ -50,7 +50,7 @@
 //! Audio knobs are separate and default sensibly; set them with
 //! [`Catalog::with_audio_config`] when the defaults don't fit.
 
-use crate::host::db_probe::{probe_plugin, probe_record};
+use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured, probe_record};
 use crate::host::plugin_ref::PluginRef;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -150,6 +150,20 @@ impl Catalog {
             saver,
             pending_save: None,
         }
+    }
+
+    /// Makes this catalog's scans **measure** the plugins they probe (doc 023
+    /// section 6): each new or changed file is also rendered, in the probe's own
+    /// process, and its descriptors carry [`measured`](PluginDescriptor::measured).
+    /// Off by default: measuring renders each plugin at two configurations, which
+    /// costs seconds a plain probe does not, and a plugin that crashes or hangs
+    /// while rendering is blacklisted like one that crashes in its load. A scan
+    /// skips a file whose time has not changed, so it never measures one it has
+    /// already probed: [`measure`](Self::measure) does.
+    #[must_use]
+    pub fn with_measuring(mut self) -> Self {
+        self.scanner = Scanner::new(self.config.pedal_path(), probe_plugin_measured);
+        self
     }
 
     /// Sets how this catalog persists its database, replacing the JSON file
@@ -516,6 +530,26 @@ impl Catalog {
                 stage: tutti_plugin_types::LoadStage::Opening,
                 reason: "unrecognized plugin extension".to_string(),
             })
+    }
+
+    /// Measures the file `plugin` names and records the result: the tail and
+    /// latency each of its plugins reports, against what it renders (doc 023
+    /// section 6), in each descriptor's [`measured`](PluginDescriptor::measured).
+    /// The row is replaced, so the file is probed again too.
+    ///
+    /// **Blocking**: the probe renders each plugin at two configurations, up to
+    /// [`DEFAULT_MEASURE_TIMEOUT`](crate::catalog::DEFAULT_MEASURE_TIMEOUT). A
+    /// frame-driven host runs [`measure_record`] on a worker and passes the
+    /// result to [`apply`](Self::apply).
+    ///
+    /// # Errors
+    ///
+    /// Any error of [`measure_record`]: the probe cannot be found or spawned, the
+    /// plugin would not load, or it crashed or hung while rendering.
+    pub fn measure(&mut self, plugin: &PluginRef) -> BridgeResult<()> {
+        let delta = measure_record(plugin.path())?;
+        self.apply(delta);
+        Ok(())
     }
 
     /// Applies a delta to the catalog, such as the one [`probe_record`]

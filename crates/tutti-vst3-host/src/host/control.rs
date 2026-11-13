@@ -52,6 +52,7 @@ pub fn descriptor_of(info: &PluginInfo, editor: EditorPresence) -> PluginDescrip
             category: Vst3SubCategories::parse(info.sub_categories.as_deref().unwrap_or_default()),
         },
         editor,
+        measured: None,
     }
 }
 

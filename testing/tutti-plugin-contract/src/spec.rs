@@ -165,6 +165,27 @@ pub const TAIL_PAST_CAP: u32 = 2;
 /// What `TAIL_PAST_CAP` reports: 61 s at 48 kHz.
 pub const TAIL_PAST_CAP_FRAMES: Samples = Samples(48_000 * 61);
 
+/// The ring behaviour that rings [`RING`] after an impulse (`RINGS_EXACT`, the
+/// high nibble of the fourth byte of the mode word).
+pub const RINGS_EXACT: u32 = 1;
+/// The ring behaviour that rings [`RING`] and [`RING_EXTRA`] more (`RINGS_LONGER`).
+pub const RINGS_LONGER: u32 = 2;
+/// The ring behaviour that rings [`RING`] over noise (`RINGS_HISS`).
+pub const RINGS_HISS: u32 = 3;
+/// The ring behaviour that rings [`RING`] starting [`LATE`] frames after its
+/// impulse (`RINGS_LATE`).
+pub const RINGS_LATE: u32 = 4;
+/// How long a ring lasts after an impulse at frame 0: its last frame is this one.
+/// It equals [`TAIL`] on purpose, so the plugin is honest unless a case says not.
+pub const RING: Samples = Samples(8191);
+/// How much longer than [`RING`] `RINGS_LONGER` rings.
+pub const RING_EXTRA: Samples = Samples(4096);
+/// Frames `RINGS_LATE` waits before it sounds; the plugin reports no latency
+/// in its default mode.
+pub const LATE: Samples = Samples(64);
+/// The peak of `RINGS_HISS`'s noise: 0.001, which is -60 dB.
+pub const HISS_DB: f32 = -60.0;
+
 /// One edit a host must read from a plugin, as the spec states it: the figures
 /// are written here, not taken from the host's own type.
 #[derive(Clone, Copy, Debug)]

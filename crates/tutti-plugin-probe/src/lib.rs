@@ -8,6 +8,12 @@
 use std::path::Path;
 use tutti_plugin_types::{MainThread, PluginDescriptor};
 
+mod measure;
+
+pub use measure::{
+    BUDGET, CONFIGS, IMPULSE, NOTE, NOTE_LENGTH, SETTLE, SILENCE, Subject, measure, measure_at,
+};
+
 /// The descriptor of every plugin the file at `path` holds, by its extension, in
 /// the file's own order, or the reason it could not be read. A CLAP factory
 /// gives each plugin it lists, a VST3 factory each audio class, an AU bundle each
@@ -107,4 +113,49 @@ fn vst2(main: &MainThread, path: &Path) -> Result<Vec<PluginDescriptor>, String>
 #[cfg(all(feature = "au", target_os = "macos"))]
 fn au(path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     tutti_au_host::AuLoaded::describe_all(path).map_err(|e| e.to_string())
+}
+
+/// [`describe`], then measure each plugin the file holds (doc 023 section 6):
+/// the descriptors come back with [`PluginDescriptor::measured`] set where the
+/// plugin could be measured, and `None` where it could not (it would not load
+/// for a render, has no audio output, or failed a block).
+///
+/// `state` puts each plugin in a state before it is measured (bytes the plugin's
+/// own `save_state` wrote); without it the plugin is measured as it loads. It is
+/// meant for a file of one plugin.
+///
+/// A plugin that crashes or hangs while measuring takes this process with it, so
+/// the host that spawned it sees the crash or the timeout of a probe that failed
+/// to load.
+///
+/// # Errors
+///
+/// As [`describe`], or a plugin that refused `state`.
+pub fn describe_measured(
+    main: &MainThread,
+    path: &Path,
+    state: Option<&[u8]>,
+) -> Result<Vec<PluginDescriptor>, String> {
+    let mut plugins = describe(main, path)?;
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    for plugin in &mut plugins {
+        plugin.measured = match extension.as_str() {
+            #[cfg(feature = "vst3")]
+            "vst3" => measure::<tutti_vst3_host::Vst3Loaded>(main, path, plugin, state)?,
+            #[cfg(feature = "clap")]
+            "clap" => measure::<tutti_clap_host::ClapLoaded>(main, path, plugin, state)?,
+            #[cfg(feature = "vst2")]
+            "vst" | "dll" | "so" => {
+                measure::<tutti_vst2_host::Vst2Loaded>(main, path, plugin, state)?
+            }
+            #[cfg(all(feature = "au", target_os = "macos"))]
+            "component" => measure::<tutti_au_host::AuLoaded>(main, path, plugin, state)?,
+            _ => None,
+        };
+    }
+    Ok(plugins)
 }

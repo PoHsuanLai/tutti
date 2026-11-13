@@ -5,6 +5,7 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
@@ -101,6 +102,13 @@ unsafe extern "C" fn factory_descriptor(
 /// | `init-hang` | never returns |
 /// | `init-print` | writes to stdout and stderr, then succeeds |
 /// | `init-refuse` | returns `false` |
+/// | `process-crash` | loads normally and aborts the process in its first `process` |
+/// | `process-hang` | loads normally and never returns from its first `process` |
+///
+/// The `process-` names are for a probe that measures (doc 023 section 6): the
+/// descriptor is read and the plugin loads, then rendering takes it down. `init`
+/// is the only call that sees the file name, so it carries the choice to
+/// `process` in [`PROCESS_FAULT`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum InitMode {
     Normal,
@@ -124,6 +132,10 @@ impl InitMode {
     }
 }
 
+/// What `process` does, chosen by the module's file name in `entry_init`
+/// ([`InitMode`]): 0 renders, 1 aborts, 2 hangs.
+static PROCESS_FAULT: AtomicU32 = AtomicU32::new(0);
+
 unsafe extern "C" fn entry_init(path: *const c_char) -> bool {
     // SAFETY: the host passes the module path as a NUL-terminated string that
     // outlives this call, or null.
@@ -132,6 +144,13 @@ unsafe extern "C" fn entry_init(path: *const c_char) -> bool {
         .as_deref()
         .and_then(|p| p.rsplit(['/', '\\']).next())
         .unwrap_or("");
+    PROCESS_FAULT.store(
+        [("process-crash", 1), ("process-hang", 2)]
+            .into_iter()
+            .find(|(prefix, _)| file_name.starts_with(prefix))
+            .map_or(0, |(_, fault)| fault),
+        Ordering::Relaxed,
+    );
     match InitMode::of(file_name) {
         InitMode::Normal => true,
         InitMode::Crash => std::process::abort(),
@@ -604,6 +623,13 @@ unsafe extern "C" fn process(
     // SAFETY, for this function's `unsafe` blocks: the process struct and what it points to (buffers, event list) are valid for the call; a channel holds `frames` samples (clap.h).
     let me = unsafe { inst(plugin) };
     let p = unsafe { &*process };
+    match PROCESS_FAULT.load(Ordering::Relaxed) {
+        1 => std::process::abort(),
+        2 => loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        },
+        _ => {}
+    }
     if p.audio_inputs_count == 0 || p.audio_outputs_count == 0 {
         return CLAP_PROCESS_ERROR;
     }

@@ -171,6 +171,7 @@ fn handle_with_mock_server(
         version: String::new(),
         class: PluginClass::Unknown,
         editor: EditorPresence::Present,
+        measured: None,
     };
     let loaded = LoadedPlugin {
         inputs: vec![PluginBus::main(ChannelLayout::STEREO)],
@@ -274,6 +275,7 @@ fn handle_with_multi_reply_server(
         version: String::new(),
         class: PluginClass::Unknown,
         editor: EditorPresence::Present,
+        measured: None,
     };
     let loaded = LoadedPlugin {
         inputs: vec![PluginBus::main(ChannelLayout::STEREO)],

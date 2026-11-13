@@ -3928,6 +3928,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tutti-plugin-types",
+ "tutti-types",
 ]
 
 [[package]]
@@ -4000,8 +4001,10 @@ dependencies = [
  "tutti-au-host",
  "tutti-clap-host",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
  "tutti-vst2-host",
  "tutti-vst2-shell-plugin",
  "tutti-vst2-test-plugin",

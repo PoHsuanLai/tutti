@@ -80,6 +80,7 @@ pub fn descriptor_of(info: &PluginInfo, editor: EditorPresence) -> PluginDescrip
                 .collect(),
         },
         editor,
+        measured: None,
     }
 }
 

@@ -74,6 +74,24 @@ pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
         .expect("the plugin takes its configuration");
 }
 
+/// The state of a fresh plugin of format `F` with its ring behaviour and tail
+/// behaviour selected (the high and low nibbles of the fourth byte of the mode
+/// word), as the format's own `save_state` writes it: what a probe given
+/// `--state` is told to load. Nothing is loaded into a plugin here.
+#[must_use]
+pub fn state_with_rings<F: Format>(rings: u32, tail: u32) -> Vec<u8> {
+    let state = F::load()
+        .save_state(&main_thread())
+        .expect("the plugin saves");
+    let mut blob = F::extract_blob(&state);
+    let at = MAGIC.len();
+    let mut word = [0u8; 4];
+    word.copy_from_slice(&blob[at..at + 4]);
+    let kept = u32::from_le_bytes(word) & 0x00FF_FFFF;
+    blob[at..at + 4].copy_from_slice(&(kept | (tail | rings << 4) << 24).to_le_bytes());
+    F::embed_blob(&state, &blob)
+}
+
 /// `blob` with its `level` set.
 #[must_use]
 pub fn patch_level(mut blob: Vec<u8>, level: f64) -> Vec<u8> {

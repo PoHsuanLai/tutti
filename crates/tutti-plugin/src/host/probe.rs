@@ -38,6 +38,45 @@ pub fn probe_metadata_with(
     plugin_path: &Path,
     timeout: Duration,
 ) -> BridgeResult<Vec<PluginDescriptor>> {
+    run(locator, plugin_path, timeout, &[])
+}
+
+/// [`probe_metadata_with`] that also **measures** each plugin (`plugin-probe
+/// --measure`, doc 023 section 6): the descriptors come back with
+/// [`PluginDescriptor::measured`] set where the plugin could be measured. It
+/// renders the plugin, so give it the long deadline
+/// ([`DEFAULT_MEASURE_TIMEOUT`](crate::host::db_probe::DEFAULT_MEASURE_TIMEOUT)):
+/// a plugin that crashes or hangs while rendering is
+/// [`BridgeError::ProcessCrashed`] or [`BridgeError::Timeout`], as in the load.
+///
+/// `state` is a file of the bytes a plugin's own `save_state` wrote, which puts
+/// the plugin in that state before the measurement (`--state`), for a file of one
+/// plugin; the record carries a hash of it.
+///
+/// # Errors
+///
+/// As [`probe_metadata_with`]; a plugin that refuses `state` is
+/// [`BridgeError::LoadFailed`].
+pub fn measure_metadata_with(
+    locator: &Locator,
+    plugin_path: &Path,
+    timeout: Duration,
+    state: Option<&Path>,
+) -> BridgeResult<Vec<PluginDescriptor>> {
+    let mut args = vec!["--measure".as_ref()];
+    if let Some(state) = state {
+        args.push("--state".as_ref());
+        args.push(state.as_os_str());
+    }
+    run(locator, plugin_path, timeout, &args)
+}
+
+fn run(
+    locator: &Locator,
+    plugin_path: &Path,
+    timeout: Duration,
+    flags: &[&std::ffi::OsStr],
+) -> BridgeResult<Vec<PluginDescriptor>> {
     let probe = locator
         .resolve(Helper::Probe)
         .ok_or(BridgeError::ProbeNotFound)?;
@@ -52,6 +91,7 @@ pub fn probe_metadata_with(
     let child = Command::new(&probe)
         .arg(plugin_path)
         .arg(&result)
+        .args(flags)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

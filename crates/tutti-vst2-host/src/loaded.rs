@@ -300,6 +300,7 @@ impl Vst2Loaded {
                         category: Vst2Category::Unasked,
                     },
                     editor: tutti_plugin_types::EditorPresence::Unknown,
+                    measured: None,
                 },
             })
             .collect())

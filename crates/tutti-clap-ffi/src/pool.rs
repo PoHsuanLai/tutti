@@ -138,7 +138,7 @@ impl GraphPool {
     /// returns `true`, no participant is inside the job or can enter it later,
     /// and every participant ran it. A wrapper that only decorates the job of
     /// a `WorkerPool` does.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     #[doc(hidden)]
     #[must_use]
     pub unsafe fn from_pool_for_test(pool: Arc<dyn tutti_graph::Pool>) -> Self {

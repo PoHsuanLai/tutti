@@ -5,14 +5,11 @@
 //! broken and an upmix export came to panic, both with a green suite. Every test
 //! here fails against the code as it was.
 //!
-//! Gated on all four format features, not just `wav`: the cases below write
-//! FLAC, Ogg and AIFF unconditionally, and a `Format` variant exists only
-//! with its feature. `hound` decodes the results back.
+//! The cases below write WAV, FLAC, Ogg and AIFF (the dev-dependency on
+//! `tutti-codec` turns every encoder on). `hound` decodes the results back.
 //!
 //! Every graph here is built with `tutti_graph::GraphBuilder` and rendered
 //! as a `RenderGraph`; the golden-digest pins live in `graph_source.rs`.
-
-#![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
 use crate::support;
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};

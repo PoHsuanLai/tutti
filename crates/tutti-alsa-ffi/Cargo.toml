@@ -23,7 +23,7 @@ workspace = true
 # The hooks a test uses to reach what the backend does not: renaming a client
 # and changing a port's capabilities, which stand in for a device that comes,
 # goes and changes. Off in a production build; the backend's tests turn it on.
-test-support = []
+testing = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # `poll(2)` on the sequencer's descriptors and a caller's stop descriptor.

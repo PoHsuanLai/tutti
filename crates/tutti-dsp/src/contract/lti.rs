@@ -9,13 +9,60 @@ use crate::{Complex32, Complex64, Lti, RealFft, Ring, System};
 
 /// The frames an impulse response is rendered for: up to the model's tail at
 /// -100 dB, a power of two (an FFT of the response is exact), or `None` for a
-/// tail that never ends.
+/// tail that never ends (the member's own declaration, [`Ring::Unbounded`]).
 fn ir_frames<M: System>(model: &M, rate: SampleRate) -> Option<usize> {
     let Ring::Finite(t) = model.tail(Db(-100.0)) else {
         return None;
     };
     let frames = ((t.get() * rate.get()) as usize + 4096).next_power_of_two();
     Some(frames.min(1 << 20))
+}
+
+/// The most frames `response` renders for a member with no finite tail.
+const UNBOUNDED_CAP: usize = 1 << 20;
+
+/// The frames `response` renders: [`ir_frames`] for a member with a finite tail; for
+/// one that declares its tail unbounded, the frames at which a geometric decay at
+/// the member's `spectral_radius` has fallen to `TRUNCATION` (1e-6) (a radius bounds
+/// every pole, so the response decays at least that fast, up to a factor polynomial
+/// in `n`), a power of two, capped at `UNBOUNDED_CAP` (2^20) (a bound near 1 is loose, and
+/// `response` checks that what the length cuts off is negligible). `None` for a
+/// radius that is not under 1.
+fn response_frames<M: Lti>(model: &M, rate: SampleRate) -> Option<usize> {
+    if let Some(frames) = ir_frames(model, rate) {
+        return Some(frames);
+    }
+    let radius = model.spectral_radius();
+    if radius == 0.0 {
+        return Some(4096);
+    }
+    if !(radius > 0.0 && radius < 1.0) {
+        return None;
+    }
+    let n = libm::ceil(libm::log(TRUNCATION) / libm::log(radius));
+    Some(((n as usize).saturating_add(4096).next_power_of_two()).min(UNBOUNDED_CAP))
+}
+
+/// How far a response a bound has cut off may still reach, as a fraction of its
+/// peak: `1e-6`.
+const TRUNCATION: f64 = 1e-6;
+
+/// Whether `model` declares a tail that never ends: a case that measures a
+/// finite tail does not apply to it (the member's declaration decides, never a
+/// list the family writes).
+fn declares_unbounded<M: System>(model: &M) -> bool {
+    matches!(model.tail(Db(-100.0)), Ring::Unbounded)
+}
+
+/// What a finite-tail case concludes when it measured nothing: `Ok` when every
+/// probe it looked at declared an unbounded tail (the case does not apply to such
+/// a member), `Err(why)` otherwise.
+fn nothing_measured(looked: usize, unbounded: usize, why: &str) -> Result<(), String> {
+    if looked > 0 && unbounded == looked {
+        Ok(())
+    } else {
+        Err(why.into())
+    }
 }
 
 /// The impulse response of `d` at `controls`, one `Vec` per output, and its model.
@@ -178,17 +225,21 @@ pub(super) mod realization {
     /// loudest windowed RMS level it reached; a short burst has not
     /// yet filled the lines, so the level after the input stops can exceed the
     /// level at the stop) is within the network's `tail(floor)`: what the node
-    /// reports to the graph covers what the realization rings.
+    /// reports to the graph covers what the realization rings. A probe whose
+    /// member declares its tail [`Ring::Unbounded`] has no tail to cover: the case
+    /// does not apply to it, and passes when that is every probe.
     pub fn tail_covers<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
-        let mut checked = 0;
+        let (mut checked, mut looked, mut unbounded) = (0, 0, 0);
         for c in d.probes() {
             if d.marginal(&c) {
                 continue;
             }
+            looked += 1;
             let (mut k, network) = built(d, &c, rate);
             let frames = d.fill(rate, 12.0);
             let Ring::Finite(deepest) = network.tail(Db(-90.0)) else {
+                unbounded += 1;
                 continue;
             };
             let after = (deepest.get() * rate.get()) as usize + 4 * WINDOW;
@@ -227,7 +278,7 @@ pub(super) mod realization {
             }
         }
         if checked == 0 {
-            return Err("every probe has an unbounded tail".into());
+            return nothing_measured(looked, unbounded, "no probe with a finite tail to measure");
         }
         Ok(())
     }
@@ -332,8 +383,22 @@ pub(super) mod realization {
     /// the `RealFft` of the response (rendered after a retarget to the same
     /// model, which must change nothing) against `frequency_response` on the FFT
     /// bins, the relative error over all of them (`L2`) under
-    /// [`response_tolerance`](LtiCase::response_tolerance). Marginal probes and
-    /// models with a tail that never ends are left out.
+    /// [`response_tolerance`](LtiCase::response_tolerance). Marginal probes are
+    /// left out.
+    ///
+    /// **The length of the response.** A member with a finite tail is rendered for
+    /// that tail at -100 dB. One that declares its tail [`Ring::Unbounded`] is
+    /// rendered for as long as its `spectral_radius` says it takes to fall to
+    /// `TRUNCATION` (1e-6) (the radius bounds every pole, so the response decays at least
+    /// geometrically at it), capped at `UNBOUNDED_CAP` (2^20) frames, and the case then
+    /// **measures** what that cuts off: by Parseval the relative `L2` error of
+    /// truncating a response is the square root of the energy beyond the cut over
+    /// the total, which (the response decaying) its last eighth bounds. That cut-off
+    /// is added to the tolerance of the comparison, and a response that has not rung
+    /// out to within the [`response_tolerance`](LtiCase::response_tolerance) itself
+    /// (the radius a loose bound, or understating the decay) fails the case rather than
+    /// being compared. So the comparison holds because what was cut off is measured
+    /// and small, not because a tail was assumed.
     pub fn response<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
@@ -342,10 +407,37 @@ pub(super) mod realization {
                 continue;
             }
             let model = d.member(&c, rate);
-            let Some(frames) = ir_frames(&model, rate) else {
-                continue;
+            let Some(frames) = response_frames(&model, rate) else {
+                return Err(format!(
+                    "the member declares no finite tail and its spectral radius {} is not \
+                     under 1: no length to render its response for",
+                    model.spectral_radius()
+                ));
             };
             let (ir, model) = impulse(d, &c, rate, frames);
+            // What the length cuts off of an unbounded member's response, as a fraction of its
+            // norm; the comparison's tolerance grows by it.
+            let mut cut = 0.0;
+            if declares_unbounded(&model) {
+                let energy = |from: usize| {
+                    ir.iter()
+                        .flat_map(|c| &c[from..])
+                        .map(|x| f64::from(*x).powi(2))
+                        .sum::<f64>()
+                };
+                // Parseval: what the length cuts off is `sqrt(E_beyond / E_total)` of the
+                // spectrum's L2 norm, and a decaying response has less beyond `frames`
+                // than in its last eighth.
+                cut = (energy(frames - frames / 8) / energy(0)).sqrt();
+                if cut > d.response_tolerance() {
+                    return Err(format!(
+                        "the response has not rung out in {frames} frames (its last eighth \
+                         is {cut:.2e} of its norm): the spectral radius {} understates the \
+                         decay",
+                        model.spectral_radius()
+                    ));
+                }
+            }
             let fft = RealFft::new(frames);
             let mut scratch = fft.new_scratch();
             let stride = (fft.bins() / 16_384).max(1);
@@ -367,11 +459,11 @@ pub(super) mod realization {
                 }
                 let err = (num / den).sqrt();
                 checked += 1;
-                if err.is_nan() || err > d.response_tolerance() {
+                let tolerance = d.response_tolerance() + cut;
+                if err.is_nan() || err > tolerance {
                     return Err(format!(
                         "output {output}: the impulse response's spectrum is {err:.3e} from the \
-                         model's response (tolerance {})",
-                        d.response_tolerance()
+                         model's response (tolerance {tolerance})"
                     ));
                 }
             }
@@ -387,25 +479,26 @@ pub(super) mod realization {
     /// through the windows between 30 and 80 dB below the loudest, gives a decay
     /// rate that is at least `1 - decay_tolerance` of the rate the radius says
     /// (a radius is a bound: the system may decay faster, never slower). A finite
-    /// response (radius 0) has no decay to measure and passes.
+    /// response (radius 0) has no decay to measure and passes, and so does a member
+    /// that declares its tail [`Ring::Unbounded`] (the decay is measured over the
+    /// tail, which it has not declared): the case passes when that is every probe.
     pub fn decay<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         const W: usize = 4096;
         let rate = rate_of(d);
-        let mut checked = 0;
-        // Whether every probe is a finite response (radius 0): it has no decay to
-        // measure, and the case has nothing to say.
-        let mut finite = true;
+        let (mut checked, mut looked, mut vacuous) = (0, 0, 0);
         for c in d.static_probes() {
             if d.marginal(&c) {
                 continue;
             }
+            looked += 1;
             let model = d.member(&c, rate);
             let radius = model.spectral_radius();
             if radius == 0.0 {
+                vacuous += 1;
                 continue;
             }
-            finite = false;
             let Some(frames) = ir_frames(&model, rate) else {
+                vacuous += 1;
                 continue;
             };
             if !(radius > 0.0 && radius < 1.0) {
@@ -443,8 +536,8 @@ pub(super) mod realization {
                 ));
             }
         }
-        if checked == 0 && !finite {
-            return Err("no probe with a decay to measure".into());
+        if checked == 0 {
+            return nothing_measured(looked, vacuous, "no probe with a decay to measure");
         }
         Ok(())
     }
@@ -452,16 +545,20 @@ pub(super) mod realization {
     /// The tail is tight: the time the impulse response takes to fall to -60 and
     /// -90 dB of its loudest window, measured in windows of [`WINDOW`] frames, is not
     /// less than `1 / tail_slack` of the model's `tail` to that floor (the `tail_covers`
-    /// case holds the other direction).
+    /// case holds the other direction). A member that declares its tail
+    /// [`Ring::Unbounded`] has no tail to be tight: the case does not apply to it,
+    /// and passes when that is every probe.
     pub fn tail_tight<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
-        let mut checked = 0;
+        let (mut checked, mut looked, mut unbounded) = (0, 0, 0);
         for c in d.static_probes() {
             if d.marginal(&c) {
                 continue;
             }
+            looked += 1;
             let model = d.member(&c, rate);
             let Some(frames) = ir_frames(&model, rate) else {
+                unbounded += 1;
                 continue;
             };
             let (ir, _) = impulse(d, &c, rate, frames);
@@ -489,7 +586,7 @@ pub(super) mod realization {
             }
         }
         if checked == 0 {
-            return Err("no probe with a finite tail".into());
+            return nothing_measured(looked, unbounded, "no probe with a finite tail");
         }
         Ok(())
     }

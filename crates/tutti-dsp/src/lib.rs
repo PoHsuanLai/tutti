@@ -134,9 +134,9 @@ pub use filter::{
 };
 pub use interp::cubic_hermite;
 pub use model::{
-    Anchor, Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Feed, Glide, Grows,
-    Lerp, Lti, MAX_LANES, MaxDecay, MaxDecayError, Period, Reach, Readout, Realized, Recurrence,
-    Ring, Setup, Start, Step, Steps, System, TAIL_FLOOR,
+    Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Feed, Glide, Grows, Lerp, Lti,
+    MAX_LANES, MaxDecay, MaxDecayError, Reach, Readout, Realized, Recurrence, Ring, Setup, Start,
+    Step, Steps, System, TAIL_FLOOR,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::mod_delay::{

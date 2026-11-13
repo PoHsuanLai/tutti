@@ -243,15 +243,14 @@ jobs:
       - name: Workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The workspace run builds each crate with the features the workspace
-      # unifies to, which leaves tutti-plugin's format features and
-      # clap-extras dark. `au` is macOS-only and compiles to nothing here.
+      # unifies to, which leaves tutti-plugin's format features dark. `au` is macOS-only and
+      # compiles to nothing here.
       - name: Plugin formats
         shell: bash
         run: |
           cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
-          cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
       # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
@@ -392,8 +391,6 @@ jobs:
       #                         never skips, without `/dev/snd/seq`
       #   tutti-plugin-types/testing — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
-      #   tutti-clap-host/clap-extras — tests/behaviour/unit_tests.rs's 5 extension tests
-      #                         and the extension code they cover
       #   tutti-plugin-db/json — `save`, `load` and their tests
       #   tutti-plugin/clap,vst2 — the CLAP tests (the `clap_*` and
       #                         `plugin_param_delivery*` suites, and the
@@ -453,7 +450,6 @@ jobs:
           cargo clippy --locked -p tutti-plugin-types --lib --features contract -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
-          cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
@@ -489,7 +485,6 @@ jobs:
           cargo nextest run --locked -p tutti-midi-protocol --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
           cargo nextest run --locked -p tutti-tempo --features serde
-          cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features testing
           cargo nextest run --locked -p tutti-plugin-db --features json
           cargo nextest run --locked -p tutti-plugin-contract --features server
@@ -628,22 +623,10 @@ jobs:
       # the audio suites need — they touch device and global state, and a panic
       # or abort in one no longer takes the whole binary's results with it.
       #
-      # The two GUI-lifecycle binaries are excluded because they are `harness =
-      # false` custom mains that drive a plugin editor on the real main thread.
-      # nextest enumerates a binary by running it with `--list --format terse`;
-      # these ignore the flag, run their whole suite, and exit non-zero, so
-      # nextest fails at *list* time having already executed them. They are run
-      # below under the libtest-free runner they were written for.
-      # Two exclusions, for opposite reasons.
-      #
-      # The GUI-lifecycle binaries are `harness = false` custom mains that drive
-      # a plugin editor on the real main thread. nextest enumerates a binary by
-      # running it with `--list --format terse`; these ignore the flag, execute
-      # their whole suite and exit non-zero, so nextest fails at *list* time
-      # having already run them. They are run below under the runner they were
-      # written for.
-      #
-      # The GUI-lifecycle binaries are `harness = false` custom mains; see above.
+      # `au_gui_lifecycle_main` is a `harness = false` main that drives a plugin
+      # editor on the process main thread; it answers nextest's
+      # `--list --format terse` and `<case> --exact`, so it runs here like any
+      # other binary.
       # `no_installed_third_party_unit_implements_the_mapping_family` is behind
       # `tutti-au-host`'s `installed-units` feature, which this run leaves off:
       # it asserts a claim about third-party Audio Units installed on the
@@ -651,8 +634,7 @@ jobs:
       - name: Test
         shell: bash
         run: |
-          cargo nextest run --locked --workspace --no-fail-fast \
-            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+          cargo nextest run --locked --workspace --no-fail-fast
 
       # tutti-session's `plugin` suite is feature-gated, and the dark-features
       # job that runs it is Linux-only. It drives the plugin-server and
@@ -694,23 +676,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
-
-      # The custom-harness editor tests. `cargo test` just execs the binary,
-      # which is exactly what a `harness = false` main wants.
-      # `has_editor_agrees_with_opening_one` is skipped for the same reason the
-      # AU mapping-family test is excluded above: it asserts agreement across a
-      # corpus that must contain both an editor-bearing and an editorless
-      # plugin, and deliberately panics rather than report a pass that a
-      # constant `true` would satisfy. A hosted runner has no third-party
-      # plugins, so it can only ever fail there. The skip is announced in the
-      # harness output, and naming a case that does not exist is an error.
-      - name: Editor-lifecycle tests (custom harness)
-        shell: bash
-        env:
-          TUTTI_GUI_SKIP: has_editor_agrees_with_opening_one
-        run: |
-          cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main
-          cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main
 
       # The RT primitives in release. Some of their properties only exist
       # with `debug_assertions` off: `AudioThreadCell`'s borrow check was

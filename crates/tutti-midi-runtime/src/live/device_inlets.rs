@@ -98,19 +98,12 @@ impl DeviceSlot {
 }
 
 /// Every slot is taken: [`DeviceInlets::open`] has none to give.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("all {} MIDI device slots are taken", .slots)]
 pub struct NoFreeSlot {
     /// How many slots there are.
     pub slots: usize,
 }
-
-impl std::fmt::Display for NoFreeSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "all {} MIDI device slots are taken", self.slots)
-    }
-}
-
-impl std::error::Error for NoFreeSlot {}
 
 /// What the graph's owner does about a device: the node to add and wire, or
 /// the slot to unwire. Taken in order ([`DeviceInlets::take_changes`]).

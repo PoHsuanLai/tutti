@@ -10,37 +10,26 @@ use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 /// Why a text is not a name ([`Name::parse`], [`ProductInstanceId`] and
 /// [`MessageText`](crate::MessageText)'s `TryFrom<&str>`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum NameError {
     /// The text is longer than `max` bytes (for a name, composed to NFC; for a
     /// [`MessageText`](crate::MessageText), escaped as it goes on the wire).
+    #[error("the text is longer than {max} bytes")]
     TooLong {
         /// The most bytes the type holds.
         max: usize,
     },
     /// A name holds a NUL, which ends one on the wire.
+    #[error("the text holds a NUL, which ends a name on the wire")]
     Nul,
     /// A name starts with a Byte Order Mark (M2-104 §1.8).
+    #[error("the text starts with a Byte Order Mark")]
     Bom,
     /// A [`ProductInstanceId`] holds a byte outside ASCII `32..=126` (other
     /// than the NUL that [`Nul`](Self::Nul) names).
+    #[error("the text holds a byte outside printable ASCII (32 to 126)")]
     NotPrintableAscii,
 }
-
-impl fmt::Display for NameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooLong { max } => write!(f, "the text is longer than {max} bytes"),
-            Self::Nul => f.write_str("the text holds a NUL, which ends a name on the wire"),
-            Self::Bom => f.write_str("the text starts with a Byte Order Mark"),
-            Self::NotPrintableAscii => {
-                f.write_str("the text holds a byte outside printable ASCII (32 to 126)")
-            }
-        }
-    }
-}
-
-impl std::error::Error for NameError {}
 
 /// A UTF-8 name of at most `N` bytes with no NUL, held inline.
 ///

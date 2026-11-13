@@ -21,7 +21,7 @@ sequencer-tests = []
 workspace = true
 
 [dependencies]
-thiserror = "2"
+thiserror = { workspace = true }
 tracing = "0.1"
 
 tutti-midi-device = { path = "../tutti-midi-device" }

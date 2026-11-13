@@ -127,7 +127,7 @@ impl From<VoiceId> for u64 {
 type Levels<'a> = &'a dyn Fn(VoiceId) -> Option<Amplitude>;
 
 /// How many voices sound for a channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     /// Any number, up to the polyphony.
     Poly,
@@ -140,7 +140,7 @@ pub enum Mode {
 }
 
 /// What a key struck again does while an earlier strike of it sounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Retrigger {
     /// Releases the earlier strike's voices at once, whatever holds them.
     Replace,
@@ -151,7 +151,7 @@ pub enum Retrigger {
 /// How a voice is chosen to give way when every slot is taken. A voice already
 /// released always goes before any held one; among released voices the quietest
 /// goes first. A strike never takes a voice it started itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Order {
     /// The one started longest ago.
     Oldest,

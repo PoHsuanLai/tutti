@@ -68,6 +68,10 @@ private:
 	/// via `mRampAt`, sized to the block.
 	void consumeParameterChanges (ProcessData& data);
 
+	/// Emit a legacy MIDI CC (`kGainControllerNumber`, value `gain * 127`) on the
+	/// event output bus when the block carried a point for `kParamGain`.
+	void emitGainController (ProcessData& data);
+
 	/// Sample offset of the last note-on seen this block, or -1.
 	int32 firstNoteOnOffset (ProcessData& data) const;
 

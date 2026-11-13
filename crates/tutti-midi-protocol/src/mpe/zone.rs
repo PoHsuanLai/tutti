@@ -11,7 +11,7 @@ use tutti_ump::{Address, ControlValue, Message, MidiChannel, MidiGroup, Rpn, Ump
 use crate::PitchBendSensitivity;
 
 /// Which of the two RP-053 zones a configuration describes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MpeZone {
     /// Master on channel 0, members counting up from channel 1.

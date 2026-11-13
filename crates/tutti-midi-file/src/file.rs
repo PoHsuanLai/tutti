@@ -102,7 +102,7 @@ impl AddAssign<u64> for Tick {
 
 /// The format word of an SMF header (SMF 1.0 section 2.1).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SmfFormat {
     /// Format 0: one track holding everything.
     SingleTrack,
@@ -116,7 +116,7 @@ pub enum SmfFormat {
 
 /// What a text meta event says (SMF 1.0 section 3.3 types `01` to `09`).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextKind {
     /// `01`: any text.
     Text,

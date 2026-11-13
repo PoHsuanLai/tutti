@@ -37,7 +37,7 @@ fn every_recipe_plans_with_no_arguments() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 41);
+    assert_eq!(RECIPES.len(), 39);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -98,7 +98,7 @@ fn test_builds_the_plugins_then_runs_nextest() {
         [
             "cargo build --locked -p tutti-plugin-server --bin plugin-server",
             "cargo build --locked -p tutti-plugin-probe --bin plugin-probe",
-            "cargo nextest run --locked --workspace --no-fail-fast -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'",
+            "cargo nextest run --locked --workspace --no-fail-fast",
         ]
     );
 }
@@ -191,16 +191,9 @@ fn loom_runs_only_the_models_it_is_named() {
 }
 
 #[test]
-fn only_the_first_editor_line_takes_the_skip_variable() {
-    let s = dry("test-editor-no-corpus", &[]);
-    assert!(s[0].starts_with("TUTTI_GUI_SKIP=has_editor_agrees_with_opening_one cargo test"));
-    assert!(s[1].starts_with("cargo test"));
-}
-
-#[test]
 fn check_windows_stubs_under_the_target_dir() {
     let steps = plan("check-windows", &[], &ctx()).unwrap();
-    assert_eq!(steps.len(), 10);
+    assert_eq!(steps.len(), 9);
     let Step::WriteFile { path, contents } = &steps[0] else {
         panic!()
     };

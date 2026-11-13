@@ -5,8 +5,6 @@
 //! the CI categories it supports, and each responder replies in kind. The reply
 //! shares the Discovery *body* format, so [`DiscoveryData`] serves both.
 
-use std::fmt;
-
 use bitflags::bitflags;
 use tutti_ump::{DeviceIdentity, FunctionBlockId, U7};
 
@@ -102,20 +100,9 @@ impl MaxSysexSize {
 }
 
 /// A raw value that is not a Receivable Maximum SysEx Message Size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{} is not a receivable SysEx size (128 to 2^28 - 1)", .0)]
 pub struct NotASysexSize(pub u32);
-
-impl fmt::Display for NotASysexSize {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} is not a receivable SysEx size (128 to 2^28 - 1)",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for NotASysexSize {}
 
 impl TryFrom<u32> for MaxSysexSize {
     type Error = NotASysexSize;

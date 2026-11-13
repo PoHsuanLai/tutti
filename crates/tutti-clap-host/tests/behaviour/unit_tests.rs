@@ -858,6 +858,7 @@ fn host_gui_closed_was_destroyed_latches_window_destroyed() {
 ///
 /// A plugin reads a null as "the host does not support this" and takes its
 /// degraded path silently, so a dropped arm is invisible at runtime.
+/// Spec: clap.host.get_extension
 #[test]
 fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
@@ -927,6 +928,7 @@ fn test_host_get_extension_returns_non_null_for_supported() {
 /// a plugin built against the older header asks the host for that id. The host
 /// answers it with the stable extension's own vtable, as it does for the plugin
 /// side.
+/// Spec: clap.host.get_extension
 #[test]
 fn test_host_get_extension_answers_the_compat_ids_with_the_stable_vtable() {
     use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT};
@@ -949,6 +951,7 @@ fn test_host_get_extension_answers_the_compat_ids_with_the_stable_vtable() {
     }
 }
 
+/// Spec: clap.host.get_extension
 #[test]
 fn test_host_get_extension_returns_null_for_unknown() {
     let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));

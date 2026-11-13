@@ -437,6 +437,7 @@ fn a_ports_rescan_the_plugin_asks_for_is_served() {
 
 /// **The request reaches the host as `IoChanged` through the server's
 /// between-blocks poll.**
+/// Spec: clap.ext.audio_ports.host.rescan
 #[test]
 fn a_served_ports_rescan_is_polled_as_io_changed() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -571,6 +572,7 @@ fn loaded_and_called_back() -> ClapInstance {
 /// the server's service pass, and not before.** The flag was recorded and
 /// nothing called back, so work a plugin deferred to the main thread (a
 /// sample load finishing, a timer being registered) never ran.
+/// Spec: clap.host.request_callback, clap.plugin.on_main_thread
 #[test]
 fn a_callback_the_plugin_asks_for_is_served() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -603,6 +605,7 @@ fn a_callback_the_plugin_asks_for_is_served() {
 /// and never called `on_timer`. The wake is the main loop's (`wakeups` and
 /// `wake`, here `wake` after the floor a zero period is given): the
 /// pass serves what it latched.
+/// Spec: clap.ext.timer_support.host.register_timer, clap.ext.timer_support.on_timer
 #[test]
 fn a_timer_the_plugin_registers_is_ticked() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -696,6 +699,7 @@ fn a_restart_reports_the_latency_after_it() {
 /// **`latency.changed` on an active plugin is served by a re-activation,
 /// and the latency is read after it**, not from the active plugin
 /// (`clap.latency`: it may change only across an activation).
+/// Spec: clap.ext.latency.host.changed
 #[test]
 fn latency_changed_on_an_active_plugin_restarts_it() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -758,6 +762,7 @@ fn a_latency_changed_inside_activate_is_not_restarted_for() {
 
 /// **A `params.rescan` of values is reported as changed values and does not
 /// restart the plugin.** The flags were latched and nothing read them.
+/// Spec: clap.ext.params.host.rescan
 #[test]
 fn a_values_rescan_is_reported_without_a_restart() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -780,6 +785,7 @@ fn a_values_rescan_is_reported_without_a_restart() {
 ///
 /// What the re-read changes (the ranges automation is denormalized against) is not
 /// observable with a plugin whose parameters are fixed.
+/// Spec: clap.ext.params.host.rescan
 #[test]
 fn an_all_rescan_restarts_the_plugin_and_reports_the_list() {
     let _lock = crate::test_utils::plugin_load_lock();
@@ -940,6 +946,7 @@ fn process_blocks(instance: &mut ClapInstance, blocks: usize) {
 
 /// A plugin that implements `clap.thread-pool` has its requests served
 /// by the server's own pool: the host's pool is in another process.
+/// Spec: clap.ext.thread_pool.host.request_exec, clap.ext.thread_pool.exec
 #[test]
 fn a_thread_pool_plugin_has_its_requests_served_here() {
     let _lock = crate::test_utils::plugin_load_lock();

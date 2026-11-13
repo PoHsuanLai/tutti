@@ -3,9 +3,10 @@
 //!
 //! Composition:
 //! - [`Channels`] — the two lock-free queues (commands, audio responses)
-//! plus the shared newest-sequence and sample-rate cells. Unsolicited events never cross threads:
-//! the bridge thread buffers them itself. Payload recycling lives in [`PayloadPool`]; the buffer-id
-//! counter is gone, the batcher owns the block sequence.
+//!   plus the shared newest-sequence and sample-rate cells. Unsolicited
+//!   events never cross threads: the bridge thread buffers them itself.
+//!   Payload recycling lives in [`PayloadPool`]; the batcher owns the block
+//!   sequence.
 //! - [`Lifecycle`] — running/crashed flags.
 //! - [`AudioSlab`] — bulk audio transport (created elsewhere; held as Arc).
 //!

@@ -23,7 +23,7 @@ use tutti_ump::StreamConfig;
 
 use crate::HardwareMidiInputs;
 use crate::backend;
-use crate::capability::{EndpointInfo, UmpCapability};
+use crate::capability::UmpCapability;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use crate::wire::Wire;
@@ -734,9 +734,18 @@ impl Drop for OpenInput {
 
 /// The devices of an enumeration, one per handle: an endpoint listed both ways
 /// is [`Duplex`](PortDirection::Duplex).
-pub(crate) fn os_devices(inputs: &[EndpointInfo], outputs: &[EndpointInfo]) -> Vec<OsDevice> {
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", alsa_ump),
+    test,
+    feature = "test-support"
+))]
+pub(crate) fn os_devices(
+    inputs: &[crate::capability::EndpointInfo],
+    outputs: &[crate::capability::EndpointInfo],
+) -> Vec<OsDevice> {
     let mut devices: BTreeMap<EndpointId, OsDevice> = BTreeMap::new();
-    let as_device = |e: &EndpointInfo, direction| OsDevice {
+    let as_device = |e: &crate::capability::EndpointInfo, direction| OsDevice {
         handle: e.id,
         identity: e.identity.clone(),
         name: e.name.clone(),

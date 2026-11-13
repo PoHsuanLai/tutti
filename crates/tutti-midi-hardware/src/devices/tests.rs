@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::HardwareMidiInputs;
+use crate::capability::EndpointInfo;
 use crate::test_support::{FakeBackend, FakeCounters, endpoint};
 
 /// Long enough to be a failure, not a race: a wake returns at once.

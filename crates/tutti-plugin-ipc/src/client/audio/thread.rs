@@ -4,7 +4,7 @@
 
 use super::ListenerSlot;
 use super::channels::Channels;
-use super::dispatch::{Owed, handle};
+use super::dispatch::{Lane, Lanes, Owed, handle};
 use super::lifecycle::Lifecycle;
 use super::messages::{AudioResponse, BridgeEvent, Command, Unsolicited};
 use super::payload_pool::PayloadPool;
@@ -114,12 +114,57 @@ fn run_thread(
     // this is a wire boundary, the check is one comparison off the audio path,
     // and a silently-ignored version field is how a skew becomes a mis-parse
     // instead of an error.
-    match ipc::recv(&mut stream) {
+    if let Err(failure) = expect_ready(&mut stream) {
+        crash(&lifecycle, &listener, failure);
+        drain_with_errors(&channels);
+        return;
+    }
+    // The control connection (3): the server accepts it after the audio one.
+    let control = match ipc::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) => {
+            crash(
+                &lifecycle,
+                &listener,
+                PluginFailure::Connect {
+                    source: Arc::new(e),
+                },
+            );
+            drain_with_errors(&channels);
+            return;
+        }
+    };
+    let mut control = control;
+    if let Err(failure) = expect_ready(&mut control) {
+        crash(&lifecycle, &listener, failure);
+        drain_with_errors(&channels);
+        return;
+    }
+    let mut lanes = Lanes {
+        audio: Lane {
+            stream,
+            owed: Owed::default(),
+        },
+        control: Lane {
+            stream: control,
+            owed: Owed::default(),
+        },
+    };
+    pump(&channels, &payloads, &lifecycle, &listener, &mut lanes);
+}
+
+/// Reads a connection's `Ready` and checks its version.
+///
+/// The reason is spelled out per case rather than as one string: a version skew
+/// and a peer that never said `Ready` are different problems for whoever reads
+/// the message, and the first is actionable.
+fn expect_ready(stream: &mut ControlStream) -> Result<(), PluginFailure> {
+    match ipc::recv(stream) {
         Ok(crate::protocol::BridgeMessage::Ready { protocol_version })
-            if crate::protocol::check_protocol_version(protocol_version).is_ok() => {}
-        // The reason is spelled out per case rather than as one string: a
-        // version skew and a peer that never said `Ready` are different
-        // problems for whoever reads the message, and the first is actionable.
+            if crate::protocol::check_protocol_version(protocol_version).is_ok() =>
+        {
+            Ok(())
+        }
         other => {
             let source = match other {
                 Ok(crate::protocol::BridgeMessage::Ready { protocol_version }) => {
@@ -131,18 +176,11 @@ fn run_thread(
                 Ok(got) => crate::error::unexpected_message("Ready", &got),
                 Err(e) => e,
             };
-            crash(
-                &lifecycle,
-                &listener,
-                PluginFailure::Handshake {
-                    source: Arc::new(source),
-                },
-            );
-            drain_with_errors(&channels);
-            return;
+            Err(PluginFailure::Handshake {
+                source: Arc::new(source),
+            })
         }
     }
-    pump(&channels, &payloads, &lifecycle, &listener, &mut stream);
 }
 
 /// The bridge's command loop.
@@ -164,12 +202,8 @@ fn pump(
     payloads: &PayloadPool,
     lifecycle: &Lifecycle,
     listener: &ListenerSlot,
-    stream: &mut ControlStream,
+    lanes: &mut Lanes,
 ) {
-    // Replies for blocks this thread stopped waiting on. Lives for the length of
-    // the connection, because that is the scope over which the stream's pairing
-    // has to stay straight; see `dispatch::Owed`.
-    let mut owed = Owed::default();
     // Unsolicited events read while a command waited for its reply. One
     // buffer for the connection, handed to the listener after each command.
     let mut inbox = Unsolicited::with_lifecycle(lifecycle.clone());
@@ -184,9 +218,7 @@ fn pump(
             continue;
         };
 
-        let result = handle(
-            cmd, stream, channels, payloads, &mut owed, &mut inbox, lifecycle,
-        );
+        let result = handle(cmd, lanes, channels, payloads, &mut inbox, lifecycle);
         drain_unsolicited(&mut inbox, channels, listener);
 
         if let Err(e) = result {

@@ -13,6 +13,7 @@ mod clap_sys;
 mod conformance;
 mod decode_boundary;
 mod doc_features;
+mod doc_idents;
 mod doc_refs;
 mod ffi;
 mod guards;
@@ -21,9 +22,11 @@ mod layout;
 mod lex;
 mod lints;
 mod midi_spec;
+mod passive_tests;
 mod pointers;
 mod prose;
 mod range_types;
+mod ratchet;
 mod session;
 mod submodule_pins;
 mod test_paths;
@@ -111,6 +114,10 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// A backticked item name in prose is an item the code uses (a per-file ratchet).
+    DocIdents,
+    /// A `#[test]` asserts something (a per-file ratchet).
+    PassiveTests,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
 }
@@ -131,6 +138,8 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::DocIdents => "gate check-doc-idents".to_owned(),
+            Gate::PassiveTests => "gate check-passive-tests".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
@@ -156,6 +165,8 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::DocIdents => doc_idents::check(&tree),
+            Gate::PassiveTests => passive_tests::check(&tree),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
                 let require =

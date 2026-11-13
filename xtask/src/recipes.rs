@@ -201,6 +201,16 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-doc-idents",
+        "",
+        "a backticked item name in prose is used by some code; a per-file ratchet",
+    ),
+    (
+        "check-passive-tests",
+        "",
+        "a #[test] asserts something; a per-file ratchet",
+    ),
+    (
         "check-conformance",
         "",
         "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
@@ -438,6 +448,8 @@ impl Planner<'_> {
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-doc-idents" => self.out.push(Step::Gate(Gate::DocIdents)),
+            "check-passive-tests" => self.out.push(Step::Gate(Gate::PassiveTests)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance-inventory" => {
                 let [f] = Self::params(name, args, ["clap"])?;
@@ -501,7 +513,8 @@ impl Planner<'_> {
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
                     "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-conformance",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-doc-idents",
+                    "check-passive-tests", "check-conformance",
                     "check-features", "package",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

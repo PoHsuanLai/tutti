@@ -10,7 +10,7 @@ use tutti_types::SampleRate;
 fn hrtf() -> HrtfBinauralNode {
     let rate = SAMPLE_RATE.get() as u32;
     let bytes = synthetic_hrir_sphere(rate, 64);
-    HrtfBinauralNode::new(&bytes, SampleRate::from(rate)).expect("the sphere parses")
+    HrtfBinauralNode::new(&bytes, SampleRate::from_hz(rate).unwrap()).expect("the sphere parses")
 }
 
 #[test]

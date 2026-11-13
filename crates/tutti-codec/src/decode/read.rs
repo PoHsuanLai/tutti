@@ -6,7 +6,7 @@
 
 use std::fs::File;
 use std::path::Path;
-use tutti_types::SampleRate;
+use tutti_types::{SampleRate, Samples};
 
 use symphonia::core::audio::{AudioBuffer, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
@@ -25,7 +25,7 @@ use tutti_types::ChannelTopology;
 /// Container metadata read from an audio file without decoding any audio.
 ///
 /// Returned by [`Wave::read_metadata`]. The fields are the container's raw
-/// answers (`u32` rate), and the topology it names, the one a full read would
+/// answers (the rate it states), and the topology it names, the one a full read would
 /// give the [`Wave`]. It carries a [`ChannelTopology`], which owns its list of
 /// speakers, so this is `Clone` and not `Copy`.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,8 +33,9 @@ pub struct WaveMetadata {
     /// Total sample frames, if the container reports it (`None` for some
     /// streamed/VBR formats that don't store a frame count).
     pub total_frames: Option<u64>,
-    /// The file's sample rate in Hz; 44 100 if the container does not say.
-    pub sample_rate: u32,
+    /// The file's sample rate. A container that states none, or 0, is
+    /// [`DecodeError::NoSampleRate`].
+    pub sample_rate: SampleRate,
     /// Which speaker each channel feeds, in the order the samples are in (as
     /// [`Wave::topology`] and [`FileIn::topology`](crate::FileIn::topology)
     /// give it): a lone channel is the centre, a speaker the vocabulary has no
@@ -112,10 +113,15 @@ pub(super) fn first_audio_track(
 
 /// The track's sample rate, as the container states it. A container that
 /// states none is refused, never given a rate of ours.
+///
+/// A rate of 0 states none.
 pub(super) fn sample_rate_of(
     params: &symphonia::core::codecs::CodecParameters,
-) -> Result<u32, DecodeError> {
-    params.sample_rate.ok_or(DecodeError::NoSampleRate)
+) -> Result<SampleRate, DecodeError> {
+    params
+        .sample_rate
+        .and_then(SampleRate::from_hz)
+        .ok_or(DecodeError::NoSampleRate)
 }
 
 impl Wave {
@@ -193,9 +199,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
     let track_id = track.id;
 
     let total_frames = track.codec_params.n_frames;
-    // A track that states a rate of 0 states none.
-    let sample_rate = SampleRate::new(f64::from(sample_rate_of(&track.codec_params)?))
-        .ok_or(DecodeError::NoSampleRate)?;
+    let sample_rate = sample_rate_of(&track.codec_params)?;
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(convert)?;
@@ -236,8 +240,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
             Some(wave) => wave,
             none => {
                 let spec = *buf.spec();
-                let rate =
-                    SampleRate::new(f64::from(spec.rate)).ok_or(DecodeError::NoSampleRate)?;
+                let rate = SampleRate::from_hz(spec.rate).ok_or(DecodeError::NoSampleRate)?;
                 none.insert(Wave::with_topology(topology_of(spec.channels), rate))
             }
         };
@@ -250,7 +253,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
                 .channel_vec_mut(ch)
                 .extend_from_slice(&buf.chan(ch)[..buffer_len]);
         }
-        wave_output.set_len(old_len + buffer_len);
+        wave_output.set_len(old_len + Samples(buffer_len));
     }
 }
 

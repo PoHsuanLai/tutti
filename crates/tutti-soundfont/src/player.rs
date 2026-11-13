@@ -574,6 +574,11 @@ impl Player {
         Some(player)
     }
 
+    /// How many voices were not started because their sample states no rate.
+    pub(crate) fn unrated_starts(&self) -> u64 {
+        self.voices.unrated()
+    }
+
     /// The longest the player can keep sounding once its last key is up: the
     /// longest release of any voice a preset can start. A release time is the
     /// time to fall 100 dB (SF2 2.04 section 8.1.2, generator 38) and a voice is

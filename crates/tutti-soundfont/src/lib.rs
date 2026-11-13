@@ -182,6 +182,13 @@ impl SoundFontUnit {
         Ok(Self::from_player(player, 0))
     }
 
+    /// How many voices a note did not start because their sample's header
+    /// states no sample rate (a rate of 0, which no pitch can be derived from).
+    /// Such a sample is skipped, not played at a made-up rate.
+    pub fn unrated_starts(&self) -> u64 {
+        self.player.unrated_starts()
+    }
+
     /// Returns the rate this unit renders at: its settings' rate at
     /// construction, or the rate its graph prepared it at.
     pub fn sample_rate(&self) -> SampleRate {

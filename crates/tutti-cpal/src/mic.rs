@@ -55,6 +55,7 @@ use tutti_types::Samples;
 use tutti_types::{ChannelLayout, ChannelTopology, Fold};
 use tutti_types::{Pull, Source};
 
+use crate::driver_seam::device_rate;
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
 use crate::host::{AudioHost, DeviceHost, DeviceSelector};
@@ -254,7 +255,7 @@ impl MicIn {
             graph_rate,
             &name,
         )?;
-        let sample_rate = SampleRate::from(config.sample_rate().0);
+        let sample_rate = device_rate(config.sample_rate())?;
         let device_inputs = ChannelLayout::from(config.channels());
 
         // Checked before the stream exists: an input the device lacks is an
@@ -607,7 +608,7 @@ pub(crate) fn choose_input_config(
 
     Err(Error::SampleRateMismatch {
         device_name: device_name.to_string(),
-        device: SampleRate::from(fallback.sample_rate().0),
+        device: device_rate(fallback.sample_rate())?,
         graph: graph_rate,
     })
 }

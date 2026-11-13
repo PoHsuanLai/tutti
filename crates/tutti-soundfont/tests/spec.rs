@@ -542,6 +542,7 @@ fn the_samples_of_a_stereo_pair_sound_on_their_own_sides() {
         sample_type,
         link,
         gain,
+        rate: 44_100,
     };
     let zone = |sample: i16| vec![(generator::SAMPLE_MODES, 1), (generator::SAMPLE_ID, sample)];
     let font = support::font::one_preset_with_samples(

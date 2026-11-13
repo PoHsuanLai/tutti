@@ -146,23 +146,15 @@ fn a_topology_sets_the_mask() {
     );
 }
 
-/// A rate no header can hold (zero, not finite, past `u32::MAX` Hz) is refused
-/// before the header, rather than saturated into one.
+/// A rate no header can hold (under half a Hertz, past `u32::MAX` Hz) is
+/// refused before the header, rather than saturated into one.
 #[test]
-fn a_zero_rate_is_refused() {
-    for rate in [
-        0.0,
-        0.4,
-        f64::NAN,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        1e10,
-        4_294_967_296.0,
-    ] {
+fn a_rate_no_header_holds_is_refused() {
+    for rate in [0.4, 1e10, 4_294_967_296.0] {
         let s = Spec::of_width(
             crate::Format::Wav(Pcm::Int16),
             ChannelLayout::STEREO,
-            <SampleRate as tutti_types::Unit>::from_raw(rate),
+            SampleRate::of(rate),
         );
         let err = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new()))
             .err()

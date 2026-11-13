@@ -32,7 +32,7 @@ pub(crate) fn wave_frame_into(wave: &Wave, place: &Place, idx: usize, out: &mut 
         return;
     }
     let src_ch = wave.channels();
-    if idx >= wave.len() || src_ch == 0 {
+    if idx >= wave.len().get() || src_ch == 0 {
         out.fill(0.0);
         return;
     }
@@ -84,7 +84,7 @@ mod tests {
             SampleRate::SR_48K,
             Seconds::new(len as f64) / 48000.0,
         );
-        for i in 0..w.len() {
+        for i in 0..w.len().get() {
             for c in 0..channels {
                 w.set(c, i, (c + 1) as f32);
             }

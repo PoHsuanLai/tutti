@@ -57,7 +57,6 @@ fn seconds_to_samples_collapses_nonsense_to_zero() {
         Samples::ZERO
     );
     assert_eq!(Seconds(-1.0).to_samples(SampleRate::SR_48K), Samples::ZERO);
-    assert_eq!(Seconds(1.0).to_samples(SampleRate(0.0)), Samples::ZERO);
 }
 
 #[test]
@@ -90,7 +89,7 @@ fn sample_rate_accepts_every_shape_a_caller_holds() {
     // migrated signatures take `impl Into<SampleRate>` without churning
     // their call sites.
     assert_eq!(SampleRate::SR_48K, SampleRate::SR_48K);
-    assert_eq!(SampleRate::from(48_000_u32), SampleRate::SR_48K);
+    assert_eq!(SampleRate::from_hz(48_000), Some(SampleRate::SR_48K));
     assert_eq!(SampleRate::SR_44K1, SampleRate::SR_44K1);
 }
 
@@ -150,7 +149,6 @@ fn one_pole_zero_time_is_instant_and_bad_input_is_defined() {
         assert_eq!(Seconds(tau).one_pole_coeff_over(Seconds(0.0)), 1.0);
     }
     assert_eq!(Seconds(f64::INFINITY).one_pole_coeff(sr), 0.0);
-    assert_eq!(Seconds(1.0).one_pole_coeff(SampleRate(f64::NAN)), 1.0);
     for step in [0.0, -0.01, f64::NAN] {
         assert_eq!(Seconds(0.1).one_pole_coeff_over(Seconds(step)), 0.0);
     }

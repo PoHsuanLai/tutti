@@ -48,13 +48,7 @@ fn a_reach_refuses_what_it_cannot_hold() {
         (c.rate(), c.domain(), c.max_decay(), c.floor()),
         (rate, decay, Seconds::new(8.0), floor)
     );
-    assert_eq!(Reach::at(rate), Some(c));
-    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert!(
-            Reach::<MaxDecay>::at(<SampleRate as tutti_types::Unit>::from_raw(bad)).is_none(),
-            "rate {bad}"
-        );
-    }
+    assert_eq!(Reach::at(rate), c);
     for bad in [0.0, 3.0, f32::NAN, f32::NEG_INFINITY] {
         assert!(Reach::new(rate, decay, Db(bad)).is_none(), "floor {bad}");
     }

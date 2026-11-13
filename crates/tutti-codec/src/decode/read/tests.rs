@@ -36,6 +36,15 @@ fn a_track_with_no_sample_rate_is_refused() {
         sample_rate_of(&params),
         Err(DecodeError::NoSampleRate)
     ));
+    // A stated rate of 0 states none.
+    params.with_sample_rate(0);
+    assert!(matches!(
+        sample_rate_of(&params),
+        Err(DecodeError::NoSampleRate)
+    ));
     params.with_sample_rate(48_000);
-    assert_eq!(sample_rate_of(&params).expect("stated"), 48_000);
+    assert_eq!(
+        sample_rate_of(&params).expect("stated"),
+        tutti_types::SampleRate::SR_48K
+    );
 }

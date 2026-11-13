@@ -106,11 +106,7 @@ impl HostClock {
     /// The clock `frames` past a reading of `block_ns`, at `rate`: where a
     /// chunk starting that far into the block sits on it.
     pub(crate) fn at(block_ns: i64, frames: usize, rate: SampleRate) -> i64 {
-        let rate = rate.get();
-        if !(rate.is_finite() && rate > 0.0) {
-            return block_ns;
-        }
-        let ns = (frames as f64 * 1e9 / rate).round() as i64;
+        let ns = (frames as f64 * 1e9 / rate.get()).round() as i64;
         block_ns.saturating_add(ns)
     }
 }
@@ -217,7 +213,7 @@ struct ProjectRead {
 
 impl ProjectTime {
     /// Project time, in frames, at a read of `t` at `rate` with the node's
-    /// steady counter at `steady`; `None` without a usable tempo and rate.
+    /// steady counter at `steady`; `None` when the result is not finite.
     /// Reads come in frame order (the counter never goes back). Audio-thread
     /// safe: arithmetic only.
     pub(crate) fn at(
@@ -226,12 +222,7 @@ impl ProjectTime {
         rate: SampleRate,
         steady: i64,
     ) -> Option<f64> {
-        let usable = |v: f64| v.is_finite() && v > 0.0;
         let (tempo, hz) = (t.tempo.get(), rate.get());
-        if !usable(hz) {
-            self.last = None;
-            return None;
-        }
         let continued = self.last.and_then(|p| {
             let gap = usize::try_from(steady.checked_sub(p.steady)?).ok()?;
             if p.rate != rate {
@@ -380,7 +371,7 @@ pub(crate) fn slope(
     frames: usize,
 ) -> f64 {
     let rate = view.rate().get();
-    if !playing || frames == 0 || !beat.get().is_finite() || !rate.is_finite() || rate <= 0.0 {
+    if !playing || frames == 0 || !beat.get().is_finite() {
         return 0.0;
     }
     let t0 = view.seconds_at(beat).get();
@@ -418,18 +409,16 @@ impl Snapshot {
             return beat;
         }
         let rate = view.rate().get();
-        if rate.is_finite() && rate > 0.0 {
-            let points = view.map().points();
-            let from = view.seconds_at(beat).get();
-            let mut next = points.partition_point(|p| p.beat.get() <= beat.get());
-            while let Some(p) = points.get(next) {
-                let ahead = (view.seconds_at(p.beat).get() - from) * rate;
-                if tutti_types::first_frame_at_or_after(ahead) > 0 {
-                    break;
-                }
-                beat = p.beat;
-                next += 1;
+        let points = view.map().points();
+        let from = view.seconds_at(beat).get();
+        let mut next = points.partition_point(|p| p.beat.get() <= beat.get());
+        while let Some(p) = points.get(next) {
+            let ahead = (view.seconds_at(p.beat).get() - from) * rate;
+            if tutti_types::first_frame_at_or_after(ahead) > 0 {
+                break;
             }
+            beat = p.beat;
+            next += 1;
         }
         self.tempo = view.tempo_at(beat);
         beat
@@ -1398,18 +1387,6 @@ mod tests {
             &[(0, Cmd::Seek(5.0)), (0, Cmd::Tempo(60.0)), (0, Cmd::Play)],
         );
         assert_eq!(read(&mut project, &[started], &[0]), [(128, Some(240_000))]);
-
-        // A tempo cannot be zero (`Bpm` refuses it); a rate of zero still
-        // leaves no project time.
-        let playing = TransportPosition::new(true, Bpm::of(120.0), Beat(2.0), None);
-        assert_eq!(
-            project.at(
-                &playing,
-                <SampleRate as tutti_types::Unit>::from_raw(0.0),
-                192
-            ),
-            None
-        );
     }
 
     /// **Stopping holds project time, and a start where it stood continues

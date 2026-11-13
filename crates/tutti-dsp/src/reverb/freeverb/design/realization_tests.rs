@@ -84,7 +84,7 @@ fn prepare_retunes_the_lines_and_keeps_the_coefficients() {
     realization.retarget(&FreeverbFamily.member(&controls(0.9, 0.2), SampleRate::DEFAULT));
     let want = realization.figures().comb;
     let rate = SampleRate::SR_96K;
-    let reach = Reach::at(rate).unwrap();
+    let reach = Reach::at(rate);
     realization.prepare(
         &FreeverbFamily.reach(&reach),
         &Setup {

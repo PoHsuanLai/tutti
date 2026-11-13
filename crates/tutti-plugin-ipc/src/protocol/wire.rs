@@ -295,6 +295,34 @@ mod tests {
         assert_eq!(postcard::to_allocvec(&end).unwrap(), [7, 2, 7]);
     }
 
+    /// **A rate that is no rate fails the message**: a `SampleRate` decodes only
+    /// from a finite `f64` above zero, so zero, a negative, NaN and infinity
+    /// never reach the server's clock or a plugin (doc 027 D13).
+    #[test]
+    fn a_rate_that_is_no_rate_does_not_decode() {
+        use crate::protocol::HostMessage;
+        for bad in [
+            0.0f64,
+            -48_000.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let mut bytes = vec![8u8];
+            bytes.extend(bad.to_le_bytes());
+            assert!(
+                postcard::from_bytes::<HostMessage>(&bytes).is_err(),
+                "{bad} decoded"
+            );
+        }
+        let mut ok = vec![8u8];
+        ok.extend(48_000.0f64.to_le_bytes());
+        assert!(matches!(
+            postcard::from_bytes::<HostMessage>(&ok),
+            Ok(HostMessage::SetSampleRate { .. })
+        ));
+    }
+
     /// A wire value in `0..=1` decodes; one outside it, or NaN, fails the
     /// message, in each width and in the optional forms.
     /// **The editor messages are appended after every earlier variant, in the

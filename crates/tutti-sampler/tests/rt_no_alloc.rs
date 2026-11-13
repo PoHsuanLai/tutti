@@ -75,7 +75,7 @@ static A: AllocDisabler = AllocDisabler;
 /// Build a stereo `Wave` of `duration_secs` filled with a 440 Hz sine.
 fn sine_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
     let mut wave = Wave::zero(2, SampleRate::of(sample_rate), Seconds::new(duration_secs));
-    let len = wave.len();
+    let len = wave.len().get();
     for i in 0..len {
         let t = i as f64 / sample_rate;
         let s = (t * 440.0 * core::f64::consts::TAU).sin() as f32 * 0.5;
@@ -630,7 +630,7 @@ fn run_stretch_drain_under_guard() {
 /// wrong-channel read is a wrong value rather than a plausible one.
 fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
     let mut wave = Wave::zero(6, SampleRate::of(sample_rate), Seconds::new(duration_secs));
-    let len = wave.len();
+    let len = wave.len().get();
     for i in 0..len {
         let t = i as f64 / sample_rate;
         let s = (t * 440.0 * core::f64::consts::TAU).sin() as f32 * 0.5;

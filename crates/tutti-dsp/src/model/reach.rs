@@ -80,14 +80,11 @@ pub struct Reach<D> {
 }
 
 impl<D: Domain> Reach<D> {
-    /// A reach, or `None` when the rate is not positive and finite or the floor is
-    /// not finite and below 0 dB (the domain is checked where it is made).
+    /// A reach, or `None` when the floor is not finite and below 0 dB (the
+    /// domain is checked where it is made).
     #[must_use]
     pub fn new(rate: SampleRate, domain: D, floor: Db) -> Option<Self> {
-        let ok = rate.get().is_finite()
-            && rate.get() > 0.0
-            && floor.get().is_finite()
-            && floor.get() < 0.0;
+        let ok = floor.get().is_finite() && floor.get() < 0.0;
         ok.then_some(Self {
             rate,
             floor,
@@ -95,11 +92,14 @@ impl<D: Domain> Reach<D> {
         })
     }
 
-    /// The defaults at `rate` ([`Domain::DEFAULT`], [`TAIL_FLOOR`]), or
-    /// `None` for a rate that is not positive and finite.
+    /// The defaults at `rate` ([`Domain::DEFAULT`], [`TAIL_FLOOR`]).
     #[must_use]
-    pub fn at(rate: SampleRate) -> Option<Self> {
-        Self::new(rate, D::DEFAULT, TAIL_FLOOR)
+    pub fn at(rate: SampleRate) -> Self {
+        Self {
+            rate,
+            floor: TAIL_FLOOR,
+            domain: D::DEFAULT,
+        }
     }
 
     /// The rate.

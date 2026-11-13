@@ -268,7 +268,7 @@ impl WindowedLoudnessConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidLoudnessParameter`] unless `rate` is finite and within
+    /// [`Error::InvalidLoudnessParameter`] unless `rate` is within
     /// 8 kHz..=192 kHz, and `layout` has 1..=16 channels.
     pub fn new(rate: impl Into<SampleRate>, layout: ChannelLayout) -> Result<Self> {
         let rate = rate.into();
@@ -1066,25 +1066,14 @@ mod tests {
         }
     }
 
-    /// Every setting is checked, NaN and infinity included, and a bad chunk is
+    /// Every setting is checked, and a bad chunk is
     /// refused without touching the meter.
     #[test]
     fn bad_settings_and_input_are_errors() {
-        for rate in [
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            0.0,
-            -48_000.0,
-            7_999.0,
-            192_001.0,
-        ] {
+        for rate in [7_999.0, 192_001.0] {
             assert!(
                 matches!(
-                    WindowedLoudnessConfig::new(
-                        <SampleRate as tutti_types::Unit>::from_raw(rate),
-                        ChannelLayout::STEREO
-                    ),
+                    WindowedLoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO),
                     Err(Error::InvalidLoudnessParameter(_))
                 ),
                 "rate {rate}"

@@ -23,7 +23,7 @@ use tutti_plugin_types::{
     Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized,
     Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
     PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor,
-    RenderMode, Request, Sample, SampleFormat, SampleRate, Samples, Seat, Stage, State, standing,
+    RenderMode, Request, Sample, SampleFormat, SampleRate, Samples, Seat, Stage, State,
 };
 
 mod any;
@@ -100,7 +100,7 @@ pub(crate) trait ServedPlugin: Render {
     ///
     /// The plugin is not running at `rate`: it keeps the rate it already
     /// accepted, or renders silence until a rate it takes.
-    fn set_sample_rate(&mut self, main: &MainThread, rate: f64) -> PluginResult<()>;
+    fn set_sample_rate(&mut self, main: &MainThread, rate: SampleRate) -> PluginResult<()>;
     /// Tells the plugin its render mode; whether it now runs in it.
     fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool;
     /// How many parameters the plugin has.
@@ -235,7 +235,7 @@ impl<F: ServerSide> Served<F> {
         main: &MainThread,
         path: &Path,
         load: &Load,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         block_size: usize,
         prefer_f64: bool,
         state: Option<&[u8]>,
@@ -277,7 +277,7 @@ impl<F: ServerSide> Served<F> {
     pub(crate) fn activate(
         main: &MainThread,
         loaded: F,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         block_size: usize,
         prefer_f64: bool,
         state: Option<&[u8]>,
@@ -287,12 +287,11 @@ impl<F: ServerSide> Served<F> {
         let activation_failed = |reason: String| {
             load_failed(LoadStage::Activation, format!("activate failed: {reason}"))
         };
-        let prepare = SampleRate::new(sample_rate)
-            .zip(MaxBlock::new(Samples(block_size)))
-            .and_then(|(rate, block)| Prepare::new(rate, block))
+        let prepare = MaxBlock::new(Samples(block_size))
+            .map(|block| Prepare::new(sample_rate, block))
             .ok_or_else(|| {
                 activation_failed(format!(
-                    "the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
+                    "the plugin cannot run in blocks of {block_size} frames"
                 ))
             })?;
 
@@ -690,25 +689,21 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     /// clock follows the rate the host asked for.) When the rollback is refused
     /// too the plugin is left loaded and silent, and the host is told with an
     /// I/O change; the next rate revives it.
-    fn set_sample_rate(&mut self, main: &MainThread, rate: f64) -> PluginResult<()> {
+    fn set_sample_rate(&mut self, main: &MainThread, rate: SampleRate) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
             return Err(PluginError::Other(
                 "the plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (previous.rate().get() - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate().get() - rate.get()).abs() < f64::EPSILON {
             return Ok(());
         }
-        let Some(wanted) = SampleRate::new(rate).and_then(|rate| previous.with_rate(rate)) else {
-            return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate} ({}): not a positive finite rate",
-                standing(self.is_active(), previous.rate())
-            )));
-        };
+        let wanted = previous.with_rate(rate);
         self.reconfigure(main, previous, wanted)
             .map_err(|(reason, rolled_back)| {
                 PluginError::Other(format!(
-                    "plugin refused sample rate {rate} ({}): {reason}",
+                    "plugin refused sample rate {} ({}): {reason}",
+                    rate.get(),
                     if rolled_back {
                         format!("running at {}", previous.rate().get())
                     } else {

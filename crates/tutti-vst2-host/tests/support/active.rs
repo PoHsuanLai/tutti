@@ -18,13 +18,11 @@ pub type Active = tutti_fixtures::Active<Whole<Vst2Loaded>>;
 /// The `Prepare` a rate, block size and width stand for, in realtime mode.
 pub fn prepare_for(rate: f64, frames: usize, double: bool) -> Prepare {
     let block = MaxBlock::new(Samples(frames)).expect("a block of at least one frame");
-    Prepare::new(SampleRate::of(rate), block)
-        .expect("a positive finite rate")
-        .with_format(if double {
-            SampleFormat::Float64
-        } else {
-            SampleFormat::Float32
-        })
+    Prepare::new(SampleRate::of(rate), block).with_format(if double {
+        SampleFormat::Float64
+    } else {
+        SampleFormat::Float32
+    })
 }
 
 /// The width a plugin is told it will be processed at.
@@ -110,10 +108,7 @@ impl ActiveExt for Active {
     }
 
     fn set_sample_rate(&mut self, rate: f64) {
-        let wanted = self
-            .prepare()
-            .with_rate(SampleRate::of(rate))
-            .expect("a positive finite rate");
+        let wanted = self.prepare().with_rate(SampleRate::of(rate));
         self.reconfigure(wanted).expect("the rate is accepted");
     }
 
@@ -123,7 +118,6 @@ impl ActiveExt for Active {
             prepare.rate(),
             MaxBlock::new(Samples(frames)).expect("a block of at least one frame"),
         )
-        .expect("the rate was already accepted")
         .with_format(prepare.format())
         .with_mode(prepare.mode());
         self.reconfigure(wanted).expect("the block is accepted");

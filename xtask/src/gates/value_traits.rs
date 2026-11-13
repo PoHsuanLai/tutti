@@ -27,7 +27,7 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "Waveform",
         "temporary: the dsp session adds Hash",
     ),
-    // plugins (39)
+    // plugins (33)
     (
         "crates/tutti-au-ffi/src/bundle.rs",
         "BundleError",
@@ -109,16 +109,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "temporary: the plugins session adds Hash",
     ),
     (
-        "crates/tutti-plugin-db/src/facts.rs",
-        "ScanDecision",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-db/src/scanner.rs",
-        "ScanPhase",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
         "crates/tutti-plugin-ipc-ffi/src/header.rs",
         "Direction",
         "temporary: the plugins session adds Hash",
@@ -196,26 +186,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
     (
         "crates/tutti-plugin-types/src/sample_format.rs",
         "SampleFormat",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-vst3-ffi/src/plugin/mod.rs",
-        "MediaType",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-vst3-ffi/src/plugin/mod.rs",
-        "BusDirection",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-vst3-ffi/src/types/audio.rs",
-        "ProcessMode",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-vst3-ffi/src/types/audio.rs",
-        "SampleWidth",
         "temporary: the plugins session adds Hash",
     ),
     // errors (6)

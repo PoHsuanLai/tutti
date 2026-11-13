@@ -500,8 +500,8 @@ impl Planner<'_> {
             "-p tutti-shared-plugin --all-targets",
             "-p tutti-export --lib",
             "-p tutti-codec --features encode-wav,encode-aiff,encode-flac,decode-wav,decode-flac,decode-mp3,decode-ogg,serde --all-targets",
-            "-p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets",
-            "-p tutti-plugin-db --features json --all-targets",
+            "-p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/serde --all-targets",
+            "-p tutti-plugin-db --features serde --all-targets",
             "-p tutti-vst2-host --all-targets",
             "-p tutti-vst3-host -p tutti-plugin-server -p tutti-plugin-probe --lib --bins",
         ] {
@@ -543,8 +543,8 @@ const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-plugin-types --lib --features contract -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings"#,
-    r#"cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-plugin --features clap,vst2,serde --all-targets -- -D warnings"#,
+    r#"cargo clippy --locked -p tutti-plugin-db --features serde --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings"#,
@@ -575,9 +575,9 @@ const TEST_FEATURES: &[&str] = &[
     r#"cargo nextest run --locked -p tutti-tempo --features serde"#,
     r#"cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests"#,
     r#"cargo nextest run --locked -p tutti-plugin-types --features testing"#,
-    r#"cargo nextest run --locked -p tutti-plugin-db --features json"#,
+    r#"cargo nextest run --locked -p tutti-plugin-db --features serde"#,
     r#"cargo nextest run --locked -p tutti-plugin-contract --features server"#,
-    r#"cargo nextest run --locked -p tutti-plugin --features clap,vst2,json"#,
+    r#"cargo nextest run --locked -p tutti-plugin --features clap,vst2,serde"#,
 ];
 
 const MIRI: &[&str] = &[

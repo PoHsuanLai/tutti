@@ -10,8 +10,9 @@
 //!   either the plugins the file holds or a blacklist). The file is the unit
 //!   because a crash blacklists a file before any plugin id is known. A
 //!   [`Delta`] replaces or drops one row, and [`PluginDb::apply`] is the only
-//!   code that changes the table. With feature `json`, `save` and `load`
-//!   write and read it as a versioned file.
+//!   code that changes the table. With feature `serde` it is `Serialize` and
+//!   `Deserialize` as a versioned record: the app picks the file format and where
+//!   it lives, and a database of another version does not deserialize.
 //! - [`Scanner`] probes the files that are new or changed since their row was
 //!   stamped, through the probe it is given (the host supplies an out-of-process
 //!   one). A scan runs on a worker over a snapshot of the table and sends
@@ -30,9 +31,9 @@ mod fs;
 mod os_path;
 mod pedal;
 mod scanner;
-#[cfg(feature = "json")]
-mod store;
 mod table;
+#[cfg(feature = "serde")]
+mod wire;
 
 pub use facts::{
     FileFacts, ScanDecision, classify, is_blacklisted_and_unchanged, missing, needs_rescan,
@@ -46,6 +47,6 @@ pub use scanner::{
     ProbeFailure, Scan, ScanBusy, ScanPhase, ScanPoll, ScanProgress, ScanResult, Scanner,
     probe_plugin_fallback,
 };
-#[cfg(feature = "json")]
-pub use store::{load, save};
 pub use table::{BlacklistedFile, Delta, FileRow, FileState, PluginDb, PluginEntry};
+#[cfg(feature = "serde")]
+pub use wire::{DB_VERSION, InvalidDb};

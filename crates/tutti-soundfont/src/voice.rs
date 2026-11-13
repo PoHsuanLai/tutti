@@ -385,7 +385,7 @@ impl Voice {
     }
 
     /// Lets the voice go into the quick release of an exclusive class (SF2
-    /// 2.04 section 8.1.2, generator 57: "rapidly terminated"): its volume
+    /// 2.04 section 8.1.2, generator 57): its volume
     /// envelope falls over [`QUICK_RELEASE`] at the longest, whatever its
     /// own release is. A voice already releasing is sped up, never slowed.
     pub(crate) fn damp(&mut self) {

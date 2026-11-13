@@ -63,7 +63,7 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "NoMidi1Form",
         "temporary: the midi session adds Hash",
     ),
-    // plugins (40)
+    // plugins (39)
     (
         "crates/tutti-au-ffi/src/bundle.rs",
         "BundleError",
@@ -252,11 +252,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
     (
         "crates/tutti-vst3-ffi/src/types/audio.rs",
         "SampleWidth",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-vst3-host/src/types/mod.rs",
-        "KeyOutcome",
         "temporary: the plugins session adds Hash",
     ),
     // errors (6)

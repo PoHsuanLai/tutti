@@ -23,6 +23,9 @@ impl Lerp for f32 {
 }
 
 /// A coefficient set that can be blended toward another.
+///
+/// The glide assumes the coefficient space is affine: a blend of two sets is a set the
+/// recurrence can run. A set for which it is not has no `Lerp`.
 pub trait Lerp: Copy + PartialEq + core::fmt::Debug {
     /// The set `k` of `n` steps of the way from `self` to `to`, computed from the
     /// two ends and the step, never accumulated, so step `n` is `to` to the bit.
@@ -290,6 +293,14 @@ pub trait Readout: Recurrence {
 /// not from a block's edge, so the render does not depend on how the input is cut
 /// into blocks. That first retarget lands whole, with nothing to approach from;
 /// `reset` lands and clears.
+///
+/// Block independence holds for any [`Recurrence`], so no family proves it again: a
+/// stream run in one block renders the same as the stream split into blocks at any
+/// frames. Two maps sit on a grid and could break it, the cadence σ
+/// ([`Cadence`](crate::Cadence)) and the glide γ ([`Approach`]); both count frames on the
+/// stream from the last reset, never from the start of a call. A family that declares
+/// [`Cadence::Block`](crate::Cadence::Block) gives it up
+/// ([`Cadence::block_independent`](crate::Cadence::block_independent) is `false`).
 ///
 /// Nothing is allocated after [`prepare`](Self::prepare): everything is sized there
 /// from the [`Capacity`](Recurrence::Capacity), and `retarget`, `process` and `reset`

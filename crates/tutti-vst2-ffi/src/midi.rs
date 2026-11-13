@@ -137,7 +137,7 @@ pub fn to_midi(event: &crate::api::MidiEvent) -> Option<WireMidi> {
 pub fn from_midi(event: &WireMidi) -> Option<crate::api::MidiEvent> {
     let mut messages = [[0u8; 3]; MAX_MESSAGES];
     match narrowed(&mut Narrower::new(), event.ump, &mut messages) {
-        1 => Some(midi_event(event.offset, messages[0])),
+        1 => Some(midi_event(event.offset, messages[0], true)),
         _ => None,
     }
 }
@@ -164,7 +164,7 @@ fn narrowed(narrower: &mut Narrower, ump: Ump, out: &mut [[u8; 3]; MAX_MESSAGES]
 }
 
 /// One MIDI-1 message as a VST2 event at `frame_offset`.
-fn midi_event(frame_offset: u32, midi_data: [u8; 3]) -> crate::api::MidiEvent {
+fn midi_event(frame_offset: u32, midi_data: [u8; 3], live: bool) -> crate::api::MidiEvent {
     use crate::api;
     use std::mem;
 
@@ -182,14 +182,15 @@ fn midi_event(frame_offset: u32, midi_data: [u8; 3]) -> crate::api::MidiEvent {
         event_type: api::EventType::Midi,
         byte_size: mem::size_of::<api::MidiEvent>() as i32,
         delta_frames,
-        // REALTIME_EVENT is hard-coded (always set). VST2 lets the host clear
-        // it for events scheduled during a non-realtime/offline render, but the
-        // engine carries no offline/realtime signal into MIDI conversion — the
-        // shared ProcessContext has no such flag, and offline export does not
-        // yet route MIDI through here. Deferred (not a code gap): the same
-        // missing plumbing blocks CLAP's CLAP_EVENT_IS_LIVE. Always-realtime is
-        // correct for live playback (the only path that reaches this today).
-        flags: api::MidiEventFlags::REALTIME_EVENT.bits(),
+        // `kVstMidiEventIsRealtime` marks an event the host plays live. It is set for a block
+        // rendered in realtime and clear for an offline render. The engine's events do not
+        // say whether they are live input or sequenced playback, so within a realtime block
+        // every event is marked.
+        flags: if live {
+            api::MidiEventFlags::REALTIME_EVENT.bits()
+        } else {
+            0
+        },
         note_length: 0,
         note_offset: 0,
         midi_data,
@@ -211,6 +212,9 @@ fn midi_event(frame_offset: u32, midi_data: [u8; 3]) -> crate::api::MidiEvent {
 /// event past it is refused and counted
 /// ([`events_dropped`](Self::events_dropped)), so staging never allocates.
 pub struct MidiSendBuffer {
+    /// Whether the events staged are marked `kVstMidiEventIsRealtime`: true for a block
+    /// rendered in realtime, false for an offline render.
+    live: bool,
     /// The most events one block stages; every list below holds this many.
     room: usize,
     /// Events refused past `room` since the buffer was made.
@@ -289,6 +293,7 @@ impl MidiSendBuffer {
     /// allocates.
     pub fn with_capacity(events: usize) -> Self {
         let mut buf = Self {
+            live: true,
             room: events,
             events_dropped: 0,
             api_events: Vec::with_capacity(events),
@@ -439,7 +444,7 @@ impl MidiSendBuffer {
                 continue;
             }
             for message in &messages[..n] {
-                let mut api = midi_event(offset.get(), *message);
+                let mut api = midi_event(offset.get(), *message, self.live);
                 api.delta_frames = delta;
                 self.order.push(Staged::Midi(self.api_events.len()));
                 self.api_events.push(api);
@@ -510,6 +515,12 @@ impl MidiSendBuffer {
 }
 
 impl MidiSendBuffer {
+    /// Whether the events staged from now on are marked `kVstMidiEventIsRealtime`: true
+    /// while the host renders in realtime (the initial state), false for an offline render.
+    pub fn set_live(&mut self, live: bool) {
+        self.live = live;
+    }
+
     /// Stages the piece (see [`stage_piece`](Self::stage_piece)) and hands it to the plugin
     /// through `render`, if any event is in it.
     pub fn send_piece(

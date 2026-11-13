@@ -652,6 +652,42 @@ fn a_listener_hears_the_crash_with_its_cause() {
     );
 }
 
+/// **What the server says while no command waits is heard when it arrives.**
+/// `SetRenderMode` is fire-and-forget: the bridge reads nothing after it. The
+/// mock answers it with a latency change the host never asked for, and the
+/// listener must hear it with no further command sent: the watcher thread tells
+/// the idle bridge, which reads the control connection.
+#[test]
+fn an_unprompted_event_reaches_the_listener_while_no_command_waits() {
+    use parking_lot::Mutex as PlMutex;
+
+    let mock = MockServer::start("unprompted", |msg| match msg {
+        HostMessage::SetRenderMode { .. } => {
+            Action::Reply(Box::new(BridgeMessage::LatencyChanged {
+                samples: crate::protocol::Samples(77),
+            }))
+        }
+        _ => Action::Silent,
+    });
+    let heard: Arc<PlMutex<Vec<usize>>> = Arc::new(PlMutex::new(Vec::new()));
+    let sink = Arc::clone(&heard);
+    mock.bridge.set_listener(Some(Arc::new(move |ev| {
+        if let crate::client::audio::BridgeEvent::LatencyChanged { samples } = ev {
+            sink.lock().push(samples.get());
+        }
+    })));
+
+    assert!(
+        mock.bridge
+            .set_render_mode_rt(crate::protocol::RenderMode::Realtime)
+    );
+    assert!(
+        wait_until(|| !heard.lock().is_empty()),
+        "the server's unprompted latency change was not heard within {NOTICE_TIMEOUT:?}"
+    );
+    assert_eq!(*heard.lock(), [77]);
+}
+
 /// A crash that happens **before** any listener exists is still reported.
 ///
 /// This is the case a callback-only design loses. `PluginBridge::new` spawns

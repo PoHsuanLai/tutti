@@ -155,10 +155,10 @@ fn data128(g: MidiGroup, d: Data128) -> [u32; 4] {
             0,
         ],
         Data128::MixedDataHeader(m) => [
-            h | (0x8 << 20) | (u32::from(m.mds_id.get()) << 16) | u32::from(m.chunk_bytes),
-            (u32::from(m.chunks) << 16) | u32::from(m.chunk),
-            (u32::from(m.manufacturer.get()) << 16) | u32::from(m.device),
-            (u32::from(m.sub_id_1) << 16) | u32::from(m.sub_id_2),
+            h | (0x8 << 20) | (u32::from(m.mds_id.get()) << 16) | u32::from(m.chunk_size.get()),
+            (u32::from(m.chunks.get()) << 16) | u32::from(m.chunk.get()),
+            (u32::from(m.identity.manufacturer.get()) << 16) | u32::from(m.identity.device),
+            (u32::from(m.identity.sub_id_1) << 16) | u32::from(m.identity.sub_id_2),
         ],
         Data128::MixedDataPayload { mds_id, bytes: b } => [
             h | (0x9 << 20)

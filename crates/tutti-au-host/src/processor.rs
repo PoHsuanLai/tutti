@@ -21,7 +21,7 @@ use tutti_plugin_types::{
     AudioBufferMut, ParamMapping, PlayheadWatch, PluginError, PluginIo, PluginResult,
     ProcessContext, ProcessOutput, Processor, TransportInfo, is_usable,
 };
-use tutti_rt::{EditWriter, Reader};
+use tutti_rt::Reader;
 use tutti_ump::SysexAssembler;
 
 use crate::automation::SharedStage;
@@ -102,12 +102,6 @@ pub struct AuProcessor {
     block_size: u32,
     /// The block's staged automation, which the render notify schedules.
     stage: SharedStage,
-    /// Writes to parameters flagged `NonRealTime`, packed by [`pack_deferred`],
-    /// for the control side to apply between blocks.
-    deferred: EditWriter<u64>,
-    /// The parameters whose automated value the unit applied, which the control
-    /// side tells the listeners of (never writes: `AUParameterListenerNotify`).
-    told: EditWriter<u32>,
 }
 
 /// What `send_midi` delivers through: the protocol the unit takes, the list
@@ -190,17 +184,6 @@ pub(crate) fn notify_now(
     }
 }
 
-/// A deferred write on the ring: the parameter in the high word, the plain
-/// value's bits in the low.
-pub(crate) fn pack_deferred(id: u32, value: f32) -> u64 {
-    (u64::from(id) << 32) | u64::from(value.to_bits())
-}
-
-/// The inverse of [`pack_deferred`].
-pub(crate) fn unpack_deferred(word: u64) -> (u32, f32) {
-    ((word >> 32) as u32, f32::from_bits(word as u32))
-}
-
 impl std::fmt::Debug for AuProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuProcessor")
@@ -220,8 +203,6 @@ pub(crate) struct ProcessorParts {
     pub(crate) midi_protocol: Option<Wire>,
     pub(crate) block_size: u32,
     pub(crate) stage: SharedStage,
-    pub(crate) deferred: EditWriter<u64>,
-    pub(crate) told: EditWriter<u32>,
 }
 
 impl AuProcessor {
@@ -236,8 +217,6 @@ impl AuProcessor {
             midi_protocol,
             block_size,
             stage,
-            deferred,
-            told,
         } = parts;
         Self {
             rendering,
@@ -250,8 +229,6 @@ impl AuProcessor {
             midi: MidiDelivery::new(midi_protocol),
             block_size,
             stage,
-            deferred,
-            told,
         }
     }
 
@@ -562,21 +539,23 @@ impl AuProcessor {
             let scheduled = self.rendering.notify.is_some();
             for queue in &changes.queues {
                 let id = queue.param_id.get();
-                let (Some(bounds), Some(last)) = (table.bounds(id), queue.points.last()) else {
+                let (Some(bounds), Some(slot), Some(last)) =
+                    (table.bounds(id), table.slot(id), queue.points.last())
+                else {
                     continue;
                 };
                 let plain = bounds.plain(last.value) as f32;
                 if table.is_non_realtime(id) {
-                    // A full ring counts the refusal; the next point of the
-                    // parameter carries its value again.
-                    let _ = self.deferred.push(pack_deferred(id, plain));
+                    // The latest value, marked for the tick: a parameter moved
+                    // in many blocks is written once, and nothing is dropped.
+                    table.marks().defer(slot, plain);
                 } else if !(scheduled && self.stage.borrow_mut().stage(queue, bounds)) {
                     // No notify, or no room left in the stage: the block's last
                     // point at its head, as a host that cannot place points.
                     // `AudioUnitSetParameter` applies it without notifying
                     // anyone; the control tick tells the listeners.
                     let _ = crate::parameters::set(&self.unit, id, plain);
-                    let _ = self.told.push(id);
+                    table.marks().tell(slot);
                 }
             }
         }
@@ -609,19 +588,23 @@ impl AuProcessor {
         // editor among them): only `AUParameterSet` and
         // `AUParameterListenerNotify` do (`AudioUnitUtilities.h`), and both
         // may take locks and dispatch to other queues, so neither is real-time
-        // safe and neither runs here. Each staged parameter goes to the control
-        // side on the `told` ring, and `AuController::apply_deferred` (the
-        // tick) notifies the listeners then. It notifies and writes nothing,
-        // since a later block may have moved the parameter on and a write of
-        // this block's end would undo it; the listeners read the unit's value.
-        // Only staged parameters are here: a `NonRealTime` one was handed to
-        // the deferred ring above (a real write, made on the tick), and one set
-        // at the head (no notify, or no room) was told there, so no parameter
-        // is told twice for a block.
+        // safe and neither runs here. Each staged parameter is marked in the
+        // table's `Marks`, and `AuController::apply_deferred` (the tick)
+        // notifies the listeners then. It notifies and writes nothing, since a
+        // later block may have moved the parameter on and a write of this
+        // block's end would undo it; the listeners read the unit's value.
+        // Only staged parameters are here: a `NonRealTime` one was marked for a
+        // write above (made on the tick), and one set at the head (no notify,
+        // or no room) was marked there, so no parameter is told twice for a
+        // block. The table is lent again rather than held across the render.
         let stage = self.stage.borrow();
-        for &(id, _) in stage.ends() {
-            // A full ring counts the refusal; the next block tells again.
-            let _ = self.told.push(id);
+        if !stage.ends().is_empty() {
+            let table = self.ranges.lend();
+            for &(id, _) in stage.ends() {
+                if let Some(slot) = table.slot(id) {
+                    table.marks().tell(slot);
+                }
+            }
         }
         drop(stage);
         // AUv2 reports no per-block MIDI, parameter or note-expression output

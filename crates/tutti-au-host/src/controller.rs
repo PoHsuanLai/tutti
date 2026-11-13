@@ -14,7 +14,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use tutti_plugin_types::{Controller, MainThread, PluginTail, Samples};
-use tutti_rt::{ArcLend, EditReader};
+use tutti_rt::ArcLend;
 
 use crate::error::Result;
 use crate::instance::AuLoaded;
@@ -28,12 +28,6 @@ pub struct AuController {
     /// The range table the Processor lends once per block; republished when the
     /// unit says its parameter list moved.
     pub(crate) ranges: Arc<ArcLend<RangeTable>>,
-    /// The writes the Processor handed over for `NonRealTime` parameters, which
-    /// [`apply_deferred`](Self::apply_deferred) makes between blocks.
-    deferred: EditReader<u64>,
-    /// The parameters whose automated value the unit has already applied, for
-    /// [`apply_deferred`](Self::apply_deferred) to tell the listeners of.
-    told: EditReader<u32>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -60,38 +54,38 @@ impl DerefMut for AuController {
 }
 
 impl AuController {
-    pub(crate) fn new(
-        loaded: AuLoaded,
-        ranges: Arc<ArcLend<RangeTable>>,
-        deferred: EditReader<u64>,
-        told: EditReader<u32>,
-    ) -> Self {
+    pub(crate) fn new(loaded: AuLoaded, ranges: Arc<ArcLend<RangeTable>>) -> Self {
         Self {
             loaded,
             ranges,
-            deferred,
-            told,
             _not_sync: PhantomData,
         }
     }
 
-    /// Writes each value the Processor deferred, in order, telling every
-    /// listener but the host's own. A parameter flagged `NonRealTime` is
-    /// changed here, between blocks, because changing it "in real-time will
-    /// cause a glitch or otherwise undesirable effect".
+    /// Writes the latest value of each `NonRealTime` parameter the Processor
+    /// marked, telling every listener but the host's own, then tells the
+    /// listeners of each parameter whose automated value the unit applied. A
+    /// `NonRealTime` parameter is changed here, between blocks, because changing
+    /// it "in real-time will cause a glitch or otherwise undesirable effect".
+    ///
+    /// A parameter is marked, not queued, so a parameter set in any number of
+    /// blocks since the last tick is written or told once, and none is dropped.
     pub(crate) fn apply_deferred(&mut self) {
         let listener = self.loaded.listener();
-        while let Some(word) = self.deferred.pop() {
-            let (id, value) = crate::processor::unpack_deferred(word);
-            let _ = crate::processor::write_now(&listener, self.loaded.unit(), id, value);
+        for marks in self.loaded.live_marks() {
+            for (id, value) in marks.take_deferred() {
+                let _ = crate::processor::write_now(&listener, self.loaded.unit(), id, value);
+            }
+            // An automated value the unit already applied is told, never
+            // written: a block may have moved the parameter on since, and a
+            // write of the older value would be heard in it. The listeners read
+            // the unit's own value; the host's listener is the sender, so it
+            // does not hear itself.
+            for id in marks.take_told() {
+                let _ = crate::processor::notify_now(&listener, self.loaded.unit(), id);
+            }
         }
-        // An automated value the unit already applied is told, never written:
-        // a block may have moved the parameter on since, and a write of the
-        // older value would be heard in it. The listeners read the unit's own
-        // value; the host's listener is the sender, so it does not hear itself.
-        while let Some(id) = self.told.pop() {
-            let _ = crate::processor::notify_now(&listener, self.loaded.unit(), id);
-        }
+        self.loaded.prune_marks();
     }
 
     /// Publishes the range table to the Processor after the unit's parameter

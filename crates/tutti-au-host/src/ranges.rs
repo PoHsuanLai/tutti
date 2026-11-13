@@ -14,6 +14,9 @@
 use tutti_au_ffi::Unit;
 use tutti_plugin_types::{Normalized, ParamMapping};
 
+use std::sync::Arc;
+
+use crate::marks::{Marks, Slot};
 use crate::parameters;
 
 /// Declared plain-unit bounds for one AU parameter, as reported by
@@ -91,11 +94,15 @@ pub(crate) struct RangeTable {
     /// "in real-time will cause a glitch or otherwise undesirable effect"
     /// (`AudioUnitProperties.h`), so the audio thread never makes one.
     non_realtime: Vec<u32>,
+    /// What the render tells the control side of each parameter here: sized for
+    /// every id in `ranges`, so each declared parameter has a [`Slot`].
+    marks: Arc<Marks>,
 }
 
 impl RangeTable {
-    /// Reads every parameter's declared range off the AU.
-    pub(crate) fn read(unit: &Unit) -> Self {
+    /// Reads every parameter's declared range off the AU. `previous` is the
+    /// marks of the table this replaces, kept when they have room for every id.
+    pub(crate) fn read(unit: &Unit, previous: Option<&Arc<Marks>>) -> Self {
         let list = parameters::list(unit);
         let mut non_realtime: Vec<u32> = list
             .iter()
@@ -116,10 +123,22 @@ impl RangeTable {
             })
             .collect();
         ranges.sort_unstable_by_key(|&(id, _)| id);
+        let ids: Vec<u32> = ranges.iter().map(|&(id, _)| id).collect();
         Self {
+            marks: Marks::covering(previous, &ids),
             ranges,
             non_realtime,
         }
+    }
+
+    /// The marks the render sets and the control tick takes.
+    pub(crate) fn marks(&self) -> &Arc<Marks> {
+        &self.marks
+    }
+
+    /// `id`'s place in [`marks`](Self::marks); every declared id has one.
+    pub(crate) fn slot(&self, id: u32) -> Option<Slot> {
+        self.marks.slot(id)
     }
 
     /// Whether the AU flagged `id` `NonRealTime`: a write to it belongs between
@@ -251,6 +270,7 @@ mod tests {
                 ),
             ],
             non_realtime: vec![7],
+            marks: Arc::new(Marks::new(vec![2, 7])),
         };
         assert!(table.is_non_realtime(7));
         assert!(!table.is_non_realtime(2));
@@ -259,5 +279,6 @@ mod tests {
         // A parameter the AU never declared has no range to denormalize
         // against, so it must be reported missing (and skipped), not guessed.
         assert!(table.bounds(3).is_none());
+        assert!(table.slot(7).is_some() && table.slot(3).is_none());
     }
 }

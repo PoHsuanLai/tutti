@@ -1,0 +1,99 @@
+# MIDI Clip File (M2-116 v1.0) inventory. The spec text is not in
+# the repo: `TUTTI_MIDI_SPECS=<dir> cargo xtask conformance-inventory midi`
+# regenerates the id, kind, section and facts columns from the text that
+# `pdftotext -layout` (26.01.0) makes of the M2-116 PDF in that directory (or a
+# .txt of it beside the PDF); the other columns are written by hand, in our own
+# words. `cargo xtask check-conformance` holds the generated columns to the
+# text when `TUTTI_MIDI_SPECS` is set. Nothing of the spec is quoted here: ids,
+# section numbers, keyword kinds and functional facts only.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids:
+#   m2-116/<section>#<n>          the nth sentence under the numbered section
+#                                 (appendix letters lowercase: d.2.1) that carries
+#                                 a conformance word. kind: shall is required,
+#                                 should recommended, may permitted; the negated
+#                                 forms keep the kind and carry the fact neg=1.
+# M2-116 has its own conformance-word table (its Table 2), the same three
+# rows as M2-104's, and no negated forms either. Section 6.2.1.1 follows 6.2
+# with no 6.2.1 between; it keeps its own number as the section.
+#   m2-116/hdr/<n>                the nth byte of the file header: facts
+#                                 byte (1-based) and value
+# side: writer, reader or both (todo marks a row not yet read).
+m2-116/1.2#1 | both |  | permitted | M2-116 §1.2 | background: SMF type 2 lets each track have its own tempo; no Clip File behaviour |  |  |
+m2-116/1.4.1#1 | both |  | permitted | M2-116 §1.4.1 | glossary: a Profile can list mandatory and optional messages, definition only |  |  |
+m2-116/1.4.1#2 | both |  | permitted | M2-116 §1.4.1 | glossary: Property Exchange reads another device's property data, definition only |  |  |
+m2-116/1.4.1#3 | both |  | recommended | M2-116 §1.4.1 | glossary: tempo is clocks per time unit, definition only |  |  |
+m2-116/1.4.1#4 | both |  | permitted | M2-116 §1.4.1 | glossary: a Transaction can have several replies, definition only |  |  |
+m2-116/1.4.1#5 | both |  | permitted | M2-116 §1.4.1 | glossary: a Transaction can be a longer multi-step exchange, definition only |  |  |
+m2-116/2#1 | both |  | permitted | M2-116 §2 | comparison with SMF type 0: the configuration header can set up a receiver before the sequence plays |  |  |
+m2-116/3.2.1#1 | both |  | required | M2-116 §3.2.1 | the file holds one DCTPQ, the first message after the file header and any Set Profile On messages |  |  |
+m2-116/3.2.1#2 | both |  | required | M2-116 §3.2.1 | the DCTPQ has a Delta Clockstamp before it that counts zero ticks |  |  |
+m2-116/3.2.2#1 | both |  | required | M2-116 §3.2.2 | a message other than a Delta Clockstamp is timed by the nearest Delta Clockstamp before it |  |  |
+m2-116/3.2.2#2 | both |  | permitted | M2-116 §3.2.2 | simultaneous events can share one Delta Clockstamp |  |  |
+m2-116/3.2.2#3 | both |  | required | M2-116 §3.2.2 | events are stored and sent in presentation order, which matters for simultaneous ones |  |  |
+m2-116/3.2.2#4 | writer |  | required | M2-116 §3.2.2 | a creator restarts the delta count with a Delta Clockstamp then a Null after 1,048,575 ticks without a message; the next Delta Clockstamp counts from the Null |  |  |
+m2-116/3.3#1 | reader |  | permitted | M2-116 §3.3 | an application that reads the replaced meta-event messages can send them to a receiver |  |  |
+m2-116/4.1#1 | both |  | required | M2-116 §4.1 | the file extension is .midi2 |  |  |
+m2-116/5#1 | both |  | required | M2-116 §5 | the file starts with an 8-byte file header |  |  |
+m2-116/5#2 | both |  | required | M2-116 §5 | the eight header bytes are the fixed ASCII magic value the header rows list |  |  |
+m2-116/5#3 | both |  | required | M2-116 §5 | byte nine is the first byte of the first UMP message of the configuration header |  |  |
+m2-116/6#1 | both |  | required | M2-116 §6 | a configuration header follows the file header immediately |  |  |
+m2-116/6#2 | both |  | required | M2-116 §6 | everything in the configuration header is a UMP message |  |  |
+m2-116/6#3 | both |  | required | M2-116 §6 | Set Profile On messages, when present, are the first messages of the header |  |  |
+m2-116/6#4 | both |  | required | M2-116 §6 | a Set Profile On has no Delta Clockstamp before it | neg=1 |  |
+m2-116/6#5 | both |  | required | M2-116 §6 | the header holds a DCTPQ right after the Set Profile On messages, or right after the file header when there are none |  |  |
+m2-116/6#6 | both |  | required | M2-116 §6 | that DCTPQ has a Delta Clockstamp before it that counts zero ticks |  |  |
+m2-116/6#7 | both |  | permitted | M2-116 §6 | the header can hold other UMP messages that configure a receiver for the sequence |  |  |
+m2-116/6#8 | both |  | required | M2-116 §6 | each such other header message has a Delta Clockstamp before it |  |  |
+m2-116/6#9 | both |  | required | M2-116 §6 | the header is everything after the file header up to, not including, the Delta Clockstamp of Start of Clip |  |  |
+m2-116/6.1#1 | both |  | permitted | M2-116 §6.1 | header messages can be given a time with Delta Clockstamps and the optional Set Tempo and Set Time Signature |  |  |
+m2-116/6.1#2 | both |  | required | M2-116 §6.1 | a header Set Time Signature is the first event after the header Set Tempo |  |  |
+m2-116/6.1#3 | both |  | required | M2-116 §6.1 | the header has at most one Set Tempo and at most one Set Time Signature | neg=1 |  |
+m2-116/6.1.1#1 | both |  | permitted | M2-116 §6.1.1 | the header can hold a Set Tempo as the first event after the DCTPQ |  |  |
+m2-116/6.1.1#2 | both |  | required | M2-116 §6.1.1 | the header Set Tempo uses the Delta Clockstamp before the DCTPQ or one of its own that counts zero ticks; the sentence runs on into a permission that a sequencer picks its own tempo resolution |  |  |
+m2-116/6.1.1#3 | both |  | required | M2-116 §6.1.1 | the header has at most one Set Tempo | neg=1 |  |
+m2-116/6.1.1#4 | both |  | permitted | M2-116 §6.1.1 | the sequence data can hold several Set Tempo messages |  |  |
+m2-116/6.1.1#5 | writer |  | recommended | M2-116 §6.1.1 | later Set Tempo messages in the sequence sit where MIDI Clock messages would fall |  |  |
+m2-116/6.1.2#1 | both |  | permitted | M2-116 §6.1.2 | the header can hold a Set Time Signature right after the Set Tempo |  |  |
+m2-116/6.1.2#2 | both |  | required | M2-116 §6.1.2 | the header Set Time Signature uses the Delta Clockstamp before the DCTPQ or one of its own that counts zero ticks |  |  |
+m2-116/6.1.2#3 | both |  | required | M2-116 §6.1.2 | the header has at most one Set Time Signature | neg=1 |  |
+m2-116/6.1.2#4 | both |  | permitted | M2-116 §6.1.2 | the sequence data can hold several Set Time Signature messages |  |  |
+m2-116/6.1.2#5 | writer |  | recommended | M2-116 §6.1.2 | Set Time Signature messages in the sequence sit at the start of a bar |  |  |
+m2-116/6.2#1 | both |  | permitted | M2-116 §6.2 | some sequence data can be aimed at a device that supports a given MIDI-CI Profile |  |  |
+m2-116/6.2#2 | both |  | permitted | M2-116 §6.2 | Profile configuration can set a receiver up to respond well to the sequence data |  |  |
+m2-116/6.2#3 | writer |  | recommended | M2-116 §6.2 | data meant for a Profile gets a Set Profile On with that Profile ID at the start of the header |  |  |
+m2-116/6.2#4 | writer |  | recommended | M2-116 §6.2 | note: Profiles can be complex, so authors should take care; advice only |  |  |
+m2-116/6.2.1.1#1 | reader |  | recommended | M2-116 §6.2.1.1 | a sequencer reads the Set Profile On from the header and runs the MIDI-CI discovery, inquiry and Set Profile On transactions to configure the receiver |  |  |
+m2-116/6.2.1.1#2 | reader |  | recommended | M2-116 §6.2.1.1 | the sequencer does that on load, before it sends the rest of the header and the sequence |  |  |
+m2-116/6.3#1 | both |  | permitted | M2-116 §6.3 | the header can hold other UMP messages that prepare the receiver, such as bank and program, volume, pan, Profile messages and SysEx |  |  |
+m2-116/6.4#1 | both |  | required | M2-116 §6.4 | Property Exchange data is never in a Clip File | neg=1 |  |
+m2-116/6.4#2 | both |  | required | M2-116 §6.4 | an application that needs Property Exchange in a standard MIDI file uses the MIDI Container File format |  |  |
+m2-116/7#1 | both |  | required | M2-116 §7 | the Clip Sequence Data follows the configuration header |  |  |
+m2-116/7#2 | both |  | required | M2-116 §7 | all sequence data is UMP messages with Delta Clockstamps |  |  |
+m2-116/7#3 | both |  | required | M2-116 §7 | the sequence data holds one Start of Clip, with a Delta Clockstamp before it, as its first message |  |  |
+m2-116/7#4 | both |  | required | M2-116 §7 | the sequence data holds one End of Clip, with a Delta Clockstamp before it, as its last message |  |  |
+m2-116/7.1#1 | both |  | required | M2-116 §7.1 | the first event of the sequence data is Start of Clip with a Delta Clockstamp before it |  |  |
+m2-116/7.1#2 | writer |  | recommended | M2-116 §7.1 | for musical content Start of Clip is timed at the start of the first bar |  |  |
+m2-116/7.1.1#1 | writer |  | recommended | M2-116 §7.1.1 | the sequence data has a Set Tempo at its start, right after Start of Clip |  |  |
+m2-116/7.1.1#2 | writer |  | recommended | M2-116 §7.1.1 | that first Set Tempo shares the Delta Clockstamp before Start of Clip or has one of the same value |  |  |
+m2-116/7.1.1#3 | writer |  | recommended | M2-116 §7.1.1 | for musical content the first Set Tempo is timed at the start of the first bar |  |  |
+m2-116/7.1.1#4 | writer |  | recommended | M2-116 §7.1.1 | later Set Tempo messages sit where MIDI clocks would fall |  |  |
+m2-116/7.1.1#5 | reader |  | permitted | M2-116 §7.1.1 | a sequencer picks its own tempo resolution and need not support every declared tempo |  |  |
+m2-116/7.1.2#1 | writer |  | recommended | M2-116 §7.1.2 | a Set Time Signature for the first bar follows Start of Clip and Set Tempo immediately |  |  |
+m2-116/7.1.2#2 | writer |  | recommended | M2-116 §7.1.2 | that first Set Time Signature uses the Delta Clockstamp before Start of Clip |  |  |
+m2-116/7.1.2#3 | writer |  | recommended | M2-116 §7.1.2 | later Set Time Signature messages sit where one bar ends and the next begins |  |  |
+m2-116/7.1.3#1 | writer |  | recommended | M2-116 §7.1.3 | a pickup bar gets a Set Time Signature that gives the pickup's true length |  |  |
+m2-116/7.1.3#2 | writer |  | recommended | M2-116 §7.1.3 | the bar after a pickup starts with a new Set Time Signature |  |  |
+m2-116/7.2#1 | both |  | permitted | M2-116 §7.2 | the sequence data can hold any UMP message except Property Exchange |  |  |
+m2-116/7.3#1 | both |  | required | M2-116 §7.3 | the last event of the sequence data is End of Clip with a Delta Clockstamp before it |  |  |
+m2-116/7.3#2 | both |  | required | M2-116 §7.3 | no data follows End of Clip | neg=1 |  |
+m2-116/hdr/1 | both |  |  | M2-116 Table 5 | byte 1 of the 8-byte file header | byte=1 value=0x53 |  |
+m2-116/hdr/2 | both |  |  | M2-116 Table 5 | byte 2 of the 8-byte file header | byte=2 value=0x4d |  |
+m2-116/hdr/3 | both |  |  | M2-116 Table 5 | byte 3 of the 8-byte file header | byte=3 value=0x46 |  |
+m2-116/hdr/4 | both |  |  | M2-116 Table 5 | byte 4 of the 8-byte file header | byte=4 value=0x32 |  |
+m2-116/hdr/5 | both |  |  | M2-116 Table 5 | byte 5 of the 8-byte file header | byte=5 value=0x43 |  |
+m2-116/hdr/6 | both |  |  | M2-116 Table 5 | byte 6 of the 8-byte file header | byte=6 value=0x4c |  |
+m2-116/hdr/7 | both |  |  | M2-116 Table 5 | byte 7 of the 8-byte file header | byte=7 value=0x49 |  |
+m2-116/hdr/8 | both |  |  | M2-116 Table 5 | byte 8 of the 8-byte file header | byte=8 value=0x50 |  |

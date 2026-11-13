@@ -80,6 +80,7 @@ fn packet(m: Message) -> FileEvent {
     FileEvent::Message(m)
 }
 
+/// Spec: m2-116/3.2.2#1, m2-116/hdr/1, m2-116/hdr/2, m2-116/hdr/3, m2-116/hdr/4, m2-116/hdr/5, m2-116/hdr/6, m2-116/hdr/7, m2-116/hdr/8, m2-116/5#2
 #[test]
 fn a_clip_reads_at_absolute_ticks() {
     let file = MidiFile::from_bytes(&clip(&valid())).unwrap();
@@ -107,6 +108,7 @@ fn a_clip_reads_at_absolute_ticks() {
 /// **The clip's length is the Delta Clockstamp before End of Clip**, so a clip
 /// that ends a bar after its last note is a bar long, and says so after a
 /// round trip.
+/// Spec: m2-116/7.3#1
 #[test]
 fn the_clip_length_is_the_delta_before_end_of_clip() {
     let mut parts = valid();
@@ -173,6 +175,7 @@ fn a_packet_no_definition_covers_survives() {
 /// **The tempo map is the Set Tempo messages** (Flex Data, M2-116 section
 /// 7.1.1): 120 BPM then 60 from beat 4, beat to seconds exact, and a clip with
 /// none plays at the default 120.
+/// Spec: m2-116/6.1.1#4
 #[test]
 fn the_tempo_map_is_the_set_tempo_messages() {
     let q = u32::from(TPQ);
@@ -202,6 +205,7 @@ fn the_tempo_map_is_the_set_tempo_messages() {
 
 // ---- structure (M2-116 sections 6 and 7): one error variant per rule ------
 
+/// Spec: m2-116/3.2.1#1, m2-116/6#5
 #[test]
 fn a_dctpq_after_a_message_is_refused() {
     // Start of Clip, then the DCTPQ: the DCTPQ is not first.
@@ -209,6 +213,7 @@ fn a_dctpq_after_a_message_is_refused() {
     assert_eq!(clip_error(&parts), ClipFileError::DctpqNotFirst);
 }
 
+/// Spec: m2-116/3.2.1#1
 #[test]
 fn a_second_dctpq_is_refused() {
     let mut parts = valid();
@@ -216,6 +221,7 @@ fn a_second_dctpq_is_refused() {
     assert_eq!(clip_error(&parts), ClipFileError::DuplicateDctpq);
 }
 
+/// Spec: m2-116/7#3
 #[test]
 fn a_second_start_of_clip_is_refused() {
     let mut parts = valid();
@@ -223,6 +229,7 @@ fn a_second_start_of_clip_is_refused() {
     assert_eq!(clip_error(&parts), ClipFileError::DuplicateStartOfClip);
 }
 
+/// Spec: m2-116/7.3#2
 #[test]
 fn data_after_end_of_clip_is_refused() {
     let mut parts = valid();
@@ -230,6 +237,7 @@ fn data_after_end_of_clip_is_refused() {
     assert_eq!(clip_error(&parts), ClipFileError::TrailingData);
 }
 
+/// Spec: m2-116/3.2.1#1, m2-116/6#5
 #[test]
 fn a_clip_without_a_dctpq_is_refused() {
     let parts = [dcs(0), start(), dcs(0), end()];
@@ -243,12 +251,14 @@ fn a_zero_dctpq_is_refused() {
     assert_eq!(clip_error(&parts), ClipFileError::ZeroDctpq);
 }
 
+/// Spec: m2-116/7#3, m2-116/7.1#1
 #[test]
 fn a_clip_without_start_of_clip_is_refused() {
     let parts = [dcs(0), dctpq(TPQ), dcs(0), end()];
     assert_eq!(clip_error(&parts), ClipFileError::MissingStartOfClip);
 }
 
+/// Spec: m2-116/7#4, m2-116/7.3#1
 #[test]
 fn a_clip_without_end_of_clip_is_refused() {
     let mut parts = valid();
@@ -265,6 +275,7 @@ fn clockstamps_and_jr_messages_do_not_count_as_content() {
     assert!(MidiFile::from_bytes(&clip(&parts)).is_ok());
 }
 
+/// Spec: m2-116/5#1
 #[test]
 fn the_magic_alignment_and_a_cut_packet_are_refused() {
     let good = clip(&valid());
@@ -454,6 +465,7 @@ fn with_header(header: &[Ump]) -> Vec<Ump> {
 
 /// Section 6: Set Profile On messages come first, carry no DCS, and the DCTPQ
 /// follows them. Kept in the header, written back before the DCTPQ.
+/// Spec: m2-116/hdr/1, m2-116/hdr/2, m2-116/hdr/3, m2-116/hdr/4, m2-116/hdr/5, m2-116/hdr/6, m2-116/hdr/7, m2-116/hdr/8, m2-116/5#2, m2-116/5#3, m2-116/6#1, m2-116/6#3, m2-116/6#4, m2-116/6#5, m2-116/6#6, m2-116/3.2.1#1, m2-116/3.2.1#2
 #[test]
 fn set_profile_on_before_the_dctpq_is_accepted() {
     let two_packets = [
@@ -489,6 +501,7 @@ fn set_profile_on_before_the_dctpq_is_accepted() {
 
 /// Anything else before the DCTPQ is not allowed: a note, or a SysEx that is
 /// not a Set Profile On.
+/// Spec: m2-116/3.2.1#1, m2-116/6#5
 #[test]
 fn a_message_before_the_dctpq_is_refused() {
     let mut note_first = vec![dcs(0), on(60, 1)];
@@ -503,6 +516,7 @@ fn a_message_before_the_dctpq_is_refused() {
 /// Section 6: the header may hold other messages that configure a receiver,
 /// each behind its own DCS. They are in the model, in order with their delta
 /// times, are not events of the sequence, and write back.
+/// Spec: m2-116/6#7, m2-116/6.1#1, m2-116/6.3#1
 #[test]
 fn a_header_with_program_change_cc_and_sysex_round_trips() {
     let control = Ump::from(Message::Midi2(
@@ -538,6 +552,7 @@ fn a_header_with_program_change_cc_and_sysex_round_trips() {
     );
 }
 
+/// Spec: m2-116/6.1#3, m2-116/6.1.1#3
 #[test]
 fn two_header_set_tempos_are_refused() {
     let parts = with_header(&[dcs(0), set_tempo(100.0), dcs(0), set_tempo(90.0)]);
@@ -546,6 +561,7 @@ fn two_header_set_tempos_are_refused() {
 
 /// Section 6.1.1: the Set Tempo is the first message after the DCTPQ,
 /// at a delta of 0 (or sharing the DCTPQ's DCS, which is also 0).
+/// Spec: m2-116/6.1.1#1, m2-116/6.1.1#2
 #[test]
 fn a_header_set_tempo_not_first_or_not_at_delta_zero_is_misplaced() {
     let after_other = with_header(&[dcs(0), program_change(), dcs(0), set_tempo(100.0)]);
@@ -560,6 +576,7 @@ fn a_header_set_tempo_not_first_or_not_at_delta_zero_is_misplaced() {
     assert!(MidiFile::from_bytes(&clip(&sharing)).is_ok());
 }
 
+/// Spec: m2-116/6.1#3, m2-116/6.1.2#3
 #[test]
 fn two_header_time_signatures_are_refused() {
     let parts = with_header(&[dcs(0), time_signature(), dcs(0), time_signature()]);
@@ -571,6 +588,7 @@ fn two_header_time_signatures_are_refused() {
 
 /// Section 6.1.2: the Set Time Signature follows the Set Tempo immediately (or
 /// is first when there is no Set Tempo).
+/// Spec: m2-116/6.1#2, m2-116/6.1.2#1
 #[test]
 fn a_header_time_signature_must_follow_the_set_tempo_immediately() {
     let behind_other = with_header(&[
@@ -607,6 +625,7 @@ fn a_header_time_signature_must_follow_the_set_tempo_immediately() {
 /// **The header's Set Tempo is the tempo from the start of the sequence**: the
 /// header's clock runs before Start of Clip, so its tempo is at sequence tick
 /// 0, and a Set Tempo in the sequence is an ordinary change after it.
+/// Spec: m2-116/6.1.1#1, m2-116/6.1.1#4
 #[test]
 fn the_header_set_tempo_is_the_tempo_from_the_start_of_the_sequence() {
     let q = u32::from(TPQ);
@@ -631,6 +650,7 @@ fn the_header_set_tempo_is_the_tempo_from_the_start_of_the_sequence() {
 
 /// The constructor holds a header to the rules the reader does, and an SMF has
 /// none.
+/// Spec: m2-116/6.1#3, m2-116/6.1.1#3
 #[test]
 fn the_constructor_holds_a_header_to_the_same_rules() {
     let tempo = |bpm| (Tick(0), packet(set_tempo(bpm).decode().unwrap()));
@@ -659,6 +679,7 @@ fn the_constructor_holds_a_header_to_the_same_rules() {
 
 /// Section 3.2.2: a gap past 1,048,575 ticks is written as a DCS of 1,048,575
 /// followed by a Null message, once per restart, then the remainder's DCS.
+/// Spec: m2-116/3.2.2#4
 #[test]
 fn a_long_gap_is_written_as_dcs_then_a_null() {
     let gap: u32 = 2 * 0x000F_FFFF + 3;
@@ -704,6 +725,7 @@ fn ci(sub_id2: u8, status: tutti_ump::SysexStatus) -> Ump {
 
 /// Section 3.2.1 and section 6: the DCTPQ has a preceding Delta
 /// Clockstamp (DCS) with its tick count set to 0.
+/// Spec: m2-116/3.2.1#2, m2-116/6#6
 #[test]
 fn the_dctpq_has_a_zero_delta_clockstamp_before_it() {
     let tail = [dcs(0), start(), dcs(0), end()];
@@ -726,6 +748,7 @@ fn the_dctpq_has_a_zero_delta_clockstamp_before_it() {
 
 /// Section 6: a Set Profile On message has no Delta
 /// Clockstamp (DCS) before it.
+/// Spec: m2-116/6#4
 #[test]
 fn a_set_profile_on_has_no_delta_clockstamp_before_it() {
     let after = [dcs(0), dctpq(TPQ), dcs(0), start(), dcs(0), end()];
@@ -757,6 +780,7 @@ fn a_set_profile_on_has_no_delta_clockstamp_before_it() {
 /// Section 6.1.2: the header's Set Time Signature uses the Delta
 /// Clockstamp that precedes the DCTPQ or has a preceding one of 0 ticks, as the
 /// Set Tempo does (section 6.1.1).
+/// Spec: m2-116/6.1.2#2
 #[test]
 fn the_header_time_signature_is_at_delta_zero() {
     for header in [
@@ -785,6 +809,7 @@ fn the_header_time_signature_is_at_delta_zero() {
 /// Section 7.2: the sequence data holds any UMP message but Property
 /// Exchange. Property Exchange is MIDI-CI
 /// sub-ID#2 `0x30` to `0x3F` (M2-101 Table 5), so its neighbours are fine.
+/// Spec: m2-116/6.4#1, m2-116/7.2#1
 #[test]
 fn property_exchange_is_refused_everywhere() {
     use tutti_ump::SysexStatus::{Complete, Start};
@@ -921,6 +946,7 @@ fn text_packets(kind: tutti_ump::FlexTextKind, text: &str) -> Vec<(Tick, FileEve
 /// M2-116 section 3.2.2: a Delta Clockstamp sets the time of the messages that
 /// follow it until the next one. The parts of a Lyric or Ruby message are written behind one DCS;
 /// the parts of any other message, and separate messages, keep their own.
+/// Spec: m2-116/3.2.2#1
 #[test]
 fn the_parts_of_a_lyric_or_ruby_message_share_one_delta_clockstamp() {
     use tutti_ump::FlexTextKind::{Composer, Lyrics, Ruby};
@@ -984,6 +1010,7 @@ fn an_unfinished_set_profile_on_is_refused() {
 }
 
 /// Section 7.3: nothing follows End of Clip, not even half a packet.
+/// Spec: m2-116/7.3#2
 #[test]
 fn half_a_packet_after_end_of_clip_is_trailing_data() {
     let mut bytes = clip(&valid());

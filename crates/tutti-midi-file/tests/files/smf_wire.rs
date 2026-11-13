@@ -2,10 +2,9 @@
 //! and the writer's byte output, against bytes built from the SMF 1.0 spec
 //! (`support`, which shares no code with the crate).
 
-mod support;
-
-use support::{Division, RawEvent, build_smf, write_vlq};
-use tutti_midi_file::{Error, FileEvent, Meta, MidiFile, SmfFormat, TextKind, Tick, Track};
+use crate::common::{note, track, unsorted};
+use crate::support::{Division, RawEvent, build_smf, write_vlq};
+use tutti_midi_file::{Error, FileEvent, Meta, MidiFile, SmfFormat, TextKind, Tick};
 use tutti_ump::{Message, Voice1};
 
 const TPQ: u16 = 96;
@@ -333,19 +332,8 @@ fn an_end_of_track_that_is_not_last_is_refused() {
 
 // ---- the writer ------------------------------------------------------------
 
-fn note(key: u8) -> FileEvent {
-    use tutti_ump::{Address, MidiChannel, NoteNumber, U7};
-    FileEvent::Message(Message::Midi1(
-        Address::first(MidiChannel::of(0)),
-        Voice1::NoteOn {
-            note: NoteNumber::of(key),
-            velocity: U7::of(100),
-        },
-    ))
-}
-
 fn track_body(events: Vec<(u64, FileEvent)>) -> Vec<u8> {
-    let track = unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect());
+    let track = track(events);
     let bytes = MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![track])
         .unwrap()
         .to_bytes()
@@ -358,7 +346,7 @@ fn track_body(events: Vec<(u64, FileEvent)>) -> Vec<u8> {
 #[test]
 fn the_writer_elides_a_repeated_status() {
     assert_eq!(
-        track_body(vec![(0, note(60)), (0, note(62))]),
+        track_body(vec![(0, note(0, 60)), (0, note(0, 62))]),
         [0x00, 0x90, 60, 100, 0x00, 62, 100, 0x00, 0xFF, 0x2F, 0x00]
     );
 }
@@ -371,7 +359,7 @@ fn the_writer_restates_a_status_after_a_meta_event() {
         bytes: Box::new(*b"m"),
     });
     assert_eq!(
-        track_body(vec![(0, note(60)), (0, meta), (0, note(62))]),
+        track_body(vec![(0, note(0, 60)), (0, meta), (0, note(0, 62))]),
         [
             0x00, 0x90, 60, 100, // note
             0x00, 0xFF, 0x06, 0x01, b'm', // marker
@@ -393,26 +381,16 @@ fn a_written_file_reads_back_equal() {
                 extra: Box::default(),
             }),
         ),
-        (0, note(60)),
-        (5, note(62)),
+        (0, note(0, 60)),
+        (5, note(0, 62)),
         (200, FileEvent::SysEx(Box::new([0x7E, 0x7F]))),
         (200, FileEvent::Escape(Box::new([1, 2]))),
-        (300, note(64)),
-        (0x0FFF_FFFF, note(65)),
+        (300, note(0, 64)),
+        (0x0FFF_FFFF, note(0, 65)),
     ];
-    let track = unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect());
+    let track = track(events);
     let file = MidiFile::smf(SmfFormat::Parallel, TPQ, vec![track.clone(), track]).unwrap();
     let back = MidiFile::from_bytes(&file.to_bytes().unwrap()).unwrap();
     assert_eq!(back.tracks(), file.tracks());
     assert_eq!(back.ticks_per_quarter(), TPQ);
-}
-
-/// A track of `events` exactly as given: not sorted, so a test can hand the
-/// constructor events out of order.
-fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
-    Track {
-        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
-        events,
-        ..Track::new()
-    }
 }

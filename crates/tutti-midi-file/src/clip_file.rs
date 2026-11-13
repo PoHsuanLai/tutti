@@ -82,7 +82,7 @@ pub(crate) struct ParsedClip {
 /// [`PropertyExchange`](Self::PropertyExchange) (sections 6.4 and 7.2),
 /// [`DuplicateStartOfClip`](Self::DuplicateStartOfClip) (section 7) and
 /// [`TrailingData`](Self::TrailingData) (section 7.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum ClipFileError {
     /// Fewer than 8 bytes, or the leading 8 bytes are not `SMF2CLIP`.

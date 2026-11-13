@@ -5,6 +5,9 @@
 #[global_allocator]
 static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+#[path = "../common/mod.rs"]
+mod common;
+
 mod clip_node;
 mod event_loss;
 mod harmony_node;

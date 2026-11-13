@@ -1,6 +1,6 @@
 use super::*;
+use crate::test_support::at;
 use tutti_fixtures::midi::{jr_timestamp, note_off, note_on};
-use tutti_graph::UmpAt;
 use tutti_types::{Frame, Samples};
 use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Utility};
 
@@ -18,12 +18,6 @@ fn jr_timestamp_value(ump: &Ump) -> Option<u16> {
         Ok(Message::Utility(Utility::JrTimestamp(t))) => Some(t),
         _ => None,
     }
-}
-
-/// `ump` at frame `offset`, built against a block long enough to hold it (the
-/// stamper reads the offset, not the block).
-fn at(offset: u32, ump: Ump) -> UmpAt {
-    (Offset::new(offset as usize, Samples(1 << 20)).unwrap(), ump)
 }
 
 #[test]

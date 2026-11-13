@@ -5,45 +5,18 @@
 
 use std::num::NonZeroUsize;
 
+use crate::support::{One, note_on, step};
 use tutti_midi_protocol::{
     Addressee, ChannelMask, Heard, KeyChange, KeyChanges, KeyTable, OctaveOffsets, Timing,
     TuningFrequency, TuningMessage, TuningName, Universal,
 };
-use tutti_types::{Amplitude, Seconds};
+use tutti_types::Seconds;
 use tutti_ump::ControlValue;
-use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, Rpn, U7, U14, Voice2};
-use tutti_voicing::{
-    Command, NoSuchTuning, Patch, Rules, TuningCapacity, VoiceId, VoiceSpec, Voicing,
-};
-
-struct One;
-impl Patch for One {
-    fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
-        spec(VoiceSpec {
-            group: None,
-            scope: 0,
-            tag: 0,
-        });
-    }
-}
-
-fn step(core: &mut Voicing, channel: u8, message: Voice2) -> Vec<Command> {
-    core.step(MidiChannel::of(channel), message, &One, |_| {
-        Some(Amplitude(1.0))
-    })
-    .to_vec()
-}
+use tutti_ump::{CCNumber, MidiChannel, NoteNumber, Rpn, U7, U14, Voice2};
+use tutti_voicing::{Command, NoSuchTuning, Rules, TuningCapacity, VoiceId, Voicing};
 
 fn on(core: &mut Voicing, channel: u8, key: u8) -> Vec<Command> {
-    step(
-        core,
-        channel,
-        Voice2::NoteOn {
-            note: NoteNumber::of(key),
-            velocity: NoteVelocity::new(0x8000),
-            attribute: Attribute::None,
-        },
-    )
+    step(core, channel, note_on(key))
 }
 
 fn say(core: &mut Voicing, message: TuningMessage) -> Vec<Command> {

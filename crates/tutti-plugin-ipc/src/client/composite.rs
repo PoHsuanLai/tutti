@@ -28,7 +28,7 @@ use tutti_types::SampleRate;
 /// and moved by each pull). Comparing with the audio instance's state instead
 /// took any difference for a user edit: automation or a plugin's volatile
 /// state moved the audio side on its own, and the editor's stale state then
-/// overwrote it (doc 027). With no baseline (the editor's state could not be
+/// overwrote it. With no baseline (the editor's state could not be
 /// read at open) the editor's state is loaded. Nothing is loaded when the
 /// editor is at its baseline, so a closed editor that changed nothing does not
 /// reload a playing plugin.
@@ -1044,7 +1044,7 @@ mod state_back_tests {
     /// **An editor that changed nothing does not reload the audio instance**,
     /// whatever the audio instance did meanwhile: its state is not consulted,
     /// so automation that moved it is not overwritten by the editor's stale
-    /// one (doc 027).
+    /// one.
     #[test]
     fn an_unchanged_editor_reloads_nothing() {
         assert_eq!(pull(Some(b"same".to_vec()), Some(b"same".to_vec())).0, None);

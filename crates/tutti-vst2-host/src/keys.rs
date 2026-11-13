@@ -3,7 +3,7 @@
 
 use tutti_plugin_types::{KeyEvent, KeyModifiers, NamedKey};
 use tutti_vst2_ffi::api::ModifierKey;
-use tutti_vst2_ffi::editor::{Key, KeyCode};
+use tutti_vst2_ffi::editor::{Key, KeyCode as Vst2KeyCode};
 
 /// The key as `effEditKeyDown`'s three arguments, or `None` when VST 2 cannot write it: a
 /// character outside ASCII (`[index]` is an ASCII character), or a modifier the host's
@@ -12,8 +12,8 @@ use tutti_vst2_ffi::editor::{Key, KeyCode};
 /// `command_is_apple` is whether the platform is macOS, where the SDK numbers the bits by
 /// role: `kVstModifierControl` (8) is the Command key, and `kVstModifierCommand` (4) the
 /// Control key. Elsewhere bit 8 is Control and no bit is the Windows key.
-pub(crate) fn key_code_of(event: &KeyEvent, command_is_apple: bool) -> Option<KeyCode> {
-    let character = match event.character {
+pub(crate) fn key_code_of(event: &KeyEvent, command_is_apple: bool) -> Option<Vst2KeyCode> {
+    let character = match event.key.character() {
         Some(character) if character.is_ascii() => character,
         Some(_) => return None,
         None => '\0',
@@ -39,9 +39,9 @@ pub(crate) fn key_code_of(event: &KeyEvent, command_is_apple: bool) -> Option<Ke
             modifier |= bit?;
         }
     }
-    Some(KeyCode {
+    Some(Vst2KeyCode {
         character,
-        key: event.key.map_or(Key::None, key_of),
+        key: event.key.named().map_or(Key::None, key_of),
         modifier: modifier.bits(),
     })
 }
@@ -112,12 +112,17 @@ fn key_of(key: NamedKey) -> Key {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_plugin_types::KeyPhase;
+    use tutti_plugin_types::{KeyCode, KeyPhase};
 
     fn event(character: Option<char>, key: Option<NamedKey>, modifiers: KeyModifiers) -> KeyEvent {
+        let key = match (character, key) {
+            (Some(c), Some(k)) => KeyCode::Both(c, k),
+            (Some(c), None) => KeyCode::Char(c),
+            (None, Some(k)) => KeyCode::Named(k),
+            (None, None) => panic!("an event names a key"),
+        };
         KeyEvent {
             phase: KeyPhase::Down,
-            character,
             key,
             modifiers,
         }

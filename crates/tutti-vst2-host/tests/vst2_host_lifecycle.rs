@@ -25,8 +25,8 @@ use tutti_graph::UmpAt;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
-    ContentScale, Control, Controller, EditorWindow, KeyEvent, KeyModifiers, KeyPhase, KeyUse,
-    NamedKey, Normalized, ParamEdit, ParamId, Request,
+    ContentScale, Control, Controller, EditorWindow, KeyCode, KeyEvent, KeyModifiers, KeyPhase,
+    KeyUse, NamedKey, Normalized, ParamEdit, ParamId, Request,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
@@ -597,16 +597,14 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
         let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
         f(true);
     });
-    let key = |phase, character, key, modifiers| KeyEvent {
+    let key = |phase, key, modifiers| KeyEvent {
         phase,
-        character,
         key,
         modifiers,
     };
     let down_a = key(
         KeyPhase::Down,
-        Some('a'),
-        Some(NamedKey::Left),
+        KeyCode::Both('a', NamedKey::Left),
         KeyModifiers::SHIFT,
     );
 
@@ -633,8 +631,7 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
     set_key_consumed(false);
     let up_control = key(
         KeyPhase::Up,
-        None,
-        Some(NamedKey::F1),
+        KeyCode::Named(NamedKey::F1),
         KeyModifiers::CONTROL,
     );
     let ignored = instance.loaded_mut().editor_key(&main_thread(), up_control);
@@ -649,7 +646,7 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
     assert_eq!(cap.last_key.modifier_bits, control_bit);
 
     set_key_consumed(true);
-    let accented = key(KeyPhase::Down, Some('é'), None, KeyModifiers::empty());
+    let accented = key(KeyPhase::Down, KeyCode::Char('é'), KeyModifiers::empty());
     let unwritable = instance.loaded_mut().editor_key(&main_thread(), accented);
     assert_eq!(unwritable.ok(), Some(KeyUse::Ignored), "ASCII only");
     assert_eq!(read_capture().key_events, 2, "and it was not sent");

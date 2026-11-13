@@ -268,7 +268,7 @@ pub struct Surface {
     /// What the format's conversion answers for [`Param::Tone`].
     pub tone: Tone,
     /// Whether the shell reads the state's tail byte (fourth byte of the mode
-    /// word): every shell of ours but the AU, which is not our plugin.
+    /// word): every shell of ours.
     pub selects_tail: bool,
     /// What the format reports when the plugin states its infinite marker
     /// (`TAIL_INFINITE`): `Unbounded` where the format has one (CLAP's
@@ -332,17 +332,19 @@ pub const VST3_CPP: Surface = Surface {
     infinite_tail: Some(tutti_plugin_types::PluginTail::Unbounded),
 };
 
-/// AU, from an Apple built-in unit (AUDelay): it has a Cocoa view; no plugin of
-/// ours to select an editor or raise a notice, and no live render mode (the
-/// property is read at initialization, so an active unit refuses it).
+/// AU, from the shared plugin's Audio Unit shell: no editor (the shell offers no
+/// Cocoa view), no live render mode (the property is read at initialization, so
+/// an active unit refuses it), no notice (the shell raises none), the tail
+/// byte read, and the host's own linear map over the declared range for `tone`
+/// (an AU has no normalized value). The infinite marker is `+inf` seconds.
 pub const AU: Surface = Surface {
     selects_editor: false,
-    has_editor: true,
+    has_editor: false,
     render_mode_live: false,
     notices: false,
     request: None,
     edits: &[],
-    tone: TONE_NORMALIZED,
-    selects_tail: false,
-    infinite_tail: None,
+    tone: TONE_LINEAR,
+    selects_tail: true,
+    infinite_tail: Some(tutti_plugin_types::PluginTail::Unbounded),
 };

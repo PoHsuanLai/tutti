@@ -223,7 +223,7 @@ pub fn parameters_listed<F: Format>() {
             // The default is the format's own plain value where it has one,
             // and the plugin's exact figure (not a point on a line).
             let tone = F::SURFACE.tone;
-            assert_close(info.default_value(), tone.default, "tone default");
+            assert_close::<F>(info.default_value(), tone.default, "tone default");
             assert_eq!(info.bounds(), tone.bounds, "tone bounds");
         } else {
             assert_eq!(info.default_value(), default, "{param:?} default");
@@ -236,11 +236,19 @@ pub fn parameters_listed<F: Format>() {
     }
 }
 
-fn assert_close(got: f64, want: f64, what: &str) {
+/// `got` is `want` to the format's own representation (`Format::PARAM_VALUE_TOLERANCE`,
+/// relative) and, at most, to the double's last places.
+fn assert_close<F: Format>(got: f64, want: f64, what: &str) {
     assert!(
-        (got - want).abs() <= want.abs() * 1e-12,
+        (got - want).abs() <= want.abs() * (1e-12 + F::PARAM_VALUE_TOLERANCE),
         "{what}: got {got}, want {want}"
     );
+}
+
+/// A value read back is the one written, to the format's tolerance.
+fn assert_reads<F: Format>(got: Option<f64>, want: f64, what: &str) {
+    let got = got.unwrap_or_else(|| panic!("{what}: read nothing"));
+    assert_close::<F>(got, want, what);
 }
 
 /// The conversion between a normalized value and the plugin's plain one is the
@@ -267,7 +275,7 @@ pub fn parameter_conversion_is_the_formats_own<F: Format>() {
                 continue;
             };
             let plain = plain.unwrap_or_else(|| panic!("tone plain at {n} ({when}): none"));
-            assert_close(plain, want[i], &format!("tone plain at {n} ({when})"));
+            assert_close::<F>(plain, want[i], &format!("tone plain at {n} ({when})"));
             let back = c
                 .parameter_normalized(&main, Param::Tone.id(), plain)
                 .unwrap_or_else(|| panic!("tone normalized at {plain} ({when}): none"));
@@ -298,9 +306,9 @@ pub fn parameter_conversion_is_the_formats_own<F: Format>() {
 pub fn parameter_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Aux, 0.75);
-    assert_eq!(read(&loaded, Param::Aux), Some(0.75), "loaded");
+    assert_reads::<F>(read(&loaded, Param::Aux), 0.75, "loaded");
     let a = activate(loaded, BLOCK);
-    assert_eq!(read(a.controller(), Param::Aux), Some(0.75), "active");
+    assert_reads::<F>(read(a.controller(), Param::Aux), 0.75, "active");
 }
 
 /// An id the plugin lacks reads `None`.
@@ -369,7 +377,11 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     let t = transcript::<F, _>(a.controller_mut());
     assert_eq!(t.blocks, [64, 1, 7, 33], "block sizes the host sent");
     for kind in [Kind::Param, Kind::NoteOn, Kind::NoteOff] {
-        let offsets: Vec<u32> = t.of(kind).map(|e| e.offset).collect();
+        let mut offsets: Vec<u32> = t.of(kind).map(|e| e.offset).collect();
+        if kind == Kind::Param && F::PARAM_TIMING == ParamTiming::Echoed {
+            // The echo follows the block's points, at the head.
+            offsets.truncate(offsets.len().saturating_sub(1));
+        }
         assert!(
             offsets.is_sorted(),
             "{kind:?} arrived out of order: {offsets:?}"
@@ -392,6 +404,8 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     let points: Vec<(u32, f64)> = t.of(Kind::Param).map(|e| (e.offset, e.value)).collect();
     match F::PARAM_TIMING {
         ParamTiming::SampleAccurate => assert_eq!(points, [(3, 0.5), (25, 0.75)]),
+        // The points, then `aux`'s last value written again at the head.
+        ParamTiming::Echoed => assert_eq!(points, [(3, 0.5), (25, 0.75), (0, 0.75)]),
         // One value per parameter at the head: the latest. This is stricter than
         // VST2 requires (two in-order `setParameter` calls would be legal), and it
         // cannot tell a host that keeps the last point on purpose from one that
@@ -402,12 +416,17 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     assert_eq!(t.of(Kind::NoteOff).count(), 1);
 }
 
-/// A transport at `tempo` BPM and quarter note `beat`, rolling or not.
+/// A transport at `tempo` BPM and quarter note `beat`, rolling or not. The
+/// position is stated in both coordinates a host hands a plugin, as the
+/// engine's own source does (`tutti-plugin-host`'s `transport_source`): the
+/// quarter notes of VST2 and VST3, and CLAP's and AU's beats, which in 4/4 are
+/// the same number.
 fn transport(playing: bool, tempo: f64, beat: f64) -> TransportInfo {
     TransportInfo::new()
         .with_sample_rate(RATE)
         .with_playing(playing)
         .with_tempo(tempo)
+        .with_position_beats(beat, tutti_plugin_types::Seconds(0.0))
         .with_position_quarters(beat)
 }
 
@@ -597,8 +616,8 @@ pub fn state_round_trip<F: Format>() {
     write(&mut loaded, Param::Level, 0.125);
     write(&mut loaded, Param::Aux, 0.0);
     loaded.load_state(&main_thread(), &saved).expect("loads");
-    assert_eq!(read(&loaded, Param::Level), Some(0.75));
-    assert_eq!(read(&loaded, Param::Aux), Some(0.5));
+    assert_reads::<F>(read(&loaded, Param::Level), 0.75, "level");
+    assert_reads::<F>(read(&loaded, Param::Aux), 0.5, "aux");
 }
 
 /// A parameter written to a loaded plugin reaches its audio at the first block.

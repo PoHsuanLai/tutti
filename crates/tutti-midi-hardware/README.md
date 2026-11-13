@@ -111,22 +111,6 @@ assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 # Ok::<(), tutti_midi_hardware::Error>(())
 ```
 
-## Timestamps
-
-Input events carry the OS's own arrival time, never the instant a thread got
-round to reading them. ALSA stamps each event in the real time of a queue the
-port owns; CoreMIDI stamps each packet with mach host time. A backend reads
-that clock and `Instant::now()` together and puts every event as far before
-the reading as its stamp is before the clock's, so a pump that wakes late
-keeps the spacing of what it reads. The device's thread then places the
-arrival on a frame (see "Quick start").
-
-Output is scheduled by the OS, not flushed when the host runs. `MidiOut::queue_timed`
-takes each event with a `SendAt`: `Now`, or an `Instant` that the backend turns
-into its own clock (an ALSA queue time on the output's own started queue,
-paired when the output opens, or CoreMIDI host time). A sink with no wire
-clock sends at once.
-
 ## Main types
 
 - [`Devices`]: the devices present, and the changes to them.
@@ -186,11 +170,6 @@ backend.
   `snd-seq` module and a readable `/dev/snd/seq`. Off by default.
 
 ## Where it sits
-
-Every decision here is a pure value in `tutti-midi-device` (`DeviceTable`,
-`Connection`, `IdentityInquiry`, `CiDevice`) or `tutti-midi-runtime` (`ClockMap`,
-`OutputPlan`) that takes time as an argument; this crate feeds them from the OS
-and carries out what they return.
 
 Builds on `tutti-ump` (the wire vocabulary and its decoded `Message`) and `tutti-midi-runtime`
 (the graph's MIDI nodes and mailbox), and re-exports the parts of both a

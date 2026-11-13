@@ -127,6 +127,12 @@ pub(crate) struct Session {
 /// How long a save waits for a block to apply a pending write before it
 /// takes the host to be quiet: a few block periods at the longest block the
 /// slab takes, and a little more.
+///
+/// Who pays it: only a save that follows a parameter write no block has
+/// applied yet, while the host sends no blocks (stopped). Such a save takes up
+/// to this much longer; a save with nothing pending, or during playback, does
+/// not wait on it. Shorter risks taking a playing host with long blocks for a
+/// quiet one, whose recall would silence a block.
 const BLOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
 impl Session {
@@ -1005,6 +1011,10 @@ mod tests {
     struct SteadySave {
         /// Whether each block after the first few was silent.
         silent: Vec<bool>,
+        /// The peak of each block after the first few that started before the
+        /// save returned, and of each that started after it.
+        peaks_before_save: Vec<f32>,
+        peaks_after_save: Vec<f32>,
         before: Vec<u8>,
         after: Vec<u8>,
     }
@@ -1040,9 +1050,10 @@ mod tests {
         let player = std::thread::spawn({
             let stop = Arc::clone(&stop);
             move || {
-                let mut silent = Vec::new();
+                let mut blocks = Vec::new();
                 let mut seq = 0u64;
                 while !stop.load(Ordering::Acquire) {
+                    let started = std::time::Instant::now();
                     seq += 1;
                     for ch in 0..2 {
                         shm.write::<f32>(seq, ch, &[1.0; FRAMES]).unwrap();
@@ -1062,13 +1073,17 @@ mod tests {
                         .unwrap();
                     }
                     let mut out = vec![0.0f32; FRAMES];
-                    let heard = shm.has_output(seq)
+                    let peak = if shm.has_output(seq)
                         && shm.read_output_into::<f32>(seq, 0, &mut out).is_ok()
-                        && out.iter().any(|&x| x != 0.0);
-                    silent.push(!heard);
+                    {
+                        out.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+                    } else {
+                        0.0
+                    };
+                    blocks.push((started, peak));
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                silent
+                blocks
             }
         });
         // Let the Processor reach the render side and the blocks settle.
@@ -1086,6 +1101,7 @@ mod tests {
             assert_none(r);
         }
         let after = save_state_bytes(&mut s);
+        let saved_at = std::time::Instant::now();
         // Snapshots come round after round in a session; each one must leave
         // the blocks alone.
         for _ in 0..10 {
@@ -1094,9 +1110,19 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
         stop.store(true, Ordering::Release);
-        let silent = player.join().unwrap();
+        let blocks: Vec<_> = player.join().unwrap().into_iter().skip(10).collect();
         SteadySave {
-            silent: silent.into_iter().skip(10).collect(),
+            silent: blocks.iter().map(|&(_, peak)| peak == 0.0).collect(),
+            peaks_before_save: blocks
+                .iter()
+                .filter(|&&(at, _)| at < saved_at)
+                .map(|&(_, peak)| peak)
+                .collect(),
+            peaks_after_save: blocks
+                .iter()
+                .filter(|&&(at, _)| at >= saved_at)
+                .map(|&(_, peak)| peak)
+                .collect(),
             before,
             after,
         }
@@ -1115,6 +1141,16 @@ mod tests {
         assert_ne!(r.before, r.after, "the save has the write");
         let silent = r.silent.iter().filter(|&&s| s).count();
         assert_eq!(silent, 0, "{silent} blocks were silent around the save");
+        // The block the save waited for applied the write before it rendered,
+        // so every block that started after the save returned renders at the
+        // new gain: the state the save reported is the state that sounds.
+        let first = r.peaks_before_save[0];
+        assert!(!r.peaks_after_save.is_empty(), "blocks ran after the save");
+        assert!(
+            r.peaks_after_save.iter().all(|&p| p != first),
+            "a block after the save rendered at the old gain {first}: {:?}",
+            r.peaks_after_save
+        );
     }
 
     /// **A save with nothing pending recalls nothing**: no block around it is

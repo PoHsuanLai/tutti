@@ -572,19 +572,19 @@ impl RenderSide {
     }
 
     /// The pipeline, for the tests that read what it counted.
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "clap", feature = "vst3")))]
     pub(crate) fn pipeline(&self) -> &AudioPipeline {
         &self.pipeline
     }
 
     /// The pipeline, mutably, for the test that undersizes it.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "vst3"))]
     pub(crate) fn pipeline_mut(&mut self) -> &mut AudioPipeline {
         &mut self.pipeline
     }
 
     /// Blocks refused for their length so far.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "clap"))]
     pub(crate) fn refused_blocks(&self) -> u64 {
         self.refused_blocks
     }

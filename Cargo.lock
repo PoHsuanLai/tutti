@@ -3209,6 +3209,7 @@ dependencies = [
  "tutti-midi-protocol",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-shared-plugin",
  "tutti-types",
  "tutti-ump",
 ]

@@ -26,14 +26,13 @@
 //! ## Running
 //!
 //! ```bash
-//! cargo test -p tutti-au-host --test au_render_notify
+//! cargo nextest run -p tutti-au-host --test au_render_notify
 //! ```
 //!
 //! No env vars, no SDK, no display. A missing **Apple** unit fails rather than
-//! skipping — see `support/corpus.rs`. The one third-party unit this suite can
-//! use is reached through `corpus::optional_third_party` and its absence is
-//! tolerated, because a third-party plugin is a genuine optional install; the
-//! test that uses it still asserts an unconditional property either way.
+//! skipping — see `support/corpus.rs`. The one third-party unit this suite uses,
+//! TAL Reverb 4, is for the `installed-units` feature
+//! (`cargo xtask test-au-installed`): with it on, its absence fails the test.
 
 #![cfg(target_os = "macos")]
 
@@ -42,10 +41,13 @@ use std::sync::{Arc, Mutex};
 
 mod support;
 use support::corpus::{
-    DELAY, DYNAMICS, SPATIAL_MIXER, SPATIAL_MIXER_RAMP_PARAM, TAL_REVERB_4, all_finite, envelope,
-    open_info, optional_third_party, peak, render, silence,
+    DELAY, DYNAMICS, SPATIAL_MIXER, SPATIAL_MIXER_RAMP_PARAM, all_finite, envelope, peak, render,
+    silence,
 };
+#[cfg(feature = "installed-units")]
+use support::corpus::{TAL_REVERB_4, open_info, optional_third_party};
 
+#[cfg(feature = "installed-units")]
 use tutti_au_host::component::AuType;
 use tutti_au_host::render_notify::{ParamEvent, RenderPhase, ScheduleAddress};
 use tutti_au_host::types::{
@@ -710,34 +712,24 @@ fn the_can_ramp_flag_is_a_claim_not_a_guarantee() {
 /// `0.014483 → 0.104773`; pinning the parameter at the ramp's start gives a flat
 /// `0.0`. Bit-identical across 10 repeats.
 ///
-/// # Why absence is tolerated here
+/// # Installed units only
 ///
-/// TAL Reverb 4 is a third-party plugin — a genuine optional install, unlike the
-/// Apple units the corpus hard-requires because they ship with macOS. So this is
-/// reached through `corpus::optional_third_party`.
-///
-/// That is **not** the silent skip `support/corpus.rs` warns about, because the
-/// unconditional half still runs: the Apple negative result above is a separate
-/// test that always executes, and when this unit is absent the notice below is
-/// loud. What would be unacceptable is a suite where *every* ramp assertion
-/// vanished with the plugin, leaving "ramping works" unexamined.
+/// TAL Reverb 4 is a third-party plugin, so this test is compiled only with the
+/// `installed-units` feature, and fails there when the unit is absent.
+#[cfg(feature = "installed-units")]
 #[test]
 fn a_ramp_is_honoured_where_a_plugin_implements_it() {
     let _g = lock();
     let (sub, mfr, param_id) = TAL_REVERB_4;
 
-    let Some(info) = optional_third_party(sub, mfr, AuType::Effect) else {
-        eprintln!(
-            "NOTICE: TAL Reverb 4 ({}/{}) is not installed, so the POSITIVE ramp \
-             leg is not exercised on this machine. The negative leg \
-             (the_can_ramp_flag_is_a_claim_not_a_guarantee, against Apple's \
-             AUSpatialMixer) still runs unconditionally. Install TAL Reverb 4 to \
-             cover intra-block ramping.",
+    let info = optional_third_party(sub, mfr, AuType::Effect).unwrap_or_else(|| {
+        panic!(
+            "TAL Reverb 4 ({}/{}) is not installed; this target is built only \
+             with `installed-units`, which asks for it",
             String::from_utf8_lossy(sub),
             String::from_utf8_lossy(mfr),
-        );
-        return;
-    };
+        )
+    });
 
     // Ramp 0 -> 1 across the block, versus pinned at 0.
     let ramped = render_info_with_schedule(
@@ -986,7 +978,8 @@ fn render_with_schedule(unit: &support::corpus::AuRef, param: u32, event: ParamE
     schedule_one_block(&mut au, param, event)
 }
 
-/// As [`render_with_schedule`], for a unit reached by [`optional_third_party`].
+/// As [`render_with_schedule`], for an installed unit.
+#[cfg(feature = "installed-units")]
 fn render_info_with_schedule(
     info: &tutti_au_host::AuComponentInfo,
     param: u32,

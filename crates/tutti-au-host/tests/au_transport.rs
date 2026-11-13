@@ -11,25 +11,19 @@
 //!   input goes silent. Without it an offline bounce truncates reverb and delay
 //!   tails at the last note.
 //!
-//! ## Which AU actually calls the callbacks (and the limitation that follows)
+//! ## Which AU actually calls the callbacks
 //!
-//! Measured empirically on this machine (macOS 15.6, ~35 Apple AUs + 3
-//! third-party): **not one Apple Audio Unit calls any of the four procs**,
-//! though every one of them *accepts* the property. The only installed unit that
-//! calls them is **TAL-NoiseMaker** (`TOGU`/`ncut`), which calls
-//! `beatAndTempoProc`, `musicalTimeLocationProc` and `transportStateProc`
-//! exactly once per render block — and calls **v1 only**, never v2.
+//! Not one Apple Audio Unit calls any of the four procs, though every one of
+//! them *accepts* the property. The units that do are the probe AU
+//! (`support/probe_au.rs`), which records what it pulled, and the shared test
+//! plugin (`testing/tutti-shared-plugin`) registered as an Audio Unit, which
+//! calls `beatAndTempoProc` and `transportStateProc` (v1 only) once per render
+//! block. The end-to-end "an AU pulled our transport and consumed the locate
+//! flag" assertion is [`a_real_au_pulls_and_consumes_the_transport`], against
+//! the shared plugin.
 //!
-//! TAL-NoiseMaker is not part of the corpus: it is a third-party plugin that is
-//! not guaranteed to be installed, and [`corpus`](support::corpus)'s rule is
-//! that a corpus member's absence is a hard failure. So the end-to-end
-//! "a real AU pulled our transport" assertion lives in
-//! [`a_real_au_pulls_and_consumes_the_transport`], which is `#[ignore]`d and
-//! skips cleanly when the plugin is absent — the one place in this suite where
-//! a skip is honest, because the subject genuinely may not exist.
-//!
-//! What is asserted unconditionally, against the Apple corpus, is everything
-//! that does not require a plugin to call back:
+//! Against the Apple corpus, everything that does not require a plugin to call
+//! back is asserted:
 //!
 //! * the property is accepted by effects, instruments and mixers alike
 //! * the `HostCallbackInfo` layout matches Apple's declaration byte for byte
@@ -45,8 +39,7 @@
 //! ## Running
 //!
 //! ```bash
-//! cargo test -p tutti-au-host --test au_transport
-//! cargo test -p tutti-au-host --test au_transport -- --include-ignored
+//! cargo nextest run -p tutti-au-host --test au_transport
 //! ```
 
 #![cfg(target_os = "macos")]
@@ -508,8 +501,8 @@ fn the_locate_flag_is_consumed_exactly_once() {
 /// A null out-param must be skipped, not written through.
 ///
 /// Every out-param in `HostCallbackInfo`'s procs is documented nullable — the AU
-/// passes null for anything it does not care about, and TAL-NoiseMaker does. A
-/// blind write is a null dereference on the render thread.
+/// passes null for anything it does not care about. A blind write is a null
+/// dereference on the render thread.
 #[test]
 fn callbacks_tolerate_null_out_params() {
     let state = TransportState::new();
@@ -677,7 +670,7 @@ fn every_proc_answers_cannot_do_until_the_host_publishes() {
 ///
 /// The probe (`support/probe_au.rs`) stores the `HostCallbackInfo` the host
 /// writes and calls the v1 procs from inside its render, the way
-/// TAL-NoiseMaker does; no Apple unit calls them. So this is the whole round
+/// the shared plugin does; no Apple unit calls them. So this is the whole round
 /// trip: the property write, AudioToolbox handing the AU the pointers, the
 /// render-thread read, the answers. A real tempo-synced AU *acting* on them
 /// (an AU delay locking to the project tempo) needs such a unit on macOS
@@ -813,47 +806,24 @@ fn host_callback_info_matches_apples_layout() {
     assert_ne!(writable, 0, "HostCallbacks must be writable");
 }
 
-// ---------------------------------------------------- the real-plugin end-to-end
+// ------------------------------------------------------------- the plugin end-to-end
 
-/// A real AU pulls the transport and consumes the locate flag.
+/// An AU that pulls the transport consumes the locate flag.
 ///
-/// The only end-to-end proof available on this machine, and the reason it is
-/// `#[ignore]`d: its subject is **TAL-NoiseMaker** (`TOGU`/`ncut`), a
-/// third-party plugin, and no Apple unit can stand in — not one of the ~35
-/// installed calls any host callback.
-///
-/// Measured behaviour, macOS 15.6: TAL-NoiseMaker calls `beatAndTempoProc`,
-/// `musicalTimeLocationProc` and `transportStateProc` exactly once per render
-/// block. It calls **v1 only** — with only `transportStateProc2` populated it
-/// calls neither and receives no transport at all, which is precisely why
-/// `TransportState::callback_info` fills both.
+/// No Apple unit calls a host callback, so the subject is the shared test plugin
+/// (`testing/tutti-shared-plugin`) registered as an Audio Unit: once per render
+/// it calls `beatAndTempoProc` and `transportStateProc` (v1), the procs
+/// `TransportState::callback_info` fills alongside v2 for exactly that reason.
 ///
 /// The assertion is that the locate flag, set before the render, is *cleared* by
 /// the render: only the AU calling a transport proc can clear it, so a false
 /// reading here is direct evidence the plugin consumed our transport.
 #[test]
-#[ignore = "requires the third-party TAL-NoiseMaker AU; no Apple unit calls host callbacks"]
 fn a_real_au_pulls_and_consumes_the_transport() {
     use crate::support::au::Au;
-    use tutti_au_host::component::{AuType, enumerate_components_of_type};
 
     let _g = lock();
-    let Some(info) = enumerate_components_of_type(AuType::Instrument)
-        .into_iter()
-        .find(|c| c.sub_type == u32::from_be_bytes(*b"ncut"))
-    else {
-        // An honest skip: unlike a corpus member, this plugin is genuinely
-        // optional. Every invariant that can be checked without it is asserted
-        // unconditionally by the tests above.
-        eprintln!(
-            "TAL-NoiseMaker (TOGU/ncut) not installed; the end-to-end \
-             transport-pull leg is not exercised"
-        );
-        return;
-    };
-
-    let mut au = Au::new(info.component, RATE, BLOCK).expect("instantiate");
-    au.install_host_callbacks().expect("install");
+    let mut au = Au::shared(RATE, BLOCK);
     au.initialize().expect("initialize");
 
     let transport = TransportInfo::new()
@@ -874,9 +844,9 @@ fn a_real_au_pulls_and_consumes_the_transport() {
 
     assert!(
         !au.transport().unwrap().state_changed_pending(),
-        "TAL-NoiseMaker calls transportStateProc once per block, so the locate \
+        "the shared plugin calls transportStateProc once per block, so the locate \
          flag must have been consumed by the render. Still pending means the AU \
-         never pulled our transport — the callbacks are not reaching it."
+         never pulled our transport: the callbacks are not reaching it."
     );
 }
 

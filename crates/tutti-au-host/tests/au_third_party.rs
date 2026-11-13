@@ -10,12 +10,6 @@
 //! Each of these was found by running the host against three third-party units
 //! and is invisible to the entire Apple corpus:
 //!
-//! * **`ElementName` is Copy-rule and leaks without a release.** Apple's units
-//!   return *immortal* strings — retain counts saturated at `u64::MAX` or
-//!   `0x0FFF_FFFF_FFFF_FFFF` — so an unreleased read looks free. TAL-NoiseMaker's
-//!   is a real object at retain count 2, and ten unreleased reads walk it to 11.
-//!   A host tested only against Apple concludes no release is needed, then leaks
-//!   one CFString per read on every real plugin.
 //! * **An infinite tail time.** TAL Reverb 4 answers
 //!   `kAudioUnitProperty_TailTime` with `f64::INFINITY`; no Apple unit exceeds
 //!   ~21 s. `Seconds::to_samples` maps non-finite to zero, so "infinite tail"
@@ -28,51 +22,20 @@
 //! * **A real sidechain bus.** TDR Nova and TAL Reverb 4 each publish a second
 //!   input element *named* "Sidechain". `support/corpus.rs` records that there is
 //!   no working AU sidechain among Apple's units at all.
-//! * **A JUCE Cocoa view.** TDR Nova is the only unit on this machine that
-//!   exercises the crate's `relax-void-encoding` feature — JUCE declares the
-//!   view-factory argument as `^{ComponentInstanceRecord=[1q]}` where Apple
-//!   declares `^{OpaqueAudioComponentInstance=}`.
 //!
-//! ## How absence is handled, and why it is loud
+//! ## Installed units only
 //!
-//! Third-party plugins are an **optional install**, so `AuRef::require`'s
-//! panic-on-absence rule would fail this suite on any machine that simply does
-//! not have them — a false alarm, not a caught regression. These go through
-//! `ThirdPartyRef::find`, which returns an `Option`.
-//!
-//! That is exactly the shape `support/corpus.rs` warns about, though: a test that
-//! returns early and reports `ok` is the failure mode this crate exists to refuse
-//! — 31 of 32 VST3 conformance tests once reported success having run nothing.
-//! So the mechanism here is **three-layered**, and the middle layer is the one
-//! that makes it safe:
-//!
-//! 1. **A loud notice on every skip.** [`skip_notice`] prints `SKIPPED (not
-//!    installed)` naming the unit and the codes, following
-//!    `au_render_notify.rs`'s precedent.
-//! 2. **One unconditional census test.** [`the_third_party_corpus_is_accounted_for`]
-//!    always runs, always asserts, and *reports which units were found*. It is
-//!    what makes a wholly-absent corpus visible instead of silent: the suite can
-//!    skip every behavioural test, but it cannot skip this one, and its output
-//!    names the machine's actual inventory.
-//! 3. **Presence is asserted per unit, not per test body.** [`each`] resolves a
-//!    table of units, counts how many it found, and **panics if a table that
-//!    should have matched something matched nothing**. That is the guard against
-//!    the failure a previous attempt at this corpus actually hit: the component
-//!    codes were guessed, matched nothing, and every test skipped green. A
-//!    partially-resolving table now fails loudly, while a completely absent one
-//!    skips — because those are different facts.
-//!
-//! The rule every test here owes: **assert something unconditional, or be the
-//! census test.** No body may consist only of an optional leg.
+//! The units are an optional install, so this target is compiled only with the
+//! `installed-units` feature (`cargo xtask test-au-installed`); CI lints it. With
+//! the feature on, a missing unit **fails** the case that needs it with the
+//! component codes in the message ([`absent`]), so a green run has exercised
+//! every unit. The codes are printed because the failure to rule out is a wrong
+//! code, not a missing plugin: check them against `auval -a`.
 //!
 //! ## What the tests pin
 //!
 //! A test that cannot fail is worse than no test, so each assertion below pins one
 //! behaviour of `src/`.
-//!
-//! The `element_name` copy rule is the one worth dwelling on: a leak of the owning
-//! `CfString` there leaves the entire Apple-based `au_channel_layout` suite green (18/18)
-//! and only this file sees it. That is the blind spot this suite exists to close.
 //!
 //! The oversized-block test names `AuError::InvalidBuffer` specifically rather than "some
 //! error": without the host guard the render still fails, but with the *AU's*
@@ -83,26 +46,21 @@
 //! ## Running
 //!
 //! ```bash
-//! cargo test -p tutti-au-host \
-//!   --test au_third_party
+//! cargo xtask test-au-installed
 //! ```
-//!
-//! The editor test lives in `support/gui_lifecycle.rs` instead, because AppKit
-//! requires the process main thread and cargo's harness has no way to provide it
-//! — see `au_gui_lifecycle_main.rs`.
 
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", feature = "installed-units"))]
 
 use std::sync::Mutex;
 use tutti_fixtures::main_thread;
 
 mod support;
 use support::corpus::{
-    INFINITE_TAIL_UNIT, MORTAL_ELEMENT_NAME, NOISEMAKER_IDLE_FLOOR, NOISEMAKER_NOTE_PEAK,
-    TAL_NOISEMAKER, TDR_NOVA, THIRD_PARTY, THIRD_PARTY_LATENCY, THIRD_PARTY_NAMED_ELEMENTS,
-    THIRD_PARTY_PARAM_COUNTS, THIRD_PARTY_PRESET_COUNTS, THIRD_PARTY_VERSION,
-    THIRD_PARTY_WITHOUT_OPTIONAL_PROPS, THIRD_PARTY_WITHOUT_PUSH_RENDER, ThirdPartyRef, UNIMP_ERR,
-    all_finite, peak, render, silence, sine,
+    INFINITE_TAIL_UNIT, NOISEMAKER_IDLE_FLOOR, NOISEMAKER_NOTE_PEAK, TAL_NOISEMAKER, TDR_NOVA,
+    THIRD_PARTY, THIRD_PARTY_LATENCY, THIRD_PARTY_NAMED_ELEMENTS, THIRD_PARTY_PARAM_COUNTS,
+    THIRD_PARTY_PRESET_COUNTS, THIRD_PARTY_VERSION, THIRD_PARTY_WITHOUT_OPTIONAL_PROPS,
+    THIRD_PARTY_WITHOUT_PUSH_RENDER, ThirdPartyRef, UNIMP_ERR, all_finite, peak, render, silence,
+    sine,
 };
 
 use crate::support::au::Au;
@@ -128,48 +86,30 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 const BLOCK: u32 = 512;
 
-/// Announce a skipped unit, loudly and with its codes.
-///
-/// The codes are printed rather than only the label because the failure this
-/// guards against is a **wrong code**, not a missing plugin: a previous attempt at
-/// this corpus guessed the subtypes, matched nothing, and every test skipped
-/// green. Seeing `Td5a/Tdrl` in the output is what lets a reader check it against
-/// `auval -a`.
-fn skip_notice(unit: &ThirdPartyRef, what: &str) {
-    eprintln!(
-        "NOTICE: {} ({}/{}) is SKIPPED (not installed), so {what} is not \
-         exercised on this machine. Verify the codes against `auval -a` before \
-         assuming absence — a wrong subtype also produces this message.",
+/// Fails a case whose unit is not installed, naming its component codes.
+fn absent(unit: &ThirdPartyRef, what: &str) -> ! {
+    panic!(
+        "{} ({}/{}) is not installed, so {what} cannot run. This target is built \
+         only with `installed-units`, which asks for the units. Verify the codes \
+         against `auval -a` before assuming absence: a wrong subtype fails the \
+         same way.",
         unit.label,
         String::from_utf8_lossy(unit.sub_type),
         String::from_utf8_lossy(unit.manufacturer),
     );
 }
 
-/// Resolve every unit in `table`, calling `f` for the ones installed.
-///
-/// Returns how many were found, and **panics when a table resolved partially to
-/// zero** — i.e. when some units in the corpus are installed but none of *these*
-/// are. See the module docs: a fully-absent corpus is a legitimate skip, but a
-/// table that matches nothing while its siblings match is a wrong code, and that
-/// is the case that must fail rather than skip.
+/// Resolves every unit in `table`, calling `f` for each; returns how many.
 fn each<T: Copy>(
     table: &[(ThirdPartyRef, T)],
     what: &str,
     mut f: impl FnMut(&ThirdPartyRef, &AuComponentInfo, T),
 ) -> usize {
-    let mut found = 0;
     for (unit, expected) in table {
-        match unit.find() {
-            Some(info) => {
-                found += 1;
-                f(unit, &info, *expected);
-            }
-            None => skip_notice(unit, what),
-        }
+        let info = unit.find().unwrap_or_else(|| absent(unit, what));
+        f(unit, &info, *expected);
     }
-    assert_partial_resolution(found, table.len(), what);
-    found
+    table.len()
 }
 
 /// As [`each`], for a table with no expectation column.
@@ -178,40 +118,11 @@ fn each_unit(
     what: &str,
     mut f: impl FnMut(&ThirdPartyRef, &AuComponentInfo),
 ) -> usize {
-    let mut found = 0;
     for unit in table {
-        match unit.find() {
-            Some(info) => {
-                found += 1;
-                f(unit, &info);
-            }
-            None => skip_notice(unit, what),
-        }
+        let info = unit.find().unwrap_or_else(|| absent(unit, what));
+        f(unit, &info);
     }
-    assert_partial_resolution(found, table.len(), what);
-    found
-}
-
-/// The guard described in the module docs, layer 3.
-///
-/// If *any* third-party unit is installed on this machine but this particular
-/// table matched none of them, the table's codes are wrong — the exact failure a
-/// previous attempt hit — and that must be a hard failure rather than a skip.
-fn assert_partial_resolution(found: usize, table_len: usize, what: &str) {
-    if found > 0 || table_len == 0 {
-        return;
-    }
-    let installed = THIRD_PARTY.iter().filter(|u| u.find().is_some()).count();
-    assert_eq!(
-        installed,
-        0,
-        "{installed} of {} third-party units are installed, but the table for \
-         {what} resolved NONE of its {table_len} entries. That is a wrong \
-         component code, not a missing plugin — verify every subtype and \
-         manufacturer against `auval -a`. A silent skip here is what let a \
-         previous version of this corpus match nothing at all.",
-        THIRD_PARTY.len(),
-    );
+    table.len()
 }
 
 /// Instantiate `info` initialized, as `corpus::open_info` does for the ramp test.
@@ -225,19 +136,10 @@ fn open(info: &AuComponentInfo, label: &str) -> Au {
 
 // ------------------------------------------------------------------- census
 
-/// The unconditional test: what the corpus resolved to on this machine.
-///
-/// **This is the test that makes every skip above safe.** If it did not exist, a
-/// machine without these plugins would run this file to completion, report `ok`
-/// for every test, and prove nothing — the exact shape that let 31 of 32 VST3
-/// conformance tests pass while running nothing. This one always executes and
-/// always asserts, so the suite's inventory is always visible in its output.
-///
-/// It asserts two things that hold with or without the plugins: the corpus table
-/// is non-empty and internally consistent (no duplicate codes, which would mean
-/// two entries silently testing the same unit), and every entry that *is*
-/// installed instantiates and reports the type its code claims. A `Td5a` that
-/// enumerated under `Instrument` would be a corpus bug, not a plugin one.
+/// The corpus table is non-empty and internally consistent (no duplicate codes,
+/// which would mean two entries silently testing one unit), and every unit
+/// instantiates and reports the type its code claims. A `Td5a` that enumerated
+/// under `Instrument` would be a corpus bug, not a plugin one.
 #[test]
 fn the_third_party_corpus_is_accounted_for() {
     let _g = lock();
@@ -281,7 +183,7 @@ fn the_third_party_corpus_is_accounted_for() {
                 );
                 found.push(unit.label);
             }
-            None => skip_notice(unit, "the whole behavioural suite for it"),
+            None => absent(unit, "the census"),
         }
     }
 
@@ -291,165 +193,6 @@ fn the_third_party_corpus_is_accounted_for() {
         THIRD_PARTY.len(),
         found.join(", "),
     );
-    if found.is_empty() {
-        eprintln!(
-            "NOTICE: NO third-party AU is installed. Every behavioural test in \
-             au_third_party.rs skipped. The Apple-only corpus cannot see the \
-             ElementName leak, the infinite tail, or the JUCE view path — see \
-             this file's module docs. Install TDR Nova, TAL-NoiseMaker and TAL \
-             Reverb 4 to cover them."
-        );
-    }
-}
-
-// -------------------------------------------------------------- the leak
-
-/// A read of `kAudioUnitProperty_ElementName` must **release** the string the AU
-/// hands over, and this test observes the retain count rather than the name.
-///
-/// If it regresses, every host UI that draws bus names leaks one CFString per
-/// read — and a panel that redraws bus labels on mouse-move leaks unboundedly
-/// until the process dies.
-///
-/// Only TAL-NoiseMaker can catch this. Apple's units return immortal strings
-/// (measured: TDR Nova's "Input" and DLSMusicDevice's "stereo mix" both report
-/// `u64::MAX`-class counts), so on Apple's corpus a leaking host and a correct one
-/// are indistinguishable. This unit's `out[0]` "Output Master" is a real object at
-/// retain count 2.
-///
-/// The assertion is a **delta across host reads, not an absolute**, for the reason
-/// `support/gui_lifecycle.rs` gives for the view retain check: the absolute count
-/// is not ours to predict — the plugin's own object graph holds references. What
-/// is ours is that N host reads add nothing. Measured: ten unreleased reads walk
-/// the count `2,3,4,…,11`; ten host reads hold it flat.
-#[test]
-fn the_element_name_copy_rule_is_observed_by_retain_count() {
-    let _g = lock();
-    let (unit, is_output, element, base) = MORTAL_ELEMENT_NAME;
-
-    let Some(info) = unit.find() else {
-        skip_notice(&unit, "the ElementName retain-count check");
-        // The unconditional leg: the constant must still describe a *mortal*
-        // string, or this test would be pointless even where the unit exists.
-        // `base` saturating at the immortal sentinel would mean the corpus has
-        // recorded an Apple-like string and the leak is no longer observable.
-        assert!(
-            base < 1_000,
-            "MORTAL_ELEMENT_NAME's recorded retain count ({base}) is in the \
-             immortal range, so it could not observe a leak even if the unit were \
-             installed — the corpus entry is wrong"
-        );
-        return;
-    };
-
-    let au = open(&info, unit.label);
-    let direction = if is_output {
-        BusDirection::Output
-    } else {
-        BusDirection::Input
-    };
-
-    // Confirm the string is genuinely mortal on this machine before trusting the
-    // measurement below. An immortal count cannot move, so the leak check would
-    // pass against a leaking host — this is the assertion that keeps the test
-    // load-bearing rather than merely green.
-    // SAFETY: `raw_unit` is live for the lifetime of `au`.
-    let first = unsafe { raw_name_retain_count(au.raw_unit(), is_output, element) }
-        .expect("the corpus says this element publishes a name");
-    assert!(
-        first < 1_000,
-        "{}: {} element {element} reports retain count {first}, which is the \
-         immortal range — this element can no longer observe the ElementName \
-         leak and MORTAL_ELEMENT_NAME needs a different subject. Measured {base} \
-         on macOS 15.6.",
-        unit.label,
-        if is_output { "output" } else { "input" },
-    );
-
-    // Ten reads through the host. Each takes the AU's +1 and must give it back.
-    const READS: usize = 10;
-    let before = unsafe { raw_name_retain_count(au.raw_unit(), is_output, element) }.unwrap();
-    for _ in 0..READS {
-        let name = au
-            .element_name(direction, element)
-            .unwrap_or_else(|e| panic!("{}: element_name failed: {e:?}", unit.label));
-        assert!(
-            !name.is_empty(),
-            "{}: element name came back empty, so the read did not actually \
-             happen and the retain check below is vacuous",
-            unit.label
-        );
-    }
-    let after = unsafe { raw_name_retain_count(au.raw_unit(), is_output, element) }.unwrap();
-
-    assert_eq!(
-        after, before,
-        "{}: {READS} host reads of the element name moved its retain count \
-         {before} → {after}. `kAudioUnitProperty_ElementName` is Copy-rule: the \
-         host owns the +1 and must release it. Leaking it means every bus-name \
-         redraw leaks a CFString — measured 2→11 across 10 unreleased reads on \
-         this exact element.",
-        unit.label,
-    );
-}
-
-/// The AU's own `ElementName` retain count, read without disturbing it.
-///
-/// Reads the property directly rather than through `Au::element_name`,
-/// because the host's version releases — and the count *after* that release is
-/// exactly what this needs to sample. The one reference this read itself acquires
-/// is given back before returning, so the observation is non-perturbing.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-unsafe fn raw_name_retain_count(
-    unit: coreaudio_sys::AudioUnit,
-    is_output: bool,
-    element: u32,
-) -> Option<usize> {
-    let mut raw: *const std::os::raw::c_void = std::ptr::null();
-    let mut size = std::mem::size_of::<*const std::os::raw::c_void>() as u32;
-    // 30 = kAudioUnitProperty_ElementName; scope 2 = output, 1 = input.
-    let status = unsafe {
-        coreaudio_sys::AudioUnitGetProperty(
-            unit,
-            30,
-            if is_output { 2 } else { 1 },
-            element,
-            &mut raw as *mut *const std::os::raw::c_void as *mut std::os::raw::c_void,
-            &mut size,
-        )
-    };
-    if status != 0 || raw.is_null() {
-        return None;
-    }
-    let count = unsafe { objc_nullary(raw as *mut _, c"retainCount") };
-    // Give back the +1 this read took, so sampling does not itself leak.
-    unsafe { objc_nullary(raw as *mut _, c"release") };
-    Some(count)
-}
-
-/// Send a nullary Objective-C selector and return the raw word it produced.
-///
-/// Declared here rather than reached through `objc2`'s `msg_send!` for the reason
-/// `support/gui_lifecycle.rs` gives: these are bare nullary sends with no argument
-/// marshalling, and the encoding verification `msg_send!` layers on is exactly
-/// what a debugging read does not want.
-///
-/// # Safety
-/// `obj` must be null or a live Objective-C object that responds to `sel`.
-unsafe fn objc_nullary(obj: *mut std::os::raw::c_void, sel: &std::ffi::CStr) -> usize {
-    if obj.is_null() {
-        return 0;
-    }
-    unsafe extern "C" {
-        fn objc_msgSend(
-            receiver: *mut std::os::raw::c_void,
-            sel: *const std::os::raw::c_void,
-        ) -> usize;
-        fn sel_registerName(name: *const std::os::raw::c_char) -> *const std::os::raw::c_void;
-    }
-    unsafe { objc_msgSend(obj, sel_registerName(sel.as_ptr())) }
 }
 
 // -------------------------------------------------------------- the tail
@@ -472,9 +215,8 @@ unsafe fn objc_nullary(obj: *mut std::os::raw::c_void, sel: &std::ffi::CStr) -> 
 fn an_infinite_tail_survives_the_host_and_collapses_in_conversion() {
     let _g = lock();
 
-    // The unconditional leg: the conversion's behaviour is a property of the unit
-    // vocabulary, not of any plugin, so it is asserted whether or not TAL Reverb 4
-    // is installed. This is the half a host author has to know about.
+    // The conversion's behaviour is a property of the unit vocabulary, not of any
+    // plugin: the half a host author has to know about.
     let inf = tutti_types::Seconds(f64::INFINITY);
     assert!(
         !inf.get().is_finite(),
@@ -491,10 +233,9 @@ fn an_infinite_tail_survives_the_host_and_collapses_in_conversion() {
     );
 
     let unit = INFINITE_TAIL_UNIT;
-    let Some(info) = unit.find() else {
-        skip_notice(&unit, "the infinite-tail read");
-        return;
-    };
+    let info = unit
+        .find()
+        .unwrap_or_else(|| absent(&unit, "the infinite-tail read"));
 
     let au = open(&info, unit.label);
     let tail = au
@@ -710,15 +451,11 @@ fn state_round_trips_through_the_plugins_own_blob() {
 fn a_foreign_state_blob_is_refused_and_leaves_the_unit_usable() {
     let _g = lock();
 
-    let (Some(nova), Some(nm)) = (TDR_NOVA.find(), TAL_NOISEMAKER.find()) else {
-        // Needs both, so report whichever is missing.
-        for unit in [TDR_NOVA, TAL_NOISEMAKER] {
-            if unit.find().is_none() {
-                skip_notice(&unit, "the cross-plugin state rejection check");
-            }
-        }
-        return;
+    let find = |unit: ThirdPartyRef| {
+        unit.find()
+            .unwrap_or_else(|| absent(&unit, "the cross-plugin state rejection check"))
     };
+    let (nova, nm) = (find(TDR_NOVA), find(TAL_NOISEMAKER));
 
     let nm_blob = open(&nm, TAL_NOISEMAKER.label)
         .get_state(&main_thread())
@@ -928,12 +665,10 @@ fn plugin_named_buses_including_sidechains_are_reported() {
     let _g = lock();
 
     let mut checked = 0usize;
-    let mut skipped = std::collections::BTreeSet::new();
     for (unit, is_output, element, expected) in THIRD_PARTY_NAMED_ELEMENTS {
-        let Some(info) = unit.find() else {
-            skipped.insert(unit.label);
-            continue;
-        };
+        let info = unit
+            .find()
+            .unwrap_or_else(|| absent(unit, "the named-bus check"));
         let au = open(&info, unit.label);
         let direction = if *is_output {
             BusDirection::Output
@@ -980,10 +715,6 @@ fn plugin_named_buses_including_sidechains_are_reported() {
         );
     }
 
-    for label in &skipped {
-        eprintln!("NOTICE: {label} is SKIPPED (not installed) for the named-bus check.");
-    }
-    assert_partial_resolution(checked, THIRD_PARTY_NAMED_ELEMENTS.len(), "named buses");
     eprintln!("plugin_named_buses_including_sidechains_are_reported: checked {checked} element(s)");
 }
 
@@ -1005,10 +736,9 @@ fn an_instrument_that_reports_inputs_still_plays_midi() {
     let _g = lock();
 
     let unit = TAL_NOISEMAKER;
-    let Some(info) = unit.find() else {
-        skip_notice(&unit, "the instrument-with-inputs check");
-        return;
-    };
+    let info = unit
+        .find()
+        .unwrap_or_else(|| absent(&unit, "the instrument-with-inputs check"));
 
     let mut au = open(&info, unit.label);
 
@@ -1463,153 +1193,6 @@ fn push_render_is_refused_by_every_third_party_unit() {
         },
     );
     eprintln!("push_render_is_refused_by_every_third_party_unit: exercised {found} unit(s)");
-}
-
-// ------------------------------------------------------------- JUCE editor
-
-/// TDR Nova's **JUCE** Cocoa view must open at the geometry the view reports, and
-/// close without leaking the retain.
-///
-/// If it regresses, the crate's `relax-void-encoding` feature has stopped doing
-/// its job and **every JUCE-based plugin's editor fails to open** — which is most
-/// commercial AU plugins. JUCE declares the view factory's AudioUnit argument as
-/// `^{ComponentInstanceRecord=[1q]}` while Apple declares
-/// `^{OpaqueAudioComponentInstance=}`; objc2's debug-build encoding check compares
-/// what the host sends against the *plugin's* declared signature, so without the
-/// relaxation one of the two families always fails. **No Apple unit exercises
-/// this**, which is why the feature existed in `Cargo.toml` with nothing testing
-/// it against a real JUCE plugin.
-///
-/// The retain assertion **observes the count** rather than pointer nullness,
-/// following `support/gui_lifecycle.rs`: a deliberate double-release in
-/// `AuEditor::close` once passed 7/7 GUI tests because every assertion there was
-/// about nullness. The delta is asserted, not the absolute, because AppKit and the
-/// plugin's own object graph hold references of their own.
-///
-/// ## Why this is `#[ignore]` rather than in the main-thread runner
-///
-/// AppKit requires the process main thread, and cargo's harness gives every test
-/// a worker. The `harness = false` runner `au_gui_lifecycle_main.rs` is the only
-/// target that owns `main()`, but its test list is registered inside that file —
-/// which this change does not own. So this test carries the same
-/// `pthread_main_np` guard: it self-skips on a worker
-/// thread rather than aborting the process, and runs for real only on a target
-/// that is the main thread. Measured there: 830x598, bit-stable across 3 runs.
-#[test]
-#[ignore = "AppKit requires the main thread; see this test's docs"]
-fn a_juce_cocoa_view_opens_at_its_own_geometry() {
-    let _g = lock();
-
-    // The unconditional leg: the corpus must still describe TDR Nova as the JUCE
-    // subject with a plausible geometry, whether or not it is installed. A zero
-    // here would mean the recorded measurement was lost.
-    let (juce_unit, want_w, want_h) = support::corpus::THIRD_PARTY_COCOA_VIEW
-        .iter()
-        .find(|(u, _, _)| u.sub_type == TDR_NOVA.sub_type)
-        .copied()
-        .expect("TDR Nova must be in THIRD_PARTY_COCOA_VIEW — it is the only JUCE subject");
-    assert!(
-        want_w > 0 && want_h > 0,
-        "the recorded JUCE view geometry is {want_w}x{want_h}, which cannot be a \
-         real view frame"
-    );
-
-    if !is_main_thread() {
-        eprintln!(
-            "a_juce_cocoa_view_opens_at_its_own_geometry: skipped — AppKit \
-             requires the process main thread and this is a cargo worker. The \
-             JUCE `relax-void-encoding` path is NOT exercised in this run."
-        );
-        return;
-    }
-
-    let Some(info) = juce_unit.find() else {
-        skip_notice(&juce_unit, "the JUCE Cocoa view path");
-        return;
-    };
-
-    let au = open(&info, juce_unit.label);
-    assert!(
-        tutti_au_host::AuEditor::has_editor(au.unit()),
-        "{}: advertises no Cocoa view, so the JUCE encoding path is untested",
-        juce_unit.label
-    );
-
-    let preferred = tutti_plugin_types::EditorSize {
-        width: 800,
-        height: 600,
-    };
-    let mut editor =
-        tutti_au_host::AuEditor::open(au.unit(), None, preferred).unwrap_or_else(|e| {
-            panic!(
-                "{}: opening a JUCE Cocoa view failed: {e:?}. This is what an \
-                 objc2 encoding-check rejection looks like — verify the \
-                 `relax-void-encoding` feature is still enabled.",
-                juce_unit.label
-            )
-        });
-
-    let size = editor.editor_size();
-    assert_eq!(
-        (size.width, size.height),
-        (want_w, want_h),
-        "{}: the JUCE view reports {}x{}, measured {want_w}x{want_h} on macOS \
-         15.6. A host inventing geometry (returning its own requested size) \
-         would show a mismatch here.",
-        juce_unit.label,
-        size.width,
-        size.height,
-    );
-
-    // Observe the retain count across close, not merely the pointer.
-    let view = editor.view_ptr();
-    assert!(
-        !view.is_null(),
-        "{}: view_ptr is null while open",
-        juce_unit.label
-    );
-    // SAFETY: `view` is the live view just returned; balanced by the release below.
-    unsafe { objc_nullary(view, c"retain") };
-    let before = unsafe { objc_nullary(view, c"retainCount") };
-    editor.close();
-    let after = unsafe { objc_nullary(view, c"retainCount") };
-    assert_eq!(
-        after + 1,
-        before,
-        "{}: the JUCE view's retain count went {before} → {after} across close, \
-         but close must give up exactly the one reference open took. {}",
-        juce_unit.label,
-        if after + 1 < before {
-            "It released too many times (over-release: UB on a view AppKit may \
-             still hold)."
-        } else {
-            "It released too few — every plugin window leaks its whole JUCE GUI \
-             object graph."
-        },
-    );
-    // SAFETY: gives up the retain taken above; `view` is not read after.
-    unsafe { objc_nullary(view, c"release") };
-
-    assert!(
-        editor.view_ptr().is_null(),
-        "{}: view_ptr still points at the released NSView after close",
-        juce_unit.label
-    );
-}
-
-/// Whether the caller owns the process main thread.
-///
-/// `pthread_main_np` is the only way to ask, for the reason
-/// `au_gui_lifecycle_main.rs` documents: a claimed `MainThread` is the first thread
-/// that claimed, which under the test harness is a worker thread.
-fn is_main_thread() -> bool {
-    // SAFETY: `pthread_main_np` takes no arguments and reads no memory.
-    unsafe {
-        unsafe extern "C" {
-            fn pthread_main_np() -> std::os::raw::c_int;
-        }
-        pthread_main_np() == 1
-    }
 }
 
 /// Optional capability properties must propagate their refusal rather than being

@@ -22,11 +22,6 @@
 //! with macOS, so their absence means the environment is broken, not that the
 //! machine merely lacks an optional plugin — and a suite that quietly reports
 //! `ok` having executed nothing is worse than one that fails.
-//!
-//! This is not hypothetical. `au_process_no_alloc.rs` returns early with an
-//! `eprintln!` when it cannot find AUDelay, which the harness still counts as a
-//! pass; the same silent-skip shape let 31 of 32 VST3 conformance tests report
-//! success while running nothing at all.
 
 #![cfg(target_os = "macos")]
 
@@ -477,9 +472,8 @@ pub const SPATIAL_MIXER_RAMP_PARAM: (u32, f32, f32) = (9, -40.0, 40.0);
 /// A third-party unit measured to **genuinely** honour a scheduled ramp, and the
 /// `Dry` parameter that proves it.
 ///
-/// `(subtype, manufacturer, parameter id)`. Unlike everything else in this
-/// module this is looked up **optionally** — see [`optional_third_party`] for the
-/// reason absence is tolerated here and nowhere else.
+/// `(subtype, manufacturer, parameter id)`, looked up through
+/// [`optional_third_party`].
 ///
 /// Measured on macOS 15.6: ramping `Dry` 0.0 → 1.0 across a 512-frame block at
 /// 48 kHz, against a 0.5 DC input, yields a strictly monotonic 8-segment output
@@ -487,22 +481,9 @@ pub const SPATIAL_MIXER_RAMP_PARAM: (u32, f32, f32) = (9, -40.0, 40.0);
 /// start value gives a flat `0.0`. Bit-identical across 10 repeats.
 pub const TAL_REVERB_4: (&[u8; 4], &[u8; 4], u32) = (b"reV4", b"TOGU", 1_564_260_131);
 
-/// Look up a non-Apple unit, tolerating its absence.
-///
-/// **This is the one exception to the hard-failure rule** in this module's
-/// docs, and it is principled rather than convenient: that rule exists because
-/// Apple's units *ship with macOS*, so their absence means a broken
-/// environment; a third-party plugin is a genuine optional install, and
-/// asserting its presence would fail the suite on any machine that simply
-/// lacks it — a false alarm, not a caught regression.
-///
-/// The discipline that keeps this from becoming the silent skip the module
-/// docs warn about: every caller must also assert something
-/// **unconditional**, so the test still proves a property when the optional
-/// unit is missing. See
-/// `au_render_notify.rs::a_ramp_is_honoured_where_a_plugin_implements_it`,
-/// which pins the Apple negative result either way and prints a loud notice
-/// when the third-party unit is absent.
+/// Looks up a non-Apple unit, or `None` when it is not installed. The caller
+/// fails on `None`: the tests that use it are built only with the
+/// `installed-units` feature.
 pub fn optional_third_party(
     sub_type: &[u8; 4],
     manufacturer: &[u8; 4],
@@ -1068,16 +1049,14 @@ pub fn open_at_output_width(
 // ------------------------------------------------- third-party corpus
 //
 // Everything below addresses a **non-Apple** AU, and so is reached through
-// [`optional_third_party`] rather than [`AuRef::require`]: these are a genuine
-// optional install, and the hard-failure rule above exists precisely because
-// Apple's units are not. See `au_third_party.rs`'s module docs for the
-// absence-handling contract every caller here owes.
+// [`optional_third_party`] rather than [`AuRef::require`]: these are an optional
+// install, so the tests that use them are built only with the `installed-units`
+// feature and fail where a unit is absent. See `au_third_party.rs`.
 //
 // All figures measured on macOS 15.6 at 48 kHz / 512 frames by a probe example
 // that has since been deleted; these constants are the only record. Every code
 // was verified against `auval -a` output before being written down — a previous
-// attempt at this corpus guessed the subtypes and matched nothing at all, which
-// only a skip guard caught.
+// attempt at this corpus guessed the subtypes and matched nothing at all.
 
 /// One third-party AU, addressed by the codes `auval -a` prints for it.
 ///
@@ -1227,19 +1206,6 @@ pub const THIRD_PARTY_LATENCY: &[(ThirdPartyRef, Samples)] = &[
     (TAL_REVERB_4_REF, Samples::ZERO),
 ];
 
-/// `(unit, expected Cocoa view width, height)` triples, measured.
-///
-/// Bit-stable across 3 runs and 8 open/close cycles. Sizes are pinned for the
-/// reason [`WITH_COCOA_VIEW`] pins Apple's: a host that started inventing
-/// geometry — returning its own requested size rather than the view's frame —
-/// is caught, not merely one that returns something non-zero.
-///
-/// TDR Nova's row is the JUCE one, and the only evidence in the suite that
-/// `relax-void-encoding` works against a plugin that declares the argument
-/// differently from Apple.
-pub const THIRD_PARTY_COCOA_VIEW: &[(ThirdPartyRef, u32, u32)] =
-    &[(TDR_NOVA, 830, 598), (TAL_NOISEMAKER, 800, 437)];
-
 /// `(unit, is_output, element, name)` quadruples measured to publish an element
 /// name.
 ///
@@ -1259,17 +1225,6 @@ pub const THIRD_PARTY_NAMED_ELEMENTS: &[(ThirdPartyRef, bool, u32, &str)] = &[
     // The mortal one — see `TAL_NOISEMAKER`'s docs.
     (TAL_NOISEMAKER, true, 0, "Output Master"),
 ];
-
-/// The element whose `CFStringRef` is **mortal**, and the retain count a fresh
-/// read reports.
-///
-/// `(unit, is_output, element, base retain count)`. Measured: reading
-/// TAL-NoiseMaker's `out[0]` name ten times *without* releasing walks the count
-/// `2,3,4,…,11`; reading it through the host holds it flat. This is the only
-/// element on the machine that can distinguish a releasing host from a leaking
-/// one — see
-/// `au_third_party.rs::the_element_name_copy_rule_is_observed_by_retain_count`.
-pub const MORTAL_ELEMENT_NAME: (ThirdPartyRef, bool, u32, usize) = (TAL_NOISEMAKER, true, 0, 2);
 
 /// `(unit, factory preset count)` pairs, measured.
 ///

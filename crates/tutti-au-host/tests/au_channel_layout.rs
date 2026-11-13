@@ -25,12 +25,12 @@
 //! 2. **Apple's mixers publish no element names.** AUMultiChannelMixer and
 //!    AUMatrixMixer answer `kAudioUnitErr_PropertyNotInUse` for every one of their
 //!    real input elements. The units that name their buses are DLSMusicDevice and
-//!    the third-party effects.
+//!    the shared test plugin.
 //!
 //! ## Running
 //!
 //! ```bash
-//! cargo test -p tutti-au-host --test au_channel_layout
+//! cargo nextest run -p tutti-au-host --test au_channel_layout
 //! ```
 
 #![cfg(target_os = "macos")]
@@ -678,29 +678,15 @@ fn the_element_name_boundary_is_the_bus_count() {
     }
 }
 
-/// Reading an element name in a loop must not leak, and the count is what proves
-/// it.
+/// Reading an element name in a loop must not over-release the AU's string.
 ///
 /// `kAudioUnitProperty_ElementName` is Copy-rule: the AU hands back a retained
-/// `CFStringRef` the host owns. Measured on TAL-NoiseMaker's output, reading it
-/// ten times *without* releasing walks the retain count `2,3,4,…,11`; releasing
-/// each read holds it flat at `2`. Apple's own units return immortal strings whose
-/// retain count is saturated, so a host tested against them alone would conclude
-/// no release was needed and then leak one CFString per read on every third-party
-/// AU — a UI polling bus names on redraw leaks unboundedly.
-///
-/// This test **observes the retain count**, not merely that the call keeps
-/// succeeding. An over-release survives any number of successful calls — a call
-/// that returns `Ok` a hundred times proves nothing about ownership, and a
-/// pointer-nullness check proves less. The count is the only observable that
-/// does.
-///
-/// It runs against an **Apple** unit (immortal string, saturated count) as well as
-/// the general shape, because the corpus rule is that absence of a required AU is a
-/// hard failure and third-party units cannot be required. On an immortal string a
-/// leak is unobservable via the count — so what is asserted there is the
-/// *stability* of the count, which a double-release would break by making the
-/// string die and the next read fault or change identity.
+/// `CFStringRef` the host owns. Apple's own units return immortal strings, whose
+/// retain count cannot move, so what is asserted here is the *stability* of the
+/// name: an over-release deallocates a live object, and the read after that
+/// either faults or comes back different. The under-release direction, which
+/// needs a mortal string, is
+/// [`the_element_name_copy_rule_is_observed_by_retain_count`].
 #[test]
 fn repeated_element_name_reads_do_not_move_the_retain_count() {
     let _g = lock();
@@ -739,108 +725,116 @@ fn repeated_element_name_reads_do_not_move_the_retain_count() {
     );
 }
 
-/// The third-party units, when present, are where the retain leak is *observable*.
+/// A read of `kAudioUnitProperty_ElementName` must **release** the string the AU
+/// hands over, and this test observes the retain count rather than the name.
 ///
-/// Ignored rather than required, and that is the one place this suite departs from
-/// the corpus's "absence is a hard failure" rule — deliberately, because TDR Nova
-/// and TAL-NoiseMaker are not part of macOS. `AuRef::require` would be wrong here:
-/// their absence means the machine lacks an optional plugin, which is exactly the
-/// case the rule carves out.
+/// Apple's units return *immortal* strings (retain counts saturated), so on the
+/// Apple corpus a leaking host and a correct one are indistinguishable. The
+/// shared test plugin's element names are heap `CFString`s the instance owns, at
+/// a real retain count, so a leak shows as growth and an over-release frees the
+/// string under the next read.
 ///
-/// Run with `--include-ignored`. What it adds over the test above is a **mortal**
-/// CFString: TAL-NoiseMaker's "Output Master" has a real retain count of 2, so an
-/// under-release is visible as growth and an over-release kills the object.
+/// The assertion is a **delta across host reads, not an absolute**: the count
+/// is the unit's own to set. What is the host's is that N reads add nothing.
 #[test]
-#[ignore = "requires third-party AUs (TDR Nova / TAL-NoiseMaker); not part of macOS"]
-fn third_party_element_names_read_repeatedly_without_leaking() {
+fn the_element_name_copy_rule_is_observed_by_retain_count() {
     let _g = lock();
-    // Addressed by component **type + subtype + manufacturer**, never by
-    // display-name substring — the corpus rule, and it matters more here than for
-    // the Apple units: these codes were read off `auval -a` on this machine, and a
-    // first guess at them ("tdrn", "tal4") matched nothing, which is exactly the
-    // silent-skip this test's final assertion turns into a failure.
-    //
-    // Measured: `aufx Td5a Tdrl` is TDR Nova (input 1 is its sidechain), and
-    // `aumu ncut TOGU` is TAL-NoiseMaker (output 0 is "Output Master", the one
-    // MORTAL CFString on the system — retain count 2 rather than saturated).
-    /// One third-party subject. A named struct rather than a six-tuple: the fields
-    /// are three `[u8; 4]`-or-`bool` values in a row, and a tuple that long is one
-    /// transposition away from looking up the manufacturer as a subtype.
-    struct ThirdParty {
-        label: &'static str,
-        /// `componentSubType`, from `auval -a` on this machine.
-        sub_type: [u8; 4],
-        /// `componentManufacturer`. Matched as well as the subtype, per the corpus
-        /// rule, so a same-subtype unit from another vendor cannot satisfy this.
-        manufacturer: [u8; 4],
-        au_type: tutti_au_host::AuType,
-        is_output: bool,
-        element: u32,
-    }
+    let au = crate::support::au::Au::shared(RATE, BLOCK);
 
-    let third_party = [
-        ThirdParty {
-            label: "TDR Nova input 1 (sidechain)",
-            sub_type: *b"Td5a",
-            manufacturer: *b"Tdrl",
-            au_type: tutti_au_host::AuType::Effect,
-            is_output: false,
-            element: 1,
-        },
-        ThirdParty {
-            label: "TAL-NoiseMaker output 0 (mortal CFString)",
-            sub_type: *b"ncut",
-            manufacturer: *b"TOGU",
-            au_type: tutti_au_host::AuType::Instrument,
-            is_output: true,
-            element: 0,
-        },
-    ];
+    for (dir, is_output) in [(BusDirection::Input, false), (BusDirection::Output, true)] {
+        // An immortal count cannot move, so the check below would pass against a
+        // leaking host: the string must be mortal for the measurement to mean
+        // anything.
+        // SAFETY: `raw_unit` is live for the lifetime of `au`.
+        let first = unsafe { raw_name_retain_count(au.raw_unit(), is_output, 0) }
+            .expect("the shared plugin publishes a name on element 0");
+        assert!(
+            first < 1_000,
+            "{dir:?} element 0 reports retain count {first}, the immortal range, \
+             so it cannot observe an ElementName leak"
+        );
 
-    let mut exercised = 0usize;
-    for subject in &third_party {
-        let ThirdParty {
-            label,
-            sub_type,
-            manufacturer,
-            au_type,
-            is_output,
-            element,
-        } = subject;
-        let wanted = u32::from_be_bytes(*sub_type);
-        let wanted_mfr = u32::from_be_bytes(*manufacturer);
-        let Some(info) = tutti_au_host::component::enumerate_components_of_type(*au_type)
-            .into_iter()
-            .find(|c| c.sub_type == wanted && c.manufacturer_code == wanted_mfr)
-        else {
-            continue;
-        };
-        let Ok(au) = crate::support::au::Au::new(info.component, RATE, BLOCK) else {
-            continue;
-        };
-        let dir = direction(*is_output);
-        let Ok(first) = au.element_name(dir, *element) else {
-            continue;
-        };
-        assert!(!first.is_empty(), "{label}: expected a non-empty name");
-        for i in 1..200 {
-            let got = au.element_name(dir, *element).unwrap_or_else(|e| {
-                panic!(
-                    "{label} read {i} failed: {e:?}. This unit's name is a MORTAL \
-                     CFString (measured retain count 2), so an over-release \
-                     deallocates it and the next read surfaces here."
-                )
-            });
-            assert_eq!(got, first, "{label} read {i} changed identity");
+        const READS: usize = 10;
+        // SAFETY: as above.
+        let before = unsafe { raw_name_retain_count(au.raw_unit(), is_output, 0) }.unwrap();
+        for _ in 0..READS {
+            let name = au.element_name(dir, 0).expect("element_name");
+            assert!(
+                !name.is_empty(),
+                "the name came back empty, so the read did not happen and the \
+                 retain check below is vacuous"
+            );
         }
-        exercised += 1;
+        // SAFETY: as above.
+        let after = unsafe { raw_name_retain_count(au.raw_unit(), is_output, 0) }.unwrap();
+        assert_eq!(
+            after, before,
+            "{READS} host reads of the {dir:?} element name moved its retain count \
+             {before} -> {after}. `kAudioUnitProperty_ElementName` is Copy-rule: \
+             the host owns the +1 and must release it."
+        );
     }
-    assert!(
-        exercised > 0,
-        "no third-party AU with a named element was found. This test is ignored by \
-         default precisely so that is not a failure in CI — but if it was run \
-         deliberately, the units it needs are absent."
-    );
+}
+
+/// The AU's own `ElementName` retain count, read without disturbing it.
+///
+/// Reads the property directly rather than through `Au::element_name`, because
+/// the host's version releases and the count *after* that release is what this
+/// samples. The one reference this read acquires is given back before returning.
+///
+/// # Safety
+/// `unit` must be a live `AudioUnit`.
+unsafe fn raw_name_retain_count(
+    unit: coreaudio_sys::AudioUnit,
+    is_output: bool,
+    element: u32,
+) -> Option<usize> {
+    let mut raw: *const std::os::raw::c_void = std::ptr::null();
+    let mut size = std::mem::size_of::<*const std::os::raw::c_void>() as u32;
+    // SAFETY: `unit` is live and `raw` is a pointer-sized out-parameter.
+    let status = unsafe {
+        coreaudio_sys::AudioUnitGetProperty(
+            unit,
+            coreaudio_sys::kAudioUnitProperty_ElementName,
+            if is_output {
+                coreaudio_sys::kAudioUnitScope_Output
+            } else {
+                coreaudio_sys::kAudioUnitScope_Input
+            },
+            element,
+            (&mut raw as *mut *const std::os::raw::c_void).cast(),
+            &mut size,
+        )
+    };
+    if status != 0 || raw.is_null() {
+        return None;
+    }
+    // SAFETY: `raw` is the retained string the AU just handed over.
+    let count = unsafe { objc_nullary(raw.cast_mut(), c"retainCount") };
+    // Give back the +1 this read took.
+    // SAFETY: as above.
+    unsafe { objc_nullary(raw.cast_mut(), c"release") };
+    Some(count)
+}
+
+/// Sends a nullary Objective-C selector and returns the word it produced: a bare
+/// send, without the argument marshalling `objc2`'s `msg_send!` adds.
+///
+/// # Safety
+/// `obj` must be null or a live Objective-C object that responds to `sel`.
+unsafe fn objc_nullary(obj: *mut std::os::raw::c_void, sel: &std::ffi::CStr) -> usize {
+    if obj.is_null() {
+        return 0;
+    }
+    unsafe extern "C" {
+        fn objc_msgSend(
+            receiver: *mut std::os::raw::c_void,
+            sel: *const std::os::raw::c_void,
+        ) -> usize;
+        fn sel_registerName(name: *const std::os::raw::c_char) -> *const std::os::raw::c_void;
+    }
+    // SAFETY: the caller's contract; the selector is registered by name.
+    unsafe { objc_msgSend(obj, sel_registerName(sel.as_ptr())) }
 }
 
 /// Every layout / name read must work in the **Loaded** state.

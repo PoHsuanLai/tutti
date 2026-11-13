@@ -59,7 +59,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     (
         "test-au-installed",
         "",
-        "the AU mapping-family claim; needs third-party Audio Units installed (macOS)",
+        "the AU tests that need third-party Audio Units installed (macOS)",
     ),
     (
         "test-doc",
@@ -305,7 +305,10 @@ impl Planner<'_> {
             }
             "test-au-installed" => self.run(
                 Cmd::sh("cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass")
-                    .args(["-E", "test(no_installed_third_party_unit_implements_the_mapping_family)"]),
+                    .args([
+                        "-E",
+                        "binary(au_third_party) | test(no_installed_third_party_unit_implements_the_mapping_family) | test(a_ramp_is_honoured_where_a_plugin_implements_it)",
+                    ]),
             ),
             "test-doc" => {
                 self.run(Cmd::sh("cargo test --locked --doc --workspace").args(args));

@@ -269,25 +269,26 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
 /// claim decays loudly: a plugin update that adds mapping support fails this and
 /// the suite gains a non-Apple subject.
 ///
-/// Absent third-party units are skipped, not failed — the crate's rule is that
-/// only Apple's units are guaranteed present.
-///
 /// Behind the `installed-units` feature (`cargo xtask test-au-installed`): none of the
 /// units is installed on a hosted runner, and a test that can only fail there
-/// is compiled out rather than filtered by name or skipped.
+/// is compiled out rather than filtered by name or skipped. With it on, an
+/// absent unit fails the test.
 #[cfg(feature = "installed-units")]
 #[test]
 fn no_installed_third_party_unit_implements_the_mapping_family() {
     let _g = lock();
     let mut supported: Vec<&str> = Vec::new();
-    let mut probed = 0usize;
 
     for unit in THIRD_PARTY {
-        let Some(info) = unit.find() else { continue };
-        probed += 1;
-        let Ok(mut au) = Au::new(info.component, RATE, BLOCK) else {
-            continue;
-        };
+        let info = unit.find().unwrap_or_else(|| {
+            panic!(
+                "{} is not installed; this test is built only with `installed-units`, \
+                 which asks for it",
+                unit.label
+            )
+        });
+        let mut au = Au::new(info.component, RATE, BLOCK)
+            .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", unit.label));
         let _ = au.initialize();
         if au.supports_parameter_midi_mapping() {
             supported.push(unit.label);
@@ -299,15 +300,6 @@ fn no_installed_third_party_unit_implements_the_mapping_family() {
         "{supported:?} now implement the parameter↔MIDI mapping family. THIS IS \
          GOOD NEWS — the suite has a non-Apple subject for the first time. Add it \
          to the round-trip tests rather than relaxing this assertion."
-    );
-    // Guard against the vacuous pass: with no third-party units installed the
-    // loop above proves nothing, and reporting `ok` for that is the silent-skip
-    // shape this crate's corpus docs call out.
-    assert!(
-        probed > 0,
-        "no third-party AU was found, so this test asserted nothing. Install one \
-         of {:?} or accept that the claim is untested here.",
-        THIRD_PARTY.iter().map(|u| u.label).collect::<Vec<_>>()
     );
 }
 

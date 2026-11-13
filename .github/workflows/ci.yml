@@ -625,10 +625,10 @@ jobs:
       # editor on the process main thread; it answers nextest's
       # `--list --format terse` and `<case> --exact`, so it runs here like any
       # other binary.
-      # `no_installed_third_party_unit_implements_the_mapping_family` is behind
-      # `tutti-au-host`'s `installed-units` feature, which this run leaves off:
-      # it asserts a claim about third-party Audio Units installed on the
-      # machine and fails, never skips, where there are none.
+      # `tutti-au-host`'s `au_third_party` target and two single tests are behind
+      # its `installed-units` feature, which this run leaves off: they assert
+      # claims about third-party Audio Units installed on the machine and fail,
+      # never skip, where there are none.
       - name: Test
         shell: bash
         run: |

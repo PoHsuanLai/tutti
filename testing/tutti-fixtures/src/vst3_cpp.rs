@@ -42,7 +42,6 @@ pub fn bundle_of(module: &Path) -> PathBuf {
 }
 
 /// The C++ plugin's bundle directory.
-#[must_use]
-pub fn vst3_cpp_bundle() -> PathBuf {
+fn vst3_cpp_bundle() -> PathBuf {
     PathBuf::from(env!("SHARED_VST3_CPP_DIR")).join("shared-vst3-cpp.vst3")
 }

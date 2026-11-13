@@ -40,7 +40,7 @@ tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp", optio
 
 [features]
 plugin = ["dep:tutti-plugin-types", "dep:raw-window-handle"]
-# `vst3_cpp_module`, `vst3_cpp_bundle` and `bundle_of`: where the C++ twin is.
+# `vst3_cpp_module` and `bundle_of`: where the C++ twin is.
 vst3-cpp = ["plugin", "dep:tutti-shared-plugin-vst3-cpp"]
 
 [dev-dependencies]

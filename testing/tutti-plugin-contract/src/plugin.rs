@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-pub use tutti_fixtures::{bundle_of, vst3_cpp_bundle, vst3_cpp_module};
+pub use tutti_fixtures::{bundle_of, vst3_cpp_module};
 
 /// The library, as cargo built it.
 #[must_use]

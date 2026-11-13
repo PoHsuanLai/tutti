@@ -66,7 +66,7 @@ pub use machine_lock::{MachineLock, machine_lock};
 pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread};
 pub use range_contract::{RangeContract, check_range_contract};
 #[cfg(feature = "vst3-cpp")]
-pub use vst3_cpp::{bundle_of, vst3_cpp_bundle, vst3_cpp_module};
+pub use vst3_cpp::{bundle_of, vst3_cpp_module};
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

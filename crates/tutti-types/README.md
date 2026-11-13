@@ -84,7 +84,7 @@ assert!((quartered - squared).abs() < 1e-6);
 
 // Seconds → frames. The rounding is IN THE NAME because allocating a delay
 // line and counting elapsed frames want different answers from one span.
-let rate = SampleRate(48_000.0);
+let rate = SampleRate::SR_48K;
 let block = Seconds(0.010_51); // 504.48 frames
 assert_eq!(block.to_samples_floor(rate), Samples(504)); // frames elapsed
 assert_eq!(block.to_samples_ceil(rate), Samples(505)); // frames to allocate
@@ -99,9 +99,9 @@ assert_eq!(Cents(1200.0).to_semitones(), Semitones(12.0));
 A unit is a name on a float, not a validated value: `Pan(5.0)` builds. The
 range a type documents is what its `new_clamped` or wrap produces, and
 `new_clamped` passes NaN through (see the `units` module docs). The types that
-do validate are `Bpm`, `Depth`, `LoopRange`, `BeatsPerBar`, `NoteValue` and
-`MeterMap`.
-`LoopRange::new`, `BeatsPerBar::new` and `NoteValue::new` return `None` for a
+do validate are `SampleRate`, `Bpm`, `Depth`, `LoopRange`, `BeatsPerBar`,
+`NoteValue` and `MeterMap`.
+`SampleRate::new` (finite and above zero), `LoopRange::new`, `BeatsPerBar::new` and `NoteValue::new` return `None` for a
 raw they cannot hold (`BeatsPerBar::clamped` is the one named saturation);
 `MeterMap::new` repairs its list (drops non-finite beats, sorts, dedups).
 

@@ -34,6 +34,7 @@ const WRITE_CHUNK: usize = 8192;
 ///
 /// ```
 /// use tutti_codec::Wave;
+/// use tutti_types::SampleRate;
 ///
 /// let mut wave = Wave::new(2, SampleRate::SR_48K);
 /// wave.push_frame(&[0.5, -0.5]);
@@ -269,11 +270,12 @@ impl Wave {
     /// ```
     /// # #[cfg(all(feature = "encode-wav", feature = "decode-wav"))] {
     /// use tutti_codec::{Format, Pcm, Wave};
+    /// use tutti_types::SampleRate;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let dir = tempfile::tempdir()?;
     /// let path = dir.path().join("ramp.wav");
-    /// let wave = Wave::from_samples(48_000u32, &[0.0, 0.25, 0.5, 0.75]);
+    /// let wave = Wave::from_samples(SampleRate::SR_48K, &[0.0, 0.25, 0.5, 0.75]);
     /// wave.write(&path, Format::Wav(Pcm::Float32))?;
     /// assert_eq!(Wave::read(&path)?.channel(0), wave.channel(0));
     /// # Ok(())

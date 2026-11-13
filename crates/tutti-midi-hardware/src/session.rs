@@ -23,8 +23,7 @@
 //! input, read from the port's stream ring.
 //!
 //! The connection map is a plain `Mutex`, not an [`ArcLend`]: nothing here is
-//! read from the audio thread, and `CLAUDE.md` names device enumeration in this
-//! crate as a deliberate exception to the publish rule.
+//! read from the audio thread.
 //!
 //! [`ArcLend`]: tutti_rt::ArcLend
 //! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
@@ -543,7 +542,7 @@ impl MidiSession {
     /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off until
     /// this is called**: a Discovery carries a System Exclusive manufacturer
     /// id, tutti has none, and the one MIDI 1.0 sets aside for non-commercial use
-    /// (`7D`) "is not to be used on any product released to the public". So
+    /// (`7D`) is not to be used on any product released to the public. So
     /// the app says who it is, with the id it registered. An identity under
     /// [`ManufacturerId::NON_COMMERCIAL`](tutti_ump::ManufacturerId::NON_COMMERCIAL)
     /// is for development and research only, never for a released product.

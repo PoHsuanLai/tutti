@@ -6,27 +6,25 @@
 //! rule is the spec's, applied at one place, [`OpenOutput::queue`](crate::OpenOutput):
 //!
 //! - **A MIDI 2.0 Protocol endpoint** gets the packets as they are.
-//!   (M2-104 §3.3.2: "MIDI 2.0 Protocol Devices shall not use any messages from
-//!   Message Type 0x2", and the graph carries none; a MIDI 1.0 Channel Voice
+//!   (M2-104 §3.3.2: MIDI 2.0 Protocol Devices use no message of
+//!   Message Type 0x2, and the graph carries none; a MIDI 1.0 Channel Voice
 //!   packet that does arrive is not changed here.) §7.1.6.2 allows MIDI 1.0
-//!   Protocol "optionally" to "that Function Block" when "a Function Block
-//!   represents (declares) a MIDI 1.0 connection"; this does not take the
-//!   option, because §6.2.2 puts the translation for such a block on the
-//!   device ("it is up to the Device to handle the required translation"), and
+//!   Protocol optionally for a Function Block that declares a MIDI 1.0
+//!   connection; this does not take the option, because §6.2.2 puts the
+//!   translation for such a block on the device, and
 //!   a per-Group narrowing would send type `0x2` into an endpoint whose Protocol
 //!   is MIDI 2.0, which §3.3.2 forbids for the rest of it.
 //! - **A MIDI 1.0 Protocol endpoint**, and a MIDI 1.0 port, gets MIDI 1.0 (§3.2:
-//!   "UMP MIDI 1.0 Devices shall not use any messages from Message Type 0x4,
-//!   MIDI 2.0 Channel Voice Messages"): each type `0x4` packet through one
+//!   UMP MIDI 1.0 Devices use no message of Message Type 0x4, MIDI 2.0 Channel
+//!   Voice Messages): each type `0x4` packet through one
 //!   [`Narrower`] for the output (M2-104 Appendix D.2, per Group and Channel, so a
 //!   parameter select is skipped only where the receiver has seen it); type
 //!   `0x2`, System and SysEx7 and every other type pass as they are. A
 //!   packet the narrower has no MIDI 1.0 form for (a per-note controller,
 //!   D.2.8) is dropped.
 //! - **JR Timestamps** are sent only when the device's configuration says it
-//!   receives them (§7.1.6.2, RXJR: the Sender "shall not send JR Timestamps
-//!   until after a Stream Configuration Notification message ... has been
-//!   received"): a JR Clock or JR Timestamp is dropped when `rx_jr` is off.
+//!   receives them (§7.1.6.2, RXJR: the Sender sends none until a Stream
+//!   Configuration Notification message has been received): a JR Clock or JR Timestamp is dropped when `rx_jr` is off.
 //!   Delta Clockstamp and Ticks Per Quarter Note are a clip's, not a wire's, and
 //!   are dropped always.
 //!

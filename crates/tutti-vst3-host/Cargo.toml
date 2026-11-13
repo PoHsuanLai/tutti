@@ -76,6 +76,8 @@ tempfile = "3"
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin", "vst3-cpp"] }
 tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
+# The README's editor example takes any `raw-window-handle` window.
+raw-window-handle = "0.6"
 
 [[test]]
 name = "conformance"

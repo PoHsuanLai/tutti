@@ -8,8 +8,8 @@
 //! **It is off until the app gives an identity**
 //! ([`MidiSession::enable_ci`](crate::MidiSession::enable_ci)). A Discovery
 //! announces a System Exclusive manufacturer id, and tutti has none of its own:
-//! M1 reserves `7D` (non-commercial) for what "is not to be used on any product
-//! released to the public", and tutti is a library that apps ship. So no
+//! M1 reserves `7D` (non-commercial) for what is not to be used on any
+//! product released to the public, and tutti is a library that apps ship. So no
 //! device is started, and the port copies no SysEx for MIDI-CI, until the app
 //! says who it is, with the id it registered. Enabling reaches the inputs
 //! already open (they start at the next poll, after any Identity Request in
@@ -48,8 +48,8 @@
 //!   MIDI-CI gets none**: it said it does not speak it. An Endpoint that
 //!   declares no Function Block at all, and one that never answered the
 //!   negotiation, get one on Group 0: with no block to say otherwise the
-//!   Endpoint's Group 0 is "treated as a Function Block with only one member
-//!   Group" (§3.2.2).
+//!   Endpoint's Group 0 is treated as a Function Block with one member
+//!   Group (§3.2.2).
 //! - **A MIDI 1.0 port** gets one on Group 0, the port's own, once the
 //!   Identity Request ([`Negotiation`](crate::stream)) has ended, answered or
 //!   given up, so the two never read the SysEx stream at once.

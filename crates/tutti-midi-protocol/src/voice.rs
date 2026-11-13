@@ -24,11 +24,11 @@ const NOTE_ON_ZERO_RELEASE: NoteVelocity = NoteVelocity::new(0x8000);
 ///
 /// ```
 /// use tutti_midi_protocol::widen_velocity;
-/// use tutti_ump::{Message, MidiChannel, NoteNumber, U7};
+/// use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Voice2};
 ///
 /// let velocity = widen_velocity(U7::of(100));
 /// assert_eq!(velocity.get(), 51492);
-/// let on = Message::note_on2(MidiChannel::FIRST, NoteNumber::of(60), velocity);
+/// let on = Message::Midi2(MidiChannel::FIRST.into(), Voice2::note_on(NoteNumber::of(60), velocity));
 /// # let _ = on;
 /// ```
 #[inline]
@@ -47,12 +47,11 @@ pub const fn widen_velocity(velocity: U7) -> NoteVelocity {
 ///
 /// ```
 /// use tutti_midi_protocol::widen_value;
-/// use tutti_ump::{CCNumber, Message, MidiChannel, U7};
+/// use tutti_ump::{CCNumber, Message, MidiChannel, U7, Voice2};
 ///
-/// let cc = Message::control_change2(
-///     MidiChannel::FIRST,
-///     CCNumber::VOLUME,
-///     widen_value(U7::of(127)),
+/// let cc = Message::Midi2(
+///     MidiChannel::FIRST.into(),
+///     Voice2::ControlChange { controller: CCNumber::VOLUME, value: widen_value(U7::of(127)) },
 /// );
 /// # let _ = cc;
 /// ```

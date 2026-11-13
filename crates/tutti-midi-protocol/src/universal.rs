@@ -27,12 +27,12 @@
 //!
 //! # The device id
 //!
-//! `7F` is the all-call: "if `<device ID>` = 7FH then the device should respond
-//! regardless of what `<device ID>` it is set to" (M1 p.40). Any other id is for
+//! `7F` is the all-call: every device responds whatever id it is set to
+//! (M1 p.40). Any other id is for
 //! the device that has it. A device with no id of its own to say is
 //! [`SysexDeviceId::DEFAULT`]; an instrument takes the messages addressed to it or to
 //! all ([`Addressee`]). Master Volume and Balance keep the two apart, as M1
-//! p.57 requires: "received on its own ID", "received on the 'All Call' ID".
+//! p.57 requires (a message on its own id and one on the All Call id are distinct).
 
 mod read;
 
@@ -186,7 +186,7 @@ pub enum Read {
     /// A Universal message this crate reads.
     Universal(Addressed),
     /// A tuning dump whose checksum field is not the XOR of the bytes before it
-    /// (MTS, "Checksum Calculation"). The spec says nothing of what a receiver
+    /// (MTS, Checksum Calculation). The spec says nothing of what a receiver
     /// does with one; an instrument does not apply it ([`UniversalReader`]
     /// counts it, [`corrupt`](UniversalReader::corrupt)).
     BadChecksum(BadChecksum),

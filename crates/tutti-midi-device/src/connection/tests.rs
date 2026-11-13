@@ -309,8 +309,8 @@ fn requested(t0: Instant) -> Connection {
     c
 }
 
-// §7.1.6.1 step 3: "If the Receiver is unable to change some or all parts of the
-// configuration, the Receiver replies with its current configuration." The
+// §7.1.6.1 step 3: a receiver that cannot change some or all of the
+// configuration replies with its current one. The
 // connection reports what the Notification says, not what it asked for.
 #[test]
 fn a_notification_of_another_protocol_is_reported_as_it_is() {
@@ -634,8 +634,8 @@ fn info_moved(n: u8, first_group: u8) -> Message {
     stream(Stream::FunctionBlockInfo(info))
 }
 
-// §6.1.1: an Endpoint that declares its blocks static "will not change any of
-// the properties of its Function Blocks after initial discovery": a Function
+// §6.1.1: an Endpoint that declares its blocks static changes none of
+// the properties of its Function Blocks after initial discovery: a Function
 // Block Info or Name after the settle is not read.
 #[test]
 fn static_function_blocks_ignore_a_later_info_and_name() {
@@ -742,8 +742,8 @@ fn a_declared_count_above_32_is_refused() {
     assert_eq!(c.endpoint().declared_function_blocks(), 32);
 }
 
-// §7.1.8: a static Endpoint "shall not have any inactive Function Blocks and
-// all Function Blocks shall have this bit set to high": a block it sent
+// §7.1.8: a static Endpoint has no inactive Function Blocks, each having
+// the bit set: a block it sent
 // inactive is read active. An Endpoint that is not static may.
 #[test]
 fn a_static_endpoints_inactive_block_is_read_active() {
@@ -763,8 +763,7 @@ fn a_static_endpoints_inactive_block_is_read_active() {
     assert!(!c.endpoint().function_block(id(0)).unwrap().active());
 }
 
-// §7.1.8: "If this is a MIDI 1.0 Port, then Number of Groups Spanned shall be
-// 1": a block that says both is read as a block of the Endpoint's protocol, not
+// §7.1.8: a MIDI 1.0 Port spans exactly one Group: a block that says both is read as a block of the Endpoint's protocol, not
 // as a port.
 #[test]
 fn a_midi1_port_over_several_groups_is_read_as_a_plain_block() {

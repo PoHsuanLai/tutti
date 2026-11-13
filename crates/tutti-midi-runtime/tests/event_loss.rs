@@ -118,7 +118,7 @@ impl Rig {
     }
 }
 
-/// The dense clip of the audit: 10,000 note pairs, an event every 1.5 frames
+/// The dense clip: 10,000 note pairs, an event every 1.5 frames
 /// (32,000 events a second): the note-on on frame `3 i`, its note-off on
 /// frame `3 i + 2`. Whatever the block, the port is sized for it, so every
 /// one of the 20,000 events arrives and nothing is reported. At 512 frames
@@ -169,9 +169,6 @@ fn a_chord_ends_in_a_long_block() {
 /// notes start and 256 end, and nothing is left sounding or ended unstarted.
 /// The loss is 44 note-ons refused and 44 note-offs withheld, each counted
 /// once: 88, charged to the clip's port 0 in the blocks they were lost in.
-///
-/// The executor's counter used to read 44 here: the swallowed note-offs were
-/// never counted.
 #[test]
 fn a_loss_is_counted_exactly_and_leaves_no_orphan() {
     let events = (0..300).flat_map(|i| [at(10, on(i)), at(500, off(i))]);

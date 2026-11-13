@@ -32,6 +32,7 @@ use crate::io::Io;
 use crate::param::ParamPorts;
 use crate::play::PlayClock;
 use crate::time::Offset;
+use crate::wake::Wake;
 use tutti_types::PlayReading;
 
 /// Most audio channels, or event ports, on one side of one node.
@@ -1425,6 +1426,32 @@ pub trait Node: Send + 'static {
     fn param_base(&self, port: usize) -> Option<f32> {
         let _ = port;
         None
+    }
+
+    /// Receives the node's [`Wake`]: the handle that makes the executor call
+    /// a node it parked.
+    ///
+    /// Control thread. The editor calls it **before** [`prepare`](Self::prepare)
+    /// each time it places the node at its key or prepares it again (a
+    /// re-prepare hands the same handle back), so `prepare` may already use
+    /// it. Keep it, and give a clone to any thread that will need to wake the
+    /// node (a plugin's `request_process` callback, a worker, a device
+    /// thread); each calls [`Wake::raise`].
+    ///
+    /// **A raise wakes the node on the next block**: even with silent
+    /// inputs, no events, and a last call that returned [`Status::Idle`], the
+    /// node is called once on the first block the executor runs after the
+    /// raise (and is parked again by the usual rules if it returns `Idle`
+    /// again). Several raises before that block wake it once. A raise on a
+    /// node that is running, not parked, or mid-block is harmless: the next
+    /// block consumes it. A node that never parks itself ignores this, which
+    /// is the default. A node that wraps another forwards the call, or the
+    /// inner node never hears of its handle.
+    ///
+    /// The handle is the placement's: a node it was replaced by, or a fork's
+    /// copy, gets its own, and a raise on this one wakes neither.
+    fn bind_wake(&mut self, wake: Wake) {
+        let _ = wake;
     }
 }
 

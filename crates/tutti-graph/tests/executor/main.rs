@@ -9,3 +9,4 @@ mod no_denormals;
 mod parallel;
 mod pool_spawn_refusal;
 mod tap_audio_in;
+mod wake;

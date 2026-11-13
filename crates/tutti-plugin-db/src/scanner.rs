@@ -708,6 +708,56 @@ mod tests {
         assert_eq!(result.new + result.failed, 1);
     }
 
+    /// **A file whose time changed loses its measurement with its row, and one
+    /// that did not keeps it** (doc 023 section 6): a scan re-probes the changed
+    /// file, whose new row replaces the measured one, and skips the unchanged
+    /// file, whose row stands. Through the scan's own detection of a change.
+    #[test]
+    fn a_changed_file_loses_its_measurement_in_a_scan() {
+        use tutti_plugin_types::{
+            LatencyVerdict, MaxBlock, Measured, PROBE_FLOOR, ProbeConfig, SampleRate, Samples,
+            StateHash, TailVerdict, Verdict,
+        };
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = plugins_dir(&dir);
+        let measured_row = |plugin: &Path, mtime: Option<u64>| {
+            let mut descriptor = PluginDescriptor::new("p", "p", PluginClass::Unknown);
+            descriptor.measured = Some(Measured {
+                tail: None,
+                latency: None,
+                config: ProbeConfig {
+                    rate: SampleRate(48_000.0),
+                    block: MaxBlock::new(Samples(512)).unwrap(),
+                    floor: PROBE_FLOOR,
+                    state: StateHash::of(&[]),
+                },
+                verdict: Verdict {
+                    tail: TailVerdict::Honest,
+                    latency: LatencyVerdict::Honest,
+                },
+            });
+            let mut facts = FileFacts::read(plugin);
+            facts.mtime = mtime.or(facts.mtime);
+            FileRow::probed(PluginFormat::Vst3, &facts, vec![descriptor])
+        };
+        let same = create_fake_plugin(&plugins_dir, "same.vst3");
+        let changed = create_fake_plugin(&plugins_dir, "changed.vst3");
+        let mut db = PluginDb::new();
+        db.apply(Delta::put(&same, measured_row(&same, None)));
+        db.apply(Delta::put(&changed, measured_row(&changed, Some(1))));
+
+        scanner_for(dir.path())
+            .scan(&mut db, &[plugins_dir], no_save)
+            .unwrap();
+
+        let measured = |path: &Path| db.row(path).unwrap().plugins()[0].measured.is_some();
+        assert!(measured(&same), "an unchanged file keeps its measurement");
+        assert!(
+            !measured(&changed),
+            "a changed file is probed again, unmeasured"
+        );
+    }
+
     #[test]
     fn scan_skips_up_to_date() {
         let dir = TempDir::new().unwrap();

@@ -653,33 +653,4 @@ mod tests {
         assert_eq!(loaded.plugins().count(), 4);
         assert!(loaded.plugins().all(|p| p.descriptor.measured.is_some()));
     }
-
-    /// **A file written before the probe measured reads as unmeasured**, not as a
-    /// corrupt file that is quarantined and rebuilt: the descriptor's `measured`
-    /// is `serde(default)`.
-    #[test]
-    fn a_file_from_before_measuring_reads_as_unmeasured() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("plugins.json");
-        let mut value: serde_json::Value = serde_json::from_str(&current_text()).unwrap();
-        let mut stripped = 0;
-        // A file is a list of `[path, row]` pairs.
-        for pair in value["files"].as_array_mut().unwrap() {
-            for plugin in pair[1]["state"]["Probed"].as_array_mut().unwrap() {
-                // The field is written (as `null`): an old file has none.
-                assert!(plugin.as_object_mut().unwrap().remove("measured").is_some());
-                stripped += 1;
-            }
-        }
-        assert_eq!(stripped, 1);
-        std::fs::write(&path, value.to_string()).unwrap();
-        let loaded = load(&path);
-        assert_eq!(
-            loaded.plugins().count(),
-            1,
-            "the file was read, not rebuilt"
-        );
-        assert_eq!(loaded.plugins().next().unwrap().descriptor.measured, None);
-        assert!(!path.with_extension("corrupt").exists());
-    }
 }

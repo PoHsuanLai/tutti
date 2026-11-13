@@ -21,8 +21,8 @@ use tutti_plugin::catalog::{
     measure_record_with, probe_failure, probe_record_with,
 };
 use tutti_plugin_contract::{
-    Clap, Format, Vst2, Vst3, Vst3Cpp, bundle_of, clap_path, library, spec, state_with_rings,
-    vst3_cpp_module, vst3_module,
+    Clap, Format, Vst2, Vst3, Vst3Cpp, bundle_of, clap_path, library, spec, state_with_fault,
+    state_with_rings, vst3_cpp_module, vst3_module,
 };
 use tutti_plugin_db::PluginDb;
 use tutti_plugin_ipc::{BridgeConfig as IpcConfig, Ipc, Launched};
@@ -469,16 +469,22 @@ fn a_plain_probe_leaves_measured_empty() {
     assert_eq!(d.measured, None);
 }
 
+/// `--measure` on the shared plugin put in the state with fault `fault`.
+fn measure_with_fault(fault: u32, timeout: Duration) -> BridgeResult<()> {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("state");
+    std::fs::write(&file, state_with_fault::<Clap>(fault)).unwrap();
+    let locator = Locator::at(tutti_fixtures::plugin_probe());
+    measure_record_with(clap_path(), &locator, timeout, Some(&file)).map(|_| ())
+}
+
 /// **A plugin that crashes while rendering is the crash a load is**: it loads,
 /// its descriptor reads (a plain probe is fine), and the measuring probe dies with
 /// no result file, which `probe_failure` calls blacklistable.
 #[test]
 fn a_plugin_that_crashes_while_measured_is_a_crash() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = clap_named(&dir, "process-crash");
-    probe(&path).expect("it loads and describes");
-    let locator = Locator::at(tutti_fixtures::plugin_probe());
-    let err = measure_record_with(&path, &locator, DEFAULT_MEASURE_TIMEOUT, None)
+    probe(&clap_path()).expect("it loads and describes");
+    let err = measure_with_fault(spec::FAULT_CRASH, DEFAULT_MEASURE_TIMEOUT)
         .expect_err("must not measure");
     assert!(matches!(err, BridgeError::ProcessCrashed), "{err:?}");
     let failure = probe_failure(err);
@@ -490,13 +496,9 @@ fn a_plugin_that_crashes_while_measured_is_a_crash() {
 /// the probe is killed.
 #[test]
 fn a_plugin_that_hangs_while_measured_times_out() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = clap_named(&dir, "process-hang");
-    probe(&path).expect("it loads and describes");
-    let locator = Locator::at(tutti_fixtures::plugin_probe());
     let started = Instant::now();
-    let err = measure_record_with(&path, &locator, Duration::from_secs(3), None)
-        .expect_err("must not measure");
+    let err =
+        measure_with_fault(spec::FAULT_HANG, Duration::from_secs(3)).expect_err("must not measure");
     assert!(matches!(err, BridgeError::Timeout { .. }), "{err:?}");
     assert!(started.elapsed() < Duration::from_secs(20));
     assert!(probe_failure(err).blacklistable);

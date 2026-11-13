@@ -33,7 +33,15 @@
 //! 61 s (`TAIL_PAST_CAP`). That is what the plugin **reports**. A parameter event
 //! moves `level` or `aux` at its sample offset.
 //!
+//! # Faults
+//!
+//! The high nibble of the mode word's low byte (`mode | fault << 4`) makes
+//! `process` fail, for a probe that measures a plugin which dies rendering
+//! (doc 023 section 6): `FAULT_CRASH` aborts the process in the first block,
+//! `FAULT_HANG` never returns from it. Loading and describing are untouched.
+//!
 //! # Rings
+//!
 //!
 //! What the plugin **does** with its tail, for the probe that measures one
 //! (doc 023 section 6): the high nibble of the fourth byte, `RINGS_*`. With it
@@ -233,6 +241,14 @@ pub const TAIL_INFINITE: u32 = 1;
 pub const TAIL_PAST_CAP: u32 = 2;
 /// Number of tail behaviours.
 pub const TAILS: u32 = 3;
+/// `process` renders (the default).
+pub const FAULT_NONE: u32 = 0;
+/// The first `process` aborts the process: a plugin that dies while rendering.
+pub const FAULT_CRASH: u32 = 1;
+/// The first `process` never returns: a plugin that hangs while rendering.
+pub const FAULT_HANG: u32 = 2;
+/// Number of fault behaviours.
+pub const FAULTS: u32 = 3;
 /// The plugin renders its modes (the tag and all), the default.
 pub const RINGS_NONE: u32 = 0;
 /// The plugin rings [`RING_FRAMES`] after its trigger.
@@ -413,6 +429,7 @@ pub struct Core {
     aux: AtomicU64,
     tone: AtomicU64,
     mode: AtomicU32,
+    fault: AtomicU32,
     editor: AtomicU32,
     notice: AtomicU32,
     tail: AtomicU32,
@@ -468,6 +485,7 @@ impl Core {
             aux: AtomicU64::new(0.25f64.to_bits()),
             tone: AtomicU64::new(0.5f64.to_bits()),
             mode: z(),
+            fault: z(),
             editor: z(),
             notice: z(),
             tail: z(),
@@ -686,6 +704,13 @@ impl Core {
         ins: &[&[S]],
         outs: &mut [&mut [S]],
     ) {
+        match self.fault.load(Relaxed) {
+            FAULT_CRASH => std::process::abort(),
+            FAULT_HANG => loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            },
+            _ => {}
+        }
         let n = self.calls.fetch_add(1, Relaxed);
         self.frames.fetch_add(frames as u64, Relaxed);
         if n as usize >= LOG_BLOCKS {
@@ -832,6 +857,7 @@ impl Core {
         let mut b = Vec::with_capacity(512);
         b.extend_from_slice(&MAGIC.to_le_bytes());
         let word = self.mode.load(Relaxed)
+            | self.fault.load(Relaxed) << 4
             | self.editor.load(Relaxed) << 8
             | self.notice.load(Relaxed) << 16
             | (self.tail.load(Relaxed) | self.rings.load(Relaxed) << 4) << 24;
@@ -894,12 +920,13 @@ impl Core {
         if word(0) != MAGIC {
             return Err(BadState);
         }
-        let (mode, editor, notice, tail, rings) = (
-            word(4) & 0xFF,
+        let (mode, editor, notice, tail, rings, fault) = (
+            word(4) & 0xF,
             (word(4) >> 8) & 0xFF,
             (word(4) >> 16) & 0xFF,
             (word(4) >> 24) & 0xF,
             word(4) >> 28,
+            (word(4) >> 4) & 0xF,
         );
         let (level, aux) = (float(8), float(16));
         if mode >= MODES
@@ -907,6 +934,7 @@ impl Core {
             || notice >= NOTICES
             || tail >= TAILS
             || rings >= RINGS
+            || fault >= FAULTS
             || !level.is_finite()
             || !aux.is_finite()
         {
@@ -917,6 +945,7 @@ impl Core {
         self.notice.store(notice, Relaxed);
         self.tail.store(tail, Relaxed);
         self.rings.store(rings, Relaxed);
+        self.fault.store(fault, Relaxed);
         self.gesture_due
             .store(u32::from(notice == NOTICE_GESTURE_ON_LOAD), Relaxed);
         self.set_param(LEVEL, level);
@@ -1072,6 +1101,21 @@ mod tests {
         let mut blob = core.save();
         blob[4..8].copy_from_slice(&((tail | rings << 4) << 24).to_le_bytes());
         core.load(&blob).expect("loads");
+    }
+
+    /// **The fault nibble shares the mode byte without disturbing the mode**, and
+    /// out of range is refused. (A fault itself ends the process or hangs it: the
+    /// probe tests run it in a separate process.)
+    #[test]
+    fn the_fault_nibble_round_trips_beside_the_mode() {
+        let core = Core::new();
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&(3 | FAULT_HANG << 4).to_le_bytes());
+        core.load(&blob).expect("loads");
+        assert_eq!(core.param(MODE), Some(0.75));
+        assert_eq!(&core.save()[4..8], &(3 | FAULT_HANG << 4).to_le_bytes());
+        blob[4..8].copy_from_slice(&(FAULTS << 4).to_le_bytes());
+        assert!(core.load(&blob).is_err());
     }
 
     /// An impulse on both channels at frame 0, then silence, rendered in blocks

@@ -337,8 +337,8 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   `db_probe` test (`TUTTI_PROBE_PLUGIN`); its measuring cases (`--measure`,
   `--state`, doc 023 section 6) render the shared plugin in the probe's process,
   which a plugin configured only through its state steers with `--state <file>`
-  (the CLAP plugin's file name steers a crash or hang in `process`:
-  `process-crash`, `process-hang`). `tutti-session`'s `plugin` suite loads
+  (the shared plugin's mode word also selects a crash or hang in `process`).
+  `tutti-session`'s `plugin` suite loads
   through the server and does not scan, so it needs the server alone. A scan
   with no `plugin-probe` on hand degrades to filename metadata
   (`ProbeNotFound`), so a suite that must see a real probe uses the fixture.

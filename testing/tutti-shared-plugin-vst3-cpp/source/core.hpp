@@ -4,8 +4,11 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace shared {
@@ -30,6 +33,8 @@ constexpr uint32_t kTailInfinite = 1, kTailPastCap = 2, kTails = 3, kTailPastCap
 constexpr uint32_t kRingsExact = 1, kRingsLonger = 2, kRingsHiss = 3, kRingsLate = 4, kRings = 5;
 constexpr uint32_t kRingFrames = 8191, kRingExtra = 4096, kLateFrames = 64;
 constexpr float kRingLevel = 0.1f, kHissLevel = 0.001f;
+// The fault nibble (core.rs, "Faults"): the high nibble of the mode byte; the first `process` aborts or never returns.
+constexpr uint32_t kFaultCrash = 1, kFaultHang = 2, kFaults = 3;
 constexpr uint32_t kMagic = 0x31505354; // "TSP1"
 constexpr size_t kStateHead = 24;
 // A transport's flags (core.rs, "State"), and how many the log keeps.
@@ -49,7 +54,7 @@ struct Ev { int kind; uint32_t offset; uint32_t id; double value; };
 struct Core
 {
 	std::atomic<double> level {0.5}, aux {0.25}, tone {0.5};
-	std::atomic<uint32_t> mode {0}, notice {0}, tailSel {0}, ringsSel {0};
+	std::atomic<uint32_t> mode {0}, notice {0}, tailSel {0}, ringsSel {0}, faultSel {0};
 	uint32_t tailSamples () const
 	{
 		return tailSel == kTailInfinite ? 0xFFFFFFFFu : tailSel == kTailPastCap ? kTailPastCapFrames : kTail;
@@ -190,6 +195,8 @@ struct Core
 	template <typename S>
 	void process (size_t nFrames, uint32_t bus, const std::vector<std::vector<S>>& in, S* const* out, size_t nOut)
 	{
+		if (faultSel == kFaultCrash) std::abort ();
+		if (faultSel == kFaultHang) for (;;) std::this_thread::sleep_for (std::chrono::seconds (1));
 		uint64_t n = calls++; frames += nFrames;
 		if (n >= 16) overflow = 1;
 		blocks[n % 16] = uint32_t (nFrames); blocksN = uint32_t (std::min<uint64_t> (n + 1, UINT32_MAX));
@@ -216,7 +223,7 @@ struct Core
 	std::vector<uint8_t> save () const
 	{
 		std::vector<uint8_t> b;
-		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode | notice << 16 | (tailSel | ringsSel << 4) << 24); put<double> (b, level); put<double> (b, aux);
+		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode | faultSel << 4 | notice << 16 | (tailSel | ringsSel << 4) << 24); put<double> (b, level); put<double> (b, aux);
 		put<uint64_t> (b, calls); put<uint64_t> (b, frames); put<uint32_t> (b, prepares);
 		put<double> (b, rate); put<uint32_t> (b, maxBlock); put<uint32_t> (b, overflow);
 		uint32_t nb = blocksN, kept = std::min<uint32_t> (nb, 16);
@@ -236,12 +243,12 @@ struct Core
 	bool load (const uint8_t* p, size_t n)
 	{
 		if (n < kStateHead) return false;
-		uint32_t magic, word, m, editor, nt, tl, rg; double l, a;
+		uint32_t magic, word, m, editor, nt, tl, rg, fl; double l, a;
 		std::memcpy (&magic, p, 4); std::memcpy (&word, p + 4, 4); std::memcpy (&l, p + 8, 8); std::memcpy (&a, p + 16, 8);
-		m = word & 0xFF; editor = (word >> 8) & 0xFF; nt = (word >> 16) & 0xFF; tl = (word >> 24) & 0xF; rg = word >> 28;
+		m = word & 0xF; fl = (word >> 4) & 0xF; editor = (word >> 8) & 0xFF; nt = (word >> 16) & 0xFF; tl = (word >> 24) & 0xF; rg = word >> 28;
 		// This plugin has no editor: it refuses the editor byte, and takes the notice byte.
-		if (magic != kMagic || m >= kModes || editor != 0 || nt >= kNotices || tl >= kTails || rg >= kRings || !std::isfinite (l) || !std::isfinite (a)) return false;
-		mode = m; notice = nt; tailSel = tl; ringsSel = rg; setParam (kLevel, l); setParam (kAux, a);
+		if (magic != kMagic || m >= kModes || editor != 0 || nt >= kNotices || tl >= kTails || rg >= kRings || fl >= kFaults || !std::isfinite (l) || !std::isfinite (a)) return false;
+		mode = m; notice = nt; tailSel = tl; ringsSel = rg; faultSel = fl; setParam (kLevel, l); setParam (kAux, a);
 		return true;
 	}
 };

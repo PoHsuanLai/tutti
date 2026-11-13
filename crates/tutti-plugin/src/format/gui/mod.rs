@@ -19,6 +19,8 @@ pub(crate) fn load_gui_instance(
 ) -> BridgeResult<Box<dyn Editor>> {
     use tutti_plugin_db::{PluginFormat, format_from_path};
 
+    // A build whose only format here is AU off macOS has no arm that reads them.
+    let _ = (main, load);
     let format = format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
         path: path.to_path_buf(),
         stage: LoadStage::Scanning,

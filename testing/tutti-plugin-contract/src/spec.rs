@@ -175,6 +175,11 @@ pub const RINGS_HISS: u32 = 3;
 /// The ring behaviour that rings [`RING`] starting [`LATE`] frames after its
 /// impulse (`RINGS_LATE`).
 pub const RINGS_LATE: u32 = 4;
+/// The fault that aborts the process in the first `process` (`FAULT_CRASH`, the
+/// high nibble of the mode word's low byte).
+pub const FAULT_CRASH: u32 = 1;
+/// The fault that never returns from the first `process` (`FAULT_HANG`).
+pub const FAULT_HANG: u32 = 2;
 /// How long a ring lasts after an impulse at frame 0: its last frame is this one.
 /// It equals [`TAIL`] on purpose, so the plugin is honest unless a case says not.
 pub const RING: Samples = Samples(8191);

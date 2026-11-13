@@ -1123,9 +1123,11 @@ activate, measure.**
   tail it reports): `Exact` rings `RING_FRAMES` (8191) after a trigger frame,
   `Longer` 4096 more, `Hiss` adds noise at -60 dB, `Late` sounds 64 frames after
   its trigger; each ignores the mode and the tag (`core.rs`, "Rings", mirrored in
-  the C++ `core.hpp`). The contract's `spec` states the figures; the CLAP plugin's
-  file name (`process-crash`, `process-hang`) takes it down in its first
-  `process`.
+  the C++ `core.hpp`). The contract's `spec` states the figures. A fault nibble
+  in the mode byte (`mode | fault << 4`: `FAULT_CRASH` aborts, `FAULT_HANG`
+  never returns, both in the first `process`, in the format-free core and the C++
+  one) takes the plugin down while it is measured; like every behaviour here it
+  is chosen through the state, which `--state` gives the probe.
 - **Tests.** `measure::tests` (the experiment against a fake that does what a
   test says: honest, longer by one frame, shorter claim, the floor's edge, noise,
   unbounded, latency differing, latency excluded from the tail, an instrument

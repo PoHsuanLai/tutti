@@ -92,6 +92,19 @@ pub fn state_with_rings<F: Format>(rings: u32, tail: u32) -> Vec<u8> {
     F::embed_blob(&state, &blob)
 }
 
+/// The state of a fresh plugin of format `F` with its fault behaviour selected
+/// (the high nibble of the mode word's low byte), as the format's own
+/// `save_state` writes it. Nothing is loaded into a plugin here.
+#[must_use]
+pub fn state_with_fault<F: Format>(fault: u32) -> Vec<u8> {
+    let state = F::load()
+        .save_state(&main_thread())
+        .expect("the plugin saves");
+    let mut blob = F::extract_blob(&state);
+    blob[MAGIC.len()] = blob[MAGIC.len()] & 0x0F | (fault as u8) << 4;
+    F::embed_blob(&state, &blob)
+}
+
 /// `blob` with its `level` set.
 #[must_use]
 pub fn patch_level(mut blob: Vec<u8>, level: f64) -> Vec<u8> {

@@ -682,7 +682,7 @@ fn an_lfo_reads_a_driven_depth_per_frame() {
     let (n, _) = g.add_with_controls(lfo);
     g.connect_output(n, 0, 0);
     let pulse = g.add(Unforkable(ParamPulse::new(
-        Frame(37),
+        Frame::new(37),
         UnitAddr::first(UnitParam::Depth),
         1.0,
     )));

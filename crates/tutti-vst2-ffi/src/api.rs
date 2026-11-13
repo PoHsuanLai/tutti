@@ -503,7 +503,7 @@ impl From<Supported> for isize {
 
 /// Denotes in which thread the host is in.
 #[repr(i32)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum ProcessLevel {
     /// Unsupported by host.
     Unknown = 0,
@@ -518,93 +518,21 @@ pub enum ProcessLevel {
     Offline,
 }
 
-/// Language that the host is using.
+/// The host's automation state, answered to `audioMasterGetAutomationState`
+/// (`VstAutomationStates`).
 #[repr(i32)]
-#[allow(missing_docs)]
-#[derive(Debug)]
-pub enum HostLanguage {
-    English = 1,
-    German,
-    French,
-    Italian,
-    Spanish,
-    Japanese,
-}
-
-/// The file operation to perform.
-#[repr(i32)]
-#[derive(Debug)]
-pub enum FileSelectCommand {
-    /// Load a file.
-    Load = 0,
-    /// Save a file.
-    Save,
-    /// Load multiple files simultaneously.
-    LoadMultipleFiles,
-    /// Choose a directory.
-    SelectDirectory,
-}
-
-/// Format to select files.
-#[derive(Debug)]
-pub enum FileSelectType {
-    /// Regular file selector.
-    Regular,
-}
-
-/// File type descriptor.
-#[repr(C)]
-#[derive(Debug)]
-pub struct FileType {
-    /// Display name of file type.
-    pub name: [u8; 128],
-
-    /// OS X file type.
-    pub osx_type: [u8; 8],
-    /// Windows file type.
-    pub win_type: [u8; 8],
-    /// Unix file type.
-    pub nix_type: [u8; 8],
-
-    /// MIME type.
-    pub mime_type_1: [u8; 128],
-    /// Additional MIME type.
-    pub mime_type_2: [u8; 128],
-}
-
-/// File selector descriptor used in `host::OpCode::OpenFileSelector`.
-#[repr(C)]
-#[derive(Debug)]
-pub struct FileSelect {
-    /// The type of file selection to perform.
-    pub command: FileSelectCommand,
-    /// The file selector to open.
-    pub select_type: FileSelectType,
-    /// Unknown. 0 = no creator.
-    pub mac_creator: i32,
-    /// Number of file types.
-    pub num_types: i32,
-    /// List of file types to show.
-    pub file_types: *mut FileType,
-
-    /// File selector's title.
-    pub title: [u8; 1024],
-    /// Initial path.
-    pub initial_path: *mut u8,
-    /// Used when operation returns a single path.
-    pub return_path: *mut u8,
-    /// Size of the path buffer in bytes.
-    pub size_return_path: i32,
-
-    /// Used when operation returns multiple paths.
-    pub return_multiple_paths: *mut *mut u8,
-    /// Number of paths returned.
-    pub num_paths: i32,
-
-    /// Reserved by host.
-    pub reserved: isize,
-    /// Reserved for future use.
-    pub future: [u8; 116],
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+pub enum AutomationState {
+    /// The host does not say (`kVstAutomationUnsupported`).
+    Unsupported = 0,
+    /// Automation is off (`kVstAutomationOff`).
+    Off,
+    /// The host plays automation back (`kVstAutomationRead`).
+    Read,
+    /// The host records automation (`kVstAutomationWrite`).
+    Write,
+    /// The host plays back and records (`kVstAutomationReadWrite`).
+    ReadWrite,
 }
 
 /// A struct which contains events.

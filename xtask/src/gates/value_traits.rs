@@ -23,103 +23,8 @@ pub(super) const MIN_FILES: usize = 100;
 pub(super) const ALLOW: &[(&str, &str, &str)] = &[
     // dsp (20)
     (
-        "crates/tutti-dsp/src/delay.rs",
-        "InterpolationMode",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-dsp/src/dither.rs",
-        "DitherShape",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-dsp/src/filter/ladder/kernel.rs",
-        "LadderType",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-dsp/src/filter/svf/kernel.rs",
-        "SvfType",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-dsp/src/reverb/network.rs",
-        "AllPassForm",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-dsp/src/spatial/vbap/layout.rs",
-        "PanningMode",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-dsp/src/waveshape.rs",
-        "ShapeKind",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-measure/src/key.rs",
-        "KeyProfile",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-measure/src/onset.rs",
-        "DetectionFunction",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-nodes/src/convolution/node.rs",
-        "IrChannelConfig",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-nodes/src/params.rs",
-        "ControlRead",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-nodes/src/params.rs",
-        "ControlValid",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
         "crates/tutti-nodes/src/testing.rs",
         "Waveform",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-polysynth/src/portamento.rs",
-        "PortamentoMode",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-polysynth/src/synth.rs",
-        "SvfMode",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-polysynth/src/voice.rs",
-        "AllocationStrategy",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-polysynth/src/voice.rs",
-        "VoiceMode",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-sf2/src/generator_type.rs",
-        "GeneratorType",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-sf2/src/loop_mode.rs",
-        "LoopMode",
-        "temporary: the dsp session adds Hash",
-    ),
-    (
-        "crates/tutti-sf2/src/sample_header.rs",
-        "Side",
         "temporary: the dsp session adds Hash",
     ),
     // midi (7)
@@ -197,11 +102,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
     (
         "crates/tutti-clap-ffi/src/library.rs",
         "Stage",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/plugin.rs",
-        "Extension",
         "temporary: the plugins session adds Hash",
     ),
     (

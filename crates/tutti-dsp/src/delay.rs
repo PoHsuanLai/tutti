@@ -80,26 +80,6 @@ impl DelayLine {
         }
     }
 
-    /// Allocates a line sized for `max_delay_secs` at `sample_rate`.
-    ///
-    /// The length is rounded **up**, so the line always holds at least the
-    /// requested duration. Note that the size is baked in here: a node changing
-    /// its sample rate has to rebuild the line, which is what the delay node's
-    /// `prepare` does.
-    #[must_use]
-    pub fn from_seconds(
-        max_delay_secs: impl Into<Seconds>,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Self {
-        // `to_samples_ceil`, not a nearest-rounding cast: a line sized for
-        // `max_delay` must hold *at least* that long, and rounding to nearest
-        // under-allocates for half of all inputs. The multiply stays in f64 —
-        // narrowing the sample rate to f32 first loses precision.
-        let max_delay_secs: Seconds = max_delay_secs.into();
-        let samples = max_delay_secs.to_samples_ceil(sample_rate);
-        Self::new(samples.get())
-    }
-
     /// Writes one frame at the cursor and advances, overwriting the oldest
     /// sample.
     ///

@@ -63,30 +63,37 @@ fn a_stream_grid_is_cut_at_the_streams_grid_points() {
 
 const N16: NonZeroU32 = NonZeroU32::new(16).unwrap();
 
-/// Only a fixed period on the stream clock is block independent.
+/// Only a period on the stream clock is block independent.
 #[test]
 fn only_a_stream_grid_is_block_independent() {
     assert!(!Cadence::BLOCK.block_independent());
     assert!(Cadence::stream(N16).block_independent());
-    let block_on_stream = Cadence {
-        period: Period::Block,
-        anchor: Anchor::Stream {
-            offset: Samples::ZERO,
-        },
-    };
-    assert!(!block_on_stream.block_independent());
 }
 
-/// The constructors state the period and the anchor the doc names.
+/// The constructors are the two forms the doc names.
 #[test]
 fn the_constructors_name_their_grid() {
-    assert_eq!(Cadence::BLOCK.period(), Period::Block);
-    assert_eq!(Cadence::BLOCK.anchor(), Anchor::Block);
-    assert_eq!(Cadence::stream(N16).period(), Period::Frames(N16));
+    assert_eq!(Cadence::BLOCK, Cadence::Block);
     assert_eq!(
-        Cadence::stream(N16).anchor(),
-        Anchor::Stream {
+        Cadence::stream(N16),
+        Cadence::Stream {
+            period: N16,
             offset: Samples::ZERO
         }
     );
+}
+
+/// A stream grid counts from its offset: grid points at `offset + k * period`.
+#[test]
+fn a_stream_grid_counts_from_its_offset() {
+    let grid = Cadence::Stream {
+        period: N16,
+        offset: Samples(4),
+    };
+    let points: Vec<usize> = grid
+        .steps(0, 40, false)
+        .filter(|s| s.grid_point)
+        .map(|s| s.frames.start)
+        .collect();
+    assert_eq!(points, [4, 20, 36]);
 }

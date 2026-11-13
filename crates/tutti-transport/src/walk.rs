@@ -29,7 +29,7 @@ pub(crate) const CELL_GRID: CellGrid = CellGrid::of(128);
 
 /// The tempo changes inside a block, found ahead of the render
 /// ([`TransportAudio::tempo_ahead`](super::TransportAudio::tempo_ahead)).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TempoAhead {
     /// The changes that fit, in time order (none at offset 0).
     pub changes: TransportChanges,

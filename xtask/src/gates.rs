@@ -19,6 +19,7 @@ mod guards;
 mod hosting;
 mod layout;
 mod lex;
+mod lints;
 mod midi_spec;
 mod pointers;
 mod prose;
@@ -27,6 +28,7 @@ mod session;
 mod submodule_pins;
 mod test_paths;
 mod toml;
+mod value_traits;
 
 pub(crate) use doc_features::doc_runs;
 
@@ -100,6 +102,10 @@ pub(crate) enum Gate {
     Hosting,
     /// `tutti-session` reaches no Bevy crate and re-exports no crate whole.
     Session,
+    /// Every crate takes the workspace lints, and `missing_debug_implementations` denies.
+    Lints,
+    /// A fieldless public `Eq` enum is `Hash`.
+    ValueTraits,
     /// Prose names crate paths and design-doc sections that exist.
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
@@ -120,6 +126,8 @@ impl Gate {
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
+            Gate::Lints => "gate check-lints".to_owned(),
+            Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
@@ -141,6 +149,10 @@ impl Gate {
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
+            Gate::Lints => lints::check(&tree, lints::UNLINTED),
+            Gate::ValueTraits => {
+                value_traits::check(&tree, value_traits::ALLOW, value_traits::MIN_FILES)
+            }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
             Gate::Conformance => {

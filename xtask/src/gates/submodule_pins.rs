@@ -2,10 +2,9 @@
 //! this asserts each one is at the commit the repo documents as the
 //! `v3.8.0_build_66` release.
 //!
-//! Three places state that pin in prose (`.gitmodules`, `CLAUDE.md`, and the
-//! `VENDORED_SDK` doc comment in `crates/tutti-vst3-host/build.rs`) and prose
-//! cannot notice when a submodule bump moves the tree out from under it. This
-//! is the only check that can.
+//! `.gitmodules` and the `VENDORED_SDK` doc comment in
+//! `crates/tutti-vst3-host/build.rs` state that pin in prose; this check holds
+//! the tree to it.
 //!
 //! It asserts SHAs rather than `git describe` output, and that choice is the
 //! whole reason the gate is not a one-line grep for the tag name. In a normal
@@ -111,7 +110,7 @@ pub(super) fn check(git: &dyn Git, pins: &[(&str, &str)]) -> Report {
                 r.fail(format!("     expected {want}"));
                 r.fail(format!("     found    {have}"));
                 r.fail("     If the SDK was bumped on purpose, update `PINS` in xtask/src/gates/submodule_pins.rs and the");
-                r.fail("     three prose mentions (.gitmodules, CLAUDE.md, build.rs) too.");
+                r.fail("     two prose mentions (.gitmodules, build.rs) too.");
             }
             _ => r.say(format!("ok   {path}")),
         }
@@ -241,7 +240,7 @@ mod tests {
                 format!("     expected {A}"),
                 format!("     found    {B}"),
                 "     If the SDK was bumped on purpose, update `PINS` in xtask/src/gates/submodule_pins.rs and the".to_owned(),
-                "     three prose mentions (.gitmodules, CLAUDE.md, build.rs) too.".to_owned(),
+                "     two prose mentions (.gitmodules, build.rs) too.".to_owned(),
                 "FAIL: the vendored VST3 SDK is not at the documented v3.8.0_build_66 pin."
                     .to_owned(),
             ]

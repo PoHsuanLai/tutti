@@ -23,7 +23,7 @@ use tutti_graph::{EventKind, SubBlocks};
 use tutti_midi_protocol::{MpeMode, MpeZones, UniversalReader};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_protocol::{value_to_unit_f32, velocity_to_unit_f32};
-use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Spread, Tail};
+use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Tail};
 use tutti_ump::ControlValue;
 use tutti_ump::NoteId;
 use tutti_ump::{
@@ -261,37 +261,6 @@ impl PolySynth {
         self.unison
             .as_ref()
             .map_or(UnisonVoices::ONE, |u| u.config().voice_count)
-    }
-
-    /// Sets the number of stacked sub-voices per note.
-    ///
-    /// Allocates: the voice bank is rebuilt at the new width (sounding
-    /// sub-voices keep their state). Call it from the control thread, never the
-    /// audio thread.
-    ///
-    /// No-op without unison.
-    pub fn set_unison_voice_count(&mut self, count: UnisonVoices) {
-        if let Some(unison) = &mut self.unison {
-            unison.set_voice_count(count);
-            let new_count = unison.voice_count();
-            self.resize_unison(new_count);
-        }
-    }
-
-    fn resize_unison(&mut self, count: usize) {
-        self.bank.resize_stride(count);
-        for voice in &mut self.voices {
-            voice.resize_unison(count);
-        }
-    }
-
-    /// Seeds the phase-randomisation generator, making a render with
-    /// `phase_randomize` reproducible. A seed of `0` is remapped to `1`, since
-    /// the xorshift generator cannot leave that state. No-op without unison.
-    pub fn seed_unison_rng(&mut self, seed: u32) {
-        if let Some(unison) = &mut self.unison {
-            unison.seed_rng(seed);
-        }
     }
 
     /// Reads one packet and applies it. The only place the synth reads the

@@ -298,36 +298,6 @@ fn a_pitch_change_ramps_every_sample_across_the_step() {
     );
 }
 
-/// No two lanes share a noise stream after the unison width changes.
-///
-/// The case that broke: noise, two voices, stride 1 → 2 with voice 1 never
-/// sounding. Voice 1's sub-voice moves from lane 1 to lane 2 carrying its
-/// untouched seed, and voice 0's new sub-voice lands on lane 1 — which,
-/// seeded by lane index, got that same seed. Two lanes, one noise.
-#[test]
-fn unison_resizes_never_duplicate_a_noise_stream() {
-    let mut b = VoiceBank::new(
-        OscillatorType::Noise,
-        &FilterType::None,
-        &flat(),
-        sr(),
-        2,
-        1,
-    );
-    for stride in [2, 1, 3, 2, 5] {
-        b.resize_stride(stride);
-        let states = &b.noise_states()[..2 * stride];
-        for (i, a) in states.iter().enumerate() {
-            for (j, c) in states.iter().enumerate().skip(i + 1) {
-                assert_ne!(
-                    a, c,
-                    "stride {stride}: lanes {i} and {j} share a noise stream"
-                );
-            }
-        }
-    }
-}
-
 /// A sustain above unity is clamped, so a retrigger at sustain never drops
 /// the level: the attack peaks at 1.0 and would otherwise hand decay a
 /// level below where the note was held.

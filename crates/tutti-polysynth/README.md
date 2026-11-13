@@ -76,14 +76,12 @@ resonance) are modulated live by `FilterModConfig`, CC74, CC71 and MPE slide.
 
 Nothing else on a synth that is in a graph is live but its `ParamSet`: the
 master volume, and with a unison engine the detune and stereo spread. Before
-insertion, `&mut self` setters take typed values (`set_volume(Amplitude)`,
-`set_unison_voice_count(UnisonVoices)`, `set_mpe(MpeMode)`),
+insertion, `&mut self` setters take typed values (`set_volume(Amplitude)`, `set_mpe(MpeMode)`),
 and a node cannot be reached by them once it is inserted.
 
 `SynthConfig::polyphony` is a `NonZeroUsize` (a synth of no voices cannot be
 written) with no upper bound. Every voice is built up front, so it is a memory
-and CPU budget. `SynthConfig::with_polyphony` and `with_group` are the builder
-the SoundFont unit's `Settings` has too. A unison stack is `UnisonVoices`, 1 to
+and CPU budget. A unison stack is `UnisonVoices`, 1 to
 16, and MPE is `MpeMode` (`mpe`): disabled, zones, or single-channel rotation;
 a zone's member bend range is the per-note bend range.
 

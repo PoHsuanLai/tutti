@@ -357,64 +357,6 @@ impl VoiceBank {
         self.live = vec![false; groups];
     }
 
-    /// Change the unison stride, keeping every surviving sub-voice's state.
-    ///
-    /// Allocates; control-thread only (it backs `set_unison_voice_count`).
-    pub(crate) fn resize_stride(&mut self, stride: usize) {
-        let stride = stride.max(1);
-        if stride == self.stride {
-            return;
-        }
-        let old = self.clone();
-        self.stride = stride;
-        self.allocate_lanes();
-        for v in 0..self.voices {
-            for s in 0..stride {
-                let to = v * stride + s;
-                if s < old.stride {
-                    self.copy_lane_from(&old, v * old.stride + s, to);
-                } else {
-                    // A sub-voice added under a sounding note joins it where
-                    // its first sub-voice is — same envelope position, same
-                    // phase — rather than sitting idle until the next note-on.
-                    // Only the noise seed stays its own, or the new lane would
-                    // replay the first one's noise.
-                    let (g, k) = split(to);
-                    let seed = self.rng[g].as_array()[k];
-                    self.copy_lane_from(&old, v * old.stride, to);
-                    self.rng[g].as_mut_array()[k] = seed;
-                }
-            }
-        }
-    }
-
-    fn copy_lane_from(&mut self, src: &Self, from: usize, to: usize) {
-        let (fg, fk) = split(from);
-        let (tg, tk) = split(to);
-        macro_rules! copy {
-            ($($field:ident),*) => {
-                $(self.$field[tg].as_mut_array()[tk] = src.$field[fg].as_array()[fk];)*
-            };
-        }
-        copy!(phase, inc, inc_target, env, env_slope, env_target);
-        self.rng[tg].as_mut_array()[tk] = src.rng[fg].as_array()[fk];
-        for i in 0..3 {
-            self.pink[tg][i].as_mut_array()[tk] = src.pink[fg][i].as_array()[fk];
-            self.coef[tg][i].as_mut_array()[tk] = src.coef[fg][i].as_array()[fk];
-            self.coef_target[tg][i].as_mut_array()[tk] = src.coef_target[fg][i].as_array()[fk];
-        }
-        for i in 0..4 {
-            self.z[tg][i].as_mut_array()[tk] = src.z[fg][i].as_array()[fk];
-        }
-        for i in 0..2 {
-            self.gain[tg][i].as_mut_array()[tk] = src.gain[fg][i].as_array()[fk];
-            self.gain_target[tg][i].as_mut_array()[tk] = src.gain_target[fg][i].as_array()[fk];
-        }
-        self.cutoff_seen[to] = src.cutoff_seen[from];
-        self.res_seen[to] = src.res_seen[from];
-        self.stage[to] = src.stage[from];
-    }
-
     /// Lane of voice `voice`'s sub-voice `sub`.
     #[inline]
     pub(crate) fn lane(&self, voice: usize, sub: usize) -> usize {
@@ -630,12 +572,6 @@ impl VoiceBank {
     pub(crate) fn phase(&self, lane: usize) -> f32 {
         let (g, k) = split(lane);
         self.phase[g].as_array()[k]
-    }
-
-    /// Each lane's current noise-generator state. Observability for tests.
-    #[cfg(test)]
-    pub(crate) fn noise_states(&self) -> Vec<u32> {
-        self.rng.iter().flat_map(|g| g.to_array()).collect()
     }
 
     // --- Render ----------------------------------------------------------

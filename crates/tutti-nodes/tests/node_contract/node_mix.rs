@@ -178,7 +178,7 @@ fn the_convolver_is_blended_by_the_graph() {
     );
     check(
         "convolver (folded, stereo)",
-        &|| ConvolverNode::mono_to_stereo(&ir, &ir2, 32),
+        &|| ConvolverNode::folded(&[&ir, &ir2], 32),
         2,
         32,
     );

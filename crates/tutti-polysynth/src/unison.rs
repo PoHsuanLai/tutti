@@ -123,7 +123,7 @@ pub struct UnisonConfig {
     /// with a brief transient spike as the copies reinforce before the detune
     /// pulls them apart. `true` trades that consistent attack for a softer,
     /// note-to-note-varying one. The generator is a seeded xorshift, so a
-    /// render is reproducible after `seed_unison_rng`.
+    /// render is reproducible.
     pub phase_randomize: bool,
 }
 
@@ -211,7 +211,7 @@ impl UnisonEngine {
     ///
     /// `driven` is the block's detune and spread from the synth's param
     /// ports where a lane drives them; `None` reads the atomic.
-    /// A detune in cents as [`set_detune`](Self::set_detune) stores it:
+    /// A detune in cents as `set_detune` stores it:
     /// floored at 0. Shared by the setter and the block's read.
     #[inline]
     fn clamp_detune(cents: f32) -> f32 {
@@ -314,34 +314,31 @@ impl UnisonEngine {
         &self.voices[..self.voice_count()]
     }
 
-    pub fn set_config(&mut self, config: UnisonConfig) {
-        self.detune.store(config.detune_cents);
-        self.spread.store(config.stereo_spread);
-        self.config = config;
-        self.recompute_params();
-    }
-
     pub fn config(&self) -> &UnisonConfig {
         &self.config
     }
 
+    #[cfg(test)]
     pub fn set_voice_count(&mut self, count: UnisonVoices) {
         self.config.voice_count = count;
         self.recompute_params();
     }
 
+    #[cfg(test)]
     pub fn set_detune(&mut self, cents: impl Into<Cents>) {
         self.config.detune_cents = Cents(Self::clamp_detune(cents.into().get()));
         self.detune.store(self.config.detune_cents);
         self.recompute_params();
     }
 
+    #[cfg(test)]
     pub fn set_stereo_spread(&mut self, spread: Spread) {
         self.config.stereo_spread = spread;
         self.spread.store(self.config.stereo_spread);
         self.recompute_params();
     }
 
+    #[cfg(test)]
     pub fn seed_rng(&mut self, seed: u32) {
         self.rng_state = if seed == 0 { 1 } else { seed };
     }

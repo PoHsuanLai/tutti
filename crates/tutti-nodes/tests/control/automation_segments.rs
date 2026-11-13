@@ -37,11 +37,10 @@ use tutti_types::{
 const RATE: f64 = 48_000.0;
 
 /// A lane sending `curve` to the cutoff, with no knob and no range: the
-/// automation-only lane every test here drives (it was
-/// `AutomationLaneNode::for_param`).
+/// automation-only lane every test here drives.
 fn automation(curve: impl Curve + 'static) -> ControlLaneNode {
-    ControlLaneNode::for_param(
-        ParamKey::<Hz>::CUTOFF,
+    ControlLaneNode::for_unit(
+        ParamKey::<Hz>::CUTOFF.addr(),
         ControlProgram::from_curve(Arc::new(curve)),
         None,
         None,

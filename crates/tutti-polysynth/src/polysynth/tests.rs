@@ -514,57 +514,6 @@ fn test_basic_dsp_chain() {
 }
 
 #[test]
-fn test_dynamic_unison_resize() {
-    // Create synth with 2-voice unison
-    let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(2).unwrap(),
-        voice_mode: VoiceMode::Poly,
-        oscillator: OscillatorType::Saw,
-        unison: Some(UnisonConfig {
-            voice_count: UnisonVoices::of(2),
-            detune_cents: tutti_types::Cents(10.0),
-            stereo_spread: Spread(0.5),
-            phase_randomize: false,
-        }),
-        ..Default::default()
-    });
-
-    // Initial state: 2 sub-voices per polyphonic voice
-    assert_eq!(synth.voices[0].sub_voice_count(), 2);
-    assert_eq!(synth.voices[1].sub_voice_count(), 2);
-    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(2));
-
-    // Increase to 5 unison voices
-    synth.set_unison_voice_count(UnisonVoices::of(5));
-    assert_eq!(synth.voices[0].sub_voice_count(), 5);
-    assert_eq!(synth.voices[1].sub_voice_count(), 5);
-    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(5));
-
-    // Decrease to 3 unison voices
-    synth.set_unison_voice_count(UnisonVoices::of(3));
-    assert_eq!(synth.voices[0].sub_voice_count(), 3);
-    assert_eq!(synth.voices[1].sub_voice_count(), 3);
-    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(3));
-
-    // Verify it still produces sound
-    let note_on = ev_note_on(0, 60, 100);
-    queue_midi(&mut synth, &[note_on]);
-
-    let mut output = [0.0f32; 2];
-    let mut max_out = 0.0f32;
-    for _ in 0..2000 {
-        synth.tick(&[], &mut output);
-        max_out = max_out.max(output[0].abs().max(output[1].abs()));
-    }
-
-    assert!(
-        max_out > 0.0,
-        "Synth should produce output after resize, got max={}",
-        max_out
-    );
-}
-
-#[test]
 fn test_note_off_respects_channel() {
     let mut synth = synth(SynthConfig {
         polyphony: NonZeroUsize::new(4).unwrap(),
@@ -2266,49 +2215,6 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
     assert_eq!(long.active_voice_count(), short.active_voice_count());
 }
 
-/// Sub-voices added under a held note sound at once, without waiting for
-/// the next note-on.
-///
-/// Growing unison from 1 to 3 at full spread moves the existing sub-voice
-/// hard left and adds two more, centre and hard right. If the added lanes
-/// started idle the right channel would go silent until the key was struck
-/// again.
-#[test]
-fn unison_grown_under_a_held_note_sounds_immediately() {
-    let mut synth = synth(SynthConfig {
-        polyphony: NonZeroUsize::new(2).unwrap(),
-        oscillator: OscillatorType::Saw,
-        unison: Some(UnisonConfig {
-            voice_count: UnisonVoices::of(1),
-            detune_cents: tutti_types::Cents(12.0),
-            stereo_spread: Spread(1.0),
-            phase_randomize: false,
-        }),
-        ..Default::default()
-    });
-    queue_midi(&mut synth, &[ev_note_on(0, 57, 100)]);
-    let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
-    for _ in 0..16 {
-        synth.render_planar(&mut l, &mut r);
-    }
-
-    synth.set_unison_voice_count(UnisonVoices::of(3));
-    let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
-    let (mut left, mut right) = (Vec::new(), Vec::new());
-    for _ in 0..8 {
-        synth.render_planar(&mut l, &mut r);
-        left.extend_from_slice(&l);
-        right.extend_from_slice(&r);
-    }
-    assert!(rms(&left) > 0.05, "the held note went quiet on resize");
-    assert!(
-        rms(&right) > 0.5 * rms(&left),
-        "the added sub-voices are silent: left rms {}, right rms {}",
-        rms(&left),
-        rms(&right)
-    );
-}
-
 /// A portamento glide sounds the same through `process` as through `tick`.
 ///
 /// Rendering a whole MIDI sub-block at the glide's final pitch would make
@@ -2399,7 +2305,6 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
         }),
         ..Default::default()
     });
-    synth.seed_unison_rng(99);
     queue_midi(
         &mut synth,
         &[ev_note_on(0, 60, 100), ev_note_on(1, 60, 100)],
@@ -3104,7 +3009,10 @@ fn a_synth_plays_its_own_groups_channels_only() {
     first.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(first.active_voice_count(), 1);
 
-    let mut second = synth(SynthConfig::default().with_group(group2));
+    let mut second = synth(SynthConfig {
+        group: group2,
+        ..SynthConfig::default()
+    });
     second.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(second.active_voice_count(), 0, "Group 1 is not Group 2's");
     second.apply_midi(note(group2));

@@ -44,8 +44,8 @@ jobs:
           PROPTEST_CASES: '1024'
         run: |
           cargo nextest run --locked --workspace --no-fail-fast \
-            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+            -E 'not binary(au_gui_lifecycle_main)'
       - name: Ignored tests
         run: |
           cargo nextest run --locked --workspace --no-fail-fast --run-ignored only \
-            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+            -E 'not binary(au_gui_lifecycle_main)'

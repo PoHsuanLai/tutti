@@ -133,7 +133,7 @@ pub const SAMPLE_PLUGIN_DIR: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
 /// [`sample_plugins`] searches this as well as `VST3_SAMPLE_PLUGIN_DIR`, which
 /// names a hand-built external SDK tree and is unset on essentially every
 /// machine. The sibling suites (`vst3_audio_correctness.rs`,
-/// `support/gui_lifecycle.rs`) fall back here for the same reason.
+/// `vst3_process_no_alloc.rs`) fall back here for the same reason.
 pub const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
 
 /// `ProcessModes_::kOffline`. Lets tests assert the plugin observed the mode we

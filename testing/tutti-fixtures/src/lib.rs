@@ -63,7 +63,7 @@ pub use env::{ScopedEnv, cases};
 pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
-pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread};
+pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread, vst3_module};
 pub use range_contract::{RangeContract, check_range_contract};
 #[cfg(feature = "vst3-cpp")]
 pub use vst3_cpp::{bundle_of, vst3_cpp_module};

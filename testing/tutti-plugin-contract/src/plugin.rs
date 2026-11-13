@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-pub use tutti_fixtures::{bundle_of, vst3_cpp_module};
+pub use tutti_fixtures::{bundle_of, vst3_cpp_module, vst3_module};
 
 /// The library, as cargo built it.
 #[must_use]
@@ -15,73 +15,6 @@ pub fn library() -> PathBuf {
 #[must_use]
 pub fn clap() -> PathBuf {
     tutti_fixtures::publish_with_extension(&library(), "clap")
-}
-
-/// The library as the module of a `.vst3` bundle,
-/// `<name>.vst3/Contents/<arch>/<module>`, the layout the VST3 host walks.
-#[must_use]
-pub fn vst3_module() -> PathBuf {
-    let real = library();
-    let dir = real
-        .with_extension("vst3")
-        .join("Contents")
-        .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
-    let module = dir.join(real.file_name().expect("file name"));
-    // Every case process stages the same link, and macOS CI has seen one find
-    // no module right after staging it ("no module at"). Each attempt stages
-    // again, and the panic says what the bundle held, so a recurrence shows its
-    // cause instead of only its symptom.
-    for _ in 0..STAGE_ATTEMPTS {
-        stage_module(&real, &dir, &module);
-        if module.exists() {
-            return module;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!(
-        "no module at {} after {STAGE_ATTEMPTS} attempts: the link reads {:?}, \
-         the library {} exists: {}, the bundle directory holds {:?}",
-        module.display(),
-        std::fs::read_link(&module),
-        real.display(),
-        real.exists(),
-        std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>()),
-    );
-}
-
-/// How many times [`vst3_module`] stages the bundle's module before it fails.
-const STAGE_ATTEMPTS: usize = 5;
-
-/// Puts `real` at `module` inside `dir`, unless it is there already. Staged
-/// under a name of this process's own and renamed in, so a process loading it
-/// never sees it half made.
-fn stage_module(real: &std::path::Path, dir: &std::path::Path, module: &std::path::Path) {
-    std::fs::create_dir_all(dir).expect("bundle directory");
-    #[cfg(unix)]
-    if !std::fs::read_link(module).is_ok_and(|to| to == real) {
-        let staging = dir.join(format!(".stage{}", std::process::id()));
-        let _ = std::fs::remove_file(&staging);
-        std::os::unix::fs::symlink(real, &staging).expect("stage the bundle link");
-        let _ = std::fs::rename(&staging, module);
-        let _ = std::fs::remove_file(&staging);
-    }
-    #[cfg(windows)]
-    {
-        // A copy, so a process loading it must never see it half written: stage
-        // beside it and rename, and leave one that is already whole alone (a
-        // loaded DLL cannot be replaced).
-        let whole = |p: &std::path::Path| {
-            std::fs::metadata(p)
-                .and_then(|m| Ok(m.len() == std::fs::metadata(real)?.len()))
-                .unwrap_or(false)
-        };
-        if !whole(module) {
-            let staging = dir.join(format!(".stage{}", std::process::id()));
-            std::fs::copy(real, &staging).expect("stage the bundle copy");
-            let _ = std::fs::rename(&staging, module);
-            let _ = std::fs::remove_file(&staging);
-        }
-    }
 }
 
 /// The shared plugin as an Audio Unit: registers it in this process (once) and

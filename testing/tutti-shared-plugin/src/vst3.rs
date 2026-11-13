@@ -108,7 +108,6 @@ struct Plugin {
     /// plugin that keeps thread-affine state may crash.
     init_thread: AtomicUsize,
     /// The factory's host context, for the view.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     context: HostContext,
     /// The host's component handler, which a state load tells (core, "Notice").
     handler: Mutex<Option<ComPtr<IComponentHandler>>>,
@@ -647,7 +646,6 @@ impl IEditControllerTrait for Plugin {
         kResultOk
     }
     unsafe fn createView(&self, _name: *const c_char) -> *mut IPlugView {
-        #[cfg(target_os = "linux")]
         if self.core.editor() != core::EDITOR_NONE {
             return view::create(self.core.editor(), self.context.clone());
         }
@@ -657,10 +655,7 @@ impl IEditControllerTrait for Plugin {
 
 /// What `setHostContext` gave this factory, shared with the plugins it makes
 /// (a factory's, not the process's: VSTGUI keeps it per library, which is this).
-#[cfg(target_os = "linux")]
 type HostContext = std::sync::Arc<view::SharedContext>;
-#[cfg(not(target_os = "linux"))]
-type HostContext = std::sync::Arc<()>;
 
 /// The class that refuses `setProcessing(1)`.
 const STUBBORN_CID: TUID = uid(0x5453_4850, 0x5348_4152, 0x4544_5445, 0x5354_0003);
@@ -837,93 +832,124 @@ extern "system" fn GetPluginFactory() -> *mut IPluginFactory {
     .map_or(std::ptr::null_mut(), |p| p.into_raw())
 }
 
-/// The editor view, on Linux: it takes the host's run loop from the context
+/// The editor view. It draws nothing and ignores its parent handle, on every
+/// platform. On Linux it takes the host's run loop from the context
 /// `setHostContext` gave the factory, as VSTGUI's `LinuxFactory` does, and
 /// registers a timer and a file descriptor with it when attached.
-#[cfg(target_os = "linux")]
 mod view {
     use super::*;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
-    use vst3::ComPtr;
-    use vst3::Steinberg::Linux::{
-        IEventHandler, IEventHandlerTrait, IRunLoop, IRunLoopTrait, ITimerHandler,
-        ITimerHandlerTrait,
-    };
 
-    /// The host context the factory was given, held as VSTGUI holds it: for the
-    /// life of the module, and shared by every instance.
-    struct Context(ComPtr<FUnknown>);
-    // SAFETY: a refcounted host object the host makes safe to share; the
-    // plugin touches it only from the editor's thread.
-    unsafe impl Send for Context {}
+    /// The platform type the view accepts: the one a host names its parent by.
+    #[cfg(target_os = "linux")]
+    fn platform_type() -> FIDString {
+        kPlatformTypeX11EmbedWindowID
+    }
+    #[cfg(target_os = "macos")]
+    fn platform_type() -> FIDString {
+        kPlatformTypeNSView
+    }
+    #[cfg(target_os = "windows")]
+    fn platform_type() -> FIDString {
+        kPlatformTypeHWND
+    }
 
-    /// The factory's slot for it.
+    #[cfg(target_os = "linux")]
+    use linux::{Registered, register};
+    #[cfg(target_os = "linux")]
+    pub(super) use linux::{SharedContext, keep_host_context};
+
+    /// Where the view has no run loop: nothing is registered.
+    #[cfg(not(target_os = "linux"))]
     #[derive(Default)]
-    pub(super) struct SharedContext(Mutex<Option<Context>>);
-
-    pub(super) unsafe fn keep_host_context(slot: &SharedContext, context: *mut FUnknown) {
-        // SAFETY: `context` is the host's object, valid for this call; `ComPtr`
-        // takes its own reference.
-        let kept = unsafe { ComRef::from_raw(context) }.map(|c| Context(c.to_com_ptr()));
-        *slot.0.lock().unwrap() = kept;
+    pub(super) struct SharedContext;
+    #[cfg(not(target_os = "linux"))]
+    struct Registered;
+    #[cfg(not(target_os = "linux"))]
+    fn register(_context: &SharedContext) -> Option<Registered> {
+        Some(Registered)
+    }
+    #[cfg(not(target_os = "linux"))]
+    impl Registered {
+        fn unregister(self) {}
+        fn leak(self) {}
     }
 
-    struct Tick;
-    impl Class for Tick {
-        type Interfaces = (ITimerHandler,);
-    }
-    impl ITimerHandlerTrait for Tick {
-        unsafe fn onTimer(&self) {}
-    }
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use super::*;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+        use vst3::ComPtr;
+        use vst3::Steinberg::Linux::{
+            IEventHandler, IEventHandlerTrait, IRunLoop, IRunLoopTrait, ITimerHandler,
+            ITimerHandlerTrait,
+        };
 
-    struct Ready;
-    impl Class for Ready {
-        type Interfaces = (IEventHandler,);
-    }
-    impl IEventHandlerTrait for Ready {
-        unsafe fn onFDIsSet(&self, _fd: Linux::FileDescriptor) {}
-    }
+        /// The host context the factory was given, held as VSTGUI holds it: for
+        /// the life of the module, and shared by every instance.
+        struct Context(ComPtr<FUnknown>);
+        // SAFETY: a refcounted host object the host makes safe to share; the
+        // plugin touches it only from the editor's thread.
+        unsafe impl Send for Context {}
 
-    /// What `attached` registered.
-    struct Registered {
-        run_loop: ComPtr<IRunLoop>,
-        tick: ComPtr<ITimerHandler>,
-        ready: ComPtr<IEventHandler>,
-        /// Never written, so the descriptor never turns readable.
-        _pair: (UnixStream, UnixStream),
-    }
+        /// The factory's slot for it.
+        #[derive(Default)]
+        pub(in crate::vst3) struct SharedContext(Mutex<Option<Context>>);
 
-    struct View {
-        /// An `EDITOR_*` behaviour other than none.
-        editor: u32,
-        context: std::sync::Arc<SharedContext>,
-        registered: Mutex<Option<Registered>>,
-        /// The thread `attached` ran on: a toolkit's view belongs to it, and
-        /// `removed` on another aborts the process, as a real one may crash.
-        thread: Mutex<Option<usize>>,
-    }
+        pub(in crate::vst3) unsafe fn keep_host_context(
+            slot: &SharedContext,
+            context: *mut FUnknown,
+        ) {
+            // SAFETY: `context` is the host's object, valid for this call;
+            // `ComPtr` takes its own reference.
+            let kept = unsafe { ComRef::from_raw(context) }.map(|c| Context(c.to_com_ptr()));
+            *slot.0.lock().unwrap() = kept;
+        }
 
-    impl Class for View {
-        type Interfaces = (IPlugView,);
-    }
+        struct Tick;
+        impl Class for Tick {
+            type Interfaces = (ITimerHandler,);
+        }
+        impl ITimerHandlerTrait for Tick {
+            unsafe fn onTimer(&self) {}
+        }
 
-    pub(super) fn create(editor: u32, context: std::sync::Arc<SharedContext>) -> *mut IPlugView {
-        ComWrapper::new(View {
-            editor,
-            context,
-            registered: Mutex::new(None),
-            thread: Mutex::new(None),
-        })
-        .to_com_ptr::<IPlugView>()
-        .map_or(std::ptr::null_mut(), |p| p.into_raw())
-    }
+        struct Ready;
+        impl Class for Ready {
+            type Interfaces = (IEventHandler,);
+        }
+        impl IEventHandlerTrait for Ready {
+            unsafe fn onFDIsSet(&self, _fd: Linux::FileDescriptor) {}
+        }
 
-    impl View {
+        /// What `attached` registered.
+        pub(in crate::vst3) struct Registered {
+            run_loop: ComPtr<IRunLoop>,
+            tick: ComPtr<ITimerHandler>,
+            ready: ComPtr<IEventHandler>,
+            /// Never written, so the descriptor never turns readable.
+            _pair: (UnixStream, UnixStream),
+        }
+
+        impl Registered {
+            /// Leaves the registrations with the host, and the handlers and the
+            /// descriptor with them.
+            pub(in crate::vst3) fn leak(self) {
+                std::mem::forget(self);
+            }
+
+            pub(in crate::vst3) fn unregister(self) {
+                // SAFETY: the handlers `attached` registered, unregistered once.
+                unsafe {
+                    self.run_loop.unregisterTimer(self.tick.as_ptr());
+                    self.run_loop.unregisterEventHandler(self.ready.as_ptr());
+                }
+            }
+        }
+
         /// Registers a timer and a file descriptor with the factory's run loop.
-        fn register(&self) -> Option<Registered> {
-            let run_loop = self
-                .context
+        pub(in crate::vst3) fn register(context: &SharedContext) -> Option<Registered> {
+            let run_loop = context
                 .0
                 .lock()
                 .unwrap()
@@ -949,41 +975,113 @@ mod view {
         }
     }
 
+    /// The size every view opens at.
+    const OPEN: (i32, i32) = (200, 100);
+    /// What [`core::EDITOR_LIVE`] asks its frame for when attached.
+    const REQUESTED: (i32, i32) = (300, 150);
+    /// What [`core::EDITOR_LIVE`] clamps a size to: its smallest and largest.
+    const MIN: (i32, i32) = (100, 50);
+    const MAX: (i32, i32) = (800, 600);
+    /// The character [`core::EDITOR_LIVE`] consumes, and the virtual key (the
+    /// left arrow, `KEY_LEFT`).
+    const KEY_CHARACTER: char16 = b'a' as char16;
+    const KEY_LEFT: int16 = 11;
+
+    struct View {
+        /// An `EDITOR_*` behaviour other than none.
+        editor: u32,
+        context: std::sync::Arc<SharedContext>,
+        registered: Mutex<Option<Registered>>,
+        /// The thread `attached` ran on: a toolkit's view belongs to it, and
+        /// `removed` on another aborts the process, as a real one may crash.
+        thread: Mutex<Option<usize>>,
+        /// The host's frame, between `setFrame` and `setFrame(nullptr)`.
+        frame: Mutex<Option<ComPtr<IPlugFrame>>>,
+        /// This view as the `IPlugView` it hands the frame; set once after
+        /// creation, never owning.
+        this: AtomicUsize,
+    }
+
+    impl Class for View {
+        type Interfaces = (IPlugView,);
+    }
+
+    pub(super) fn create(editor: u32, context: std::sync::Arc<SharedContext>) -> *mut IPlugView {
+        let view = ComWrapper::new(View {
+            editor,
+            context,
+            registered: Mutex::new(None),
+            thread: Mutex::new(None),
+            frame: Mutex::new(None),
+            this: AtomicUsize::new(0),
+        });
+        let Some(ptr) = view.to_com_ptr::<IPlugView>() else {
+            return std::ptr::null_mut();
+        };
+        // SAFETY of the later cast back: the pointer names this very object,
+        // which outlives its use (the frame is cleared before the view goes).
+        view.this.store(ptr.as_ptr() as usize, SeqCst);
+        ptr.into_raw()
+    }
+
+    impl View {
+        fn live(&self) -> bool {
+            self.editor == core::EDITOR_LIVE
+        }
+    }
+
     impl IPlugViewTrait for View {
         unsafe fn isPlatformTypeSupported(&self, kind: FIDString) -> tresult {
             // SAFETY: both are NUL-terminated platform-type strings.
             let same = unsafe {
-                std::ffi::CStr::from_ptr(kind)
-                    == std::ffi::CStr::from_ptr(kPlatformTypeX11EmbedWindowID)
+                std::ffi::CStr::from_ptr(kind) == std::ffi::CStr::from_ptr(platform_type())
             };
             if same { kResultTrue } else { kResultFalse }
         }
         unsafe fn attached(&self, _parent: *mut c_void, _kind: FIDString) -> tresult {
             *self.thread.lock().unwrap() = Some(this_thread());
-            match self.editor {
+            let result = match self.editor {
                 // Registers lazily, in `onSize`, as VSTGUI does on its first layout.
                 core::EDITOR_LATE => kResultOk,
                 // Registers, then refuses: what a toolkit that fails halfway leaves.
                 core::EDITOR_FAILING => {
-                    if let Some(registered) = self.register() {
-                        std::mem::forget(registered);
+                    if let Some(registered) = register(&self.context) {
+                        registered.leak();
                     }
                     kResultFalse
                 }
-                _ => match self.register() {
+                _ => match register(&self.context) {
                     Some(registered) => {
                         *self.registered.lock().unwrap() = Some(registered);
                         kResultOk
                     }
                     None => kNotInitialized,
                 },
+            };
+            if result == kResultOk && self.live() {
+                // Asks the host's frame for a size of its own, as a toolkit view does
+                // once it has laid itself out.
+                let frame = self.frame.lock().unwrap().clone();
+                if let Some(frame) = frame {
+                    let mut rect = ViewRect {
+                        left: 0,
+                        top: 0,
+                        right: REQUESTED.0,
+                        bottom: REQUESTED.1,
+                    };
+                    // SAFETY: `this` names this live view and `rect` outlives the call.
+                    unsafe {
+                        frame.resizeView(self.this.load(SeqCst) as *mut IPlugView, &mut rect);
+                    }
+                }
             }
+            result
         }
         unsafe fn onSize(&self, _size: *mut ViewRect) -> tresult {
             if self.editor == core::EDITOR_LATE {
                 // Leaked: nothing ever unregisters it.
-                if let Some(registered) = self.register() {
-                    std::mem::forget(registered);
+                if let Some(registered) = register(&self.context) {
+                    registered.leak();
                 }
             }
             kResultOk
@@ -1001,28 +1099,29 @@ mod view {
             if self.editor == core::EDITOR_LEAKY {
                 // The leak: the registrations stay with the host, and the
                 // handlers and the descriptor outlive the view.
-                std::mem::forget(registered);
+                registered.leak();
             } else {
-                // SAFETY: the handlers `attached` registered, unregistered once.
-                unsafe {
-                    registered
-                        .run_loop
-                        .unregisterTimer(registered.tick.as_ptr());
-                    registered
-                        .run_loop
-                        .unregisterEventHandler(registered.ready.as_ptr());
-                }
+                registered.unregister();
             }
             kResultOk
         }
-        unsafe fn onWheel(&self, _distance: f32) -> tresult {
-            kResultFalse
+        unsafe fn onWheel(&self, distance: f32) -> tresult {
+            if self.live() && distance > 0.0 {
+                kResultTrue
+            } else {
+                kResultFalse
+            }
         }
-        unsafe fn onKeyDown(&self, _key: char16, _code: int16, _modifiers: int16) -> tresult {
-            kResultFalse
+        unsafe fn onKeyDown(&self, key: char16, code: int16, _modifiers: int16) -> tresult {
+            if self.live() && (key == KEY_CHARACTER || code == KEY_LEFT) {
+                kResultTrue
+            } else {
+                kResultFalse
+            }
         }
-        unsafe fn onKeyUp(&self, _key: char16, _code: int16, _modifiers: int16) -> tresult {
-            kResultFalse
+        unsafe fn onKeyUp(&self, key: char16, code: int16, _modifiers: int16) -> tresult {
+            // SAFETY: the same call, on the same arguments.
+            unsafe { self.onKeyDown(key, code, 0) }
         }
         unsafe fn getSize(&self, size: *mut ViewRect) -> tresult {
             // SAFETY: `size` is an out-pointer the host owns for the call.
@@ -1030,8 +1129,8 @@ mod view {
                 *size = ViewRect {
                     left: 0,
                     top: 0,
-                    right: 200,
-                    bottom: 100,
+                    right: OPEN.0,
+                    bottom: OPEN.1,
                 };
             }
             kResultOk
@@ -1039,14 +1138,28 @@ mod view {
         unsafe fn onFocus(&self, _state: TBool) -> tresult {
             kResultOk
         }
-        unsafe fn setFrame(&self, _frame: *mut IPlugFrame) -> tresult {
+        unsafe fn setFrame(&self, frame: *mut IPlugFrame) -> tresult {
+            // SAFETY: `frame` is the host's frame or null; `ComRef` checks for null.
+            *self.frame.lock().unwrap() =
+                unsafe { ComRef::from_raw(frame) }.map(|f| f.to_com_ptr());
             kResultOk
         }
         unsafe fn canResize(&self) -> tresult {
-            kResultFalse
+            if self.live() {
+                kResultTrue
+            } else {
+                kResultFalse
+            }
         }
-        unsafe fn checkSizeConstraint(&self, _rect: *mut ViewRect) -> tresult {
-            kResultFalse
+        unsafe fn checkSizeConstraint(&self, rect: *mut ViewRect) -> tresult {
+            if !self.live() {
+                return kResultFalse;
+            }
+            // SAFETY: `rect` is the host's, valid for the call.
+            let rect = unsafe { &mut *rect };
+            rect.right = rect.left + (rect.right - rect.left).clamp(MIN.0, MAX.0);
+            rect.bottom = rect.top + (rect.bottom - rect.top).clamp(MIN.1, MAX.1);
+            kResultTrue
         }
     }
 }

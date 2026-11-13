@@ -61,16 +61,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "the AU mapping-family claim; needs third-party Audio Units installed (macOS)",
     ),
-    (
-        "test-editor",
-        "",
-        "the custom-harness editor tests (VST3 and AU)",
-    ),
-    (
-        "test-editor-no-corpus",
-        "",
-        "test-editor without the installed-plugin corpus case",
-    ),
+    ("test-editor", "", "the custom-harness editor tests (AU)"),
     (
         "test-doc",
         "[cargo test args]",
@@ -314,7 +305,7 @@ impl Planner<'_> {
                 self.run(
                     Cmd::sh("cargo nextest run --locked --workspace").args(args).args([
                         "-E",
-                        "not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)",
+                        "not binary(au_gui_lifecycle_main)",
                     ]),
                 );
             }
@@ -323,11 +314,6 @@ impl Planner<'_> {
                     .args(["-E", "test(no_installed_third_party_unit_implements_the_mapping_family)"]),
             ),
             "test-editor" => self.lines(&[
-                "cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main",
-                "cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main",
-            ]),
-            "test-editor-no-corpus" => self.lines(&[
-                "TUTTI_GUI_SKIP=has_editor_agrees_with_opening_one cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main",
                 "cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main",
             ]),
             "test-doc" => {

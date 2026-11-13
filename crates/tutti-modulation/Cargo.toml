@@ -14,39 +14,15 @@ categories = ["multimedia::audio"]
 [lints]
 workspace = true
 
-[features]
-# Everything (the compiler, the program, the shaping vocabulary) builds with
-# no features.
-default = []
-# `Reflect` on the `LfoShape`/`Polarity` vocabulary a Bevy component carries.
-#
-# Enables the reflection feature of `tutti-types`, whose types ride inside the
-# reflected ones. A reflection-completeness edge rather than the transitive
-# Bevy leak the feature-hygiene rule guards against. (`tutti-curve` has no
-# `bevy` feature: a `Law` inside a reflected route is the adapter's to wrap.)
-bevy = [
-    "tutti-types/bevy",
-    "dep:bevy_reflect",
-]
-
 [dependencies]
 # `Law`, the project's response-curve vocabulary, and the automation trajectory
 # that is a `Curve`.
 tutti-curve = { path = "../tutti-curve" }
 
 # The value vocabulary: `Depth`, `Beat`, `PhaseIncrement`, `ParamAddr` (a
-# target's param), `PlayReading`. A leaf crate: Bevy-free.
+# target's param), `PlayReading`.
 tutti-types = { path = "../tutti-types", default-features = false }
 
 # The MIDI a note envelope hears (`Ump`, its held `Key`). Layer 0.
 tutti-ump = { path = "../tutti-ump" }
 
-# Bevy derives, gated on the `bevy` feature.
-bevy_reflect = { workspace = true, optional = true }
-
-# docs.rs renders with every feature on. `default = []` keeps the engine
-# Bevy-free for consumers, but it would otherwise publish a page with the
-# feature-gated half of the public API missing.
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]

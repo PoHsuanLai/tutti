@@ -53,8 +53,7 @@ or an offline export, gets its MIDI without linking CoreMIDI or ALSA.
   `tutti-ump` and `tutti-midi-protocol` (MPE zone values included).
 - **No files.** SMF and the path-level Clip File codec belong to
   `tutti-midi-file`.
-- **No audio, and no ECS.** Nothing here touches a sample buffer; the Bevy
-  systems that drive this are in `bevy-tutti`.
+- **No audio, and no ECS.** Nothing here touches a sample buffer.
 
 MPE lives here as an *ingestion* transform, not as a per-synth state machine:
 per M2-104, MPE is an input-edge concern, and synth voices track per-note
@@ -187,7 +186,7 @@ is `tutti-midi-file`'s `ClipFileError`; `Midi1Parser` refuses a message with `No
 
 Builds on `tutti-ump`, `tutti-midi-protocol`, `tutti-transport` and `tutti-graph`. Used by the
 synth, SoundFont and plugin crates and by `tutti-midi-hardware`; re-exported by
-`tutti` and used by `bevy-tutti`.
+`tutti`.
 
 ## Features
 

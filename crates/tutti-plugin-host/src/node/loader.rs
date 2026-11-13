@@ -181,7 +181,7 @@ where
     // it, `editor_idle` dispatches from it.
     //
     // **Limit:** `editor_idle` is the only main-thread tick an in-process
-    // plugin has, and bevy-tutti calls it only while an editor is open. So a
+    // plugin has, and a host calls it only while an editor is open. So a
     // parked rate change, and the re-reads of latency, tail and pin counts
     // (`Instance::pump`, raised as `PluginInvalidation` through the handle's
     // `on_invalidate`), happen only while the editor pump runs. The session

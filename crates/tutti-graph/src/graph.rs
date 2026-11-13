@@ -48,7 +48,7 @@ use tutti_types::{Samples, Tail};
 
 /// A stable identity for a node, chosen by the **author** of the topology.
 ///
-/// A `NodeKey` is supplied from outside (a Bevy `Entity`'s bits, a document
+/// A `NodeKey` is supplied from outside (a document
 /// node id, a test's literal), so it stays the same across any number of
 /// recompiles and across a crossfade that replaces the node: a handle a caller
 /// stored never goes stale. The runtime's own id is derived from it while

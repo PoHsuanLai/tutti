@@ -84,7 +84,7 @@ pub enum RecorderError {
 
 /// [`RecorderError`] as the `io::Error` a sink's
 /// [`finalize`](Sink::finalize) speaks, for a host that reports every way
-/// a take can end through one channel (`bevy-tutti`'s `PumpFinished`).
+/// a take can end through one channel.
 ///
 /// [`Io`](RecorderError::Io) unwraps to the error it carries. The others
 /// become an `io::Error` with this error as its source, so the layouts stay
@@ -408,7 +408,7 @@ where
 ///   [`start_finite`](Recorder::start_finite) from a [`FiniteSource`], a
 ///   decoded file): lets the source reach its end, then finalizes.
 /// - [`finish_in_place`](Self::finish_in_place), `finish` without consuming the
-///   recorder, for a host that stores the take in place (a Bevy component).
+///   recorder, for a host that stores the take in place.
 ///   Pair it with [`request_stop`](Self::request_stop) and
 ///   [`is_finished`](Self::is_finished) to end a take without blocking.
 /// - dropping the recorder, which does what `finish` does and logs a failure.

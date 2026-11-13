@@ -11,11 +11,8 @@
 //
 // The struct form picks the representation from the raw type. `f32` and `f64`
 // give a float quantity: derives `Copy, Clone, Debug, PartialEq, Default`,
-// serde `transparent` under `serde`, `Reflect` under `bevy` (registered under
-// the path `tutti_types::value::units`, which scene files name, whichever file
-// defines the type; the path is written below, so float units stay in this
-// module). Any other raw type gives an integer quantity: those derives plus
-// `Eq, PartialOrd, Ord, Hash`, serde `transparent`, no reflection.
+// serde `transparent` under `serde`. Any other raw type gives an integer
+// quantity: those derives plus `Eq, PartialOrd, Ord, Hash`, serde `transparent`.
 //
 // Each ability below is one `(@ability Name ..)` arm, with the traits or
 // methods it gives. `Affine(Dur)` is the only one that takes an argument.
@@ -42,8 +39,6 @@ macro_rules! unit {
         #[derive(Copy, Clone, Debug, PartialEq, Default)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         #[cfg_attr(feature = "serde", serde(transparent))]
-        #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
-        #[cfg_attr(feature = "bevy", type_path = "tutti_types::value::units")]
         $v struct $name($fv $raw);
         $(unit!(@ability $ability $name, $raw $(, $arg)?);)*
     };

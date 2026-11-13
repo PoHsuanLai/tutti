@@ -153,7 +153,7 @@ println!("{} bytes of preset state", preset.len());
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 if plugin.has_editor(&main) {
-    // Any winit, Bevy or other `raw-window-handle` window.
+    // Any winit or other `raw-window-handle` window.
     let handle = WindowHandle::from_window(window)?;
     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);

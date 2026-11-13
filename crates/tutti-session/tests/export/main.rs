@@ -8,8 +8,7 @@ mod bounce_stems;
 mod export_cancel;
 // What an export renders and forks: the graph's own latency and tail, a
 // prepare hook's edit and timeline, a fork's isolation from live playback,
-// and where a fork is built and dropped (the session halves of the
-// `bevy-tutti` export suites).
+// and where a fork is built and dropped.
 #[cfg(feature = "export")]
 mod export_fork;
 // A parallel export is bit-identical to the serial one.

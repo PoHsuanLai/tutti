@@ -1,7 +1,5 @@
 //! A restart re-rates the MIDI clock master, through a session on
-//! `ManualStreamDriver`s (the session half of `bevy-tutti`'s
-//! `engine::restart` test `a_restart_re_rates_the_midi_clock`, moved here when
-//! the adapter was parked).
+//! `ManualStreamDriver`s.
 
 use std::sync::{Arc, Mutex};
 

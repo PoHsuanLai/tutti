@@ -180,7 +180,7 @@ println!("{edits} param edits; latency changed: {}", restart.latency_changed);
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = Vst3Loaded::load(&main, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 if plugin.has_editor(&main) {
-    // Any winit, Bevy or other `raw-window-handle` window.
+    // Any winit or other `raw-window-handle` window.
     let handle = WindowHandle::from_window(window)?;
     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);

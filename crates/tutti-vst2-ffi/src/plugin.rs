@@ -1165,24 +1165,22 @@ impl Host for HostCallback {
 
     /// Get the host's current process level (`audioMasterGetCurrentProcessLevel`).
     ///
-    /// `0` unknown, `1` user/GUI thread, `2` realtime audio, `3` sequencer, `4`
-    /// offline render. A plugin asks this to decide how much time it may spend
-    /// per block: under `4` there is no deadline, so a higher-quality path is
-    /// affordable.
-    ///
-    /// The host side of this opcode was always answered
-    /// (`interfaces.rs`, `OpCode::GetCurrentProcessLevel`), but the plugin side
-    /// had no way to send it — so a hosted plugin could not read a mode the host
-    /// was already tracking. Both halves are needed for the query to exist.
-    fn get_process_level(&self) -> isize {
-        self.callback(
+    /// The level of the thread asking: a plugin asks this to decide how much time it may
+    /// spend per block, since under `Offline` there is no deadline and a higher-quality
+    /// path is affordable. A value outside `VstProcessLevels` reads as `Unknown`.
+    fn get_process_level(&self) -> api::ProcessLevel {
+        let raw = self.callback(
             self.effect,
             host::OpCode::GetCurrentProcessLevel,
             0,
             0,
             ptr::null_mut(),
             0.0,
-        )
+        );
+        i32::try_from(raw)
+            .ok()
+            .and_then(|v| api::ProcessLevel::try_from(v).ok())
+            .unwrap_or(api::ProcessLevel::Unknown)
     }
 
     /// Get block size.

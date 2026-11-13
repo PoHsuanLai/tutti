@@ -134,7 +134,10 @@ pub fn host_dispatch(
         Ok(OpCode::IOChanged) => return host.io_changed() as isize,
         Ok(OpCode::GetInputLatency) => return host.get_input_latency(),
         Ok(OpCode::GetOutputLatency) => return host.get_output_latency(),
-        Ok(OpCode::GetCurrentProcessLevel) => return host.get_process_level(),
+        Ok(OpCode::GetCurrentProcessLevel) => {
+            // The ABI carries the level as an integer: the typed `ProcessLevel` stops here.
+            return host.get_process_level() as isize;
+        }
         Ok(OpCode::GetAutomationState) => return host.get_automation_state(),
 
         // `audioMasterUpdateDisplay`. A plugin fires this after changing preset

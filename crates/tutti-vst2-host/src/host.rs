@@ -32,7 +32,8 @@
 //!
 //! - `get_sample_rate`, `get_block_size` and `get_process_level` return **real
 //!   data**: the rate and maximum block the plugin was last told, and
-//!   realtime or offline for the render mode. The first two are written
+//!   realtime or offline for the render mode, answered by the asking thread
+//!   (process thread, main thread, other). The first two are written
 //!   before the opcode that tells the plugin, so a query from inside
 //!   `effSetSampleRate` reads the new figure.
 //! - `io_changed` and `update_display` raise [`Request`]s on a [`RequestWord`]
@@ -51,10 +52,10 @@ use crate::midi::to_midi;
 use crate::transport_cell::TransportReader;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tutti_plugin_types::{Request, RescanScope, WireMidi, sysex_packets};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use tutti_plugin_types::{MainThread, Request, RescanScope, WireMidi, sysex_packets};
 use tutti_rt::RequestWord;
-use vst::api::Supported;
+use vst::api::{ProcessLevel, Supported};
 use vst::host::Host;
 
 /// What the plugin reported of a parameter edit: `audioMasterBeginEdit`,
@@ -98,6 +99,24 @@ pub(crate) const PARAM_QUEUE_CAPACITY: usize = 512;
 /// apart for unrelated reasons.
 pub(crate) const MIDI_OUT_QUEUE_CAPACITY: usize = 256;
 
+/// An address unique to the calling thread while it lives: that of a thread-local byte.
+/// Reading it neither allocates nor locks, so the audio thread may.
+fn thread_token() -> usize {
+    thread_local! {
+        static TOKEN: u8 = const { 0 };
+    }
+    TOKEN.with(|t| std::ptr::from_ref(t) as usize)
+}
+
+/// The span of one process call on a thread, ended on drop (a panicking plugin included).
+pub(crate) struct ProcessScope<'a>(&'a HostState);
+
+impl Drop for ProcessScope<'_> {
+    fn drop(&mut self) {
+        self.0.process_thread.store(0, Ordering::Release);
+    }
+}
+
 /// Implements `vst::host::Host`. Owns the producer end of the queues the
 /// plugin writes into.
 pub(crate) struct HostState {
@@ -139,6 +158,10 @@ pub(crate) struct HostState {
     /// behind an `Arc` with no lock by design: every field it exposes is
     /// already lock-free.
     offline: std::sync::atomic::AtomicBool,
+    /// The thread inside the plugin's process call ([`thread_token`]), or 0 outside one.
+    /// Answers `audioMasterGetCurrentProcessLevel` by caller: written by the process
+    /// thread's [`ProcessScope`], read from whichever thread the plugin calls from.
+    process_thread: AtomicUsize,
     /// What the plugin asked of the host through `audioMasterIOChanged` and
     /// `audioMasterUpdateDisplay`: bits for the main thread to take, because
     /// the plugin may call from its audio thread, where a re-read dispatching
@@ -186,6 +209,7 @@ impl HostState {
             block_size: AtomicU64::new(block_size as u64),
             sample_rate_bits: AtomicU64::new(default_sample_rate.to_bits()),
             offline: std::sync::atomic::AtomicBool::new(false),
+            process_thread: AtomicUsize::new(0),
             requests: RequestWord::new(),
             size_request: AtomicU64::new(0),
             current_id,
@@ -228,6 +252,13 @@ impl HostState {
     pub(crate) fn set_offline(&self, offline: bool) {
         self.offline
             .store(offline, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Marks the calling thread as inside the plugin's process call until the returned
+    /// scope drops. Real-time safe: one atomic store each way.
+    pub(crate) fn enter_process(&self) -> ProcessScope<'_> {
+        self.process_thread.store(thread_token(), Ordering::Release);
+        ProcessScope(self)
     }
 
     pub(crate) fn is_offline(&self) -> bool {
@@ -419,19 +450,23 @@ impl Host for HostState {
         f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
     }
 
-    /// Real data: `kVstProcessLevelOffline` (4) while the host is rendering
-    /// offline, `kVstProcessLevelRealtime` (2) otherwise.
-    ///
-    /// The two the host can honestly answer. `User` (1) and `Prefetch` (3)
-    /// describe *which thread is asking* — this callback is re-entrant from
-    /// wherever the plugin chooses to call it, and the host cannot tell — so
-    /// answering either would be a guess. `Unknown` (0) would mean "host does
-    /// not support the query", which is false.
-    fn get_process_level(&self) -> isize {
-        if self.is_offline() {
-            4 // kVstProcessLevelOffline
+    /// The level of the thread asking (`audioMasterGetCurrentProcessLevel`): from inside the
+    /// plugin's process call, `Offline` while the host renders offline and `Realtime`
+    /// otherwise; from the process's main thread, `User`; from any other thread,
+    /// `Unknown`. `Prefetch` is never answered: the host runs no sequencing thread. The
+    /// caller is told what its own thread is, never a guess.
+    fn get_process_level(&self) -> ProcessLevel {
+        let me = thread_token();
+        if self.process_thread.load(Ordering::Acquire) == me {
+            if self.is_offline() {
+                ProcessLevel::Offline
+            } else {
+                ProcessLevel::Realtime
+            }
+        } else if MainThread::current().is_some() {
+            ProcessLevel::User
         } else {
-            2 // kVstProcessLevelRealtime
+            ProcessLevel::Unknown
         }
     }
 
@@ -704,14 +739,70 @@ mod tests {
     /// block. Reporting realtime during a bounce is what made an offline render
     /// silently produce the live-quality result.
     #[test]
-    fn get_process_level_follows_the_render_mode() {
+    fn process_level_inside_process_follows_the_render_mode() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
 
         host.set_offline(true);
-        assert_eq!(host.get_process_level(), 4); // kVstProcessLevelOffline
+        {
+            let _in_process = host.enter_process();
+            assert_eq!(host.get_process_level(), ProcessLevel::Offline);
+        }
 
         host.set_offline(false);
-        assert_eq!(host.get_process_level(), 2); // kVstProcessLevelRealtime
+        let _in_process = host.enter_process();
+        assert_eq!(host.get_process_level(), ProcessLevel::Realtime);
+    }
+
+    /// Outside a process call the answer is the caller's thread: the claimed main thread is
+    /// `User`, another thread is `Unknown`, and the process scope ending ends `Realtime`.
+    #[test]
+    fn process_level_outside_process_is_user_on_main_and_unknown_elsewhere() {
+        let host = Arc::new(make_host(TransportWriter::new().reader(), 48_000.0));
+        let _main = MainThread::claim().expect("one test, one process");
+
+        assert_eq!(host.get_process_level(), ProcessLevel::User);
+        let other = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.get_process_level())
+                .join()
+                .unwrap()
+        };
+        assert_eq!(other, ProcessLevel::Unknown, "never a guessed Realtime");
+
+        // A scope open on the main thread does not make another thread a process thread.
+        let scope = host.enter_process();
+        assert_eq!(host.get_process_level(), ProcessLevel::Realtime);
+        let other = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.get_process_level())
+                .join()
+                .unwrap()
+        };
+        assert_eq!(other, ProcessLevel::Unknown);
+        drop(scope);
+        assert_eq!(host.get_process_level(), ProcessLevel::User);
+    }
+
+    /// The process thread is not the main thread: inside its scope it answers by the render
+    /// mode, and after the scope it is `Unknown`.
+    #[test]
+    fn process_level_on_a_process_thread_that_is_not_main() {
+        let host = Arc::new(make_host(TransportWriter::new().reader(), 48_000.0));
+        let _main = MainThread::claim().expect("one test, one process");
+        host.set_offline(true);
+        let answers = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                let inside = {
+                    let _scope = host.enter_process();
+                    host.get_process_level()
+                };
+                (inside, host.get_process_level())
+            })
+            .join()
+            .unwrap()
+        };
+        assert_eq!(answers, (ProcessLevel::Offline, ProcessLevel::Unknown));
     }
 
     /// The automation queue is bounded, and overflowing it is *reported*.

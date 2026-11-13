@@ -275,9 +275,10 @@ pub trait Host {
     }
 
     /// Report the current process level (`audioMasterGetCurrentProcessLevel`,
-    /// `VstProcessLevels`): 0 = unknown, 2 = realtime, 4 = offline.
-    fn get_process_level(&self) -> isize {
-        0
+    /// `VstProcessLevels`) of the thread asking. The default is `Unknown`: the host
+    /// does not say.
+    fn get_process_level(&self) -> api::ProcessLevel {
+        api::ProcessLevel::Unknown
     }
 
     /// Report the host's automation state (`audioMasterGetAutomationState`,

@@ -505,7 +505,7 @@ impl From<Supported> for isize {
 
 /// Denotes in which thread the host is in.
 #[repr(i32)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum ProcessLevel {
     /// Unsupported by host.
     Unknown = 0,

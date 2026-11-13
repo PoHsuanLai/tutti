@@ -426,24 +426,7 @@ impl ParamSegment {
     /// within `u32::MAX` frames. For a node that takes point values and
     /// must land the end value on its frame.
     pub fn arrives_after(&self) -> Option<Samples> {
-        let (p, l) = (self.position, self.length);
-        if segment_progress(p, l, 0).is_none() {
-            return Some(Samples(0));
-        }
-        // Finite here. The guess is within a frame or two of the
-        // predicate's answer, which decides.
-        let guess = (l - p).ceil().max(0.0);
-        if guess >= u32::MAX as f32 {
-            return None;
-        }
-        let mut j = guess as u32;
-        while j > 0 && segment_progress(p, l, j - 1).is_none() {
-            j -= 1;
-        }
-        while segment_progress(p, l, j).is_some() {
-            j = j.checked_add(1)?;
-        }
-        Some(Samples(j as usize))
+        arrival(self.position, self.length).map(|j| Samples(j as usize))
     }
 
     /// The pure part of the segment: its endpoints and its law, as a
@@ -471,6 +454,32 @@ pub(crate) fn segment_value(piece: Piece, position: f32, length: f32, j: u32) ->
         Some(t) => piece.value(t),
         None => piece.to,
     }
+}
+
+/// How many frames after its event a segment of `position` and `length`
+/// arrives: the first `j` at which [`segment_progress`] is `None` (0 for a
+/// step). `None` when it never arrives within `u32::MAX` frames. The one
+/// count the port's corners, the reference interpreter's and
+/// [`ParamSegment::arrives_after`] share.
+pub(crate) fn arrival(position: f32, length: f32) -> Option<u32> {
+    let (p, l) = (position, length);
+    if segment_progress(p, l, 0).is_none() {
+        return Some(0);
+    }
+    // Finite here. The guess is within a frame or two of the predicate's
+    // answer, which decides.
+    let guess = (l - p).ceil().max(0.0);
+    if guess >= u32::MAX as f32 {
+        return None;
+    }
+    let mut j = guess as u32;
+    while j > 0 && segment_progress(p, l, j - 1).is_none() {
+        j -= 1;
+    }
+    while segment_progress(p, l, j).is_some() {
+        j = j.checked_add(1)?;
+    }
+    Some(j)
 }
 
 /// A segment's progress `j` frames after its event, `None` once it has

@@ -40,7 +40,7 @@ declare_params!([] Declared, n {
 fn show(out: &mut [f32], input: ParamInput<'_>, base: f32) {
     match input {
         ParamInput::Base => out.fill(base),
-        ParamInput::Frames(v) => out.copy_from_slice(v),
+        ParamInput::Frames { values: v, .. } => out.copy_from_slice(v),
     }
 }
 

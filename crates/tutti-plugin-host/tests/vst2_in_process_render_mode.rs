@@ -1,11 +1,11 @@
 //! Does a render mode set on the *handle* reach the plugin that renders?
 //!
-//! `PluginHandle::set_render_mode` is the route a bounce driver uses — it is
+//! `AnyThread::set_render_mode` through the handle is the route a bounce driver uses — it is
 //! what `bevy_tutti::plugin_host::render_mode` calls, because `into_parts`
 //! consumes the `Plugin` at load and only the handle survives into the ECS.
 //!
 //! The in-process VST2 path must populate that route. With the `render_mode`
-//! slot left `None`, `handle.set_render_mode` returns `false` and does nothing,
+//! slot left `None`, `any_thread().set_render_mode` returns `false` and does nothing,
 //! and an offline bounce renders every in-process VST2 plugin at live quality
 //! while telling the other three formats otherwise.
 //!
@@ -179,7 +179,10 @@ fn the_handle_accepts_a_render_mode() {
     let loaded = load();
 
     assert!(
-        loaded.handle.set_render_mode(RenderMode::Offline),
+        loaded
+            .handle
+            .any_thread()
+            .set_render_mode(RenderMode::Offline),
         "VST2 answers the process level from a host callback, so there is no \
          query a plugin could decline — this must not report a refusal"
     );
@@ -218,7 +221,12 @@ fn an_offline_mode_set_on_the_handle_reaches_the_plugin() {
     let _guard = lock_probe();
     let mut loaded = load();
 
-    assert!(loaded.handle.set_render_mode(RenderMode::Offline));
+    assert!(
+        loaded
+            .handle
+            .any_thread()
+            .set_render_mode(RenderMode::Offline)
+    );
     drive_block(&mut loaded.unit);
     let cap = read_capture(&loaded.path);
 
@@ -241,7 +249,12 @@ fn restoring_realtime_reaches_the_plugin() {
     let _guard = lock_probe();
     let mut loaded = load();
 
-    assert!(loaded.handle.set_render_mode(RenderMode::Offline));
+    assert!(
+        loaded
+            .handle
+            .any_thread()
+            .set_render_mode(RenderMode::Offline)
+    );
     drive_block(&mut loaded.unit);
     assert_eq!(
         read_capture(&loaded.path).process_level,
@@ -249,7 +262,12 @@ fn restoring_realtime_reaches_the_plugin() {
         "precondition: the plugin must have gone offline first"
     );
 
-    assert!(loaded.handle.set_render_mode(RenderMode::Realtime));
+    assert!(
+        loaded
+            .handle
+            .any_thread()
+            .set_render_mode(RenderMode::Realtime)
+    );
     drive_block(&mut loaded.unit);
     let cap = read_capture(&loaded.path);
 
@@ -268,7 +286,12 @@ fn a_rate_change_keeps_the_render_mode() {
     let _guard = lock_probe();
     let mut loaded = load();
 
-    assert!(loaded.handle.set_render_mode(RenderMode::Offline));
+    assert!(
+        loaded
+            .handle
+            .any_thread()
+            .set_render_mode(RenderMode::Offline)
+    );
     drive_blocks_at(&mut loaded.unit, 44_100.0, BLOCK, BLOCK);
     // The drain point of the rate the audio side parked.
     loaded.handle.editor_idle(&main_thread());

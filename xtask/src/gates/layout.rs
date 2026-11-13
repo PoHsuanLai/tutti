@@ -200,6 +200,10 @@ pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[
         "tutti-midi-protocol",
         &["crates/tutti-midi-protocol/src/universal/read.rs"],
     ),
+    (
+        "tutti-midi-device",
+        &["crates/tutti-midi-device/src/ci/read.rs"],
+    ),
 ];
 
 /// The crates that can reach a C library through `export-ogg`.
@@ -853,6 +857,27 @@ mod tests {
         assert!(check(&m, &NoCargo).findings.iter().any(|l| {
             l.contains("crates/tutti-midi-protocol/src/universal.rs names winnow outside")
         }));
+        // The MIDI-CI grammar is the device crate's one parser module.
+        m.files.insert(
+            "crates/tutti-midi-device/src/ci/read.rs".into(),
+            "use winnow::Parser;\n".into(),
+        );
+        assert!(
+            check(&m, &NoCargo)
+                .findings
+                .iter()
+                .all(|l| !l.contains("tutti-midi-device/src/ci/read.rs"))
+        );
+        m.files.insert(
+            "crates/tutti-midi-device/src/ci.rs".into(),
+            "use winnow::Parser;\n".into(),
+        );
+        assert!(
+            check(&m, &NoCargo)
+                .findings
+                .iter()
+                .any(|l| l.contains("crates/tutti-midi-device/src/ci.rs names winnow outside"))
+        );
     }
 
     #[test]

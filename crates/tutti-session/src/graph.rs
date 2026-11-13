@@ -984,8 +984,8 @@ impl Graph {
             + self
                 .plugins
                 .values()
-                .filter_map(crate::plugin::HostedPlugin::meter)
-                .map(tutti_plugin_host::PluginMeter::reclaim)
+                .filter_map(|hosted| hosted.node.as_ref())
+                .map(|node| node.meter().reclaim())
                 .sum::<usize>();
         pinned
     }
@@ -2712,6 +2712,15 @@ impl Graph {
     #[must_use = "the call refuses a node that does not exist"]
     pub fn node_latency(&self, node: impl Into<NodeKey>) -> Result<Samples, NoSuchNode> {
         self.shape_of(node.into()).map(|s| s.latency.samples())
+    }
+
+    /// What a plugin's view reports of `node`: the figures the graph holds.
+    #[cfg(feature = "plugin")]
+    pub(crate) fn plugin_figures(&self, node: NodeKey) -> crate::plugin_diagnostics::Figures {
+        crate::plugin_diagnostics::Figures {
+            latency: self.node_latency(node).unwrap_or_default(),
+            tail: self.node_tail(node).unwrap_or_default(),
+        }
     }
 
     /// The tail `node` reports.

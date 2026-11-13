@@ -528,8 +528,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  Configuration Request) and `Connection` (the discoverer's steps, time
                  as an `Instant` value), and the MIDI-CI codec (`CiMessage`: Discovery
                  and its Reply, Invalidate MUID, ACK, NAK, over SysEx payload bytes);
+                 the Device Inquiry initiator of a MIDI 1.0 port (`IdentityInquiry`);
                  no OS, no thread, and no dependency but `tutti-ump`, `bitflags`,
-                 `unicode-normalization` (names are NFC) and optional `serde`
+                 `unicode-normalization` (names are NFC), `winnow` (the CI decode,
+                 `ci/read.rs` alone) and optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits;
                  no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
@@ -807,7 +809,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   and `tutti_ump::SysexAssembler` to reassemble; `DiscoveryData::new` takes a
   `tutti_ump::DeviceIdentity`; `Muid::new`
   refuses the reserved range and broadcast, which is a `Destination`). The CI codec has
-  no state machine; design 017 §5, "MIDI-CI", is the rebuild. `CiMessage::decode` returns
+  no state machine; design 017 §5, "MIDI-CI", is the rebuild. `CiMessage::decode` is a `winnow`
+  grammar in `src/ci/read.rs` (the crate's one parser module, listed in `check-layout`'s
+  `WINNOW_HOMES`; no `winnow` type is in a public signature, field or error: the bodies are
+  read through `DiscoveryData::decode_body` and `Nak`/`Ack::decode_body`, which answer `Option`).
+  It returns
   a `Decoded`, and a message it cannot read is an `Unread` that keeps its header so the
   NAK can be addressed (`Unread::nak`); a message carries its own destination (Discovery
   and Invalidate MUID are broadcast, the rest go to one `Muid`), and a value the spec
@@ -819,7 +825,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Extend<Ump>` and allocates nothing, `Connection` (`new` returns `(Self, Action)`, the first `Action::Send`) is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` (an iterator over the devices that settled) from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which answers `Pushed::{Sent, Diverted, Full}` and also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); **the send time is `tutti_midi_runtime::OutputPlan`'s** (the frame's instant on `ClockMap::os_at` + the audio output's latency, `None` while unreported and never a zero, - the device's MIDI latency + the user's `OutputOffset`; now or past is `SendAt::Now`, more than `MAX_OUTPUT_AHEAD` is refused and counted) and every send time is an `Instant` the backend converts to its own clock in one function (`MidiOut::queue_timed`); `Endpoint::reply` has no caller, since tutti publishes no endpoint. **A MIDI 1.0 source is opened as MIDI 1.0 and widened by the ingest node's `Translator`, never by the OS** (ALSA's `UmpVersion`, CoreMIDI's `Midi10` port). A consumer that persists a `DeviceInfo` depends on it with
+  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` (an iterator over the devices that settled) from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which answers `Pushed::{Sent, Diverted, Full}` and also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); **the send time is `tutti_midi_runtime::OutputPlan`'s** (the frame's instant on `ClockMap::os_at` + the audio output's latency, `None` while unreported and never a zero, - the device's MIDI latency + the user's `OutputOffset`; now or past is `SendAt::Now`, more than `MAX_OUTPUT_AHEAD` is refused and counted) and every send time is an `Instant` the backend converts to its own clock in one function (`MidiOut::queue_timed`); `Endpoint::reply` has no caller, since tutti publishes no endpoint. **A MIDI 1.0 port with an output is sent an Identity Request** (M1 p.40, `F0 7E 7F 06 01 F7`) by the same first `poll` (`tutti_midi_device::IdentityInquiry`: sent again once after `INQUIRY_TIMEOUT`, then given up, nothing waits on it); while it is out the input edge copies the port's SysEx7 packets to its stream ring (`HardwareMidiInputs::hear_sysex`; a copy, the graph still hears them) and the reply, read with `tutti_midi_protocol::read`, gives the device's `Endpoint` its `identity` (a `DeviceStream` of `Basis::Inquired`). **A MIDI 1.0 source is opened as MIDI 1.0 and widened by the ingest node's `Translator`, never by the OS** (ALSA's `UmpVersion`, CoreMIDI's `Midi10` port). A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with
@@ -969,8 +975,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   from `clear`, so `prepare` restarts the sweep, and its sine is solved at control points every 16 frames and
   joined by chords; a rate lands whole at its grid point with the phase continuous (**floored at 0.01 Hz, a lane's
   value and a cell's alike**, `MIN_RATE`), the depth glides at most `DELAY_SLEW` frames of delay per frame, the
-  feedback over `GAIN_GLIDE`; the swept loop reads its feedback tap at the delay, so its period is the delay plus
-  one frame, which is not `delay_step`'s (a later, owner-gated change)), the cubic Hermite kernel, the phaser
+  feedback over `GAIN_GLIDE`; the swept loop is `delay_step`'s, so its period is the delay), the cubic Hermite
+  kernel, the phaser
   as a family (`PhaserFamily`, run by `PhaserRecurrence`: not `Grows`, its capacity `()`; its `Stages` (2 to 12,
   refused not clamped), `SweepRange` (finite, bottom at least 20 Hz and not above the top; the 0.90-of-Nyquist
   cap on the top is the member's and the authored top is kept, so a higher rate restores it) and `Stagger` (the
@@ -1688,6 +1694,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `Session::schedule -> Result<(), ScheduleFull>` → `Result<(), ScheduleError>`
   (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). A comment or doc that
   disagrees with the code is the bug.
+- **Dead plugin names** (doc 029 step 4): `PluginHandle::presets(&main) -> Option<Vec<Preset>>` and `load_preset -> Option<bool>` → `-> Result<_, PresetError>` (`Unsupported`, `Refused`, `Lost`), and for a host the session's view, `MainSession::plugin(node)?.presets() -> Result<Presets, PresetError>` (`Presets::{kind, iter, get, current, load_file}`, `PresetEntry::load`; a main-thread call, so not on `Plugin<'_>`), `Plugin::liveness()` and the public `PluginLiveness` (the session's debounce is crate-private now) → `Plugin::health() -> PluginHealth` (`Running`, `Stalled`, `Died { cause }`, `Reloading { attempt, cause }`; the verdicts that remove the node are the events `PluginChange::{Died, GaveUp}`), `Plugin::{controls, meter}` and the handle's `server_pid`, `block_counts`, `dropped_parameter_events`, `terminate` as a host's calls → `Plugin::diagnostics()` (`server_pid`, `block_counts`, `missed_chunks`, `latency`, `tail`, `follows_project_meter`, `reported_latency`, `chunk_in_flight_answered`, `terminate`, and the counts as `tutti_graph::Losses`: `midi_in`, `parameter_points`, `parameter_edits`; the same in either hosting), `Plugin::handle()` → behind `tutti-session`'s `testing` feature (a host uses the views), `Plugin::controls()` / `meter()` → deleted (`Diagnostics::{reported_latency, chunk_in_flight_answered, missed_chunks, follows_project_meter}`), `PluginHandle::set_render_mode` → deleted (the session's `Phase::RenderMode`; `AnyThread::set_render_mode` is the backend's), a plugin's `input_buses()` / `output_buses()` as a host's wiring vocabulary → `Plugin::buses() -> PluginBuses` (`main_input`, `input(i)`, `output(i)`; no `sidechain()`, since no loader marks one and an app wires a key input by index: the graph's `BusRef` and `BusSource`).
 - **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
   restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook
   `LiveSession::on_restart`; `restart_on`, `Session::watch_devices` with four

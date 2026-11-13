@@ -951,7 +951,58 @@ pub unsafe fn get_extension(id: &CStr) -> *const std::ffi::c_void {
     if id == clap_sys::ext::state_context::CLAP_EXT_STATE_CONTEXT {
         return &STATE_CONTEXT_EXT as *const _ as *const std::ffi::c_void;
     }
+    if id == clap_sys::ext::preset_load::CLAP_EXT_PRESET_LOAD
+        && PRESET_LOAD_ENABLED.load(Ordering::SeqCst)
+    {
+        return &PRESET_LOAD_EXT as *const _ as *const std::ffi::c_void;
+    }
     ptr::null()
+}
+
+// ---------------------------------------------------------------------------
+// `clap.preset-load`.
+// ---------------------------------------------------------------------------
+
+/// Whether the plugin answers `clap.preset-load`: off unless
+/// `TUTTI_CLAP_PROBE_PRESET_LOAD=1` is in the environment, so the suites that
+/// need a plugin without the extension (a missing extension is not a refusal)
+/// keep theirs. Set once, by `configure`.
+pub static PRESET_LOAD_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// The extension of a file this plugin takes as a preset.
+pub const PRESET_FILE_SUFFIX: &str = ".tutti-preset";
+
+/// What loading a preset file sets "Cutoff" (index 0) to: a value the host can
+/// read back through the plugin's own parameter calls.
+pub const PRESET_CUTOFF: f64 = 350.0;
+
+static PRESET_LOAD_EXT: clap_sys::ext::preset_load::clap_plugin_preset_load =
+    clap_sys::ext::preset_load::clap_plugin_preset_load {
+        from_location: Some(preset_from_location),
+    };
+
+/// Accepts a file location ending in [`PRESET_FILE_SUFFIX`] and applies it
+/// (Cutoff becomes [`PRESET_CUTOFF`]); declines every other location, so a host
+/// that sends a path of the wrong shape, or an id of another kind, is refused.
+unsafe extern "C" fn preset_from_location(
+    _plugin: *const clap_plugin,
+    location_kind: u32,
+    location: *const c_char,
+    _load_key: *const c_char,
+) -> bool {
+    if location_kind != clap_sys::factory::preset_discovery::CLAP_PRESET_DISCOVERY_LOCATION_FILE
+        || location.is_null()
+    {
+        return false;
+    }
+    // SAFETY: a CLAP entry: `location` is a nul-terminated string for the call.
+    let path = unsafe { CStr::from_ptr(location) };
+    if !path.to_string_lossy().ends_with(PRESET_FILE_SUFFIX) {
+        return false;
+    }
+    ensure_values_init();
+    store_value(0, PRESET_CUTOFF);
+    true
 }
 
 // ---------------------------------------------------------------------------

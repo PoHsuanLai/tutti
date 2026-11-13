@@ -3,8 +3,8 @@
 //! A plugin may render differently without realtime pressure (a convolution
 //! reverb switching to a longer partition, an oversampling saturator raising
 //! its factor). Every format carries the request, and
-//! [`PluginHandle::set_render_mode`](crate::PluginHandle::set_render_mode)
-//! delivers it. Three of the four formats can only take the mode while the
+//! [`AnyThread::set_render_mode`](tutti_plugin_types::AnyThread::set_render_mode)
+//! (the session's, through the handle) delivers it. Three of the four formats can only take the mode while the
 //! plugin is deactivated, so an announcement is a deactivate/reactivate cycle,
 //! and a host announces only when it must: [`needs_announcement`].
 

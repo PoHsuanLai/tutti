@@ -5,7 +5,7 @@
 //! plugin is never marked edited by the phase.
 //!
 //! These are the session halves of `bevy-tutti`'s `plugin_host::health` tests
-//! (the component mirror, `PluginHealth`, and the entity's `AudioNode`
+//! (the component mirror, `PluginLiveness`, and the entity's `AudioNode`
 //! removal stayed with the adapter), moved here when the adapter was parked.
 //! The plugin is a fake backend (`PluginHandle::from_backend`) hosted at a
 //! node with `Graph::host_plugin`, so no `plugin-server` is needed; what the
@@ -24,7 +24,7 @@ use tutti_plugin_host::Liveness;
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::{BridgeError, ParameterInfo, PluginFailure};
 use tutti_plugin_types::{Normalized, ParamId};
-use tutti_session::{Phase, PhaseCx, PluginLiveness, Session, SessionEvent};
+use tutti_session::{Phase, PhaseCx, PluginHealth, Session, SessionEvent};
 use tutti_session::{PluginChange, PluginEvent};
 use tutti_types::SampleRate;
 
@@ -207,7 +207,7 @@ fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
 
 /// **A plugin is not written off on the first bad observation.** Pinned at
 /// every count below the threshold, because an off-by-one here would unwire a
-/// live plugin: it is Failing with that many consecutive observations, and
+/// live plugin: it reads Died (not yet written off), and
 /// its node stays.
 #[test]
 fn a_crash_is_not_declared_until_the_debounce_elapses() {
@@ -217,8 +217,8 @@ fn a_crash_is_not_declared_until_the_debounce_elapses() {
         assert!(died.is_empty(), "at {frames} observation(s): {died:?}");
         assert!(
             matches!(
-                s.plugin(node).expect("hosted").liveness(),
-                PluginLiveness::Failing { consecutive } if *consecutive == frames as u8
+                s.plugin(node).expect("hosted").health(),
+                PluginHealth::Died { .. }
             ),
             "at {frames} observation(s) the plugin is failing, not dead"
         );
@@ -251,8 +251,8 @@ fn a_live_plugin_is_never_declared_dead() {
     let died = observe(&mut s, Liveness::DEATHS as usize + 5);
     assert!(died.is_empty(), "{died:?}");
     assert!(matches!(
-        s.plugin(node).expect("hosted").liveness(),
-        PluginLiveness::Healthy
+        s.plugin(node).expect("hosted").health(),
+        PluginHealth::Running
     ));
     assert!(s.graph_ref().contains(node), "a healthy plugin stays wired");
 }

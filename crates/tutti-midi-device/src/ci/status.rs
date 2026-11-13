@@ -92,29 +92,13 @@ macro_rules! status_message {
             /// a body that stops before a field defaults it: "the fields
             /// defined in the received version" (§5.3).
             pub(crate) fn decode_body(b: &[u8]) -> Option<Self> {
-                let byte = |i: usize| -> Option<U7> {
-                    b.get(i).map_or(Some(U7::default()), |&v| U7::new(v))
-                };
-                let mut details = [U7::default(); 5];
-                for (i, slot) in details.iter_mut().enumerate() {
-                    *slot = byte(3 + i)?;
-                }
-                let message = match (b.get(8), b.get(9)) {
-                    (Some(&lo), Some(&hi)) => {
-                        if lo & 0x80 != 0 || hi & 0x80 != 0 {
-                            return None;
-                        }
-                        let len = usize::from(lo) | (usize::from(hi) << 7);
-                        MessageText::decode(b.get(10..10 + len)?)
-                    }
-                    _ => MessageText::default(),
-                };
+                let status = super::read::status_body(b)?;
                 Some(Self {
-                    $sub: byte(0)?,
-                    status_code: byte(1)?,
-                    status_data: byte(2)?,
-                    details,
-                    message,
+                    $sub: status.sub_id2,
+                    status_code: status.status_code,
+                    status_data: status.status_data,
+                    details: status.details,
+                    message: status.message,
                 })
             }
         }

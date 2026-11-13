@@ -1,5 +1,5 @@
 //! A plugin host, end to end (design 029): scan, pick, load, wire, play,
-//! set a parameter, save the state, bounce.
+//! set a parameter, save the state, read its health, diagnostics and presets, bounce.
 //!
 //! ```text
 //! cargo build -p tutti-plugin-server -p tutti-plugin-probe
@@ -151,7 +151,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_path.display()
     );
 
-    // 8. Events. What the plugin reports (its own edit of a parameter, a new
+    // 8. Health and presets. `health()` is one reading of the plugin's life
+    //    (running, stalled, dead and about to be written off, or being
+    //    reloaded). Presets are the main thread's: `ui.plugin(node)?.presets()`
+    //    says whether the plugin lists them (`Browse`: load an entry by its id)
+    //    or loads them from files (`File`, CLAP), and refuses a plugin with
+    //    none (`PresetError::Unsupported`).
+    eprintln!("health: {:?}", hosted.health());
+    //    Diagnostics are the corner of the plugin's panel: its server (none in
+    //    process), its dropouts, what it lost, and the latency the graph
+    //    compensates for it, the same whichever hosting runs it. `buses()` hands
+    //    out the graph's bus handles: a key input is wired by
+    //    index (no format marks a sidechain): `connect(kick.bus_out(0),
+    //    hosted.buses().input(1).unwrap())`.
+    let diagnostics = hosted.diagnostics();
+    eprintln!(
+        "server {:?}, latency {:?}, lost MIDI {:?}, input buses: {}",
+        diagnostics.server_pid(),
+        diagnostics.latency(),
+        diagnostics.midi_in(),
+        hosted.buses().input_count()
+    );
+    {
+        let mut ui = session.main(main);
+        match ui.plugin(node)?.presets() {
+            Ok(presets) => match presets.kind() {
+                PresetKind::Browse => {
+                    eprintln!("{} preset(s)", presets.len());
+                    if let Some(first) = presets.iter().next() {
+                        first.load()?;
+                        eprintln!("loaded {:?}", first.name());
+                    }
+                }
+                _ => eprintln!("loads preset files, lists none"),
+            },
+            Err(PresetError::Unsupported) => eprintln!("no presets"),
+            Err(other) => return Err(other.into()),
+        }
+    }
+
+    // 9. Events. What the plugin reports (its own edit of a parameter, a new
     //    tail) and what happens to it (died, reloading) is one stream: the
     //    session's `SessionEvent::Plugin`, named by node. A host reads it from
     //    `update()`; there is no callback to install and none to clear.
@@ -163,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 9. Bounce four beats to a 24-bit WAV. The plugin hears Offline while it
+    // 10. Bounce four beats to a 24-bit WAV. The plugin hears Offline while it
     //    renders and Realtime after.
     let job = session.bounce_start(
         Bounce::project()

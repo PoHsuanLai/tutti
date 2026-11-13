@@ -25,9 +25,10 @@ use crate::{
     api::{self, AEffect, ChunkError, PluginFlags, PluginMain, Supported, TimeInfo, consts::*},
     buffer::AudioBuffer,
     channels::ChannelInfo,
-    editor::Rect,
+    editor::{KeyCode, Rect},
     interfaces,
     plugin::{self, Category, Info},
+    speaker::{self, ArrangementRead, SpeakerArrangement},
 };
 
 #[repr(i32)]
@@ -2195,6 +2196,98 @@ impl PluginInstance {
                 0.0,
             );
         });
+    }
+
+    /// `effSetSpeakerArrangement`: proposes `input` and `output`, whether the plugin keeps
+    /// them. The input travels in `value` and the output in `ptr`, both as pointers to a
+    /// `VstSpeakerArrangement`. Legal only while the plugin is suspended, so it is
+    /// exclusive and answers `false` without a call once the plugin is resumed.
+    ///
+    /// `true` is the plugin's `1`; what it kept is [`speaker_arrangement`](Self::speaker_arrangement).
+    pub fn set_speaker_arrangement(
+        &mut self,
+        _main: &MainThread,
+        input: &SpeakerArrangement,
+        output: &SpeakerArrangement,
+    ) -> bool {
+        if self.resumed {
+            return false;
+        }
+        let mut input = input.encode();
+        let mut output = output.encode();
+        self.exclusive(|| {
+            self.dispatch(
+                plugin::OpCode::SetSpeakerArrangement,
+                0,
+                input.as_mut_ptr() as isize,
+                output.as_mut_ptr().cast::<c_void>(),
+                0.0,
+            ) == 1
+        })
+    }
+
+    /// `effGetSpeakerArrangement`: the input and output arrangements the plugin holds.
+    ///
+    /// # Errors
+    ///
+    /// [`ArrangementRead::Unanswered`] when the plugin returns 0, and
+    /// [`ArrangementRead::Malformed`] when it writes a type, speaker or channel count the
+    /// format does not have.
+    pub fn speaker_arrangement(
+        &self,
+        _main: &MainThread,
+    ) -> Result<(SpeakerArrangement, SpeakerArrangement), ArrangementRead> {
+        let mut input = speaker::read_buffer();
+        let mut output = speaker::read_buffer();
+        let answered = self.dispatch(
+            plugin::OpCode::GetSpeakerArrangement,
+            0,
+            input.as_mut_ptr() as isize,
+            output.as_mut_ptr().cast::<c_void>(),
+            0.0,
+        );
+        if answered != 1 {
+            return Err(ArrangementRead::Unanswered);
+        }
+        match (
+            SpeakerArrangement::decode(&input),
+            SpeakerArrangement::decode(&output),
+        ) {
+            (Some(input), Some(output)) => Ok((input, output)),
+            _ => Err(ArrangementRead::Malformed),
+        }
+    }
+
+    /// `effEditKeyDown` for `key`, to the open editor: whether the plugin used the key.
+    /// `false` with no call when no editor is open.
+    pub fn editor_key_down(&mut self, _main: &MainThread, key: KeyCode) -> bool {
+        self.editor_key(plugin::OpCode::EditorKeyDown, key)
+    }
+
+    /// `effEditKeyUp`, as [`editor_key_down`](Self::editor_key_down).
+    pub fn editor_key_up(&mut self, _main: &MainThread, key: KeyCode) -> bool {
+        self.editor_key(plugin::OpCode::EditorKeyUp, key)
+    }
+
+    /// The key opcodes carry the ASCII character in `index`, the virtual key in `value` and
+    /// the modifier mask in `opt`, whose `f32` bits are the mask (the receiver reads
+    /// `opt.to_bits()`).
+    fn editor_key(&self, opcode: plugin::OpCode, key: KeyCode) -> bool {
+        if !self.editor_open {
+            return false;
+        }
+        self.dispatch(
+            opcode,
+            // The ASCII character, or 0 for a key with none.
+            if key.character.is_ascii() {
+                key.character as i32
+            } else {
+                0
+            },
+            isize::from(key.key),
+            ptr::null_mut(),
+            f32::from_bits(u32::from(key.modifier)),
+        ) == 1
     }
 
     /// `effCanDo`.

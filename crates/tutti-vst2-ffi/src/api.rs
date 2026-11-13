@@ -373,7 +373,7 @@ pub struct ChannelProperties {
 /// Tells the host how the channels are intended to be used in the plugin. Only useful for some
 /// hosts.
 #[repr(i32)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpeakerArrangementType {
     /// User defined arrangement.
     Custom = -2,
@@ -451,6 +451,48 @@ pub enum SpeakerArrangementType {
 
     /// L R C Lfe Ls Rs Tfl Tfc Tfr Trl Trr Lfe2
     Surround102,
+}
+
+impl SpeakerArrangementType {
+    /// The type a `kSpeakerArr*` constant names, or `None` for a number that is none.
+    #[must_use]
+    pub fn from_raw(raw: i32) -> Option<Self> {
+        use SpeakerArrangementType::*;
+        const ALL: [SpeakerArrangementType; 31] = [
+            Custom,
+            Empty,
+            Mono,
+            Stereo,
+            StereoSurround,
+            StereoCenter,
+            StereoSide,
+            StereoCLfe,
+            Cinema30,
+            Music30,
+            Cinema31,
+            Music31,
+            Cinema40,
+            Music40,
+            Cinema41,
+            Music41,
+            Surround50,
+            Surround51,
+            Cinema60,
+            Music60,
+            Cinema61,
+            Music61,
+            Cinema70,
+            Music70,
+            Cinema71,
+            Music71,
+            Cinema80,
+            Music80,
+            Cinema81,
+            Music81,
+            Surround102,
+        ];
+        ALL.into_iter().find(|kind| *kind as i32 == raw)
+    }
 }
 
 /// Used to specify whether functionality is supported.

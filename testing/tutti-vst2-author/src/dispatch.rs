@@ -9,6 +9,7 @@ use tutti_vst2_ffi::{
     buffer::AudioBuffer,
     editor::{Key, KeyCode, Rect},
     interfaces::{copy_string, read_string},
+    speaker::SpeakerArrangement,
 };
 
 use crate::aeffect::AEffectExt as _;
@@ -389,27 +390,58 @@ fn dispatch_inner(
         //OpCode::GetParamInfo => { /*TODO*/ }
         Ok(OpCode::GetApiVersion) => return 2400,
 
+        // `index` is the ASCII character, `value` the virtual key, and `opt`'s bits the
+        // modifier mask; the answer is 1 when the editor used the key.
         Ok(OpCode::EditorKeyDown) => {
-            if let Some(editor) = get_editor()
-                && let Ok(key) = Key::try_from(value)
-            {
-                editor.key_down(KeyCode {
+            return match (get_editor(), Key::try_from(value)) {
+                (Some(editor), Ok(key)) => isize::from(editor.key_down(KeyCode {
                     character: index as u8 as char,
                     key,
                     modifier: opt.to_bits() as u8,
-                });
-            }
+                })),
+                _ => 0,
+            };
         }
         Ok(OpCode::EditorKeyUp) => {
-            if let Some(editor) = get_editor()
-                && let Ok(key) = Key::try_from(value)
-            {
-                editor.key_up(KeyCode {
+            return match (get_editor(), Key::try_from(value)) {
+                (Some(editor), Ok(key)) => isize::from(editor.key_up(KeyCode {
                     character: index as u8 as char,
                     key,
                     modifier: opt.to_bits() as u8,
-                });
-            }
+                })),
+                _ => 0,
+            };
+        }
+        // `value` is the input `VstSpeakerArrangement*` and `ptr` the output.
+        Ok(OpCode::SetSpeakerArrangement) => {
+            // SAFETY: VST2 ABI: the host passes pointers to arrangements sized for their
+            // channel counts, or null.
+            let arrangements = unsafe {
+                (
+                    SpeakerArrangement::from_ptr(value as *const c_void),
+                    SpeakerArrangement::from_ptr(ptr),
+                )
+            };
+            return match arrangements {
+                (Some(input), Some(output)) => {
+                    isize::from(get_plugin().set_speaker_arrangement(&input, &output))
+                }
+                _ => 0,
+            };
+        }
+        Ok(OpCode::GetSpeakerArrangement) => {
+            return match get_plugin().speaker_arrangement() {
+                Some((input, output)) => {
+                    // SAFETY: VST2 ABI: the host passes buffers with room for the
+                    // plugin's channels.
+                    unsafe {
+                        input.write_to_ptr(value as *mut c_void);
+                        output.write_to_ptr(ptr);
+                    }
+                    1
+                }
+                None => 0,
+            };
         }
         Ok(OpCode::StartProcess) => get_plugin().start_process(),
         Ok(OpCode::StopProcess) => get_plugin().stop_process(),

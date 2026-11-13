@@ -12,6 +12,7 @@ use crate::{
     channels::ChannelInfo,
     editor::Editor,
     host::{self, Host},
+    speaker::SpeakerArrangement,
 };
 
 /// Plugin type. Generally either Effect or Synth.
@@ -517,6 +518,26 @@ pub trait Plugin: Send {
     /// relying on soft bypass rather than muting the plugin itself.
     fn set_bypass(&mut self, bypass: bool) -> bool {
         false
+    }
+
+    /// Takes the host's proposed speaker arrangements, answering `effSetSpeakerArrangement`
+    /// (42). Return `true` to accept both.
+    ///
+    /// The default is `false`: declining, as an unimplemented opcode does.
+    ///
+    /// This method is only called while the plugin is in the *suspended* state.
+    fn set_speaker_arrangement(
+        &mut self,
+        input: &SpeakerArrangement,
+        output: &SpeakerArrangement,
+    ) -> bool {
+        false
+    }
+
+    /// The input and output arrangements the plugin holds, answering
+    /// `effGetSpeakerArrangement` (69). `None` answers 0, "no arrangement to report".
+    fn speaker_arrangement(&self) -> Option<(SpeakerArrangement, SpeakerArrangement)> {
+        None
     }
 
     /// The plugin's own name, answering `effGetEffectName` (45).

@@ -18,7 +18,7 @@ extern crate log;
 
 use std::ptr;
 
-pub use tutti_vst2_ffi::{api, buffer, channels, editor, event, host, plugin};
+pub use tutti_vst2_ffi::{api, buffer, channels, editor, event, host, plugin, speaker};
 
 mod aeffect;
 mod cache;

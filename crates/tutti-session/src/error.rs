@@ -317,7 +317,7 @@ pub enum MidiError {
 /// Who holds the hardware input's routes when the other declarer is refused
 /// ([`MidiError::TwoRouteDeclarers`]).
 #[cfg(feature = "midi")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RouteDeclarer {
     /// The session's own rules: `Midi::route` and `Midi::set_route_fallback`.
     Session,

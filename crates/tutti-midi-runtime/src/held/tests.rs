@@ -70,6 +70,7 @@ fn a_release_ends_notes_before_it_lifts_pedals_and_centres_the_bend() {
 /// **A release for one Group leaves the other's alone** (a Group is a cable,
 /// M2-104 section 2.1.2): notes on Groups 1 and 2, release Group 2, and
 /// Group 1's note is still held.
+/// Spec: m2-104/2.1.2#2
 #[test]
 fn a_release_for_one_group_leaves_the_others_held() {
     let mut held = HeldState::new();

@@ -1,0 +1,432 @@
+# MIDI 2.0 UMP and Protocol (M2-104 v1.1.2) inventory. The spec text is not in
+# the repo: `TUTTI_MIDI_SPECS=<dir> cargo xtask conformance-inventory midi`
+# regenerates the id, kind, section and facts columns from the text that
+# `pdftotext -layout` (26.01.0) makes of the M2-104 PDF in that directory (or a
+# .txt of it beside the PDF); the other columns are written by hand, in our own
+# words. `cargo xtask check-conformance` holds the generated columns to the
+# text when `TUTTI_MIDI_SPECS` is set. Nothing of the spec is quoted here: ids,
+# section numbers, keyword kinds and functional facts only.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids:
+#   m2-104/<section>#<n>          the nth sentence under the numbered section
+#                                 (appendix letters lowercase: d.2.1) that carries
+#                                 a conformance word. kind: shall is required,
+#                                 should recommended, may permitted; the negated
+#                                 forms keep the kind and carry the fact neg=1.
+#   m2-104/mt/<mt>                a Message Type: facts mt, bytes (the UMP size)
+#   m2-104/msg/<mt>/<status>      a defined message: <mt> and <status> are
+#                                 lowercase hex without 0x; Flex Data (mt d) is
+#                                 <bank>.<status>, two hex digits each. Facts:
+#                                 mt, status, bank (Flex Data), bytes
+# side: sender, receiver or both (todo marks a row not yet read).
+m2-104/1.3#1 | both |  | recommended | M2-104 §1.3 | the spec gives the packet payload only; each transport spec defines the wire format |  |  |
+m2-104/1.4#1 | both |  | permitted | M2-104 §1.4 | a device can have one or more Function Blocks |  |  |
+m2-104/1.6.1#1 | both |  | permitted | M2-104 §1.6.1 | glossary remark on a preferred pitch-interval term, no behaviour |  |  |
+m2-104/1.6.1#2 | both |  | permitted | M2-104 §1.6.1 | glossary: a Profile can list mandatory and optional messages, definition only |  |  |
+m2-104/1.6.1#3 | both |  | permitted | M2-104 §1.6.1 | glossary: Property Exchange reads another device's properties, definition only |  |  |
+m2-104/1.6.1#4 | both |  | recommended | M2-104 §1.6.1 | glossary: tempo is clocks per time unit, definition only |  |  |
+m2-104/1.6.1#5 | both |  | permitted | M2-104 §1.6.1 | glossary: a Transaction can have several replies, definition only |  |  |
+m2-104/1.6.1#6 | both |  | permitted | M2-104 §1.6.1 | glossary: a Transaction can be a longer multi-step exchange, definition only |  |  |
+m2-104/1.6.1#7 | both |  | permitted | M2-104 §1.6.1 | glossary: UMP MIDI 1.0 devices can use the extended message types |  |  |
+m2-104/1.8#1 | both |  | permitted | M2-104 §1.8 | note: a message can define a text encoding other than the default |  |  |
+m2-104/1.8#2 | both |  | required | M2-104 §1.8 | text in a message carries no byte order mark | neg=1 |  |
+m2-104/2.1#1 | both |  | required | M2-104 §2.1 | a packet is one to four 32-bit words |  |  |
+m2-104/2.1#2 | both |  | required | M2-104 §2.1 | a packet holds one whole message or one part of a long data message, nothing more |  |  |
+m2-104/2.1.1#1 | both |  | permitted | M2-104 §2.1.1 | a device's internal word format is free, native endian included |  |  |
+m2-104/2.1.2#1 | both |  | required | M2-104 §2.1.2 | the top four bits of every packet are the message type |  |  |
+m2-104/2.1.2#2 | both |  | required | M2-104 §2.1.2 | each Group has 16 channels, separate from every other Group's |  |  |
+m2-104/2.1.2#3 | both |  | permitted | M2-104 §2.1.2 | packets for different Groups can be interleaved in any order |  |  |
+m2-104/2.1.2#4 | both |  | required | M2-104 §2.1.2 | a message without a channel field applies to every channel of its Group |  |  |
+m2-104/2.1.2#5 | both |  | permitted | M2-104 §2.1.2 | a reserved message type may later be defined with or without a group field |  |  |
+m2-104/2.1.3#1 | sender |  | required | M2-104 §2.1.3 | a message marked reserved is never sent | neg=1 |  |
+m2-104/2.1.3#2 | sender |  | required | M2-104 §2.1.3 | reserved fields are written as zero and carry no meaning |  |  |
+m2-104/2.1.3#3 | sender |  | required | M2-104 §2.1.3 | bits marked r are written as zero and carry no meaning |  |  |
+m2-104/2.1.3#4 | sender |  | required | M2-104 §2.1.3 | undefined option-flag bits are written as zero |  |  |
+m2-104/2.1.3#5 | receiver |  | required | M2-104 §2.1.3 | receivers, translators and transports do not rely on reserved bits reading zero | neg=1 |  |
+m2-104/2.1.4#1 | sender |  | required | M2-104 §2.1.4 | a reserved message type is never sent | neg=1 |  |
+m2-104/3.2#1 | both |  | permitted | M2-104 §3.2 | a UMP MIDI 1.0 device can use the traditional MIDI 1.0 message types |  |  |
+m2-104/3.2#2 | both |  | permitted | M2-104 §3.2 | it can add the extension message types within the same Group |  |  |
+m2-104/3.2#3 | sender |  | required | M2-104 §3.2 | a UMP MIDI 1.0 device never sends MIDI 2.0 Channel Voice messages | neg=1 |  |
+m2-104/3.2.1.2#1 | both |  | permitted | M2-104 §3.2.1.2 | extension message types usable by UMP MIDI 1.0 devices: utility, SysEx 8, Flex Data, Stream |  |  |
+m2-104/3.2.1.2#2 | sender |  | required | M2-104 §3.2.1.2 | restates that the MIDI 1.0 Protocol never uses message type 4 | neg=1 |  |
+m2-104/3.2.2#1 | both |  | required | M2-104 §3.2.2 | future messages will say whether UMP MIDI 1.0 devices can use them | neg=1 |  |
+m2-104/3.3#1 | both |  | permitted | M2-104 §3.3 | a MIDI 2.0 Protocol device can use the core messages and other defined types in the same Group |  |  |
+m2-104/3.3.1#1 | both |  | permitted | M2-104 §3.3.1 | these message types carry MIDI 2.0 functionality |  |  |
+m2-104/3.3.1#2 | sender |  | required | M2-104 §3.3.1 | a MIDI 2.0 Protocol device never sends MIDI 1.0 Channel Voice messages | neg=1 |  |
+m2-104/3.3.2#1 | both |  | required | M2-104 §3.3.2 | future messages will say whether MIDI 2.0 Protocol devices can use them | neg=1 |  |
+m2-104/4.1#1 | both |  | permitted | M2-104 §4.1 | JR timestamps can also carry accurate timing across a link with jitter |  |  |
+m2-104/4.1.1#1 | both |  | required | M2-104 §4.1.1 | a translator that understands JR timestamps schedules MIDI 1.0 output by the received timestamps |  |  |
+m2-104/4.1.1#2 | both |  | permitted | M2-104 §4.1.1 | a translator can generate JR timestamps from reception time when the output has them |  |  |
+m2-104/5#1 | both |  | permitted | M2-104 §5 | the UMP version tells which messages and formats a device can use, discovery messages included |  |  |
+m2-104/6.1#1 | both |  | permitted | M2-104 §6.1 | a device can declare one Function Block per function it offers |  |  |
+m2-104/6.1#2 | both |  | permitted | M2-104 §6.1 | two devices can move their blocks' Groups so they send and receive on matching Groups |  |  |
+m2-104/6.1#3 | both |  | permitted | M2-104 §6.1 | example: a device moves its keyboard block between Groups to match its peer |  |  |
+m2-104/6.1.1#1 | both |  | permitted | M2-104 §6.1.1 | a block starts on any Group and spans one to sixteen Groups |  |  |
+m2-104/6.1.1#2 | both |  | permitted | M2-104 §6.1.1 | an endpoint declares at most 32 blocks |  |  |
+m2-104/6.1.1#3 | both |  | permitted | M2-104 §6.1.1 | a block can be bidirectional, input only or output only |  |  |
+m2-104/6.1.1#4 | both |  | permitted | M2-104 §6.1.1 | a block can change its first Group and span |  |  |
+m2-104/6.1.1#5 | both |  | permitted | M2-104 §6.1.1 | some designs need blocks to overlap |  |  |
+m2-104/6.1.1#6 | both |  | permitted | M2-104 §6.1.1 | any number of blocks can sit on one Group |  |  |
+m2-104/6.2#1 | both |  | permitted | M2-104 §6.2 | an endpoint can proxy MIDI 1.0 byte-stream ports on the UMP stream |  |  |
+m2-104/6.2#2 | both |  | permitted | M2-104 §6.2 | such connections can be shown as Function Blocks |  |  |
+m2-104/6.2#3 | both |  | permitted | M2-104 §6.2 | a MIDI 1.0 block on a MIDI 2.0 endpoint can use the MIDI 1.0 Protocol |  |  |
+m2-104/6.2#4 | both |  | recommended | M2-104 §6.2 | on MIDI 2.0, a device has a translator for blocks that stand for MIDI 1.0 ports |  |  |
+m2-104/6.2.1.1#1 | both |  | recommended | M2-104 §6.2.1.1 | a MIDI 1.0 in and out pair is one block on one Group |  |  |
+m2-104/6.2.1.1#2 | both |  | permitted | M2-104 §6.2.1.1 | that pairing suits internal MIDI 1.0 functions and bidirectional external ports |  |  |
+m2-104/6.2.1.2#1 | both |  | recommended | M2-104 §6.2.1.2 | ports not used as pairs are each one single-Group block |  |  |
+m2-104/6.2.1.2#2 | both |  | permitted | M2-104 §6.2.1.2 | several such blocks can share a Group when needed |  |  |
+m2-104/6.2.2#1 | both |  | permitted | M2-104 §6.2.2 | restates that several blocks can share a Group |  |  |
+m2-104/6.2.2#2 | both |  | permitted | M2-104 §6.2.2 | MIDI 1.0 blocks can overlap non-MIDI 1.0 blocks on a Group |  |  |
+m2-104/7.1.1#1 | both |  | permitted | M2-104 §7.1.1 | a device can ask an endpoint for basic information |  |  |
+m2-104/7.1.1#2 | receiver |  | required | M2-104 §7.1.1 | on Endpoint Discovery, compare the received version with its own to choose behaviour |  |  |
+m2-104/7.1.1#3 | receiver |  | required | M2-104 §7.1.1 | a newer received version: process only own-version fields, ignore appended fields and reserved values |  |  |
+m2-104/7.1.1#4 | receiver |  | required | M2-104 §7.1.1 | an older received version: process only what that version defines |  |  |
+m2-104/7.1.2#1 | sender |  | required | M2-104 §7.1.2 | reply to an Endpoint Discovery asking for endpoint info with an Endpoint Info Notification |  |  |
+m2-104/7.1.2#2 | sender |  | recommended | M2-104 §7.1.2 | send an Endpoint Info Notification when any of its properties changes |  |  |
+m2-104/7.1.2#3 | sender |  | required | M2-104 §7.1.2 | with the static-blocks bit set, never change block properties after discovery | neg=1 |  |
+m2-104/7.1.2#4 | sender |  | required | M2-104 §7.1.2 | the declared block count never changes | neg=1 |  |
+m2-104/7.1.2#5 | sender |  | permitted | M2-104 §7.1.2 | the number of active blocks can change through Function Block messages |  |  |
+m2-104/7.1.3#1 | sender |  | permitted | M2-104 §7.1.3 | a Device Identity Notification can be sent any time or when asked for by the filter |  |  |
+m2-104/7.1.3#2 | both |  | permitted | M2-104 §7.1.3 | the revision field is usually the software or firmware version, possibly hardware |  |  |
+m2-104/7.1.4#1 | sender |  | permitted | M2-104 §7.1.4 | an Endpoint Name Notification can be sent any time or when asked for by the filter |  |  |
+m2-104/7.1.4#2 | both |  | permitted | M2-104 §7.1.4 | the endpoint name can span several packets |  |  |
+m2-104/7.1.4#3 | sender |  | required | M2-104 §7.1.4 | an endpoint name is at most 98 bytes: one Complete packet or Start, up to five Continue, End | neg=1 |  |
+m2-104/7.1.4#4 | sender |  | required | M2-104 §7.1.4 | name data left over in the last packet is zero-filled |  |  |
+m2-104/7.1.4#5 | sender |  | required | M2-104 §7.1.4 | that zero fill happens only in an End or Complete packet |  |  |
+m2-104/7.1.5#1 | sender |  | recommended | M2-104 §7.1.5 | devices declare a Product Instance Id |  |  |
+m2-104/7.1.5#2 | sender |  | recommended | M2-104 §7.1.5 | the Product Instance Id is preferably the serial number and unique per manufacturer, family and model |  |  |
+m2-104/7.1.5#3 | sender |  | permitted | M2-104 §7.1.5 | a Product Instance Id can be sent any time or when asked for by the filter |  |  |
+m2-104/7.1.5#4 | sender |  | required | M2-104 §7.1.5 | the Product Instance Id is ASCII text with codes 32 to 126 |  |  |
+m2-104/7.1.5#5 | both |  | permitted | M2-104 §7.1.5 | the Product Instance Id can span several packets |  |  |
+m2-104/7.1.5#6 | sender |  | required | M2-104 §7.1.5 | a Product Instance Id is at most 42 bytes: Complete, or Start, optional Continue, End | neg=1 |  |
+m2-104/7.1.5#7 | sender |  | required | M2-104 §7.1.5 | Product Instance Id data left over in the last packet is zero-filled |  |  |
+m2-104/7.1.5#8 | sender |  | required | M2-104 §7.1.5 | that zero fill happens only in an End or Complete packet |  |  |
+m2-104/7.1.6.2#1 | sender |  | recommended | M2-104 §7.1.6.2 | do not use the requested protocol until the Stream Configuration Notification reply arrives | neg=1 |  |
+m2-104/7.1.6.2#2 | both |  | recommended | M2-104 §7.1.6.2 | after selection all data uses the selected protocol, except a MIDI 1.0 block on a MIDI 2.0 endpoint |  |  |
+m2-104/7.1.6.2#3 | sender |  | required | M2-104 §7.1.6.2 | after requesting JR timestamps at the peer, send none until the notification reply arrives | neg=1 |  |
+m2-104/7.1.6.2#4 | receiver |  | required | M2-104 §7.1.6.2 | when asked to transmit JR timestamps, prefix every message with one |  |  |
+m2-104/7.1.6.2#5 | receiver |  | recommended | M2-104 §7.1.6.2 | after asking the peer to send JR timestamps, expect none until the notification reply arrives | neg=1 |  |
+m2-104/7.1.6.3#1 | sender |  | required | M2-104 §7.1.6.3 | an endpoint sends a Stream Configuration Notification in the listed situations |  |  |
+m2-104/7.1.7#1 | sender |  | recommended | M2-104 §7.1.7 | individual block requests use block numbers 0 to 31 |  |  |
+m2-104/7.1.8#1 | sender |  | required | M2-104 §7.1.8 | reply with a Function Block Info Notification when discovery asks for block info |  |  |
+m2-104/7.1.8#2 | sender |  | required | M2-104 §7.1.8 | a discovery for all blocks gets one info notification per block |  |  |
+m2-104/7.1.8#3 | sender |  | recommended | M2-104 §7.1.8 | an endpoint with changeable blocks sends info when a block property changes |  |  |
+m2-104/7.1.8#4 | both |  | recommended | M2-104 §7.1.8 | an active block should be processed by the other side |  |  |
+m2-104/7.1.8#5 | sender |  | required | M2-104 §7.1.8 | with static blocks declared, no block is inactive and every block's active bit is set | neg=1 |  |
+m2-104/7.1.8#6 | sender |  | required | M2-104 §7.1.8 | a MIDI 1.0 port block spans exactly one Group |  |  |
+m2-104/7.1.8#7 | sender |  | recommended | M2-104 §7.1.8 | avoid UI hints that contradict the declared direction |  |  |
+m2-104/7.1.8#8 | sender |  | required | M2-104 §7.1.8 | an output-only block does not declare itself primarily a receiver | neg=1 |  |
+m2-104/7.1.8#9 | sender |  | required | M2-104 §7.1.8 | a UMP 1.1 implementation reports version 1 or higher |  |  |
+m2-104/7.1.9#1 | sender |  | permitted | M2-104 §7.1.9 | a Function Block Name Notification can be sent when asked for by the filter |  |  |
+m2-104/7.1.9#2 | sender |  | required | M2-104 §7.1.9 | a name request for all blocks gets one name notification per block |  |  |
+m2-104/7.1.9#3 | sender |  | permitted | M2-104 §7.1.9 | a name notification can be sent any time unless blocks are declared static |  |  |
+m2-104/7.1.9#4 | both |  | permitted | M2-104 §7.1.9 | a block name can span several packets |  |  |
+m2-104/7.1.9#5 | sender |  | required | M2-104 §7.1.9 | a block name is at most 91 bytes: Complete, or Start, up to five Continue, End | neg=1 |  |
+m2-104/7.1.9#6 | sender |  | required | M2-104 §7.1.9 | block name data left over in the last packet is zero-filled |  |  |
+m2-104/7.1.9#7 | sender |  | required | M2-104 §7.1.9 | that zero fill happens only in an End or Complete packet |  |  |
+m2-104/7.1.9#8 | sender |  | recommended | M2-104 §7.1.9 | consider small displays and limited character sets when choosing a name |  |  |
+m2-104/7.1.10#1 | sender |  | required | M2-104 §7.1.10 | in a clip file, Start of Clip is preceded by a Delta Clockstamp |  |  |
+m2-104/7.1.10#2 | sender |  | recommended | M2-104 §7.1.10 | musical clip content starts its first bar at the Start of Clip |  |  |
+m2-104/7.1.11#1 | sender |  | required | M2-104 §7.1.11 | a clip file's last event is an End of Clip preceded by a Delta Clockstamp |  |  |
+m2-104/7.2.2.1#1 | sender |  | required | M2-104 §7.2.2.1 | a JR Clock goes out at its stated time, as exactly as the sender can manage |  |  |
+m2-104/7.2.2.1#2 | sender |  | required | M2-104 §7.2.2.1 | send a JR Clock at least every 250 milliseconds |  |  |
+m2-104/7.2.2.1#3 | receiver |  | permitted | M2-104 §7.2.2.1 | a receiver can smooth JR Clock arrival times to get a steady clock |  |  |
+m2-104/7.2.2.1#4 | receiver |  | required | M2-104 §7.2.2.1 | the receiver applies a delay sized from the measured jitter when rendering |  |  |
+m2-104/7.2.2.1#5 | sender |  | permitted | M2-104 §7.2.2.1 | a sender can send extra JR Clocks at a shorter period |  |  |
+m2-104/7.2.2.1#6 | receiver |  | recommended | M2-104 §7.2.2.1 | a receiver draws no conclusion from the interval between JR Clocks | neg=1 |  |
+m2-104/7.2.2.1#7 | sender |  | required | M2-104 §7.2.2.1 | send a JR Clock at least every 250 ms to resolve the 16-bit time wrap |  |  |
+m2-104/7.2.2.2#1 | sender |  | required | M2-104 §7.2.2.2 | a JR Timestamp precedes every non-timestamp message except simultaneous ones |  |  |
+m2-104/7.2.2.2#2 | receiver |  | recommended | M2-104 §7.2.2.2 | map each message time from the sender's clock into the receiver's clock |  |  |
+m2-104/7.2.2.2#3 | receiver |  | required | M2-104 §7.2.2.2 | render events at the time given against the JR Clock |  |  |
+m2-104/7.2.2.2#4 | sender |  | required | M2-104 §7.2.2.2 | send JR-timestamped messages in the order they should render |  |  |
+m2-104/7.2.2.2#5 | receiver |  | required | M2-104 §7.2.2.2 | render JR-timestamped messages in the order received |  |  |
+m2-104/7.2.2.3#1 | receiver |  | required | M2-104 §7.2.2.3 | before any JR Clock arrives, play messages immediately |  |  |
+m2-104/7.2.2.3#2 | receiver |  | recommended | M2-104 §7.2.2.3 | a receiver without JR support renders at once and asks the sender to stop JR timestamps |  |  |
+m2-104/7.2.3.1#1 | both |  | permitted | M2-104 §7.2.3.1 | ticks per quarter note runs 1 to 65535, with 0 reserved |  |  |
+m2-104/7.2.3.1#2 | both |  | permitted | M2-104 §7.2.3.1 | note: a wall-clock time base is an option for some applications |  |  |
+m2-104/7.2.3.2#1 | sender |  | permitted | M2-104 §7.2.3.2 | simultaneous events can share one Delta Clockstamp |  |  |
+m2-104/7.2.3.2#2 | sender |  | required | M2-104 §7.2.3.2 | events are stored and sent in presentation order |  |  |
+m2-104/7.2.3.2#3 | sender |  | required | M2-104 §7.2.3.2 | after 1048575 ticks with no message, a clip writer adds a Delta Clockstamp and a NOOP |  |  |
+m2-104/7.4#1 | sender |  | required | M2-104 §7.4 | a Group that uses MIDI 2.0 Channel Voice does not use MIDI 1.0 Channel Voice | neg=1 |  |
+m2-104/7.4.2#1 | both |  | required | M2-104 §7.4.2 | translating a MIDI 2.0 Note On to MIDI 1.0 turns a zero velocity into 1 |  |  |
+m2-104/7.4.4#1 | sender |  | required | M2-104 §7.4.4 | undefined per-note controller numbers are reserved and not used | neg=1 |  |
+m2-104/7.4.5#1 | receiver |  | required | M2-104 §7.4.5 | Per-Note Management with Detach: current and earlier notes on that number stop responding to per-note controllers |  |  |
+m2-104/7.4.5#2 | receiver |  | required | M2-104 §7.4.5 | playing notes keep their per-note controller values until they end |  |  |
+m2-104/7.4.5#3 | receiver |  | recommended | M2-104 §7.4.5 | with the Reset flag, reset that number's per-note controllers to defaults |  |  |
+m2-104/7.4.5#4 | receiver |  | recommended | M2-104 §7.4.5 | with both flags, detach first and then reset |  |  |
+m2-104/7.4.5#5 | receiver |  | required | M2-104 §7.4.5 | new defaults and later per-note changes apply to future notes only |  |  |
+m2-104/7.4.6#1 | sender |  | recommended | M2-104 §7.4.6 | a MIDI 2.0 sender avoids Control Change numbers 6, 38 and 98 to 101 | neg=1 |  |
+m2-104/7.4.6#2 | sender |  | recommended | M2-104 §7.4.6 | it uses the Registered and Assignable Controller messages instead |  |  |
+m2-104/7.4.6#3 | sender |  | recommended | M2-104 §7.4.6 | a MIDI 2.0 sender avoids Control Change numbers 0 and 32 | neg=1 |  |
+m2-104/7.4.6#4 | sender |  | recommended | M2-104 §7.4.6 | it uses the MIDI 2.0 Program Change message instead |  |  |
+m2-104/7.4.6#5 | receiver |  | recommended | M2-104 §7.4.6 | a MIDI 2.0 receiver ignores Control Change 0, 6, 32, 38 and 98 to 101 |  |  |
+m2-104/7.4.6#6 | both |  | required | M2-104 §7.4.6 | in MIDI 2.0, Control Change 88 is not the high-resolution velocity | neg=1 |  |
+m2-104/7.4.6.1#1 | receiver |  | required | M2-104 §7.4.6.1 | the low 25 bits of this controller's value are ignored |  |  |
+m2-104/7.4.6.1#2 | receiver |  | required | M2-104 §7.4.6.1 | the low 25 bits of this controller's value are ignored |  |  |
+m2-104/7.4.7.1#1 | receiver |  | required | M2-104 §7.4.7.1 | the low 18 bits of this registered controller's value are ignored |  |  |
+m2-104/7.4.7.1#2 | receiver |  | required | M2-104 §7.4.7.1 | the low 25 bits of this registered controller's value are ignored |  |  |
+m2-104/7.4.7.1#3 | receiver |  | required | M2-104 §7.4.7.1 | the low 25 bits of this registered controller's value are ignored |  |  |
+m2-104/7.4.7.1#4 | receiver |  | required | M2-104 §7.4.7.1 | the low 25 bits of this registered controller's value are ignored |  |  |
+m2-104/7.4.7.1#5 | receiver |  | required | M2-104 §7.4.7.1 | the low 25 bits of this registered controller's value are ignored |  |  |
+m2-104/7.4.9#1 | sender |  | required | M2-104 §7.4.9 | with the bank-valid bit clear, the bank MSB and LSB fields are written as zero |  |  |
+m2-104/7.4.9#2 | sender |  | required | M2-104 §7.4.9 | undefined Program Change option flags are written as zero |  |  |
+m2-104/7.4.13.1#1 | receiver |  | recommended | M2-104 §7.4.13.1 | notes after the sensitivity message respond to per-note bend within that range |  |  |
+m2-104/7.4.13.2#1 | receiver |  | required | M2-104 §7.4.13.2 | a receiver that knows this controller handles all 7 integer bits within its supported range |  |  |
+m2-104/7.4.13.2#2 | receiver |  | permitted | M2-104 §7.4.13.2 | it can use as many fractional bits as it supports |  |  |
+m2-104/7.4.13.3#1 | receiver |  | permitted | M2-104 §7.4.13.3 | a device can support a subset of the sensitivity range |  |  |
+m2-104/7.4.13.4#1 | sender |  | permitted | M2-104 §7.4.13.4 | a sender can give each note its own bend amount |  |  |
+m2-104/7.4.13.4#2 | sender |  | recommended | M2-104 §7.4.13.4 | set the sensitivity to the widest range any note needs |  |  |
+m2-104/7.4.13.4#3 | sender |  | recommended | M2-104 §7.4.13.4 | narrower notes send per-note bend values from a subset of the range |  |  |
+m2-104/7.4.14#1 | sender |  | required | M2-104 §7.4.14 | attribute type 0 sets the attribute value to zero |  |  |
+m2-104/7.4.14#2 | receiver |  | required | M2-104 §7.4.14 | attribute type 0 attribute value is ignored |  |  |
+m2-104/7.4.14#3 | sender |  | required | M2-104 §7.4.14 | with no attribute data, type and data fields are both zero |  |  |
+m2-104/7.4.14#4 | sender |  | recommended | M2-104 §7.4.14 | attribute data that fits no defined type uses type 1 |  |  |
+m2-104/7.4.14#5 | sender |  | recommended | M2-104 §7.4.14 | attribute data of unknown type uses type 1 |  |  |
+m2-104/7.4.14#6 | receiver |  | recommended | M2-104 §7.4.14 | a device that does not know the active Profile ignores type 2 attribute data |  |  |
+m2-104/7.4.14#7 | sender |  | recommended | M2-104 §7.4.14 | note: profile-defined attribute type 2 is not used for properties shared by several Profiles | neg=1 |  |
+m2-104/7.4.14#8 | both |  | recommended | M2-104 §7.4.14 | standards bodies give properties shared across Profiles their own attribute types instead of type 2 |  |  |
+m2-104/7.4.14#9 | sender |  | recommended | M2-104 §7.4.14 | attribute type 2 is not used for properties of widely used Profiles | neg=1 |  |
+m2-104/7.4.14#10 | both |  | recommended | M2-104 §7.4.14 | standards bodies give widely supported Profile data its own attribute type instead of type 2 |  |  |
+m2-104/7.4.14#11 | receiver |  | recommended | M2-104 §7.4.14 | with attribute type 3 the note number is only an index, implying no pitch |  |  |
+m2-104/7.4.15.2#1 | receiver |  | required | M2-104 §7.4.15.2 | the integer part of Pitch 7.25 is a 12-tone equal-tempered pitch with A at 440 Hz as note 69 |  |  |
+m2-104/7.4.15.2#2 | receiver |  | recommended | M2-104 §7.4.15.2 | support at least 9 fractional bits |  |  |
+m2-104/7.4.15.3#1 | receiver |  | recommended | M2-104 §7.4.15.3 | with the Pitch 7.9 attribute the note number is only an index, implying no pitch |  |  |
+m2-104/7.4.15.3#2 | receiver |  | required | M2-104 §7.4.15.3 | the integer part of Pitch 7.9 is a 12-tone equal-tempered pitch with A at 440 Hz as note 69 |  |  |
+m2-104/7.5#1 | both |  | permitted | M2-104 §7.5 | a Flex Data message can span several packets and has flexible addressing |  |  |
+m2-104/7.5#2 | sender |  | recommended | M2-104 §7.5 | keep real-time Flex Data messages as small as possible |  |  |
+m2-104/7.5.1#1 | both |  | permitted | M2-104 §7.5.1 | the Flex Data standard mechanisms can be used by any message of type 0xD |  |  |
+m2-104/7.5.1#2 | sender |  | required | M2-104 §7.5.1 | every Flex Data message is either one Complete packet or a Start through End run |  |  |
+m2-104/7.5.1#3 | sender |  | permitted | M2-104 §7.5.1 | optional Continue packets between Start and End add payload space |  |  |
+m2-104/7.5.1#4 | sender |  | required | M2-104 §7.5.1 | a Flex Data message has at most 32 packets | neg=1 |  |
+m2-104/7.5.2#1 | sender |  | recommended | M2-104 §7.5.2 | senders follow the rules on interspersing messages and ending Flex Data messages in a Group |  |  |
+m2-104/7.5.2#2 | sender |  | recommended | M2-104 §7.5.2 | between Start and End send only Continue packets of that message, real-time messages and JR Clocks | neg=1 |  |
+m2-104/7.5.2#3 | sender |  | permitted | M2-104 §7.5.2 | real-time and JR Clock messages can sit inside a Flex Data run for timing sync |  |  |
+m2-104/7.5.3#1 | both |  | permitted | M2-104 §7.5.3 | Set Tempo can improve timing synchronization over MIDI Clock alone |  |  |
+m2-104/7.5.3#2 | sender |  | required | M2-104 §7.5.3 | with MIDI Clock being sent, Set Tempo only occurs on a clock tick |  |  |
+m2-104/7.5.3#3 | sender |  | recommended | M2-104 §7.5.3 | without MIDI Clock, Set Tempo occurs only on the sender's 1/24-quarter-note timing |  |  |
+m2-104/7.5.3#4 | sender |  | required | M2-104 §7.5.3 | in a Standard MIDI File, Set Tempo only occurs on a 1/24-quarter-note position |  |  |
+m2-104/7.5.3#5 | sender |  | required | M2-104 §7.5.3 | Set Tempo uses format 0, a Complete packet |  |  |
+m2-104/7.5.3#6 | sender |  | required | M2-104 §7.5.3 | Set Tempo is addressed to the Group |  |  |
+m2-104/7.5.3#7 | both |  | permitted | M2-104 §7.5.3 | a sequencer chooses the tempo resolution it supports |  |  |
+m2-104/7.5.4#1 | sender |  | required | M2-104 §7.5.4 | with MIDI Clock being sent, Set Time Signature only occurs at a bar boundary |  |  |
+m2-104/7.5.4#2 | sender |  | recommended | M2-104 §7.5.4 | without MIDI Clock, Set Time Signature occurs only at the sender's bar boundary |  |  |
+m2-104/7.5.4#3 | sender |  | required | M2-104 §7.5.4 | in a Standard MIDI File, Set Time Signature only occurs at a bar boundary |  |  |
+m2-104/7.5.4#4 | sender |  | required | M2-104 §7.5.4 | Set Time Signature uses format 0, a Complete packet |  |  |
+m2-104/7.5.4#5 | sender |  | required | M2-104 §7.5.4 | Set Time Signature is addressed to the Group |  |  |
+m2-104/7.5.5#1 | both |  | permitted | M2-104 §7.5.5 | a sequencer can use Set Metronome to configure its own metronome |  |  |
+m2-104/7.5.5#2 | sender |  | permitted | M2-104 §7.5.5 | Set Metronome can be sent to configure a receiver's metronome |  |  |
+m2-104/7.5.5#3 | sender |  | required | M2-104 §7.5.5 | Set Metronome uses format 0, a Complete packet |  |  |
+m2-104/7.5.5#4 | sender |  | required | M2-104 §7.5.5 | Set Metronome is addressed to the Group |  |  |
+m2-104/7.5.5#5 | sender |  | required | M2-104 §7.5.5 | an undivided bar has accent part 1 equal to the beat count and parts 2 and 3 zero |  |  |
+m2-104/7.5.5#6 | both |  | permitted | M2-104 §7.5.5 | a bar can be divided into up to three parts |  |  |
+m2-104/7.5.5#7 | both |  | permitted | M2-104 §7.5.5 | example: a 5/4 bar can be divided 3 plus 2 |  |  |
+m2-104/7.5.5#8 | both |  | permitted | M2-104 §7.5.5 | example: a 9/4 bar can be divided 3+3+3 or 4+4+1 |  |  |
+m2-104/7.5.5#9 | sender |  | required | M2-104 §7.5.5 | bar accent parts add up to the bar's beat count |  |  |
+m2-104/7.5.9#1 | both |  | required | M2-104 §7.5.9 | Flex Data text in banks 1 and 2 is UTF-8 with no byte order mark |  |  |
+m2-104/7.5.9#2 | sender |  | required | M2-104 §7.5.9 | text data left over in the last packet is zero-filled |  |  |
+m2-104/7.5.9#3 | sender |  | required | M2-104 §7.5.9 | a zero byte occurs only in an End or Complete packet |  |  |
+m2-104/7.5.9.1#1 | sender |  | recommended | M2-104 §7.5.9.1 | Project Name text is addressed to the Group |  |  |
+m2-104/7.5.9.1#2 | sender |  | recommended | M2-104 §7.5.9.1 | MIDI Clip Name text is addressed to the Group |  |  |
+m2-104/7.5.9.1#3 | both |  | permitted | M2-104 §7.5.9.1 | example: a text message can name several people |  |  |
+m2-104/7.5.9.1#4 | both |  | permitted | M2-104 §7.5.9.1 | several entities fit in one message or one message each |  |  |
+m2-104/7.5.9.1#5 | sender |  | recommended | M2-104 §7.5.9.1 | several entities in one text message are separated by commas |  |  |
+m2-104/7.5.9.2#1 | sender |  | required | M2-104 §7.5.9.2 | a Recording or Concert Date message uses the Text common format |  |  |
+m2-104/7.5.9.2#2 | sender |  | required | M2-104 §7.5.9.2 | its text is an ISO 8601 date with an optional time |  |  |
+m2-104/7.5.10#1 | sender |  | required | M2-104 §7.5.10 | each Lyric Data message holds one syllable, or one word if it has one syllable |  |  |
+m2-104/7.5.10#2 | sender |  | required | M2-104 §7.5.10 | a syllable is placed or sent when its sung note starts |  |  |
+m2-104/7.5.10#3 | sender |  | required | M2-104 §7.5.10 | a syllable fits in one Complete packet or a run ending in End |  |  |
+m2-104/7.5.10#4 | sender |  | recommended | M2-104 §7.5.10 | send all packets of a Lyric Data message together |  |  |
+m2-104/7.5.10#5 | sender |  | required | M2-104 §7.5.10 | a clip file stamps every packet of one lyric with a common Delta Clockstamp |  |  |
+m2-104/7.5.10#6 | sender |  | required | M2-104 §7.5.10 | a syllable ending mid-packet is zero-filled to mark its end |  |  |
+m2-104/7.5.10#7 | both |  | required | M2-104 §7.5.10 | a trailing space ends a word |  |  |
+m2-104/7.5.10#8 | both |  | required | M2-104 §7.5.10 | a trailing carriage return ends a line |  |  |
+m2-104/7.5.10#9 | both |  | required | M2-104 §7.5.10 | a line feed after a carriage return ends a paragraph |  |  |
+m2-104/7.5.10#10 | sender |  | required | M2-104 §7.5.10 | after a syllable, word, line or paragraph ends mid-packet, the rest is zero-filled |  |  |
+m2-104/7.5.10#11 | sender |  | required | M2-104 §7.5.10 | a zero byte never occurs in a Start packet | neg=1 |  |
+m2-104/7.5.10#12 | sender |  | required | M2-104 §7.5.10 | hyphens appear only in genuinely hyphenated words |  |  |
+m2-104/7.5.10.1#1 | both |  | recommended | M2-104 §7.5.10.1 | a melisma marks that the previous lyric syllable continues |  |  |
+m2-104/7.5.10.1#2 | sender |  | required | M2-104 §7.5.10.1 | a melisma that ends a word is followed at once by a lyric message holding a space |  |  |
+m2-104/7.5.10.1#3 | sender |  | permitted | M2-104 §7.5.10.1 | the word-end lyric after a melisma can include carriage return and line feed |  |  |
+m2-104/7.5.12#1 | sender |  | required | M2-104 §7.5.12 | each Ruby Data message holds one syllable, or one word if it has one syllable |  |  |
+m2-104/7.5.12#2 | sender |  | required | M2-104 §7.5.12 | a ruby syllable is placed or sent when its sung note starts |  |  |
+m2-104/7.5.12#3 | sender |  | required | M2-104 §7.5.12 | a ruby syllable fits in one Complete packet or a run ending in End |  |  |
+m2-104/7.5.12#4 | sender |  | recommended | M2-104 §7.5.12 | send all packets of a Ruby Data message together |  |  |
+m2-104/7.5.12#5 | sender |  | required | M2-104 §7.5.12 | a clip file stamps every packet of one ruby text with a common Delta Clockstamp |  |  |
+m2-104/7.5.12#6 | sender |  | required | M2-104 §7.5.12 | a syllable ending mid-packet is zero-filled to mark its end |  |  |
+m2-104/7.5.12#7 | both |  | required | M2-104 §7.5.12 | a trailing space ends a word |  |  |
+m2-104/7.5.12#8 | both |  | required | M2-104 §7.5.12 | a trailing carriage return ends a line |  |  |
+m2-104/7.5.12#9 | both |  | required | M2-104 §7.5.12 | a line feed after a carriage return ends a paragraph |  |  |
+m2-104/7.5.12#10 | sender |  | required | M2-104 §7.5.12 | after a syllable, word, line or paragraph ends mid-packet, the rest is zero-filled |  |  |
+m2-104/7.5.12#11 | sender |  | required | M2-104 §7.5.12 | a zero byte never occurs in a Start packet | neg=1 |  |
+m2-104/7.5.12#12 | sender |  | required | M2-104 §7.5.12 | hyphens appear only in genuinely hyphenated words |  |  |
+m2-104/7.5.12.1#1 | both |  | recommended | M2-104 §7.5.12.1 | a ruby melisma marks that the previous syllable continues |  |  |
+m2-104/7.5.12.1#2 | sender |  | required | M2-104 §7.5.12.1 | a melisma that ends a word is followed at once by a ruby message holding a space |  |  |
+m2-104/7.5.12.1#3 | sender |  | permitted | M2-104 §7.5.12.1 | the word-end ruby after a melisma can include carriage return and line feed |  |  |
+m2-104/7.6#1 | sender |  | required | M2-104 §7.6 | unused bytes of a system message are reserved and written as zero |  |  |
+m2-104/7.6.1#1 | both |  | permitted | M2-104 §7.6.1 | System Common and System Real Time messages can go to any Group |  |  |
+m2-104/7.6.1#2 | receiver |  | permitted | M2-104 §7.6.1 | a Group's timing clock can come from that Group, another Group or the device's own clock |  |  |
+m2-104/7.7#1 | sender |  | required | M2-104 §7.7 | every SysEx message is either one Complete packet or a Start through End run |  |  |
+m2-104/7.7#2 | sender |  | permitted | M2-104 §7.7 | optional Continue packets between Start and End add payload space |  |  |
+m2-104/7.7#3 | sender |  | required | M2-104 §7.7 | unused bytes of a SysEx packet are zero |  |  |
+m2-104/7.7#4 | both |  | permitted | M2-104 §7.7 | note: a SysEx packet can carry fewer than six data bytes |  |  |
+m2-104/7.7.1#1 | sender |  | required | M2-104 §7.7.1 | senders follow the MIDI 1.0 rules for interspersing messages and ending SysEx in a Group |  |  |
+m2-104/7.7.1#2 | sender |  | required | M2-104 §7.7.1 | between Start and End on a Group send only Continue packets and real-time messages | neg=1 |  |
+m2-104/7.7.1#3 | sender |  | permitted | M2-104 §7.7.1 | real-time messages of that Group can sit inside a SysEx run for timing sync |  |  |
+m2-104/7.7.1#4 | receiver |  | required | M2-104 §7.7.1 | any other message on that Group between Start and End terminates the SysEx message |  |  |
+m2-104/7.7.1#5 | both |  | permitted | M2-104 §7.7.1 | Groupless messages and other Groups' messages can be interspersed with a SysEx message |  |  |
+m2-104/7.8#1 | sender |  | required | M2-104 §7.8 | every SysEx 8 message is either one Complete packet or a Start through End run |  |  |
+m2-104/7.8#2 | sender |  | permitted | M2-104 §7.8 | optional Continue packets between Start and End add payload space |  |  |
+m2-104/7.8#3 | sender |  | required | M2-104 §7.8 | unused bytes of a SysEx 8 packet are zero |  |  |
+m2-104/7.8#4 | both |  | permitted | M2-104 §7.8 | note: a SysEx 8 packet can carry fewer than 14 data bytes |  |  |
+m2-104/7.8#5 | sender |  | required | M2-104 §7.8 | a device with only one stream uses stream id 0 |  |  |
+m2-104/7.8#6 | sender |  | required | M2-104 §7.8 | without Function Block Discovery of multi-stream support, send only one stream at a time | neg=1 |  |
+m2-104/7.8#7 | sender |  | required | M2-104 §7.8 | with N streams only stream ids 0 to N-1 are used |  |  |
+m2-104/7.8#8 | sender |  | required | M2-104 §7.8 | a merger discovers the receiver's stream count before sending merged SysEx 8 streams |  |  |
+m2-104/7.8.1#1 | sender |  | required | M2-104 §7.8.1 | a sender out of payload sends an End packet with zero data and a count from the allowed pair |  |  |
+m2-104/7.9#1 | both |  | recommended | M2-104 §7.9 | note: small data sets belong in SysEx 7 or SysEx 8 |  |  |
+m2-104/7.9#2 | both |  | permitted | M2-104 §7.9 | note: a Mixed Data Set can span several chunks |  |  |
+m2-104/7.9#3 | both |  | permitted | M2-104 §7.9 | note: a Mixed Data Set can need several chunks |  |  |
+m2-104/7.9#4 | sender |  | required | M2-104 §7.9 | a chunk with a byte count not a multiple of 16 pads the last payload bytes |  |  |
+m2-104/7.9#5 | sender |  | required | M2-104 §7.9 | an unknown chunk count is written as zero |  |  |
+m2-104/7.9#6 | sender |  | required | M2-104 §7.9 | with an unknown count, the final chunk states the real chunk count |  |  |
+m2-104/7.9#7 | sender |  | required | M2-104 §7.9 | chunks are numbered upward from 1 |  |  |
+m2-104/7.9#8 | both |  | recommended | M2-104 §7.9 | device id 0xFFFF addresses every device, like 0x7F in MIDI 1.0 |  |  |
+m2-104/7.9#9 | both |  | permitted | M2-104 §7.9 | a manufacturer-specific id lets that manufacturer define this field |  |  |
+m2-104/7.9#10 | both |  | permitted | M2-104 §7.9 | a manufacturer-specific id lets that manufacturer define this field |  |  |
+m2-104/7.9#11 | both |  | permitted | M2-104 §7.9 | a manufacturer-specific id lets that manufacturer define this field |  |  |
+m2-104/7.9.1#1 | sender |  | required | M2-104 §7.9.1 | a sender that cannot finish a data set ends it and closes the set id in one of two ways |  |  |
+m2-104/7.9.1#2 | sender |  | required | M2-104 §7.9.1 | when earlier data is known valid, the final chunk states the real chunk count |  |  |
+m2-104/7.9.1#3 | sender |  | required | M2-104 §7.9.1 | when earlier data validity is unknown, the final chunk's number field is zero |  |  |
+m2-104/7.9.1#4 | sender |  | recommended | M2-104 §7.9.1 | a sender out of payload sends one more header-only chunk with the counts set as described |  |  |
+m2-104/c.3#1 | receiver |  | required | M2-104 §C.3 | receivers respond to both per-note pitch methods |  |  |
+m2-104/c.3#2 | receiver |  | required | M2-104 §C.3 | receivers implement Per-Note Management |  |  |
+m2-104/c.3#3 | sender |  | recommended | M2-104 §C.3 | continuous per-note pitch uses Registered Per-Note Controller 3 |  |  |
+m2-104/d#1 | both |  | required | M2-104 §D | compliance needs the Default Translation Mode following every rule of the translation appendix |  |  |
+m2-104/d#2 | both |  | permitted | M2-104 §D | devices can offer Alternate Translation Modes |  |  |
+m2-104/d.1#1 | both |  | recommended | M2-104 §D.1 | if this spec and the scaling spec disagree, the scaling spec rules |  |  |
+m2-104/d.1.1#1 | both |  | required | M2-104 §D.1.1 | default value translation scales to the full range |  |  |
+m2-104/d.1.1#2 | both |  | recommended | M2-104 §D.1.1 | translation of MIDI 1.0 values is lossless on a round trip |  |  |
+m2-104/d.1.2#1 | both |  | required | M2-104 §D.1.2 | a 1.0 to 2.0 to 1.0 round trip returns the original value |  |  |
+m2-104/d.1.5#1 | both |  | permitted | M2-104 §D.1.5 | a translator can map near-zero values to 1 and near-maximum values to maximum minus 1 |  |  |
+m2-104/d.2.8#1 | both |  | permitted | M2-104 §D.2.8 | alternate translation modes can translate these MIDI 2.0 messages |  |  |
+m2-104/d.2.9#1 | both |  | required | M2-104 §D.2.9 | outside UMP, these MIDI 2.0 messages are not used with MIDI 1.0 | neg=1 |  |
+m2-104/d.3.1#1 | both |  | required | M2-104 §D.3.1 | a MIDI 1.0 Note On at velocity 0 translates to a MIDI 2.0 Note Off at velocity 0x8000 |  |  |
+m2-104/d.3.1#2 | both |  | required | M2-104 §D.3.1 | translated notes carry attribute type 0 and value 0 unless an active Profile says otherwise |  |  |
+m2-104/d.3.3#1 | both |  | recommended | M2-104 §D.3.3 | 14-bit control change pairs are not merged into one 32-bit value | neg=1 |  |
+m2-104/d.3.3#2 | both |  | recommended | M2-104 §D.3.3 | 14-bit control change pairs stay as two separate messages |  |  |
+m2-104/d.3.3#3 | both |  | recommended | M2-104 §D.3.3 | 14-bit pairs are not turned into relative controller messages | neg=1 |  |
+m2-104/d.3.3#4 | both |  | required | M2-104 §D.3.3 | the default translation remembers the latest CC 6, 98, 99, 100 and 101 |  |  |
+m2-104/d.3.3#5 | both |  | recommended | M2-104 §D.3.3 | an RPN or NRPN is sent when a listed trigger occurs |  |  |
+m2-104/d.3.3#6 | both |  | permitted | M2-104 §D.3.3 | note: some translators wait a short time for CC 38 after CC 6 |  |  |
+m2-104/d.3.3#7 | both |  | required | M2-104 §D.3.3 | with all data present, the translator sends the MIDI 2.0 RPN or NRPN message as described |  |  |
+m2-104/d.3.3#8 | both |  | required | M2-104 §D.3.3 | lone CC 0 and CC 32 do not translate, except in a Program Change with the bank-valid bit | neg=1 |  |
+m2-104/d.4#1 | both |  | recommended | M2-104 §D.4 | a product with an alternate translation mode tells the user it is active |  |  |
+m2-104/d.4.1#1 | both |  | permitted | M2-104 §D.4.1 | a device that understands the Profile can use that Profile's alternate translation |  |  |
+m2-104/d.4.2#1 | both |  | permitted | M2-104 §D.4.2 | a device can enter an alternate translation mode by means other than a Profile |  |  |
+m2-104/d.4.2#2 | both |  | recommended | M2-104 §D.4.2 | the device tells the user an alternate translation mode is in use |  |  |
+m2-104/g#1 | both |  | permitted | M2-104 §G | legend: these messages do not translate to MIDI 1.0 but a UMP MIDI 1.0 device can use them |  |  |
+m2-104/i#1 | both |  | permitted | M2-104 §I | USB devices using blocks and Group Terminal Blocks can have conflicting topology |  |  |
+m2-104/i#2 | both |  | recommended | M2-104 §I | USB devices not using the described strategies should consider the following points |  |  |
+m2-104/i#3 | both |  | permitted | M2-104 §I | a USB endpoint's UMP Stream messages may not be received | neg=1 |  |
+m2-104/i#4 | both |  | permitted | M2-104 §I | a USB endpoint receives utility messages only on Group 1 |  |  |
+m2-104/i#5 | both |  | permitted | M2-104 §I | MIDI-CI Protocol Negotiation, deprecated, may be needed to change protocols on such devices |  | deprecated | M2-104 App. I fourth bullet, §1.4 change list, end of §7.1.6
+m2-104/mt/0 | both |  |  | M2-104 Table 4 | Utility messages are 4 bytes | mt=0x0 bytes=4 |  |
+m2-104/mt/1 | both |  |  | M2-104 Table 4 | System Common and Real Time messages are 4 bytes | mt=0x1 bytes=4 |  |
+m2-104/mt/2 | both |  |  | M2-104 Table 4 | MIDI 1.0 Channel Voice messages are 4 bytes | mt=0x2 bytes=4 |  |
+m2-104/mt/3 | both |  |  | M2-104 Table 4 | 7-bit data messages (SysEx) are 8 bytes | mt=0x3 bytes=8 |  |
+m2-104/mt/4 | both |  |  | M2-104 Table 4 | MIDI 2.0 Channel Voice messages are 8 bytes | mt=0x4 bytes=8 |  |
+m2-104/mt/5 | both |  |  | M2-104 Table 4 | SysEx 8 and Mixed Data Set messages are 16 bytes | mt=0x5 bytes=16 |  |
+m2-104/mt/6 | both |  |  | M2-104 Table 4 | Reserved type, 4 bytes long so a receiver can skip it | mt=0x6 bytes=4 |  |
+m2-104/mt/7 | both |  |  | M2-104 Table 4 | Reserved type, 4 bytes long so a receiver can skip it | mt=0x7 bytes=4 |  |
+m2-104/mt/8 | both |  |  | M2-104 Table 4 | Reserved type, 8 bytes long so a receiver can skip it | mt=0x8 bytes=8 |  |
+m2-104/mt/9 | both |  |  | M2-104 Table 4 | Reserved type, 8 bytes long so a receiver can skip it | mt=0x9 bytes=8 |  |
+m2-104/mt/a | both |  |  | M2-104 Table 4 | Reserved type, 8 bytes long so a receiver can skip it | mt=0xa bytes=8 |  |
+m2-104/mt/b | both |  |  | M2-104 Table 4 | Reserved type, 12 bytes long so a receiver can skip it | mt=0xb bytes=12 |  |
+m2-104/mt/c | both |  |  | M2-104 Table 4 | Reserved type, 12 bytes long so a receiver can skip it | mt=0xc bytes=12 |  |
+m2-104/mt/d | both |  |  | M2-104 Table 4 | Flex Data messages are 16 bytes | mt=0xd bytes=16 |  |
+m2-104/mt/e | both |  |  | M2-104 Table 4 | Reserved type, 16 bytes long so a receiver can skip it | mt=0xe bytes=16 |  |
+m2-104/mt/f | both |  |  | M2-104 Table 4 | UMP Stream messages are 16 bytes | mt=0xf bytes=16 |  |
+m2-104/msg/0/0 | both |  |  | M2-104 Table 34 | NOOP utility message, no payload | mt=0x0 status=0x0 bytes=4 |  |
+m2-104/msg/0/1 | both |  |  | M2-104 Table 34 | JR Clock utility message with a 16-bit sender time | mt=0x0 status=0x1 bytes=4 |  |
+m2-104/msg/0/2 | both |  |  | M2-104 Table 34 | JR Timestamp utility message with a 16-bit time | mt=0x0 status=0x2 bytes=4 |  |
+m2-104/msg/0/3 | both |  |  | M2-104 Table 34 | Delta Clockstamp ticks-per-quarter-note utility message | mt=0x0 status=0x3 bytes=4 |  |
+m2-104/msg/0/4 | both |  |  | M2-104 Table 34 | Delta Clockstamp utility message with a 20-bit tick count | mt=0x0 status=0x4 bytes=4 |  |
+m2-104/msg/1/f1 | both |  |  | M2-104 Table 34 | MIDI Time Code quarter frame system message | mt=0x1 status=0xf1 bytes=4 |  |
+m2-104/msg/1/f2 | both |  |  | M2-104 Table 34 | Song Position Pointer system message with a 14-bit position | mt=0x1 status=0xf2 bytes=4 |  |
+m2-104/msg/1/f3 | both |  |  | M2-104 Table 34 | Song Select system message with a 7-bit song number | mt=0x1 status=0xf3 bytes=4 |  |
+m2-104/msg/1/f6 | both |  |  | M2-104 Table 34 | Tune Request system message | mt=0x1 status=0xf6 bytes=4 |  |
+m2-104/msg/1/f8 | both |  |  | M2-104 Table 34 | Timing Clock real-time message | mt=0x1 status=0xf8 bytes=4 |  |
+m2-104/msg/1/fa | both |  |  | M2-104 Table 34 | Start real-time message | mt=0x1 status=0xfa bytes=4 |  |
+m2-104/msg/1/fb | both |  |  | M2-104 Table 34 | Continue real-time message | mt=0x1 status=0xfb bytes=4 |  |
+m2-104/msg/1/fc | both |  |  | M2-104 Table 34 | Stop real-time message | mt=0x1 status=0xfc bytes=4 |  |
+m2-104/msg/1/fe | both |  |  | M2-104 Table 34 | Active Sensing real-time message | mt=0x1 status=0xfe bytes=4 |  |
+m2-104/msg/1/ff | both |  |  | M2-104 Table 34 | Reset real-time message | mt=0x1 status=0xff bytes=4 |  |
+m2-104/msg/2/8 | both |  |  | M2-104 Table 34 | MIDI 1.0 Note Off with 7-bit note and velocity | mt=0x2 status=0x8 bytes=4 |  |
+m2-104/msg/2/9 | both |  |  | M2-104 Table 34 | MIDI 1.0 Note On with 7-bit note and velocity | mt=0x2 status=0x9 bytes=4 |  |
+m2-104/msg/2/a | both |  |  | M2-104 Table 34 | MIDI 1.0 Poly Pressure with 7-bit note and pressure | mt=0x2 status=0xa bytes=4 |  |
+m2-104/msg/2/b | both |  |  | M2-104 Table 34 | MIDI 1.0 Control Change with 7-bit controller and value | mt=0x2 status=0xb bytes=4 |  |
+m2-104/msg/2/c | both |  |  | M2-104 Table 34 | MIDI 1.0 Program Change with a 7-bit program | mt=0x2 status=0xc bytes=4 |  |
+m2-104/msg/2/d | both |  |  | M2-104 Table 34 | MIDI 1.0 Channel Pressure with a 7-bit value | mt=0x2 status=0xd bytes=4 |  |
+m2-104/msg/2/e | both |  |  | M2-104 Table 34 | MIDI 1.0 Pitch Bend as 7-bit LSB and MSB | mt=0x2 status=0xe bytes=4 |  |
+m2-104/msg/3/0 | both |  |  | M2-104 Table 34 | 7-bit SysEx complete in one packet, up to 6 data bytes | mt=0x3 status=0x0 bytes=8 |  |
+m2-104/msg/3/1 | both |  |  | M2-104 Table 34 | 7-bit SysEx Start packet | mt=0x3 status=0x1 bytes=8 |  |
+m2-104/msg/3/2 | both |  |  | M2-104 Table 34 | 7-bit SysEx Continue packet | mt=0x3 status=0x2 bytes=8 |  |
+m2-104/msg/3/3 | both |  |  | M2-104 Table 34 | 7-bit SysEx End packet | mt=0x3 status=0x3 bytes=8 |  |
+m2-104/msg/4/0 | both |  |  | M2-104 Table 34 | MIDI 2.0 Registered Per-Note Controller, 32-bit value | mt=0x4 status=0x0 bytes=8 |  |
+m2-104/msg/4/1 | both |  |  | M2-104 Table 34 | MIDI 2.0 Assignable Per-Note Controller, 32-bit value | mt=0x4 status=0x1 bytes=8 |  |
+m2-104/msg/4/2 | both |  |  | M2-104 Table 34 | MIDI 2.0 Registered Controller (RPN) with bank, index and 32-bit value | mt=0x4 status=0x2 bytes=8 |  |
+m2-104/msg/4/3 | both |  |  | M2-104 Table 34 | MIDI 2.0 Assignable Controller (NRPN) with bank, index and 32-bit value | mt=0x4 status=0x3 bytes=8 |  |
+m2-104/msg/4/4 | both |  |  | M2-104 Table 34 | MIDI 2.0 Relative Registered Controller, signed 32-bit delta | mt=0x4 status=0x4 bytes=8 |  |
+m2-104/msg/4/5 | both |  |  | M2-104 Table 34 | MIDI 2.0 Relative Assignable Controller, signed 32-bit delta | mt=0x4 status=0x5 bytes=8 |  |
+m2-104/msg/4/6 | both |  |  | M2-104 Table 34 | MIDI 2.0 Per-Note Pitch Bend with a 32-bit value | mt=0x4 status=0x6 bytes=8 |  |
+m2-104/msg/4/8 | both |  |  | M2-104 Table 34 | MIDI 2.0 Note Off with 16-bit velocity and an attribute | mt=0x4 status=0x8 bytes=8 |  |
+m2-104/msg/4/9 | both |  |  | M2-104 Table 34 | MIDI 2.0 Note On with 16-bit velocity and an attribute | mt=0x4 status=0x9 bytes=8 |  |
+m2-104/msg/4/a | both |  |  | M2-104 Table 34 | MIDI 2.0 Poly Pressure with a 32-bit value | mt=0x4 status=0xa bytes=8 |  |
+m2-104/msg/4/b | both |  |  | M2-104 Table 34 | MIDI 2.0 Control Change with a 32-bit value | mt=0x4 status=0xb bytes=8 |  |
+m2-104/msg/4/c | both |  |  | M2-104 Table 34 | MIDI 2.0 Program Change with option flags and optional bank | mt=0x4 status=0xc bytes=8 |  |
+m2-104/msg/4/d | both |  |  | M2-104 Table 34 | MIDI 2.0 Channel Pressure with a 32-bit value | mt=0x4 status=0xd bytes=8 |  |
+m2-104/msg/4/e | both |  |  | M2-104 Table 34 | MIDI 2.0 Pitch Bend with a 32-bit value | mt=0x4 status=0xe bytes=8 |  |
+m2-104/msg/4/f | both |  |  | M2-104 Table 34 | MIDI 2.0 Per-Note Management with detach and reset flags | mt=0x4 status=0xf bytes=8 |  |
+m2-104/msg/5/0 | both |  |  | M2-104 Table 34 | SysEx 8 complete in one packet, up to 13 data bytes | mt=0x5 status=0x0 bytes=16 |  |
+m2-104/msg/5/1 | both |  |  | M2-104 Table 34 | SysEx 8 Start packet with a stream id | mt=0x5 status=0x1 bytes=16 |  |
+m2-104/msg/5/2 | both |  |  | M2-104 Table 34 | SysEx 8 Continue packet | mt=0x5 status=0x2 bytes=16 |  |
+m2-104/msg/5/3 | both |  |  | M2-104 Table 34 | SysEx 8 End packet | mt=0x5 status=0x3 bytes=16 |  |
+m2-104/msg/5/8 | both |  |  | M2-104 Table 34 | Mixed Data Set header chunk carrying the set's header fields | mt=0x5 status=0x8 bytes=16 |  |
+m2-104/msg/5/9 | both |  |  | M2-104 Table 34 | Mixed Data Set payload chunk | mt=0x5 status=0x9 bytes=16 |  |
+m2-104/msg/f/0 | both |  |  | M2-104 Table 34 | Endpoint Discovery request with version and filter bits | mt=0xf status=0x0 bytes=16 |  |
+m2-104/msg/f/1 | both |  |  | M2-104 Table 34 | Endpoint Info Notification: version, static blocks, protocols, JR support | mt=0xf status=0x1 bytes=16 |  |
+m2-104/msg/f/2 | both |  |  | M2-104 Table 34 | Device Identity Notification: manufacturer, family, model, revision | mt=0xf status=0x2 bytes=16 |  |
+m2-104/msg/f/3 | both |  |  | M2-104 Table 34 | Endpoint Name Notification text, multi-packet | mt=0xf status=0x3 bytes=16 |  |
+m2-104/msg/f/4 | both |  |  | M2-104 Table 34 | Product Instance Id Notification text, multi-packet | mt=0xf status=0x4 bytes=16 |  |
+m2-104/msg/f/5 | both |  |  | M2-104 Table 34 | Stream Configuration Request: protocol and JR flags | mt=0xf status=0x5 bytes=16 |  |
+m2-104/msg/f/6 | both |  |  | M2-104 Table 34 | Stream Configuration Notification: protocol and JR flags | mt=0xf status=0x6 bytes=16 |  |
+m2-104/msg/f/10 | both |  |  | M2-104 Table 34 | Function Block Discovery request with block number and filter | mt=0xf status=0x10 bytes=16 |  |
+m2-104/msg/f/11 | both |  |  | M2-104 Table 34 | Function Block Info Notification: direction, groups, MIDI 1.0 and CI flags | mt=0xf status=0x11 bytes=16 |  |
+m2-104/msg/f/12 | both |  |  | M2-104 Table 34 | Function Block Name Notification text, multi-packet | mt=0xf status=0x12 bytes=16 |  |
+m2-104/msg/f/20 | both |  |  | M2-104 Table 34 | Start of Clip stream message | mt=0xf status=0x20 bytes=16 |  |
+m2-104/msg/f/21 | both |  |  | M2-104 Table 34 | End of Clip stream message | mt=0xf status=0x21 bytes=16 |  |
+m2-104/msg/d/00.00 | both |  |  | M2-104 Table 34 | Flex Data Set Tempo in 10 ns units per quarter note | mt=0xd bank=0x0 status=0x0 bytes=16 |  |
+m2-104/msg/d/00.01 | both |  |  | M2-104 Table 34 | Flex Data Set Time Signature: numerator, denominator, 32nd notes | mt=0xd bank=0x0 status=0x1 bytes=16 |  |
+m2-104/msg/d/00.02 | both |  |  | M2-104 Table 34 | Flex Data Set Metronome: clicks, bar accents, subdivisions | mt=0xd bank=0x0 status=0x2 bytes=16 |  |
+m2-104/msg/d/00.05 | both |  |  | M2-104 Table 34 | Flex Data Set Key Signature: sharps or flats and tonic | mt=0xd bank=0x0 status=0x5 bytes=16 |  |
+m2-104/msg/d/00.06 | both |  |  | M2-104 Table 34 | Flex Data Set Chord Name: tonic, type, alterations, bass note | mt=0xd bank=0x0 status=0x6 bytes=16 |  |
+m2-104/msg/d/01.00 | both |  |  | M2-104 Table 16 | Flex Data metadata text of an unknown kind | mt=0xd bank=0x1 status=0x0 bytes=16 |  |
+m2-104/msg/d/01.01 | both |  |  | M2-104 Table 16 | Flex Data metadata text: project name | mt=0xd bank=0x1 status=0x1 bytes=16 |  |
+m2-104/msg/d/01.02 | both |  |  | M2-104 Table 16 | Flex Data metadata text: composition name | mt=0xd bank=0x1 status=0x2 bytes=16 |  |
+m2-104/msg/d/01.03 | both |  |  | M2-104 Table 16 | Flex Data metadata text: MIDI clip name | mt=0xd bank=0x1 status=0x3 bytes=16 |  |
+m2-104/msg/d/01.04 | both |  |  | M2-104 Table 16 | Flex Data metadata text: copyright notice | mt=0xd bank=0x1 status=0x4 bytes=16 |  |
+m2-104/msg/d/01.05 | both |  |  | M2-104 Table 16 | Flex Data metadata text: composer name | mt=0xd bank=0x1 status=0x5 bytes=16 |  |
+m2-104/msg/d/01.06 | both |  |  | M2-104 Table 16 | Flex Data metadata text: lyricist name | mt=0xd bank=0x1 status=0x6 bytes=16 |  |
+m2-104/msg/d/01.07 | both |  |  | M2-104 Table 16 | Flex Data metadata text: arranger name | mt=0xd bank=0x1 status=0x7 bytes=16 |  |
+m2-104/msg/d/01.08 | both |  |  | M2-104 Table 16 | Flex Data metadata text: publisher name | mt=0xd bank=0x1 status=0x8 bytes=16 |  |
+m2-104/msg/d/01.09 | both |  |  | M2-104 Table 16 | Flex Data metadata text: primary performer name | mt=0xd bank=0x1 status=0x9 bytes=16 |  |
+m2-104/msg/d/01.0a | both |  |  | M2-104 Table 16 | Flex Data metadata text: accompanying performer name | mt=0xd bank=0x1 status=0xa bytes=16 |  |
+m2-104/msg/d/01.0b | both |  |  | M2-104 Table 16 | Flex Data metadata text: recording or concert date | mt=0xd bank=0x1 status=0xb bytes=16 |  |
+m2-104/msg/d/01.0c | both |  |  | M2-104 Table 16 | Flex Data metadata text: recording or concert location | mt=0xd bank=0x1 status=0xc bytes=16 |  |
+m2-104/msg/d/02.00 | both |  |  | M2-104 Table 16 | Flex Data performance text of an unknown kind | mt=0xd bank=0x2 status=0x0 bytes=16 |  |
+m2-104/msg/d/02.01 | both |  |  | M2-104 Table 16 | Flex Data performance text: lyrics | mt=0xd bank=0x2 status=0x1 bytes=16 |  |
+m2-104/msg/d/02.02 | both |  |  | M2-104 Table 16 | Flex Data performance text: lyrics language | mt=0xd bank=0x2 status=0x2 bytes=16 |  |
+m2-104/msg/d/02.03 | both |  |  | M2-104 Table 16 | Flex Data performance text: ruby | mt=0xd bank=0x2 status=0x3 bytes=16 |  |
+m2-104/msg/d/02.04 | both |  |  | M2-104 Table 16 | Flex Data performance text: ruby language | mt=0xd bank=0x2 status=0x4 bytes=16 |  |

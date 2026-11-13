@@ -25,7 +25,7 @@ pub struct SlotId(pub u128);
 ///
 /// A named pair rather than a `reverse: bool`, so the intent reads at the call
 /// site instead of at the declaration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Direction {
     /// Read the source from its start toward its end.
     #[default]

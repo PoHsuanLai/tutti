@@ -73,6 +73,7 @@ fn controls(packets: &[Ump]) -> Vec<(u8, u8)> {
 /// Whatever MIDI 2.0 messages are sent to a MIDI 1.0 endpoint, no
 /// packet of the batch is type 4, and the ones with a MIDI 1.0 form come out as
 /// type 2 on the same Group and Channel.
+/// Spec: m2-104/3.2#3, m2-104/3.2.1.2#2
 #[test]
 fn a_midi1_endpoint_is_never_sent_type_4() {
     let mut wire = Wire::new(MIDI1);

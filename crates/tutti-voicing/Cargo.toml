@@ -3,10 +3,13 @@ name = "tutti-voicing"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "What a note-driven instrument decides before it makes sound, as one pure step"
+description = "Decides what a note-driven instrument does with each MIDI message: start, release, steal or bend a voice"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 publish = false
+keywords = ["midi", "audio", "synthesizer", "polyphony", "mpe"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true

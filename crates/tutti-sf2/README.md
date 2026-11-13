@@ -1,39 +1,17 @@
 # tutti-sf2
 
-`tutti-sf2` reads a SoundFont 2 (`.sf2`) file into data: the presets, the
-instruments, the sample headers and the 16-bit sample data. It holds nothing
-that plays; `tutti-soundfont` is the player over it.
+This crate reads SoundFont 2 (.sf2) files and gives you their contents as data: presets, instruments, sample headers and the sample audio.
 
-The code is the file-reading half of Nobuaki Tanaka's
-[rustysynth](https://github.com/sinshu/rustysynth) (ported from
-[MeltySynth](https://github.com/sinshu/meltysynth)); see [the license](LICENSE.txt).
+It does not play anything; `tutti-soundfont` does that. It needs only `tutti-types` and `tutti-ump`, so you can use it on its own to inspect or convert SoundFont files.
 
-Generator values stay raw, in the unit the SoundFont 2.04 specification gives
-each (`GeneratorType`); turning a value into seconds or hertz is the player's.
-A file with a compressed (SoundFont 3) `smpl` chunk is refused with
-`Error::UnsupportedSampleFormat`; the `sm24` chunk and the modulator chunks are
-skipped.
-
-Sample positions are `tutti_types::Samples`, a rate is a `SampleRate` and a
-pitch correction `Cents`. A preset's bank is a `Bank` (a MIDI bank 0 to 127, or
-percussion) and its program a `U7`; a preset whose file values are neither
-cannot be played but is kept, as the specification says (section 7.2), and
-reports `None`. An exclusive class is an `Option<NonZeroU8>`: `None` is class 0.
-`SoundFont::open` reads a path and `SoundFont::from_reader` any `Read`. The
-crate's failure type is `Error`, with a `Result` alias.
-
-```no_run
-use tutti_sf2::SoundFont;
-
-let soundfont = SoundFont::open("piano.sf2")?;
-for preset in soundfont.presets() {
-    if let (Some(bank), Some(patch)) = (preset.bank(), preset.patch()) {
-        println!("{bank}:{} {}", patch.get(), preset.name());
-    }
-}
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
+This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
 
 ## License
 
-[MIT](LICENSE.txt); the copyright is the original author's.
+Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+
+The reading code derives from Nobuaki Tanaka's [rustysynth](https://github.com/sinshu/rustysynth) (after [MeltySynth](https://github.com/sinshu/meltysynth)), which is MIT licensed; see [its license](https://github.com/PoHsuanLai/tutti/blob/main/crates/tutti-sf2/LICENSE.txt).
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

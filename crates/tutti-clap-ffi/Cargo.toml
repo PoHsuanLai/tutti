@@ -3,10 +3,9 @@ name = "tutti-clap-ffi"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The unsafe half of the CLAP host: safe handles over clap-sys"
+description = "Safe bindings for hosting CLAP plugins, built on clap-sys, for tutti"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-clap-ffi"
 readme = "README.md"
 keywords = ["clap", "audio", "plugin", "ffi"]
 categories = ["multimedia::audio"]
@@ -22,7 +21,7 @@ testing = []
 
 [dependencies]
 clap-sys = "0.5"
-libloading = "0.8"
+libloading.workspace = true
 bitflags = "2"
 # `WindowHandle`, the one value whose unsafe constructor carries the claim that
 # a parent window is valid; the editor entries take it by reference.

@@ -83,6 +83,7 @@ fn clocks_are_emitted_on_the_configured_cadence() {
     );
 }
 
+/// Spec: m2-104/7.2.2.1#2
 #[test]
 fn the_cadence_keeps_running_through_silence() {
     // The load-bearing case. §7.2.2.1: JR Clocks are independent of
@@ -166,6 +167,7 @@ fn stamp_advances_by_events_and_stamp_span_by_the_block() {
     assert_eq!(by_block.origin(), Frame::new(512), "the block advanced it");
 }
 
+/// Spec: m2-104/7.2.2.1#2
 #[test]
 #[should_panic(expected = "exceeds the §7.2.2.1 maximum")]
 fn an_interval_over_the_spec_maximum_is_rejected() {
@@ -174,6 +176,7 @@ fn an_interval_over_the_spec_maximum_is_rejected() {
     JrClockEmitter::with_interval(SampleRate::SR_48K, Duration::from_millis(251));
 }
 
+/// Spec: m2-104/7.2.2.1#2
 #[test]
 fn the_default_interval_is_inside_the_spec_maximum() {
     assert!(JR_CLOCK_INTERVAL < JR_CLOCK_MAX_INTERVAL);
@@ -256,6 +259,7 @@ fn two_producers_on_one_stream_keep_stamps_monotonic() {
     assert_eq!(wire.origin(), Frame::new(1024), "two 512-frame blocks");
 }
 
+/// Spec: m2-104/7.2.2.2#1
 #[test]
 fn stamp_block_prefixes_each_event() {
     let stamper = JrStamper::new(SampleRate::SR_48K);

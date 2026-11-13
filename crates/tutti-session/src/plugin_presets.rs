@@ -15,7 +15,7 @@ use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::{MainThread, Preset, PresetError, PresetId, PresetSupport};
 
 /// What a plugin's format does with presets ([`Presets::kind`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PresetKind {
     /// The plugin lists its presets and loads one by its id (VST2, VST3, AU):

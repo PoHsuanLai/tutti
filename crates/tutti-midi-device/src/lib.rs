@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The pure core of MIDI device detection and the MIDI-CI codec.
 //!
 //! The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])

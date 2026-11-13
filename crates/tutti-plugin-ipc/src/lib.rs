@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The plugin host's process edge: the wire both ends speak, the
 //! shared-memory slab and control socket it travels on, the plugin-server's
 //! launch, and the client that drives a served plugin.

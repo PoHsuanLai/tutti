@@ -3,10 +3,9 @@ name = "tutti-clap-host"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "CLAP plugin hosting library for Rust"
+description = "A host for CLAP audio plugins"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-clap-host"
 readme = "README.md"
 keywords = ["clap", "audio", "plugin", "dsp", "host"]
 categories = ["multimedia::audio"]
@@ -38,7 +37,7 @@ tutti-clap-ffi = { path = "../tutti-clap-ffi", features = ["testing"] }
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 # The integration tests re-open the reference plugin's library themselves (the
 # crate forbids `unsafe`; a test may use it).
-libloading = "0.8"
+libloading.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }

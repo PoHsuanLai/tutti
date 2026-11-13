@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use super::*;
 use crate::Family;
@@ -44,8 +44,8 @@ impl FamilyCase for CrossoverFamily {
         }
         let mut rng = StdRng::seed_from_u64(24);
         all.extend((0..100).map(|_| {
-            let low = rng.gen_range(20.0..8_000.0f32);
-            controls(low, low * rng.gen_range(1.1..2.5))
+            let low = rng.random_range(20.0..8_000.0f32);
+            controls(low, low * rng.random_range(1.1..2.5))
         }));
         all
     }

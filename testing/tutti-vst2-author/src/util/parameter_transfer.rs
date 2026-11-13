@@ -123,7 +123,7 @@ mod tests {
     use std::time::Duration;
 
     use self::rand::rngs::StdRng;
-    use self::rand::{Rng, SeedableRng};
+    use self::rand::{RngExt, SeedableRng};
 
     const THREADS: usize = 3;
     const PARAMETERS: usize = 1000;
@@ -142,8 +142,8 @@ mod tests {
             thread::spawn(move || {
                 let mut values = vec![0f32; PARAMETERS];
                 for _ in 0..UPDATES {
-                    let p: usize = t_rng.gen_range(0..PARAMETERS);
-                    let v: f32 = t_rng.gen_range(0.0..1.0);
+                    let p: usize = t_rng.random_range(0..PARAMETERS);
+                    let v: f32 = t_rng.random_range(0.0..1.0);
                     values[p] = v;
                     t_transfer.set_parameter(p, v);
                 }
@@ -157,7 +157,7 @@ mod tests {
         let mut acquire_rng = StdRng::seed_from_u64(42);
         while results.len() < THREADS {
             let mut last_p = -1;
-            for (p, v) in transfer.iterate(acquire_rng.gen_bool(0.9)) {
+            for (p, v) in transfer.iterate(acquire_rng.random_bool(0.9)) {
                 assert!(p as isize > last_p);
                 last_p = p as isize;
                 values[p] = v;

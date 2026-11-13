@@ -9,13 +9,11 @@ pub(crate) use tutti_fixtures::noise;
 /// The "control changed between two blocks" experiment.
 ///
 /// Three nodes from `make` render `block1` identically. Then `change` is
-/// applied to two of them: `ramped` renders `block2` through `process` (the
-/// per-block read, which ramps), `jumped` through `tick` (a block of one per
+/// applied to two of them: the render `r` is of `block2` through `process` (the
+/// per-block read, which ramps), `j` through `tick` (a block of one per
 /// sample, so the change lands whole on the first sample, as a per-sample read
-/// would). `held` never sees the change.
-pub(crate) struct ChangeRun<N> {
-    pub ramped: N,
-    pub jumped: N,
+/// would). `h`, of the third, never sees the change.
+pub(crate) struct ChangeRun {
     pub r: Vec<Vec<f32>>,
     pub j: Vec<Vec<f32>>,
     pub h: Vec<Vec<f32>>,
@@ -59,7 +57,7 @@ pub(crate) fn change_between_node_blocks<N: Node>(
     change: impl Fn(&N),
     block1: &[&[f32]],
     block2: &[&[f32]],
-) -> ChangeRun<N> {
+) -> ChangeRun {
     let (mut ramped, mut jumped, mut held) = (prepared(make()), prepared(make()), prepared(make()));
     for n in [&mut ramped, &mut jumped, &mut held] {
         drive_block(n, block1);
@@ -69,16 +67,10 @@ pub(crate) fn change_between_node_blocks<N: Node>(
     let r = drive_block(&mut ramped, block2);
     let j = drive_frames(&mut jumped, block2);
     let h = drive_block(&mut held, block2);
-    ChangeRun {
-        ramped,
-        jumped,
-        r,
-        j,
-        h,
-    }
+    ChangeRun { r, j, h }
 }
 
-impl<N> ChangeRun<N> {
+impl ChangeRun {
     /// The change is ramped *into* the block: on the block's first sample the
     /// ramped render is still near the unchanged one — at most half as far from
     /// it as the render that took the change whole — on every channel, and the
@@ -99,6 +91,65 @@ impl<N> ChangeRun<N> {
             );
         }
     }
+}
+
+/// Returns a [`prepared`] node of `make`, driven over `before` in one block, then
+/// `change`d, then driven over `after` in blocks of `block` frames, with its render of
+/// `after`.
+pub(crate) fn render_change<N: Node>(
+    make: impl Fn() -> N,
+    change: impl Fn(&N),
+    before: &[&[f32]],
+    after: &[&[f32]],
+    block: usize,
+) -> (N, Vec<Vec<f32>>) {
+    let mut node = prepared(make());
+    drive_block(&mut node, before);
+    change(&node);
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    let mut at = 0;
+    while at < after[0].len() {
+        let end = (at + block).min(after[0].len());
+        let chunk: Vec<&[f32]> = after.iter().map(|s| &s[at..end]).collect();
+        let o = drive_block(&mut node, &chunk);
+        out.resize(o.len(), Vec::new());
+        for (c, v) in o.into_iter().enumerate() {
+            out[c].extend(v);
+        }
+        at = end;
+    }
+    (node, out)
+}
+
+/// Asserts that a cell moved between blocks glides on the stream clock, so a write
+/// renders the same whatever the host's blocks: the render of `after` is the same, bit
+/// for bit, at blocks of 1, 17, 64 and 256 frames, and it is not the render with the cell
+/// left alone. Returns the node rendered at blocks of 64.
+#[track_caller]
+pub(crate) fn assert_cell_glides<N: Node>(
+    make: impl Fn() -> N,
+    change: impl Fn(&N),
+    before: &[&[f32]],
+    after: &[&[f32]],
+    what: &str,
+) -> N {
+    let (node, at64) = render_change(&make, &change, before, after, 64);
+    for block in [1, 17, 256] {
+        let (_, out) = render_change(&make, &change, before, after, block);
+        assert!(
+            out.iter()
+                .flatten()
+                .zip(at64.iter().flatten())
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "{what}: the glide at blocks of {block} is not the glide at blocks of 64"
+        );
+    }
+    let (_, held) = render_change(&make, |_: &N| {}, before, after, 64);
+    assert!(
+        held != at64,
+        "{what}: the change is inaudible, so this run cannot see a glide"
+    );
+    node
 }
 
 /// The rate the per-frame unit tests run their nodes at.

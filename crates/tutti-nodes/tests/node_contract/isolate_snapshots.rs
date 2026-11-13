@@ -257,7 +257,7 @@ fn eq_band() {
 
 #[test]
 fn bus_strip() {
-    IsolateRow::new("BusStripNode (stereo)", BusStripNode::new)
+    IsolateRow::new("BusStripNode (stereo)", BusStripNode::stereo)
         .control("volume", |s| s.set_volume(Amplitude(0.5)))
         .control("pan", |s| s.set_pan(Pan::new_clamped(-0.7)))
         .check();

@@ -27,10 +27,42 @@
 //! | 3 | Notes | `key + 1000 * c` while a note is held, else 0 |
 //! | 4 | Silent | writes nothing |
 //!
-//! Tail 8191 in every mode, unless the state's tail byte (the fourth byte of the
-//! mode word, `mode | editor << 8 | notice << 16 | tail << 24`) selects the
-//! infinite marker (`TAIL_INFINITE`) or a finite 61 s (`TAIL_PAST_CAP`). A parameter event moves `level` or `aux` at its
-//! sample offset.
+//! Tail 8191 in every mode, unless the state's tail nibble (the low nibble of the
+//! fourth byte of the mode word, `mode | editor << 8 | notice << 16 | (tail |
+//! rings << 4) << 24`) selects the infinite marker (`TAIL_INFINITE`) or a finite
+//! 61 s (`TAIL_PAST_CAP`). That is what the plugin **reports**. A parameter event
+//! moves `level` or `aux` at its sample offset.
+//!
+//! # Faults
+//!
+//! The high nibble of the mode word's low byte (`mode | fault << 4`) makes
+//! `process` fail, for a probe that measures a plugin which dies rendering
+//! (doc 023 section 6): `FAULT_CRASH` aborts the process in the first block,
+//! `FAULT_HANG` never returns from it. Loading and describing are untouched.
+//!
+//! # Rings
+//!
+//!
+//! What the plugin **does** with its tail, for the probe that measures one
+//! (doc 023 section 6): the high nibble of the fourth byte, `RINGS_*`. With it
+//! non-zero the plugin ignores its mode and the `tag` (a probe subject has no DC
+//! offset to settle past) and renders a ring: any frame with a non-zero input
+//! on any channel starts it, at age 0; at an age from `onset` to `onset + length`
+//! inclusive every output channel is `RING_LEVEL` (0.1), at any other age 0.
+//! A new trigger restarts the age. The ring's `length` is `RING_FRAMES` unless
+//! the behaviour says otherwise, and has nothing to do with the tail it reports:
+//!
+//! | rings | name | `length` | `onset` | also |
+//! |---|---|---|---|---|
+//! | 0 | None | | | the modes above |
+//! | 1 | Exact | `RING_FRAMES` (8191) | 0 | |
+//! | 2 | Longer | `RING_FRAMES + RING_EXTRA` (12287) | 0 | |
+//! | 3 | Hiss | `RING_FRAMES` | 0 | `HISS_LEVEL` (0.001, -60 dB) of noise on every frame |
+//! | 4 | Late | `RING_FRAMES` | `LATE_FRAMES` (64) | reports the latency of the mode (0 in Tag) |
+//!
+//! So a probe of an `Exact` plugin finds its last frame above the floor at 8191
+//! and, against the reported tail of 8191, calls it honest; against a tail byte
+//! of `TAIL_INFINITE`, unchecked.
 //!
 //! # Editor
 //!
@@ -209,6 +241,37 @@ pub const TAIL_INFINITE: u32 = 1;
 pub const TAIL_PAST_CAP: u32 = 2;
 /// Number of tail behaviours.
 pub const TAILS: u32 = 3;
+/// `process` renders (the default).
+pub const FAULT_NONE: u32 = 0;
+/// The first `process` aborts the process: a plugin that dies while rendering.
+pub const FAULT_CRASH: u32 = 1;
+/// The first `process` never returns: a plugin that hangs while rendering.
+pub const FAULT_HANG: u32 = 2;
+/// Number of fault behaviours.
+pub const FAULTS: u32 = 3;
+/// The plugin renders its modes (the tag and all), the default.
+pub const RINGS_NONE: u32 = 0;
+/// The plugin rings [`RING_FRAMES`] after its trigger.
+pub const RINGS_EXACT: u32 = 1;
+/// The plugin rings [`RING_FRAMES`]` + `[`RING_EXTRA`] after its trigger.
+pub const RINGS_LONGER: u32 = 2;
+/// As [`RINGS_EXACT`], and adds noise of [`HISS_LEVEL`] to every frame.
+pub const RINGS_HISS: u32 = 3;
+/// As [`RINGS_EXACT`], its onset [`LATE_FRAMES`] after its trigger.
+pub const RINGS_LATE: u32 = 4;
+/// Number of ring behaviours.
+pub const RINGS: u32 = 5;
+/// Frames a ring lasts after its onset, in every ring behaviour but
+/// [`RINGS_LONGER`]: what [`TAIL`] says, the plugin being honest.
+pub const RING_FRAMES: u32 = 8191;
+/// Frames [`RINGS_LONGER`] rings beyond [`RING_FRAMES`].
+pub const RING_EXTRA: u32 = 4096;
+/// What a ring is made of: a held level.
+pub const RING_LEVEL: f32 = 0.1;
+/// Peak of [`RINGS_HISS`]'s noise: 0.001, -60 dB, above the probe's floor.
+pub const HISS_LEVEL: f32 = 0.001;
+/// Frames [`RINGS_LATE`] puts between its trigger and its onset.
+pub const LATE_FRAMES: u32 = 64;
 /// 61 s at 48 kHz: a finite tail past what the graph's `MAX_NODE_TAIL` (60 s)
 /// bounds.
 pub const TAIL_PAST_CAP_FRAMES: u32 = 48_000 * 61;
@@ -366,9 +429,11 @@ pub struct Core {
     aux: AtomicU64,
     tone: AtomicU64,
     mode: AtomicU32,
+    fault: AtomicU32,
     editor: AtomicU32,
     notice: AtomicU32,
     tail: AtomicU32,
+    rings: AtomicU32,
     gesture_due: AtomicU32,
     calls: AtomicU64,
     frames: AtomicU64,
@@ -398,6 +463,9 @@ pub struct Dsp {
     level: f64,
     aux: f64,
     held: Option<u8>,
+    rings: u32,
+    age: Option<u64>,
+    noise: u32,
     delay: Vec<Vec<f64>>,
     pos: usize,
     scratch32: Vec<Vec<f32>>,
@@ -417,9 +485,11 @@ impl Core {
             aux: AtomicU64::new(0.25f64.to_bits()),
             tone: AtomicU64::new(0.5f64.to_bits()),
             mode: z(),
+            fault: z(),
             editor: z(),
             notice: z(),
             tail: z(),
+            rings: z(),
             gesture_due: z(),
             calls: AtomicU64::new(0),
             frames: AtomicU64::new(0),
@@ -450,6 +520,11 @@ impl Core {
             TAIL_PAST_CAP => TAIL_PAST_CAP_FRAMES,
             _ => TAIL,
         }
+    }
+
+    /// The ring behaviour a state load selected (`RINGS_*`).
+    pub fn rings(&self) -> u32 {
+        self.rings.load(Relaxed)
     }
 
     /// The notice behaviour a state load selected (`NOTICE_*`).
@@ -500,6 +575,9 @@ impl Core {
     /// and clears the transcript. Allocates; control thread.
     pub fn prepare(&self, dsp: &mut Dsp, rate: f64, max_block: usize) {
         dsp.mode = self.mode.load(Relaxed);
+        dsp.rings = self.rings.load(Relaxed);
+        dsp.age = None;
+        dsp.noise = 0x1234_5678;
         dsp.held = None;
         dsp.pos = 0;
         dsp.delay = (0..MAX_CHANNELS)
@@ -626,6 +704,13 @@ impl Core {
         ins: &[&[S]],
         outs: &mut [&mut [S]],
     ) {
+        match self.fault.load(Relaxed) {
+            FAULT_CRASH => std::process::abort(),
+            FAULT_HANG => loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            },
+            _ => {}
+        }
         let n = self.calls.fetch_add(1, Relaxed);
         self.frames.fetch_add(frames as u64, Relaxed);
         if n as usize >= LOG_BLOCKS {
@@ -690,6 +775,9 @@ impl Core {
         ins: &[&[S]],
         outs: &mut [&mut [S]],
     ) {
+        if dsp.rings != RINGS_NONE {
+            return Self::render_rings(dsp, from, to, ins, outs);
+        }
         for (c, out) in outs.iter_mut().enumerate() {
             let t = tag(bus, c);
             for i in from..to.min(out.len()) {
@@ -714,9 +802,50 @@ impl Core {
         }
     }
 
+    /// The ring behaviours' render (the module's "Rings"): frame by frame, since
+    /// the age is the frame's, not a channel's.
+    fn render_rings<S: Sample>(
+        dsp: &mut Dsp,
+        from: usize,
+        to: usize,
+        ins: &[&[S]],
+        outs: &mut [&mut [S]],
+    ) {
+        let (length, onset) = match dsp.rings {
+            RINGS_LONGER => (RING_FRAMES + RING_EXTRA, 0),
+            RINGS_LATE => (RING_FRAMES, LATE_FRAMES),
+            _ => (RING_FRAMES, 0),
+        };
+        let hiss = if dsp.rings == RINGS_HISS {
+            HISS_LEVEL
+        } else {
+            0.0
+        };
+        let frames = outs.iter().map(|o| o.len()).min().unwrap_or(0);
+        for i in from..to.min(frames) {
+            if ins.iter().any(|ch| ch[i].to_f64() != 0.0) {
+                dsp.age = Some(0);
+            }
+            let ringing = dsp.age.is_some_and(|a| {
+                (u64::from(onset)..=u64::from(onset) + u64::from(length)).contains(&a)
+            });
+            for out in outs.iter_mut() {
+                // A xorshift32: deterministic, and never zero.
+                dsp.noise ^= dsp.noise << 13;
+                dsp.noise ^= dsp.noise >> 17;
+                dsp.noise ^= dsp.noise << 5;
+                let noise = (dsp.noise as f32 / u32::MAX as f32 * 2.0 - 1.0) * hiss;
+                let ring = if ringing { RING_LEVEL } else { 0.0 };
+                out[i] = S::from_f32(ring + noise);
+            }
+            dsp.age = dsp.age.map(|a| a + 1);
+        }
+    }
+
     /// Silences the audio side's memory: delay line and held note.
     pub fn reset(&self, dsp: &mut Dsp) {
         dsp.held = None;
+        dsp.age = None;
         for l in &mut dsp.delay {
             l.iter_mut().for_each(|v| *v = 0.0);
         }
@@ -728,9 +857,10 @@ impl Core {
         let mut b = Vec::with_capacity(512);
         b.extend_from_slice(&MAGIC.to_le_bytes());
         let word = self.mode.load(Relaxed)
+            | self.fault.load(Relaxed) << 4
             | self.editor.load(Relaxed) << 8
             | self.notice.load(Relaxed) << 16
-            | self.tail.load(Relaxed) << 24;
+            | (self.tail.load(Relaxed) | self.rings.load(Relaxed) << 4) << 24;
         b.extend_from_slice(&word.to_le_bytes());
         b.extend_from_slice(&self.level.load(Relaxed).to_le_bytes());
         b.extend_from_slice(&self.aux.load(Relaxed).to_le_bytes());
@@ -790,17 +920,21 @@ impl Core {
         if word(0) != MAGIC {
             return Err(BadState);
         }
-        let (mode, editor, notice, tail) = (
-            word(4) & 0xFF,
+        let (mode, editor, notice, tail, rings, fault) = (
+            word(4) & 0xF,
             (word(4) >> 8) & 0xFF,
             (word(4) >> 16) & 0xFF,
-            word(4) >> 24,
+            (word(4) >> 24) & 0xF,
+            word(4) >> 28,
+            (word(4) >> 4) & 0xF,
         );
         let (level, aux) = (float(8), float(16));
         if mode >= MODES
             || editor >= EDITORS
             || notice >= NOTICES
             || tail >= TAILS
+            || rings >= RINGS
+            || fault >= FAULTS
             || !level.is_finite()
             || !aux.is_finite()
         {
@@ -810,6 +944,8 @@ impl Core {
         self.editor.store(editor, Relaxed);
         self.notice.store(notice, Relaxed);
         self.tail.store(tail, Relaxed);
+        self.rings.store(rings, Relaxed);
+        self.fault.store(fault, Relaxed);
         self.gesture_due
             .store(u32::from(notice == NOTICE_GESTURE_ON_LOAD), Relaxed);
         self.set_param(LEVEL, level);
@@ -957,5 +1093,119 @@ mod tests {
         let mut blob = core.save();
         blob[4..8].copy_from_slice(&(TAILS << 24).to_le_bytes());
         assert!(core.load(&blob).is_err(), "out of range");
+    }
+
+    /// Selects a ring behaviour (and keeps the tail nibble) through the state,
+    /// as the contract does.
+    fn with_rings(core: &Core, rings: u32, tail: u32) {
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&((tail | rings << 4) << 24).to_le_bytes());
+        core.load(&blob).expect("loads");
+    }
+
+    /// **The fault nibble shares the mode byte without disturbing the mode**, and
+    /// out of range is refused. (A fault itself ends the process or hangs it: the
+    /// probe tests run it in a separate process.)
+    #[test]
+    fn the_fault_nibble_round_trips_beside_the_mode() {
+        let core = Core::new();
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&(3 | FAULT_HANG << 4).to_le_bytes());
+        core.load(&blob).expect("loads");
+        assert_eq!(core.param(MODE), Some(0.75));
+        assert_eq!(&core.save()[4..8], &(3 | FAULT_HANG << 4).to_le_bytes());
+        blob[4..8].copy_from_slice(&(FAULTS << 4).to_le_bytes());
+        assert!(core.load(&blob).is_err());
+    }
+
+    /// An impulse on both channels at frame 0, then silence, rendered in blocks
+    /// of 512 for `frames`: channel 0's output, frame by frame.
+    fn impulse_response(core: &Core, frames: usize) -> Vec<f32> {
+        let mut dsp = Dsp::default();
+        core.prepare(&mut dsp, 48_000.0, 512);
+        let mut heard = Vec::new();
+        for at in (0..frames).step_by(512) {
+            let mut ins = [vec![0.0f32; 512], vec![0.0f32; 512]];
+            if at == 0 {
+                ins[0][0] = 0.1;
+                ins[1][0] = 0.1;
+            }
+            let ins: Vec<&[f32]> = ins.iter().map(Vec::as_slice).collect();
+            let mut outs = [vec![9.0f32; 512], vec![9.0f32; 512]];
+            let mut refs: Vec<&mut [f32]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
+            core.process(&mut dsp, 512, 0, &ins, &mut refs);
+            heard.extend_from_slice(&outs[0]);
+        }
+        heard
+    }
+
+    /// **The ring is `RING_LEVEL` from the trigger's frame for exactly its
+    /// length and then nothing**: no DC, no tag, whatever the mode says.
+    #[test]
+    fn an_exact_ring_lasts_its_length_after_the_impulse() {
+        let core = Core::new();
+        with_rings(&core, RINGS_EXACT, TAIL_DEFAULT);
+        let heard = impulse_response(&core, 10_240);
+        let last = RING_FRAMES as usize;
+        assert!(heard[..=last].iter().all(|&v| v == RING_LEVEL));
+        assert!(heard[last + 1..].iter().all(|&v| v == 0.0), "then silence");
+    }
+
+    /// **A longer ring and a late one differ from the exact one by exactly their
+    /// figure**: the extra frames, the onset's delay.
+    #[test]
+    fn the_longer_and_the_late_ring_move_their_edge() {
+        let core = Core::new();
+        with_rings(&core, RINGS_LONGER, TAIL_DEFAULT);
+        let heard = impulse_response(&core, 14_336);
+        let last = (RING_FRAMES + RING_EXTRA) as usize;
+        assert_eq!(heard[last], RING_LEVEL);
+        assert_eq!(heard[last + 1], 0.0);
+        with_rings(&core, RINGS_LATE, TAIL_DEFAULT);
+        let heard = impulse_response(&core, 10_240);
+        let onset = LATE_FRAMES as usize;
+        assert!(heard[..onset].iter().all(|&v| v == 0.0));
+        assert_eq!(heard[onset], RING_LEVEL);
+        assert_eq!(heard[onset + RING_FRAMES as usize], RING_LEVEL);
+        assert_eq!(heard[onset + RING_FRAMES as usize + 1], 0.0);
+    }
+
+    /// **The hiss is on with silence in, and stays at its level**: every frame
+    /// carries noise, none above `HISS_LEVEL`, and the peak reaches near it.
+    #[test]
+    fn the_hiss_is_always_on_and_bounded() {
+        let core = Core::new();
+        with_rings(&core, RINGS_HISS, TAIL_DEFAULT);
+        let heard = impulse_response(&core, 20_480);
+        let tail = &heard[RING_FRAMES as usize + 1..];
+        assert!(tail.iter().all(|v| v.abs() <= HISS_LEVEL));
+        assert!(tail.iter().any(|v| v.abs() > 0.9 * HISS_LEVEL));
+        assert!(tail.iter().filter(|&&v| v == 0.0).count() < 4);
+    }
+
+    /// **The ring byte shares the tail's byte without disturbing it**: each
+    /// round-trips, and either out of range is refused.
+    #[test]
+    fn the_rings_nibble_round_trips_beside_the_tail() {
+        let core = Core::new();
+        for (rings, tail) in [(RINGS_LONGER, TAIL_INFINITE), (RINGS_LATE, TAIL_PAST_CAP)] {
+            with_rings(&core, rings, tail);
+            assert_eq!(core.rings(), rings);
+            assert_eq!(
+                core.tail_samples(),
+                if tail == TAIL_INFINITE {
+                    u32::MAX
+                } else {
+                    TAIL_PAST_CAP_FRAMES
+                }
+            );
+            assert_eq!(
+                &core.save()[4..8],
+                &((tail | rings << 4) << 24).to_le_bytes()
+            );
+        }
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&(RINGS << 28).to_le_bytes());
+        assert!(core.load(&blob).is_err());
     }
 }

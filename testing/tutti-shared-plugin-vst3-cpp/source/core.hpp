@@ -4,8 +4,11 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace shared {
@@ -25,6 +28,13 @@ inline double toneNormalized (double plain)
 constexpr uint32_t kLatency = 137, kTail = 8191;
 // The tail byte (core.rs, "Tail"): the default, the infinite marker (kInfiniteTail), or a finite 61 s.
 constexpr uint32_t kTailInfinite = 1, kTailPastCap = 2, kTails = 3, kTailPastCapFrames = 48000 * 61;
+// The rings nibble (core.rs, "Rings"): the high nibble of the tail byte, what the plugin does with a trigger (any non-zero input
+// frame), and not what it reports. Exact, Longer, Hiss and Late; a ring is kRingLevel from its onset for its length, inclusive.
+constexpr uint32_t kRingsExact = 1, kRingsLonger = 2, kRingsHiss = 3, kRingsLate = 4, kRings = 5;
+constexpr uint32_t kRingFrames = 8191, kRingExtra = 4096, kLateFrames = 64;
+constexpr float kRingLevel = 0.1f, kHissLevel = 0.001f;
+// The fault nibble (core.rs, "Faults"): the high nibble of the mode byte; the first `process` aborts or never returns.
+constexpr uint32_t kFaultCrash = 1, kFaultHang = 2, kFaults = 3;
 constexpr uint32_t kMagic = 0x31505354; // "TSP1"
 constexpr size_t kStateHead = 24;
 // A transport's flags (core.rs, "State"), and how many the log keeps.
@@ -44,7 +54,7 @@ struct Ev { int kind; uint32_t offset; uint32_t id; double value; };
 struct Core
 {
 	std::atomic<double> level {0.5}, aux {0.25}, tone {0.5};
-	std::atomic<uint32_t> mode {0}, notice {0}, tailSel {0};
+	std::atomic<uint32_t> mode {0}, notice {0}, tailSel {0}, ringsSel {0}, faultSel {0};
 	uint32_t tailSamples () const
 	{
 		return tailSel == kTailInfinite ? 0xFFFFFFFFu : tailSel == kTailPastCap ? kTailPastCapFrames : kTail;
@@ -63,7 +73,8 @@ struct Core
 	std::atomic<uint32_t> toldN {0};
 
 	// audio side
-	uint32_t dspMode = 0; double dspLevel = 0.5; int held = -1; size_t pos = 0;
+	uint32_t dspMode = 0, dspRings = 0, noise = 0x12345678; double dspLevel = 0.5; int held = -1; size_t pos = 0;
+	int64_t age = -1;
 	std::vector<std::vector<double>> delay;
 	std::vector<Ev> events;
 
@@ -84,14 +95,14 @@ struct Core
 
 	void prepare (double r, size_t maxB)
 	{
-		dspMode = mode; held = -1; pos = 0;
+		dspMode = mode; dspRings = ringsSel; age = -1; noise = 0x12345678; held = -1; pos = 0;
 		delay.assign (8, std::vector<double> (kLatency, 0.0));
 		events.clear (); events.reserve (128);
 		calls = 0; frames = 0; blocksN = 0; logN = 0; toldN = 0; overflow = 0; rate = r; maxBlock = uint32_t (maxB); prepares++;
 	}
 	void reset ()
 	{
-		held = -1;
+		held = -1; age = -1;
 		for (auto& l : delay) std::fill (l.begin (), l.end (), 0.0);
 	}
 	void push (Ev e)
@@ -137,10 +148,33 @@ struct Core
 		if (n < UINT32_MAX) toldN = n + 1;
 	}
 
+	// The ring behaviours' render (core.rs, "Rings"), frame by frame: the age is the frame's.
+	template <typename S>
+	void renderRings (size_t from, size_t to, const std::vector<std::vector<S>>& in, S* const* out, size_t nOut)
+	{
+		int64_t length = dspRings == kRingsLonger ? kRingFrames + kRingExtra : kRingFrames;
+		int64_t onset = dspRings == kRingsLate ? kLateFrames : 0;
+		float hiss = dspRings == kRingsHiss ? kHissLevel : 0.f;
+		for (size_t i = from; i < to; ++i)
+		{
+			for (size_t c = 0; c < in.size (); ++c)
+				if (double (in[c][i]) != 0.0) age = 0;
+			bool ringing = age >= onset && age <= onset + length;
+			for (size_t c = 0; c < nOut; ++c)
+			{
+				noise ^= noise << 13; noise ^= noise >> 17; noise ^= noise << 5;
+				float n = (float (noise) / float (UINT32_MAX) * 2.f - 1.f) * hiss;
+				out[c][i] = S ((ringing ? kRingLevel : 0.f) + n);
+			}
+			if (age >= 0) ++age;
+		}
+	}
+
 	template <typename S>
 	void render (size_t from, size_t to, uint32_t bus, const std::vector<std::vector<S>>& in,
 	             S* const* out, size_t nOut)
 	{
+		if (dspRings != 0) { renderRings (from, to, in, out, nOut); return; }
 		for (size_t c = 0; c < nOut; ++c)
 			for (size_t i = from; i < to; ++i)
 			{
@@ -161,6 +195,8 @@ struct Core
 	template <typename S>
 	void process (size_t nFrames, uint32_t bus, const std::vector<std::vector<S>>& in, S* const* out, size_t nOut)
 	{
+		if (faultSel == kFaultCrash) std::abort ();
+		if (faultSel == kFaultHang) for (;;) std::this_thread::sleep_for (std::chrono::seconds (1));
 		uint64_t n = calls++; frames += nFrames;
 		if (n >= 16) overflow = 1;
 		blocks[n % 16] = uint32_t (nFrames); blocksN = uint32_t (std::min<uint64_t> (n + 1, UINT32_MAX));
@@ -187,7 +223,7 @@ struct Core
 	std::vector<uint8_t> save () const
 	{
 		std::vector<uint8_t> b;
-		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode | notice << 16 | tailSel << 24); put<double> (b, level); put<double> (b, aux);
+		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode | faultSel << 4 | notice << 16 | (tailSel | ringsSel << 4) << 24); put<double> (b, level); put<double> (b, aux);
 		put<uint64_t> (b, calls); put<uint64_t> (b, frames); put<uint32_t> (b, prepares);
 		put<double> (b, rate); put<uint32_t> (b, maxBlock); put<uint32_t> (b, overflow);
 		uint32_t nb = blocksN, kept = std::min<uint32_t> (nb, 16);
@@ -207,12 +243,12 @@ struct Core
 	bool load (const uint8_t* p, size_t n)
 	{
 		if (n < kStateHead) return false;
-		uint32_t magic, word, m, editor, nt, tl; double l, a;
+		uint32_t magic, word, m, editor, nt, tl, rg, fl; double l, a;
 		std::memcpy (&magic, p, 4); std::memcpy (&word, p + 4, 4); std::memcpy (&l, p + 8, 8); std::memcpy (&a, p + 16, 8);
-		m = word & 0xFF; editor = (word >> 8) & 0xFF; nt = (word >> 16) & 0xFF; tl = word >> 24;
+		m = word & 0xF; fl = (word >> 4) & 0xF; editor = (word >> 8) & 0xFF; nt = (word >> 16) & 0xFF; tl = (word >> 24) & 0xF; rg = word >> 28;
 		// This plugin has no editor: it refuses the editor byte, and takes the notice byte.
-		if (magic != kMagic || m >= kModes || editor != 0 || nt >= kNotices || tl >= kTails || !std::isfinite (l) || !std::isfinite (a)) return false;
-		mode = m; notice = nt; tailSel = tl; setParam (kLevel, l); setParam (kAux, a);
+		if (magic != kMagic || m >= kModes || editor != 0 || nt >= kNotices || tl >= kTails || rg >= kRings || fl >= kFaults || !std::isfinite (l) || !std::isfinite (a)) return false;
+		mode = m; notice = nt; tailSel = tl; ringsSel = rg; faultSel = fl; setParam (kLevel, l); setParam (kAux, a);
 		return true;
 	}
 };

@@ -65,8 +65,8 @@ What is typed, what is a string, and what stops at a format host.
 | Capability flags | One `Features` bitset plus a `probed` mask (`FeatureReport`); a clear bit with a clear `probed` bit means "not asked" | `tutti-plugin-types` `features.rs`, `LoadedPlugin` |
 | Parameter unit | `ParameterInfo.unit: String` stays as the display text (VST3 the `units` string, VST2 the label, AU its own `ParameterUnit` print with 9 of the 27 codes decoded, CLAP `""`), and `ParameterInfo.measures: Option<ParamUnit>` types it where the format declared it exactly and the range fits (step 1, built) | `tutti-plugin-types` `param_unit.rs`, `tutti-vst3-host` `loaded/parameters.rs`, `tutti-vst2-host` `parameters.rs`, `tutti-clap-host` `instance/params.rs`, `tutti-au-host` `unit_code.rs` |
 | Parameter kind | `ParameterInfo.role: Option<UnitParam>`: `Bypass` from the CLAP and VST3 flag, `Wet` from VST3's `DryWetMix`, `Pan` from AU's pan code; never from a name (step 1, built) | same |
-| Tail | `PluginTail` (an alias of `tutti_types::Tail`) stored in `PluginControls`, passed through `Processing::ceiling` and handed to `Shape::with_tail` by the node's `shape`. The figure is the **plugin's claim** (nothing measures it until step 3), and a CLAP plugin's *sleep* narrows it live: the node reports `Tail::None` and is `Status::Idle`; a tail change re-declares the ceiling through `Editor::set_tail` (step 2, built) | `tutti-plugin-types` `metadata.rs`, `tutti-plugin-host` `node/graph.rs` |
-| Latency | `LoadedPlugin.latency_samples`; the node declares it plus the IPC chunk. Also a claim, unmeasured | same |
+| Tail | `PluginTail` (an alias of `tutti_types::Tail`) stored in `PluginControls`, passed through `Processing::ceiling` and handed to `Shape::with_tail` by the node's `shape`. The figure is the **plugin's claim**, which `plugin-probe --measure` checks (`PluginDescriptor::measured`, step 3, built; the node does not read it yet, step 5), and a CLAP plugin's *sleep* narrows it live: the node reports `Tail::None` and is `Status::Idle`; a tail change re-declares the ceiling through `Editor::set_tail` (step 2, built) | `tutti-plugin-types` `metadata.rs`, `tutti-plugin-host` `node/graph.rs` |
+| Latency | `LoadedPlugin.latency_samples`; the node declares it plus the IPC chunk. Also a claim; the probe records the first sound beside it, and never corrects it | same |
 | Voices | `VoiceInfo { voice_count, voice_capacity, supports_overlapping_notes }` in `tutti-clap-host`; no other format has a counterpart; `tutti-voicing` is not involved | `tutti-clap-host` `types.rs` |
 | Note expression | `NoteExpressionType` (volume, pan, tuning, vibrato, brightness, pressure, expression, custom) and the per-block value list; the *description* of an expression (range, bipolar, one-shot) is read by `tutti-vst3-host` and does not cross | `tutti-plugin-types` `note_expression.rs` |
 | Presets | `Preset`, `PresetId`, `PresetSupport`; list and load only | `tutti-plugin-types` `presets.rs` |
@@ -640,7 +640,8 @@ claim (`declared_shape`), and the silence skip parks the node on it. Three
 changes, in order.
 
 ```rust
-/// What a probe measured. New, in `Processing`.
+/// What a probe measured. New, in `Processing`. (As built it also holds the
+/// verdict: see "As built, step 3".)
 pub struct Measured {
     pub tail: Option<Samples>,      // last sample above the floor, from the impulse
     pub latency: Option<Samples>,   // first sample above the floor
@@ -694,7 +695,8 @@ the same experiment out of process.
 
 - **Types** are `tutti-plugin-types`'s, in `metadata.rs` beside `PluginTail`
   (`Capabilities` is step 5): `Measured { tail, latency }` (both `Option<Samples>`,
-  `Default`, empty: nothing produces one until step 3) and `Processing`
+  `Default`, empty: nothing produces one until step 3; step 3 moved it to
+  `measured.rs` and gave it a configuration and a verdict) and `Processing`
   (`new(claim)`, `with_measured`, `claim`, `measured`, `ceiling`). `ceiling` is as
   sketched above: a measurement raises a finite claim and never lowers or invents
   one. The plugin node's `shape` hands `Processing::new(tail).ceiling()` to
@@ -1040,6 +1042,109 @@ activate, measure.**
   5.2 grows only by a run over installed plugins that counts the `units` strings
   it sees, in the manner of the measurement recorded in `param_properties.rs`.
 
+**As built, step 3 (the probes).**
+
+- **Types** are `tutti-plugin-types`'s, in `measured.rs` (`Measured` moved out of
+  `metadata.rs`): `Measured { tail, latency, config, verdict }`, `ProbeConfig
+  { rate: SampleRate, block: MaxBlock, floor: Db, state: StateHash }`,
+  `PROBE_FLOOR` (`Db(-100)`, the one named floor, Q3) and `StateHash` (FNV-1a of the state
+  the plugin loaded in). `Measured` is no longer `Default` or `Eq` (a `Db` is a
+  float) and so neither is `Processing`. `PluginDescriptor::measured:
+  Option<Measured>` is `serde(default)`; it rides the `PluginDb` row
+  (`FileState::Probed`), so a file whose time changed loses it with the row.
+- **The verdict is a struct of two judgements, not one value**: `Verdict { tail:
+  TailVerdict, latency: LatencyVerdict }`. A plugin can be `TailLonger` and
+  `LatencyDiffers` at once (the probe test plugin's `RINGS_LATE` is), and an
+  unbounded claim leaves the latency as checkable as ever; a single enum would
+  have to name the pairs or lose one. `TailVerdict` is `Honest`, `TailLonger
+  { reported, measured }`, `NeverSettles { level }` or `NotChecked(NotChecked)`;
+  `LatencyVerdict` is `Honest`, `LatencyDiffers { reported, measured }`,
+  `NeverSettles { level }` or `NotChecked(NotChecked)`; the reasons are a closed
+  enum (`UnboundedClaim`, `UnknownClaim`, `NeverReachedFloor`, `Silent`,
+  `Instrument`), not text. `NeverSettles` is in both because nothing is judged
+  of a plugin that makes its own sound. The verdict is stored beside the figures
+  because the descriptor is the only place the record persists and the claim it
+  was judged against is not in it.
+- **The experiment** (`tutti-plugin-probe`'s `measure.rs`; `measure_at` over any
+  `Processor`, `measure` over any `InProcess` format by descriptor id): render one
+  second of silence in and, if the output never falls below the floor, record
+  `NeverSettles` at the level it held (the least of the blocks' peaks, so a
+  start-up transient is not hiss) and judge nothing; `reset`; then the impulse
+  (0.1 on every input channel at frame 0) or, for a plugin with **no audio
+  input**, a note-on and a note-off at 100 ms; render until the output has
+  stayed below the floor for 1 s or the budget is spent (`MAX_NODE_TAIL` plus
+  `BUDGET_MARGIN`, 5 s, in frames, so it follows the graph's bound at every rate:
+  an effect still sounding is judged by its lower bound, which is past the bound,
+  so `TailLonger`, and `Processing::ceiling` turns it into `Unbounded`; an
+  instrument is `NotChecked(NeverReachedFloor)`). The stimulus level, 0.1
+  (`IMPULSE`), is the probe's constant and no bound for a nonlinear plugin: a gate
+  that never opens at it is `Silent`. Latency is the first frame
+  above the floor; the tail is the last, **less the reported latency** (a tail
+  excludes latency, doc 013, so a plugin that delays by 137 and rings 5000
+  beyond says 5000 and is `Honest`). A tail longer than the claim is `TailLonger`;
+  a shorter one is honest (a claim is a ceiling). An instrument's latency is
+  `NotChecked(Instrument)` (its first sound is its attack) and an instrument
+  still sounding at the budget is `NotChecked(NeverReachedFloor)`; a plugin that
+  made no sound at all is `NotChecked(Silent)` for both, never a pass. A NaN
+  counts as sound. An instrument is "no audio input" and not the descriptor's
+  role, because the shared CLAP plugin's features say both.
+- **Two configurations, one record.** It measures at 48 kHz/512 and 44.1
+  kHz/64 (`CONFIGS`) and keeps one `Measured` (`Measured::merge`): the larger tail
+  with the configuration that produced it (the ceiling only rises, so the larger
+  figure is the safe one; a tie keeps the first), the first configuration's
+  latency (nothing reads it as a ceiling; a disagreement is in the verdict), and
+  the worse verdict of each judgement (`NeverSettles` over `TailLonger` over a
+  gap over `Honest`, the longer of two `TailLonger`s). Two entries would have
+  been a `Vec` where the design says `Option`, and a second record with nothing
+  to read it.
+- **The probe** takes `--measure` and, with it, `--state <file>` (the bytes a
+  plugin's own `save_state` wrote, loaded before the measurement; the record's
+  `StateHash` is of the state it measured). A bad state is a typed `Failed`, a
+  plugin that refuses it too; one that crashes or hangs while rendering leaves
+  no result file, so the host sees a crash or a timeout, the same outcomes (and
+  the same `probe_failure`, blacklistable) as in the load. The result file's
+  magic is **version 4** (postcard has no defaults, so a version 3 file, whose
+  descriptors lack the field, is refused by its magic); the db file stays
+  **version 3** (JSON, and `measured` is `serde(default)`: an old file reads as
+  `None`).
+- **The scan opts in.** Measuring renders every plugin at two configurations,
+  seconds a plain probe does not cost, and a plugin that dies rendering is
+  blacklisted. `Catalog::with_measuring()` makes a catalog's scans measure
+  (`DEFAULT_MEASURE_TIMEOUT`, 180 s); `Catalog::measure(&PluginRef)` and the
+  non-blocking `measure_record` / `measure_record_with` measure one file, which a
+  scan never revisits while its time is unchanged. The default scan is as it was.
+- **The wiring to the node is not built.** The node's claim comes from the
+  plugin's own `PluginControls` or instance (`Processing::new(tail).ceiling()` in
+  the node's `shape`, the session's plugin phase and `Graph::refresh_node_tail`),
+  and nothing carries the catalog descriptor to it: `PluginLoad::with_catalog`
+  reads the blacklist and the audio config only. `Processing::with_measured` and
+  its ceiling are built and tested against a real probe's record; reading
+  `measured` from the catalog into the node is step 5's `Capabilities`, which is
+  where the descriptor and the load meet.
+- **The shared test plugin rings.** It only reported before: its output was
+  `in + tag`, a DC offset the floor never admits. The high nibble of the mode
+  word's fourth byte is now a `RINGS_*` behaviour (the low nibble is still the
+  tail it reports): `Exact` rings `RING_FRAMES` (8191) after a trigger frame,
+  `Longer` 4096 more, `Hiss` adds noise at -60 dB, `Late` sounds 64 frames after
+  its trigger; each ignores the mode and the tag (`core.rs`, "Rings", mirrored in
+  the C++ `core.hpp`). The contract's `spec` states the figures. A fault nibble
+  in the mode byte (`mode | fault << 4`: `FAULT_CRASH` aborts, `FAULT_HANG`
+  never returns, both in the first `process`, in the format-free core and the C++
+  one) takes the plugin down while it is measured; like every behaviour here it
+  is chosen through the state, which `--state` gives the probe.
+- **Tests.** `measure::tests` (the experiment against a fake that does what a
+  test says: honest, longer by one frame, shorter claim, the floor's edge, noise,
+  unbounded, latency differing, latency excluded from the tail, an instrument
+  from its note-off, the budget, block independence); `measured.rs` (FNV-1a
+  vectors, the merge); the contract's `probe` suite, through the real binary on
+  every format's shared plugin (CLAP, VST2, VST3 and the C++ VST3): honest,
+  `TailLonger`, `NeverSettles`, `NotChecked`, `LatencyDiffers` with `TailLonger`,
+  and a crash and a hang while measuring; the wire and the db file round-trip
+  `measured` and an old file reads as `None`; the catalog's opt-in and
+  `measure`. Mutations checked once: a plugin reporting 8190 for a ring of 8191
+  turns `Honest` into `TailLonger`; skipping the silence-in render reads the noisy
+  plugin as `TailLonger` (a tail at the budget, past `MAX_NODE_TAIL`).
+
 ## 7. The reverse direction (parked)
 
 The inventory reads the other way too. A tutti node exported as a plugin must
@@ -1083,7 +1188,7 @@ dependency: step 3 needs only 021's step 4c (the probe binary), step 2 needs
 |---|---|---|---|
 | 1 | **Parameter unit and kind.** `ParamUnit`, `ParameterInfo::measures` and `role` (`serde(default)`), the pure mapping per format host, the plausibility check, `typed::<U>`; the AU host decodes all 27 codes | nothing | every code, every accepted string, every near-miss (`kHz`, `Db`, empty), a range that does not fit. Mutation: break one table row, its test fails |
 | 2 | **The tail into the graph (built).** `Processing::ceiling`, `Measured` (empty until step 3), CLAP's process status to `report_tail` and `Status::Idle` in the plugin node, a tail setter on the editor if none exists | PR #359 | a fake CLAP processor that sleeps. Mutation: report `Sleep` while sounding, the honest-tail contract fails |
-| 3 | **Tail and latency probes.** `--measure` in `tutti-plugin-probe`, `Measured` in `PluginDescriptor`, the verdict; the shared test plugin's mode word sets its tail | 021 step 4c | the plugin reports N and rings M: `Honest` when N = M, `TailLonger` when N < M; a plugin that adds noise above the floor with silence in is `NeverSettles`, not `TailLonger`. Mutations: report M - 1, the verdict changes; skip the silence-in render, the noisy plugin reads `TailLonger` |
+| 3 | **Tail and latency probes (built).** `--measure` in `tutti-plugin-probe`, `Measured` in `PluginDescriptor`, the verdict; the shared test plugin's mode word sets its tail | 021 step 4c | the plugin reports N and rings M: `Honest` when N = M, `TailLonger` when N < M; a plugin that adds noise above the floor with silence in is `NeverSettles`, not `TailLonger`. Mutations: report M - 1, the verdict changes; skip the silence-in render, the noisy plugin reads `TailLonger` |
 | 4 | **The voice description.** `DeclaredVoices`, `rules`, the CLAP fill, `NoteTracker` over `OneVoice`, the note-end event, hanging-note cleanup on stop and seek | step 2 | the tracker is tested against `tutti-voicing`'s own spec tests, no other implementation; a hanging-note case per format. Mutation: drop the note-end handler, a voice stays |
 | 5 | **`Capabilities` and `Reported`.** Assemble it in `Loaded`, carry it with `LoadedPlugin`, replace it on a restart notice; `Dialects` | step 4 | a re-read test through the 016 `step` core. Mutation: clear the flag-to-field mapping, the test fails |
 | 6 | **`LayoutOptions` and `Ambisonic`** (G1, G11). A native node declares a set first; then the four plugin sources | step 5 | a `Fold` property test over every `LayoutChoice` pair; a refused proposal changes nothing in the graph |

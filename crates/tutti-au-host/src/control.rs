@@ -91,6 +91,7 @@ pub(crate) fn describe(handle: &AuHandle) -> PluginDescriptor {
             component_type: class_of(handle.au_type()),
         },
         editor: EditorPresence::measured(AuEditor::has_editor(handle.unit())),
+        measured: None,
     }
 }
 

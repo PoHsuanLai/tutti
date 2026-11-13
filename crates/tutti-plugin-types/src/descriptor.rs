@@ -51,6 +51,18 @@ pub struct PluginDescriptor {
     // quarantined. `Unknown` because such a record never examined the plugin.
     #[cfg_attr(feature = "serde", serde(default))]
     pub editor: EditorPresence,
+    /// What `plugin-probe --measure` found of the plugin's tail and latency, if
+    /// a measuring probe has looked (doc 023 section 6). `None` is "nobody
+    /// measured it", never "it measured nothing".
+    ///
+    /// Rides the descriptor's row in the catalog, so a file whose modification
+    /// time changes loses it with the rest of the row. A persisted record
+    /// without this field reads as `None`.
+    // `serde(default)` for the same reason as `editor`: a catalog written before
+    // the field existed must stay loadable. (The probe's result file is postcard,
+    // which has no defaults: its magic carries the version.)
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub measured: Option<crate::Measured>,
 }
 
 /// Whether a plugin has an editor, and whether anyone has actually looked.
@@ -123,6 +135,7 @@ impl PluginDescriptor {
             version: String::new(),
             class,
             editor: EditorPresence::Unknown,
+            measured: None,
         }
     }
 }

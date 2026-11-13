@@ -197,6 +197,7 @@ pub(super) fn rig(label: &str) -> Rig {
             version: String::new(),
             class: PluginClass::Unknown,
             editor: EditorPresence::Absent,
+            measured: None,
         },
         loaded: LoadedPlugin {
             inputs: vec![PluginBus::main(ChannelLayout::STEREO)],

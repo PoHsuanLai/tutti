@@ -233,7 +233,13 @@ mod tests {
     use super::*;
     use crate::facts::FileFacts;
     use crate::format::{PluginClass, PluginDescriptor, PluginFormat};
+    use crate::table::FileState;
     use tempfile::TempDir;
+    use tutti_plugin_types::{
+        LatencyVerdict, MaxBlock, Measured, NotChecked, PROBE_FLOOR, ProbeConfig, StateHash,
+        TailVerdict, Verdict,
+    };
+    use tutti_types::{Db, SampleRate, Samples};
 
     fn row(name: &str) -> FileRow {
         let facts = FileFacts {
@@ -577,5 +583,74 @@ mod tests {
         save(&db, &path).unwrap();
 
         assert_eq!(load(&path), db);
+    }
+
+    /// A row of one plugin whose `measured` is `measured`.
+    fn measured_row(name: &str, measured: Measured) -> FileRow {
+        let mut row = row(name);
+        let FileState::Probed(plugins) = &mut row.state else {
+            unreachable!("a probed row");
+        };
+        plugins[0].measured = Some(measured);
+        row
+    }
+
+    fn measurement(tail: TailVerdict, latency: LatencyVerdict) -> Measured {
+        Measured {
+            tail: Some(Samples(8191)),
+            latency: Some(Samples(64)),
+            config: ProbeConfig {
+                rate: SampleRate(44_100.0),
+                block: MaxBlock::new(Samples(64)).unwrap(),
+                floor: PROBE_FLOOR,
+                state: StateHash::of(b"patch"),
+            },
+            verdict: Verdict { tail, latency },
+        }
+    }
+
+    /// **A measurement survives the file, whatever its verdict**: every variant a
+    /// probe can write reads back equal, so the record a host shows is the one the
+    /// probe made.
+    #[test]
+    fn a_measurement_survives_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("plugins.json");
+        let held = Db(-60.0);
+        let verdicts = [
+            (TailVerdict::Honest, LatencyVerdict::Honest),
+            (
+                TailVerdict::TailLonger {
+                    reported: Samples(8191),
+                    measured: Samples(12_287),
+                },
+                LatencyVerdict::LatencyDiffers {
+                    reported: Samples(0),
+                    measured: Samples(64),
+                },
+            ),
+            (
+                TailVerdict::NeverSettles { level: held },
+                LatencyVerdict::NeverSettles { level: held },
+            ),
+            (
+                TailVerdict::NotChecked(NotChecked::UnboundedClaim),
+                LatencyVerdict::NotChecked(NotChecked::Instrument),
+            ),
+        ];
+        let mut db = PluginDb::new();
+        for (k, (tail, latency)) in verdicts.into_iter().enumerate() {
+            let name = format!("plugin{k}");
+            let delta = Delta::put(
+                format!("/plugins/{name}.vst3"),
+                measured_row(&name, measurement(tail, latency)),
+            );
+            db.apply(delta);
+        }
+        save(&db, &path).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded, db);
+        assert_eq!(loaded.plugins().count(), 4);
+        assert!(loaded.plugins().all(|p| p.descriptor.measured.is_some()));
     }
 }

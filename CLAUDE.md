@@ -336,7 +336,11 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   `plugin_server`: a dev-dependency builds a library, not a binary, and a
   missing one is a failure, never a skip). `tutti-plugin-contract`'s `probe`
   suite (`--features server`) spawns it, and so does `tutti-plugin`'s opt-in
-  `db_probe` test (`TUTTI_PROBE_PLUGIN`). `tutti-session`'s `plugin` suite loads
+  `db_probe` test (`TUTTI_PROBE_PLUGIN`); its measuring cases (`--measure`,
+  `--state`, doc 023 section 6) render the shared plugin in the probe's process,
+  which a plugin configured only through its state steers with `--state <file>`
+  (the shared plugin's mode word also selects a crash or hang in `process`).
+  `tutti-session`'s `plugin` suite loads
   through the server and does not scan, so it needs the server alone. A scan
   with no `plugin-probe` on hand degrades to filename metadata
   (`ProbeNotFound`), so a suite that must see a real probe uses the fixture.
@@ -643,7 +647,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  already-activated plugin and needs no main thread); no wire,
                  design 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
-                 into a result file, `tutti-plugin-types`' `probe_wire`; the format
+                 into a result file, `tutti-plugin-types`' `probe_wire`, and with
+                 `--measure` renders it and holds its tail and latency to what it
+                 reports (`Measured`, `Verdict`; doc 023 section 6); the format
                  hosts and no hosting; nothing depends on it, design 021 §2.5),
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
   tutti-au-ffi (all AU unsafe; macOS only, empty elsewhere),

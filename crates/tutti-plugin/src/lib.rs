@@ -73,7 +73,8 @@ pub use tutti_plugin_types::{Normalized, ParamId};
 /// own store and pass it to `Catalog::with_db`.
 pub mod catalog {
     pub use crate::host::db_probe::{
-        DEFAULT_PROBE_TIMEOUT, probe_failure, probe_record, probe_record_with,
+        DEFAULT_MEASURE_TIMEOUT, DEFAULT_PROBE_TIMEOUT, measure_record, measure_record_with,
+        probe_failure, probe_record, probe_record_with,
     };
     pub use tutti_plugin_types::{Helper, Locator};
     // Named in `Plugin::role` and `Catalog::iter`.

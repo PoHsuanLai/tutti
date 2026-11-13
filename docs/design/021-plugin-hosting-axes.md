@@ -378,6 +378,16 @@ and to the set of served formats (which excludes VST2).
   becomes "build `plugin-server` and `plugin-probe` first" for the tests that
   scan (`tutti-plugin`'s `db_probe`, `tutti-session`'s `plugin` suite).
 
+**Measuring (doc 023 step 3).** `plugin-probe <path> <result-file> --measure
+[--state <file>]` reads the descriptors as before and then activates each plugin
+and renders it; the figures ride the descriptor (`PluginDescriptor::measured`),
+so the wire is the same file with the same outcomes (the magic's version went to
+4, since postcard has no defaults). A crash or hang while rendering is the same
+no-file outcome as one in the load. `--state` puts the plugin in the state a file
+holds first. The host side is `probe_metadata_with`'s sibling
+`measure_metadata_with` and, in `tutti-plugin`'s catalog, `measure_record` and
+`Catalog::{with_measuring, measure}`.
+
 **As built (step 4c).**
 
 - **The crate.** `crates/tutti-plugin-probe`, binary `plugin-probe <path>

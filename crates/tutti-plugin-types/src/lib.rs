@@ -29,6 +29,7 @@ mod lifecycle;
 mod load_stage;
 mod locate;
 mod main_thread;
+mod measured;
 mod metadata;
 mod midi;
 mod midi_intake;
@@ -109,8 +110,11 @@ pub use lifecycle::{
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
+pub use measured::{
+    LatencyVerdict, Measured, NotChecked, PROBE_FLOOR, ProbeConfig, StateHash, TailVerdict, Verdict,
+};
 pub use metadata::{
-    BusChannels, Layout, LoadedPlugin, Measured, PluginBus, PluginBuses, PluginTail, Processing,
+    BusChannels, Layout, LoadedPlugin, PluginBus, PluginBuses, PluginTail, Processing,
 };
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 pub use midi_intake::MidiIntake;

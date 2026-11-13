@@ -111,6 +111,7 @@ impl AuLoaded {
                         component_type: class_of(info.component_type),
                     },
                     editor: EditorPresence::Unknown,
+                    measured: None,
                 })
             })
             .collect();

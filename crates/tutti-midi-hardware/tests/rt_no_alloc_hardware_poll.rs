@@ -89,8 +89,10 @@ impl Rig {
     /// `inputs`' ports must be opened first: their inlets are added here.
     fn new(inputs: &HardwareMidiInputs) -> Self {
         let inlets = inputs.inlets();
-        let (mut editor, exec) =
-            Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(1024))));
+        let (mut editor, exec) = Editor::new(Prepare::new(
+            SampleRate::of(RATE),
+            MaxBlock::of(Samples(1024)),
+        ));
         editor.insert(INGEST, "in", MidiIngestNode::new(inlets.slots()));
         for change in inlets.take_changes() {
             if let InletChange::Attach { slot, node } = change {
@@ -151,7 +153,7 @@ impl Rig {
     /// drain what reached the tap.
     fn run(&mut self, frames: usize) {
         self.clock
-            .write(self.next_block(), Frame(self.frames), SampleRate(RATE));
+            .write(self.next_block(), Frame(self.frames), SampleRate::of(RATE));
         self.exec
             .process(frames, &TransportPosition::default(), &[], &mut []);
         self.frames += frames as u64;

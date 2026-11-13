@@ -79,7 +79,7 @@ fn play(s: &mut Session, windows: usize) {
 fn main() -> Result<(), tutti::Error> {
     let mut s = Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::MONO,
             MaxBlock::of(Samples(BLOCK)),
         )

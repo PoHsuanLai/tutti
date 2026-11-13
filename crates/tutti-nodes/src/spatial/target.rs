@@ -45,7 +45,10 @@ impl AngleSmoother {
     /// the rate the smoother is stepped, `sr / stride`
     /// ([`Seconds::one_pole_coeff`]).
     fn coeff(sample_rate: SampleRate, stride: Samples) -> f32 {
-        SMOOTH_TIME.one_pole_coeff(SampleRate(sample_rate.get() / stride.get() as f64))
+        // A step with no rate (a zero stride) is a smoother that jumps:
+        // `one_pole_coeff`'s answer for a rate that is no rate.
+        SampleRate::new(sample_rate.get() / stride.get() as f64)
+            .map_or(1.0, |rate| SMOOTH_TIME.one_pole_coeff(rate))
     }
 
     /// Retune for a new sample rate, keeping the stride

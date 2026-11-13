@@ -29,7 +29,7 @@ impl<const IN: u16, const OUT: u16> Node for Events<IN, OUT> {
 fn detached() -> Session {
     Session::builder()
         .outputs_floor(ChannelLayout::MONO)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds")
 }
 

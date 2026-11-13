@@ -45,7 +45,7 @@ use tutti_types::{
     Samples, UnitParam,
 };
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 256;
 
 /// A wave whose every frame is 1.0, so a rendered sample *is* the gain.
@@ -54,10 +54,7 @@ const BLOCK: usize = 256;
 /// against an expected gain directly, and a ramp would make that comparison
 /// depend on which frame the read landed on.
 fn flat_wave(len: usize) -> Arc<Wave> {
-    Arc::new(Wave::from_samples(
-        SampleRate::new(48_000.0),
-        &vec![1.0f32; len],
-    ))
+    Arc::new(Wave::from_samples(SampleRate::SR_48K, &vec![1.0f32; len]))
 }
 
 /// Rolling at 120 BPM from beat 0, as a host counting frames reports it.

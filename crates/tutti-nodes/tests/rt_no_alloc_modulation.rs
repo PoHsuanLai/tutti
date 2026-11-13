@@ -34,7 +34,7 @@ static A: AllocDisabler = AllocDisabler;
 /// `amplitude`, 32 warm-up blocks, then `blocks` blocks under
 /// `assert_no_alloc`, `between(i)` run before each (a control move).
 fn gate<N: IntoNode>(node: N, amplitude: f32, blocks: usize, mut between: impl FnMut(usize)) {
-    let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
     for c in rig.inputs_mut() {
         for (i, x) in c.iter_mut().enumerate() {
             *x = if i % 2 == 0 { amplitude } else { -amplitude };
@@ -226,7 +226,7 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
 #[test]
 fn a_delay_with_its_lanes_fed_is_allocation_free() {
     for width in [2u16, 6] {
-        let mut rig = Direct::new(delay(width, 0.01, 0.4, 0.3), SampleRate(48_000.0), 64);
+        let mut rig = Direct::new(delay(width, 0.01, 0.4, 0.3), SampleRate::SR_48K, 64);
         for c in rig.inputs_mut() {
             for (i, x) in c.iter_mut().enumerate() {
                 *x = if i % 2 == 0 { 0.5 } else { -0.5 };
@@ -263,7 +263,7 @@ fn a_delay_with_its_lanes_fed_is_allocation_free() {
 #[test]
 fn a_chorus_with_its_lanes_fed_is_allocation_free() {
     for width in [2u16, 6] {
-        let mut rig = Direct::new(ModDelayNode::chorus(bus(width)), SampleRate(48_000.0), 64);
+        let mut rig = Direct::new(ModDelayNode::chorus(bus(width)), SampleRate::SR_48K, 64);
         for c in rig.inputs_mut() {
             for (i, x) in c.iter_mut().enumerate() {
                 *x = if i % 2 == 0 { 0.5 } else { -0.5 };
@@ -308,7 +308,7 @@ fn a_phaser_with_its_lanes_fed_is_allocation_free() {
             PhaserControls::DEFAULT,
         )
         .expect("a step fits any width");
-        let mut rig = Direct::new(phaser, SampleRate(48_000.0), 64);
+        let mut rig = Direct::new(phaser, SampleRate::SR_48K, 64);
         for c in rig.inputs_mut() {
             for (i, x) in c.iter_mut().enumerate() {
                 *x = if i % 2 == 0 { 0.5 } else { -0.5 };
@@ -422,10 +422,8 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
         lane(Arc::new(SineCurve)),
         lane(Arc::new(shaped)),
     ];
-    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(
-        SampleRate(48_000.0),
-        MaxBlock::of(Samples(max)),
-    ));
+    let (mut ed, exec) =
+        tutti_graph::Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(max))));
     let mut outputs = Vec::new();
     for (k, lane) in lanes.into_iter().enumerate() {
         let (l, p) = (NodeKey(10 + k as u64), NodeKey(20 + k as u64));
@@ -528,7 +526,7 @@ fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
             tutti_types::Bpm::of(113.0),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         let mut bufs: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; 128]);
         for n in lane_blocks(4_000) {
@@ -573,7 +571,7 @@ fn event_lanes_render_the_same_serial_and_parallel() {
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
             tutti_types::Bpm::of(113.0),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         let mut bufs: [Vec<f32>; 4] = std::array::from_fn(|_| vec![0.0; 128]);
         let mut all: [Vec<u32>; 4] = Default::default();
@@ -743,10 +741,8 @@ fn lanes_200(
     use tutti_graph::{EventOut, ParamIn, ParamRange, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
     use tutti_types::Samples;
-    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(
-        SampleRate(48_000.0),
-        MaxBlock::of(Samples(max)),
-    ));
+    let (mut ed, exec) =
+        tutti_graph::Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(max))));
     let at = |k: usize| ParamIn {
         node: NodeKey(1000 + (k / 8) as u64),
         param: PROBE8[k % 8].into(),
@@ -856,7 +852,7 @@ fn two_hundred_lanes_render_the_same_serial_and_parallel() {
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
             tutti_types::Bpm::of(120.0),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         let mut bufs = vec![vec![0.0f32; 128]; 200];
         let mut all = vec![Vec::new(); 200];
@@ -910,7 +906,7 @@ fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
             tutti_types::Bpm::of(120.0),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         let mut bufs = vec![vec![0.0f32; 128]; 200];
         let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..]).collect();
@@ -1024,10 +1020,8 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use tutti_nodes::automation::ControlLaneNode;
     use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
     use tutti_types::{Amplitude, AtomicF32, Depth, Hz, ParamKey, Samples, Seconds, UnitParam};
-    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(
-        SampleRate(48_000.0),
-        MaxBlock::of(Samples(max)),
-    ));
+    let (mut ed, exec) =
+        tutti_graph::Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(max))));
     let probe = |k: usize| NodeKey(5000 + k as u64);
     let cutoff = |k: usize| ParamIn {
         node: probe(k),
@@ -1191,7 +1185,7 @@ fn signal_sources_render_the_same_serial_and_parallel() {
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
             tutti_types::Bpm::of(120.0),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         let mut bufs = vec![vec![0.0f32; 128]; 2 * CHAINS];
         let mut all = vec![Vec::new(); 2 * CHAINS];
@@ -1242,7 +1236,7 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
             tutti_types::Bpm::of(120.0),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         );
         let mut bufs = vec![vec![0.0f32; 128]; 2 * CHAINS];
         let blocks = lane_blocks(24_000);
@@ -1340,10 +1334,8 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
         curve: Law::Linear,
     };
 
-    let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
-        MaxBlock::of(Samples(128)),
-    ));
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(128))));
     let (saw, filter) = (NodeKey(1 << 48), NodeKey((1 << 48) + 1));
     ed.insert(saw, "saw", ForkByClone(Osc::saw(Hz(110.0))));
     let params = ed.insert(

@@ -71,7 +71,7 @@ fn tag(effect: &Effect) -> Fx {
 }
 
 fn prep(n: u8) -> Prepare {
-    let rate = SampleRate(if n.is_multiple_of(2) {
+    let rate = SampleRate::of(if n.is_multiple_of(2) {
         48_000.0
     } else {
         44_100.0
@@ -1567,8 +1567,8 @@ fn set_mode_changes_the_next_activation_and_restarts_nothing() {
 fn a_prepare_has_a_real_rate_and_a_block() {
     let block = MaxBlock::of(Samples(64));
     for rate in [48_000.0, 44_100.0, f64::MIN_POSITIVE, f64::MAX] {
-        let prepare = Prepare::new(SampleRate(rate), block).expect("a real rate");
-        assert_eq!(prepare.rate(), SampleRate(rate));
+        let prepare = Prepare::new(SampleRate::of(rate), block).expect("a real rate");
+        assert_eq!(prepare.rate(), SampleRate::of(rate));
         assert_eq!(prepare.max_block(), block);
         assert_eq!(prepare.format(), SampleFormat::Float32);
         assert_eq!(prepare.mode(), RenderMode::Realtime);
@@ -1581,15 +1581,20 @@ fn a_prepare_has_a_real_rate_and_a_block() {
         f64::INFINITY,
         f64::NEG_INFINITY,
     ] {
-        assert!(Prepare::new(SampleRate(rate), block).is_none(), "{rate}");
         assert!(
-            prep(0).with_rate(SampleRate(rate)).is_none(),
+            Prepare::new(<SampleRate as tutti_types::Unit>::from_raw(rate), block).is_none(),
+            "{rate}"
+        );
+        assert!(
+            prep(0)
+                .with_rate(<SampleRate as tutti_types::Unit>::from_raw(rate))
+                .is_none(),
             "with_rate({rate})"
         );
     }
     assert_eq!(
-        prep(0).with_rate(SampleRate(96_000.0)).map(|p| p.rate()),
-        Some(SampleRate(96_000.0))
+        prep(0).with_rate(SampleRate::SR_96K).map(|p| p.rate()),
+        Some(SampleRate::SR_96K)
     );
     assert!(MaxBlock::new(Samples(0)).is_none());
 }
@@ -1657,8 +1662,8 @@ fn a_note_value_keeps_the_range_contract() {
 #[test]
 fn a_standing_says_running_or_deactivated() {
     assert_eq!(
-        crate::standing(true, SampleRate(48_000.0)),
+        crate::standing(true, SampleRate::SR_48K),
         "running at 48000"
     );
-    assert_eq!(crate::standing(false, SampleRate(48_000.0)), "deactivated");
+    assert_eq!(crate::standing(false, SampleRate::SR_48K), "deactivated");
 }

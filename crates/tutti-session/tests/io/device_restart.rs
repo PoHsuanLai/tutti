@@ -30,7 +30,7 @@ fn spec_at(rate: f64) -> OutputSpec {
 
 fn spec_with(rate: f64, channels: usize) -> OutputSpec {
     OutputSpec::new(
-        SampleRate(rate),
+        SampleRate::of(rate),
         ChannelLayout::try_from(channels).expect("a test width is small"),
         tutti_cpal::cpal::SampleFormat::F32,
     )
@@ -145,9 +145,9 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     assert!(!old.is_open() && new.is_open(), "on the new device");
     assert_eq!(
         s.graph_ref().testing().prepared().sample_rate(),
-        SampleRate(NEW)
+        SampleRate::of(NEW)
     );
-    assert_eq!(t.sample_rate(), SampleRate(NEW), "the transport's rate");
+    assert_eq!(t.sample_rate(), SampleRate::of(NEW), "the transport's rate");
     // Before the first block: the re-prepare finished inside the hook, and
     // the figures a disk source pre-rolls by are the new rate's.
     let new_latency = s.graph_ref().node_latency(lim).unwrap();
@@ -239,8 +239,8 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
         "{err}"
     );
     assert!(old.is_open() && !new.is_open(), "the old device plays on");
-    assert_eq!(device.spec().sample_rate, SampleRate(OLD));
-    assert_eq!(device.graph_rate(), SampleRate(OLD));
+    assert_eq!(device.spec().sample_rate, SampleRate::of(OLD));
+    assert_eq!(device.graph_rate(), SampleRate::of(OLD));
     assert!(play(&mut s, &old, 441, 10).iter().any(|&x| x != 0.0));
 
     // Within it, the same restart goes through (the widening onto the 5.1
@@ -321,8 +321,8 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect_err("the graph no longer compiles");
     assert!(!old.is_open() && !new.is_open(), "left stopped");
-    assert_eq!(device.graph_rate(), SampleRate(OLD));
-    assert_eq!(device.spec().sample_rate, SampleRate(OLD));
+    assert_eq!(device.graph_rate(), SampleRate::of(OLD));
+    assert_eq!(device.spec().sample_rate, SampleRate::of(OLD));
 
     // The declared wiring writes the limiter's input back.
     s.graph()

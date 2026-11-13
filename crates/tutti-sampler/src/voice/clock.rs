@@ -566,7 +566,7 @@ mod tests {
         }
         Env {
             frame: Frame(0),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: SampleRate::SR_48K,
             block_len: Samples(BLOCK),
             transport,
             changes: c,
@@ -798,14 +798,14 @@ mod tests {
     /// The crossfade is [`WRAP_FADE`] at the rate, at most half a pass.
     #[test]
     fn the_crossfade_is_the_fade_or_half_a_pass() {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let loop_of =
             |beats: f64| LoopRange::new(Beat::new(0.0), Beat::new(beats)).expect("a loop");
         let len = |beats| Wrap::new(loop_of(beats), Bpm::of(120.0), rate).map(|w| w.len);
         assert_eq!(len(1.0), Some(240));
         assert_eq!(len(0.005), Some(60), "a pass of 120 frames");
         assert_eq!(len(0.00005), None, "a pass of 1.2 frames");
-        let fast = SampleRate(96_000.0);
+        let fast = SampleRate::SR_96K;
         assert_eq!(
             Wrap::new(loop_of(1.0), Bpm::of(120.0), fast).map(|w| w.len),
             Some(480)

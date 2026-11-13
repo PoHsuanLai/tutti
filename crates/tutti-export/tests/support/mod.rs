@@ -39,7 +39,7 @@ pub struct RenderConfig {
 impl Default for RenderConfig {
     fn default() -> Self {
         Self {
-            sample_rate: SampleRate(44_100.0),
+            sample_rate: SampleRate::SR_44K1,
             duration_seconds: Seconds(0.0),
             latency: Samples(0),
             tail: Samples(0),

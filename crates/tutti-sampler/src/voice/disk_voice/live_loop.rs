@@ -65,7 +65,7 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
 
 /// The same ramp, resident, for the memory tier.
 fn ramp_wave(rate: u32, frames: usize) -> Arc<tutti_codec::Wave> {
-    let mut wave = tutti_codec::Wave::new(2, SampleRate::new(rate as f64));
+    let mut wave = tutti_codec::Wave::new(2, SampleRate::of(rate as f64));
     for i in 0..frames {
         wave.push_frame(&[value(i), -value(i)]);
     }
@@ -144,7 +144,7 @@ impl Live {
     /// a live voice placed at beat 0 from the first stream's reader.
     fn with(path: &Path, setup: Setup) -> Self {
         let config = DiskStreamerConfig::default();
-        let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
+        let mut streamer = DiskStreamer::manual(SampleRate::of(SR), config).expect("builds");
         let start = crate::Placement::new(SamplePosition(setup.beat / 2.0 * SR))
             .expect("a position in the file");
         let openings: Vec<_> = (0..=setup.neighbours)
@@ -171,7 +171,10 @@ impl Live {
         }
         let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::of(120.0));
         let mut voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0)));
-        voice.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+        voice.prepare(&Prepare::new(
+            SampleRate::of(SR),
+            MaxBlock::of(Samples(BLOCK)),
+        ));
         voice.set_speed(PlaybackRate::new(setup.speed));
         Self {
             streamer,
@@ -185,8 +188,8 @@ impl Live {
     /// One block of the voice, channel 0; then the clock moves and the
     /// streamer runs a cycle, as the thread would before the next callback.
     fn block(&mut self) -> Vec<f32> {
-        let left = block(&mut self.voice, &self.clock, SampleRate::new(SR), BLOCK).swap_remove(0);
-        self.clock.advance(BLOCK as i64, SampleRate::new(SR));
+        let left = block(&mut self.voice, &self.clock, SampleRate::of(SR), BLOCK).swap_remove(0);
+        self.clock.advance(BLOCK as i64, SampleRate::of(SR));
         let _ = self.streamer.step_once();
         left
     }
@@ -225,7 +228,7 @@ impl Live {
 /// transport change in the block's `Env`), channel 0; the clock then stands
 /// where the seek leaves it at the block's end.
 fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> Vec<f32> {
-    let mut env = clock.env(BLOCK, SampleRate::new(SR));
+    let mut env = clock.env(BLOCK, SampleRate::of(SR));
     let mut changes = TransportChanges::NONE;
     changes
         .push(
@@ -238,7 +241,7 @@ fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> 
         .audio
         .swap_remove(0);
     clock.set_beat(Beat::new(beat));
-    clock.advance((BLOCK - at) as i64, SampleRate::new(SR));
+    clock.advance((BLOCK - at) as i64, SampleRate::of(SR));
     left
 }
 
@@ -256,13 +259,16 @@ impl Memory {
             MemorySource::placed(wave, VoiceWindow::from(Beat(0.0))).expect("a placeable wave");
         source.set_speed(PlaybackRate::new(speed));
         source.set_loop(loop_);
-        source.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+        source.prepare(&Prepare::new(
+            SampleRate::of(SR),
+            MaxBlock::of(Samples(BLOCK)),
+        ));
         Self { source, clock }
     }
 
     fn block(&mut self) -> Vec<f32> {
-        let left = block(&mut self.source, &self.clock, SampleRate::new(SR), BLOCK).swap_remove(0);
-        self.clock.advance(BLOCK as i64, SampleRate::new(SR));
+        let left = block(&mut self.source, &self.clock, SampleRate::of(SR), BLOCK).swap_remove(0);
+        self.clock.advance(BLOCK as i64, SampleRate::of(SR));
         left
     }
 
@@ -718,11 +724,14 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
 
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut fork = live.voice.fork_copy();
-    fork.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+    fork.prepare(&Prepare::new(
+        SampleRate::of(SR),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     let mut forked = Vec::new();
     for _ in 0..81 + 150 {
-        forked.extend(block(&mut fork, &clock, SampleRate::new(SR), BLOCK).swap_remove(0));
-        clock.advance(BLOCK as i64, SampleRate::new(SR));
+        forked.extend(block(&mut fork, &clock, SampleRate::of(SR), BLOCK).swap_remove(0));
+        clock.advance(BLOCK as i64, SampleRate::of(SR));
     }
     let want = Memory::new(ramp_wave(SR as u32, LEN), b, 1.0, 0.0).render(81 + 150);
     assert_same_outside("the fork against the edited loop", &forked, &want, &[]);
@@ -856,8 +865,8 @@ fn a_starved_reader_ramps_out_and_back_in() {
     // Far outside the window, and the streamer stalls for 50 blocks.
     live.clock.set_beat(Beat::new(beats(1_450_000.0)));
     for _ in 0..50 {
-        got.extend(block(&mut live.voice, &live.clock, SampleRate::new(SR), BLOCK).swap_remove(0));
-        live.clock.advance(BLOCK as i64, SampleRate::new(SR));
+        got.extend(block(&mut live.voice, &live.clock, SampleRate::of(SR), BLOCK).swap_remove(0));
+        live.clock.advance(BLOCK as i64, SampleRate::of(SR));
     }
     assert!(
         live.underruns() > 0,
@@ -930,7 +939,10 @@ fn pool_with(
     stream: Stream,
 ) -> (crate::VoicePool, crate::VoicePoolHandle) {
     let (mut pool, handle) = crate::VoicePool::new().with_handle();
-    pool.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
+    pool.prepare(&Prepare::new(
+        SampleRate::of(SR),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     handle
         .add_streaming(id, voice, stream, crate::Playback::default())
         .expect("the command queue has room in a test");
@@ -941,7 +953,7 @@ fn pool_with(
 /// returns the streamer and the stream's handle and reader.
 fn streaming(path: &Path) -> (DiskStreamer<ByHand>, Stream, crate::StreamReader) {
     let mut streamer =
-        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
+        DiskStreamer::manual(SampleRate::of(SR), DiskStreamerConfig::default()).expect("builds");
     let opening = streamer.open(path, crate::Placement::HEAD);
     let (stream, reader) = crate::testing::settle(&mut streamer, opening).expect("the file opens");
     assert!(
@@ -974,8 +986,8 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut left = Vec::new();
     for _ in 0..200 {
-        left.extend(block(&mut pool, &clock, SampleRate::new(SR), BLOCK).swap_remove(0));
-        clock.advance(BLOCK as i64, SampleRate::new(SR));
+        left.extend(block(&mut pool, &clock, SampleRate::of(SR), BLOCK).swap_remove(0));
+        clock.advance(BLOCK as i64, SampleRate::of(SR));
         let _ = streamer.step_once();
     }
     // The frame of the file each output sample is (`value` inverted).
@@ -1003,7 +1015,7 @@ fn a_loop_set_on_one_pool_voice_leaves_the_other_voices_stream_alone() {
     write_ramp(&first, SR as u32, 10_000);
     write_ramp(&second, SR as u32, 12_000);
     let mut streamer =
-        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
+        DiskStreamer::manual(SampleRate::of(SR), DiskStreamerConfig::default()).expect("builds");
     let mut open = |path: &Path| {
         let opening = streamer.open(path, crate::Placement::HEAD);
         crate::testing::settle(&mut streamer, opening).expect("the file opens")
@@ -1064,7 +1076,7 @@ fn two_voices_opened_in_sequence_on_one_file_share_no_cell() {
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, 10_000);
     let mut streamer =
-        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
+        DiskStreamer::manual(SampleRate::of(SR), DiskStreamerConfig::default()).expect("builds");
     let open = |streamer: &mut DiskStreamer<ByHand>| {
         let opening = streamer.open(&path, crate::Placement::HEAD);
         let (stream, reader) = crate::testing::settle(streamer, opening).expect("the file opens");

@@ -116,10 +116,7 @@ impl Node for Probe {
 fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
     let filter = svf();
     let (lo, hi) = (500.0, 1500.0);
-    let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(48_000.0),
-        MaxBlock::of(Samples(64)),
-    ));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))));
     let probe = NodeKey(1);
     ed.insert(probe, "probe", Unforkable(Probe));
     ed.spec_mut()
@@ -218,10 +215,7 @@ fn render_chorus(
     };
     g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
     let mut r = g
-        .renderer(Prepare::new(
-            SampleRate(48_000.0),
-            MaxBlock::of(Samples(128)),
-        ))
+        .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(128))))
         .expect("builds");
     if let Some(depth) = lane {
         let ed = r.editor_mut();
@@ -377,10 +371,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
     };
     g.spec_mut().set_param_range(at, range);
     let mut r = g
-        .renderer(Prepare::new(
-            SampleRate(48_000.0),
-            MaxBlock::of(Samples(128)),
-        ))
+        .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(128))))
         .expect("builds");
     let knob = params.cell(param).expect("the LFO addresses it");
     let ed = r.editor_mut();
@@ -481,10 +472,7 @@ where
     };
     g.spec_mut().set_param_range(at, range);
     let mut r = g
-        .renderer(Prepare::new(
-            SampleRate(48_000.0),
-            MaxBlock::of(Samples(128)),
-        ))
+        .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(128))))
         .expect("builds");
     let ed = r.editor_mut();
     let layer = Layer {

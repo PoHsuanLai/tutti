@@ -67,7 +67,7 @@ impl Split {
 /// are at -6.02 dB at their crossover and sum to unit magnitude.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CrossoverModel {
-    pub(super) rate: f64,
+    pub(super) rate: SampleRate,
     pub(super) bands: usize,
     pub(super) freqs: [f64; MAX_SPLITS],
     pub(super) coeffs: [Split; MAX_SPLITS],
@@ -85,7 +85,7 @@ impl CrossoverModel {
     pub fn new(frequencies: &[Hz], rate: impl Into<SampleRate>) -> Result<Self, CrossoverError> {
         let rate = rate.into();
         validate(frequencies, rate)?;
-        let mut model = Self::unsolved(frequencies.len() + 1, rate.get());
+        let mut model = Self::unsolved(frequencies.len() + 1, rate);
         for (f, hz) in model.freqs.iter_mut().zip(frequencies) {
             *f = f64::from(hz.get());
         }
@@ -94,7 +94,7 @@ impl CrossoverModel {
     }
 
     /// `bands` bands at `rate`, the coefficients not yet solved for any frequency.
-    pub(super) fn unsolved(bands: usize, rate: f64) -> Self {
+    pub(super) fn unsolved(bands: usize, rate: SampleRate) -> Self {
         Self {
             rate,
             bands,
@@ -106,7 +106,7 @@ impl CrossoverModel {
     /// Solves every split's coefficients at `self.freqs`.
     pub(super) fn solve(&mut self) {
         for j in 0..self.splits() {
-            self.coeffs[j] = Split::solve(self.freqs[j], self.rate);
+            self.coeffs[j] = Split::solve(self.freqs[j], self.rate.get());
         }
     }
 
@@ -125,7 +125,7 @@ impl CrossoverModel {
     /// The sample rate the coefficients are solved at.
     #[must_use]
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(self.rate)
+        self.rate
     }
 
     fn splits(&self) -> usize {
@@ -156,7 +156,7 @@ impl Lti for CrossoverModel {
     fn frequency_response(&self, output: usize, freqs: &[Hz], gain: &mut [Complex64]) {
         for (g, f) in gain.iter_mut().zip(freqs) {
             *g = if output < self.bands {
-                let w = 2.0 * PI * f64::from(f.get()) / self.rate;
+                let w = 2.0 * PI * f64::from(f.get()) / self.rate.get();
                 let mut h = Complex64::new(1.0, 0.0);
                 for (j, c) in self.coeffs[..self.splits()].iter().enumerate() {
                     if j < output {

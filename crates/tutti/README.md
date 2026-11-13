@@ -36,10 +36,10 @@ g.pipe_output(tone);
 // Building prepares every node at the render's rate and largest block. The
 // editor stays on the control thread; the executor goes to the engine.
 let (mut editor, executor) = g
-    .build(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))))
+    .build(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256))))
     .expect("the graph compiles");
 
-let transport = Transport::new(SampleRate(48_000.0));
+let transport = Transport::new(SampleRate::SR_48K);
 let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
 // One interleaved stereo block, rendered on "the audio thread".

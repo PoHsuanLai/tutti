@@ -112,14 +112,14 @@ fn render(
     frames: usize,
     block: usize,
 ) -> Vec<f32> {
-    let transport = Transport::new(SampleRate::new(SR));
-    let mut wave = Wave::new(1, SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
+    let mut wave = Wave::new(1, SampleRate::of(SR));
     for i in 0..4 * SR as usize {
         wave.push_frame(&[i as f32 / SCALE]);
     }
     let wave = Arc::new(wave);
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     match voice {

@@ -4,7 +4,7 @@
 use crate::{Rendered, RenderedError};
 use tutti_types::{SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// No planes is refused.
 #[test]
@@ -30,7 +30,12 @@ fn unequal_planes_are_refused() {
 #[test]
 fn an_invalid_rate_is_refused() {
     for rate in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
-        let err = Rendered::new(vec![vec![0.0; 4]], SampleRate(rate), 0).unwrap_err();
+        let err = Rendered::new(
+            vec![vec![0.0; 4]],
+            <SampleRate as tutti_types::Unit>::from_raw(rate),
+            0,
+        )
+        .unwrap_err();
         assert!(matches!(err, RenderedError::InvalidRate { .. }), "{rate}");
     }
 }

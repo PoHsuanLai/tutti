@@ -8,7 +8,7 @@ use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 fn spec_at(rate: f64) -> OutputSpec {
     OutputSpec::new(
-        SampleRate(rate),
+        SampleRate::of(rate),
         ChannelLayout::STEREO,
         cpal::SampleFormat::F32,
     )
@@ -20,15 +20,15 @@ fn spec_at(rate: f64) -> OutputSpec {
 /// starts.
 #[test]
 fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
-    let transport = Transport::new(SampleRate::new(44_100.0));
+    let transport = Transport::new(SampleRate::SR_44K1);
     let (mut ed, exec) = Editor::new(Prepare::new(
-        SampleRate(44_100.0),
+        SampleRate::SR_44K1,
         MaxBlock::of(Samples(512)),
     ));
     let engine = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
     let state = Arc::new(AudioCallbackState::new(engine));
     let mut driver = TuttiDriver::new(AudioEngine::from_spec(spec_at(44_100.0)), state);
-    let graph = SampleRate(44_100.0);
+    let graph = SampleRate::SR_44K1;
 
     // Twice onto the same 48 kHz device: the second attempt must not
     // find the first one's resolved spec and call it "no change".
@@ -45,7 +45,7 @@ fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
             matches!(
                 err,
                 crate::Error::RateChanged { device, graph: g }
-                    if device == SampleRate(48_000.0) && g == graph
+                    if device == SampleRate::SR_48K && g == graph
             ),
             "attempt {attempt}: {err}"
         );

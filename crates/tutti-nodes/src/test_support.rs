@@ -22,7 +22,7 @@ pub(crate) struct ChangeRun<N> {
 }
 
 /// The rate the node helpers below prepare and drive nodes at.
-pub(crate) const RATE: SampleRate = SampleRate(48_000.0);
+pub(crate) const RATE: SampleRate = SampleRate::SR_48K;
 
 /// A node prepared at [`RATE`] for blocks of up to 1024 frames.
 pub(crate) fn prepared<N: Node>(node: N) -> N {
@@ -102,7 +102,7 @@ impl<N> ChangeRun<N> {
 }
 
 /// The rate the per-frame unit tests run their nodes at.
-pub(crate) const RATE_44K: SampleRate = SampleRate(44_100.0);
+pub(crate) const RATE_44K: SampleRate = SampleRate::SR_44K1;
 
 /// A node prepared at `rate` for blocks of up to 1024 frames.
 pub(crate) fn prepared_at<N: Node>(node: N, rate: SampleRate) -> N {

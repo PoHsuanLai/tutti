@@ -21,7 +21,7 @@ static A: AllocDisabler = AllocDisabler;
 #[test]
 fn inlet_process_is_allocation_free() {
     let (node, mut prod) = InletNode::pair(ChannelLayout::STEREO, Samples(4096));
-    let mut node = Direct::new(node, SampleRate(48_000.0), 64);
+    let mut node = Direct::new(node, SampleRate::SR_48K, 64);
 
     for _ in 0..2048 {
         prod.push_interleaved(&[0.2, 0.2]);

@@ -28,8 +28,8 @@ use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, Ump};
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-const R48: SampleRate = SampleRate(48_000.0);
-const R441: SampleRate = SampleRate(44_100.0);
+const R48: SampleRate = SampleRate::SR_48K;
+const R441: SampleRate = SampleRate::SR_44K1;
 
 /// MIDI 1.0, channel 0, note-on, velocity 100.
 fn note(n: u32) -> Ump {

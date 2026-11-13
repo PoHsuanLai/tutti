@@ -90,7 +90,7 @@ impl FamilyCase for LadderFamily<f64> {
 /// a 24 dB type 1/4.
 impl LtiCase for LadderFamily<f64> {
     fn figures(&self) -> Vec<Figure<LadderControls>> {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let at = |c: LadderControls, freq: f32, gain: f64| Figure {
             controls: c,
             rate,
@@ -181,7 +181,7 @@ crate::recurrence_contract!(design(), BlockIndependent);
 #[test]
 fn a_blend_is_linear_and_arrives_on_the_new_set() {
     let d = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let model = |hz, drive| d.member(&controls(LadderType::HP12, hz, 0.3, drive), rate);
     let (old, new) = (model(500.0, 1.0), model(5_000.0, 4.0));
     for i in [7usize, 15] {
@@ -228,7 +228,7 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
 #[test]
 fn the_cut_ramp_goes_on_from_where_it_was() {
     let d = design();
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let model = |hz| d.member(&controls(LadderType::HP12, hz, 0.3, 1.0), rate);
     let (a, b) = (model(500.0), model(5_000.0));
     let mut r = d.realized();

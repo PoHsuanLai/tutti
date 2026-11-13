@@ -539,7 +539,7 @@ mod tests {
 
     /// `n` frames of `node` at `sr` in one block, transport stopped at beat 0.
     fn render(node: LfoNode, sr: f64, n: usize) -> Vec<f32> {
-        let mut d = Direct::new(node, SampleRate(sr), n);
+        let mut d = Direct::new(node, SampleRate::of(sr), n);
         d.block();
         d.output(0).to_vec()
     }
@@ -547,7 +547,7 @@ mod tests {
     /// `n` frames of `node` through a graph at 48 kHz, each block handed
     /// `transport` as its own (advancing, when it rolls, by the block).
     fn render_at(node: LfoNode, transport: TransportPosition, n: usize) -> Vec<f32> {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let mut solo = Solo::new(node, Prepare::new(rate, MaxBlock::of(Samples(256))));
         solo.renderer_mut().set_transport_fn(move |frame| {
             let mut clock = tutti_types::FrameClock::new(transport.beat(), transport.tempo, rate);
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn test_lfo_reset() {
-        let mut d = Direct::new(LfoNode::new(LfoShape::Sine), SampleRate(100.0), 50);
+        let mut d = Direct::new(LfoNode::new(LfoShape::Sine), SampleRate::of(100.0), 50);
         d.block();
         Node::reset(&mut *d.node);
         d.block();
@@ -789,7 +789,7 @@ mod tests {
     /// binary step, so the position is exact).
     #[test]
     fn a_random_value_is_the_same_in_a_fork() {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::SR_48K;
         let mut d = Direct::new(
             LfoNode::new(LfoShape::Random)
                 .with_seed(5)

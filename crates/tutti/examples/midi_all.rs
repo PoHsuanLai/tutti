@@ -26,7 +26,7 @@ use tutti::polysynth::{PolySynth, SynthConfig};
 use tutti::prelude::*;
 use tutti::ump::U7;
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
 const TPQ: u16 = 480;
 

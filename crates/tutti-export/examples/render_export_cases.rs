@@ -41,7 +41,7 @@ const TONE_HZ: f32 = 1_000.0;
 /// at (a graph prepared at another rate is refused, not re-rated).
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
+        .build(RenderGraph::prepare(tutti_types::SampleRate::of(SR)))
         .expect("builds");
     RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
@@ -137,7 +137,7 @@ impl Case {
 }
 
 fn base(format: Format, channels: ChannelLayout) -> Case {
-    let rate = tutti_types::SampleRate(SR);
+    let rate = tutti_types::SampleRate::of(SR);
     Case {
         job: Job::new(rate, Seconds(DUR).to_samples(rate), Samples(0), Samples(0))
             .expect("a render"),
@@ -268,7 +268,7 @@ fn main() -> tutti_export::Result<()> {
         (22_050.0, "22k05"),
     ] {
         let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
-        cfg.resample = Some(Resample::to(tutti_types::SampleRate(target)));
+        cfg.resample = Some(Resample::to(tutti_types::SampleRate::of(target)));
         write(format!("resample_{tag}.wav"), tone_graph(), &cfg)?;
     }
 
@@ -276,7 +276,7 @@ fn main() -> tutti_export::Result<()> {
     // Nyquist and must be attenuated, not folded down to ~4 kHz.
     {
         let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
-        cfg.resample = Some(Resample::to(tutti_types::SampleRate(22_050.0)));
+        cfg.resample = Some(Resample::to(tutti_types::SampleRate::SR_22K05));
         write(
             "resample_alias_22k05.wav".into(),
             near_nyquist_graph(),
@@ -289,7 +289,7 @@ fn main() -> tutti_export::Result<()> {
     for (i, chunk) in tutti_export::ChunkSize::PRESETS.iter().enumerate() {
         let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
         cfg.resample = Some(Resample {
-            target_rate: tutti_types::SampleRate(44_100.0),
+            target_rate: tutti_types::SampleRate::SR_44K1,
             chunk: *chunk,
         });
         write(format!("chunk_{i}.wav"), tone_graph(), &cfg)?;

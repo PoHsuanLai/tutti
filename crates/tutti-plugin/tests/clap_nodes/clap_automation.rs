@@ -70,7 +70,7 @@ fn automation_reaches_the_plugin_through_its_event_input() {
         None,
         (0.0, 1.0),
     );
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
+    let prepare = Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let (mut live, _exec) = Editor::new(prepare);
     let (auto_key, key) = (NodeKey(1), NodeKey(9));
     let _automation = live.insert(auto_key, "automation", automation);
@@ -92,7 +92,7 @@ fn automation_reaches_the_plugin_through_its_event_input() {
         .topology
         .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
+        sample_rate: SampleRate::of(SAMPLE_RATE),
         ..Default::default()
     }));
     let (_fork_ed, mut fork_exec) = live
@@ -132,7 +132,7 @@ fn render_gain(
         .render_mode(render::TAG_ONLY)
         .gain_enabled(true);
     let probe = load_probe(SAMPLE_RATE);
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
+    let prepare = Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let (mut live, _exec) = Editor::new(prepare);
     let _controls = live.insert(
         PLUGIN,
@@ -161,7 +161,7 @@ fn render_gain(
             port: 0,
         })]);
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
+        sample_rate: SampleRate::of(SAMPLE_RATE),
         ..Default::default()
     }));
     let (mut fork_ed, mut fork_exec) = live

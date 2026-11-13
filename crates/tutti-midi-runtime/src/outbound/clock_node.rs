@@ -51,8 +51,8 @@ pub const CLOCK_EVENT_CAPACITY: usize = 256;
 /// use tutti_midi_runtime::ClockNode;
 /// use tutti_ump::MidiGroup;
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
-/// let clock = editor.insert(NodeKey(1), "clock", ClockNode::new(MidiGroup::FIRST, SampleRate(48_000.0)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
+/// let clock = editor.insert(NodeKey(1), "clock", ClockNode::new(MidiGroup::FIRST, SampleRate::SR_48K));
 /// clock.set_enabled(true);
 /// ```
 #[derive(Debug)]

@@ -27,7 +27,7 @@ fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
     let main = MainThread::claim().expect("one test, one process");
     let mut session = Session::builder()
         .outputs_floor(ChannelLayout::STEREO)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("a detached session builds");
     let node = session
         .add_plugin_blocking(

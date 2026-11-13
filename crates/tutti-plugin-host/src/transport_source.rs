@@ -689,7 +689,7 @@ mod tests {
     use tutti_types::{BarNumber, BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_types::{Frame, FrameClock, Samples};
 
-    const SR: SampleRate = SampleRate(48_000.0);
+    const SR: SampleRate = SampleRate::SR_48K;
 
     fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
         Env {
@@ -1236,7 +1236,7 @@ mod tests {
                         end: Beat(end),
                     });
                 }
-                Cmd::Rate(hz) => self.clock.set_sample_rate(SampleRate(hz)),
+                Cmd::Rate(hz) => self.clock.set_sample_rate(SampleRate::of(hz)),
             }
         }
 
@@ -1402,7 +1402,14 @@ mod tests {
         // A tempo cannot be zero (`Bpm` refuses it); a rate of zero still
         // leaves no project time.
         let playing = TransportPosition::new(true, Bpm::of(120.0), Beat(2.0), None);
-        assert_eq!(project.at(&playing, SampleRate(0.0), 192), None);
+        assert_eq!(
+            project.at(
+                &playing,
+                <SampleRate as tutti_types::Unit>::from_raw(0.0),
+                192
+            ),
+            None
+        );
     }
 
     /// **Stopping holds project time, and a start where it stood continues
@@ -1710,7 +1717,7 @@ mod tests {
                 None,
                 true,
                 stopped(0.0, None),
-                SampleRate(96_000.0),
+                SampleRate::SR_96K,
                 Some((b1 * 60.0 / 121.0 * 96_000.0).round() as i64),
             ),
         ];

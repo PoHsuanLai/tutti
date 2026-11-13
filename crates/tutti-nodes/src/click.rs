@@ -710,7 +710,7 @@ mod tests {
     fn env(rate: f64, len: usize, transport: tutti_graph::TransportPosition) -> Env {
         Env {
             frame: Frame(0),
-            sample_rate: tutti_types::SampleRate(rate),
+            sample_rate: tutti_types::SampleRate::of(rate),
             block_len: Samples(len),
             transport,
             changes: TransportChanges::NONE,
@@ -732,11 +732,11 @@ mod tests {
     }
 
     fn make_click() -> (Transport, Arc<ClickSettings>, ClickNode) {
-        let transport = Transport::new(SampleRate::new(SR));
+        let transport = Transport::new(SampleRate::of(SR));
         let settings = Arc::new(ClickSettings::new());
         let node = prepared(
             ClickNode::new(&transport, Arc::clone(&settings)),
-            tutti_types::SampleRate(SR),
+            tutti_types::SampleRate::of(SR),
             64,
         );
         (transport, settings, node)
@@ -1034,7 +1034,7 @@ mod tests {
         let mut host = FrameClock::new(
             Beat(2.0 - 20.0 / 22_050.0),
             Bpm::of(120.0),
-            tutti_types::SampleRate(SR),
+            tutti_types::SampleRate::of(SR),
         );
         let counted = |host: &FrameClock| {
             tutti_graph::TransportPosition::counted(true, host.tempo(), host.origin(), None)
@@ -1081,13 +1081,13 @@ mod tests {
         const ONSET: f64 = 1.0;
 
         for len in [64usize, 40] {
-            let transport = Transport::new(SampleRate::new(RATE));
+            let transport = Transport::new(SampleRate::of(RATE));
             let settings = Arc::new(ClickSettings::new());
             settings.set_mode(MetronomeMode::Always);
             settings.set_volume(Amplitude::new(1.0)).unwrap();
             let mut node = prepared(
                 ClickNode::new(&transport, settings),
-                tutti_types::SampleRate(RATE),
+                tutti_types::SampleRate::of(RATE),
                 len,
             );
             // The click's first frame is exactly zero (`sin(0)` under a zero
@@ -1100,7 +1100,7 @@ mod tests {
             node.last_click_onset = Some(Beat(0.0));
             node.click_pos = node.click_normal.len();
 
-            let bps = tutti_types::beats_per_sample(Bpm::of(BPM), SampleRate::new(RATE)).get();
+            let bps = tutti_types::beats_per_sample(Bpm::of(BPM), SampleRate::of(RATE)).get();
             let expected = ((ONSET - START) / bps).ceil() as usize;
             assert_ne!(
                 expected % len,
@@ -1109,7 +1109,7 @@ mod tests {
             );
 
             let mut host =
-                FrameClock::new(Beat(START), Bpm::of(BPM), tutti_types::SampleRate(RATE));
+                FrameClock::new(Beat(START), Bpm::of(BPM), tutti_types::SampleRate::of(RATE));
             let mut left = Vec::new();
             while left.len() < expected + 2 * len {
                 let t = tutti_graph::TransportPosition::counted(
@@ -1248,7 +1248,7 @@ mod tests {
             ("count-in", |t, _| t.settings().set_in_preroll(true)),
         ];
         let fresh = || {
-            let transport = Transport::new(SampleRate::new(48_000.0));
+            let transport = Transport::new(SampleRate::SR_48K);
             let settings = Arc::new(ClickSettings::new());
             settings.set_volume(Amplitude::new(0.5)).unwrap();
             // Recording-only, so the count-in gates it (the render records).
@@ -1259,12 +1259,9 @@ mod tests {
         // 10 240 frames rolling (and recording) from beat 0 at 20 beats a
         // second: four clicks, past beat 3 (a downbeat in 3/4, not in 4/4).
         let render = |node: ClickNode| {
-            let mut node = prepared(node, tutti_types::SampleRate(48_000.0), 64);
-            let mut host = FrameClock::new(
-                Beat(0.0),
-                Bpm::of(1_200.0),
-                tutti_types::SampleRate(48_000.0),
-            );
+            let mut node = prepared(node, tutti_types::SampleRate::SR_48K, 64);
+            let mut host =
+                FrameClock::new(Beat(0.0), Bpm::of(1_200.0), tutti_types::SampleRate::SR_48K);
             let mut left = Vec::new();
             for _ in 0..160 {
                 let t = tutti_graph::TransportPosition::counted(

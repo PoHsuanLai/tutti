@@ -42,7 +42,7 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, Buf
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
-        .sample_rate(SampleRate(rate))
+        .sample_rate(SampleRate::of(rate))
         .clock(clock)
         .latency(BounceLatency::Keep)
         .tail(BounceTail::None)
@@ -111,7 +111,7 @@ fn session_with<N: tutti_session::SessionNode>(unit: N) -> (Session, NodeKey) {
         .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
-    session.graph().set_sample_rate(SampleRate(RATE));
+    session.graph().set_sample_rate(SampleRate::of(RATE));
     let (synth, _) = session.graph().add(unit);
     // The dry pair; the unit's other outputs are sends.
     for c in 0..2 {
@@ -153,7 +153,7 @@ fn timeline(rate: f64) -> Arc<OfflineTimeline> {
     Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(90.0)).expect("a tempo")),
-        sample_rate: SampleRate(rate),
+        sample_rate: SampleRate::of(rate),
         loop_range: None,
     }))
 }
@@ -167,7 +167,7 @@ fn request(rate: f64) -> Bounce<NodeKey, BufferMaster> {
 /// input, rendered in 64-frame blocks by hand (`contract::Direct`): what
 /// the note sounds like from its first frame, at `rate`.
 fn reference<N: Node>(unit: N, rate: f64) -> Vec<f32> {
-    let mut unit = Direct::new(unit, SampleRate(rate), 64);
+    let mut unit = Direct::new(unit, SampleRate::of(rate), 64);
     let at = Offset::new(0, Samples(64)).expect("inside");
     unit.events(0, &[Event::midi(at, clip_note_on())]);
     let mut out = Vec::with_capacity(NOTE);
@@ -252,7 +252,7 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
             .outputs_floor(ChannelLayout::STEREO)
             .build_detached(SampleRate::DEFAULT)
             .expect("a detached session builds");
-        session.graph().set_sample_rate(SampleRate(RATE));
+        session.graph().set_sample_rate(SampleRate::of(RATE));
         let (synth, controls) = session.graph().add(poly());
         session.graph().connect(synth, Root).unwrap();
         let _ = session.update();

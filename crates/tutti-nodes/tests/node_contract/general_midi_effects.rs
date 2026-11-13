@@ -9,7 +9,7 @@ use tutti_graph::{Node, ParamNode};
 use tutti_nodes::{FreeverbNode, ModDelayNode};
 use tutti_types::{BusTopology, ChannelLayout, SampleRate, Tail, UnitParam};
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 64;
 
 /// `node` driven over `frames` frames of a unit impulse at frame 0 on every

@@ -13,7 +13,7 @@ use tutti_types::{
     ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB, SampleRate, Samples, Speaker,
 };
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 /// The channels `values` hold, one per global output from channel 0.
 fn feed(session: &mut Session, values: &[f32]) {

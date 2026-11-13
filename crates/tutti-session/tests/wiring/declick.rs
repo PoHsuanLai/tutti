@@ -19,7 +19,7 @@ const SPAN: usize = 256;
 fn session() -> Session {
     Session::builder()
         .outputs_floor(ChannelLayout::STEREO)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds")
 }
 

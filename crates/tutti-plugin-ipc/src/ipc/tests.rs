@@ -20,7 +20,7 @@ use crate::{
 };
 
 const CEILING: usize = 64;
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 /// The size the mock server's editor opens at.
 const MOCK_EDITOR: tutti_plugin_types::EditorSize = tutti_plugin_types::EditorSize {
     width: 640,
@@ -300,17 +300,17 @@ fn a_processor_follows_the_graphs_rate_block_and_quantum() {
     let (ipc, server) = mock();
     let received = Arc::clone(&server.received);
     let (mut processor, _controller) = activate(ipc, 48);
-    assert!(processor.retune(SampleRate(96_000.0), Samples(60), Some(Samples(40))));
+    assert!(processor.retune(SampleRate::SR_96K, Samples(60), Some(Samples(40))));
     assert_eq!(processor.chunk(), NonZeroUsize::new(40), "the quantum");
     assert_eq!(processor.latency(), Samples(40), "one chunk of latency");
-    assert!(processor.retune(SampleRate(96_000.0), Samples(30), None));
+    assert!(processor.retune(SampleRate::SR_96K, Samples(30), None));
     assert_eq!(processor.chunk(), NonZeroUsize::new(30), "the block");
     let start = Instant::now();
     while !received
         .lock()
         .unwrap()
         .iter()
-        .any(|m| matches!(m, HostMessage::SetSampleRate { rate } if *rate == SampleRate(96_000.0)))
+        .any(|m| matches!(m, HostMessage::SetSampleRate { rate } if *rate == SampleRate::SR_96K))
     {
         assert!(start.elapsed() < Duration::from_secs(5), "the rate is sent");
         std::thread::sleep(Duration::from_millis(5));

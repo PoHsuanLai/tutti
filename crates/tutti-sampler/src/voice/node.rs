@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn reclaim_frees_a_window_a_block_held_across_the_next() {
         let wave = Arc::new(tutti_codec::Wave::from_samples(
-            SampleRate::new(48_000.0),
+            SampleRate::SR_48K,
             &[0.0; 64],
         ));
         let voice = Voice {
@@ -542,10 +542,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("tone.wav");
         let samples = vec![0.25f32; 4_800];
-        tutti_fixtures::signal::write_wav_f32(&path, SampleRate::new(48_000.0), 1, &samples);
-        let mut streamer =
-            crate::DiskStreamer::manual(SampleRate::new(48_000.0), Default::default())
-                .expect("streamer builds");
+        tutti_fixtures::signal::write_wav_f32(&path, SampleRate::SR_48K, 1, &samples);
+        let mut streamer = crate::DiskStreamer::manual(SampleRate::SR_48K, Default::default())
+            .expect("streamer builds");
         let opening = streamer.open(&path, crate::Placement::HEAD);
         let (stream, reader) = crate::testing::settle(&mut streamer, opening).expect("opens");
         let served = Arc::clone(&reader.status);

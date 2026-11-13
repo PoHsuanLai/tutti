@@ -1771,10 +1771,7 @@ mod tests {
 
     fn out_with_counter(stamping: bool) -> (UmpOut, Arc<AtomicUsize>) {
         let count = Arc::new(AtomicUsize::new(0));
-        let mut out = UmpOut::new(
-            Box::new(CountingSink(count.clone())),
-            SampleRate::new(48_000.0),
-        );
+        let mut out = UmpOut::new(Box::new(CountingSink(count.clone())), SampleRate::SR_48K);
         out.set_stamping(stamping);
         (out, count)
     }
@@ -1890,7 +1887,7 @@ mod tests {
     #[test]
     fn a_batch_of_frames_is_a_block_from_its_first_frame() {
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut out = UmpOut::new(Box::new(Recording(log.clone())), SampleRate::new(48_000.0));
+        let mut out = UmpOut::new(Box::new(Recording(log.clone())), SampleRate::SR_48K);
         let mut router = MidiOutRouter {
             out: Some(&mut out),
             drops: None,
@@ -1922,7 +1919,7 @@ mod tests {
     #[test]
     fn a_mailbox_drain_keeps_the_stamps_spacing() {
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut out = UmpOut::new(Box::new(Recording(log.clone())), SampleRate::new(48_000.0));
+        let mut out = UmpOut::new(Box::new(Recording(log.clone())), SampleRate::SR_48K);
         let (tx, rx) = tutti_midi_runtime::MidiMailbox::pair();
         tx.queue_stamped(&[(u32::MAX - 4, note(0).1), (5, note(0).1)]);
         let mut router = MidiOutRouter {
@@ -1954,7 +1951,7 @@ mod tests {
     fn timing_at(t0: Instant, terms: OutputTerms) -> OutputTiming {
         OutputTiming {
             map: ClockMap::new(
-                SampleRate::new(48_000.0),
+                SampleRate::SR_48K,
                 tutti_midi_runtime::ClockReading::new(t0, Frame::ZERO),
             ),
             now: t0 - Duration::from_millis(10),
@@ -1968,7 +1965,7 @@ mod tests {
 
     fn timed_out() -> (UmpOut, Arc<std::sync::Mutex<Vec<Outgoing>>>) {
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let out = UmpOut::new(Box::new(Timed(log.clone())), SampleRate::new(48_000.0));
+        let out = UmpOut::new(Box::new(Timed(log.clone())), SampleRate::SR_48K);
         (out, log)
     }
 

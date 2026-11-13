@@ -156,7 +156,10 @@ fn out(node: u64, port: u16) -> Source {
 /// An editor with a probe at each of `probes` (cutoff ranged `range`), its
 /// outputs the probes' in order; committed, so the range cells exist.
 fn probes(max: usize, probes: &[u64], range: (f32, f32)) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(max)),
+    ));
     for &p in probes {
         ed.insert(NodeKey(p), "probe", ForkByClone(Probe));
         ed.spec_mut().topology.outputs.push(vec![out(p, 0)]);
@@ -241,7 +244,7 @@ struct Host {
 impl Host {
     fn new() -> Self {
         Self {
-            clock: FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE)),
+            clock: FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE)),
         }
     }
 
@@ -561,7 +564,7 @@ fn an_export_is_the_live_render_bit_for_bit() {
         .fork(
             ForkTarget::Master,
             ForkMode::Offline,
-            Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(1024))),
+            Prepare::new(SampleRate::of(RATE), MaxBlock::of(Samples(1024))),
         )
         .expect("forks");
     let total = 60_000;
@@ -790,8 +793,10 @@ fn a_plugin_lane_sends_linear_grid_pieces() {
     ));
     e.add_breakpoint(Breakpoint::new(Beat(0.6), 0.4));
     let curve: Arc<dyn Curve> = Arc::new(e);
-    let (mut ed, mut exec) =
-        Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(128))));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate::of(RATE),
+        MaxBlock::of(Samples(128)),
+    ));
     let lane = ControlLaneNode::for_foreign(
         3,
         ControlProgram::from_curve(Arc::clone(&curve)),
@@ -1255,7 +1260,7 @@ fn a_lane_fed_fork_reads_its_value_at_frame_0() {
         .fork(
             ForkTarget::Master,
             ForkMode::Offline,
-            Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(64))),
+            Prepare::new(SampleRate::of(RATE), MaxBlock::of(Samples(64))),
         )
         .expect("forks");
     assert!(controls.set_knob(700.0));

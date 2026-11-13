@@ -19,7 +19,7 @@ const NEW: f64 = 48_000.0;
 
 fn spec_at(rate: f64) -> OutputSpec {
     OutputSpec::new(
-        SampleRate(rate),
+        SampleRate::of(rate),
         ChannelLayout::STEREO,
         tutti_cpal::cpal::SampleFormat::F32,
     )
@@ -77,9 +77,11 @@ fn a_restart_re_rates_the_midi_clock() {
         .into_parts();
     let _ = s.update();
     let wire = Wire::default();
-    s.midi()
-        .set_hardware_out(Some(UmpOut::new(Box::new(wire.clone()), SampleRate(OLD))));
-    assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate(OLD)));
+    s.midi().set_hardware_out(Some(UmpOut::new(
+        Box::new(wire.clone()),
+        SampleRate::of(OLD),
+    )));
+    assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate::of(OLD)));
     s.midi_nodes()
         .expect("the engine's MIDI nodes")
         .clock_master
@@ -106,7 +108,7 @@ fn a_restart_re_rates_the_midi_clock() {
         .expect("restarts");
     assert_eq!(
         s.midi().hardware_out_rate(),
-        Some(SampleRate(NEW)),
+        Some(SampleRate::of(NEW)),
         "the hardware out's frames follow the graph to its new rate"
     );
     let _ = s.update(); // what the old rate left in the tap

@@ -9,7 +9,7 @@ use tutti_types::{Depth, Hz, MaxBlock, Mix, Q, SampleRate, Samples};
 fn session() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             tutti_types::ChannelLayout::STEREO,
             MaxBlock::of(Samples(256)),
         )

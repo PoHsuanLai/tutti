@@ -95,9 +95,10 @@ impl Channels {
     /// The current sample rate. `Relaxed` suffices: it only sizes a timeout, so
     /// reading a value one block stale is harmless.
     pub(super) fn sample_rate(&self) -> SampleRate {
-        SampleRate(f64::from_bits(
+        SampleRate::new(f64::from_bits(
             self.sample_rate_bits.load(Ordering::Relaxed),
         ))
+        .unwrap_or(SampleRate::DEFAULT)
     }
 
     pub(super) fn set_sample_rate(&self, rate: SampleRate) {
@@ -251,7 +252,7 @@ mod tests {
     use super::*;
 
     fn channels() -> Channels {
-        Channels::new(SampleRate(48_000.0))
+        Channels::new(SampleRate::SR_48K)
     }
 
     /// Abandoned blocks and replies are separate monotonic totals: a poller

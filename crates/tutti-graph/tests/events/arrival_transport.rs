@@ -428,7 +428,7 @@ fn a_sample_rate_change_starts_the_history_over() {
         let out = rig.block(64, t, c);
         rig.check(&out, LAT, &format!("48 kHz, block {b}"));
     }
-    rig.reprepare(SampleRate(96_000.0));
+    rig.reprepare(SampleRate::SR_96K);
     let before = rig.clamped;
     for b in 0..12 {
         // The first block at the new rate does not continue the old one.

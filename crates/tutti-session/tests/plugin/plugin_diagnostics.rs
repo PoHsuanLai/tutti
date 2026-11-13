@@ -12,7 +12,7 @@ use tutti_plugin_types::MainThread;
 use tutti_session::{PluginLoadRequest, Root, Session};
 use tutti_types::{ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
 
 fn main_thread() -> MainThread {

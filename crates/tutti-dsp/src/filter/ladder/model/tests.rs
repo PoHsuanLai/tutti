@@ -2,7 +2,7 @@ use super::*;
 use crate::filter::ladder::kernel::{LadderCoefficients, ladder_step};
 use crate::{Complex32, Real, RealFft};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn model(ty: LadderType, fc: f32, res: f32) -> LadderModel {
     LadderModel::new(

@@ -853,7 +853,7 @@ mod tests {
         };
         let slab = Arc::clone(AudioSlab::create(name, layout).expect("slab").slab());
         let bridge = AudioBridge {
-            channels: Channels::new(SampleRate(48_000.0)),
+            channels: Channels::new(SampleRate::SR_48K),
             payloads: PayloadPool::new(),
             lifecycle: Lifecycle::new(),
             listener: Arc::new(Mutex::new(None)),
@@ -880,10 +880,10 @@ mod tests {
     /// disconnected.
     #[test]
     fn the_sample_rate_is_stored_and_updated_live() {
-        let channels = Channels::new(SampleRate(48_000.0));
-        assert_eq!(channels.sample_rate(), SampleRate(48_000.0));
+        let channels = Channels::new(SampleRate::SR_48K);
+        assert_eq!(channels.sample_rate(), SampleRate::SR_48K);
 
-        channels.set_sample_rate(SampleRate(192_000.0));
-        assert_eq!(channels.sample_rate(), SampleRate(192_000.0));
+        channels.set_sample_rate(SampleRate::SR_192K);
+        assert_eq!(channels.sample_rate(), SampleRate::SR_192K);
     }
 }

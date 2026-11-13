@@ -66,7 +66,7 @@ fn saw(f0: f64, n: usize) -> Vec<f32> {
 
 /// tutti's reading, in Hz. `None` when it reports unvoiced.
 fn tutti_hz(x: &[f32]) -> Option<f64> {
-    let cfg = YinConfig::standard(SampleRate(SR)).expect("config");
+    let cfg = YinConfig::standard(SampleRate::of(SR)).expect("config");
     match yin(&cfg, x).expect("enough input") {
         PitchEstimate::Voiced(p) => Some(p.frequency.get() as f64),
         PitchEstimate::Unvoiced => None,

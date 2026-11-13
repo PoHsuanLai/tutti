@@ -37,7 +37,7 @@ fn the_served_control_and_any_thread_answer_alike() {
         BridgeConfig::default(),
         tutti_fixtures::clap_probe().to_path_buf(),
         tutti_plugin_types::Load::new(),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         None,
         Some(crate::format::gui::load_gui_instance),
     )
@@ -116,7 +116,7 @@ fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
         BridgeConfig::default(),
         tutti_fixtures::clap_probe().to_path_buf(),
         tutti_plugin_types::Load::new(),
-        SampleRate(48_000.0),
+        SampleRate::SR_48K,
         None,
         None,
     )

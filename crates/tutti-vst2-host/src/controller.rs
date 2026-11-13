@@ -139,7 +139,7 @@ impl Loaded for Vst2Loaded {
         main: &MainThread,
         prepare: Prepare,
     ) -> Result<(Vst2Processor, Vst2Controller), Refused<Self>> {
-        let rate = prepare.rate().0;
+        let rate = prepare.rate().get();
         let block = prepare.max_block().get();
         let Some(audio) = self.audio.take() else {
             return Err(Refused {

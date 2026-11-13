@@ -89,8 +89,10 @@ impl Listener {
     /// A graph over `inlets`, whose clock reads the wall time now at frame 0.
     pub fn over(inlets: &Arc<DeviceInlets>) -> Self {
         let slots = inlets.slots();
-        let (mut editor, exec) =
-            Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(BLOCK))));
+        let (mut editor, exec) = Editor::new(Prepare::new(
+            SampleRate::of(RATE),
+            MaxBlock::of(Samples(BLOCK)),
+        ));
         let seen = Arc::new(Mutex::new(Vec::new()));
         editor.insert(
             SINK,
@@ -145,7 +147,7 @@ impl Listener {
         while self.frames + BLOCK as u64 <= due {
             let start = self.origin + Duration::from_secs_f64(self.frames as f64 / RATE);
             self.clock
-                .write(start, Frame(self.frames), SampleRate(RATE));
+                .write(start, Frame(self.frames), SampleRate::of(RATE));
             let mut out = vec![0.0f32; BLOCK];
             self.exec.process(
                 BLOCK,

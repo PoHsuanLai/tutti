@@ -140,7 +140,7 @@ impl GraphUnit {
         g.pipe_input(key).pipe_output(key);
         let renderer = g
             .renderer(tutti_graph::Prepare::new(
-                tutti_types::SampleRate(SAMPLE_RATE),
+                tutti_types::SampleRate::of(SAMPLE_RATE),
                 tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK)),
             ))
             .expect("a one-plugin graph compiles");
@@ -371,7 +371,7 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::Plugin
         let built = tutti_plugin::catalog::Plugin::open(
             Some(&main_thread()),
             &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
-            SampleRate::new(SAMPLE_RATE),
+            SampleRate::of(SAMPLE_RATE),
         )
         .map(|plugin| {
             let handle = plugin.handle().clone();
@@ -1521,7 +1521,7 @@ fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin_host::PluginH
     let built = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
         &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     )
     .map(|plugin| {
         let handle = plugin.handle().clone();

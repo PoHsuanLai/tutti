@@ -18,7 +18,7 @@ fn an_update_runs_the_work_a_thread_deferred_to_the_main_thread() {
     let main = MainThread::claim().expect("one test, one process");
     let mut session = tutti_session::Session::builder()
         .outputs_floor(ChannelLayout::STEREO)
-        .build_detached(SampleRate(48_000.0))
+        .build_detached(SampleRate::SR_48K)
         .expect("builds");
     let ran_on_main = Arc::new(AtomicBool::new(false));
     let main_id = std::thread::current().id();

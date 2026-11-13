@@ -31,7 +31,7 @@ static PROBE_LOCK: Mutex<()> = Mutex::new(());
 const PARAM_VALUE: u16 = 5;
 
 fn prepare() -> Prepare {
-    Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))).expect("a real rate")
+    Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256))).expect("a real rate")
 }
 
 struct Probe {
@@ -304,7 +304,7 @@ fn a_refused_activation_hands_the_plugin_back() {
     let probe = Probe::acquire();
     set_activate_refusal(96_000.0);
     let wanted = prepare()
-        .with_rate(SampleRate(96_000.0))
+        .with_rate(SampleRate::SR_96K)
         .expect("a real rate");
     let refused = probe
         .load()

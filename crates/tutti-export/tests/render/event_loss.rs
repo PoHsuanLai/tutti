@@ -52,7 +52,7 @@ impl Node for Discard {
     fn reset(&mut self) {}
 }
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn graph() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);

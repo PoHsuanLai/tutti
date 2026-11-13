@@ -442,7 +442,7 @@ struct SourcePlan {
 ///     Depth, Hz, ParamAddr, ParamCell, PhaseIncrement, SampleRate, Samples, UnitParam, Q,
 /// };
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
 /// let filter = NodeKey(1);
 /// let params = editor.insert(
 ///     filter,

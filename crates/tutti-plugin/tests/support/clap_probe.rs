@@ -58,7 +58,7 @@ impl Rig {
     pub fn new(client: PluginClient<Bound>, rate: f64, block: usize) -> Self {
         Self::prepared(
             client,
-            Prepare::new(SampleRate(rate), MaxBlock::of(Samples(block))),
+            Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(block))),
         )
     }
 
@@ -394,7 +394,7 @@ pub fn load_probe_with(config: BridgeConfig, sample_rate: f64) -> LoadedProbe {
         config,
         &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::clap_probe())
             .expect("a plugin file"),
-        SampleRate::new(sample_rate),
+        SampleRate::of(sample_rate),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");
     let handle = client.handle();

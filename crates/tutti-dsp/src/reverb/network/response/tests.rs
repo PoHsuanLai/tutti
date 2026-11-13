@@ -3,7 +3,7 @@ use tutti_types::{Amplitude, Db, Seconds, StereoWidth};
 use super::*;
 use crate::reverb::network::{Gains, Inline, Modulation, OutputMap, Tap, Taps};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn gains(v: &[f32]) -> Gains {
     Gains::from_slice(v).unwrap()

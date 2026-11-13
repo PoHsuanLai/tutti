@@ -167,7 +167,7 @@ mod tests {
     use tutti_types::{ChannelLayout, Latency, Samples, Tail, UnitParam};
 
     /// A rate at which a time of `n / 1024` seconds is exactly `n` frames.
-    const RATE: SampleRate = SampleRate(1_024.0);
+    const RATE: SampleRate = SampleRate::of(1_024.0);
     const MAX: MaxDelay = MaxDelay::of(Seconds(1.0));
 
     fn controls(time: f64, feedback: f32, cross: f32) -> DelayControls {
@@ -421,7 +421,7 @@ mod tests {
     /// on a line of 100 ms at 44.1 kHz is heard at the line's 4410 frames.
     #[test]
     fn a_time_past_the_line_is_the_longest() {
-        let rate = SampleRate(44_100.0);
+        let rate = SampleRate::SR_44K1;
         let node = DelayNode::mono(MaxDelay::of(Seconds(0.1)), controls(5.0, 0.0, 0.0));
         let mut node = prepared(node, rate, 4_800);
         let x = impulses(1, 4_800, &[0]);

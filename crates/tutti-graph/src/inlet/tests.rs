@@ -6,7 +6,7 @@ use crate::{PlayClock, TransportChanges, TransportPosition};
 use tutti_types::MaxBlock;
 use tutti_types::{Frame, SampleRate};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 
 fn ring_with(frames: &[[f32; 2]]) -> (InletNode, TapWriter) {
     let (node, mut writer) = InletNode::pair(ChannelLayout::STEREO, Samples(64));

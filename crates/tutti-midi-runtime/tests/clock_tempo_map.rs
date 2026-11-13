@@ -144,22 +144,19 @@ struct Rig {
 /// A clock (enabled, MTC per `mtc`) under an event tap, on an engine over `map`.
 fn rig(map: &Arc<TempoMap>, mtc: bool) -> Rig {
     let (mut ed, exec): (Editor, Executor) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     let master = ed.insert(
         NodeKey(1),
         "clock",
-        ClockNode::new(
-            tutti_ump::MidiGroup::FIRST,
-            tutti_types::SampleRate(48_000.0),
-        ),
+        ClockNode::new(tutti_ump::MidiGroup::FIRST, tutti_types::SampleRate::SR_48K),
     );
     master.set_enabled(true);
     master.set_send_mtc(mtc);
     let out = std::cell::RefCell::new(common::sink(&mut ed, 0, &[(1, 0)]));
     ed.commit().expect("commits");
-    let transport = Transport::new(SampleRate::new(SR));
+    let transport = Transport::new(SampleRate::of(SR));
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport.settings().set_tempo_map(Arc::clone(map));
     Rig {

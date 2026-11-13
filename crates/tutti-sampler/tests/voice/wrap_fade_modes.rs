@@ -30,7 +30,7 @@ const READS: u64 = 12;
 const LOOP: (f64, f64) = (0.125, 0.376);
 
 fn tone() -> Arc<Wave> {
-    let mut w = Wave::new(2, SampleRate::new(SR));
+    let mut w = Wave::new(2, SampleRate::of(SR));
     for i in 0..SR as usize {
         let t = i as f32 / SR as f32;
         w.push_frame(&[(t * 2_765.0).sin() * 0.4, (t * 4_148.0).sin() * 0.3]);
@@ -47,7 +47,7 @@ enum Host {
 
 fn graph(wave: &Arc<Wave>, workers: usize, host: Host) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(
-        SampleRate(SR),
+        SampleRate::of(SR),
         MaxBlock::of(Samples(MAX_BLOCK)),
     ));
     if workers > 1 {
@@ -89,7 +89,7 @@ fn render(exec: &mut Executor) -> Vec<Vec<u32>> {
     let channels = 2 * READS as usize;
     let mut all = vec![Vec::new(); channels];
     let region = tutti_types::LoopRange::new(Beat::new(LOOP.0), Beat::new(LOOP.1)).expect("a loop");
-    let mut clock = FrameClock::new(Beat(0.0), Bpm::of(120.0), SampleRate(SR));
+    let mut clock = FrameClock::new(Beat(0.0), Bpm::of(120.0), SampleRate::of(SR));
     let mut wraps = 0;
     for i in 0..600 {
         let n = 1 + (i * 37) % MAX_BLOCK;

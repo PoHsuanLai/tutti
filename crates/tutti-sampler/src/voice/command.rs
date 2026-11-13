@@ -44,7 +44,8 @@ impl SharedRate {
     }
 
     pub(crate) fn load(&self) -> SampleRate {
-        SampleRate(f64::from_bits(self.0.load(Ordering::Relaxed)))
+        SampleRate::new(f64::from_bits(self.0.load(Ordering::Relaxed)))
+            .unwrap_or(SampleRate::DEFAULT)
     }
 }
 
@@ -390,7 +391,7 @@ impl SendError {
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
 /// # use tutti_codec::Wave;
 /// # use std::sync::Arc;
-/// # let wave = Arc::new(Wave::from_samples(tutti_types::SampleRate::new(48_000.0), &[0.0; 64]));
+/// # let wave = Arc::new(Wave::from_samples(tutti_types::SampleRate::SR_48K, &[0.0; 64]));
 /// # let voice = Voice {
 /// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),
@@ -406,7 +407,7 @@ impl SendError {
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource, VoiceWindow};
 /// # use tutti_codec::Wave;
 /// # use std::sync::Arc;
-/// # let wave = Arc::new(Wave::from_samples(tutti_types::SampleRate::new(48_000.0), &[0.0; 64]));
+/// # let wave = Arc::new(Wave::from_samples(tutti_types::SampleRate::SR_48K, &[0.0; 64]));
 /// # let voice = Voice {
 /// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),

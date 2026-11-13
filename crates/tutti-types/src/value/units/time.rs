@@ -147,23 +147,114 @@ impl Seconds {
 
 // ── Sample rates ────────────────────────────────────────────────────────────
 
-unit! {
-    /// Audio sample rate in Hertz.
+/// Audio sample rate in Hertz.
+///
+/// `f64`-backed because sample rates routinely exceed `f32`'s
+/// integer-precision range (192 kHz is exact, but `1.0 / 48_000.0` in `f32`
+/// carries ~6e-8 of relative error, and a phase accumulator integrating
+/// that over a long render drifts audibly).
+///
+/// Defined once, here, so every crate names the same type.
+///
+/// A rate is finite and above zero: [`new`](Self::new) refuses anything else
+/// and [`of`](Self::of) panics on it, for a literal or a constant. The common
+/// rates are named constants (`SR_44K1`, `SR_48K`, ...).
+///
+/// Builds from `u32` (file headers, device configs), which widens exactly.
+/// Deliberately **not** from `f32`: that widening is lossless in isolation, but
+/// an `f32` rate has nearly always already lost precision upstream, and an
+/// implicit conversion would launder it in silently. A site that genuinely
+/// holds one writes `SampleRate::new(f64::from(x))`, where review can see it.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "bevy", type_path = "tutti_types::value::units")]
+pub struct SampleRate(pub f64);
+
+impl SampleRate {
+    /// The rate, or `None` when `raw` is NaN, infinite, zero or negative.
+    #[inline]
+    #[must_use]
+    pub const fn new(raw: f64) -> Option<Self> {
+        if raw.is_finite() && raw > 0.0 {
+            Some(Self(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The rate for a literal or a constant. For a value that arrives from
+    /// outside, use [`new`](Self::new).
     ///
-    /// `f64`-backed because sample rates routinely exceed `f32`'s
-    /// integer-precision range (192 kHz is exact, but `1.0 / 48_000.0` in `f32`
-    /// carries ~6e-8 of relative error, and a phase accumulator integrating
-    /// that over a long render drifts audibly).
+    /// # Panics
     ///
-    /// Defined once, here, so every crate names the same type.
+    /// When `raw` is not finite and above zero; in a `const` that is a compile
+    /// error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: f64) -> Self {
+        match Self::new(raw) {
+            Some(rate) => rate,
+            None => panic!("a sample rate is finite and above zero"),
+        }
+    }
+
+    /// Returns the raw Hertz, discarding the unit.
     ///
-    /// Builds from `f64` and from `u32` (file headers, device configs) — both
-    /// widen exactly. Deliberately **not** from `f32`: that widening is
-    /// lossless in isolation, but an `f32` rate has nearly always already lost
-    /// precision upstream, and an implicit conversion would launder it in
-    /// silently. A site that genuinely holds one writes `SampleRate(x as f64)`,
-    /// where review can see it.
-    pub struct SampleRate(pub f64): Unit, Ordered, Bounded;
+    /// Reach for this at a boundary the unit types do not cross (C ABI, IPC,
+    /// WIT), not to do arithmetic the type deliberately omits.
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+
+    /// Returns the smaller of the two, in this unit.
+    #[inline]
+    #[must_use]
+    pub fn min(self, other: Self) -> Self {
+        Self(f64::min(self.0, other.0))
+    }
+
+    /// Returns the larger of the two, in this unit.
+    #[inline]
+    #[must_use]
+    pub fn max(self, other: Self) -> Self {
+        Self(f64::max(self.0, other.0))
+    }
+
+    /// Clamps into `lo..=hi`, in this unit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `lo > hi`, matching `f64::clamp`.
+    #[inline]
+    #[must_use]
+    pub fn clamp(self, lo: Self, hi: Self) -> Self {
+        Self(f64::clamp(self.0, lo.0, hi.0))
+    }
+}
+
+impl Unit for SampleRate {
+    type Raw = f64;
+    #[inline]
+    fn from_raw(v: f64) -> Self {
+        Self(v)
+    }
+    #[inline]
+    fn to_raw(self) -> f64 {
+        self.0
+    }
+}
+
+impl core::fmt::Display for SampleRate {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, f)
+    }
 }
 
 // Deliberately absent, and the omissions are load-bearing:
@@ -187,6 +278,21 @@ impl SampleRate {
 
     /// 48 kHz — the typical pro-audio default.
     pub const SR_48K: Self = Self(48_000.0);
+
+    /// 88.2 kHz, twice the CD rate.
+    pub const SR_88K2: Self = Self(88_200.0);
+
+    /// 96 kHz.
+    pub const SR_96K: Self = Self(96_000.0);
+
+    /// 192 kHz.
+    pub const SR_192K: Self = Self(192_000.0);
+
+    /// 22.05 kHz, half the CD rate.
+    pub const SR_22K05: Self = Self(22_050.0);
+
+    /// 8 kHz, the telephone rate.
+    pub const SR_8K: Self = Self(8_000.0);
 
     /// The placeholder rate for anything built before the device's is known.
     ///

@@ -22,7 +22,7 @@ fn gate<N: tutti_graph::IntoNode>(node: N) {
 #[cfg(feature = "convolution")]
 fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
     let (mut rig, _controls) =
-        tutti_graph::contract::BlockRig::new(node, tutti_types::SampleRate(48_000.0), block);
+        tutti_graph::contract::BlockRig::new(node, tutti_types::SampleRate::SR_48K, block);
     for _ in 0..16 {
         rig.block();
     }
@@ -38,7 +38,7 @@ fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
 fn convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
 
-    let ir = generate_test_ir(2048, Seconds::new(0.3), SampleRate::new(48_000.0));
+    let ir = generate_test_ir(2048, Seconds::new(0.3), SampleRate::SR_48K);
     gate(ConvolverNode::new(&ir, 512));
 }
 
@@ -47,8 +47,8 @@ fn convolver_process_is_allocation_free() {
 fn stereo_convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
 
-    let ir_l = generate_test_ir(2048, Seconds::new(0.3), SampleRate::new(48_000.0));
-    let ir_r = generate_test_ir(2048, Seconds::new(0.4), SampleRate::new(48_000.0));
+    let ir_l = generate_test_ir(2048, Seconds::new(0.3), SampleRate::SR_48K);
+    let ir_r = generate_test_ir(2048, Seconds::new(0.4), SampleRate::SR_48K);
     gate(ConvolverNode::stereo(&ir_l, &ir_r, 512));
 }
 
@@ -60,7 +60,7 @@ fn stereo_convolver_process_is_allocation_free() {
 fn convolver_mid_cycle_blocks_are_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
 
-    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::new(48_000.0));
+    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::SR_48K);
     for block in [37usize, 100, 128, 1000] {
         gate_at(ConvolverNode::new(&ir, 256), block);
     }
@@ -75,7 +75,7 @@ fn convolver_ragged_calls_are_allocation_free() {
     use tutti_dsp::Convolver;
     use tutti_nodes::generate_test_ir;
 
-    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::new(48_000.0));
+    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::SR_48K);
     let mut c = Convolver::new(&ir, 128);
     let x: Vec<f32> = (0..513).map(|i| ((i as f32) * 0.31).sin()).collect();
     let mut y = vec![0.0f32; 513];
@@ -103,7 +103,7 @@ fn convolver_tail_levels_are_allocation_free() {
     use tutti_dsp::Convolver;
     use tutti_nodes::generate_test_ir;
 
-    let ir = generate_test_ir(240_000, Seconds::new(1.0), SampleRate::new(48_000.0));
+    let ir = generate_test_ir(240_000, Seconds::new(1.0), SampleRate::SR_48K);
     let mut c = Convolver::new(&ir, 512);
     let x: Vec<f32> = (0..5000).map(|i| ((i as f32) * 0.31).sin()).collect();
     let mut y = vec![0.0f32; 5000];
@@ -134,7 +134,7 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
             generate_test_ir(
                 1024,
                 tutti_types::Seconds::from_f32(0.2 + 0.05 * c as f32),
-                SampleRate::new(48_000.0),
+                SampleRate::SR_48K,
             )
         })
         .collect();
@@ -167,7 +167,7 @@ fn distortion_process_is_allocation_free_fed_and_unfed() {
         for fed in [false, true] {
             let mut node = Direct::new(
                 DistortionNode::with_channels(3u16, kind, Drive::new(2.0)),
-                SampleRate(48_000.0),
+                SampleRate::SR_48K,
                 64,
             );
             for (c, x) in node.inputs_mut().iter_mut().enumerate() {

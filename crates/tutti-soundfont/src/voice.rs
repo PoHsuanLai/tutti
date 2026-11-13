@@ -176,7 +176,7 @@ impl Voice {
             vib_lfo: Lfo::new(settings),
             mod_lfo: Lfo::new(settings),
             oscillator: Oscillator::new(settings),
-            rate: SampleRate(f64::from(settings.hz())),
+            rate: settings.rate(),
             low_pass: None,
             history: DirectForm1::default(),
             block: vec![0_f32; settings.block_len()],
@@ -524,7 +524,7 @@ mod tests {
     use super::*;
     use tutti_types::Amplitude;
 
-    const RATE: SampleRate = SampleRate(44_100.0);
+    const RATE: SampleRate = SampleRate::SR_44K1;
     const CUTOFF: f32 = 500.0;
 
     /// The steady-state gain of the voice's low-pass at `hz`, measured by

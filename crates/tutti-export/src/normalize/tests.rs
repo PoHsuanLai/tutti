@@ -130,7 +130,7 @@ mod measurer {
     use tutti_measure::{LoudnessConfig, measure_loudness};
     use tutti_types::{Amplitude, Hz, Samples};
 
-    const RATE: SampleRate = SampleRate(48_000.0);
+    const RATE: SampleRate = SampleRate::SR_48K;
 
     /// A 1 kHz sine of `secs` seconds, as planes: amplitude `amp` on the left
     /// and half of it on the right, so a measurement that put a sample on the
@@ -160,8 +160,8 @@ mod measurer {
     #[test]
     fn a_chunk_is_at_most_a_second() {
         assert_eq!(chunk_frames(RATE), 48_000);
-        assert_eq!(chunk_frames(SampleRate(44_100.0)), 44_100);
-        assert_eq!(chunk_frames(SampleRate(0.2)), 1);
+        assert_eq!(chunk_frames(SampleRate::SR_44K1), 44_100);
+        assert_eq!(chunk_frames(SampleRate::of(0.2)), 1);
     }
 
     /// The chunked reading of a known sine is its analytic loudness, and the

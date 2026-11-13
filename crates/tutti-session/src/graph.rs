@@ -3196,7 +3196,7 @@ mod tail_tests {
         Graph::new(
             ChannelLayout::STEREO,
             2,
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             MaxBlock::of(Samples(64)),
             None,
             tutti_transport::TempoReader::fixed(Arc::new(map)),

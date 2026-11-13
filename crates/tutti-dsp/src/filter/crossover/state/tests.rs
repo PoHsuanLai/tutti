@@ -17,7 +17,7 @@ fn unit_sine(hz: f64, rate: f64, len: usize) -> Vec<f32> {
     sine(
         Hz::new(hz as f32),
         Amplitude::new(1.0),
-        SampleRate::new(rate),
+        SampleRate::of(rate),
         Samples(len),
     )
 }
@@ -36,7 +36,7 @@ fn sweep() -> Vec<f64> {
 /// `hz`, in steady state: the tree of `freqs` at 48 kHz run as the crossover runs it.
 fn bands_at(freqs: &[f32], hz: f64) -> (Vec<(f64, f64)>, f64) {
     let freqs: Vec<Hz> = freqs.iter().map(|&f| Hz(f)).collect();
-    let model = CrossoverModel::new(&freqs, SampleRate::new(RATE)).unwrap();
+    let model = CrossoverModel::new(&freqs, SampleRate::of(RATE)).unwrap();
     let mut state = CrossoverState::default();
     let x = unit_sine(hz, RATE, SETTLE + WINDOW);
     let nb = model.bands();

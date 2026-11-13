@@ -268,7 +268,7 @@ mod tests {
     /// seconds, so beat 4 at 48 kHz is `4 x 60 x 48 000 / bpm` frames.
     #[test]
     fn set_tempo_publishes_the_constant_map_of_that_tempo() {
-        let rate = tutti_types::SampleRate(48_000.0);
+        let rate = tutti_types::SampleRate::SR_48K;
         let s = TransportSettings::new();
         for bpm in [120.0, 90.0, 97.123_456_789_012_35, 120.587_389_506_707_47] {
             s.set_tempo(Bpm::of(bpm));

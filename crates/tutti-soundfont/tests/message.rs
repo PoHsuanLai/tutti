@@ -312,7 +312,7 @@ fn a_full_bend_spans_the_registered_sensitivity() {
 /// there sounds 7 semitones above the same note unbent at 48 kHz.
 #[test]
 fn a_re_rated_unit_keeps_the_bend_and_its_range() {
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let key = m2(Voice2::NoteOn {
         note: NoteNumber::of(55),
         velocity: NoteVelocity::new(0xC000),

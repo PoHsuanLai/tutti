@@ -38,7 +38,7 @@ use tutti_types::{ChannelLayout, Interleaved, Samples};
 /// use tutti_codec::{Encoder, Format, Pcm, Spec};
 /// use tutti_types::{ChannelLayout, Interleaved, SampleRate};
 ///
-/// let spec = Spec::of_width(Format::Wav(Pcm::Int16), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let spec = Spec::of_width(Format::Wav(Pcm::Int16), ChannelLayout::STEREO, SampleRate::SR_48K);
 /// let mut encoder = Encoder::create(&spec, Cursor::new(Vec::new()))?;
 /// encoder.write(Interleaved::new(&[0.5, -0.5, 0.25, -0.25], ChannelLayout::STEREO))?;
 /// let wav = encoder.finish()?.into_inner();

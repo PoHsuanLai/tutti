@@ -71,7 +71,7 @@ impl SessionRate {
     }
 
     pub(crate) fn get(&self) -> SampleRate {
-        SampleRate(self.0.load(Ordering::SeqCst))
+        SampleRate::new(self.0.load(Ordering::SeqCst)).unwrap_or(SampleRate::DEFAULT)
     }
 
     /// Move the rate. Control thread; the streamer re-derives its ratios when

@@ -86,7 +86,7 @@ impl Call {
     /// The slot's three words: a kind (never zero) and two arguments.
     fn encode(self) -> [u64; 3] {
         match self {
-            Self::Activate(rate, block) => [1, rate.0.to_bits(), block.0 as u64],
+            Self::Activate(rate, block) => [1, rate.get().to_bits(), block.0 as u64],
             Self::Deactivate => [2, 0, 0],
             Self::Rebuild => [3, 0, 0],
             Self::Process(frames) => [4, frames as u64, 0],
@@ -116,7 +116,7 @@ impl Call {
 
     fn decode([kind, a, b]: [u64; 3]) -> Option<Self> {
         Some(match kind {
-            1 => Self::Activate(SampleRate(f64::from_bits(a)), Samples(b as usize)),
+            1 => Self::Activate(SampleRate::new(f64::from_bits(a))?, Samples(b as usize)),
             2 => Self::Deactivate,
             3 => Self::Rebuild,
             4 => Self::Process(a as usize),
@@ -325,7 +325,7 @@ impl FakePlugin {
 
     /// Makes `activate` refuse this rate. `None` takes every rate again.
     pub fn refuse_rate(&self, rate: Option<SampleRate>) {
-        let bits = rate.map_or(0, |r| r.0.to_bits());
+        let bits = rate.map_or(0, |r| r.get().to_bits());
         self.0.refuse_rate.store(bits, Ordering::Relaxed);
     }
 
@@ -706,7 +706,7 @@ impl Loaded for FakeLoaded {
             "the fake was told to panic in activate"
         );
         let refused = f64::from_bits(shared.refuse_rate.load(Ordering::Relaxed));
-        if refused != 0.0 && refused == prepare.rate().0 {
+        if refused != 0.0 && refused == prepare.rate().get() {
             let reason = PluginError::Other(format!("the fake refuses {refused} Hz"));
             let plugin = (!shared.lose_on_refuse.load(Ordering::Relaxed)).then_some(self);
             return Err(Refused { plugin, reason });

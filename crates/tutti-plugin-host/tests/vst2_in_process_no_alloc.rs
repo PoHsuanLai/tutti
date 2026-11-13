@@ -41,12 +41,12 @@ fn process_steady_state_does_not_allocate() {
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
     )
     .expect("load failed");
     // Prepared (outside the gate) as a graph prepares a node, then driven by
     // hand through `Node::process`.
-    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate::SR_48K, 64);
 
     // Warm up: many plugins allocate on their first few process calls
     // (sample buffers, lookup tables). Run enough blocks to settle.
@@ -79,7 +79,7 @@ fn process_with_a_meter_does_not_allocate() {
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
     )
     .expect("load failed");
     unit.controls()
@@ -87,7 +87,7 @@ fn process_with_a_meter_does_not_allocate() {
             Beat(0.0),
             TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
         )])));
-    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate::SR_48K, 64);
     for _ in 0..32 {
         unit.block();
     }
@@ -106,10 +106,10 @@ fn process_with_midi_does_not_allocate() {
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
     )
     .expect("load failed");
-    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate::SR_48K, 64);
 
     // Warm up audio path.
     for _ in 0..32 {
@@ -175,13 +175,13 @@ fn two_hundred_moving_parameters_do_not_allocate() {
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
-        SampleRate::new(48_000.0),
+        SampleRate::SR_48K,
     );
     // SAFETY: as above.
     unsafe { std::env::remove_var("TUTTI_VST2_PROBE_PARAMS") };
     let (unit, handle) = loaded.expect("load failed");
     let controls = unit.controls();
-    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate::SR_48K, 64);
 
     // Sixteenths, a different one for every parameter, frame and block.
     let value = |b: u32, k: u32, id: u32| ((b * 2 + k + id) % 16) as f32 / 16.0;

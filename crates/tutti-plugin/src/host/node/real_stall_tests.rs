@@ -128,7 +128,7 @@ fn load_probe(env: &mut ScopedEnv, render_mode: u32) -> (PluginClient, PluginHan
     let client = PluginClient::new(
         BridgeConfig::default(),
         &crate::catalog::PluginRef::file(tutti_fixtures::clap_probe()).expect("a plugin file"),
-        SampleRate::new(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");
     let handle = client.handle();
@@ -145,7 +145,7 @@ fn graph_of(client: PluginClient) -> Renderer {
     ));
     g.pipe_input(key).pipe_output(key);
     g.renderer(Prepare::new(
-        SampleRate(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
         MaxBlock::of(Samples(BLOCK)),
     ))
     .expect("a one-plugin graph compiles")
@@ -493,7 +493,7 @@ fn half_chunk_rig(
         tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
     ))
     .0;
-    let mut unit = tutti_graph::contract::Direct::boxed(node, SampleRate(SAMPLE_RATE), BLOCK);
+    let mut unit = tutti_graph::contract::Direct::boxed(node, SampleRate::of(SAMPLE_RATE), BLOCK);
     unit.set_block_len(BLOCK / 2);
     (unit, controls)
 }
@@ -561,7 +561,7 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
 
     // The same rate, another callback size.
     unit.node.prepare(&Prepare::new(
-        SampleRate(SAMPLE_RATE),
+        SampleRate::of(SAMPLE_RATE),
         MaxBlock::of(Samples(BLOCK * 2)),
     ));
 

@@ -50,7 +50,7 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, Buf
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
-        .sample_rate(SampleRate(rate))
+        .sample_rate(SampleRate::of(rate))
         .clock(clock)
         .latency(BounceLatency::Keep)
         .tail(BounceTail::None)
@@ -114,7 +114,7 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
         .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
-    session.graph().set_sample_rate(SampleRate(RATE));
+    session.graph().set_sample_rate(SampleRate::of(RATE));
     let probe = session
         .add_plugin_blocking(
             &main_thread(),
@@ -275,7 +275,7 @@ fn instrument_at(rate: f64) {
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(90.0)).expect("a tempo")),
-        sample_rate: SampleRate(rate),
+        sample_rate: SampleRate::of(rate),
         loop_range: None,
     }));
     let planes = stem_planes(

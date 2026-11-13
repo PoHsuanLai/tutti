@@ -35,7 +35,7 @@ const START_PROCESS: i32 = 71;
 const STOP_PROCESS: i32 = 72;
 
 fn prepare() -> Prepare {
-    Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK))).expect("a real rate")
+    Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK))).expect("a real rate")
 }
 
 /// Holds the probe for one test and puts its switches, capture, trace and
@@ -274,10 +274,19 @@ fn no_prepare_holds_a_rate_or_block_that_is_none() {
     let loaded = probe.load();
     for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(
-            Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK))).is_none(),
+            Prepare::new(
+                <SampleRate as tutti_types::Unit>::from_raw(rate),
+                MaxBlock::of(Samples(BLOCK))
+            )
+            .is_none(),
             "{rate} Hz"
         );
-        assert!(prepare().with_rate(SampleRate(rate)).is_none(), "{rate} Hz");
+        assert!(
+            prepare()
+                .with_rate(<SampleRate as tutti_types::Unit>::from_raw(rate))
+                .is_none(),
+            "{rate} Hz"
+        );
     }
     assert!(MaxBlock::new(Samples(0)).is_none());
     let (processor, controller) = loaded
@@ -852,7 +861,7 @@ fn a_rate_change_that_moves_the_latency_is_told() {
     let mut driven = Driven::activated(&probe);
     set_late_latency(1537);
     let wanted = prepare()
-        .with_rate(SampleRate(96_000.0))
+        .with_rate(SampleRate::SR_96K)
         .expect("a real rate");
     driven.drive(Event::Op(HostOp::Reconfigure(wanted)));
     assert_eq!(driven.state.stage(), Stage::Active);

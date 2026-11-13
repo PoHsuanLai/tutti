@@ -193,7 +193,9 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
     let track_id = track.id;
 
     let total_frames = track.codec_params.n_frames;
-    let sample_rate = f64::from(sample_rate_of(&track.codec_params)?);
+    // A track that states a rate of 0 states none.
+    let sample_rate = SampleRate::new(f64::from(sample_rate_of(&track.codec_params)?))
+        .ok_or(DecodeError::NoSampleRate)?;
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(convert)?;
@@ -204,7 +206,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
 
     // Pre-allocate using the metadata frame count when available (WAV, FLAC).
     let mut wave: Option<Wave> = total_frames.map(|total| {
-        let mut wave = Wave::with_topology(topology, SampleRate::new(sample_rate));
+        let mut wave = Wave::with_topology(topology, sample_rate);
         for ch in 0..wave.channels() {
             wave.channel_vec_mut(ch).reserve_exact(total as usize);
         }
@@ -230,13 +232,15 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
 
         let (buf, buffer_len) =
             decode_packet_into(&mut *decoder, &packet, &mut dest).map_err(convert)?;
-        let wave_output = wave.get_or_insert_with(|| {
-            let spec = *buf.spec();
-            Wave::with_topology(
-                topology_of(spec.channels),
-                SampleRate::new(spec.rate as f64),
-            )
-        });
+        let wave_output = match &mut wave {
+            Some(wave) => wave,
+            none => {
+                let spec = *buf.spec();
+                let rate =
+                    SampleRate::new(f64::from(spec.rate)).ok_or(DecodeError::NoSampleRate)?;
+                none.insert(Wave::with_topology(topology_of(spec.channels), rate))
+            }
+        };
 
         // Batch-append all channels at once.
         let num_ch = buf.spec().channels.count();

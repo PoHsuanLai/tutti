@@ -43,11 +43,7 @@ pub enum Hook {
 pub trait FamilyCase: Family {
     /// The rates to make members at.
     fn rates(&self) -> Vec<SampleRate> {
-        vec![
-            SampleRate(44_100.0),
-            SampleRate(48_000.0),
-            SampleRate(96_000.0),
-        ]
+        vec![SampleRate::SR_44K1, SampleRate::SR_48K, SampleRate::SR_96K]
     }
 
     /// Controls in range: a grid with the corners, and seeded random draws.

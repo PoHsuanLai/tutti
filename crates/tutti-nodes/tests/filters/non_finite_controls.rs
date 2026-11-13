@@ -58,7 +58,7 @@ fn render_node_finite(node: &mut dyn Node, rate: SampleRate, blocks: usize, seed
 /// [`survives`] for a graph node: the same cases, the rate change a
 /// re-`prepare`.
 fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -> Vec<Cell>) {
-    let (a, b) = (SampleRate(48_000.0), SampleRate(44_100.0));
+    let (a, b) = (SampleRate::SR_48K, SampleRate::SR_44K1);
     for bad in BAD {
         let count = cells(&make()).len();
         for k in 0..count {
@@ -308,7 +308,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
 #[test]
 fn the_convolver_holds_off_non_finite_controls() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
-    let ir = generate_test_ir(128, Seconds::new(0.1), SampleRate::new(48_000.0));
+    let ir = generate_test_ir(128, Seconds::new(0.1), SampleRate::SR_48K);
     survives_node(
         "convolver",
         || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64),
@@ -346,12 +346,9 @@ fn a_distortion_built_with_a_non_finite_drive_renders_finite() {
     use tutti_nodes::{DistortionNode, ShapeKind};
     for bad in BAD {
         let mut node = DistortionNode::new(ShapeKind::Tanh, Drive::new(bad));
-        node.prepare(&Prepare::new(
-            SampleRate(48_000.0),
-            MaxBlock::of(Samples(64)),
-        ));
+        node.prepare(&Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))));
         assert!(
-            render_node_finite(&mut node, SampleRate(48_000.0), 4, 1),
+            render_node_finite(&mut node, SampleRate::SR_48K, 4, 1),
             "drive {bad}"
         );
     }

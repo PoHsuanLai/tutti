@@ -78,7 +78,7 @@ const DUR_S: f64 = 1.0;
 /// rate would do the transposition itself and pre-cancel the very effect under
 /// test, reporting a clean 440 Hz for every case.
 fn tone(frames: usize) -> Arc<Wave> {
-    let mut w = Wave::new(1, SampleRate::new(SR));
+    let mut w = Wave::new(1, SampleRate::of(SR));
     for i in 0..frames {
         w.push_frame(&[(TAU * BASE_HZ * i as f32 / SR as f32).sin()]);
     }
@@ -98,7 +98,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo_map: Arc::new(TempoMap::constant(Bpm::of(TEMPO)).expect("a tempo")),
-        sample_rate: SampleRate(SR),
+        sample_rate: SampleRate::of(SR),
         loop_range: None,
     }));
 
@@ -126,7 +126,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     let (id, _handle) = g.add_with_controls(pool);
     g.pipe_output(id);
     let (editor, executor) = g
-        .build(RenderGraph::prepare(SampleRate(SR)))
+        .build(RenderGraph::prepare(SampleRate::of(SR)))
         .expect("builds");
     (
         RenderGraph::assemble(editor, executor, Setup::new()).expect("built together"),
@@ -137,7 +137,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
 fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: SampleRate(SR),
+            sample_rate: SampleRate::of(SR),
             duration_seconds: Seconds(DUR_S),
             ..Default::default()
         },

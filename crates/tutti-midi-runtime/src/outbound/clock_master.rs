@@ -278,7 +278,7 @@ impl ClockMaster {
 
     /// The rate [`tick`](Self::tick) places events at.
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(self.sample_rate.load(Ordering::Acquire))
+        SampleRate::new(self.sample_rate.load(Ordering::Acquire)).unwrap_or(SampleRate::DEFAULT)
     }
 
     /// Turn MTC quarter-frame emission on or off, independently of the 24-PPQN

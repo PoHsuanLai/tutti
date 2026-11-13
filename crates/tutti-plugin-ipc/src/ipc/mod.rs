@@ -222,7 +222,8 @@ impl Link {
     }
 
     pub(crate) fn rate(&self) -> SampleRate {
-        SampleRate(f64::from_bits(self.rate.load(Ordering::Acquire)))
+        SampleRate::new(f64::from_bits(self.rate.load(Ordering::Acquire)))
+            .unwrap_or(SampleRate::DEFAULT)
     }
 
     pub(crate) fn set_rate(&self, rate: SampleRate) {

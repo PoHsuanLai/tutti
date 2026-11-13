@@ -498,7 +498,7 @@ mod tests {
     }
 
     fn geometry() -> StftGeometry {
-        StftGeometry::new(SampleRate::new(SAMPLE_RATE), Samples(2048), Samples(512)).unwrap()
+        StftGeometry::new(SampleRate::of(SAMPLE_RATE), Samples(2048), Samples(512)).unwrap()
     }
 
     fn signal(seconds: f64, onsets: &[f64]) -> Vec<f32> {
@@ -667,7 +667,7 @@ mod tests {
         let mut fft = FftScratch::new();
 
         let coarse = OnsetConfig::new(
-            StftGeometry::new(SampleRate::new(SAMPLE_RATE), Samples(2048), Samples(1024)).unwrap(),
+            StftGeometry::new(SampleRate::of(SAMPLE_RATE), Samples(2048), Samples(1024)).unwrap(),
             DetectionFunction::SpectralFlux,
         );
         let fine = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
@@ -710,7 +710,7 @@ mod tests {
             // frame the spike falls.
             let tolerance = cfg.geometry().window().get() as f64 / SAMPLE_RATE;
             for (found, &expected) in onsets.iter().zip(&truth) {
-                let t = found.time(SampleRate::new(SAMPLE_RATE)).get();
+                let t = found.time(SampleRate::of(SAMPLE_RATE)).get();
                 assert!(
                     (t - expected).abs() <= tolerance,
                     "{function:?}: onset at {t} is not within one window of {expected}"

@@ -39,7 +39,7 @@ const DECLICK: usize = 256;
 fn offline() -> Session {
     Session::builder()
         .build_offline(
-            SampleRate(RATE),
+            SampleRate::of(RATE),
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )

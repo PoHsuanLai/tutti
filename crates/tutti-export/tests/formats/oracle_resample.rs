@@ -62,7 +62,7 @@ const OUT_RATE: f64 = 44_100.0;
 /// renders at (a graph prepared at another is refused, not re-rated).
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(tutti_types::SampleRate(IN_RATE)))
+        .build(RenderGraph::prepare(tutti_types::SampleRate::of(IN_RATE)))
         .expect("builds");
     RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
@@ -81,7 +81,7 @@ fn sine_graph(freq: f32) -> RenderGraph {
 fn config(freq_target: SampleRateTarget) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_types::SampleRate(IN_RATE),
+            sample_rate: tutti_types::SampleRate::of(IN_RATE),
             duration_seconds: Seconds(1.0),
             ..Default::default()
         },
@@ -92,7 +92,7 @@ fn config(freq_target: SampleRateTarget) -> ExportConfig {
         },
         dither: None,
         resample: match freq_target {
-            SampleRateTarget::Convert => Some(Resample::to(tutti_types::SampleRate(OUT_RATE))),
+            SampleRateTarget::Convert => Some(Resample::to(tutti_types::SampleRate::of(OUT_RATE))),
             SampleRateTarget::Passthrough => None,
         },
     }

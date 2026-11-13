@@ -38,7 +38,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-const SR: SampleRate = SampleRate(48_000.0);
+const SR: SampleRate = SampleRate::SR_48K;
 /// Quarter notes per frame at 120 BPM and 48 kHz.
 const BEATS_PER_FRAME: f64 = 2.0 / 48_000.0;
 const PARAM: u32 = 7;

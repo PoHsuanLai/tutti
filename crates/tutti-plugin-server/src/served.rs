@@ -287,8 +287,9 @@ impl<F: ServerSide> Served<F> {
         let activation_failed = |reason: String| {
             load_failed(LoadStage::Activation, format!("activate failed: {reason}"))
         };
-        let prepare = MaxBlock::new(Samples(block_size))
-            .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
+        let prepare = SampleRate::new(sample_rate)
+            .zip(MaxBlock::new(Samples(block_size)))
+            .and_then(|(rate, block)| Prepare::new(rate, block))
             .ok_or_else(|| {
                 activation_failed(format!(
                     "the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
@@ -437,7 +438,7 @@ impl<F: ServerSide> Served<F> {
             // on one: the host reads the list when it opens a session.
             Notice::NoteExpressionChanged => {}
             Notice::Refused { rate, reason } => {
-                tracing::warn!("plugin refused {} Hz: {reason}", rate.0);
+                tracing::warn!("plugin refused {} Hz: {reason}", rate.get());
                 // Whether the host must re-read the instance depends on whether
                 // a rollback revives it: `finish_refusals` decides.
                 self.refresh_wiring(main);
@@ -695,10 +696,10 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
                 "the plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate().get() - rate).abs() < f64::EPSILON {
             return Ok(());
         }
-        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+        let Some(wanted) = SampleRate::new(rate).and_then(|rate| previous.with_rate(rate)) else {
             return Err(PluginError::Other(format!(
                 "plugin refused sample rate {rate} ({}): not a positive finite rate",
                 standing(self.is_active(), previous.rate())
@@ -709,7 +710,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
                 PluginError::Other(format!(
                     "plugin refused sample rate {rate} ({}): {reason}",
                     if rolled_back {
-                        format!("running at {}", previous.rate().0)
+                        format!("running at {}", previous.rate().get())
                     } else {
                         "deactivated".to_string()
                     }

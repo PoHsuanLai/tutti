@@ -13,7 +13,7 @@ use tutti_nodes::{
 };
 use tutti_types::{AtomicF32, Db, Hz, ParamCell, Q, SampleRate, Samples, Seconds, UnitParam};
 
-const RATE: SampleRate = SampleRate(48_000.0);
+const RATE: SampleRate = SampleRate::SR_48K;
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
 
 fn block(width: usize, seed: usize) -> Vec<Vec<f32>> {

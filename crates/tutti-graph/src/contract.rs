@@ -107,7 +107,7 @@ mod snapshot;
 pub use snapshot::{IsolateRow, SNAPSHOT_FRAMES};
 
 /// The rate every contract graph runs at.
-pub const SAMPLE_RATE: SampleRate = SampleRate(48_000.0);
+pub const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;
 
 /// The `MaxBlock` every contract graph is prepared for. Above 65, so the
 /// ragged schedule's 65-frame block fits, and not a multiple of anything a

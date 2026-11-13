@@ -271,7 +271,7 @@ mod tests {
     fn built(capacity: usize) -> Built {
         Built::new(
             capacity,
-            SampleRate::new(48_000.0),
+            SampleRate::SR_48K,
             BufferConfig::default(),
             Seams::default(),
         )

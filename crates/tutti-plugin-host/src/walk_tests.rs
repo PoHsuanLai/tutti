@@ -40,7 +40,7 @@ fn block(len: usize, transport: TransportPosition, changes: &[(usize, TransportP
     }
     Env {
         frame: Frame(0),
-        sample_rate: SampleRate(RATE),
+        sample_rate: SampleRate::of(RATE),
         block_len: Samples(len),
         transport,
         changes: list,
@@ -200,11 +200,11 @@ fn ramps_map() -> TempoMap {
 fn a_step_inside_a_chunk_is_an_entry_at_its_frame() {
     let map = step_map();
     assert_eq!(
-        map.view(SampleRate(RATE))
+        map.view(SampleRate::of(RATE))
             .frame_at_or_after(Beat(4.0))
             .get()
             - map
-                .view(SampleRate(RATE))
+                .view(SampleRate::of(RATE))
                 .frame_at_or_after(Beat(3.99))
                 .get(),
         240

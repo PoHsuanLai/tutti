@@ -33,7 +33,7 @@ use crate::reverb::FamilyNode;
 /// use tutti_types::{SampleRate, Samples};
 ///
 /// let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
-/// let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
+/// let mut solo = Solo::new(filter, Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(64))));
 /// let out = solo.render_input(&[&[1.0; 64]]);
 /// assert_eq!(out.len(), 1);
 ///
@@ -171,7 +171,7 @@ mod tests {
 
     /// `node`, prepared at 44.1 kHz, over a mono `input` in one block.
     fn render(node: SvfFilterNode, input: &[f32]) -> Vec<f32> {
-        let rate = SampleRate(44_100.0);
+        let rate = SampleRate::SR_44K1;
         let mut node = tutti_graph::contract::prepared(node, rate, input.len());
         drive(&mut node, rate, &[input], &[]).remove(0)
     }
@@ -179,7 +179,7 @@ mod tests {
     /// `node`, prepared at 44.1 kHz, over `inputs` (one slice per channel)
     /// in one block.
     fn render_wide(node: SvfFilterNode, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
-        let rate = SampleRate(44_100.0);
+        let rate = SampleRate::SR_44K1;
         let mut node = tutti_graph::contract::prepared(node, rate, inputs[0].len());
         drive(&mut node, rate, inputs, &[])
     }
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_svf_f32_state_matches_f64_for_mid_cutoff() {
         let input = generate_sine(500.0, 44100.0, 2048);
-        let rate = SampleRate(44_100.0);
+        let rate = SampleRate::SR_44K1;
         let mut f64_node = tutti_graph::contract::prepared(
             SvfFilterNode::<f64>::new(SvfType::LowPass, Hz::new(1000.0), Q::new(0.707)),
             rate,

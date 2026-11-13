@@ -1297,7 +1297,7 @@ mod tests {
             .handle(
                 &main_thread(),
                 HostMessage::SetSampleRate {
-                    rate: tutti_plugin_types::SampleRate(96000.0),
+                    rate: tutti_plugin_types::SampleRate::SR_96K,
                 },
             )
             .unwrap()
@@ -1398,7 +1398,7 @@ mod tests {
                 HostMessage::LoadPlugin {
                     path: std::path::PathBuf::from("/nonexistent/path/plugin.vst3"),
                     load: tutti_plugin_types::Load::new(),
-                    sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                    sample_rate: tutti_plugin_types::SampleRate::SR_44K1,
                     block_size: 512,
                     preferred_format: SampleFormat::Float32,
                     shm_name: "x".into(),
@@ -1445,7 +1445,7 @@ mod tests {
             HostMessage::LoadPlugin {
                 path: std::path::PathBuf::from(clap_plugin()),
                 load: tutti_plugin_types::Load::new(),
-                sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                sample_rate: tutti_plugin_types::SampleRate::SR_44K1,
                 block_size: 512,
                 preferred_format,
                 shm_name: name.to_string(),
@@ -1478,7 +1478,7 @@ mod tests {
                 HostMessage::LoadPlugin {
                     path: std::path::PathBuf::from(clap_plugin()),
                     load,
-                    sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                    sample_rate: tutti_plugin_types::SampleRate::SR_44K1,
                     block_size: 512,
                     preferred_format: SampleFormat::Float32,
                     shm_name: "choosing".to_string(),
@@ -1568,7 +1568,7 @@ mod tests {
             s.handle(
                 &main_thread(),
                 HostMessage::SetSampleRate {
-                    rate: tutti_plugin_types::SampleRate(rate),
+                    rate: tutti_plugin_types::SampleRate::of(rate),
                 },
             )
             .unwrap()
@@ -1848,7 +1848,7 @@ mod tests {
                 .handle(
                     &main_thread(),
                     HostMessage::SetSampleRate {
-                        rate: tutti_plugin_types::SampleRate(bad),
+                        rate: <tutti_plugin_types::SampleRate as tutti_types::Unit>::from_raw(bad),
                     },
                 )
                 .unwrap()
@@ -2200,7 +2200,7 @@ mod tests {
                 HostMessage::LoadPlugin {
                     path: std::path::PathBuf::from(clap_plugin()),
                     load: tutti_plugin_types::Load::new(),
-                    sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                    sample_rate: tutti_plugin_types::SampleRate::SR_44K1,
                     block_size: 512,
                     preferred_format: SampleFormat::Float32,
                     shm_name: "staged".into(),
@@ -2221,7 +2221,7 @@ mod tests {
             HostMessage::LoadPlugin {
                 path: std::path::PathBuf::from("/nonexistent/plugin.clap"),
                 load: tutti_plugin_types::Load::new(),
-                sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                sample_rate: tutti_plugin_types::SampleRate::SR_44K1,
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
                 shm_name: "x".into(),
@@ -2379,7 +2379,7 @@ mod tests {
                     HostMessage::LoadPlugin {
                         path: std::path::PathBuf::from(clap_plugin()),
                         load: tutti_plugin_types::Load::new(),
-                        sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                        sample_rate: tutti_plugin_types::SampleRate::SR_44K1,
                         block_size: 512,
                         preferred_format: SampleFormat::Float32,
                         shm_name: "announce".into(),
@@ -2477,7 +2477,7 @@ mod tests {
             .handle(
                 &main_thread(),
                 HostMessage::SetSampleRate {
-                    rate: tutti_plugin_types::SampleRate(96000.0),
+                    rate: tutti_plugin_types::SampleRate::SR_96K,
                 },
             )
             .unwrap()
@@ -2543,7 +2543,7 @@ mod tests {
             HostMessage::LoadPlugin {
                 path: bundle,
                 load: tutti_plugin_types::Load::new(),
-                sample_rate: tutti_plugin_types::SampleRate(48_000.0),
+                sample_rate: tutti_plugin_types::SampleRate::SR_48K,
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
                 shm_name: name.to_string(),
@@ -2709,7 +2709,7 @@ mod tests {
             HostMessage::LoadPlugin {
                 path: bundle,
                 load: tutti_plugin_types::Load::new(),
-                sample_rate: tutti_plugin_types::SampleRate(48_000.0),
+                sample_rate: tutti_plugin_types::SampleRate::SR_48K,
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
                 shm_name: "refit_vst3".to_string(),

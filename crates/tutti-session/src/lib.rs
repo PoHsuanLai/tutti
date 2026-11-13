@@ -19,7 +19,7 @@
 //!
 //! let mut s = Session::builder()
 //!     .outputs_floor(ChannelLayout::MONO)
-//!     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(512)))
+//!     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(512)))
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
 //! s.graph().connect(osc, Root).unwrap();

@@ -21,7 +21,7 @@ fn a_blocked_enumeration_does_not_hold_the_update_and_lands_when_it_answers() {
     let (mut s, _device) = Session::builder()
         .build_device_on(
             OutputSpec::new(
-                SampleRate(48_000.0),
+                SampleRate::SR_48K,
                 ChannelLayout::STEREO,
                 tutti_cpal::cpal::SampleFormat::F32,
             ),
@@ -72,7 +72,7 @@ fn a_failed_listing_reports_the_typed_error() {
     let (mut s, _device) = Session::builder()
         .build_device_on(
             OutputSpec::new(
-                SampleRate(48_000.0),
+                SampleRate::SR_48K,
                 ChannelLayout::STEREO,
                 tutti_cpal::cpal::SampleFormat::F32,
             ),

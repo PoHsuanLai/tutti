@@ -937,7 +937,7 @@ fn direct_driving_events_does_not_allocate() {
     use tutti_graph::{Event, Offset};
     use tutti_types::{Bpm, SampleRate};
 
-    let rate = SampleRate(48_000.0);
+    let rate = SampleRate::SR_48K;
     let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut pulse = Direct::new(Pulse::new(Latency::ZERO), rate, 64);
     pulse.set_transport(rolling);

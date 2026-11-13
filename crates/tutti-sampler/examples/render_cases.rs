@@ -32,7 +32,7 @@ const BLOCK: usize = 64;
 
 /// A 440 Hz sine, the reference tone every case is measured against.
 fn tone(freq: f32, frames: usize) -> Arc<Wave> {
-    let mut w = Wave::new(1, SampleRate::new(SR));
+    let mut w = Wave::new(1, SampleRate::of(SR));
     for i in 0..frames {
         w.push_frame(&[(TAU * freq * i as f32 / SR as f32).sin()]);
     }
@@ -42,7 +42,7 @@ fn tone(freq: f32, frames: usize) -> Arc<Wave> {
 /// Render one case through a real pool and return interleaved stereo output.
 fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     let (pool, handle) = VoicePool::new().with_handle();
-    let mut pool = contract::prepared(pool, SampleRate(SR), BLOCK);
+    let mut pool = contract::prepared(pool, SampleRate::of(SR), BLOCK);
     // A rolling transport this example advances by hand, a block at a time.
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     // 4x the output length: at the slowest factor the source is consumed far
@@ -91,7 +91,7 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
         }
         let block = contract::drive_input(
             &mut pool,
-            &transport.env(BLOCK, SampleRate::new(SR)),
+            &transport.env(BLOCK, SampleRate::of(SR)),
             &[],
             &[],
             &[],
@@ -101,7 +101,7 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
             out.push(l);
             out.push(r);
         }
-        transport.advance(BLOCK as i64, SampleRate::new(SR));
+        transport.advance(BLOCK as i64, SampleRate::of(SR));
         rendered += BLOCK;
     }
     out.truncate(FRAMES * 2);

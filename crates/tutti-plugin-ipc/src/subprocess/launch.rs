@@ -546,7 +546,7 @@ mod tests {
             &Locator::at(&stand_in),
             &config,
             Path::new("/nonexistent.vst3"),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ) {
             Err(e) => e,
             // Cannot happen (`sleep` never sends `Ready`), but reap rather than
@@ -611,7 +611,7 @@ mod tests {
             &config,
             plugin,
             &Load::new(),
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
             Some(&[0u8; 16]),
             restore_timeout,
         );
@@ -730,7 +730,7 @@ mod tests {
             &Locator::at(tutti_fixtures::plugin_server()),
             &config,
             &not_a_plugin,
-            SampleRate(48_000.0),
+            SampleRate::SR_48K,
         ) {
             Err(e) => e,
             Ok(mut server) => {

@@ -74,7 +74,7 @@ fn rig(config: InputConfig, lead: Samples) -> Rig {
     }));
     let (driver, stream) = ManualStreamDriver::new();
     let spec = OutputSpec::new(
-        SampleRate(RATE),
+        SampleRate::of(RATE),
         ChannelLayout::STEREO,
         tutti_cpal::cpal::SampleFormat::F32,
     );

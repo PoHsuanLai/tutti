@@ -48,7 +48,7 @@ const LSB16: f32 = 1.0 / 32_767.0;
 /// renders at (a graph prepared at another is refused, not re-rated).
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
+        .build(RenderGraph::prepare(tutti_types::SampleRate::of(SR)))
         .expect("builds");
     RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
@@ -63,7 +63,7 @@ fn dc_graph(level: f32) -> RenderGraph {
 fn config(dither: Option<DitherShape>, bit_depth: Pcm) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_types::SampleRate(SR),
+            sample_rate: tutti_types::SampleRate::of(SR),
             duration_seconds: Seconds(0.5),
             ..Default::default()
         },

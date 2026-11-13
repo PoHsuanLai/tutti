@@ -75,9 +75,9 @@ use crate::tap::{TapReader, TapWriter};
 /// use tutti_types::{ChannelLayout, SampleRate, Samples};
 ///
 /// let (ring, mut producer) =
-///     InletRing::pair(ChannelLayout::STEREO, Samples(64), SampleRate(48_000.0));
+///     InletRing::pair(ChannelLayout::STEREO, Samples(64), SampleRate::SR_48K);
 /// producer.push_interleaved(&[0.5, -0.5]);
-/// assert_eq!(ring.rate(), SampleRate(48_000.0));
+/// assert_eq!(ring.rate(), SampleRate::SR_48K);
 /// assert_eq!(ring.layout(), ChannelLayout::STEREO);
 /// ```
 #[derive(Debug)]

@@ -303,7 +303,7 @@ mod tests {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(200.0), Hz(15_000.0)]).unwrap();
         let set = node.param_set();
         let rate = 22_050.0;
-        let mut node = tutti_graph::contract::prepared(node, SampleRate(rate), 1024);
+        let mut node = tutti_graph::contract::prepared(node, SampleRate::of(rate), 1024);
         set.set(Splits::addr(0), 300.0);
         // 9 555 frames are 130 whole periods of 300 Hz at 22.05 kHz.
         let len = 9_555 + 12_000;

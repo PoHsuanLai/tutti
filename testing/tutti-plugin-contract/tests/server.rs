@@ -30,7 +30,7 @@ fn through_server<F: Format>(path: PathBuf) {
     let client = PluginClient::new(
         BridgeConfig::default(),
         &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
-        tutti_plugin_types::SampleRate::new(48_000.0),
+        tutti_plugin_types::SampleRate::SR_48K,
     )
     .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));
     let handle = client.handle();
@@ -119,7 +119,7 @@ fn served<F: Format>(
         IpcConfig::default(),
         path,
         Load::new(),
-        SampleRate::new(RATE),
+        SampleRate::of(RATE),
         None,
         Some(no_editor),
     )

@@ -8,7 +8,7 @@ mod tests {
     use tutti_types::Frame;
     use tutti_types::{Bpm, FrameClock, SampleRate, Samples};
 
-    const SR: SampleRate = SampleRate(48_000.0);
+    const SR: SampleRate = SampleRate::SR_48K;
 
     /// The beats a block of `len` frames starting on `host`'s frame gets, in
     /// `f64`.

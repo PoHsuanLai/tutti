@@ -78,7 +78,7 @@ println!("{} by {}", loaded.info().name, loaded.info().vendor);
 
 // A refusal hands the plugin back in the error, so a plugin that declines f64
 // can be retried at f32 without reloading.
-let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
+let prepare = Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)))
     .expect("a real rate");
 let (mut processor, controller) = loaded
     .activate(&main, prepare)

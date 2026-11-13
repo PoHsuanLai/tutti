@@ -549,7 +549,7 @@ mod tests {
         tutti_fixtures::signal::sine(
             tutti_types::Hz(freq),
             tutti_types::Amplitude(amp),
-            SampleRate(rate),
+            SampleRate::of(rate),
             tutti_types::Samples(n),
         )
         .into_iter()
@@ -558,7 +558,7 @@ mod tests {
     }
 
     fn cfg(rate: f64) -> LoudnessConfig {
-        LoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO)
+        LoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO)
     }
 
     /// A chunk that ends mid-frame carries its part frame into the next one.
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn a_ragged_chunk_carries_its_part_frame() {
         let layout = ChannelLayout::from(6u16);
-        let c = LoudnessConfig::new(SampleRate(48_000.0), layout);
+        let c = LoudnessConfig::new(SampleRate::SR_48K, layout);
         let n = 48_000;
         let buf: Vec<f32> = (0..n)
             .flat_map(|i| {
@@ -791,7 +791,7 @@ mod tests {
     }
 
     fn windowed_cfg(rate: f64) -> WindowedLoudnessConfig {
-        WindowedLoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO).unwrap()
+        WindowedLoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO).unwrap()
     }
 
     /// Feeds `buf` in `frames`-frame chunks, returning the reading after each.
@@ -963,7 +963,7 @@ mod tests {
     #[test]
     fn a_ragged_chunk_keeps_channels_in_place() {
         let layout = ChannelLayout::from(6u16);
-        let cfg = WindowedLoudnessConfig::new(SampleRate(48_000.0), layout).unwrap();
+        let cfg = WindowedLoudnessConfig::new(SampleRate::SR_48K, layout).unwrap();
         let buf: Vec<f32> = (0..48_000 * 4)
             .flat_map(|i| {
                 let s = 0.5 * (TAU * 1_000.0 * i as f32 / 48_000.0).sin();
@@ -1018,7 +1018,7 @@ mod tests {
     #[test]
     fn reset_drops_a_carried_part_frame() {
         let layout = ChannelLayout::from(6u16);
-        let cfg = WindowedLoudnessConfig::new(SampleRate(48_000.0), layout).unwrap();
+        let cfg = WindowedLoudnessConfig::new(SampleRate::SR_48K, layout).unwrap();
         let lfe = |frames: usize| -> Vec<f32> {
             (0..frames)
                 .flat_map(|i| {
@@ -1081,7 +1081,10 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    WindowedLoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO),
+                    WindowedLoudnessConfig::new(
+                        <SampleRate as tutti_types::Unit>::from_raw(rate),
+                        ChannelLayout::STEREO
+                    ),
                     Err(Error::InvalidLoudnessParameter(_))
                 ),
                 "rate {rate}"
@@ -1089,13 +1092,13 @@ mod tests {
         }
         for channels in [0u16, 17] {
             assert!(matches!(
-                WindowedLoudnessConfig::new(SampleRate(48_000.0), ChannelLayout::from(channels)),
+                WindowedLoudnessConfig::new(SampleRate::SR_48K, ChannelLayout::from(channels)),
                 Err(Error::InvalidLoudnessParameter(_))
             ));
         }
-        assert!(WindowedLoudnessConfig::new(SampleRate(8_000.0), ChannelLayout::MONO).is_ok());
+        assert!(WindowedLoudnessConfig::new(SampleRate::SR_8K, ChannelLayout::MONO).is_ok());
         assert!(
-            WindowedLoudnessConfig::new(SampleRate(192_000.0), ChannelLayout::from(16u16)).is_ok()
+            WindowedLoudnessConfig::new(SampleRate::SR_192K, ChannelLayout::from(16u16)).is_ok()
         );
 
         let cfg = windowed_cfg(48_000.0);

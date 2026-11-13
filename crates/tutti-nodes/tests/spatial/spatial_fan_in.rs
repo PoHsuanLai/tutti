@@ -20,10 +20,7 @@ fn settled_energy(layout: ChannelLayout, bearings: &[f32]) -> Vec<f32> {
         .collect();
     vbap_mix(&mut g, layout, &sources).expect("a preset");
     let mut r = g
-        .renderer(Prepare::new(
-            SampleRate(48_000.0),
-            MaxBlock::of(Samples(256)),
-        ))
+        .renderer(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256))))
         .expect("builds");
     let mut last = Vec::new();
     for _ in 0..49 {

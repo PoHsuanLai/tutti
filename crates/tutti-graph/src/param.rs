@@ -356,7 +356,7 @@ impl<'a> ParamInput<'a> {
     }
 
     /// The block offsets, ascending, where the trajectory its event source
-    /// delivered **changes piece** (doc 024 §4.5, "Solve at corners"):
+    /// delivered **changes piece**:
     ///
     /// - a ramp event's frame;
     /// - a segment event's frame, unless it continues the piece in flight:

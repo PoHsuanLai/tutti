@@ -3,7 +3,6 @@
 //! node's translation onto its ports, a control thread's through the event
 //! inlet into the event tap's ring, and the clock's ticks.
 
-use assert_no_alloc::AllocDisabler;
 use std::num::NonZeroUsize;
 use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
@@ -20,11 +19,7 @@ use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, Frame, FrameClock, Moment, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump};
 
-mod common;
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
-
+use crate::common;
 fn note_on(ch: u8, note: u8) -> Ump {
     midi::note_on(
         MidiGroup::FIRST,

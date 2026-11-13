@@ -28,6 +28,7 @@ mod device;
 mod discovery;
 mod endpoint;
 mod initiator;
+mod pe;
 mod profile;
 mod read;
 mod status;
@@ -43,6 +44,12 @@ pub use endpoint::{CiInstanceId, EndpointInfo, EndpointStatus};
 pub use initiator::{
     Outcome, PROFILE_TIMEOUT, ProfileAction, ProfileChange, ProfileEntry, ProfileInitiator,
     ProfileTable, ProfileTarget, Request, RequestError,
+};
+pub use pe::{
+    MediaType, NotValid, PE_MAX_HEADER_LEN, PeDecimal, PeEncoding, PeEndedBy, PeExtra, PeHeader,
+    PeHeaderError, PeHeaderTooLong, PeMessage, PePage, PeReply, PeRequest, PeReservedProperty,
+    PeStatus, PeSubscription, PeUpdateCommand, PeValue, PropertyName, ResourceId, ResourceName,
+    SubscribeId, mcoded7,
 };
 pub use profile::{
     ChannelsDetail, DetailsData, InquiryTarget, ListTooLong, ManufacturerProfile, ProfileChannels,

@@ -6051,7 +6051,7 @@ the source count changes".
 | Benches: `tutti-nodes/benches/node_kernels.rs`, `parallel_render.rs`, `tutti-session/benches/render_load.rs` | The `ChannelSumNode` rows become a graph with a fan-in (the bench measures the op through the graph), which is also the measurement `op_work` needs. |
 | `tutti-soundfont/src/lib.rs`, `tutti-spatial/src/hrtf/mod.rs` | Doc comments that name the node. |
 | `bevy-tutti/tests/graph_value.rs` | Parked; not updated. |
-| Docs: the rows and decisions edited in this document; CLAUDE.md's wiring bullet and the `Dead crate names` list (add `ChannelSumNode` → fan-in); `graph.rs` and `spec.rs` doc comments; `docs/engineering-notes.md`; the mentions in docs 015 and 024 | As point 7. |
+| Docs: the rows and decisions edited in this document; CLAUDE.md's wiring bullet and the `Dead crate names` list (add `ChannelSumNode` → fan-in); `graph.rs` and `spec.rs` doc comments; `docs/engineering-notes.md`; the mention in doc 015 | As point 7. |
 
 ##### 9. Tests the build adds
 
@@ -6252,8 +6252,8 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    > `channel_sum_process_is_allocation_free` (the op's own no-alloc gate is
    > `tutti-graph`'s) and the `isolate_snapshots` mention. CLAUDE.md lists it
    > under the dead names; the READMEs of `tutti-nodes` and `tutti-soundfont`,
-   > doc 015's example (its sidechain bus is a `BusStripNode`) and doc 024's
-   > row 30 no longer offer it. `graph.rs`, `spec.rs` and the engineering notes
+   > doc 015's example (its sidechain bus is a `BusStripNode`) no
+   > longer offer it. `graph.rs`, `spec.rs` and the engineering notes
    > had no mention left. The parked `bevy-tutti`'s `graph_value` tests still
    > name it; per the parking rule they are left for the un-parking PR. The
    > mentions above this note are the record of how it went.
@@ -7057,7 +7057,7 @@ state beside the mode. The static half is built here; the driven half (a
   ports, `ModDelayConfig::mix`, `WetDry`, `set_mix`/`mix()` and the dsp kernels'
   mix arguments are gone) and the graph's mix blends it with the input
   delayed by the declared latency. The reverbs (`FreeverbNode`, `FdnNode`) went
-  wet-only the same way (doc 024 step 2b PR9: `DryWet`, `Blend` and `DryAlign` are
+  wet-only the same way (`DryWet`, `Blend` and `DryAlign` are
   deleted). A reverb's design places its channels (`tutti_dsp::Placement::Speakers`),
   so its node declares a mono main bus in and a stereo one out, and the fold sends
   the mono input, a centre, to both sides at gain 1.0: at a partial mix the dry is on
@@ -7740,7 +7740,7 @@ that says "unassigned" for such a channel predates the rename.
 - T2 adds the handles and moves the multi-bus nodes.
 - T3 moves the designs and deletes `Placement` and `Keyed`.
 
-They come before `tutti-dsp`'s PR10 and the family lanes (doc 024 §10), which rewrite node shapes and `process` and
+They come before `tutti-dsp`'s PR10 and the family lanes, which rewrite node shapes and `process` and
 would otherwise be written once on the old API and migrated again.
 
 **Decided in review (core, 2026-11-11).**
@@ -8633,8 +8633,8 @@ the source stands ("Shaped ramps" below).
   `Exponential` and `SCurve` → `PowerIn(2)` and `PowerInOut(2)`, the cubic to
   quintic eases → the powers 3 to 5, `Logarithmic` → `PowerIn(0.5)`), and
   `Back`, `Elastic`, `Bounce`, `Circular` and `Bezier` were not carried (a lane
-  sent them as the piecewise-linear fallback below). Q25 of doc 024 removed
-  the crate: **`Law` is `tutti-curve`'s, the one set of laws**, the mapping and
+  sent them as the piecewise-linear fallback below). With the crate
+  gone, **`Law` is `tutti-curve`'s, the one set of laws**, the mapping and
   the five extras are gone, and what still takes the fallback is a piece a
   range would bend, and a curve with no pieces.
 - **The param port** (`param.rs`). An event source's running state
@@ -10337,7 +10337,7 @@ by width alone.
     the engine's order for its width (a count-built wave of 4 is quad).
     `fold_frame` is deleted, and so are `fold_frame_to_mono`,
     `fold_frame_to_stereo`, `fold_buffer_to_mono` and `fold_planar_to_mono`
-    (design 024 step 0b, consolidation 3): the nodes that held a bare frame
+    (consolidation 3): the nodes that held a bare frame
     build a `Fold` on the control side (`ConvolverNode`, `HrtfBinauralNode`,
     `VbapPannerNode`) and `Interleaved::fold_into` applies one to a buffer.
   - **Engine.** `Engine::new` builds, on the control side, the fold from every

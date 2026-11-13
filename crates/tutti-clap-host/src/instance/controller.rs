@@ -22,7 +22,7 @@ use super::thread_pool::PoolCell;
 /// [`ClapLoaded`] (the [`Control`] trait and the methods
 /// below), with parameter writes redirected to the Processor. It does not
 /// `Deref` to the loaded plugin; a caller that needs the format's own surface
-/// (the editor, ports, the `clap-extras` extensions) asks for
+/// (the editor, ports, parameter indication) asks for
 /// [`loaded`](Self::loaded) or [`loaded_mut`](Self::loaded_mut).
 ///
 /// `Send` so a server can build it on one thread and run it on another, not

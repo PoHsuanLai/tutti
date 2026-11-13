@@ -1,28 +1,14 @@
-//! Polling host-state flags, opening/closing the plugin editor, context
-//! menus, triggers, remote controls, POSIX FDs, timers, and other
-//! main-thread host-interaction methods.
+//! Polling host-state flags, opening/closing the plugin editor, POSIX FDs,
+//! timers, and other main-thread host-interaction methods.
 
 use super::ClapLoaded;
 use crate::error::{ClapError, Result};
 use crate::host::state::TimerEntry;
 use crate::host::{HostState, LogRecord};
 use crate::types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
-#[cfg(feature = "clap-extras")]
-use crate::types::{
-    ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
-    TriggerInfo,
-};
 use std::sync::Arc;
 use tutti_clap_ffi::GuiError;
 use tutti_plugin_types::{FdId, Interest, MainThread, Ready, Wakeups};
-
-#[cfg(feature = "clap-extras")]
-fn menu_target(target: ContextMenuTarget) -> tutti_clap_ffi::MenuTarget {
-    match target {
-        ContextMenuTarget::Global => tutti_clap_ffi::MenuTarget::Global,
-        ContextMenuTarget::Param(id) => tutti_clap_ffi::MenuTarget::Param(id),
-    }
-}
 
 fn gui_error(error: GuiError) -> ClapError {
     ClapError::EditorError(error.to_string())
@@ -379,47 +365,6 @@ impl ClapLoaded {
             .take(&self.host_state.audio_ports.config_changed)
     }
 
-    /// Consumes and returns the `remote_controls.changed` flag. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn take_remote_controls_changed(&self) -> bool {
-        self.host_state
-            .take(&self.host_state.remote_controls.changed)
-    }
-
-    /// Consumes and returns the page ID the plugin most recently suggested
-    /// the host switch to, or `None` if no suggestion is pending. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn take_suggested_remote_page(&self) -> Option<u32> {
-        let val = self
-            .host_state
-            .remote_controls
-            .suggested_page
-            .swap(u32::MAX, std::sync::atomic::Ordering::AcqRel);
-        if val == u32::MAX { None } else { Some(val) }
-    }
-
-    /// Drains all pending [`TransportRequest`]s the plugin has emitted, in
-    /// arrival order. Requires the `clap-extras` feature.
-    ///
-    /// Main-thread only: this takes the lock that the plugin-side push
-    /// deliberately only *tries*, so calling it from the audio thread
-    /// reintroduces the inversion that push avoids.
-    ///
-    /// A short result is not proof the plugin was quiet — the queue drops when
-    /// full or contended. Read
-    /// [`TransportState::dropped`](crate::host::state::TransportState::dropped)
-    /// when that matters.
-    #[cfg(feature = "clap-extras")]
-    pub fn drain_transport_requests(&self) -> Vec<TransportRequest> {
-        let Ok(mut reqs) = self.host_state.transport.requests.lock() else {
-            return Vec::new();
-        };
-        // `drain`, not `mem::take`: taking the `VecDeque` leaves an empty one
-        // with no capacity behind, so the plugin's next push would allocate —
-        // on the audio thread, which is the whole thing this queue avoids.
-        reqs.drain(..).collect()
-    }
-
     /// Consumes and returns the `notes.names_changed` flag.
     pub fn take_note_names_changed(&self) -> bool {
         self.host_state.take(&self.host_state.notes.names_changed)
@@ -429,13 +374,6 @@ impl ClapLoaded {
     pub fn take_voice_info_changed(&self) -> bool {
         self.host_state
             .take(&self.host_state.notes.voice_info_changed)
-    }
-
-    /// Consumes and returns the `preset_loaded` flag. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn take_preset_loaded(&self) -> bool {
-        self.host_state
-            .take(&self.host_state.processing.preset_loaded)
     }
 
     /// Invokes the plugin's `on_main_thread` callback — call when
@@ -450,97 +388,6 @@ impl ClapLoaded {
     pub fn on_main_thread(&mut self, main: &MainThread) -> &mut Self {
         self.plugin.on_main_thread(main);
         self
-    }
-
-    /// Publishes track metadata for the plugin to read via
-    /// `CLAP_EXT_TRACK_INFO`. Call [`Self::notify_track_info_changed`]
-    /// afterwards to ping the plugin. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn set_track_info(&self, info: TrackInfo) {
-        if let Ok(mut guard) = self.host_state.resources.track_info.lock() {
-            *guard = Some(info);
-        }
-    }
-
-    /// Tells the plugin its track info has changed. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn notify_track_info_changed(&self, main: &MainThread) {
-        self.plugin.notify_track_info_changed(main);
-    }
-
-    /// Number of remote-control pages the plugin exposes. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn remote_controls_page_count(&self, main: &MainThread) -> usize {
-        self.plugin.remote_controls_count(main) as usize
-    }
-
-    /// Describes the remote-controls page at `index`. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn remote_controls_page(
-        &self,
-        main: &MainThread,
-        index: usize,
-    ) -> Option<RemoteControlsPage> {
-        let page = self
-            .plugin
-            .remote_controls_page(main, u32::try_from(index).ok()?)?;
-        Some(RemoteControlsPage {
-            section_name: page.section_name,
-            page_id: page.page_id,
-            page_name: page.page_name,
-            param_ids: page.param_ids,
-            is_for_preset: page.is_for_preset,
-        })
-    }
-
-    /// Asks the plugin to supply the context-menu entries for `target`.
-    /// Returns `None` if the plugin does not implement context menus.
-    /// Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn context_menu_populate(
-        &self,
-        main: &MainThread,
-        target: ContextMenuTarget,
-    ) -> Option<Vec<ContextMenuItem>> {
-        self.plugin.context_menu_populate(main, menu_target(target))
-    }
-
-    /// Invokes a context-menu action the plugin previously reported via
-    /// [`Self::context_menu_populate`]. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn context_menu_perform(
-        &self,
-        main: &MainThread,
-        target: ContextMenuTarget,
-        action_id: u32,
-    ) -> bool {
-        self.plugin
-            .context_menu_perform(main, menu_target(target), action_id)
-    }
-
-    /// Number of trigger "parameters" (stateless momentary actions) the
-    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn trigger_count(&self, main: &MainThread) -> usize {
-        self.plugin.trigger_count(main) as usize
-    }
-
-    /// Describes the trigger at `index`. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn trigger_info(&self, main: &MainThread, index: usize) -> Option<TriggerInfo> {
-        let info = self.plugin.trigger_info(main, u32::try_from(index).ok()?)?;
-        Some(TriggerInfo {
-            id: info.id,
-            flags: info.flags,
-            name: info.name,
-            module: info.module,
-        })
-    }
-
-    /// Tells the plugin its tuning table set has changed. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn notify_tuning_changed(&self, main: &MainThread) {
-        self.plugin.notify_tuning_changed(main);
     }
 
     /// Calls `on_fd` for descriptor `fd` if a wake found it ready and it is

@@ -23,12 +23,10 @@
 //!    thread; the main-thread entries it lets run beside `process`
 //!    (`params.get_value`, text conversion, `state.save/load`, `gui`,
 //!    `latency.get`, `tail.get`, `on_main_thread`) are all `Plugin` can call
-//!    while an `AudioSide` exists. The `[!active]` entries (port
-//!    configuration, `extensible-audio-ports`) refuse with
-//!    [`CallError::WrongState`] while the plugin is active, and
-//!    `audio-ports-activation.set_active` takes the claim then, as CLAP's
-//!    `[active ? audio-thread : main-thread]` says. The `clap.gui` entries
-//!    follow `create` and precede `destroy`, which `Plugin` tracks.
+//!    while an `AudioSide` exists. The `[!active]` entry
+//!    (`audio-ports-config.select`) refuses with [`CallError::WrongState`]
+//!    while the plugin is active. The `clap.gui` entries follow `create` and
+//!    precede `destroy`, which `Plugin` tracks.
 //! 2. *Audio entries never overlap.* Every audio-side entry runs under the
 //!    instance's [`AudioClaim`](crate::AudioClaim), so two audio-side calls never overlap even
 //!    from two OS threads. `params.flush` on an active plugin, the one entry
@@ -59,32 +57,10 @@ use clap_sys::ext::ambisonic::{
     CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT, clap_plugin_ambisonic,
 };
 use clap_sys::ext::audio_ports::{CLAP_EXT_AUDIO_PORTS, clap_plugin_audio_ports};
-use clap_sys::ext::audio_ports_activation::{
-    CLAP_EXT_AUDIO_PORTS_ACTIVATION, CLAP_EXT_AUDIO_PORTS_ACTIVATION_COMPAT,
-    clap_plugin_audio_ports_activation,
-};
 use clap_sys::ext::audio_ports_config::{
     CLAP_EXT_AUDIO_PORTS_CONFIG, CLAP_EXT_AUDIO_PORTS_CONFIG_INFO,
     CLAP_EXT_AUDIO_PORTS_CONFIG_INFO_COMPAT, clap_plugin_audio_ports_config,
     clap_plugin_audio_ports_config_info,
-};
-use clap_sys::ext::configurable_audio_ports::{
-    CLAP_EXT_CONFIGURABLE_AUDIO_PORTS, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS_COMPAT,
-    clap_plugin_configurable_audio_ports,
-};
-use clap_sys::ext::context_menu::{
-    CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT, clap_plugin_context_menu,
-};
-use clap_sys::ext::draft::extensible_audio_ports::{
-    CLAP_EXT_EXTENSIBLE_AUDIO_PORTS, clap_plugin_extensible_audio_ports,
-};
-use clap_sys::ext::draft::resource_directory::{
-    CLAP_EXT_RESOURCE_DIRECTORY, clap_plugin_resource_directory,
-};
-use clap_sys::ext::draft::triggers::{CLAP_EXT_TRIGGERS, clap_plugin_triggers};
-use clap_sys::ext::draft::tuning::{CLAP_EXT_TUNING, clap_plugin_tuning_t};
-use clap_sys::ext::draft::undo::{
-    CLAP_EXT_UNDO_CONTEXT, CLAP_EXT_UNDO_DELTA, clap_plugin_undo_context, clap_plugin_undo_delta,
 };
 use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_plugin_gui};
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_plugin_latency};
@@ -98,9 +74,6 @@ use clap_sys::ext::posix_fd_support::{CLAP_EXT_POSIX_FD_SUPPORT, clap_plugin_pos
 use clap_sys::ext::preset_load::{
     CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_plugin_preset_load,
 };
-use clap_sys::ext::remote_controls::{
-    CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT, clap_plugin_remote_controls,
-};
 use clap_sys::ext::render::{CLAP_EXT_RENDER, clap_plugin_render};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::ext::state_context::{CLAP_EXT_STATE_CONTEXT, clap_plugin_state_context};
@@ -108,9 +81,6 @@ use clap_sys::ext::surround::{CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT, clap_
 use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_plugin_tail};
 use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_plugin_thread_pool};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_plugin_timer_support};
-use clap_sys::ext::track_info::{
-    CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT, clap_plugin_track_info,
-};
 use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_plugin_voice_info};
 use clap_sys::plugin::clap_plugin;
 
@@ -161,21 +131,14 @@ extensions! {
     audio_ports: clap_plugin_audio_ports = [CLAP_EXT_AUDIO_PORTS];
     audio_ports_config: clap_plugin_audio_ports_config = [CLAP_EXT_AUDIO_PORTS_CONFIG];
     audio_ports_config_info: clap_plugin_audio_ports_config_info = [CLAP_EXT_AUDIO_PORTS_CONFIG_INFO, CLAP_EXT_AUDIO_PORTS_CONFIG_INFO_COMPAT];
-    audio_ports_activation: clap_plugin_audio_ports_activation = [CLAP_EXT_AUDIO_PORTS_ACTIVATION, CLAP_EXT_AUDIO_PORTS_ACTIVATION_COMPAT];
-    configurable_ports: clap_plugin_configurable_audio_ports = [CLAP_EXT_CONFIGURABLE_AUDIO_PORTS, CLAP_EXT_CONFIGURABLE_AUDIO_PORTS_COMPAT];
-    extensible_ports: clap_plugin_extensible_audio_ports = [CLAP_EXT_EXTENSIBLE_AUDIO_PORTS];
     ambisonic: clap_plugin_ambisonic = [CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT];
     surround: clap_plugin_surround = [CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT];
     params: clap_plugin_params = [CLAP_EXT_PARAMS];
     param_indication: clap_plugin_param_indication = [CLAP_EXT_PARAM_INDICATION, CLAP_EXT_PARAM_INDICATION_COMPAT];
-    remote_controls: clap_plugin_remote_controls = [CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT];
     state: clap_plugin_state = [CLAP_EXT_STATE];
     state_context: clap_plugin_state_context = [CLAP_EXT_STATE_CONTEXT];
     preset_load: clap_plugin_preset_load = [CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT];
-    undo_delta: clap_plugin_undo_delta = [CLAP_EXT_UNDO_DELTA];
-    undo_context: clap_plugin_undo_context = [CLAP_EXT_UNDO_CONTEXT];
     gui: clap_plugin_gui = [CLAP_EXT_GUI];
-    context_menu: clap_plugin_context_menu = [CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT];
     note_ports: clap_plugin_note_ports = [CLAP_EXT_NOTE_PORTS];
     note_name: clap_plugin_note_name = [CLAP_EXT_NOTE_NAME];
     latency: clap_plugin_latency = [CLAP_EXT_LATENCY];
@@ -184,10 +147,6 @@ extensions! {
     voice_info: clap_plugin_voice_info = [CLAP_EXT_VOICE_INFO];
     timer_support: clap_plugin_timer_support = [CLAP_EXT_TIMER_SUPPORT];
     thread_pool: clap_plugin_thread_pool = [CLAP_EXT_THREAD_POOL];
-    track_info: clap_plugin_track_info = [CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT];
-    triggers: clap_plugin_triggers = [CLAP_EXT_TRIGGERS];
-    tuning: clap_plugin_tuning_t = [CLAP_EXT_TUNING];
-    resource_directory: clap_plugin_resource_directory = [CLAP_EXT_RESOURCE_DIRECTORY];
     posix_fd_support: clap_plugin_posix_fd_support = [CLAP_EXT_POSIX_FD_SUPPORT];
 }
 
@@ -201,12 +160,6 @@ pub enum Extension {
     AudioPortsConfig,
     /// `clap.audio-ports-config-info`.
     AudioPortsConfigInfo,
-    /// `clap.audio-ports-activation`.
-    AudioPortsActivation,
-    /// `clap.configurable-ports`.
-    ConfigurableAudioPorts,
-    /// `clap.extensible-ports`.
-    ExtensibleAudioPorts,
     /// `clap.ambisonic`.
     Ambisonic,
     /// `clap.surround`.
@@ -215,22 +168,14 @@ pub enum Extension {
     Params,
     /// `clap.param-indication`.
     ParamIndication,
-    /// `clap.remote-controls`.
-    RemoteControls,
     /// `clap.state`.
     State,
     /// `clap.state-context`.
     StateContext,
     /// `clap.preset-load`.
     PresetLoad,
-    /// `clap.undo-delta`.
-    UndoDelta,
-    /// `clap.undo-context`.
-    UndoContext,
     /// `clap.gui`.
     Gui,
-    /// `clap.context-menu`.
-    ContextMenu,
     /// `clap.note-ports`.
     NotePorts,
     /// `clap.note-name`.
@@ -247,14 +192,6 @@ pub enum Extension {
     TimerSupport,
     /// `clap.thread-pool`.
     ThreadPool,
-    /// `clap.track-info`.
-    TrackInfo,
-    /// `clap.triggers`.
-    Triggers,
-    /// `clap.tuning`.
-    Tuning,
-    /// `clap.resource-directory`.
-    ResourceDirectory,
     /// `clap.posix-fd-support`.
     PosixFdSupport,
 }
@@ -417,9 +354,6 @@ plain!(
     clap_sys::ext::note_name::clap_note_name,
     clap_sys::ext::voice_info::clap_voice_info,
     clap_sys::ext::ambisonic::clap_ambisonic_config,
-    clap_sys::ext::draft::triggers::clap_trigger_info,
-    clap_sys::ext::draft::undo::clap_undo_delta_properties,
-    clap_sys::ext::remote_controls::clap_remote_controls_page,
 );
 
 impl Plugin {
@@ -514,21 +448,14 @@ impl Plugin {
             Extension::AudioPorts => e.audio_ports.cast(),
             Extension::AudioPortsConfig => e.audio_ports_config.cast(),
             Extension::AudioPortsConfigInfo => e.audio_ports_config_info.cast(),
-            Extension::AudioPortsActivation => e.audio_ports_activation.cast(),
-            Extension::ConfigurableAudioPorts => e.configurable_ports.cast(),
-            Extension::ExtensibleAudioPorts => e.extensible_ports.cast(),
             Extension::Ambisonic => e.ambisonic.cast(),
             Extension::Surround => e.surround.cast(),
             Extension::Params => e.params.cast(),
             Extension::ParamIndication => e.param_indication.cast(),
-            Extension::RemoteControls => e.remote_controls.cast(),
             Extension::State => e.state.cast(),
             Extension::StateContext => e.state_context.cast(),
             Extension::PresetLoad => e.preset_load.cast(),
-            Extension::UndoDelta => e.undo_delta.cast(),
-            Extension::UndoContext => e.undo_context.cast(),
             Extension::Gui => e.gui.cast(),
-            Extension::ContextMenu => e.context_menu.cast(),
             Extension::NotePorts => e.note_ports.cast(),
             Extension::NoteName => e.note_name.cast(),
             Extension::Latency => e.latency.cast(),
@@ -537,10 +464,6 @@ impl Plugin {
             Extension::VoiceInfo => e.voice_info.cast(),
             Extension::TimerSupport => e.timer_support.cast(),
             Extension::ThreadPool => e.thread_pool.cast(),
-            Extension::TrackInfo => e.track_info.cast(),
-            Extension::Triggers => e.triggers.cast(),
-            Extension::Tuning => e.tuning.cast(),
-            Extension::ResourceDirectory => e.resource_directory.cast(),
             Extension::PosixFdSupport => e.posix_fd_support.cast(),
         };
         !p.is_null()
@@ -741,24 +664,6 @@ impl Plugin {
             });
         });
         true
-    }
-
-    /// `param-indication.set_mapping`.
-    pub fn set_param_mapping(
-        &self,
-        _main: &MainThread,
-        param_id: u32,
-        has_mapping: bool,
-        color: Option<clap_sys::color::clap_color>,
-        label: Option<&str>,
-        description: Option<&str>,
-    ) {
-        let label = label.and_then(|s| CString::new(s).ok());
-        let description = description.and_then(|s| CString::new(s).ok());
-        let color_ptr = color.as_ref().map_or(ptr::null(), ptr::from_ref);
-        let label_ptr = label.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-        let desc_ptr = description.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-        call!(self.param_indication.set_mapping(param_id, has_mapping, color_ptr, label_ptr, desc_ptr) else ());
     }
 
     /// `param-indication.set_automation`.
@@ -1037,105 +942,6 @@ impl Plugin {
             .then(|| AudioPortInfo::from_raw(&info))
     }
 
-    /// `configurable-audio-ports.can_apply_configuration`, `[main-thread &&
-    /// !active]`.
-    ///
-    /// # Errors
-    /// [`CallError::WrongState`] while the plugin is active.
-    pub fn can_apply_audio_port_configuration(
-        &self,
-        _main: &MainThread,
-        requests: &[PortConfigRequest],
-    ) -> Result<bool, CallError> {
-        self.require_inactive()?;
-        let raw = PortConfigRequest::to_raw(requests);
-        Ok(
-            call!(self.configurable_ports.can_apply_configuration(raw.as_ptr(), raw.len() as u32) else false),
-        )
-    }
-
-    /// `configurable-audio-ports.apply_configuration`, `[main-thread &&
-    /// !active]`.
-    ///
-    /// # Errors
-    /// [`CallError::WrongState`] while the plugin is active.
-    pub fn apply_audio_port_configuration(
-        &mut self,
-        _main: &MainThread,
-        requests: &[PortConfigRequest],
-    ) -> Result<bool, CallError> {
-        self.require_inactive()?;
-        let raw = PortConfigRequest::to_raw(requests);
-        Ok(
-            call!(self.configurable_ports.apply_configuration(raw.as_ptr(), raw.len() as u32) else false),
-        )
-    }
-
-    /// `audio-ports-activation.can_activate_while_processing`.
-    #[must_use]
-    pub fn can_activate_audio_port_while_processing(&self, _main: &MainThread) -> bool {
-        call!(self.audio_ports_activation.can_activate_while_processing() else false)
-    }
-
-    /// `audio-ports-activation.set_active`, `[active ? audio-thread :
-    /// main-thread]`: on an active plugin it takes the audio claim, and while
-    /// the plugin is processing it is refused unless the plugin said it can
-    /// activate a port then.
-    ///
-    /// # Errors
-    /// [`CallError::WrongState`] for a processing plugin that cannot.
-    pub fn set_audio_port_active(
-        &mut self,
-        _main: &MainThread,
-        is_input: bool,
-        port_index: u32,
-        is_active: bool,
-        sample_size: u32,
-    ) -> Result<bool, CallError> {
-        let _claim = self.is_active().then(|| self.core.roles.claim());
-        if self.core.processing.load(Ordering::Relaxed)
-            && !call!(self.audio_ports_activation.can_activate_while_processing() else false)
-        {
-            return Err(CallError::WrongState);
-        }
-        Ok(
-            call!(self.audio_ports_activation.set_active(is_input, port_index, is_active, sample_size) else false),
-        )
-    }
-
-    /// `extensible-audio-ports.add_port`, `[main-thread && !active]`.
-    ///
-    /// # Errors
-    /// [`CallError::WrongState`] while the plugin is active.
-    pub fn add_audio_port(
-        &mut self,
-        _main: &MainThread,
-        is_input: bool,
-        channel_count: u32,
-        port_type: Option<&str>,
-    ) -> Result<bool, CallError> {
-        self.require_inactive()?;
-        let port_type = port_type.and_then(|s| CString::new(s).ok());
-        let type_ptr = port_type.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-        Ok(
-            call!(self.extensible_ports.add_port(is_input, channel_count, type_ptr, ptr::null()) else false),
-        )
-    }
-
-    /// `extensible-audio-ports.remove_port`, `[main-thread && !active]`.
-    ///
-    /// # Errors
-    /// [`CallError::WrongState`] while the plugin is active.
-    pub fn remove_audio_port(
-        &mut self,
-        _main: &MainThread,
-        is_input: bool,
-        index: u32,
-    ) -> Result<bool, CallError> {
-        self.require_inactive()?;
-        Ok(call!(self.extensible_ports.remove_port(is_input, index) else false))
-    }
-
     /// `ambisonic.is_config_supported`.
     #[must_use]
     pub fn is_ambisonic_config_supported(
@@ -1241,151 +1047,10 @@ impl Plugin {
             .is_some_and(|e| e.exec.is_some())
     }
 
-    // ---- notifications ---------------------------------------------------
-
-    /// `track-info.changed`.
-    pub fn notify_track_info_changed(&self, _main: &MainThread) {
-        call!(self.track_info.changed() else ());
-    }
-
-    /// `tuning.changed`.
-    pub fn notify_tuning_changed(&self, _main: &MainThread) {
-        call!(self.tuning.changed() else ());
-    }
-
-    // ---- remote controls, triggers ---------------------------------------
-
-    /// `remote-controls.count`.
-    #[must_use]
-    pub fn remote_controls_count(&self, _main: &MainThread) -> u32 {
-        call!(self.remote_controls.count() else 0)
-    }
-
-    /// `remote-controls.get`.
-    #[must_use]
-    pub fn remote_controls_page(
-        &self,
-        _main: &MainThread,
-        index: u32,
-    ) -> Option<crate::RemoteControlsPageDecl> {
-        let mut page = Plain::zeroed();
-        call!(self.remote_controls.get(index, &mut page) else false)
-            .then(|| crate::RemoteControlsPageDecl::from_raw(&page))
-    }
-
-    /// `triggers.count`.
-    #[must_use]
-    pub fn trigger_count(&self, _main: &MainThread) -> u32 {
-        call!(self.triggers.count() else 0)
-    }
-
-    /// `triggers.get_info`.
-    #[must_use]
-    pub fn trigger_info(&self, _main: &MainThread, index: u32) -> Option<crate::TriggerDecl> {
-        let mut info = Plain::zeroed();
-        // As `param_info`: `TriggerDecl` carries no cookie.
-        call!(self.triggers.get_info(index, &mut info) else false)
-            .then(|| crate::TriggerDecl::from_raw(&info))
-    }
-
-    // ---- resource directory ----------------------------------------------
-
-    /// `resource-directory.set_directory`.
-    pub fn resource_set_directory(&self, _main: &MainThread, path: &Path, is_shared: bool) {
-        if let Ok(cstr) = CString::new(path.to_string_lossy().as_ref()) {
-            call!(self.resource_directory.set_directory(cstr.as_ptr(), is_shared) else ());
-        }
-    }
-
-    /// `resource-directory.collect`.
-    pub fn resource_collect(&self, _main: &MainThread, all: bool) {
-        call!(self.resource_directory.collect(all) else ());
-    }
-
-    /// `resource-directory.get_files_count`.
-    #[must_use]
-    pub fn resource_file_count(&self, _main: &MainThread) -> u32 {
-        call!(self.resource_directory.get_files_count() else 0)
-    }
-
-    /// `resource-directory.get_file_path`.
-    #[must_use]
-    pub fn resource_file_path(&self, _main: &MainThread, index: u32) -> Option<String> {
-        self.ext(self.core.exts.resource_directory)?.get_file_path?;
-        let mut buf = [0 as c_char; 4096];
-        let result = call!(self.resource_directory.get_file_path(index, buf.as_mut_ptr(), buf.len() as u32) else -1);
-        (result >= 0).then(|| crate::chars_to_string(&buf))
-    }
-
-    // ---- undo ------------------------------------------------------------
-
-    /// `undo-delta.get_delta_properties`.
-    #[must_use]
-    pub fn undo_delta_properties(&self, _main: &MainThread) -> Option<crate::UndoDeltaDecl> {
-        self.ext(self.core.exts.undo_delta)?.get_delta_properties?;
-        let mut props = Plain::zeroed();
-        call!(self.undo_delta.get_delta_properties(&mut props) else ());
-        Some(crate::UndoDeltaDecl::from_raw(&props))
-    }
-
-    /// `undo-delta.can_use_delta_format_version`.
-    #[must_use]
-    pub fn undo_can_use_format_version(&self, _main: &MainThread, version: u32) -> bool {
-        call!(self.undo_delta.can_use_delta_format_version(version) else false)
-    }
-
-    /// `undo-delta.undo`.
-    pub fn undo_apply_delta(
-        &mut self,
-        _main: &MainThread,
-        format_version: u32,
-        delta: &[u8],
-    ) -> bool {
-        call!(self.undo_delta.undo(format_version, delta.as_ptr().cast(), delta.len()) else false)
-    }
-
-    /// `undo-delta.redo`.
-    pub fn redo_apply_delta(
-        &mut self,
-        _main: &MainThread,
-        format_version: u32,
-        delta: &[u8],
-    ) -> bool {
-        call!(self.undo_delta.redo(format_version, delta.as_ptr().cast(), delta.len()) else false)
-    }
-
-    /// `undo-context.set_can_undo`.
-    pub fn undo_set_can_undo(&self, _main: &MainThread, can_undo: bool) {
-        call!(self.undo_context.set_can_undo(can_undo) else ());
-    }
-
-    /// `undo-context.set_can_redo`.
-    pub fn undo_set_can_redo(&self, _main: &MainThread, can_redo: bool) {
-        call!(self.undo_context.set_can_redo(can_redo) else ());
-    }
-
-    /// `undo-context.set_undo_name`.
-    pub fn undo_set_undo_name(&self, _main: &MainThread, name: &str) {
-        if let Ok(cstr) = CString::new(name) {
-            call!(self.undo_context.set_undo_name(cstr.as_ptr()) else ());
-        }
-    }
-
-    /// `undo-context.set_redo_name`.
-    pub fn undo_set_redo_name(&self, _main: &MainThread, name: &str) {
-        if let Ok(cstr) = CString::new(name) {
-            call!(self.undo_context.set_redo_name(cstr.as_ptr()) else ());
-        }
-    }
-
-    // ---- gui (see `gui.rs`) and context menu (see `menu.rs`) -------------
+    // ---- gui (see `gui.rs`) ----------------------------------------------
 
     pub(crate) fn gui_ext(&self) -> Option<&clap_plugin_gui> {
         self.ext(self.core.exts.gui)
-    }
-
-    pub(crate) fn context_menu_ext(&self) -> Option<&clap_plugin_context_menu> {
-        self.ext(self.core.exts.context_menu)
     }
 
     pub(crate) fn raw(&self) -> *const clap_plugin {
@@ -1564,36 +1229,6 @@ impl AudioPortInfo {
             port_type,
             in_place_pair: info.in_place_pair,
         }
-    }
-}
-
-/// One entry of a `configurable-audio-ports` request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PortConfigRequest {
-    /// Input or output.
-    pub is_input: bool,
-    /// The port's index.
-    pub port_index: u32,
-    /// The channel count wanted.
-    pub channel_count: u32,
-}
-
-impl PortConfigRequest {
-    fn to_raw(
-        requests: &[Self],
-    ) -> Vec<clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request> {
-        requests
-            .iter()
-            .map(|r| {
-                clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request {
-                    is_input: r.is_input,
-                    port_index: r.port_index,
-                    channel_count: r.channel_count,
-                    port_type: ptr::null(),
-                    port_details: ptr::null(),
-                }
-            })
-            .collect()
     }
 }
 
@@ -1792,7 +1427,6 @@ mod extension_query_tests {
         let exts = Exts::query(&plugin);
 
         assert!(exts.surround.is_null(), "surround");
-        assert!(exts.track_info.is_null(), "track_info");
         assert!(exts.preset_load.is_null(), "preset_load");
     }
 }

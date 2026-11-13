@@ -10,13 +10,10 @@
 //! re-entering itself.
 
 use super::state::{HostState, PosixFdEntry, TimerEntry};
-use crate::types::{AudioPortsRescan, ParamRescan, TrackPortType, TransportRequest, UndoChange};
+use crate::types::{AudioPortsRescan, ParamRescan};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tutti_clap_ffi::{
-    AudioPortsRescanFlags, HostCallbacks, LogSeverity, ParamsRescanFlags, TrackInfoWriter,
-    TrackPortKind, TransportCommand, TuningInfoWriter,
-};
+use tutti_clap_ffi::{AudioPortsRescanFlags, HostCallbacks, LogSeverity, ParamsRescanFlags};
 use tutti_plugin_types::{Request, RescanScope};
 
 /// The stderr tag for each CLAP severity. Split out of the log method so the
@@ -192,83 +189,10 @@ impl HostCallbacks for HostState {
         self.notes.voice_info_changed.store(true, Ordering::Release);
     }
 
-    fn preset_loaded(&self) {
-        self.processing.preset_loaded.store(true, Ordering::Release);
-    }
-
     fn audio_ports_config_rescan(&self) {
         self.audio_ports
             .config_changed
             .store(true, Ordering::Release);
-    }
-
-    fn remote_controls_changed(&self) {
-        self.remote_controls.changed.store(true, Ordering::Release);
-    }
-
-    fn remote_controls_suggest_page(&self, page_id: u32) {
-        self.remote_controls
-            .suggested_page
-            .store(page_id, Ordering::Release);
-    }
-
-    fn track_info(&self, out: &mut TrackInfoWriter<'_>) -> bool {
-        let Ok(guard) = self.resources.track_info.lock() else {
-            return false;
-        };
-        let Some(track) = guard.as_ref() else {
-            return false;
-        };
-        if let Some(name) = &track.name {
-            out.set_name(name);
-        }
-        if let Some(color) = track.color {
-            out.set_color(color.alpha, color.red, color.green, color.blue);
-        }
-        if let Some(audio) = track.audio {
-            out.set_audio(
-                i32::from(audio.layout.count()),
-                audio.port_type.map(|kind| match kind {
-                    TrackPortType::Mono => TrackPortKind::Mono,
-                    TrackPortType::Stereo => TrackPortKind::Stereo,
-                    TrackPortType::Surround => TrackPortKind::Surround,
-                    TrackPortType::Ambisonic => TrackPortKind::Ambisonic,
-                }),
-            );
-        }
-        if track.is_return_track {
-            out.set_return_track();
-        }
-        if track.is_bus {
-            out.set_bus();
-        }
-        if track.is_master {
-            out.set_master();
-        }
-        true
-    }
-
-    fn transport_request(&self, command: TransportCommand) {
-        let request = match command {
-            TransportCommand::Start => TransportRequest::Start,
-            TransportCommand::Stop => TransportRequest::Stop,
-            TransportCommand::Continue => TransportRequest::Continue,
-            TransportCommand::Pause => TransportRequest::Pause,
-            TransportCommand::TogglePlay => TransportRequest::TogglePlay,
-            TransportCommand::Jump { position_beats } => TransportRequest::Jump { position_beats },
-            TransportCommand::LoopRegion {
-                start_beats,
-                duration_beats,
-            } => TransportRequest::LoopRegion {
-                start_beats,
-                duration_beats,
-            },
-            TransportCommand::ToggleLoop => TransportRequest::ToggleLoop,
-            TransportCommand::EnableLoop(on) => TransportRequest::EnableLoop(on),
-            TransportCommand::Record(on) => TransportRequest::Record(on),
-            TransportCommand::ToggleRecord => TransportRequest::ToggleRecord,
-        };
-        self.transport.push(request);
     }
 
     fn ambisonic_changed(&self) {
@@ -281,82 +205,6 @@ impl HostCallbacks for HostState {
         self.audio_ports
             .surround_changed
             .store(true, Ordering::Release);
-    }
-
-    fn triggers_rescan(&self) {
-        self.resources
-            .triggers_rescan_requested
-            .store(true, Ordering::Release);
-    }
-
-    fn tuning_count(&self) -> u32 {
-        self.resources
-            .tuning_infos
-            .lock()
-            .map(|infos| u32::try_from(infos.len()).unwrap_or(u32::MAX))
-            .unwrap_or(0)
-    }
-
-    fn tuning_info(&self, index: u32, out: &mut TuningInfoWriter<'_>) -> bool {
-        let Ok(infos) = self.resources.tuning_infos.lock() else {
-            return false;
-        };
-        let Some(tuning) = infos.get(index as usize) else {
-            return false;
-        };
-        out.set(tuning.tuning_id, &tuning.name, tuning.is_dynamic);
-        true
-    }
-
-    fn resource_directory_request(&self, is_shared: bool) -> bool {
-        let lock = if is_shared {
-            &self.resources.directory_shared
-        } else {
-            &self.resources.directory_private
-        };
-        lock.lock().map(|g| g.is_some()).unwrap_or(false)
-    }
-
-    fn resource_directory_release(&self, is_shared: bool) {
-        let lock = if is_shared {
-            &self.resources.directory_shared
-        } else {
-            &self.resources.directory_private
-        };
-        if let Ok(mut guard) = lock.lock() {
-            *guard = None;
-        }
-    }
-
-    fn undo_begin_change(&self) {
-        self.undo.in_progress.store(true, Ordering::Release);
-    }
-
-    fn undo_cancel_change(&self) {
-        self.undo.in_progress.store(false, Ordering::Release);
-    }
-
-    fn undo_change_made(&self, name: &str, delta: &[u8], delta_can_undo: bool) {
-        self.undo.in_progress.store(false, Ordering::Release);
-        if let Ok(mut changes) = self.undo.changes.lock() {
-            changes.push(UndoChange {
-                name: name.to_owned(),
-                delta: delta.to_vec(),
-                delta_can_undo,
-            });
-        }
-    }
-
-    fn undo_request_undo(&self) {
-        self.undo.requested.store(true, Ordering::Release);
-    }
-
-    fn undo_request_redo(&self) {
-        self.undo.redo_requested.store(true, Ordering::Release);
-    }
-
-    fn undo_wants_context_updates(&self, wanted: bool) {
-        self.undo.wants_context.store(wanted, Ordering::Release);
     }
 
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {

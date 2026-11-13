@@ -601,80 +601,25 @@ fn a_block_past_the_activated_size_is_refused() {
     assert!(!side.is_processing());
 }
 
-/// The entries CLAP gives to `[!active]` are refused while the plugin is
-/// active (nothing is called), and reach the plugin when it is not.
+/// `select_audio_ports_config`, which CLAP gives to `[!active]`, is refused
+/// while the plugin is active (nothing is called), and reaches the plugin when
+/// it is not.
 #[test]
 fn state_gated_entries_are_refused_while_active() {
     let _g = lock();
     let mut plugin = load(Arc::default());
-    let request = [tutti_clap_ffi::PortConfigRequest {
-        is_input: true,
-        port_index: 0,
-        channel_count: 2,
-    }];
-    // Inactive: each reaches the plugin (the reference plugin has none of the
-    // extensions, so the answer is `false`, not a state error).
+    // Inactive: it reaches the plugin (the reference plugin has no such
+    // extension, so the answer is `false`, not a state error).
     assert_eq!(
         plugin.select_audio_ports_config(&main_thread(), 0),
         Ok(false)
     );
-    assert_eq!(
-        plugin.can_apply_audio_port_configuration(&main_thread(), &request),
-        Ok(false)
-    );
-    assert_eq!(
-        plugin.apply_audio_port_configuration(&main_thread(), &request),
-        Ok(false)
-    );
-    assert_eq!(
-        plugin.add_audio_port(&main_thread(), true, 2, None),
-        Ok(false)
-    );
-    assert_eq!(plugin.remove_audio_port(&main_thread(), true, 0), Ok(false));
 
     plugin
         .activate(&main_thread(), 48_000.0, 1, 512)
         .expect("activates");
     assert_eq!(
         plugin.select_audio_ports_config(&main_thread(), 0),
-        Err(CallError::WrongState)
-    );
-    assert_eq!(
-        plugin.can_apply_audio_port_configuration(&main_thread(), &request),
-        Err(CallError::WrongState)
-    );
-    assert_eq!(
-        plugin.apply_audio_port_configuration(&main_thread(), &request),
-        Err(CallError::WrongState)
-    );
-    assert_eq!(
-        plugin.add_audio_port(&main_thread(), true, 2, None),
-        Err(CallError::WrongState)
-    );
-    assert_eq!(
-        plugin.remove_audio_port(&main_thread(), true, 0),
-        Err(CallError::WrongState)
-    );
-}
-
-/// `audio-ports-activation.set_active` on a processing plugin is refused
-/// unless the plugin said it can activate a port while processing.
-#[test]
-fn a_port_cannot_be_activated_while_processing_unless_the_plugin_allows() {
-    let _g = lock();
-    let mut plugin = load(Arc::default());
-    let (mut side, mut scratch) = start(&mut plugin, 512);
-    assert_eq!(
-        plugin.set_audio_port_active(&main_thread(), true, 0, true, 32),
-        Ok(false)
-    );
-    let mut left = vec![0.0f32; FRAMES];
-    let mut right = vec![0.0f32; FRAMES];
-    let mut outputs: Vec<&mut [f32]> = vec![&mut left, &mut right];
-    render(&mut side, &mut scratch, &mut outputs, FRAMES as u32).expect("runs");
-    assert!(side.is_processing());
-    assert_eq!(
-        plugin.set_audio_port_active(&main_thread(), true, 0, true, 32),
         Err(CallError::WrongState)
     );
 }

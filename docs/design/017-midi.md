@@ -3463,6 +3463,10 @@ What the decoded messages are consumed by, one item each.
 - **Where it runs.** `MidiSession::connect_input` now opens the device's output for every device
   (it did for UMP Endpoints only), and a MIDI 1.0 port with an output (not a UMP Endpoint) is sent
   the request by `Negotiation::poll`, from `MidiSession::poll(now)` in the session's `Phase::Poll`.
+  That output is the input's own, opened only to ask (and, for a UMP Endpoint, to negotiate): it is
+  not the session's MIDI output (`MidiSession::output` does not report it and the graph routes
+  nothing to it), it closes when the input disconnects, and a refused open (an output another app
+  holds) leaves the input connected and the device `Described`, with nothing asked.
   The reply is a SysEx, which the input edge must hand to the control side without hiding it from
   the graph, because a SysEx7 packet is not recognisable as an Identity Reply until the message is
   whole, and a patch dump arriving meanwhile must reach the graph: so the edge **copies** (not

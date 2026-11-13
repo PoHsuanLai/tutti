@@ -404,6 +404,59 @@ fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
     );
 }
 
+/// An output the session cannot open (another app holds it) does not fail the
+/// input: the connect succeeds, the device is the `Described` device the OS
+/// says it is, and nothing is sent or waited for.
+#[test]
+fn a_refused_output_does_not_fail_the_input_and_nothing_is_asked() {
+    use tutti_midi_device::INQUIRY_TIMEOUT;
+    let wire = session_over(
+        UmpCapability::midi1(),
+        PortDirection::Duplex,
+        Endpoint::new(Capabilities::default()),
+    );
+    wire.counters.refuse_output_opens(true);
+    wire.session.connect_input(&wire.id.clone()).unwrap();
+    assert!(wire.session.is_input_connected(&wire.id));
+    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
+    for step in 0..4 {
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+    }
+    assert!(received(&wire).is_empty(), "no output, nothing sent");
+    let stream = wire.session.stream(&wire.id).unwrap();
+    assert_eq!(stream.basis(), Basis::Described);
+    assert_eq!(stream.endpoint().identity(), None);
+}
+
+/// The output an input opens to ask its device is that input's own: it is not
+/// the session's MIDI output (`output()` stays unset, and the session's own
+/// `connect_output` to the same device is a separate open that `output()`
+/// reports), and it goes with the input: once disconnected, the retry the
+/// inquiry would have sent is never sent.
+#[test]
+fn the_asking_output_is_the_inputs_own_and_closes_with_it() {
+    use tutti_midi_device::INQUIRY_TIMEOUT;
+    let wire = midi1_wire();
+    assert!(
+        wire.session.output().is_none(),
+        "asking is not the session's output"
+    );
+    assert!(wire.session.poll(wire.at(0)).next().is_none());
+    assert_eq!(received(&wire).len(), 1, "the request");
+
+    assert!(wire.session.disconnect_input(&wire.id.clone()));
+    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
+    for step in 1..4 {
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+    }
+    assert!(received(&wire).is_empty(), "no retry after the input went");
+    assert!(wire.session.stream(&wire.id).is_none());
+    assert!(wire.session.output().is_none());
+
+    wire.session.connect_output(&wire.id.clone()).unwrap();
+    assert_eq!(wire.session.output().map(|o| o.id), Some(wire.id.clone()));
+}
+
 /// A late reply (after the inquiry gave up) and a SysEx that is not an Identity
 /// Reply (here General MIDI System On, M1 p.52) leave the device as it was.
 #[test]

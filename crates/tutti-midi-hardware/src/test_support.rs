@@ -68,6 +68,8 @@ type SentLog = Arc<Mutex<Vec<(EndpointId, tutti_ump::Ump, tutti_midi_runtime::Se
 struct FakeDevices {
     inputs: Vec<EndpointInfo>,
     outputs: Vec<EndpointInfo>,
+    /// Whether opening an output fails, as one held by another app does.
+    refuse_outputs: bool,
     watches: Vec<(u64, Sender<Delivery>)>,
     next_watch: u64,
 }
@@ -221,6 +223,12 @@ impl FakeCounters {
     /// every subscriber's `DeviceEvents::failure` says why.
     pub fn fail_watch(&self, reason: &str) {
         self.devices().deliver(&Report::Fail(reason.to_string()));
+    }
+
+    /// Makes every later output open fail (or succeed again), as an output
+    /// another app holds does; the listed devices stay as they are.
+    pub fn refuse_output_opens(&self, refuse: bool) {
+        self.devices().refuse_outputs = refuse;
     }
 
     /// Unplugs the device with `id` from both lists and tells every running
@@ -461,9 +469,14 @@ impl MidiEndpoints for FakeBackend {
     }
 
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
-        if !self.devices().outputs.iter().any(|e| e.id == id) {
+        let devices = self.devices();
+        if devices.refuse_outputs {
+            return Err(Error::device("output in use"));
+        }
+        if !devices.outputs.iter().any(|e| e.id == id) {
             return Err(Error::device("no such output"));
         }
+        drop(devices);
         Ok(Box::new(FakeSink {
             sent: Arc::clone(&self.sent),
             accepts: self.accepts,

@@ -263,6 +263,13 @@ impl MidiSession {
     /// backend pushes into it from the driver's thread and the audio thread
     /// drains it. Events never pass through this type.
     ///
+    /// The device's output, if it has one, is opened too, for discovery alone
+    /// (the UMP Stream negotiation, or a MIDI 1.0 port's Identity Request, both
+    /// stepped by [`poll`](Self::poll)): it is not the session's output, which
+    /// [`output`](Self::output) reports and [`connect_output`](Self::connect_output)
+    /// chooses, and it closes with the input. An output that will not open
+    /// leaves the input connected and the device as the OS describes it.
+    ///
     /// # Errors
     ///
     /// [`Error::NoDeviceNamed`] when a name matches no input (listing the

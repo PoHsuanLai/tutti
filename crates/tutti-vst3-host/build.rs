@@ -156,7 +156,7 @@ fn main() {
     let src = sdk.join("public.sdk/samples/vst/hostchecker/source");
     if !src.is_dir() {
         println!(
-            "cargo:warning=hostchecker sources not found under {}; conformance test will skip",
+            "cargo:warning=hostchecker sources not found under {}; the conformance tests fail on it",
             src.display()
         );
         println!("cargo:rustc-env=VST3_HOSTCHECK_AVAILABLE=0");
@@ -408,36 +408,23 @@ fn link_bundle<'a>(
 
 /// Build the SDK sample plugins the conformance suite drives, beside the probe.
 ///
-/// # Which samples, and why not all of them
-///
-/// The suite names four plugins. Two are built here, `audio-probe` is built
-/// above, and two are not buildable from the pinned submodules at all:
-///
-/// - **`multiple_programchanges`** — declares **16 program lists** whose ids are
+/// - **`multiple_programchanges`** declares **16 program lists** whose ids are
 ///   `kProgramStartId + i`, so a list id is provably not a position in
 ///   `program_lists()`. A host that dropped `list_id` and kept `index` would
 ///   collapse all 16 onto one another, and three tests in
-///   `tutti-plugin-server` exist to catch exactly that. `audio-probe`
-///   publishes no program lists, so it cannot stand in.
-/// - **`remap_paramid`** — publishes an `IRemapParamID` mapping, the only way to
-///   exercise the host's param-id migration path. Needs no VSTGUI: its
-///   controller is a plain `EditControllerEx1`.
+///   `tutti-plugin-server` exist to catch exactly that. `audio-probe` publishes
+///   no program lists, so it cannot stand in.
+/// - **`remap_paramid`** publishes an `IRemapParamID` mapping, the only way to
+///   exercise the host's param-id migration path. Its controller is a plain
+///   `EditControllerEx1`.
 ///
-/// **`hostchecker` and `note_expression_synth` are NOT built, and cannot be.**
-/// Both ship a controller that *inherits from* `VSTGUI::VST3EditorDelegate`
-/// (`hostcheckercontroller.h:110`, `note_expression_synth_ui.h:36`), and each
-/// sample's `factory.cpp` registers that controller — so the UI translation
-/// unit is not optional, it is on the only path to `GetPluginFactory`. VSTGUI is
-/// a separate Steinberg repository and is **not among this repo's three pinned
-/// submodules** (`base`, `pluginterfaces`, `public.sdk`), so there is nothing to
-/// compile it against. Vendoring a fourth submodule for a UI library the host
-/// never calls into is a large amount of build for no host coverage.
-///
-/// The tests that need those two are `#[ignore]`d with that reason rather than
-/// silently skipped — see `vst3_conformance.rs`. Note that the *hostchecker
-/// validation modules* are unaffected and still compile: [`build_hostcheck`]
-/// takes the six check `.cpp`s directly, and they depend only on the
-/// header-only `pluginterfaces` and never touch the controller.
+/// The other SDK samples ship a controller that inherits from
+/// `VSTGUI::VST3EditorDelegate`, and VSTGUI is not among the pinned submodules
+/// (`base`, `pluginterfaces`, `public.sdk`), so they are not built. The optional
+/// controller interfaces they would have shown are implemented by the C++ twin
+/// of the shared test plugin instead. The HostChecker validation modules
+/// ([`build_hostcheck`]) need only the header-only `pluginterfaces` and are
+/// compiled directly.
 fn build_sdk_samples(sdk: &Path, generated_include: &Path, dir: &Path, sdk_objects: &[PathBuf]) {
     build_sdk_sample(
         sdk,

@@ -46,6 +46,26 @@
 //! removed filters back to the control thread, where
 //! [`VoicePoolHandle::collect_retired`](crate::VoicePoolHandle::collect_retired)
 //! frees them.
+//!
+//! # Limitations
+//!
+//! These were measured through the real voice and engine (stereo, 48 kHz, the
+//! ratio being output duration over source duration). A replacement must fix
+//! each one:
+//!
+//! - **The stereo image collapses.** Each channel has its own phase solution,
+//!   so a mix with an L/R correlation of 0.692 comes out at 0.018, 0.003 and
+//!   0.269 at ratios 0.5, 1.5 and 2.0.
+//! - **A non-integer ratio is impure.** The intake drops or repeats whole
+//!   samples, with no interpolation: a 5 kHz sine is 19 dB impure at 1.5 and
+//!   9 dB at 0.5, against 60 dB at 2.0.
+//! - **A ratio step leaves a hole.** A change of intake flushes the stream:
+//!   0.8 to 1.0667 dips the level by 11.6 dB, and 1.0 to 1.05 drops out.
+//! - **Onsets land late and smeared.** The window of delay is not reported, so
+//!   PDC cannot compensate it (the voice declares no latency). Attacks land
+//!   19 to 40 ms late, spread over 6 to 21 ms.
+//! - **Nothing ties the stretch to the tempo.** After a tempo change, a clip
+//!   stretched to the old tempo drifts off the beat.
 
 /// Per-channel RT scratch capacity, in samples.
 ///

@@ -19,7 +19,7 @@
 //! ```bash
 //! VST3_SDK_DIR=/path/to/vst3sdk \
 //! VST3_SAMPLE_PLUGIN_DIR=/path/to/build/VST3/Release \
-//! cargo test -p tutti-vst3-host --features conformance --test vst3_conformance
+//! cargo nextest run -p tutti-vst3-host --features conformance --test conformance
 //! ```
 //!
 //! Neither env var is required. The SDK is an in-repo submodule and `build.rs`
@@ -28,34 +28,20 @@
 //! `VST3_SAMPLE_PLUGIN_DIR` only substitute an external SDK or an external
 //! plugin tree.
 //!
-//! **Nothing here skips silently.** Every test either asserts or carries an
-//! explicit `#[ignore = "..."]`; there is no `eprintln!("skipping"); return;`
-//! in the file. That shape reports `ok` while executing nothing, which is worse
-//! than having no suite, because it claims coverage of the `ProcessData` this
-//! host builds.
+//! Nothing here skips: a missing artifact panics with its build command
+//! (`require_probe`, `require_twin`, `require_sample`).
 //!
 //! The `harness_ready()` gate asserts (its two requirements are met by any
-//! recursive checkout, so absence has one cause and one fix). There are no
-//! per-plugin skip gates either: `sample`/`sample_plugins` search the in-repo
-//! bundle directory as well as the external one, and the lookups that must
-//! succeed go through `require_sample` / `require_host_checker`, which panic
-//! by name.
+//! recursive checkout, so absence has one cause and one fix). `sample` and
+//! `sample_plugins` search the in-repo bundle directory as well as the external
+//! one.
 //!
-//! # What is `#[ignore]`d, and why
-//!
-//! 18 tests need `host-checker` or `note-expression-synth`. Both SDK samples
-//! ship a controller that **inherits from** `VSTGUI::VST3EditorDelegate`, and
-//! each sample's `factory.cpp` registers that controller — so the UI
-//! translation unit sits on the only path to `GetPluginFactory`. VSTGUI is a
-//! separate Steinberg repository and is not among this repo's three pinned
-//! submodules, so `build.rs` has nothing to compile it against. Run them with
-//! `--ignored` against a `VST3_SAMPLE_PLUGIN_DIR` that holds an external SDK
-//! build.
-//!
-//! This does **not** weaken the checks themselves: `build.rs` compiles
-//! HostChecker's six validation `.cpp`s directly (they need only the
-//! header-only `pluginterfaces`, never the controller), and every check-driven
-//! test runs against the in-repo `audio-probe`.
+//! The plugins the suites drive are all built from this repository: `audio-probe`
+//! and the SDK samples by `build.rs`, and the C++ twin of the shared test plugin
+//! by `tutti-shared-plugin-vst3-cpp` (through `tutti_fixtures::vst3_cpp_module`).
+//! `build.rs` also compiles HostChecker's six validation `.cpp`s directly (they
+//! need only the header-only `pluginterfaces`), and every check-driven test
+//! runs against `audio-probe`.
 
 // Each conformance test binary includes this module and uses a subset of it.
 #![allow(dead_code)]
@@ -144,12 +130,16 @@ pub const SAMPLE_PLUGIN_DIR: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
 /// [`sample_plugins`] searches this as well as `VST3_SAMPLE_PLUGIN_DIR`, which
 /// names a hand-built external SDK tree and is unset on essentially every
 /// machine. The sibling suites (`vst3_audio_correctness.rs`,
-/// `support/gui_lifecycle.rs`) fall back here for the same reason.
+/// `vst3_process_no_alloc.rs`) fall back here for the same reason.
 pub const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
 
 /// `ProcessModes_::kOffline`. Lets tests assert the plugin observed the mode we
 /// asked for, independent of the enum's Rust-side representation.
 pub const K_OFFLINE: c_int = 2;
+
+/// `kParamObservedProcessMode` in `audio-probe/source/probeids.h`: the process
+/// mode the plugin saw, as `processMode * 0.5`.
+pub const K_PARAM_OBSERVED_PROCESS_MODE: u32 = 106;
 
 // ── Findings ─────────────────────────────────────────────────────────────────
 
@@ -324,40 +314,10 @@ pub fn harness_ready() -> bool {
     true
 }
 
-/// The reason `host-checker` and `note-expression-synth` are unavailable, and
-/// the text every `#[ignore]` on a test needing one repeats.
-///
-/// Both samples ship a controller that **inherits from**
-/// `VSTGUI::VST3EditorDelegate` (`hostcheckercontroller.h:110`,
-/// `note_expression_synth_ui.h:36`), and each sample's `factory.cpp` registers
-/// that controller — so the UI translation unit is not optional, it sits on the
-/// only path to `GetPluginFactory`. VSTGUI is a separate Steinberg repository
-/// and is **not among this repo's three pinned submodules** (`base`,
-/// `pluginterfaces`, `public.sdk`), so `build.rs` has nothing to compile it
-/// against.
-///
-/// This is the one genuinely environmental gap in this file, and it is stated as
-/// `#[ignore]` rather than a printed skip so it is visible in the run summary
-/// instead of hiding inside a passing test. Set `VST3_SAMPLE_PLUGIN_DIR` to an
-/// externally built SDK tree and run with `--ignored` to execute them.
-///
-/// Note this does **not** affect the HostChecker *validation modules*:
-/// `build.rs` compiles those six `.cpp`s directly and they depend only on the
-/// header-only `pluginterfaces`, never on the controller. Every check-driven
-/// test in this file runs against `audio-probe`.
-pub const NEEDS_VSTGUI: &str = "needs a VST3 SDK sample whose controller inherits \
-     from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned \
-     submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run \
-     with --ignored.";
-
 /// Resolve a sample plugin that **must** be present, panicking by name if not.
 ///
-/// Used instead of `let Some(x) = sample(..) else { eprintln!("skipping");
-/// return; }`, a shape that makes a test report `ok` while executing nothing.
-///
-/// A test whose plugin genuinely cannot be built carries `#[ignore]` instead —
-/// see [`NEEDS_VSTGUI`]. So reaching this panic means a plugin `build.rs` *does*
-/// produce went missing, which is a build failure and not an environment.
+/// Reaching this panic means a plugin `build.rs` produces went missing, which is
+/// a build failure and not an environment.
 #[track_caller]
 pub fn require_sample(bundle: &str) -> Vst3Loaded {
     let path = sample_path(bundle).unwrap_or_else(|| {
@@ -572,102 +532,46 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     Ok(per_block)
 }
 
-// ── HostChecker's own parameter protocol ─────────────────────────────────────
-//
-// The reference plugin reports its verdict *through the audio path*: every
-// block, `HostCheckerProcessor::process` bit-packs the log ids it accumulated
-// into `outputParameterChanges` as 8 parameters of 24 bits each
-// (`kProcessWarnTag + i`). Reading them back exercises our output-parameter
-// handling and yields the plugin's findings at once — a second, independent
-// opinion alongside the linked-in `HostCheck` (which sees the same struct but
-// from our side of the FFI).
-
-/// First tag of the 8-parameter warning block.
-///
-/// From the anonymous enum in `hostcheckercontroller.h`, which starts at
-/// `kProcessingLoadTag = 1000` and runs unbroken to `kProcessWarnTag`. Counted
-/// from the header rather than guessed: an off-by-five here decodes the
-/// neighbouring `kProcessContext*` readouts as warning bitfields and invents
-/// "spec errors" that do not exist. [`warn_tag_block_is_isolated`] pins the
-/// value against that class of mistake.
-pub const K_PROCESS_WARN_TAG: u32 = 1027;
-/// `kParamProcessModeTag`, immediately below the warning block; it checks
-/// the block's lower bound.
-pub const K_PARAM_PROCESS_MODE_TAG: u32 = 1026;
-/// Parameters in the warning block.
-pub const K_PARAM_WARN_COUNT: u32 = 8;
-/// Bits packed into each warning parameter.
-pub const K_PARAM_WARN_BIT_COUNT: u32 = 24;
-
 /// A VST3 `ParamID` as the automation vocabulary's address.
 ///
-/// The tags above stay bare `u32` because they are arithmetic (`TAG + i`) and
-/// bounds checks; only the queue lookups need the address form. VST3 ids are
-/// `Opaque` — the format hands out numbers whose meaning only the plugin knows.
+/// VST3 ids are opaque: the format hands out numbers whose meaning only the
+/// plugin knows.
 pub fn param_address(tag: u32) -> ParamId {
     ParamId::new(tag)
 }
 
-/// Decode the log ids HostChecker packed into one `outputParameterChanges`
-/// set. Returns the ids, which index the same table as [`hc_log_description`].
-pub fn decode_hostchecker_warnings(out: &ParameterChanges) -> Vec<i32> {
-    let mut ids = Vec::new();
-    for i in 0..K_PARAM_WARN_COUNT {
-        let Some(queue) = out.queue(param_address(K_PROCESS_WARN_TAG + i)) else {
-            continue;
-        };
-        let Some(point) = queue.points.last() else {
-            continue;
-        };
-        // The plugin sends `bits / 2^24`; undo that to recover the bitfield.
-        let bits = (point.value.get() * f64::from(1u32 << K_PARAM_WARN_BIT_COUNT)).round() as u32;
-        for bit in 0..K_PARAM_WARN_BIT_COUNT {
-            if bits & (1 << bit) != 0 {
-                ids.push((i * K_PARAM_WARN_BIT_COUNT + bit) as i32);
-            }
-        }
-    }
-    ids
-}
-
-/// Resolve a log id to its severity + description via the linked table.
-pub fn describe_log_id(id: i32) -> Option<(String, String)> {
-    if id < 0 || id >= unsafe { hc_num_log_events() } {
-        return None;
-    }
-    unsafe {
-        let d = CStr::from_ptr(hc_log_description(id));
-        let s = CStr::from_ptr(hc_log_severity(id));
-        Some((
-            s.to_string_lossy().into_owned(),
-            d.to_string_lossy().into_owned(),
-        ))
-    }
-}
-
-/// Path to the `host-checker` reference plugin, if it was built.
-pub fn host_checker_path() -> Option<PathBuf> {
-    sample_plugins()
-        .into_iter()
-        .find(|(name, _)| name == "host-checker")
-        .map(|(_, path)| path)
-}
-
-/// [`host_checker_path`], panicking with the reason when it is absent.
-///
-/// Every caller is `#[ignore]`d with [`NEEDS_VSTGUI`], so on a default run this
-/// is never reached. It exists for the `--ignored` run against an external SDK
-/// tree: there, the plugin is expected to be present, and its absence should
-/// name itself rather than reappear as a silent skip.
+/// Loads `audio-probe`, the reference plugin `build.rs` builds from
+/// `tests/support/audio-probe` on every `conformance` build, panicking with the
+/// build command when it is absent.
 #[track_caller]
-pub fn require_host_checker() -> PathBuf {
-    host_checker_path().unwrap_or_else(|| {
+pub fn require_probe() -> Vst3Loaded {
+    require_sample("audio-probe.vst3")
+}
+
+/// The path of `audio-probe`'s module, panicking with the build command when it
+/// is absent.
+#[track_caller]
+pub fn probe_path() -> PathBuf {
+    sample_path("audio-probe.vst3").unwrap_or_else(|| {
         panic!(
-            "host-checker is not available. {NEEDS_VSTGUI} Plugins found: {:?}",
-            sample_plugins()
-                .into_iter()
-                .map(|(n, _)| n)
-                .collect::<Vec<_>>()
+            "audio-probe.vst3 is not present in {PROBE_DIR_BUILT:?}. `build.rs` builds it \
+             when the `conformance` feature is on:\n\n  \
+             cargo build -p tutti-vst3-host --features conformance --tests\n"
+        )
+    })
+}
+
+/// Loads the C++ twin of the shared test plugin (`testing/tutti-shared-plugin-vst3-cpp`).
+/// Cargo builds it with the tests, through `tutti-fixtures`' `vst3-cpp` feature,
+/// so an absent module is a failed build, and the panic names the command.
+#[track_caller]
+pub fn require_twin() -> Vst3Loaded {
+    let module = tutti_fixtures::vst3_cpp_module();
+    Vst3Loaded::load(&main_thread(), &module, LoadOptions::new()).unwrap_or_else(|e| {
+        panic!(
+            "the C++ twin at {} failed to load: {e:?}; rebuild it with \
+             `cargo build -p tutti-shared-plugin-vst3-cpp`",
+            module.display()
         )
     })
 }
@@ -681,19 +585,9 @@ pub fn supports_f64(path: &Path) -> bool {
 
 // ── Optional controller interfaces ───────────────────────────────────────────
 //
-// Everything below drives a `Vst3Loaded` accessor that had **zero call sites**
-// in either src or tests — code that had never once executed, so "untested" and
-// "unknown to work at all" were the same statement.
-//
-// Each assertion is anchored to a *contrast* between two real plugins rather
-// than to a single expected number: `host-checker` implements seven of these
-// interfaces and `note-expression-synth` a different three, so a host that
-// returned a constant (or ignored its arguments) cannot satisfy both.
-
-/// Load a named sample bundle, or `None` when this machine lacks it.
-pub fn sample(name: &str) -> Option<Vst3Loaded> {
-    Vst3Loaded::load(&main_thread(), &sample_path(name)?, LoadOptions::new()).ok()
-}
+// Each assertion is anchored to a figure the C++ twin publishes (`require_twin`)
+// and to a plugin without the interface (`require_probe`), so a host that
+// returned a constant, or ignored its arguments, cannot satisfy both.
 
 /// Locate a sample bundle by file name, **searching both plugin directories**.
 ///

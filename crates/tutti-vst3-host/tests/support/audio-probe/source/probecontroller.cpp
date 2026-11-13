@@ -59,6 +59,10 @@ tresult PLUGIN_API AudioProbeController::initialize (FUnknown* context)
 	    STR16 ("DelayMs"), kParamDelayMs, STR16 ("ms"), kDelayMsMin, kDelayMsMax,
 	    kDelayMsMin, 0, ParameterInfo::kCanAutomate));
 
+	// Written by the processor each block; the host never sets it.
+	parameters.addParameter (STR16 ("ObservedProcessMode"), nullptr, 0, 0.0,
+	                         ParameterInfo::kIsReadOnly, kParamObservedProcessMode);
+
 	return kResultOk;
 }
 

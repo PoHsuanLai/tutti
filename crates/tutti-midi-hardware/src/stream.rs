@@ -82,7 +82,7 @@ const WANTED: StreamConfig = StreamConfig {
 };
 
 /// How a device's [`DeviceStream`] came to be known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Basis {
     /// The device answered: the Endpoint is what it said, and the
     /// configuration is the last Stream Configuration Notification it sent

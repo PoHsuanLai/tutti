@@ -218,7 +218,7 @@ pub enum Outcome {
 }
 
 /// What a Report changed ([`ProfileAction::Changed`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ProfileChange {
     /// Profile Added Report: newly supported, disabled.
@@ -273,20 +273,13 @@ pub enum ProfileAction {
 }
 
 /// A request that cannot be made.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RequestError {
     /// The same request, or a Set On or Off of the same Profile at the same
     /// address, is still waiting for its answer.
+    #[error("a request for that Profile at that address is already in flight")]
     InFlight,
 }
-
-impl std::fmt::Display for RequestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a request for that Profile at that address is already in flight")
-    }
-}
-
-impl std::error::Error for RequestError {}
 
 /// One Profile of the table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

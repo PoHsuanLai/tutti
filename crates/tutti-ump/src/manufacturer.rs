@@ -36,16 +36,9 @@ pub struct ManufacturerId(u16);
 
 /// A word that is no [`ManufacturerId`]: it is neither a 7-bit id nor a 21-bit
 /// id in the 16-bit form.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#06x} is not a 16-bit manufacturer id", .0)]
 pub struct NotManufacturerId(pub u16);
-
-impl core::fmt::Display for NotManufacturerId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:#06x} is not a 16-bit manufacturer id", self.0)
-    }
-}
-
-impl std::error::Error for NotManufacturerId {}
 
 impl ManufacturerId {
     /// The Reserved id, `0x0000` (Table 20).

@@ -43,16 +43,9 @@ pub enum Message {
 /// with an undefined status, or a defined message with a reserved value in a
 /// field. The words are kept, so a later revision's message can be forwarded
 /// unchanged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no defined message in the packet {}", .0)]
 pub struct Unknown(pub Ump);
-
-impl core::fmt::Display for Unknown {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "no defined message in the packet {}", self.0)
-    }
-}
-
-impl core::error::Error for Unknown {}
 
 /// A Group and a Channel within it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,7 +320,7 @@ pub enum Voice1 {
 
 /// The role of a packet in a System Exclusive message (Tables 18 and 19).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SysexStatus {
     /// The whole message.
     Complete,
@@ -1022,7 +1015,7 @@ pub struct ChordName {
 
 /// The messages that use the Flex text format (Table 16).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FlexTextKind {
     /// Bank 1, status 0.
     UnknownMetadata,
@@ -1065,7 +1058,7 @@ pub enum FlexTextKind {
 // ---- UMP Stream ------------------------------------------------------------
 
 /// A packet's place in a multi-packet message (Stream and Flex Format).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Form {
     /// The whole message.
     Complete,
@@ -1194,7 +1187,7 @@ pub enum Direction {
 }
 
 /// The primary role a Function Block declares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiHint {
     /// Unknown or undeclared.
     Unknown,

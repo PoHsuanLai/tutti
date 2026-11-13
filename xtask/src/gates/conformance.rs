@@ -38,7 +38,9 @@
 //! kind, section, facts)` quadruples equal the extracted ones. The MIDI specs
 //! are not in the repo and not in CI, so with the text absent the comparison
 //! is skipped and said so, and only `TUTTI_CONFORMANCE=require-all` (which
-//! also requires the `clap-sys` source) makes the absence a finding.
+//! also requires the `clap-sys` source) makes the absence a finding. CI sets
+//! `require`, which never demands the MIDI text; `require-all` is for a local
+//! run on a machine that holds the specs.
 
 use super::clap_sys::{self, Item};
 use super::lex::blank_keeping_docs;

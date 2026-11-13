@@ -1,13 +1,12 @@
 [package]
 name = "tutti-engine"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Renders tutti's audio graph block by block, together with a playback clock"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 keywords = ["audio", "dsp", "real-time", "daw"]
 categories = ["multimedia::audio"]
 
@@ -17,12 +16,12 @@ workspace = true
 [dependencies]
 thiserror.workspace = true
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
-tutti-rt = { path = "../tutti-rt" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 bytemuck = { version = "1.16", features = ["derive"] }
 # `Engine` renders a `tutti_graph::Executor`.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
-tutti-transport = { path = "../tutti-transport" }
-tutti-metering = { path = "../tutti-metering" }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
+tutti-metering = { version = "0.0.1", path = "../tutti-metering" }
 # The hand-over queues of the after-the-fader tap (the crate `tutti-graph` uses
 # for its editor queue).
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }

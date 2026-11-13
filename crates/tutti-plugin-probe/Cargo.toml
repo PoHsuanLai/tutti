@@ -1,6 +1,6 @@
 [package]
 name = "tutti-plugin-probe"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "A small program tutti runs to read a plugin's details without risking the host"
@@ -9,7 +9,6 @@ license.workspace = true
 repository.workspace = true
 keywords = ["audio", "plugin", "vst3", "clap", "scan"]
 categories = ["multimedia::audio"]
-publish = false
 
 [lints]
 workspace = true
@@ -30,16 +29,16 @@ vst2 = ["dep:tutti-vst2-host"]
 au = ["dep:tutti-au-host"]
 
 [dependencies]
-tutti-plugin-types = { path = "../tutti-plugin-types", features = ["probe-wire"] }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types", features = ["probe-wire"] }
 # The experiment's units and stimulus: counts and levels, a note, and where in a
 # block it sits.
-tutti-types = { path = "../tutti-types" }
-tutti-graph = { path = "../tutti-graph" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-clap-host = { path = "../tutti-clap-host", optional = true }
-tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
-tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
-tutti-au-host = { path = "../tutti-au-host", optional = true }
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-clap-host = { version = "0.0.1", path = "../tutti-clap-host", optional = true }
+tutti-vst3-host = { version = "0.0.1", path = "../tutti-vst3-host", optional = true }
+tutti-vst2-host = { version = "0.0.1", path = "../tutti-vst2-host", optional = true }
+tutti-au-host = { version = "0.0.1", path = "../tutti-au-host", optional = true }
 
 [lib]
 name = "tutti_plugin_probe"

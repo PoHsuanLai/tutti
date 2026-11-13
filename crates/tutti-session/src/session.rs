@@ -654,9 +654,8 @@ impl Session {
                     self.mods.resync(&mut self.graph);
                 }
             }
-            Phase::MidiOut => {
-                #[cfg(feature = "midi-hardware")]
-                self.midi_state.follow_output_config(self.midi_io.as_ref());
+            Phase::MidiOut =>
+            {
                 #[cfg(feature = "midi")]
                 self.midi_state.midi_out_phase(&mut self.graph, cx.now, out)
             }
@@ -675,7 +674,7 @@ impl Session {
                 // its inlet: committed now, not an update later.
                 #[cfg(feature = "midi-hardware")]
                 if self.midi_state.midi_input_phase(
-                    self.midi_io.as_ref(),
+                    self.midi_io.as_mut(),
                     self.midi.as_ref(),
                     &mut self.graph,
                     cx.now,
@@ -876,7 +875,7 @@ impl Session {
             settings: self.transport.settings(),
             meter: self.click_settings.project_meter(),
             #[cfg(feature = "midi-hardware")]
-            io: self.midi_io.as_ref(),
+            io: self.midi_io.as_mut(),
         }
     }
 

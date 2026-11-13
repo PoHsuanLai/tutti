@@ -52,7 +52,7 @@ fn main() {
     );
     // The graph's side: the engine's part, played on the wall clock.
     let mut graph = Listener::over(&inlets);
-    let io = MidiSession::open(Arc::clone(&inlets)).expect("open MIDI");
+    let mut io = MidiSession::open(Arc::clone(&inlets)).expect("open MIDI");
 
     let inputs = io.inputs();
     let Some(iac_input) = inputs.iter().find(|d| d.name.contains("IAC")) else {
@@ -70,7 +70,7 @@ fn main() {
     );
     println!("Connected inputs: {:?}", io.connected_input_names());
 
-    io.connect_output("IAC").unwrap();
+    let mut out = io.connect_output("IAC").unwrap();
     thread::sleep(Duration::from_millis(200));
 
     // Whatever was buffered before the test.
@@ -83,7 +83,7 @@ fn main() {
     // messages at both ends — the port handles the wire form, and the
     // MIDI-1-vs-2 distinction never surfaces.
     let mut roundtrip = |label: &str, msg: Message, check: &dyn Fn(Voice2) -> bool| {
-        io.send(&[(Offset::ZERO, Ump::from(msg))]);
+        out.queue(&[(Offset::ZERO, Ump::from(msg))]);
         let first: Option<Ump> = graph.listen(Duration::from_millis(100)).first().copied();
         match first {
             None => println!("  FAIL [{label}]: no events received"),
@@ -143,7 +143,7 @@ fn main() {
 
     println!("\n=== Test 5: Rapid burst (10 notes) ===");
     for n in 60..70u8 {
-        io.send(&[(
+        out.queue(&[(
             Offset::ZERO,
             note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
         )]);
@@ -161,7 +161,7 @@ fn main() {
     );
 
     io.disconnect_input(&iac_input.id);
-    io.disconnect_output();
+    drop(out);
 
     println!("\nAll tests complete!");
 }

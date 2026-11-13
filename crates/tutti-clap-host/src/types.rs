@@ -208,7 +208,7 @@ impl ClapNoteExpression {
 bitflags! {
     /// Parameter behaviour flags from `clap_param_info`. See the CLAP spec
     /// for precise semantics of each bit. CLAP-native; the loader projects the
-    /// subset it needs onto the shared `tutti_plugin_types::ParameterFlags` at
+    /// subset it needs onto the shared `tutti_plugin_types::ParamFlags` at
     /// the crate boundary.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct ClapParamFlags: u32 {

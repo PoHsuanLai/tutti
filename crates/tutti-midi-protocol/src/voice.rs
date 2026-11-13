@@ -82,12 +82,10 @@ pub const fn widen_bend(bend: U14) -> BendValue {
 }
 
 /// The MIDI 2.0 message that means what `voice` means (M2-104 Appendix D.3,
-/// M2-115 section 3). The caller keeps the [`Address`]
-/// unchanged.
+/// M2-115 section 3). The caller keeps the [`Address`] unchanged.
 ///
-/// Transitional for a consumer: see the crate docs. Control Changes that
-/// would need RPN or Bank Select assembly widen by value as plain Control
-/// Changes, and a Program Change has no bank.
+/// Control Changes that would need RPN or Bank Select assembly widen by value
+/// as plain Control Changes, and a Program Change has no bank.
 #[inline]
 #[must_use]
 pub fn widen(voice: Voice1) -> Voice2 {

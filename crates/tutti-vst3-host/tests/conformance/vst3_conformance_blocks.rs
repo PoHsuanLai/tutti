@@ -44,7 +44,7 @@ fn hostcheck_is_linked() {
 ///
 /// Every other test here loads a bundle by path, and `Vst3Loaded::load` calls
 /// `find_audio_class`, which takes the **first** class whose category contains
-/// `"Audio"` (`loaded.rs:1617-1630`). One bundle can export many: `mda-vst3`
+/// `"Audio"`. One bundle can export many: `mda-vst3`
 /// packs the whole mda suite into a single binary, which is the normal shape
 /// for commercial VST3 — plugin *suites* ship as one bundle, not one per
 /// effect.

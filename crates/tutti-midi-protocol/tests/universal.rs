@@ -235,12 +235,46 @@ fn a_message_of_the_group_ends_an_open_one_and_another_group_does_not() {
 #[test]
 fn an_overlong_message_is_dropped_counted_and_the_next_is_read() {
     let mut long = vec![0xF0, 0x41];
-    long.extend(std::iter::repeat_n(0x11, 100));
+    long.extend(std::iter::repeat_n(0x11, 600));
     long.push(0xF7);
     let mut r = reader(0);
     assert!(feed(&mut r, packets(0, &long)).is_empty());
     assert_eq!(r.dropped(), 1);
     assert_eq!(feed(&mut r, packets(0, &VOLUME)).len(), 1);
+}
+
+/// A Key-Based Tuning Dump is 409 bytes with its framing: it crosses the SysEx7
+/// packets whole and is read; a copy with a bad checksum is counted and not
+/// passed on, but only when it was for this device or for all.
+#[test]
+fn a_tuning_dump_crosses_the_reader_and_a_corrupt_one_is_counted() {
+    let mut payload = vec![0x7E, 0x7F, 0x08, 0x04, 0x00, 0x00];
+    payload.extend_from_slice(b"Equal           ");
+    for k in 0..128u8 {
+        payload.extend([k, 0, 0]);
+    }
+    payload.push(payload.iter().fold(0, |a, b| a ^ b) & 0x7F);
+    let mut framed = vec![0xF0];
+    framed.extend(&payload);
+    framed.push(0xF7);
+    assert_eq!(framed.len(), 409);
+
+    let mut r = reader(0);
+    let heard = feed(&mut r, packets(0, &framed));
+    assert_eq!(heard.len(), 1);
+    assert!(matches!(heard[0].message, Universal::Tuning(_)));
+    assert_eq!(r.corrupt(), 0);
+
+    // The checksum is wrong, for all devices: counted, not passed on.
+    let n = framed.len();
+    framed[n - 2] ^= 0x01;
+    assert!(feed(&mut r, packets(0, &framed)).is_empty());
+    assert_eq!(r.corrupt(), 1);
+    // For another device it is none of this reader's business.
+    framed[2] = 9;
+    assert!(feed(&mut r, packets(0, &framed)).is_empty());
+    assert_eq!(r.corrupt(), 1);
+    assert_eq!(r.dropped(), 0);
 }
 
 /// **A device's own id is `00` to `7E`: `7F` is the all-call** (M1 p.40), which

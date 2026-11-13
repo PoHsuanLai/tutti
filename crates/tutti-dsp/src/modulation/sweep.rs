@@ -249,6 +249,11 @@ pub enum StaggerError {
 }
 
 impl Stagger {
+    /// No stagger: every channel sweeps in step with channel 0.
+    pub const NONE: Self = Self {
+        kind: Kind::Step(PhaseIncrement(0.0)),
+    };
+
     /// Channel `c` runs `c` times `step` ahead of channel 0, wrapped into one cycle: at
     /// width 2 the step is the right channel's offset. `None` when `step` is not finite.
     #[must_use]

@@ -28,7 +28,7 @@ use tutti_modulation::{
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     CompressorControls, CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterControls,
-    LimiterNode, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
+    LimiterNode, ModDelayNode, PhaserControls, PhaserNode, Stages, SvfFilterNode, SvfType,
 };
 use tutti_types::{BeatDuration, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples};
 use tutti_types::{BusTopology, ChannelLayout, UnitParam};
@@ -583,8 +583,9 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
 /// inside `1 Hz..0.49 sr`) the output stays bounded by what the input and a
 /// 0.5 feedback can make.
 ///
-/// And the depth gets `set_depth`'s clamp: driven to 8 it sounds as it
-/// does driven to exactly 1 (the knob at 1, nothing added).
+/// That a depth past 1 sweeps the range and no further is stated from the definition in
+/// `tutti-nodes`' `a_depth_lane_past_one_sweeps_the_whole_range_and_no_further` (it was a
+/// render against another render, deleted).
 #[test]
 fn a_phaser_driven_past_its_depth_range_stays_stable() {
     let mut state = 0x9e37_79b9_u32;
@@ -598,7 +599,7 @@ fn a_phaser_driven_past_its_depth_range_stays_stable() {
         // Knob 0.5 plus `depth` of the 16-wide range: 8.5 (held at the
         // range's 8) and -7.5.
         let out = render_driven(
-            PhaserNode::with_channels(ChannelLayout::MONO, 4),
+            PhaserNode::mono(Stages::of(4), PhaserControls::DEFAULT),
             UnitParam::Depth,
             ParamRange::new(-8.0, 8.0),
             depth,
@@ -608,24 +609,6 @@ fn a_phaser_driven_past_its_depth_range_stays_stable() {
         assert!(
             p.is_finite() && p < 4.0,
             "driven at {depth} of the range: bounded, peak {p}"
-        );
-    }
-    let phaser_at = |knob: f32, depth: f32| {
-        let n = PhaserNode::with_channels(ChannelLayout::MONO, 4);
-        n.set_depth(Depth::clamped(knob));
-        render_driven(
-            n,
-            UnitParam::Depth,
-            ParamRange::new(-8.0, 8.0),
-            depth,
-            &noise,
-        )
-    };
-    let (past, full) = (phaser_at(1.0, 0.4375), phaser_at(1.0, 0.0));
-    for (i, (a, b)) in past.iter().zip(&full).enumerate() {
-        assert!(
-            (a - b).abs() < 1e-5,
-            "frame {i}: driven to 8 {a} vs depth 1 {b}"
         );
     }
 }

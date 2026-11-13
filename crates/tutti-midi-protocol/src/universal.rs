@@ -15,6 +15,9 @@
 //! - General MIDI System On and Off (M1 p.52, `09 01` and `09 02`).
 //! - Master Volume and Master Balance (M1 p.57, `04 01` and `04 02`).
 //! - Master Fine Tuning and Master Coarse Tuning (CA-025, `04 03` and `04 04`).
+//! - The MIDI Tuning Standard (`08`): [`TuningMessage`], with its
+//!   [frequency data](crate::TuningFrequency). A dump whose checksum does not hold is
+//!   [`Read::BadChecksum`], not `Unread`.
 //!
 //! Anything else is [`Read::Unread`] when it is Universal (another sub-id, or one
 //! of these cut short or with data bytes over), and [`Read::Foreign`] when the
@@ -32,6 +35,8 @@
 //! p.57 requires: "received on its own ID", "received on the 'All Call' ID".
 
 mod read;
+
+use crate::tuning::TuningMessage;
 
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexMessage, SysexStep, U7, U14, Ump};
 
@@ -138,6 +143,8 @@ pub enum GeneralMidi {
 /// A Universal message this crate reads. Fields are the wire's values, in the
 /// type that holds them; what a value means (a curve, a displacement) is the
 /// consumer's.
+// Copy, and read on the audio thread: boxing the table or the changes would allocate there.
+#[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Universal {
@@ -158,6 +165,8 @@ pub enum Universal {
     /// Master Coarse Tuning (`04 04`, CA-025): the MSB, `0x40` is A440 and a
     /// step is a semitone.
     MasterCoarseTuning(U7),
+    /// A MIDI Tuning Standard message (`08`, CA-020 and CA-021).
+    Tuning(TuningMessage),
 }
 
 /// A Universal message and who its header names.
@@ -169,11 +178,29 @@ pub struct Addressed {
     pub message: Universal,
 }
 
+/// A dump that failed its checksum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BadChecksum {
+    /// The recipient in the header.
+    pub to: Recipient,
+    /// The checksum the bytes make.
+    pub expected: U7,
+    /// The checksum the message said.
+    pub found: U7,
+}
+
 /// What [`read()`](fn@read) made of one SysEx message.
+// Copy, and read on the audio thread: boxing the table or the changes would allocate there.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Read {
     /// A Universal message this crate reads.
     Universal(Addressed),
+    /// A tuning dump whose checksum field is not the XOR of the bytes before it
+    /// (MTS, "Checksum Calculation"). The spec says nothing of what a receiver
+    /// does with one; an instrument does not apply it ([`UniversalReader`]
+    /// counts it, [`corrupt`](UniversalReader::corrupt)).
+    BadChecksum(BadChecksum),
     /// Universal (`7E` or `7F`), but not one this crate reads, or one of them
     /// that does not parse (cut short, or with bytes after its end).
     Unread,
@@ -197,10 +224,19 @@ pub enum Read {
 pub fn read(message: SysexMessage<'_>) -> Read {
     let payload = message.payload();
     match payload.first() {
-        Some(&(read::NON_REAL_TIME | read::REAL_TIME)) => read::parse(payload)
-            .map_or(Read::Unread, |(to, message)| {
-                Read::Universal(Addressed { to, message })
+        Some(&(read::NON_REAL_TIME | read::REAL_TIME)) => match read::parse(payload) {
+            read::Parsed::Message(to, message) => Read::Universal(Addressed { to, message }),
+            read::Parsed::BadChecksum {
+                to,
+                expected,
+                found,
+            } => Read::BadChecksum(BadChecksum {
+                to,
+                expected,
+                found,
             }),
+            read::Parsed::Unread => Read::Unread,
+        },
         _ => Read::Foreign,
     }
 }
@@ -223,9 +259,10 @@ pub struct Heard {
     pub message: Universal,
 }
 
-/// The longest message the reader takes in, `F0` and `F7` included: an Identity
-/// Reply with a three-byte manufacturer id is 17 bytes.
-const MAX_MESSAGE: usize = 32;
+/// The longest message the reader takes in, `F0` and `F7` included: a Single
+/// Note Tuning Change of 127 changes with a bank is 517 bytes, a Key-Based
+/// Tuning Dump 409.
+const MAX_MESSAGE: usize = 528;
 
 /// An instrument's edge for Universal System Exclusive: one Group's UMPs in,
 /// the messages addressed to the instrument out.
@@ -238,6 +275,7 @@ pub struct UniversalReader {
     group: MidiGroup,
     device: SysexDeviceId,
     assembler: SysexAssembler<Box<[u8]>>,
+    corrupt: u64,
 }
 
 impl UniversalReader {
@@ -249,6 +287,7 @@ impl UniversalReader {
             group,
             device,
             assembler: SysexAssembler::new(vec![0; room].into_boxed_slice(), MAX_MESSAGE, 1),
+            corrupt: 0,
         }
     }
 
@@ -271,19 +310,27 @@ impl UniversalReader {
         let SysexStep::Complete(done) = self.assembler.push(ump) else {
             return None;
         };
-        let Read::Universal(Addressed {
-            to: recipient,
-            message,
-        }) = read(self.assembler.message(done))
-        else {
-            return None;
+        let (recipient, message) = match read(self.assembler.message(done)) {
+            Read::Universal(Addressed { to, message }) => (to, message),
+            Read::BadChecksum(bad) => {
+                if self.is_for_us(bad.to).is_some() {
+                    self.corrupt += 1;
+                }
+                return None;
+            }
+            _ => return None,
         };
-        let to = match recipient {
-            Recipient::AllCall => Addressee::All,
-            Recipient::Device(device) if device == self.device => Addressee::Own,
-            Recipient::Device(_) => return None,
-        };
+        let to = self.is_for_us(recipient)?;
         Some(Heard { to, message })
+    }
+
+    /// Who a header names, if it names this reader's device.
+    fn is_for_us(&self, recipient: Recipient) -> Option<Addressee> {
+        match recipient {
+            Recipient::AllCall => Some(Addressee::All),
+            Recipient::Device(device) if device == self.device => Some(Addressee::Own),
+            Recipient::Device(_) => None,
+        }
     }
 
     /// Messages dropped whole: too long, cut by another message of the Group,
@@ -291,6 +338,13 @@ impl UniversalReader {
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.assembler.dropped()
+    }
+
+    /// Dumps addressed to this device that failed their checksum and were not
+    /// passed on ([`Read::BadChecksum`]).
+    #[must_use]
+    pub fn corrupt(&self) -> u64 {
+        self.corrupt
     }
 
     /// Forgets an open message.

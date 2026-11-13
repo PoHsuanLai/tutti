@@ -28,7 +28,8 @@ bitflags! {
     /// (M2-101 §5.5.2, the "CI Category Supported" bitmap).
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct CiCategories: u8 {
-        /// Supports Protocol Negotiation (deprecated in CI 1.2, kept for the bit).
+        /// Protocol Negotiation (Table 7, D1: deprecated in CI 1.2). A 1.1 peer may
+        /// set it and the bit is kept as received; this crate never advertises it.
         const PROTOCOL_NEGOTIATION = 1 << 1;
         /// Supports Profile Configuration.
         const PROFILE_CONFIGURATION = 1 << 2;

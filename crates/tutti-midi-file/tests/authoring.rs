@@ -141,8 +141,12 @@ fn push_refuses_an_event_before_the_last() {
     );
     assert!(err.to_string().contains("tick 9"), "{err}");
     // The typed error crosses `?` into the crate's.
-    let as_error: Error = err.into();
-    assert!(matches!(as_error, Error::OutOfOrder(e) if e == err));
+    let authored = || -> tutti_midi_file::Result<Track> {
+        Ok(track
+            .clone()
+            .push(Tick(9), Meta::tempo(Bpm::of(100.0)))?)
+    };
+    assert!(matches!(authored(), Err(Error::OutOfOrder(e)) if e == err));
 }
 
 /// Collecting pairs puts them in tick order, stable: events at one tick keep

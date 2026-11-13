@@ -148,6 +148,25 @@ fn categories_survive_round_trip() {
     assert!(!back.categories.contains(CiCategories::PROCESS_INQUIRY));
 }
 
+// Table 7: D1 Protocol Negotiation (deprecated in 1.2), D2 Profile Configuration,
+// D3 Property Exchange, D4 Process Inquiry. A 1.1 peer may set D1; its bitmap
+// must come back unchanged.
+#[test]
+fn a_peers_category_bitmap_with_protocol_negotiation_set_round_trips() {
+    assert_eq!(CiCategories::PROTOCOL_NEGOTIATION.bits(), 0x02);
+    assert_eq!(CiCategories::PROFILE_CONFIGURATION.bits(), 0x04);
+    assert_eq!(CiCategories::PROPERTY_EXCHANGE.bits(), 0x08);
+    assert_eq!(CiCategories::PROCESS_INQUIRY.bits(), 0x10);
+    let mut body = Vec::new();
+    sample_discovery().encode_body(true, &mut body);
+    body[11] = 0x02 | 0x04;
+    let back = DiscoveryData::decode_body(true, &body).expect("decodes");
+    assert!(back.categories.contains(CiCategories::PROTOCOL_NEGOTIATION));
+    let mut again = Vec::new();
+    back.encode_body(true, &mut again);
+    assert_eq!(again, body);
+}
+
 // §5.5.3: "The allowed values in the Receivable Maximum SysEx Message Size are
 // 128 or greater."
 #[test]

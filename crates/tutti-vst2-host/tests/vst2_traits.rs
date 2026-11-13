@@ -637,6 +637,32 @@ fn the_automation_mode_reaches_the_plugin_as_state_and_time_info_flags() {
     drop(rejoin(processor, controller));
 }
 
+/// **The host never claims `kVstSmpteValid`**: a plugin asking `audioMasterGetTime` with every
+/// flag requested, the SMPTE one included, is answered a snapshot without it, because the
+/// transport the host holds carries no SMPTE offset or frame rate to fill `smpteOffset` and
+/// `smpteFrameRate` from. A host that set the flag with zeroed fields would tell the plugin
+/// it is at SMPTE 0 in 24 fps.
+#[test]
+fn smpte_is_not_claimed_when_a_plugin_asks_for_it() {
+    const SMPTE_VALID: i32 = 1 << 14;
+    const PLAYING: i32 = 1 << 1;
+    let probe = Probe::acquire();
+    let (mut processor, controller) = probe.activate();
+    let transport = tutti_vst2_host::TransportInfo::new().with_playing(true);
+    let ctx = ProcessContext {
+        transport: Some(&transport),
+        ..ProcessContext::new()
+    };
+
+    render_f32(&mut processor, &ctx);
+
+    let cap = capture();
+    assert!(cap.time_info_present);
+    assert_ne!(cap.time_flags & PLAYING, 0, "the snapshot is the live one");
+    assert_eq!(cap.time_flags & SMPTE_VALID, 0, "no SMPTE is claimed");
+    drop(rejoin(processor, controller));
+}
+
 /// **A rejoin keeps what the audio side remembers**: the transport the plugin
 /// last read stays the predecessor of the next block's, so a start after a
 /// reconfigure is still an edge (`kVstTransportChanged`) against the stop

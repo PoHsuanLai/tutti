@@ -12,6 +12,9 @@
 //! `TRANSPORT_RECORDING` sits at bit 3 — mistranscribing any of them
 //! silently mis-signals the plugin's transport state.
 //!
+//! `kVstSmpteValid` is never set: the transport carries no SMPTE offset or frame rate, so
+//! `smpteOffset` and `smpteFrameRate` stay zero and are not claimed.
+//!
 //! # Two flag families, two different rules
 //!
 //! **`*_VALID` bits are claims about *this* snapshot.** Setting one tells the
@@ -232,6 +235,23 @@ mod tests {
                 F::from_bits_truncate(off.flags),
                 "{mode:?} moves no other bit"
             );
+        }
+    }
+
+    /// `kVstSmpteValid` (bit 14) is claimed for no transport: the snapshot has no SMPTE
+    /// offset or frame rate, so the bit stays clear and the fields stay zero.
+    #[test]
+    fn smpte_is_never_claimed() {
+        let transport = playing_transport()
+            .with_tempo(120.0)
+            .with_sample_rate(48_000.0)
+            .with_position_quarters(4.0)
+            .with_bar(4.0, Default::default());
+        for transport in [&transport, &TransportInfo::new()] {
+            let info = build_vst2_time_info(transport, 48_000.0, None, AutomationMode::ReadWriting);
+            assert_eq!(info.flags & (1 << 14), 0);
+            assert_eq!(info.flags & F::SMPTE_VALID.bits(), 0);
+            assert_eq!(info.smpte_offset, 0);
         }
     }
 

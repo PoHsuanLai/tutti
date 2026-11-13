@@ -20,7 +20,7 @@ pub const PE_MAX_HEADER_LEN: usize = 0x3FFF;
 /// Tables 33 and 34). A message with no Property Data is not chunked
 /// (M2-101 §8.3.2), so a header fits the Receivable Maximum SysEx Message Size
 /// less these.
-const MESSAGE_OVERHEAD: usize = 1 + 13 + 1 + 2 + 6 + 1;
+pub(super) const MESSAGE_OVERHEAD: usize = 1 + 13 + 1 + 2 + 6 + 1;
 
 /// The encoding of Property Data (M2-103 §6.1.6, Table 12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -29,8 +29,7 @@ pub enum PeEncoding {
     Ascii,
     /// Encoded with [`mcoded7`](super::mcoded7).
     Mcoded7,
-    /// Compressed with zlib (RFC 1950), then encoded with Mcoded7. The
-    /// compression is not in this module.
+    /// Compressed with zlib (RFC 1950), then encoded with Mcoded7.
     ZlibMcoded7,
 }
 

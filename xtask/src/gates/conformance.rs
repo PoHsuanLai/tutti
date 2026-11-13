@@ -32,9 +32,19 @@
 //! file pins ([`super::clap_sys`]): the committed `(id, side,
 //! maturity)` triples equal the extracted ones. With the source absent the
 //! comparison is skipped and said so, unless `TUTTI_CONFORMANCE=require`.
+//!
+//! The rows whose id starts `m2-104/` are held to the spec text
+//! `TUTTI_MIDI_SPECS` points at ([`super::midi_spec`]): the committed `(id,
+//! kind, section, facts)` quadruples equal the extracted ones. The MIDI specs
+//! are not in the repo and not in CI, so with the text absent the comparison
+//! is skipped and said so, and only `TUTTI_CONFORMANCE=require-all` (which
+//! also requires the `clap-sys` source) makes the absence a finding. CI sets
+//! `require`, which never demands the MIDI text; `require-all` is for a local
+//! run on a machine that holds the specs.
 
 use super::clap_sys::{self, Item};
 use super::lex::blank_keeping_docs;
+use super::midi_spec;
 use super::{Report, Tree};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -43,6 +53,8 @@ const NA_KINDS: [&str; 3] = ["deprecated", "forbidden-for-side", "other-side"];
 const KINDS: [&str; 3] = ["required", "recommended", "permitted"];
 const MATURITIES: [&str; 2] = ["stable", "draft"];
 const TAG: &str = "/// Spec:";
+/// The ids of the M2-104 inventory.
+const MIDI_PREFIX: &str = "m2-104/";
 
 fn skipped(dir: &str) -> bool {
     matches!(dir, "target" | ".git")
@@ -278,7 +290,67 @@ fn triples(items: &[Item]) -> BTreeSet<(String, String, String)> {
         .collect()
 }
 
-pub(super) fn check(tree: &dyn Tree, clap: Result<&dyn Tree, String>, require: bool) -> Report {
+/// Which absent spec sources are findings (`TUTTI_CONFORMANCE`).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Require {
+    pub(super) clap: bool,
+    pub(super) midi: bool,
+}
+
+impl Require {
+    /// `require` demands the `clap-sys` source; `require-all` also the MIDI
+    /// spec text.
+    pub(super) fn parse(value: Option<&str>) -> Require {
+        match value {
+            Some("require") => Require {
+                clap: true,
+                midi: false,
+            },
+            Some("require-all") => Require {
+                clap: true,
+                midi: true,
+            },
+            _ => Require::default(),
+        }
+    }
+}
+
+/// The `(id, kind, section, facts)` of every row whose id starts `prefix`.
+fn generated(rows: &[(String, Row)], prefix: &str) -> BTreeSet<[String; 4]> {
+    rows.iter()
+        .map(|(_, r)| r)
+        .filter(|r| r.id.starts_with(prefix))
+        .map(|r| {
+            [
+                r.id.clone(),
+                r.kind.clone(),
+                r.section.clone(),
+                r.facts.clone(),
+            ]
+        })
+        .collect()
+}
+
+fn midi_quads(items: &[midi_spec::Item]) -> BTreeSet<[String; 4]> {
+    items
+        .iter()
+        .map(|i| {
+            [
+                i.id.clone(),
+                i.kind.to_owned(),
+                i.section.clone(),
+                i.facts.clone(),
+            ]
+        })
+        .collect()
+}
+
+pub(super) fn check(
+    tree: &dyn Tree,
+    clap: Result<&dyn Tree, String>,
+    midi: Result<&str, String>,
+    require: Require,
+) -> Report {
     let mut r = Report::default();
     let (rows, errs) = load(tree);
     for e in errs {
@@ -339,8 +411,28 @@ pub(super) fn check(tree: &dyn Tree, clap: Result<&dyn Tree, String>, require: b
                 ));
             }
         }
-        Err(why) if require => r.fail(format!("clap inventory not checked: {why}")),
+        Err(why) if require.clap => r.fail(format!("clap inventory not checked: {why}")),
         Err(why) => r.say(format!("clap inventory not checked: {why}")),
+    }
+    match midi.and_then(midi_spec::extract) {
+        Ok(items) => {
+            let want = midi_quads(&items);
+            let have = generated(&rows, MIDI_PREFIX);
+            for q in want.difference(&have) {
+                r.fail(format!(
+                    "{DIR}: the M2-104 text gives `{}` ({}, {}, {}) that no row matches; run `cargo xtask conformance-inventory midi`",
+                    q[0], q[1], q[2], q[3]
+                ));
+            }
+            for q in have.difference(&want) {
+                r.fail(format!(
+                    "{DIR}: the M2-104 row `{}` ({}, {}, {}) is not what the text gives; run `cargo xtask conformance-inventory midi`",
+                    q[0], q[1], q[2], q[3]
+                ));
+            }
+        }
+        Err(why) if require.midi => r.fail(format!("M2-104 inventory not checked: {why}")),
+        Err(why) => r.say(format!("M2-104 inventory not checked: {why}")),
     }
     r.say(format!(
         "check-conformance: {} rows, {} ids tagged",
@@ -409,6 +501,75 @@ pub(super) fn regenerate(existing: Option<&str>, items: &[Item]) -> Result<Strin
     Ok(out)
 }
 
+/// The comment lines that open `midi-m2-104.txt`: its columns and id grammar.
+const MIDI_HEADER: &str = "\
+# MIDI 2.0 UMP and Protocol (M2-104 v1.1.2) inventory. The spec text is not in
+# the repo: `TUTTI_MIDI_SPECS=<dir> cargo xtask conformance-inventory midi`
+# regenerates the id, kind, section and facts columns from the text that
+# `pdftotext -layout` (26.01.0) makes of the M2-104 PDF in that directory (or a
+# .txt of it beside the PDF); the other columns are written by hand, in our own
+# words. `cargo xtask check-conformance` holds the generated columns to the
+# text when `TUTTI_MIDI_SPECS` is set. Nothing of the spec is quoted here: ids,
+# section numbers, keyword kinds and functional facts only.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Ids:
+#   m2-104/<section>#<n>          the nth sentence under the numbered section
+#                                 (appendix letters lowercase: d.2.1) that carries
+#                                 a conformance word. kind: shall is required,
+#                                 should recommended, may permitted; the negated
+#                                 forms keep the kind and carry the fact neg=1.
+#   m2-104/mt/<mt>                a Message Type: facts mt, bytes (the UMP size)
+#   m2-104/msg/<mt>/<status>      a defined message: <mt> and <status> are
+#                                 lowercase hex without 0x; Flex Data (mt d) is
+#                                 <bank>.<status>, two hex digits each. Facts:
+#                                 mt, status, bank (Flex Data), bytes
+# side: sender, receiver or both (todo marks a row not yet read).
+";
+
+/// The text of `testing/conformance/midi-m2-104.txt` for the extracted
+/// `items`: their id, kind, section and facts, with the other columns kept
+/// from `existing` for an id that is still there, and a new id as a `todo`
+/// row with no paraphrase (the gate refuses it). Also the ids added and
+/// removed.
+pub(super) fn regenerate_midi(
+    existing: Option<&str>,
+    items: &[midi_spec::Item],
+) -> Result<(String, Vec<String>, Vec<String>), String> {
+    let mut old: BTreeMap<String, Row> = BTreeMap::new();
+    if let Some(text) = existing {
+        let (rows, errs) = parse_file("midi-m2-104.txt", text);
+        if !errs.is_empty() {
+            return Err(errs.join("\n"));
+        }
+        old.extend(rows.into_iter().map(|r| (r.id.clone(), r)));
+    }
+    let (mut out, mut added) = (String::from(MIDI_HEADER), Vec::new());
+    for it in items {
+        let mut row = old.remove(&it.id).unwrap_or_else(|| {
+            added.push(it.id.clone());
+            Row {
+                id: it.id.clone(),
+                side: "todo".to_owned(),
+                maturity: String::new(),
+                kind: String::new(),
+                section: String::new(),
+                paraphrase: String::new(),
+                facts: String::new(),
+                na_kind: String::new(),
+                cite: String::new(),
+            }
+        });
+        row.kind = it.kind.to_owned();
+        row.section = it.section.clone();
+        row.facts = it.facts.clone();
+        out.push_str(&row.render());
+        out.push('\n');
+    }
+    Ok((out, added, old.into_keys().collect()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,7 +586,12 @@ mod tests {
 
     fn run(files: &[(&str, &str)]) -> Report {
         let mem = Mem::with(files);
-        check(&mem, Err("absent".to_owned()), false)
+        check(
+            &mem,
+            Err("absent".to_owned()),
+            Err("no specs".to_owned()),
+            Require::default(),
+        )
     }
 
     fn has(r: &Report, needle: &str) -> bool {
@@ -587,7 +753,12 @@ mod tests {
         let sys = Mem::with(&[("src/ext/params.rs", PARAMS_SRC)]);
         let go = |rows: &str| {
             let mem = Mem::with(&[("Cargo.lock", LOCK), ("testing/conformance/clap.txt", rows)]);
-            check(&mem, Ok(&sys), false)
+            check(
+                &mem,
+                Ok(&sys),
+                Err("no specs".to_owned()),
+                Require::default(),
+            )
         };
         assert!(go(ROW).passed());
         assert!(has(
@@ -609,7 +780,12 @@ mod tests {
     #[test]
     fn without_the_clap_sys_source_the_check_is_skipped_unless_required() {
         let mem = Mem::with(&[("Cargo.lock", LOCK), ("testing/conformance/clap.txt", ROW)]);
-        let skipped = check(&mem, Err("clap-sys 0.5.0 not found".to_owned()), false);
+        let skipped = check(
+            &mem,
+            Err("clap-sys 0.5.0 not found".to_owned()),
+            Err("no specs".to_owned()),
+            Require::default(),
+        );
         assert!(skipped.passed());
         assert!(
             skipped
@@ -617,7 +793,12 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("clap-sys 0.5.0 not found"))
         );
-        let required = check(&mem, Err("clap-sys 0.5.0 not found".to_owned()), true);
+        let required = check(
+            &mem,
+            Err("clap-sys 0.5.0 not found".to_owned()),
+            Err("no specs".to_owned()),
+            Require::parse(Some("require")),
+        );
         assert!(has(&required, "clap-sys 0.5.0 not found"));
     }
 
@@ -653,5 +834,103 @@ mod tests {
             ]
         );
         assert!(regenerate(Some("bad line\n"), &items).is_err());
+    }
+
+    const MIDI_TEXT: &str = "RUNNING\n 1\n\x0cRUNNING\n 2\n\x0cRUNNING\n 3\n\x0c1 Alpha\nA frob shall spin.\nTable 4 Allocation\n0x0 32 bits\n0x1 32 bits\n0x2 32 bits\n0x3 64 bits\n0x4 64 bits\n0x5 128 bits\n0x6 32 bits\n0x7 32 bits\n0x8 64 bits\n0x9 64 bits\n0xA 64 bits\n0xB 96 bits\n0xC 96 bits\n0xD 128 bits\n0xE 128 bits\n0xF 128 bits\nFigure 4 End\nTable 34 Messages\nUTILITY NOOP 0x0 res. 0x0 20\nFlex Data Set Tempo 0xD 0xg 0 1 0 0x00 0x00 n\nTable 16 Text\n0x01 0x00 Unknown\nFigure 5 End\n";
+
+    fn midi_rows() -> String {
+        let items = midi_spec::extract(MIDI_TEXT).unwrap();
+        let (text, added, removed) = regenerate_midi(None, &items).unwrap();
+        assert_eq!(added.len(), items.len());
+        assert!(removed.is_empty());
+        text
+    }
+
+    #[test]
+    fn the_midi_rows_must_equal_what_the_text_gives() {
+        // Rebuild each row with a paraphrase in column six.
+        let with_words: Vec<String> = midi_rows()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| {
+                let mut c: Vec<&str> = l.split(" | ").collect();
+                c[1] = "both";
+                c[5] = "words";
+                c.join(" | ")
+            })
+            .collect();
+        let good = with_words.join("\n");
+        let go = |inv: &str, text: Result<&str, String>| {
+            let mem = Mem::with(&[("testing/conformance/midi-m2-104.txt", inv)]);
+            check(&mem, Err("absent".to_owned()), text, Require::default())
+        };
+        assert!(
+            go(&good, Ok(MIDI_TEXT)).passed(),
+            "{:?}",
+            go(&good, Ok(MIDI_TEXT)).findings
+        );
+        let wrong_kind = good.replacen("| required |", "| recommended |", 1);
+        assert!(has(
+            &go(&wrong_kind, Ok(MIDI_TEXT)),
+            "the M2-104 row `m2-104/1#1` (recommended"
+        ));
+        assert!(has(
+            &go(&wrong_kind, Ok(MIDI_TEXT)),
+            "the M2-104 text gives `m2-104/1#1` (required"
+        ));
+        let dropped: String = good.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert!(has(&go(&dropped, Ok(MIDI_TEXT)), "gives `m2-104/1#1`"));
+    }
+
+    #[test]
+    fn without_the_midi_text_the_check_is_skipped_unless_require_all() {
+        let lock = Mem::with(&[("Cargo.lock", LOCK), ("testing/conformance/clap.txt", ROW)]);
+        let sys = Mem::with(&[("src/ext/params.rs", PARAMS_SRC)]);
+        let run = |v: Option<&str>| {
+            check(
+                &lock,
+                Ok(&sys),
+                Err("TUTTI_MIDI_SPECS is not set".to_owned()),
+                Require::parse(v),
+            )
+        };
+        for v in [None, Some("require")] {
+            let r = run(v);
+            assert!(r.passed(), "{:?}", r.findings);
+            assert!(
+                r.out
+                    .iter()
+                    .any(|l| l.contains("M2-104 inventory not checked"))
+            );
+        }
+        assert!(has(
+            &run(Some("require-all")),
+            "M2-104 inventory not checked: TUTTI_MIDI_SPECS"
+        ));
+    }
+
+    #[test]
+    fn midi_regeneration_keeps_hand_columns_flags_new_ids_and_reports_removed() {
+        let items = midi_spec::extract(MIDI_TEXT).unwrap();
+        let first = &items[0];
+        let kept = format!(
+            "{} | sender | | required | stale | my words | | deprecated | cite\nm2-104/gone#1 | both | | | | old | | |\n",
+            first.id
+        );
+        let (out, added, removed) = regenerate_midi(Some(&kept), &items).unwrap();
+        let row = out.lines().find(|l| l.starts_with(&first.id)).unwrap();
+        assert_eq!(
+            row,
+            format!(
+                "{} | sender |  | required | {} | my words |  | deprecated | cite",
+                first.id, first.section
+            )
+        );
+        assert_eq!(removed, ["m2-104/gone#1"]);
+        assert_eq!(added.len(), items.len() - 1);
+        let new = out.lines().find(|l| l.starts_with("m2-104/mt/0")).unwrap();
+        assert!(new.contains("| todo |"));
+        let r = run(&[("testing/conformance/midi-m2-104.txt", &out)]);
+        assert!(has(&r, "has an empty paraphrase"));
     }
 }

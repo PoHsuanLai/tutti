@@ -35,6 +35,7 @@ fn decoded(group: MidiGroup, p: &[u8]) -> Vec<(SysexStatus, Vec<u8>)> {
 use SysexStatus::{Complete, Continue, End, Start};
 
 /// Up to six bytes is one `Complete`; empty is one `Complete` of no bytes.
+/// Spec: m2-104/7.7#1
 #[test]
 fn a_short_payload_is_one_complete_packet() {
     assert_eq!(decoded(MidiGroup::of(0), &[]), [(Complete, vec![])]);
@@ -45,6 +46,7 @@ fn a_short_payload_is_one_complete_packet() {
 }
 
 /// Seven bytes: `Start` with six, `End` with one.
+/// Spec: m2-104/7.7#1
 #[test]
 fn seven_bytes_are_start_and_end() {
     let p = payload(7);
@@ -56,6 +58,7 @@ fn seven_bytes_are_start_and_end() {
 }
 
 /// Twelve bytes: `Start` and `End`, six each; thirteen: a `Continue` between.
+/// Spec: m2-104/7.7#1, m2-104/7.7#2
 #[test]
 fn twelve_and_thirteen_bytes() {
     let p = payload(12);
@@ -77,6 +80,7 @@ fn twelve_and_thirteen_bytes() {
 }
 
 /// A long payload: `Start`, `Continue`*, `End`, six bytes each but the last.
+/// Spec: m2-104/7.7#1, m2-104/7.7#2
 #[test]
 fn a_long_payload_runs_start_continue_end() {
     let p = payload(1000);
@@ -182,6 +186,7 @@ fn a_ref_made_by_hand_names_its_range() {
 
 /// The words of a single packet from M2-104 Table 18: type 3, group, status 0,
 /// byte count, then the bytes.
+/// Spec: m2-104/msg/3/0
 #[test]
 fn a_single_packet_is_the_spec_words() {
     let words = |group, payload: &[u8]| {

@@ -3,10 +3,13 @@ name = "tutti-plugin-ipc-ffi"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The unsafe of Tutti's plugin process edge, behind safe calls: the audio slab's shared mapping and header, and the OS calls the host and plugin-server make"
+description = "The operating-system calls behind tutti's plugin helper process, wrapped in safe functions"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 publish = false
+keywords = ["audio", "plugin", "ipc", "shared-memory"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true

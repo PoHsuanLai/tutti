@@ -14,6 +14,7 @@ fn pitch_bend_sensitivity_rpn_roundtrip() {
 
 /// **A whole-semitone count is 7 integer bits**: up to 127 it is exact, above
 /// it `new` refuses rather than shifting bits out (128 was 0, 200 was 72).
+/// Spec: m2-104/7.4.13.2#1
 #[test]
 fn a_whole_semitone_count_above_127_is_refused() {
     for s in 0..=PitchBendSensitivity::MAX_SEMITONES {

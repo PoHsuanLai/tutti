@@ -263,6 +263,7 @@ fn each_event_leaves_on_its_channels_port() {
 /// different ports, so a synth wired to one hears the other never; a Group
 /// the node was not built to hear is not delivered; the fork of such a node
 /// has the same ports.
+/// Spec: m2-104/2.1.2#2
 #[test]
 fn a_groups_channels_leave_on_their_own_ports() {
     let group = |g: u8, channel: u8, n: u8| {

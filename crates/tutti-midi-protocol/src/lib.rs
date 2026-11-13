@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! Translation between the MIDI 1.0 and MIDI 2.0 protocols.
 //!
 //! [`widen`] turns a MIDI 1.0 channel voice message into the MIDI 2.0 message

@@ -44,14 +44,27 @@
 //! - **Profile Specific Data** from the peer, to this device or to the Broadcast MUID, is
 //!   handed out as it is ([`ProfileAction::SpecificData`]).
 //!
-//! A message from another source, or a Reply, Details Reply or NAK not addressed to this device,
+//! - **Timeout Wait** (M2-101 §5.10, Table 14): an ACK with Status Code `0x10` from the peer, to
+//!   this device, says "wait" for Status Data times 100 ms (0 to 12.7 s). It names its transaction
+//!   by the Original Transaction Sub-ID#2 and the address it is on (§5.10.1, "along with other
+//!   fields"), and for a Set or a Details request by the Profile Id in its five detail bytes
+//!   (§5.10.3; zeroes from a peer with none to give, as for a NAK). A Profile Inquiry names no
+//!   Profile, so its details are not read; it is matched on the Function Block address it was sent
+//!   to. The deadline becomes `now + wait` **if that is later**: a wait asks for more time, never
+//!   less, so a wait of 0 leaves the deadline where it is, and each new wait counts from when it
+//!   arrives. An ACK for nothing in flight, and an ACK with any other status, resolve and extend
+//!   nothing: **a success ACK (`0x00`) does not end a Set**, because the answer to a Set is the
+//!   Enabled or Disabled Report ("This is an acknowledgement upon receipt of a Set Profile On
+//!   message", §7.10; M2-102 §2.6, §2.7), and §5.10 reserves the ACK for "new mechanisms" that other
+//!   specifications describe, none of which M2-102 does for Profiles.
+//!
+//! A message from another source, or a Reply, Details Reply, ACK or NAK not addressed to this device,
 //! is not this peer's and changes nothing.
 //!
 //! # The timeout
 //!
 //! [`PROFILE_TIMEOUT`] is tutti's choice, 3 seconds: M2-101 gives none for Profile
 //! Configuration, and the only wait it states is Discovery's "at least 3 seconds" (§5.5.5).
-//! A peer's "Timeout Wait" ACK (§5.10, Table 14) is not read: it does not extend a wait.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -60,8 +73,8 @@ use std::vec::Vec;
 use tutti_ump::{MidiChannel, U7};
 
 use super::{
-    CI_VERSION, CiDeviceId, CiHeader, CiMessage, Decoded, Destination, DetailsData, InquiryTarget,
-    Muid, Nak, ProfileChannels, ProfileId, ProfileLists, ProfileState,
+    Ack, CI_VERSION, CiDeviceId, CiHeader, CiMessage, Decoded, Destination, DetailsData,
+    InquiryTarget, Muid, Nak, ProfileChannels, ProfileId, ProfileLists, ProfileState,
     SUB_ID2_PROFILE_DETAILS_INQUIRY, SUB_ID2_PROFILE_INQUIRY, SUB_ID2_SET_PROFILE_OFF,
     SUB_ID2_SET_PROFILE_ON, SpecificData,
 };
@@ -69,6 +82,15 @@ use super::{
 /// How long a Profile Inquiry, Set Profile On or Off, or Details Inquiry waits for
 /// its answer: 3 seconds. See the module docs: tutti's figure, from §5.5.5.
 pub const PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The unit of a Timeout Wait's Status Data (§5.10, Table 14).
+const WAIT_STEP: Duration = Duration::from_millis(100);
+
+/// Whether the five detail bytes of an ACK or a NAK name `profile` (§5.10.3, §5.11.3), or
+/// are zeroes, which a peer with nothing to name sends.
+fn details_name(details: [u8; 5], profile: ProfileId) -> bool {
+    details == profile.to_bytes() || details == [0; 5]
+}
 
 /// Where a Set Profile On is aimed, and how many Channels it asks for (§7.8).
 ///
@@ -557,7 +579,7 @@ impl ProfileInitiator {
     }
 
     /// A CI message of the connection's Group arrived.
-    pub fn on_message(&mut self, decoded: &Decoded, _now: Instant) -> Vec<ProfileAction> {
+    pub fn on_message(&mut self, decoded: &Decoded, now: Instant) -> Vec<ProfileAction> {
         let mut actions = Vec::new();
         let Decoded::Message(message) = decoded else {
             return actions;
@@ -649,6 +671,11 @@ impl ProfileInitiator {
                     data: data.clone(),
                 });
             }
+            CiMessage::Ack { ack, .. }
+                if from_peer && to_us && ack.status_code == Ack::STATUS_TIMEOUT_WAIT =>
+            {
+                self.on_wait(address, ack, now);
+            }
             CiMessage::Nak { nak, .. } if from_peer && to_us => {
                 self.on_nak(address, nak, &mut actions);
             }
@@ -715,6 +742,29 @@ impl ProfileInitiator {
         }
     }
 
+    /// A Timeout Wait: the transaction it names waits until `now` plus the time asked,
+    /// when that is later than it already would.
+    fn on_wait(&mut self, address: CiDeviceId, ack: &Ack, now: Instant) {
+        let until = now + WAIT_STEP * u32::from(ack.status_data.get());
+        let original = ack.ack_sub_id2.get();
+        if original == SUB_ID2_PROFILE_INQUIRY {
+            if address == CiDeviceId::FunctionBlock
+                && let Some(inquiry) = self.inquiry.as_mut()
+            {
+                inquiry.deadline = inquiry.deadline.max(until);
+            }
+            return;
+        }
+        let details = ack.details.map(U7::get);
+        if let Some(pending) = self.pending.iter_mut().find(|p| {
+            p.request.sub_id2() == original
+                && p.request.address() == address
+                && details_name(details, p.request.profile())
+        }) {
+            pending.deadline = pending.deadline.max(until);
+        }
+    }
+
     fn on_nak(&mut self, address: CiDeviceId, nak: &Nak, actions: &mut Vec<ProfileAction>) {
         let original = nak.nak_sub_id2.get();
         if original == SUB_ID2_PROFILE_INQUIRY {
@@ -729,7 +779,7 @@ impl ProfileInitiator {
         let at = self.pending.iter().position(|p| {
             p.request.sub_id2() == original
                 && p.request.address() == address
-                && (details == p.request.profile().to_bytes() || details == [0; 5])
+                && details_name(details, p.request.profile())
         });
         if let Some(at) = at {
             let pending = self.pending.remove(at);

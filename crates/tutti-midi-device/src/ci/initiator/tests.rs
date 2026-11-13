@@ -1,4 +1,5 @@
 use std::time::{Duration, Instant};
+use tutti_ump::DeviceIdentity;
 use tutti_ump::{MidiChannel, U7};
 
 use super::super::*;
@@ -800,4 +801,200 @@ fn the_wire_of_what_it_sends_decodes_back() {
             Decoded::Message(message)
         );
     }
+}
+
+fn wait_ack(
+    address: CiDeviceId,
+    original: u8,
+    tenths_of_a_second: u8,
+    p: Option<ProfileId>,
+) -> Decoded {
+    Decoded::Message(CiMessage::Ack {
+        header: header(PEER, address),
+        to: muid(OURS),
+        ack: Ack::new(U7::of(original), Ack::STATUS_TIMEOUT_WAIT)
+            .with_status_data(U7::of(tenths_of_a_second))
+            .with_details(p.map_or([0; 5], ProfileId::to_bytes).map(U7::of)),
+    })
+}
+
+// §5.10, Table 14: Timeout Wait, Status Data in multiples of 100 ms.
+#[test]
+fn a_timeout_wait_extends_a_set_until_now_plus_the_time_asked() {
+    let (mut i, now) = known();
+    i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
+    // 50 x 100 ms = 5 s, asked at 2 s.
+    let asked = now + Duration::from_secs(2);
+    assert!(
+        i.on_message(
+            &wait_ack(CiDeviceId::Group, 0x22, 50, Some(profile(1))),
+            asked
+        )
+        .is_empty()
+    );
+    assert_eq!(i.deadline(), Some(asked + Duration::from_secs(5)));
+    // Not timed out at 3 s, nor at 4 s, and the Report still resolves it.
+    assert!(i.on_timeout(now + PROFILE_TIMEOUT).is_empty());
+    let at_4s = now + Duration::from_secs(4);
+    assert!(i.on_timeout(at_4s).is_empty());
+    let actions = i.on_message(&enabled(CiDeviceId::Group, profile(1), 0), at_4s);
+    assert!(matches!(
+        actions.last(),
+        Some(ProfileAction::Resolved {
+            outcome: Outcome::Reported { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_timeout_wait_that_is_not_for_the_set_extends_nothing() {
+    let (mut i, now) = known();
+    i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
+    let before = i.deadline();
+    let later = now + Duration::from_secs(1);
+    for ack in [
+        // Another Profile, another address, another message, another source, another destination.
+        wait_ack(CiDeviceId::Group, 0x22, 100, Some(profile(2))),
+        wait_ack(channel(0), 0x22, 100, Some(profile(1))),
+        wait_ack(CiDeviceId::Group, 0x23, 100, Some(profile(1))),
+        Decoded::Message(CiMessage::Ack {
+            header: header(OTHER, CiDeviceId::Group),
+            to: muid(OURS),
+            ack: Ack::new(U7::of(0x22), Ack::STATUS_TIMEOUT_WAIT)
+                .with_status_data(U7::of(100))
+                .with_details(profile(1).to_bytes().map(U7::of)),
+        }),
+        Decoded::Message(CiMessage::Ack {
+            header: header(PEER, CiDeviceId::Group),
+            to: muid(OTHER),
+            ack: Ack::new(U7::of(0x22), Ack::STATUS_TIMEOUT_WAIT)
+                .with_status_data(U7::of(100))
+                .with_details(profile(1).to_bytes().map(U7::of)),
+        }),
+    ] {
+        assert!(i.on_message(&ack, later).is_empty());
+        assert_eq!(i.deadline(), before);
+    }
+}
+
+#[test]
+fn a_timeout_wait_never_shortens_a_wait_and_a_zero_wait_changes_nothing() {
+    // Table 14: "the time to wait ... (0-12.7 seconds)": more time, never less.
+    let (mut i, now) = known();
+    i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
+    let before = i.deadline();
+    i.on_message(&wait_ack(CiDeviceId::Group, 0x22, 0, Some(profile(1))), now);
+    i.on_message(&wait_ack(CiDeviceId::Group, 0x22, 5, Some(profile(1))), now);
+    assert_eq!(i.deadline(), before);
+}
+
+#[test]
+fn a_success_ack_does_not_end_a_set() {
+    // The answer to a Set is the Report (§7.10, M2-102 §2.6), not an ACK 0x00.
+    let (mut i, now) = known();
+    i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
+    let ack = Decoded::Message(CiMessage::Ack {
+        header: header(PEER, CiDeviceId::Group),
+        to: muid(OURS),
+        ack: Ack::new(U7::of(0x22), Ack::STATUS_ACK)
+            .with_details(profile(1).to_bytes().map(U7::of)),
+    });
+    assert!(i.on_message(&ack, now).is_empty());
+    assert_eq!(i.deadline(), Some(now + PROFILE_TIMEOUT));
+}
+
+#[test]
+fn a_timeout_wait_for_nothing_in_flight_is_ignored() {
+    let (mut i, now) = known();
+    assert!(
+        i.on_message(
+            &wait_ack(CiDeviceId::Group, 0x22, 50, Some(profile(1))),
+            now
+        )
+        .is_empty()
+    );
+    assert!(
+        i.on_message(&wait_ack(CiDeviceId::FunctionBlock, 0x20, 50, None), now)
+            .is_empty()
+    );
+    assert_eq!(i.deadline(), None);
+}
+
+#[test]
+fn a_timeout_wait_extends_a_details_request() {
+    let (mut i, now) = known();
+    let target = InquiryTarget::NUMBER_OF_CHANNELS;
+    i.details(channel(2), profile(1), target, now).unwrap();
+    i.on_message(&wait_ack(channel(2), 0x28, 100, Some(profile(1))), now);
+    assert_eq!(i.deadline(), Some(now + Duration::from_secs(10)));
+}
+
+#[test]
+fn an_inquiry_with_a_timeout_wait_outlives_the_profile_timeout() {
+    let (mut i, _, now) = start();
+    i.on_message(&wait_ack(CiDeviceId::FunctionBlock, 0x20, 100, None), now);
+    assert!(i.on_timeout(now + PROFILE_TIMEOUT).is_empty());
+    assert!(i.on_timeout(now + Duration::from_secs(9)).is_empty());
+    // The set still completes at the final Reply, and a wait past the end is the timeout.
+    let actions = i.on_message(
+        &reply(CiDeviceId::FunctionBlock, &[], &[]),
+        now + Duration::from_secs(9),
+    );
+    assert_eq!(actions, [ProfileAction::ProfilesKnown]);
+    let (mut i, _, now) = start();
+    i.on_message(&wait_ack(CiDeviceId::FunctionBlock, 0x20, 100, None), now);
+    assert_eq!(
+        i.on_timeout(now + Duration::from_secs(10)),
+        [ProfileAction::InquiryTimedOut]
+    );
+}
+
+// tutti's own Responder (`CiDevice`) has no Profiles: an Initiator's inquiry of it
+// completes at the final Reply on 0x7F with nothing in the table (§7.13, M2-102 §2.4).
+#[test]
+fn an_inquiry_of_tuttis_own_responder_completes_with_an_empty_table() {
+    use tutti_ump::ManufacturerId;
+    let now = Instant::now();
+    let identity = DeviceIdentity {
+        manufacturer: ManufacturerId::of(0x41),
+        family: [U7::of(1), U7::of(2)],
+        model: [U7::of(3), U7::of(4)],
+        revision: [U7::of(5), U7::of(6), U7::of(7), U7::of(8)],
+    };
+    let (mut device, _) = CiDevice::new(
+        identity,
+        CiCategories::empty(),
+        MaxSysexSize::of(512),
+        || 0x0200_0002,
+        now,
+    );
+    assert_eq!(device.muid(), muid(PEER));
+    let (mut initiator, mut to_device) = ProfileInitiator::new(muid(OURS), device.muid(), now);
+
+    let mut events = Vec::new();
+    for _ in 0..4 {
+        if to_device.is_empty() {
+            break;
+        }
+        let mut to_initiator = Vec::new();
+        for action in to_device.drain(..) {
+            let ProfileAction::Send(message) = action else {
+                panic!("only sends, got {action:?}");
+            };
+            // Across the wire: encode, decode.
+            for reply in device.on_message(&CiMessage::decode(&message.encode()), now) {
+                if let CiAction::Send(reply) = reply {
+                    to_initiator.push(reply);
+                }
+            }
+        }
+        for message in to_initiator {
+            events.extend(initiator.on_message(&CiMessage::decode(&message.encode()), now));
+        }
+    }
+    assert_eq!(events, [ProfileAction::ProfilesKnown]);
+    assert!(initiator.is_known());
+    assert!(initiator.table().is_empty());
+    assert_eq!(initiator.deadline(), None);
 }

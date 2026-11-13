@@ -3660,6 +3660,17 @@ that runs it is part 5.
   same Profile and address, cannot be in flight twice (`RequestError::InFlight`).
   Profile Specific Data from the peer, to us or to the Broadcast MUID, is handed out
   uninterpreted (`ProfileAction::SpecificData`).
+- **Timeout Wait.** An ACK with Status Code 0x10 from the peer, to us (Table 14: Status Data in
+  multiples of 100 ms, 0 to 12.7 s), moves the deadline of the transaction it names to `now + wait`
+  when that is later. Matched by the Original Transaction Sub-ID#2, the address, and for a Set or a
+  Details request the Profile Id in the five details (§5.10.1, §5.10.3; zeroes match, as for a NAK);
+  a Profile Inquiry names no Profile, so it is matched on the Function Block address it went to. A
+  wait **only extends**: 0 leaves the deadline, and a later wait counts from its arrival. A **success
+  ACK (0x00) ends nothing**: a Set's answer is the Enabled or Disabled Report (§7.10, M2-102 §2.6,
+  §2.7), and §5.10 leaves the ACK to "new mechanisms" that other specifications define, which
+  M2-102 does not for Profiles. An ACK for nothing in flight is ignored. An end-to-end test drives
+  the Initiator against `CiDevice`: its inquiry of tutti's own Responder completes with an empty
+  table.
 - **`CiDevice` as Responder.** tutti has no Profiles. A Profile Inquiry to the device is answered with
   both lists empty on the address it came on (§7.13; M2-102 §2.4's final Reply on 0x7F). A Set On, Set
   Off or Details Inquiry is a Profile it does not have: a NAK 0x04 with the Profile Id as details, on
@@ -3672,7 +3683,7 @@ that runs it is part 5.
   Responder of Profiles. The spec does not ask an Initiator for the bit. The Receivable Maximum SysEx Size is
   already 512, the §5.5.3 floor of an Initiator of Profile Configuration.
 - **Open.** (1) Part 5 wires an Initiator per found peer into `tutti-midi-hardware`/`tutti-session`
-  and sends on the peer's Group. (2) The peer's "Timeout Wait" ACK (§5.10) does not extend a wait.
+  and sends on the peer's Group. (2) (done) The peer's "Timeout Wait" ACK (§5.10) extends a wait; see the next bullet.
   (3) M2-102 §2.5.1's "shall not request more than the declared maximum" is the caller's: the
   Initiator does not read a Details Reply to bound a later Set On. (4) No Profile is defined here:
   a Profile's own rules (levels, controllers) are its specification's.

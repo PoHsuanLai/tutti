@@ -9,8 +9,7 @@ microphone. It is the only Tutti crate that links a platform audio API, so a
 headless render, an offline export or a test never pulls one in.
 
 Use it directly when you assemble the engine yourself; the `tutti` facade
-re-exports it as `tutti::device` (feature `device`), and `bevy-tutti` drives
-the same types from a Bevy plugin.
+re-exports it as `tutti::device` (feature `device`).
 
 ## Quick start
 

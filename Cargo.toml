@@ -1,26 +1,15 @@
 # Workspace root for the tutti audio engine.
-#
-# tutti is a self-contained audio engine, Bevy-free at its core: `bevy` is an
-# optional, off-by-default feature on every engine crate that has one.
-# bevy-tutti, the Bevy adapter layered on top, is PARKED: it lives in
-# crates/bevy-tutti, outside this workspace (`exclude` below), so nothing here
-# builds Bevy.
 [workspace]
 resolver = "2"
 members = [
-    # The Bevy-free umbrella. A pure re-export crate, and it must stay one:
-    # the package of this name that existed before `4b5bd2fd` was the
-    # workspace ROOT package and held `TuttiEngine`, a builder and the CPAL
-    # callback, and it was dissolved because `bevy-tutti` needed that logic.
-    # Re-exporting was never the problem; owning logic was. See
+    # The umbrella: a pure re-export crate, and it must stay one. See
     # `crates/tutti/src/lib.rs` and `crates/tutti/tests/no_logic.rs`.
     # The development commands (`cargo xtask help`): std only, no workspace
     # dependency, outside the layering (`cargo xtask check-layout`).
     "xtask",
     "crates/tutti",
-    # The Bevy-free API layer both umbrellas use (design 015): the
-    # cross-crate composition, not an umbrella. It re-exports no crate whole
-    # and never reaches Bevy (`cargo xtask check-session`).
+    # The API layer: the cross-crate composition, not an umbrella. It
+    # re-exports no crate whole (`cargo xtask check-session`).
     "crates/tutti-session",
     # The publish cell the engine hands non-scalar state to its audio thread
     # through. A general-purpose crate that names nothing of tutti's (and
@@ -117,12 +106,6 @@ members = [
     "testing/tutti-plugin-contract",
 ]
 
-# `crates/bevy-tutti`, the Bevy adapter, is parked: not a member, and its own
-# `[workspace]` root (CLAUDE.md, "bevy-tutti is parked"). Build it on demand with
-# `cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features full,plugin
-# --all-targets`.
-exclude = ["crates/bevy-tutti"]
-
 # The edition every member inherits with `edition.workspace = true`, vendored
 # members included, and the minimum Rust they build with (`rust-version`, the
 # pinned toolchain's minor; let chains need 1.88), and the licence and
@@ -168,13 +151,7 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 
 # Shared-dep pins the members inherit via `workspace = true`.
-#
-# `bevy_reflect` is the optional `bevy` feature of `tutti-types` and
-# `tutti-modulation`, and the one pin a consumer must keep in step with the
-# bevy 0.19 line; the rest of the bevy 0.19 pins moved to the parked
-# `crates/bevy-tutti/Cargo.toml`.
 [workspace.dependencies]
-bevy_reflect = { version = "0.19", default-features = false }
 thiserror = "2"
 
 # Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —

@@ -458,8 +458,7 @@ fn bench_pool512(c: &mut Criterion) {
     group.finish();
 }
 
-/// `n` clips, each its own `VoiceNode` (how `bevy-tutti` spawns a clip:
-/// one node per clip, each with its own scratch), in `block`-frame blocks on
+/// `n` clips, each its own `VoiceNode` (one node per clip, each with its own scratch), in `block`-frame blocks on
 /// the moving transport. One block of every node per iteration.
 struct Clips {
     nodes: Vec<Direct<VoiceNode>>,
@@ -508,7 +507,7 @@ impl Clips {
     }
 }
 
-/// A clip per `VoiceNode`, as `bevy-tutti` spawns them: 64 stereo
+/// A clip per `VoiceNode`: 64 stereo
 /// nodes, at 64- and 512-frame blocks (each node's scratch sized for its
 /// block: 57 bytes a stereo frame).
 fn bench_clips(c: &mut Criterion) {

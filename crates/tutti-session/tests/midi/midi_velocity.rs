@@ -1,7 +1,6 @@
 //! A clip's velocity keeps its full 16-bit range to the event input.
 //!
-//! The session half of `bevy-tutti`'s `midi_sequence`
-//! `velocity_keeps_its_full_width`. Two velocities one LSB apart at 16 bits
+//! Two velocities one LSB apart at 16 bits
 //! are the same number at 7, so this fails the moment anything on the
 //! `Midi::play_clip` → clip node → event edge path narrows the field (it
 //! caught exactly that once: a `note_on_7bit` that crushed the value and

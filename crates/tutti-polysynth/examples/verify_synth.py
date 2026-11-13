@@ -2,7 +2,7 @@
 """Judge tutti-synth's rendered output against first-principles synthesis theory.
 
 Run:
-    cargo run --release --manifest-path crates/bevy-tutti/Cargo.toml \
+    cargo run --release \
         -p tutti-synth --example render_synth_cases -- /tmp/tutti-synth
     uv run python crates/tutti-polysynth/examples/verify_synth.py /tmp/tutti-synth
 

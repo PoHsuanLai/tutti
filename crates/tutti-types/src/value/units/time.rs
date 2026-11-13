@@ -175,8 +175,6 @@ impl Seconds {
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
-#[cfg_attr(feature = "bevy", type_path = "tutti_types::value::units")]
 pub struct SampleRate(f64);
 
 impl SampleRate {

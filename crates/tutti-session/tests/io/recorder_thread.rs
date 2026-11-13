@@ -14,8 +14,7 @@
 //! nextest's per-test timeout. That is said plainly at the test rather than
 //! dressed up as a check.
 //!
-//! The last three tests are the Bevy-free half of `bevy-tutti`'s
-//! `audio_io_pump.rs` (design 015 moved its pump loop here): a finite
+//! The last three tests (design 015): a finite
 //! source ends its own take and a frame loop can see that without blocking; a
 //! live one ends only when asked, and the ask does not block either.
 //!
@@ -409,9 +408,9 @@ fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
 
 /// **A finite take ends itself, and a host that cannot block can see it.**
 ///
-/// `bevy-tutti`'s drain system polls `is_finished` once per frame and only
-/// then calls `finish_in_place`, so the frame never waits on the pump thread. This is
-/// that sequence without Bevy: nobody requests a stop, the source's own
+/// A host polls `is_finished` once per frame and only
+/// then calls `finish_in_place`, so the frame never waits on the pump thread.
+/// Here nobody requests a stop, the source's own
 /// [`Pull::Ended`] ends the loop, and the run flag is still set when
 /// the take is collected, which is what tells "it ended" from "it was ended".
 #[test]
@@ -453,8 +452,7 @@ fn is_finished_reports_a_finite_take_ending_itself_without_blocking() {
 
 /// **A live take ends when asked, and asking does not block.**
 ///
-/// `request_stop` is what `bevy-tutti`'s `AudioPump::stop` calls from a
-/// system: it returns at once, the pump notices on its next pass, and
+/// `request_stop` returns at once, the pump notices on its next pass, and
 /// `is_finished` turns true without anyone joining. The collect after it is
 /// then a join that does not wait.
 #[test]

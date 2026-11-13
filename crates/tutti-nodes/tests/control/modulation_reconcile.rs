@@ -1,4 +1,4 @@
-//! The Bevy-free modulation reconciler (`tutti_nodes::Modulation`, doc 014
+//! The modulation reconciler (`tutti_nodes::Modulation`, doc 014
 //! §8.2, §12.5): declarations applied to a plain `Editor`, rendered by its
 //! executor, against analytic figures and invariants of the render.
 //!
@@ -980,8 +980,8 @@ fn a_foreign_target_takes_a_lane_on_its_event_input() {
 /// **A rebind to a node with another param list waits for its commit.**
 /// Probe 1 declares `[Cutoff]`; a macro of 1 at depth 0.25 over `0..=1000`
 /// reads 250. The host replaces it at its key with a probe declaring
-/// `[Cutoff, Q]` (the same knob cell), then applies and commits, as a Bevy
-/// frame does (spawn, then commit). Until that commit the port's range
+/// `[Cutoff, Q]` (the same knob cell), then applies and commits (spawn, then
+/// commit). Until that commit the port's range
 /// cell is the old unit's, which the commit replaces (another list), so
 /// the target is unresolved and its lane goes; the host re-applies after
 /// the commit, and the lane is rebuilt on the new cell. A range edit to
@@ -1393,7 +1393,7 @@ impl Playhead {
 /// 1024-frame blocks. Bit for bit from the play start.
 ///
 /// The reference CLAP plugin's gain at a pinned chunk size is
-/// `bevy-tutti`'s `mod_plugin.rs`: a plugin is `tutti-plugin`'s, which `tutti-nodes` cannot name.
+/// A plugin is `tutti-plugin`'s, which `tutti-nodes` cannot name.
 #[test]
 fn an_export_is_the_live_render_on_a_native_param() {
     let (mut ed, mut exec) = editor(128);

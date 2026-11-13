@@ -1,10 +1,8 @@
 //! A node's params are addressed as the node goes in, so a modulation lane's
 //! knob is the node's own cell.
 //!
-//! The session half of `bevy-tutti`'s `params_at_insert` suite, which pinned
-//! the three ECS insertion paths (`spawn_audio_node`, `insert_audio_node`,
-//! `crossfade_audio_node`); all three go through `Graph::add` and
-//! `Graph::crossfade`, so these pin those: a lane finds a native param's knob
+//! The insertion paths are `Graph::add` and `Graph::crossfade`; these pin
+//! them: a lane finds a native param's knob
 //! through the node's `ParamSet`, which the insertion keeps by key
 //! (`SessionNode::params`, `set_node_params`). They stand at the insertion
 //! paths rather than at a fixture that addresses by hand, because a path that

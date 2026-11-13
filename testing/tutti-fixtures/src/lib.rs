@@ -267,12 +267,24 @@ pub fn clap_probe() -> &'static Path {
 
 /// The VST2 test plugin (`tutti-vst2-test-plugin`).
 ///
+/// On macOS a host meets VST2 under a `.vst` name and cargo's `.dylib` reads as
+/// no format (`PluginRef::file` refuses it), so the path is the `.vst` link
+/// ([`publish_with_extension`]); elsewhere it is the cdylib, whose `.so` and
+/// `.dll` already read as VST2.
+///
 /// # Panics
 ///
 /// If the cdylib has not been built ([`cdylib`]).
 pub fn vst2_probe() -> &'static Path {
     static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
-    RESOLVED.get_or_init(|| cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin"))
+    RESOLVED.get_or_init(|| {
+        let real = cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin");
+        if cfg!(target_os = "macos") {
+            publish_with_extension(&real, "vst")
+        } else {
+            real
+        }
+    })
 }
 
 /// Publish `real` under its own name with `extension` (`.clap`, say) beside

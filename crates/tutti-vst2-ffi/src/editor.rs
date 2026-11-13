@@ -36,13 +36,6 @@ pub trait Editor {
     /// Return whether the window is currently open.
     fn is_open(&mut self) -> bool;
 
-    /// Set the knob mode for this editor (if supported by host).
-    ///
-    /// Return `true` if the knob mode was set.
-    fn set_knob_mode(&mut self, mode: KnobMode) -> bool {
-        false
-    }
-
     /// Receive key up event. Return `true` if the key was used.
     fn key_up(&mut self, keycode: KeyCode) -> bool {
         false
@@ -78,16 +71,6 @@ pub struct KeyCode {
     pub key: Key,
     /// Modifier key bitflags. See `enums::flags::modifier_key`.
     pub modifier: u8,
-}
-
-/// Allows host to set how a parameter knob works.
-#[repr(isize)]
-#[derive(Copy, Clone, Debug, TryFromPrimitive, IntoPrimitive)]
-#[allow(missing_docs)]
-pub enum KnobMode {
-    Circular,
-    CircularRelative,
-    Linear,
 }
 
 /// Platform independent key codes.
@@ -163,6 +146,7 @@ mod tests {
     /// right), so its layout is `repr(C)`. No test can fail on the missing
     /// attribute: `repr(Rust)` happens to keep field order for four equal
     /// fields. This pins the layout the attribute guarantees.
+    /// Spec: vst2.struct.ERect
     #[test]
     fn rect_has_the_erect_layout() {
         assert_eq!(std::mem::size_of::<Rect>(), 8);

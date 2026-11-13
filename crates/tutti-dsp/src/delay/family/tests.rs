@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tutti_types::{BusTopology, Db, Feedback, Hz, SampleRate, Seconds};
 
@@ -75,8 +75,12 @@ impl FamilyCase for DelayFamily {
         }
         let mut rng = StdRng::seed_from_u64(24);
         all.extend((0..32).map(|_| {
-            let fb = rng.gen_range(0.0..limit);
-            controls(rng.gen_range(0.0..1.0), fb, rng.gen_range(0.0..limit - fb))
+            let fb = rng.random_range(0.0..limit);
+            controls(
+                rng.random_range(0.0..1.0),
+                fb,
+                rng.random_range(0.0..limit - fb),
+            )
         }));
         all
     }

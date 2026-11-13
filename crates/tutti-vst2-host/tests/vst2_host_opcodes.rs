@@ -17,7 +17,7 @@
 //!   `Host::get_plugin_id` was overridden to `'DAWI'` and never consulted.
 //!
 //! `audioMasterGetLanguage` (38) is the third: the fall-through's 0 is not a
-//! valid `HostLanguage`, which is 1-based, so a plugin indexing a string table
+//! valid language (`kVstLangEnglish` is 1), which is 1-based, so a plugin indexing a string table
 //! by it reads slot 0.
 //!
 //! # What is covered here, and what is not
@@ -124,6 +124,7 @@ fn requests(instance: &mut Active) -> Vec<Request> {
 /// The probe fires it from `resume`, which the activation dispatches, so a
 /// loaded instance has already seen one. Before the routing arm existed the
 /// opcode hit the `trace!` fall-through and nothing was asked.
+/// Spec: vst2.audioMaster.UpdateDisplay
 #[test]
 fn update_display_reaches_the_host() {
     let probe = Probe::acquire();

@@ -1,12 +1,14 @@
 [package]
 name = "tutti-plugin-ipc"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The plugin host's process edge for Tutti: the wire, the shared-memory slab, the plugin-server's launch, and the client of a served plugin"
+description = "How tutti talks to its plugin helper process"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
-publish = false
+keywords = ["audio", "plugin", "ipc", "sandbox"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -18,12 +20,12 @@ workspace = true
 testing = []
 
 [dependencies]
-tutti-types = { path = "../tutti-types" }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
-tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
 # The shared mapping and the OS calls, behind safe calls.
-tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
+tutti-plugin-ipc-ffi = { version = "0.0.1", path = "../tutti-plugin-ipc-ffi" }
 
 # The wire.
 serde = { version = "1", features = ["derive"] }
@@ -32,11 +34,11 @@ postcard = { version = "1.1.3", default-features = false, features = ["use-std"]
 # The slab's sample views (`Pod`), so no `unsafe` byte cast of our own.
 bytemuck = "1"
 # Unpredictable slab and socket names (pure Rust; the OS's random source).
-getrandom = "0.3"
+getrandom = "0.4"
 
 crossbeam = "0.8"
 crossbeam-channel = "0.5"
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 # Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows).
 interprocess = { version = "2" }

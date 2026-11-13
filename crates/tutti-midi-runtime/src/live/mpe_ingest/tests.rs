@@ -1,8 +1,8 @@
 use super::*;
+use crate::test_support::at;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::MpeZoneConfig;
-use tutti_types::Samples;
 use tutti_ump::{Address, CCNumber, KeyEvent, Message, Voice2};
 
 /// What the ingest sends, collected: the tests read it as a list.
@@ -23,11 +23,6 @@ impl Collected for MpeIngest {
         self.zone_defaults(group, offset, |e| out.push(e));
         out.into_iter()
     }
-}
-
-/// `ump` at frame `offset` of a 64-frame block.
-fn at(offset: usize, ump: Ump) -> UmpAt {
-    (Offset::new(offset, Samples(64)).unwrap(), ump)
 }
 
 /// The channel nibble of a channel voice packet.
@@ -482,6 +477,7 @@ fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
 /// not the note a bend on channel 2 of Group 1 is for (that bend holds no note
 /// in its Group and is dropped), and the per-note message built for Group 2's
 /// bend stays in Group 2.
+/// Spec: m2-104/2.1.2#2
 #[test]
 fn a_groups_member_channels_hold_notes_of_their_own() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));

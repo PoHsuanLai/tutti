@@ -23,6 +23,7 @@ mod controller;
 mod editor_instance;
 mod hosting;
 mod instance;
+mod keys;
 mod library;
 mod loaded;
 mod mapping;

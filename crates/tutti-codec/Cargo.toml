@@ -1,13 +1,11 @@
 [package]
 name = "tutti-codec"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish = false
-description = "Tutti's audio file codecs: WAV, AIFF, FLAC and Ogg Vorbis out behind one Encoder, and WAV, FLAC, MP3 and Ogg in as a Wave or a FileIn"
+description = "Reads WAV, FLAC, MP3 and Ogg audio files, and writes WAV, AIFF, FLAC and Ogg Vorbis"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-codec"
 readme = "README.md"
 keywords = ["audio", "wav", "flac", "aiff", "ogg"]
 categories = ["multimedia::audio"]
@@ -43,7 +41,7 @@ serde = ["dep:serde"]
 thiserror.workspace = true
 # An unfinished file that cannot be removed is logged.
 tracing = "0.1"
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 # No default features: the encoder drives flacenc's frame encoder on its own
 # workers, so flacenc's `par` (and its `serde`/`log`) are unused.

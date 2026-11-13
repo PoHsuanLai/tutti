@@ -379,7 +379,7 @@ pub enum ProfilesChange {
 }
 
 /// A [`ProfileSwitch`] that cannot be made.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProfileError {
     /// The device the switch was made from is no longer an open input.

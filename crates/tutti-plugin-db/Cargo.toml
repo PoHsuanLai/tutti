@@ -1,16 +1,14 @@
 [package]
 name = "tutti-plugin-db"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Plugin discovery for the Tutti audio engine: directory walk, file table, scan with crash recovery, and a versioned database file"
+description = "Finds the audio plugins installed on a machine and remembers them"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-plugin-db"
 readme = "README.md"
 # Not published: whether and when this goes to crates.io is the maintainer's
 # call, not a side effect of a workspace change. Remove this line to publish.
-publish = false
 keywords = ["audio", "plugin", "vst3", "clap", "discovery"]
 categories = ["multimedia::audio"]
 
@@ -24,7 +22,7 @@ default = []
 serde = ["dep:serde", "dep:thiserror", "tutti-plugin-types/serde"]
 
 [dependencies]
-tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = { workspace = true, optional = true }
 tracing = "0.1"

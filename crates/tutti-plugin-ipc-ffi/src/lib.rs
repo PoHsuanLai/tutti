@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! The `unsafe` of Tutti's plugin process edge, each piece behind a safe call,
 //! so `tutti-plugin-ipc` and `tutti-plugin-server` forbid `unsafe` (the owner's
 //! rule: `unsafe` lives in one self-contained place behind a safe wrapper; the

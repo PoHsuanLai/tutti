@@ -9,7 +9,7 @@ use tutti_types::{Beat, BeatDuration, Bpm, Frame, SampleRate, Seconds, first_fra
 ///
 /// Built on the control side (`new` and `with_point` allocate); every query
 /// borrows it and allocates nothing.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TempoMap {
     pts: Vec<TempoPoint>,
     segs: Vec<Seg>,

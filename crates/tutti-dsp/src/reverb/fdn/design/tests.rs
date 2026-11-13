@@ -1,5 +1,5 @@
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use super::*;
 use crate::contract::{FamilyCase, Hook, LtiCase, RecurrenceCase, ReverbCase};
@@ -52,15 +52,15 @@ impl FamilyCase for FdnFamily {
         let mut rng = StdRng::seed_from_u64(22);
         for _ in 0..200 {
             all.push(FdnControls {
-                decay: [0; 3].map(|_| Seconds(rng.gen_range(0.05..8.0))),
-                size: Mix(rng.gen_range(0.0..=1.0)),
-                diffusion: Mix(rng.gen_range(0.0..=1.0)),
-                pre_delay: Seconds(rng.gen_range(0.0..=0.5)),
-                modulation: Depth::of(rng.gen_range(-1.0..=1.0)),
-                rate: Hz(rng.gen_range(0.05..=5.0)),
-                width: StereoWidth(rng.gen_range(0.0..=2.0)),
-                wet: Db(rng.gen_range(-60.0..=12.0)),
-                freeze: rng.gen_bool(0.2),
+                decay: [0; 3].map(|_| Seconds(rng.random_range(0.05..8.0))),
+                size: Mix(rng.random_range(0.0..=1.0)),
+                diffusion: Mix(rng.random_range(0.0..=1.0)),
+                pre_delay: Seconds(rng.random_range(0.0..=0.5)),
+                modulation: Depth::of(rng.random_range(-1.0..=1.0)),
+                rate: Hz(rng.random_range(0.05..=5.0)),
+                width: StereoWidth(rng.random_range(0.0..=2.0)),
+                wet: Db(rng.random_range(-60.0..=12.0)),
+                freeze: rng.random_bool(0.2),
             });
         }
         all
@@ -527,7 +527,13 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
     let run = |k: &mut Realized<FdnRecurrence>, frames: usize, noise: bool| {
         let mut rng = StdRng::seed_from_u64(5);
         let x: Vec<f32> = (0..frames)
-            .map(|_| if noise { rng.gen_range(-0.5..0.5) } else { 0.0 })
+            .map(|_| {
+                if noise {
+                    rng.random_range(-0.5..0.5)
+                } else {
+                    0.0
+                }
+            })
             .collect();
         for chunk in x.chunks(64) {
             let (mut l, mut r) = (vec![0.0f32; chunk.len()], vec![0.0f32; chunk.len()]);

@@ -13,6 +13,16 @@ pub struct NotValid {
     pub what: &'static str,
 }
 
+/// A number outside the range of the type it was meant to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{raw} is not a valid {what}")]
+pub struct NotInRange<R: fmt::Display + fmt::Debug> {
+    /// The type the number was meant to be.
+    pub what: &'static str,
+    /// The number.
+    pub raw: R,
+}
+
 /// Defines a string type that holds only text its validator accepts.
 macro_rules! text_type {
     ($(#[$meta:meta])* $name:ident, $what:literal, $valid:expr) => {

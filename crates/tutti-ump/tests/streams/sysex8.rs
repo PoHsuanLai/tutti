@@ -64,6 +64,7 @@ fn payload(len: usize) -> Vec<u8> {
 /// Stream ID) is a Complete; otherwise a Start, Continues and an End, 13 bytes
 /// each but the last. The Stream ID is in every packet, and `# of bytes`
 /// counts it.
+/// Spec: m2-104/7.8#1, m2-104/7.8#2
 #[test]
 fn packets_follow_table_19_at_boundary_sizes() {
     // (payload length, statuses, `# of bytes` of each packet)
@@ -122,6 +123,7 @@ fn a_written_message_reads_back_whole() {
 
 /// Section 7.8: Start and Continue with fewer than 14 bytes are not a message
 /// end, and a Start or Continue with only the Stream ID is allowed.
+/// Spec: m2-104/7.8#4
 #[test]
 fn a_short_start_or_continue_does_not_end_the_message() {
     let mut a = assembler(1);
@@ -139,6 +141,7 @@ fn a_short_start_or_continue_does_not_end_the_message() {
 
 /// Section 7.8.1: an End whose `# of bytes` is 1 (the Stream ID alone, data
 /// zero) closes a message whose data is valid.
+/// Spec: m2-104/7.8.1#1
 #[test]
 fn an_end_of_one_byte_closes_a_valid_message() {
     let mut a = assembler(1);
@@ -149,6 +152,7 @@ fn an_end_of_one_byte_closes_a_valid_message() {
 
 /// Section 7.8.1: an End with `# of bytes` 0xF aborts the stream's message:
 /// nothing is delivered and it is counted; the stream is usable after.
+/// Spec: m2-104/7.8.1#1
 #[test]
 fn an_end_of_fifteen_aborts_the_message_and_counts_it() {
     let mut a = assembler(1);

@@ -6,7 +6,7 @@ use tutti_types::Samples;
 ///
 /// `Default` is tuned for 64-channel streaming on a typical desktop; use
 /// `Default` + struct-update to change one field.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BufferConfig {
     /// Baseline refill size in frames, before the varifill strategy scales
     /// it by buffer urgency, disk throughput and playback speed. 16384 by

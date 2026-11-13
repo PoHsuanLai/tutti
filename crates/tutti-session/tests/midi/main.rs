@@ -2,6 +2,8 @@
 
 // A held key across a retarget and a re-route.
 #[cfg(feature = "midi")]
+mod common;
+#[cfg(feature = "midi")]
 mod held_keys;
 // Clips, live inputs, routes and the hardware out (`Session::midi`).
 #[cfg(feature = "midi")]

@@ -13,16 +13,22 @@
 //!   from inside the setter;
 //! - pin and parameter counts are read after `effOpen`;
 //! - `audioMasterCanDo` answers what the host supports;
+//! - the plugin's queries of the host (vendor strings, latencies) and its editor's edits;
 //! - `effEditIdle` reaches an open editor;
+//! - editor keys reach an open editor, and its answer is reported;
 //! - a block longer than the announced maximum is split before the plugin.
 
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
+use keyboard_types::{Code, Key, KeyState, Modifiers, NamedKey};
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_plugin_types::{ContentScale, Control, Controller, EditorWindow, Request};
+use tutti_plugin_types::{
+    ContentScale, Control, Controller, EditorWindow, KeyEvent, KeyUse, ModifierConvention,
+    Normalized, ParamEdit, ParamId, Request,
+};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
@@ -177,6 +183,7 @@ fn load_with_env(block: usize, env: &[(&str, &str)]) -> Active {
 ///
 /// Before the fix `load` stopped at `effMainsChanged(1)`: the first
 /// `set_sample_rate` then sent `effStopProcess` for a process never started.
+/// Spec: vst2.eff.SetSampleRate, vst2.eff.SetBlockSize, vst2.eff.SetProcessPrecision, vst2.eff.MainsChanged, vst2.eff.StartProcess, vst2.eff.StopProcess
 #[test]
 fn activation_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
     let _guard = lock_probe();
@@ -379,6 +386,7 @@ fn the_host_answers_the_figure_being_set_from_inside_the_setter() {
 /// A plugin that finalises its pin and parameter counts inside `effOpen` is
 /// read after it: the counts the host sizes its scratch and parameter
 /// snapshot from are the settled ones.
+/// Spec: vst2.eff.Open, vst2.field.numInputs, vst2.field.numParams
 #[test]
 fn counts_finalised_in_eff_open_are_read() {
     let _guard = lock_probe();
@@ -404,6 +412,7 @@ fn counts_finalised_in_eff_open_are_read() {
 
 /// A plugin asking the host what it can do is told what it does: MIDI in and
 /// out and time info yes, window sizing no, anything else "don't know".
+/// Spec: vst2.audioMaster.CanDo, vst2.cando.host.sendVstEvents, vst2.cando.host.sendVstMidiEvent, vst2.cando.host.sendVstTimeInfo, vst2.cando.host.receiveVstEvents, vst2.cando.host.receiveVstMidiEvent, vst2.cando.host.sizeWindow, vst2.cando.host.acceptIOChanges, vst2.cando.host.startStopProcess, vst2.cando.host.receiveVstSysexEvent, vst2.cando.host.sendVstMidiEventFlagIsRealtime, vst2.cando.host.supplyIdle
 #[test]
 fn can_do_answers_reach_the_plugin() {
     let _guard = lock_probe();
@@ -426,8 +435,109 @@ fn can_do_answers_reach_the_plugin() {
     assert_eq!(ask("receiveVstEvents"), 1);
     assert_eq!(ask("receiveVstMidiEvent"), 1);
     assert_eq!(ask("sizeWindow"), 1);
+    assert_eq!(ask("acceptIOChanges"), 1);
+    assert_eq!(ask("startStopProcess"), 1);
+    assert_eq!(ask("receiveVstSysexEvent"), 1);
+    assert_eq!(ask("sendVstMidiEventFlagIsRealtime"), 0);
     assert_eq!(ask("supplyIdle"), -1);
     assert_eq!(ask("a string no host knows"), 0);
+}
+
+// ---------------------------------------------------------------------------
+// What a plugin asks of the host
+// ---------------------------------------------------------------------------
+
+// The `audioMaster` opcodes asked below, as the SDK numbers them.
+const MASTER_GET_INPUT_LATENCY: i32 = 18;
+const MASTER_GET_OUTPUT_LATENCY: i32 = 19;
+const MASTER_GET_VENDOR_STRING: i32 = 32;
+const MASTER_GET_PRODUCT_STRING: i32 = 33;
+const MASTER_GET_VENDOR_VERSION: i32 = 34;
+
+fn ask_host(opcode: i32) -> isize {
+    probe_call(b"tutti_vst2_probe_ask_host\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(i32) -> isize = unsafe { std::mem::transmute(*sym) };
+        f(opcode)
+    })
+}
+
+fn ask_host_string(opcode: i32) -> (isize, String) {
+    let mut buffer = [0 as std::os::raw::c_char; 64];
+    let answer = probe_call(b"tutti_vst2_probe_ask_host_string\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: unsafe extern "C" fn(i32, *mut std::os::raw::c_char) -> isize =
+            unsafe { std::mem::transmute(*sym) };
+        // SAFETY: `buffer` is writable for the 64 bytes the opcode's contract gives.
+        unsafe { f(opcode, buffer.as_mut_ptr()) }
+    });
+    // SAFETY: the host NUL-terminates what it writes into the zeroed buffer.
+    let text = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+    (answer, text.to_string_lossy().into_owned())
+}
+
+/// A plugin asking who the host is reads "Tutti" and "Tutti VST2 Host", version 1, and the
+/// strings are the ones the host wrote, not a placeholder of the bindings.
+/// Spec: vst2.audioMaster.GetVendorString, vst2.audioMaster.GetProductString, vst2.audioMaster.GetVendorVersion
+#[test]
+fn the_host_names_itself_to_a_plugin_that_asks() {
+    let _guard = lock_probe();
+    let _instance = load(512);
+
+    assert_eq!(
+        ask_host_string(MASTER_GET_VENDOR_STRING),
+        (1, "Tutti".into())
+    );
+    assert_eq!(
+        ask_host_string(MASTER_GET_PRODUCT_STRING),
+        (1, "Tutti VST2 Host".into())
+    );
+    assert_eq!(ask_host(MASTER_GET_VENDOR_VERSION), 1);
+}
+
+/// The host reports no input or output latency of its own (`audioMasterGetInputLatency` and
+/// `GetOutputLatency` answer 0): the engine's delay compensation is applied outside the
+/// plugin, and a plugin told another figure would compensate twice.
+#[test]
+fn the_host_reports_no_io_latency_of_its_own() {
+    let _guard = lock_probe();
+    let _instance = load(512);
+
+    assert_eq!(ask_host(MASTER_GET_INPUT_LATENCY), 0);
+    assert_eq!(ask_host(MASTER_GET_OUTPUT_LATENCY), 0);
+}
+
+/// A knob turned in the plugin's own editor is reported as the gesture it is: begin, the
+/// value, end, in the order the plugin made the calls, for the parameter it named.
+/// Spec: vst2.audioMaster.BeginEdit, vst2.audioMaster.Automate, vst2.audioMaster.EndEdit
+#[test]
+fn an_editor_gesture_is_reported_in_order() {
+    let _guard = lock_probe();
+    let mut instance = load(512);
+    let mut drained = Vec::new();
+    instance
+        .loaded_mut()
+        .take_reported_edits(&main_thread(), &mut drained);
+    drained.clear();
+
+    probe_call(b"tutti_vst2_probe_fire_edit\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(i32, f32) = unsafe { std::mem::transmute(*sym) };
+        f(2, 0.25);
+    });
+
+    instance
+        .loaded_mut()
+        .take_reported_edits(&main_thread(), &mut drained);
+    let id = ParamId::new(2);
+    assert_eq!(
+        drained,
+        [
+            ParamEdit::Begin(id),
+            ParamEdit::change(id, Normalized::of(0.25)),
+            ParamEdit::End(id),
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +546,7 @@ fn can_do_answers_reach_the_plugin() {
 
 /// `editor_idle` dispatches `effEditIdle` to an open editor, once per call, and
 /// to none that is closed.
+/// Spec: vst2.eff.EditIdle
 #[test]
 fn editor_idle_reaches_an_open_editor() {
     let _guard = lock_probe();
@@ -452,10 +563,12 @@ fn editor_idle_reaches_an_open_editor() {
 
     // The probe's editor never touches the parent.
     let parent = tutti_fixtures::StandInWindow.handle();
-    instance
+    let size = instance
         .loaded_mut()
         .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
         .expect("the probe opens");
+    // `effEditGetRect` is the probe's 320 by 240, read before `effEditOpen`.
+    assert_eq!((size.width, size.height), (320, 240));
     instance.loaded_mut().editor_idle(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());
@@ -464,6 +577,116 @@ fn editor_idle_reaches_an_open_editor() {
     instance.loaded_mut().close_editor(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());
     assert_eq!(idles(), 3, "none once closed");
+}
+
+// ---------------------------------------------------------------------------
+// effEditKeyDown / effEditKeyUp
+// ---------------------------------------------------------------------------
+
+fn set_key_consumed(consumed: bool) {
+    probe_call(b"tutti_vst2_probe_set_key_consumed\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
+        f(consumed);
+    });
+}
+
+/// A key forwarded to an open editor reaches the plugin as `effEditKeyDown` or
+/// `effEditKeyUp` with the ASCII character in `index`, the SDK's virtual key in `value` and
+/// the modifier mask in the bits of `opt`; the plugin's answer is reported as used or
+/// ignored. None reaches a closed editor, or a character outside ASCII.
+/// Spec: vst2.eff.EditKeyDown
+#[test]
+fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
+    let _guard = lock_probe();
+    let mut instance = load_with_env(512, &[("TUTTI_VST2_PROBE_EDITOR", "1")]);
+    probe_call(b"tutti_vst2_probe_set_editor_opens\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
+        f(true);
+    });
+    let key = |state, key, code, modifiers| KeyEvent {
+        state,
+        key,
+        code,
+        modifiers,
+    };
+    let down_a = key(
+        KeyState::Down,
+        Key::Character("7".into()),
+        Code::Numpad7,
+        Modifiers::SHIFT,
+    );
+
+    let closed = instance
+        .loaded_mut()
+        .editor_key(&main_thread(), down_a.clone());
+    assert_eq!(closed.ok(), Some(KeyUse::Ignored), "no editor is open");
+    assert_eq!(read_capture().key_events, 0, "and the plugin heard nothing");
+
+    let parent = tutti_fixtures::StandInWindow.handle();
+    instance
+        .loaded_mut()
+        .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
+        .expect("the probe opens");
+
+    set_key_consumed(true);
+    let used = instance.loaded_mut().editor_key(&main_thread(), down_a);
+    assert_eq!(used.ok(), Some(KeyUse::Used), "the plugin returned 1");
+    let cap = read_capture();
+    assert_eq!(cap.key_events, 1);
+    assert!(cap.last_key.down);
+    assert_eq!(cap.last_key.character, i32::from(b'7'));
+    assert_eq!(cap.last_key.key, 31, "VKEY_NUMPAD7");
+    assert_eq!(cap.last_key.modifier_bits, 1, "the shift bit");
+
+    set_key_consumed(false);
+    let up_control = key(
+        KeyState::Up,
+        Key::Named(NamedKey::F1),
+        Code::F1,
+        Modifiers::CONTROL,
+    );
+    let ignored = instance.loaded_mut().editor_key(&main_thread(), up_control);
+    assert_eq!(ignored.ok(), Some(KeyUse::Ignored), "the plugin returned 0");
+    let cap = read_capture();
+    assert_eq!(cap.key_events, 2);
+    assert!(!cap.last_key.down, "effEditKeyUp");
+    assert_eq!(cap.last_key.character, 0, "no character");
+    assert_eq!(cap.last_key.key, 40, "VKEY_F1");
+    // Control is bit 8 off a Mac, where bit 4 is the role the SDK calls Command.
+    let control_bit = match ModifierConvention::HOST {
+        ModifierConvention::Mac => 4,
+        ModifierConvention::Pc => 8,
+    };
+    assert_eq!(cap.last_key.modifier_bits, control_bit);
+
+    set_key_consumed(true);
+    let accented = key(
+        KeyState::Down,
+        Key::Character("é".into()),
+        Code::KeyE,
+        Modifiers::empty(),
+    );
+    let unwritable = instance.loaded_mut().editor_key(&main_thread(), accented);
+    assert_eq!(unwritable.ok(), Some(KeyUse::Ignored), "ASCII only");
+    assert_eq!(read_capture().key_events, 2, "and it was not sent");
+
+    let left = key(
+        KeyState::Down,
+        Key::Named(NamedKey::ArrowLeft),
+        Code::ArrowLeft,
+        Modifiers::empty(),
+    );
+    let used = instance.loaded_mut().editor_key(&main_thread(), left);
+    assert_eq!(used.ok(), Some(KeyUse::Used), "the plugin returned 1");
+    let cap = read_capture();
+    assert_eq!(cap.key_events, 3);
+    assert_eq!(cap.last_key.character, 0, "a named key types no character");
+    assert_eq!(cap.last_key.key, 11, "VKEY_LEFT");
+
+    instance.loaded_mut().close_editor(&main_thread());
+    set_key_consumed(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +785,37 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
     assert_eq!(cap.event_count, 1);
     assert_eq!(cap.events[0].delta_frames, 150 - 128);
     assert_eq!(cap.events[0].midi_data[1], 62);
+}
+
+/// `kVstMidiEventIsRealtime` (bit 0 of the event's flags) is set on a block rendered in
+/// realtime and clear on a block rendered offline, and set again when the host goes back to
+/// realtime.
+/// Spec: vst2.flag.kVstMidiEventIsRealtime, vst2.event.kVstMidiType
+#[test]
+fn the_realtime_flag_is_set_live_and_clear_offline() {
+    const IS_REALTIME: i32 = 1;
+    let _guard = lock_probe();
+    let mut instance = load(BLOCK);
+    let note = [(
+        Offset::new(10, Samples(64)).unwrap(),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+    )];
+    let flags = |instance: &mut Active| {
+        render_f32(instance, 64, &note, None, 0.0);
+        let cap = read_capture();
+        assert_eq!(cap.event_count, 1);
+        cap.events[0].flags
+    };
+
+    assert_eq!(flags(&mut instance) & IS_REALTIME, IS_REALTIME, "live");
+    instance.loaded().set_offline_render(true);
+    assert_eq!(flags(&mut instance) & IS_REALTIME, 0, "offline");
+    instance.loaded().set_offline_render(false);
+    assert_eq!(
+        flags(&mut instance) & IS_REALTIME,
+        IS_REALTIME,
+        "live again"
+    );
 }
 
 /// A later piece's transport snapshot is the block's advanced by the frames

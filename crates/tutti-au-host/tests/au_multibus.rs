@@ -215,6 +215,7 @@ fn instruments_report_no_input_buses() {
 /// drifts from the AU's element count — which is what would break first if
 /// either side were rewritten independently. A unit that genuinely disagrees is
 /// the case the change exists for, and this is where it would surface.
+/// Spec: au.prop.ElementCount
 #[test]
 fn has_input_is_derived_from_the_element_count() {
     let _g = lock();

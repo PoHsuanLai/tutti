@@ -1,9 +1,9 @@
 [package]
 name = "tutti-rt"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Real-time-safe shared-memory primitives for the audio thread, and the one thread-priority call"
+description = "Small data structures safe to use from an audio callback, which must never wait, allocate or lock"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
@@ -12,18 +12,17 @@ categories = ["multimedia::audio", "concurrency"]
 # Not published: it carries the engine's `unsafe` (the denormals guard, the
 # parallel executor's claims), and whether it is offered as a crate of its own
 # is the maintainer's call. Its `unsafe` is listed in the README's "Safety".
-publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
 # `request_priority`: the OS thread-priority call, behind one outcome type.
-thread-priority = "1.1"
+thread-priority = "3.1"
 # `ArcLend`/`Loan`/`Reader`, re-exported at the root: the cell non-scalar state
 # reaches the audio thread through. A general-purpose crate that names no tutti
 # crate.
-arc-lend = { path = "../arc-lend" }
+arc-lend = { version = "0.0.1", path = "../arc-lend" }
 # The fixed inline storage behind `RtVec` (`vec.rs`): a run of `N` slots that
 # cannot grow, so the cap is the type's, not a check beside it.
 arrayvec = "0.7"
@@ -47,7 +46,7 @@ bytemuck = "1.16"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Performance"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Performance"] }
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"

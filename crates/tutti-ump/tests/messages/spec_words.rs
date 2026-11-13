@@ -26,15 +26,6 @@ fn addr(group: u8, channel: u8) -> Address {
         channel: MidiChannel::of(channel),
     }
 }
-fn note(n: u8) -> NoteNumber {
-    NoteNumber::new(n).unwrap()
-}
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap()
-}
-fn u14(v: u16) -> U14 {
-    U14::new(v).unwrap()
-}
 fn alt(kind: AlterationKind, degree: u8) -> Alteration {
     Alteration {
         kind,
@@ -52,6 +43,7 @@ fn pin(words: [u32; 4], message: Message) {
 }
 
 // F.1.1, Table 26. Bits 31-28 MT, 27-24 reserved, 23-20 status, then data.
+/// Spec: m2-104/msg/0/0, m2-104/msg/0/1, m2-104/msg/0/2, m2-104/msg/0/3, m2-104/msg/0/4
 #[test]
 fn utility() {
     pin([0x0000_0000, 0, 0, 0], Message::Utility(Utility::Noop));
@@ -82,17 +74,18 @@ fn utility() {
 }
 
 // F.1.2, Table 27, group 5: MT 1, group in 27-24, status byte in 23-16.
+/// Spec: m2-104/msg/1/f1, m2-104/msg/1/f2, m2-104/msg/1/f3, m2-104/msg/1/f6, m2-104/msg/1/f8, m2-104/msg/1/fa, m2-104/msg/1/fb, m2-104/msg/1/fc, m2-104/msg/1/fe, m2-104/msg/1/ff
 #[test]
 fn system() {
     let sys = |s| Message::System(g(5), s);
     // MTC: status F1, 0nnndddd = 0101_1010.
-    pin([0x15F1_5A00, 0, 0, 0], sys(System::TimeCode(u7(0x5A))));
+    pin([0x15F1_5A00, 0, 0, 0], sys(System::TimeCode(U7::of(0x5A))));
     // Song Position: LSB 0x45 then MSB 0x46, so (0x46 << 7) | 0x45 = 0x2345.
     pin(
         [0x15F2_4546, 0, 0, 0],
-        sys(System::SongPosition(u14(0x2345))),
+        sys(System::SongPosition(U14::of(0x2345))),
     );
-    pin([0x15F3_0900, 0, 0, 0], sys(System::SongSelect(u7(9))));
+    pin([0x15F3_0900, 0, 0, 0], sys(System::SongSelect(U7::of(9))));
     pin([0x15F6_0000, 0, 0, 0], sys(System::TuneRequest));
     pin([0x15F8_0000, 0, 0, 0], sys(System::TimingClock));
     pin([0x15FA_0000, 0, 0, 0], sys(System::Start));
@@ -104,36 +97,37 @@ fn system() {
 
 // F.1.3, Table 28, group 3 channel 5: MT 2, group, opcode in 23-20, channel in
 // 19-16, byte 3 in 15-8, byte 4 in 7-0.
+/// Spec: m2-104/msg/2/8, m2-104/msg/2/9, m2-104/msg/2/a, m2-104/msg/2/b, m2-104/msg/2/c, m2-104/msg/2/d, m2-104/msg/2/e
 #[test]
 fn midi1_channel_voice() {
     let v = |v| Message::Midi1(addr(3, 5), v);
     pin(
         [0x2385_3C40, 0, 0, 0],
         v(Voice1::NoteOff {
-            note: note(60),
-            velocity: u7(64),
+            note: NoteNumber::of(60),
+            velocity: U7::of(64),
         }),
     );
     pin(
         [0x2395_3C7F, 0, 0, 0],
         v(Voice1::NoteOn {
-            note: note(60),
-            velocity: u7(127),
+            note: NoteNumber::of(60),
+            velocity: U7::of(127),
         }),
     );
     // Velocity 0 is a Note On to the codec; translation reads it as an off.
     pin(
         [0x2395_3C00, 0, 0, 0],
         v(Voice1::NoteOn {
-            note: note(60),
-            velocity: u7(0),
+            note: NoteNumber::of(60),
+            velocity: U7::of(0),
         }),
     );
     pin(
         [0x23A5_3C10, 0, 0, 0],
         v(Voice1::PolyPressure {
-            note: note(60),
-            pressure: u7(16),
+            note: NoteNumber::of(60),
+            pressure: U7::of(16),
         }),
     );
     // CC 74 = 0x4A, value 0x20.
@@ -141,18 +135,28 @@ fn midi1_channel_voice() {
         [0x23B5_4A20, 0, 0, 0],
         v(Voice1::ControlChange {
             controller: CCNumber::of(74),
-            value: u7(0x20),
+            value: U7::of(0x20),
         }),
     );
-    pin([0x23C5_0900, 0, 0, 0], v(Voice1::ProgramChange(u7(9))));
-    pin([0x23D5_3300, 0, 0, 0], v(Voice1::ChannelPressure(u7(0x33))));
+    pin([0x23C5_0900, 0, 0, 0], v(Voice1::ProgramChange(U7::of(9))));
+    pin(
+        [0x23D5_3300, 0, 0, 0],
+        v(Voice1::ChannelPressure(U7::of(0x33))),
+    );
     // Pitch Bend 0x2345: LSB 0x45 in byte 3, MSB 0x46 in byte 4.
-    pin([0x23E5_4546, 0, 0, 0], v(Voice1::PitchBend(u14(0x2345))));
-    pin([0x23E5_0040, 0, 0, 0], v(Voice1::PitchBend(u14(0x2000))));
+    pin(
+        [0x23E5_4546, 0, 0, 0],
+        v(Voice1::PitchBend(U14::of(0x2345))),
+    );
+    pin(
+        [0x23E5_0040, 0, 0, 0],
+        v(Voice1::PitchBend(U14::of(0x2000))),
+    );
 }
 
 // F.2.1, Table 29, group 2: MT 3, status in 23-20, # of bytes in 19-16, data
 // from byte 3.
+/// Spec: m2-104/msg/3/0, m2-104/msg/3/1, m2-104/msg/3/2, m2-104/msg/3/3
 #[test]
 fn sysex7() {
     let p = |status, data: &[u8]| Message::Sysex7(g(2), Sysex7Packet::new(status, data).unwrap());
@@ -174,6 +178,7 @@ fn sysex7() {
 
 // F.3.1, Table 31, group 4: MT 5, status in 23-20, `# of bytes` in 19-16 (it
 // counts the stream id), stream id in byte 3, data from byte 4. §7.8.
+/// Spec: m2-104/msg/5/0, m2-104/msg/5/1, m2-104/msg/5/2, m2-104/msg/5/3
 #[test]
 fn sysex8() {
     let p = |status, stream, data: &[u8]| {
@@ -213,6 +218,7 @@ fn sysex8() {
 }
 
 // §7.9, Figure 86, group 4: MT 5, status 8 and 9, MDS id in 19-16.
+/// Spec: m2-104/msg/5/8, m2-104/msg/5/9
 #[test]
 fn mixed_data_set() {
     pin(
@@ -250,6 +256,7 @@ fn mixed_data_set() {
 
 // F.2.2, Table 30, group 1 channel 2: MT 4, opcode in 23-20, channel in 19-16,
 // byte 3 (index) in 15-8, byte 4 in 7-0; word 2 is the data.
+/// Spec: m2-104/msg/4/6, m2-104/msg/4/8, m2-104/msg/4/9, m2-104/msg/4/a
 #[test]
 fn midi2_note_and_pressure() {
     let v = |v| Message::Midi2(addr(1, 2), v);
@@ -258,7 +265,7 @@ fn midi2_note_and_pressure() {
     pin(
         [0x4192_3C03, 0xABCD_1234, 0, 0],
         v(Voice2::NoteOn {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity: NoteVelocity::new(0xABCD),
             attribute: Attribute::Pitch(0x1234),
         }),
@@ -266,7 +273,7 @@ fn midi2_note_and_pressure() {
     pin(
         [0x4182_3C00, 0x8000_0000, 0, 0],
         v(Voice2::NoteOff {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity: NoteVelocity::new(0x8000),
             attribute: Attribute::None,
         }),
@@ -274,7 +281,7 @@ fn midi2_note_and_pressure() {
     pin(
         [0x4192_3C01, 0x0000_BEEF, 0, 0],
         v(Voice2::NoteOn {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity: NoteVelocity::MIN,
             attribute: Attribute::Manufacturer(0xBEEF),
         }),
@@ -282,7 +289,7 @@ fn midi2_note_and_pressure() {
     pin(
         [0x4182_3C02, 0x1111_2222, 0, 0],
         v(Voice2::NoteOff {
-            note: note(60),
+            note: NoteNumber::of(60),
             velocity: NoteVelocity::new(0x1111),
             attribute: Attribute::Profile(0x2222),
         }),
@@ -290,19 +297,20 @@ fn midi2_note_and_pressure() {
     pin(
         [0x41A2_3C00, 0x1122_3344, 0, 0],
         v(Voice2::PolyPressure {
-            note: note(60),
+            note: NoteNumber::of(60),
             value: ControlValue::new(0x1122_3344),
         }),
     );
     pin(
         [0x4162_3C00, 0x8000_0000, 0, 0],
         v(Voice2::PerNotePitchBend {
-            note: note(60),
+            note: NoteNumber::of(60),
             value: BendValue::new(0x8000_0000),
         }),
     );
 }
 
+/// Spec: m2-104/msg/4/0, m2-104/msg/4/1, m2-104/msg/4/2, m2-104/msg/4/3, m2-104/msg/4/4, m2-104/msg/4/5, m2-104/msg/4/b, m2-104/msg/4/d, m2-104/msg/4/e, m2-104/msg/4/f
 #[test]
 fn midi2_per_note_and_controllers() {
     let v = |v| Message::Midi2(addr(1, 2), v);
@@ -311,7 +319,7 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x4102_3C03, 0x3C00_0000, 0, 0],
         v(Voice2::RegisteredPerNote {
-            note: note(60),
+            note: NoteNumber::of(60),
             controller: RegisteredPerNoteController::Pitch,
             value: ControlValue::new(0x3C00_0000),
         }),
@@ -319,7 +327,7 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x4112_3CC8, 0x0000_0001, 0, 0],
         v(Voice2::AssignablePerNote {
-            note: note(60),
+            note: NoteNumber::of(60),
             controller: 0xC8,
             value: ControlValue::new(1),
         }),
@@ -328,16 +336,16 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x4122_0102, 0xDEAD_BEEF, 0, 0],
         v(Voice2::Registered {
-            bank: u7(1),
-            index: u7(2),
+            bank: U7::of(1),
+            index: U7::of(2),
             value: ControlValue::new(0xDEAD_BEEF),
         }),
     );
     pin(
         [0x4132_0102, 0xDEAD_BEEF, 0, 0],
         v(Voice2::Assignable {
-            bank: u7(1),
-            index: u7(2),
+            bank: U7::of(1),
+            index: U7::of(2),
             value: ControlValue::new(0xDEAD_BEEF),
         }),
     );
@@ -345,16 +353,16 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x4142_0102, 0xFFFF_FFFF, 0, 0],
         v(Voice2::RelativeRegistered {
-            bank: u7(1),
-            index: u7(2),
+            bank: U7::of(1),
+            index: U7::of(2),
             delta: -1,
         }),
     );
     pin(
         [0x4152_0102, 0x0000_0010, 0, 0],
         v(Voice2::RelativeAssignable {
-            bank: u7(1),
-            index: u7(2),
+            bank: U7::of(1),
+            index: U7::of(2),
             delta: 16,
         }),
     );
@@ -377,7 +385,7 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x41F2_3C03, 0, 0, 0],
         v(Voice2::PerNoteManagement {
-            note: note(60),
+            note: NoteNumber::of(60),
             detach: true,
             reset: true,
         }),
@@ -385,7 +393,7 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x41F2_3C02, 0, 0, 0],
         v(Voice2::PerNoteManagement {
-            note: note(60),
+            note: NoteNumber::of(60),
             detach: true,
             reset: false,
         }),
@@ -393,7 +401,7 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x41F2_3C01, 0, 0, 0],
         v(Voice2::PerNoteManagement {
-            note: note(60),
+            note: NoteNumber::of(60),
             detach: false,
             reset: true,
         }),
@@ -416,7 +424,7 @@ fn the_note_a_message_addresses() {
         let addresses_a_note = matches!(status, 0x0 | 0x1 | 0x6 | 0x8 | 0x9 | 0xA | 0xF);
         assert_eq!(
             voice.note(),
-            addresses_a_note.then(|| note(60)),
+            addresses_a_note.then(|| NoteNumber::of(60)),
             "status {status:#x}: {voice:?}"
         );
     }
@@ -424,23 +432,24 @@ fn the_note_a_message_addresses() {
 
 // Figure 64: word 1 option flags in 7-0 with the Bank Valid bit B at bit 0;
 // word 2 is program (30-24), bank MSB (14-8), bank LSB (6-0).
+/// Spec: m2-104/msg/4/c
 #[test]
 fn midi2_program_change() {
     let v = |v| Message::Midi2(addr(1, 2), v);
     pin(
         [0x41C2_0001, 0x0900_3424, 0, 0],
         v(Voice2::ProgramChange {
-            program: u7(9),
+            program: U7::of(9),
             bank: Some(Bank {
-                msb: u7(0x34),
-                lsb: u7(0x24),
+                msb: U7::of(0x34),
+                lsb: U7::of(0x24),
             }),
         }),
     );
     pin(
         [0x41C2_0000, 0x0900_0000, 0, 0],
         v(Voice2::ProgramChange {
-            program: u7(9),
+            program: U7::of(9),
             bank: None,
         }),
     );
@@ -448,6 +457,7 @@ fn midi2_program_change() {
 
 // §7.5, Figures 69 to 75, group 6: word 1 is MT D, group, form (23-22),
 // address (21-20), channel (19-16), status bank (15-8), status (7-0).
+/// Spec: m2-104/msg/d/00.00, m2-104/msg/d/00.01, m2-104/msg/d/00.02
 #[test]
 fn flex_setup() {
     let f = |f| Message::Flex(g(6), f);
@@ -480,6 +490,7 @@ fn flex_setup() {
     );
 }
 
+/// Spec: m2-104/msg/d/00.05, m2-104/msg/d/00.06
 #[test]
 fn flex_key_and_chord() {
     let f = |f| Message::Flex(g(6), f);
@@ -558,6 +569,7 @@ fn flex_key_and_chord() {
     );
 }
 
+/// Spec: m2-104/msg/d/01.01, m2-104/msg/d/01.04, m2-104/msg/d/01.0c, m2-104/msg/d/02.01, m2-104/msg/d/02.03, m2-104/msg/d/02.04
 #[test]
 fn flex_text() {
     let t = |address, kind, form, bytes| {
@@ -633,6 +645,7 @@ fn flex_text() {
 }
 
 // §7.1, Figures 10 to 25: MT F, form in 27-26, status in 25-16.
+/// Spec: m2-104/msg/f/0, m2-104/msg/f/20, m2-104/msg/f/21
 #[test]
 fn stream_endpoint_messages() {
     let s = Message::Stream;
@@ -669,6 +682,7 @@ fn stream_endpoint_messages() {
     pin([0xF021_0000, 0, 0, 0], s(Stream::EndOfClip));
 }
 
+/// Spec: m2-104/msg/f/1
 #[test]
 fn stream_endpoint_info() {
     // Word 2: S in bit 31, function blocks in 30-24, M2 bit 9, M1 bit 8, RXJR
@@ -678,7 +692,7 @@ fn stream_endpoint_info() {
         Message::Stream(Stream::EndpointInfo(EndpointInfo {
             version: UmpVersion { major: 1, minor: 1 },
             static_function_blocks: true,
-            function_blocks: u7(3),
+            function_blocks: U7::of(3),
             midi2: true,
             midi1: true,
             rx_jr: true,
@@ -691,7 +705,7 @@ fn stream_endpoint_info() {
         Message::Stream(Stream::EndpointInfo(EndpointInfo {
             version: UmpVersion { major: 1, minor: 1 },
             static_function_blocks: false,
-            function_blocks: u7(32),
+            function_blocks: U7::of(32),
             midi2: true,
             midi1: false,
             rx_jr: false,
@@ -700,17 +714,18 @@ fn stream_endpoint_info() {
     );
 }
 
+/// Spec: m2-104/msg/f/2, m2-104/msg/f/3, m2-104/msg/f/4
 #[test]
 fn stream_identity_and_names() {
-    let b = |v: [u8; 4]| v.map(u7);
+    let b = |v: [u8; 4]| v.map(U7::of);
     // Figure 14: each id byte is 7 bits in a byte of its own. Manufacturer in
     // word 2 bytes 2-0, family and model in word 3, revision in word 4.
     pin(
         [0xF002_0000, 0x0000_206B, 0x0102_0304, 0x0506_0708],
         Message::Stream(Stream::DeviceIdentity(DeviceIdentity {
             manufacturer: ManufacturerId::of(0xA06B),
-            family: [u7(1), u7(2)],
-            model: [u7(3), u7(4)],
+            family: [U7::of(1), U7::of(2)],
+            model: [U7::of(3), U7::of(4)],
             revision: b([5, 6, 7, 8]),
         })),
     );
@@ -741,6 +756,7 @@ fn stream_identity_and_names() {
     );
 }
 
+/// Spec: m2-104/msg/f/5, m2-104/msg/f/6
 #[test]
 fn stream_configuration() {
     // Figures 18 and 19: protocol in bits 15-8, RXJR bit 1, TXJR bit 0.
@@ -770,6 +786,7 @@ fn stream_configuration() {
     );
 }
 
+/// Spec: m2-104/msg/f/10, m2-104/msg/f/11, m2-104/msg/f/12
 #[test]
 fn stream_function_blocks() {
     // Figure 20: block number in 15-8, filter in 7-0 (`i` bit 0, `n` bit 1).
@@ -934,7 +951,7 @@ fn registered_per_note_controllers_have_their_appendix_a_numbers() {
             Message::Midi2(
                 addr(1, 2),
                 Voice2::RegisteredPerNote {
-                    note: note(60),
+                    note: NoteNumber::of(60),
                     controller,
                     value: ControlValue::new(5),
                 },

@@ -73,6 +73,7 @@ fn changes(points: &[(Param, i32, f64)]) -> ParameterChanges {
 }
 
 /// Each input channel lands in its own output slot: `out = in + tag`.
+/// Spec: clap.plugin.process, vst3.IAudioProcessor.process, vst2.field.processReplacing, au.select.AudioUnitRender
 pub fn routing_tag_oracle<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     let ins = [ramp(BLOCK, 0.25), ramp(BLOCK, 0.5)];
@@ -102,6 +103,7 @@ pub fn reconfigure_keeps_rendering<F: Format>() {
 
 /// The plugin's buses as the host reports them, loaded and active: one stereo
 /// main bus a side, with the role the format gives it.
+/// Spec: clap.ext.audio_ports.count, clap.ext.audio_ports.get, vst3.IComponent.getBusCount, vst3.IComponent.getBusInfo, vst2.field.numInputs, vst2.field.numOutputs
 pub fn buses_reported<F: Format>() {
     let main = main_thread();
     let want = [(spec::MAIN_BUS, BusRole::Main)];
@@ -116,6 +118,7 @@ pub fn buses_reported<F: Format>() {
 }
 
 /// Reported latency follows the plugin's mode.
+/// Spec: clap.ext.latency.get, vst3.IAudioProcessor.getLatencySamples, vst2.field.initialDelay, au.prop.Latency
 pub fn latency_reported<F: Format>() {
     assert_eq!(
         active_in::<F>(Mode::Delay)
@@ -156,6 +159,7 @@ pub fn latency_applied<F: Format>() {
 /// I1): an impulse in the delay line before the reset never comes out after it.
 /// The oracle is the spec's own delay, [`spec::LATENCY`]; the silence after the
 /// reset is longer than it, so a remembered impulse would be heard.
+/// Spec: clap.plugin.reset, vst3.IAudioProcessor.setProcessing, vst2.eff.StopProcess, au.select.AudioUnitReset
 pub fn reset_clears_the_delay_line<F: Format>() {
     let mut a = active_with::<F>(Mode::Delay, 128, SampleFormat::Float32);
     let frames = 100;
@@ -179,6 +183,7 @@ pub fn reset_clears_the_delay_line<F: Format>() {
 }
 
 /// The tail the plugin reports.
+/// Spec: clap.ext.tail.get, vst3.IAudioProcessor.getTailSamples, vst2.eff.GetTailSize, au.prop.TailTime
 pub fn tail_reported<F: Format>() {
     assert_eq!(
         active_in::<F>(Mode::Tag).controller().tail(&main_thread()),
@@ -212,6 +217,7 @@ pub fn tail_markers_reported<F: Format>() {
 /// The plugin lists its parameters with their names, defaults and, where the
 /// format reports it, that they are automatable. Not step counts: CLAP's stepped
 /// flag carries none, and VST2 has no steps.
+/// Spec: clap.ext.params.count, clap.ext.params.get_info, vst3.IEditController.getParameterCount, vst3.IEditController.getParameterInfo, vst2.field.numParams, vst2.eff.GetParamName, au.prop.ParameterList, au.prop.ParameterInfo
 pub fn parameters_listed<F: Format>() {
     let mut got = F::load().parameters(&main_thread());
     got.sort_by_key(|p| p.id().get());
@@ -303,6 +309,7 @@ pub fn parameter_conversion_is_the_formats_own<F: Format>() {
 }
 
 /// A parameter written loaded reads back, loaded and active.
+/// Spec: clap.ext.params.get_value, vst3.IEditController.getParamNormalized, vst3.IEditController.setParamNormalized, vst2.field.getParameter, vst2.field.setParameter, au.select.AudioUnitGetParameter, au.select.AudioUnitSetParameter
 pub fn parameter_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Aux, 0.75);
@@ -341,6 +348,7 @@ pub fn active_write_applied<F: Format>() {
 
 /// A parameter point lands at its sample offset, or at the block head where
 /// the format cannot place it.
+/// Spec: clap.event.param_value, vst3.IParamValueQueue.getPoint, vst3.IParamValueQueue.getPointCount, au.select.AudioUnitScheduleParameters, au.param.event.Immediate
 pub fn automation_point_offset<F: Format>() {
     let mut a = active_in::<F>(Mode::Level);
     let points = changes(&[(Param::Level, 32, 0.75)]);
@@ -353,6 +361,7 @@ pub fn automation_point_offset<F: Format>() {
 }
 
 /// A note starts and stops at its sample offset.
+/// Spec: clap.event.note_on, clap.event.note_off, vst3.IEventList.getEvent, vst2.eff.ProcessEvents, vst2.event.kVstMidiType, au.midi.MusicDeviceMIDIEventList
 pub fn note_at_offset<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(10, true), note(40, false)];
@@ -473,6 +482,7 @@ pub fn transport_reaches_the_plugin<F: Format>() {
 /// A transport change inside a block is told at its frame, after the block's
 /// own: CLAP has an event for it (`CLAP_EVENT_TRANSPORT`); VST3 and VST2 have
 /// none, and are gaps.
+/// Spec: clap.event.transport
 pub fn transport_change_is_told_at_its_frame<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     let head = transport(true, 120.0, 4.0);
@@ -585,6 +595,7 @@ pub fn gesture_edits() -> Vec<ParamEdit> {
 /// changes with their values, the end, each for `aux`, and each to be recorded.
 /// CLAP's plugin says it in the first block after the state load (its output
 /// events); the others at the load, and a block after it adds nothing.
+/// Spec: clap.event.param_gesture_begin, clap.event.param_gesture_end, clap.event.param_value, vst3.IComponentHandler.beginEdit, vst3.IComponentHandler.performEdit, vst3.IComponentHandler.endEdit, vst2.audioMaster.BeginEdit, vst2.audioMaster.Automate, vst2.audioMaster.EndEdit
 pub fn a_gesture_is_reported_in_order<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     let main = main_thread();
@@ -612,6 +623,7 @@ pub fn a_gesture_is_reported_in_order<F: Format>() {
 }
 
 /// State round-trips what the plugin persists.
+/// Spec: clap.ext.state.save, clap.ext.state.load, clap.stream.istream.read, clap.stream.ostream.write, vst3.IComponent.getState, vst3.IComponent.setState, vst3.IBStream.read, vst3.IBStream.write, vst2.eff.GetChunk, vst2.eff.SetChunk, au.prop.ClassInfo
 pub fn state_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);

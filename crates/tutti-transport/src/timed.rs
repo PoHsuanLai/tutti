@@ -100,7 +100,7 @@ impl core::fmt::Display for ScheduleFull {
 impl std::error::Error for ScheduleFull {}
 
 /// One command in flight.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scheduled {
     at: At,
     command: TransportCommand,

@@ -227,7 +227,7 @@ pub struct Pass {
 }
 
 /// What ends a [`Pass`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PassEnd {
     /// A loop wrap, on the frame after the pass (the next pass's first, or,
     /// for a block's last pass, the first frame of the block after it).

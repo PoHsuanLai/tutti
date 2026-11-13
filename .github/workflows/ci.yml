@@ -178,6 +178,11 @@ jobs:
       # Every InProcess/OutOfProcess impl is listed in the plugin contract's
       # `hostings` (`xtask` over the source, no build).
       - run: cargo xtask check-hosting
+      # Every crate takes `[lints] workspace = true` and the workspace denies
+      # `missing_debug_implementations` (manifest scan, no build).
+      - run: cargo xtask check-lints
+      # A fieldless public enum that is `Eq` is `Hash` (source scan, no build).
+      - run: cargo xtask check-value-traits
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
       # The spec inventories under `testing/conformance/` are well formed, every

@@ -196,7 +196,8 @@ mod tests {
                 kind: Kind::NoteOn,
                 offset: 7,
                 id: 60,
-                value: 0.0
+                value: 0.0,
+                ramp: None,
             }]
         );
         assert_eq!(t.transports_sent, 1);

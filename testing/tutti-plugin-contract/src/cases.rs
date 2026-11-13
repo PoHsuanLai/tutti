@@ -360,6 +360,39 @@ pub fn automation_point_offset<F: Format>() {
     }
 }
 
+/// Two points of one parameter reach the plugin as two points, never as a ramp
+/// between them: the queue's points are values at offsets (`AUComponent.h`
+/// leaves a ramp to a `Ramped` event, with its own duration), so the output
+/// holds the first value until the second point.
+/// Spec: clap.event.param_value, vst3.IParamValueQueue.getPoint, vst3.IParamValueQueue.getPointCount, au.select.AudioUnitScheduleParameters, au.param.event.Immediate, au.param.event.Ramped
+pub fn automation_points_are_not_ramps<F: Format>() {
+    let mut a = active_in::<F>(Mode::Level);
+    let points = changes(&[(Param::Level, 8, 0.25), (Param::Level, 40, 0.75)]);
+    let out = a.render(
+        &silence(BLOCK),
+        BLOCK,
+        &ProcessContext::new().params(&points),
+    );
+    tutti_plugin_types::Control::flush_edits(a.controller_mut(), &main_thread());
+    let t = transcript::<F, _>(a.controller_mut());
+    assert_eq!(t.of(Kind::Ramp).count(), 0, "the host sent a ramp");
+    let sent: Vec<(u32, f64)> = t.of(Kind::Param).map(|e| (e.offset, e.value)).collect();
+    match F::PARAM_TIMING {
+        ParamTiming::SampleAccurate => {
+            assert_eq!(sent, [(8, 0.25), (40, 0.75)]);
+            for (i, &v) in out[0].iter().enumerate() {
+                let want = match i {
+                    0..8 => 0.5,
+                    8..40 => 0.25,
+                    _ => 0.75,
+                };
+                assert_eq!(v, want, "frame {i}");
+            }
+        }
+        ParamTiming::BlockHead => assert_eq!(sent, [(0, 0.75)]),
+    }
+}
+
 /// A note starts and stops at its sample offset.
 /// Spec: clap.event.note_on, clap.event.note_off, vst3.IEventList.getEvent, vst2.eff.ProcessEvents, vst2.event.kVstMidiType, au.midi.MusicDeviceMIDIEventList
 pub fn note_at_offset<F: Format>() {

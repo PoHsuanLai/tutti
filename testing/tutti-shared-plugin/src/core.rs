@@ -159,6 +159,14 @@
 //! events, so a host that sends one every block never overflows them; `t`
 //! counts what it did not keep.
 //!
+//! An AU ramp (kind 10) is recorded as the host sent it: the head's offset is
+//! the ramp's `startBufferOffset` (i32 bits), the id word holds the parameter
+//! id in its low 32 bits and `durationInFrames` in its high 32, and the value
+//! word holds the plain `startValue` (f32 bits) in its low 32 bits and the
+//! plain `endValue` in its high 32. `level` moves linearly from the start to
+//! the end over the duration, `aux` takes the end value at the start, and a
+//! later parameter point on `level` cancels the ramp.
+//!
 //! An event is `kind << 32 | offset` (u64; kind 1 parameter, 2 note on, 3 note
 //! off, 4 control change, 5 data event, 6 null parameter list, 7 flush), the
 //! parameter id, key or controller number (u64; a data event's first byte, 0
@@ -344,6 +352,16 @@ pub struct BadState;
 pub enum Ev {
     /// A parameter value at a sample offset.
     Param { id: u32, offset: u32, value: f64 },
+    /// A parameter ramp (AU `kParameterEvent_Ramped`): the plain values and the
+    /// start offset as the host wrote them, the offset negative when the ramp
+    /// began before this block.
+    Ramp {
+        id: u32,
+        offset: i32,
+        duration: u32,
+        start: f32,
+        end: f32,
+    },
     /// A note on.
     NoteOn { offset: u32, key: u8 },
     /// A note off.
@@ -365,6 +383,7 @@ pub enum Ev {
 impl Ev {
     fn offset(&self) -> u32 {
         match *self {
+            Ev::Ramp { offset, .. } => offset.max(0) as u32,
             Ev::Param { offset, .. }
             | Ev::NoteOn { offset, .. }
             | Ev::NoteOff { offset, .. }
@@ -485,6 +504,33 @@ pub struct Dsp {
     scratch32: Vec<Vec<f32>>,
     scratch64: Vec<Vec<f64>>,
     events: Vec<Ev>,
+    ramp: Option<LevelRamp>,
+}
+
+/// A linear move of `level`, in the frames of the block being rendered.
+#[derive(Clone, Copy, Debug, Default)]
+struct LevelRamp {
+    /// The frame the ramp starts at, relative to the block (negative once the
+    /// block it started in is past).
+    begin: i64,
+    duration: u32,
+    start: f64,
+    end: f64,
+}
+
+impl LevelRamp {
+    /// The level at block frame `i`, or `None` before the ramp starts.
+    fn at(&self, i: usize) -> Option<f64> {
+        let t = i as i64 - self.begin;
+        if t < 0 {
+            None
+        } else if t >= i64::from(self.duration) {
+            Some(self.end)
+        } else {
+            let k = t as f64 / f64::from(self.duration);
+            Some(self.start + (self.end - self.start) * k)
+        }
+    }
 }
 
 /// The audio side, behind the lock the control side never takes.
@@ -635,6 +681,17 @@ impl Core {
         // The transcript records arrival order, before the sort a render does.
         match ev {
             Ev::Param { id, offset, value } => self.log(1, offset, id, value),
+            Ev::Ramp {
+                id,
+                offset,
+                duration,
+                start,
+                end,
+            } => self.log_words(
+                10 << 32 | u64::from(offset as u32),
+                u64::from(id) | u64::from(duration) << 32,
+                u64::from(start.to_bits()) | u64::from(end.to_bits()) << 32,
+            ),
             Ev::NoteOn { offset, key } => self.log(2, offset, u32::from(key), 0.0),
             Ev::NoteOff { offset, key } => self.log(3, offset, u32::from(key), 0.0),
             Ev::Control {
@@ -705,11 +762,19 @@ impl Core {
     }
 
     fn log(&self, kind: u64, offset: u32, id: u32, value: f64) {
+        self.log_words(
+            kind << 32 | u64::from(offset),
+            u64::from(id),
+            value.to_bits(),
+        );
+    }
+
+    fn log_words(&self, head: u64, id: u64, value: u64) {
         let n = self.log_n.load(Relaxed) as usize;
         if n < LOG_EVENTS {
-            self.log[n][0].store(kind << 32 | u64::from(offset), Relaxed);
-            self.log[n][1].store(u64::from(id), Relaxed);
-            self.log[n][2].store(value.to_bits(), Relaxed);
+            self.log[n][0].store(head, Relaxed);
+            self.log[n][1].store(id, Relaxed);
+            self.log[n][2].store(value, Relaxed);
             self.log_n.store(n as u32 + 1, Release);
         } else {
             self.overflow.store(1, Relaxed);
@@ -763,10 +828,37 @@ impl Core {
             self.render(dsp, pos, at, bus, ins, outs);
             pos = at;
             match *ev {
+                Ev::Ramp {
+                    id,
+                    offset,
+                    duration,
+                    start,
+                    end,
+                } => {
+                    let (start, end) = (f64::from(start), f64::from(end));
+                    if id == LEVEL && duration > 0 {
+                        dsp.ramp = Some(LevelRamp {
+                            begin: i64::from(offset),
+                            duration,
+                            start: start.clamp(0.0, 1.0),
+                            end: end.clamp(0.0, 1.0),
+                        });
+                    } else {
+                        // Only `level` moves linearly: any other parameter
+                        // takes the ramp's end value at its start.
+                        self.set_param(id, end);
+                        if id == AUX {
+                            dsp.aux = end.clamp(0.0, 1.0);
+                        }
+                    }
+                }
                 Ev::Param { id, value, .. } => {
                     self.set_param(id, value);
                     match id {
-                        LEVEL => dsp.level = value.clamp(0.0, 1.0),
+                        LEVEL => {
+                            dsp.ramp = None;
+                            dsp.level = value.clamp(0.0, 1.0);
+                        }
                         AUX => dsp.aux = value.clamp(0.0, 1.0),
                         _ => {}
                     }
@@ -784,6 +876,20 @@ impl Core {
             }
         }
         self.render(dsp, pos, frames, bus, ins, outs);
+        if let Some(ramp) = dsp.ramp {
+            // The level the block ends on is the state's; the ramp goes on
+            // from the next block's head, or ends.
+            let last = ramp.at(frames);
+            if let Some(level) = last {
+                dsp.level = level;
+                self.set_param(LEVEL, level);
+            }
+            let done = i64::from(ramp.duration) <= frames as i64 - ramp.begin;
+            dsp.ramp = (!done).then_some(LevelRamp {
+                begin: ramp.begin - frames as i64,
+                ..ramp
+            });
+        }
         dsp.pos = (dsp.pos + frames) % (LATENCY as usize);
         events.clear();
         dsp.events = events;
@@ -814,7 +920,10 @@ impl Core {
                         line[k] = x;
                         out[i] = S::from_f64(old + f64::from(t));
                     }
-                    2 => out[i] = S::from_f64(dsp.level),
+                    2 => {
+                        let level = dsp.ramp.and_then(|r| r.at(i)).unwrap_or(dsp.level);
+                        out[i] = S::from_f64(level);
+                    }
                     3 => {
                         out[i] =
                             S::from_f64(dsp.held.map_or(0.0, |k| f64::from(k) + 1000.0 * c as f64));
@@ -997,6 +1106,43 @@ mod tests {
         let (core, mut dsp) = (Core::new(), Dsp::default());
         core.prepare(&mut dsp, 48_000.0, 4);
         (core, dsp)
+    }
+
+    /// A ramp is logged as sent, `level` rises linearly over its duration and
+    /// holds the end value, and a later point on `level` cancels it.
+    #[test]
+    fn a_level_ramp_is_logged_and_rendered_linearly() {
+        let (core, mut dsp) = ready();
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&2u32.to_le_bytes());
+        core.load(&blob).unwrap();
+        core.prepare(&mut dsp, 48_000.0, 8);
+        core.push(
+            &mut dsp,
+            Ev::Ramp {
+                id: LEVEL,
+                offset: 2,
+                duration: 4,
+                start: 0.0,
+                end: 1.0,
+            },
+        );
+        let (ins, mut out) = ([0.0f32; 8], [0.0f32; 8]);
+        core.process(&mut dsp, 8, 0, &[&ins], &mut [&mut out]);
+        assert_eq!(out, [0.5, 0.5, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0]);
+        let blob = core.save();
+        let t = crate::transcript::Transcript::parse(&blob);
+        let ramp = t.events[0].ramp.expect("a ramp is logged with its span");
+        assert_eq!(
+            (
+                t.events[0].offset,
+                t.events[0].value,
+                ramp.duration,
+                ramp.end
+            ),
+            (2, 0.0, 4, 1.0)
+        );
+        assert_eq!(t.level, 1.0);
     }
 
     #[test]

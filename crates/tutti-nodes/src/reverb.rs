@@ -163,16 +163,11 @@ pub trait NodeFamily: Family + 'static {
     /// What a [`Grows`] family's [`Grows::reach`] gives at `rate`, over the family's
     /// default [`Domain`](tutti_dsp::Domain) with the tail measured to [`TAIL_FLOOR`] ([`Reach::at`]): such a
     /// family's [`capacity`](Self::capacity).
-    ///
-    /// # Panics
-    ///
-    /// For a `rate` that is not positive and finite ([`Reach::at`] refuses it; the node
-    /// replaces such a rate before it asks).
     fn grown(&self, rate: SampleRate) -> <Self::Recurrence as Recurrence>::Capacity
     where
         Self: Grows,
     {
-        let reach = Reach::<Self::Domain>::at(rate).expect("a positive finite rate");
+        let reach = Reach::<Self::Domain>::at(rate);
         self.reach(&reach)
     }
 }
@@ -357,11 +352,7 @@ impl<F: NodeFamily> FamilyNode<F> {
 
     /// Prepares the realization for `rate` and sizes everything that depends on it.
     fn retune(&mut self, rate: SampleRate, max_block: MaxBlock) {
-        self.rate = if rate.get().is_finite() && rate.get() > 0.0 {
-            rate
-        } else {
-            SampleRate::DEFAULT
-        };
+        self.rate = rate;
         let capacity = self.family.capacity(self.rate);
         self.realization.prepare(
             &capacity,

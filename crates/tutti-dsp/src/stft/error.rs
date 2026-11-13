@@ -47,9 +47,6 @@ pub enum Error {
         /// The window shape, which is what sets the required overlap.
         window_fn: CosineWindow,
     },
-    /// A sample rate of zero or below.
-    #[error("sample rate must be positive")]
-    NonPositiveSampleRate,
     /// A grid's data length disagrees with `frames * bins`.
     #[error("grid has {len} values but its shape is {rows}x{cols} = {}", rows * cols)]
     GridShapeMismatch {

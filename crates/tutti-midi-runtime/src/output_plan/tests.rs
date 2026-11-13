@@ -20,7 +20,7 @@ fn ms(n: u64) -> Duration {
 
 /// A map where frame 0 is at `t0`.
 fn map_at(t0: Instant) -> ClockMap {
-    ClockMap::new(R48, ClockReading::new(t0, Frame(0))).unwrap()
+    ClockMap::new(R48, ClockReading::new(t0, Frame(0)))
 }
 
 fn terms(audio: Option<Duration>, device: Duration, offset: f64) -> OutputTerms {
@@ -109,7 +109,7 @@ fn a_frame_the_clock_cannot_place_is_sent_now() {
         Placement::Send(SendAt::Now)
     );
     let tiny = SampleRate::of(1e-9);
-    let slow = ClockMap::new(tiny, ClockReading::new(t0, Frame(0))).unwrap();
+    let slow = ClockMap::new(tiny, ClockReading::new(t0, Frame(0)));
     assert_eq!(
         plan.place(Frame(u64::MAX), Some(&slow), t0),
         Placement::Send(SendAt::Now),

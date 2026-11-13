@@ -49,7 +49,7 @@ fn probe_path() -> PathBuf {
 }
 
 fn prepare() -> Prepare {
-    Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256))).expect("a real rate")
+    Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(256)))
 }
 
 /// The lock, and the misbehaviour the next load sees.
@@ -245,8 +245,7 @@ fn a_block_past_i32_max_is_refused() {
     let too_big = Prepare::new(
         SampleRate::SR_48K,
         MaxBlock::of(Samples(i32::MAX as usize + 1)),
-    )
-    .expect("a real rate");
+    );
     let refused = probe
         .load()
         .activate(&main_thread(), too_big)
@@ -607,9 +606,7 @@ fn a_refused_rate_leaves_the_plugin_loaded() {
         .activate(&main_thread(), prepare())
         .expect("48 kHz");
     let loaded = Vst3Loaded::deactivate(&main_thread(), processor, controller).expect("a pair");
-    let high = prepare()
-        .with_rate(SampleRate::SR_96K)
-        .expect("a real rate");
+    let high = prepare().with_rate(SampleRate::SR_96K);
     let refused = loaded
         .activate(&main_thread(), high)
         .expect_err("96 kHz is refused");

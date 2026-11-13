@@ -292,8 +292,7 @@ pub(super) fn new_node(
         origin: None,
     });
     let _ = ipc.watch(true);
-    let prepare =
-        Prepare::new(SR, MaxBlock::new(Samples(CHUNK)).expect("a block")).expect("a rate");
+    let prepare = Prepare::new(SR, MaxBlock::new(Samples(CHUNK)).expect("a block"));
     let descriptor = ipc.descriptor().clone();
     let wiring = ipc.loaded().clone();
     let (processor, controller) = ipc

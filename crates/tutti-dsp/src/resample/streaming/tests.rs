@@ -12,7 +12,13 @@ fn resample_blocked(
     block: Option<usize>,
 ) -> Vec<Vec<f32>> {
     let n = planes[0].len();
-    let mut r = StreamingResampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
+    let mut r = StreamingResampler::new(
+        planes.len(),
+        SampleRate::from_hz(from).unwrap(),
+        SampleRate::from_hz(to).unwrap(),
+        chunk,
+    )
+    .unwrap();
     let mut out = vec![Vec::new(); planes.len()];
     match block {
         None => r.push(planes, &mut out).unwrap(),
@@ -42,7 +48,11 @@ fn the_length_is_the_rounded_ratio_however_the_input_is_blocked() {
                 let planes: Vec<Vec<f32>> = (0..2).map(|_| vec![0.1f32; n]).collect();
                 let want = (n as f64 * f64::from(to) / f64::from(from)).round() as usize;
                 assert_eq!(
-                    StreamingResampler::output_frames(from.into(), to.into(), Samples(n)),
+                    StreamingResampler::output_frames(
+                        SampleRate::from_hz(from).unwrap(),
+                        SampleRate::from_hz(to).unwrap(),
+                        Samples(n)
+                    ),
                     Samples(want),
                     "{from}->{to} n={n}: the stated length is the stream's"
                 );
@@ -120,7 +130,8 @@ fn the_signal_survives_every_blocking() {
 #[test]
 fn the_carry_stays_under_one_chunk_between_pushes() {
     for chunk in ChunkSize::PRESETS {
-        let mut r = StreamingResampler::new(2, 44_100.into(), 48_000.into(), chunk).unwrap();
+        let mut r =
+            StreamingResampler::new(2, SampleRate::SR_44K1, SampleRate::SR_48K, chunk).unwrap();
         let mut out = vec![Vec::new(); 2];
         let block = vec![vec![0.25f32; 37]; 2];
         for i in 0..2_000 {
@@ -142,7 +153,13 @@ fn the_carry_stays_under_one_chunk_between_pushes() {
 fn resample(planes: &[Vec<f32>], from: u32, to: u32, chunk: ChunkSize) -> Vec<Vec<f32>> {
     // The `u32`s keep the call sites below reading as plain rates; the
     // conversion is here, once.
-    let mut r = StreamingResampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
+    let mut r = StreamingResampler::new(
+        planes.len(),
+        SampleRate::from_hz(from).unwrap(),
+        SampleRate::from_hz(to).unwrap(),
+        chunk,
+    )
+    .unwrap();
     let mut out = vec![Vec::new(); planes.len()];
     r.push(planes, &mut out).unwrap();
     r.finish(&mut out).unwrap();
@@ -429,8 +446,8 @@ fn upsampling_cuts_at_the_input_band_edge() {
 }
 
 /// A rate the converter cannot take is an error that names the rate, not a
-/// saturated or wrapped integer: NaN, infinities, zero, negatives and
-/// anything under 0.5 Hz (which rounds to 0) or at 2^32 Hz and over. A
+/// saturated or wrapped integer: anything under 0.5 Hz (which rounds to 0) or
+/// at 2^32 Hz and over. A
 /// pair whose blocks would be enormous (1 Hz -> 192 kHz plans a ~98 M-point
 /// FFT) is refused too.
 #[test]
@@ -438,21 +455,12 @@ fn an_unusable_rate_is_an_error() {
     let new = |from: f64, to: f64| {
         StreamingResampler::new(
             1,
-            <SampleRate as tutti_types::Unit>::from_raw(from),
-            <SampleRate as tutti_types::Unit>::from_raw(to),
+            SampleRate::of(from),
+            SampleRate::of(to),
             ChunkSize::N1024,
         )
     };
-    for bad in [
-        f64::NAN,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        0.0,
-        -48_000.0,
-        0.4,
-        1e300,
-        4_294_967_296.0,
-    ] {
+    for bad in [0.4, 1e300, 4_294_967_296.0] {
         for (from, to) in [(bad, 48_000.0), (44_100.0, bad)] {
             let err = new(from, to).err().unwrap_or_else(|| {
                 panic!("{from} -> {to} Hz was accepted");
@@ -578,10 +586,10 @@ fn the_passband_is_flat_to_the_band_edge() {
 /// not an identity, so `new` is the one to say so.
 #[test]
 fn rates_of_one_whole_hz_are_no_conversion() {
-    let hz = |r: f64| <SampleRate as tutti_types::Unit>::from_raw(r);
+    let hz = |r: f64| SampleRate::of(r);
     assert!(!StreamingResampler::converts(hz(44_100.0), hz(44_100.2)));
     assert!(StreamingResampler::converts(hz(44_100.0), hz(48_000.0)));
-    assert!(StreamingResampler::converts(hz(f64::NAN), hz(f64::NAN)));
+    assert!(StreamingResampler::converts(hz(0.4), hz(0.4)));
     assert_eq!(
         StreamingResampler::output_frames(hz(44_100.0), hz(44_100.2), Samples(1_000_000)),
         Samples(1_000_000)

@@ -22,7 +22,6 @@ fn main() -> MainThread {
 
 fn prepare(rate: f64) -> Prepare {
     Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(64)))
-        .expect("the tests use real rates")
         .with_format(SampleFormat::Float32)
         .with_mode(RenderMode::Realtime)
 }

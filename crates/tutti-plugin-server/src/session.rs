@@ -14,7 +14,7 @@ use tutti_plugin_ipc::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, StagedState};
 use tutti_plugin_types::{
     BridgeError, BridgeResult, EditorError, EditorSize, Load, MainThread, ParameterQueue,
-    PluginError, Ready, SampleFormat, Wakeups, WindowHandle,
+    PluginError, Ready, SampleFormat, SampleRate, Wakeups, WindowHandle,
 };
 
 /// What [`Session::handle`] asks the transport loop to do.
@@ -238,7 +238,7 @@ impl Session {
                 main,
                 path,
                 &load,
-                sample_rate.get(),
+                sample_rate,
                 block_size,
                 preferred_format,
                 state,
@@ -364,16 +364,8 @@ impl Session {
             }
 
             M::SetSampleRate { rate } => {
-                // The wire's rate is not range-checked on decode: refuse one no
-                // clock can run at before the clock or the plugin sees it. The
-                // plugin keeps the rate it had, and the host is told why.
-                if !(rate.get().is_finite() && rate.get() > 0.0) {
-                    return Ok(BridgeMessage::SampleRateSet {
-                        rate,
-                        error: Some(format!("{} is not a sample rate", rate.get())),
-                    }
-                    .into());
-                }
+                // A rate no clock can run at is refused by the wire itself: a
+                // `SampleRate` does not decode from one (doc 027 D13).
                 // The clock follows the rate the host runs at, so a plugin
                 // that takes a later rate is on the right one. A refusal
                 // leaves it silent (`handle_process` publishes nothing) and
@@ -381,7 +373,7 @@ impl Session {
                 // otherwise render at its old rate against the host's blocks.
                 self.clock.sample_rate = rate.get();
                 let error = match self.plugin.as_mut() {
-                    Some(plugin) => match plugin.plugin_mut().set_sample_rate(main, rate.get()) {
+                    Some(plugin) => match plugin.plugin_mut().set_sample_rate(main, rate) {
                         Ok(()) => None,
                         Err(e) => {
                             tracing::warn!(requested = %rate, "sample rate not applied: {e}");
@@ -633,7 +625,7 @@ impl Session {
         main: &MainThread,
         path: std::path::PathBuf,
         load: &Load,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         block_size: usize,
         preferred_format: SampleFormat,
         declared: Option<StagedState>,
@@ -685,7 +677,7 @@ impl Session {
         let loaded = plugin.plugin().loaded().clone();
         let negotiated = plugin.plugin().negotiated(prefer_f64);
         self.clock = Clock {
-            sample_rate,
+            sample_rate: sample_rate.get(),
             format: negotiated,
         };
         self.max_block = block_size;
@@ -1869,37 +1861,6 @@ mod tests {
         assert_eq!(s.side().refused_blocks(), 3);
     }
 
-    /// **A rate no clock can run at is refused at the edge (doc 027 D13).** The
-    /// wire does not range-check a `SampleRate`; a NaN or zero must not reach
-    /// the plugin or the session's clock, and the host is told why.
-    #[test]
-    #[cfg(feature = "clap")]
-    fn a_rate_that_is_not_a_rate_is_refused() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let (mut s, _shm) = load_clap("bad_rate", SampleFormat::Float32);
-        let before = s.clock.sample_rate;
-        for bad in [f64::NAN, 0.0, -48_000.0, f64::INFINITY] {
-            let reply = s
-                .handle(
-                    &main_thread(),
-                    HostMessage::SetSampleRate {
-                        rate: <tutti_plugin_types::SampleRate as tutti_types::Unit>::from_raw(bad),
-                    },
-                )
-                .unwrap()
-                .into_reply();
-            assert!(
-                matches!(reply, BridgeMessage::SampleRateSet { error: Some(_), .. }),
-                "{bad}: {reply:?}"
-            );
-            assert_eq!(s.clock.sample_rate.to_bits(), before.to_bits(), "{bad}");
-            assert!(
-                s.rate_refused.is_none(),
-                "{bad}: the plugin keeps rendering"
-            );
-        }
-    }
-
     /// What [`clap_round_trip`] observed.
     #[cfg(feature = "clap")]
     struct RoundTrip<T> {
@@ -2808,7 +2769,7 @@ mod tests {
             &main_thread(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
             &Load::new(),
-            48_000.0,
+            SampleRate::SR_48K,
             128,
             false,
             None,

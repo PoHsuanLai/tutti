@@ -19,7 +19,7 @@
 //! ```
 //! use tutti_types::{Beat, Bpm, FrameClock, SampleRate, Samples};
 //!
-//! let mut clock = FrameClock::new(Beat(0.0), Bpm::of(90.0), SampleRate(48_000.0));
+//! let mut clock = FrameClock::new(Beat(0.0), Bpm::of(90.0), SampleRate::of(48_000.0));
 //! for _ in 0..1_500 {
 //!     clock.advance(Samples(64), None);
 //! }
@@ -495,7 +495,7 @@ impl FrameClock {
 mod tests {
     use super::*;
 
-    const SR: SampleRate = SampleRate(48_000.0);
+    const SR: SampleRate = SampleRate::of(48_000.0);
 
     /// A region is refused with the reason it is wrong: an end before the
     /// start is `Reversed`, equal bounds `Empty`, a NaN or infinite bound
@@ -803,7 +803,7 @@ mod tests {
             let rate = [22_050.0, 44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0]
                 [(next() % 6) as usize];
             let start = (next() % 1_000) as f64 / 7.0;
-            let mut c = FrameClock::new(Beat(start), Bpm::of(tempo), SampleRate(rate));
+            let mut c = FrameClock::new(Beat(start), Bpm::of(tempo), SampleRate::of(rate));
             let mut frames = 0u64;
             for _ in 0..blocks {
                 let n = 1 + (next() % 1_024) as usize;
@@ -835,7 +835,7 @@ mod tests {
             let tempo = 40.0 + (next() % 20_000) as f64 / 100.0;
             let rate = [44_100.0, 48_000.0, 96_000.0][(next() % 3) as usize];
             let origin = (next() % 4_096) as f64 / 64.0;
-            let mut c = FrameClock::new(Beat(origin), Bpm::of(tempo), SampleRate(rate));
+            let mut c = FrameClock::new(Beat(origin), Bpm::of(tempo), SampleRate::of(rate));
             c.advance(Samples((next() % 10_000) as usize), None);
             // An end that is itself a frame's beat on this segment, nudged by
             // up to an ulp: the case the estimate's rounding gets wrong.
@@ -893,7 +893,7 @@ mod tests {
 
         c.set_tempo(Bpm::of(90.0));
         assert_eq!(g(&c), 2);
-        c.set_sample_rate(SampleRate(44_100.0));
+        c.set_sample_rate(SampleRate::of(44_100.0));
         assert_eq!(g(&c), 3);
         c.mark_play_start();
         assert_eq!(g(&c), 4);

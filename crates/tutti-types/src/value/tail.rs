@@ -295,7 +295,7 @@ mod tests {
     /// NaN, negatives and `-∞` are unknown rather than unbounded or none.
     #[test]
     fn from_seconds_reads_only_plus_infinity_as_unbounded() {
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::of(48_000.0);
         assert_eq!(
             Tail::from_seconds(Seconds(f64::INFINITY), rate),
             Tail::Unbounded

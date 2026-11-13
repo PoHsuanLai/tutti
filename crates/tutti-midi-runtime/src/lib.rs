@@ -19,7 +19,7 @@ mod sync;
 mod tempo_follower;
 mod traits;
 
-pub use clock_map::{ClockMap, ClockReading, GAIN, InvalidRate, Observed, RESYNC};
+pub use clock_map::{ClockMap, ClockReading, GAIN, Observed, RESYNC};
 pub use held::HeldState;
 pub use ledger::{NoteLedger, Sending};
 pub use live::{

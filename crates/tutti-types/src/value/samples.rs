@@ -151,12 +151,6 @@ impl Samples {
     /// unassigned count, so it has to say whether it is allocating, measuring or
     /// counting. This lands on a continuous quantity, where there is one answer.
     ///
-    /// A non-positive rate gives `Seconds(0.0)` rather than an infinity — the
-    /// same choice [`BeatDuration::to_seconds`](super::units::BeatDuration::to_seconds)
-    /// makes for a non-positive tempo, and for the same reason: the degenerate
-    /// value reaches a readout or a scheduler, where zero is recoverable and
-    /// `inf` is not.
-    ///
     /// Divided in `f64`: a frame count leaves `f32`'s exact-integer range (2^24)
     /// after about six minutes at 48 kHz.
     ///
@@ -165,12 +159,7 @@ impl Samples {
     /// nanosecond.
     #[inline]
     pub fn to_seconds(self, rate: impl Into<super::units::SampleRate>) -> super::units::Seconds {
-        let rate = rate.into().get();
-        if rate > 0.0 {
-            super::units::Seconds(self.0 as f64 / rate)
-        } else {
-            super::units::Seconds(0.0)
-        }
+        super::units::Seconds(self.0 as f64 / rate.into().get())
     }
 }
 
@@ -262,21 +251,12 @@ mod tests {
     #[test]
     fn frames_convert_to_a_span_and_back() {
         use super::super::units::{SampleRate, Seconds};
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::of(48_000.0);
         assert_eq!(Samples(48_000).to_seconds(rate), Seconds(1.0));
         assert_eq!(Samples(0).to_seconds(rate), Seconds(0.0));
         // Round-trips through the forward direction it is the inverse of.
         assert_eq!(Seconds(2.5).to_samples(rate), Samples(120_000));
         assert_eq!(Samples(120_000).to_seconds(rate), Seconds(2.5));
-    }
-
-    /// A degenerate rate yields no span rather than an infinity — the value
-    /// reaches a readout or a scheduler, and zero is the recoverable one.
-    #[test]
-    fn a_non_positive_rate_is_no_span() {
-        use super::super::units::{SampleRate, Seconds};
-        assert_eq!(Samples(48_000).to_seconds(SampleRate(0.0)), Seconds(0.0));
-        assert_eq!(Samples(48_000).to_seconds(SampleRate(-1.0)), Seconds(0.0));
     }
 
     /// A long frame count keeps its frame through `Seconds` and back.
@@ -287,7 +267,7 @@ mod tests {
     #[test]
     fn a_long_frame_count_round_trips_through_seconds() {
         use super::super::units::SampleRate;
-        let rate = SampleRate(48_000.0);
+        let rate = SampleRate::of(48_000.0);
         for frames in [Samples((1 << 24) + 1), Samples(48_000 * 3600 + 1)] {
             assert_eq!(frames.to_seconds(rate).to_samples(rate), frames);
         }

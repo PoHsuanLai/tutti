@@ -30,11 +30,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use atomic_float::AtomicF64;
 use tutti_plugin_types::{ChunkCounters, PluginTail};
 use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
-use tutti_types::{SampleRate, Samples};
+use tutti_types::{AtomicSampleRate, SampleRate, Samples};
 
 use tutti_plugin_types::MAX_CHUNK;
 
@@ -75,7 +74,7 @@ pub struct PluginControls {
     node: NodeControls,
     /// The rate stamped onto a freshly-installed source. Shared — see the module
     /// docs for why it could not stay a per-clone field. `f64` at the atomic.
-    sample_rate: Arc<AtomicF64>,
+    sample_rate: Arc<AtomicSampleRate>,
     /// What the node's IPC pipeline reports
     /// ([`missed_chunks`](Self::missed_chunks),
     /// [`chunk_in_flight_answered`](Self::chunk_in_flight_answered)).
@@ -212,7 +211,7 @@ impl PluginControls {
             tail: Arc::new(Mutex::new(tail)),
             pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
             node: NodeControls::new(crate::PluginMeter::default(), Arc::default()),
-            sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
+            sample_rate: Arc::new(AtomicSampleRate::new(sample_rate)),
             chunks,
         }
     }
@@ -316,14 +315,14 @@ impl PluginControls {
 
     /// The sample rate a source installed now would be stamped with.
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate::new(self.sample_rate.load(Ordering::Acquire)).unwrap_or(SampleRate::DEFAULT)
+        self.sample_rate.load(Ordering::Acquire)
     }
 
     /// Update the shared rate and re-stamp every installed source. Called from
     /// the node's `prepare`; a no-op on a slot with nothing installed (a
     /// later install reads the new rate).
     pub fn restamp(&self, sample_rate: SampleRate) {
-        self.sample_rate.store(sample_rate.get(), Ordering::Release);
+        self.sample_rate.store(sample_rate, Ordering::Release);
     }
 
     /// What a fork takes of the live node's sources, read now (a fork's

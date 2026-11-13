@@ -153,7 +153,8 @@ impl NodeFamily for DelayFamily {
     /// The lines of the family's own longest delay ([`DelayFamily::max_delay`], the
     /// [`Domain`](tutti_dsp::Domain) it is built to) at `rate`.
     fn capacity(&self, rate: SampleRate) -> DelayCapacity {
-        let reach = Reach::new(rate, self.max_delay(), TAIL_FLOOR).expect("a positive finite rate");
+        let reach =
+            Reach::new(rate, self.max_delay(), TAIL_FLOOR).expect("TAIL_FLOOR is a valid floor");
         self.reach(&reach)
     }
 }

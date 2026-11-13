@@ -66,8 +66,8 @@ pub struct FdId(pub i32);
 /// What `activate` needs, and what a change of any field costs: a deactivate
 /// and an activate.
 ///
-/// A rate is finite and positive and a block holds at least one frame, so no
-/// host is handed an activation its format would refuse.
+/// A [`SampleRate`] is finite and positive and a block holds at least one
+/// frame, so no host is handed an activation its format would refuse.
 ///
 /// # Examples
 ///
@@ -76,10 +76,8 @@ pub struct FdId(pub i32);
 /// use tutti_types::{SampleRate, Samples};
 ///
 /// let block = MaxBlock::of(Samples(512));
-/// let prepare = Prepare::new(SampleRate::SR_48K, block).unwrap();
+/// let prepare = Prepare::new(SampleRate::SR_48K, block);
 /// assert_eq!(prepare.mode(), RenderMode::Realtime);
-/// assert!(SampleRate::new(f64::NAN).is_none());
-/// assert!(SampleRate::new(0.0).is_none());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Prepare {
@@ -91,26 +89,22 @@ pub struct Prepare {
 
 impl Prepare {
     /// An activation at `rate` with blocks of up to `max_block` frames, in
-    /// 32-bit audio under realtime pressure. [`None`] if `rate` is not finite
-    /// and positive.
+    /// 32-bit audio under realtime pressure.
     #[must_use]
-    pub fn new(rate: SampleRate, max_block: MaxBlock) -> Option<Self> {
-        Some(Self {
-            rate: valid_rate(rate)?,
+    pub fn new(rate: SampleRate, max_block: MaxBlock) -> Self {
+        Self {
+            rate,
             max_block,
             format: SampleFormat::default(),
             mode: RenderMode::default(),
-        })
+        }
     }
 
-    /// This activation, at `rate`. [`None`] if `rate` is not finite and
-    /// positive.
+    /// This activation, at `rate`.
     #[must_use]
-    pub fn with_rate(self, rate: SampleRate) -> Option<Self> {
-        Some(Self {
-            rate: valid_rate(rate)?,
-            ..self
-        })
+    pub const fn with_rate(mut self, rate: SampleRate) -> Self {
+        self.rate = rate;
+        self
     }
 
     /// This activation, exchanging audio in `format`.
@@ -161,10 +155,6 @@ pub fn standing(active: bool, rate: SampleRate) -> String {
     } else {
         "deactivated".to_string()
     }
-}
-
-fn valid_rate(rate: SampleRate) -> Option<SampleRate> {
-    (rate.get().is_finite() && rate.get() > 0.0).then_some(rate)
 }
 
 /// Which changes a format needs a restart for.

@@ -79,8 +79,7 @@ println!("{} by {}", loaded.plugin_info().name, loaded.plugin_info().vendor);
 // Activated. `T` fixes the sample width: `f64` is refused unless the plugin
 // advertises 64-bit support, and a refusal hands the plugin back in the error,
 // so it can be retried at `f32` without reloading.
-let prepare = Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)))
-    .expect("a real rate");
+let prepare = Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)));
 let (mut processor, controller) = loaded
     .activate_typed::<f32>(&main, prepare)
     .map_err(|refused| tutti_vst3_host::Vst3Error::NotSupported(refused.reason.to_string()))?;

@@ -66,7 +66,7 @@ pub trait FamilyCase: Family {
     where
         Self: Grows,
     {
-        Reach::at(rate).expect("a positive finite rate")
+        Reach::at(rate)
     }
 
     /// The frames of musical delay before the model's first sound: a pre-delay,

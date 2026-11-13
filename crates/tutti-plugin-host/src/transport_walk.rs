@@ -133,7 +133,7 @@ impl Stretch {
     /// stopped or has none ahead.
     fn predict(&self, view: &mut TempoView<'_>) -> Option<(usize, Kind)> {
         let rate = view.rate().get();
-        if !self.playing || !rate.is_finite() || rate <= 0.0 || !self.beat.get().is_finite() {
+        if !self.playing || !self.beat.get().is_finite() {
             return None;
         }
         let t0 = view.seconds_at(self.beat).get();
@@ -181,7 +181,7 @@ impl Stretch {
         if !there.is_finite() {
             return false;
         }
-        let (predicted, slack) = if self.playing && rate.is_finite() && rate > 0.0 {
+        let (predicted, slack) = if self.playing {
             let t0 = view.seconds_at(self.beat).get();
             let at = Seconds(t0 + (frame - self.frame) as f64 / rate);
             let beat = view.beat_at_seconds(at);

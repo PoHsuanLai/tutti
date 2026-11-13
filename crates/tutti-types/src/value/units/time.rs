@@ -160,18 +160,24 @@ impl Seconds {
 /// and [`of`](Self::of) panics on it, for a literal or a constant. The common
 /// rates are named constants (`SR_44K1`, `SR_48K`, ...).
 ///
-/// Builds from `u32` (file headers, device configs), which widens exactly.
+/// There is no `Default` (a missing rate is visible where it is missing; the
+/// placeholder before a device's is known is [`DEFAULT`](Self::DEFAULT)) and
+/// no `Unit` impl (its `from_raw` could not refuse). A `u32` (file headers,
+/// device configs) goes through [`from_hz`](Self::from_hz), which refuses zero.
 /// Deliberately **not** from `f32`: that widening is lossless in isolation, but
 /// an `f32` rate has nearly always already lost precision upstream, and an
 /// implicit conversion would launder it in silently. A site that genuinely
 /// holds one writes `SampleRate::new(f64::from(x))`, where review can see it.
+///
+/// `new` and `of` take Hertz; serde reads and writes the bare `f64` and
+/// refuses what `new` refuses.
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[cfg_attr(feature = "bevy", type_path = "tutti_types::value::units")]
-pub struct SampleRate(pub f64);
+pub struct SampleRate(f64);
 
 impl SampleRate {
     /// The rate, or `None` when `raw` is NaN, infinite, zero or negative.
@@ -212,6 +218,14 @@ impl SampleRate {
         self.0
     }
 
+    /// The rate of a whole number of Hertz (a file header, a device config),
+    /// or `None` for zero.
+    #[inline]
+    #[must_use]
+    pub const fn from_hz(hz: u32) -> Option<Self> {
+        Self::new(hz as f64)
+    }
+
     /// Returns the smaller of the two, in this unit.
     #[inline]
     #[must_use]
@@ -235,18 +249,6 @@ impl SampleRate {
     #[must_use]
     pub fn clamp(self, lo: Self, hi: Self) -> Self {
         Self(f64::clamp(self.0, lo.0, hi.0))
-    }
-}
-
-impl Unit for SampleRate {
-    type Raw = f64;
-    #[inline]
-    fn from_raw(v: f64) -> Self {
-        Self(v)
-    }
-    #[inline]
-    fn to_raw(self) -> f64 {
-        self.0
     }
 }
 
@@ -338,16 +340,71 @@ impl SampleRate {
     }
 }
 
-// `Unit` generates no `From` (a bare `f64` is built with `new`). File headers
-// and device configs hand out `u32`, which widens exactly, so that one stays implicit — it is what
-// lets a migrated signature take `impl Into<SampleRate>` and still accept what
-// its callers already hold. No `From<f32>`; see the type's doc for why.
-impl From<u32> for SampleRate {
+impl TryFrom<f64> for SampleRate {
+    type Error = SampleRateOutOfRange;
+
     #[inline]
-    fn from(v: u32) -> Self {
-        Self(f64::from(v))
+    fn try_from(raw: f64) -> Result<Self, SampleRateOutOfRange> {
+        Self::new(raw).ok_or(SampleRateOutOfRange(raw))
     }
 }
+
+impl From<SampleRate> for f64 {
+    #[inline]
+    fn from(rate: SampleRate) -> f64 {
+        rate.0
+    }
+}
+
+/// A [`SampleRate`] another thread reads: one atomic word, the rate's bits.
+///
+/// Only a `SampleRate` is stored, so a load answers a `SampleRate` with no
+/// check and no fallback: the cell cannot hold a non-rate. `Relaxed` suffices
+/// where the rate only sizes something; the caller names the ordering it needs
+/// otherwise.
+#[derive(Debug)]
+pub struct AtomicSampleRate(core::sync::atomic::AtomicU64);
+
+impl AtomicSampleRate {
+    /// A cell holding `rate`.
+    #[must_use]
+    pub const fn new(rate: SampleRate) -> Self {
+        Self(core::sync::atomic::AtomicU64::new(rate.0.to_bits()))
+    }
+
+    /// The rate in the cell.
+    #[inline]
+    #[must_use]
+    pub fn load(&self, order: core::sync::atomic::Ordering) -> SampleRate {
+        // Only `new` and `store` write the cell, each from a `SampleRate`.
+        SampleRate(f64::from_bits(self.0.load(order)))
+    }
+
+    /// Replaces the rate in the cell.
+    #[inline]
+    pub fn store(&self, rate: SampleRate, order: core::sync::atomic::Ordering) {
+        self.0.store(rate.0.to_bits(), order);
+    }
+
+    /// Replaces the rate in the cell and answers the one it held.
+    #[inline]
+    pub fn swap(&self, rate: SampleRate, order: core::sync::atomic::Ordering) -> SampleRate {
+        SampleRate(f64::from_bits(self.0.swap(rate.0.to_bits(), order)))
+    }
+}
+
+/// A raw number that is not a sample rate: NaN, infinite, zero or negative
+/// (see [`SampleRate::new`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SampleRateOutOfRange(pub f64);
+
+impl core::fmt::Display for SampleRateOutOfRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "a sample rate is finite and above zero, got {}", self.0)
+    }
+}
+
+impl core::error::Error for SampleRateOutOfRange {}
 
 #[cfg(test)]
 mod tests;

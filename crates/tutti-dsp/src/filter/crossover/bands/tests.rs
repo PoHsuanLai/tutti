@@ -62,16 +62,6 @@ fn frequencies_are_validated() {
         Err(CrossoverError::Nyquist { index: 1, .. })
     ));
     assert!(check(&[23_999.0]).is_ok());
-    for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert_eq!(
-            validate(
-                &[Hz(100.0)],
-                <SampleRate as tutti_types::Unit>::from_raw(rate)
-            )
-            .unwrap_err(),
-            CrossoverError::SampleRate
-        );
-    }
 }
 
 /// The messages say what is wrong.

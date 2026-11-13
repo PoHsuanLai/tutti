@@ -171,7 +171,7 @@ fn the_buses_are_those_the_plugin_has_at_activation() {
     let instance = ClapInstance::activate(
         &main_thread(),
         opened,
-        44100.0,
+        SampleRate::SR_44K1,
         512,
         false,
         None,
@@ -236,7 +236,7 @@ fn a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit() {
     let instance = ClapInstance::activate(
         &main_thread(),
         opened,
-        44100.0,
+        SampleRate::SR_44K1,
         512,
         true,
         None,
@@ -265,7 +265,7 @@ fn a_rate_change_that_changes_the_layout_raises_io_changed() {
         tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
     );
     instance
-        .set_sample_rate(&main_thread(), 48000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(48000.0))
         .expect("accepted");
 
     assert_eq!(instance.loaded().inputs.len(), 2, "stereo main + mono aux");
@@ -306,7 +306,7 @@ fn setting_the_current_sample_rate_does_not_cycle_the_plugin() {
     crate::test_utils::clap_probe_reset_activation_count();
 
     instance
-        .set_sample_rate(&main_thread(), 44100.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(44100.0))
         .expect("re-setting the current rate must succeed");
 
     assert_eq!(
@@ -329,7 +329,7 @@ fn a_rate_change_that_keeps_the_layout_does_not_raise_io_changed() {
     let mut instance =
         ClapInstance::load_first(&main_thread(), path, 44100.0, 512, false).expect("load");
     instance
-        .set_sample_rate(&main_thread(), 48000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(48000.0))
         .expect("accepted");
     assert!(!instance.take_io_changed());
 }
@@ -354,7 +354,7 @@ fn a_deactivated_instance_renders_silence_and_tells_the_host() {
 
     let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
     let err = instance
-        .set_sample_rate(&main_thread(), 48000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(48000.0))
         .expect_err("the 64-bit flags are gone");
     assert!(err.to_string().contains("deactivated"), "got {err}");
     assert!(instance.take_io_changed(), "the host is told");
@@ -662,7 +662,7 @@ fn a_latency_that_depends_on_the_rate_is_reread_after_a_rate_change() {
 
     let _longer = crate::test_utils::clap_probe_latency_at_activation(11);
     instance
-        .set_sample_rate(&main_thread(), 48000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(48000.0))
         .expect("rate change");
 
     let now = Samples(before.0 + 11);
@@ -1495,61 +1495,20 @@ fn a_requires_process_parameter_is_not_flushed_while_processing() {
     assert!(flush_out_of_band(false, false));
 }
 
-/// **A rate that is no rate is refused before the plugin is touched**: the
-/// instance runs on at the configuration it has, the plugin is not activated
-/// again, and the error says where it runs.
+/// **A load with no block is refused** at the activation stage, and the
+/// plugin is never activated. (A rate that is no rate cannot be asked: a
+/// `SampleRate` is finite and above zero.)
 #[test]
-fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
-    let _lock = crate::test_utils::plugin_load_lock();
-    let mut instance = ClapInstance::load_first(
-        &main_thread(),
-        Path::new(clap_plugin()),
-        44100.0,
-        512,
-        false,
-    )
-    .expect("load");
-    crate::test_utils::clap_probe_reset_activation_count();
-    let prepare = instance.state.prepare();
-    for rate in [0.0, -44_100.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let err = instance
-            .set_sample_rate(&main_thread(), rate)
-            .expect_err("a rate that is no rate is refused");
-        assert!(err.to_string().contains("running at 44100"), "{err}");
-        assert!(instance.is_active(), "{rate}");
-    }
-    assert_eq!(instance.state.prepare(), prepare);
-    assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
-    instance
-        .set_sample_rate(&main_thread(), 48_000.0)
-        .expect("a real rate");
-    assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
-}
-
-/// **A load at no rate or no block is refused** at the activation stage:
-/// zero, negative and non-finite rates, and a block of no frames. The plugin
-/// is never activated.
-#[test]
-fn a_load_at_no_rate_or_no_block_is_refused() {
+fn a_load_with_no_block_is_refused() {
     let _lock = crate::test_utils::plugin_load_lock();
     crate::test_utils::clap_probe_reset_activation_count();
-    for (rate, block) in [
-        (0.0, 512),
-        (-44_100.0, 512),
-        (f64::NAN, 512),
-        (f64::INFINITY, 512),
-        (f64::NEG_INFINITY, 512),
-        (44_100.0, 0),
-    ] {
-        match ClapInstance::load_first(&main_thread(), Path::new(clap_plugin()), rate, block, false)
-        {
-            Err(PluginError::Load {
-                stage: LoadStage::Activation,
-                reason,
-            }) => assert!(reason.contains("cannot run at"), "{reason}"),
-            Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
-            Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
-        }
+    match ClapInstance::load_first(&main_thread(), Path::new(clap_plugin()), 44_100.0, 0, false) {
+        Err(PluginError::Load {
+            stage: LoadStage::Activation,
+            reason,
+        }) => assert!(reason.contains("cannot run in blocks of 0"), "{reason}"),
+        Err(other) => panic!("a block of no frames: {other:?}"),
+        Ok(_) => panic!("a block of no frames must be refused"),
     }
     assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
 }
@@ -1573,7 +1532,7 @@ fn a_refused_rate_is_rolled_back_and_the_plugin_keeps_running() {
 
     let refusal = crate::test_utils::clap_probe_refuse_rate(96000.0);
     let err = instance
-        .set_sample_rate(&main_thread(), 96000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(96000.0))
         .expect_err("the plugin refuses 96 kHz");
     drop(refusal);
 
@@ -2190,7 +2149,7 @@ fn test_clap_sample_rate_change() {
 
     // Change sample rate — this deactivates, updates, and requires reactivation
     instance
-        .set_sample_rate(&main_thread(), 48000.0)
+        .set_sample_rate(&main_thread(), SampleRate::of(48000.0))
         .expect("rate accepted");
 
     // Process should still work (auto-reactivates)
@@ -2232,7 +2191,7 @@ fn test_clap_sample_rate_cycle_multiple() {
     // Cycle through several sample rates
     for &rate in &[48000.0, 96000.0, 44100.0, 22050.0] {
         instance
-            .set_sample_rate(&main_thread(), rate)
+            .set_sample_rate(&main_thread(), SampleRate::of(rate))
             .expect("rate accepted");
 
         let num_samples = 512;

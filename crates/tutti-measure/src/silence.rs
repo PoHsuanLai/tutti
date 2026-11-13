@@ -80,8 +80,7 @@ impl SilenceConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
-    /// NaN, and [`Error::InvalidThreshold`] for a threshold that is not finite
+    /// [`Error::InvalidThreshold`] for a threshold that is not finite
     /// (a NaN would make every config unequal to itself and restart the scan
     /// on each chunk).
     pub fn new(
@@ -90,13 +89,6 @@ impl SilenceConfig {
         min_silence: impl Into<Seconds>,
     ) -> Result<Self> {
         let rate = sample_rate.into();
-        #[allow(
-            clippy::neg_cmp_op_on_partial_ord,
-            reason = "the negation is the NaN guard: `rate <= 0.0` would accept a NaN rate"
-        )]
-        if !(rate.get() > 0.0) {
-            return Err(Error::NonPositiveSampleRate);
-        }
         if !threshold.get().is_finite() {
             return Err(Error::InvalidThreshold { threshold });
         }
@@ -377,20 +369,6 @@ mod tests {
                 SilenceConfig::new(SampleRate::of(RATE), Db(t), Seconds(0.1)),
                 Err(Error::InvalidThreshold { .. })
             ));
-        }
-    }
-
-    #[test]
-    fn a_bad_rate_is_refused() {
-        for rate in [0.0, -1.0, f64::NAN] {
-            assert_eq!(
-                SilenceConfig::new(
-                    <SampleRate as tutti_types::Unit>::from_raw(rate),
-                    Db(-20.0),
-                    Seconds(0.1)
-                ),
-                Err(Error::NonPositiveSampleRate)
-            );
         }
     }
 }

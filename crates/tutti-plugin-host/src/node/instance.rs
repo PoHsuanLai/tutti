@@ -78,7 +78,7 @@ impl<F: InProcess> Instance<F> {
         main: &MainThread,
         path: &Path,
         load: &Load,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         block_size: usize,
         restore: Option<&mut dyn FnMut(&mut F) -> Result<(), String>>,
     ) -> Result<(Self, Rt<F::Processor>, Option<Result<(), String>>), (LoadStage, String)> {
@@ -105,18 +105,15 @@ impl<F: Loaded> Instance<F> {
         main: &MainThread,
         loaded: F,
         origin: Option<Origin>,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         block_size: usize,
     ) -> Result<(Self, Rt<F::Processor>), (LoadStage, String)> {
-        let prepare = SampleRate::new(sample_rate)
-            .zip(MaxBlock::new(Samples(block_size)))
-            .and_then(|(rate, block)| Prepare::new(rate, block))
+        let prepare = MaxBlock::new(Samples(block_size))
+            .map(|block| Prepare::new(sample_rate, block))
             .ok_or_else(|| {
                 (
                     LoadStage::Activation,
-                    format!(
-                        "the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
-                    ),
+                    format!("the plugin cannot run in blocks of {block_size} frames"),
                 )
             })?;
         let (hand, rt) = Hand::threaded();
@@ -271,46 +268,38 @@ impl<F: Loaded> Instance<F> {
     pub(super) fn set_sample_rate(
         &mut self,
         main: &MainThread,
-        rate: f64,
+        rate: SampleRate,
         rt: Option<&mut Rt<F::Processor>>,
     ) -> Result<(), String> {
         let refused = |this: &Self, why: &str| {
             format!(
-                "plugin refused sample rate {rate} ({}): {why}",
+                "plugin refused sample rate {} ({}): {why}",
+                rate.get(),
                 standing(this.state.renders(), this.prepare.rate())
             )
         };
-        let result = match SampleRate::new(rate).and_then(|rate| self.prepare.with_rate(rate)) {
-            // Before the plugin is touched: nothing is recalled for a rate
-            // that is no rate.
-            None => Err(refused(self, "not a positive finite rate")),
-            Some(wanted) => {
-                let mut outcome = self.drive(main, Event::Op(HostOp::Reconfigure(wanted)));
-                if let Some(rt) = rt {
-                    // The recall raised above: the realtime end hands the
-                    // Processor back, the tick runs the parked plan, and the
-                    // new Processor is lent and taken.
-                    let _ = rt.poll(Processor::stop);
-                    let ticked = self.drive(main, Event::Tick);
-                    outcome = outcome.or(ticked);
-                    let _ = rt.poll(Processor::stop);
-                }
-                match outcome {
-                    Some(why) => Err(refused(self, &why)),
-                    None => {
-                        self.prepare = wanted;
-                        Ok(())
-                    }
-                }
+        let wanted = self.prepare.with_rate(rate);
+        let mut outcome = self.drive(main, Event::Op(HostOp::Reconfigure(wanted)));
+        if let Some(rt) = rt {
+            // The recall raised above: the realtime end hands the Processor
+            // back, the tick runs the parked plan, and the new Processor is
+            // lent and taken.
+            let _ = rt.poll(Processor::stop);
+            let ticked = self.drive(main, Event::Tick);
+            outcome = outcome.or(ticked);
+            let _ = rt.poll(Processor::stop);
+        }
+        let result = match outcome {
+            Some(why) => Err(refused(self, &why)),
+            None => {
+                self.prepare = wanted;
+                Ok(())
             }
         };
         match &result {
             Err(reason) => {
                 self.rate_refused = true;
-                // The report names what was asked, even when that is no rate
-                // (so `from_raw`, unchecked on purpose).
-                let asked = <SampleRate as tutti_types::Unit>::from_raw(rate);
-                self.rate_report = Some(Some((asked, reason.clone())));
+                self.rate_report = Some(Some((rate, reason.clone())));
             }
             Ok(()) if self.rate_refused => {
                 self.rate_refused = false;
@@ -395,9 +384,7 @@ impl<F: Loaded> Instance<F> {
     /// live: the activation a later reconfiguration starts from is at it, and
     /// a refusal of the rate before it is over.
     pub(super) fn retuned(&mut self, rate: SampleRate) {
-        if let Some(prepare) = self.prepare.with_rate(rate) {
-            self.prepare = prepare;
-        }
+        self.prepare = self.prepare.with_rate(rate);
         if self.rate_refused {
             self.rate_refused = false;
             self.rate_report = Some(None);
@@ -412,91 +399,48 @@ mod tests {
 
     use super::*;
 
-    /// **A load at no rate or no block is refused** at the activation stage:
-    /// zero, negative and non-finite rates, and a block of no frames.
+    /// **A load with no block is refused** at the activation stage (a rate is a
+    /// `SampleRate`, so it cannot be none).
     #[test]
-    fn a_load_at_no_rate_or_no_block_is_refused() {
-        for (rate, block) in [
-            (0.0, 64),
-            (-48_000.0, 64),
-            (f64::NAN, 64),
-            (f64::INFINITY, 64),
-            (f64::NEG_INFINITY, 64),
-            (48_000.0, 0),
-        ] {
-            match Instance::<Vst2Loaded>::load(
-                &main_thread(),
-                tutti_fixtures::vst2_probe(),
-                &Load::new(),
-                rate,
-                block,
-                None,
-            ) {
-                Err((LoadStage::Activation, reason)) => {
-                    assert!(reason.contains("cannot run at"), "{reason}");
-                }
-                Err((stage, reason)) => panic!("{rate} Hz, {block}: {stage:?} {reason}"),
-                Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+    fn a_load_with_no_block_is_refused() {
+        match Instance::<Vst2Loaded>::load(
+            &main_thread(),
+            tutti_fixtures::vst2_probe(),
+            &Load::new(),
+            SampleRate::SR_48K,
+            0,
+            None,
+        ) {
+            Err((LoadStage::Activation, reason)) => {
+                assert!(reason.contains("cannot run in blocks"), "{reason}");
             }
+            Err((stage, reason)) => panic!("{stage:?} {reason}"),
+            Ok(_) => panic!("a block of no frames must be refused"),
         }
     }
 
-    /// **A rate that is no rate leaves the instance as it was, and says so**: the plugin is
-    /// not taken apart (its halves stay, it is not lost), the configuration is the one it had,
-    /// and the refusal is an error worded as the other formats word it (the rate, where the
-    /// plugin stands, why) and a report for the control side
-    /// (`PluginInvalidation::RateRefused`). A rate the plugin then takes reports the
-    /// recovery once (`RateRestored`).
+    /// **A rate the plugin takes is the instance's new configuration, and a
+    /// plain change reports nothing** (`PluginInvalidation::RateRefused` and
+    /// `RateRestored` are for a refusal and the recovery from one).
     #[test]
-    fn a_rate_that_is_no_rate_leaves_the_instance_alone_and_is_reported() {
+    fn a_rate_the_plugin_takes_reports_nothing() {
         let (mut instance, _rt, _) = Instance::<Vst2Loaded>::load(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
-            48_000.0,
+            SampleRate::SR_48K,
             64,
             None,
         )
         .expect("loads");
-        let before = instance.prepare;
         assert_eq!(instance.take_rate_report(), None, "nothing to report yet");
-        for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let reason = instance
-                .set_sample_rate(&main_thread(), rate, None)
-                .expect_err("a rate that is no rate is refused");
-            assert!(
-                reason.contains("running at 48000") && reason.contains("not a positive finite"),
-                "{rate}: {reason}"
-            );
-            let report = instance.take_rate_report().expect("and reported");
-            let (reported, why) = report.expect("a refusal, not a recovery");
-            assert!(
-                reported.get() == rate || (reported.get().is_nan() && rate.is_nan()),
-                "{rate}"
-            );
-            assert_eq!(why, reason);
-            assert_eq!(instance.take_rate_report(), None, "once");
-            assert_eq!(instance.prepare, before, "{rate}");
-            assert!(instance.renders(), "{rate}");
-            assert!(!instance.is_lost(), "{rate}");
-        }
         instance
-            .set_sample_rate(&main_thread(), 96_000.0, None)
+            .set_sample_rate(&main_thread(), SampleRate::SR_96K, None)
             .expect("a real rate is taken");
-        assert_eq!(instance.prepare.rate().get(), 96_000.0);
-        assert_eq!(
-            instance.take_rate_report(),
-            Some(None),
-            "the recovery is reported"
-        );
-        instance
-            .set_sample_rate(&main_thread(), 48_000.0, None)
-            .expect("and again");
-        assert_eq!(
-            instance.take_rate_report(),
-            None,
-            "a plain change reports nothing"
-        );
+        assert_eq!(instance.prepare.rate(), SampleRate::SR_96K);
+        assert_eq!(instance.take_rate_report(), None, "a plain change");
+        assert!(instance.renders());
+        assert!(!instance.is_lost());
     }
 
     /// **A rate change made off the realtime thread completes at the pump,
@@ -511,14 +455,14 @@ mod tests {
             &main,
             tutti_fixtures::vst2_probe(),
             &Load::new(),
-            48_000.0,
+            SampleRate::SR_48K,
             64,
             None,
         )
         .expect("loads");
         assert!(rt.poll(Processor::stop).is_some(), "lent at the load");
         instance
-            .set_sample_rate(&main, 96_000.0, None)
+            .set_sample_rate(&main, SampleRate::SR_96K, None)
             .expect("the change starts");
         assert!(rt.poll(Processor::stop).is_none(), "handed back");
         assert!(instance.state.is_parked(), "waits for the Processor");

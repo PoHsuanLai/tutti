@@ -139,7 +139,7 @@ impl AudioEngine {
         let device = host.device(Direction::Output, &sel)?;
         let config = device.default_output_config()?;
         Ok(Self {
-            spec: OutputSpec::from_supported(&config),
+            spec: OutputSpec::from_supported(&config)?,
             target: Some((host, sel)),
             faults: Arc::new(StreamFaults::new()),
             latency: Arc::new(StreamLatency::new()),
@@ -230,7 +230,7 @@ impl AudioEngine {
         };
         let device = host.device(Direction::Output, sel)?;
         let config = device.default_output_config()?;
-        self.spec = OutputSpec::from_supported(&config);
+        self.spec = OutputSpec::from_supported(&config)?;
         // What it is called is recorded by the caller once the stream runs
         // (`set_opened`): a restart that fails leaves the name of the device
         // the previous stream ran on.

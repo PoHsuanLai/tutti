@@ -10,42 +10,6 @@ fn job(length: usize, latency: usize, tail: usize) -> Result<Job, JobError> {
     Job::new(RATE, Samples(length), Samples(latency), Samples(tail))
 }
 
-/// A rate that is NaN or infinite is refused, and the error carries it.
-#[test]
-fn a_non_finite_rate_is_refused() {
-    for rate in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let err = Job::new(
-            <SampleRate as tutti_types::Unit>::from_raw(rate),
-            Samples(1),
-            Samples(0),
-            Samples(0),
-        )
-        .unwrap_err();
-        assert!(
-            matches!(err, JobError::InvalidRate { .. }),
-            "{rate}: {err:?}"
-        );
-    }
-}
-
-/// A rate of zero or below is refused.
-#[test]
-fn a_non_positive_rate_is_refused() {
-    for rate in [0.0, -0.0, -1.0, -48_000.0] {
-        let err = Job::new(
-            <SampleRate as tutti_types::Unit>::from_raw(rate),
-            Samples(1),
-            Samples(0),
-            Samples(0),
-        )
-        .unwrap_err();
-        assert!(
-            matches!(err, JobError::InvalidRate { .. }),
-            "{rate}: {err:?}"
-        );
-    }
-}
-
 /// A job with no audible frame is refused, whatever it trims or keeps.
 #[test]
 fn a_zero_length_is_refused() {

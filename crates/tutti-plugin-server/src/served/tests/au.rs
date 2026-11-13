@@ -452,7 +452,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
         events: Vec::new(),
         refused: false,
     };
-    let prepare = Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(512))).unwrap();
+    let prepare = Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(512)));
     assert!(
         au.drive(&main_thread(), Event::Op(HostOp::Activate(prepare)))
             .is_none()

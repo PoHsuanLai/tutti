@@ -15,7 +15,7 @@ fn ms(n: u64) -> Duration {
 }
 
 fn map_at(t0: Instant, frame: u64) -> ClockMap {
-    ClockMap::new(R48, ClockReading::new(t0, Frame(frame))).unwrap()
+    ClockMap::new(R48, ClockReading::new(t0, Frame(frame)))
 }
 
 // Frames follow the rate from the anchor: 1 s is 48 000 frames, 10 ms is 480.
@@ -76,7 +76,7 @@ fn a_frame_maps_back_to_its_time() {
     }
     // A distance an `Instant` cannot hold is no instant (a rate of 1e-9 makes
     // 2^64 frames 1e28 seconds).
-    let slow = ClockMap::new(SampleRate::of(1e-9), ClockReading::new(t0, Frame(0))).unwrap();
+    let slow = ClockMap::new(SampleRate::of(1e-9), ClockReading::new(t0, Frame(0)));
     assert_eq!(slow.os_at(Frame(u64::MAX)), None);
 }
 
@@ -172,7 +172,7 @@ fn a_reading_that_goes_backwards_is_rejected() {
 fn a_rate_change_keeps_the_instant_of_the_anchor() {
     let t0 = base();
     let mut map = map_at(t0, 48_000);
-    assert_eq!(map.set_rate(SampleRate::SR_44K1), Ok(()));
+    map.set_rate(SampleRate::SR_44K1);
     assert_eq!(map.rate(), SampleRate::SR_44K1);
     assert_eq!(map.frame_at(t0), Some(Frame(44_100)));
     assert_eq!(
@@ -180,27 +180,4 @@ fn a_rate_change_keeps_the_instant_of_the_anchor() {
         Some(Frame(88_200))
     );
     assert_eq!(map.os_at(Frame(88_200)), Some(t0 + Duration::from_secs(1)));
-}
-
-// A rate that is not a rate builds no map and changes none.
-#[test]
-fn a_rate_that_is_not_finite_and_positive_is_refused() {
-    let t0 = base();
-    let reading = ClockReading::new(t0, Frame(0));
-    for bad in [0.0, -48_000.0, f64::NAN, f64::INFINITY] {
-        assert_eq!(
-            ClockMap::new(<SampleRate as tutti_types::Unit>::from_raw(bad), reading),
-            None,
-            "{bad}"
-        );
-    }
-    let mut map = map_at(t0, 0);
-    let before = map;
-    assert_eq!(
-        map.set_rate(<SampleRate as tutti_types::Unit>::from_raw(0.0)),
-        Err(InvalidRate(<SampleRate as tutti_types::Unit>::from_raw(
-            0.0
-        )))
-    );
-    assert_eq!(map, before);
 }

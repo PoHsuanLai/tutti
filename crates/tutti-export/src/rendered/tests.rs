@@ -26,20 +26,6 @@ fn unequal_planes_are_refused() {
     );
 }
 
-/// A rate that is not finite and positive is refused.
-#[test]
-fn an_invalid_rate_is_refused() {
-    for rate in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
-        let err = Rendered::new(
-            vec![vec![0.0; 4]],
-            <SampleRate as tutti_types::Unit>::from_raw(rate),
-            0,
-        )
-        .unwrap_err();
-        assert!(matches!(err, RenderedError::InvalidRate { .. }), "{rate}");
-    }
-}
-
 /// The getters read back what was given.
 #[test]
 fn the_getters_read_back_what_was_given() {
@@ -74,7 +60,7 @@ fn a_render_becomes_the_wave_of_its_planes() {
         Rendered::new(vec![vec![0.1, 0.2, 0.3], vec![-0.1, -0.2, -0.3]], RATE, 7).unwrap();
     let wave = tutti_codec::Wave::from(rendered);
     assert_eq!(wave.channels(), 2);
-    assert_eq!(wave.len(), 3);
+    assert_eq!(wave.len(), Samples(3));
     assert_eq!(wave.sample_rate(), RATE);
     assert_eq!(wave.channel(0), [0.1, 0.2, 0.3]);
     assert_eq!(wave.channel(1), [-0.1, -0.2, -0.3]);

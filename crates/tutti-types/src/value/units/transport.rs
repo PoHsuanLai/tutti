@@ -244,16 +244,14 @@ impl SrcRatio {
     ///
     /// Returns exactly [`UNITY`](Self::UNITY) when the two rates agree to within
     /// 0.01 Hz, so the common matched-rate case is bit-exact rather than
-    /// `1.0000001`. A non-positive session rate also yields unity: there is no
-    /// meaningful conversion, and propagating a NaN or infinity here would
-    /// poison every sample downstream.
+    /// `1.0000001`.
     #[inline]
     pub fn for_rates(
         file_rate: impl Into<SampleRate>,
         session_rate: impl Into<SampleRate>,
     ) -> Self {
         let (file_rate, session_rate) = (file_rate.into().get(), session_rate.into().get());
-        if session_rate <= 0.0 || (file_rate - session_rate).abs() < 0.01 {
+        if (file_rate - session_rate).abs() < 0.01 {
             Self::UNITY
         } else {
             Self(file_rate / session_rate)

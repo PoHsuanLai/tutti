@@ -212,7 +212,7 @@ fn load_wave(
     {
         if let Ok(w) = Wave::read(file_path) {
             let arc_wave = Arc::new(w);
-            let bytes = arc_wave.len() as u64 * arc_wave.channels() as u64 * 4;
+            let bytes = arc_wave.len().get() as u64 * arc_wave.channels() as u64 * 4;
             meter.record_read(bytes, metrics);
             cache.insert(file_path.to_path_buf(), arc_wave.clone());
             return Some(arc_wave);

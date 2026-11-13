@@ -23,6 +23,12 @@ use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
 use crate::owner::Owned;
 
+/// The rate a device reports, or [`Error::InvalidDevice`] when it reports 0 Hz.
+pub(crate) fn device_rate(rate: cpal::SampleRate) -> Result<SampleRate> {
+    SampleRate::from_hz(rate.0)
+        .ok_or_else(|| Error::InvalidDevice("the device reports a sample rate of 0 Hz".into()))
+}
+
 /// The configuration an output stream is opened with: rate, width, sample
 /// format and callback size.
 ///
@@ -81,13 +87,13 @@ impl OutputSpec {
         self
     }
 
-    pub(crate) fn from_supported(c: &cpal::SupportedStreamConfig) -> Self {
-        Self {
-            sample_rate: SampleRate::from(c.sample_rate().0),
+    pub(crate) fn from_supported(c: &cpal::SupportedStreamConfig) -> Result<Self> {
+        Ok(Self {
+            sample_rate: device_rate(c.sample_rate())?,
             channels: ChannelLayout::from(c.channels().max(1)),
             sample_format: c.sample_format(),
             quantum: quantum_for(c.buffer_size()),
-        }
+        })
     }
 
     pub(crate) fn stream_config(&self) -> cpal::StreamConfig {

@@ -406,7 +406,7 @@ pub fn read_frame(wave: &Arc<Wave>, place: &Place, position: f64, out: &mut [f32
     if out.is_empty() {
         return;
     }
-    let len = wave.len();
+    let len = wave.len().get();
     let src_ch = wave.channels();
     if len == 0 || src_ch == 0 {
         out.fill(0.0);
@@ -488,7 +488,7 @@ pub(crate) fn read_looped_frame(
     if out.is_empty() {
         return;
     }
-    let len = wave.len();
+    let len = wave.len().get();
     let src_ch = wave.channels();
     if len == 0 || src_ch == 0 {
         out.fill(0.0);
@@ -960,7 +960,7 @@ mod tests {
     /// channels distinguishable by sign, so a channel swap is visible.
     fn stereo_ramp() -> Arc<Wave> {
         let mut w = Wave::zero(2, SampleRate::SR_44K1, Seconds::new(64.0) / 44_100.0);
-        for i in 0..w.len() {
+        for i in 0..w.len().get() {
             w.set(0, i, (i as f32 + 1.0) * 0.01);
             w.set(1, i, -((i as f32 + 1.0) * 0.01));
         }
@@ -969,7 +969,7 @@ mod tests {
 
     fn mono_ramp() -> Arc<Wave> {
         let mut w = Wave::zero(1, SampleRate::SR_44K1, Seconds::new(64.0) / 44_100.0);
-        for i in 0..w.len() {
+        for i in 0..w.len().get() {
             w.set(0, i, (i as f32 + 1.0) * 0.01);
         }
         Arc::new(w)
@@ -979,7 +979,7 @@ mod tests {
     /// wrong *value* rather than a plausible one.
     fn indexed_wave(channels: usize) -> Arc<Wave> {
         let mut w = Wave::zero(channels, SampleRate::SR_44K1, Seconds::new(32.0) / 44_100.0);
-        for i in 0..w.len() {
+        for i in 0..w.len().get() {
             for c in 0..channels {
                 w.set(c, i, (c + 1) as f32);
             }
@@ -1125,7 +1125,7 @@ mod tests {
     fn six_channel_wave_on_a_stereo_frame_folds_through_the_itu_matrix() {
         // 5.1 order: L R C LFE Ls Rs — centre only.
         let mut w = Wave::zero(6, SampleRate::SR_44K1, Seconds::new(32.0) / 44_100.0);
-        for i in 0..w.len() {
+        for i in 0..w.len().get() {
             w.set(2, i, 1.0);
         }
         let w = Arc::new(w);
@@ -1323,7 +1323,7 @@ mod tests {
     #[test]
     fn position_past_the_end_does_not_panic() {
         let w = stereo_ramp();
-        let len = w.len() as f64;
+        let len = w.len().get() as f64;
         let mut out = [0.0f32; 2];
         for pos in [len - 0.5, len, len + 1.0, len * 4.0, 1e9] {
             read_frame(&w, pos, &mut out); // must not panic

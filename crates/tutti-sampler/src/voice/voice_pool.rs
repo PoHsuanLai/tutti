@@ -1809,7 +1809,7 @@ fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
     const BLOCK: usize = 64;
     let value = |i: usize| (i + 1) as f32 / 1024.0;
     let mut wave = Wave::zero(2, SampleRate::of(SR), Seconds::new(0.1));
-    for i in 0..wave.len() {
+    for i in 0..wave.len().get() {
         wave.set(0, i, value(i));
         wave.set(1, i, -value(i));
     }
@@ -2114,7 +2114,7 @@ fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
         SampleRate::SR_44K1,
         Seconds::new(len as f64) / 44_100.0,
     );
-    for i in 0..w.len() {
+    for i in 0..w.len().get() {
         for c in 0..channels {
             w.set(c, i, (c + 1) as f32);
         }

@@ -38,8 +38,7 @@ impl YinConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
-    /// NaN; [`Error::EmptyFrequencyRange`] when a bound is not positive or
+    /// [`Error::EmptyFrequencyRange`] when a bound is not positive or
     /// `min_freq` is not below `max_freq`; [`Error::AboveNyquist`] when
     /// `max_freq` exceeds half the sample rate.
     pub fn new(
@@ -50,13 +49,6 @@ impl YinConfig {
         let sample_rate = sample_rate.into();
         let (min_freq, max_freq) = (min_freq.into(), max_freq.into());
 
-        #[allow(
-            clippy::neg_cmp_op_on_partial_ord,
-            reason = "the negation is the NaN guard (see `geometry.rs`): `x <= 0.0` would silently admit a NaN rate"
-        )]
-        if !(sample_rate.get() > 0.0) {
-            return Err(Error::NonPositiveSampleRate);
-        }
         if min_freq.get() <= 0.0 || max_freq.get() <= 0.0 || min_freq >= max_freq {
             return Err(Error::EmptyFrequencyRange {
                 min: min_freq,
@@ -84,8 +76,7 @@ impl YinConfig {
     ///
     /// # Errors
     ///
-    /// As [`new`](Self::new): [`Error::NonPositiveSampleRate`], or
-    /// [`Error::AboveNyquist`] at a rate below 4 kHz.
+    /// As [`new`](Self::new): [`Error::AboveNyquist`] at a rate below 4 kHz.
     pub fn standard(sample_rate: impl Into<SampleRate>) -> Result<Self> {
         Self::new(sample_rate, Hz(50.0), Hz(2000.0))
     }

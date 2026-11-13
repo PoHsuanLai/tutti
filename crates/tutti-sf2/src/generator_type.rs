@@ -192,7 +192,11 @@ mod tests {
         let named: Vec<u16> = (0..=u16::MAX)
             .filter(|&id| GeneratorType::from_id(id).is_some())
             .collect();
-        assert_eq!(named.len(), 52, "the 59 numbers 0 to 58, less the 7 unused or reserved");
+        assert_eq!(
+            named.len(),
+            52,
+            "the 59 numbers 0 to 58, less the 7 unused or reserved"
+        );
         for id in named {
             let g = GeneratorType::from_id(id).unwrap();
             assert_eq!(g as u16, id, "{g:?}");

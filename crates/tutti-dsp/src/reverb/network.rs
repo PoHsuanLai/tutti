@@ -41,7 +41,8 @@ use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
 pub const MAX_LINES: usize = 64;
 /// The most stages in series in a [`Network`].
 pub const MAX_STAGES: usize = 8;
-/// The most channels an [`Fdn`] outputs or an all-pass stage runs on.
+/// The most channels an [`Fdn`] outputs or an all-pass stage runs on. A size of the
+/// storage, not a property of the network.
 pub const MAX_CHANNELS: usize = 8;
 /// The most taps in one [`Taps`] stage.
 pub const MAX_TAPS: usize = 64;

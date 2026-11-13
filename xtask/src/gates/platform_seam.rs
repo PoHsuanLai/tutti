@@ -191,7 +191,11 @@ pub(super) const ALLOW: &[(&str, usize, &str)] = &[
         3,
         PLUGINS,
     ),
-    ("crates/tutti-vst3-host/tests/vst3_traits.rs", 1, PLUGINS),
+    (
+        "crates/tutti-vst3-host/tests/conformance/vst3_traits.rs",
+        1,
+        PLUGINS,
+    ),
     ("testing/tutti-clap-test-plugin/src/gui.rs", 3, PLUGINS),
     (
         "testing/tutti-clap-test-plugin/src/subprocess.rs",

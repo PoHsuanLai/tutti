@@ -25,6 +25,20 @@ pub struct CapturedEvent {
     pub _pad: u8,
 }
 
+/// An editor key event as the host sent it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CapturedKey {
+    /// `effEditKeyDown` (true) or `effEditKeyUp`.
+    pub down: bool,
+    /// `[index]`, the ASCII character.
+    pub character: i32,
+    /// `[value]`, the virtual key.
+    pub key: i32,
+    /// The bits of `[opt]`, the modifier mask.
+    pub modifier_bits: u32,
+}
+
 /// Cap on events stored per block. `event_count` records the true count
 /// even when it exceeds this, so an overflow is visible rather than
 /// silently truncated into a passing assertion.
@@ -108,6 +122,9 @@ pub struct ProcessCapture {
     /// The host's answer to the most recent query: `2` realtime, `4` offline.
     /// Meaningless while `process_level_queries` is 0.
     pub process_level: i32,
+    /// The host's answer to `audioMasterGetAutomationState` at the most recent block:
+    /// `1` off, `2` read, `3` write, `4` read and write. `0` until a block runs.
+    pub automation_state: i32,
 
     /// Whether `audioMasterGetTime` returned a non-null `VstTimeInfo`.
     /// A host that never answers the transport query is a distinct failure
@@ -142,6 +159,11 @@ pub struct ProcessCapture {
     /// The first [`MAX_CAPTURED_EVENTS`] of the most recent batch, in the
     /// order the host presented them.
     pub events: [CapturedEvent; MAX_CAPTURED_EVENTS],
+
+    /// Count of `effEditKeyDown` and `effEditKeyUp` dispatches.
+    pub key_events: u32,
+    /// The last key event.
+    pub last_key: CapturedKey,
 }
 
 impl ProcessCapture {
@@ -167,6 +189,7 @@ impl ProcessCapture {
             host_block_in_set_block: 0,
             process_level_queries: 0,
             process_level: 0,
+            automation_state: 0,
             time_info_present: false,
             time_sample_pos: 0.0,
             time_tempo: 0.0,
@@ -186,6 +209,13 @@ impl ProcessCapture {
                 midi_data: [0; 3],
                 _pad: 0,
             }; MAX_CAPTURED_EVENTS],
+            key_events: 0,
+            last_key: CapturedKey {
+                down: false,
+                character: 0,
+                key: 0,
+                modifier_bits: 0,
+            },
         }
     }
 }

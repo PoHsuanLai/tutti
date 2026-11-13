@@ -356,7 +356,7 @@ use crate::event::{Event, MidiEvent, SysExEvent};
 /// larger than `MidiEvent`, so either one can be stored in a `SysExEvent`.
 pub type PlaceholderEvent = api::SysExEvent;
 
-/// This trait is used by `SendEventBuffer::send_events` to accept iterators over midi events
+/// This trait is used by `SendEventBuffer::store_events` to accept iterators over midi events
 pub trait WriteIntoPlaceholder {
     /// writes an event into the given placeholder memory location
     fn write_into(&self, out: &mut PlaceholderEvent);
@@ -432,7 +432,7 @@ impl<'a> WriteIntoPlaceholder for Event<'a> {
     }
 }
 
-use crate::{api, host::Host};
+use crate::api;
 use std::mem;
 
 /// This buffer is used for sending midi events through the VST interface.
@@ -483,38 +483,6 @@ impl SendEventBuffer {
             }
         }
         Self { buf, api_events }
-    }
-
-    /// Sends events to the host. See the `fwd_midi` example.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use tutti_vst2_ffi::plugin::{Info, Plugin, HostCallback};
-    /// # use tutti_vst2_ffi::buffer::{AudioBuffer, SendEventBuffer};
-    /// # use tutti_vst2_ffi::host::Host;
-    /// # use tutti_vst2_ffi::event::*;
-    /// # struct ExamplePlugin { host: HostCallback, send_buffer: SendEventBuffer }
-    /// # impl Plugin for ExamplePlugin {
-    /// #     fn new(host: HostCallback) -> Self { Self { host, send_buffer: Default::default() } }
-    /// #
-    /// #     fn get_info(&self) -> Info { Default::default() }
-    /// #
-    /// fn process(&mut self, buffer: &mut AudioBuffer<f32>){
-    ///     let events: Vec<MidiEvent> = vec![
-    ///         // ...
-    ///     ];
-    ///     self.send_buffer.send_events(&events, &mut self.host);
-    /// }
-    /// # }
-    /// ```
-    #[inline(always)]
-    pub fn send_events<T: IntoIterator<Item = U>, U: WriteIntoPlaceholder>(
-        &mut self,
-        events: T,
-        host: &mut dyn Host,
-    ) {
-        self.store_events(events);
-        host.process_events(self.events());
     }
 
     /// Stores events in the buffer, replacing the buffer's current content.

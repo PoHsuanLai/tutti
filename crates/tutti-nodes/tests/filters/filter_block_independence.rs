@@ -1,4 +1,4 @@
-//! The SVF, the EQ band, the ladder and the crossover on the stream grid (doc 024 Q27): the render is a
+//! The SVF, the EQ band, the ladder and the crossover on the stream grid: the render is a
 //! function of the stream, not of how it is cut into blocks, and a control reaches
 //! the render within one 16-frame segment of the grid point that sampled it.
 //!

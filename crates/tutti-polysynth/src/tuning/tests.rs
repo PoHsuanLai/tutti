@@ -91,6 +91,11 @@ fn test_from_ratios() {
     let tuning = Tuning::from_ratios(&ratios);
 
     assert_eq!(tuning.scale_size(), 5);
+    // A4 (note 69) is degree 4, 27/16; note 71 is degree 1, 9/8, an octave on: a
+    // frequency ratio of (9/8) / (27/16) * 2 = 4/3.
+    let a4 = tuning.note_to_freq(NoteNumber::of(69)).get();
+    let b4 = tuning.note_to_freq(NoteNumber::of(71)).get();
+    assert!((b4 / a4 - 4.0 / 3.0).abs() < 1e-4, "{}", b4 / a4);
 }
 
 /// The MIDI range's ends.

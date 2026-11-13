@@ -27,6 +27,7 @@ mod error;
 )]
 mod guard;
 mod port;
+mod profiles;
 mod session;
 mod stamp;
 mod stream;
@@ -48,6 +49,10 @@ pub use devices::{
 pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, Pushed, StreamDrain};
+pub use profiles::{
+    ChannelCount, ChannelProfile, ListedProfile, PeerProfiles, ProfileError, ProfileSwitch,
+    ProfilesChange, Whole, WholeProfile,
+};
 pub use session::{DeviceQuery, MidiSession, OutputInfo, Polled};
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{

@@ -206,17 +206,6 @@ impl StftGeometry {
             && self.window.get() / self.hop.get() >= self.window_fn.cola_overlap()
     }
 
-    /// Real-spectrum bins, excluding Nyquist — the magnitude path's count.
-    ///
-    /// Differs from [`bins_per_frame`](Self::bins_per_frame) by one, which is
-    /// exactly why storing both on two separate structs invited a consumer to
-    /// reach for the wrong one.
-    #[inline]
-    #[must_use]
-    pub fn freq_bins(self) -> BinCount {
-        BinCount(self.window.get() / 2)
-    }
-
     /// Real-spectrum bins including Nyquist — the complex path's count.
     #[inline]
     #[must_use]

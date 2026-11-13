@@ -1,8 +1,7 @@
-//! `FamilyNode<D>`'s ports are its design's cells and nothing else (doc 024 step
-//! 2b PR9): no port for a mix, because a node is the wet signal alone and its
-//! blend with the input is the graph's (`node_mix.rs`). The state-variable filter
-//! and a live Freeverb start their ports at the first cell; the fixed General MIDI
-//! send has none.
+//! `FamilyNode<D>`'s ports are its design's cells and nothing else: no port for a mix, because
+//! a node is the wet signal alone and its blend with the input is the graph's (`node_mix.rs`).
+//! The state-variable filter and a live Freeverb start their ports at the first cell; the fixed
+//! General MIDI send has none.
 
 use tutti_dsp::{FreeverbControls, FreeverbFamily, SvfType};
 use tutti_graph::contract::prepared;

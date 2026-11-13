@@ -9,10 +9,10 @@ use crate::Domain;
 /// [`Reach`](crate::Reach), and the size of the line a [`DelayFamily`](crate::DelayFamily)
 /// allocates.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): finite, above zero and at
+/// A range-checked value: finite, above zero and at
 /// most [`CAP`](Self::CAP). [`new`](Self::new) refuses anything else and never clamps: the
 /// maximum becomes an allocation (a line per channel), so a NaN, a negative span or a
-/// finite one of 1e30 seconds must not reach it (it used to abort the process).
+/// finite one of 1e30 seconds must not reach it.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct MaxDelay(Seconds);
 

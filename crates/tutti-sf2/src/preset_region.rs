@@ -10,16 +10,13 @@ use crate::instrument::Instrument;
 use crate::zone::Zone;
 
 fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
-    let index = generator.generator_type as usize;
-
-    // Unknown generators should be ignored.
-    if index < gs.len() {
-        gs[index] = generator.value as i16;
+    if let Some(known) = GeneratorType::from_id(generator.generator_type) {
+        gs[known as usize] = generator.value as i16;
     }
 }
 
 /// Indicates how instrument parameters should be modified within a preset.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PresetRegion {
     pub(crate) gs: [i16; GeneratorType::COUNT],

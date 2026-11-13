@@ -86,7 +86,7 @@ fn a_polyphony_past_the_maximum_is_refused_and_the_maximum_builds() {
     }
 }
 
-/// `Polyphony` keeps the range-checked shape of CLAUDE.md: `new` refuses and
+/// `Polyphony` keeps the range-checked shape: `new` refuses and
 /// never clamps, `TryFrom` agrees and carries the refused raw, `of` panics.
 /// The checked shape is serde's, which the type has none of in the library:
 /// the check runs on the same `try_from` shape written here.

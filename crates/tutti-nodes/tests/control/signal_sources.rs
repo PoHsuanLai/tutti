@@ -1,4 +1,4 @@
-//! The signal-driven modulation sources (doc 014 §6): `EnvelopeFollowerNode`
+//! The signal-driven modulation sources: `EnvelopeFollowerNode`
 //! and `NoteEnvelopeNode`, alone and through a `ControlLaneNode`, against
 //! analytic figures and invariants of the render (never another reference
 //! render).
@@ -358,8 +358,8 @@ fn lane_to_probe(
         },
     };
     let program = ControlProgram::new(None, vec![], vec![input]).expect("valid");
-    let node = ControlLaneNode::for_param(
-        ParamKey::<Hz>::CUTOFF,
+    let node = ControlLaneNode::for_unit(
+        ParamKey::<Hz>::CUTOFF.addr(),
         program,
         Some(Arc::new(AtomicF32::new(knob)).into()),
         Some(ed.param_range_cell(cutoff(probe)).expect("committed")),

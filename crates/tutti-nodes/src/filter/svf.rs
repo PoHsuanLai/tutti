@@ -442,8 +442,7 @@ mod tests {
 
     /// The shape is as wide as the filter was built, in and out, declares
     /// cutoff, Q and gain as its modulatable params, and reports
-    /// `Tail::Unknown`. (Doc 014 §12.6 added the gain port: a route onto an
-    /// SVF's gain was refused once the frame-rate driver went.)
+    /// `Tail::Unknown`.
     #[test]
     fn the_shape_is_the_width_and_declares_cutoff_q_and_gain() {
         let f = SvfFilterNode::<f64>::with_channels(

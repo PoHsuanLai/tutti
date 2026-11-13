@@ -25,7 +25,7 @@ impl Node for SoundFontUnit {
             .with_event_resolution(Resolution::Frames(crate::SYNTH_BLOCK_FRAMES as u32))
             // Sample playback and filters per voice: measured 76 ns
             // per frame and channel with one note held, 140 with eight,
-            // against `SvfFilterNode`'s 7.2 (doc 013, "The cost model and coarsening").
+            // against `SvfFilterNode`'s 7.2.
             // The default, stated.
             .with_cost(tutti_graph::Cost::Heavy)
             // The longest a voice rings after its key is up: an export that

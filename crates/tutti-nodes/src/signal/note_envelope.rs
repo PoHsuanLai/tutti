@@ -1,5 +1,5 @@
 //! [`NoteEnvelopeNode`]: an ADSR on a MIDI input, sent to control lanes as
-//! exact segments (design doc 014 §6).
+//! exact segments.
 
 use tutti_graph::Cost;
 use tutti_modulation::{Adsr, NoteAdsr, SignalKind, SignalSource, SourceId};
@@ -21,9 +21,9 @@ use super::{SourceNode, SourcePorts};
 /// - **It sends only on events**, so a lane that starts reading it while it
 ///   holds a sustain (a newly wired route) would read 0 until its next note
 ///   or stage boundary. An `EventKind::Resync` on its input closes that:
-///   it re-sends where it stands, resumed, on the event's frame (doc 014
-///   §6). The [`Modulation`](crate::Modulation) reconciler schedules one
-///   whenever a lane's program newly reads the envelope.
+///   it re-sends where it stands, resumed, on the event's frame. The
+///   [`Modulation`](crate::Modulation) reconciler schedules one whenever a
+///   lane's program newly reads the envelope.
 ///
 /// Insert it `ForkByClone(node)`: it shares nothing with a clone, and a
 /// fork's (the node as inserted, reset) starts idle, as a live play start

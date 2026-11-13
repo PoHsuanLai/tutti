@@ -102,7 +102,7 @@ impl Family for FreeverbFamily {
 
     // The comb feedback and damping glide in whole chunks counted from the last
     // reset, so the render is a function of the stream whatever the blocks (the
-    // design is still sampled per block, as for the FDN, doc 024 Q27).
+    // design is still sampled per block, as for the FDN).
     const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(CHUNK as u32) {
         Some(n) => n,
         None => unreachable!(),

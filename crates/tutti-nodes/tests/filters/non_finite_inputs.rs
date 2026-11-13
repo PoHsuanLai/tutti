@@ -90,7 +90,7 @@ fn the_strip_holds_off_non_finite_volume_and_pan() {
     let cells: [(&str, Cell); 2] = [("volume", BusStripNode::volume), ("pan", BusStripNode::pan)];
     for (name, cell) in cells {
         for bad in BAD {
-            let mut node = BusStripNode::new();
+            let mut node = BusStripNode::stereo();
             node.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(64))));
             assert!(renders_finite(&mut node, 2));
             let atomic = cell(&node);

@@ -56,6 +56,16 @@
 //!   off, controllers reset, running status cleared, back to the power-up
 //!   condition.
 //!
+//! The three share one rule: a release the block has no room for stays held
+//! and is owed, and goes out at the next block's first frame. A lapse releases
+//! the Group's held state and leaves the translator and MPE state alone (the
+//! specification asks only that voices go quiet); an engine stall does not
+//! lapse a cable: what arrived during it is placed late, at the first frame of
+//! the block that finds it, and clears the timer there. No input path keeps a byte parser (ALSA and
+//! CoreMIDI deliver UMP), so no running status or SysEx reassembly is stranded
+//! at this edge; Set Local On, Omni On or Poly, Song Position 0 and Stop belong
+//! to the transport and the synth, and nothing here holds them.
+//!
 //! The FE and the FF are the cable's own: the node acts on them and sends
 //! neither on (an FF is never echoed, p. 33).
 //!

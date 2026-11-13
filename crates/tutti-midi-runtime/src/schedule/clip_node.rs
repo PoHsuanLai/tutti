@@ -16,8 +16,8 @@
 //! each with a note-off on the frame the jump happens, and then returns the
 //! hold pedals (CC 64, 66, 67, 69) and the pitch bend it left off their
 //! normal position to it, on the same frame (MIDI 1.0 Detailed Spec p. 31,
-//! Stop; the pedals after the offs because a pedal down takes priority over
-//! Note Off, A-5). It writes only through
+//! Stop; the pedals after the offs because a pedal that is down holds a note
+//! through its Note Off, A-5). It writes only through
 //! the ledger's [`Sending`], which pays a note-off the port refused before
 //! anything else goes out.
 //!

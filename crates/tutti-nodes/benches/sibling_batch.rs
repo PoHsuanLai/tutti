@@ -368,7 +368,7 @@ fn graph(kind: Kind, variant: Variant, members: usize, frames: usize) -> Executo
                         ed.insert(k, "strip", ForkByClone(StripNode(Ramp::member(m))));
                     }
                     Kind::BusStrip => {
-                        let s = BusStripNode::new();
+                        let s = BusStripNode::stereo();
                         s.set_volume(Amplitude::new(0.5 + m as f32 * 1e-3));
                         ed.insert(k, "bus strip", s);
                     }

@@ -891,7 +891,7 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
 /// 400 notes and a sustain pedal are down when a seek ends them into a port
 /// with room for 296 offs: the offs the port refuses are paid in the blocks
 /// after, and the pedal-up, refused behind them, goes out only after the last
-/// of them (A-5: a pedal still down takes priority over a note-off), exactly
+/// of them (A-5: a pedal still down holds the note through its note-off), exactly
 /// once.
 #[test]
 fn a_refused_pedal_up_is_owed_and_follows_the_last_note_off() {
@@ -961,7 +961,7 @@ impl Node for SendThenRelease {
 /// the return in the protocol the message it was told about used: a MIDI 1.0
 /// Control Change 64 with value 0 and a MIDI 1.0 Pitch Bend at 0x2000, never
 /// a MIDI 2.0 packet (M1 p. 31, Stop; the 14-bit centre is 0x2000, M1 table
-/// of Pitch Bend). A pedal value below 64 is up (M1 CC 64 "0-63 off"), so a
+/// of Pitch Bend). A pedal value below 64 is up (M1 CC 64: 0 to 63 is off), so a
 /// pedal sent at 63 is not lifted again.
 #[test]
 fn a_midi_1_pedal_and_bend_are_returned_in_midi_1() {

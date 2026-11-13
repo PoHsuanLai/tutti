@@ -1,0 +1,4 @@
+* text=auto
+
+# Third-party sources, left out of GitHub's language statistics.
+vendor/** linguist-vendored

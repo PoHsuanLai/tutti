@@ -164,6 +164,16 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "the repo layout, the crate layering, the codec boundary and the depth-free test paths",
     ),
     (
+        "check-doc-refs",
+        "",
+        "prose names crate paths and design-doc sections that exist",
+    ),
+    (
+        "check-pointers",
+        "",
+        "no file:line pointer in code prose; one under docs/ names a line that exists",
+    ),
+    (
         "check-range-types",
         "",
         "no plain derived Deserialize on a private tuple field",
@@ -375,6 +385,8 @@ impl Planner<'_> {
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
+            "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
+            "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
             "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
@@ -424,7 +436,7 @@ impl Planner<'_> {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
-                    "check-submodule-pins",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers",
                     "check-features",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

@@ -613,6 +613,17 @@ tresult PLUGIN_API AudioProbeProcessor::process (ProcessData& data)
 	if (data.numSamples <= 0 || data.numOutputs <= 0 || !data.outputs)
 		return kResultOk;
 
+	// Report the process mode this block carried (see `kParamObservedProcessMode`).
+	// A realtime block reports nothing, so a host's ordinary playback reads no
+	// processor-driven parameter output from this plugin.
+	if (data.processMode != kRealtime && data.outputParameterChanges)
+	{
+		int32 queueIndex = 0, pointIndex = 0;
+		if (IParamValueQueue* queue =
+		        data.outputParameterChanges->addParameterData (kParamObservedProcessMode, queueIndex))
+			queue->addPoint (0, static_cast<ParamValue> (data.processMode) * 0.5, pointIndex);
+	}
+
 	if (data.symbolicSampleSize == kSample64)
 		renderBlock<double> (data);
 	else

@@ -522,11 +522,14 @@ unsafe fn run<S: Sample>(
 impl IProcessContextRequirementsTrait for Plugin {
     /// What the transcript records of a block's transport (core, "State"):
     /// its tempo, its musical position and its play, record and cycle state.
+    /// It also requires the chord, which the host never sends and no
+    /// transcript reads.
     unsafe fn getProcessContextRequirements(&self) -> u32 {
         use IProcessContextRequirements_::Flags_ as F;
         state_bit(F::kNeedTempo)
             | state_bit(F::kNeedProjectTimeMusic)
             | state_bit(F::kNeedTransportState)
+            | state_bit(F::kNeedChord)
     }
 }
 

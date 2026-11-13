@@ -206,6 +206,17 @@ enum ProbeParams : ParamID
     /// still using base `Parameter`, so its plain range really is `0..1` and it
     /// proves nothing here.
     kParamDelayMs = 105,
+
+    /// Read-only output: `processMode * 0.5`, written through
+    /// `outputParameterChanges` at offset 0 of every block whose mode is not
+    /// `kRealtime`, where `ProcessModes::kOffline` (2) arrives as 1.0.
+    ///
+    /// The process mode a host *asks for* is a number it holds; this is the one
+    /// the plugin *saw* in `ProcessData::processMode`, which is what crossed
+    /// the ABI. A host that regressed to a hardcoded `kRealtime` publishes
+    /// nothing, and a realtime block publishes nothing by design, so playback
+    /// reads no processor-driven parameter output from the probe.
+    kParamObservedProcessMode = 106,
 };
 
 /// Plain-value bounds for [`kParamDelayMs`], in milliseconds.

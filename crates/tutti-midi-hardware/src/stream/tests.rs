@@ -11,6 +11,7 @@ use crate::{HardwareMidiInputs, Pushed};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
+use tutti_graph::UmpAt;
 use tutti_midi_device::{
     BlockName, Capabilities, DeviceId, EndpointId, FunctionBlock, MAX_ATTEMPTS, PortDirection,
     STEP_TIMEOUT,
@@ -24,6 +25,8 @@ use tutti_ump::{
 /// A fake duplex device `raw` and the session that opened its input.
 struct Wire {
     session: MidiSession,
+    /// The output the caller holds, following what the session polls.
+    output: Option<OpenOutput>,
     counters: FakeCounters,
     id: DeviceId,
     raw: EndpointId,
@@ -61,6 +64,7 @@ fn session_over(os: UmpCapability, direction: PortDirection, device: Endpoint) -
         .unwrap_or_else(|| session.outputs().first().expect("the device").id.clone());
     Wire {
         session,
+        output: None,
         counters,
         id,
         raw: EndpointId::from_raw(7),
@@ -74,12 +78,33 @@ impl Wire {
         self.start + Duration::from_millis(ms)
     }
 
+    /// A poll at `ms`, whose reports the held output follows.
+    fn poll(&mut self, ms: u64) -> Vec<Polled> {
+        let polled: Vec<_> = self.session.poll(self.at(ms)).collect();
+        if let Some(output) = &mut self.output {
+            for report in &polled {
+                output.follow(report);
+            }
+        }
+        polled
+    }
+
+    /// Connects the output of the device, held by the wire.
+    fn connect_output(&mut self) {
+        self.output = Some(self.session.connect_output(&self.id).unwrap());
+    }
+
+    /// Queues `events` to the held output: how many the device took.
+    fn send(&mut self, events: &[UmpAt]) -> usize {
+        self.output.as_mut().expect("an output").queue(events)
+    }
+
     /// One tick of the session at `ms`, then the device reads what the session
     /// sent and answers into the input. Returns what the session sent, and the
     /// devices the tick settled.
     fn tick(&mut self, ms: u64) -> (Vec<Stream>, Vec<(DeviceId, DeviceStream)>) {
         let now = self.at(ms);
-        let settled = streams(self.session.poll(now));
+        let settled = streams(self.poll(ms));
         let sent: Vec<Stream> = self
             .counters
             .take_sent(self.raw)
@@ -132,7 +157,7 @@ fn offering_both() -> Endpoint {
 /// off though the device offers them** (the module's reasoning).
 #[test]
 fn a_device_that_answers_is_negotiated_onto_midi2_with_jr_off() {
-    let wire = session_over(
+    let mut wire = session_over(
         UmpCapability::midi1(),
         PortDirection::Duplex,
         offering_both(),
@@ -241,7 +266,7 @@ fn a_device_that_offers_only_midi1_stays_in_midi1() {
 #[test]
 fn a_silent_device_settles_as_the_os_describes_it() {
     let silent = Endpoint::new(Capabilities::default());
-    let wire = session_over(UmpCapability::midi2(), PortDirection::Duplex, silent);
+    let mut wire = session_over(UmpCapability::midi2(), PortDirection::Duplex, silent);
     wire.session.connect_input(&wire.id.clone()).unwrap();
 
     let step = STEP_TIMEOUT.as_millis() as u64;
@@ -276,7 +301,7 @@ fn a_silent_device_settles_as_the_os_describes_it() {
 /// wait). (It is sent an Identity Request, the tests below.)
 #[test]
 fn a_midi1_port_is_not_sent_stream_messages_and_is_described_at_once() {
-    let wire = session_over(
+    let mut wire = session_over(
         UmpCapability::midi1(),
         PortDirection::Duplex,
         Endpoint::new(Capabilities::default()),
@@ -298,7 +323,7 @@ fn a_midi1_port_is_not_sent_stream_messages_and_is_described_at_once() {
 
 /// A MIDI 1.0 duplex device, connected, and what the session sent at `ms`.
 fn midi1_wire() -> Wire {
-    let wire = session_over(
+    let mut wire = session_over(
         UmpCapability::midi1(),
         PortDirection::Duplex,
         Endpoint::new(Capabilities::default()),
@@ -343,7 +368,7 @@ fn reply_at(wire: &Wire, packets: Vec<Ump>, ms: u64) {
 /// `Inquired` stream and `stream` then holds.
 #[test]
 fn a_midi1_device_that_answers_an_identity_request_has_its_identity() {
-    let wire = midi1_wire();
+    let mut wire = midi1_wire();
     assert!(wire.session.poll(wire.at(0)).next().is_none());
     assert_eq!(received(&wire), sysex(&[0x7E, 0x7F, 0x06, 0x01]));
     assert_eq!(
@@ -379,7 +404,7 @@ fn a_midi1_device_that_answers_an_identity_request_has_its_identity() {
 #[test]
 fn a_silent_midi1_device_is_asked_twice_and_stays_described() {
     use tutti_midi_device::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT};
-    let wire = midi1_wire();
+    let mut wire = midi1_wire();
     let ms = INQUIRY_TIMEOUT.as_millis() as u64;
     let mut sends = 0;
     for step in 0..6 {
@@ -398,7 +423,7 @@ fn a_silent_midi1_device_is_asked_twice_and_stays_described() {
 #[test]
 fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
     use tutti_midi_device::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT};
-    let wire = midi1_wire();
+    let mut wire = midi1_wire();
     let ms = INQUIRY_TIMEOUT.as_millis() as u64;
     // The request, its one retry, then the poll that gives up.
     for step in 0..=u64::from(INQUIRY_ATTEMPTS) {
@@ -430,7 +455,7 @@ fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
 #[test]
 fn a_refused_output_does_not_fail_the_input_and_nothing_is_asked() {
     use tutti_midi_device::INQUIRY_TIMEOUT;
-    let wire = session_over(
+    let mut wire = session_over(
         UmpCapability::midi1(),
         PortDirection::Duplex,
         Endpoint::new(Capabilities::default()),
@@ -449,18 +474,13 @@ fn a_refused_output_does_not_fail_the_input_and_nothing_is_asked() {
 }
 
 /// The output an input opens to ask its device is that input's own: it is not
-/// the session's MIDI output (`output()` stays unset, and the session's own
-/// `connect_output` to the same device is a separate open that `output()`
-/// reports), and it goes with the input: once disconnected, the retry the
-/// inquiry would have sent is never sent.
+/// one the caller holds (`connect_output` to the same device is a separate open
+/// that the caller owns), and it goes with the input: once disconnected, the
+/// retry the inquiry would have sent is never sent.
 #[test]
 fn the_asking_output_is_the_inputs_own_and_closes_with_it() {
     use tutti_midi_device::INQUIRY_TIMEOUT;
-    let wire = midi1_wire();
-    assert!(
-        wire.session.output().is_none(),
-        "asking is not the session's output"
-    );
+    let mut wire = midi1_wire();
     assert!(wire.session.poll(wire.at(0)).next().is_none());
     assert_eq!(received(&wire).len(), 1, "the request");
 
@@ -471,10 +491,9 @@ fn the_asking_output_is_the_inputs_own_and_closes_with_it() {
     }
     assert!(received(&wire).is_empty(), "no retry after the input went");
     assert!(wire.session.stream(&wire.id).is_none());
-    assert!(wire.session.output().is_none());
 
-    wire.session.connect_output(&wire.id.clone()).unwrap();
-    assert_eq!(wire.session.output().map(|o| o.id), Some(wire.id.clone()));
+    let output = wire.session.connect_output(&wire.id.clone()).unwrap();
+    assert_eq!(output.id(), &wire.id);
 }
 
 /// A gap in the stream ring never joins an Identity Reply. The message sent is
@@ -484,7 +503,7 @@ fn the_asking_output_is_the_inputs_own_and_closes_with_it() {
 /// after it answers.
 #[test]
 fn a_gap_in_the_stream_ring_never_joins_an_identity_reply() {
-    let wire = midi1_wire();
+    let mut wire = midi1_wire();
     assert!(wire.session.poll(wire.at(0)).next().is_none());
     let valid = [
         0x7E, 0x7F, 0x06, 0x02, 0x41, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
@@ -529,7 +548,7 @@ fn a_gap_in_the_stream_ring_never_joins_an_identity_reply() {
 #[test]
 fn only_an_identity_reply_inside_the_inquiry_answers_it() {
     use tutti_midi_device::INQUIRY_TIMEOUT;
-    let wire = midi1_wire();
+    let mut wire = midi1_wire();
     let ms = INQUIRY_TIMEOUT.as_millis() as u64;
     assert!(wire.session.poll(wire.at(0)).next().is_none());
     reply_at(&wire, sysex(&[0x7E, 0x7F, 0x09, 0x01]), 1);
@@ -591,7 +610,7 @@ fn sysex_is_copied_to_the_stream_ring_while_asked_and_always_reaches_the_graph()
 /// `Described`, as the OS says, with no wait.
 #[test]
 fn an_endpoint_with_no_output_is_described_not_waited_for() {
-    let wire = session_over(
+    let mut wire = session_over(
         UmpCapability::midi2(),
         PortDirection::Input,
         Endpoint::new(Capabilities::default()),
@@ -718,16 +737,15 @@ fn rpn_ump(value: u32) -> Ump {
 fn a_midi1_port_is_never_sent_type_4() {
     use tutti_fixtures::midi::note_on;
     use tutti_ump::{MidiChannel, MidiGroup};
-    let wire = session_over(
+    let mut wire = session_over(
         UmpCapability::midi1(),
         PortDirection::Output,
         offering_both(),
     );
-    wire.session.connect_output(&wire.id).unwrap();
+    wire.connect_output();
     let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
     assert_eq!(
-        wire.session
-            .send(&[(Offset::ZERO, note), (Offset::ZERO, rpn_ump(12 << 25))]),
+        wire.send(&[(Offset::ZERO, note), (Offset::ZERO, rpn_ump(12 << 25))]),
         2
     );
     let got = received(&wire);
@@ -762,33 +780,33 @@ fn the_output_follows_the_negotiated_protocol() {
     // for MIDI 2.0, so it ends in MIDI 2.0 ...
     let mut wire = session_over(UmpCapability::midi2(), PortDirection::Duplex, device);
     wire.session.connect_input(&wire.id.clone()).unwrap();
-    wire.session.connect_output(&wire.id).unwrap();
+    wire.connect_output();
     let note = [(
         Offset::ZERO,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
     )];
     // ... but until then the output is what the OS said: MIDI 2.0.
-    wire.session.send(&note);
+    wire.send(&note);
     assert_eq!(received(&wire)[0].message_type(), 4);
 
     let stream = settle(&mut wire);
     assert_eq!(stream.config().protocol, Protocol::Midi2);
     received(&wire);
-    wire.session.send(&note);
+    wire.send(&note);
     assert_eq!(received(&wire)[0].message_type(), 4);
 
     // The device goes to MIDI 1.0 on its own: it is told, and the output goes
     // with it.
     send_ump(&wire, notification(Protocol::Midi1, false), 20);
-    let changed = streams(wire.session.poll(wire.at(20)));
+    let changed = streams(wire.poll(20));
     assert!(
         matches!(changed.as_slice(), [(_, s)] if s.config().protocol == Protocol::Midi1),
         "{changed:?}"
     );
-    wire.session.send(&note);
+    wire.send(&note);
     assert_eq!(received(&wire)[0].message_type(), 2);
     assert_eq!(
-        wire.session.output().map(|o| o.config.protocol),
+        wire.output.as_ref().map(|o| o.config().protocol),
         Some(Protocol::Midi1)
     );
 }
@@ -807,7 +825,7 @@ fn jr_reaches_a_device_only_after_its_notification_enables_it() {
     wire.session.connect_input(&wire.id.clone()).unwrap();
     let stream = settle(&mut wire);
     assert!(!stream.config().rx_jr);
-    wire.session.connect_output(&wire.id).unwrap();
+    wire.connect_output();
     let clock = Ump::from(Message::Utility(tutti_ump::Utility::JrClock(7)));
     let note = tutti_fixtures::midi::note_on(
         tutti_ump::MidiGroup::FIRST,
@@ -817,12 +835,12 @@ fn jr_reaches_a_device_only_after_its_notification_enables_it() {
     );
     let events = [(Offset::ZERO, clock), (Offset::ZERO, note)];
     received(&wire);
-    assert_eq!(wire.session.send(&events), 2, "nothing was refused");
+    assert_eq!(wire.send(&events), 2, "nothing was refused");
     assert_eq!(received(&wire), [note]);
 
     send_ump(&wire, notification(Protocol::Midi2, true), 30);
-    assert_eq!(wire.session.poll(wire.at(30)).len(), 1);
-    wire.session.send(&events);
+    assert_eq!(wire.poll(30).len(), 1);
+    wire.send(&events);
     assert_eq!(received(&wire), [clock, note]);
 }
 
@@ -915,8 +933,8 @@ fn an_output_connected_after_the_settle_starts_in_the_settled_protocol() {
     let mut wire = session_over(UmpCapability::midi2(), PortDirection::Duplex, device);
     wire.session.connect_input(&wire.id.clone()).unwrap();
     assert_eq!(settle(&mut wire).config().protocol, Protocol::Midi1);
-    wire.session.connect_output(&wire.id).unwrap();
-    wire.session.send(&[(
+    wire.connect_output();
+    wire.send(&[(
         Offset::ZERO,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
     )]);
@@ -942,7 +960,7 @@ fn model_identity(model: u8) -> tutti_ump::DeviceIdentity {
 fn a_midi1_device_that_answers_an_identity_request_is_learned_and_checked_against_a_saved_one() {
     use tutti_midi_device::{Learned, Match};
 
-    let wire = midi1_wire();
+    let mut wire = midi1_wire();
     assert!(wire.session.poll(wire.at(0)).next().is_none());
     assert!(
         wire.session.learned(&wire.id).is_empty(),

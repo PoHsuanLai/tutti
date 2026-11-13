@@ -53,7 +53,7 @@ pub use profiles::{
     ChannelCount, ChannelProfile, ListedProfile, PeerProfiles, ProfileError, ProfileSwitch,
     ProfilesChange, Whole, WholeProfile,
 };
-pub use session::{DeviceQuery, MidiSession, OutputInfo, Polled};
+pub use session::{DeviceQuery, MidiSession, Polled};
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{
     BindPolicy, Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId,

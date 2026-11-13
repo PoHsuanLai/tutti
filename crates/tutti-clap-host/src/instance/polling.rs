@@ -605,7 +605,7 @@ impl ClapLoaded {
     /// Latches what a wait found: the ready descriptors that are still
     /// registered, with the events they asked for, and the timers due at `now`
     /// (each restarting its period). Nothing is called: the plugin hears of
-    /// them when [`take_requests_with`](Self::take_requests_with) hands them to
+    /// them when [`take_requests_now`](Self::take_requests_now) hands them to
     /// the lifecycle, which serves them within its budget.
     pub(crate) fn latch_wakeups(&mut self, ready: &[Ready], now: std::time::Instant) {
         if let Ok(registered) = self.host_state.resources.posix_fds.lock() {

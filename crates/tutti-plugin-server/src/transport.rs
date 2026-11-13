@@ -50,6 +50,9 @@ pub(crate) trait Transport: Send {
     /// of the plugin's ([`crate::main_loop`]); `None` for a transport that is
     /// not one (an in-memory pair), which is waited on through
     /// [`wait_readable`](Self::wait_readable) alone.
+    // Only the unix backend polls it with the plugin's descriptors; elsewhere
+    // no plugin has any to add.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn stream(&self) -> Option<&PlatformStream> {
         None
     }

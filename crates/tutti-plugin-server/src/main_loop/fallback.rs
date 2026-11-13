@@ -9,7 +9,7 @@ pub(crate) type Stream = interprocess::local_socket::Stream;
 
 /// The reactor's window-system half. Nothing to pump here.
 #[derive(Debug, Default)]
-pub(crate) struct Native;
+pub(crate) struct Native(());
 
 impl Native {
     /// Waits until `transport`'s socket is readable (`Ok(true)`) or `timeout`

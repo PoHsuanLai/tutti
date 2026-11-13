@@ -274,84 +274,89 @@ mod tests {
         assert!(Interest::NONE.is_empty() && !rw.is_empty());
     }
 
-    /// A plugin that asks for one descriptor and a timer, and records what it
-    /// is woken with.
-    struct Asks {
-        fd: FdId,
-        deadline: Instant,
-        woken: Vec<(Vec<Ready>, Instant)>,
-    }
-
-    impl EditorWindow for Asks {
-        fn has_editor(&self, _: &MainThread) -> bool {
-            false
-        }
-        fn open_editor(
-            &mut self,
-            _: &MainThread,
-            _: crate::WindowHandle,
-            _: crate::ContentScale,
-        ) -> crate::PluginResult<crate::EditorSize> {
-            unreachable!("no editor")
-        }
-        fn close_editor(&mut self, _: &MainThread) {}
-        fn editor_idle(&mut self, _: &MainThread) {}
-        fn editor_capabilities(&mut self, _: &MainThread) -> crate::EditorCapabilities {
-            crate::EditorCapabilities::default()
-        }
-        fn set_editor_size(
-            &mut self,
-            _: &MainThread,
-            _: crate::EditorSize,
-        ) -> crate::PluginResult<crate::EditorSize> {
-            unreachable!("no editor")
-        }
-        fn poll_editor_resize_request(&mut self, _: &MainThread) -> Option<crate::EditorSize> {
-            None
-        }
-        fn wakeups(&mut self, _: &MainThread, out: &mut Wakeups) {
-            out.watch(self.fd, Interest::READ);
-            out.due_at(self.deadline);
-        }
-        fn wake(&mut self, _: &MainThread, ready: &[Ready], now: Instant) {
-            self.woken.push((ready.to_vec(), now));
-        }
-    }
-
-    /// **A pass wakes the plugin when a descriptor it asked for is readable or
-    /// its timer is due, and only then.**
+    /// Descriptors are POSIX's: the pass over a real one is one `cfg` here.
     #[cfg(unix)]
-    #[test]
-    fn a_pass_wakes_the_plugin_with_what_fired_and_not_otherwise() {
-        use std::io::Write;
-        use std::os::fd::AsRawFd;
-        let main = MainThread::claim().expect("one test, one process");
-        let (reader, mut writer) = std::io::pipe().unwrap();
-        let mut plugin = Asks {
-            fd: FdId(reader.as_raw_fd()),
-            deadline: Instant::now() + Duration::from_secs(3600),
-            woken: Vec::new(),
-        };
-        service_now(&mut plugin, &main);
-        assert!(plugin.woken.is_empty(), "nothing readable, nothing due");
-        writer.write_all(b"x").unwrap();
-        service_now(&mut plugin, &main);
-        let (ready, _) = &plugin.woken[0];
-        assert_eq!(
-            ready,
-            &[Ready {
-                fd: plugin.fd,
-                events: Interest::READ
-            }]
-        );
-        // Drained, and its timer due: it is woken with nothing ready.
-        let mut byte = [0u8; 1];
-        std::io::Read::read_exact(&mut &reader, &mut byte).unwrap();
-        service_now(&mut plugin, &main);
-        assert_eq!(plugin.woken.len(), 1, "drained and not due");
-        plugin.deadline = Instant::now();
-        service_now(&mut plugin, &main);
-        assert_eq!(plugin.woken.len(), 2, "a due timer wakes it too");
-        assert!(plugin.woken[1].0.is_empty());
+    mod service {
+        use super::*;
+
+        /// A plugin that asks for one descriptor and a timer, and records what it
+        /// is woken with.
+        struct Asks {
+            fd: FdId,
+            deadline: Instant,
+            woken: Vec<(Vec<Ready>, Instant)>,
+        }
+
+        impl EditorWindow for Asks {
+            fn has_editor(&self, _: &MainThread) -> bool {
+                false
+            }
+            fn open_editor(
+                &mut self,
+                _: &MainThread,
+                _: crate::WindowHandle,
+                _: crate::ContentScale,
+            ) -> crate::PluginResult<crate::EditorSize> {
+                unreachable!("no editor")
+            }
+            fn close_editor(&mut self, _: &MainThread) {}
+            fn editor_idle(&mut self, _: &MainThread) {}
+            fn editor_capabilities(&mut self, _: &MainThread) -> crate::EditorCapabilities {
+                crate::EditorCapabilities::default()
+            }
+            fn set_editor_size(
+                &mut self,
+                _: &MainThread,
+                _: crate::EditorSize,
+            ) -> crate::PluginResult<crate::EditorSize> {
+                unreachable!("no editor")
+            }
+            fn poll_editor_resize_request(&mut self, _: &MainThread) -> Option<crate::EditorSize> {
+                None
+            }
+            fn wakeups(&mut self, _: &MainThread, out: &mut Wakeups) {
+                out.watch(self.fd, Interest::READ);
+                out.due_at(self.deadline);
+            }
+            fn wake(&mut self, _: &MainThread, ready: &[Ready], now: Instant) {
+                self.woken.push((ready.to_vec(), now));
+            }
+        }
+
+        /// **A pass wakes the plugin when a descriptor it asked for is readable or
+        /// its timer is due, and only then.**
+        #[test]
+        fn a_pass_wakes_the_plugin_with_what_fired_and_not_otherwise() {
+            use std::io::Write;
+            use std::os::fd::AsRawFd;
+            let main = MainThread::claim().expect("one test, one process");
+            let (reader, mut writer) = std::io::pipe().unwrap();
+            let mut plugin = Asks {
+                fd: FdId(reader.as_raw_fd()),
+                deadline: Instant::now() + Duration::from_secs(3600),
+                woken: Vec::new(),
+            };
+            service_now(&mut plugin, &main);
+            assert!(plugin.woken.is_empty(), "nothing readable, nothing due");
+            writer.write_all(b"x").unwrap();
+            service_now(&mut plugin, &main);
+            let (ready, _) = &plugin.woken[0];
+            assert_eq!(
+                ready,
+                &[Ready {
+                    fd: plugin.fd,
+                    events: Interest::READ
+                }]
+            );
+            // Drained, and its timer due: it is woken with nothing ready.
+            let mut byte = [0u8; 1];
+            std::io::Read::read_exact(&mut &reader, &mut byte).unwrap();
+            service_now(&mut plugin, &main);
+            assert_eq!(plugin.woken.len(), 1, "drained and not due");
+            plugin.deadline = Instant::now();
+            service_now(&mut plugin, &main);
+            assert_eq!(plugin.woken.len(), 2, "a due timer wakes it too");
+            assert!(plugin.woken[1].0.is_empty());
+        }
     }
 }

@@ -1,6 +1,5 @@
 //! What the session's MIDI reports from [`Session::update`](crate::Session::update):
-//! [`MidiEvent`], nested under [`SessionEvent::Midi`](crate::SessionEvent::Midi)
-//! (design 030, convention 1).
+//! [`MidiEvent`], nested under [`SessionEvent::Midi`](crate::SessionEvent::Midi).
 
 /// A MIDI event of the session, one per thing that happened.
 ///
@@ -11,8 +10,8 @@
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum MidiEvent {
-    /// A MIDI device was added to the list, in the order the OS reported
-    /// (design 017 §5). The session reads the devices in `Phase::Poll`; the
+    /// A MIDI device was added to the list, in the order the OS reported.
+    /// The session reads the devices in `Phase::Poll`; the
     /// list at any time is [`Midi::devices`](crate::Midi::devices).
     #[cfg(feature = "midi-hardware")]
     Added {
@@ -33,8 +32,8 @@ pub enum MidiEvent {
     },
     /// A device the session held open as an input vanished: its connection
     /// is closed and its port retired, after the [`Removed`](Self::Removed)
-    /// that said so. What the device had queued is discarded; notes it held
-    /// are not released (design 017 §8.3 is not built).
+    /// that said so. What the device had queued is discarded; the notes,
+    /// pedals and bends it held are released downstream by the ingest node.
     #[cfg(feature = "midi-hardware")]
     InputLost {
         /// Its last listing; `info.id` is the device.
@@ -49,7 +48,7 @@ pub enum MidiEvent {
         info: tutti_midi_hardware::DeviceInfo,
     },
     /// A device the session holds open as an input has settled its UMP Stream
-    /// negotiation (design 017 §5, M2-104 §7.1.6.1): the Endpoint it declared,
+    /// negotiation (M2-104 §7.1.6.1): the Endpoint it declared,
     /// or the OS's description of it where it did not answer, and the Protocol
     /// in use. Reported once per connection, from `Phase::Poll`; the state
     /// stays readable as
@@ -62,7 +61,7 @@ pub enum MidiEvent {
         stream: Box<tutti_midi_hardware::DeviceStream>,
     },
     /// A MIDI-CI peer of a device the session holds open as an input was
-    /// found, changed or lost (design 017 L8, M2-101): the session runs a
+    /// found, changed or lost (M2-101): the session runs a
     /// MIDI-CI Device (Management only) on the input for as long as it is open
     /// and reports each change once, from `Phase::Poll`. The peers now are
     /// [`Midi::ci_peers`](crate::Midi::ci_peers).
@@ -130,7 +129,7 @@ pub enum MidiEvent {
         tempo: tutti_types::Bpm,
         /// The beat the step was placed at, for a host to draw it. A publish
         /// that lands late takes effect from the block that picks it up, so
-        /// the change is heard after this beat (doc 020 §11).
+        /// the change is heard after this beat.
         beat: tutti_types::Beat,
     },
     /// A meter the session follows was published: a Set Time Signature of the

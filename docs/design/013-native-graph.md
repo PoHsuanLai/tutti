@@ -3802,7 +3802,7 @@ Decisions:
    cut, takes its held events with it. (`chase_skipped_count` is gone: nothing
    is skipped.) A re-prepare keeps its units and a mode
    change swaps nothing, so neither chases; a fork does not, its copy
-   carries the state. What the two instruments write is in doc 017, "L4d".
+   carries the state.
 7. **The caller spins, then yields** while it waits on a helper (on the
    task graph, any task finishing: the sinks' `remaining`, the caller's own
    count and the helpers' completion counters; on the gate, `entered`). On
@@ -7765,9 +7765,9 @@ the four lanes above, the graph's own surface is:
 | Buses and coercion between declared layouts | Lane 4 |
 | Latency compensation, tails, feedback edges | Built (the compiler) |
 | Tap and level meter on any port | Built (`Op::Tap`, `Op::Meter`) |
-| Event tap (any event output, out to a thread) | Built (`Op::EventTap`, `EventTapReader`, `Graph::open_event_tap`; doc 017, stage E1) |
+| Event tap (any event output, out to a thread) | Built (`Op::EventTap`, `EventTapReader`, `Graph::open_event_tap`) |
 | Inlet (a thread's ring into the graph) | Built (`Graph::open_inlet`; `InletNode` is its implementation, not a node an author adds) |
-| Event inlet (a thread's events into the graph on their frame) | Built (`Graph::open_event_inlet`; `EventInletNode` is its implementation, not a node an author adds; doc 017, stage E2) |
+| Event inlet (a thread's events into the graph on their frame) | Built (`Graph::open_event_inlet`; `EventInletNode` is its implementation, not a node an author adds) |
 | Event fan-in (merge) | Built (`Op::EventMerge`) |
 | Param modulation and automation on a param port | Built (doc 014: the compiler's lane per param) |
 | Transport and tempo | Built (`Env`) |
@@ -7789,8 +7789,8 @@ the four lanes above, the graph's own surface is:
 - **Event tap and event inlet.** Audio has a tap and an inlet; events had
   neither as a primitive. Copying events out of any event port was done by
   MIDI-specific nodes (`MidiOutNode`, now deleted, and the queue nodes), and feeding events
-  in by `MidiInputNode` and `MidiQueueNode`. The **event tap is built**
-  (doc 017 stage E1): `Op::EventTap`, `TapReader`'s event sibling, a plan op of
+  in by `MidiInputNode` and `MidiQueueNode`. The **event tap is built**:
+  `Op::EventTap`, `TapReader`'s event sibling, a plan op of
   the `EVENTS` cost class that claims its `EventTapWriter` like `Op::Tap`
   claims its lanes, `DelayKey::EventTap` for `TapAlign::ToOutput`, carried
   across plans by `EventTapId` (a port that goes missing keeps its table entry
@@ -7800,8 +7800,7 @@ the four lanes above, the graph's own surface is:
   a waiting list on `Env::due`, a silent fork, `Moment` in `tutti-types`. A push
   is stamped with a `Stamp` (`NextBlock`, `Frame`, `Moment`; no beat), and its
   losses are one `Losses` value (events, `InletCounts::losses`).
-  It is the MIDI lanes' work (doc 017 owns the event side); this document
-  records only that it belongs to the graph.
+  It belongs to the graph.
 
 **Kept as nodes, on purpose:**
 
@@ -7984,15 +7983,15 @@ fourth.
     controls is adopted once and latched, as the pre-block did), and sends
     each event out of **its Group and channel's port** — sixteen for each
     Group heard, plus one channelless port per Group for system, SysEx and
-    Flex (a message with no Group, Utility and Stream, leaves the first Group's;
-    doc 017 L3). **Routing is wiring**: a listener on channel `c` of a Group
+    Flex (a message with no Group, Utility and Stream, leaves the first Group's).
+    **Routing is wiring**: a listener on channel `c` of a Group
     takes edges from that Group's port `c` and its channelless port, one on
     every channel from its seventeen (`MidiInputPorts::listening`; for the
     first Group alone, which is the default, the ports are `c` and
     `CHANNELLESS_PORT`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
     and `MAX_TARGETS_PER_ROUTE` are gone, and so is `MidiRouter`. Its fork
     reads no wire.
-  - **`MidiQueueNode`** (deleted, doc 017 stage E4: the event inlet
+  - **`MidiQueueNode`** (deleted: the event inlet
     replaced it): what a control thread sends (a keyboard, a
     preview), out of one port, each event on its offset clamped into the
     block. Its controls are the push half of a `MidiMailbox`, which is now
@@ -8004,7 +8003,7 @@ fourth.
     takes the transport and an emit sink rather than holding a `Timeline`
     and a sender. Its fork sends nothing. As before, a loop wrap reads as a
     locate on the next block.
-  - **`MidiOutNode`** (deleted in doc 017 stage E3; the session's hardware
+  - **`MidiOutNode`** (deleted; the session's hardware
     out is an event tap): a sink handing its event input's MIDI to a control
     thread through a ring, each event stamped with its frame on the graph's
     clock (wrapping at 2³²).

@@ -36,9 +36,9 @@ use tutti_modulation::{
     Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Waveform,
 };
 use tutti_nodes::automation::{Breakpoint, ControlLaneNode, Law, Trajectory};
-use tutti_types::{Beat, Bpm, Samples};
-use tutti_types::{BeatDuration, Depth, PhaseIncrement};
+use tutti_types::{Beat, BeatsPerCycle, Bpm, Samples};
 use tutti_types::{BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
+use tutti_types::{Depth, PhaseIncrement};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -91,7 +91,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let lfo = Layer {
         id: LayerId(1),
         clock: Clock::Beats {
-            per_cycle: BeatDuration(0.25),
+            per_cycle: BeatsPerCycle::of(0.25),
             phase: PhaseIncrement(0.0),
         },
         wave: Waveform::Shape {

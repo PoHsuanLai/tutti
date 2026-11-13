@@ -46,10 +46,14 @@ pub use initiator::{
     ProfileTable, ProfileTarget, Request, RequestError,
 };
 pub use pe::{
-    MediaType, NotValid, PE_MAX_HEADER_LEN, PeDecimal, PeEncoding, PeEndedBy, PeExtra, PeHeader,
-    PeHeaderError, PeHeaderTooLong, PeMessage, PePage, PeReply, PeRequest, PeReservedProperty,
-    PeStatus, PeSubscription, PeUpdateCommand, PeValue, PropertyName, ResourceId, ResourceName,
-    SubscribeId, mcoded7,
+    BodyLimit, BufferLimit, ChunkNo, ChunkPosition, ChunkTotal, MediaType, NotInRange, NotValid,
+    PE_MAX_CHUNK_DATA_LEN, PE_MAX_HEADER_LEN, PE_TIMEOUT, PeAnswer, PeBodyError, PeBuffered,
+    PeChunk, PeChunkError, PeDecimal, PeEncoding, PeEndedBy, PeExpired, PeExtra, PeFlowControl,
+    PeHeader, PeHeaderError, PeHeaderTooLong, PeMessage, PeMessageKind, PePage, PeReassembler,
+    PeReassemblyError, PeReassemblyLimits, PeReceived, PeRefused, PeReply, PeRequest, PeRequestId,
+    PeReservedProperty, PeSignal, PeStatus, PeStep, PeSubscription, PeTerminator, PeTransaction,
+    PeUpdateCommand, PeValue, PropertyName, ResourceId, ResourceName, StreamLimit, SubscribeId,
+    TimeoutWait, decode_body, encode_body, mcoded7, split_message,
 };
 pub use profile::{
     ChannelsDetail, DetailsData, InquiryTarget, ListTooLong, ManufacturerProfile, ProfileChannels,

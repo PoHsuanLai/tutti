@@ -41,7 +41,7 @@ impl Node for Bands {
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         for k in 0..2 {
             match io.param(k) {
-                ParamInput::Frames(v) => io.output(k).copy_from_slice(v),
+                ParamInput::Frames { values: v, .. } => io.output(k).copy_from_slice(v),
                 ParamInput::Base => {
                     let base = self.knobs[k].load(Ordering::Acquire);
                     io.output(k).fill(base);

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tutti_fixtures::main_thread;
 
-use tutti_plugin_types::{ContentScale, MainThread};
+use tutti_plugin_types::{ContentScale, Interest, MainThread, Ready, Wakeups};
 use tutti_vst3_ffi::{Module, Plugin};
 
 /// `core::EDITOR_*`, from the plugin's spec.
@@ -81,6 +81,58 @@ fn a_tidy_editor_registers_and_unregisters() {
     assert_eq!(registered(&plugin), (1, 1));
     plugin.close_editor(&main);
     assert_eq!(registered(&plugin), (0, 0));
+}
+
+/// **The run loop is described to the host's wait, and what the wait found is
+/// run.** A tidy view registers a 1 ms timer and a descriptor. The description
+/// has the descriptor (for reading) and the timer's deadline; a wake just before
+/// the deadline runs nothing, one at it runs the timer, and a descriptor runs its
+/// handler only when it is reported readable (not when it is reported writable).
+#[test]
+fn the_run_loop_is_described_and_what_the_wait_found_is_run() {
+    let main = MainThread::claim().unwrap();
+    let module = module();
+    let mut plugin = plugin_with_editor(&module, TIDY);
+    open(&mut plugin, &main);
+
+    let mut wakeups = Wakeups::new();
+    plugin.editor_wakeups(&main, &mut wakeups);
+    let [watch] = wakeups.watches() else {
+        panic!("one descriptor registered: {:?}", wakeups.watches());
+    };
+    assert_eq!(watch.interest, Interest::READ);
+    let deadline = wakeups.deadline().expect("one timer registered");
+    let fd = watch.fd;
+
+    plugin.wake_editor_loop(&main, &[], deadline - Duration::from_micros(1));
+    assert_eq!(plugin.run_loop_activity().timers_fired, 0, "not due yet");
+    plugin.wake_editor_loop(&main, &[], deadline);
+    assert_eq!(
+        plugin.run_loop_activity().timers_fired,
+        1,
+        "due at its deadline"
+    );
+
+    let writable = Ready {
+        fd,
+        events: Interest::WRITE,
+    };
+    plugin.wake_editor_loop(&main, &[writable], deadline);
+    assert_eq!(plugin.run_loop_activity().fds_dispatched, 0, "not readable");
+    let readable = Ready {
+        fd,
+        events: Interest::READ,
+    };
+    plugin.wake_editor_loop(&main, &[readable], deadline);
+    assert_eq!(plugin.run_loop_activity().fds_dispatched, 1, "readable");
+
+    plugin.close_editor(&main);
+    let mut after = Wakeups::new();
+    plugin.editor_wakeups(&main, &mut after);
+    assert!(
+        after.is_empty(),
+        "nothing left to wait on once the editor closed"
+    );
 }
 
 /// **A timer and a descriptor a plugin leaves registered when its editor closes

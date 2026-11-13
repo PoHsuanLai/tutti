@@ -7,10 +7,13 @@ use tutti_clap_test_plugin::{CMD_REGISTER_TIMER, Site, ThreadCapture};
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::{Editor, EditorWindow, Load, OutOfProcess};
 
-/// A timer the plugin registers ticks on the editor's idle, which is the only
-/// main-thread tick the editor instance has. The host answered
+/// A timer the plugin registers ticks when the host's pump finds it due
+/// (`wakeups` and `wake`, which the editor's `editor_idle` then serves: the
+/// only main-thread tick the editor instance has). The host answered
 /// `register_timer` with `true` and never called `on_timer`, so a plugin that
-/// animates its editor from a timer froze.
+/// animates its editor from a timer froze. A period of zero is floored for
+/// the wake-up (it must not spin the host's loop), so it is due once the floor
+/// has passed.
 #[test]
 fn a_timer_the_editor_registers_ticks_on_idle() {
     let path = tutti_fixtures::clap_probe();
@@ -43,8 +46,15 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
     let tick = Site::OnTimer as usize;
     assert_eq!(read().sites[tick].visits, 0);
 
+    // Before the floor has passed the loop is not woken for it, and the timer
+    // is not latched.
+    EditorWindow::wake(&mut editor, &main, &[], std::time::Instant::now());
     editor.editor_idle(&main);
+    assert_eq!(read().sites[tick].visits, 0, "not before its wake-up");
 
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    EditorWindow::wake(&mut editor, &main, &[], std::time::Instant::now());
+    editor.editor_idle(&main);
     assert_eq!(read().sites[tick].visits, 1, "a period-0 timer is due");
 }
 

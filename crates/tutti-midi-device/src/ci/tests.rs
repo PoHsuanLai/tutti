@@ -118,19 +118,20 @@ fn non_ci_sysex_is_not_ci() {
 
 // §5.3 and §5.11: a device owes a NAK to a message it does not understand, so a
 // message that is not read keeps the header it was addressed by. This is the
-// Unread of a Profile Inquiry (0x20), a kind this codec does not model.
+// Unread of an Inquiry: Property Exchange Capabilities (0x30), a kind this codec
+// does not model.
 #[test]
 fn a_message_that_is_not_read_keeps_its_header() {
     let mut bytes = invalidate();
     bytes[1] = 0x03; // Device ID: channel 4
-    bytes[3] = 0x20; // Profile Inquiry
+    bytes[3] = 0x30; // Property Exchange Capabilities
     bytes[4] = 0x01;
     let got = unread(&bytes);
     assert_eq!(
         got,
         Unread {
             device_id: 0x03,
-            sub_id2: 0x20,
+            sub_id2: 0x30,
             version: 0x01,
             source: Some(muid(1)),
             destination: Some(Destination::Broadcast),
@@ -149,7 +150,7 @@ fn a_message_that_is_not_read_keeps_its_header() {
                 source: muid(0x77),
             },
             to: muid(1),
-            nak: Nak::new(U7::of(0x20), U7::of(0x01)),
+            nak: Nak::new(U7::of(0x30), U7::of(0x01)),
         }
     );
     assert_eq!(message(&reply.encode()), reply);

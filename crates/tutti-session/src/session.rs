@@ -430,7 +430,7 @@ pub struct Session {
     /// and the count the last poll saw.
     #[cfg(feature = "device")]
     pub(crate) faults: Option<(Arc<tutti_cpal::StreamFaults>, u64)>,
-    /// The device watch (design 018), and what restarts reported since the
+    /// The device watch, and what restarts reported since the
     /// last poll.
     #[cfg(feature = "device")]
     pub(crate) device_watch: Option<crate::DeviceWatch>,

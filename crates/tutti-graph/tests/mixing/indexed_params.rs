@@ -60,7 +60,7 @@ impl Node for Bands {
                     let base = self.thr[k].load().0;
                     io.output(k).fill(base);
                 }
-                ParamInput::Frames(v) => io.output(k).copy_from_slice(v),
+                ParamInput::Frames { values: v, .. } => io.output(k).copy_from_slice(v),
             }
         }
         Status::Modified
@@ -426,7 +426,7 @@ impl Node for Wide {
         for (out, k) in [(0, 0), (1, 31)] {
             match io.param(k) {
                 ParamInput::Base => io.output(out).fill(0.0),
-                ParamInput::Frames(v) => io.output(out).copy_from_slice(v),
+                ParamInput::Frames { values: v, .. } => io.output(out).copy_from_slice(v),
             }
         }
         Status::Modified

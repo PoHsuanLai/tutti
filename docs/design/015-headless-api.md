@@ -1899,7 +1899,7 @@ addition). Specifics:
 - **Any change to the graph, the node contract or the RT rules.**
 - **Devices that come and go.** What `Phase::Poll` does when a card is
   unplugged, replugged or replaced as the default is
-  [018](018-audio-devices.md)'s; this design only gives it the phase.
+  the device watch's (`tutti-session`); this design only gives it the phase.
 
 ## 11. Decisions
 

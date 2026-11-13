@@ -51,6 +51,7 @@ mod requests;
 mod sample_format;
 mod sysex;
 mod transport;
+mod wakeups;
 
 // Test-only global allocator for the no-alloc gates: panics on any heap
 // allocation inside `assert_no_alloc::assert_no_alloc(..)` scopes.
@@ -119,6 +120,7 @@ pub use metadata::{
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 pub use midi_intake::MidiIntake;
 pub use tutti_graph::BusRole;
+pub use wakeups::{Interest, Ready, Wakeups, Watch};
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use locate::{Helper, Locator};

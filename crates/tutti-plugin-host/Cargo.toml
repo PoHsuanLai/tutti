@@ -60,7 +60,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # linked rlib is a separate image with separate statics, so only the cdylib's
 # globals see the host's calls. The same pair, for the same reasons, as
 # `tutti-vst2-host`'s dev-dependencies.
-libloading = "0.8"
+libloading.workspace = true
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 
 [[bench]]

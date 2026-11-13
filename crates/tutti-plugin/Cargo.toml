@@ -121,7 +121,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # globals see the host's calls. The same pair, for the same reasons, as
 # `tutti-vst2-host`'s dev-dependencies; here it lets a test assert what the
 # *node* dispatched rather than what the instance API does.
-libloading = "0.8"
+libloading.workspace = true
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # The reference CLAP plugin the OUT-OF-PROCESS correctness suites drive. A
 # dev-dependency for the artifact, not the API: cargo builds its cdylib in this

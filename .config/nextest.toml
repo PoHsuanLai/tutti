@@ -16,3 +16,8 @@ sequencer = { max-threads = 4 }
 [[profile.default.overrides]]
 filter = 'package(tutti-midi-hardware) and test(/backend::alsa::tests::/)'
 test-group = 'sequencer'
+
+# `cargo xtask conformance` joins each test's result to the spec rows it tags.
+# CI runs the plugin test tiers with this profile and uploads the file per OS.
+[profile.conformance.junit]
+path = "junit.xml"

@@ -243,7 +243,7 @@ pub(super) fn pinned_clap_sys(lock: &str) -> Option<String> {
 }
 
 /// Every inventory file's rows (all files read, every error collected).
-fn load(tree: &dyn Tree) -> (Vec<(String, Row)>, Vec<String>) {
+pub(super) fn load(tree: &dyn Tree) -> (Vec<(String, Row)>, Vec<String>) {
     let (mut rows, mut errs) = (Vec::new(), Vec::new());
     let mut owner: BTreeMap<String, String> = BTreeMap::new();
     for path in tree.files(DIR, &skipped) {

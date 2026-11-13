@@ -31,7 +31,11 @@ fn dry(name: &str, args: &[&str]) -> Vec<String> {
 /// The fewest arguments `name` plans with: none, except the version
 /// `release` needs.
 fn least_args(name: &str) -> &'static [&'static str] {
-    if name == "release" { &["0.1.0"] } else { &[] }
+    match name {
+        "release" => &["0.1.0"],
+        "conformance" => &["--results", "r"],
+        _ => &[],
+    }
 }
 
 #[test]
@@ -62,7 +66,7 @@ fn release_takes_one_plain_version() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 44);
+    assert_eq!(RECIPES.len(), 46);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -338,4 +342,48 @@ fn a_dependency_asked_for_twice_runs_once() {
     p.dep("plugin-probe").unwrap();
     p.dep("plugin-probe").unwrap();
     assert_eq!(p.out.len(), 1);
+}
+
+#[test]
+fn conformance_reads_its_options_and_defaults_the_output() {
+    let s = dry("conformance", &["--results", "junit"]);
+    assert_eq!(s.len(), 1);
+    assert_eq!(
+        s[0],
+        "conformance: join /repo/junit/<os>.xml to the inventories, write /repo/site/conformance/index.html and ../badges/*.json"
+    );
+    let s = dry("conformance", &["--out", "o", "--results", "j"]);
+    assert!(s[0].contains("/repo/j/<os>.xml") && s[0].contains("write /repo/o/index.html"));
+}
+
+#[test]
+fn conformance_refuses_a_missing_repeated_or_unknown_option() {
+    let plan = |a: &[&str]| {
+        let a: Vec<String> = a.iter().map(|s| (*s).to_owned()).collect();
+        plan("conformance", &a, &ctx())
+    };
+    assert!(plan(&[]).unwrap_err().contains("--results"));
+    assert!(plan(&["--results"]).unwrap_err().contains("needs a value"));
+    assert!(
+        plan(&["--results", "a", "--results", "b"])
+            .unwrap_err()
+            .contains("twice")
+    );
+    assert!(plan(&["--nope", "a"]).is_err());
+}
+
+#[test]
+fn coverage_probes_llvm_cov_after_building_the_plugins() {
+    let steps = plan("coverage", &[], &ctx()).unwrap();
+    let at = steps
+        .iter()
+        .position(|s| *s == Step::RequireLlvmCov)
+        .unwrap();
+    assert_eq!(at, 2, "after plugin-server and plugin-probe");
+    let run = steps[at + 1].display();
+    assert!(
+        run.starts_with("cargo llvm-cov nextest --locked --workspace"),
+        "{run}"
+    );
+    assert!(run.ends_with("--html --output-dir site/coverage"), "{run}");
 }

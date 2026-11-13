@@ -111,6 +111,7 @@ fn the_legacy_path_counts_a_message_it_cannot_narrow() {
 /// Control Change packet, built by `EventList`, moves the parameter mapped to
 /// it, and a controller at 32 bits is not narrowed away (full scale lands on
 /// the top of the range).
+/// Spec: au.midi.MusicDeviceMIDIEventList
 #[test]
 fn a_ump_list_moves_a_mapped_parameter() {
     let _g = AU_LOCK.lock().unwrap_or_else(|e| e.into_inner());

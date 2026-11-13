@@ -4,21 +4,8 @@ fn parse(bytes: &[u8]) -> Vec<Message> {
     Midi1Parser::new(MidiGroup::FIRST).feed_all(bytes).collect()
 }
 
-fn u7(v: u8) -> U7 {
-    U7::new(v).unwrap()
-}
-
 fn on(ch: u8, note: u8, vel: u8) -> Message {
-    Message::Midi1(
-        Address {
-            group: MidiGroup::FIRST,
-            channel: MidiChannel::of(ch),
-        },
-        Voice1::NoteOn {
-            note: NoteNumber::new(note).unwrap(),
-            velocity: u7(vel),
-        },
-    )
+    Message::note_on(MidiChannel::of(ch), NoteNumber::of(note), U7::of(vel))
 }
 
 fn sysex(status: SysexStatus, data: &[u8]) -> Message {
@@ -39,7 +26,7 @@ fn system(s: System) -> Message {
 fn the_wire_bytes_are_the_spec_tables() {
     let cc = |c, v| Voice1::ControlChange {
         controller: CCNumber::new(c).unwrap(),
-        value: u7(v),
+        value: U7::of(v),
     };
     let note = |n| NoteNumber::new(n).unwrap();
     let voices: [(&[u8], u8, Voice1); 7] = [
@@ -48,7 +35,7 @@ fn the_wire_bytes_are_the_spec_tables() {
             3,
             Voice1::NoteOff {
                 note: note(60),
-                velocity: u7(0x40),
+                velocity: U7::of(0x40),
             },
         ),
         (
@@ -56,7 +43,7 @@ fn the_wire_bytes_are_the_spec_tables() {
             2,
             Voice1::NoteOn {
                 note: note(60),
-                velocity: u7(100),
+                velocity: U7::of(100),
             },
         ),
         (
@@ -64,12 +51,12 @@ fn the_wire_bytes_are_the_spec_tables() {
             4,
             Voice1::PolyPressure {
                 note: note(0x30),
-                pressure: u7(0x20),
+                pressure: U7::of(0x20),
             },
         ),
         (&[0xB1, 0x07, 0x7F], 1, cc(7, 0x7F)),
-        (&[0xC5, 0x0A], 5, Voice1::ProgramChange(u7(10))),
-        (&[0xDF, 0x40], 15, Voice1::ChannelPressure(u7(0x40))),
+        (&[0xC5, 0x0A], 5, Voice1::ProgramChange(U7::of(10))),
+        (&[0xDF, 0x40], 15, Voice1::ChannelPressure(U7::of(0x40))),
         // 0x2000 is the centre; the data bytes are 0x00 (low 7) and 0x40 (high 7).
         (
             &[0xE0, 0x00, 0x40],
@@ -91,13 +78,13 @@ fn the_wire_bytes_are_the_spec_tables() {
     }
 
     let systems: [(&[u8], System); 10] = [
-        (&[0xF1, 0x35], System::TimeCode(u7(0x35))),
+        (&[0xF1, 0x35], System::TimeCode(U7::of(0x35))),
         // Song position 0x0101 = 257: low 7 bits 0x01, high 7 bits 0x02.
         (
             &[0xF2, 0x01, 0x02],
             System::SongPosition(U14::new(0x101).unwrap()),
         ),
-        (&[0xF3, 0x03], System::SongSelect(u7(3))),
+        (&[0xF3, 0x03], System::SongSelect(U7::of(3))),
         (&[0xF6], System::TuneRequest),
         (&[0xF8], System::TimingClock),
         (&[0xFA], System::Start),
@@ -114,7 +101,7 @@ fn the_wire_bytes_are_the_spec_tables() {
 
 #[test]
 fn padded_bytes_are_zero_after_the_message() {
-    let program = Voice1::ProgramChange(u7(9)).bytes(MidiChannel::of(2));
+    let program = Voice1::ProgramChange(U7::of(9)).bytes(MidiChannel::of(2));
     assert_eq!((program.padded(), program.len()), ([0xC2, 9, 0], 2));
     let clock = System::TimingClock.bytes();
     assert_eq!((clock.padded(), clock.len()), ([0xF8, 0, 0], 1));
@@ -124,8 +111,8 @@ fn padded_bytes_are_zero_after_the_message() {
 #[test]
 fn a_bank_is_cc0_msb_then_cc32_lsb() {
     let bank = Bank {
-        msb: u7(3),
-        lsb: u7(4),
+        msb: U7::of(3),
+        lsb: U7::of(4),
     };
     let [msb, lsb] = bank.bytes(MidiChannel::of(2));
     assert_eq!(msb.padded(), [0xB2, 0, 3]);
@@ -146,7 +133,7 @@ fn u14_from_halves_inverts_msb_and_lsb() {
         let v = U14::new(raw).unwrap();
         assert_eq!(U14::from_halves(v.msb(), v.lsb()), v);
     }
-    assert_eq!(U14::from_halves(u7(1), u7(2)).get(), 0x82);
+    assert_eq!(U14::from_halves(U7::of(1), U7::of(2)).get(), 0x82);
 }
 
 // ---- running status and real-time bytes ----------------------------------------
@@ -176,14 +163,17 @@ fn system_common_cancels_running_status() {
     );
     assert_eq!(
         parse(&[0x90, 60, 100, 0xF1, 5, 61, 90]),
-        [on(0, 60, 100), system(System::TimeCode(u7(5)))]
+        [on(0, 60, 100), system(System::TimeCode(U7::of(5)))]
     );
 }
 
 /// A system common message completes once and does not repeat on more data.
 #[test]
 fn a_system_common_message_is_not_running_status() {
-    assert_eq!(parse(&[0xF3, 1, 2, 3]), [system(System::SongSelect(u7(1)))]);
+    assert_eq!(
+        parse(&[0xF3, 1, 2, 3]),
+        [system(System::SongSelect(U7::of(1)))]
+    );
 }
 
 #[test]
@@ -391,7 +381,7 @@ fn a_status_byte_ends_a_sysex_without_an_end_packet() {
     );
     assert_eq!(
         parse(&[0xF0, 1, 0xF1, 0x20, 0xF7]),
-        [system(System::TimeCode(u7(0x20)))]
+        [system(System::TimeCode(U7::of(0x20)))]
     );
 }
 
@@ -406,7 +396,7 @@ fn message_reads_one_message_and_ignores_the_padding() {
                 group: MidiGroup::FIRST,
                 channel: MidiChannel::of(0),
             },
-            Voice1::ProgramChange(u7(p)),
+            Voice1::ProgramChange(U7::of(p)),
         )
     };
     let read = |bytes: &[u8]| parse_exact(MidiGroup::FIRST, bytes);
@@ -423,11 +413,17 @@ fn message_reads_one_message_and_ignores_the_padding() {
 #[test]
 fn message_takes_the_length_the_status_gives() {
     let read = |bytes: &[u8]| parse_exact(MidiGroup::FIRST, bytes);
-    assert_eq!(read(&[0xF3, 4]), Some(system(System::SongSelect(u7(4)))));
-    assert_eq!(read(&[0xF3, 4, 9]), Some(system(System::SongSelect(u7(4)))));
+    assert_eq!(
+        read(&[0xF3, 4]),
+        Some(system(System::SongSelect(U7::of(4))))
+    );
+    assert_eq!(
+        read(&[0xF3, 4, 9]),
+        Some(system(System::SongSelect(U7::of(4))))
+    );
     assert_eq!(
         read(&[0xF1, 0x35]),
-        Some(system(System::TimeCode(u7(0x35))))
+        Some(system(System::TimeCode(U7::of(0x35))))
     );
     assert_eq!(
         read(&[0xF2, 1, 2]),
@@ -483,10 +479,10 @@ fn bytes_round_trip_through_the_parser_for_every_value() {
         };
         for d1 in 0..128u8 {
             let note = NoteNumber::new(d1).unwrap();
-            voice(Voice1::ProgramChange(u7(d1)));
-            voice(Voice1::ChannelPressure(u7(d1)));
+            voice(Voice1::ProgramChange(U7::of(d1)));
+            voice(Voice1::ChannelPressure(U7::of(d1)));
             for d2 in 0..128u8 {
-                let v = u7(d2);
+                let v = U7::of(d2);
                 voice(Voice1::NoteOff { note, velocity: v });
                 voice(Voice1::NoteOn { note, velocity: v });
                 voice(Voice1::PolyPressure { note, pressure: v });
@@ -502,7 +498,7 @@ fn bytes_round_trip_through_the_parser_for_every_value() {
     }
     assert_eq!(checked, 16 * 128 * (2 + 128 * 5));
     for d1 in 0..128u8 {
-        for s in [System::TimeCode(u7(d1)), System::SongSelect(u7(d1))] {
+        for s in [System::TimeCode(U7::of(d1)), System::SongSelect(U7::of(d1))] {
             check(&mut parser, system(s), s.bytes());
         }
     }
@@ -532,7 +528,7 @@ fn framing_adds_the_delimiters_and_knows_its_length() {
     assert_eq!(f.collect::<Vec<_>>(), [0xF0, 1, 2, 3, 0xF7]);
     assert_eq!(frame::<u8>(&[]).collect::<Vec<_>>(), [0xF0, 0xF7]);
 
-    let payload = [u7(9)];
+    let payload = [U7::of(9)];
     let mut f = frame(&payload);
     assert_eq!(f.len(), 3);
     assert_eq!(f.next(), Some(0xF0));

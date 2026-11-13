@@ -500,6 +500,7 @@ mod tests {
     /// replaces its latest: `kResultOk` with the replaced slot's index, the
     /// lost point counted. An earlier point is dropped: `kResultFalse`,
     /// `index` untouched, counted. All inside the no-alloc gate.
+    /// Spec: vst3.IParamValueQueue.addPoint
     #[test]
     fn add_point_past_the_room_keeps_the_latest_counted() {
         use vst3::Steinberg::Vst::IParamValueQueueTrait;

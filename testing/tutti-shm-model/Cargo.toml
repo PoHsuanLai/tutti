@@ -35,7 +35,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "loom model of the tutti-plugin shared-memory header protocol (test-only)"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/tutti-audio/tutti"
 publish = false
 
 # Note: this crate does NOT take `[lints] workspace = true`, because it needs a

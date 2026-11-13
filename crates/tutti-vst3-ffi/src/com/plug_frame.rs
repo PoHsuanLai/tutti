@@ -142,6 +142,7 @@ mod tests {
     /// Several requests between two takes yield only the last; a take
     /// consumes it, so the next poll reports nothing until the plugin asks
     /// again.
+    /// Spec: vst3.IPlugFrame.resizeView
     #[test]
     fn the_latest_resize_request_wins_and_is_taken_once() {
         let frame = frame();

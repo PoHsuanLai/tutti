@@ -230,6 +230,7 @@ fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
 /// **`kPrefetchableSupportChanged` runs the deactivate and activate the
 /// header asks for.** The flag was decoded and dropped. The probe counts its
 /// own activations, which is what the host cannot see.
+/// Spec: vst3.IComponentHandler.restartComponent
 #[test]
 fn a_prefetchable_support_change_restarts_the_plugin() {
     // `RestartFlags_::kPrefetchableSupportChanged`.
@@ -269,6 +270,7 @@ fn a_prefetchable_support_change_restarts_the_plugin() {
 /// **`kParamIDMappingChanged` reaches the client as a parameter-list
 /// change**, so it re-pulls the ids; it was decoded and dropped, and every
 /// lane that named a remapped id detached.
+/// Spec: vst3.IComponentHandler.restartComponent
 #[test]
 fn a_param_id_remap_is_reported_as_a_changed_list() {
     // `RestartFlags_::kParamIDMappingChanged`.

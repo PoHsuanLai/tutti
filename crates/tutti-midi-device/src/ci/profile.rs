@@ -336,7 +336,7 @@ impl InquiryTarget {
 }
 
 /// Why bytes are not Profile data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ProfileDataError {
     /// A byte has its top bit set: System Exclusive carries 7-bit data.
     #[error("a data byte has its top bit set")]

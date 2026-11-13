@@ -304,7 +304,6 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
 /// The convolver's gain is its only cell (the mix is the graph's, which refuses
 /// a non-finite one: `tutti-session/tests/nodes/node_mix.rs`); it does not feed
 /// recursive state, but the block's end starts the next block's ramp.
-#[cfg(feature = "convolution")]
 #[test]
 fn the_convolver_holds_off_non_finite_controls() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};

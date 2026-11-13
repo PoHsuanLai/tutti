@@ -18,7 +18,7 @@ workspace = true
 # The hooks a test uses to drive the raw C vtables the safe API hides (raw
 # lists, streams and host vtables, a context-menu builder). Off in a
 # production build; the host crate's tests turn it on.
-test-support = []
+testing = []
 # The wrappers for the speculative extensions (param indication, remote
 # controls, triggers, tuning, undo, resource directory, preset load, context
 # menu, port configuration requests). The host crate's own `clap-extras`

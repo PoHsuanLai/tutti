@@ -64,7 +64,7 @@ The wrappers are tested against the reference plugin (`tutti-clap-test-plugin`)
 in `tests/plugin_handle.rs`, and against stub vtables in the unit tests beside
 the code they cover. A test that needs a raw list or vtable (a null pointer, an
 undersized header, a misaligned event) uses the `*_raw_for_test` hooks, which
-are `#[doc(hidden)]`, behind the `test-support` feature (off in a production
+are `#[doc(hidden)]`, behind the `testing` feature (off in a production
 build; the host crate's dev-dependency turns it on) and leak a few bytes on
 purpose.
 

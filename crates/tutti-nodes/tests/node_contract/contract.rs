@@ -128,8 +128,6 @@ contract_tests!(audio crossover => crossover_row());
 contract_tests!(audio multiband => multiband_row());
 contract_tests!(audio stereo_limiter => stereo_limiter_row());
 contract_tests!(audio delay_line => delay_line_row());
-
-#[cfg(feature = "convolution")]
 mod convolution {
     use super::*;
     use tutti_nodes::ConvolverNode;

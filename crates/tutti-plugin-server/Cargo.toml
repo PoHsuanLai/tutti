@@ -30,9 +30,6 @@ clap = ["dep:tutti-clap-host"]
 # Audio Unit support (macOS only)
 au = ["dep:tutti-au-host"]
 
-# All served plugin formats. VST2 is not one: its editor and audio instance are
-# one object, so it runs in the host's process only (design 021 §4).
-all = ["vst3", "clap", "au"]
 
 [dependencies]
 # The wire, the shared-memory slab and the state chunking: the process edge's
@@ -114,5 +111,5 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # The AU loader's transport test pulls the host-callback procs through
-# `TransportState::test_pull`, which `tutti-au-ffi` keeps behind `test-support`.
-tutti-au-host = { path = "../tutti-au-host", features = ["test-support"] }
+# `TransportState::test_pull`, which `tutti-au-ffi` keeps behind `testing`.
+tutti-au-host = { path = "../tutti-au-host", features = ["testing"] }

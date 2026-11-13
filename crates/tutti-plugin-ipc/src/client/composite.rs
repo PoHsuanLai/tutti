@@ -363,14 +363,14 @@ impl PluginBridge {
     /// How many abandoned replies the bridge thread has taken back off the
     /// socket. See
     /// [`AudioBridge::settled_replies`](super::audio::AudioBridge::settled_replies).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn settled_replies(&self) -> u64 {
         self.audio.settled_replies()
     }
 
     /// How many blocks' replies the bridge thread abandoned. See
     /// [`AudioBridge::abandoned_replies`](super::audio::AudioBridge::abandoned_replies).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn abandoned_replies(&self) -> u64 {
         self.audio.abandoned_replies()
     }
@@ -403,7 +403,7 @@ impl PluginBridge {
     }
 
     /// See [`AudioBridge::set_rate_timeout`](super::audio::AudioBridge::set_rate_timeout).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_rate_timeout(&self, timeout: std::time::Duration) {
         self.audio.set_rate_timeout(timeout);
     }

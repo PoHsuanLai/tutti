@@ -43,8 +43,6 @@
 //! The graph has no seeding of noise generators, so no case here uses a
 //! seeded generator.
 
-#![cfg(feature = "wav")]
-
 use crate::support;
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig, write_buffers};
 use tutti_types::MaxBlock;

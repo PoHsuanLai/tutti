@@ -40,7 +40,7 @@ authors = [
 [features]
 # `PluginEvents::for_test`: a view of a crafted event list, for the host crate's tests. Off in
 # a production build.
-test-support = []
+testing = []
 
 [dependencies]
 bitflags = "1"

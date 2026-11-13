@@ -40,7 +40,7 @@ pub use listener::{
 pub use midi_out::{
     AuMidiOutput, MidiOutSink, MidiOutputInfo, install as install_midi_output, midi_output_info,
 };
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 #[doc(hidden)]
 pub use midi_out::{decode_packet_list_for_test, split_packet_list_for_test};
 pub use plain::Plain;

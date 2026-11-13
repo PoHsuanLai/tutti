@@ -11,7 +11,6 @@
 //! needs are `tutti::session::` paths. Every fallible call returns the one
 //! `Error`, so `?` runs the whole program.
 
-// ANCHOR: readme
 use tutti::export::Written;
 use tutti::{
     Amplitude, Beat, Bounce, Bpm, ChannelLayout, Clip, Depth, Error, Format, FreeverbNode, Hz, Lfo,
@@ -115,7 +114,6 @@ fn song(dir: &std::path::Path) -> Result<Written, Error> {
         .into_master();
     Ok(written)
 }
-// ANCHOR_END: readme
 
 #[cfg(test)]
 mod tests {

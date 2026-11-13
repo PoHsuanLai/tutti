@@ -28,6 +28,7 @@ impl<F: ServerSide> Served<F> {
             prefer_f64,
             None,
             &mut || {},
+            Hand::local(),
         )
         .map(|(served, _)| served)
     }
@@ -42,7 +43,18 @@ impl<F: ServerSide> Served<F> {
         rate: f64,
         block: usize,
     ) -> PluginResult<Self> {
-        Self::load(main, path, load, rate, block, false, None, &mut || {}).map(|(served, _)| served)
+        Self::load(
+            main,
+            path,
+            load,
+            rate,
+            block,
+            false,
+            None,
+            &mut || {},
+            Hand::local(),
+        )
+        .map(|(served, _)| served)
     }
 }
 
@@ -69,7 +81,7 @@ fn load_any(path: &Path) -> PluginResult<AnyServed> {
         None,
         &mut || {},
     )
-    .map(|(plugin, _)| plugin)
+    .map(|(plugin, _, _)| plugin)
 }
 
 fn assert_refused(result: PluginResult<AnyServed>, at: LoadStage, reason: &str) {

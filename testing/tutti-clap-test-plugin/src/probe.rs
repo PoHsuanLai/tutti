@@ -38,6 +38,12 @@ pub enum ClapSwitch {
     LatencyChangedInActivate,
     /// Whether the plugin offers `clap.tail` (0 or 1).
     TailExtension,
+    /// Whether the render path scales its output by the `Gain` parameter (0
+    /// or 1).
+    ApplyGain,
+    /// Milliseconds every `on_timer` takes (0 for none): a slow paint on the
+    /// host's main thread.
+    TimerStall,
 }
 
 impl ClapSwitch {
@@ -59,6 +65,8 @@ impl ClapSwitch {
                 b"tutti_test_plugin_set_latency_changed_in_activate\0"
             }
             Self::TailExtension => b"tutti_test_plugin_set_tail_extension\0",
+            Self::ApplyGain => b"tutti_test_plugin_set_apply_gain\0",
+            Self::TimerStall => b"tutti_test_plugin_set_timer_stall_ms\0",
         }
     }
 }

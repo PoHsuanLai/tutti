@@ -26,7 +26,7 @@ use tutti_ump::Ump;
 ///
 /// Both are fixed at plugin load and change only on an explicit host request,
 /// so the audio path reads them without synchronisation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Clock {
     /// Frames per second, as the plugin was configured. `f64` rather than `Hz`:
     /// this value crosses into the hosted formats' C ABIs, where the unit types
@@ -1394,6 +1394,7 @@ mod tests {
             false,
             None,
             &mut || {},
+            tutti_plugin_types::Hand::local(),
         )
         .expect("the vendored VST3 probe must load");
 

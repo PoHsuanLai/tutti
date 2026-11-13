@@ -176,6 +176,7 @@ fn the_buses_are_those_the_plugin_has_at_activation() {
         false,
         None,
         &mut || {},
+        Hand::local(),
     )
     .expect("activate")
     .0;
@@ -232,10 +233,18 @@ fn a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit() {
     assert!(opened.supports_f64(), "fixture: flagged at open");
 
     let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
-    let instance =
-        ClapInstance::activate(&main_thread(), opened, 44100.0, 512, true, None, &mut || {})
-            .expect("falls back to 32-bit audio")
-            .0;
+    let instance = ClapInstance::activate(
+        &main_thread(),
+        opened,
+        44100.0,
+        512,
+        true,
+        None,
+        &mut || {},
+        Hand::local(),
+    )
+    .expect("falls back to 32-bit audio")
+    .0;
     assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
 }
 

@@ -1,0 +1,344 @@
+//! Stream-format configuration (sample rate, block size, channel layout).
+
+use tutti_au_ffi::property::{MaximumFramesPerSlice, SampleRate, StreamFormat};
+use tutti_au_ffi::{Element, Scope};
+use tutti_plugin_types::ChannelLayout;
+
+use crate::bus::BusDirection;
+use crate::error::{AuError, Result};
+use crate::handle::AuHandle;
+use crate::types::*;
+
+/// Input/output channel layouts for an AU: `tutti-au-ffi`'s [`BusLayout`](tutti_au_ffi::BusLayout), whose
+/// `has_input` carries the "has an input bus at all" distinction that
+/// [`ChannelLayout`] (which cannot be zero) cannot.
+pub use tutti_au_ffi::BusLayout as AuBusLayout;
+
+/// Aggregate stream configuration applied to an AU before initialization.
+///
+/// This bundles sample rate, maximum block size, and channel layout so they
+/// can be applied atomically to the AU before initialization.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamConfig {
+    /// Sample rate in Hz.
+    pub sample_rate: f64,
+    /// Maximum frames the AU will be asked to render in a single `process()` call.
+    pub block_size: u32,
+    /// Channel layout (input + output buses).
+    pub channels: AuBusLayout,
+}
+
+impl StreamConfig {
+    /// Builds a config from explicit values.
+    pub fn new(sample_rate: f64, block_size: u32, channels: AuBusLayout) -> Self {
+        Self {
+            sample_rate,
+            block_size,
+            channels,
+        }
+    }
+
+    /// Queries the AU's current stream format on bus 0 to discover its channel
+    /// layout.
+    ///
+    /// Bus 0 only, deliberately: this layout is what the render scratch is sized
+    /// from, and [`AuProcessor::render_f32`](crate::processor::AuProcessor::render_f32)
+    /// renders bus 0 alone. Multi-bus units are *described* by
+    /// [`crate::bus`] — `bus_count` / `bus_layout` — but not yet rendered
+    /// per-bus, so widening the probe would size buffers for buses nothing
+    /// reads.
+    ///
+    /// `has_input` is taken from the AU's own input **element count**, not from
+    /// whether the stream-format query happened to succeed. Those differ: an AU
+    /// can have an input element whose format it declines to report, and the old
+    /// "format read failed ⇒ 0 channels ⇒ no input" inference would then skip
+    /// installing the render callback on a unit that genuinely needs one. The
+    /// element count is the AU's direct answer to "is there an input bus".
+    ///
+    /// Falls back to stereo out / no input if the AU refuses the queries.
+    pub(crate) fn probe(handle: &AuHandle) -> AuBusLayout {
+        let unit = handle.unit();
+        let outputs =
+            crate::bus::bus_layout(unit, BusDirection::Output, 0).unwrap_or(ChannelLayout::STEREO);
+
+        // An AU with zero input elements has no bus 0 to ask about, so skip the
+        // format query entirely rather than reading -10877 and inferring from it.
+        let has_input = crate::bus::bus_count(unit, BusDirection::Input) > 0;
+        let inputs = if has_input {
+            crate::bus::bus_layout(unit, BusDirection::Input, 0).unwrap_or(ChannelLayout::STEREO)
+        } else {
+            ChannelLayout::EMPTY
+        };
+
+        AuBusLayout {
+            inputs,
+            outputs,
+            has_input,
+        }
+    }
+
+    /// The largest relative deviation tolerated between the requested sample
+    /// rate and the rate the AU reports back.
+    ///
+    /// The ASBD carries `mSampleRate` as an `f64` and AUs echo it verbatim, so
+    /// an accepted rate normally compares bit-exact; this only absorbs the
+    /// rounding an AU introduces if it round-trips the rate through a narrower
+    /// representation. It is far tighter than any real rate step (44.1k vs 48k
+    /// is 8%), so a genuinely rejected rate never slips through.
+    const SAMPLE_RATE_TOLERANCE: f64 = 1e-6;
+
+    /// Writes this configuration onto the AU and return the *effective* channel
+    /// layout the AU actually accepted.
+    ///
+    /// Sets `MaximumFramesPerSlice`, then the input/output stream formats.
+    /// Stream-format sets are best-effort (a rejection is not fatal) because
+    /// many AUs refuse mono/non-native formats and keep their own layout. When
+    /// that happens the requested channel counts must not be assumed to have
+    /// stuck: the accepted format is re-`get_property`'d and the layout the AU
+    /// is really running is reported, so the caller sizes `RenderScratch` to
+    /// match. Sizing the
+    /// scratch to a rejected (larger) layout is a topology mismatch that reads
+    /// out-of-bounds during render.
+    ///
+    /// The requested width is sent **as asked** — there is no stereo floor here.
+    /// That is what makes the return value meaningful: a floor would turn a mono
+    /// request into an accurate-looking `Stereo`, indistinguishable from a
+    /// genuine refusal. Measured on macOS 15.6, 12 of 15 Apple units accept a
+    /// 1-channel format and initialize at it; the 3 that refuse report `-10868`
+    /// and keep their own width, which is what this returns.
+    ///
+    /// The **sample rate**, unlike the channel layout, is NOT best-effort.
+    /// A channel-count rejection is recoverable — resize the scratch and carry
+    /// on — but a rejected sample rate is not: the config
+    /// would record a rate the AU is not running at, and `sample_rate()` /
+    /// `get_latency()` both trust that number, so the block would be rendered
+    /// at the wrong rate (pitch/time drift) with a PDC latency computed against
+    /// a phantom rate. So the accepted `mSampleRate` is read back and a
+    /// mismatch is a hard error.
+    pub(crate) fn apply(&self, handle: &AuHandle) -> Result<AuBusLayout> {
+        let unit = handle.unit();
+
+        let effective = {
+            unit.set::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO, &self.block_size)?;
+
+            // JUCE sets `kAudioUnitProperty_SampleRate` per scope in addition to
+            // carrying the rate in the ASBD; some AUs only honour one of the
+            // two. Both writes are best-effort here — the read-back below is
+            // what actually decides whether the rate took.
+            let _ = unit.set::<SampleRate>(Scope::OUTPUT, Element::ZERO, &self.sample_rate);
+            if self.channels.has_input {
+                let _ = unit.set::<SampleRate>(Scope::INPUT, Element::ZERO, &self.sample_rate);
+            }
+
+            // The requested width is sent verbatim — no stereo floor. This used
+            // to be `.count().max(2)`, which silently rewrote every narrower
+            // request: a host asking for mono got a stereo ASBD, the AU accepted
+            // it, and the read-back below then truthfully reported Stereo. So
+            // mono was unreachable through this type *and* the failure was
+            // invisible, because the effective layout handed back was an accurate
+            // description of a format the caller never asked for.
+            //
+            // Removing the floor is safe precisely because of that read-back: the
+            // units measured to refuse a narrowing (AUMatrixReverb and
+            // DLSMusicDevice both refuse mono with -10868,
+            // `kAudioUnitErr_FormatNotSupported`) keep their own width, which is
+            // what gets returned and what `RenderScratch` is then sized from. The
+            // floor was a default, never a guard; the default now lives in
+            // `AuLoaded::new`, which is the one caller that has to invent a width.
+            let out_asbd = AudioStreamBasicDescription::float32(
+                self.sample_rate,
+                self.channels.outputs.count() as u32,
+            );
+            let _ = unit.set::<StreamFormat>(Scope::OUTPUT, Element::ZERO, &out_asbd);
+            // Read back what the AU actually accepted for the output scope.
+            // Unlike the channel count, a sample-rate mismatch is fatal.
+            let out_accepted = unit.get::<StreamFormat>(Scope::OUTPUT, Element::ZERO);
+            if let Ok(asbd) = out_accepted.as_ref() {
+                self.check_sample_rate("output", asbd.mSampleRate)?;
+            }
+            let effective_outputs = match out_accepted.as_ref() {
+                Ok(asbd) => accepted_layout("output", asbd.mChannelsPerFrame)?,
+                Err(_) => self.channels.outputs,
+            };
+
+            let mut effective_inputs = self.channels.inputs;
+            if self.channels.has_input {
+                let in_asbd = AudioStreamBasicDescription::float32(
+                    self.sample_rate,
+                    self.channels.inputs.count() as u32,
+                );
+                let _ = unit.set::<StreamFormat>(Scope::INPUT, Element::ZERO, &in_asbd);
+                // Read back what the AU actually accepted for the input scope.
+                let in_accepted = unit.get::<StreamFormat>(Scope::INPUT, Element::ZERO);
+                if let Ok(asbd) = in_accepted.as_ref() {
+                    self.check_sample_rate("input", asbd.mSampleRate)?;
+                }
+                effective_inputs = match in_accepted.as_ref() {
+                    Ok(asbd) => accepted_layout("input", asbd.mChannelsPerFrame)?,
+                    Err(_) => self.channels.inputs,
+                };
+            }
+
+            AuBusLayout {
+                inputs: effective_inputs,
+                outputs: effective_outputs,
+                has_input: self.channels.has_input,
+            }
+        };
+
+        Ok(effective)
+    }
+
+    /// Reads `MaximumFramesPerSlice` back and fail if the AU kept a different
+    /// value than [`StreamConfig::block_size`].
+    ///
+    /// Separate from [`Self::apply`], which `?`s on the *set* alone. A successful
+    /// set is not proof the value stuck: the property is writable only while the
+    /// AU is uninitialized, and an AU that clamps to its own maximum returns
+    /// `noErr` while keeping a smaller figure. Recording the larger requested
+    /// number then breaks
+    /// [`AuProcessor::render_f32`](crate::processor::AuProcessor::render_f32)'s
+    /// `num_frames > block_size` guard in the dangerous direction — the render is
+    /// admitted and the AU writes past buffers it sized for fewer frames.
+    ///
+    /// An AU that does not implement the property is **not** a failure: there is
+    /// no value to disagree with, and `MaximumFramesPerSlice` is optional. Only a
+    /// value the AU reports *differently* is rejected.
+    ///
+    /// Called on both paths that write the property: every load, through
+    /// [`AuLoaded`](crate::instance::AuLoaded)'s shared constructor tail, and
+    /// every resize, through
+    /// an activation's block ceiling.
+    /// The load path is the one a host cannot avoid taking.
+    ///
+    /// # Errors
+    /// [`AuError::BlockSizeRejected`] carrying both figures, because "the AU
+    /// allocated 512 while the host thinks 2048" is the only diagnosable form of
+    /// this failure.
+    pub(crate) fn verify_block_size(&self, handle: &AuHandle) -> Result<()> {
+        let accepted = handle
+            .unit()
+            .get::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO);
+        // A refusal to report is not a rejection — see above.
+        let Ok(accepted) = accepted else {
+            return Ok(());
+        };
+        if accepted != self.block_size {
+            return Err(AuError::BlockSizeRejected {
+                requested: self.block_size,
+                accepted,
+            });
+        }
+        Ok(())
+    }
+
+    /// Fail loudly when the AU kept a different sample rate than the one
+    /// requested, instead of letting the config record a rate the plugin is not
+    /// actually running at.
+    ///
+    /// A rate of `0.0` means "not yet configured" on some AUs (the ASBD is
+    /// zero-initialized before any format is set) and is not treated as a
+    /// rejection — there is nothing to disagree with yet.
+    ///
+    /// `scope` names which bus disagreed, and both rates are reported verbatim,
+    /// because "the AU is at 44100 while the host thinks 48000" is the only
+    /// diagnosable form of this failure.
+    fn check_sample_rate(&self, scope: &'static str, accepted: f64) -> Result<()> {
+        if accepted == 0.0 {
+            return Ok(());
+        }
+        let deviation = (accepted - self.sample_rate).abs();
+        if deviation > self.sample_rate.abs() * Self::SAMPLE_RATE_TOLERANCE {
+            return Err(AuError::SampleRateRejected {
+                scope,
+                requested: self.sample_rate,
+                accepted,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The layout of a bus whose stream format the AU accepted with `channels`
+/// channels per frame, or [`AuError::BusTooWide`] when no layout holds that.
+fn accepted_layout(scope: &'static str, channels: u32) -> Result<ChannelLayout> {
+    ChannelLayout::try_from(channels).map_err(|_| AuError::BusTooWide { scope, channels })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_at(sample_rate: f64) -> StreamConfig {
+        StreamConfig::new(
+            sample_rate,
+            512,
+            AuBusLayout {
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
+                has_input: true,
+            },
+        )
+    }
+
+    /// A rate the AU did not take must be an error, not a silent `Ok`.
+    ///
+    /// Reading back only `mChannelsPerFrame` and returning `Ok(())` regardless
+    /// records a rejected rate as if accepted; the rate read-back is the only
+    /// thing that catches it.
+    #[test]
+    fn a_rate_the_au_did_not_accept_is_an_error() {
+        let config = config_at(48_000.0);
+
+        // Exactly what was asked for: accepted.
+        assert!(config.check_sample_rate("output", 48_000.0).is_ok());
+
+        // The AU kept its own rate. Passing this silently renders at the wrong
+        // rate, with a PDC latency computed against a phantom 48 kHz.
+        let err = config
+            .check_sample_rate("output", 44_100.0)
+            .expect_err("a different rate must not be reported as success");
+        match err {
+            AuError::SampleRateRejected {
+                scope,
+                requested,
+                accepted,
+            } => {
+                assert_eq!(scope, "output");
+                assert_eq!(requested, 48_000.0);
+                assert_eq!(accepted, 44_100.0);
+            }
+            other => panic!("expected SampleRateRejected, got {other:?}"),
+        }
+
+        // Both directions, and the input scope is named separately.
+        assert!(
+            config_at(44_100.0)
+                .check_sample_rate("input", 48_000.0)
+                .is_err()
+        );
+        assert!(matches!(
+            config_at(44_100.0).check_sample_rate("input", 96_000.0),
+            Err(AuError::SampleRateRejected { scope: "input", .. })
+        ));
+    }
+
+    /// An unconfigured ASBD reads `mSampleRate == 0.0`; that is "nothing set
+    /// yet", not a rejection, and must not fail the apply.
+    #[test]
+    fn an_unconfigured_rate_is_not_a_rejection() {
+        assert!(config_at(48_000.0).check_sample_rate("output", 0.0).is_ok());
+    }
+
+    /// The tolerance is for f64 round-tripping only — it must be far too tight
+    /// to swallow any real rate step (44.1k vs 48k is 8%).
+    #[test]
+    fn tolerance_absorbs_rounding_but_not_a_real_rate_change() {
+        let config = config_at(48_000.0);
+        // Sub-ULP-scale rounding: accepted.
+        let rounded = 48_000.0 + 48_000.0 * (StreamConfig::SAMPLE_RATE_TOLERANCE * 0.5);
+        assert!(config.check_sample_rate("output", rounded).is_ok());
+        // One hertz off is already 20x the tolerance window: rejected.
+        assert!(config.check_sample_rate("output", 48_001.0).is_err());
+    }
+}

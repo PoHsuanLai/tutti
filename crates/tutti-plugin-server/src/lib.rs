@@ -3,7 +3,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod audio_pipeline;
-mod event_loop;
+mod main_loop;
+mod render;
 // With no format served the table is an uninhabited enum and nothing above it
 // runs.
 #[cfg_attr(

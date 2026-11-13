@@ -234,6 +234,11 @@ impl WindowHandle {
     /// is `false`, since there the number is a pointer or a handle of a
     /// process that is not this one.
     ///
+    /// The reason is what the number is. An X11 window id is an integer the
+    /// server's own display connection resolves, so it means the same window
+    /// there; an `HWND` or an `NSView` of another process is a handle or a
+    /// pointer into that process, and means nothing in this one.
+    ///
     /// Safe because where it answers `Some` the number is an id the window
     /// system checks (an X11 window id a plugin hands to the X server, which
     /// refuses a stale or forged one), never an address this process

@@ -183,11 +183,6 @@ pub(crate) struct VoiceBank {
     /// Sub-voices per voice: lane stride between consecutive voices.
     stride: usize,
     voices: usize,
-    /// Next noise seed to hand out. Every lane array allocation draws fresh
-    /// seeds from here, so a lane added by a unison resize never starts on a
-    /// seed another lane already holds — seeding by lane index did, since a
-    /// surviving sub-voice keeps its old stream after moving to a new index.
-    next_seed: u32,
 
     // Oscillator.
     phase: Vec<V>,
@@ -235,7 +230,6 @@ impl std::fmt::Debug for VoiceBank {
             .field("sample_rate", &self.sample_rate)
             .field("stride", &self.stride)
             .field("voices", &self.voices)
-            .field("next_seed", &self.next_seed)
             .finish_non_exhaustive()
     }
 }
@@ -293,7 +287,6 @@ impl VoiceBank {
             sample_rate,
             stride: stride.max(1),
             voices,
-            next_seed: 1,
             phase: Vec::new(),
             inc: Vec::new(),
             inc_target: Vec::new(),
@@ -325,7 +318,7 @@ impl VoiceBank {
         self.lanes().div_ceil(kernel::LANES)
     }
 
-    /// (Re)size every lane array to the current `voices * stride`, zeroed.
+    /// Size every lane array to `voices * stride`, zeroed.
     fn allocate_lanes(&mut self) {
         let groups = self.groups();
         let lanes = groups * kernel::LANES;
@@ -335,11 +328,10 @@ impl VoiceBank {
         self.inc_target = vec![zero; groups];
         // Distinct nonzero seeds per lane: xorshift cannot leave zero, and two
         // lanes with one seed would play the same noise in both ears.
-        let mut seeds = (self.next_seed..).map(seed_from);
+        let mut seeds = (1..).map(seed_from);
         self.rng = (0..groups)
             .map(|_| u32x8::new(core::array::from_fn(|_| seeds.next().unwrap_or(1))))
             .collect();
-        self.next_seed = self.next_seed.wrapping_add(lanes as u32);
         self.pink = vec![[zero; 3]; groups];
         self.z = vec![[zero; 4]; groups];
         self.coef = vec![[zero; 3]; groups];

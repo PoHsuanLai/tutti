@@ -201,10 +201,6 @@ pub enum Edge {
 pub enum ParamValue {
     /// A continuous value, in the parameter's own unit.
     Scalar(f32),
-    /// A switch.
-    Bool(bool),
-    /// A choice from an unassigned list.
-    Index(u32),
 }
 
 // `PartialEq` and `Hash` are both hand-written over the same bit-pattern key, so
@@ -239,8 +235,6 @@ impl ParamValue {
     fn key(&self) -> (u8, u64) {
         match *self {
             ParamValue::Scalar(v) => (0, v.to_bits() as u64),
-            ParamValue::Bool(b) => (1, b as u64),
-            ParamValue::Index(i) => (2, i as u64),
         }
     }
 }

@@ -11,9 +11,9 @@
 //!   task is worth dispatching, where that does not lengthen the critical
 //!   path.
 //! - **The plan's totals**: [`Plan::work`](crate::Plan::work), the whole
-//!   block's work, and [`Plan::critical_path`](crate::Plan::critical_path),
-//!   the costliest path through the task DAG, every hand-over from a task
-//!   to a successor charged [`TASK_DISPATCH`] per place in the queue.
+//!   block's work, and the costliest path through the task DAG, every
+//!   hand-over from a task to a successor charged [`TASK_DISPATCH`] per
+//!   place in the queue.
 //!
 //! [`schedule`] turns those totals into a [`Schedule`] for a pool of `p`
 //! participants: serial, or parallel from some block length up, waking a

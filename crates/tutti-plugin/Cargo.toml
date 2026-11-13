@@ -1,6 +1,6 @@
 [package]
 name = "tutti-plugin"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Hosts VST3, CLAP, Audio Unit and VST2 plugins in a tutti audio graph, out of process where the format allows"
@@ -38,31 +38,31 @@ vst2 = ["dep:tutti-vst2-host"]
 [dependencies]
 # The format-generic half of hosting: the handle, the node's controls, the
 # transport and parameter delivery, and the in-process node (design 021 4a).
-tutti-plugin-host = { path = "../tutti-plugin-host" }
+tutti-plugin-host = { version = "0.0.1", path = "../tutti-plugin-host" }
 
 # The transport the hosted plugins read.
-tutti-transport = { path = "../tutti-transport" }
-tutti-tempo = { path = "../tutti-tempo" }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
+tutti-tempo = { version = "0.0.1", path = "../tutti-tempo" }
 # The engine's value vocabulary (`Samples`, `SampleRate`).
-tutti-types = { path = "../tutti-types" }
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
 
 # The graph, for a plugin node's own `ForkSource` (fork by state
 # transfer). No cycle: `tutti-graph` names only `tutti-types`, `tutti-rt` and `tutti-ump`.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # MIDI support
-tutti-midi-runtime = { path = "../tutti-midi-runtime" }
+tutti-midi-runtime = { version = "0.0.1", path = "../tutti-midi-runtime" }
 
 # The process edge: the wire, the slab, the server's launch and the client of a
 # served plugin (design 021 step 3).
-tutti-plugin-ipc = { path = "../tutti-plugin-ipc" }
+tutti-plugin-ipc = { version = "0.0.1", path = "../tutti-plugin-ipc" }
 
 # Shared value vocabulary used across host crates + IPC protocol.
-tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
+tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
 
 # Discovery: the scanner, the catalog and its records. This crate supplies the
 # subprocess probe.
-tutti-plugin-db = { path = "../tutti-plugin-db" }
+tutti-plugin-db = { version = "0.0.1", path = "../tutti-plugin-db" }
 
 # Logging
 tracing = "0.1"
@@ -74,10 +74,10 @@ serde = { version = "1", features = ["derive"], optional = true }
 # In-process plugin GUI (optional — loads plugin library for editor only).
 # `tutti-vst2-host` is different: it owns the audio path too (single in-process
 # AEffect), since VST2 fuses editor and processor.
-tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
-tutti-clap-host = { path = "../tutti-clap-host", optional = true }
-tutti-au-host = { path = "../tutti-au-host", optional = true }
-tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
+tutti-vst3-host = { version = "0.0.1", path = "../tutti-vst3-host", optional = true }
+tutti-clap-host = { version = "0.0.1", path = "../tutti-clap-host", optional = true }
+tutti-au-host = { version = "0.0.1", path = "../tutti-au-host", optional = true }
+tutti-vst2-host = { version = "0.0.1", path = "../tutti-vst2-host", optional = true }
 
 # The probe's private result directory (pure Rust; removed on drop, panic included).
 tempfile = "3"

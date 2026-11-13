@@ -43,7 +43,11 @@ pub enum Resolution {
 
 impl Midi<'_> {
     fn hardware(&self) -> Result<&tutti_midi_hardware::MidiSession> {
-        self.io.ok_or(MidiError::NoHardware)
+        self.io.as_deref().ok_or(MidiError::NoHardware)
+    }
+
+    fn hardware_mut(&mut self) -> Result<&mut tutti_midi_hardware::MidiSession> {
+        self.io.as_deref_mut().ok_or(MidiError::NoHardware)
     }
 
     /// The MIDI devices present now, inputs and outputs, ordered by id. Empty on
@@ -53,7 +57,9 @@ impl Midi<'_> {
     /// [`MidiEvent`](crate::MidiEvent) from `Session::update`.
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceInfo> {
-        self.io.map_or_else(Vec::new, |io| io.devices().list())
+        self.io
+            .as_deref()
+            .map_or_else(Vec::new, |io| io.devices().list())
     }
 
     /// Opens an input device, by `&DeviceId` or by name (a case-insensitive
@@ -67,7 +73,7 @@ impl Midi<'_> {
     /// [`MidiError::Hardware`] when no input has that name or id, the id is not
     /// an input, the device has no free slot, or the OS refuses it.
     pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
-        Ok(self.hardware()?.connect_input(device)?)
+        Ok(self.hardware_mut()?.connect_input(device)?)
     }
 
     /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off by
@@ -87,7 +93,7 @@ impl Midi<'_> {
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer.
     pub fn enable_ci(&mut self, identity: DeviceIdentity) -> Result<()> {
-        self.hardware()?.enable_ci(identity);
+        self.hardware_mut()?.enable_ci(identity);
         Ok(())
     }
 
@@ -99,7 +105,7 @@ impl Midi<'_> {
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer.
     pub fn disable_ci(&mut self) -> Result<()> {
-        self.hardware()?.disable_ci();
+        self.hardware_mut()?.disable_ci();
         Ok(())
     }
 
@@ -112,7 +118,9 @@ impl Midi<'_> {
     /// was when read: read it again after a `CiPeer` event.
     #[must_use]
     pub fn ci_peers(&self, id: &DeviceId) -> Arc<[CiPeerInfo]> {
-        self.io.map_or_else(Arc::default, |io| io.ci_peers(id))
+        self.io
+            .as_deref()
+            .map_or_else(Arc::default, |io| io.ci_peers(id))
     }
 
     /// The Profiles the MIDI-CI peers found on the open input `id` support, by
@@ -127,7 +135,9 @@ impl Midi<'_> {
     /// Profile at an address the peer listed.
     #[must_use]
     pub fn profiles(&self, id: &DeviceId) -> Arc<[PeerProfiles]> {
-        self.io.map_or_else(Arc::default, |io| io.profiles(id))
+        self.io
+            .as_deref()
+            .map_or_else(Arc::default, |io| io.profiles(id))
     }
 
     /// Asks a peer to enable or disable a Profile it lists, on the input the
@@ -142,7 +152,7 @@ impl Midi<'_> {
     /// [`MidiError::Profile`] when the input the switch was made from has closed, the peer is gone,
     /// or it no longer lists the Profile there.
     pub fn set_profile(&mut self, switch: ProfileSwitch) -> Result<()> {
-        Ok(self.hardware()?.set_profile(switch)?)
+        Ok(self.hardware_mut()?.set_profile(switch)?)
     }
 
     /// The MIDI-CI peers of the open input `id` that declared Process Inquiry and
@@ -156,7 +166,9 @@ impl Midi<'_> {
     /// report can only be asked of a peer that supports it.
     #[must_use]
     pub fn report_peers(&self, id: &DeviceId) -> Arc<[ReportPeer]> {
-        self.io.map_or_else(Arc::default, |io| io.report_peers(id))
+        self.io
+            .as_deref()
+            .map_or_else(Arc::default, |io| io.report_peers(id))
     }
 
     /// Asks a peer for a MIDI Message Report, on the input the request was made
@@ -171,7 +183,7 @@ impl Midi<'_> {
     /// [`MidiError::Report`] when the input the request was made from has closed or
     /// the peer is gone.
     pub fn report(&mut self, ask: ReportAsk) -> Result<()> {
-        Ok(self.hardware()?.report(ask)?)
+        Ok(self.hardware_mut()?.report(ask)?)
     }
 
     /// Returns what the open input `id` has said about itself so far: its Device
@@ -185,7 +197,9 @@ impl Midi<'_> {
     /// (M2-101 §5.8.3.1).
     #[must_use]
     pub fn learned(&self, id: &DeviceId) -> Learned {
-        self.io.map_or_else(Learned::new, |io| io.learned(id))
+        self.io
+            .as_deref()
+            .map_or_else(Learned::new, |io| io.learned(id))
     }
 
     /// Returns the open input `id` as an app keeps it: the listing's row with what it
@@ -197,7 +211,7 @@ impl Midi<'_> {
     /// [`confirm`](Self::confirm).
     #[must_use]
     pub fn saved(&self, id: &DeviceId) -> Option<SavedDevice> {
-        self.io.and_then(|io| io.saved(id))
+        self.io.as_deref().and_then(|io| io.saved(id))
     }
 
     /// Compares the open input `id` with the device `saved` describes, by what it
@@ -223,47 +237,55 @@ impl Midi<'_> {
     #[must_use = "a device that was not open is an error"]
     pub fn disconnect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
         let device = device.into();
-        if self.hardware()?.disconnect_input(device.clone()) {
+        if self.hardware_mut()?.disconnect_input(device.clone()) {
             Ok(())
         } else {
             Err(MidiError::InputNotOpen(device))
         }
     }
 
-    /// Opens an output device, by id or name, closing the one open (a session
-    /// sends to one destination). If the session's hardware out has no output
-    /// yet ([`set_hardware_out`](Midi::set_hardware_out)), it is set to this
-    /// device, stamping as the device's configuration says.
+    /// Opens an output device, by id or name, and makes it the hardware out's
+    /// sink: the output is the hardware out's own, replacing the sink it had (a
+    /// session sends to one destination, and the stamp stream carries on across
+    /// the change). It stamps as the device's configuration says, which each
+    /// update's poll follows.
     ///
     /// # Errors
     ///
     /// As [`connect_input`](Self::connect_input), for an output.
     pub fn connect_output(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
-        let io = self.hardware()?;
-        io.connect_output(device)?;
-        if self.state.out.is_none() {
-            let rate = self.graph.prepared().sample_rate();
-            let mut out = UmpOut::new(Box::new(io.clone()), rate);
-            // A device that has not settled its negotiation sends no JR
-            // Timestamps; the `MidiOut` phase follows what it settles.
-            if let Some(config) = io.output() {
-                out.set_stamping(config.config.rx_jr);
+        let output = self.hardware()?.connect_output(device)?;
+        match &mut self.state.out {
+            Some(out) => out.set_device(output),
+            None => {
+                let rate = self.graph.prepared().sample_rate();
+                self.state.out = Some(UmpOut::of_device(output, rate));
             }
-            self.state.out = Some(out);
         }
         Ok(())
     }
 
-    /// Closes the output. What the hardware out sends is counted as dropped
-    /// until another is connected.
+    /// The device output the hardware out sends into, if it is one: its id,
+    /// name and the Protocol and JR Timestamps it sends in.
+    #[must_use]
+    pub fn output(&self) -> Option<&tutti_midi_hardware::OpenOutput> {
+        self.state.out.as_ref().and_then(UmpOut::device)
+    }
+
+    /// Closes the device output: the hardware out has no sink, and what it
+    /// sends is counted as dropped until another is connected
+    /// ([`connect_output`](Self::connect_output) or
+    /// [`set_hardware_out`](Midi::set_hardware_out)).
     ///
     /// # Errors
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
-    /// [`MidiError::OutputNotOpen`] when no output is open.
+    /// [`MidiError::OutputNotOpen`] when the hardware out is not a device's.
     #[must_use = "an output that was not open is an error"]
     pub fn disconnect_output(&mut self) -> Result<()> {
-        if self.hardware()?.disconnect_output() {
+        self.hardware()?;
+        if self.output().is_some() {
+            self.state.out = None;
             Ok(())
         } else {
             Err(MidiError::OutputNotOpen)

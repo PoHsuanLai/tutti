@@ -1,6 +1,6 @@
 [package]
 name = "tutti-nodes"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Built-in audio effects for tutti: filters, delays, dynamics, reverbs, modulation effects, mixing and automation"
@@ -21,28 +21,28 @@ testing = []
 
 [dependencies]
 # Value vocabulary (the `Curve` trait), for `impl Curve for Trajectory`.
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 
 # The modulation compiler and its vocabulary (`ControlProgram`, `Curve`,
 # `LfoShape`, `compile`): the control lane evaluates its programs, and the
 # reconcile (`Modulation`) calls the compiler.
-tutti-modulation = { path = "../tutti-modulation", default-features = false }
+tutti-modulation = { version = "0.0.1", path = "../tutti-modulation", default-features = false }
 
 # The algorithms every node adapts.
-tutti-dsp = { path = "../tutti-dsp", default-features = false }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false }
 
 # The node contract every node here implements.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # Trajectory primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
 # `tutti_nodes::automation`.
-tutti-curve = { path = "../tutti-curve" }
+tutti-curve = { version = "0.0.1", path = "../tutti-curve" }
 
 # `ClickNode` reads the count-in flag off a `Transport` and follows a
 # `ProjectMeter`.
-tutti-transport = { path = "../tutti-transport" }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
 
 # `VbapError`.
 thiserror = { workspace = true }

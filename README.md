@@ -2,7 +2,7 @@
 
 A type-driven, real-time audio engine for building DAWs in Rust.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/PoHsuanLai/tutti/ci.yml?branch=main&style=flat&label=CI)](https://github.com/PoHsuanLai/tutti/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/tutti-audio/tutti/ci.yml?branch=main&style=flat&label=CI)](https://github.com/tutti-audio/tutti/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue?style=flat)](#license)
 
 Audio software has always felt a little chaotic to us: formats with their own
@@ -16,16 +16,16 @@ tutti is not on crates.io yet. Add it from git:
 
 ```toml
 [dependencies]
-tutti = { git = "https://github.com/PoHsuanLai/tutti" }
+tutti = { git = "https://github.com/tutti-audio/tutti" }
 ```
 
 `cargo doc -p tutti --open` builds the API docs, and
 [`crates/tutti/examples`](crates/tutti/examples) has whole programs. A Bevy
-adapter lives at [bevy-tutti](https://github.com/PoHsuanLai/bevy-tutti).
+adapter lives at [bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 
 ## Getting help
 
-Open an [issue](https://github.com/PoHsuanLai/tutti/issues).
+Open an [issue](https://github.com/tutti-audio/tutti/issues).
 
 ## Contributing
 

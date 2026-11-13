@@ -1,6 +1,6 @@
 [package]
 name = "tutti-sf2"
-version = "0.0.1"
+version.workspace = true
 authors = ["Nobuaki Tanaka"]
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,6 @@ repository.workspace = true
 license = "MIT"
 keywords = ["soundfont", "sf2", "audio", "parser"]
 categories = ["multimedia::audio", "parser-implementations"]
-publish = false
 
 [lints]
 workspace = true
@@ -23,8 +22,8 @@ serde = ["dep:serde"]
 [dependencies]
 serde = { version = "1", optional = true, features = ["derive"] }
 thiserror.workspace = true
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }

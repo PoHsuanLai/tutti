@@ -14,7 +14,7 @@ use crate::error::{Result, check};
 use crate::sys;
 
 /// Why [`Poller::wait`] returned.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Wait {
     /// The sequencer has input.
     Ready,

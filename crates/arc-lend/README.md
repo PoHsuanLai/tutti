@@ -4,11 +4,11 @@ arc-lend is a shared-value cell built for threads that run against a deadline: o
 
 Such a thread might be an audio callback, a game's fixed update or a control loop. The writer keeps ownership of old values and frees them later, so readers only borrow.
 
-arc-lend was built for [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust, but does not depend on it.
+arc-lend was built for [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust, but does not depend on it.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
 ### Contribution
 

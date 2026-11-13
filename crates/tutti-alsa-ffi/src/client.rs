@@ -31,7 +31,7 @@ pub enum Read {
 
 /// The MIDI protocol a UMP client asks the kernel to deliver (and to convert
 /// to, at the port boundary, from what a source sends).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UmpVersion {
     /// MIDI 1.0 in UMP packets (type 2): a MIDI 1.0 source arrives as it is, and
     /// a MIDI 2.0 source is narrowed by the kernel.

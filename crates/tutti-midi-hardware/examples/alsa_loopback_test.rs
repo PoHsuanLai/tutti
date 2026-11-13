@@ -48,7 +48,7 @@ fn main() {
     );
     // The graph's side: the engine's part, played on the wall clock.
     let mut graph = Listener::over(&inlets);
-    let io = MidiSession::open(Arc::clone(&inlets)).expect("open MIDI");
+    let mut io = MidiSession::open(Arc::clone(&inlets)).expect("open MIDI");
 
     let inputs = io.inputs();
     let outputs = io.outputs();
@@ -61,7 +61,7 @@ fn main() {
 
     io.connect_input(&inp.id).expect("connect input");
     graph.apply();
-    io.connect_output(&out.id).expect("connect output");
+    let mut sink = io.connect_output(&out.id).expect("connect output");
     thread::sleep(Duration::from_millis(200));
 
     // Whatever was buffered before the test.
@@ -71,7 +71,7 @@ fn main() {
 
     let mut roundtrip = |label: &str, sent: Ump, check: &dyn Fn(Ump) -> bool| {
         assert_eq!(
-            io.send(&[(Offset::ZERO, sent)]),
+            sink.queue(&[(Offset::ZERO, sent)]),
             1,
             "the session accepted the event"
         );
@@ -105,7 +105,7 @@ fn main() {
 
     println!("\n=== Test 3: Burst (10 notes) ===");
     for n in 60..70u8 {
-        io.send(&[(
+        sink.queue(&[(
             Offset::ZERO,
             note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
         )]);
@@ -121,7 +121,7 @@ fn main() {
     }
 
     io.disconnect_input(&inp.id);
-    io.disconnect_output();
+    drop(sink);
 
     if failures == 0 {
         println!("\nAll tests complete!");

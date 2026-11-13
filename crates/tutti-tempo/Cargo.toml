@@ -1,13 +1,12 @@
 [package]
 name = "tutti-tempo"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "A tempo map: converts between beats, seconds and audio frames through tempo changes and ramps"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 keywords = ["audio", "tempo", "daw"]
 categories = ["multimedia::audio"]
 

@@ -9,8 +9,7 @@ use std::process::Child;
 /// panic between spawn and wait, keeps running, and once it exits it is a
 /// zombie until this process ends. Every child the plugin crates spawn (the
 /// plugin-server, the probe) is held as one of these from the moment it is
-/// spawned, so no path out of the code that holds it leaves one behind
-/// (doc 027 D11).
+/// spawned, so no path out of the code that holds it leaves one behind.
 ///
 /// It derefs to the [`Child`], so `id`, `try_wait`, `kill` and `wait` are
 /// std's own. A child that already exited (or was reaped through the deref)

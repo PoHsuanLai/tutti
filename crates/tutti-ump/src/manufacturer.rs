@@ -9,14 +9,14 @@ use crate::U7;
 ///
 /// A one-byte id is `0x00xx`. A three-byte id has the high bit of the word set
 /// and its second and third bytes in the high and low bytes: `0x8000 | xx << 8 | yy`.
-/// So a word is a valid id when it is `0x0000..=0x007F`, or when its top bit is set
+/// So a word is a valid id when it is `0x0001..=0x007F`, or when its top bit is set
 /// and bits 14 to 8 and 6 to 0 hold the two 7-bit bytes, and bit 7 is clear:
 /// [`new`](Self::new) refuses any other word and never masks.
 ///
-/// `0x0000` is the Reserved one-byte id, and the three-byte `00 00 00` is
-/// `0x8000`; both write as three zero bytes, and [`from_sysex_bytes`](Self::from_sysex_bytes)
-/// reads three zero bytes as `0x8000`, as the specification's conversion code
-/// does (a first byte of `00` selects the three-byte form).
+/// `00` and `00 00 00` (unusable per the MIDI 1.0 Detailed Specification,
+/// Manufacturer SysEx ID Numbers; `0x0000` is Reserved in Table 20) are no id:
+/// [`new`](Self::new) refuses `0x0000` and `0x8000`, and
+/// [`from_sysex_bytes`](Self::from_sysex_bytes) refuses three zero bytes.
 ///
 /// ```
 /// use tutti_ump::{ManufacturerId, U7};
@@ -36,20 +36,11 @@ pub struct ManufacturerId(u16);
 
 /// A word that is no [`ManufacturerId`]: it is neither a 7-bit id nor a 21-bit
 /// id in the 16-bit form.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{:#06x} is not a 16-bit manufacturer id", .0)]
 pub struct NotManufacturerId(pub u16);
 
-impl core::fmt::Display for NotManufacturerId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:#06x} is not a 16-bit manufacturer id", self.0)
-    }
-}
-
-impl std::error::Error for NotManufacturerId {}
-
 impl ManufacturerId {
-    /// The Reserved id, `0x0000` (Table 20).
-    pub const RESERVED: Self = Self(0x0000);
     /// Non-Commercial / Research, No Public Release: `0x007D`.
     pub const NON_COMMERCIAL: Self = Self(0x007D);
     /// Universal System Exclusive, Non-Real Time: `0x007E`.
@@ -57,14 +48,15 @@ impl ManufacturerId {
     /// Universal System Exclusive, Real Time: `0x007F`.
     pub const UNIVERSAL_REAL_TIME: Self = Self(0x007F);
 
-    /// The id of the word `raw`, or `None` if it is neither form.
+    /// The id of the word `raw`, or `None` if it is neither form or is one of
+    /// the two reserved zero ids.
     #[inline]
     #[must_use]
     pub const fn new(raw: u16) -> Option<Self> {
         let valid = if raw & 0x8000 == 0 {
-            raw <= 0x007F
+            raw != 0 && raw <= 0x007F
         } else {
-            raw & 0x0080 == 0
+            raw != 0x8000 && raw & 0x0080 == 0
         };
         if valid { Some(Self(raw)) } else { None }
     }
@@ -94,17 +86,15 @@ impl ManufacturerId {
     /// The id of three System Exclusive id bytes as a Device Inquiry reply or a
     /// Device Identity carries them: a first byte of `00` selects the 21-bit id of
     /// the other two (`0x8000 | b2 << 8 | b3`), any other first byte is the one-byte
-    /// id and the other two are zero (M2-104 section 7.10, "Example Conversion
-    /// Code", and section 7.1.3: "the remaining 2 bytes are filled with zeroes").
+    /// id and the other two are zero (M2-104 section 7.10, Example Conversion
+    /// Code, and section 7.1.3: the remaining two bytes are zero).
     /// `None` for a one-byte id followed by a non-zero byte, which the code would
-    /// read as the one-byte id alone and so not give back.
+    /// read as the one-byte id alone and so not give back, and for `00 00 00`.
     #[inline]
     #[must_use]
     pub const fn from_sysex_bytes(bytes: [U7; 3]) -> Option<Self> {
         if bytes[0].get() == 0 {
-            Some(Self(
-                0x8000 | (bytes[1].get() as u16) << 8 | bytes[2].get() as u16,
-            ))
+            Self::new(0x8000 | (bytes[1].get() as u16) << 8 | bytes[2].get() as u16)
         } else if bytes[1].get() == 0 && bytes[2].get() == 0 {
             Some(Self(bytes[0].get() as u16))
         } else {
@@ -164,7 +154,7 @@ mod tests {
         b.map(U7::of)
     }
 
-    /// M2-104 section 7.10, "7-Bit (1-byte) Manufacturer IDs" and Table 20:
+    /// M2-104 section 7.10, 7-Bit (1-byte) Manufacturer IDs, and Table 20:
     /// the high byte is `00` and the low byte is the MIDI 1.0 value.
     #[test]
     fn a_one_byte_id_is_the_byte_in_the_low_half() {
@@ -184,7 +174,7 @@ mod tests {
         assert_eq!(ManufacturerId::UNIVERSAL_REAL_TIME.get(), 0x007F);
     }
 
-    /// Section 7.10, "21-Bit (3-byte) Manufacturer IDs": the leading `00` is
+    /// Section 7.10, 21-Bit (3-byte) Manufacturer IDs: the leading `00` is
     /// replaced by the top bit of the word, bytes 2 and 3 go to the high and
     /// low bytes (`0x8000 | MFID_2 << 8 | MFID_3`).
     #[test]
@@ -215,6 +205,17 @@ mod tests {
         );
     }
 
+    /// MIDI 1.0: `00` and `00 00 00` are unusable; Table 20 lists `0x0000` as
+    /// Reserved.
+    #[test]
+    fn the_zero_ids_are_refused() {
+        assert_eq!(ManufacturerId::new(0x0000), None);
+        assert_eq!(ManufacturerId::new(0x8000), None);
+        assert_eq!(ManufacturerId::try_from(0u16), Err(NotManufacturerId(0)));
+        assert_eq!(ManufacturerId::from_sysex_bytes(bytes([0, 0, 0])), None);
+        assert!(ManufacturerId::from_sysex_bytes(bytes([0, 0, 1])).is_some());
+    }
+
     /// A word is an id only if it is `0x00xx` with `xx` 7-bit, or has the top
     /// bit set and both bytes 7-bit.
     #[test]
@@ -223,13 +224,12 @@ mod tests {
             assert_eq!(ManufacturerId::new(bad), None, "{bad:#x}");
             assert_eq!(ManufacturerId::try_from(bad), Err(NotManufacturerId(bad)));
         }
-        for good in [0x0000u16, 0x007F, 0x8000, 0x8001, 0xFF7F] {
+        for good in [0x0001u16, 0x007F, 0x8001, 0xFF7F] {
             assert_eq!(ManufacturerId::new(good).map(u16::from), Some(good));
         }
     }
 
-    /// Every word `new` accepts survives the three-byte form, but the Reserved
-    /// `0x0000`, which shares `00 00 00` with `0x8000` and reads as it.
+    /// Every word `new` accepts survives the three-byte form.
     #[test]
     fn every_id_survives_the_three_byte_form() {
         for raw in 0..=u16::MAX {
@@ -237,11 +237,7 @@ mod tests {
                 continue;
             };
             let back = ManufacturerId::from_sysex_bytes(id.sysex_bytes()).unwrap();
-            if raw == 0 {
-                assert_eq!(back.get(), 0x8000);
-            } else {
-                assert_eq!(back, id, "{raw:#x}");
-            }
+            assert_eq!(back, id, "{raw:#x}");
         }
     }
 }

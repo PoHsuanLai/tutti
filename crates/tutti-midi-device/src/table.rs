@@ -73,7 +73,7 @@ pub enum Resolved {
 }
 
 /// Which resolutions [`Resolved::bind`] takes without asking.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BindPolicy {
     /// Only an [`Exact`](Resolved::Exact) device: the one that is safe to bind
     /// unasked.

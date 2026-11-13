@@ -809,7 +809,7 @@ mod tests {
                 connect_within(&connect_path, Duration::from_millis(200)).expect("connect");
             let chunk = HostMessage::LoadStateChunk {
                 seq: 0,
-                last: false,
+                last: None,
                 bytes: vec![0u8; 1 << 20],
             };
             // Far more than any socket buffer holds: the peer reads nothing.

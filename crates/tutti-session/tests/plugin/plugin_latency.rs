@@ -69,10 +69,7 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
 /// takes MIDI and automation on one event input. Idle updates leave the graph
 /// clean (the phase compares the plugin's declared figure with the editor's
 /// and, while they agree, edits nothing: no recompile and no republish frame
-/// after frame). A latency the plugin changes (what `latency.changed` writes
-/// into its cell) reaches the graph through `Phase::Plugins`, with a
-/// `PluginLatencyChanged`; a figure past what PDC compensates is clamped, not
-/// refused.
+/// after frame).
 #[test]
 fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     let mut s = offline();

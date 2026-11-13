@@ -11,7 +11,6 @@ mod guard;
 mod gui;
 mod host;
 mod library;
-mod menu;
 mod plugin;
 mod pool;
 mod roles;
@@ -24,18 +23,10 @@ pub use events::{EventRef, EventSink, EventSource, PluginEvent, header_size};
 #[doc(hidden)]
 pub use events::{input_raw_for_test, output_raw_for_test};
 pub use gui::{EmbedOutcome, GuiError, GuiHints};
-pub use host::{
-    Host, HostCallbacks, TrackInfoWriter, TrackPortKind, TransportCommand, TuningInfoWriter,
-};
+pub use host::{Host, HostCallbacks};
 pub use library::{Bundle, DescriptorInfo, LoadError, Stage, chars_to_string};
-#[cfg(feature = "testing")]
-#[doc(hidden)]
-pub use menu::builder_for_test;
-pub use menu::{MenuItem, MenuTarget};
 pub use plugin::PortConfigRequest;
-pub use plugin::{
-    ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortKind, off_thread_drops,
-};
+pub use plugin::{ActivateError, AudioPortInfo, CallError, Plugin, PortKind, off_thread_drops};
 pub use pool::{GraphPool, PoolHandle, TaskPool};
 pub use roles::{AudioClaim, LifecycleClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};
@@ -44,7 +35,6 @@ pub use types::{
     LogSeverity, NoteName, NotePortDecl, ParamInfo, ParamsRescanFlags, ProcessStatus, StateContext,
     VoiceInfo,
 };
-pub use types::{RemoteControlsPageDecl, TriggerDecl, UndoDeltaDecl};
 
 // Test-only global allocator for the no-allocation gates.
 #[cfg(test)]

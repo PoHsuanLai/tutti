@@ -481,22 +481,13 @@ fn a_control_out_of_range_is_clamped_and_one_not_finite_is_the_defaults() {
             ..controls(2.0, 0.2, 0.0)
         };
         assert_eq!(m(fb).feedback(), d.feedback, "{bad}");
-        let rate = PhaserControls {
-            rate: Hz(bad),
-            ..controls(2.0, 0.2, 0.0)
-        };
-        assert_eq!(
-            m(rate).increment(),
-            PhaseIncrement::per_sample(d.rate, RATE),
-            "{bad}"
-        );
     }
     assert_eq!(m(controls(1.0, 1.0, 0.0)).depth(), Depth::FULL);
     assert_eq!(m(controls(1.0, -1.0, 0.0)).depth(), Depth::INVERTED);
 }
 
 /// The rate is **floored at 0.01 Hz**, a cell's value and a lane's alike: a rate of -3 Hz, of
-/// zero and of 0.005 Hz is the 0.01 Hz sweep, whose LFO phase is the f32 walk of
+/// zero and of 0.005 Hz is the 0.01 Hz sweep, a rate that is not a number is the default's, whose LFO phase is the f32 walk of
 /// `0.01 / sr` a frame (walked here per frame, not read off the member), and a rate above the
 /// floor is not.
 #[test]
@@ -512,7 +503,17 @@ fn a_rate_below_the_floor_is_the_floor() {
     };
     // 4801 frames solve the control points at 0, 16, .., 4800: 301 segments of 16, the phase
     // at the end of the last.
-    for rate in [-3.0f32, 0.0, 0.005, 0.01] {
+    // A rate that is not a number is the default's.
+    let default = PhaserControls::DEFAULT.rate.get();
+    for (rate, effective) in [
+        (-3.0f32, 0.01),
+        (0.0, 0.01),
+        (0.005, 0.01),
+        (0.01, 0.01),
+        (f32::NAN, default),
+        (f32::INFINITY, default),
+        (f32::NEG_INFINITY, default),
+    ] {
         let (mut k, _) = built(&f, &controls(rate, 1.0, 0.5), RATE);
         render(
             &mut k,
@@ -521,7 +522,7 @@ fn a_rate_below_the_floor_is_the_floor() {
             64,
         );
         let (_, _, state) = k.parts_mut();
-        assert_eq!(state.phase, walked(0.01, 4_800 + 16), "rate {rate}");
+        assert_eq!(state.phase, walked(effective, 4_800 + 16), "rate {rate}");
     }
     let (mut k, _) = built(&f, &controls(0.5, 1.0, 0.5), RATE);
     render(
@@ -765,8 +766,8 @@ impl<'de> Deserialize<'de> for Stages {
     }
 }
 
-/// `Stages` keeps the range-checked shape of CLAUDE.md: `new` refuses a count outside
-/// `2..=12` (a node used to clamp it into range silently) and never clamps.
+/// `Stages` keeps the range-checked shape: `new` refuses a count outside
+/// `2..=12` and never clamps.
 #[test]
 fn stages_keep_the_range_checked_shape() {
     tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {

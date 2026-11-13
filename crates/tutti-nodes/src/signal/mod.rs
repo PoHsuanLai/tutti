@@ -1,4 +1,4 @@
-//! Signal-driven modulation sources (design doc 014 §6): graph nodes that
+//! Signal-driven modulation sources: graph nodes that
 //! send a raw value in `[0, 1]` into a control lane's event input,
 //! addressed `ParamAddr::Id(source.0)`.
 //!
@@ -8,7 +8,7 @@
 //!
 //! Both **reset at play start**, on the frame the graph's play clock
 //! (`Env::play`) restarts, read at the node's input time (`Cx::play_at`),
-//! so a live play from beat X and an export from beat X agree (doc 014 §6).
+//! so a live play from beat X and an export from beat X agree.
 //! A fork's node starts in that state: both are inserted
 //! `ForkByClone(node)`, whose fork is the node as inserted, reset. Neither
 //! holds a cell, a handle or anything else a clone would share, and neither

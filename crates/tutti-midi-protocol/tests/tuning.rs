@@ -1,4 +1,4 @@
-//! The MIDI Tuning Standard's grammar ("MIDI Tuning Updated Specification":
+//! The MIDI Tuning Standard's grammar (the MIDI Tuning Updated Specification:
 //! the original messages, CA-020 and CA-021), from the byte layouts it gives.
 
 use tutti_midi_protocol::{
@@ -24,8 +24,8 @@ fn tuning(payload: &[u8]) -> TuningMessage {
     }
 }
 
-/// The checksum field: "successively XOR'ing the bytes in the message,
-/// excluding the F0, F7, and the checksum field [...] AND'ed with 7F".
+/// The checksum field: the XOR of the bytes of the message, leaving out the
+/// F0, F7 and the checksum field, masked with 7F.
 fn checksum(payload: &[u8]) -> u8 {
     payload.iter().fold(0, |a, b| a ^ b) & 0x7F
 }
@@ -49,7 +49,7 @@ fn table_bytes() -> (Vec<u8>, KeyTable) {
     (bytes, KeyTable::new(words))
 }
 
-/// MTS, "Frequency Data Format": `3C 00 00` is middle C, `45 00 00` is A440,
+/// MTS, Frequency Data Format: `3C 00 00` is middle C, `45 00 00` is A440,
 /// `45 00 01` one step (0.0061 cents) above it, and the fraction is sent most
 /// significant byte first: `44 7F 7F` is the step below A440.
 #[test]
@@ -71,7 +71,7 @@ fn frequency_data_is_a_semitone_and_a_fraction_most_significant_byte_first() {
     assert_eq!(change(1, 0x7F, 0x7F, 0x7E), TuningFrequency::TOP);
 }
 
-/// MTS: "7F 7F 7F" is "no change" and is a value, not a sentinel the caller
+/// MTS: `7F 7F 7F` is the no-change word and is a value, not a sentinel the caller
 /// compares bytes against.
 #[test]
 fn seven_f_seven_f_seven_f_is_the_no_change_word() {
@@ -105,8 +105,8 @@ fn a_bulk_dump_request_names_a_program_and_maybe_a_bank() {
 }
 
 /// `F0 7E <device ID> 08 01 tt <tuning name> [xx yy zz] x128 chksum F7`: all
-/// 128 keys in order from note 0, and a name of 16 characters. "It is now
-/// recommended that receivers may ignore the checksum in that message": a wrong
+/// 128 keys in order from note 0, and a name of 16 characters. The spec lets
+/// receivers ignore the checksum of that message: a wrong
 /// one is still read.
 #[test]
 fn a_bulk_tuning_dump_is_128_words_and_its_checksum_may_be_ignored() {
@@ -140,8 +140,7 @@ fn a_dump_that_is_short_of_a_word_is_unread() {
     assert_eq!(parse(&payload), Read::Unread);
 }
 
-/// `08 04 bb tt <name> [xx yy zz] x128 chksum`, "identical to the current BULK
-/// TUNING DUMP except for the addition of the bank select byte": and for this
+/// `08 04 bb tt <name> [xx yy zz] x128 chksum`, the same as the Bulk Tuning Dump with a bank select byte added; for this
 /// message the checksum is the XOR of every byte between `F0` and itself.
 #[test]
 fn a_key_based_dump_names_a_bank_and_is_checked() {
@@ -164,7 +163,7 @@ fn a_key_based_dump_names_a_bank_and_is_checked() {
 }
 
 /// A wrong checksum on one of the checked dumps is its own outcome: not the
-/// message, and not "unread" either. The spec does not say what a receiver does;
+/// message, and not unread either. The spec does not say what a receiver does;
 /// this says what was wrong and what it should have been.
 #[test]
 fn a_dump_with_a_bad_checksum_is_a_typed_outcome() {
@@ -225,7 +224,7 @@ fn the_scale_octave_dumps_are_twelve_offsets_and_a_checksum() {
 }
 
 /// `F0 7F <device ID> 08 02 tt ll [kk xx yy zz] F7` is real time, no bank, and
-/// "the total length of the message equals 8 + (ll x 4) bytes": a count that
+/// its total length is 8 + (ll x 4) bytes: a count that
 /// disagrees with the bytes is not the message.
 #[test]
 fn a_single_note_change_carries_ll_changes_and_ll_is_its_length() {
@@ -266,9 +265,9 @@ fn a_single_note_change_carries_ll_changes_and_ll_is_its_length() {
     assert!(changes.as_slice().is_empty());
 }
 
-/// `08 07 bb tt ll [..]` is the bank form, real time under `7F` ("WILL affect
-/// currently sounding notes") and non-real time under `7E` ("will NOT update the
-/// currently sounding notes"); the non-real-time form has no `08 02`.
+/// `08 07 bb tt ll [..]` is the bank form, real time under `7F` (it affects
+/// currently sounding notes) and non-real time under `7E` (it does not update
+/// them); the non-real-time form has no `08 02`.
 #[test]
 fn the_bank_form_of_the_note_change_is_real_or_non_real_time_by_its_header() {
     let body = [0x08, 0x07, 0x02, 0x03, 0x01, 0x3C, 0x3C, 0x20, 0x00];
@@ -303,7 +302,7 @@ fn the_bank_form_of_the_note_change_is_real_or_non_real_time_by_its_header() {
 
 /// The Scale/Octave Tuning channel field: `ff` bits 0 and 1 are channels 15 and
 /// 16, `gg` bits 0 to 6 channels 8 to 14, `hh` bits 0 to 6 channels 1 to 7;
-/// "5 additional bits in one of the channel bytes, which must be set to 0".
+/// the five remaining bits of one channel byte must be 0.
 #[test]
 fn the_channel_bytes_name_channels_by_bit() {
     let channels = |ff: u8, gg: u8, hh: u8| {

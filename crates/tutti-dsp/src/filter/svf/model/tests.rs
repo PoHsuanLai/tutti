@@ -149,7 +149,7 @@ fn prototype(ty: SvfType, s: Complex64, q: f64, gain_db: f64) -> Complex64 {
     }
 }
 
-/// The spec (the design diagram of the SVF, doc 024 section 2.7.4): the model is
+/// The spec: the model is
 /// the analog prototype `H_a(s)` of its response under the bilinear map prewarped at
 /// the cutoff, `s = (1/g)(z - 1)/(z + 1)` with `g = tan(pi fc / rate)`, evaluated
 /// directly here with plain complex arithmetic. Every type (the bell and the

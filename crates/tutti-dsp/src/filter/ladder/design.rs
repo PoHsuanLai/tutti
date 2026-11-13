@@ -1,4 +1,4 @@
-//! [`LadderFamily`]: the Moog ladder as a [`Family`](crate::Family) (design 024 step 2b).
+//! [`LadderFamily`]: the Moog ladder as a [`Family`](crate::Family).
 //!
 //! The controls are [`LadderControls`], the model [`LadderModel`] (the small-signal
 //! linearisation) and the kernel [`Ladder`]: the four stages with the `tanh` in the

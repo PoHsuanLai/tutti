@@ -57,21 +57,6 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "the workspace suite the way CI runs it (nextest; builds plugin-server and plugin-probe first)",
     ),
     (
-        "test-au-installed",
-        "",
-        "the AU mapping-family claim; needs third-party Audio Units installed (macOS)",
-    ),
-    (
-        "test-editor",
-        "",
-        "the custom-harness editor tests (VST3 and AU)",
-    ),
-    (
-        "test-editor-no-corpus",
-        "",
-        "test-editor without the installed-plugin corpus case",
-    ),
-    (
         "test-doc",
         "[cargo test args]",
         "doctests (nextest does not run them)",
@@ -84,7 +69,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     (
         "test-all",
         "",
-        "test, test-features, test-editor, test-au-installed, test-doc, test-release",
+        "test, test-features, test-doc, test-release",
     ),
     (
         "check-features",
@@ -311,25 +296,8 @@ impl Planner<'_> {
             "test" => {
                 self.dep("plugin-server")?;
                 self.dep("plugin-probe")?;
-                self.run(
-                    Cmd::sh("cargo nextest run --locked --workspace").args(args).args([
-                        "-E",
-                        "not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)",
-                    ]),
-                );
+                self.run(Cmd::sh("cargo nextest run --locked --workspace").args(args));
             }
-            "test-au-installed" => self.run(
-                Cmd::sh("cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass")
-                    .args(["-E", "test(no_installed_third_party_unit_implements_the_mapping_family)"]),
-            ),
-            "test-editor" => self.lines(&[
-                "cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main",
-                "cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main",
-            ]),
-            "test-editor-no-corpus" => self.lines(&[
-                "TUTTI_GUI_SKIP=has_editor_agrees_with_opening_one cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main",
-                "cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main",
-            ]),
             "test-doc" => {
                 self.run(Cmd::sh("cargo test --locked --doc --workspace").args(args));
                 self.run(Cmd::sh("cargo test --locked --doc -p tutti-session --all-features").args(args));
@@ -338,7 +306,7 @@ impl Planner<'_> {
                 "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph",
             ]),
             "test-all" => {
-                for d in ["test", "test-features", "test-editor", "test-au-installed", "test-doc", "test-release"] {
+                for d in ["test", "test-features", "test-doc", "test-release"] {
                     self.dep(d)?;
                 }
             }
@@ -458,7 +426,7 @@ impl Planner<'_> {
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
                     "check-submodule-pins",
                     "check-features",
-                    "check-loom", "test", "test-features", "test-editor", "test-doc",
+                    "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",
                 ] {
                     self.dep(d)?;
@@ -509,7 +477,6 @@ impl Planner<'_> {
             "-p tutti-codec --features encode-wav,encode-aiff,encode-flac,decode-wav,decode-flac,decode-mp3,decode-ogg,serde --all-targets",
             "-p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets",
             "-p tutti-plugin-db --features json --all-targets",
-            "-p tutti-clap-host --features clap-extras --all-targets",
             "-p tutti-vst2-host --all-targets",
             "-p tutti-vst3-host -p tutti-plugin-server -p tutti-plugin-probe --lib --bins",
         ] {
@@ -519,7 +486,6 @@ impl Planner<'_> {
 }
 
 const CHECK_FEATURES: &[&str] = &[
-    r#"cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,audio-io,serde --all-targets -- -D warnings"#,
@@ -552,7 +518,6 @@ const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-plugin-types --lib --features contract -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings"#,
-    r#"cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings"#,
@@ -564,7 +529,6 @@ const CHECK_FEATURES: &[&str] = &[
 ];
 
 const TEST_FEATURES: &[&str] = &[
-    r#"cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass"#,
     r#"cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst3"#,
     r#"cargo build --locked -p tutti-plugin-probe"#,
     r#"cargo nextest run --locked -p tutti-cpal --features capture"#,
@@ -585,7 +549,6 @@ const TEST_FEATURES: &[&str] = &[
     r#"cargo nextest run --locked -p tutti-midi-device --features serde"#,
     r#"cargo nextest run --locked -p tutti-tempo --features serde"#,
     r#"cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests"#,
-    r#"cargo nextest run --locked -p tutti-clap-host --features clap-extras"#,
     r#"cargo nextest run --locked -p tutti-plugin-types --features testing"#,
     r#"cargo nextest run --locked -p tutti-plugin-db --features json"#,
     r#"cargo nextest run --locked -p tutti-plugin-contract --features server"#,
@@ -617,6 +580,7 @@ const LOOM: &[&str] = &[
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test edit_ring_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test fault_latch_loom -- --nocapture"#,
+    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test wake_flag_loom"#,
 ];
 
 const LOOM_FULL: &[&str] = &[

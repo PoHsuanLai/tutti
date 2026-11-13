@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-// Every `unsafe` call into ALSA and CoreMIDI is in `tutti-alsa-ffi` and
-// `tutti-coremidi-ffi` (`cargo xtask check-ffi`).
 #![forbid(unsafe_code)]
 
 // --- Framework-free hardware I/O core ---
@@ -29,6 +27,7 @@ mod error;
 )]
 mod guard;
 mod port;
+mod profiles;
 mod session;
 mod stamp;
 mod stream;
@@ -50,6 +49,10 @@ pub use devices::{
 pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, Pushed, StreamDrain};
+pub use profiles::{
+    ChannelCount, ChannelProfile, ListedProfile, PeerProfiles, ProfileError, ProfileSwitch,
+    ProfilesChange, Whole, WholeProfile,
+};
 pub use session::{DeviceQuery, MidiSession, OutputInfo, Polled};
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{

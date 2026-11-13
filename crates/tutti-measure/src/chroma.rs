@@ -484,13 +484,6 @@ impl ChromaState {
         self.sums = TuningSums::default();
     }
 
-    /// How many frames have been folded.
-    #[inline]
-    #[must_use]
-    pub fn frames_seen(&self) -> usize {
-        self.frames
-    }
-
     /// The mean of the frames folded so far, per class; all zero before the
     /// first.
     #[must_use]
@@ -753,6 +746,44 @@ mod tests {
         }
     }
 
+    /// A subharmonic's weight is the decay per order: at 0.3 the G4 sine's C
+    /// (a third of it) reads `0.09 / 1.3`.
+    #[test]
+    fn the_harmonic_decay_weighs_the_subharmonic_votes() {
+        let cfg = cfg().with_harmonic_decay(0.3).unwrap();
+        let c = run(&sine(392.0, 8192, 0.5), &cfg).mean();
+        assert!((c[7] - 1.0).abs() < 1e-6);
+        assert!((c[0] - 0.09 / 1.3).abs() < 0.01, "{c:?}");
+    }
+
+    /// A peak under the floor, relative to the frame's strongest, is ignored:
+    /// a sine 50 dB under another votes at a -80 dB floor and not at -40.
+    #[test]
+    fn peaks_under_the_floor_do_not_vote() {
+        let strong = sine(440.0, 8192, 0.5);
+        let x: Vec<f32> = strong
+            .iter()
+            .zip(sine(330.0, 8192, 0.5 * 10f64.powf(-50.0 / 20.0)))
+            .map(|(a, b)| a + b)
+            .collect();
+        let only = cfg().with_harmonics(1).unwrap();
+        let ignored = run(&x, &only.with_peak_floor(Db(-40.0)).unwrap()).mean();
+        assert_eq!(ignored[4], 0.0);
+        let heard = run(&x, &only.with_peak_floor(Db(-80.0)).unwrap()).mean();
+        assert!(heard[4] > 0.0, "{heard:?}");
+    }
+
+    /// The band limits which peaks fold: a 440 Hz sine is heard in a band
+    /// around it and not in one above it.
+    #[test]
+    fn the_band_selects_the_peaks_that_fold() {
+        let x = sine(440.0, 8192, 0.5);
+        let inside = cfg().with_band(Hz(300.0), Hz(600.0)).unwrap();
+        assert_eq!(run(&x, &inside).mean()[9], 1.0);
+        let above = cfg().with_band(Hz(600.0), Hz(2000.0)).unwrap();
+        assert!(run(&x, &above).grid().as_slice().iter().all(|&v| v == 0.0));
+    }
+
     /// A sine's tuning is its distance from the grid, within the interpolation
     /// bias at its frequency: 0.02 bin is `1200 log2(1 + 0.02 w / f)` cents,
     /// `w = 22050 / 4096` Hz. The mean wraps: +45 and -55 are the same.
@@ -800,11 +831,9 @@ mod tests {
             let frame = step_chroma(&fixed, &mut state, &x[at..at + 4096], &mut fft).unwrap();
             assert_eq!(frame.as_slice(), row);
         }
-        assert_eq!(state.frames_seen(), batch.grid().frames().get());
         assert_eq!(state.mean(), batch.mean());
         assert_eq!(state.tuning(), batch.tuning());
         state.reset();
-        assert_eq!(state.frames_seen(), 0);
         assert_eq!(state.mean(), [0.0; CLASSES]);
     }
 
@@ -825,8 +854,9 @@ mod tests {
         let x = sine(440.0, 4096, 0.5);
         step_chroma(&cfg(), &mut state, &x, &mut fft).unwrap();
         let other = cfg().with_harmonics(1).unwrap();
-        step_chroma(&other, &mut state, &x, &mut fft).unwrap();
-        assert_eq!(state.frames_seen(), 1);
+        step_chroma(&other, &mut state, &sine(330.0, 4096, 0.5), &mut fft).unwrap();
+        let mean = state.mean();
+        assert_eq!((mean[4], mean[9]), (1.0, 0.0), "{mean:?}");
     }
 
     /// A frame that is refused leaves the carry alone, even under a config
@@ -842,11 +872,9 @@ mod tests {
         nan[7] = f32::NAN;
         assert!(step_chroma(&other, &mut state, &nan, &mut fft).is_err());
         assert!(step_chroma(&other, &mut state, &x[..100], &mut fft).is_err());
-        assert_eq!(state.frames_seen(), 1);
         assert_eq!((state.mean(), state.tuning()), (mean, tuning));
 
         state.reset();
-        assert_eq!(state.frames_seen(), 0);
         assert_eq!(state.mean(), [0.0; CLASSES]);
         assert_eq!(state.tuning(), Cents(0.0));
     }
@@ -941,6 +969,5 @@ mod tests {
             step_chroma(&cfg(), &mut state, &x[..4096], &mut fft).unwrap_err(),
             Error::NonFiniteInput
         );
-        assert_eq!(state.frames_seen(), 0);
     }
 }

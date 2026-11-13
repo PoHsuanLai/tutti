@@ -70,8 +70,7 @@ fn wait_until(what: &str, cond: impl Fn() -> bool) {
 ///
 /// Re-declared here rather than shared with `the unit tests' fixture of the same
 /// shape: that one is `#[cfg(test)]`-private to the crate, and an integration
-/// binary cannot see it. `tutti-sampler`'s `MockTransport` hits the same wall
-/// and answers it the same way (`tests/voice/tier_parity.rs:119`).
+/// binary cannot see it.
 struct Ramp {
     frames: usize,
     pos: usize,

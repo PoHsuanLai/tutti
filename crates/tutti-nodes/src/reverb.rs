@@ -1,4 +1,4 @@
-//! The reverb: any [`Family`] as a graph node (design 022 section 5).
+//! The reverb: any [`Family`] as a graph node.
 //!
 //! [`FamilyNode<F>`] is the one node over every reverb algorithm. It is generic
 //! rather than boxed: a [`Family`] has a `Controls` type and a [`Recurrence`] of its
@@ -9,7 +9,7 @@
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
 //!
 //! The node is wet only: its blend with its input, for use as an insert, is the
-//! graph's mix (`Editor::set_mix`, doc 013 M4), which aligns the input by the
+//! graph's mix (`Editor::set_mix`), which aligns the input by the
 //! realization's latency (never its pre-delay, which is part of the wet sound).
 //! [`FreeverbNode`] is the General MIDI send of the SoundFont player.
 
@@ -29,10 +29,7 @@ use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 
 // The node measures its tail to `TAIL_FLOOR`: the level the wet signal has fallen to
 // when the declared tail ends, and below which the node parks, 60 dB under what it
-// carried, the figure the General MIDI reverb has always declared. Measured against
-// the old, uncut Freeverb at `input_end + tail`, what the cut discards is more than
-// 100 dB below the rendered peak: about -112 dBFS RMS after a 2 s noise burst,
-// -128 dBFS after a 50 ms one, and nothing after an impulse (already flushed).
+// carried.
 
 /// A tail of this many frames never ends.
 const UNBOUNDED: u64 = u64::MAX;
@@ -62,7 +59,7 @@ pub enum Rings {
 /// The longest a family can ring, as a fixed ceiling ([`Rings::Ceiling`]): a time that is
 /// finite and not negative.
 ///
-/// A range-checked value (CLAUDE.md, "Range-checked values"): [`new`](Self::new) refuses a
+/// A range-checked value: [`new`](Self::new) refuses a
 /// NaN, an infinite or a negative time and never clamps, since the ceiling becomes the
 /// [`Tail::Finite`] the graph reads, and an unchecked one would declare a tail no node has.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
@@ -365,7 +362,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         // A block cadence's realization glides its own coefficients between the designs of
         // its blocks, so the reader lands a moved cell whole there.
         self.params.retune(rate, F::SAMPLING != Cadence::BLOCK);
-        // Latency has one home per cause (design 024 section 2.7.2): the member's and the
+        // Latency has one home per cause: the member's and the
         // realization's, summed here once. It is the blank member's: a latency that moved
         // with a control would be a shape the graph cannot follow (the contract's `latency`
         // case holds every member to it).
@@ -521,7 +518,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         let size = io.frames();
         // The stops: each grid point (cut at its step's start, read at its solve
         // frame), and each corner of a port driving a slow control (cut and read on
-        // its frame; doc 024 §4.5, "Solve at corners"), in order.
+        // its frame), in order.
         let mut grid = F::SAMPLING
             .steps(position, size, self.applied.is_none())
             .filter(|step| step.grid_point)

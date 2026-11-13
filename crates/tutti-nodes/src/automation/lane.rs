@@ -35,7 +35,7 @@ use super::Curve;
 /// **Audio, not a param source.** It renders the curve as audio, one value
 /// per frame, for anything that reads a signal (a node's audio input, a
 /// meter). A param port is driven by a [`ControlLaneNode`](super::ControlLaneNode) instead
-/// (`ControlLaneNode::for_param` over
+/// (`ControlLaneNode::for_unit` over
 /// [`ControlProgram::from_curve`](tutti_modulation::ControlProgram::from_curve)),
 /// which sends the curve as curve-segment events
 /// ([`ParamSegment`](tutti_graph::ParamSegment)).
@@ -43,7 +43,7 @@ use super::Curve;
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]) with no controls: a live curve swap is a
-/// respawn ([`set_curve`](Self::set_curve) takes `&mut self`). A fork reads
+/// respawn. A fork reads
 /// the curve's [`frozen`](Curve::frozen) copy when it has one (a curve that
 /// reads state written after it was built), and shares the `Arc` otherwise
 /// (an trajectory, read-only once shared). It is a generator
@@ -103,15 +103,6 @@ impl AutomationLaneNode {
         }
     }
 
-    /// Replaces the curve, allocating a new `Arc`.
-    ///
-    /// `&mut self`, so it cannot reach a node already live in the graph — a
-    /// live curve swap goes through a respawn. Does not clear
-    /// [`last_value`](Self::last_value).
-    pub fn set_curve(&mut self, curve: impl Curve + 'static) {
-        self.curve = Arc::new(curve);
-    }
-
     /// Most recent value the lane emitted: after a block, the value at its
     /// last frame — the end-of-block value, not the average (for an event
     /// lane, the value its last segment gives that frame; unchanged by a
@@ -122,20 +113,12 @@ impl AutomationLaneNode {
         self.last_value
     }
 
-    /// Evaluates the curve at `beat` **without** recording it as the last
-    /// value.
+    /// Evaluates the curve at `beat`.
     ///
     /// Returns `0.0` where the curve has no value — before its first point, or
-    /// on an empty trajectory. Use [`update_to`](Self::update_to) to evaluate and
-    /// record in one step.
+    /// on an empty trajectory.
     pub fn value_at(&self, beat: Beat) -> f32 {
         self.curve.value_at(beat).unwrap_or(0.0)
-    }
-
-    /// Evaluates at `beat` and records it as the last value.
-    pub fn update_to(&mut self, beat: Beat) -> f32 {
-        self.last_value = self.value_at(beat);
-        self.last_value
     }
 
     /// A copy of this lane for a fork: the curve's
@@ -261,21 +244,21 @@ mod tests {
 
     #[test]
     fn test_update_tracks_beat_position() {
-        let mut lane = AutomationLaneNode::new(ramp_trajectory());
+        let lane = AutomationLaneNode::new(ramp_trajectory());
 
-        assert!((lane.update_to(Beat(0.0)) - 0.0).abs() < 0.01);
-        assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
-        assert!((lane.update_to(Beat(4.0)) - 1.0).abs() < 0.01);
-        assert!((lane.update_to(Beat(6.0)) - 0.75).abs() < 0.01);
+        assert!((lane.value_at(Beat(0.0)) - 0.0).abs() < 0.01);
+        assert!((lane.value_at(Beat(2.0)) - 0.5).abs() < 0.01);
+        assert!((lane.value_at(Beat(4.0)) - 1.0).abs() < 0.01);
+        assert!((lane.value_at(Beat(6.0)) - 0.75).abs() < 0.01);
     }
 
     /// The transport hands an already-wrapped beat, so a lane at beat 6
     /// behaves identically whether or not a loop produced it.
     #[test]
     fn wrapped_beat_needs_no_loop_handling_in_the_lane() {
-        let mut lane = AutomationLaneNode::new(ramp_trajectory());
+        let lane = AutomationLaneNode::new(ramp_trajectory());
         // A 4..8 loop wraps beat 10 to beat 6 in the transport.
-        let wrapped = lane.update_to(Beat(6.0));
+        let wrapped = lane.value_at(Beat(6.0));
         assert!(
             (wrapped - 0.75).abs() < 0.01,
             "expected ~0.75, got {wrapped}"
@@ -298,33 +281,27 @@ mod tests {
     }
 
     #[test]
-    fn test_set_curve_changes_output() {
-        let mut lane = AutomationLaneNode::new(ramp_trajectory());
-        assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
-
-        let mut flat: Trajectory = Trajectory::new();
-        flat.add_breakpoint(Breakpoint::new(Beat(0.0), 0.9));
-        flat.add_breakpoint(Breakpoint::new(Beat(8.0), 0.9));
-        lane.set_curve(flat);
-
-        assert!((lane.update_to(Beat(2.0)) - 0.9).abs() < 0.01);
-    }
-
-    #[test]
     fn test_reset_clears_last_value() {
-        let mut lane = AutomationLaneNode::new(ramp_trajectory());
-        lane.update_to(Beat(4.0));
-        assert!((lane.last_value() - 1.0).abs() < 0.01);
+        let mut flat: Trajectory = Trajectory::new();
+        flat.add_breakpoint(Breakpoint::new(Beat(0.0), 0.5));
+        flat.add_breakpoint(Breakpoint::new(Beat(8.0), 0.5));
+        let mut d = tutti_graph::contract::Direct::new(
+            AutomationLaneNode::new(flat),
+            SampleRate::SR_48K,
+            64,
+        );
+        d.block();
+        assert!((d.node.last_value() - 0.5).abs() < 0.01);
 
-        Node::reset(&mut lane);
-        assert_eq!(lane.last_value(), 0.0);
+        Node::reset(&mut *d.node);
+        assert_eq!(d.node.last_value(), 0.0);
     }
 
     #[test]
     fn test_empty_trajectory_returns_zero() {
         let empty: Trajectory = Trajectory::new();
-        let mut lane = AutomationLaneNode::new(empty);
-        assert_eq!(lane.update_to(Beat(5.0)), 0.0);
+        let lane = AutomationLaneNode::new(empty);
+        assert_eq!(lane.value_at(Beat(5.0)), 0.0);
         let empty: Trajectory = Trajectory::new();
         let out = render(AutomationLaneNode::new(empty), stopped_at(5.0), 1);
         assert_eq!(out[0], 0.0);

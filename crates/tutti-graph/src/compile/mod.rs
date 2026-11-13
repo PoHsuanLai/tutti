@@ -39,7 +39,7 @@
 //!    single-predecessor chains into tasks, pack sibling tasks too cheap to
 //!    dispatch alone (never lengthening the critical path), fuse the chains
 //!    that leaves, and total the
-//!    cost model's estimates (`Plan::work`, `Plan::critical_path`; see
+//!    cost model's estimates (`Plan::work` and the critical path; see
 //!    `cost.rs`). The serial executor ignores tasks; the parallel one
 //!    (`par.rs`) dispatches them, when `Plan::schedule` says spreading
 //!    pays.

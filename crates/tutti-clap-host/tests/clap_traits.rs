@@ -389,9 +389,15 @@ fn a_state_load_makes_queued_writes_stale() {
 
     render(&mut processor, SampleFormat::Float32).expect("block");
     controller.set_parameter(&main_thread(), id, Normalized::of(0.25));
-    let saved = controller.save_state(&main_thread()).expect("saves");
+    let saved = controller
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("saves");
     controller
-        .load_state(&main_thread(), &saved)
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("restores");
     controller.set_parameter(&main_thread(), id, Normalized::of(0.75));
 
@@ -520,7 +526,7 @@ fn the_controller_serves_reads_while_the_processor_renders() {
         let _ = controller.parameter(&main_thread(), id).expect("a value");
         let _ = controller.parameters(&main_thread());
         controller
-            .save_state(&main_thread())
+            .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
             .expect("state saves beside process");
         controller.set_parameter(
             &main_thread(),

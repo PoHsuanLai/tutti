@@ -14,8 +14,6 @@ use clap_sys::ext::audio_ports::{
     CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE,
 };
 use clap_sys::ext::audio_ports_config::clap_audio_ports_config;
-use clap_sys::ext::draft::triggers::clap_trigger_info;
-use clap_sys::ext::draft::undo::clap_undo_delta_properties;
 use clap_sys::ext::log::{
     CLAP_LOG_DEBUG, CLAP_LOG_ERROR, CLAP_LOG_FATAL, CLAP_LOG_HOST_MISBEHAVING, CLAP_LOG_INFO,
     CLAP_LOG_PLUGIN_MISBEHAVING, CLAP_LOG_WARNING,
@@ -31,9 +29,8 @@ use clap_sys::ext::params::{
     CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
     CLAP_PARAM_RESCAN_VALUES, clap_param_info,
 };
-use clap_sys::ext::remote_controls::clap_remote_controls_page;
 use clap_sys::ext::state_context::{
-    CLAP_STATE_CONTEXT_FOR_DUPLICATE, CLAP_STATE_CONTEXT_FOR_PRESET, CLAP_STATE_CONTEXT_FOR_PROJECT,
+    CLAP_STATE_CONTEXT_FOR_DUPLICATE, CLAP_STATE_CONTEXT_FOR_PROJECT,
 };
 use clap_sys::ext::voice_info::clap_voice_info;
 use clap_sys::process::{
@@ -140,12 +137,10 @@ impl ProcessStatus {
 
 /// Which use-case a state save or load is for (`clap.state-context`).
 ///
-/// The plugin may serialize differently per context: a preset typically
-/// excludes the project-specific bindings a project save keeps.
+/// The plugin may serialize differently per context. The host reaches two of
+/// the three the extension defines: it has no preset save.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateContext {
-    /// Saving or loading a user preset.
-    ForPreset,
     /// Saving or loading as part of the enclosing project.
     ForProject,
     /// Duplicating an existing instance.
@@ -157,9 +152,18 @@ impl StateContext {
     #[must_use]
     pub fn raw(self) -> u32 {
         match self {
-            Self::ForPreset => CLAP_STATE_CONTEXT_FOR_PRESET,
             Self::ForProject => CLAP_STATE_CONTEXT_FOR_PROJECT,
             Self::ForDuplicate => CLAP_STATE_CONTEXT_FOR_DUPLICATE,
+        }
+    }
+}
+
+impl From<tutti_plugin_types::StateUse> for StateContext {
+    fn from(state_use: tutti_plugin_types::StateUse) -> Self {
+        use tutti_plugin_types::StateUse;
+        match state_use {
+            StateUse::Project => Self::ForProject,
+            StateUse::Duplicate => Self::ForDuplicate,
         }
     }
 }
@@ -190,6 +194,22 @@ impl AutomationState {
             Self::Playing => CLAP_PARAM_INDICATION_AUTOMATION_PLAYING,
             Self::Recording => CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
             Self::Overriding => CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
+        }
+    }
+}
+
+impl From<tutti_plugin_types::AutomationMode> for AutomationState {
+    /// The indication for a parameter while the host is in `mode`: reading is
+    /// `Playing`, and writing, alone or with reading, is `Recording`.
+    /// `Overriding` is a live touch over playing automation and `Present` is
+    /// automation that is not playing; both are per parameter, which
+    /// `AutomationMode` does not name.
+    fn from(mode: tutti_plugin_types::AutomationMode) -> Self {
+        use tutti_plugin_types::AutomationMode;
+        match mode {
+            AutomationMode::Off => Self::None,
+            AutomationMode::Reading => Self::Playing,
+            AutomationMode::Writing | AutomationMode::ReadWriting => Self::Recording,
         }
     }
 }
@@ -395,78 +415,6 @@ impl AmbisonicDecl {
         Self {
             ordering: config.ordering,
             normalization: config.normalization,
-        }
-    }
-}
-
-/// `remote-controls.get`, owned.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteControlsPageDecl {
-    /// The section the page belongs to.
-    pub section_name: String,
-    /// The page's id.
-    pub page_id: u32,
-    /// The page's name.
-    pub page_name: String,
-    /// The eight parameters it maps (`u32::MAX` for none).
-    pub param_ids: [u32; 8],
-    /// Whether the page is for the preset rather than the plugin.
-    pub is_for_preset: bool,
-}
-
-impl RemoteControlsPageDecl {
-    pub(crate) fn from_raw(page: &clap_remote_controls_page) -> Self {
-        Self {
-            section_name: chars_to_string(&page.section_name),
-            page_id: page.page_id,
-            page_name: chars_to_string(&page.page_name),
-            param_ids: page.param_ids,
-            is_for_preset: page.is_for_preset,
-        }
-    }
-}
-
-/// `triggers.get_info`, owned.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TriggerDecl {
-    /// The trigger's id.
-    pub id: u32,
-    /// The raw `CLAP_TRIGGER_*` flags.
-    pub flags: u32,
-    /// Display name.
-    pub name: String,
-    /// `/`-separated display path.
-    pub module: String,
-}
-
-impl TriggerDecl {
-    pub(crate) fn from_raw(info: &clap_trigger_info) -> Self {
-        Self {
-            id: info.id,
-            flags: info.flags,
-            name: chars_to_string(&info.name),
-            module: chars_to_string(&info.module),
-        }
-    }
-}
-
-/// `undo-delta.get_delta_properties`, owned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UndoDeltaDecl {
-    /// Whether the plugin produces deltas.
-    pub has_delta: bool,
-    /// Whether they persist across sessions.
-    pub are_deltas_persistent: bool,
-    /// The format version it writes.
-    pub format_version: u32,
-}
-
-impl UndoDeltaDecl {
-    pub(crate) fn from_raw(props: &clap_undo_delta_properties) -> Self {
-        Self {
-            has_delta: props.has_delta,
-            are_deltas_persistent: props.are_deltas_persistent,
-            format_version: props.format_version,
         }
     }
 }

@@ -141,9 +141,9 @@ impl Ump {
     /// event keeps them in preference to any other. The other channel-mode
     /// controllers (121, 122, 124 to 127) end nothing and are not panics.
     /// Controller numbers and their meanings: MIDI 1.0 Detailed Specification,
-    /// "Channel Mode Messages" (CC 120 All Sound Off, CC 123 All Notes Off);
-    /// the MIDI 2.0 Control Change (M2-104, "MIDI 2.0 Control Change
-    /// Message") keeps the index in the same bits of the first word.
+    /// Channel Mode Messages (CC 120 All Sound Off, CC 123 All Notes Off);
+    /// the MIDI 2.0 Control Change (M2-104, MIDI 2.0 Control Change
+    /// Message) keeps the index in the same bits of the first word.
     #[inline]
     #[must_use]
     pub const fn is_panic_controller(&self) -> bool {

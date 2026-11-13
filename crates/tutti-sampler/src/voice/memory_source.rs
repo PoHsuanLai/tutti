@@ -680,8 +680,7 @@ impl MemorySource {
 
     /// The gate a placed read seats at, for a read stepping at
     /// `stretch_rate` as well (a stretcher consuming it): its window, this
-    /// wave's rate, and varispeed with the stretch — see
-    /// [`stretched_window_position`](Self::stretched_window_position).
+    /// wave's rate, and varispeed with the stretch.
     #[inline]
     pub(crate) fn gate(&self, stretch_rate: ReadRate) -> Option<Gate> {
         Some(Gate {
@@ -700,8 +699,7 @@ impl MemorySource {
     /// frames the transport reaches its edges, and in between seats where
     /// the gate puts the playhead and steps by
     /// `read_rate × stretch_rate` per frame. The origin comes from the gate
-    /// ([`stretched_window_position`](Self::stretched_window_position):
-    /// varispeed and the stretch, measured in this wave's frames), the step
+    /// (varispeed and the stretch, measured in this wave's frames), the step
     /// from [`read_rate`](Self::read_rate) (varispeed and the conversion) —
     /// the one model the offline disk reader seats by too, so the tiers read
     /// the same positions, frame for frame. Pass [`ReadRate::UNITY`] when
@@ -989,44 +987,6 @@ impl MemorySource {
             window.duration,
             self.wave.sample_rate(),
             self.window_rate(),
-        )
-    }
-
-    /// [`window_position`](Self::window_position) for a stretched read, where
-    /// the source is consumed at `stretch_rate` rather than at wall-clock rate.
-    ///
-    /// The rate must reach the *origin*, not only the within-block step, and that
-    /// is the whole reason this exists. `window_position` re-derives its origin
-    /// from the playhead on every block, and the playhead advances at wall clock.
-    /// A caller that seats itself there and then steps by a stretched rate gets a
-    /// sawtooth: block N covers `block_size / stretch` source samples, but block
-    /// N+1 re-seats a full `block_size` further on, discarding the difference. At
-    /// 2x the read jumps forward 32 samples every 64, forever.
-    ///
-    /// Measured, with the rate reaching neither origin nor step: a placed voice
-    /// at 2.0x emits 880 Hz from a 440 Hz source with its duration unchanged —
-    /// the stretch factor acting as pure varispeed. Folding the rate into the
-    /// step *alone* is worse, not better (pitch 35% off, spectral purity 0.95
-    /// against 0.54), because then the two disagree within every block as well
-    /// as across them.
-    ///
-    /// Separate from `window_position` rather than folded into it: that method's
-    /// varispeed-only contract is load-bearing for the disk tier and for the
-    /// unstretched memory path, both of which still call it. Two named methods,
-    /// each with one meaning.
-    #[inline]
-    pub fn stretched_window_position(
-        &self,
-        transport: &tutti_graph::TransportPosition,
-        stretch_rate: ReadRate,
-    ) -> Option<SamplePosition> {
-        let window = self.placement?;
-        super::interp::window_position(
-            transport,
-            window.start,
-            window.duration,
-            self.wave.sample_rate(),
-            self.window_rate().then(stretch_rate),
         )
     }
 

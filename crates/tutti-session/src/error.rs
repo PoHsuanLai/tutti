@@ -202,6 +202,11 @@ pub enum MidiError {
     #[error("MIDI hardware: {0}")]
     Hardware(#[from] tutti_midi_hardware::Error),
 
+    /// A Profile switch was refused ([`Midi::set_profile`](crate::Midi::set_profile)).
+    #[cfg(feature = "midi-hardware")]
+    #[error("MIDI-CI Profile: {0}")]
+    Profile(#[from] tutti_midi_hardware::ProfileError),
+
     /// A MIDI file could not be read, built or written.
     #[error("MIDI file: {0}")]
     File(#[from] tutti_midi_file::Error),
@@ -355,10 +360,6 @@ midi_cause_into_error!(
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Wraps an error from `tutti_engine::Error`.
-    #[error(transparent)]
-    Engine(#[from] tutti_engine::Error),
-
     /// The graph engine refused its graph: wraps
     /// `tutti_engine::GraphEngineError`.
     #[error("graph engine: {0}")]
@@ -370,12 +371,6 @@ pub enum Error {
     /// lose a channel). Wraps `tutti_types::FoldError`.
     #[error("the graph root cannot be placed on the output: {0}")]
     Output(#[from] tutti_types::FoldError),
-
-    /// A device restart was refused or failed
-    /// ([`LiveSession::restart`](crate::LiveSession::restart)).
-    #[cfg(feature = "device")]
-    #[error(transparent)]
-    Restart(#[from] crate::RestartError),
 
     /// An inlet refused its producer's ring ([`Graph::add_inlet`](crate::Graph::add_inlet)).
     #[error(transparent)]
@@ -425,22 +420,10 @@ pub enum Error {
         why: crate::NotInstrument,
     },
 
-    /// SoundFont subsystem failure. Wraps `tutti_soundfont::Error`. (The
-    /// polyphonic synth has none: a `PolySynth` is built infallibly.)
-    #[cfg(feature = "soundfont")]
-    #[error("SoundFont: {0}")]
-    SoundFont(#[from] tutti_soundfont::Error),
-
     /// A sampler call or open did not go through ([`SamplerError`](crate::SamplerError)).
     #[cfg(feature = "sampler")]
     #[error(transparent)]
     Sampler(#[from] crate::SamplerError),
-
-    /// Spatial-audio subsystem failure. Wraps `tutti_nodes::VbapError`
-    /// (VBAP speaker-layout construction). HRTF has its own error type and
-    /// does not route through here.
-    #[error("Spatial: {0}")]
-    Spatial(#[from] tutti_nodes::VbapError),
 
     /// Plugin-host bridge failure (VST2/VST3/CLAP). Wraps
     /// `tutti_plugin_types::BridgeError`.
@@ -463,10 +446,6 @@ pub enum Error {
     /// A bus edge was refused ([`Graph::connect`](crate::Graph::connect)).
     #[error(transparent)]
     Bus(#[from] tutti_graph::BusError),
-
-    /// A node mode was refused ([`Graph::set_mode`](crate::Graph::set_mode)).
-    #[error(transparent)]
-    Mode(#[from] tutti_graph::ModeError),
 
     /// A dry/wet mix was refused ([`Graph::set_mix`](crate::Graph::set_mix)).
     #[error(transparent)]
@@ -497,11 +476,6 @@ pub enum Error {
     #[cfg(feature = "export")]
     #[error(transparent)]
     Bounce(#[from] crate::BounceError),
-
-    /// A bounce asks for something no render could give.
-    #[cfg(feature = "export")]
-    #[error(transparent)]
-    BounceConfig(#[from] crate::BounceConfigError),
 
     /// A take could not be armed or did not end cleanly
     /// ([`Session::record`](crate::Session::record)).

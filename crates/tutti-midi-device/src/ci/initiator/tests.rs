@@ -108,7 +108,7 @@ fn it_starts_with_a_profile_inquiry_to_the_function_block_from_us_to_the_peer() 
 
 #[test]
 fn the_set_is_complete_at_the_final_reply_on_7f_and_not_before() {
-    // M2-102 §2.4: Channels first, then Groups, "As a final reply ... address 0x7F".
+    // M2-102 §2.4: Channels first, then Groups, then a final reply on address 0x7F.
     let (mut i, _, now) = start();
     assert!(
         i.on_message(&reply(channel(0), &[profile(1)], &[]), now)
@@ -151,8 +151,8 @@ fn the_enabled_list_is_enabled_and_the_disabled_list_disabled() {
 
 #[test]
 fn a_final_reply_with_no_profiles_ends_the_inquiry_and_prunes_the_silent_addresses() {
-    // M2-102 §2.4: the empty 0x7F reply "indicate[s] that no further replies will
-    // follow", so an address that did not reply this round has no Profiles now.
+    // M2-102 §2.4: the empty 0x7F reply shows that no further replies will
+    // follow, so an address that did not reply this round has no Profiles now.
     let (mut i, _, now) = start();
     i.on_message(&reply(channel(0), &[profile(1)], &[]), now);
     i.on_message(&reply(CiDeviceId::FunctionBlock, &[], &[]), now);
@@ -399,7 +399,7 @@ fn set_on_a_channel_sends_the_request_with_its_channel_count() {
 
 #[test]
 fn set_on_a_group_or_function_block_asks_for_zero_channels() {
-    // §7.8: "Set the Number of Channels Requested field to a value of 0x0000."
+    // §7.8: a Group or Function Block address sets Number Channels Requested to 0x0000.
     for (target, address) in [
         (ProfileTarget::Group, CiDeviceId::Group),
         (ProfileTarget::FunctionBlock, CiDeviceId::FunctionBlock),
@@ -458,7 +458,7 @@ fn set_on_resolves_on_the_enabled_report_of_that_profile_at_that_address() {
 
 #[test]
 fn set_on_answered_by_a_disabled_report_is_the_peer_unable_to_comply() {
-    // M2-102 §2.6: "the device shall reply with a Profile Disabled Report".
+    // M2-102 §2.6: the device replies with a Profile Disabled Report.
     let (mut i, _, now) = start();
     i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
     let actions = i.on_message(&disabled(CiDeviceId::Group, profile(1), 0), now);
@@ -880,7 +880,7 @@ fn a_timeout_wait_that_is_not_for_the_set_extends_nothing() {
 
 #[test]
 fn a_timeout_wait_never_shortens_a_wait_and_a_zero_wait_changes_nothing() {
-    // Table 14: "the time to wait ... (0-12.7 seconds)": more time, never less.
+    // Table 14: the time to wait is 0 to 12.7 seconds: more time, never less.
     let (mut i, now) = known();
     i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
     let before = i.deadline();

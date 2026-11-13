@@ -11,7 +11,7 @@
 
 use tutti_fixtures::{machine_lock, main_thread};
 use tutti_plugin_ipc::{BridgeConfig, Ipc, Launched};
-use tutti_plugin_types::{AnyThread, Control, Health, ParamId, RenderMode, SampleRate};
+use tutti_plugin_types::{AnyThread, Control, Health, ParamId, RenderMode, SampleRate, StateUse};
 
 use super::real_stall_tests::plugin_server_path;
 
@@ -39,6 +39,7 @@ fn the_served_control_and_any_thread_answer_alike() {
         tutti_plugin_types::Load::new(),
         SampleRate::SR_48K,
         None,
+        tutti_plugin_types::StateUse::Project,
         Some(crate::format::gui::load_gui_instance),
     )
     .expect("the probe launches in a real plugin-server");
@@ -78,7 +79,8 @@ fn the_served_control_and_any_thread_answer_alike() {
 
     let state = AnyThread::save_state(&any).expect("the probe saves");
     assert_eq!(
-        Control::save_state(&mut control, &main).expect("the probe saves"),
+        Control::save_state(&mut control, &main, tutti_plugin_types::StateUse::Project)
+            .expect("the probe saves"),
         state,
         "the state"
     );
@@ -94,6 +96,42 @@ fn the_served_control_and_any_thread_answer_alike() {
         "the advisory is delivered"
     );
     assert!(!Health::is_crashed(&any));
+}
+
+/// **A live served load carries what the state is for**: the probe takes a
+/// state only saved for and loaded in `CLAP_STATE_CONTEXT_FOR_DUPLICATE` (2),
+/// so a duplicate's blob loads through `load_state(Duplicate)` and is
+/// refused by `load_state`, which is a project's (3).
+#[test]
+fn a_live_served_load_reaches_the_plugin_in_the_context_it_names() {
+    let _lock = machine_lock();
+    let mut env = tutti_fixtures::ScopedEnv::new();
+    env.set("TUTTI_PLUGIN_SERVER", plugin_server_path());
+    env.set("TUTTI_CLAP_PROBE_LOAD_ONLY_CONTEXT", "2");
+    let Launched { ipc, .. } = Ipc::launch(
+        BridgeConfig::default(),
+        tutti_fixtures::clap_probe().to_path_buf(),
+        tutti_plugin_types::Load::new(),
+        SampleRate::SR_48K,
+        None,
+        tutti_plugin_types::StateUse::Project,
+        Some(crate::format::gui::load_gui_instance),
+    )
+    .expect("the probe launches in a real plugin-server");
+    let main = main_thread();
+    let mut control = ipc.controller();
+
+    let copy = Control::save_state(&mut control, &main, StateUse::Duplicate)
+        .expect("the probe saves for a duplicate");
+    Control::load_state(&mut control, &main, &copy, StateUse::Duplicate)
+        .expect("a duplicate's state loads in the duplicate context");
+    Control::load_state(
+        &mut control,
+        &main,
+        &copy,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect_err("a project load is not the duplicate context the probe accepts");
 }
 
 /// **A client launched with no editor loader asks the real server for its
@@ -118,6 +156,7 @@ fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
         tutti_plugin_types::Load::new(),
         SampleRate::SR_48K,
         None,
+        tutti_plugin_types::StateUse::Project,
         None,
     )
     .expect("the probe launches in a real plugin-server with no editor loader");

@@ -26,22 +26,19 @@
 //! * `effGetMidiKeyName` (66) names individual keys, which is how a drum plugin
 //!   tells a host to label a pad "Kick" rather than "note 36".
 //!
-//! # All of it is optional, and real plugins decline
+//! # All of it is optional
 //!
-//! Measured (see `tests/vst2_param_properties.rs` for the recorded numbers)
-//! against three widely used VST2 plugins —
-//! TAL-NoiseMaker (88 params, synth), TAL-Reverb-4 (20 params), TDR Nova (75
-//! params, 73 programs): **all three answer `0` to `effGetParameterProperties`
-//! for every parameter, and decline the entire MIDI-metadata family.** So these
-//! accessors return `Option`, absence is the expected case, and the caller must
-//! keep its name/label fallback. A host that assumed the data was there would
+//! A plugin may answer `0` to `effGetParameterProperties` for every parameter
+//! and decline the entire MIDI-metadata family. So these accessors return
+//! `Option`, absence is a legal answer, and the caller must keep its name/label
+//! fallback. A host that assumed the data was there would
 //! render every parameter as the degenerate integer range `0..0`.
 //!
 //! Absence is always detected from the dispatch **return value**, never by
 //! inspecting the buffer: an unimplemented opcode falls through the plugin's
 //! dispatcher without writing, leaving the zeros the host put there, which is
 //! byte-identical to a plugin genuinely reporting "no range, no category".
-//! One measured plugin answers `-1` rather than `0` to
+//! A plugin may answer `-1` rather than `0` to
 //! `effGetCurrentMidiProgram`, which is why the decode compares against the
 //! spec'd success value instead of testing `!= 0`.
 

@@ -39,7 +39,8 @@ node without a lock.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
   adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Waveform`, the wave a
   control lane evaluates): an audio generator, whose output feeds a node's
-  audio input.
+  audio input. Its `LfoClock` is free (a rate in `Hz`, a param) or synced to the
+  transport beat (a span fixed at build); its depth and rate are read per frame.
 - **Dry/wet** — the convolver, delay, chorus/flanger, phaser and the two reverbs output their wet signal only; blend with the input through the graph's `set_mix`.
 - **Mixing** — `BusStripNode` (volume / balance; a mute or bypass is the graph's `NodeMode`).
   Summing is the graph's: a port or an output channel sums its sources; so is
@@ -53,7 +54,7 @@ node without a lock.
   cells (`tutti_graph::declare_params!`), as param ports, filled per
   frame from one event source each (read through `Io::param`).
 - **Modulation** — the `automation` module's `ControlLaneNode`, which
-  evaluates a `tutti_modulation::ControlProgram` into a param port (design doc 014),
+  evaluates a `tutti_modulation::ControlProgram` into a param port,
   the signal sources that feed a lane (`SourceNode<S>`, the one sender of a
   `tutti_modulation::ControlSource`: `EnvelopeFollowerNode`,
   `NoteEnvelopeNode`), and `Modulation`, the reconciler that builds them from

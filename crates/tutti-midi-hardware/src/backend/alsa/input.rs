@@ -136,7 +136,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     let seq = super::client::open("tutti-in", true, UmpVersion::Midi2)?;
     // What the source can speak decides what this client is delivered: a MIDI
     // 1.0 source arrives as MIDI 1.0 UMP (type 2) and the ingest node's
-    // `Translator` widens it, so the kernel never converts it (design 017 L6d).
+    // `Translator` widens it, so the kernel never converts it.
     // The record is read on the open client, and the version is set before the
     // port exists and before the subscription, so no event is delivered at the
     // other one.

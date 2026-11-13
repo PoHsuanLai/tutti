@@ -37,14 +37,6 @@ pub enum Error {
     #[error("Resampling error: {0}")]
     Resample(#[from] tutti_dsp::ResampleError),
 
-    /// The resampler's input carry stopped shrinking after `chunks` chunks.
-    /// A bug in the resampler, not in the caller's input.
-    #[error("Resampling error: the resample carry stopped shrinking after {chunks} chunks")]
-    ResampleStalled {
-        /// The chunk count the carry should have drained within.
-        chunks: usize,
-    },
-
     /// A width the render cannot use, which means zero and nothing else.
     ///
     /// The frame width is a runtime `ChannelLayout`, so any positive count

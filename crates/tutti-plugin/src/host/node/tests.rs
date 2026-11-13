@@ -441,7 +441,7 @@ fn a_tail_change_reaches_the_listener() {
 #[test]
 fn handle_save_state_roundtrip() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|msg| match msg {
-        HostMessage::SaveState => Some(BridgeMessage::StateChunk {
+        HostMessage::SaveState { .. } => Some(BridgeMessage::StateChunk {
             seq: 0,
             last: true,
             bytes: vec![0xDE, 0xAD, 0xBE, 0xEF],

@@ -129,12 +129,6 @@ impl MidiReceiver {
         count
     }
 
-    /// Whether anything is waiting.
-    #[must_use]
-    pub fn has_events(&self) -> bool {
-        !self.slot.events.is_empty()
-    }
-
     /// Drops everything waiting in the ring.
     pub fn clear(&self) {
         while self.slot.events.pop().is_some() {}

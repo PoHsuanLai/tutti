@@ -33,8 +33,6 @@
 //! VST3_SDK_DIR=/path/to/vst3sdk \
 //! cargo test -p tutti-vst3-host --features conformance --test vst3_audio_correctness
 //! ```
-//!
-//! Set `VST3_SAMPLE_PLUGIN_DIR` to substitute an externally built probe.
 
 #![cfg(feature = "conformance")]
 
@@ -73,16 +71,6 @@ use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 /// out numbers whose meaning only the plugin knows.
 fn param_address(tag: u32) -> ParamId {
     ParamId::new(tag)
-}
-
-/// Compile-time default, baked in by `build.rs`; overridable at runtime.
-const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
-
-fn sample_plugin_dir() -> String {
-    std::env::var("VST3_SAMPLE_PLUGIN_DIR")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| SAMPLE_PLUGIN_DIR_BUILT.to_string())
 }
 
 /// Serialises every test that touches a plugin. It guards the process-wide
@@ -178,22 +166,14 @@ fn probe_in(dir: &str) -> Option<PathBuf> {
 /// what let this suite print `ok. 9 passed` while executing nothing at all: the
 /// bundle was simply named differently than the lookup expected, and nothing
 /// said so.
-///
-/// `VST3_SAMPLE_PLUGIN_DIR` still wins when it holds a probe, so an externally
-/// built one can be substituted deliberately.
 fn probe_path() -> PathBuf {
-    let external = sample_plugin_dir();
-    if let Some(p) = probe_in(&external) {
-        return p;
-    }
     if let Some(p) = probe_in(PROBE_DIR_BUILT) {
         return p;
     }
     panic!(
         "audio-probe not found. build.rs builds it from tests/support/audio-probe \
          into {PROBE_DIR_BUILT:?} whenever the `conformance` feature is on, so this \
-         means the build did not produce it (or VST3_SAMPLE_PLUGIN_DIR={external:?} \
-         points somewhere without an audio-probe.vst3)."
+         means the build did not produce it."
     );
 }
 
@@ -1362,62 +1342,33 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
 
 /// MIDI the plugin *emits* must reach the host.
 ///
-/// The reverse direction of every other MIDI test here. `legacy-midicc-out`
-/// emits a legacy MIDI CC from its `process` when its controller parameter
-/// changes; the host has to decode that from `outputEvents` and surface it as a
-/// `(Offset, Ump)`. A host that never drains the output list silently drops
-/// everything an arpeggiator or MIDI-effect plugin produces.
+/// The reverse direction of every other MIDI test here. `audio-probe` emits a
+/// legacy MIDI CC 7 on its event output bus, at offset 0, in a block that carried
+/// a point for its `Gain` parameter, with the gain as the value (`gain * 127`);
+/// the host has to decode that from `outputEvents` and surface it. A host that
+/// never drains the output list silently drops everything an arpeggiator or
+/// MIDI-effect plugin produces. A block without a gain point emits nothing, so
+/// a host that invented events fails too.
 #[test]
 fn midi_emitted_by_the_plugin_reaches_the_host() {
-    if !harness_ready() {
-        return;
-    }
+    const GAIN: u32 = 102;
+    const FRAMES: usize = 512;
     let _guard = plugin_guard();
+    let mut inst = Active::<f32>::load(&probe_path(), 48_000.0, FRAMES).expect("audio-probe loads");
 
-    let dir = sample_plugin_dir();
-    let bundle = Path::new(&dir).join("legacy-midicc-out.vst3");
-    let path = tutti_plugin_types::bundle::any_module_in_bundle(
-        &bundle,
-        tutti_plugin_types::bundle::ModuleKind::Vst3,
-    );
-    let Some(path) = path else {
-        eprintln!("legacy-midicc-out not built; skipping MIDI-output test");
-        return;
-    };
-    let Ok(mut inst) = Active::<f32>::load(&path, 48_000.0, 512) else {
-        eprintln!("legacy-midicc-out load failed; skipping");
-        return;
-    };
-
-    // Drive blocks while sweeping the plugin's parameters: it emits CC when a
-    // parameter changes, so a static value produces nothing.
-    let info = inst.loaded().plugin_info().clone();
-    let param_ids: Vec<u32> = inst
-        .loaded()
-        .parameter_ids(&main_thread())
-        .into_iter()
-        .map(|id| id.get())
-        .collect();
-
-    let mut emitted = 0usize;
-    for step in 0..16 {
-        let mut params = ParameterChanges::reserved(param_ids.len(), 1);
-        for &id in &param_ids {
-            params.add_change(param_address(id), 0, (step as f64 * 0.0625).min(1.0));
+    let mut block = |gain: Option<f64>| {
+        let mut params = ParameterChanges::reserved(1, 1);
+        if let Some(gain) = gain {
+            params.add_change(param_address(GAIN), 0, gain);
         }
-
-        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
-            .map(|_| vec![0.0; 512])
-            .collect();
-        let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
-            .map(|_| vec![0.0; 512])
-            .collect();
+        let ins: Vec<Vec<f32>> = vec![vec![0.0; FRAMES]; 2];
+        let mut outs: Vec<Vec<f32>> = vec![vec![0.0; FRAMES]; 2];
         let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
         let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer {
             inputs: &in_refs,
             outputs: &mut out_refs,
-            num_samples: 512,
+            num_samples: FRAMES,
             sample_rate: 48_000.0,
         };
         let out = inst.process(
@@ -1426,15 +1377,16 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
             Some(&params),
             &TransportInfo::default(),
         );
-        emitted += out.midi_events.len();
-    }
+        out.midi_events.len()
+    };
 
-    assert!(
-        emitted > 0,
-        "legacy-midicc-out emits MIDI CC on parameter change, but the host \
-         surfaced none across 16 blocks — plugin-emitted MIDI is being dropped"
+    assert_eq!(block(None), 0, "a block with no gain point emits nothing");
+    assert_eq!(
+        block(Some(0.5)),
+        1,
+        "the probe emits one CC for a gain point, but the host surfaced a different count: \
+         plugin-emitted MIDI is being dropped or invented"
     );
-    eprintln!("plugin-emitted MIDI events surfaced: {emitted}");
 }
 
 /// The host asks for the plugin's `ProcessContext` requirements only after
@@ -1557,6 +1509,24 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");
 }
 
+/// Every index below `parameter_count` lists the id the plugin declared at that
+/// index, in the plugin's own order. The probe's ids are `100..=106`, none of
+/// them its position, so a host that listed positions, or stopped short of the
+/// count, fails here.
+#[test]
+fn the_listed_parameter_ids_are_the_plugins_own_in_order() {
+    let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
+
+    assert_eq!(loaded.parameter_count(&main_thread()), 7);
+    assert_eq!(
+        loaded.parameter_ids(&main_thread()),
+        (100..=106).map(ParamId::new).collect::<Vec<_>>(),
+        "the probe declares Mode, Ramp, Gain, RequestIoChanged, UiState, DelayMs and \
+         ObservedProcessMode, in that order"
+    );
+}
+
 /// An id the plugin never listed has no descriptor and reads as `None` (as the
 /// `Control::parameter` contract says, and as CLAP and VST2 answer), and a write
 /// to it changes no listed parameter and does not stick.
@@ -1564,9 +1534,6 @@ fn a_sysex_open_across_a_stop_is_dropped() {
 /// `getParamNormalized` answers 0 for an unknown id; the host used to pass that
 /// through as `Some(0.0)`. The owner decided on `None`, so the two reads below
 /// assert it.
-///
-/// This covers what the `#[ignore]`d `test_set_parameter` (which needs an
-/// installed third-party plugin) also checks, on the repo's own probe.
 #[test]
 fn an_unlisted_parameter_id_is_reported_not_written() {
     use tutti_plugin_types::{Control, Normalized};
@@ -1588,7 +1555,12 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
         .iter()
         .map(|i| loaded.get_parameter(i.get()))
         .collect();
-    let saved_before = Control::save_state(&mut loaded, &main_thread()).expect("the probe saves");
+    let saved_before = Control::save_state(
+        &mut loaded,
+        &main_thread(),
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("the probe saves");
     Control::set_parameter(&mut loaded, &main_thread(), unlisted, Normalized::of(0.25));
     assert_eq!(Control::parameter(&loaded, &main_thread(), unlisted), None);
     let after: Vec<_> = listed
@@ -1599,7 +1571,12 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
     // The write is not remembered for the next activation either: it would be
     // in the saved state.
     assert_eq!(
-        Control::save_state(&mut loaded, &main_thread()).expect("the probe saves"),
+        Control::save_state(
+            &mut loaded,
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project
+        )
+        .expect("the probe saves"),
         saved_before
     );
 }
@@ -1675,11 +1652,22 @@ mod loaded_writes {
     fn a_write_to_a_loaded_plugin_survives_a_save_and_restore() {
         let _guard = plugin_guard();
         let mut source = written();
-        let blob = Control::save_state(&mut source, &main_thread()).expect("the probe saves");
+        let blob = Control::save_state(
+            &mut source,
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
 
         let mut restored = load();
         assert_eq!(read(&restored, PARAM_RAMP), Some(0.0), "a fresh probe");
-        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
         assert_eq!(read(&restored, PARAM_RAMP), Some(RAMP_LEVEL));
 
         let block = first_block(restored);
@@ -1699,11 +1687,21 @@ mod loaded_writes {
         let _guard = plugin_guard();
 
         let mut loaded = load();
-        let plain = Control::save_state(&mut loaded, &main_thread()).expect("the probe saves");
+        let plain = Control::save_state(
+            &mut loaded,
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
         assert_eq!(plain[VERSION_AT], 1);
 
         write(&mut loaded, PARAM_RAMP, RAMP_LEVEL);
-        let pending = Control::save_state(&mut loaded, &main_thread()).expect("the probe saves");
+        let pending = Control::save_state(
+            &mut loaded,
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
         assert_eq!(pending[VERSION_AT], 2, "a loaded write is stored");
 
         let mut inst = activated(load());
@@ -1716,8 +1714,12 @@ mod loaded_writes {
         for _ in 0..3 {
             render(&mut inst, 64, &[], None, |_, _, _| 0.0);
         }
-        let blob =
-            Control::save_state(inst.controller_mut(), &main_thread()).expect("the probe saves");
+        let blob = Control::save_state(
+            inst.controller_mut(),
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
         assert_eq!(blob[VERSION_AT], 1, "a write a block took is not stored");
     }
 
@@ -1735,11 +1737,21 @@ mod loaded_writes {
     fn a_save_between_activation_and_the_first_block_keeps_the_loaded_writes() {
         let _guard = plugin_guard();
         let mut inst = activated(written());
-        let blob =
-            Control::save_state(inst.controller_mut(), &main_thread()).expect("the probe saves");
+        let blob = Control::save_state(
+            inst.controller_mut(),
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
 
         let mut restored = load();
-        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
         let block = first_block(restored);
         assert!(
             block.iter().all(|&v| v == RAMP_LEVEL as f32),
@@ -1756,11 +1768,21 @@ mod loaded_writes {
         let mut source = activated(load());
         write_active(&mut source, PARAM_MODE, MODE_RAMP);
         write_active(&mut source, PARAM_RAMP, RAMP_LEVEL);
-        let blob =
-            Control::save_state(source.controller_mut(), &main_thread()).expect("the probe saves");
+        let blob = Control::save_state(
+            source.controller_mut(),
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
 
         let mut restored = load();
-        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
         let block = first_block(restored);
         assert!(
             block.iter().all(|&v| v == RAMP_LEVEL as f32),
@@ -1784,13 +1806,24 @@ mod loaded_writes {
     #[test]
     fn a_blob_with_pending_writes_loaded_into_an_active_plugin_reaches_its_next_block() {
         let _guard = plugin_guard();
-        let blob = Control::save_state(&mut written(), &main_thread()).expect("the probe saves");
+        let blob = Control::save_state(
+            &mut written(),
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
 
         let mut inst = load()
             .activate_at::<f32>(48_000.0, 64)
             .map_err(|(_, e)| e)
             .expect("the probe activates");
-        Control::load_state(inst.controller_mut(), &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(
+            inst.controller_mut(),
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
 
         let block = render(&mut inst, 64, &[], None, |_, _, _| 0.0).out[0][0].clone();
         assert!(
@@ -1808,7 +1841,12 @@ mod loaded_writes {
         let _guard = plugin_guard();
         let mut source = load();
         write(&mut source, PARAM_GAIN, 0.25);
-        let blob = Control::save_state(&mut source, &main_thread()).expect("the probe saves");
+        let blob = Control::save_state(
+            &mut source,
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
 
         let listed = source.parameter_ids(&main_thread());
         let unlisted = (0..=u32::MAX)
@@ -1822,9 +1860,20 @@ mod loaded_writes {
         crafted.extend_from_slice(&blob[TABLE_AT + 4..]);
 
         let mut restored = load();
-        Control::load_state(&mut restored, &main_thread(), &crafted).expect("the blob loads");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &crafted,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
         assert_eq!(
-            Control::save_state(&mut restored, &main_thread()).expect("the probe saves"),
+            Control::save_state(
+                &mut restored,
+                &main_thread(),
+                tutti_plugin_types::StateUse::Project
+            )
+            .expect("the probe saves"),
             blob
         );
     }
@@ -1860,7 +1909,12 @@ mod loaded_writes {
         let _guard = plugin_guard();
         let reference = {
             let mut source = written();
-            Control::save_state(&mut source, &main_thread()).expect("the probe saves")
+            Control::save_state(
+                &mut source,
+                &main_thread(),
+                tutti_plugin_types::StateUse::Project,
+            )
+            .expect("the probe saves")
         };
         // The reference's body, after its two-entry table.
         let body = &reference[13 + 2 * 12..];
@@ -1880,8 +1934,19 @@ mod loaded_writes {
         blob.extend_from_slice(body);
 
         let mut restored = load();
-        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
-        let saved = Control::save_state(&mut restored, &main_thread()).expect("the probe saves");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
+        let saved = Control::save_state(
+            &mut restored,
+            &main_thread(),
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the probe saves");
         assert_eq!(stored_writes(&saved), 2);
     }
 
@@ -1893,7 +1958,13 @@ mod loaded_writes {
         let blob = v2_blob(&[(PARAM_GAIN, 0.25)], &[], &[]);
         let mut restored = load();
         assert_eq!(read(&restored, PARAM_GAIN), Some(1.0), "the probe default");
-        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
         assert_eq!(read(&restored, PARAM_GAIN), Some(0.25));
     }
 
@@ -1909,7 +1980,13 @@ mod loaded_writes {
             &[],
         );
         let mut restored = load();
-        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
         let block = first_block(restored);
         assert!(
             block.iter().all(|&v| v == RAMP_LEVEL as f32),
@@ -1930,7 +2007,13 @@ mod loaded_writes {
             &[],
         );
         let mut restored = load();
-        Control::load_state(&mut restored, &main_thread(), &blob).expect("the blob loads");
+        Control::load_state(
+            &mut restored,
+            &main_thread(),
+            &blob,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("the blob loads");
         assert_eq!(read(&restored, PARAM_GAIN), Some(0.0), "NaN is 0");
         assert_eq!(read(&restored, PARAM_RAMP), Some(1.0), "infinity saturates");
     }

@@ -1,6 +1,5 @@
 //! [`DeviceInlets`]: one event inlet per hardware MIDI device, and the
-//! producer end ([`DeviceInput`]) the device's thread stamps and pushes through
-//! (doc 017 stage E5).
+//! producer end ([`DeviceInput`]) the device's thread stamps and pushes through.
 //!
 //! A device's thread learns when an event arrived from the OS, as an
 //! [`Instant`]. The graph wants a frame. The thread places each arrival itself,
@@ -21,8 +20,7 @@
 //! a fixed **lead** after its mapped frame ([`DeviceInlets::new`]: a block's
 //! length is the natural value). An event then sounds exactly the lead after
 //! it arrived, whatever the block boundaries, and the spacing between events
-//! is the map's: within the bound doc 017 section 5 states
-//! ([`ClockMap`]). An event is late, and counted so
+//! is the map's: within the bound [`ClockMap`] states. An event is late, and counted so
 //! (`late` in [`InletCounts::losses`]), only when the
 //! thread's push comes more than the lead after its arrival.
 //!
@@ -98,19 +96,12 @@ impl DeviceSlot {
 }
 
 /// Every slot is taken: [`DeviceInlets::open`] has none to give.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("all {} MIDI device slots are taken", .slots)]
 pub struct NoFreeSlot {
     /// How many slots there are.
     pub slots: usize,
 }
-
-impl std::fmt::Display for NoFreeSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "all {} MIDI device slots are taken", self.slots)
-    }
-}
-
-impl std::error::Error for NoFreeSlot {}
 
 /// What the graph's owner does about a device: the node to add and wire, or
 /// the slot to unwire. Taken in order ([`DeviceInlets::take_changes`]).

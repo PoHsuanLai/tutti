@@ -23,8 +23,7 @@
 //! input, read from the port's stream ring.
 //!
 //! The connection map is a plain `Mutex`, not an [`ArcLend`]: nothing here is
-//! read from the audio thread, and `CLAUDE.md` names device enumeration in this
-//! crate as a deliberate exception to the publish rule.
+//! read from the audio thread.
 //!
 //! [`ArcLend`]: tutti_rt::ArcLend
 //! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
@@ -41,6 +40,7 @@ use crate::ci::{CiChange, CiPeerInfo, Heard};
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
+use crate::profiles::{PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo, Learned, SavedDevice};
 use tutti_midi_runtime::{DeviceInlets, MidiOut, Outgoing};
@@ -204,6 +204,9 @@ pub enum Polled {
     Stream(DeviceId, Box<DeviceStream>),
     /// A MIDI-CI peer of the device was found, changed or lost.
     Ci(DeviceId, CiChange),
+    /// A MIDI-CI peer's Profiles became known or changed, a switch ended, or
+    /// the peer's Profiles were dropped.
+    Profile(DeviceId, ProfilesChange),
 }
 
 impl MidiSession {
@@ -320,10 +323,11 @@ impl MidiSession {
         let os = self.inner.devices.capability(&id).unwrap_or_default();
         // A MIDI 1.0 port with an output is asked for its identity instead.
         let out = self.inner.devices.open_output(&id).ok();
+        let stream = Negotiation::new(id.clone(), os, out);
         open.inputs.insert(
             id,
             Held {
-                stream: Negotiation::new(os, out),
+                stream,
                 hearing: false,
                 lost_seen: 0,
                 input,
@@ -515,6 +519,12 @@ impl MidiSession {
                     .into_iter()
                     .map(|change| Polled::Ci(id.clone(), change)),
             );
+            polled.extend(
+                stepped
+                    .profiles
+                    .into_iter()
+                    .map(|change| Polled::Profile(id.clone(), change)),
+            );
         }
         // The output the session holds sends in what its device settled.
         if let Some(out) = &mut open.output
@@ -543,7 +553,7 @@ impl MidiSession {
     /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off until
     /// this is called**: a Discovery carries a System Exclusive manufacturer
     /// id, tutti has none, and the one MIDI 1.0 sets aside for non-commercial use
-    /// (`7D`) "is not to be used on any product released to the public". So
+    /// (`7D`) is not to be used on any product released to the public. So
     /// the app says who it is, with the id it registered. An identity under
     /// [`ManufacturerId::NON_COMMERCIAL`](tutti_ump::ManufacturerId::NON_COMMERCIAL)
     /// is for development and research only, never for a released product.
@@ -592,6 +602,45 @@ impl MidiSession {
             .inputs
             .get(id)
             .map_or_else(Arc::default, |held| held.stream.ci_peers())
+    }
+
+    /// The Profiles of the MIDI-CI peers found on the open input `id` that
+    /// declared Profile Configuration, by Group then MUID (M2-101 §7): empty when
+    /// it is not open or no peer did. The session asks each such peer for its
+    /// Profiles when it is found, and keeps them as the peer reports. Shared like
+    /// [`ci_peers`](Self::ci_peers): read again after a
+    /// [`Polled::Profile`].
+    #[must_use]
+    pub fn profiles(&self, id: &DeviceId) -> Arc<[PeerProfiles]> {
+        self.inner
+            .open()
+            .inputs
+            .get(id)
+            .map_or_else(Arc::default, |held| held.stream.profiles())
+    }
+
+    /// Asks a peer to enable or disable a Profile it lists, on the input the
+    /// [`ProfileSwitch`] was made from, as the Initiator (M2-101 §§7.8, 7.9): the request is sent at the
+    /// next [`poll`](Self::poll), and its end is a [`ProfilesChange::Resolved`]
+    /// (the peer's Enabled or Disabled Report, its NAK, or [`PROFILE_TIMEOUT`]
+    /// with no answer). Make the [`ProfileSwitch`] from a handle in
+    /// [`profiles`](Self::profiles).
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError::NotOpen`] when that input has since closed,
+    /// [`ProfileError::NoSuchPeer`] when the peer is gone, and
+    /// [`ProfileError::NotListed`] when it no longer lists the Profile there.
+    ///
+    /// [`PROFILE_TIMEOUT`]: tutti_midi_device::PROFILE_TIMEOUT
+    pub fn set_profile(&self, switch: ProfileSwitch) -> std::result::Result<(), ProfileError> {
+        self.inner
+            .open()
+            .inputs
+            .get_mut(&switch.device)
+            .ok_or(ProfileError::NotOpen)?
+            .stream
+            .set_profile(switch)
     }
 
     /// What is known of the UMP Stream state of the open input `id`: `None`

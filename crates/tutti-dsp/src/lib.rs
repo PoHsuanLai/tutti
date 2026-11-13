@@ -7,7 +7,7 @@
 //! By family, as the source is laid out (each family's design, model and kernel side
 //! by side):
 //!
-//! - **The model** (design 024, `model/`): the traits every family answers to. A
+//! - **The model** (`model/`): the traits every family answers to. A
 //!   [`Family`] maps a family's controls to its [`Member`](Family::Member) and states its
 //!   buses ([`Channels`]); a [`System`] is what every member answers (its
 //!   [`latency`](System::latency) and [`tail`](System::tail)), and [`Lti`] the class of
@@ -39,7 +39,7 @@
 //!   The multiband compressor is a family too ([`MultibandFamily`], run by
 //!   [`MultibandRecurrence`]): a crossover tree per channel and the compressor's frame step per
 //!   band, each band's makeup, bypass and solo gliding over [`GAIN_GLIDE`].
-//! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
+//! - **Reverb** (`reverb/`): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
 //!   families over it, [`FreeverbFamily`] (run by [`FreeverbRecurrence`]) and [`FdnFamily`]

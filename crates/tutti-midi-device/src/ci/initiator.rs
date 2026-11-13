@@ -12,11 +12,11 @@
 //!
 //! # The rules
 //!
-//! - The inquiry (M2-102 §2.4, "0x21 Reply to Profile Inquiry"): [`new`](ProfileInitiator::new)
+//! - The inquiry (M2-102 §2.4, the `0x21` Reply to Profile Inquiry): [`new`](ProfileInitiator::new)
 //!   sends a Profile Inquiry to the Function Block (`0x7F`), which asks for every Profile
-//!   "regardless of MIDI Channel structure". The peer answers with one Reply per address that
+//!   whatever the MIDI Channel structure. The peer answers with one Reply per address that
 //!   has Profiles, in the order Channels, then Groups (`0x7E`), and then a final Reply on
-//!   `0x7F`, "with no Profiles reported to indicate that no further replies will follow"
+//!   `0x7F`, reporting no Profiles to show that no further replies will follow,
 //!   when it has none. That last Reply is the rule for the set being complete
 //!   ([`ProfileAction::ProfilesKnown`]); an address that replied is replaced by its Reply, and
 //!   an address that did not is dropped from the table then. Neither spec gives a time limit,
@@ -31,11 +31,11 @@
 //!   [`ProfileAction::Changed`] when it changed something. An Enabled or Disabled Report for a
 //!   Profile the table lacks adds it: the peer supports it, since it says so.
 //! - Set On and Set Off ([`set_on`](ProfileInitiator::set_on),
-//!   [`set_off`](ProfileInitiator::set_off)): "This is an acknowledgement upon receipt of a Set
-//!   Profile On message" (§7.10), so the request resolves on the Enabled or Disabled Report of
+//!   [`set_off`](ProfileInitiator::set_off)): the Enabled Report acknowledges a Set
+//!   Profile On (§7.10), so the request resolves on the Enabled or Disabled Report of
 //!   that Profile at that address, whichever state it reports (M2-102 §2.6 and §2.7: a peer that
 //!   cannot comply reports the state it kept), on a NAK of that message for that Profile
-//!   (Status `0x04` "Profile not supported on the requested Channel, Group, or Function Block"
+//!   (Status `0x04`, Profile not supported on the requested Channel, Group, or Function Block,
 //!   or any other; the NAK's five detail bytes are the Profile Id, §5.11.3), or on
 //!   [`PROFILE_TIMEOUT`]. A Report of another Profile (M2-102 §2.8: a Profile Disabled
 //!   Report for the Profile it replaced) is a change and resolves nothing.
@@ -45,17 +45,17 @@
 //!   handed out as it is ([`ProfileAction::SpecificData`]).
 //!
 //! - Timeout Wait (M2-101 §5.10, Table 14): an ACK with Status Code `0x10` from the peer, to
-//!   this device, says "wait" for Status Data times 100 ms (0 to 12.7 s). It names its transaction
-//!   by the Original Transaction Sub-ID#2 and the address it is on (§5.10.1, "along with other
-//!   fields"), and for a Set or a Details request by the Profile Id in its five detail bytes
+//!   this device, says to wait for Status Data times 100 ms (0 to 12.7 s). It names its transaction
+//!   by the Original Transaction Sub-ID#2 and the address it is on (§5.10.1, along with other
+//!   fields), and for a Set or a Details request by the Profile Id in its five detail bytes
 //!   (§5.10.3; zeroes from a peer with none to give, as for a NAK). A Profile Inquiry names no
 //!   Profile, so its details are not read; it is matched on the Function Block address it was sent
 //!   to. The deadline becomes `now + wait` if that is later: a wait asks for more time, never
 //!   less, so a wait of 0 leaves the deadline where it is, and each new wait counts from when it
 //!   arrives. An ACK for nothing in flight, and an ACK with any other status, resolve and extend
 //!   nothing: a success ACK (`0x00`) does not end a Set, because the answer to a Set is the
-//!   Enabled or Disabled Report ("This is an acknowledgement upon receipt of a Set Profile On
-//!   message", §7.10; M2-102 §2.6, §2.7), and §5.10 reserves the ACK for "new mechanisms" that other
+//!   Enabled or Disabled Report (the Enabled Report is the acknowledgement of a Set Profile On,
+//!   §7.10; M2-102 §2.6, §2.7), and §5.10 reserves the ACK for new mechanisms that other
 //!   specifications describe, none of which M2-102 does for Profiles.
 //!
 //! A message from another source, or a Reply, Details Reply, ACK or NAK not addressed to this device,
@@ -64,7 +64,7 @@
 //! # The timeout
 //!
 //! [`PROFILE_TIMEOUT`] is tutti's choice, 3 seconds: M2-101 gives none for Profile
-//! Configuration, and the only wait it states is Discovery's "at least 3 seconds" (§5.5.5).
+//! Configuration, and the only wait it states is Discovery's 3 seconds at least (§5.5.5).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -94,9 +94,9 @@ fn details_name(details: [u8; 5], profile: ProfileId) -> bool {
 
 /// Where a Set Profile On is aimed, and how many Channels it asks for (§7.8).
 ///
-/// "When the Profile Destination field is set to address 0x7E or 0x7F, the number of
-/// Channels is determined by the width of the Group or Function Block. Set the
-/// Number of Channels Requested field to a value of 0x0000": so only a Channel has a
+/// For a Profile Destination of address 0x7E or 0x7F the number of Channels is
+/// the width of the Group or Function Block, and Number Channels Requested is
+/// 0x0000: so only a Channel has a
 /// count to give, and a Group or Function Block has none to get wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileTarget {
@@ -106,7 +106,7 @@ pub enum ProfileTarget {
     Channel {
         /// The Channel.
         channel: MidiChannel,
-        /// "Manager + Member Channels".
+        /// The Manager plus Member Channels.
         channels: ProfileChannels,
     },
     /// The whole Group (`0x7E`).
@@ -218,7 +218,7 @@ pub enum Outcome {
 }
 
 /// What a Report changed ([`ProfileAction::Changed`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ProfileChange {
     /// Profile Added Report: newly supported, disabled.
@@ -273,20 +273,13 @@ pub enum ProfileAction {
 }
 
 /// A request that cannot be made.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RequestError {
     /// The same request, or a Set On or Off of the same Profile at the same
     /// address, is still waiting for its answer.
+    #[error("a request for that Profile at that address is already in flight")]
     InFlight,
 }
-
-impl std::fmt::Display for RequestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a request for that Profile at that address is already in flight")
-    }
-}
-
-impl std::error::Error for RequestError {}
 
 /// One Profile of the table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,7 +316,7 @@ impl ProfileTable {
         self.addresses.keys().copied()
     }
 
-    /// The Profiles at one address, in Id order.
+    /// The Profiles at one address, by Profile Id; none for an address with none.
     pub fn profiles(
         &self,
         address: CiDeviceId,
@@ -697,7 +690,7 @@ impl ProfileInitiator {
         inquiry.replied.insert(address);
         self.table.replace(address, lists);
         if address == CiDeviceId::FunctionBlock {
-            // "As a final reply ... to indicate that no further replies will follow."
+            // The final reply, with no Profiles, shows that no further replies will follow (M2-102 §2.4).
             let replied = std::mem::take(&mut inquiry.replied);
             self.inquiry = None;
             self.table.addresses.retain(|at, _| replied.contains(at));

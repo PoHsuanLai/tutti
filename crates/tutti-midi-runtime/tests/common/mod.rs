@@ -1,6 +1,4 @@
-//! A test sink for MIDI leaving a graph: one event tap per source port,
-//! read like the ring of the node it replaces (doc 017, stage E3:
-//! the hardware out is a tap, so a node that only copied events out is gone).
+//! A test sink for MIDI leaving a graph: one event tap per source port.
 
 #![allow(dead_code)]
 

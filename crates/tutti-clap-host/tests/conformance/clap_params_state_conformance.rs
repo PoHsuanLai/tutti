@@ -35,7 +35,7 @@ use tutti_clap_test_plugin::{
     PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture,
     ProcessCapture, STATE_MAGIC,
 };
-use tutti_plugin_types::Control;
+use tutti_plugin_types::{AutomationMode, Control, StateUse};
 use tutti_plugin_types::{Normalized, ParamFlags, ParamId, ParamSteps, Request, RescanScope};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
@@ -328,8 +328,8 @@ fn host_derives_step_count_from_the_stepped_flag() {
 }
 
 /// `CLAP_PARAM_IS_AUTOMATABLE` must reach `ParamFlags::AUTOMATABLE`.
-/// Every probe param sets it, so a host that drops the bit fails on all three;
-/// a host that hardcodes `true` is caught by the `READ_ONLY`/`BYPASS`/`HIDDEN`
+/// Every probe param but `Manual` sets it, so a host that drops the bit fails
+/// on all the others, and one that hardcodes `true` fails on `Manual`; a host that hardcodes `true` is caught by the `READ_ONLY`/`BYPASS`/`HIDDEN`
 /// half, which no probe param sets.
 ///
 /// Each assertion is `Some(_)`, not a bare bool: CLAP reports every capability
@@ -341,10 +341,17 @@ fn host_projects_parameter_flags() {
     let loaded = probe.load();
 
     for p in loaded.parameter_list(&main_thread()) {
+        let declared = probe_params()
+            .iter()
+            .find(|d| d.id == p.id().get())
+            .expect("a declared parameter")
+            .flags
+            & clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE
+            != 0;
         assert_eq!(
             p.flag(ParamFlags::AUTOMATABLE),
-            Some(true),
-            "param {} is AUTOMATABLE in the plugin's info",
+            Some(declared),
+            "param {} is AUTOMATABLE exactly as the plugin's info declares",
             p.id()
         );
         assert_eq!(
@@ -929,7 +936,7 @@ fn host_round_trips_plugin_state_through_its_streams() {
 
     loaded.set_plain_value(&main_thread(), p.id, 999.0);
     let saved = loaded
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("state save should succeed");
 
     // The payload must be the plugin's, not an empty or truncated stand-in.
@@ -958,7 +965,11 @@ fn host_round_trips_plugin_state_through_its_streams() {
     assert_eq!(probe.peek(p.id), Some(101.0));
 
     loaded
-        .load_state(&main_thread(), &saved)
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("state load should succeed");
     assert_eq!(
         probe.peek(p.id),
@@ -983,13 +994,21 @@ fn state_load_restores_every_parameter_to_its_own_value() {
     for &(id, v) in &marks {
         loaded.set_plain_value(&main_thread(), id, v);
     }
-    let saved = loaded.save_state(&main_thread()).expect("save");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
     // Scramble them all, then restore.
     for &(id, _) in &marks {
         loaded.set_plain_value(&main_thread(), id, 0.0);
     }
-    loaded.load_state(&main_thread(), &saved).expect("load");
+    loaded
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("load");
 
     for &(id, v) in &marks {
         assert_eq!(
@@ -1007,9 +1026,17 @@ fn state_load_restores_every_parameter_to_its_own_value() {
 fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let saved = loaded.save_state(&main_thread()).expect("save");
+    let saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
-    loaded.load_state(&main_thread(), &saved).expect("load");
+    loaded
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("load");
 
     let cap = probe.capture();
     assert_eq!(cap.load_calls, 1);
@@ -1038,12 +1065,18 @@ fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
 fn host_reports_a_load_failure_when_the_payload_is_corrupt() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let mut saved = loaded.save_state(&main_thread()).expect("save");
+    let mut saved = loaded
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .expect("save");
 
     // Flip one byte of the magic.
     saved[0] ^= 0xFF;
 
-    let result = loaded.load_state(&main_thread(), &saved);
+    let result = loaded.load_state(
+        &main_thread(),
+        &saved,
+        tutti_plugin_types::StateUse::Project,
+    );
     assert!(
         result.is_err(),
         "a payload the plugin rejects must surface as an error, not a silent \
@@ -1059,7 +1092,7 @@ fn empty_state_is_a_no_op() {
     let mut loaded = probe.load();
 
     loaded
-        .load_state(&main_thread(), &[])
+        .load_state(&main_thread(), &[], tutti_plugin_types::StateUse::Project)
         .expect("empty state is not an error");
 
     assert_eq!(
@@ -1091,8 +1124,7 @@ fn host_passes_the_state_context_through_to_the_plugin() {
 
     // (StateContext, the CLAP wire value the plugin must observe)
     let cases = [
-        (StateContext::ForPreset, 1u32),
-        (StateContext::ForDuplicate, 2),
+        (StateContext::ForDuplicate, 2u32),
         (StateContext::ForProject, 3),
     ];
     for (ctx, wire) in cases {
@@ -1140,5 +1172,96 @@ fn host_loads_state_with_the_requested_context() {
         probe.peek(p.id),
         Some(3.0),
         "the context load must restore the value"
+    );
+}
+
+/// The host's automation mode reaches the plugin as `param-indication`'s raw
+/// states, per `clap_param_indication` (NONE 0, PLAYING 2, RECORDING 3):
+/// once for every automatable parameter, and never for one that is not.
+#[test]
+fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    let automatable: Vec<u32> = probe_params()
+        .iter()
+        .filter(|p| p.flags & clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE != 0)
+        .map(|p| p.id)
+        .collect();
+    assert!(
+        automatable.len() < probe_params().len(),
+        "the table holds a parameter that cannot be automated"
+    );
+
+    let cases = [
+        (AutomationMode::Reading, 2u32),
+        (AutomationMode::Writing, 3),
+        (AutomationMode::ReadWriting, 3),
+        (AutomationMode::Off, 0),
+    ];
+    for (mode, raw) in cases {
+        param_reset();
+        Control::set_automation_state(&mut loaded, &main_thread(), mode);
+        let cap = probe.capture();
+        let got: Vec<(u32, u32)> = cap.indications[..cap.indication_calls as usize]
+            .iter()
+            .map(|i| (i.param_id, i.state))
+            .collect();
+        let want: Vec<(u32, u32)> = automatable.iter().map(|&id| (id, raw)).collect();
+        assert_eq!(
+            got, want,
+            "{mode:?} must reach every automatable parameter as {raw}"
+        );
+    }
+}
+
+/// The shared layer's save is a project save, and a duplicate is saved and
+/// loaded as `CLAP_STATE_CONTEXT_FOR_DUPLICATE`: the context values the plugin
+/// observes are CLAP's 3 (project) and 2 (duplicate), never the plain entry
+/// point's 0.
+#[test]
+fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+
+    let project = Control::save_state(
+        &mut loaded,
+        &main_thread(),
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("project save");
+    assert_eq!(
+        probe.capture().last_save_context,
+        3,
+        "save_state is FOR_PROJECT"
+    );
+    assert_eq!(project[STATE_MAGIC.len()], 3);
+
+    let copy = Control::save_state(&mut loaded, &main_thread(), StateUse::Duplicate)
+        .expect("duplicate save");
+    assert_eq!(
+        probe.capture().last_save_context,
+        2,
+        "a duplicate is FOR_DUPLICATE"
+    );
+    assert_eq!(copy[STATE_MAGIC.len()], 2);
+
+    Control::load_state(
+        &mut loaded,
+        &main_thread(),
+        &project,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("project load");
+    assert_eq!(
+        probe.capture().last_load_context,
+        3,
+        "load_state is FOR_PROJECT"
+    );
+    Control::load_state(&mut loaded, &main_thread(), &copy, StateUse::Duplicate)
+        .expect("duplicate load");
+    assert_eq!(
+        probe.capture().last_load_context,
+        2,
+        "a duplicate is FOR_DUPLICATE"
     );
 }

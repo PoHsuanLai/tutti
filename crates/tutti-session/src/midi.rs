@@ -275,35 +275,18 @@ impl UmpOut {
     /// prefixes and the events) to the sink. The stream advances its own
     /// origin, so successive blocks stay monotonic whichever drain called.
     ///
-    /// Prefer [`send_stamped_span`](Self::send_stamped_span): the JR Clock
-    /// cadence advances with the *block*, and this entry point can only
-    /// advance by the events it was handed, so a silent stream never
-    /// clocks. With stamping off the events go out unchanged.
+    /// The JR Clock cadence advances only by the events handed in, so a
+    /// silent stream never clocks. With stamping off the events go out
+    /// unchanged.
     pub fn send_stamped(&mut self, events: &[UmpAt]) {
         self.send_batch(events);
     }
 
-    /// Like [`send_stamped`](Self::send_stamped), but tells the stream how
-    /// long the block was so the JR Clock cadence keeps running through
-    /// silence (§7.2.2.1: the cadence is a property of elapsed time, not of
-    /// traffic).
-    pub fn send_stamped_span(&mut self, events: &[UmpAt], block: Samples) {
-        if !self.stamping {
-            self.send_batch(events);
-            return;
-        }
-        let mut buf = core::mem::take(&mut self.stamped);
-        self.stream.stamp_span(events, block, &mut buf);
-        self.send_all(&buf);
-        self.stamped = buf;
-    }
-
-    /// Sends a batch of events, each on its frame on the graph's clock, as
-    /// [`send_stamped_span`](Self::send_stamped_span) sends a block: the batch
-    /// is the block, its first frame (the earliest) is its start, and its span
-    /// runs to the last frame inclusive, so what the stamper reads is the
-    /// events' spacing and the JR Clock advances by the span. An empty batch
-    /// sends nothing.
+    /// Sends a batch of events, each on its frame on the graph's clock. The
+    /// batch is one block: its first frame (the earliest) is its start, and
+    /// its span runs to the last frame inclusive, so what the stamper reads
+    /// is the events' spacing and the JR Clock advances by the span. An empty
+    /// batch sends nothing.
     ///
     /// With `timing`, each event is sent at the time its frame has on the OS
     /// clock ([`OutputPlan`]: the frame's instant, plus the audio output's
@@ -784,7 +767,8 @@ impl MidiState {
 
     /// `Phase::Poll`: steps the UMP Stream negotiation and the MIDI-CI of each
     /// held input and reports those that settled ([`MidiEvent::StreamSettled`])
-    /// and the peers found, changed or lost ([`MidiEvent::CiPeer`]), reports the
+    /// the peers found, changed or lost ([`MidiEvent::CiPeer`]) and their Profiles
+    /// ([`MidiEvent::CiProfiles`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -830,6 +814,9 @@ impl MidiState {
                     }
                     tutti_midi_hardware::Polled::Ci(device, change) => {
                         MidiEvent::CiPeer { device, change }
+                    }
+                    tutti_midi_hardware::Polled::Profile(device, change) => {
+                        MidiEvent::CiProfiles { device, change }
                     }
                     // A kind of report this session does not know is not one.
                     _ => continue,

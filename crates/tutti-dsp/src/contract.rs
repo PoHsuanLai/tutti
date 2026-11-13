@@ -1,5 +1,5 @@
 //! The contract: cases every [`Family`](crate::Family) and its
-//! [`Realized`](crate::Realized) runner are held to (design 024 section 6).
+//! [`Realized`](crate::Realized) runner are held to.
 //!
 //! Written once per class of system, behind the `contract` feature (off by
 //! default; it pulls `rand` for seeded noise). This is the one public module of
@@ -42,7 +42,7 @@
 //! spec, never another implementation's render. Each case is a plain function
 //! from a family to a `Result` ([`cases`]).
 //!
-//! `recurrence_contract!` states the three laws of design 024 section 2.7.4, and
+//! `recurrence_contract!` states the three laws, and
 //! the macro is laid out by them: the recurrence **realizes the member** (what a
 //! render does is what the member's queries say), the **block form is the frame
 //! form** (cutting the input into blocks changes nothing), and the **glide lands**

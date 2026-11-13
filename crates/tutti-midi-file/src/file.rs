@@ -102,7 +102,7 @@ impl AddAssign<u64> for Tick {
 
 /// The format word of an SMF header (SMF 1.0 section 2.1).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SmfFormat {
     /// Format 0: one track holding everything.
     SingleTrack,
@@ -116,7 +116,7 @@ pub enum SmfFormat {
 
 /// What a text meta event says (SMF 1.0 section 3.3 types `01` to `09`).
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextKind {
     /// `01`: any text.
     Text,
@@ -155,15 +155,15 @@ pub enum Meta {
         bytes: Box<[u8]>,
     },
     /// `51`: Set Tempo, microseconds per quarter note. The 24-bit wire value
-    /// (a bare number: it is the file's own figure, and a zero, "no valid
-    /// tempo", has to be kept to be written back). [`Meta::tempo`] and
+    /// (a bare number: it is the file's own figure, and a zero, no valid
+    /// tempo, has to be kept to be written back). [`Meta::tempo`] and
     /// [`Meta::bpm`] cross to a [`Bpm`].
     Tempo {
         /// Microseconds per quarter note, at most `0xFF_FFFF`.
         micros_per_quarter: u32,
         /// The data past the three bytes this reads: empty unless the file
-        /// has a longer event (SMF 1.0 section 3.3: programs "must ignore
-        /// everything past what they know about"). Kept so the file writes
+        /// has a longer event (SMF 1.0 section 3.3: a program ignores
+        /// everything past what it knows). Kept so the file writes
         /// back as it was.
         extra: Box<[u8]>,
     },
@@ -179,8 +179,8 @@ pub enum Meta {
         thirty_seconds_per_quarter: u8,
         /// The data past the four bytes this reads, as `extra` of
         /// [`Tempo`](Self::Tempo). A longer Time Signature is real: the
-        /// compound-signature bytes "were added at the end so that the
-        /// current Meta Event could be extended" (SMF 1.0 section 3.3).
+        /// compound-signature bytes were added at the end so that the
+        /// existing Meta Event could be extended (SMF 1.0 section 3.3).
         extra: Box<[u8]>,
     },
     /// `59`: Key Signature.
@@ -214,7 +214,7 @@ const MICROS_PER_MINUTE: f64 = 60_000_000.0;
 impl Meta {
     /// A Set Tempo for `bpm`, rounded to the wire's microsecond. The wire
     /// holds 1 to 16 777 215 us per quarter: a tempo above 60 million BPM
-    /// writes the shortest, 1 (the wire's zero means "no valid tempo"), and
+    /// writes the shortest, 1 (the wire's zero means no valid tempo), and
     /// one below about 3.6 BPM the longest.
     pub fn tempo(bpm: Bpm) -> Self {
         let micros = (MICROS_PER_MINUTE / bpm.get()).round() as u32;
@@ -318,10 +318,9 @@ pub struct Track {
     pub header: Vec<(Tick, FileEvent)>,
     /// Where the header ends, on the header's clock: the tick of Start of Clip,
     /// which is the last header message's tick plus the Delta Clockstamp before
-    /// Start of Clip. M2-116 section 6.1: "the cumulative values of all Delta
-    /// Clockstamp up to and including the Delta Clockstamp for the Start of
-    /// Clip Message determines the total length of time allocated to the Clip
-    /// Configuration Header", which a receiver may need to configure itself.
+    /// Start of Clip. M2-116 section 6.1: the Delta Clockstamps up to and
+    /// including the one for Start of Clip add up to the time allocated to the
+    /// Clip Configuration Header, which a receiver may need to configure itself.
     /// Not before the last header message. `Tick(0)` for an SMF, and for a
     /// header that asks for no time after its last message.
     pub header_end: Tick,
@@ -366,7 +365,7 @@ impl Track {
 
     /// A note: a Note On at `tick` and its Note Off `len` ticks on, on `channel`
     /// (a bare [`MidiChannel`] is in Group 1, as an SMF holds). The Note Off
-    /// carries the MIDI release velocity of 64, "no release velocity".
+    /// carries the MIDI release velocity of 64, which means none.
     ///
     /// Events are placed in tick order, after the events already at their
     /// tick, so notes may be added in any order, overlap, or start together

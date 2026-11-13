@@ -107,43 +107,6 @@ impl Default for PeakBlocks {
 }
 
 impl PeakBlocks {
-    /// Wraps blocks that are already channel-major.
-    ///
-    /// For consumers that *derive* one summary from another rather than
-    /// blocking samples — building a coarser mipmap tier by merging pairs, most
-    /// of all. Those already hold the finished blocks, and routing them back
-    /// through [`step_peaks`] would mean inventing samples that reduce to the
-    /// values they already have.
-    ///
-    /// `blocks.len()` must be `layout.count() * per_channel`; a mismatch means
-    /// the caller's own bookkeeping disagrees with itself, so this **panics**
-    /// rather than truncating — a silently short channel would draw as a clip
-    /// that ends early.
-    ///
-    /// # Panics
-    ///
-    /// If `blocks.len()` is not `layout.count() * per_channel`.
-    #[must_use]
-    pub fn from_channel_major(
-        blocks: Vec<PeakBlock>,
-        layout: ChannelLayout,
-        per_channel: usize,
-    ) -> Self {
-        let expected = layout.count() as usize * per_channel;
-        assert_eq!(
-            blocks.len(),
-            expected,
-            "{} blocks for {} channels of {per_channel}",
-            blocks.len(),
-            layout.count(),
-        );
-        Self {
-            blocks,
-            layout,
-            per_channel,
-        }
-    }
-
     /// The width these blocks describe.
     #[inline]
     pub fn layout(&self) -> ChannelLayout {

@@ -377,10 +377,14 @@ pub fn measure<L: InProcess>(
     };
     if let Some(bytes) = state {
         loaded
-            .load_state(main, bytes)
+            .load_state(main, bytes, tutti_plugin_types::StateUse::Project)
             .map_err(|e| format!("{}: the plugin refused the state: {e}", descriptor.id))?;
     }
-    let state = StateHash::of(&loaded.save_state(main).unwrap_or_default());
+    let state = StateHash::of(
+        &loaded
+            .save_state(main, tutti_plugin_types::StateUse::Project)
+            .unwrap_or_default(),
+    );
     let wiring = loaded.wiring(main);
     if wiring.total_outputs() == 0 {
         return Ok(None);

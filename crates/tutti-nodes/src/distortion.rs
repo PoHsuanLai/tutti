@@ -95,14 +95,6 @@ impl DistortionNode {
         self.drive.as_atomic()
     }
 
-    /// Sets the [`Drive`] into the shaping curve, floored at 0.
-    ///
-    /// Read once per block; the shaper is rebuilt only when drive moves
-    /// meaningfully, which is cheap because it carries no state.
-    pub fn set_drive(&self, drive: impl Into<Drive>) {
-        self.drive.store(Drive(drive.into().get().max(0.0)));
-    }
-
     /// Rebuild the (stateless) shaper if drive has moved meaningfully. Cheap:
     /// the shapers carry no z-state, so reconstruction is just a field swap.
     #[inline]
@@ -145,8 +137,7 @@ impl Node for DistortionNode {
     /// `channels` in and out, drive modulatable .
     /// The shapers carry no z-state, so the output stops with the input.
     ///
-    /// The cost is the curve's, measured by doc 013's fixed-plus-per-frame
-    /// fit against its two reference nodes (its cost table has the row):
+    /// The cost is the curve's:
     /// `Softsign` and `HardClip` are arithmetic, `Light`; `Crush` and
     /// `SoftCrush` (a rounding call) and `Atan` and `Tanh` (a libm call)
     /// are `Moderate`.

@@ -114,7 +114,7 @@ members = [
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+repository = "https://github.com/PoHsuanLai/tutti"
 
 # Lints every member inherits with `[lints] workspace = true`.
 #

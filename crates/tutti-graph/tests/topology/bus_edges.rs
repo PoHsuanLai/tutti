@@ -494,47 +494,6 @@ fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
     assert!(ed.spec().bus_edges.is_empty(), "nothing is stored");
 }
 
-/// By index is asked for by name, never a fallback: a stereo pair into a
-/// six-channel unassigned bus is refused by speaker and taken channel for channel
-/// by index (the first two ports, the rest silent), and by index never narrows.
-#[test]
-fn by_index_is_its_own_edge() {
-    let (mut ed, _exec) = editor(
-        &[
-            (1, source(2, smpte(2))),
-            (2, sink(6, unassigned(6))),
-            (3, source(6, smpte(6))),
-            (4, sink(2, smpte(2))),
-        ],
-        0,
-    );
-    assert!(matches!(
-        ed.connect_bus(from(1, 0), bus_ref(2, 0)),
-        Err(BusError::Fold {
-            error: FoldError::Unassigned { .. },
-            ..
-        })
-    ));
-    ed.connect_bus_by_index(from(1, 0), bus_ref(2, 0))
-        .expect("by index widens");
-    assert_eq!(
-        ed.spec().bus_edges[&bus_ref(2, 0)],
-        [feed(from(1, 0), BusFold::ByIndex)]
-    );
-    let lanes: Vec<_> = ed.lowered().expect("lowers").lanes.into_iter().collect();
-    assert_eq!(
-        lanes,
-        [0u16, 1].map(|c| (lane(2, c, out_port(1, c)), Amplitude::new(1.0)))
-    );
-    assert!(matches!(
-        ed.connect_bus_by_index(from(3, 0), bus_ref(4, 0)),
-        Err(BusError::Fold {
-            error: FoldError::Unplaced { .. },
-            ..
-        })
-    ));
-}
-
 /// The global input is an unassigned bus: with no global input at all there is
 /// nothing to read (`Empty`), and one wider than a bus is refused by name.
 #[test]

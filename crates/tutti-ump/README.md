@@ -9,8 +9,8 @@ The Universal MIDI Packet (M2-104) for the Tutti engine.
 - `Message`, `TryFrom<Ump> for Message`, `From<Message> for Ump`, `Unknown`: every message M2-104
   defines (Utility, System, MIDI 1.0 and 2.0 channel voice, System Exclusive 7
   and 8, Mixed Data Set, Flex Data, UMP Stream) as a `Copy` value, with named
-  constructors for the common channel voice messages (`Message::note_on`, and
-  `note_on2` for MIDI 2.0, whose 16-bit `NoteVelocity` and 32-bit
+  constructors for the common channel voice messages (`Message::note_on`; MIDI 2.0
+  messages are `Message::Midi2` over `Voice2`, whose 16-bit `NoteVelocity` and 32-bit
   `ControlValue` and `BendValue` are not the 7-bit values of the 1.0 form). `Ump::decode`
   never panics and ignores reserved bits; a packet no definition covers is
   `Unknown` and keeps its words.

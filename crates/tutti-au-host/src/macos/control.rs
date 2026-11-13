@@ -18,7 +18,7 @@ use tutti_plugin_types::{
     EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
     ParamEdit, ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
     PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
-    PresetId, RenderMode, Request, RescanScope, WindowHandle, Wraps, taken,
+    PresetId, RenderModeSupport, Request, RescanScope, WindowHandle, Wraps, taken,
 };
 use tutti_types::Samples;
 
@@ -170,6 +170,7 @@ impl AuLoaded {
         let has_presets = !self.factory_presets().is_empty();
         features.set(Features::PRESET_LIST, has_presets);
         features.set(Features::PRESET_LOAD, has_presets);
+        features.set(Features::RENDER_MODE, self.render_mode_accepted());
         features
     }
 
@@ -457,14 +458,16 @@ impl Control for AuLoaded {
         out.extend(taken(&self.requests));
     }
 
-    /// Writes `kAudioUnitProperty_OfflineRender`. `true` when the unit took it.
-    ///
-    /// A unit that sizes an oversampling or look-ahead buffer from the flag can
-    /// only do so at `AudioUnitInitialize`, so on an *active* unit
-    /// [`AuController`] answers `false` and the caller reconfigures through the
-    /// `Lifecycle`, whose next activation writes the mode before initializing.
-    fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
-        self.write_render_mode(mode.is_offline())
+    /// `OnActivation` where the unit takes `kAudioUnitProperty_OfflineRender`,
+    /// `Unsupported` where it refuses it (the property is optional). A unit
+    /// that sizes an oversampling or look-ahead buffer from the flag does so at
+    /// `AudioUnitInitialize`, so the mode is written before each activation.
+    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+        if self.render_mode_accepted() {
+            RenderModeSupport::OnActivation
+        } else {
+            RenderModeSupport::Unsupported
+        }
     }
 
     /// The plugin's own edits (its editor moving a knob, with the gesture around
@@ -556,11 +559,6 @@ impl EditorWindow for AuLoaded {
 
 impl Wraps for AuController {
     type Plugin = AuLoaded;
-
-    /// The mode is written before `AudioUnitInitialize`, which an active unit
-    /// has passed: the caller reconfigures through the `Lifecycle`, whose next
-    /// activation carries the mode.
-    const SWITCHES_RENDER_MODE: bool = false;
 
     fn plugin(&self) -> &AuLoaded {
         &self.loaded

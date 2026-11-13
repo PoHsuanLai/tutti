@@ -90,8 +90,9 @@ pub struct AuLoaded {
     descriptor: PluginDescriptor,
     /// Whether `kAudioUnitProperty_OfflineRender` was last written as offline.
     offline: bool,
-    /// Whether the unit took the last render mode written to it: the live
-    /// probe behind `Features::RENDER_MODE`, since the property is optional.
+    /// Whether the unit took the last render mode written to it, from a probe
+    /// written at construction on: behind `Features::RENDER_MODE` and
+    /// `render_mode_support`, since the property is optional.
     mode_accepted: bool,
     /// The last latency read that succeeded: what a refusal answers, since a
     /// unit that stops answering keeps what it last reported rather than being
@@ -188,6 +189,9 @@ impl AuLoaded {
 
         let descriptor = describe(&handle);
         let ranges = RangeTable::read(handle.unit(), None);
+        // The probe: an uninitialized unit that implements the property takes
+        // a write of the mode it already has, realtime.
+        let mode_accepted = crate::offline::set_offline_render(handle.unit(), false).is_ok();
         Ok(Self {
             watch: None,
             handle,
@@ -200,7 +204,7 @@ impl AuLoaded {
             retired_marks: Vec::new(),
             descriptor,
             offline: false,
-            mode_accepted: false,
+            mode_accepted,
             last_latency: Cell::new(Samples::ZERO),
             origin: tutti_plugin_types::Origin::new("", tutti_plugin_types::Load::new()),
         })
@@ -248,10 +252,10 @@ impl AuLoaded {
         &self.requests
     }
 
-    /// Whether the unit took the last render mode written to it (activation
-    /// writes the mode of its [`Prepare`](tutti_plugin_types::Prepare); so does
-    /// [`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode)). `kAudioUnitProperty_OfflineRender` is
-    /// optional, so this is the live probe behind `Features::RENDER_MODE`.
+    /// Whether the unit took the last render mode written to it: a realtime
+    /// write at construction, then the mode of each activation's
+    /// [`Prepare`](tutti_plugin_types::Prepare). `kAudioUnitProperty_OfflineRender`
+    /// is optional, so this is the probe behind `Features::RENDER_MODE`.
     pub fn render_mode_accepted(&self) -> bool {
         self.mode_accepted
     }

@@ -504,13 +504,16 @@ impl<F: Loaded> InProcClient<F> {
         }
     }
 
-    /// Sets the render mode the plugin runs in ([`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode),
-    /// and a reconfiguration through the lifecycle for a format that cannot
-    /// take it live: the next activation carries the mode).
+    /// Sets the render mode the plugin runs in, as its
+    /// [`render_mode_support`](tutti_plugin_types::Control::render_mode_support)
+    /// says: told live, or a reconfiguration through the lifecycle whose
+    /// activation carries the mode, or (where the plugin has no mode) kept for
+    /// its next activation with the plugin left running.
     ///
-    /// `false` off the main thread, where the plugin cannot be told, and when
-    /// the plugin refuses the reconfiguration. Takes the instance lock, so
-    /// call it from a control thread, not the audio thread.
+    /// `false` off the main thread, where the plugin cannot be told, for a
+    /// plugin with no mode, and when the plugin refuses the mode or the
+    /// reconfiguration. Takes the instance lock, so call it from a control
+    /// thread, not the audio thread.
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         match MainThread::current() {
             Some(main) => self.inner.lock().set_render_mode(&main, mode, None),

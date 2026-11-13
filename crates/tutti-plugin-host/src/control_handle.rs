@@ -804,6 +804,9 @@ mod tests {
         fn info(&self) -> &PluginDescriptor {
             unreachable!("the preset tests never ask")
         }
+        fn render_mode_support(&self, _main: &MainThread) -> tutti_plugin_types::RenderModeSupport {
+            unreachable!("the preset tests never ask")
+        }
         fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
             LoadedPlugin::default()
         }

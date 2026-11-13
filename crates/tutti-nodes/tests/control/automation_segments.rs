@@ -283,7 +283,7 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
         out.extend(block(&mut ed, &mut exec, &t, &TransportChanges::NONE, n));
         clock.advance(Samples(n), None);
     }
-    let step = tutti_modulation::CONTROL_GRID.get().get() as usize;
+    let step = tutti_modulation::CONTROL_GRID.stride() as usize;
     let at = |f: usize| {
         let mut c = FrameClock::new(Beat(0.0), TEMPO, SampleRate::of(RATE));
         c.advance(Samples(f), None);

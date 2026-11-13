@@ -14,12 +14,12 @@ use tutti_modulation::{
     CONTROL_GRID, Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Waveform,
 };
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
-
-use crate::SOURCE_EVENT_CAPACITY;
 use tutti_types::{
     AtomicF32, Beat, Frame, ParamAddr, ParamCell, ParamKey, SamplePosition, Samples, Tail, Unit,
     UnitAddr,
 };
+
+use crate::SOURCE_EVENT_CAPACITY;
 
 /// How a lane builds a segment for its target: the typed key (or foreign
 /// id) bound in, so the lane itself is not generic.
@@ -770,7 +770,7 @@ impl Block<'_> {
         consider(moving);
         if !d.is_finite() {
             // Gliding into a steady value: one grid step.
-            d = f64::from(CONTROL_GRID.get().get());
+            d = f64::from(CONTROL_GRID.stride());
         }
         let end = ProgramTime {
             beat: Beat(fpb.map_or(beat, |f| beat + d / f)),
@@ -1042,7 +1042,7 @@ impl Node for ControlLaneNode {
             span,
             native: self.native,
             make: &*self.make,
-            stride: u64::from(CONTROL_GRID.get().get()),
+            stride: u64::from(CONTROL_GRID.stride()),
             truncate: false,
             seconds: has_seconds(program),
         };

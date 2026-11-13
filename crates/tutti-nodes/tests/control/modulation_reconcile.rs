@@ -33,7 +33,7 @@ use tutti_types::{
 
 const RATE: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm::of(120.0);
-const STEP: usize = tutti_modulation::CONTROL_GRID.get().get() as usize;
+const STEP: usize = tutti_modulation::CONTROL_GRID.stride() as usize;
 const DECLICK: usize = 256;
 
 /// Graph keys of the rig, far from `NodeKey::fresh`'s, which the reconciler

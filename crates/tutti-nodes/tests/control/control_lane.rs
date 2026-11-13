@@ -32,7 +32,7 @@ const RATE: f64 = 48_000.0;
 /// 24 000 frames a beat: beat figures land on whole frames.
 const TEMPO: Bpm = Bpm::of(120.0);
 const FPB: f64 = 24_000.0;
-const STEP: usize = tutti_modulation::CONTROL_GRID.get().get() as usize;
+const STEP: usize = tutti_modulation::CONTROL_GRID.stride() as usize;
 
 // ---------------------------------------------------------------- nodes --
 

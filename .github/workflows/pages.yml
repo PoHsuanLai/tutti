@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -133,17 +133,6 @@ jobs:
           name: site-coverage
           path: site/coverage
       - run: cargo xtask conformance --results junit --out site/conformance
-      - name: Landing page
-        run: |
-          cat > site/index.html <<'HTML'
-          <!doctype html>
-          <meta charset="utf-8">
-          <title>tutti</title>
-          <ul>
-            <li><a href="conformance/index.html">Plugin spec conformance</a></li>
-            <li><a href="coverage/html/index.html">Line coverage</a></li>
-          </ul>
-          HTML
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

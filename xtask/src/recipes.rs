@@ -38,6 +38,9 @@ pub(crate) enum Step {
         results: PathBuf,
         out: PathBuf,
     },
+    /// Run the command with the environment `cargo llvm-cov show-env` prints,
+    /// so it builds into the target directory the instrumented tests run from.
+    InLlvmCovEnv(Cmd),
     /// `coverage`'s probe: fails with the install hint when cargo-llvm-cov is missing.
     RequireLlvmCov,
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
@@ -60,10 +63,11 @@ impl Step {
             Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <fs>, each member with its features together (private items), then each feature of tutti-session and tutti alone".to_owned(),
             Step::ConformanceInventory(f) => format!("conformance-inventory {f}"),
             Step::Conformance { results, out } => format!(
-                "conformance: join {}/<os>.xml to the inventories, write {}/index.html and ../badges/*.json",
+                "conformance: join {}/<os>.xml to the inventories, write {}/index.html, ../index.html and ../badges/*.json",
                 results.display(),
                 out.display()
             ),
+            Step::InLlvmCovEnv(c) => format!("(cargo llvm-cov show-env) {}", c.display()),
             Step::RequireLlvmCov => {
                 "cargo llvm-cov --version || fail (cargo install cargo-llvm-cov --locked)".to_owned()
             }
@@ -228,7 +232,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     (
         "coverage",
-        "[--out site/coverage]",
+        "[--out site/coverage] [--package a,b]",
         "line coverage of the workspace as HTML (needs cargo-llvm-cov)",
     ),
     (
@@ -502,16 +506,27 @@ impl Planner<'_> {
                 });
             }
             "coverage" => {
-                let o = options(name, args, &["--out"])?;
+                let o = options(name, args, &["--out", "--package"])?;
                 let out = o.get("--out").map_or("site/coverage", String::as_str);
-                self.dep("plugin-server")?;
-                self.dep("plugin-probe")?;
                 self.out.push(Step::RequireLlvmCov);
-                self.run(
-                    Cmd::sh("cargo llvm-cov nextest --locked --workspace --no-fail-fast --html")
-                        .arg("--output-dir")
-                        .arg(out),
-                );
+                // The fixtures look for the plugin binaries beside the running
+                // test binary, which llvm-cov builds under its own target
+                // directory: build them there.
+                for bin in ["plugin-server", "plugin-probe"] {
+                    self.out.push(Step::InLlvmCovEnv(Cmd::sh(&format!(
+                        "cargo build --locked -p tutti-{bin} --bin {bin}"
+                    ))));
+                }
+                let mut run = Cmd::sh("cargo llvm-cov nextest --locked --ignore-run-fail");
+                match o.get("--package") {
+                    Some(list) => {
+                        for p in list.split(',') {
+                            run = run.arg("-p").arg(p);
+                        }
+                    }
+                    None => run = run.arg("--workspace"),
+                }
+                self.run(run.arg("--html").arg("--output-dir").arg(out));
             }
             "conformance-inventory" => {
                 let [f] = Self::params(name, args, ["clap"])?;

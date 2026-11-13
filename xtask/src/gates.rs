@@ -238,8 +238,8 @@ fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// `conformance --results <dir> --out <dir>`: the dashboard at `<out>/index.html`
-/// and the badges at `<out>/../badges/<format>-<os>.json`, from the JUnit files
+/// `conformance --results <dir> --out <dir>`: the dashboard at `<out>/index.html`,
+/// the landing page beside it at `<out>/../index.html` and the badges at `<out>/../badges/<format>-<os>.json`, from the JUnit files
 /// `<dir>/<os>.xml` (an OS with no file has run nothing).
 pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Result<(), String> {
     let mut texts = Vec::new();
@@ -267,8 +267,12 @@ pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Resul
         root: root.to_path_buf(),
     };
     let report = conformance_site::report(&tree, &texts)?;
-    let badges_dir = out.parent().unwrap_or(out).join("badges");
-    let mut files = vec![(out.join("index.html"), conformance_site::dashboard(&report))];
+    let site = out.parent().unwrap_or(out);
+    let badges_dir = site.join("badges");
+    let mut files = vec![
+        (out.join("index.html"), conformance_site::dashboard(&report)),
+        (site.join("index.html"), conformance_site::landing()),
+    ];
     for (name, json) in conformance_site::badges(&report) {
         files.push((badges_dir.join(name), json));
     }
@@ -279,6 +283,10 @@ pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Resul
     }
     for f in &report {
         for (os, name) in conformance_site::OSES.iter().enumerate() {
+            if !f.has_results(os) {
+                println!("{} {name}: no results", f.name);
+                continue;
+            }
             let (covered, failing, applicable) = f.counts(os);
             println!(
                 "{} {name}: {covered}/{applicable} covered, {failing} failing",

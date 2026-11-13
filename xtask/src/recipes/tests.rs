@@ -350,7 +350,7 @@ fn conformance_reads_its_options_and_defaults_the_output() {
     assert_eq!(s.len(), 1);
     assert_eq!(
         s[0],
-        "conformance: join /repo/junit/<os>.xml to the inventories, write /repo/site/conformance/index.html and ../badges/*.json"
+        "conformance: join /repo/junit/<os>.xml to the inventories, write /repo/site/conformance/index.html, ../index.html and ../badges/*.json"
     );
     let s = dry("conformance", &["--out", "o", "--results", "j"]);
     assert!(s[0].contains("/repo/j/<os>.xml") && s[0].contains("write /repo/o/index.html"));
@@ -373,17 +373,37 @@ fn conformance_refuses_a_missing_repeated_or_unknown_option() {
 }
 
 #[test]
-fn coverage_probes_llvm_cov_after_building_the_plugins() {
+fn coverage_builds_the_plugins_under_llvm_cov_then_runs_it() {
     let steps = plan("coverage", &[], &ctx()).unwrap();
-    let at = steps
-        .iter()
-        .position(|s| *s == Step::RequireLlvmCov)
-        .unwrap();
-    assert_eq!(at, 2, "after plugin-server and plugin-probe");
-    let run = steps[at + 1].display();
+    assert_eq!(steps[0], Step::RequireLlvmCov);
+    assert_eq!(
+        steps[1].display(),
+        "(cargo llvm-cov show-env) cargo build --locked -p tutti-plugin-server --bin plugin-server"
+    );
     assert!(
-        run.starts_with("cargo llvm-cov nextest --locked --workspace"),
+        steps[2]
+            .display()
+            .ends_with("-p tutti-plugin-probe --bin plugin-probe")
+    );
+    let run = steps[3].display();
+    assert!(
+        run.starts_with("cargo llvm-cov nextest --locked --ignore-run-fail --workspace"),
         "{run}"
     );
     assert!(run.ends_with("--html --output-dir site/coverage"), "{run}");
+    assert_eq!(steps.len(), 4);
+}
+
+#[test]
+fn coverage_takes_a_package_list_in_place_of_the_workspace() {
+    let s = dry(
+        "coverage",
+        &["--package", "tutti-clap-host,tutti-ump", "--out", "o"],
+    );
+    let run = s.last().unwrap();
+    assert!(
+        run.contains("-p tutti-clap-host -p tutti-ump --html --output-dir o"),
+        "{run}"
+    );
+    assert!(!run.contains("--workspace"));
 }

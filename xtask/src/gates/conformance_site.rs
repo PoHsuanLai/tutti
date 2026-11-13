@@ -9,7 +9,9 @@
 //! - else `Failing` when a test claiming the row failed;
 //! - else `Covered` when one passed (a skipped test did not run, so it covers
 //!   nothing);
-//! - else `Missing`.
+//! - else `Missing`, or `NoResults` when no test claiming any row of the area
+//!   ran on that OS at all (the column has no data, so its rows are not
+//!   missing coverage; the area-OS pair gets no badge).
 //!
 //! A plugin-contract case runs once per format and its tag lists every format's
 //! ids, so a result of the binary `tutti-plugin-contract::<format>` covers only
@@ -38,6 +40,8 @@ pub(super) enum Status {
     Covered,
     Failing,
     Missing,
+    /// Nothing of the area ran on the OS.
+    NoResults,
     Na,
 }
 
@@ -58,6 +62,11 @@ pub(super) struct FormatReport {
 }
 
 impl FormatReport {
+    /// Whether any test claiming a row of the area ran on OS column `os`.
+    pub(super) fn has_results(&self, os: usize) -> bool {
+        self.rows.iter().any(|r| !r.tests[os].is_empty())
+    }
+
     /// `(covered, failing, applicable)` on OS column `os`; a not-applicable
     /// row is out of `applicable`.
     pub(super) fn counts(&self, os: usize) -> (usize, usize, usize) {
@@ -288,10 +297,20 @@ pub(super) fn report(
                 }
             })
             .collect();
-        out.push(FormatReport {
+        let mut report = FormatReport {
             name: area.to_owned(),
             rows: reports,
-        });
+        };
+        for os in 0..OSES.len() {
+            if !report.has_results(os) {
+                for r in &mut report.rows {
+                    if r.status[os] == Status::Missing {
+                        r.status[os] = Status::NoResults;
+                    }
+                }
+            }
+        }
+        out.push(report);
     }
     Ok(out)
 }
@@ -346,7 +365,9 @@ pub(super) fn badges(formats: &[FormatReport]) -> Vec<(String, String)> {
     formats
         .iter()
         .flat_map(|f| {
-            (0..OSES.len()).map(|os| (format!("{}-{}.json", f.name, OSES[os]), badge(f, os)))
+            (0..OSES.len())
+                .filter(|&os| f.has_results(os))
+                .map(|os| (format!("{}-{}.json", f.name, OSES[os]), badge(f, os)))
         })
         .collect()
 }
@@ -360,7 +381,7 @@ th,td{border:1px solid #8884;padding:.25rem .5rem;text-align:left;vertical-align
 td.id{font-family:ui-monospace,monospace;white-space:nowrap}\
 td.s{text-align:center;color:#fff;font-weight:600;white-space:nowrap;width:5.5rem}\
 td.covered{background:var(--ok)}td.failing{background:var(--bad)}\
-td.missing{background:var(--none)}td.na{background:var(--na)}\
+td.missing{background:var(--none)}td.noresults{background:transparent;color:var(--na);font-weight:400}td.na{background:var(--na)}\
 #filter{width:100%;max-width:30rem;padding:.4rem;margin:.5rem 0}\
 .counts{margin:0 0 .5rem}.counts span{margin-right:1.2rem}\
 tr.hide{display:none}";
@@ -377,6 +398,7 @@ fn cell(r: &RowReport, os: usize) -> String {
         Status::Covered => ("covered", "pass"),
         Status::Failing => ("failing", "FAIL"),
         Status::Missing => ("missing", "missing"),
+        Status::NoResults => ("noresults", "no results"),
         Status::Na => ("na", "n/a"),
     };
     let title = if r.status[os] == Status::Na {
@@ -403,6 +425,18 @@ fn cell(r: &RowReport, os: usize) -> String {
     )
 }
 
+/// The site's landing page: relative links to the dashboard and the coverage
+/// report, which sit beside it.
+pub(super) fn landing() -> String {
+    "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+<title>tutti</title></head><body>\n<h1>tutti</h1>\n<ul>\n\
+<li><a href=\"conformance/index.html\">Spec conformance</a></li>\n\
+<li><a href=\"coverage/html/index.html\">Line coverage</a></li>\n\
+</ul>\n</body></html>\n"
+        .to_owned()
+}
+
 /// The dashboard page: one table per format, rows by OS, with the counts and
 /// a filter box. Plain HTML, inline CSS and JS, no external reference.
 pub(super) fn dashboard(formats: &[FormatReport]) -> String {
@@ -415,7 +449,8 @@ pub(super) fn dashboard(formats: &[FormatReport]) -> String {
     h.push_str("</style></head><body>\n<h1>Plugin spec conformance</h1>\n");
     h.push_str(
         "<p>Each row is one item of a format's spec. A cell is <b>pass</b> when a test \
-claiming the row passed on that OS, <b>FAIL</b> when one failed, <b>missing</b> when none ran, \
+claiming the row passed on that OS, <b>FAIL</b> when one failed, <b>missing</b> when none ran on an OS that has results for the area, \
+<b>no results</b> when nothing of the area ran on that OS, \
 and <b>n/a</b> when the spec itself excludes the row (hover for the citation). \
 <a href=\"../coverage/html/index.html\">Line coverage</a>.</p>\n",
     );
@@ -430,10 +465,14 @@ and <b>n/a</b> when the spec itself excludes the row (hover for the citation). \
             esc(&f.name)
         ));
         for (os, name) in OSES.iter().enumerate() {
-            let (covered, failing, applicable) = f.counts(os);
-            h.push_str(&format!(
-                "<span>{name}: {covered}/{applicable} covered, {failing} failing</span>"
-            ));
+            if f.has_results(os) {
+                let (covered, failing, applicable) = f.counts(os);
+                h.push_str(&format!(
+                    "<span>{name}: {covered}/{applicable} covered, {failing} failing</span>"
+                ));
+            } else {
+                h.push_str(&format!("<span>{name}: no results</span>"));
+            }
         }
         h.push_str("</p>\n<table><thead><tr><th>id</th><th>side</th><th>kind</th><th>item</th>");
         for os in OSES {
@@ -543,7 +582,11 @@ impl Format for Vst3 {
         );
         assert_eq!(status(clap, "clap.c", 0), Status::Failing);
         assert_eq!(status(clap, "clap.d", 0), Status::Na);
-        assert_eq!(status(clap, "clap.a", 1), Status::Missing, "no macos file");
+        assert_eq!(
+            status(clap, "clap.a", 1),
+            Status::NoResults,
+            "no macos file"
+        );
         assert_eq!(status(clap, "clap.d", 2), Status::Na);
     }
 
@@ -567,7 +610,7 @@ impl Format for Vst3 {
         let linux = xml(&[("tutti-plugin-contract::clap", "shared", "")]);
         let r = run(&[("linux", linux)]);
         assert_eq!(status(&r[0], "clap.a", 0), Status::Covered);
-        assert_eq!(status(&r[1], "vst3.x", 0), Status::Missing);
+        assert_eq!(status(&r[1], "vst3.x", 0), Status::NoResults);
         let both = xml(&[
             ("tutti-plugin-contract::clap", "shared", ""),
             ("tutti-plugin-contract::vst3", "shared", ""),
@@ -585,7 +628,7 @@ impl Format for Vst3 {
             ("tutti-plugin-contract::clap", "gapped_one", ""),
         ]);
         let r = run(&[("linux", linux)]);
-        assert_eq!(status(&r[1], "vst3.x", 0), Status::Missing);
+        assert_eq!(status(&r[1], "vst3.x", 0), Status::NoResults);
         assert_eq!(
             status(&r[0], "clap.b", 0),
             Status::Covered,
@@ -617,6 +660,55 @@ impl Format for Vst3 {
     }
 
     #[test]
+    fn an_os_with_no_results_for_an_area_is_no_results_and_one_with_results_is_missing() {
+        // clap ran on linux and macos; vst3 ran on macos only.
+        let linux = xml(&[("tutti-plugin-contract::clap", "shared", "")]);
+        let macos = xml(&[
+            ("tutti-plugin-contract::clap", "shared", ""),
+            ("tutti-plugin-contract::vst3", "shared", "<skipped/>"),
+        ]);
+        let r = run(&[("linux", linux), ("macos", macos)]);
+        let (clap, vst3) = (&r[0], &r[1]);
+        assert_eq!(
+            status(clap, "clap.b", 0),
+            Status::Missing,
+            "linux has clap results"
+        );
+        assert_eq!(
+            status(clap, "clap.b", 2),
+            Status::NoResults,
+            "windows has none"
+        );
+        assert_eq!(
+            status(clap, "clap.d", 2),
+            Status::Na,
+            "the spec's own N/A stays"
+        );
+        assert_eq!(status(vst3, "vst3.x", 0), Status::NoResults);
+        assert_eq!(
+            status(vst3, "vst3.x", 1),
+            Status::Missing,
+            "a skipped test is a result"
+        );
+        let names: Vec<String> = badges(&r).into_iter().map(|b| b.0).collect();
+        assert_eq!(
+            names,
+            ["clap-linux.json", "clap-macos.json", "vst3-macos.json"]
+        );
+        let page = dashboard(&r);
+        assert!(page.contains("class=\"s noresults\""));
+        assert!(page.contains("<span>windows: no results</span>"));
+    }
+
+    #[test]
+    fn the_landing_page_links_the_dashboard_and_the_coverage_relatively() {
+        let page = landing();
+        assert!(page.contains("href=\"conformance/index.html\""));
+        assert!(page.contains("href=\"coverage/html/index.html\""));
+        assert!(!page.contains("http://") && !page.contains("https://"));
+    }
+
+    #[test]
     fn counts_leave_not_applicable_rows_out_of_the_total() {
         let linux = xml(&[("tutti-plugin-contract::clap", "shared", "")]);
         let clap = &run(&[("linux", linux)])[0];
@@ -635,17 +727,11 @@ impl Format for Vst3 {
             badge(clap, 0),
             "{\"schemaVersion\":1,\"label\":\"clap linux\",\"message\":\"3/3\",\"color\":\"brightgreen\"}\n"
         );
-        assert!(
-            badge(clap, 1).contains("\"message\":\"0/3\"") && badge(clap, 1).contains("\"red\"")
-        );
         let names: Vec<String> = badges(std::slice::from_ref(clap))
             .into_iter()
             .map(|b| b.0)
             .collect();
-        assert_eq!(
-            names,
-            ["clap-linux.json", "clap-macos.json", "clap-windows.json"]
-        );
+        assert_eq!(names, ["clap-linux.json"], "no badge without results");
     }
 
     #[test]

@@ -1,5 +1,4 @@
-//! The tutti engine's Bevy-free API layer (design 015): the cross-crate
-//! composition both umbrellas use.
+//! The tutti engine's API layer (design 015): the cross-crate composition.
 //!
 //! A [`Session`] is a [`Graph`] (a `tutti-graph` editor, the nodes inserted
 //! through it, their event feeds), its transport, and the engine side it
@@ -7,8 +6,7 @@
 //! with [`Session::render`]), on a device (`device`: the `!Send`
 //! `Device` stays on the thread that opened it), or detached (the
 //! executor stays on this side). One call, [`Session::update`], runs the
-//! steps of a frame in [`PHASES`] order: a Bevy app runs the same phases one
-//! system at a time.
+//! steps of a frame in [`PHASES`] order.
 //!
 //! ```
 //! use tutti_types::MaxBlock;
@@ -31,8 +29,7 @@
 //! ```
 //!
 //! Like `tutti-graph`, every module is private: everything is
-//! `tutti_session::Item`. Nothing here reaches Bevy,
-//! and the crate re-exports no crate whole (`cargo xtask check-session`).
+//! `tutti_session::Item`. The crate re-exports no crate whole (`cargo xtask check-session`).
 
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -122,7 +119,9 @@ pub use graph::{
 #[cfg(all(feature = "device", feature = "audio-io"))]
 pub use input::{Input, InputConfig, InputOpener, OpenedInput, Trim};
 #[cfg(feature = "midi")]
-pub use instrument::{AddedInstrument, InstrumentHandle, NotInstrument, SessionInstrument};
+pub use instrument::{
+    AddedInstrument, AnyNode, InstrumentHandle, NotInstrument, SessionInstrument,
+};
 pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, EventTapPort, Fanin,

@@ -2,8 +2,7 @@
 //! rendered, so a break anywhere between the declaration and the speaker
 //! fails it.
 //!
-//! The session half of `bevy-tutti`'s `midi_soundfont` suite (its ECS half,
-//! the `PlaySoundFont` spawner and the asset, stayed there). Every other MIDI
+//! Every other MIDI
 //! test asserts on the plumbing (`midi.rs`' stand-in synth logs the events
 //! at its port, `general_midi.rs` reads the topology); these render a real
 //! `SoundFontUnit` through the graph and measure the output.
@@ -12,9 +11,7 @@
 //! one fails with the resolved path rather than skipping.
 //!
 //! The clip tests roll the transport from beat 0 at 120 BPM (24 000 frames a
-//! beat), where the `bevy-tutti`
-//! ones moved a hand-kept playhead; the property is the same (a note sounds
-//! on its beat and not before).
+//! beat); the property is that a note sounds on its beat and not before.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -111,7 +108,7 @@ fn play(s: &Session) {
 fn a_declared_note_produces_audio() {
     let (mut s, synth) = rig();
     s.midi()
-        .play_clip(synth, note(60, Beat(0.0), BeatDuration(2.0)))
+        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(2.0)))
         .expect("a synth takes a clip");
     let _ = s.update();
     play(&s);
@@ -134,7 +131,7 @@ fn a_declared_note_produces_audio() {
 fn the_note_waits_for_its_beat() {
     let (mut s, synth) = rig();
     s.midi()
-        .play_clip(synth, note(60, Beat(4.0), BeatDuration(4.0)))
+        .play_clip(synth, Beat(0.0), note(60, Beat(4.0), BeatDuration(4.0)))
         .expect("a synth takes a clip");
     let _ = s.update();
     play(&s);
@@ -167,7 +164,7 @@ fn preview_still_sounds_under_an_installed_clip() {
     // A clip whose first note is far in the future, so anything audible in
     // the next quarter-second can only be the preview.
     s.midi()
-        .play_clip(synth, note(60, Beat(100.0), BeatDuration(1.0)))
+        .play_clip(synth, Beat(0.0), note(60, Beat(100.0), BeatDuration(1.0)))
         .expect("a synth takes a clip");
     let _ = s.update();
     play(&s);

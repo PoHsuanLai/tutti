@@ -8,9 +8,10 @@
 
 use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, BlockCounts, ContentScale, Control, Delivered,
-    EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Health, LoadedPlugin, MainThread,
-    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure, PluginResult,
-    Preset, PresetId, RenderMode, Request, SampleRate, StateError, TerminationReason, WindowHandle,
+    EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Features, Health, LoadedPlugin,
+    MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure,
+    PluginResult, Preset, PresetId, RenderMode, RenderModeSupport, Request, SampleRate, StateError,
+    TerminationReason, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -246,6 +247,17 @@ macro_rules! served_control {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 out.append(&mut asked);
+            }
+
+            /// `Live` from here wherever the plugin has a mode: the server
+            /// tells it or activates it again itself, so the host never
+            /// reactivates a served plugin for its mode.
+            fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+                if self.link.loaded.features.contains(Features::RENDER_MODE) {
+                    RenderModeSupport::Live
+                } else {
+                    RenderModeSupport::Unsupported
+                }
             }
 
             fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {

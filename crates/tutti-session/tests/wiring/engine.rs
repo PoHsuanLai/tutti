@@ -1,7 +1,5 @@
 //! The engine an offline session builds, rendered from the builder's own
-//! wiring (the click it inserts). Moved from `bevy-tutti`'s
-//! `engine::build` tests, which rendered the same engine through the
-//! adapter's `assemble`.
+//! wiring (the click it inserts).
 //!
 //! Each test stands on analytic figures (onset frames, the tone a dry voice
 //! reads, a pitched voice's fifth up) and on what needs no oracle (a voice's

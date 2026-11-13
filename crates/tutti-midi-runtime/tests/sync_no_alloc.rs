@@ -7,8 +7,7 @@
 //! adds jitter to the derived tempo.
 //!
 //! Tick body is pure scalar state arithmetic + a fixed-size ring buffer
-//! update; the gate is a regression net against a future change that
-//! moves to a `Vec`-backed interval history or similar.
+//! update.
 
 use assert_no_alloc::AllocDisabler;
 use std::time::{Duration, Instant};

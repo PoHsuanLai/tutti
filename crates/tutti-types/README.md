@@ -47,9 +47,9 @@ latency pass and the tail fold are `tutti-graph`'s.
 ## What this crate does not own
 
 Anything that renders, decodes, or opens a device. It is the **root leaf** —
-Bevy-free, engine-free, depending on no workspace crate (its outside
-dependencies are `atomic_float` and `libm`, plus `serde` and `bevy_reflect`
-behind their features) and `#![forbid(unsafe_code)]`. The lock-free and `unsafe`
+Engine-free, depending on no workspace crate (its outside
+dependencies are `atomic_float` and `libm`, plus `serde`
+behind its feature) and `#![forbid(unsafe_code)]`. The lock-free and `unsafe`
 runtime primitives, the graph runtime, the engine, the device and the file
 codecs are other crates'. Two consequences make the split load-bearing:
 
@@ -116,18 +116,12 @@ escape to raw `f32`.
 
 ## Features
 
-Both are off by default (`default = []`) — the engine-wide rule that Bevy is
-opt-in is stated here rather than inherited, because this is the crate every
-other one names.
+Off by default (`default = []`).
 
 - `serde` — `Serialize`/`Deserialize` on the wire- and document-carried types:
   the unit newtypes, `Samples`, `Frame`, `Note`, `Latency`, `Tail`,
   `ChannelLayout`, `ChannelTopology` and the meter vocabulary. Not `Param`,
   `UnitParam` or `LoopRange`.
-- `bevy` — `Reflect` on the unit newtypes, `ChannelLayout` and the param
-  addresses (`UnitParam`, `UnitAddr`, `ParamAddr`). Reflection only: no
-  `Component`/`Resource` derives, because an app stores a `Volume`, never a bare
-  `Db`.
 
 ## License
 

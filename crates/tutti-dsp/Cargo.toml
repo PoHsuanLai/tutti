@@ -43,9 +43,8 @@ thiserror.workspace = true
 rand = { version = "0.8", optional = true }
 
 [features]
-# No `bevy` feature, and no default features. This crate is a library of
-# algorithms over `&[f32]` (filters, dynamics, convolution, delay, reverb);
-# a host that wants these results in an ECS wires them up on its own side.
+# No default features. This crate is a library of algorithms over `&[f32]`
+# (filters, dynamics, convolution, delay, reverb).
 default = []
 # The contract suite, `tutti_dsp::contract` (design 024 section 6): the cases a
 # design and its realization are held to, the one public module of the crate.

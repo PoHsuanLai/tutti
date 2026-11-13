@@ -9,8 +9,7 @@ mod device;
 mod device_input;
 #[cfg(feature = "device")]
 mod device_listing;
-// A restart onto another rate, width or block (the session halves of
-// `bevy-tutti`'s `engine::restart` tests), and the MIDI clock's re-rate.
+// A restart onto another rate, width or block, and the MIDI clock's re-rate.
 #[cfg(all(feature = "device", feature = "midi"))]
 mod device_midi_clock;
 // The hardware out is sent at the time of each event's frame.

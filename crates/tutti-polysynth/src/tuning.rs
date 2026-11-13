@@ -20,7 +20,7 @@ use tutti_ump::NoteNumber;
 const A4_FREQ: Hz = Hz(440.0);
 const A4_NOTE: NoteNumber = NoteNumber::of(69);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ScaleDegree {
     /// 0 = unison, 1200 = octave
     pub cents: Cents,
@@ -61,7 +61,7 @@ pub(crate) fn key_freq(note: f32, tune: Semitones) -> Hz {
 /// `k / n`, so a non-12 scale repeats every `n` note numbers rather than every
 /// 12. A 24-degree quarter-tone scale therefore spans an octave across 24 keys,
 /// and the keyboard covers correspondingly less range.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tuning {
     degrees: Vec<ScaleDegree>,
     freq_table: [Hz; 128],

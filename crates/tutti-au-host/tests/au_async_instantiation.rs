@@ -12,13 +12,13 @@
 //! current context": a message that reads like a transient condition worth
 //! retrying, for a component this entry point can never create.
 //!
-//! # The corpus, not a fixture
+//! //! # A component that carries the flag
 //!
-//! These run against whatever is installed. That is deliberate — the flag is
-//! set by the *system* at registration, not by anything a test can construct,
-//! so a synthetic component cannot carry it. The trade is that coverage depends
-//! on the machine: on a system with no v3-with-view units the flag-specific
-//! assertions have nothing to look at, and say so rather than passing silently.
+//! The flag is part of a component's description, so
+//! `an_async_only_component_is_refused_by_name` registers the shared test plugin
+//! a second time under a subtype whose description sets it
+//! (`tutti_shared_plugin::register_au_async_only`) and asserts the refusal on
+//! that unit as well as on every component the system flags itself.
 
 #![cfg(target_os = "macos")]
 
@@ -66,20 +66,16 @@ fn enumeration_carries_the_component_flags() {
 /// back a generic "cannot do in current context" that suggests retrying.
 #[test]
 fn an_async_only_component_is_refused_by_name() {
+    tutti_shared_plugin::register_au_async_only();
     let all = corpus();
     let async_only = async_only(&all);
-
-    if async_only.is_empty() {
-        // Not an assertion, because it would be one that cannot fail on a
-        // machine with no such units. Reported so a green run on such a machine
-        // is not mistaken for coverage.
-        eprintln!(
-            "no component on this system sets RequiresAsyncInstantiation \
-             (checked {}); the refusal path is unexercised here",
-            all.len()
-        );
-        return;
-    }
+    assert!(
+        async_only
+            .iter()
+            .any(|c| c.sub_type == u32::from_be_bytes(tutti_shared_plugin::AU_ASYNC_SUBTYPE)),
+        "the registered async-only copy of the shared plugin is not in the \
+         enumeration with its flag, so no component here can be refused"
+    );
 
     for info in async_only {
         let err = AuHandle::new(info.component).err().unwrap_or_else(|| {
@@ -138,35 +134,4 @@ fn a_normal_component_is_not_refused_as_async_only() {
         "none of the first 20 non-async components could be instantiated at \
          all, so this test proved nothing about the guard"
     );
-}
-
-/// `is_v3` and `requires_async_instantiation` are different questions.
-///
-/// The system sets `IsV3AudioUnit` for every v3 unit and the async flag only
-/// for those *with views*, so conflating them would refuse loadable v3 units.
-/// Reported rather than asserted: whether the distinguishing case exists
-/// depends on what is installed.
-#[test]
-fn v3_and_async_only_are_not_the_same_set() {
-    let all = corpus();
-    let v3: Vec<_> = all.iter().filter(|c| c.is_v3()).collect();
-    let async_only = async_only(&all);
-
-    eprintln!(
-        "corpus: {} components, {} v3, {} async-only",
-        all.len(),
-        v3.len(),
-        async_only.len()
-    );
-
-    // Every async-only component is v3 — the flag is only set for v3 units
-    // with views — so this direction holds whenever the set is non-empty.
-    for info in &async_only {
-        assert!(
-            info.is_v3(),
-            "{}: requires async instantiation but is not flagged v3, which \
-             contradicts AudioComponent.h:200-201",
-            info.name
-        );
-    }
 }

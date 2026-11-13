@@ -55,8 +55,11 @@ pub(crate) const FOLLOW_TAP_CAPACITY: tutti_graph::EventCapacity =
 
 /// What [`Midi::follow_tempo`](crate::Midi::follow_tempo) follows.
 ///
-/// The source is a Group's Flex Data of the session's MIDI input node ([`MidiNodes::input`](crate::MidiNodes::input)), the
-/// only source built; MIDI Clock and MTC are later sources of the same call.
+/// The only source today is a Group's Flex Data Set Tempo (and Set Time
+/// Signature) on the session's MIDI input node
+/// ([`MidiNodes::input`](crate::MidiNodes::input)). **MIDI Clock and MIDI
+/// Time Code are not followed yet**: a device that sends only those changes
+/// nothing, and this struct has no field to choose a source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FollowTempo {
     /// The Group followed. A Group is a cable of its own (M2-104 §2.1.2,

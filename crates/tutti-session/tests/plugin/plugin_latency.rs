@@ -2,14 +2,8 @@
 //! callback size re-declares it (design 015 §4.3), over the reference CLAP
 //! plugin in a real `plugin-server`.
 //!
-//! These are the session halves of `bevy-tutti`'s `plugin_capture` (the
-//! latency half of `a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions`,
-//! `a_crossfaded_plugin_is_bound_again`) and of its
-//! `a_restart_to_another_callback_size_re_declares_a_plugins_latency`, moved
-//! here when the adapter was parked. What stayed with the adapter is
-//! entity-shaped: the `PluginShadow`, the `PluginMeterBound` marker, the
-//! meter installed on a crossfade's incoming client (the adapter's
-//! `plugin_bind_meter`; `Session::crossfade_plugin` installs none).
+//! `Session::crossfade_plugin` installs no meter on a crossfade's incoming
+//! client.
 //!
 //! **Build `plugin-server` first** (`cargo build -p tutti-plugin-server`):
 //! it is not a dev-dependency (a cycle through `tutti-plugin`), and without it
@@ -75,10 +69,7 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
 /// takes MIDI and automation on one event input. Idle updates leave the graph
 /// clean (the phase compares the plugin's declared figure with the editor's
 /// and, while they agree, edits nothing: no recompile and no republish frame
-/// after frame). A latency the plugin changes (what `latency.changed` writes
-/// into its cell) reaches the graph through `Phase::Plugins`, with a
-/// `PluginLatencyChanged`; a figure past what PDC compensates is clamped, not
-/// refused.
+/// after frame).
 #[test]
 fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     let mut s = offline();

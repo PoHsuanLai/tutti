@@ -147,7 +147,11 @@ fn a_clip_plays_its_note_on_its_frame() {
     let mut s = offline();
     let (synth, seen) = tap(&mut s);
     s.midi()
-        .play_clip(synth, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
+        .play_clip(
+            synth,
+            Beat(0.0),
+            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+        )
         .expect("the tap takes MIDI");
     let _ = s.update();
     roll(&s, 9_000);
@@ -161,27 +165,105 @@ fn a_clip_plays_its_note_on_its_frame() {
 fn a_clip_edit_updates_in_place() {
     let mut s = offline();
     let (synth, seen) = tap(&mut s);
-    let clip = s
-        .midi()
-        .play_clip(synth, note(60, Beat(0.0), BeatDuration(1.0)))
+    s.midi()
+        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(1.0)))
         .unwrap();
+    let clip = s.midi().clip(synth).expect("the target's clip");
     let _ = s.update();
     let nodes = plan_nodes(&s);
 
-    let edited = s
-        .midi()
-        .play_clip(synth, note(64, Beat(1.0 / 3.0), BeatDuration(1.0)))
+    s.midi()
+        .play_clip(
+            synth,
+            Beat(0.0),
+            note(64, Beat(1.0 / 3.0), BeatDuration(1.0)),
+        )
         .unwrap();
     let _ = s.update();
-    assert_eq!(edited, clip, "the same clip");
+    assert_eq!(s.midi().clip(synth), Some(clip), "the same clip");
     assert_eq!(plan_nodes(&s), nodes, "and no node more");
     roll(&s, 9_000);
     assert_eq!(note_ons(&seen), vec![(8_000, 64)], "playing the new events");
 
-    assert!(s.midi().stop_clip(synth));
+    s.midi().stop_clip(synth).expect("the target has a clip");
     let _ = s.update();
     assert_eq!(s.midi().clip(synth), Some(clip), "the emptied clip stays");
     assert!(s.graph_ref().contains(clip));
+}
+
+/// **A clip's events land `at` beats later**: a third of a beat into the
+/// clip, started at beat 1, is a third of a beat past beat 1, frame 32 000 at
+/// 120 BPM / 48 kHz.
+#[test]
+fn a_clip_starts_at_the_beat_it_is_given() {
+    let mut s = offline();
+    let (synth, seen) = tap(&mut s);
+    s.midi()
+        .play_clip(
+            synth,
+            Beat(1.0),
+            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+        )
+        .expect("the tap takes MIDI");
+    let _ = s.update();
+    roll(&s, 33_000);
+    assert_eq!(note_ons(&seen), vec![(32_000, 60)]);
+}
+
+/// **A start that is not a finite beat is refused, and nothing is made.**
+#[test]
+fn a_clip_start_that_is_not_finite_is_refused() {
+    let mut s = offline();
+    let (synth, _) = tap(&mut s);
+    let nan = Beat(0.0 / std::hint::black_box(0.0));
+    for bad in [nan, Beat(f64::INFINITY)] {
+        assert!(matches!(
+            s.midi()
+                .play_clip(synth, bad, note(60, Beat(0.0), BeatDuration(1.0))),
+            Err(MidiError::BeatNotFinite(_))
+        ));
+    }
+    assert_eq!(s.midi().clip(synth), None, "no clip was made");
+}
+
+/// **Stopping a clip a target does not have names the target.**
+#[test]
+fn stopping_a_clip_that_is_not_there_names_the_target() {
+    let mut s = offline();
+    let (synth, _) = tap(&mut s);
+    assert!(matches!(
+        s.midi().stop_clip(synth),
+        Err(MidiError::NoClip(n)) if n == synth
+    ));
+}
+
+/// **A file plays as a clip at the beat it is given**: a note on its beat 1,
+/// in a file played from beat 1, sounds at beat 2 (frame 48 000), and a format
+/// 2 file, which has no one timeline, is refused with that reason.
+#[test]
+fn a_file_plays_at_a_beat_and_a_format_2_file_is_refused() {
+    use tutti_midi_file::{MidiFile, SmfFormat, Tick, Track};
+    use tutti_ump::U7;
+    let track = Track::new().note(
+        Tick(480),
+        240,
+        MidiChannel::FIRST,
+        NoteNumber::of(62),
+        U7::of(100),
+    );
+    let file = MidiFile::smf(SmfFormat::SingleTrack, 480, vec![track.clone()]).unwrap();
+    let mut s = offline();
+    let (synth, seen) = tap(&mut s);
+    s.midi().play_file(synth, Beat(1.0), &file).unwrap();
+    let _ = s.update();
+    roll(&s, 49_000);
+    assert_eq!(note_ons(&seen), vec![(48_000, 62)]);
+
+    let sequential = MidiFile::smf(SmfFormat::Sequential, 480, vec![track]).unwrap();
+    assert!(matches!(
+        s.midi().play_file(synth, Beat(0.0), &sequential),
+        Err(MidiError::File(tutti_midi_file::Error::NoCommonTimeline(_)))
+    ));
 }
 
 /// **A target that takes no MIDI is refused**: a node with no event input,
@@ -195,7 +277,7 @@ fn a_target_without_an_event_input_takes_no_clip() {
             0.5,
         )));
     assert!(matches!(
-        s.midi().play_clip(dc, std::iter::empty::<TimedMidiEvent>()),
+        s.midi().play_clip(dc, Beat(0.0), std::iter::empty::<TimedMidiEvent>()),
         Err(MidiError::NoEventInput(n)) if n == dc.erase()
     ));
     s.remove(dc).unwrap();
@@ -213,10 +295,10 @@ fn a_target_without_an_event_input_takes_no_clip() {
 fn a_clip_and_a_live_input_survive_a_re_bind() {
     let mut s = offline();
     let (old, old_seen) = tap(&mut s);
-    let clip = s
-        .midi()
-        .play_clip(old, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
+    s.midi()
+        .play_clip(old, Beat(0.0), note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
         .unwrap();
+    let clip = s.midi().clip(old).expect("the target's clip");
     let mut live = s.midi().input(old).unwrap();
     let inlet = s.graph_ref().feed(old, Feeder::LiveInput)[0].node();
     let _ = s.update();
@@ -579,10 +661,10 @@ fn dropped_ticks_are_reported_at_most_once_a_second() {
 fn the_sessions_midi_nodes_keep_their_reclaimers() {
     let mut s = offline();
     let (synth, _) = tap(&mut s);
-    let clip = s
-        .midi()
-        .play_clip(synth, note(60, Beat(0.0), BeatDuration(1.0)))
+    s.midi()
+        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(1.0)))
         .expect("the tap takes MIDI");
+    let clip = s.midi().clip(synth).expect("the target's clip");
     assert!(s.graph_ref().testing().keeps_reclaimer(clip), "the clip's");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     assert!(
@@ -1015,10 +1097,14 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     s.graph()
         .set_sources(input(synth), [hand.events_out()])
         .unwrap();
-    let clip = s
-        .midi()
-        .play_clip(synth, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
+    s.midi()
+        .play_clip(
+            synth,
+            Beat(0.0),
+            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+        )
         .unwrap();
+    let clip = s.midi().clip(synth).expect("the target's clip");
     let _ = s.update();
     assert_eq!(
         sorted(s.graph_ref().sources(input(synth)).unwrap()),
@@ -1069,7 +1155,9 @@ fn a_port_that_loses_events_is_reported() {
         )
         .unwrap()
     });
-    s.midi().play_clip(synth, chord).expect("takes MIDI");
+    s.midi()
+        .play_clip(synth, Beat(0.0), chord)
+        .expect("takes MIDI");
     let _ = s.update();
     roll(&s, 512);
     let lost: Vec<_> = s

@@ -1,7 +1,7 @@
 //! [`MidiFile::to_clip`]: a Standard MIDI File as a MIDI 2.0 Clip File.
 //!
-//! M2-116 section 3.3: the SMF 1 "Meta Events" "have been replaced by new
-//! MIDI messages in the UMP Format", mostly Flex Data (message type D), and
+//! M2-116 section 3.3: the SMF 1 Meta Events are replaced by new
+//! messages in the UMP Format, mostly Flex Data (message type D), and
 //! Appendix B lists them. This module is that replacement as a function.
 //! What has no replacement is returned beside the clip, never dropped
 //! silently.
@@ -30,7 +30,7 @@ pub enum ToClipError {
 }
 
 /// Why an SMF event has no place in the clip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DropReason {
     /// No UMP message replaces it (M2-116 Appendix B lists none): Sequence
@@ -38,7 +38,7 @@ pub enum DropReason {
     /// Sequencer Specific, any other meta event, and an `F7` escape.
     NoSuccessor,
     /// SMPTE Offset. M2-116 Appendix B names an SMPTE Offset message as its
-    /// successor, "defined in" M2-104, but M2-104 v1.1.2 defines no such
+    /// successor, defined in M2-104, but M2-104 v1.1.2 defines no such
     /// message, so there is nothing to write it as yet.
     SuccessorUndefined,
     /// Channel Prefix and MIDI Port Prefix. They address the meta events
@@ -61,10 +61,10 @@ pub enum DropReason {
     /// not hold.
     KeySignatureOutOfRange,
     /// A Time Signature with a denominator power of 0 (a whole note): the
-    /// Flex field reads 0 as "non-standard" (M2-104 section 7.5.4).
+    /// Flex field reads 0 as non-standard (M2-104 section 7.5.4).
     WholeNoteDenominator,
     /// A Time Signature with a numerator of 0, a bar of no beats: the Flex
-    /// field holds "a value from 1 to 256" (M2-104 section 7.5.4).
+    /// field holds a value from 1 to 256 (M2-104 section 7.5.4).
     ZeroNumerator,
     /// A System Exclusive event that is not one complete message of 7-bit
     /// bytes from `F0` to `F7`: a divided message (its `F0` part has no `F7`)
@@ -72,13 +72,13 @@ pub enum DropReason {
     SysexNotCompleteSevenBit,
     /// A MIDI-CI Property Exchange message (Universal System Exclusive
     /// `7E`, sub-ID#1 `0D`, sub-ID#2 `30` to `3F`, M2-101 section 8):
-    /// "Property Data for PE Resources shall not be included in a MIDI Clip
-    /// File" (M2-116 section 6.4), and the sequence data may hold "any MIDI
-    /// messages in UMP Format, except Property Exchange messages" (7.2).
+    /// Property Data for PE Resources is not included in a Clip File
+    /// (M2-116 section 6.4), and the sequence data holds no Property Exchange
+    /// message (7.2).
     PropertyExchange,
     /// A text event with no bytes. SMF gives it no meaning, and the Flex
-    /// message it would become does: a Complete Lyric packet "filled with the
-    /// value 0x00 ... specifies a melisma" (M2-104 section 7.5.10.1).
+    /// message it would become does: a Complete Lyric packet filled with
+    /// zero bytes specifies a melisma (M2-104 section 7.5.10.1).
     EmptyText,
 }
 
@@ -154,11 +154,9 @@ fn signature(
             thirty_seconds,
         })),
         // SMF has the clocks per click only, so the bar is not divided:
-        // "If the bar is not divided, then the value of Bar Accent Part 1
-        // shall be equal to the number of beats in the bar, Bar Accent Part 2
-        // shall be set to zero, and Bar Accent Part 3 shall be set to zero"
-        // (M2-104 section 7.5.5). "Set a value of 0 to not use any
-        // Subdivision Clicks" (same section).
+        // An undivided bar has Bar Accent Part 1 equal to the beats in the
+        // bar and Parts 2 and 3 zero, and a Subdivision Clicks value of 0
+        // means none (M2-104 section 7.5.5).
         flex(Flex::SetMetronome(Metronome {
             clocks_per_click,
             accent_1: numerator,
@@ -198,9 +196,8 @@ fn key_signature(sharps: i8, minor: bool) -> Option<KeySignature> {
 
 /// A text as its Flex packets, or why it has none.
 ///
-/// "MIDI messages only use normalized UTF-8 encoded Unicode characters,
-/// following the NFC (Normalization Form C) standard" and "shall not include
-/// a Byte Order Mark" (M2-104 section 1.8): a leading BOM goes and the rest is
+/// Message text is NFC-normalized UTF-8 with no Byte Order Mark (M2-104
+/// section 1.8): a leading BOM goes and the rest is
 /// composed to NFC, which changes how the text is spelled, never what it says.
 fn text(kind: FlexTextKind, bytes: &[u8]) -> std::result::Result<Vec<FileEvent>, DropReason> {
     if bytes.is_empty() {
@@ -273,9 +270,9 @@ fn convert(
             }
             Meta::Text { kind, bytes } => {
                 let kind = match kind {
-                    // SMF 1.0 section 3.3: "In a format 0 track, or the first
-                    // track in a format 1 file, the name of the Sequence.
-                    // Otherwise, the name of the Track." The sequence is the
+                    // SMF 1.0 section 3.3: in a format 0 track, or the first
+                    // track of a format 1 file, the name is the sequence's,
+                    // otherwise the track's. The sequence is the
                     // Composition (Song) Name of Appendix B.
                     TextKind::TrackName if track == 0 && format != SmfFormat::Sequential => {
                         FlexTextKind::CompositionName
@@ -283,7 +280,7 @@ fn convert(
                     TextKind::TrackName => return Err(DropReason::TrackName),
                     TextKind::Copyright => FlexTextKind::Copyright,
                     TextKind::Lyric => FlexTextKind::Lyrics,
-                    // "Any text" is what the Unknown Metadata Text message is
+                    // Any text is what the Unknown Metadata Text message is
                     // for (M2-104 Table 16, bank 1 status 0).
                     TextKind::Text => FlexTextKind::UnknownMetadata,
                     TextKind::InstrumentName
@@ -333,12 +330,12 @@ impl MidiFile {
     /// Placement follows M2-116 sections 7.1.1 and 7.1.2: at tick 0 the Set
     /// Tempo messages come first and the Set Time Signature messages (each
     /// with its Set Metronome) next, then the rest; a file with no Set Tempo
-    /// at tick 0 gets the SMF default, 120 bpm (SMF 1.0 section 3.3: "If no
-    /// tempo is specified, 120 beats per minute is assumed"), and one with no
+    /// at tick 0 gets the SMF default, 120 bpm (SMF 1.0 section 3.3: without a
+    /// tempo, 120 beats per minute is assumed), and one with no
     /// Time Signature 4/4, 24 clocks per click, 8 32nds per quarter, so the
     /// clip says what a SMF reader assumed. A later tempo or time signature
-    /// stays on its own tick: the spec's "where MIDI clocks fall" and "at a
-    /// bar line" are wishes about the author's grid, and moving an event
+    /// stays on its own tick: the spec's advice to place them on MIDI clocks and
+    /// bar lines is a wish about the author's grid, and moving an event
     /// would change the music. The [header](Track::header) is empty: the
     /// sequence data carries the tempo, which the spec's section 7.1.1 asks.
     ///

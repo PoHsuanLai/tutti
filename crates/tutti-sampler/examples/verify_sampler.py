@@ -96,8 +96,7 @@ ZERO_OVERLAP = {"pitch_down_two_octaves", "stretch_half_pitch_down"}
 
 # Cases with a known pitch defect, reported as KNOWN-BUG rather than failed.
 # Empty: every stretch_* case keeps its pitch, because the stretch rate reaches
-# both the block origin and the within-block step
-# (`MemorySource::stretched_window_position`). Kept so a regression of that
+# both the block origin and the within-block step. Kept so a regression of that
 # kind can be recorded here instead of widening a tolerance.
 KNOWN_BROKEN: set[str] = set()
 

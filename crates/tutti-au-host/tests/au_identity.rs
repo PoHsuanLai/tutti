@@ -62,11 +62,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// Every instantiable unit hands back the exact context name written.
 ///
-/// Asserts the **read-back**, not the write status. An earlier version of this
-/// test asserted only that the write returned `Ok`, which meant
-/// `set_context_name` could be replaced by `Ok(())` and all nine tests still
-/// passed — the precise failure this suite's header warns about, committed into
-/// the suite meant to prevent it.
+/// Asserts the **read-back**, not the write status.
 #[test]
 fn every_unit_round_trips_a_context_name() {
     let _g = lock();
@@ -305,8 +301,7 @@ fn a_non_implementing_unit_reports_the_gap_rather_than_an_empty_list() {
 /// The same distinction `parameters_for_overview` already had a test for, and
 /// for the same reason: `Ok(None)` says "implements it, nothing set", `Err`
 /// says "ask elsewhere". Collapsing them downgrades every non-implementer
-/// silently. Both readers survived being rewritten to swallow their error
-/// before this existed.
+/// silently.
 #[test]
 fn the_string_readers_report_a_missing_property_as_an_error() {
     let _g = lock();

@@ -1,5 +1,4 @@
 //! Interfaces to VST events.
-// TODO: Update and explain both host and plugin events
 
 use std::{mem, slice};
 
@@ -40,7 +39,6 @@ pub struct MidiEvent {
     ///
     /// E.g. if the block size is 512 and this value is 123, the event will occur on sample
     /// `samples[123]`.
-    // TODO: Don't repeat this value in all event types
     pub delta_frames: i32,
 
     /// This midi event was created live as opposed to being played back in the sequencer.
@@ -166,8 +164,6 @@ mod tests {
     /// reserved bit is behaving legally. Decoding with `from_bits().unwrap()`
     /// turned that into a panic raised through an `extern "C"` frame, on the
     /// path every single MIDI event from every VST2 plugin travels.
-    ///
-    /// The sibling case in `channels.rs` was already fixed; this one was missed.
     #[test]
     fn an_undefined_flag_bit_does_not_panic_the_midi_path() {
         let raw = api::MidiEvent {

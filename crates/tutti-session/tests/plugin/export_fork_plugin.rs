@@ -2,8 +2,7 @@
 //! plugin through a real `plugin-server`, exported through a fork: a fresh
 //! instance in a server of its own, loaded with the live one's state
 //! (tutti-plugin's `PluginClient::fork_instance`), so the render thread never
-//! drives the **live** plugin. The session halves of what `bevy-tutti`'s
-//! export suite pinned before that crate was parked.
+//! drives the **live** plugin.
 //!
 //! **Build the server first**: `cargo build -p tutti-plugin-server`. It is
 //! not a dev-dependency (a cycle through `tutti-plugin`), and without it every
@@ -290,7 +289,7 @@ fn instrument_at(rate: f64, hosting: Hosting) {
     };
     session
         .midi()
-        .play_clip(probe, vec![note(1.0, true), note(2.0, false)])
+        .play_clip(probe, Beat(0.0), vec![note(1.0, true), note(2.0, false)])
         .expect("the plugin takes a clip");
     let _ = session.update();
 

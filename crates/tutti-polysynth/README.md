@@ -107,7 +107,7 @@ the control thread.
   are `tutti-midi-hardware`.
 
 The `tutti` crate re-exports this one as `tutti::polysynth` behind its
-`synth` feature, and `bevy-tutti` uses it behind the same feature.
+`synth` feature.
 
 ## Examples
 

@@ -1,5 +1,5 @@
 //! [`OutputPlan`]: when a hardware MIDI output should send an event, as a pure
-//! function (design 017, "OutputPlan").
+//! function.
 //!
 //! The graph's MIDI is on frames. A device wants it at a time, and the OS's
 //! sequencer or CoreMIDI will hold an event until a time it is given, so the
@@ -97,21 +97,9 @@ impl Outgoing {
 pub struct OutputOffset(Seconds);
 
 /// The seconds [`OutputOffset::try_from`] refused.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("an output offset is finite and at most {} s either way, not {} s", MAX_OUTPUT_LATENCY.get(), .0.get())]
 pub struct OffsetOutOfRange(pub Seconds);
-
-impl core::fmt::Display for OffsetOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "an output offset is finite and at most {} s either way, not {} s",
-            MAX_OUTPUT_LATENCY.get(),
-            self.0.get()
-        )
-    }
-}
-
-impl std::error::Error for OffsetOutOfRange {}
 
 impl OutputOffset {
     /// No trim.
@@ -160,15 +148,6 @@ impl OutputLatency {
     #[must_use]
     pub fn new(device: Duration, offset: OutputOffset) -> Option<Self> {
         (device.as_secs_f64() <= MAX_OUTPUT_LATENCY.get()).then_some(Self { device, offset })
-    }
-
-    /// Only the user's offset.
-    #[must_use]
-    pub fn offset_only(offset: OutputOffset) -> Self {
-        Self {
-            device: Duration::ZERO,
-            offset,
-        }
     }
 
     /// What the device takes to sound an event: it is sent that much earlier.

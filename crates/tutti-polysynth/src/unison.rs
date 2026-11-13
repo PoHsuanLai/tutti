@@ -6,7 +6,6 @@
 //! and spread are recomputed only when they change, so the audio thread does an
 //! array index rather than the trigonometry.
 
-use core::fmt;
 use tutti_types::{Amplitude, Cents, Pan, Param, Phase, Spread};
 
 pub(crate) const MAX_UNISON_VOICES: usize = UnisonVoices::MAX as usize;
@@ -63,21 +62,9 @@ impl Default for UnisonVoices {
 }
 
 /// The refused count of [`UnisonVoices`]'s `TryFrom<u8>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a unison stack is 1 to {} sub-voices, but was {}", UnisonVoices::MAX, .0)]
 pub struct UnisonVoicesError(pub u8);
-
-impl fmt::Display for UnisonVoicesError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "a unison stack is 1 to {} sub-voices, but was {}",
-            UnisonVoices::MAX,
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for UnisonVoicesError {}
 
 impl TryFrom<u8> for UnisonVoices {
     type Error = UnisonVoicesError;
@@ -100,7 +87,7 @@ impl From<UnisonVoices> for u8 {
 /// sub-voices are summed to a constant-power total, so raising
 /// [`voice_count`](Self::voice_count) thickens the tone without raising the
 /// level.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnisonConfig {
     /// Sub-voices per note, 1..=16. `1` is plain unison-off and the default.
     /// Even counts have no centre voice, so the written pitch is not itself
@@ -140,7 +127,7 @@ impl Default for UnisonConfig {
 
 /// One unison sub-voice's derived parameters, recomputed by every unison
 /// setter.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct UnisonVoiceParams {
     /// Pitch ratio against the note's pitch; 1.0 is the center pitch. A bare
     /// ratio: it is the output of `Semitones::to_pitch_ratio`, and a

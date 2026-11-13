@@ -626,11 +626,6 @@ fn state_gated_entries_are_refused_while_active() {
         plugin.apply_audio_port_configuration(&main_thread(), &request),
         Ok(false)
     );
-    assert_eq!(
-        plugin.add_audio_port(&main_thread(), true, 2, None),
-        Ok(false)
-    );
-    assert_eq!(plugin.remove_audio_port(&main_thread(), true, 0), Ok(false));
 
     plugin
         .activate(&main_thread(), 48_000.0, 1, 512)
@@ -645,14 +640,6 @@ fn state_gated_entries_are_refused_while_active() {
     );
     assert_eq!(
         plugin.apply_audio_port_configuration(&main_thread(), &request),
-        Err(CallError::WrongState)
-    );
-    assert_eq!(
-        plugin.add_audio_port(&main_thread(), true, 2, None),
-        Err(CallError::WrongState)
-    );
-    assert_eq!(
-        plugin.remove_audio_port(&main_thread(), true, 0),
         Err(CallError::WrongState)
     );
 }

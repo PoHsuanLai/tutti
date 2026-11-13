@@ -233,7 +233,7 @@ impl EditorView<'_> {
         self.hosted.handle.has_editor()
     }
 
-    /// Opens the editor in `window` (a winit or Bevy window, or any
+    /// Opens the editor in `window` (a winit window, or any
     /// `raw-window-handle` 0.6 window), whose backing-store scale is `scale`:
     /// a window handle carries none. A plugin that can only float
     /// ([`Features::EDITOR_FLOATING`]) opens its own window instead and `window`

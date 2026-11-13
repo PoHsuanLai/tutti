@@ -24,7 +24,7 @@ use tutti_session::{
     RouteSpec, Session, SessionEvent, TargetName,
 };
 use tutti_transport::MotionEvent;
-use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, UnitParam};
+use tutti_types::{BeatsPerCycle, Depth, Hz, ParamAddr, UnitParam};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 use common::probe::{ProbeUnit, Pulse};
@@ -119,8 +119,7 @@ fn ducked(f: usize, ta: f64, tr: f64) -> f64 {
     0.8 - 0.6 * x
 }
 
-/// **Doc 014 §8.1, headless (design 015 §5.1), renders `bevy-tutti`'s
-/// `the_8_1_example_renders_its_analytic_values` figures on an offline
+/// **Doc 014 §8.1, headless (design 015 §5.1), renders its analytic figures on an offline
 /// session.** A sine LFO of one cycle per half beat on a cutoff (knob 500
 /// in `0..=1000`, depth 0.3) renders the analytic sine, bar-locked at 120
 /// BPM (4 Hz), within §5.3's bound past the connect's declick; and the pad
@@ -148,7 +147,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     m.range_raw(gain, 0.0, 1.0).unwrap();
-    let wobble = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
+    let wobble = m.lfo(Lfo::sine().rate(BeatsPerCycle::of(0.5)));
     m.route(RouteSpec::new(wobble, cutoff, Depth::of(0.3)))
         .unwrap();
     let kick = m.follower(Follower::default(), kick_bus);

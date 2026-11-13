@@ -5,8 +5,6 @@
 //! the CI categories it supports, and each responder replies in kind. The reply
 //! shares the Discovery *body* format, so [`DiscoveryData`] serves both.
 
-use std::fmt;
-
 use bitflags::bitflags;
 use tutti_ump::{DeviceIdentity, FunctionBlockId, U7};
 
@@ -27,11 +25,13 @@ pub const SUB_ID2_NAK: u8 = 0x7F;
 
 bitflags! {
     /// The CI capability categories a device advertises in Discovery
-    /// (M2-101 §5.5.2, the "CI Category Supported" bitmap).
+    /// (M2-101 §5.5.2, the CI Category Supported bitmap).
+    ///
+    /// Bit D1, Protocol Negotiation, is deprecated (Table 7) and has no flag:
+    /// a device built from this type cannot advertise it, and a peer's D1 is
+    /// dropped when its bitmap is read.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct CiCategories: u8 {
-        /// Supports Protocol Negotiation (deprecated in CI 1.2, kept for the bit).
-        const PROTOCOL_NEGOTIATION = 1 << 1;
         /// Supports Profile Configuration.
         const PROFILE_CONFIGURATION = 1 << 2;
         /// Supports Property Exchange.
@@ -41,19 +41,17 @@ bitflags! {
     }
 }
 
-/// The wire value of "no Function Block", `0x7F` (M2-101 §5.6.2: "If the
-/// MIDI-CI Device is not associated with a Function Block (for example, is
-/// connected by a MIDI 1.0 byte stream), then set the value to 0x7F (no
-/// Function Block)"). [`DiscoveryData::function_block`] is `None` for it.
+/// The wire value of no Function Block, `0x7F` (M2-101 §5.6.2: used when the
+/// device is not associated with a Function Block, for example on a MIDI 1.0
+/// byte stream). [`DiscoveryData::function_block`] is `None` for it.
 const NO_FUNCTION_BLOCK_WIRE: u8 = 0x7F;
 
 /// The Receivable Maximum SysEx Message Size (M2-101 §5.5.3): 28 bits, and at
 /// least 128.
 ///
-/// "All MIDI-CI Devices shall support System Exclusive message lengths of at
-/// least 128 bytes. The allowed values in the Receivable Maximum SysEx Message
-/// Size are 128 or greater." A device that can initiate Profile Configuration
-/// or Property Exchange "shall support message lengths of at least 512 bytes":
+/// Every device must support System Exclusive messages of at least 128 bytes,
+/// so 128 is the smallest value. A device that can initiate Profile Configuration
+/// or Property Exchange must support at least 512 bytes:
 /// whether a device is one is the caller's to say, so that floor is
 /// [`INITIATOR_MIN`](Self::INITIATOR_MIN) and not checked here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -102,20 +100,9 @@ impl MaxSysexSize {
 }
 
 /// A raw value that is not a Receivable Maximum SysEx Message Size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{} is not a receivable SysEx size (128 to 2^28 - 1)", .0)]
 pub struct NotASysexSize(pub u32);
-
-impl fmt::Display for NotASysexSize {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} is not a receivable SysEx size (128 to 2^28 - 1)",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for NotASysexSize {}
 
 impl TryFrom<u32> for MaxSysexSize {
     type Error = NotASysexSize;
@@ -156,36 +143,24 @@ pub struct DiscoveryData {
     /// Maximum SysEx message size the device can receive (§5.5.3).
     pub max_sysex_size: MaxSysexSize,
     /// **Output Path ID** (Message Version 2). On a Discovery this is the
-    /// initiator's own path id — §5.5.4: "Initiators that have multiple MIDI Out
-    /// connections should use a unique Output Path ID for each connection." On a
+    /// initiator's own path id — §5.5.4 has an initiator with several MIDI Out
+    /// connections use a unique Output Path ID for each. On a
     /// reply it echoes the id from the Discovery that prompted it, which §5.6.1
-    /// makes mandatory: "The Reply to Discovery shall return the same Output
-    /// Path ID provided in the originating Discovery Message."
+    /// makes mandatory (the Reply returns the Output Path ID of the Discovery
+    /// it answers).
     pub output_path_id: U7,
     /// **Function Block** this responder represents (Message Version 2, *reply
     /// only*), or `None` (wire `0x7F`) if it represents none. A number the
     /// spec does not give a Function Block (32 to 126) is malformed.
     ///
-    /// §5.6.2: "The Reply to Discovery shall declare the number of the Function
-    /// Block that this Responder represents. This allows an Initiator to tie a
-    /// Function Block to a MIDI-CI Device." Ignored when encoding a Discovery,
+    /// §5.6.2: the Reply declares the number of the Function Block the Responder
+    /// represents, which lets an Initiator tie a Function Block to a MIDI-CI
+    /// Device. Ignored when encoding a Discovery,
     /// which has no such field.
     pub function_block: Option<FunctionBlockId>,
 }
 
 impl DiscoveryData {
-    /// Length of the fields common to both directions: 3 mfr + 2 family +
-    /// 2 model + 4 revision + 1 categories + 4 max-size.
-    pub const BODY_LEN: usize = 3 + 2 + 2 + 4 + 1 + 4;
-
-    /// Byte length of a Discovery body (Table 6): the common fields plus the
-    /// Output Path ID.
-    pub const DISCOVERY_LEN: usize = Self::BODY_LEN + 1;
-
-    /// Byte length of a Reply to Discovery body (Table 8): the common fields
-    /// plus Output Path Instance ID and Function Block.
-    pub const REPLY_LEN: usize = Self::BODY_LEN + 2;
-
     /// A body with the Message-Version-2 fields at their neutral values: path
     /// id 0 and no Function Block. Use the field setters for a device that
     /// has several MIDI Out connections or sits behind a Function Block.
@@ -238,7 +213,7 @@ impl DiscoveryData {
     ///
     /// The Version-2 trailer is read when present and defaulted when absent, so
     /// a Message Format Version 1 peer still decodes: §5.3 requires a receiver
-    /// to "process the fields, values, and bits defined in the received version"
+    /// to process only the fields, values and bits of the received version
     /// when it is lower than its own. A missing Function Block reads as `None`
     /// rather than block 0, which would be a lie.
     pub(crate) fn decode_body(is_reply: bool, b: &[u8]) -> Option<DiscoveryData> {

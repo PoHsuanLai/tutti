@@ -45,14 +45,13 @@
 //! [`narrow_velocity`], [`narrow_value`] and [`narrow_bend`] go the other way
 //! for a consumer that has MIDI 1.0 resolution only (M2-115 section 3.4): the
 //! top bits, as a right shift. `widen` then narrow returns every 7-bit and
-//! 14-bit value it started with. Unlike `widen`, these are not transitional: a
-//! consumer such as a SoundFont synth works at MIDI 1.0 resolution and nothing
-//! upstream of it translates down, so it narrows for as long as it exists.
+//! 14-bit value it started with. A consumer such as a SoundFont synth works
+//! at MIDI 1.0 resolution and narrows what reaches it.
 //! The widening of one value is [`widen_velocity`], [`widen_value`] and
 //! [`widen_bend`]: they build a [`NoteVelocity`](tutti_ump::NoteVelocity), a
 //! [`ControlValue`](tutti_ump::ControlValue) or a
 //! [`BendValue`](tutti_ump::BendValue) from a 7-bit or 14-bit one, which a
-//! MIDI 2.0 constructor such as `Message::note_on2` wants.
+//! MIDI 2.0 constructor such as `Voice2::note_on` wants.
 //!
 //! Going down has four entry points; pick by what you hold and what you need.
 //!

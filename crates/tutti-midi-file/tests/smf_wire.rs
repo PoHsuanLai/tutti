@@ -257,9 +257,8 @@ fn a_longer_header_is_read() {
 
 // ---- meta events bigger than expected (SMF 1.0 section 3.3) ----------------
 
-/// SMF 1.0 section 3.3: programs "shouldn't be surprised if it's bigger than
-/// they expected. If so, they must ignore everything past what they know
-/// about." A Set Tempo, a Time Signature and a Key Signature with extra data
+/// SMF 1.0 section 3.3: a meta event may be bigger than a program expects, and
+/// the program ignores what is past what it knows. A Set Tempo, a Time Signature and a Key Signature with extra data
 /// are read as themselves, from the bytes they define.
 #[test]
 fn a_meta_event_longer_than_defined_is_read_for_what_it_defines() {
@@ -302,8 +301,8 @@ fn a_meta_event_longer_than_defined_is_read_for_what_it_defines() {
 }
 
 /// The file model is lossless: the bytes past what a program knows are written
-/// back (SMF 1.0 section 3.3: a program "must not add anything of their own"
-/// to a meta event, and so must not drop what is there).
+/// back (SMF 1.0 section 3.3: a program adds nothing of its own to a meta event,
+/// and so must not drop what is there).
 #[test]
 fn a_longer_meta_event_is_written_back_as_it_was() {
     let bytes = raw_track(&[
@@ -316,8 +315,8 @@ fn a_longer_meta_event_is_written_back_as_it_was() {
     assert_eq!(back, bytes);
 }
 
-/// SMF 1.0 section 3.3: "An end-of-track event must occur as the last event in
-/// the track." One with events after it is refused, not read as the track's
+/// SMF 1.0 section 3.3: an end-of-track event is the last event in the
+/// track. One with events after it is refused, not read as the track's
 /// end (which would drop what follows).
 #[test]
 fn an_end_of_track_that_is_not_last_is_refused() {

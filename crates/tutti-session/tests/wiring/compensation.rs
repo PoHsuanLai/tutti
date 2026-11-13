@@ -3,10 +3,7 @@
 //! publishes nothing, a re-prepare republishes once it resumes, and the
 //! compiler compensates without splicing anything into the wiring.
 //!
-//! These are the session halves of the tests in `bevy-tutti`'s
-//! `graph::latency` (`GraphLatency` and `ChannelCompensation` there were
-//! mirrors of the session's `latency()` and `compensation()`; the mirroring
-//! stayed with the adapter), moved here when the adapter was parked. The
+//! The
 //! total and the table of a latent branch are also pinned, to the sample, by
 //! `graph.rs`'s `a_latent_branch_is_compensated_on_the_other_to_the_sample`,
 //! and a restart's republication by `device.rs`'s

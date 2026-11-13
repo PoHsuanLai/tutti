@@ -341,7 +341,7 @@ pub enum HopPolicy {
 }
 
 /// Which part of the buffer to analyze.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum SampleRange {
     /// The whole buffer.
     All,

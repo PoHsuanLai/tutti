@@ -9,7 +9,7 @@
 //! - **Every crate root forbids `unsafe`**, `src/lib.rs` and `src/main.rs`
 //!   alike, except the crates in [`HOMES`]: the `-ffi` crates, `tutti-rt`,
 //!   `arc-lend`, `tutti-plugin-types` (which denies it and allows one
-//!   constructor) and the parked `bevy-tutti`. This subsumes the old host
+//!   constructor). This subsumes the old host
 //!   crates' scans, `plugin-server`'s loaders and the VST2 caller pins. A home
 //!   that forbids `unsafe` after all, or is gone, is a stale entry.
 //! - **The `-ffi` crates carry the lints** that make every `unsafe` block
@@ -55,11 +55,6 @@ pub(super) const HOMES: &[(&str, &str, Option<&str>)] = &[
         "tutti-plugin-types",
         "one documented `unsafe` constructor (`WindowHandle::from_u64`)",
         Some("deny(unsafe_code)"),
-    ),
-    (
-        "bevy-tutti",
-        "parked: out of the workspace, its crate root comes back with un-parking",
-        None,
     ),
 ];
 
@@ -247,7 +242,6 @@ mod tests {
         );
         put(format!("{MIDI}/src/lib.rs"), FORBID);
         put(format!("{MIDI}/tests/t.rs"), "fn t() {}\n");
-        m.files.remove("crates/bevy-tutti/src/lib.rs");
         m
     }
 
@@ -261,7 +255,7 @@ mod tests {
         let r = check(&clean());
         assert!(r.passed(), "{:?}", r.findings);
         assert!(
-            r.out[0].starts_with("check-ffi: ok (32 crates"),
+            r.out[0].starts_with("check-ffi: ok (31 crates"),
             "{:?}",
             r.out
         );

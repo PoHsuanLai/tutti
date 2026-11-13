@@ -9,9 +9,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_graph::{Offset, UmpAt};
 use tutti_midi_device::EndpointId;
 
-// The fake backend is in `crate::test_support` so `bevy-tutti` can test
-// its own session wiring against it: a headless CI box has no MIDI port.
-
 /// A session over the shared fake backend, plus its two counters.
 ///
 /// Returned as a tuple rather than the `FakeCounters` struct so each test

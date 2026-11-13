@@ -7,9 +7,11 @@
 use tutti_graph::{
     CrossfadeCurve, Cx, Io, Node, ParamNode, ParamSet, Params, Prepare, Shape, Status, Unforkable,
 };
-use tutti_nodes::{CompressorControls, CompressorNode, SvfFilterNode, SvfType};
+use tutti_nodes::{CompressorControls, CompressorNode, KeySource, SvfFilterNode, SvfType};
 use tutti_session::{ParamError, Session};
-use tutti_types::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Seconds, UnitAddr, UnitParam};
+use tutti_types::{
+    BusTopology, ChannelLayout, Db, Hz, Param, Q, SampleRate, Seconds, UnitAddr, UnitParam,
+};
 
 fn detached() -> Session {
     Session::builder()
@@ -55,13 +57,17 @@ fn set_param_writes_the_cell_the_key_names() {
 
     // A `Seconds` param is an `f64` cell: the write is exact for a value an
     // `f32` holds.
-    let (comp, controls) = s.graph().add(CompressorNode::mono(CompressorControls {
-        threshold: Db(-20.0),
-        ratio: tutti_types::CompressionRatio(4.0),
-        attack: Seconds(0.01),
-        release: Seconds(0.1),
-        ..CompressorControls::DEFAULT
-    }));
+    let (comp, controls) = s.graph().add(CompressorNode::new(
+        BusTopology::MONO,
+        KeySource::Sidechain,
+        CompressorControls {
+            threshold: Db(-20.0),
+            ratio: tutti_types::CompressionRatio(4.0),
+            attack: Seconds(0.01),
+            release: Seconds(0.1),
+            ..CompressorControls::DEFAULT
+        },
+    ));
     s.graph().set_param(comp.attack(), Seconds(0.25)).unwrap();
     assert_eq!(controls.get(UnitParam::Attack), Some(0.25));
 }

@@ -24,7 +24,7 @@ use tutti_session::{InPort, Key, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
 #[cfg(feature = "modulation")]
-use tutti_types::{BeatDuration, Depth};
+use tutti_types::{BeatsPerCycle, Depth};
 use tutti_types::{CompressionRatio, Db, Hz, Seconds, UnitAddr, UnitParam};
 
 const RATE: f64 = 48_000.0;
@@ -249,7 +249,7 @@ fn a_route_to_band_1_modulates_band_1_only() {
     let band1 = mb.gain_db_at(1);
     let mut m = s.mods_mut();
     m.range(band1, Db(-24.0)..Db(24.0)).unwrap();
-    let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
+    let lfo = m.lfo(Lfo::sine().rate(BeatsPerCycle::of(0.5)));
     m.route(RouteSpec::new(lfo, band1, Depth::of(0.25)))
         .unwrap();
     for _ in 0..4 {

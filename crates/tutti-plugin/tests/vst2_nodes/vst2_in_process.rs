@@ -133,10 +133,8 @@ fn handle_parameter_roundtrip() {
 /// implement — which is exactly what an earlier draft of this test did, and it
 /// failed for that reason rather than finding a host bug.
 ///
-/// Restoring *values* is covered against real plugins in `tutti-au-host`'s
-/// `au_third_party.rs` and `tutti-vst2-host`'s `integration_tests.rs`, both of
-/// which are gated on installed plugins. Stating the gap here rather than
-/// leaving an assertion that looks like it covers it.
+/// Restoring *values* through a chunk is not covered here. Stating the gap
+/// rather than leaving an assertion that looks like it covers it.
 #[test]
 fn handle_state_roundtrip() {
     let _lock = lock_probe();

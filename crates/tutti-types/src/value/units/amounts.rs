@@ -165,8 +165,6 @@ impl Feedback {
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "f32", into = "f32"))]
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
-#[cfg_attr(feature = "bevy", type_path = "tutti_types::value::units")]
 pub struct Depth(f32);
 
 // NOT `Additive` and NOT `Scalable`: a sum or a scaled depth can leave

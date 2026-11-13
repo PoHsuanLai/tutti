@@ -49,7 +49,7 @@ pub enum OscillatorType {
 /// Which response of the state-variable filter [`FilterType::Svf`] taps.
 ///
 /// All four share one cutoff and one `Q`; only the output tap differs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Default)]
 #[non_exhaustive]
 pub enum SvfMode {
     /// Passes below cutoff. The default, and the conventional subtractive tap.
@@ -195,7 +195,7 @@ pub struct FilterModConfig {
 /// `Volume` and, with a unison engine, `Detune` and `StereoSpread`. Everything
 /// else here is read per note or per sample and has no control after the
 /// synth is built.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SynthConfig {
     /// How many notes may sound at once. At least 1 (the type refuses 0); there
     /// is no upper bound. Every voice is fully constructed up front, so this is

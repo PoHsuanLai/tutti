@@ -650,7 +650,7 @@ impl Wire for Bus {
         from: BusSource,
         to: BusSink,
     ) -> Result<Vec<(Edge, bool)>, ConnectError> {
-        graph.add_bus_edge(from, to, false)?;
+        graph.add_bus_edge(from, to)?;
         Ok(Vec::new())
     }
     fn disconnect(

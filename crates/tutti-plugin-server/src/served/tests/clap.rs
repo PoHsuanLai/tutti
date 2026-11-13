@@ -13,7 +13,7 @@ use tutti_plugin_types::{
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use tutti_clap_host::ClapLoaded as HostLoaded;
-use tutti_plugin_types::{EditorPresence, Features, PluginTail, Request};
+use tutti_plugin_types::{EditorPresence, Features, PluginTail, RenderModeSupport, Request};
 
 type ClapInstance = Served<HostLoaded>;
 
@@ -805,7 +805,7 @@ fn test_clap_parameter_list() {
     let params = instance.parameters(&main_thread());
     assert!(
         !params.is_empty(),
-        "Parameter list should not be empty for TAL-NoiseMaker"
+        "Parameter list should not be empty for the reference plugin"
     );
 
     for param in &params {
@@ -1129,21 +1129,15 @@ fn test_clap_process_f32_with_note() {
 
 // ── Second-instance tests ──
 //
-// These ran against a second, separately-installed plugin (Surge XT at an
-// absolute macOS path). The group was headed "f64-capable", but nothing in
-// it asserts f64 — Surge does not advertise
-// `CLAP_AUDIO_PORT_SUPPORTS_64BITS` either, as `test_surge_port_flags`
-// itself notes. What the group actually covers is a *second* load of the
-// host against a different instance: stereo output, process-without-crash,
-// state round-trip, voice info. Pointing it at the reference plugin keeps
-// that coverage and lets it run anywhere.
+// Stereo output, process-without-crash, state round-trip and voice info,
+// against the reference plugin. None of it asserts f64.
 //
 // The f64 suite is the session's (`an_f64_session_runs_a_64bit_capable_clap_plugin_in_f64`
 // and its neighbours): the reference plugin advertises 64-bit ports behind
 // `tutti_test_plugin_set_ports_64bit`.
 
 #[test]
-fn test_surge_load() {
+fn test_reference_load() {
     let _lock = crate::test_utils::plugin_load_lock();
     let instance = ClapInstance::load_first(
         &main_thread(),
@@ -1154,7 +1148,7 @@ fn test_surge_load() {
     );
     assert!(
         instance.is_ok(),
-        "Failed to load Surge XT: {:?}",
+        "Failed to load the reference plugin: {:?}",
         instance.err()
     );
 
@@ -1162,11 +1156,11 @@ fn test_surge_load() {
     let meta = instance.descriptor();
     assert!(!meta.name.is_empty());
     assert!(!meta.id.is_empty());
-    println!("Surge XT loaded: {} ({})", meta.name, meta.id);
+    println!("Reference plugin loaded: {} ({})", meta.name, meta.id);
 }
 
 #[test]
-fn test_surge_port_flags() {
+fn test_reference_port_flags() {
     let _lock = crate::test_utils::plugin_load_lock();
     let instance = ClapInstance::load_first(
         &main_thread(),
@@ -1175,7 +1169,7 @@ fn test_surge_port_flags() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
     let port_info = instance
         .clap_loaded()
@@ -1187,7 +1181,7 @@ fn test_surge_port_flags() {
 }
 
 #[test]
-fn test_surge_process_f32_silence() {
+fn test_reference_process_f32_silence() {
     let _lock = crate::test_utils::plugin_load_lock();
     let mut instance = ClapInstance::load_first(
         &main_thread(),
@@ -1196,7 +1190,7 @@ fn test_surge_process_f32_silence() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
     let num_samples = 512;
     let input_data = vec![vec![0.0f32; num_samples]; 2];
@@ -1223,7 +1217,7 @@ fn test_surge_process_f32_silence() {
 }
 
 #[test]
-fn test_surge_process_f32_with_note() {
+fn test_reference_process_f32_with_note() {
     let _lock = crate::test_utils::plugin_load_lock();
     let mut instance = ClapInstance::load_first(
         &main_thread(),
@@ -1232,7 +1226,7 @@ fn test_surge_process_f32_with_note() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
     let num_samples = 512;
     let note_on = [(
@@ -1246,9 +1240,8 @@ fn test_surge_process_f32_with_note() {
     )];
 
     // Process block with NoteOn + follow-up blocks.
-    // Surge XT is strict about CLAP thread contracts and may not produce
-    // audio when process() is called from a non-audio thread, so this only
-    // verify no crash rather than asserting on output content.
+    // process() runs off the audio thread here, so this verifies only that
+    // nothing crashes, not the output content.
     for i in 0..5 {
         let input_data = vec![vec![0.0f32; num_samples]; 2];
         let mut output_data = vec![vec![0.0f32; num_samples]; 2];
@@ -1279,9 +1272,9 @@ fn test_surge_process_f32_with_note() {
     }
 }
 
-/// Test Surge XT parameter setting via flush.
+/// Test parameter setting via flush.
 #[test]
-fn test_surge_set_parameter_flush() {
+fn test_reference_set_parameter_flush() {
     let _lock = crate::test_utils::plugin_load_lock();
     let mut instance = ClapInstance::load_first(
         &main_thread(),
@@ -1290,7 +1283,7 @@ fn test_surge_set_parameter_flush() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty(), "Need at least one parameter");
@@ -1905,10 +1898,10 @@ fn test_clap_process_with_transport() {
     );
 }
 
-// ── Group I: Surge XT Additional Coverage ──
+// ── Group I: Additional Coverage ──
 
 #[test]
-fn test_surge_state_save_load() {
+fn test_reference_state_save_load() {
     let _lock = crate::test_utils::plugin_load_lock();
     let mut instance = ClapInstance::load_first(
         &main_thread(),
@@ -1917,7 +1910,7 @@ fn test_surge_state_save_load() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty());
@@ -1926,7 +1919,10 @@ fn test_surge_state_save_load() {
     let saved = instance
         .save_state(&main_thread())
         .expect("save should succeed");
-    assert!(!saved.is_empty(), "Surge XT state should not be empty");
+    assert!(
+        !saved.is_empty(),
+        "Reference plugin state should not be empty"
+    );
 
     let original_value = instance.normalized(&main_thread(), param_id);
     let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
@@ -1939,14 +1935,14 @@ fn test_surge_state_save_load() {
     let restored = instance.normalized(&main_thread(), param_id);
     assert!(
         (restored - original_value).abs() < 0.01,
-        "Surge XT param should be restored: expected {}, got {}",
+        "Reference plugin param should be restored: expected {}, got {}",
         original_value,
         restored
     );
 }
 
 #[test]
-fn test_surge_audio_ports() {
+fn test_reference_audio_ports() {
     let _lock = crate::test_utils::plugin_load_lock();
     let instance = ClapInstance::load_first(
         &main_thread(),
@@ -1955,12 +1951,15 @@ fn test_surge_audio_ports() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
     let output_count = instance
         .clap_loaded()
         .audio_port_count(&main_thread(), false);
-    assert!(output_count > 0, "Surge XT should have output ports");
+    assert!(
+        output_count > 0,
+        "Reference plugin should have output ports"
+    );
 
     let port = instance
         .clap_loaded()
@@ -1974,7 +1973,7 @@ fn test_surge_audio_ports() {
 }
 
 #[test]
-fn test_surge_latency_tail() {
+fn test_reference_latency_tail() {
     let _lock = crate::test_utils::plugin_load_lock();
     let instance = ClapInstance::load_first(
         &main_thread(),
@@ -1983,7 +1982,7 @@ fn test_surge_latency_tail() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
     let _latency = instance.clap_loaded().latency_samples(&main_thread());
     let _tail = instance.clap_loaded().tail_samples(&main_thread());
@@ -2022,8 +2021,10 @@ fn test_clap_has_gui() {
 
 // ── Group K: Render Mode ──
 
+/// **A CLAP plugin with `clap.render` takes the render mode live**, and says
+/// so in its features: the reference plugin implements the extension.
 #[test]
-fn test_clap_render_mode() {
+fn a_plugin_with_the_render_extension_takes_the_mode_live() {
     let _lock = crate::test_utils::plugin_load_lock();
     let mut instance = ClapInstance::load_first(
         &main_thread(),
@@ -2033,16 +2034,19 @@ fn test_clap_render_mode() {
         false,
     )
     .expect("Failed to load");
-
-    // Set offline mode — returns true if plugin supports render extension
-    let _ = instance
-        .loaded_mut_unwrapped()
-        .set_render_mode(&main_thread(), RenderMode::Offline);
-    // Set back to realtime
-    let _ = instance
-        .loaded_mut_unwrapped()
-        .set_render_mode(&main_thread(), RenderMode::Realtime);
-    // No crash is the assertion
+    let loaded = instance.loaded_mut_unwrapped();
+    assert_eq!(
+        loaded.render_mode_support(&main_thread()),
+        RenderModeSupport::Live
+    );
+    assert!(
+        loaded
+            .wiring(&main_thread())
+            .features
+            .contains(Features::RENDER_MODE)
+    );
+    assert!(loaded.set_render_mode(&main_thread(), RenderMode::Offline));
+    assert!(loaded.set_render_mode(&main_thread(), RenderMode::Realtime));
 }
 
 #[test]
@@ -2077,7 +2081,7 @@ fn test_clap_voice_info() {
     )
     .expect("Failed to load");
 
-    // TAL-NoiseMaker may or may not support voice info
+    // Voice info is optional.
     if let Some(info) = instance.clap_loaded().voice_info(&main_thread()) {
         assert!(info.voice_count > 0, "voice_count should be > 0");
         assert!(info.voice_capacity > 0, "voice_capacity should be > 0");
@@ -2085,7 +2089,7 @@ fn test_clap_voice_info() {
 }
 
 #[test]
-fn test_surge_voice_info() {
+fn test_reference_voice_info() {
     let _lock = crate::test_utils::plugin_load_lock();
     let instance = ClapInstance::load_first(
         &main_thread(),
@@ -2094,14 +2098,16 @@ fn test_surge_voice_info() {
         512,
         false,
     )
-    .expect("Failed to load Surge XT");
+    .expect("Failed to load the reference plugin");
 
-    // Surge XT likely supports voice info
     if let Some(info) = instance.clap_loaded().voice_info(&main_thread()) {
-        assert!(info.voice_count > 0, "Surge XT voice_count should be > 0");
+        assert!(
+            info.voice_count > 0,
+            "Reference plugin voice_count should be > 0"
+        );
         assert!(
             info.voice_capacity > 0,
-            "Surge XT voice_capacity should be > 0"
+            "Reference plugin voice_capacity should be > 0"
         );
     }
 }

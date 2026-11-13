@@ -22,7 +22,7 @@ use tutti_nodes::{
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
-    BeatDuration, BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
+    BeatsPerCycle, BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
     UnitParam,
 };
 use tutti_ump::{MidiChannel, NoteNumber, U7};
@@ -59,7 +59,7 @@ fn gate<N: IntoNode>(node: N, amplitude: f32, blocks: usize, mut between: impl F
 #[test]
 fn lfo_node_process_is_allocation_free() {
     gate(
-        LfoNode::new(LfoShape::Sine).with_frequency(Hz::new(2.0_f32)),
+        LfoNode::new(LfoShape::Sine).with_rate(Hz::new(2.0_f32)),
         0.0,
         5_000,
         |_| {},
@@ -71,7 +71,7 @@ fn lfo_random_shape_process_is_allocation_free() {
     // RandomSmooth hashes its cycle index on its own path. Fast enough
     // to step inside the warm-up, so the node is audible there.
     gate(
-        LfoNode::new(LfoShape::RandomSmooth).with_frequency(Hz::new(200.0_f32)),
+        LfoNode::new(LfoShape::RandomSmooth).with_rate(Hz::new(200.0_f32)),
         0.0,
         5_000,
         |_| {},
@@ -85,7 +85,7 @@ fn lfo_random_shape_process_is_allocation_free() {
 fn beat_synced_lfo_process_is_allocation_free() {
     gate(
         LfoNode::new(LfoShape::Sine)
-            .with_beat_sync(BeatDuration::new(4.0))
+            .with_beat_sync(BeatsPerCycle::of(4.0))
             .with_phase_offset(PhaseIncrement::new(0.25)),
         0.0,
         5_000,

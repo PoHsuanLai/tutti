@@ -32,7 +32,7 @@ fn a_clip_nodes_table_is_24_kib() {
 }
 
 /// **A clip is translated as it is loaded, in beat order, and keeps its list
-/// order** (design 017 §4). An RPN 0 run listed backwards (its CC 38 first,
+/// order**. An RPN 0 run listed backwards (its CC 38 first,
 /// its selects last) is assembled in beat order into one Registered
 /// Controller at the CC 38's beat; a MIDI 1.0 Note On at velocity 0 becomes a
 /// Note Off (M2-104 D.3.1); and the events keep the list's order, which the

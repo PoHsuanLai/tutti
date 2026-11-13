@@ -223,6 +223,7 @@ use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
 use crate::tap::TapWriter;
+use crate::wake::Wake;
 use crate::{EdgeFade, EdgeId, EventTapId, MeterId, TapId};
 use tutti_types::PlayReading;
 
@@ -264,18 +265,32 @@ const EDGE_FADE_CAPACITY: usize = 1024;
 /// the box is this crate's; its drop is checked against the audio-thread
 /// marker (`RtScope::check_outside`). This crate must *run* its
 /// units, so the box hands `&mut` out.
-pub(crate) struct NodeBox(Box<dyn Node>);
+///
+/// It carries the unit's [`Wake`]: the executor's clone of the flag lives and
+/// dies with the unit, so its drop is the control side's too, and the audio
+/// thread is never the last owner of the flag's storage.
+pub(crate) struct NodeBox {
+    node: Box<dyn Node>,
+    wake: Wake,
+}
 
 impl NodeBox {
-    pub(crate) fn new(node: Box<dyn Node>) -> Self {
-        Self(node)
+    pub(crate) fn new(node: Box<dyn Node>, wake: Wake) -> Self {
+        Self { node, wake }
+    }
+
+    /// Whether the unit's [`Wake`] was raised since the last call, clearing
+    /// it.
+    #[inline]
+    pub(crate) fn take_wake(&self) -> bool {
+        self.wake.take()
     }
 
     /// The unit, out of its box — control side, to re-prepare it. Leaves a
     /// zero-sized placeholder behind for the box's own drop, which therefore
     /// frees nothing (a `Box` of a zero-sized type never allocated).
     pub(crate) fn into_inner(mut self) -> Box<dyn Node> {
-        std::mem::replace(&mut self.0, Box::new(Vacant))
+        std::mem::replace(&mut self.node, Box::new(Vacant))
     }
 }
 
@@ -296,13 +311,13 @@ impl Node for Vacant {
 impl Deref for NodeBox {
     type Target = dyn Node;
     fn deref(&self) -> &(dyn Node + 'static) {
-        &*self.0
+        &*self.node
     }
 }
 
 impl DerefMut for NodeBox {
     fn deref_mut(&mut self) -> &mut (dyn Node + 'static) {
-        &mut *self.0
+        &mut *self.node
     }
 }
 
@@ -439,6 +454,7 @@ impl Commit {
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
         mut modes: impl FnMut(NodeKey) -> ModeState,
+        mut wakes: impl FnMut(NodeKey) -> Wake,
         opened: Opened,
     ) -> Box<Commit> {
         let wanted = delta
@@ -481,7 +497,7 @@ impl Commit {
                 Incoming {
                     idx: p.idx,
                     generation: p.generation,
-                    node: NodeBox::new(unit),
+                    node: NodeBox::new(unit, wakes(p.key)),
                     fade,
                     params,
                     mode: modes(p.key),
@@ -3060,7 +3076,11 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     let scheduled = !ein.is_empty() && !discards && st.has_due[st.at];
 
     let (in_silent, in_constant) = in_masks(ain, &*st.flags);
-    let quiet_inputs = !injected
+    // A raised `Wake` counts as input. Taken for every node every block, so a
+    // raise on a node that is not parked is consumed and cannot wake it later.
+    let woken = u.node.take_wake();
+    let quiet_inputs = !woken
+        && !injected
         && !scheduled
         && in_silent.covers(ain.len())
         && ein.iter().all(|&s| st.events.ev(s).is_empty());

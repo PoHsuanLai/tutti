@@ -5,11 +5,22 @@
 #include "base/source/fstreamer.h"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/base/ustring.h"
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstmidilearn.h"
+#include "pluginterfaces/vst/ivstnoteexpression.h"
+#include "pluginterfaces/vst/ivstparameterfunctionname.h"
+#include "pluginterfaces/vst/ivstphysicalui.h"
+#include "pluginterfaces/vst/ivstprefetchablesupport.h"
+#include "pluginterfaces/vst/ivstrepresentation.h"
+#include "pluginterfaces/vst/ivstunits.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "public.sdk/source/main/pluginfactory.h"
 #include "public.sdk/source/vst/vstaudioeffect.h"
 #include "public.sdk/source/vst/vsteditcontroller.h"
+
+#include <cstring>
+#include <thread>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -24,15 +35,29 @@ static std::vector<uint8_t> readAll (IBStream* s)
 	return b;
 }
 
-class SharedProcessor : public AudioEffect
+class SharedProcessor : public AudioEffect, public IPrefetchableSupport
 {
 public:
+	OBJ_METHODS (SharedProcessor, AudioEffect)
+	DEFINE_INTERFACES
+		DEF_INTERFACE (IPrefetchableSupport)
+	END_DEFINE_INTERFACES (AudioEffect)
+	REFCOUNT_METHODS (AudioEffect)
+
+	// The plugin can be prefetched in its current state.
+	tresult PLUGIN_API getPrefetchableSupport (PrefetchableSupport& support) SMTG_OVERRIDE
+	{
+		support = kIsYetPrefetchable;
+		return kResultOk;
+	}
+
 	shared::Core core;
 	SharedProcessor ()
 	{
 		setControllerClass (kControllerUID);
-		// What the transcript records of a block's transport (core.rs, "State").
-		processContextRequirements.needTempo ().needProjectTimeMusic ().needTransportState ();
+		// What the transcript records of a block's transport (core.rs, "State"), and the chord, which
+		// the host never sends and no transcript reads.
+		processContextRequirements.needTempo ().needProjectTimeMusic ().needTransportState ().needChord ();
 	}
 	static FUnknown* createInstance (void*) { return (IAudioProcessor*)new SharedProcessor (); }
 
@@ -140,14 +165,42 @@ public:
 	}
 };
 
-class SharedController : public EditController, public IMidiMapping
+// The controller's optional interfaces, which only this twin implements: the figures the host's reads are held to.
+namespace spec {
+// Note expression: three types on bus 0, channel 0.
+constexpr NoteExpressionTypeID kCustomNoteExpression = 100;
+// Keyswitches: two on bus 0, channel 0, as [min, max] key ranges.
+constexpr int32 kKeyswitchRanges[2][2] = {{0, 1}, {2, 3}};
+// "Generic 8 Cells", the one representation the plugin answers.
+constexpr const char* kXmlName = "Generic 8 Cells";
+constexpr const char* kXml =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<vstXML><version>1.0</version><representation name=\"Generic 8 Cells\">"
+    "<layout name=\"Cells\" type=\"generic\"><cell><parameter>level</parameter></cell></layout>"
+    "</representation></vstXML>";
+}
+
+class SharedController : public EditControllerEx1,
+                         public IMidiMapping,
+                         public INoteExpressionController,
+                         public IKeyswitchController,
+                         public INoteExpressionPhysicalUIMapping,
+                         public IXmlRepresentationController,
+                         public IParameterFunctionName,
+                         public IMidiLearn
 {
 public:
-	OBJ_METHODS (SharedController, EditController)
+	OBJ_METHODS (SharedController, EditControllerEx1)
 	DEFINE_INTERFACES
 		DEF_INTERFACE (IMidiMapping)
-	END_DEFINE_INTERFACES (EditController)
-	REFCOUNT_METHODS (EditController)
+		DEF_INTERFACE (INoteExpressionController)
+		DEF_INTERFACE (IKeyswitchController)
+		DEF_INTERFACE (INoteExpressionPhysicalUIMapping)
+		DEF_INTERFACE (IXmlRepresentationController)
+		DEF_INTERFACE (IParameterFunctionName)
+		DEF_INTERFACE (IMidiLearn)
+	END_DEFINE_INTERFACES (EditControllerEx1)
+	REFCOUNT_METHODS (EditControllerEx1)
 
 	// Event bus 0, channel 0: controller 74 drives `level`; nothing else is mapped (core.rs).
 	tresult PLUGIN_API getMidiControllerAssignment (int32 bus, int16 channel, CtrlNumber controller, ParamID& id) SMTG_OVERRIDE
@@ -156,11 +209,96 @@ public:
 		id = shared::kLevel;
 		return kResultTrue;
 	}
+
+	// INoteExpressionController: volume, tuning and a custom type.
+	int32 PLUGIN_API getNoteExpressionCount (int32 bus, int16 channel) SMTG_OVERRIDE { return bus == 0 && channel == 0 ? 3 : 0; }
+	tresult PLUGIN_API getNoteExpressionInfo (int32 bus, int16 channel, int32 index, NoteExpressionTypeInfo& info) SMTG_OVERRIDE
+	{
+		if (bus != 0 || channel != 0 || index < 0 || index > 2) return kResultFalse;
+		static const NoteExpressionTypeID ids[3] = {kVolumeTypeID, kTuningTypeID, spec::kCustomNoteExpression};
+		static const char* titles[3] = {"Volume", "Tuning", "Custom"};
+		info = {};
+		info.typeId = ids[index];
+		UString (info.title, 128).fromAscii (titles[index]);
+		UString (info.shortTitle, 128).fromAscii (titles[index]);
+		info.unitId = -1;
+		info.valueDesc.defaultValue = 0.5;
+		info.valueDesc.minimum = 0.0;
+		info.valueDesc.maximum = 1.0;
+		return kResultTrue;
+	}
+	tresult PLUGIN_API getNoteExpressionStringByValue (int32, int16, NoteExpressionTypeID, NoteExpressionValue, String128) SMTG_OVERRIDE { return kResultFalse; }
+	tresult PLUGIN_API getNoteExpressionValueByString (int32, int16, NoteExpressionTypeID, const TChar*, NoteExpressionValue&) SMTG_OVERRIDE { return kResultFalse; }
+
+	// IKeyswitchController: two note-on keyswitches.
+	int32 PLUGIN_API getKeyswitchCount (int32 bus, int16 channel) SMTG_OVERRIDE { return bus == 0 && channel == 0 ? 2 : 0; }
+	tresult PLUGIN_API getKeyswitchInfo (int32 bus, int16 channel, int32 index, KeyswitchInfo& info) SMTG_OVERRIDE
+	{
+		if (bus != 0 || channel != 0 || index < 0 || index > 1) return kResultFalse;
+		static const char* titles[2] = {"Legato", "Staccato"};
+		info = {};
+		info.typeId = kNoteOnKeyswitchTypeID;
+		UString (info.title, 128).fromAscii (titles[index]);
+		UString (info.shortTitle, 128).fromAscii (titles[index]);
+		info.keyswitchMin = spec::kKeyswitchRanges[index][0];
+		info.keyswitchMax = spec::kKeyswitchRanges[index][1];
+		info.keyRemapped = -1;
+		info.unitId = -1;
+		return kResultTrue;
+	}
+
+	// INoteExpressionPhysicalUIMapping: x movement drives tuning, pressure drives volume, y is unmapped.
+	tresult PLUGIN_API getPhysicalUIMapping (int32 bus, int16 channel, PhysicalUIMapList& list) SMTG_OVERRIDE
+	{
+		if (bus != 0 || channel != 0) return kResultFalse;
+		for (uint32 i = 0; i < list.count; ++i)
+		{
+			PhysicalUIMap& m = list.map[i];
+			if (m.physicalUITypeID == kPUIXMovement) m.noteExpressionTypeID = kTuningTypeID;
+			else if (m.physicalUITypeID == kPUIPressure) m.noteExpressionTypeID = kVolumeTypeID;
+			else m.noteExpressionTypeID = kInvalidTypeID;
+		}
+		return kResultTrue;
+	}
+
+	// IXmlRepresentationController: one document, for one name.
+	tresult PLUGIN_API getXmlRepresentationStream (RepresentationInfo& info, IBStream* stream) SMTG_OVERRIDE
+	{
+		if (!stream || std::strcmp (info.name, spec::kXmlName) != 0) return kResultFalse;
+		int32 n = 0;
+		const int32 len = int32 (std::strlen (spec::kXml));
+		return stream->write (const_cast<char*> (spec::kXml), len, &n) == kResultOk && n == len ? kResultOk : kResultFalse;
+	}
+
+	// IParameterFunctionName: the dry/wet mix is `level`, the randomize target is `tone`.
+	tresult PLUGIN_API getParameterIDFromFunctionName (UnitID unit, FIDString name, ParamID& id) SMTG_OVERRIDE
+	{
+		if (unit != kRootUnitId || !name) return kResultFalse;
+		if (std::strcmp (name, FunctionNameType::kDryWetMix) == 0) id = shared::kLevel;
+		else if (std::strcmp (name, FunctionNameType::kRandomize) == 0) id = shared::kTone;
+		else return kResultFalse;
+		return kResultTrue;
+	}
+
+	// IMidiLearn: a live controller moves `aux` to controller / 127. The call is a main-thread call
+	// (ivstmidilearn.h), so one from any other thread aborts, as the editor view's does.
+	tresult PLUGIN_API onLiveMIDIControllerInput (int32 bus, int16, CtrlNumber controller) SMTG_OVERRIDE
+	{
+		if (std::this_thread::get_id () != mainThread) std::abort ();
+		if (bus != 0) return kResultFalse;
+		setParamNormalized (shared::kAux, double (controller) / 127.0);
+		return kResultTrue;
+	}
 	static FUnknown* createInstance (void*) { return (IEditController*)new SharedController (); }
 	tresult PLUGIN_API initialize (FUnknown* ctx) SMTG_OVERRIDE
 	{
-		tresult r = EditController::initialize (ctx);
+		tresult r = EditControllerEx1::initialize (ctx);
 		if (r != kResultOk) return r;
+		mainThread = std::this_thread::get_id ();
+		// A unit tree three levels deep under the implicit root; the parameters stay in the root.
+		addUnit (new Unit (STR16 ("Voices"), 1, kRootUnitId));
+		addUnit (new Unit (STR16 ("Oscillator"), 2, 1));
+		addUnit (new Unit (STR16 ("Filter"), 3, 2));
 		parameters.addParameter (STR16 ("level"), nullptr, 0, 0.5, ParameterInfo::kCanAutomate, shared::kLevel);
 		parameters.addParameter (STR16 ("aux"), nullptr, 0, 0.25, ParameterInfo::kCanAutomate, shared::kAux);
 		parameters.addParameter (STR16 ("mode"), nullptr, shared::kModes - 1, 0.0, ParameterInfo::kCanAutomate, shared::kMode);
@@ -196,6 +334,9 @@ public:
 		}
 		return kResultOk;
 	}
+
+private:
+	std::thread::id mainThread;
 };
 
 BEGIN_FACTORY_DEF ("Tutti", "", "")

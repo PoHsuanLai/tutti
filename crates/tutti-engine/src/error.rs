@@ -14,10 +14,6 @@ pub enum Error {
     /// The named audio device could not be used.
     #[error("Invalid device: {0}")]
     InvalidDevice(String),
-
-    /// The LUFS meter is held by another reader, or was never initialized.
-    #[error("LUFS measurement not available (already in use or not initialized)")]
-    LufsNotReady,
 }
 
 /// `Result` with this crate's [`Error`](enum@Error) as the error type.

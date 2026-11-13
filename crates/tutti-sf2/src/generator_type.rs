@@ -1,6 +1,6 @@
 /// The SoundFont 2.04 generator numbers (section 8.1.2), the index of a
 /// generator in a region's table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum GeneratorType {

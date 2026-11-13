@@ -1,9 +1,6 @@
 //! The output-device listing runs off the update: an enumeration that blocks
 //! holds nothing, and its answer reaches the host as an event in a later
-//! update (the session half of `bevy-tutti`'s
-//! `a_blocked_enumeration_does_not_hold_the_frame_and_lands_when_it_answers`,
-//! moved here when the adapter was parked; the `AudioDeviceState` list it
-//! also read stayed with the adapter).
+//! update.
 
 use std::time::{Duration, Instant};
 

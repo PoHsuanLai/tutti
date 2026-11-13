@@ -124,6 +124,86 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
     assert_eq!(heard, [600, 900], "recording took nothing from the target");
 }
 
+/// **A take of an instrument records what its handle's keys play**, frame for
+/// frame, though the keys are not `Midi::input`'s: the tap is on the inlet
+/// that feeds the instrument, wherever its keys came from.
+#[test]
+fn a_take_of_an_instrument_records_what_its_handle_plays() {
+    let mut s = offline();
+    let mut synth = s
+        .add_instrument(Probe(ForkByClone(Five), Arc::default()))
+        .expect("an instrument")
+        .handle;
+    let mut take = s
+        .midi()
+        .record(synth.node(), EventCapacity::of(64))
+        .expect("an instrument takes MIDI");
+    let _ = s.update();
+    let (c, k) = (MidiChannel::of(2), NoteNumber::of(60));
+    synth
+        .keys_mut()
+        .note_on(Frame::new(600), c, k, NoteVelocity::new(0x8000))
+        .unwrap();
+    synth.keys_mut().note_off(Frame::new(900), c, k).unwrap();
+    blocks(&s, 3);
+    let got: Vec<_> = take.drain().map(|e| (e.frame, e.ump)).collect();
+    assert_eq!(
+        got,
+        [
+            (
+                Frame::new(600),
+                midi::note_on(MidiGroup::FIRST, c, 60, 0x8000)
+            ),
+            (Frame::new(900), midi::note_off(MidiGroup::FIRST, c, 60, 0)),
+        ]
+    );
+}
+
+/// **An instrument has one live input, its handle's**: asking `Midi::input`
+/// for a second is refused by name, and nothing is opened.
+#[test]
+fn an_instrument_has_its_handles_keys_and_no_second_live_input() {
+    let mut s = offline();
+    let synth = s
+        .add_instrument(Probe(ForkByClone(Five), Arc::default()))
+        .expect("an instrument")
+        .handle;
+    let key = synth.node().erase();
+    assert!(matches!(
+        s.midi().input(key),
+        Err(MidiError::InstrumentKeys(n)) if n == key
+    ));
+    assert!(
+        s.graph_ref()
+            .feed(key, tutti_session::Feeder::LiveInput)
+            .is_empty(),
+        "no second inlet was opened"
+    );
+}
+
+/// **The instrument's key is typed, so a source of the caller's own wires into
+/// its event input** (`events_in` is a method of `Key`, which an erased
+/// `NodeKey` has not).
+#[test]
+fn an_instruments_typed_key_takes_a_wire_of_the_callers_own() {
+    let mut s = offline();
+    let synth = s
+        .add_instrument(Probe(ForkByClone(Five), Arc::default()))
+        .expect("an instrument")
+        .handle;
+    let (inlet, _writer) = s.graph().open_event_inlet(EventCapacity::of(8));
+    s.graph()
+        .connect(inlet.events_out(), synth.node().events_in())
+        .expect("the instrument's main event input takes a second source");
+    assert!(
+        s.graph_ref()
+            .sources(synth.node().events_in())
+            .unwrap()
+            .contains(&inlet.events_out()),
+        "the caller's wire is one of the input's sources"
+    );
+}
+
 /// A target that takes no MIDI cannot be recorded.
 #[test]
 fn recording_a_target_with_no_event_input_is_refused() {
@@ -220,14 +300,6 @@ fn the_sessions_mpe_mode_reaches_the_ingest_and_the_next_instrument() {
 
     s.midi().set_mpe(MpeMode::Disabled);
     assert_eq!(s.midi().mpe(), MpeMode::Disabled);
-    assert_eq!(
-        s.midi_nodes()
-            .expect("the builder's MIDI nodes")
-            .input_controls
-            .pending_mpe_mode(),
-        Some(MpeMode::Disabled),
-        "the ingest node was asked"
-    );
     s.add_instrument(Probe(ForkByClone(Five), Arc::clone(&built)))
         .expect("an instrument");
     assert_eq!(*built.lock().unwrap(), [rotation, MpeMode::Disabled]);
@@ -349,10 +421,19 @@ mod hardware {
             "the output has a sink to drain to"
         );
 
-        assert!(s.midi().disconnect_input("keys"));
-        assert!(!s.midi().disconnect_input("keys"), "not open any more");
-        assert!(s.midi().disconnect_output());
-        assert!(!s.midi().disconnect_output());
+        s.midi().disconnect_input("keys").expect("it was open");
+        assert!(
+            matches!(
+                s.midi().disconnect_input("keys"),
+                Err(MidiError::InputNotOpen(_))
+            ),
+            "not open any more"
+        );
+        s.midi().disconnect_output().expect("it was open");
+        assert!(matches!(
+            s.midi().disconnect_output(),
+            Err(MidiError::OutputNotOpen)
+        ));
     }
 
     /// **A name that matches nothing is the hardware's error, carried as the
@@ -376,7 +457,14 @@ mod hardware {
             Err(MidiError::NoHardware)
         ));
         assert!(bare.midi().devices().is_empty());
-        assert!(!bare.midi().disconnect_input("keys"));
+        assert!(matches!(
+            bare.midi().disconnect_input("keys"),
+            Err(MidiError::NoHardware)
+        ));
+        assert!(matches!(
+            bare.midi().disconnect_output(),
+            Err(MidiError::NoHardware)
+        ));
     }
 
     /// **Only a device that is surely the saved one is connected unasked.** A

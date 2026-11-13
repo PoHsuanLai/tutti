@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! What `plugin-probe` does, as a library so a test can call it in-process: read
 //! the descriptor of every plugin the file at a path holds, by the path's extension.
 //!

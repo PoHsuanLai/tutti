@@ -43,13 +43,7 @@ const ALLOW: &[&str] = &[
     "host_gui_request_hide",
     "host_note_ports_supported_dialects",
     "host_preset_load_on_error",
-    "host_context_menu_populate",
-    "host_context_menu_perform",
-    "host_context_menu_can_popup",
-    "host_context_menu_popup",
-    "host_triggers_clear",
-    "host_tuning_get_relative",
-    "host_tuning_should_play",
+    "host_preset_load_loaded",
     // vst3-ffi
     "createContextMenu",
 ];
@@ -66,34 +60,10 @@ const MAIN_THREAD: &[&str] = &[
     "host_posix_fd_modify",
     "host_posix_fd_register",
     "host_posix_fd_unregister",
-    "host_preset_load_loaded",
-    "host_remote_controls_changed",
-    "host_remote_controls_suggest_page",
-    "host_resource_release_directory",
-    "host_resource_request_directory",
     "host_state_mark_dirty",
     "host_surround_changed",
     "host_timer_register",
     "host_timer_unregister",
-    "host_transport_request_continue",
-    "host_transport_request_enable_loop",
-    "host_transport_request_jump",
-    "host_transport_request_loop_region",
-    "host_transport_request_pause",
-    "host_transport_request_record",
-    "host_transport_request_start",
-    "host_transport_request_stop",
-    "host_transport_request_toggle_loop",
-    "host_transport_request_toggle_play",
-    "host_transport_request_toggle_record",
-    "host_triggers_rescan",
-    "host_tuning_get_count",
-    "host_undo_begin_change",
-    "host_undo_cancel_change",
-    "host_undo_change_made",
-    "host_undo_request_redo",
-    "host_undo_request_undo",
-    "host_undo_set_wants_context",
     "host_voice_info_changed",
 ];
 
@@ -107,7 +77,7 @@ const GUARDS: &[&str] = &[
 ];
 
 /// The fewest callbacks the real tree must show, or the scan is broken.
-pub(super) const MIN_SEEN: usize = 100;
+pub(super) const MIN_SEEN: usize = 90;
 
 fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'

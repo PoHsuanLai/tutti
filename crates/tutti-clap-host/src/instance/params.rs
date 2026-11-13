@@ -8,67 +8,9 @@ use super::ClapLoaded;
 use crate::events::ParamBounds;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{ClapParamFlags, ClapParamInfo};
-#[cfg(feature = "clap-extras")]
 use crate::types::{Color, ParamAutomationState};
 use tutti_plugin_types::MainThread;
 
-/// How a host surface control (e.g. a hardware knob) is bound to a plugin
-/// parameter, per `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
-#[cfg(feature = "clap-extras")]
-#[derive(Debug, Clone)]
-pub struct ParamMapping {
-    /// The parameter being bound, by its stable id.
-    pub param_id: u32,
-    /// Whether a control is bound at all. `false` tells the plugin the
-    /// parameter is not mapped to any physical control.
-    pub has_mapping: bool,
-    /// Colour hint for the control's LED or ring; `None` sends no hint.
-    pub color: Option<Color>,
-    /// Short label for the control, e.g. the hardware knob's printed name.
-    pub label: Option<String>,
-    /// Longer description of what the control is bound to.
-    pub description: Option<String>,
-}
-
-#[cfg(feature = "clap-extras")]
-impl ParamMapping {
-    /// Creates a mapping entry for the given parameter.
-    /// Set `has_mapping = false` to tell the plugin the parameter is no
-    /// longer mapped to any physical control.
-    #[must_use]
-    pub fn new(param_id: u32, has_mapping: bool) -> Self {
-        Self {
-            param_id,
-            has_mapping,
-            color: None,
-            label: None,
-            description: None,
-        }
-    }
-
-    /// Color hint for the mapped control's LED/ring (builder style).
-    #[must_use]
-    pub fn color(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-
-    /// Short label for the mapped control (builder style).
-    #[must_use]
-    pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-
-    /// Longer description of the mapping (builder style).
-    #[must_use]
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
-        self.description = Some(desc.into());
-        self
-    }
-}
-
-#[cfg(feature = "clap-extras")]
 fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
     clap_sys::color::clap_color {
         alpha: color.alpha,
@@ -303,24 +245,9 @@ impl ClapLoaded {
         self.flush_params(main, vec![ClapEvent::param_value(0, id, value)]);
     }
 
-    /// Informs the plugin about a host-surface → parameter mapping. No-op if
-    /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn set_param_mapping(&self, main: &MainThread, mapping: &ParamMapping) {
-        self.plugin.set_param_mapping(
-            main,
-            mapping.param_id,
-            mapping.has_mapping,
-            mapping.color.map(color_to_clap),
-            mapping.label.as_deref(),
-            mapping.description.as_deref(),
-        );
-    }
-
     /// Informs the plugin of a parameter's automation state so it can update
     /// UI feedback (e.g. knob rings). No-op if the plugin does not implement
-    /// `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
+    /// `CLAP_EXT_PARAM_INDICATION`.
     pub fn set_param_automation(
         &self,
         main: &MainThread,

@@ -47,6 +47,9 @@
 //!   flip, so a block lands in one take with its peak and frames together.
 //! - [`RequestWord`] — up to 32 kinds of request a callee raises from any
 //!   thread (one `fetch_or`) and a control thread takes whole.
+//! - [`WakeFlag`] — a flag any thread raises (one store) and the audio thread
+//!   takes (raised since the last take), so a parked node can be woken from
+//!   outside the block.
 //! - [`edit_ring()`] — a bounded single-producer single-consumer queue of small
 //!   `Copy` values, for edits the control thread hands the audio thread.
 //! - [`drain_clock()`] — counts the drains the audio side begins, so the control
@@ -98,6 +101,7 @@ mod spin;
 mod split;
 mod task_graph;
 mod vec;
+mod wake_flag;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use clock::monotonic_ns;
@@ -124,6 +128,7 @@ pub use spin::BlockWaits;
 pub use split::{ClaimConflict, ClaimTable, Claimed, ClaimedRun, Held, RwView, SplitMut, SplitRw};
 pub use task_graph::{Participant, TaskGraph};
 pub use vec::RtVec;
+pub use wake_flag::WakeFlag;
 
 // The cell non-scalar state reaches the audio thread through: a control
 // thread publishes, the audio thread only borrows (`Loan`), so it never frees.

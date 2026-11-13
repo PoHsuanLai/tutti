@@ -334,7 +334,7 @@ pub struct Track {
 
 impl Track {
     /// An empty track, ending at tick 0. Events are added with the builder
-    /// ([`note`](Self::note), [`tempo`](Self::tempo), [`meta`](Self::meta),
+    /// ([`note`](Self::note), [`meta`](Self::meta),
     /// [`push`](Self::push)), by [`collect`](Iterator::collect)ing or
     /// [`extend`](Extend::extend)ing `(Tick, FileEvent)` pairs, or by filling
     /// the public fields of a track a file layer reads.

@@ -1,5 +1,5 @@
 //! The OS side of device watching: a thread that enumerates the host and
-//! publishes what it finds (design 018 §2).
+//! publishes what it finds.
 //!
 //! cpal 0.15 has no change notification on any host, and enumeration can
 //! block (ALSA probes cards, WASAPI enumerates endpoints). So it runs on a

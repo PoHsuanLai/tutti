@@ -1120,7 +1120,7 @@ Every MIDI feature has four layers:
 
 The same pattern is already in use: the plugin hosts' pure `step` (design 016),
 `Phase::Poll`, `PhaseCx { now }`, and `Session::update() -> Vec<SessionEvent>`.
-Audio devices (design 018) follow the pattern and share `Phase::Poll`. They share
+Audio devices (`tutti-session`'s device watch) follow the pattern and share `Phase::Poll`. They share
 no code with MIDI.
 
 ## Event tap and event inlet

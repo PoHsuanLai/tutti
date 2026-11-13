@@ -13,10 +13,22 @@
 //!    unsolicited news in the other direction, rides here.
 //! 2. **An idle tick**, [`TICK_PERIOD`] (about 30 Hz): the open editor's idle
 //!    ([`EditorWindow::editor_idle`](tutti_plugin_types::EditorWindow): VST2's
-//!    `effEditIdle`, VST3's run loop), the plugin's own timers and callbacks
-//!    (CLAP's, served by [`Session::tick`]'s service pass), and a plugin's
-//!    resize request. A tick is due once and not owed: a loop that was busy
-//!    with blocks for 100 ms runs one tick after them, never three.
+//!    `effEditIdle`), the plugin's own callbacks (CLAP's, served by
+//!    [`Session::tick`]'s service pass), and a plugin's resize request. A tick
+//!    is due once and not owed: a loop that was busy with blocks for 100 ms
+//!    runs one tick after them, never three.
+//!
+//!    **The plugin's own event sources are not the tick's.** What a plugin asks
+//!    to have waited on (CLAP's `posix-fd-support` and `timer-support`, VST3's
+//!    `Linux::IRunLoop`) is [`EditorWindow::wakeups`](tutti_plugin_types::EditorWindow):
+//!    its descriptors and the earliest of its timers. The loop's wait covers
+//!    them with the socket (one `poll(2)` on unix, [`Native::wait`]) and ends at
+//!    the earliest deadline, so a registered descriptor that becomes readable is
+//!    served the instant it does and a timer at its period, not on the next
+//!    tick; what fired is handed back with
+//!    [`EditorWindow::wake`](tutti_plugin_types::EditorWindow) ([`Session::wake`]).
+//!    The other backends wait for timers alone: no plugin registers a
+//!    descriptor where its format has none.
 //! 3. **The window system's events**, where a platform needs them pumped. That
 //!    is the backend's `pump` ([`Native`]), and it is empty: the one platform that
 //!    needs it, a served AU on macOS (its main dispatch queue, which AUv3's
@@ -28,7 +40,7 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_plugin_types::{BridgeError, BridgeResult, MainThread};
+use tutti_plugin_types::{BridgeError, BridgeResult, MainThread, Ready, Wakeups};
 
 use crate::render::RenderThread;
 use crate::session::{Reaction, Session};
@@ -108,7 +120,14 @@ pub(crate) fn serve(
     main: &MainThread,
     render: &RenderThread,
 ) -> BridgeResult<()> {
-    serve_every(session, transport, &mut Native, main, render, TICK_PERIOD)
+    serve_every(
+        session,
+        transport,
+        &mut Native::default(),
+        main,
+        render,
+        TICK_PERIOD,
+    )
 }
 
 /// [`serve`] with a tick every `period`.
@@ -121,6 +140,10 @@ pub(crate) fn serve_every(
     period: Duration,
 ) -> BridgeResult<()> {
     let mut ticker = Ticker::new(Instant::now(), period);
+    // What the plugin wants waited on, and what the wait found ready: reused,
+    // so a steady watch set allocates nothing.
+    let mut wakeups = Wakeups::new();
+    let mut ready: Vec<Ready> = Vec::new();
     loop {
         // An audio connection that ends is the host leaving, which the control
         // connection says too; one that was misused is a peer to stop serving.
@@ -134,7 +157,23 @@ pub(crate) fn serve_every(
                 transport.send(&event)?;
             }
         }
-        if !backend.wait(transport, main, ticker.wait(Instant::now()))? {
+        // The plugin's own event sources are waited on here, with the socket
+        // and the tick: its descriptors, and its earliest timer bounds the
+        // wait. Read after the tick and the last message, which change them.
+        wakeups.clear();
+        session.wakeups(main, &mut wakeups);
+        let now = Instant::now();
+        let timeout = wakeups
+            .until_due(now)
+            .map_or(ticker.wait(now), |due| due.min(ticker.wait(now)));
+        let readable = backend.wait(transport, main, timeout, &wakeups, &mut ready)?;
+        let now = Instant::now();
+        if !ready.is_empty() || wakeups.is_due(now) {
+            for event in session.wake(main, &ready, now) {
+                transport.send(&event)?;
+            }
+        }
+        if !readable {
             continue;
         }
         let msg = transport.recv()?;

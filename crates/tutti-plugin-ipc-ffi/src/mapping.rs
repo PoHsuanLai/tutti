@@ -314,7 +314,7 @@ fn open_file(name: &str, size: usize, mode: Open) -> Result<File, SlabError> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
-                opts.custom_flags(libc::O_NOFOLLOW);
+                opts.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
             }
         }
     }

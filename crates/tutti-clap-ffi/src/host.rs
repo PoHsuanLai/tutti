@@ -343,19 +343,16 @@ pub trait HostCallbacks: Send + Sync + 'static {
         let _ = wanted;
     }
     /// `clap.posix-fd-support` `register_fd`.
-    #[cfg(unix)]
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {
         let _ = (fd, flags);
         false
     }
     /// `clap.posix-fd-support` `modify_fd`.
-    #[cfg(unix)]
     fn posix_fd_modify(&self, fd: i32, flags: u32) -> bool {
         let _ = (fd, flags);
         false
     }
     /// `clap.posix-fd-support` `unregister_fd`.
-    #[cfg(unix)]
     fn posix_fd_unregister(&self, fd: i32) -> bool {
         let _ = fd;
         false
@@ -583,6 +580,9 @@ extern "C" fn host_get_extension(
             CLAP_EXT_AMBISONIC_COMPAT       => HOST_AMBISONIC,
             CLAP_EXT_SURROUND_COMPAT        => HOST_SURROUND,
         );
+        // The one platform line: `posix-fd-support.h` is POSIX's, so a host
+        // on Windows does not offer it, and a plugin there falls back to its own
+        // events.
         #[cfg(unix)]
         if id == CLAP_EXT_POSIX_FD_SUPPORT {
             return std::ptr::from_ref(&HOST_POSIX_FD_SUPPORT).cast::<c_void>();
@@ -1349,7 +1349,6 @@ mod tests {
                 .fetch_add(1 + delta.len() as u32, Ordering::SeqCst);
         }
 
-        #[cfg(unix)]
         fn posix_fd_register(&self, _fd: i32, _flags: u32) -> bool {
             self.reached.fetch_add(1, Ordering::SeqCst);
             true

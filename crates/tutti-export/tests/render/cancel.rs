@@ -6,8 +6,6 @@
 //! reports every 4096 of them, so a render of `BLOCKS` blocks reports every
 //! fourth.
 
-#![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-
 use crate::support;
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 

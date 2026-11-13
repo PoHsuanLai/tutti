@@ -43,9 +43,19 @@ use std::sync::Arc;
 use super::fault::FaultLatch;
 use tutti_codec::Wave;
 use tutti_types::SamplePosition;
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-flac",
+    feature = "decode-mp3",
+    feature = "decode-ogg"
+))]
 use tutti_types::Samples;
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-flac",
+    feature = "decode-mp3",
+    feature = "decode-ogg"
+))]
 use tutti_types::Source;
 
 use super::Loop;

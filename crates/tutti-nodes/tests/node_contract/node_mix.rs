@@ -157,8 +157,6 @@ fn check_io<N: IntoNode>(
         );
     }
 }
-
-#[cfg(feature = "convolution")]
 #[test]
 fn the_convolver_is_blended_by_the_graph() {
     use tutti_nodes::{ConvolverNode, generate_room_ir};

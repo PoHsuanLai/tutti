@@ -9,8 +9,6 @@
 //! and files that share a gain are checked against the relation that gain
 //! implies (the stems sum to the master).
 
-#![cfg(all(feature = "wav", feature = "flac"))]
-
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;

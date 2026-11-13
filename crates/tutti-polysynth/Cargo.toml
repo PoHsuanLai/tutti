@@ -16,7 +16,6 @@ workspace = true
 
 [features]
 default = []
-std = []
 
 [dependencies]
 

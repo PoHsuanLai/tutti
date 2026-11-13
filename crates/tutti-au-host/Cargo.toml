@@ -18,7 +18,7 @@ workspace = true
 # What the integration tests need from `tutti-au-ffi` to build their own raw
 # calls beside the safe API (the raw `AudioUnit` behind a `Unit`, the packet-list
 # walkers). Off in a production build.
-test-support = ["tutti-au-ffi/test-support"]
+testing = ["tutti-au-ffi/testing"]
 # `tests/au_midi_map.rs`'s claim about third-party Audio Units that are
 # installed on the machine (TDR Nova, TAL-NoiseMaker, TAL Reverb 4). It fails,
 # never skips, where they are absent, so it is compiled out unless asked for:
@@ -51,8 +51,8 @@ coreaudio-sys = "0.2"
 [dev-dependencies]
 # The tests build SysEx and MIDI 1.0 fixtures with its helpers.
 # The tests that build their own raw calls beside the safe API.
-tutti-au-host = { path = ".", features = ["test-support"] }
-tutti-au-ffi = { path = "../tutti-au-ffi", features = ["test-support"] }
+tutti-au-host = { path = ".", features = ["testing"] }
+tutti-au-ffi = { path = "../tutti-au-ffi", features = ["testing"] }
 # `mapping_contract!`: the laws `ParamBounds` is held to.
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 tutti-graph = { path = "../tutti-graph" }

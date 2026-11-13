@@ -167,10 +167,7 @@ pub use signal::{
 // nodes and edges, with no Bevy.
 mod reconcile;
 pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
-
-#[cfg(feature = "convolution")]
 mod convolution;
-#[cfg(feature = "convolution")]
 pub use convolution::{
     ConvolverNode, IrChannelConfig, generate_room_ir, generate_room_ir_into, generate_test_ir,
     generate_test_ir_into,

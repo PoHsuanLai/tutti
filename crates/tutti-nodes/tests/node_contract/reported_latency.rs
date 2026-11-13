@@ -298,11 +298,6 @@ fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
 // ---------------------------------------------------------------------------
 // The convolver's reported latency is true of the whole output.
 // ---------------------------------------------------------------------------
-//
-// Behind the crate's `convolution` feature, as the convolver is. A workspace
-// run turns it on (tutti-export depends on it); for this crate alone, pass
-// `--features convolution`.
-#[cfg(feature = "convolution")]
 mod convolver {
     use super::*;
     use tutti_nodes::ConvolverNode;

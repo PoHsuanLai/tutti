@@ -4,7 +4,7 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run -p vst3-host --example gui_test
+//! cargo run -p tutti-vst3-host --example gui_test
 //! ```
 
 use std::path::Path;

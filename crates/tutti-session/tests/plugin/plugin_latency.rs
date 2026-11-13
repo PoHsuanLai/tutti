@@ -77,7 +77,7 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
 /// and, while they agree, edits nothing: no recompile and no republish frame
 /// after frame). A latency the plugin changes (what `latency.changed` writes
 /// into its cell) reaches the graph through `Phase::Plugins`, with a
-/// `PluginLatencyChanged`; a figure past what PDC compensates is clamped, not
+/// `PluginChange::LatencyChanged`; a figure past what PDC compensates is clamped, not
 /// refused.
 #[test]
 fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {

@@ -85,7 +85,7 @@ pub const fn widen_bend(bend: U14) -> BendValue {
 /// M2-115 section 3). The caller keeps the [`Address`]
 /// unchanged.
 ///
-/// Transitional for a consumer: see the crate docs. Control Changes that
+/// Control Changes that
 /// would need RPN or Bank Select assembly widen by value as plain Control
 /// Changes, and a Program Change has no bank.
 #[inline]

@@ -266,7 +266,7 @@ fn a_plugin_added_mid_export_is_told_offline() {
 /// debounce counts unhealthy observations at the `now`s the test passes:
 /// `Liveness::DEATHS` of them inside the window (50 ms) are still Failing,
 /// with the node in place; the first past the window is Dead, the node is
-/// removed and `PluginDied` names it, with the engine's cause; no update
+/// removed and `PluginChange::Died` names it, with the engine's cause; no update
 /// after reports it again.
 #[test]
 fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
@@ -527,11 +527,11 @@ impl Drive {
 /// **A crashed plugin comes back at its node with its last state.** The
 /// probe's first server aborts on its 60th block (a replacement does not: the
 /// once-file); before that a parameter is set and a snapshot captured. The
-/// death is reported as `PluginReloading` with the node kept, and the load
+/// death is reported as `PluginChange::Reloading` with the node kept, and the load
 /// is handed out as a job; landing it puts the replacement at the same node
 /// with its wiring (the outputs still read it, so the render is sound again
 /// with no re-wiring), the parameter back at the snapshot's value, and
-/// `PluginRecovered` saying the state was restored, how old, and that the
+/// `PluginChange::Recovered` saying the state was restored, how old, and that the
 /// latency moved by the replacement's extra (the plan's total with it: the
 /// commit re-plans PDC).
 #[test]
@@ -708,8 +708,8 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
 
 /// **A plugin that fails every load is given up on, and its node removed.**
 /// Every server aborts on its first block, so each reload comes up and dies:
-/// two reloads (the policy's budget), then `PluginGaveUp` naming the failures,
-/// the node and its record gone, and no `PluginDied`.
+/// two reloads (the policy's budget), then `PluginChange::GaveUp` naming the failures,
+/// the node and its record gone, and no `PluginChange::Died`.
 #[test]
 fn a_plugin_that_crashes_every_time_is_given_up_on() {
     let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")], |b| {
@@ -1247,7 +1247,7 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
 /// swapping it in would leave the topology invalid and refuse every later
 /// commit while the session called the plugin healthy. It is refused before
 /// the swap: the next attempt is scheduled (the same refusal again, until
-/// the budget is spent), the reason reaches `PluginGaveUp`, and an edit made
+/// the budget is spent), the reason reaches `PluginChange::GaveUp`, and an edit made
 /// meanwhile commits.
 #[test]
 fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {

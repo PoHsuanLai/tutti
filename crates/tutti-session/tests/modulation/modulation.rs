@@ -119,8 +119,7 @@ fn ducked(f: usize, ta: f64, tr: f64) -> f64 {
     0.8 - 0.6 * x
 }
 
-/// **Doc 014 §8.1, headless (design 015 §5.1), renders `bevy-tutti`'s
-/// `the_8_1_example_renders_its_analytic_values` figures on an offline
+/// **Doc 014 §8.1, headless (design 015 §5.1), renders its analytic figures on an offline
 /// session.** A sine LFO of one cycle per half beat on a cutoff (knob 500
 /// in `0..=1000`, depth 0.3) renders the analytic sine, bar-locked at 120
 /// BPM (4 Hz), within §5.3's bound past the connect's declick; and the pad

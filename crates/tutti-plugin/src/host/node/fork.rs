@@ -92,7 +92,7 @@
 //! it does not reach the fork. Steps 2 to 5 (the `plugin-server` launch and
 //! the state load, half a second or more) are a **deferred build**
 //! (`ForkBuild::deferred`) that reads nothing live and may run on any
-//! thread: bevy-tutti's export runs it on its compute pool, so the frame
+//! thread (a compute pool, say), so the frame
 //! the export starts in does not wait for it. [`PluginClient::fork_instance`]
 //! runs all five on the calling thread.
 //!
@@ -378,8 +378,7 @@ impl ForkSource for ServedFork {
 
     /// The live instance's state (and rate, and meter) is read here, at the
     /// gather; the `plugin-server` launch and the state load, half a second
-    /// or more, are the build's, on whichever thread runs it (bevy-tutti's
-    /// export: its compute pool).
+    /// or more, are the build's, on whichever thread runs it.
     fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         let capture = self.capture(mode).map_err(ForkCause::new)?;
         Ok(ForkBuild::deferred(move || {

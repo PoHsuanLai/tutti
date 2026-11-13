@@ -23,11 +23,6 @@ pub(crate) enum Step {
         path: PathBuf,
         contents: String,
     },
-    /// `check-bevy-free`'s dependency tree check: fails if the tree printed by
-    /// the command names a bevy crate. The command's own status is ignored, as
-    /// the justfile's pipeline ignored it (the `cargo check` before it had
-    /// already built the same graph).
-    NoBevyInTree(Cmd),
     /// A gate over the repo's files (`gates.rs`), run in this process.
     Gate(Gate),
     /// `cargo doc` for each member's features together and each feature of
@@ -44,10 +39,6 @@ impl Step {
         match self {
             Step::Run(c) => c.display(),
             Step::WriteFile { path, .. } => format!("write {}", path.display()),
-            Step::NoBevyInTree(c) => format!(
-                "{} | fail if a line matches '\\bbevy(_[a-z]+)?\\b'",
-                c.display()
-            ),
             Step::Gate(g) => g.display(),
             Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <fs>, each member with its features together (private items), then each feature of tutti-session and tutti alone".to_owned(),
             Step::RequireCargoDeny => {
@@ -168,14 +159,9 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "build plugin-server in release",
     ),
     (
-        "check-bevy-free",
-        "",
-        "the Bevy-free floor: builds and the dependency tree",
-    ),
-    (
         "check-session",
         "",
-        "tutti-session is Bevy-free (closure and features) and re-exports no crate whole",
+        "tutti-session re-exports no crate whole",
     ),
     (
         "check-guards",
@@ -416,18 +402,6 @@ impl Planner<'_> {
             "plugin-server-release" => {
                 self.lines(&["cargo build --locked --release -p tutti-plugin-server --bin plugin-server"]);
             }
-            "check-bevy-free" => {
-                self.lines(&[
-                    "cargo check --locked -p tutti-transport -p tutti-metering -p tutti-engine",
-                    "cargo check --locked -p tutti-types",
-                    "cargo check --locked -p tutti-types --features bevy",
-                    "cargo check --locked -p tutti",
-                    "cargo check --locked -p tutti --features full",
-                ]);
-                self.out.push(Step::NoBevyInTree(Cmd::sh(
-                    "cargo tree --locked -p tutti --features full -e normal",
-                )));
-            }
             "check-session" => self.out.push(Step::Gate(Gate::Session)),
             "check-guards" => self.out.push(Step::Gate(Gate::Guards)),
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
@@ -480,7 +454,7 @@ impl Planner<'_> {
             }
             "ci" => {
                 for d in [
-                    "lint", "deny", "check-paths", "check-bevy-free", "check-session", "check-guards",
+                    "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-layout", "check-range-types", "check-hosting",
                     "check-submodule-pins",
                     "check-features",

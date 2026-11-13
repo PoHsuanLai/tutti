@@ -81,7 +81,4 @@ pub use tutti_midi_runtime::{
 // and a consumer that wants only the former should not link CoreMIDI. Depend
 // on `tutti-midi-file` directly.
 
-// This crate is OS MIDI I/O plus the value types a host drives. The ECS
-// bindings that drive them — routing, sequence, scheduled dispatch, clock-out,
-// track-out, metadata, device management, MPE — live in
-// `bevy_tutti::midi`.
+// This crate is OS MIDI I/O plus the value types a host drives.

@@ -66,8 +66,7 @@ pub struct AspectRatio {
 /// physical pixels per logical pixel (1.0 at standard density, 2.0 on a
 /// Retina display or at 200 % on Windows).
 ///
-/// The host knows it from its window (`winit::Window::scale_factor`, Bevy's
-/// `Window::scale_factor`) and passes it when it opens an editor; each format
+/// The host knows it from its window (`winit::Window::scale_factor`) and passes it when it opens an editor; each format
 /// forwards it where its ABI takes it: CLAP `clap_plugin_gui::set_scale` and
 /// VST3 `IPlugViewContentScaleSupport::setContentScaleFactor`, on the
 /// physical-pixel windowing systems only (Win32, X11). On macOS the window
@@ -169,7 +168,7 @@ pub struct InvalidContentScale(pub f64);
 pub struct WindowHandle(u64);
 
 impl WindowHandle {
-    /// The native window behind `window` (a winit or Bevy window, a wgpu
+    /// The native window behind `window` (a winit window, a wgpu
     /// surface's window, ...).
     ///
     /// # Errors

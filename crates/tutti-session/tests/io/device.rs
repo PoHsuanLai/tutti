@@ -29,10 +29,7 @@ fn spec_at(rate: f64) -> OutputSpec {
 /// **The session publishes the meter and the taps its callback feeds**, not
 /// disconnected ones: a host opens a tap with `Graph::open_output_tap` and
 /// sees the frames the callback renders, and reads the level they carry from
-/// `Session::take_master_meter`. (Moved from `bevy-tutti`'s `engine::build`, where
-/// it pinned `AudioTapRes`; its adapter half there now checks the resource is
-/// the session's meter. The tap half was `Session::tap().open()`; the frame
-/// count is the same figure.)
+/// `Session::take_master_meter`.
 #[test]
 fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
     let (driver, stream) = ManualStreamDriver::new();

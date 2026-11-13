@@ -18,8 +18,7 @@ use crate::{HeardOpen, HeardTapError, Playhead, RemoveError, ScheduleError, Temp
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
 ///
-/// A host that runs the steps itself (a Bevy app runs each in its own
-/// system) calls [`Session::run_phase`] once per phase, in this order.
+/// A host that runs the steps itself calls [`Session::run_phase`] once per phase, in this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Phase {
@@ -334,7 +333,7 @@ pub enum RootTopologyStatus {
     Refused(tutti_types::FoldError),
 }
 
-/// The tutti engine, Bevy-free: a [`Graph`], its transport, and the engine
+/// The tutti engine: a [`Graph`], its transport, and the engine
 /// side it renders on, in the order [`update`](Self::update) runs them.
 ///
 /// Built with [`SessionBuilder`](crate::SessionBuilder): offline (the host
@@ -646,7 +645,7 @@ impl Session {
                 #[cfg(feature = "modulation")]
                 {
                     // The re-apply's commit, as the update's own: published
-                    // on `Sent` (what `commit_and_publish` did in Bevy).
+                    // on `Sent`.
                     if self.mods.reapply(&mut self.graph, cx.mods, cx.now, out) {
                         self.commit();
                     }

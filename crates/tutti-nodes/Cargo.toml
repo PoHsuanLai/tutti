@@ -16,7 +16,6 @@ workspace = true
 
 [features]
 default = []
-# No `bevy` feature: ECS bindings are host-side.
 # FFT convolution reverb (partitioned IR).
 # (The transforms are `tutti_dsp::RealFft`; the convolution itself is this
 # crate's, so its IR spectra can be stored once and shared.)
@@ -29,15 +28,13 @@ testing = []
 
 [dependencies]
 # Value vocabulary (the `Curve` trait), for `impl Curve for Trajectory`.
-# default-features = false so bevy does not re-leak.
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # The modulation compiler and its vocabulary (`ControlProgram`, `Curve`,
 # `LfoShape`, `compile`): the control lane evaluates its programs, and the
-# reconcile (`Modulation`) calls the compiler. `default-features = false`
-# keeps its `bevy` feature (Reflect) off this deliberately bevy-free crate.
+# reconcile (`Modulation`) calls the compiler.
 tutti-modulation = { path = "../tutti-modulation", default-features = false }
 
 # The algorithms every node adapts. tutti-dsp names no tutti crate but
@@ -129,9 +126,8 @@ harness = false
 name = "hrtf_binaural"
 harness = false
 
-# docs.rs renders with every feature on. `default = []` keeps the engine
-# Bevy-free for consumers, but it would otherwise publish a page with the
-# feature-gated half of the public API missing.
+# docs.rs renders with every feature on, or the feature-gated half of the
+# public API would be missing.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

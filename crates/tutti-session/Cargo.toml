@@ -1,17 +1,14 @@
-# The Bevy-free API layer (design 015): the cross-crate composition both
-# umbrellas use. `bevy-tutti` and `tutti` depend on it; nothing else does.
+# The API layer: the cross-crate composition. `tutti` depends on it.
 #
 # Not an umbrella: it re-exports no crate whole (`cargo xtask check-session`
 # fails on `pub use tutti_x as …;`, `pub use tutti_x;` and
-# `pub use tutti_x::*;`), only the single items its own signatures take. And no
-# `bevy` feature: nothing here reaches Bevy (`cargo xtask check-session` runs
-# `cargo tree -p tutti-session -e normal --all-features`).
+# `pub use tutti_x::*;`), only the single items its own signatures take.
 [package]
 name = "tutti-session"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The tutti audio engine's Bevy-free API layer: a graph, its engine, its device and the order they run in"
+description = "The tutti audio engine's API layer: a graph, its engine, its device and the order they run in"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-session"
@@ -36,9 +33,6 @@ tutti-engine = { path = "../tutti-engine" }
 # arrival stamps are related to it); `ArcLend` for the tests that publish.
 tutti-rt = { path = "../tutti-rt" }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
-# Logging: what the `bevy_log` calls of `bevy-tutti`'s old `GraphRuntime`
-# became. `bevy_log` is a `tracing` subscriber, so a Bevy app sees these
-# where it saw those.
 tracing = "0.1"
 thiserror.workspace = true
 serde = { version = "1", optional = true, features = ["derive"] }
@@ -73,12 +67,11 @@ tutti-plugin-types = { path = "../tutti-plugin-types", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 
 [features]
-# Every subsystem is a feature, as on every engine crate. There is no `bevy`
-# feature, and there must never be one (`cargo xtask check-session`).
+# Every subsystem is a feature, as on every engine crate.
 default = []
 device = ["dep:tutti-cpal"]
 # `Recorder` and its pump loop: device-free, so a host that records files or
-# taps without a microphone (`bevy-tutti`'s `AudioPump`) takes it alone.
+# taps without a microphone takes it alone.
 record = ["dep:tutti-dsp"]
 # The live I/O edge: `record`, and with `device`, the mic capture too.
 audio-io = ["record", "tutti-cpal?/capture", "tutti-codec/encode-wav"]

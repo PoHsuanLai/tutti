@@ -78,12 +78,11 @@ pub mod testing;
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,
 // `Voice`'s memory tier) is `tutti-codec`'s. Re-exported so a consumer building
-// a voice needs no direct `tutti-codec` dependency. `WaveAsset`, the Bevy
-// wrapper of one, is `bevy_tutti::sampler`'s.
+// a voice needs no direct `tutti-codec` dependency.
 pub use tutti_codec::Wave;
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
-// share. Bevy-free apart from the asset loader, gated inside.
+// share.
 mod voice;
 
 // Planar block scratch and its kernels: the voices render into it, the
@@ -94,8 +93,8 @@ mod lanes;
 // voice-playback concern: it owns no source and imports nothing from `voice`.
 pub mod stretch;
 
-// Bevy-free DSP leaves + value types from `voice` — usable as plain
-// `tutti_graph` nodes without the ECS layer. The streamer's `LruCache` /
+// DSP leaves + value types from `voice`, usable as plain
+// `tutti_graph` nodes. The streamer's `LruCache` /
 // `StreamPin` are internal machinery a consumer never constructs, so they stay
 // `pub(crate)`.
 // `DiskVoiceConfig` and `DiskSource` are deliberately NOT re-exported: nothing
@@ -112,15 +111,7 @@ pub use voice::{
     VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, memory_voice,
     voice_width,
 };
-// Entity-as-node markers for the voice pool. The asset loader and the playback
-// plugin are bevy-tutti's; what lives here is the pair of marker components,
-// which are derives on this crate's own value types.
-#[cfg(feature = "bevy")]
-pub use voice::{VoicePoolNode, VoicePoolRef};
-
-// The async disk-streaming engine (streamer thread + the `DiskStreamer` handle). All
-// Bevy-free — a non-Bevy host drives it directly via `DiskStreamer::new` / the
-// `StreamerThread` API.
+// The async disk-streaming engine (streamer thread + the `DiskStreamer` handle).
 pub(crate) mod streamer;
 
 pub use streamer::{
@@ -149,8 +140,3 @@ pub use streamer::{ByHand, StepOutcome};
 mod probe;
 #[cfg(codec)]
 pub use probe::{ProbeError, SampleFacts, probe};
-
-// This crate exposes no Bevy plugin of its own. `DiskStreamer` is an engine
-// service, not a Bevy noun: bevy-tutti wraps it as `DiskStreamerRes` and owns
-// `TuttiPlaybackPlugin`.
-//

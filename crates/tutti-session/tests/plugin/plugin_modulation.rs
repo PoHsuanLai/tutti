@@ -4,14 +4,6 @@
 //! outlives the plugin behind it being replaced (a crash's recovery, a
 //! crossfade) and an export is the live render.
 //!
-//! These are the session halves of `bevy-tutti`'s `plugin_recovery`
-//! (`a_modulation_lane_on_the_plugin_survives_its_replacement`),
-//! `plugin_capture` (`a_crossfaded_plugin_is_bound_again`: the lane and
-//! the parameter read) and `mod_plugin`
-//! (`an_export_is_the_live_render_on_a_clap_gain`), moved here when the
-//! adapter was parked. A detached session (no engine, no device) stands for
-//! the adapter's headless graph.
-//!
 //! The reference plugin is the CLAP probe through a real `plugin-server`.
 //! **Build `plugin-server` first** (`cargo build -p tutti-plugin-server`):
 //! without it every test here fails, naming that command. They must fail

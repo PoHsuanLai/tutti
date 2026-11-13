@@ -9,8 +9,7 @@ region, a whole take streamed from disk, varispeed or time-stretched. It is a
 clip player, not an instrument: there is no `note_on`, no keymap and no voice
 stealing (see `tutti-polysynth` and `tutti-soundfont` for note-driven
 playback). Most applications reach it through the `tutti` crate
-(`tutti::sampler`, feature `sampler`) or through `bevy-tutti`, which adds the
-Bevy plugin and asset loader.
+(`tutti::sampler`, feature `sampler`).
 
 ## Two playback tiers
 
@@ -96,9 +95,6 @@ here instead (`VoicePool::with_channels` returns `PoolTooWide`).
 - `wav`, `flac`, `mp3`, `ogg`: decoder support for that format, forwarded to
   `tutti-codec`, which owns the decoder. `files` turns on all four. With none of
   them, `probe` and `SampleFacts` are absent: no header can be read.
-- `bevy`: derives `Component` on the voice-pool markers `VoicePoolRef` and
-  `VoicePoolNode`. The plugin and asset loader are `bevy-tutti`'s; everything
-  else in this crate works without Bevy.
 - `test-support`: `DiskStreamer::manual` and `step_once`, which run the
   streamer's cycle by hand instead of on its thread, and the `testing` module (a
   mock transport and block driver). For tests; a host has no use for it.

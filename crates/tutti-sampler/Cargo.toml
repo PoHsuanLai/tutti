@@ -17,12 +17,6 @@ workspace = true
 [features]
 default = ["wav"]
 
-# Bevy ECS integration: the entity-as-node marker derives on the voice-pool
-# handles, and nothing else. Plugins and asset loaders are bevy-tutti's, so
-# this feature adds only `derive(Component)` — the DSP leaves (MemorySource, DiskVoice, VoicePool, the disk streamer, the
-# stretch::Unit) compile Bevy-free for direct `tutti_graph` use either way.
-bevy = ["dep:bevy_ecs"]
-
 # `serde` for `Placement` (a range-checked position: it serialises as the bare
 # `f64` and refuses what `Placement::new` refuses). Off by default; the crate's
 # own dev-dependency turns it on so its contract test runs under a plain
@@ -77,10 +71,6 @@ tutti-rt = { path = "../tutti-rt" }
 # STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
 # checked) and `window::hann` rather than keeping a ninth copy of each.
 tutti-dsp = { path = "../tutti-dsp", default-features = false }
-
-# The entity-as-node marker derives on the voice-pool handles. Optional,
-# gated by the `bevy` feature.
-bevy_ecs = { version = "0.19", default-features = false, optional = true }
 
 tracing = "0.1"
 thiserror = "2"

@@ -5,12 +5,13 @@
 //! Layout:
 //! - every workspace member under `crates/` is directly `crates/<package-name>`,
 //!   a nested directory is refused, and so is a directory under `crates/` or
-//!   `testing/` that is not a member (the parked crates in [`PARKED`] are their
-//!   own `[workspace]` root, out of the member list on purpose);
+//!   `testing/` that is not a member;
 //! - every member under `testing/` is directly `testing/<dir>`;
 //! - no member lives anywhere else but `xtask`, whose manifest has no dependency
 //!   at all (std only) and which nothing depends on;
-//! - nothing under `crates/` has a normal or build dependency on `testing/`.
+//! - nothing under `crates/` has a normal or build dependency on `testing/`;
+//! - no member's manifest names a dependency called `bevy` or `bevy_*`/`bevy-*`, in
+//!   any dependency table (normal, build, dev, target-specific).
 //!
 //! Layering (CLAUDE.md, "Workspace"): a normal or build dependency between
 //! workspace crates points strictly down [`LAYERS`]; a crate missing from the
@@ -23,8 +24,8 @@
 //! The codec libraries are `tutti-codec`'s alone, and `winnow` is named in
 //! [`WINNOW_HOMES`]'s parser modules alone; in `tutti-codec`'s manifest a
 //! `decode-*` feature enables no encoder library and an `encode-*` feature no
-//! `symphonia`. `export` alone on `tutti-session`, `tutti` and `bevy-tutti`
-//! (while it is a member) reaches no C library: `cargo tree -i ogg_next_sys`
+//! `symphonia`. `export` alone on `tutti-session` and `tutti`
+//! reaches no C library: `cargo tree -i ogg_next_sys`
 //! finds nothing, and with `export-ogg` it still does, so the check cannot pass
 //! by looking at nothing.
 //!
@@ -96,13 +97,8 @@ pub(super) const LAYERS: &[&[&str]] = &[
     ],
     &["tutti-plugin", "tutti-plugin-probe"],
     &["tutti-plugin-server", "tutti-session"],
-    // `bevy-tutti` is parked, so never a member here; its place stays so that it
-    // is ranked, and its edges checked, the day it is back.
-    &["tutti", "bevy-tutti"],
+    &["tutti"],
 ];
-
-/// Crates kept in the tree and out of the workspace: each its own `[workspace]` root.
-const PARKED: &[&str] = &["crates/bevy-tutti"];
 
 /// The crates whose normal and build dependencies on workspace crates are exactly these.
 const ONLY: &[(&str, &[&str])] = &[
@@ -214,7 +210,7 @@ pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[
 ];
 
 /// The crates that can reach a C library through `export-ogg`.
-const OGG_PACKAGES: &[&str] = &["tutti-session", "tutti", "bevy-tutti"];
+const OGG_PACKAGES: &[&str] = &["tutti-session", "tutti"];
 
 struct Pkg {
     name: String,
@@ -301,15 +297,6 @@ pub(super) fn check(tree: &dyn Tree, cargo: &dyn Cargo) -> Report {
         }
         for dir in entries {
             if member_dirs.contains(dir.as_str()) {
-                continue;
-            }
-            if PARKED.contains(&dir.as_str()) {
-                let manifest = tree.read(&format!("{dir}/Cargo.toml")).unwrap_or_default();
-                if !manifest.contains("\n[workspace]") {
-                    bad.push(format!(
-                        "{dir} is parked and must be its own `[workspace]` root"
-                    ));
-                }
                 continue;
             }
             bad.push(format!("{dir} is not a workspace member"));
@@ -567,15 +554,21 @@ pub(super) fn check(tree: &dyn Tree, cargo: &dyn Cargo) -> Report {
             ));
         }
         let users: BTreeSet<String> = internal(p).into_iter().map(|(d, _)| d).collect();
-        if users.contains("tutti-session") && !["tutti", "bevy-tutti"].contains(&p.name.as_str()) {
+        if users.contains("tutti-session") && p.name != "tutti" {
             bad.push(format!(
-                "{} depends on tutti-session; only tutti and bevy-tutti do",
+                "{} depends on tutti-session; only tutti does",
                 p.name
             ));
         }
-        for top in ["tutti", "bevy-tutti"] {
-            if users.contains(top) {
-                bad.push(format!("{} depends on {top}, the top of the tree", p.name));
+        if users.contains("tutti") {
+            bad.push(format!("{} depends on tutti, the top of the tree", p.name));
+        }
+        for (d, _) in &p.deps {
+            if d == "bevy" || d.starts_with("bevy_") || d.starts_with("bevy-") {
+                bad.push(format!(
+                    "{} depends on {d}; no workspace crate depends on Bevy (the adapter is its own repository)",
+                    p.name
+                ));
             }
         }
     }
@@ -613,10 +606,7 @@ mod tests {
             .collect();
         let mut m = Mem::with(&[(
             "Cargo.toml",
-            &format!(
-                "[workspace]\nmembers = [\n{}\n]\nexclude = [\"crates/bevy-tutti\"]\n",
-                list.join("\n")
-            ),
+            &format!("[workspace]\nmembers = [\n{}\n]\n", list.join("\n")),
         )]);
         for (dir, name, body) in members {
             m.files.insert(
@@ -663,7 +653,7 @@ mod tests {
     fn a_layered_workspace_passes() {
         let r = run(&base());
         assert!(r.passed(), "{:?}", r.findings);
-        assert_eq!(r.out[0], "check-layout: ok (7 members, 48 ranked)");
+        assert_eq!(r.out[0], "check-layout: ok (7 members, 47 ranked)");
     }
 
     #[test]
@@ -715,25 +705,38 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_that_is_not_a_member_fails_unless_it_is_parked() {
+    fn a_directory_that_is_not_a_member_fails() {
         let mut m = ws(&base());
         m.files
             .insert("crates/stray/Cargo.toml".into(), String::new());
         assert!(check(&m, &NoCargo).findings[1].contains("crates/stray is not a workspace member"));
-        let mut m = ws(&base());
-        m.files.insert(
-            "crates/bevy-tutti/Cargo.toml".into(),
-            "[package]\nname = \"bevy-tutti\"\n".into(),
-        );
-        assert!(
-            check(&m, &NoCargo).findings[1]
-                .contains("crates/bevy-tutti is parked and must be its own")
-        );
-        m.files.insert(
-            "crates/bevy-tutti/Cargo.toml".into(),
-            "[package]\n\n[workspace]\n".into(),
-        );
-        assert!(check(&m, &NoCargo).passed());
+    }
+
+    #[test]
+    fn a_bevy_dependency_in_any_table_fails_and_a_lookalike_passes() {
+        for body in [
+            "[dependencies]\nbevy_reflect = \"0.19\"\n",
+            "[dev-dependencies]\nbevy = { version = \"0.19\" }\n",
+            "[build-dependencies]\nbevy-tutti = { path = \"x\" }\n",
+            "[target.'cfg(unix)'.dependencies]\nbevy_ecs = \"0.19\"\n",
+            "[dependencies.bevy_tasks]\nversion = \"0.19\"\n",
+        ] {
+            let r = with(("crates/tutti-types", "tutti-types", body));
+            assert!(
+                r.findings
+                    .iter()
+                    .any(|l| l.contains("tutti-types depends on bevy")
+                        && l.contains("no workspace crate depends on Bevy")),
+                "{body}: {:?}",
+                r.findings
+            );
+        }
+        let r = with((
+            "crates/tutti-types",
+            "tutti-types",
+            "[dependencies]\nbevyish = \"1\"\nthiserror = \"2\"\n",
+        ));
+        assert!(r.passed(), "{:?}", r.findings);
     }
 
     #[test]
@@ -956,9 +959,12 @@ mod tests {
             "tutti-graph",
             "[dev-dependencies]\ntutti-session = { path = \"x\" }\n",
         ));
-        assert!(run(&v).findings.iter().any(|l| {
-            l.contains("tutti-graph depends on tutti-session; only tutti and bevy-tutti do")
-        }));
+        assert!(
+            run(&v)
+                .findings
+                .iter()
+                .any(|l| { l.contains("tutti-graph depends on tutti-session; only tutti does") })
+        );
         let _ = r;
         let mut v = base();
         v.push(("crates/tutti-plugin-ipc", "tutti-plugin-ipc", ""));

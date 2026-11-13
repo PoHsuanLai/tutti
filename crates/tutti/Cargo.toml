@@ -1,10 +1,10 @@
-# The Bevy-free umbrella. It holds no code: src/lib.rs is only re-exports.
+# The umbrella. It holds no code: src/lib.rs is only re-exports.
 [package]
 name = "tutti"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The tutti audio engine behind one dependency. Bevy-free."
+description = "The tutti audio engine behind one dependency."
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti"
@@ -75,7 +75,7 @@ default = ["session"]
 session = ["dep:tutti-session"]
 
 # Everything a headless host can have. Plugin FORMATS stay opt-in — each
-# links an SDK — exactly as in bevy-tutti's own `full`.
+# links an SDK.
 full = [
     "device",
     "wav",
@@ -97,8 +97,7 @@ full = [
     "convolution",
 ]
 
-# The sound card. NOT default, unlike in `bevy-tutti` where it is mandatory:
-# an offline render, a CI job and a server build all want this crate without
+# The sound card. NOT default: an offline render, a CI job and a server build all want this crate without
 # ALSA or CoreAudio headers on the box.
 device = ["dep:tutti-cpal", "tutti-session?/device"]
 
@@ -109,8 +108,7 @@ jack = ["device", "tutti-cpal/jack"]
 # --- codecs -----------------------------------------------------------------
 #
 # The decoder is `tutti-codec`'s, so a format turns on `codec` (below):
-# `Wave::read` and `FileIn` are reached as `tutti::codec::…`. bevy-tutti
-# forwards without it, because there `tutti-codec` is always a dependency.
+# `Wave::read` and `FileIn` are reached as `tutti::codec::…`.
 wav = ["codec", "tutti-codec/decode-wav", "tutti-sampler?/wav"]
 flac = ["codec", "tutti-codec/decode-flac", "tutti-sampler?/flac"]
 mp3 = ["codec", "tutti-codec/decode-mp3", "tutti-sampler?/mp3"]
@@ -126,7 +124,7 @@ codec = ["dep:tutti-codec"]
 # `encode-*` feature. Implied by `audio-io`, so it is rarely named directly.
 io = ["session", "tutti-session/record", "codec", "tutti-codec/encode-wav"]
 
-# --- MIDI, two axes (identical to bevy-tutti) -------------------------------
+# --- MIDI, two axes --------------------------------------------------------
 midi = [
     "dep:tutti-midi-protocol",
     "dep:tutti-midi-file",
@@ -137,13 +135,8 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session?/midi-hardwar
 
 # --- subsystems -------------------------------------------------------------
 #
-# Every one of these is bevy-tutti's feature MINUS its `/bevy` forwards. That
-# is the only systematic difference between the two tables, and it is the
-# whole point of this crate: `bevy-tutti`'s `modulation` pulls
-# `tutti-modulation/bevy` + `tutti-types/bevy`, and its `sampler` pulls
-# `tutti-sampler/bevy`. None of that belongs here. (Each also turns on the
-# session's feature of the same name, with `?` here because `session` is
-# optional; in bevy-tutti the session is always there.)
+# Each also turns on the session's feature of the same name, with `?` because
+# `session` is optional.
 synth = ["dep:tutti-polysynth", "tutti-session?/synth"]
 soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2", "tutti-session?/soundfont"]
 sampler = ["wav", "dep:tutti-sampler", "tutti-session?/sampler"]
@@ -160,8 +153,7 @@ export-ogg = ["export", "tutti-export/ogg", "tutti-session?/export-ogg"]
 modulation = ["dep:tutti-modulation", "tutti-session?/modulation"]
 convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 
-# Axes bevy-tutti does not have: bevy-tutti does not depend on
-# `tutti-dsp` or `tutti-measure` at all. `tutti::dsp` and `tutti::measure` are both.
+# `tutti::dsp` and `tutti::measure` are both.
 dsp = ["dep:tutti-dsp", "dep:tutti-measure"]
 
 # --- plugin hosting ---------------------------------------------------------

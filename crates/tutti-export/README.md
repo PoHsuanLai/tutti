@@ -40,7 +40,7 @@ that is handed a `Progress`, a `Stage` and one fraction of the whole render.
 Encoding is WAV, FLAC, AIFF or OGG Vorbis, each
 behind its own feature (`wav`, `flac`, `aiff`, `ogg`). **None is on by default**:
 `ogg` links the C Vorbis library, so a consumer names the formats it writes. The
-umbrellas (`tutti`, `bevy-tutti`, `tutti-session`) forward them as `export-wav`,
+umbrellas (`tutti`, `tutti-session`) forward them as `export-wav`,
 `export-flac`, `export-aiff` and `export-ogg`; their `export` feature implies
 `export-wav` only, so `export-ogg` is the one path to C.
 

@@ -25,8 +25,7 @@
 //! threads are not the OS main thread, and every test claims). So the host must
 //! claim from its UI or OS main thread, first, at startup; a thread that claims
 //! earlier becomes "the main thread" for the process, and the real one is then
-//! refused. `bevy-tutti`'s `TuttiHostingPlugin::build` claims and panics if it
-//! is refused. A format whose soundness needs the OS's main thread still asks
+//! refused. A format whose soundness needs the OS's main thread still asks
 //! the OS itself (the AU editor re-checks `pthread_main_np`).
 //!
 //! The claim is **once per process**, not once per test. Under `cargo nextest`

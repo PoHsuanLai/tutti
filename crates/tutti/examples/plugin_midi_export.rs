@@ -1,4 +1,4 @@
-//! Load a plugin, play a MIDI file, export to WAV, without Bevy (design 015
+//! Load a plugin, play a MIDI file, export to WAV (design 015
 //! §5.2).
 //!
 //! The plugin is loaded as a job and added to an offline session; the file's

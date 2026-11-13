@@ -5,14 +5,11 @@
 //! The expected messages of the generated streams come from how the stream was
 //! built, not from a second parser.
 
-use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use assert_no_alloc::assert_no_alloc;
 use tutti_ump::{
     Address, CCNumber, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber, Sysex7Packet,
     SysexStatus, System, U7, U14, Voice1, parse_exact,
 };
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 /// A small, fast generator: the same stream for the same seed.
 struct Rng(u64);

@@ -738,7 +738,11 @@ the same experiment out of process.
   `tail.changed`, through `Notice::TailChanged`, over the wire as
   `BridgeMessage::TailChanged`); the session's plugin phase now compares the
   controls' ceiling with the graph's, as it does the latency
-  (`Graph::refresh_node_tail`, `Editor::set_tail`). **A finite figure past
+  (`Graph::refresh_node_tail`, `Editor::set_tail`). AU's `TailTime` property
+  listener raises the same `Request::TailChanged` and takes the same route; VST3
+  (its restart flags have no tail flag; the host reads `getTailSamples` at load)
+  and VST2 (no changed callback) have no source of a tail change and are left as
+  they were. **A finite figure past
   `MAX_NODE_TAIL` is `Unbounded`, never clamped** (`Processing::ceiling`, which both
   the node's `shape` and the session go through): a clamp would declare a ceiling
   shorter than the plugin rings, ending a bounce of a two-minute reverb at 60 s and
@@ -748,10 +752,6 @@ the same experiment out of process.
   the shared plugin's tail byte tests the two format hosts through the contract
   (`tail_markers_reported`). `MAX_NODE_TAIL` stays: it bounds the length a bounce is
   sized from (`graph_tail`), not any arithmetic (sums saturate).
-  AU's `TailTime` property listener raises the same `Request::TailChanged` and
-  takes the same route. VST3 (its restart flags have no tail flag; the host
-  reads `getTailSamples` at load) and VST2 (no changed callback) have no source
-  of a tail change and are left as they were.
 - **`Editor::set_tail(key, Tail)`** (`tutti-graph`) mirrors `set_latency`: the
   same guards (`collect`, poisoned, refused while re-preparing, `NoSuchNode`),
   writes the spec and the shape, and `touch`es. It takes the shape's `Tail`, so

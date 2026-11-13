@@ -2285,17 +2285,43 @@ mod tests {
             std::mem::take(&mut *locked(&self.held))
         }
 
-        /// `Phase::Collect`: what the jobs sent lands.
-        fn land(&mut self) {
+        /// `Phase::Collect`: what the jobs sent lands; the events it reported.
+        fn land(&mut self) -> Vec<SessionEvent> {
             let mut out = Vec::new();
             let cx = crate::PhaseCx::at(self.t0);
             self.session.run_phase(crate::Phase::Collect, cx, &mut out);
+            out
         }
 
         /// Runs `job` on another thread, and lands its end.
-        fn run_and_land(&mut self, job: Job) {
+        fn run_and_land(&mut self, job: Job) -> Vec<SessionEvent> {
             std::thread::spawn(move || job.run()).join().unwrap();
-            self.land();
+            self.land()
+        }
+
+        /// The node's record as a plugin being recovered, its reload due now,
+        /// whose ref resolves in process (CLAP, `Hosting::InProcess`).
+        #[cfg(feature = "clap")]
+        fn recovering_in_process(&mut self) {
+            let hosted = self.session.graph.plugins.get_mut(&self.node).unwrap();
+            hosted.plugin = PluginRef::file("fake.clap")
+                .expect("a plugin file")
+                .with_hosting(Hosting::InProcess);
+            hosted.origin = Some(Origin {
+                config: AudioConfig::default(),
+            });
+            let mut recovery = Recovery::new(RecoveryPolicy::default());
+            let _ = recovery.step(
+                RecoveryEvent::Died {
+                    cause: PluginFailure::StreamClosed,
+                },
+                self.t0,
+            );
+            hosted.recovery = Some(recovery);
+            hosted.status = PluginLiveness::Recovering {
+                cause: ReloadCause::Died(PluginFailure::StreamClosed),
+            };
+            hosted.reload.due = Some(self.t0);
         }
     }
 
@@ -2725,5 +2751,53 @@ mod tests {
                 .reload_job_failed(node, &token, failed, &mut again);
             assert!(again.is_empty(), "a replaced attempt's end is stale");
         }
+    }
+
+    /// **A reload of a plugin whose ref resolves in process is refused as
+    /// `ReplacementInProcess`, with no main thread and nothing opened.** The
+    /// decision is `Plugin::hosting_of` over the ref (a pure resolve, no module
+    /// read): `PluginLoad::run` returns such a load unopened (`Opened::OnMain`),
+    /// and the landing does not open it. No thread of this process claimed the
+    /// main thread, so an open (which takes the token) could not have happened.
+    #[cfg(feature = "clap")]
+    #[test]
+    fn a_reload_that_resolves_in_process_is_refused_unopened() {
+        assert!(MainThread::current().is_none(), "nobody claimed");
+        let mut rig = rig(None);
+        rig.recovering_in_process();
+        let job = rig.plugins_at(0).pop().expect("the reload is submitted");
+        let events = rig.run_and_land(job);
+        let [
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Reloading { cause, .. },
+                ..
+            }),
+        ] = &events[..]
+        else {
+            panic!("the next attempt is scheduled: {events:?}");
+        };
+        assert!(
+            matches!(
+                cause,
+                ReloadCause::Attempt(RecoveryFailure::ReplacementInProcess)
+            ),
+            "{cause:?}"
+        );
+        assert!(MainThread::current().is_none(), "still nobody claimed");
+    }
+
+    /// **A reload job that outlives its node lands nowhere, silently.** The
+    /// spawner holds the job; the node is removed; the job then runs and its end
+    /// lands: no event, and no failure recorded for a node that is gone.
+    #[cfg(feature = "clap")]
+    #[test]
+    fn a_reload_job_that_outlives_its_node_lands_quietly() {
+        let mut rig = rig(None);
+        rig.recovering_in_process();
+        let job = rig.plugins_at(0).pop().expect("the reload is submitted");
+        rig.session.remove(rig.node).expect("the node is removed");
+        assert!(rig.session.plugin(rig.node).is_err(), "its record is gone");
+        let events = rig.run_and_land(job);
+        assert!(events.is_empty(), "nothing is reported: {events:?}");
     }
 }

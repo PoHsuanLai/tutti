@@ -1,21 +1,15 @@
 # tutti-au-ffi
 
-The unsafe half of the Audio Unit host. Every `unsafe` the host needs to talk to
-AudioToolbox, CoreAudio and CoreFoundation lives here, behind safe handles; the
-host crate above it, `tutti-au-host`, is `#![forbid(unsafe_code)]` and holds the
-logic (the bus and stream configuration, the parameter and preset vocabulary,
-the lifecycle).
+The low-level code for talking to Audio Unit plugins on macOS, wrapped in safe handles over Apple's AudioToolbox and CoreFoundation.
 
-The crate is empty off macOS.
+It holds all the `unsafe` code needed to host Audio Units so that `tutti-au-host` does not have to. It is empty on other platforms. Most people will use it through `tutti-au-host`, `tutti-plugin` or `tutti` rather than directly.
 
-## What is here
+This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
 
-| | |
-|---|---|
-| `ComponentRef` | an `AudioComponent` found in the registry; `Copy`, and the only way to name a component |
-| `Unit` | an owned `AudioComponentInstance`: it disposes on drop, and every AudioToolbox call on it is a method |
-| `Plain` | the sealed set of plain-data types a property or parameter can be read into or written from |
-| `CfString`, `CfUrl`, `CfArray`, `CfPlist` | owned CoreFoundation values (Create rule), released on drop |
+## License
 
-Each `unsafe` block carries one `// SAFETY:` argument where it is introduced;
-`undocumented_unsafe_blocks` and `missing_safety_doc` are denied.
+Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in tutti by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

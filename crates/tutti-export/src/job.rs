@@ -11,7 +11,7 @@ use tutti_types::{SampleRate, Samples};
 
 /// What a render does when the graph it renders dropped events
 /// ([`Job::on_event_loss`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum EventLossPolicy {
     /// The render stops at the first block that dropped an event with

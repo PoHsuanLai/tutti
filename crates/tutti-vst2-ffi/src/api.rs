@@ -503,7 +503,7 @@ impl From<Supported> for isize {
 
 /// Denotes in which thread the host is in.
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, num_enum::TryFromPrimitive)]
 pub enum ProcessLevel {
     /// Unsupported by host.
     Unknown = 0,
@@ -521,7 +521,7 @@ pub enum ProcessLevel {
 /// The host's automation state, answered to `audioMasterGetAutomationState`
 /// (`VstAutomationStates`).
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, num_enum::TryFromPrimitive)]
 pub enum AutomationState {
     /// The host does not say (`kVstAutomationUnsupported`).
     Unsupported = 0,

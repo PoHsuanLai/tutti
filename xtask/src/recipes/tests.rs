@@ -37,7 +37,7 @@ fn every_recipe_plans_with_no_arguments() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 40);
+    assert_eq!(RECIPES.len(), 39);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -196,7 +196,7 @@ fn only_the_first_editor_line_takes_the_skip_variable() {
 #[test]
 fn check_windows_stubs_under_the_target_dir() {
     let steps = plan("check-windows", &[], &ctx()).unwrap();
-    assert_eq!(steps.len(), 10);
+    assert_eq!(steps.len(), 9);
     let Step::WriteFile { path, contents } = &steps[0] else {
         panic!()
     };

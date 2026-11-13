@@ -4,8 +4,7 @@
 //! Every other latency test in this tree stops one step short of the
 //! question. `vst2_latency.rs` and the VST3 suites assert that the host *reads*
 //! the plugin's declared figure; `tutti-graph`'s own tests assert the
-//! compiler's PDC against hand-built nodes; `bevy-tutti`'s assert that the
-//! latency poll reaches the editor. None of them puts a real plugin in a real
+//! compiler's PDC against hand-built nodes. None of them puts a real plugin in a real
 //! graph beside a real dry path and looks at the samples, so the one thing that
 //! could still be wrong — that the figure the host reports, the figure the
 //! planner plans against, and the delay the audio actually suffers are the

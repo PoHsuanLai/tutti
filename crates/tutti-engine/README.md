@@ -13,7 +13,7 @@ consulting the transport.
 
 Use it directly when you drive the audio callback yourself (a custom device
 layer, an offline renderer, a test harness); otherwise take the `tutti` facade,
-which re-exports this crate as `tutti::engine`, or `bevy-tutti` for a Bevy app.
+which re-exports this crate as `tutti::engine`.
 
 ## What this crate does not own
 
@@ -37,8 +37,6 @@ which re-exports this crate as `tutti::engine`, or `bevy-tutti` for a Bevy app.
 - **The value vocabulary.** The unit newtypes, the `Source`/`Sink` traits
   and the meter math are `tutti-types`'. Delay compensation (`latency_plan`,
   `delays`) is `tutti-graph`'s pure pass, applied by the graph compiler.
-- **The ECS binding.** The node component, the reconcile pipeline and the
-  declarative wiring live in the host adapter, `bevy_tutti::graph`.
 - **The worker pool and the pre-roll table.** `tutti-graph`'s.
 - **The metronome.** `ClickNode` is `tutti-nodes`'.
 - **The root width ceiling.** `MAX_ROOT_CHANNELS` is `tutti-graph`'s; the engine

@@ -140,26 +140,6 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
                     1
                 })
         }
-        Step::NoBevyInTree(c) => {
-            let out = command(c, ctx)
-                .stderr(process::Stdio::inherit())
-                .output()
-                .map_err(|e| spawn_failed(c, &e))?;
-            let tree = String::from_utf8_lossy(&out.stdout);
-            let hits: Vec<_> = tree
-                .lines()
-                .enumerate()
-                .filter(|(_, l)| names_a_bevy_crate(l))
-                .collect();
-            if hits.is_empty() {
-                return Ok(());
-            }
-            for (i, l) in hits {
-                println!("{}:{l}", i + 1);
-            }
-            eprintln!("FAIL: a bevy crate reached the Bevy-free facade.");
-            Err(1)
-        }
         Step::Gate(g) => {
             let report = g.run(&ctx.root);
             for l in &report.out {
@@ -280,32 +260,6 @@ fn expand(arg: &str, root: &Path) -> Vec<String> {
     }
 }
 
-/// `grep -E '\bbevy(_[a-z]+)?\b'`: `bevy` or `bevy_` and lowercase letters, as a whole
-/// word. Backtracking never helps here: if the optional group is followed by
-/// a word character, so is every shorter match.
-fn names_a_bevy_crate(line: &str) -> bool {
-    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    let b = line.as_bytes();
-    line.match_indices("bevy").any(|(i, _)| {
-        if i > 0 && word(b[i - 1]) {
-            return false;
-        }
-        let mut j = i + 4;
-        if b.get(j) == Some(&b'_') {
-            let k = j
-                + 1
-                + b[j + 1..]
-                    .iter()
-                    .take_while(|c| c.is_ascii_lowercase())
-                    .count();
-            if k > j + 1 {
-                j = k;
-            }
-        }
-        b.get(j).is_none_or(|&c| !word(c))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,29 +305,6 @@ mod tests {
         let h = help();
         for (name, ..) in RECIPES {
             assert!(h.contains(&format!("  {name} ")), "{name}");
-        }
-    }
-
-    #[test]
-    fn the_bevy_pattern_is_the_greps() {
-        for hit in [
-            "bevy v0.19",
-            "├── bevy_ecs v0.19",
-            " bevy_tasks",
-            "bevy",
-            "tutti-bevy",
-        ] {
-            assert!(names_a_bevy_crate(hit), "{hit}");
-        }
-        for miss in [
-            "bevyx",
-            "bevy_ecs2",
-            "bevy_Ecs",
-            "bevy_",
-            "xbevy",
-            "debevy_ecs",
-        ] {
-            assert!(!names_a_bevy_crate(miss), "{miss}");
         }
     }
 

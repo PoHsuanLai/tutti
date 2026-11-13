@@ -751,28 +751,24 @@ fn each_refusal_fires_by_name() {
     assert!(run(&one_lfo, &routes, &t1).is_ok());
 }
 
-/// What `bevy-tutti` expressed before the compiler compiles
-/// with no runtime (no driver, no target), each feature as a declaration:
+/// Every declaration a host can make compiles with no runtime (no driver, no
+/// target), each feature as a declaration:
 ///
-/// - a `ModSource { shape }` at `ModClock::Free { hz }` or
-///   `ModClock::Synced { beats_per_cycle }` with a `phase_offset`: an LFO
-///   on a seconds or a beat clock, every shape (the random ones as hashed
-///   waves);
-/// - a `ModRoute { depth, polarity, curve }` to a native param or a plugin
+/// - an LFO at a seconds clock or a beat clock with a phase offset, every shape
+///   (the random ones as hashed waves);
+/// - a route with a depth, polarity and curve to a native param or a plugin
 ///   parameter (`ParamAddr::Id`), every one a lane; a disabled one is left
 ///   out;
-/// - a `ModRange { min, max }`: the target's range (its base is the knob,
-///   a cell, not a declaration);
+/// - a target's range (its base is the knob, a cell, not a declaration);
 /// - a plugin parameter's automation curve, and an LFO route into a plugin
 ///   parameter: automation and a layer.
 ///
-/// A custom `ModSourceKind` (an arbitrary `Modulator`) has no closed form;
-/// it declares one with `declare() -> Source`.
+/// A source with no closed form declares one with `declare() -> Source`.
 ///
 /// It pins that the declarations compile, which the type checker and the run assert.
-/// The no-runtime half is `cargo check -p tutti-modulation` without features.
+/// The no-runtime half is `cargo check -p tutti-modulation`.
 #[test]
-fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
+fn every_declaration_a_host_can_make_compiles_without_a_runtime() {
     let mut sources = Vec::new();
     let mut routes = Vec::new();
     for (k, &shape) in LfoShape::all().iter().enumerate() {

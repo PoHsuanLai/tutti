@@ -51,7 +51,7 @@
 //! and for how long (the channel's Portamento Time). What a channel holds
 //! besides notes is its [`ChannelState`].
 
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroUsize};
 
 use tutti_midi_protocol::{
     GeneralMidi, Heard, KeyTable, MpeZones, Timing, TuningMessage, Universal, bend_to_signed_f32,
@@ -127,7 +127,7 @@ impl From<VoiceId> for u64 {
 type Levels<'a> = &'a dyn Fn(VoiceId) -> Option<Amplitude>;
 
 /// How many voices sound for a channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     /// Any number, up to the polyphony.
     Poly,
@@ -140,7 +140,7 @@ pub enum Mode {
 }
 
 /// What a key struck again does while an earlier strike of it sounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Retrigger {
     /// Releases the earlier strike's voices at once, whatever holds them.
     Replace,
@@ -151,7 +151,7 @@ pub enum Retrigger {
 /// How a voice is chosen to give way when every slot is taken. A voice already
 /// released always goes before any held one; among released voices the quietest
 /// goes first. A strike never takes a voice it started itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Order {
     /// The one started longest ago.
     Oldest,
@@ -182,7 +182,7 @@ pub struct Rules {
     /// A key struck again.
     pub retrigger: Retrigger,
     /// The most voices sounding at once.
-    pub polyphony: usize,
+    pub polyphony: NonZeroUsize,
     /// Who gives way when that is reached.
     pub steal: Steal,
     /// Whether a voice with a group number ends the others of its group and
@@ -209,7 +209,7 @@ pub struct Rules {
 impl Rules {
     /// The polyphony of [`Rules::default`], [`mono`](Self::mono) and
     /// [`legato`](Self::legato): enough for a monophonic note's layers.
-    pub const DEFAULT_POLYPHONY: usize = 8;
+    pub const DEFAULT_POLYPHONY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
     /// A polyphonic instrument of `polyphony` voices: a struck key again
     /// replaces its voice ([`Retrigger::Replace`]), the oldest voice gives way
@@ -217,7 +217,7 @@ impl Rules {
     /// sostenuto, and a full bend spans General MIDI's 2 semitones (a per-note
     /// one 48).
     #[must_use]
-    pub const fn poly(polyphony: usize) -> Self {
+    pub const fn poly(polyphony: NonZeroUsize) -> Self {
         Self {
             mode: Mode::Poly,
             retrigger: Retrigger::Replace,
@@ -263,7 +263,7 @@ impl Rules {
 
     /// These rules with `polyphony` voices.
     #[must_use]
-    pub const fn with_polyphony(mut self, polyphony: usize) -> Self {
+    pub const fn with_polyphony(mut self, polyphony: NonZeroUsize) -> Self {
         self.polyphony = polyphony;
         self
     }
@@ -624,11 +624,10 @@ impl Voicing {
     /// A core for `rules`. Allocates its tables; `step` never does.
     #[must_use]
     pub fn new(rules: Rules) -> Self {
+        let polyphony = rules.polyphony.get();
         Self {
-            notes: Vec::with_capacity(rules.polyphony + 1),
-            out: Vec::with_capacity(
-                2 * rules.polyphony + CHANNELS + MAX_SPECS * (2 + NOTE_CONTROLS),
-            ),
+            notes: Vec::with_capacity(polyphony + 1),
+            out: Vec::with_capacity(2 * polyphony + CHANNELS + MAX_SPECS * (2 + NOTE_CONTROLS)),
             rules,
             sustain: [false; CHANNELS],
             channels: [ChannelState::new(rules.bend_range); CHANNELS],
@@ -640,7 +639,7 @@ impl Voicing {
             held: [Held::NONE; CHANNELS],
             per_note: PerNoteState::new(1, rules.per_note_bend_range),
             events: Vec::with_capacity(NOTE_EVENTS),
-            retired: Vec::with_capacity(2 * rules.polyphony + MAX_SPECS + 2),
+            retired: Vec::with_capacity(2 * polyphony + MAX_SPECS + 2),
             strike_note: NoteId::from_raw(0),
         }
     }
@@ -1395,7 +1394,7 @@ impl Voicing {
         from: Option<NoteNumber>,
     ) {
         self.damp_exclusive(spec, None);
-        let steal = if self.notes.len() < self.rules.polyphony {
+        let steal = if self.notes.len() < self.rules.polyphony.get() {
             None
         } else if let Some(v) = self.victim(levels) {
             Some(v)
@@ -1804,7 +1803,7 @@ mod tests {
         }
     }
 
-    const POLY: Rules = Rules::poly(4);
+    const POLY: Rules = Rules::poly(NonZeroUsize::new(4).unwrap());
     const MONO: Rules = Rules::mono();
     const LEGATO: Rules = Rules::legato();
 
@@ -1911,13 +1910,16 @@ mod tests {
     /// per-note range has none, tutti's 48.
     #[test]
     fn the_rules_constructors_differ_in_mode_and_the_setters_in_one_field() {
-        assert_eq!(Rules::poly(8), Rules::default());
+        assert_eq!(Rules::poly(NonZeroUsize::new(8).unwrap()), Rules::default());
         assert_eq!(
             Rules::mono(),
             Rules::poly(Rules::DEFAULT_POLYPHONY).with_mode(Mode::Mono)
         );
         assert_eq!(Rules::legato().mode, Mode::Legato);
-        assert_eq!(Rules::poly(5).polyphony, 5);
+        assert_eq!(
+            Rules::poly(NonZeroUsize::new(5).unwrap()).polyphony.get(),
+            5
+        );
         assert_eq!(Rules::default().bend_range, Semitones(2.0));
         let r = Rules::default().with_sostenuto(false);
         assert_eq!(
@@ -1999,7 +2001,7 @@ mod tests {
     /// layers is whole.
     #[test]
     fn a_strike_starts_at_most_the_cap_and_a_patch_within_it_is_whole() {
-        let rules = POLY.with_polyphony(64);
+        let rules = POLY.with_polyphony(NonZeroUsize::new(64).unwrap());
         let tags = |c: &[Command]| -> Vec<u32> {
             c.iter()
                 .filter_map(|c| match c {
@@ -2087,7 +2089,7 @@ mod tests {
     /// whose first voice took the last slot drops its second.
     #[test]
     fn a_strike_does_not_steal_its_own_voices() {
-        let mut s = Sim::new(POLY.with_polyphony(3));
+        let mut s = Sim::new(POLY.with_polyphony(NonZeroUsize::new(3).unwrap()));
         s.on(0, 60);
         s.on(0, 62);
         let c = s.on_with(0, 64, &Pair { group: 0, scope: 0 });
@@ -2133,7 +2135,9 @@ mod tests {
 
     // ---- exclusive groups (SF2 2.04 section 8.1.2, generator 57) --------
 
-    const EXCLUSIVE: Rules = POLY.with_exclusive_groups(true).with_polyphony(8);
+    const EXCLUSIVE: Rules = POLY
+        .with_exclusive_groups(true)
+        .with_polyphony(NonZeroUsize::new(8).unwrap());
 
     /// The scope of an exclusive class is the whole preset (8.1.2, generator
     /// 57, Read): a note of the class ends the sounding notes of that class
@@ -2655,7 +2659,7 @@ mod tests {
     /// it is the first to give way when the pool is full.
     #[test]
     fn a_damped_voice_counts_as_released_and_is_told_once() {
-        let mut s = Sim::new(EXCLUSIVE.with_polyphony(2));
+        let mut s = Sim::new(EXCLUSIVE.with_polyphony(NonZeroUsize::new(2).unwrap()));
         s.on_with(0, 60, &Grouped { scope: 5 });
         let c = s.on_with(0, 62, &Grouped { scope: 5 });
         assert_eq!(c[0], Command::Damp(id(1)), "{c:?}");
@@ -3573,7 +3577,7 @@ mod tests {
             let rules = POLY
                 .with_mode(mode)
                 .with_steal(steal)
-                .with_polyphony(6)
+                .with_polyphony(NonZeroUsize::new(6).unwrap())
                 .with_retrigger(if stream % 2 == 0 {
                     Retrigger::Replace
                 } else {

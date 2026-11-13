@@ -76,7 +76,6 @@ to insert the moment it is built.
 
 - **No room simulation and no HRIR data.** The panners place a source; the
   HRIR dataset is supplied by the caller as bytes.
-- **No Bevy.** ECS bindings are the host's; `bevy-tutti` drives the graph.
 - **No sample playback and no synthesis.** Those are `tutti-sampler`,
   `tutti-polysynth` and `tutti-soundfont`.
 
@@ -143,7 +142,7 @@ unchanged, so it never reaches their state.
 
 ## Where it sits
 
-The `tutti` crate re-exports this one as `tutti::nodes`; `bevy-tutti`,
+The `tutti` crate re-exports this one as `tutti::nodes`;
 `tutti-polysynth`, `tutti-export` and `tutti-plugin` build on
 it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
 `tutti-types`.

@@ -30,7 +30,7 @@ pub enum ToClipError {
 }
 
 /// Why an SMF event has no place in the clip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DropReason {
     /// No UMP message replaces it (M2-116 Appendix B lists none): Sequence

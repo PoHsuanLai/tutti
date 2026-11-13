@@ -66,7 +66,6 @@ use tutti_midi_device::{
     Action, Connection, Ending, Endpoint, IdentityInquiry, InquiryAction, Learned,
 };
 use tutti_midi_protocol::{Addressed, Read, Universal, read};
-use tutti_midi_runtime::MidiOut;
 use tutti_ump::{
     DeviceIdentity, MidiGroup, Protocol, StreamConfig, SysexAssembler, SysexStep, Ump,
 };
@@ -83,7 +82,7 @@ const WANTED: StreamConfig = StreamConfig {
 };
 
 /// How a device's [`DeviceStream`] came to be known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Basis {
     /// The device answered: the Endpoint is what it said, and the
     /// configuration is the last Stream Configuration Notification it sent
@@ -294,7 +293,7 @@ impl Negotiation {
     /// The input is closing: MIDI-CI ends on the device's output (see
     /// [`Ci::close`]).
     pub(crate) fn close(&mut self) {
-        if let Some(out) = &self.out {
+        if let Some(out) = &mut self.out {
             self.ci.close(out);
         }
     }
@@ -370,7 +369,7 @@ impl Negotiation {
         heard: &Heard<'_>,
         ci: Option<DeviceIdentity>,
     ) -> Stepped {
-        let ci = match &self.out {
+        let ci = match &mut self.out {
             Some(out) => self.ci.poll(now, heard, ci, out),
             None => Vec::new(),
         };
@@ -428,8 +427,8 @@ impl Negotiation {
         None
     }
 
-    fn send(&self, ump: Ump) {
-        if let Some(out) = &self.out
+    fn send(&mut self, ump: Ump) {
+        if let Some(out) = &mut self.out
             && out.queue(&[(Offset::ZERO, ump)]) == 0
         {
             // The step is sent again when it times out.

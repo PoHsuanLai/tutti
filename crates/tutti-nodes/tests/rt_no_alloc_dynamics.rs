@@ -53,13 +53,17 @@ fn gate<N: IntoNode>(node: N, amplitude: f32, warm: usize, blocks: usize) {
 fn compressor_mono_process_is_allocation_free() {
     // 2 inputs (audio + sidechain), 1 output.
     gate(
-        CompressorNode::mono(CompressorControls {
-            threshold: Db::new(-20.0),
-            ratio: CompressionRatio::new(4.0),
-            attack: Seconds::new(0.005),
-            release: Seconds::new(0.050),
-            ..CompressorControls::DEFAULT
-        }),
+        CompressorNode::new(
+            BusTopology::MONO,
+            KeySource::Sidechain,
+            CompressorControls {
+                threshold: Db::new(-20.0),
+                ratio: CompressionRatio::new(4.0),
+                attack: Seconds::new(0.005),
+                release: Seconds::new(0.050),
+                ..CompressorControls::DEFAULT
+            },
+        ),
         0.7,
         16,
         2_000,
@@ -70,14 +74,18 @@ fn compressor_mono_process_is_allocation_free() {
 fn compressor_stereo_process_is_allocation_free() {
     // 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gain.
     gate(
-        CompressorNode::stereo(CompressorControls {
-            threshold: Db::new(-18.0),
-            knee: Db::new(6.0),
-            ratio: CompressionRatio::new(3.0),
-            attack: Seconds::new(0.003),
-            release: Seconds::new(0.080),
-            ..CompressorControls::DEFAULT
-        }),
+        CompressorNode::new(
+            BusTopology::STEREO,
+            KeySource::Sidechain,
+            CompressorControls {
+                threshold: Db::new(-18.0),
+                knee: Db::new(6.0),
+                ratio: CompressionRatio::new(3.0),
+                attack: Seconds::new(0.003),
+                release: Seconds::new(0.080),
+                ..CompressorControls::DEFAULT
+            },
+        ),
         0.8,
         16,
         2_000,
@@ -193,13 +201,17 @@ fn brickwall_limiter_process_is_allocation_free() {
 fn gate_mono_process_is_allocation_free() {
     // 2 inputs (audio + sidechain), 1 output.
     gate(
-        GateNode::mono(GateControls {
-            threshold: Db::new(-40.0),
-            attack: Seconds::new(0.001),
-            hold: Seconds::new(0.010),
-            release: Seconds::new(0.100),
-            range: Db::new(-60.0),
-        }),
+        GateNode::new(
+            BusTopology::MONO,
+            KeySource::Sidechain,
+            GateControls {
+                threshold: Db::new(-40.0),
+                attack: Seconds::new(0.001),
+                hold: Seconds::new(0.010),
+                release: Seconds::new(0.100),
+                range: Db::new(-60.0),
+            },
+        ),
         0.5,
         16,
         2_000,
@@ -209,13 +221,17 @@ fn gate_mono_process_is_allocation_free() {
 #[test]
 fn gate_stereo_process_is_allocation_free() {
     gate(
-        GateNode::stereo(GateControls {
-            threshold: Db::new(-40.0),
-            attack: Seconds::new(0.001),
-            hold: Seconds::new(0.010),
-            release: Seconds::new(0.100),
-            range: Db::new(-80.0),
-        }),
+        GateNode::new(
+            BusTopology::STEREO,
+            KeySource::Sidechain,
+            GateControls {
+                threshold: Db::new(-40.0),
+                attack: Seconds::new(0.001),
+                hold: Seconds::new(0.010),
+                release: Seconds::new(0.100),
+                range: Db::new(-80.0),
+            },
+        ),
         0.6,
         16,
         2_000,

@@ -87,7 +87,7 @@ impl ClockReading {
 }
 
 /// What [`ClockMap::observe`] did with a reading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[must_use]
 pub enum Observed {
     /// The reading was within [`RESYNC`] of the prediction and moved the map

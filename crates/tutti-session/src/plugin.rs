@@ -130,8 +130,7 @@ use crate::{
     RecoveryEvent, RecoveryFailure, RecoveryPolicy, ReloadCause, Session, SessionEvent,
 };
 
-/// How often a healthy plugin's state is captured, by default: 8 s, the
-/// 512 frames at 60 Hz `bevy-tutti` counted before (design 015 §4.4).
+/// How often a healthy plugin's state is captured, by default: 8 s (design 015 §4.4).
 /// [`SessionBuilder::snapshot_interval`](crate::SessionBuilder::snapshot_interval)
 /// sets another.
 pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(8);

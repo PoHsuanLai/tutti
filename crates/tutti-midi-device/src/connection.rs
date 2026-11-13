@@ -15,9 +15,6 @@
 //!    truth (§7.1.6.1 step 3: the peer may refuse any part).
 //! 3. **Function Blocks** (step 4): ask for every block's Info and Name.
 //!
-//! Step 5, MIDI-CI Discovery, is the CI codec's and has no state machine yet
-//! (design 017 §5, "MIDI-CI").
-//!
 //! A step that gets no answer within [`STEP_TIMEOUT`] is sent again, up to
 //! [`MAX_ATTEMPTS`] times in all. Then Discovery and Select Protocol give up
 //! and the peer is a MIDI 1.0 device ([`Ending::Midi1Fallback`]); Function
@@ -54,7 +51,7 @@ pub const NAME_GRACE: Duration = Duration::from_millis(100);
 pub const MAX_ATTEMPTS: u8 = 3;
 
 /// How a connection ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Ending {
     /// The steps ran: the Endpoint's active configuration is what its last
     /// Stream Configuration Notification reported, whether or not that is what

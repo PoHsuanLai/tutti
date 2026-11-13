@@ -126,7 +126,7 @@ pub enum Feeder {
     /// The timed queue of an instrument's handle
     /// (`Session::add_instrument`, feature `midi`).
     Instrument,
-    /// A host's declarations (bevy-tutti's `EventSources`).
+    /// A host's declarations.
     Declared,
 }
 
@@ -312,7 +312,7 @@ pub struct Graph {
     /// Each open event tap as it was opened (its port, alignment and
     /// capacity), so [`Taps::reopen_events`] can open it
     /// again.
-    event_taps: BTreeMap<EventTapId, (EventOut, TapAlign, EventCapacity)>,
+    event_taps: BTreeMap<EventTapId, (tutti_graph::EventTapSource, TapAlign, EventCapacity)>,
     /// The id the next meter takes (`MASTER_METER` is taken at construction).
     next_meter: u32,
     /// The master meter's reader until a host takes it.
@@ -3076,8 +3076,8 @@ fn render(
 /// Resolves a host's modulation keys to graph nodes.
 ///
 /// `tutti_modulation`'s declarations key a target by `TargetKey { node: u64, param }`
-/// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (a
-/// Bevy entity's bits, say), and this is how the session's
+/// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (an
+/// entity's bits, say), and this is how the session's
 /// [`Modulation`](crate::Phase::Modulation) phase reads it ([`ModInput`](crate::ModInput)).
 #[cfg(feature = "modulation")]
 pub trait ModKeys {

@@ -3,8 +3,8 @@
 RustySynth is a SoundFont **player** - you need to provide a .sf2 file.
 
 `TimGM6mb.sf2` is **committed** here: it is the fixture for the SoundFont test
-suites (`tutti-soundfont`'s `tests/`, and `bevy-tutti`'s `midi_soundfont` under
-its `midi` + `soundfont` features). Those resolve it from their own
+suites (`tutti-soundfont`'s `tests/`, and `tutti-session`'s `midi_soundfont`
+under its `midi` + `soundfont` features). Those resolve it from their own
 `CARGO_MANIFEST_DIR` up to the repo root and fail loudly, naming the path, when
 it is missing — never skip.
 

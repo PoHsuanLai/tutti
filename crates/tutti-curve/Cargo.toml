@@ -15,8 +15,7 @@ categories = ["multimedia::audio"]
 workspace = true
 
 # No features: a `Law` is a plain `Copy` value. Nothing here persists a curve,
-# so there is no `serde`, and nothing is a Bevy component, so there is no
-# `bevy`.
+# so there is no `serde`.
 
 [dependencies]
 # `Beat`, the position of an automation point.

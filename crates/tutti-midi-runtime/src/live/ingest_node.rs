@@ -61,6 +61,7 @@
 //!
 //! Its fork is silent: an offline render reads no wire.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_graph::{Losses, UmpAt};
@@ -225,16 +226,19 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 /// use tutti_types::{SampleRate, Samples};
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
+/// use std::num::NonZeroUsize;
 /// use tutti_midi_runtime::MidiIngestNode;
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
 /// // Four device slots, none wired yet.
-/// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(4));
+/// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(NonZeroUsize::new(4).unwrap()));
 /// assert_eq!(controls.pending_mpe_mode(), None);
 /// ```
 pub struct MidiIngestNode {
     /// One translation state per device slot.
     devices: Box<[Device]>,
+    /// How many `devices` there are: never zero.
+    count: NonZeroUsize,
     /// The slots' epochs ([`MidiIngestNode::following`]); `None` for a node
     /// whose slots no inlets hand out, which never restarts one.
     epochs: Option<Arc<[AtomicU64]>>,
@@ -368,15 +372,15 @@ impl std::fmt::Debug for MidiIngestNode {
 }
 
 impl MidiIngestNode {
-    /// A node with `devices` event inputs, one per device slot (at least one),
+    /// A node with `devices` event inputs, one per device slot,
     /// with MPE ingestion off.
     #[must_use]
-    pub fn new(devices: usize) -> Self {
-        let devices = devices.max(1);
+    pub fn new(devices: NonZeroUsize) -> Self {
         let cell = Arc::new(ArcLend::new(None));
         Self {
             mpe_request: cell.reader(),
-            devices: (0..devices)
+            count: devices,
+            devices: (0..devices.get())
                 .map(|_| Device::new(MpeMode::Disabled))
                 .collect(),
             epochs: None,
@@ -391,8 +395,8 @@ impl MidiIngestNode {
 
     /// How many device slots, which is how many event inputs.
     #[must_use]
-    pub fn devices(&self) -> usize {
-        self.devices.len()
+    pub fn devices(&self) -> NonZeroUsize {
+        self.count
     }
 
     /// Restart a slot's translator and MPE state when a device takes it, as
@@ -406,9 +410,9 @@ impl MidiIngestNode {
     /// [`SlotCountMismatch`] when the node and the inlets have different
     /// numbers of slots.
     pub fn following(mut self, inlets: &DeviceInlets) -> Result<Self, SlotCountMismatch> {
-        if inlets.slots() != self.devices.len() {
+        if inlets.slots() != self.count {
             return Err(SlotCountMismatch {
-                node: self.devices.len(),
+                node: self.count,
                 inlets: inlets.slots(),
             });
         }
@@ -462,25 +466,14 @@ impl MidiIngestNode {
 
 /// A [`MidiIngestNode`] and the [`DeviceInlets`] it was to follow have
 /// different numbers of slots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the ingest node has {} device slots and the inlets {}", .node, .inlets)]
 pub struct SlotCountMismatch {
     /// The node's event inputs.
-    pub node: usize,
+    pub node: NonZeroUsize,
     /// The inlets' slots.
-    pub inlets: usize,
+    pub inlets: NonZeroUsize,
 }
-
-impl std::fmt::Display for SlotCountMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "the ingest node has {} device slots and the inlets {}",
-            self.node, self.inlets
-        )
-    }
-}
-
-impl std::error::Error for SlotCountMismatch {}
 
 /// The host's handle on a [`MidiIngestNode`]: its MPE mode. Cheap to clone.
 #[derive(Clone, Debug)]
@@ -688,7 +681,7 @@ impl Staging<'_> {
 /// A [`MidiIngestNode`]'s fork: the same slots and ports, nothing to read.
 struct SilentInput {
     ports: MidiInputPorts,
-    devices: usize,
+    devices: NonZeroUsize,
 }
 
 impl ForkSource for SilentInput {
@@ -705,7 +698,7 @@ impl IntoNode for MidiIngestNode {
     fn into_parts(self) -> NodeParts<MidiIngestControls> {
         let fork = SilentInput {
             ports: self.ports,
-            devices: self.devices.len(),
+            devices: self.count,
         };
         let controls = MidiIngestControls {
             request: Arc::clone(self.mpe_request.cell()),

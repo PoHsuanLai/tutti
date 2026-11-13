@@ -8,17 +8,6 @@
 //! as a partner (`nodi` wraps a reader, `rimd` is unmaintained, `midi-file` is
 //! a thin reader), so the honest substitute is to write one from the spec.
 //!
-//! # Why this rather than checked-in `.mid` fixtures
-//!
-//! This repo has no checked-in test data of any kind, and its stated reason is
-//! good: `tests/formats/roundtrip.rs:46` argues that an expected value should be
-//! recomputed from first principles rather than pinned to bytes, "the whole
-//! point is a second opinion". A committed corpus would also only cover the
-//! files someone thought to commit. A builder covers those *and* the malformed
-//! cases — a zero division, an SMPTE header, a truncated chunk — which is
-//! where a hand-rolled parser actually breaks, and it puts the bytes next to
-//! the assertion that cares about them.
-//!
 //! # What it implements
 //!
 //! Enough of SMF 1.0 to be a real cross-check: `MThd`/`MTrk` framing, the

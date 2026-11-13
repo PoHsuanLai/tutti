@@ -1,5 +1,5 @@
 //! What an `AudioUnitParameterUnit` code measures, as a [`ParamUnit`] and a
-//! [`UnitParam`] role (doc 023 §5.2).
+//! [`UnitParam`] role.
 //!
 //! AU's unit is a numeric code from a closed enumeration, the most honest
 //! declaration of the four formats. The codes are plain numbers, so this module

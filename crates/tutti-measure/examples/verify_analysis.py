@@ -2,7 +2,7 @@
 """Judge tutti-measure's pitch and loudness readings against independent references.
 
 Run:
-    cargo run --release --manifest-path crates/bevy-tutti/Cargo.toml \
+    cargo run --release \
         -p tutti-measure --example render_analysis_cases -- /tmp/tutti-measure
     uv run python crates/tutti-measure/examples/verify_analysis.py /tmp/tutti-measure
 

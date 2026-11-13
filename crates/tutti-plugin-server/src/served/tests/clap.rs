@@ -13,7 +13,7 @@ use tutti_plugin_types::{
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use tutti_clap_host::ClapLoaded as HostLoaded;
-use tutti_plugin_types::{EditorPresence, Features, PluginTail, Request};
+use tutti_plugin_types::{EditorPresence, Features, PluginTail, RenderModeSupport, Request};
 
 type ClapInstance = Served<HostLoaded>;
 
@@ -2022,8 +2022,10 @@ fn test_clap_has_gui() {
 
 // ── Group K: Render Mode ──
 
+/// **A CLAP plugin with `clap.render` takes the render mode live**, and says
+/// so in its features: the reference plugin implements the extension.
 #[test]
-fn test_clap_render_mode() {
+fn a_plugin_with_the_render_extension_takes_the_mode_live() {
     let _lock = crate::test_utils::plugin_load_lock();
     let mut instance = ClapInstance::load_first(
         &main_thread(),
@@ -2033,16 +2035,19 @@ fn test_clap_render_mode() {
         false,
     )
     .expect("Failed to load");
-
-    // Set offline mode — returns true if plugin supports render extension
-    let _ = instance
-        .loaded_mut_unwrapped()
-        .set_render_mode(&main_thread(), RenderMode::Offline);
-    // Set back to realtime
-    let _ = instance
-        .loaded_mut_unwrapped()
-        .set_render_mode(&main_thread(), RenderMode::Realtime);
-    // No crash is the assertion
+    let loaded = instance.loaded_mut_unwrapped();
+    assert_eq!(
+        loaded.render_mode_support(&main_thread()),
+        RenderModeSupport::Live
+    );
+    assert!(
+        loaded
+            .wiring(&main_thread())
+            .features
+            .contains(Features::RENDER_MODE)
+    );
+    assert!(loaded.set_render_mode(&main_thread(), RenderMode::Offline));
+    assert!(loaded.set_render_mode(&main_thread(), RenderMode::Realtime));
 }
 
 #[test]

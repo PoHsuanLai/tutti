@@ -253,12 +253,6 @@ impl VoiceNode {
         &self.slot.voice
     }
 
-    /// The wrapped voice (mutable view), for a caller building the node
-    /// before it goes into a graph.
-    pub fn voice_mut(&mut self) -> &mut Voice {
-        &mut self.slot.voice
-    }
-
     /// A block longer than the scratch, in pieces as long as it: only a
     /// node driven by hand without a `prepare` (its `UNPREPARED_FRAMES`) or
     /// past the `max_block` it was prepared for reaches this.

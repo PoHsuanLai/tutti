@@ -97,8 +97,8 @@ impl From<SamplerEvent> for SessionEvent {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SamplerError {
-    /// The session holds no disk streamer: it was built without one, or a
-    /// host took it ([`Session::take_disk_streamer`]).
+    /// The session holds no disk streamer: it was built without one
+    /// ([`SessionBuilder::build_detached`](crate::SessionBuilder::build_detached)).
     #[error("the session has no disk streamer")]
     NoStreamer,
     /// The disk streamer could not be started ([`SessionBuilder`](crate::SessionBuilder)).

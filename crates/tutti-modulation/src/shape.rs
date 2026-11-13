@@ -38,9 +38,9 @@ pub enum Polarity {
 ///
 /// The first five are pure functions of [`Phase`] and evaluate through
 /// [`LfoShape::evaluate_periodic`]. The last two are *stepped* — their value
-/// depends on the cycle index, so a caller must branch on
-/// [`LfoShape::is_random`] first, or evaluate any shape at an unwrapped
-/// position through [`Waveform::raw_at`](crate::Waveform::raw_at).
+/// depends on the cycle index, so a caller must
+/// match on them before calling `evaluate_periodic`, or evaluate any shape at
+/// an unwrapped position through [`Waveform::raw_at`](crate::Waveform::raw_at).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LfoShape {
     /// Sine over the cycle: `sin(phase · 2π)`.
@@ -58,8 +58,7 @@ pub enum LfoShape {
     SawtoothDown,
     /// Stepped noise: one value per cycle, held across it, a hash of the cycle
     /// index and a seed, so it needs the unwrapped position, not just the
-    /// phase ([`is_random`](Self::is_random) is true; [`Waveform::raw_at`]
-    /// evaluates it).
+    /// phase ([`Waveform::raw_at`] evaluates it).
     ///
     /// [`Waveform::raw_at`]: crate::Waveform::raw_at
     Random,
@@ -69,19 +68,10 @@ pub enum LfoShape {
 }
 
 impl LfoShape {
-    /// True for shapes whose output depends on the cycle index (and a seed),
-    /// not just the phase. Callers must branch on this before
-    /// [`LfoShape::evaluate_periodic`], or evaluate through
-    /// [`Waveform::raw_at`](crate::Waveform::raw_at), which takes every shape.
-    #[inline]
-    #[must_use]
-    pub fn is_random(&self) -> bool {
-        matches!(self, Self::Random | Self::RandomSmooth)
-    }
-
     /// Evaluate a purely phase-deterministic shape at [`Phase`] → `[-1, 1]`.
     ///
-    /// Callers must first check [`LfoShape::is_random`]; random shapes need the
+    /// Callers must first rule out [`Random`](Self::Random) and
+    /// [`RandomSmooth`](Self::RandomSmooth); random shapes need the
     /// cycle index and are not handled here (they debug-assert).
     #[inline]
     pub fn evaluate_periodic(&self, phase_t: Phase) -> f32 {

@@ -98,10 +98,6 @@ pub enum BusFold {
     /// ([`Fold::between`]), which never guesses. A bus that names no speaker
     /// meets another only at its width.
     Speakers,
-    /// By index, asked for by name: sink channel `c` is source channel `c`, a
-    /// wider sink is zero-filled and a narrower one refused
-    /// ([`Fold::by_index`]), whatever either side names.
-    ByIndex,
 }
 
 /// One source of a sink bus and how it folds: an entry of
@@ -270,12 +266,6 @@ impl GraphSpec {
         self.feed_bus(from, to, BusFold::Speakers)
     }
 
-    /// As [`connect_bus`](Self::connect_bus), channel by index
-    /// ([`BusFold::ByIndex`]).
-    pub fn connect_bus_by_index(&mut self, from: BusSource, to: BusRef) -> bool {
-        self.feed_bus(from, to, BusFold::ByIndex)
-    }
-
     fn feed_bus(&mut self, from: BusSource, to: BusRef, fold: BusFold) -> bool {
         insert_feed(self.bus_edges.entry(to).or_default(), from, fold)
     }
@@ -303,12 +293,6 @@ impl GraphSpec {
     /// lowering.
     pub fn connect_bus_to_root(&mut self, from: BusSource) -> bool {
         insert_feed(&mut self.root_sources, from, BusFold::Speakers)
-    }
-
-    /// As [`connect_bus_to_root`](Self::connect_bus_to_root), channel by
-    /// index ([`BusFold::ByIndex`]).
-    pub fn connect_bus_to_root_by_index(&mut self, from: BusSource) -> bool {
-        insert_feed(&mut self.root_sources, from, BusFold::ByIndex)
     }
 
     /// Removes `from` from the bus edges into the root. Returns whether it
@@ -471,7 +455,6 @@ impl GraphSpec {
                 &ChannelTopology::from(source_topology),
                 &ChannelTopology::from(sink),
             ),
-            BusFold::ByIndex => Fold::by_index(source_topology.layout(), sink.layout()),
         }
         .map_err(LaneError::Fold)?;
 

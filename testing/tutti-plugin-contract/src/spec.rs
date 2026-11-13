@@ -305,12 +305,11 @@ pub const VST2: Surface = Surface {
     infinite_tail: None,
 };
 
-/// VST3 from the Rust plugin: an editor once selected (where its X11 view can
-/// embed), the mode read at activation, an edit of `aux` to 0.75 on each state
+/// VST3 from the Rust plugin: an editor once selected, the mode read at activation, an edit of `aux` to 0.75 on each state
 /// load.
 pub const VST3: Surface = Surface {
     selects_editor: true,
-    has_editor: cfg!(all(unix, not(target_os = "macos"))),
+    has_editor: true,
     render_mode: tutti_plugin_types::RenderModeSupport::OnActivation,
     notices: true,
     request: None,

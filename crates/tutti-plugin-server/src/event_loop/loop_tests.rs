@@ -8,9 +8,11 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use tutti_clap_test_plugin::Site;
+#[cfg(all(unix, not(target_os = "macos")))]
 use tutti_clap_test_plugin::{
     GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_WIDTH,
-    GuiMode, Site,
+    GuiMode,
 };
 use tutti_fixtures::main_thread;
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, ProcessAudioData};
@@ -109,8 +111,10 @@ fn session(name: &str) -> (Session, tutti_plugin_ipc::SlabWriter) {
 }
 
 /// Selects the gui shape for the load that follows; the default again on drop.
+#[cfg(all(unix, not(target_os = "macos")))]
 struct GuiShape;
 
+#[cfg(all(unix, not(target_os = "macos")))]
 impl GuiShape {
     fn embeddable() -> Self {
         let probe = crate::test_utils::clap();
@@ -120,6 +124,7 @@ impl GuiShape {
     }
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 impl Drop for GuiShape {
     fn drop(&mut self) {
         let probe = crate::test_utils::clap();

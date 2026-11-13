@@ -18,8 +18,8 @@ use std::path::Path;
 
 use tutti_plugin_ipc::BridgeMessage;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, AutomationMode, Event, Features, Hand, HostOp, Lifecycle, Load,
-    LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized, Notice,
+    AudioBuffer, AudioBufferMut, AutomationMode, Control, Event, Features, Hand, HostOp, Lifecycle,
+    Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized, Notice,
     OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo,
     PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor, RenderMode,
     Request, Sample, SampleFormat, SampleRate, Samples, Stage, State, standing,
@@ -79,6 +79,11 @@ pub(crate) trait ServedPlugin: Render {
             SampleFormat::Float32
         }
     }
+    /// The plugin's control surface, which is also its editor's window calls
+    /// ([`EditorWindow`](tutti_plugin_types::EditorWindow)): the editor of a
+    /// served plugin opens on the instance itself (doc 029 section 6.5).
+    /// `None` when the plugin is lost.
+    fn control_mut(&mut self) -> Option<&mut dyn Control>;
     /// Acts on what the plugin asked of the host since the last call, and
     /// returns what the host should be told. Between blocks, on the thread
     /// that loaded the plugin.
@@ -551,6 +556,10 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         &self.wiring
     }
 
+    fn control_mut(&mut self) -> Option<&mut dyn Control> {
+        self.lifecycle.control()
+    }
+
     fn poll(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
         self.serve(main);
         self.forward_edits(main);
@@ -602,7 +611,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     }
 
     /// A format that takes the mode live (CLAP's `render.set`, VST2's callback)
-    /// is told through [`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode); one that reads it only at
+    /// is told through [`Control::set_render_mode`]; one that reads it only at
     /// activation (VST3's `setupProcessing`, AU's `AudioUnitInitialize`) is
     /// activated again in the mode, keeping its instance and state. A refusal
     /// is rolled back to the mode the plugin was running in, and answers

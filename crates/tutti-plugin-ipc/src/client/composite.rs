@@ -1,6 +1,7 @@
 //! Plugin bridge — composites out-of-process audio with in-process GUI.
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs, Submitted};
+use super::remote_editor::RemoteEditor;
 use crate::protocol::{
     MidiEventVec, Normalized, NoteExpressionChanges, ParamId, ParameterChanges, ParameterInfo,
     Preset, PresetId, TransportChanges, TransportInfo,
@@ -14,7 +15,7 @@ use tutti_plugin_types::{
 };
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
-use tutti_plugin_types::{Editor, Load, Origin};
+use tutti_plugin_types::{Editor, EditorWindow, Load, Origin};
 use tutti_types::SampleRate;
 
 /// Gives the audio instance the editor instance's state when the user changed
@@ -56,15 +57,19 @@ fn pull_editor_state(
 /// Composites an out-of-process audio bridge with a lazily-loaded in-process
 /// GUI instance. Audio processing goes through `AudioBridge` (IPC to
 /// plugin-server child process). Editor/GUI operations load the plugin
-/// in-process on first `open_editor` call.
+/// in-process on first `open_editor` call, or, for a bridge made with no
+/// [`EditorLoader`], run in the server (doc 029 section 6.5).
 pub struct PluginBridge {
     audio: AudioBridge,
     /// The file and the plugin in it, which the editor-only instance loads
     /// (the one the audio instance is).
     origin: Origin,
     /// Loads the in-process editor instance on the first open: the host's
-    /// table of formats, which this crate does not depend on.
-    load_editor: EditorLoader,
+    /// table of formats, which this crate does not depend on. `None`: the
+    /// editor lives in the server, and `remote` is the editor.
+    load_editor: Option<EditorLoader>,
+    /// The editor in the server, used when there is no `load_editor`.
+    remote: Mutex<RemoteEditor>,
     gui: Mutex<Option<Box<dyn Editor>>>,
     /// The editor's state when it was last in step with the audio instance:
     /// what [`pull_editor_state`] compares against. Read and written with the
@@ -186,11 +191,12 @@ impl PluginBridge {
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
         origin: Origin,
-        load_editor: EditorLoader,
+        load_editor: Option<EditorLoader>,
         sample_rate: SampleRate,
     ) -> BridgeResult<(Arc<Self>, BridgeThread)> {
         let (audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
         let bridge = Arc::new(Self {
+            remote: Mutex::new(RemoteEditor::new(audio.clone())),
             audio,
             origin,
             load_editor,
@@ -211,13 +217,14 @@ impl PluginBridge {
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
         origin: Origin,
-        load_editor: EditorLoader,
+        load_editor: Option<EditorLoader>,
         sample_rate: SampleRate,
         state_progress_timeout: std::time::Duration,
     ) -> BridgeResult<(Arc<Self>, BridgeThread)> {
         let (mut audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
         audio.set_state_progress_timeout(state_progress_timeout);
         let bridge = Arc::new(Self {
+            remote: Mutex::new(RemoteEditor::new(audio.clone())),
             audio,
             origin,
             load_editor,
@@ -401,6 +408,19 @@ impl PluginBridge {
         self.audio.set_rate_timeout(timeout);
     }
 
+    /// Runs a call of the editor in the server, its refusal as the
+    /// [`EditorError`] the bridge's editor calls answer with.
+    fn remote<T>(
+        &self,
+        call: impl FnOnce(&mut RemoteEditor) -> tutti_plugin_types::PluginResult<T>,
+    ) -> std::result::Result<T, EditorError> {
+        let mut remote = self.remote.lock().map_err(|_| EditorError::Busy)?;
+        call(&mut remote).map_err(|e| match e {
+            PluginError::Editor(typed) => typed,
+            other => EditorError::PluginError(other.to_string()),
+        })
+    }
+
     /// The editor-only instance in `slot`, loaded with the [`EditorLoader`] if
     /// this is the first open.
     fn editor_instance<'a>(
@@ -412,8 +432,11 @@ impl PluginBridge {
             Some(gui) => Ok(gui),
             empty => {
                 tracing::info!("[bridge] lazy-loading the in-process GUI");
-                let instance = (self.load_editor)(main, self.origin.path(), self.origin.load())
-                    .map_err(|e| {
+                let load_editor = self.load_editor.ok_or_else(|| {
+                    EditorError::PluginError("this bridge has no in-process editor loader".into())
+                })?;
+                let instance =
+                    load_editor(main, self.origin.path(), self.origin.load()).map_err(|e| {
                         EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
                     })?;
                 Ok(empty.insert(instance))
@@ -437,6 +460,9 @@ impl PluginBridge {
     ) -> std::result::Result<EditorSize, EditorError> {
         if self.audio.is_crashed() {
             return Err(EditorError::PluginCrashed);
+        }
+        if self.load_editor.is_none() {
+            return self.remote(|remote| remote.open_editor(main, parent, scale));
         }
 
         tracing::info!(
@@ -496,6 +522,9 @@ impl PluginBridge {
         if self.audio.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
+        if self.load_editor.is_none() {
+            return self.remote(|remote| remote.open_floating_editor(main));
+        }
 
         let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
         let gui = self.editor_instance(main, &mut guard)?;
@@ -538,6 +567,14 @@ impl PluginBridge {
     /// Closes the editor, after sending the audio instance what the user changed
     /// in it. `false` when no editor was open.
     pub fn close_editor(&self, main: &MainThread) -> bool {
+        if self.load_editor.is_none() {
+            let Ok(mut remote) = self.remote.lock() else {
+                return false;
+            };
+            let was_open = remote.is_open();
+            remote.close_editor(main);
+            return was_open;
+        }
         self.mirror.closed();
         let Ok(mut guard) = self.gui.lock() else {
             return false;
@@ -560,6 +597,12 @@ impl PluginBridge {
     /// The editor's main-thread tick: applies what the realtime setters queued
     /// for it and sends the audio instance the user's edits.
     pub fn editor_idle(&self, main: &MainThread) {
+        if self.load_editor.is_none() {
+            if let Ok(mut remote) = self.remote.lock() {
+                remote.editor_idle(main);
+            }
+            return;
+        }
         if let Ok(mut guard) = self.gui.lock()
             && let Some(gui) = guard.as_mut()
         {
@@ -706,6 +749,13 @@ impl PluginBridge {
 
     /// The open editor's resize capabilities (the default when none is open).
     pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+        if self.load_editor.is_none() {
+            return self
+                .remote
+                .lock()
+                .map(|mut remote| remote.editor_capabilities(main))
+                .unwrap_or_default();
+        }
         let Ok(mut guard) = self.gui.lock() else {
             return EditorCapabilities::default();
         };
@@ -725,6 +775,9 @@ impl PluginBridge {
         main: &MainThread,
         requested: EditorSize,
     ) -> std::result::Result<EditorSize, EditorError> {
+        if self.load_editor.is_none() {
+            return self.remote(|remote| remote.set_editor_size(main, requested));
+        }
         let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
         let gui = guard
             .as_mut()
@@ -745,6 +798,9 @@ impl PluginBridge {
         main: &MainThread,
         scale: ContentScale,
     ) -> std::result::Result<(), EditorError> {
+        if self.load_editor.is_none() {
+            return self.remote(|remote| remote.set_editor_scale(main, scale));
+        }
         let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
         let gui = guard
             .as_mut()
@@ -757,6 +813,9 @@ impl PluginBridge {
 
     /// A size the open editor asked its window to take since the last poll.
     pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
+        if self.load_editor.is_none() {
+            return self.remote.lock().ok()?.poll_editor_resize_request(main);
+        }
         let mut guard = self.gui.lock().ok()?;
         guard.as_mut()?.poll_editor_resize_request(main)
     }

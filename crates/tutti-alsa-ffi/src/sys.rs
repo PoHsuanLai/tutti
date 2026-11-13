@@ -153,7 +153,7 @@ impl Default for snd_seq_ump_event_t {
 /// A legacy `snd_seq_event_t`: the UMP event's prefix, with a 12-byte data
 /// union. Size 28 (asserted below); declared with byte fields only, as it is
 /// handed to alsa-lib and never read back.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct snd_seq_event_t {
@@ -177,10 +177,10 @@ pub struct snd_seq_event_t {
 }
 
 /// `SND_SEQ_EVENT_NOTEON`.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 pub const SND_SEQ_EVENT_NOTEON: u8 = 6;
 /// `SND_SEQ_EVENT_CONTROLLER`.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 pub const SND_SEQ_EVENT_CONTROLLER: u8 = 10;
 
 // --- Constants -------------------------------------------------------------
@@ -340,7 +340,7 @@ unsafe extern "C" {
     ) -> c_int;
 
     /// Send one legacy event immediately, bypassing the queue.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     pub fn snd_seq_event_output_direct(seq: *mut snd_seq_t, ev: *mut snd_seq_event_t) -> c_int;
 
     // Client enumeration.
@@ -473,7 +473,7 @@ unsafe extern "C" {
     pub fn snd_ump_endpoint_info_get_name(info: *const snd_ump_endpoint_info_t) -> *const c_char;
 }
 
-#[cfg(all(alsa_ump, feature = "test-support"))]
+#[cfg(all(alsa_ump, feature = "testing"))]
 unsafe extern "C" {
     /// Set the port's `SND_SEQ_PORT_CAP_*` bits.
     pub fn snd_seq_port_info_set_capability(info: *mut snd_seq_port_info_t, capability: c_uint);
@@ -517,7 +517,7 @@ const _: () = {
     assert!(offset_of!(snd_seq_ump_event_t, source) == 12);
     assert!(offset_of!(snd_seq_ump_event_t, dest) == 14);
     assert!(offset_of!(snd_seq_ump_event_t, ump) == 16);
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "testing")]
     {
         assert!(size_of::<snd_seq_event_t>() == 28);
         assert!(offset_of!(snd_seq_event_t, data) == 16);

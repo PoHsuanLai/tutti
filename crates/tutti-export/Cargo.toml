@@ -14,16 +14,6 @@ categories = ["multimedia::audio"]
 [lints]
 workspace = true
 
-[features]
-default = []
-# The formats `tutti-codec` writes; a `Format` variant exists only with its
-# feature on. None is on by default: `ogg` links the C Vorbis library, and a
-# consumer names the formats it writes.
-wav = ["tutti-codec/encode-wav"]
-flac = ["tutti-codec/encode-flac"]
-aiff = ["tutti-codec/encode-aiff"]
-ogg = ["tutti-codec/encode-vorbis"]
-
 [dependencies]
 thiserror.workspace = true
 # A spill file that cannot be removed is logged, not an error: the render's
@@ -32,7 +22,8 @@ tracing = "0.1"
 tutti-transport = { path = "../tutti-transport" }
 tutti-types = { path = "../tutti-types", default-features = false }
 # The encoders and the file's format; the pipeline in this crate hands them
-# blocks. No features of its own: the four above turn each format on.
+# blocks. No features of its own: a consumer names the `encode-*` formats it
+# writes on `tutti-codec`; this crate's tests turn them all on below.
 tutti-codec = { path = "../tutti-codec" }
 # The graph: `RenderGraph` is a forked or built
 # `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
@@ -47,10 +38,9 @@ tutti-dsp = { path = "../tutti-dsp", default-features = false }
 tutti-measure = { path = "../tutti-measure" }
 
 [dev-dependencies]
-# Every format on for this crate's own tests, examples and bench (none is
-# default: `ogg` links C), the pattern `tutti-codec` uses. A consumer's build
-# never sees it. `cargo xtask test-features` checks the library with each alone.
-tutti-export = { path = ".", features = ["wav", "flac", "aiff", "ogg"] }
+# Every encoder on for this crate's own tests, examples and bench (none is
+# default: `encode-vorbis` links C). A consumer's build never sees it.
+tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "encode-flac", "encode-aiff", "encode-vorbis"] }
 criterion.workspace = true
 # An independent reader for the WAV files the tests export.
 hound = "3.5"
@@ -65,7 +55,7 @@ tutti-tempo = { path = "../tutti-tempo" }
 # Convolution nodes and the `testing` stimulus nodes for the end-to-end export
 # tests, examples and bench. Acyclic: tutti-nodes does NOT depend on
 # tutti-export.
-tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["convolution", "testing"] }
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # Voice/VoicePool producers for `sampler_to_export.rs`, which renders a sampler
 # voice through the offline clock and asserts on the exported pitch. Also
 # acyclic: tutti-sampler does NOT depend on tutti-export.

@@ -12,7 +12,7 @@ use std::mem::align_of;
 use std::os::raw::c_void;
 
 use coreaudio_sys::{AudioTimeStamp, MIDIPacket, MIDIPacketList, OSStatus};
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 use tutti_midi_protocol::midi1;
 use tutti_midi_protocol::widen_message;
 use tutti_plugin_types::{MidiEventVec, WireMidi};
@@ -551,7 +551,7 @@ fn next_packet(raw_next: *const u8) -> *const u8 {
 /// # Safety
 /// `pktlist` must be a well-formed, non-null `MIDIPacketList`.
 #[doc(hidden)]
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<WireMidi> {
     let mut out = Vec::new();
     let mut decoder = Decoder::new();
@@ -577,7 +577,7 @@ pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec
 /// # Safety
 /// As [`decode_packet_list_for_test`].
 #[doc(hidden)]
-#[cfg(feature = "test-support")]
+#[cfg(feature = "testing")]
 pub unsafe fn split_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<(u32, Vec<u8>)> {
     let mut out = Vec::new();
     let mut parser = Midi1Parser::new(MidiGroup::FIRST);

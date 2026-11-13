@@ -17,8 +17,9 @@ workspace = true
 [features]
 default = []
 # Mic capture (`MicIn`). Gated because it needs the codec's `FileOut`, the
-# sink `MicIn::matching_sink` opens; without it this crate is output-only.
-capture = ["dep:tutti-codec"]
+# sink `MicIn::matching_sink` opens (WAV, so it implies `encode-wav`: a sink
+# that can write nothing is no sink); without it this crate is output-only.
+capture = ["dep:tutti-codec", "tutti-codec/encode-wav"]
 
 # JACK, through cpal's implicitly-featured optional `jack` dependency.
 #

@@ -274,11 +274,17 @@ fn no_prepare_holds_a_rate_or_block_that_is_none() {
     let loaded = probe.load();
     for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(
-            Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(BLOCK))).is_none(),
+            Prepare::new(
+                <SampleRate as tutti_types::Unit>::from_raw(rate),
+                MaxBlock::of(Samples(BLOCK))
+            )
+            .is_none(),
             "{rate} Hz"
         );
         assert!(
-            prepare().with_rate(SampleRate::of(rate)).is_none(),
+            prepare()
+                .with_rate(<SampleRate as tutti_types::Unit>::from_raw(rate))
+                .is_none(),
             "{rate} Hz"
         );
     }

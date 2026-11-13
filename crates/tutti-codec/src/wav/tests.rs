@@ -162,7 +162,7 @@ fn a_zero_rate_is_refused() {
         let s = Spec::of_width(
             crate::Format::Wav(Pcm::Int16),
             ChannelLayout::STEREO,
-            SampleRate::of(rate),
+            <SampleRate as tutti_types::Unit>::from_raw(rate),
         );
         let err = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new()))
             .err()

@@ -56,7 +56,7 @@ fn every_fft_size_yields_a_cola_grid() {
 #[test]
 fn non_positive_sample_rate_does_not_panic() {
     for rate in [0.0, -44_100.0] {
-        let u = Unit::new(SampleRate::of(rate));
+        let u = Unit::new(<SampleRate as tutti_types::Unit>::from_raw(rate));
         assert_eq!(u.channels(), ChannelLayout::STEREO);
     }
 }

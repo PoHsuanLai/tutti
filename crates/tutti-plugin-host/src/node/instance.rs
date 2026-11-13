@@ -307,10 +307,10 @@ impl<F: Loaded> Instance<F> {
         match &result {
             Err(reason) => {
                 self.rate_refused = true;
-                // A raw that is no rate cannot be named as the refused one: the
-                // report carries the rate the plugin stands at.
-                let refused_rate = SampleRate::new(rate).unwrap_or_else(|| self.prepare.rate());
-                self.rate_report = Some(Some((refused_rate, reason.clone())));
+                // The report names what was asked, even when that is no rate
+                // (so `from_raw`, unchecked on purpose).
+                let asked = <SampleRate as tutti_types::Unit>::from_raw(rate);
+                self.rate_report = Some(Some((asked, reason.clone())));
             }
             Ok(()) if self.rate_refused => {
                 self.rate_refused = false;

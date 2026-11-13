@@ -1582,7 +1582,7 @@ fn a_prepare_has_a_real_rate_and_a_block() {
         f64::NEG_INFINITY,
     ] {
         assert!(
-            Prepare::new(SampleRate::of(rate), block).is_none(),
+            Prepare::new(<SampleRate as tutti_types::Unit>::from_raw(rate), block).is_none(),
             "{rate}"
         );
         assert!(

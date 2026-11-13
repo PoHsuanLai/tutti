@@ -1393,7 +1393,12 @@ mod tests {
         assert!(new(64, 1).is_ok() && new(65_536, 65_536).is_ok() && new(4096, 64).is_ok());
         for rate in [f64::INFINITY, 0.5, 1e9] {
             assert!(bad(SpectrumConfig::new(
-                StftGeometry::new(SampleRate::of(rate), Samples(256), Samples(64)).unwrap()
+                StftGeometry::new(
+                    <SampleRate as tutti_types::Unit>::from_raw(rate),
+                    Samples(256),
+                    Samples(64)
+                )
+                .unwrap()
             )));
         }
         assert!(

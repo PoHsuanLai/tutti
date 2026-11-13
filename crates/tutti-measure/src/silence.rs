@@ -384,7 +384,11 @@ mod tests {
     fn a_bad_rate_is_refused() {
         for rate in [0.0, -1.0, f64::NAN] {
             assert_eq!(
-                SilenceConfig::new(SampleRate::of(rate), Db(-20.0), Seconds(0.1)),
+                SilenceConfig::new(
+                    <SampleRate as tutti_types::Unit>::from_raw(rate),
+                    Db(-20.0),
+                    Seconds(0.1)
+                ),
                 Err(Error::NonPositiveSampleRate)
             );
         }

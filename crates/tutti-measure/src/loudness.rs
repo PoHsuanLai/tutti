@@ -1081,7 +1081,10 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    WindowedLoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO),
+                    WindowedLoudnessConfig::new(
+                        <SampleRate as tutti_types::Unit>::from_raw(rate),
+                        ChannelLayout::STEREO
+                    ),
                     Err(Error::InvalidLoudnessParameter(_))
                 ),
                 "rate {rate}"

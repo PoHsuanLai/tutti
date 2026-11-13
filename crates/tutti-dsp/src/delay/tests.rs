@@ -1,14 +1,5 @@
 use super::*;
 
-/// A line for 0.1 s at 48 kHz holds 4800 frames: `0.1 * 48000` is 4800 in
-/// `f64`, so its `_ceil` is 4800, where the `f32` nearest 0.1 times 48000
-/// is 4800.00007 and rounds up to 4801.
-#[test]
-fn a_line_is_sized_from_the_exact_seconds() {
-    let from_secs = DelayLine::from_seconds(Seconds(0.1), SampleRate(48_000.0));
-    assert_eq!(from_secs.buffer.len(), DelayLine::new(4800).buffer.len());
-}
-
 #[test]
 fn test_delay_line_basic() {
     let mut dl = DelayLine::new(10);

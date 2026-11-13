@@ -17,7 +17,7 @@ mod realized;
 mod setup;
 mod system;
 
-pub use cadence::{Anchor, Cadence, Period, Step};
+pub use cadence::{Cadence, Step};
 pub use capacity::Capacity;
 pub use family::{Channels, Family, Grows};
 pub use feed::{Feed, MAX_LANES};

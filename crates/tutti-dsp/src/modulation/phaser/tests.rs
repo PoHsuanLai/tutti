@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use tutti_types::{BusTopology, Db, Depth, Feedback, Hz, Phase, PhaseIncrement, SampleRate};
 
 use super::*;
+use crate::Realized;
 use crate::contract::{FamilyCase, Figure, LtiCase, RecurrenceCase, built, noise, render};
-use crate::{Complex32, RealFft, Realized};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -121,6 +121,26 @@ impl RecurrenceCase for PhaserFamily {
 }
 
 impl LtiCase for PhaserFamily {
+    /// 1e-3, the render's `f32` against the model's `f64`, for every design but one whose
+    /// slowest frozen probe is **numerically marginal**: a spectral radius within 1e-5 of 1
+    /// (the 12-stage chain parked at a 20 Hz bottom with feedback 0.99 has 0.9999988, a
+    /// ringing of some 10^6 frames). The model and the render share the coefficient, rounded
+    /// to `f32`, so what differs there is the `f32` roundoff of the loop's state, which the
+    /// loop amplifies by about `1 / (1 - r)`: measured at 3.3e-2 of the norm, held to 5%. A
+    /// sign flipped in the loop is off by order one at every design.
+    fn response_tolerance(&self) -> f64 {
+        let slowest = self
+            .rates()
+            .into_iter()
+            .flat_map(|rate| {
+                self.static_probes()
+                    .into_iter()
+                    .map(move |c| self.member(&c, rate).spectral_radius())
+            })
+            .fold(0.0f64, f64::max);
+        if 1.0 - slowest < 1e-5 { 0.05 } else { 1e-3 }
+    }
+
     /// The closed forms of the chain at its fixed points: `A = 1` at DC and `(-1)^N` at
     /// Nyquist (for any coefficient), so `|H| = 1 / (1 - g)` at DC and
     /// `1 / (1 + g (-1)^N)` at Nyquist; and flat at no feedback, where `|A| = 1` everywhere.
@@ -161,30 +181,14 @@ impl LtiCase for PhaserFamily {
 }
 
 /// The contract of one design: the family's cases with the `Lti` group, and the recurrence's
-/// with `BlockIndependent`. The realization cases that need a **finite tail** (`tail_covers`,
-/// `response`, `decay`, `tail_tight`: each skips every probe whose tail is
-/// [`Ring::Unbounded`], and the phaser's is, by design, since the closed loop's poles have no
-/// closed form to cut a tail at) are not run; the two that do not need one, `linear` and
-/// `stability`, are run directly, and the response is held against the render by
-/// `the_frozen_member_is_the_renders_impulse_response`.
-///
-/// Until delay lane PR 5: there the contract reads `System::tail()` itself and does not
-/// apply a finite-tail case to an `Unbounded` member, and the phaser goes back through the
-/// `Lti` group (`response` from the contract, not a side test).
+/// with `Lti` and `BlockIndependent`, like every other `Lti` family. The phaser's tail is
+/// [`Ring::Unbounded`] by design (the closed loop's poles have no closed form to cut a tail
+/// at), so the contract reads that from the member: the cases that measure a finite tail do
+/// not apply to it, and `response` renders for as long as the member's spectral radius says.
 macro_rules! phaser_contract {
     () => {
         crate::family_contract!(design(), Lti);
-        crate::recurrence_contract!(design(), BlockIndependent);
-
-        #[test]
-        fn recurrence_contract_linear() {
-            crate::contract::cases::realization::linear(&design()).unwrap();
-        }
-
-        #[test]
-        fn recurrence_contract_stability() {
-            crate::contract::cases::realization::stability(&design()).unwrap();
-        }
+        crate::recurrence_contract!(design(), Lti, BlockIndependent);
     };
 }
 
@@ -355,47 +359,6 @@ fn a_half_mix_of_the_chain_has_ceil_n_over_two_notches_where_the_phase_is_odd_pi
                 mix.norm()
             );
         }
-    }
-}
-
-/// The frozen member is what the realization renders: the spectrum of the impulse response
-/// (long enough to have rung out: the poles of a mid-range sweep at these feedbacks are well
-/// inside the circle) against `frequency_response`, the relative error over all bins.
-/// The contract's `response` case does the same for a family with a finite tail; the
-/// phaser's tail is unbounded by design, so it is run here at a fixed length.
-#[test]
-fn the_frozen_member_is_the_renders_impulse_response() {
-    const FRAMES: usize = 1 << 15;
-    for (stages, fb) in [(4usize, 0.0f32), (4, 0.7), (7, 0.9), (12, 0.5), (2, 0.99)] {
-        let f = family(2, stages, range(400.0, 5_000.0), step(0.3));
-        let c = controls(3.0, 0.0, fb);
-        let (mut k, m) = built(&f, &c, RATE);
-        let mut x = vec![0.0f32; FRAMES];
-        x[0] = 1.0;
-        let ir = render(&mut k, crate::contract::widths(&f), &x, 64);
-        let fft = RealFft::new(FRAMES);
-        let mut scratch = fft.new_scratch();
-        let mut bins = vec![Complex32::new(0.0, 0.0); fft.bins()];
-        fft.forward(&ir[1], &mut bins, &mut scratch);
-        let freqs: Vec<Hz> = (0..fft.bins())
-            .map(|b| Hz((b as f64 * RATE.get() / FRAMES as f64) as f32))
-            .collect();
-        let mut want = vec![Complex64::new(0.0, 0.0); freqs.len()];
-        m.frequency_response(1, &freqs, &mut want);
-        let (mut num, mut den) = (0.0f64, 0.0f64);
-        for (b, w) in bins.iter().zip(&want) {
-            let got = Complex64::new(f64::from(b.re), f64::from(b.im));
-            num += (got - w).norm_sqr();
-            den += w.norm_sqr();
-        }
-        let err = (num / den).sqrt();
-        // A loop of gain 100 (feedback 0.99) amplifies the `f32` roundoff of the render
-        // where the model has none: the contract's own tolerance, 1%, is for it.
-        let tolerance = if fb > 0.95 { 1e-2 } else { 1e-3 };
-        assert!(
-            err < tolerance,
-            "{stages} stages at feedback {fb}: {err:.3e} from the model"
-        );
     }
 }
 

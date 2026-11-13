@@ -49,6 +49,10 @@ ramps and the graph shape. Here they take plain typed values per call.
 - **Resampling and dither** — `FftResampler` and `StreamingResampler` for export, and
   `DitherNoise` with `DitherSink`, the dither path export and recording share.
 
+A family samples its slow controls on a `Cadence`: `Block` (once per block, so the render depends
+on how audio is split), or `Stream` (a period on the stream's clock, which makes it block
+independent; every family but the block-sampled ones is on `Cadence::stream(16)`).
+
 Each family is laid out as its design (controls to a model), its model (a `System`, and
 an `Lti` where it is linear and time-invariant) and its kernel (the per-frame math that
 `Realized` runs), the split of design 024.

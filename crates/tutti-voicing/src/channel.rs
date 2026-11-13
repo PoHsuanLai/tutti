@@ -15,8 +15,9 @@
 //! per-channel controller state, so it can be handed on whole (a SoundFont swap
 //! keeps what a performer set, and takes a new font).
 
-use tutti_midi_protocol::{signed_f32_to_bend_u32, unit_f32_to_u32};
+use tutti_midi_protocol::{signed_f32_to_bend, unit_f32_to_value};
 use tutti_types::{Cents, Pan, Seconds, Semitones};
+use tutti_ump::ControlValue;
 use tutti_ump::{CCNumber, NoteNumber, Rpn, U7, U14, Voice2};
 
 /// What a full Modulation Wheel spans until RPN 5 says otherwise: General MIDI
@@ -194,7 +195,7 @@ impl ChannelState {
     pub(crate) fn chase(&self, fresh: &Self, mut emit: impl FnMut(Voice2)) {
         let cc = |controller: CCNumber, value: u8| Voice2::ControlChange {
             controller,
-            value: u32::from(value) << 25,
+            value: ControlValue::new(u32::from(value) << 25),
         };
         let mut fourteen = |msb: CCNumber, now: U14, then: U14| {
             if now == then {
@@ -225,17 +226,15 @@ impl ChannelState {
             emit(cc(CCNumber::PORTAMENTO_CONTROL, key.get()));
         }
         if self.pressure != fresh.pressure {
-            emit(Voice2::ChannelPressure(unit_f32_to_u32(self.pressure)));
+            emit(Voice2::ChannelPressure(unit_f32_to_value(self.pressure)));
         }
         if self.bend.position != fresh.bend.position {
-            emit(Voice2::PitchBend(signed_f32_to_bend_u32(
-                self.bend.position,
-            )));
+            emit(Voice2::PitchBend(signed_f32_to_bend(self.bend.position)));
         }
         let registered = |rpn: Rpn, value: u32| Voice2::Registered {
             bank: rpn.bank(),
             index: rpn.index(),
-            value,
+            value: ControlValue::new(value),
         };
         for rpn in Self::REGISTERED {
             let (now, then) = (self.registered_word(rpn), fresh.registered_word(rpn));

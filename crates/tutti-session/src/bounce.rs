@@ -114,7 +114,7 @@ impl From<std::ops::Range<Seconds>> for Range {
     }
 }
 
-/// `Frame(0)..Frame(48_000)` is [`Range::Frames`].
+/// `Frame::new(0)..Frame::new(48_000)` is [`Range::Frames`].
 impl From<std::ops::Range<Frame>> for Range {
     fn from(r: std::ops::Range<Frame>) -> Self {
         Self::Frames(r.start, r.end)
@@ -2090,8 +2090,8 @@ mod tests {
             Range::Seconds(Seconds(1.0), Seconds(2.0))
         );
         assert_eq!(
-            Range::from(Frame(0)..Frame(48_000)),
-            Range::Frames(Frame(0), Frame(48_000))
+            Range::from(Frame::new(0)..Frame::new(48_000)),
+            Range::Frames(Frame::new(0), Frame::new(48_000))
         );
     }
 
@@ -2139,7 +2139,7 @@ mod tests {
         let map = TempoMap::constant(Bpm::of(120.0)).unwrap();
         let by_seconds = span(Range::Seconds(Seconds(1.0), Seconds(3.0)), None, &map, RATE);
         let by_frames = span(
-            Range::Frames(Frame(48_000), Frame(144_000)),
+            Range::Frames(Frame::new(48_000), Frame::new(144_000)),
             None,
             &map,
             RATE,
@@ -2341,7 +2341,7 @@ mod tests {
         let request = || {
             Bounce::project()
                 .master_buffers()
-                .range(Range::Frames(Frame(0), Frame(DURATION as u64)))
+                .range(Range::Frames(Frame::new(0), Frame::new(DURATION as u64)))
         };
 
         let untrimmed = planes(session.bounce(request().latency(BounceLatency::Keep)));

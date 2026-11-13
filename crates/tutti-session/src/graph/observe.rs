@@ -7,8 +7,8 @@
 //! the next commit compiles them.
 
 use tutti_graph::{
-    CloseError, EventTapId, EventTapReader, MeterId, MeterReader, MeterSpec, MissingSource,
-    NodeKey, TapAlign, TapId, TapReader,
+    CloseError, EventCapacity, EventTapId, EventTapReader, MeterId, MeterReader, MeterSpec,
+    MissingSource, NodeKey, TapAlign, TapId, TapReader,
 };
 use tutti_types::Samples;
 
@@ -153,7 +153,8 @@ impl Taps<'_> {
     /// compiled by the next commit and fed by every block that renders after
     /// it; a copy of events, the event sibling of [`open`](Self::open).
     ///
-    /// `capacity` is a count of events. A non-note-off is refused once that
+    /// `capacity` is a count of events ([`EventCapacity`], as for
+    /// `Midi::record`). A non-note-off is refused once that
     /// many are held, a note-off is kept up to
     /// [`note_off_room`](tutti_graph::note_off_room) of it, and each refusal is
     /// counted ([`EventTapReader::take_lost`]). `align` is as for a plan tap:
@@ -181,7 +182,7 @@ impl Taps<'_> {
         &mut self,
         source: EventOutPort,
         align: TapAlign,
-        capacity: usize,
+        capacity: EventCapacity,
     ) -> Result<EventTapReader, MissingSource> {
         let id = EventTapId(self.graph.next_event_tap);
         let raw = source.raw().ok_or_else(|| MissingSource::EventPort {
@@ -192,7 +193,10 @@ impl Taps<'_> {
                 .shape(source.node())
                 .map_or(0, |s| usize::from(s.event_out)),
         })?;
-        let reader = self.graph.editor.open_event_tap(id, raw, align, capacity)?;
+        let reader = self
+            .graph
+            .editor
+            .open_event_tap(id, raw, align, capacity.get() as usize)?;
         self.graph.next_event_tap += 1;
         self.graph.event_taps.insert(id, (raw, align, capacity));
         self.graph.edited = true;
@@ -247,7 +251,11 @@ impl Taps<'_> {
     pub fn reopen_event(&mut self, id: EventTapId) -> Option<EventTapReader> {
         let &(port, align, capacity) = self.graph.event_taps.get(&id)?;
         self.graph.edited = true;
-        match self.graph.editor.open_event_tap(id, port, align, capacity) {
+        match self
+            .graph
+            .editor
+            .open_event_tap(id, port, align, capacity.get() as usize)
+        {
             Ok(reader) => Some(reader),
             Err(_) => {
                 self.graph.event_taps.remove(&id);

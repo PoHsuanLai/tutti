@@ -332,7 +332,7 @@ fn a_scheduled_locate_lands_on_its_frame() {
     let locate = |t: &Transport| {
         t.motion()
             .schedule(
-                At::Frame(Frame(at as u64)),
+                At::Frame(Frame::new(at as u64)),
                 MotionEvent::Locate {
                     beat: Beat(0.25),
                     fade: FadeOut::Immediate,

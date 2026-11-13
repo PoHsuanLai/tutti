@@ -158,7 +158,7 @@ fn an_arrival_sounds_on_the_frame_the_clock_puts_it_on_plus_the_lead() {
         let t0 = Instant::now();
         let mut clock = BlockClock::new();
         inlets.set_clock(Some(clock.reader()));
-        clock.write(t0, Frame(1000), SampleRate::of(RATE));
+        clock.write(t0, Frame::new(1000), SampleRate::of(RATE));
         for (n, d) in [(60u8, 100u64), (61, 250), (62, 700)] {
             assert!(rig.input.push(note(n), after(t0, d)));
         }
@@ -182,9 +182,9 @@ fn a_later_reading_places_later_arrivals() {
     let t0 = Instant::now();
     let mut clock = BlockClock::new();
     inlets.set_clock(Some(clock.reader()));
-    clock.write(t0, Frame(1000), SampleRate::of(RATE));
+    clock.write(t0, Frame::new(1000), SampleRate::of(RATE));
     assert!(rig.input.push(note(60), after(t0, 100)));
-    clock.write(after(t0, 480), Frame(1480), SampleRate::of(RATE));
+    clock.write(after(t0, 480), Frame::new(1480), SampleRate::of(RATE));
     assert!(rig.input.push(note(61), after(t0, 580)));
     rig.run(6);
     let frames: Vec<u64> = rig.take().iter().map(|e| e.0).collect();
@@ -211,7 +211,7 @@ fn an_arrival_before_frame_zero_is_for_the_next_block() {
     let t0 = Instant::now();
     let mut clock = BlockClock::new();
     inlets.set_clock(Some(clock.reader()));
-    clock.write(t0, Frame(100), SampleRate::of(RATE));
+    clock.write(t0, Frame::new(100), SampleRate::of(RATE));
     // 5,000 frames before the reading: frame -4,900.
     let early = t0 - Duration::from_secs_f64(5000.0 / RATE);
     assert!(rig.input.push(note(60), early));
@@ -230,14 +230,14 @@ fn a_restarted_clock_places_arrivals_from_the_new_anchor() {
     let t0 = Instant::now();
     let mut first = BlockClock::new();
     inlets.set_clock(Some(first.reader()));
-    first.write(t0, Frame(1000), SampleRate::of(RATE));
+    first.write(t0, Frame::new(1000), SampleRate::of(RATE));
     assert!(rig.input.push(note(60), after(t0, 480)));
 
     // The engine restarts a second later; its frames begin at 0 again.
     let t1 = t0 + Duration::from_secs(1);
     let mut second = BlockClock::new();
     inlets.set_clock(Some(second.reader()));
-    second.write(t1, Frame(100), SampleRate::of(RATE));
+    second.write(t1, Frame::new(100), SampleRate::of(RATE));
     assert!(rig.input.push(note(61), after(t1, 480)));
     rig.run(6);
     let frames: Vec<u64> = rig.take().iter().map(|e| e.0).collect();
@@ -255,7 +255,7 @@ fn a_reading_at_another_rate_is_rescaled_by_the_inlet() {
     let t0 = Instant::now();
     let mut clock = BlockClock::new();
     inlets.set_clock(Some(clock.reader()));
-    clock.write(t0, Frame(2000), SampleRate::SR_96K);
+    clock.write(t0, Frame::new(2000), SampleRate::SR_96K);
     assert!(rig.input.push(note(60), t0 + Duration::from_millis(10)));
     rig.run(6);
     // 2,000 frames at 96 kHz is 1,000 at 48 kHz; 10 ms is 480 more.

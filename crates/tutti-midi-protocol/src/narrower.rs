@@ -1,10 +1,11 @@
 //! The stateful MIDI 2.0 to MIDI 1.0 translation of M2-104 Appendix D.2: the
 //! [`Narrower`] an output edge runs.
 
+use crate::midi1;
 use crate::scale;
-use crate::{midi1, narrow_bend};
 use tutti_ump::{
-    Address, Bank, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2,
+    Address, Bank, CCNumber, ControlValue, Message, Midi1Bytes, MidiChannel, MidiGroup, U7, Ump,
+    Voice1, Voice2,
 };
 
 /// Every channel of every group.
@@ -74,14 +75,14 @@ struct Channel {
 ///
 /// ```
 /// use tutti_midi_protocol::Narrower;
-/// use tutti_ump::{Address, Message, MidiChannel, MidiGroup, U7, Voice2};
+/// use tutti_ump::{Address, ControlValue, Message, MidiChannel, MidiGroup, U7, Voice2};
 ///
 /// let address = Address { group: MidiGroup::FIRST, channel: MidiChannel::FIRST };
 /// // Pitch bend sensitivity (RPN 0/0), 12 semitones, zero-extended.
 /// let bend_range = Message::Midi2(address, Voice2::Registered {
 ///     bank: U7::of(0),
 ///     index: U7::of(0),
-///     value: 12 << 25,
+///     value: ControlValue::new(12 << 25),
 /// });
 /// let mut narrower = Narrower::new();
 /// let mut bytes = Vec::new();
@@ -149,15 +150,15 @@ impl Narrower {
             Voice2::Registered { bank, index, value } => {
                 let selected = Selected::Registered { bank, index };
                 let data = if scale::zero_extended(bank, index) {
-                    narrow_rounded(value)
+                    narrow_rounded(value.get())
                 } else {
-                    narrow_bend(value).get()
+                    narrow_data(value)
                 };
                 run(channel, selected, data, &mut cc);
             }
             Voice2::Assignable { bank, index, value } => {
                 let selected = Selected::Assignable { bank, index };
-                run(channel, selected, narrow_bend(value).get(), &mut cc);
+                run(channel, selected, narrow_data(value), &mut cc);
             }
             Voice2::ProgramChange {
                 program,
@@ -222,6 +223,13 @@ fn run(channel: &mut Channel, selected: Selected, data: u16, cc: &mut impl FnMut
 /// A 32-bit value as 14 bits, rounded (M2-115 section 4.4.1,
 /// `scaleDownRounding(value, 32, 14)`): add half the scaled range, shift,
 /// clamp to the 14-bit maximum.
+/// The top 14 bits of a 32-bit controller word: the data of a Registered or
+/// Assignable Controller that M2-115 scales Min-Center-Max, narrowed by a right
+/// shift (as [`narrow_bend`](crate::narrow_bend) does a bend).
+fn narrow_data(value: ControlValue) -> u16 {
+    (value.get() >> 18) as u16
+}
+
 fn narrow_rounded(value: u32) -> u16 {
     const SCALE_BITS: u32 = 32 - 14;
     let shifted = (u64::from(value) + (1 << (SCALE_BITS - 1))) >> SCALE_BITS;

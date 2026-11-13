@@ -5,6 +5,7 @@
 use tutti_midi_protocol::{Addressee, GeneralMidi, Heard, Universal};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, Rpn, U7, U14, Voice2};
+use tutti_ump::{BendValue, ControlValue};
 use tutti_voicing::{Command, Patch, Rules, VoiceSpec, Voicing};
 
 struct One;
@@ -40,7 +41,7 @@ fn note_on(key: u8) -> Voice2 {
 fn cc(n: u8, value7: u32) -> Voice2 {
     Voice2::ControlChange {
         controller: CCNumber::of(n),
-        value: value7 << 25,
+        value: ControlValue::new(value7 << 25),
     }
 }
 
@@ -97,7 +98,7 @@ fn the_master_tuning_sums_with_the_channels_own_tuning_and_wheel() {
         Voice2::Registered {
             bank: Rpn::CHANNEL_COARSE_TUNING.bank(),
             index: Rpn::CHANNEL_COARSE_TUNING.index(),
-            value: 67 << 25,
+            value: ControlValue::new(67 << 25),
         },
     );
     let r = retunes(&say(&mut core, Addressee::All, COARSE(0x42)));
@@ -105,7 +106,7 @@ fn the_master_tuning_sums_with_the_channels_own_tuning_and_wheel() {
     assert_eq!(on(0), 5.0, "+2 master and +3 channel");
     assert_eq!(on(1), 2.0);
     // A full wheel up on channel 1 spans the default 2 semitones.
-    let bend = step(&mut core, 1, Voice2::PitchBend(u32::MAX));
+    let bend = step(&mut core, 1, Voice2::PitchBend(BendValue::new(u32::MAX)));
     assert!((retunes(&bend)[0].1 - 4.0).abs() < 1e-3);
 }
 
@@ -117,7 +118,7 @@ fn the_percussion_channel_is_not_retuned() {
     let r = retunes(&say(&mut core, Addressee::All, COARSE(0x4C)));
     assert_eq!(r.len(), 15);
     assert!(r.iter().all(|&(c, b)| c != 9 && b == 12.0));
-    let bend = step(&mut core, 9, Voice2::PitchBend(u32::MAX));
+    let bend = step(&mut core, 9, Voice2::PitchBend(BendValue::new(u32::MAX)));
     assert!((retunes(&bend)[0].1 - 2.0).abs() < 1e-3, "the wheel alone");
 }
 
@@ -183,14 +184,14 @@ fn dirty(core: &mut Voicing, bend_range: u32) {
     step(core, 0, cc(1, 90));
     step(core, 0, cc(10, 0));
     step(core, 0, cc(64, 127));
-    step(core, 0, Voice2::PitchBend(u32::MAX));
+    step(core, 0, Voice2::PitchBend(BendValue::new(u32::MAX)));
     step(
         core,
         0,
         Voice2::Registered {
             bank: Rpn::PITCH_BEND_SENSITIVITY.bank(),
             index: Rpn::PITCH_BEND_SENSITIVITY.index(),
-            value: bend_range << 25,
+            value: ControlValue::new(bend_range << 25),
         },
     );
 }
@@ -231,7 +232,7 @@ fn general_midi_on_mutes_and_returns_every_channel_to_its_defaults() {
     assert_eq!(c.pan(), core.channel(MidiChannel::of(7)).pan());
     // The range is General MIDI's, not the 12 the instrument was built with
     // nor the 24 a message set: a full wheel is 2 semitones.
-    let bend = step(&mut core, 0, Voice2::PitchBend(u32::MAX));
+    let bend = step(&mut core, 0, Voice2::PitchBend(BendValue::new(u32::MAX)));
     assert!((retunes(&bend)[0].1 - 2.0).abs() < 1e-3);
     // The pedal is up: a key down and up releases at once.
     step(&mut core, 0, note_on(64));
@@ -258,7 +259,7 @@ fn general_midi_off_returns_to_the_instruments_own_status() {
         Addressee::All,
         Universal::GeneralMidi(GeneralMidi::Off),
     );
-    let bend = step(&mut core, 0, Voice2::PitchBend(u32::MAX));
+    let bend = step(&mut core, 0, Voice2::PitchBend(BendValue::new(u32::MAX)));
     assert!((retunes(&bend)[0].1 - 12.0).abs() < 1e-3);
 }
 

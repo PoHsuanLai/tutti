@@ -1,145 +1,170 @@
-//! `check-doc-features`: rustdoc, one feature at a time, for the crates whose
-//! public surface is feature-gated.
+//! `check-doc-features`: rustdoc over the features a workspace build leaves
+//! off.
 //!
-//! `cargo doc --workspace` builds every crate with its default features, which
-//! for these two is none, so it documents almost nothing of them; the
-//! `--features full,plugin` line beside it sees the union but not a link that
-//! only resolves with two features on. A doc comment under `#[cfg(feature =
-//! "x")]` is compiled by rustdoc only when `x` is on, so a link out of it into
-//! an item another feature gates breaks for exactly the consumer who turns on
-//! `x` alone.
+//! `cargo doc --workspace` builds every crate with the features some member's
+//! edge turns on, so an item behind a feature nothing in the workspace enables
+//! (a `contract` harness, `test-support`, a codec, a plugin format) and the
+//! links in its docs are never documented there. A doc comment under
+//! `#[cfg(feature = "x")]` is compiled by rustdoc only when `x` is on. Two kinds
+//! of run close that:
 //!
-//! The feature list is read from each Cargo.toml, so a new feature is covered
-//! without editing [`CRATES`]. `RUSTDOCFLAGS` defaults to `-D warnings`.
-//! (`crates/bevy-tutti` is parked, out of the workspace, so it is not
-//! documented here; its feature docs come back with it.) `jack` is skipped: it
-//! links libjack, as in `cargo xtask check-features`.
+//! - **Each member with its features together**, private items included: one
+//!   `cargo doc -p <member> --features <every feature>` per workspace member
+//!   that has features, with `--document-private-items`. A broken or redundant
+//!   link in gated code reached main from five crates this way before this run
+//!   existed (`tutti-codec`, `tutti-cpal`, `tutti-nodes`, `tutti-sampler`,
+//!   `tutti-vst3-ffi`).
+//! - **Each feature alone**, for the crates whose public surface is
+//!   feature-gated ([`ONE_AT_A_TIME`]): the union cannot see a link out of one
+//!   feature's docs into an item only another feature gates, which breaks for
+//!   exactly the consumer who turns on the first alone.
+//!
+//! The members come from the root manifest's `members` and the features from
+//! each member's `[features]` table, so a new crate or feature is covered with
+//! no edit here. Skipped: `default` (not a feature of its own), `jack` (its
+//! build script wants the JACK headers, as in `cargo xtask check-features`; the
+//! CI rustdoc job documents the umbrellas with `--all-features`, JACK included)
+//! and, in the union, `bevy` (it builds Bevy; `bevy-tutti` is parked and no
+//! workspace command builds it). `RUSTDOCFLAGS` is the caller's when set.
 //!
 //! This one is a list of commands, not a verdict over files: [`doc_runs`]
 //! reads the manifests (pure, over a [`Tree`]) and the runner in `main.rs`
 //! runs each [`DocRun`] and reports the ones that failed.
-//!
-//! The script read the manifests with `sed` and `awk`; both are written out:
-//! - the name: the first line matching `^name = "(.*)"` (greedy, to the last
-//!   quote on the line), with `sed -n 's/^name = "\(.*\)"/\1/p'`, which
-//!   replaces only the matched part, so text after the last quote stays;
-//! - the features: between a line starting `[features]` and the next line
-//!   starting `[`, each line matching `^[a-z0-9_-]+ *=`, as its first
-//!   whitespace-separated field (so `a=[]` is the field `a=[]`), minus the
-//!   lines that are exactly `default` or `jack` (`grep -vx`).
-//!
-//! Mutation record (each planted, seen to fail the named test, removed):
-//! - keep `jack`: `default_and_jack_are_not_documented_alone`;
-//! - end the section at `[features.` only: `only_the_features_table_is_read`;
-//! - drop the `Cargo.toml` existence check: `a_missing_manifest_is_an_error`.
 
 use super::Tree;
+use super::toml::{Toml, strings};
 use crate::cmd::Cmd;
 
-/// The crates whose features are documented one at a time.
-const CRATES: &[&str] = &["crates/tutti-session", "crates/tutti"];
+/// The crates whose features are also documented one at a time.
+const ONE_AT_A_TIME: &[&str] = &["crates/tutti-session", "crates/tutti"];
 
-/// Features that are not documented alone.
+/// Features never documented, alone or together.
 const SKIPPED: &[&str] = &["default", "jack"];
+
+/// Features left out of a member's union.
+const NOT_IN_UNION: &[&str] = &["bevy"];
 
 /// One `cargo doc` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocRun {
     pub(crate) package: String,
-    pub(crate) feature: String,
+    /// The features turned on, in the manifest's order.
+    pub(crate) features: Vec<String>,
+    /// Whether this is a member's union (with private items) or one feature.
+    pub(crate) union: bool,
 }
 
 impl DocRun {
     /// The line printed before it runs.
     pub(crate) fn heading(&self) -> String {
         format!(
-            "== cargo doc -p {} --features {}",
-            self.package, self.feature
+            "== cargo doc -p {} --features {}{}",
+            self.package,
+            self.features.join(","),
+            if self.union { " (private items)" } else { "" }
         )
     }
 
-    /// `RUSTDOCFLAGS` is the caller's unless it is unset or empty.
+    /// `RUSTDOCFLAGS` is the caller's unless it is unset or empty; the default
+    /// denies warnings, and a union run also documents private items.
     pub(crate) fn command(&self, rustdocflags: Option<&str>) -> Cmd {
+        let default = if self.union {
+            "-D warnings --document-private-items"
+        } else {
+            "-D warnings"
+        };
         Cmd::sh("cargo doc --locked -p")
             .arg(&self.package)
-            .args(["--no-deps", "--features", &self.feature])
+            .args(["--no-deps", "--features", &self.features.join(",")])
             .env(
                 "RUSTDOCFLAGS",
-                rustdocflags
-                    .filter(|f| !f.is_empty())
-                    .unwrap_or("-D warnings"),
+                rustdocflags.filter(|f| !f.is_empty()).unwrap_or(default),
             )
     }
 
-    /// What the failure list names: `name/feature`.
+    /// What the failure list names: `name/feature`, or `name/*` for a union.
     pub(crate) fn label(&self) -> String {
-        format!("{}/{}", self.package, self.feature)
+        if self.union {
+            format!("{}/*", self.package)
+        } else {
+            format!("{}/{}", self.package, self.features.join(","))
+        }
     }
 }
 
-/// Every `cargo doc` to run, in order, and the error that ends the list: a
-/// crate that moved. The script went crate by crate, so the runs of the crates
-/// before the missing one still happen, then the error stops everything (the
-/// failures so far are not summarized).
-pub(crate) fn doc_runs(tree: &dyn Tree) -> (Vec<DocRun>, Option<String>) {
+/// Every `cargo doc` to run, in order (each member's union in the root's
+/// member order, then the one-at-a-time crates' features), and the errors that
+/// fail the gate whatever the runs say: a member or a listed crate with no
+/// manifest, or a manifest with no name.
+pub(crate) fn doc_runs(tree: &dyn Tree) -> (Vec<DocRun>, Vec<String>) {
     let mut runs = Vec::new();
-    for dir in CRATES {
-        let Some(manifest) = tree.read(&format!("{dir}/Cargo.toml")) else {
-            return (
-                runs,
-                Some(format!(
-                    "FAIL: {dir}/Cargo.toml does not exist; was the crate moved?"
-                )),
-            );
+    let mut errors = Vec::new();
+    let root = Toml::parse(&tree.read("Cargo.toml").unwrap_or_default());
+    let members = root
+        .value("workspace", "members")
+        .map(strings)
+        .unwrap_or_default();
+    if members.is_empty() {
+        errors.push("FAIL: Cargo.toml: no workspace members found; the scan is broken".into());
+    }
+    for dir in &members {
+        let Some((package, features)) = manifest(tree, dir, &mut errors) else {
+            continue;
         };
-        let name = package_name(&manifest).unwrap_or_default();
-        for feature in features(&manifest) {
+        let features: Vec<String> = features
+            .into_iter()
+            .filter(|f| !NOT_IN_UNION.contains(&f.as_str()))
+            .collect();
+        if !features.is_empty() {
             runs.push(DocRun {
-                package: name.clone(),
-                feature,
+                package,
+                features,
+                union: true,
             });
         }
     }
-    (runs, None)
-}
-
-/// `sed -n 's/^name = "\(.*\)"/\1/p' | head -1`.
-fn package_name(manifest: &str) -> Option<String> {
-    manifest.split('\n').find_map(|l| {
-        let rest = l.strip_prefix("name = \"")?;
-        let last = rest.rfind('"')?;
-        Some(format!("{}{}", &rest[..last], &rest[last + 1..]))
-    })
-}
-
-fn features(manifest: &str) -> Vec<String> {
-    let mut inside = false;
-    let mut out = Vec::new();
-    for l in manifest.split('\n') {
-        if l.starts_with("[features]") {
-            inside = true;
+    for dir in ONE_AT_A_TIME {
+        let Some((package, features)) = manifest(tree, dir, &mut errors) else {
             continue;
-        }
-        if l.starts_with('[') {
-            inside = false;
-        }
-        if inside && is_feature_line(l) {
-            let first = l.split([' ', '\t']).next().unwrap_or(l);
-            if !SKIPPED.contains(&first) {
-                out.push(first.to_owned());
-            }
+        };
+        for feature in features {
+            runs.push(DocRun {
+                package: package.clone(),
+                features: vec![feature],
+                union: false,
+            });
         }
     }
-    out
+    (runs, errors)
 }
 
-/// `^[a-z0-9_-]+ *=`
-fn is_feature_line(l: &str) -> bool {
-    let key = l
-        .bytes()
-        .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
-        .count();
-    key > 0 && l[key..].trim_start_matches(' ').starts_with('=')
+/// The package name and the features (less [`SKIPPED`]) of `dir`'s manifest.
+fn manifest(tree: &dyn Tree, dir: &str, errors: &mut Vec<String>) -> Option<(String, Vec<String>)> {
+    let Some(text) = tree.read(&format!("{dir}/Cargo.toml")) else {
+        errors.push(format!(
+            "FAIL: {dir}/Cargo.toml does not exist; was the crate moved?"
+        ));
+        return None;
+    };
+    let toml = Toml::parse(&text);
+    let Some(name) = toml
+        .value("package", "name")
+        .and_then(|v| strings(v).into_iter().next())
+    else {
+        errors.push(format!("FAIL: {dir}/Cargo.toml has no package name"));
+        return None;
+    };
+    let features = toml
+        .section("features")
+        .map(|s| {
+            s.entries
+                .iter()
+                .map(|(k, _)| k.clone())
+                .filter(|k| !SKIPPED.contains(&k.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((name, features))
 }
 
 #[cfg(test)]
@@ -147,12 +172,14 @@ mod tests {
     use super::super::fake::Mem;
     use super::*;
 
+    const ROOT: &str = "[workspace]\nmembers = [\n  \"crates/tutti-session\",\n  \"crates/tutti\",\n  \"crates/plain\",\n  \"crates/tutti-types\",\n]\n";
+
     const SESSION: &str = r#"[package]
 name = "tutti-session"
 version = "0.1.0"
 
 [features]
-default = []
+default = ["audio-io"]
 jack = ["x/jack"]
 audio-io = ["a"]
 clap = ["b"]   # trailing
@@ -163,115 +190,134 @@ x = "1"
 wasm = []
 "#;
     const FACADE: &str = "[package]\nname = \"tutti\"\n[features]\nfull = []\nio=[]\n";
+    const PLAIN: &str = "[package]\nname = \"plain\"\n[dependencies]\nx = \"1\"\n";
+    const TYPES: &str =
+        "[package]\nname = \"tutti-types\"\n[features]\nbevy = [\"dep:bevy\"]\nserde = []\n";
 
     fn tree() -> Mem {
         Mem::with(&[
+            ("Cargo.toml", ROOT),
             ("crates/tutti-session/Cargo.toml", SESSION),
             ("crates/tutti/Cargo.toml", FACADE),
+            ("crates/plain/Cargo.toml", PLAIN),
+            ("crates/tutti-types/Cargo.toml", TYPES),
         ])
     }
 
-    fn runs(m: &Mem) -> Vec<String> {
+    fn labels(m: &Mem) -> Vec<String> {
         doc_runs(m).0.iter().map(DocRun::label).collect()
     }
 
-    // Mutation: add "`jack`" to nothing, i.e. empty `SKIPPED`: this fails.
+    /// Every member with features is documented with them together, in member
+    /// order, then the listed crates one feature at a time; a member with no
+    /// features has no run.
     #[test]
-    fn default_and_jack_are_not_documented_alone() {
+    fn each_member_with_features_is_documented_whole_then_the_listed_ones_alone() {
         assert_eq!(
-            runs(&tree()),
+            labels(&tree()),
             [
+                "tutti-session/*",
+                "tutti/*",
+                "tutti-types/*",
                 "tutti-session/audio-io",
                 "tutti-session/clap",
                 "tutti-session/midi_2",
                 "tutti/full",
-                // awk's $1 of `io=[]` is the whole word, as the script had it.
-                "tutti/io=[]",
+                "tutti/io",
             ]
         );
+        let (runs, errors) = doc_runs(&tree());
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(runs[0].features, ["audio-io", "clap", "midi_2"]);
     }
 
-    // Mutation: never reset `inside` on a `[` line: `wasm` under
-    // [dependencies] is documented too.
+    /// `default` and `jack` are never documented, and `bevy` stays out of a
+    /// union (it would build Bevy).
+    #[test]
+    fn default_jack_and_bevy_are_left_out() {
+        let (runs, _) = doc_runs(&tree());
+        for r in &runs {
+            for f in &r.features {
+                assert!(!["default", "jack", "bevy"].contains(&f.as_str()), "{r:?}");
+            }
+        }
+        let types = runs.iter().find(|r| r.package == "tutti-types").unwrap();
+        assert_eq!(types.features, ["serde"]);
+    }
+
+    /// Only the `[features]` table is read: a `[dependencies]` key is not a
+    /// feature.
     #[test]
     fn only_the_features_table_is_read() {
-        let r = runs(&tree());
-        assert!(!r.iter().any(|f| f.contains("wasm")));
-        let m = Mem::with(&[
-            (
-                "crates/tutti-session/Cargo.toml",
-                "name = \"s\"\n[features.x]\na = []\n[features]\nb = []\n[other]\nc = []\n",
-            ),
-            ("crates/tutti/Cargo.toml", "name = \"t\"\n"),
-        ]);
-        assert_eq!(runs(&m), ["s/b"]);
+        assert!(!labels(&tree()).iter().any(|f| f.contains("wasm")));
+        let (runs, _) = doc_runs(&tree());
+        assert!(!runs.iter().any(|r| r.features.iter().any(|f| f == "x")));
     }
 
+    /// A member or a listed crate without a manifest, or one with no name, is a
+    /// failure of the gate, and the other crates are still documented.
     #[test]
-    fn the_name_is_the_seds() {
-        assert_eq!(package_name("name = \"a\"\n").as_deref(), Some("a"));
-        // `sed s///` replaces only the match: the rest of the line stays.
-        assert_eq!(package_name("name = \"a\" # c\n").as_deref(), Some("a # c"));
-        // Only a line that starts with it, and the first such.
-        assert_eq!(
-            package_name(" name = \"x\"\nname = \"y\"\nname = \"z\"\n").as_deref(),
-            Some("y")
-        );
-        assert_eq!(package_name("name=\"a\"\n"), None);
-    }
-
-    #[test]
-    fn a_feature_line_is_the_awks() {
-        for l in ["a = []", "a=[]", "a-b_1  =x", "a ="] {
-            assert!(is_feature_line(l), "{l}");
-        }
-        for l in ["A = []", "= []", " a = []", "a b = []", "# a = []", ""] {
-            assert!(!is_feature_line(l), "{l}");
-        }
-    }
-
-    // Mutation: drop the existence check (use "" for a missing manifest): this
-    // fails.
-    #[test]
-    fn a_missing_manifest_is_an_error() {
+    fn a_missing_manifest_or_name_is_an_error() {
         let mut m = tree();
         m.files.remove("crates/tutti/Cargo.toml");
-        let (runs, err) = doc_runs(&m);
+        let (runs, errors) = doc_runs(&m);
         assert_eq!(
-            err.as_deref(),
-            Some("FAIL: crates/tutti/Cargo.toml does not exist; was the crate moved?")
+            errors,
+            [
+                "FAIL: crates/tutti/Cargo.toml does not exist; was the crate moved?",
+                "FAIL: crates/tutti/Cargo.toml does not exist; was the crate moved?",
+            ]
         );
-        // The crate before it was still documented.
-        assert_eq!(runs.len(), 3);
-        m.files.remove("crates/tutti-session/Cargo.toml");
-        let (runs, err) = doc_runs(&m);
-        assert!(runs.is_empty() && err.unwrap().contains("tutti-session/Cargo.toml"));
+        assert!(runs.iter().any(|r| r.package == "tutti-types"));
+        let mut m = tree();
+        m.files.insert(
+            "crates/plain/Cargo.toml".into(),
+            "[features]\na = []\n".into(),
+        );
+        assert_eq!(
+            doc_runs(&m).1,
+            ["FAIL: crates/plain/Cargo.toml has no package name"]
+        );
+        let m = Mem::with(&[("Cargo.toml", "[workspace]\n")]);
+        assert!(doc_runs(&m).1[0].contains("no workspace members"));
     }
 
+    /// A union documents private items and denies warnings; a single feature
+    /// denies warnings; the caller's flags win unless empty.
     #[test]
-    fn a_run_is_cargo_doc_for_one_feature() {
-        let r = DocRun {
+    fn a_run_is_cargo_doc_over_its_features() {
+        let one = DocRun {
             package: "tutti-session".into(),
-            feature: "audio-io".into(),
+            features: vec!["audio-io".into()],
+            union: false,
         };
         assert_eq!(
-            r.heading(),
+            one.heading(),
             "== cargo doc -p tutti-session --features audio-io"
         );
         assert_eq!(
-            r.command(None).display(),
+            one.command(None).display(),
             "RUSTDOCFLAGS='-D warnings' cargo doc --locked -p tutti-session --no-deps --features audio-io"
         );
-        // The caller's flags win; an empty value is the default, as `${X:-d}`.
+        let all = DocRun {
+            package: "tutti-codec".into(),
+            features: vec!["decode-wav".into(), "serde".into()],
+            union: true,
+        };
+        assert_eq!(all.label(), "tutti-codec/*");
+        assert_eq!(
+            all.command(None).display(),
+            "RUSTDOCFLAGS='-D warnings --document-private-items' cargo doc --locked -p tutti-codec --no-deps --features decode-wav,serde"
+        );
         assert!(
-            r.command(Some("-D missing_docs"))
+            all.command(Some("-D missing_docs"))
                 .display()
                 .starts_with("RUSTDOCFLAGS='-D missing_docs' ")
         );
         assert!(
-            r.command(Some(""))
+            all.command(Some(""))
                 .display()
-                .starts_with("RUSTDOCFLAGS='-D warnings' ")
+                .starts_with("RUSTDOCFLAGS='-D warnings --document-private-items' ")
         );
     }
 }

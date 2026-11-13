@@ -4,6 +4,7 @@
 //! filtered by device id (M1 p.40). The font's sample is a looped sine, 441 Hz at
 //! key 69.
 
+use tutti_ump::ControlValue;
 mod support;
 
 use std::sync::Arc;
@@ -44,7 +45,7 @@ fn font_with(drums_up: bool) -> Arc<SoundFont> {
 }
 
 fn sysex(group: u8, bytes: &[u8]) -> Vec<Ump> {
-    SysexMessage::new(bytes)
+    SysexMessage::from_framed(bytes)
         .expect("a framed message")
         .packets(MidiGroup::of(group))
         .collect()
@@ -288,7 +289,7 @@ fn a_tuning_program_select_is_per_channel_and_instant() {
         Voice2::Registered {
             bank: Rpn::TUNING_PROGRAM_SELECT.bank(),
             index: Rpn::TUNING_PROGRAM_SELECT.index(),
-            value: 1 << 25,
+            value: ControlValue::new(1 << 25),
         },
     );
     rig.render(4410);

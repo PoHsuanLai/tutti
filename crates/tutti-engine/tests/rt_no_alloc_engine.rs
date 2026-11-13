@@ -129,10 +129,10 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_no_alloc::assert_no_alloc(|| {
         for round in 0..20u64 {
             let base = 1024 * (1 + 8 * round);
-            m.schedule(At::Frame(Frame(base + 300)), MotionEvent::Play)
+            m.schedule(At::Frame(Frame::new(base + 300)), MotionEvent::Play)
                 .expect("room");
             m.schedule(
-                At::Frame(Frame(base + 2100)),
+                At::Frame(Frame::new(base + 2100)),
                 TransportCommand::Loop(LoopEdit::over(
                     LoopRange::new(Beat::new(0.0), Beat::new(4.0)).expect("ordered"),
                 )),
@@ -140,20 +140,20 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
             .expect("room");
             m.schedule(At::Beat(Beat(0.5)), MotionEvent::locate(Beat(0.0)))
                 .expect("room");
-            m.schedule(At::Frame(Frame(base + 6000)), MotionEvent::stop())
+            m.schedule(At::Frame(Frame::new(base + 6000)), MotionEvent::stop())
                 .expect("room");
             m.schedule(
-                At::Frame(Frame(base + 7000)),
+                At::Frame(Frame::new(base + 7000)),
                 TransportCommand::Loop(LoopEdit::armed(false)),
             )
             .expect("room");
             // The snapshot publish: a bounds edit and a re-arm.
             m.schedule(
-                At::Frame(Frame(base + 7500)),
+                At::Frame(Frame::new(base + 7500)),
                 LoopEdit::bounds(LoopRange::new(Beat::new(1.0), Beat::new(3.0)).expect("ordered")),
             )
             .expect("room");
-            m.schedule(At::Frame(Frame(base + 7600)), LoopEdit::armed(true))
+            m.schedule(At::Frame(Frame::new(base + 7600)), LoopEdit::armed(true))
                 .expect("room");
             for _ in 0..8 {
                 engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
@@ -515,7 +515,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
         for round in 0..20u64 {
             let base = 1024 * (1 + 8 * round);
             m.schedule(
-                At::Frame(Frame(base + 1500)),
+                At::Frame(Frame::new(base + 1500)),
                 TransportCommand::Loop(LoopEdit::over(
                     LoopRange::new(Beat::new(0.0), Beat::new(2.0)).expect("ordered"),
                 )),
@@ -524,7 +524,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
             m.schedule(At::Beat(Beat(1.75)), MotionEvent::locate(Beat(0.9)))
                 .expect("room");
             m.schedule(
-                At::Frame(Frame(base + 7000)),
+                At::Frame(Frame::new(base + 7000)),
                 TransportCommand::Loop(LoopEdit::armed(false)),
             )
             .expect("room");

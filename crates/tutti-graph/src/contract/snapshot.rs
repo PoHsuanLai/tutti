@@ -185,7 +185,7 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
             // `drive_input`, not `drive`: the block's length is the `Env`'s, so
             // a generator with no inputs (an LFO) renders too.
             let env = crate::node::Env {
-                frame: tutti_types::Frame(done as u64),
+                frame: tutti_types::Frame::new(done as u64),
                 sample_rate: SAMPLE_RATE,
                 block_len: tutti_types::Samples(size),
                 transport: crate::node::TransportPosition::default(),
@@ -193,7 +193,7 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
                 play: crate::PlayClock {
                     start: crate::PlayReading {
                         epoch: 0,
-                        play: tutti_types::Frame(done as u64),
+                        play: tutti_types::Frame::new(done as u64),
                     },
                     next_epoch: 0,
                 },

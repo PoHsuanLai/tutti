@@ -9127,7 +9127,7 @@ reference):
   addressed a position then, so they took the recipe's "own `Controls` +
   `ForkSource`" branch (`tutti-spatial/src/fork.rs`); they are `Node` +
   `ParamNode` now (`UnitParam::{Azimuth, Elevation, Spread, StereoWidth}`,
-  doc 028 §4.3, 3b) and `fork.rs` is gone.
+  as built when the crate moved into `tutti-nodes`) and `fork.rs` is gone.
 - **tutti-sampler** — `DiskSource`, `DiskVoice`, `VoicePool`, `VoiceNode`
   (the sampler block render's leftover: typed controls, placement on the node's own queue,
   gain a `Param`; the placement is now a published cell, "Sampler

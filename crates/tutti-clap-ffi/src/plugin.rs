@@ -272,6 +272,9 @@ pub(crate) struct Core {
     /// Whether `start_processing` has run and `stop_processing` has not.
     /// Written under the audio claim.
     pub(crate) processing: AtomicBool,
+    /// A `reset` asked for while the claim was held elsewhere: the next block
+    /// runs it first, under its own claim.
+    pub(crate) reset_owed: AtomicBool,
     /// The block size the instance was activated for; `process` refuses more.
     pub(crate) max_frames: AtomicU32,
     /// The smallest block the instance was activated for.
@@ -462,6 +465,7 @@ impl Plugin {
             retired: AtomicBool::new(false),
             active: AtomicBool::new(false),
             processing: AtomicBool::new(false),
+            reset_owed: AtomicBool::new(false),
             max_frames: AtomicU32::new(0),
             min_frames: AtomicU32::new(0),
             layout: Mutex::new(Arc::default()),

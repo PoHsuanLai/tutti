@@ -151,7 +151,7 @@ fn readings(play: &[f32], epoch: &[f32]) -> Vec<PlayReading> {
         .zip(epoch)
         .map(|(&p, &e)| PlayReading {
             epoch: e as u32,
-            play: Frame(p as u64),
+            play: Frame::new(p as u64),
         })
         .collect()
 }
@@ -169,7 +169,7 @@ fn run(from: PlayReading, n: usize) -> Vec<PlayReading> {
 fn the_clock_restarts_on_each_play_start_and_nowhere_else() {
     let mut r = rig(0, false);
     let first = r.ed.play_reading();
-    assert_eq!(first.play, Frame(0), "a new executor starts at 0");
+    assert_eq!(first.play, Frame::new(0), "a new executor starts at 0");
 
     let b1 = r.block(64, transport(false, 0.0), &[]);
     assert_eq!(b1, run(first, 64), "stopped, it counts");
@@ -184,7 +184,7 @@ fn the_clock_restarts_on_each_play_start_and_nowhere_else() {
         run(
             PlayReading {
                 epoch: e1,
-                play: Frame(0)
+                play: Frame::new(0)
             },
             64
         )
@@ -208,7 +208,7 @@ fn the_clock_restarts_on_each_play_start_and_nowhere_else() {
         run(
             PlayReading {
                 epoch: e2,
-                play: Frame(0)
+                play: Frame::new(0)
             },
             34
         )[..]
@@ -217,7 +217,7 @@ fn the_clock_restarts_on_each_play_start_and_nowhere_else() {
         r.ed.play_reading(),
         PlayReading {
             epoch: e2,
-            play: Frame(34)
+            play: Frame::new(34)
         }
     );
     assert_eq!(r.exec.play_reading(), r.ed.play_reading());
@@ -251,7 +251,7 @@ fn a_latent_node_reads_the_clock_at_its_input_time() {
         run(
             PlayReading {
                 epoch: e,
-                play: Frame(0)
+                play: Frame::new(0)
             },
             28
         )[..]
@@ -261,7 +261,7 @@ fn a_latent_node_reads_the_clock_at_its_input_time() {
         r.ed.play_reading(),
         PlayReading {
             epoch: e,
-            play: Frame(128)
+            play: Frame::new(128)
         }
     );
 }
@@ -282,7 +282,7 @@ fn a_fork_starts_its_clock_at_zero() {
         r.ed.fork(ForkTarget::Master, ForkMode::Live, prepare(MAX))
             .expect("forks");
     let fresh = fed.play_reading();
-    assert_eq!(fresh.play, Frame(0));
+    assert_eq!(fresh.play, Frame::new(0));
     assert_ne!(fresh.epoch, live.epoch);
     let (mut o0, mut o1) = (vec![0.0; 64], vec![0.0; 64]);
     fexec.process(64, &transport(false, 0.0), &[], &mut [&mut o0, &mut o1]);

@@ -29,6 +29,7 @@ use crate::render::Render;
 use crate::settings::Settings;
 use crate::soundfont_math::SoundFontMath;
 use crate::voices::Voices;
+use tutti_ump::ControlValue;
 
 // The controllers `ump` has no name for: the least significant half of a 14-bit
 // controller is its MSB's number plus 32, and the two sends are General MIDI's
@@ -418,7 +419,7 @@ impl Player {
                 channel,
                 Voice2::ControlChange {
                     controller: CCNumber::RESET_ALL,
-                    value: 0,
+                    value: ControlValue::new(0),
                 },
             );
         }

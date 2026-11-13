@@ -44,7 +44,9 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   plan, PDC and export read the ceiling); the report must cover the ring-out
   and err long, measured from the last non-quiet input (not from the call);
   only a node without event inputs is parked on it (doc 013, "A tail excludes
-  latency"; `contract::assert_honest_tail` checks it).
+  latency"; `contract::assert_honest_tail` checks it). A finite ceiling past
+  `MAX_NODE_TAIL` is not a figure: `graph_tail` counts it unbounded, never
+  clamps it (a clamp would end a bounce inside a ring-out someone meant).
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
   graph node that needs the transport at a frame reads `Env::transport_at`

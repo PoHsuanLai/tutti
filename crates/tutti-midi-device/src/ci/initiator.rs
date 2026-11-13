@@ -316,17 +316,6 @@ impl ProfileTable {
         self.addresses.keys().copied()
     }
 
-    /// The Profiles at one address, in Id order.
-    pub fn profiles(
-        &self,
-        address: CiDeviceId,
-    ) -> impl Iterator<Item = (ProfileId, &ProfileEntry)> + '_ {
-        self.addresses
-            .get(&address)
-            .into_iter()
-            .flat_map(|profiles| profiles.iter().map(|(id, entry)| (*id, entry)))
-    }
-
     /// One Profile at one address.
     #[must_use]
     pub fn get(&self, address: CiDeviceId, profile: ProfileId) -> Option<&ProfileEntry> {

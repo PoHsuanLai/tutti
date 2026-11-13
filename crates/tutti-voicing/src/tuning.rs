@@ -119,10 +119,6 @@ impl Tunings {
         }
     }
 
-    pub(crate) fn capacity(&self) -> TuningCapacity {
-        self.capacity
-    }
-
     pub(crate) fn refused(&self) -> u64 {
         self.refused
     }

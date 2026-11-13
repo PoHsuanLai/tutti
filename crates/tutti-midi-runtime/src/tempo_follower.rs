@@ -73,12 +73,6 @@ impl TempoFollower {
         self.source
     }
 
-    /// Whether it reads the time signature too.
-    #[must_use]
-    pub const fn follows_meter(&self) -> bool {
-        self.meter
-    }
-
     /// What `ump` asks the transport to take, if anything: a Set Tempo or (when
     /// the meter is followed) a Set Time Signature of the followed Group, whose
     /// value the project's units can hold. `None` for any other message, for one

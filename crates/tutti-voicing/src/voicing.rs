@@ -1024,12 +1024,6 @@ impl Voicing {
         self.tuning.table(bank, program)
     }
 
-    /// How many tuning programs and banks the core holds ([`Rules::tuning`]).
-    #[must_use]
-    pub fn tuning_capacity(&self) -> TuningCapacity {
-        self.tuning.capacity()
-    }
-
     /// Tuning messages for a bank or program the core has no room for, which
     /// changed nothing: a dump, a Single Note Tuning Change, or a Tuning Bank or
     /// Program Select (MTS: "it should ignore that message").

@@ -2,6 +2,7 @@
 //! laid out by hand from M2-116 (the structure rules are about *order*, which
 //! only a hand-built stream can get wrong on purpose).
 
+use crate::common::{track, unsorted};
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_midi_file::{
     ClipFileError, Error, FileEvent, Meta, MidiFile, MidiFileKind, SmfFormat, Tick, Track,
@@ -312,10 +313,6 @@ fn no_prefix_of_a_valid_clip_is_accepted() {
 }
 
 // ---- building a clip ------------------------------------------------------
-
-fn track(events: Vec<(u64, FileEvent)>) -> Track {
-    unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
-}
 
 #[test]
 fn what_a_clip_cannot_hold_is_refused() {
@@ -1020,14 +1017,4 @@ fn half_a_packet_after_end_of_clip_is_trailing_data() {
         MidiFile::from_bytes(&bytes),
         Err(Error::Clip(ClipFileError::TrailingData))
     ));
-}
-
-/// A track of `events` exactly as given: not sorted, so a test can hand the
-/// constructor events out of order.
-fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
-    Track {
-        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
-        events,
-        ..Track::new()
-    }
 }

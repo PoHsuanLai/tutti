@@ -1,6 +1,7 @@
 //! `Sysex7Packets` (`SysexMessage::packets` and `checked`): one payload as SysEx7 packets
 //! (M2-104 section 7.7), and `Sysex7Packet::data`.
 
+use crate::support::payload;
 use tutti_ump::{
     Message, MidiGroup, Sysex7Packet, Sysex7Packets, SysexAssembler, SysexError, SysexMessage,
     SysexStatus, SysexStep, Ump,
@@ -9,10 +10,6 @@ use tutti_ump::{
 /// The packets of a payload of 7-bit values: the plain-bytes door.
 fn sysex7_packets(group: MidiGroup, payload: &[u8]) -> Sysex7Packets<'_> {
     Sysex7Packets::from_payload(group, payload).expect("7-bit bytes")
-}
-
-fn payload(len: usize) -> Vec<u8> {
-    (0..len).map(|i| (i % 128) as u8).collect()
 }
 
 fn raw(payload: &[u8]) -> Vec<u8> {

@@ -49,11 +49,7 @@ fn wire() -> Vec<Ump> {
 /// An executor over an ingest node that follows a one-slot set of inlets, and
 /// the device's end of its inlet.
 fn rig() -> (Executor, DeviceInput) {
-    let inlets = DeviceInlets::new(
-        NonZeroUsize::new(1).unwrap(),
-        EventCapacity::of(4_096),
-        Duration::ZERO,
-    );
+    let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(4_096), Duration::ZERO);
     let device = inlets.open().expect("a free slot");
     let (mut editor, exec) = Editor::new(Prepare::new(
         SampleRate::SR_48K,
@@ -62,7 +58,7 @@ fn rig() -> (Executor, DeviceInput) {
     editor.insert(
         NodeKey(1),
         "ingest",
-        MidiIngestNode::new(NonZeroUsize::new(1).unwrap())
+        MidiIngestNode::new(NonZeroUsize::MIN)
             .following(&inlets)
             .expect("one slot"),
     );

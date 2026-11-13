@@ -367,7 +367,7 @@ fn draining_changes_holds_no_lock_across_the_owners_work() {
 #[test]
 fn a_full_inlet_refuses_and_counts() {
     let inlets = DeviceInlets::new(
-        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::MIN,
         tutti_graph::EventCapacity::of(2),
         Duration::ZERO,
     );

@@ -409,11 +409,7 @@ fn a_slot_a_new_device_takes_forgets_the_previous_devices_half_sent_run() {
         ])
     };
     for reopened in [false, true] {
-        let inlets = DeviceInlets::new(
-            NonZeroUsize::new(1).unwrap(),
-            EventCapacity::of(64),
-            Duration::ZERO,
-        );
+        let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(64), Duration::ZERO);
         let Ingest {
             node,
             inlets: nodes,
@@ -490,11 +486,7 @@ fn heard(seen: &Seen) -> Vec<(u64, String)> {
 #[test]
 fn a_device_that_lets_go_has_what_it_held_released() {
     for replaced in [false, true] {
-        let inlets = DeviceInlets::new(
-            NonZeroUsize::new(1).unwrap(),
-            EventCapacity::of(64),
-            Duration::ZERO,
-        );
+        let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(64), Duration::ZERO);
         let device = inlets.open().expect("a free slot");
         let bend = at(30, pitch_bend(G, MidiChannel::of(0), 0xC000_0000));
         let wire = Script::new(vec![

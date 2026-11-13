@@ -46,7 +46,7 @@ fn voice(voice: Voice2) -> Message {
 fn main() {
     // One inlet slot, 256 events, each event placed 20 ms after it arrived.
     let inlets = DeviceInlets::new(
-        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::MIN,
         tutti_graph::EventCapacity::of(256),
         Duration::from_millis(20),
     );

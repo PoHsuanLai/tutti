@@ -278,7 +278,7 @@ fn the_ingest_node_follows_the_block() {
     use tutti_midi_runtime::MidiIngestNode;
 
     for (block, want) in [(64usize, 512u32), (4096, 512), (8192, 1024), (16_384, 2048)] {
-        let mut node = MidiIngestNode::new(NonZeroUsize::new(1).unwrap());
+        let mut node = MidiIngestNode::new(NonZeroUsize::MIN);
         node.prepare(&Prepare::new(
             SampleRate::SR_48K,
             MaxBlock::of(Samples(block)),

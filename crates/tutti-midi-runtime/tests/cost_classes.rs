@@ -197,9 +197,7 @@ fn every_midi_node_is_light() {
         Cost::Light
     );
     assert_eq!(
-        MidiIngestNode::new(NonZeroUsize::new(1).unwrap())
-            .shape()
-            .cost,
+        MidiIngestNode::new(NonZeroUsize::MIN).shape().cost,
         Cost::Light
     );
 }

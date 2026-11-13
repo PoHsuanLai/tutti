@@ -277,3 +277,81 @@ fn an_exported_plugin_instrument_plays_its_clip() {
 fn an_exported_in_process_plugin_instrument_plays_its_clip() {
     instrument_at(RATE, Hosting::InProcess);
 }
+
+fn instrument_at(rate: f64, hosting: Hosting) {
+    let (mut session, probe) = session_with_probe_hosted(NOTES, hosting);
+    let note = |beat: f64, on: bool| {
+        let event = if on {
+            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+        } else {
+            note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+        };
+        TimedMidiEvent::new(Beat(beat), event).unwrap()
+    };
+    session
+        .midi()
+        .play_clip(probe, vec![note(1.0, true), note(2.0, false)])
+        .expect("the plugin takes a clip");
+    let _ = session.update();
+
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        start_beat: Beat(0.0),
+        tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(90.0)).expect("a tempo")),
+        sample_rate: SampleRate::of(rate),
+        loop_range: None,
+    }));
+    let planes = stem_planes(
+        &mut session,
+        bounce_of(1.5, rate, ExportClock::timeline(timeline)).stem_with(Stem::buffers(probe)),
+    );
+    let open: Vec<usize> = planes[0]
+        .iter()
+        .enumerate()
+        .filter(|&(_, &s)| s != 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        !open.is_empty(),
+        "{rate} Hz: the instrument rendered no notes"
+    );
+    // A served plugin's batcher holds one chunk: what it is sent in chunk
+    // `k` it returns in chunk `k + 1`. A fork has no device, so its chunk is
+    // the export's block. A plugin in this process renders in the block.
+    let pipeline: usize = match hosting {
+        Hosting::InProcess => 0,
+        _ => tutti_export::GRAPH_MAX_BLOCK.get(),
+    };
+    let beat = 32_000 * (rate / RATE) as usize;
+    let (on, off) = (open[0], *open.last().unwrap() + 1);
+    assert_eq!(
+        (on, off),
+        (beat + pipeline, 2 * beat + pipeline),
+        "{rate} Hz: the gate is open from beat 1 to beat 2, {pipeline} frames late"
+    );
+    assert_eq!(open.len(), off - on, "one unbroken note");
+    assert!(planes[0][on] > 0.9, "the note's velocity");
+}
+
+/// **A plugin fork that dies mid-export fails the export by the plugin's
+/// key**, promptly, instead of writing the silence it rendered after the
+/// crash. The crash switch is set after the live instance loaded, so only
+/// the fork's server reads it; it aborts on its 8th block.
+#[test]
+fn a_plugin_fork_that_crashes_mid_export_is_a_named_failure() {
+    let (mut session, probe) = session_with_probe(TAG_PASSTHROUGH);
+    feed_with(&mut session, probe, ForkByClone(Const::mono(0.25)));
+    probe_env("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", 8);
+    let started = Instant::now();
+    match session.bounce(buffers(2.0)) {
+        Err(BounceError::Export(tutti_export::Error::ForkFailed { key, kind, .. })) => {
+            assert_eq!(key, probe);
+            assert_eq!(kind, tutti_graph::ForkFaultKind::Crashed);
+        }
+        other => panic!("expected a keyed fork failure, got {other:?}"),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the failure took {:?}",
+        started.elapsed()
+    );
+}

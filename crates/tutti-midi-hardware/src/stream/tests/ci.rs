@@ -419,6 +419,8 @@ fn the_inputs_disconnect_ends_midi_ci() {
     assert_eq!(wire.session.ci_peers(&wire.id).len(), 1, "alive");
 
     assert!(wire.session.disconnect_input(&wire.id.clone()));
+    // The close announced the MUID invalid, once; nothing follows it.
+    assert_eq!(ci_sent(&wire).len(), 1);
     for ms in [60, 5_000, 60_000] {
         let _ = polled(&wire, ms);
     }
@@ -730,4 +732,187 @@ fn a_gap_in_the_stream_ring_never_joins_a_midi_ci_message() {
         matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(info))] if info.muid() == other),
         "{found:?}"
     );
+}
+
+/// The device tells the session its block `id` is now on `first_group`, one
+/// Group wide, declaring MIDI-CI `version`.
+fn block_info(wire: &Wire, id: u8, first_group: u8, version: u8, ms: u64) {
+    send_ump(
+        wire,
+        Stream::FunctionBlockInfo(tutti_ump::FunctionBlockInfo {
+            active: true,
+            id: FunctionBlockId::new(id).unwrap(),
+            direction: BlockDirection::Bidirectional,
+            ui_hint: tutti_ump::UiHint::Both,
+            midi1: tutti_ump::Midi1Port::No,
+            first_group: FirstGroup::new(first_group).unwrap(),
+            groups_spanned: GroupSpan::new(1).unwrap(),
+            midi_ci_version: version,
+            max_sysex8_streams: 0,
+        }),
+        ms,
+    );
+}
+
+/// The MUID and Group of each Discovery among what was sent.
+fn discoveries(wire: &Wire) -> Vec<(MidiGroup, Muid)> {
+    discoveries_of(ci_sent(wire))
+}
+
+fn discoveries_of(sent: Vec<(MidiGroup, CiMessage)>) -> Vec<(MidiGroup, Muid)> {
+    sent.into_iter()
+        .filter_map(|(group, m)| match m {
+            CiMessage::Discovery { header, .. } => Some((group, header.source)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A peer found on `group` by the device whose MUID is `ours`.
+fn find_peer(wire: &Wire, group: MidiGroup, ours: Muid, ms: u64) {
+    say(
+        wire,
+        group,
+        &CiMessage::DiscoveryReply {
+            header: CiHeader::new(peer()),
+            to: ours,
+            data: peer_data(),
+        },
+        ms,
+    );
+    let found = polled(wire, ms + 1);
+    assert!(
+        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(_))]),
+        "{found:?}"
+    );
+}
+
+/// M2-101 §3.3.2: a block that starts declaring MIDI-CI after the settle is a
+/// MIDI-CI Device from then on: its Group gets a Discovery, and the Group that
+/// already had a device keeps it (nothing is sent for it).
+#[test]
+fn a_block_that_starts_declaring_midi_ci_after_the_settle_is_sent_discovery() {
+    let wire = endpoint_wire(&[ci_block(0, 2, 2), ci_block(1, 4, 0)]);
+    let _ = received(&wire);
+    block_info(&wire, 1, 4, 2, 200);
+    let _ = polled(&wire, 210);
+    let _ = polled(&wire, 220);
+    let sent = discoveries(&wire);
+    assert!(
+        matches!(sent.as_slice(), [(g, _)] if *g == MidiGroup::of(4)),
+        "one Discovery, on the new Group: {sent:?}"
+    );
+}
+
+/// §3.3.2 and §5.9: a block that stops declaring MIDI-CI ends its Group's
+/// device (an Invalidate MUID from and for its own MUID, its peers `Lost`),
+/// while another Group's device and peers are untouched.
+#[test]
+fn a_block_that_stops_declaring_midi_ci_ends_its_groups_device_and_no_other() {
+    let wire = endpoint_wire(&[ci_block(0, 2, 2), ci_block(1, 4, 2)]);
+    let muids: std::collections::HashMap<_, _> = discoveries(&wire).into_iter().collect();
+    assert_eq!(muids.len(), 2);
+    let (on2, on4) = (muids[&MidiGroup::of(2)], muids[&MidiGroup::of(4)]);
+    find_peer(&wire, MidiGroup::of(2), on2, 200);
+    find_peer(&wire, MidiGroup::of(4), on4, 220);
+    let _ = received(&wire);
+
+    block_info(&wire, 0, 2, 0, 300);
+    // The poll that hears the change recomputes the Groups; the next acts.
+    let mut all = polled(&wire, 310);
+    all.extend(polled(&wire, 320));
+    let lost: Vec<_> = all
+        .iter()
+        .filter_map(|p| match p {
+            Polled::Ci(_, CiChange::Lost { group, muid }) => Some((*group, *muid)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lost, [(MidiGroup::of(2), peer())]);
+    let sent = ci_sent(&wire);
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [(g, CiMessage::InvalidateMuid { header, target })]
+                if *g == MidiGroup::of(2) && header.source == on2 && *target == on2
+        ),
+        "{sent:?}"
+    );
+    let peers = wire.session.ci_peers(&wire.id);
+    assert_eq!(
+        peers
+            .iter()
+            .map(|p| (p.group(), p.muid()))
+            .collect::<Vec<_>>(),
+        [(MidiGroup::of(4), peer())],
+        "Group 4's peer is untouched"
+    );
+}
+
+/// A block that moves to another Group is, by Group, an end and a start: the
+/// old Group's device is invalidated and the new Group gets a Discovery under a
+/// fresh MUID.
+#[test]
+fn a_block_that_moves_ends_the_old_groups_device_and_starts_the_new() {
+    let wire = endpoint_wire(&[ci_block(0, 2, 2)]);
+    let old = discoveries(&wire)[0].1;
+    let _ = received(&wire);
+    block_info(&wire, 0, 6, 2, 200);
+    let _ = polled(&wire, 210);
+    let _ = polled(&wire, 220);
+    let sent = ci_sent(&wire);
+    assert!(
+        sent.iter().any(|(g, m)| *g == MidiGroup::of(2)
+            && matches!(m, CiMessage::InvalidateMuid { target, .. } if *target == old)),
+        "{sent:?}"
+    );
+    let started = discoveries_of(sent);
+    assert!(
+        matches!(started.as_slice(), [(g, muid)] if *g == MidiGroup::of(6) && *muid != old),
+        "{started:?}"
+    );
+}
+
+/// §5.9 lists a shutdown among the reasons for an Invalidate MUID: closing an
+/// input sends one for each running device's own MUID, on that device's
+/// output, and reports no peer lost (the app closed it).
+#[test]
+fn disconnecting_an_input_sends_one_invalidate_muid_from_our_muid() {
+    let (wire, ours) = midi1_running();
+    find_peer(&wire, GROUP_0, ours, 40);
+    let _ = received(&wire);
+    assert!(wire.session.disconnect_input(&wire.id.clone()));
+    let sent = ci_sent(&wire);
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [(g, CiMessage::InvalidateMuid { header, target })]
+                if *g == GROUP_0 && header.source == ours && *target == ours
+        ),
+        "{sent:?}"
+    );
+    assert!(polled(&wire, 100).is_empty(), "no Lost for a closed input");
+}
+
+/// Every input is closed the same way, by `disconnect_all_inputs`.
+#[test]
+fn disconnecting_all_inputs_invalidates_too() {
+    let (wire, ours) = midi1_running();
+    wire.session.disconnect_all_inputs();
+    let sent = ci_sent(&wire);
+    assert!(
+        matches!(sent.as_slice(), [(_, CiMessage::InvalidateMuid { target, .. })] if *target == ours),
+        "{sent:?}"
+    );
+}
+
+/// An input whose MIDI-CI never ran has no MUID to invalidate: closing it
+/// sends nothing, enabled or not.
+#[test]
+fn closing_an_input_without_midi_ci_sends_nothing() {
+    let wire = midi1_wire();
+    let _ = polled(&wire, 0);
+    let _ = received(&wire);
+    assert!(wire.session.disconnect_input(&wire.id.clone()));
+    assert!(ci_sent(&wire).is_empty());
 }

@@ -3592,10 +3592,27 @@ What the decoded messages are consumed by, one item each.
   from `Phase::Poll` and `Midi::ci_peers(&DeviceId)`; the `tutti::midi` module exports `CiChange` and
   `CiPeerInfo`. A change of the device's own MUID reaches the app as every peer `Lost`, and the new
   round finds them again.
-- **Open.** (1) Function Blocks that change after the settle (a Function Block Info Change) are not
-  followed: the devices are decided at the settle. (2) No Invalidate MUID is sent when an input
-  closes (only on `disable_ci`), so a peer learns of that by silence. (3) Profile Configuration and Property Exchange, and the answer to Endpoint Inquiry
+- **Open.** Profile Configuration and Property Exchange, and the answer to Endpoint Inquiry
   (tutti has no Product Instance Id), are later parts.
+
+#### L8 part 3b: following Function Blocks, and closing: as built
+
+- **Function Block changes are followed** (M2-101 §3.3.2: a block that changes its Group location or
+  number of Groups invalidates its MUID and starts a new connection). The listening `Connection` of a
+  settled stream reports `Action::Changed`; `Negotiation` then recomputes the Groups
+  (`groups_after_settle`) and `Ci::poll` reconciles the running devices with them at its next step
+  (`Running::reconcile`): a Group still called for keeps its device and peers untouched; a Group no
+  longer called for ends its device (an Invalidate MUID from and for its own MUID, its peers
+  `Lost`); a new Group starts a device (a Discovery under a fresh MUID). **A block that moves is, by
+  Group, an end and a start**: the old Group's device ends and the new Group's begins. When no Group
+  is left the devices are dropped and the port stops copying SysEx. Only while enabled.
+- **Closing an input announces it** (§5.9 lists a shutdown): `disconnect_input`,
+  `disconnect_all_inputs` and the reopening of a dead input in `connect_input` end each running device
+  with its Invalidate MUID on the input's own output (`Ci::close`, the same `stop` as `disable_ci`),
+  best effort (a refused send is logged). **No `CiChange::Lost` is reported**: the app closed the
+  input, the entry is gone, and it already knows its peers went with it. **Dropping a
+  `MidiSession` sends nothing**: a drop runs where no output may be reachable.
+- **Open.** Profile Configuration and Property Exchange, and Endpoint Inquiry, as above.
 
 ### L7b: the MIDI Tuning Standard: as built (part 2)
 

@@ -211,7 +211,9 @@ use tutti_plugin_types::{
     ParameterQueue, TimeSignature, TransportInfo,
 };
 
-const RATE: f64 = 44_100.0;
+const SAMPLE_RATE: SampleRate = SampleRate::SR_44K1;
+/// The same rate as the raw `f64` the served load and the buffer take.
+const RATE: f64 = SAMPLE_RATE.get();
 /// The bundle every Apple unit is declared in.
 const CORE_AUDIO: &str = "/System/Library/Components/CoreAudio.component";
 
@@ -425,7 +427,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
             .find(|c| c.name.contains("AUDelay"))
             .expect("AUDelay ships with macOS")
             .component,
-        RATE,
+        SAMPLE_RATE,
         512,
     )
     .expect("AUDelay instantiates");
@@ -450,7 +452,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
         events: Vec::new(),
         refused: false,
     };
-    let prepare = Prepare::new(SampleRate::of(RATE), MaxBlock::of(Samples(512)));
+    let prepare = Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(512)));
     assert!(
         au.drive(&main_thread(), Event::Op(HostOp::Activate(prepare)))
             .is_none()

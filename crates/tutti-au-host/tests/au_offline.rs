@@ -79,7 +79,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     AU_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 const BLOCK: u32 = 512;
 
 /// A property refusal, spelled as the exact status rather than a bare `is_err`.
@@ -488,7 +488,13 @@ fn the_push_path_renders_audio() {
         let mut max = 0.0f32;
 
         for blk in 0..8usize {
-            let input = sine(2, BLOCK as usize, blk * BLOCK as usize, 0.5, RATE as f32);
+            let input = sine(
+                2,
+                BLOCK as usize,
+                blk * BLOCK as usize,
+                0.5,
+                RATE.get() as f32,
+            );
             let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
             assert!(
                 scratch.stage_input(0, &ins, BLOCK),
@@ -549,7 +555,13 @@ fn the_push_path_matches_the_pull_path_sample_for_sample() {
     let mut scratch = stereo_scratch();
 
     for blk in 0..8usize {
-        let input = sine(2, BLOCK as usize, blk * BLOCK as usize, 0.5, RATE as f32);
+        let input = sine(
+            2,
+            BLOCK as usize,
+            blk * BLOCK as usize,
+            0.5,
+            RATE.get() as f32,
+        );
         let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
 
         scratch.stage_input(0, &ins, BLOCK);
@@ -608,7 +620,7 @@ fn the_push_path_refuses_an_oversized_block() {
     }
 
     // The exact-size render still works, so the bound is `>` and not `>=`.
-    let input = sine(2, BLOCK as usize, 0, 0.5, RATE as f32);
+    let input = sine(2, BLOCK as usize, 0, 0.5, RATE.get() as f32);
     let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
     scratch.stage_input(0, &ins, BLOCK);
     au.process_push(&mut scratch, BLOCK)
@@ -813,7 +825,13 @@ fn the_one_unit_that_implements_process_multiple_renders_through_it() {
     let mut max = 0.0f32;
 
     for blk in 0..8usize {
-        let input = sine(2, BLOCK as usize, blk * BLOCK as usize, 0.5, RATE as f32);
+        let input = sine(
+            2,
+            BLOCK as usize,
+            blk * BLOCK as usize,
+            0.5,
+            RATE.get() as f32,
+        );
         let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
         scratch.stage_input(0, &ins, BLOCK);
         au.process_push_multiple(&mut scratch, BLOCK)
@@ -861,7 +879,7 @@ fn the_one_unit_that_implements_process_multiple_renders_through_it() {
         &[ChannelLayout::STEREO],
         BLOCK,
     );
-    let input = sine(2, BLOCK as usize, 0, 0.5, RATE as f32);
+    let input = sine(2, BLOCK as usize, 0, 0.5, RATE.get() as f32);
     let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
     wide.stage_input(0, &ins, BLOCK);
     wide.stage_input(1, &ins, BLOCK);
@@ -924,7 +942,7 @@ fn a_scratch_with_no_output_bus_is_refused() {
 fn staging_into_a_missing_bus_is_reported() {
     let _g = lock();
     let mut scratch = stereo_scratch();
-    let input = sine(2, BLOCK as usize, 0, 0.5, RATE as f32);
+    let input = sine(2, BLOCK as usize, 0, 0.5, RATE.get() as f32);
     let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
 
     assert!(scratch.stage_input(0, &ins, BLOCK), "bus 0 exists");
@@ -1048,7 +1066,7 @@ impl RtBufs {
         // Non-silent, so the guarded renders exercise the copy paths rather than
         // whatever fast path an AU might take for a zero block.
         for (i, (l, r)) in me.in_l.iter_mut().zip(me.in_r.iter_mut()).enumerate() {
-            let v = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / RATE as f32).sin() * 0.5;
+            let v = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / RATE.get() as f32).sin() * 0.5;
             *l = v;
             *r = v * 0.5;
         }

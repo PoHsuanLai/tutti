@@ -75,7 +75,7 @@ fn every_unit_round_trips_a_context_name() {
         // Loaded, not initialized: a property read needs no `initialize`, and a
         // sweep that initializes every unit can lose the process
         // (`may_initialize_in_a_sweep`).
-        let Ok(au) = Au::new(info.component, 48_000.0, 512) else {
+        let Ok(au) = Au::new(info.component, tutti_types::SampleRate::SR_48K, 512) else {
             continue;
         };
         au.set_context_name("track 3")
@@ -103,7 +103,7 @@ fn every_unit_round_trips_a_context_name() {
 #[test]
 fn a_context_name_can_be_replaced() {
     let _g = lock();
-    let au = DELAY.open(48_000.0, 512);
+    let au = DELAY.open(tutti_types::SampleRate::SR_48K, 512);
 
     au.set_context_name("track 3").expect("set_context_name");
     au.set_context_name("Drum Bus").expect("set_context_name");
@@ -122,7 +122,7 @@ fn a_context_name_can_be_replaced() {
 #[test]
 fn a_nick_name_round_trips_and_can_be_replaced() {
     let _g = lock();
-    let au = DELAY.open(48_000.0, 512);
+    let au = DELAY.open(tutti_types::SampleRate::SR_48K, 512);
 
     au.set_nick_name("Slapback").expect("set_nick_name");
     assert_eq!(
@@ -148,8 +148,8 @@ fn a_nick_name_round_trips_and_can_be_replaced() {
 #[test]
 fn two_instances_of_one_au_hold_independent_nick_names() {
     let _g = lock();
-    let a = DELAY.open(48_000.0, 512);
-    let b = DELAY.open(48_000.0, 512);
+    let a = DELAY.open(tutti_types::SampleRate::SR_48K, 512);
+    let b = DELAY.open(tutti_types::SampleRate::SR_48K, 512);
 
     a.set_nick_name("Drums").expect("set_nick_name");
     b.set_nick_name("Vocals").expect("set_nick_name");
@@ -171,7 +171,7 @@ fn two_instances_of_one_au_hold_independent_nick_names() {
 #[test]
 fn a_nick_name_survives_non_ascii_text() {
     let _g = lock();
-    let au = DELAY.open(48_000.0, 512);
+    let au = DELAY.open(tutti_types::SampleRate::SR_48K, 512);
     for name in ["ドラム", "Café — Bus 2", "трек 3", "🥁 kick"] {
         au.set_nick_name(name).expect("set_nick_name");
         assert_eq!(
@@ -189,7 +189,7 @@ fn a_nick_name_survives_non_ascii_text() {
 #[test]
 fn the_overview_is_a_strict_subset_for_a_unit_that_curates() {
     let _g = lock();
-    let au = MATRIX_REVERB.open(48_000.0, 512);
+    let au = MATRIX_REVERB.open(tutti_types::SampleRate::SR_48K, 512);
 
     let overview = au
         .parameters_for_overview()
@@ -227,7 +227,7 @@ fn the_overview_is_a_strict_subset_for_a_unit_that_curates() {
 #[test]
 fn the_overview_order_is_not_the_parameter_list_order() {
     let _g = lock();
-    let au = DYNAMICS.open(48_000.0, 512);
+    let au = DYNAMICS.open(tutti_types::SampleRate::SR_48K, 512);
 
     let overview = au
         .parameters_for_overview()
@@ -253,7 +253,7 @@ fn the_overview_order_is_not_the_parameter_list_order() {
 #[test]
 fn every_overview_entry_addresses_a_readable_parameter() {
     let _g = lock();
-    let au = MATRIX_REVERB.open(48_000.0, 512);
+    let au = MATRIX_REVERB.open(tutti_types::SampleRate::SR_48K, 512);
 
     let overview = au.parameters_for_overview().expect("overview");
     for p in &overview {
@@ -282,7 +282,7 @@ fn every_overview_entry_addresses_a_readable_parameter() {
 #[test]
 fn a_non_implementing_unit_reports_the_gap_rather_than_an_empty_list() {
     let _g = lock();
-    let au = DLS_SYNTH.open(48_000.0, 512);
+    let au = DLS_SYNTH.open(tutti_types::SampleRate::SR_48K, 512);
 
     match au.parameters_for_overview() {
         Err(AuError::OsStatus { code, .. }) if code == INVALID_PROPERTY => {}
@@ -318,7 +318,7 @@ fn the_string_readers_report_a_missing_property_as_an_error() {
         // Loaded, not initialized: a property read needs no `initialize`, and a
         // sweep that initializes every unit can lose the process
         // (`may_initialize_in_a_sweep`).
-        let Ok(au) = Au::new(info.component, 48_000.0, 512) else {
+        let Ok(au) = Au::new(info.component, tutti_types::SampleRate::SR_48K, 512) else {
             continue;
         };
         if let Err(e) = au.icon_location() {
@@ -343,7 +343,7 @@ fn the_string_readers_report_a_missing_property_as_an_error() {
     // every property it does not implement, so it witnesses the path directly.
     // Same reasoning as `Misbehaviour::RefusesLatency`, which exists because no
     // real AU refuses latency either.
-    let probe = Misbehaviour::None.open(48_000.0, 512);
+    let probe = Misbehaviour::None.open(tutti_types::SampleRate::SR_48K, 512);
     match probe.nick_name() {
         Err(AuError::OsStatus { code, .. }) if code == INVALID_PROPERTY => {}
         Err(other) => panic!(
@@ -368,7 +368,7 @@ fn the_string_readers_report_a_missing_property_as_an_error() {
 fn the_overview_decodes_every_entry_the_au_reported() {
     let _g = lock();
     for unit in [MATRIX_REVERB, DYNAMICS] {
-        let au = unit.open(48_000.0, 512);
+        let au = unit.open(tutti_types::SampleRate::SR_48K, 512);
         let overview = au.parameters_for_overview().expect("overview");
 
         // The AU's own byte count, decoded independently of the module under test.
@@ -423,7 +423,7 @@ fn an_icon_url_names_a_file_that_exists() {
         // Loaded, not initialized: a property read needs no `initialize`, and a
         // sweep that initializes every unit can lose the process
         // (`may_initialize_in_a_sweep`).
-        let Ok(au) = Au::new(info.component, 48_000.0, 512) else {
+        let Ok(au) = Au::new(info.component, tutti_types::SampleRate::SR_48K, 512) else {
             continue;
         };
         checked += 1;
@@ -464,7 +464,7 @@ fn the_corpus_sweep_never_sees_a_harness_probe() {
 
     // Force the probes into the registry — this is the exact precondition that
     // made the race reachable.
-    let _probe = Misbehaviour::None.open(48_000.0, 512);
+    let _probe = Misbehaviour::None.open(tutti_types::SampleRate::SR_48K, 512);
 
     let probes: Vec<_> = every_component()
         .into_iter()

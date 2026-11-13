@@ -644,7 +644,7 @@ impl Misbehaviour {
     /// Not initialized because several probes are *about* the initialize
     /// transition; tests that want a running unit call
     /// [`open_initialized`](Self::open_initialized).
-    pub fn open(self, rate: f64, block: u32) -> Au {
+    pub fn open(self, rate: tutti_types::SampleRate, block: u32) -> Au {
         self.try_open(rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label()))
     }
@@ -655,13 +655,13 @@ impl Misbehaviour {
     /// happens *after* construction, but a config the AU declines makes the
     /// constructor itself the thing under test — and a panicking opener can only
     /// assert that a load succeeded, never that it was correctly refused.
-    pub fn try_open(self, rate: f64, block: u32) -> tutti_au_host::Result<Au> {
+    pub fn try_open(self, rate: tutti_types::SampleRate, block: u32) -> tutti_au_host::Result<Au> {
         let info = self.require();
         Au::new(info.component, rate, block)
     }
 
     /// Instantiate and initialize, panicking if either step fails.
-    pub fn open_initialized(self, rate: f64, block: u32) -> Au {
+    pub fn open_initialized(self, rate: tutti_types::SampleRate, block: u32) -> Au {
         let mut au = self.open(rate, block);
         au.initialize()
             .unwrap_or_else(|e| panic!("{}: initialize failed: {e:?}", self.label()));

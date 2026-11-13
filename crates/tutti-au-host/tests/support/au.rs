@@ -47,15 +47,15 @@ fn refusal(error: PluginError) -> AuError {
     AuError::InvalidBuffer(error.to_string())
 }
 
-fn prepare_of(rate: f64, block: u32) -> Prepare {
-    Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(block as usize)))
+fn prepare_of(rate: SampleRate, block: u32) -> Prepare {
+    Prepare::new(rate, MaxBlock::of(Samples(block as usize)))
 }
 
 impl Au {
     /// A unit at `rate`/`block`, not initialized. See [`AuLoaded::new`].
     pub fn new(
         component: tutti_au_host::component::AuComponentRef,
-        rate: f64,
+        rate: SampleRate,
         block: u32,
     ) -> tutti_au_host::Result<Self> {
         Ok(Self::of(AuLoaded::new(component, rate, block)?))
@@ -70,7 +70,11 @@ impl Au {
     }
 
     /// A unit from a scan result, not initialized.
-    pub fn from_info(info: &AuComponentInfo, rate: f64, block: u32) -> tutti_au_host::Result<Self> {
+    pub fn from_info(
+        info: &AuComponentInfo,
+        rate: SampleRate,
+        block: u32,
+    ) -> tutti_au_host::Result<Self> {
         Self::new(info.component, rate, block)
     }
 
@@ -148,16 +152,15 @@ impl Au {
     /// Rejoins the halves, applies the stream configuration (the host's own
     /// step of an activation, whose refusal rolls itself back), and activates
     /// again if the unit was active. A refusal is reported as the host's error.
-    fn restream(&mut self, rate: f64, block: u32) -> tutti_au_host::Result<()> {
+    fn restream(&mut self, rate: SampleRate, block: u32) -> tutti_au_host::Result<()> {
         let was_active = self.is_initialized();
         if was_active {
             self.uninitialize()?;
         }
         let result = self.reconfigure_stream(rate, block);
         if result.is_ok() {
-            self.prepare =
-                Prepare::new(SampleRate::of(rate), MaxBlock::of(Samples(block as usize)))
-                    .with_mode(self.prepare.mode());
+            self.prepare = Prepare::new(rate, MaxBlock::of(Samples(block as usize)))
+                .with_mode(self.prepare.mode());
         }
         if was_active {
             self.initialize()?;
@@ -166,7 +169,7 @@ impl Au {
     }
 
     /// A new sample rate: a rejected one leaves the unit on the rate it was on.
-    pub fn set_sample_rate(&mut self, rate: f64) -> tutti_au_host::Result<()> {
+    pub fn set_sample_rate(&mut self, rate: SampleRate) -> tutti_au_host::Result<()> {
         let block = self.block_size();
         self.restream(rate, block)
     }

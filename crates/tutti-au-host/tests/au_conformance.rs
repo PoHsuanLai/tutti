@@ -60,7 +60,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     AU_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-const RATE: f64 = 48_000.0;
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate::SR_48K;
 const BLOCK: u32 = 512;
 
 // ---------------------------------------------------------------- lifecycle
@@ -547,7 +547,11 @@ fn input_reaches_the_plugin() {
 #[test]
 fn reported_latency_is_the_plugins_own_in_samples() {
     let _g = lock();
-    for rate in [44_100.0, 48_000.0, 96_000.0] {
+    for rate in [
+        tutti_types::SampleRate::SR_44K1,
+        tutti_types::SampleRate::SR_48K,
+        tutti_types::SampleRate::SR_96K,
+    ] {
         let au = DYNAMICS.open(rate, BLOCK);
         let latency = au.get_latency().expect("latency");
         assert_eq!(
@@ -574,7 +578,11 @@ fn sample_rate_change_reconfigures_and_still_renders() {
     let mut au = DELAY.open(RATE, BLOCK);
     assert_eq!(au.sample_rate(), RATE);
 
-    for rate in [44_100.0, 96_000.0, 48_000.0] {
+    for rate in [
+        tutti_types::SampleRate::SR_44K1,
+        tutti_types::SampleRate::SR_96K,
+        tutti_types::SampleRate::SR_48K,
+    ] {
         au.set_sample_rate(rate)
             .unwrap_or_else(|e| panic!("set_sample_rate({rate}) failed: {e:?}"));
         assert_eq!(

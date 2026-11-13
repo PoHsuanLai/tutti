@@ -1267,10 +1267,8 @@ impl PluginInstance {
     /// Query `effGetParameterProperties` for one parameter.
     ///
     /// `None` when the plugin does not implement the opcode — which is the
-    /// common case, not an error. Measured against three shipping plugins
-    /// (TAL-NoiseMaker, TAL-Reverb-4, TDR Nova): all three answer `0` for every
-    /// parameter, so a host must treat absence as normal and fall back to the
-    /// name/label pair.
+    /// common case, not an error: a host must treat absence as normal and fall
+    /// back to the name/label pair.
     ///
     /// Absence is detected by the *return value*, never by inspecting the
     /// buffer. An unimplemented opcode falls through the plugin's dispatcher

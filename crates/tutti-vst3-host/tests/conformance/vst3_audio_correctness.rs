@@ -33,8 +33,6 @@
 //! VST3_SDK_DIR=/path/to/vst3sdk \
 //! cargo test -p tutti-vst3-host --features conformance --test vst3_audio_correctness
 //! ```
-//!
-//! Set `VST3_SAMPLE_PLUGIN_DIR` to substitute an externally built probe.
 
 #![cfg(feature = "conformance")]
 
@@ -73,16 +71,6 @@ use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
 /// out numbers whose meaning only the plugin knows.
 fn param_address(tag: u32) -> ParamId {
     ParamId::new(tag)
-}
-
-/// Compile-time default, baked in by `build.rs`; overridable at runtime.
-const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
-
-fn sample_plugin_dir() -> String {
-    std::env::var("VST3_SAMPLE_PLUGIN_DIR")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| SAMPLE_PLUGIN_DIR_BUILT.to_string())
 }
 
 /// Serialises every test that touches a plugin. It guards the process-wide
@@ -178,22 +166,14 @@ fn probe_in(dir: &str) -> Option<PathBuf> {
 /// what let this suite print `ok. 9 passed` while executing nothing at all: the
 /// bundle was simply named differently than the lookup expected, and nothing
 /// said so.
-///
-/// `VST3_SAMPLE_PLUGIN_DIR` still wins when it holds a probe, so an externally
-/// built one can be substituted deliberately.
 fn probe_path() -> PathBuf {
-    let external = sample_plugin_dir();
-    if let Some(p) = probe_in(&external) {
-        return p;
-    }
     if let Some(p) = probe_in(PROBE_DIR_BUILT) {
         return p;
     }
     panic!(
         "audio-probe not found. build.rs builds it from tests/support/audio-probe \
          into {PROBE_DIR_BUILT:?} whenever the `conformance` feature is on, so this \
-         means the build did not produce it (or VST3_SAMPLE_PLUGIN_DIR={external:?} \
-         points somewhere without an audio-probe.vst3)."
+         means the build did not produce it."
     );
 }
 

@@ -1,32 +1,20 @@
 //! `effGetParameterProperties` + MIDI-metadata conformance, driven through the
 //! real `AEffect` FFI by the in-repo reference plugin.
 //!
-//! # Why these go through the probe and not a real plugin
+//! # The probe's default declines
 //!
-//! Every VST2 plugin installed on the development machine declines all six
-//! opcodes. Measured directly, by dispatching to each plugin's `AEffect` and
-//! reading back the buffer:
-//!
-//! | plugin          | numParams | numPrograms | opcode 56 | 62 | 63 | 64 | 65 | 66 |
-//! |-----------------|-----------|-------------|-----------|----|----|----|----|----|
-//! | TAL-NoiseMaker  | 88 (synth)| 1           | 0 (all)   | 0  | -1 | 0  | 0  | 0  |
-//! | TAL-Reverb-4    | 20        | 1           | 0 (all)   | 0  | -1 | 0  | 0  | 0  |
-//! | TDR Nova        | 75        | 73          | 0 (all)   | 0  | -1 | 0  | 0  | 0  |
-//!
-//! All three report `effGetApiVersion` = 2400, so they are full VST 2.4
-//! plugins that simply do not implement the optional opcodes. A test written
-//! against them could only ever assert "returns None", which is worth exactly
-//! one test — [`real_world_plugins_decline_these_opcodes`] below is that test,
-//! written against the probe's *default* (declining) behaviour so it runs
-//! everywhere rather than only on this machine.
+//! The probe declines all six opcodes by default, answering `-1` to
+//! `effGetCurrentMidiProgram` (opcode 63) and `0` to the rest: the plugin is a
+//! full VST 2.4 plugin that does not implement the optional opcodes. A test
+//! against the default could only ever assert "returns None", which is worth
+//! exactly one test: [`a_default_plugin_declines_these_opcodes`] below.
 //!
 //! Everything else needs a plugin that answers, so the probe answers, behind
-//! switches that are off by default. That keeps the probe's default behaviour
-//! matching the measured real-world one while making the decode path reachable.
+//! switches that are off by default.
 //!
-//! The `-1` in the `63` column is the reason the host compares against the
-//! spec'd success value rather than testing `!= 0`: a `!= 0` test reads all
-//! three of these plugins as *successfully* reporting a program.
+//! The `-1` in the opcode 63 answer is the reason the host compares against the
+//! spec'd success value rather than testing `!= 0`: a `!= 0` test reads the
+//! default probe as *successfully* reporting a program.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -141,14 +129,13 @@ use tutti_vst2_test_plugin::{
     PROBE_PARAM_CATEGORY, PROBE_SWITCH_PARAM,
 };
 
-/// The default probe — like every real plugin measured — declines all six
-/// opcodes, and the host reports that as absence rather than as zeroed data.
+/// The default probe declines all six opcodes, and the host reports that as
+/// absence rather than as zeroed data.
 ///
-/// This is the only test that matches what the installed plugins actually do,
-/// which is why it exists: the decode tests below all require a plugin that
-/// answers, and none is available here.
+/// The decode tests below all require a plugin that answers; this one covers
+/// the default.
 #[test]
-fn real_world_plugins_decline_these_opcodes() {
+fn a_default_plugin_declines_these_opcodes() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
@@ -368,10 +355,8 @@ fn midi_program_metadata_round_trips() {
 /// `effGetCurrentMidiProgram` returns the program *index*, not a boolean, and
 /// index 0 is a valid answer.
 ///
-/// This is the trap the real-plugin measurement exposed from the other side:
-/// all three installed plugins answer `-1` here, so a host testing `!= 0` reads
-/// a refusal as success — and, symmetrically, reads a genuine "program 0" as
-/// failure.
+/// A host testing `!= 0` reads a refusal (`-1`) as success — and,
+/// symmetrically, reads a genuine "program 0" as failure.
 #[test]
 fn current_midi_program_zero_is_a_valid_answer_not_a_failure() {
     let _guard = lock_probe();
@@ -605,7 +590,7 @@ fn the_change_flag_and_category_query_reach_the_plugin() {
 /// instance answers when they are on and declines when they are off.
 ///
 /// Without this, a decode test could pass against a probe that always answers,
-/// and the "real plugins decline" test could pass against one that never does —
+/// and the default-declines test could pass against one that never does —
 /// each looking correct while proving nothing about the gate itself.
 #[test]
 fn the_probe_switches_gate_the_answers_both_ways() {
@@ -730,7 +715,7 @@ fn a_declared_switch_reaches_the_shared_parameter_info_as_a_toggle() {
 }
 
 /// A plugin that declines the opcode reports normalized bounds and unknown
-/// steps — the state every real installed VST2 is in.
+/// steps — the default state.
 #[test]
 fn a_declining_plugin_reports_no_range_and_no_steps() {
     let _guard = lock_probe();

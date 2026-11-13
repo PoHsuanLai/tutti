@@ -18,8 +18,7 @@
 //!
 //! `HostState` directly, not `process`. The claim is the whole mechanism, it
 //! needs no plugin to exercise, and testing it here means this runs on every
-//! `cargo test` rather than behind `--ignored` and an installed plugin — which
-//! matters for a property no other test can see.
+//! `cargo test`.
 //!
 //! # On `assert_no_alloc`
 //!

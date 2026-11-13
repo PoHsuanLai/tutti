@@ -196,10 +196,6 @@ made it read as flaky rather than as a missing lock. Fixed — but note the evid
 weak by nature: five consecutive clean parallel runs do not prove a race is gone. What is
 solid is that the file now follows the rule its siblings document.
 
-**`test_load_tal_noisemaker` fails when un-ignored** — it passes the bundle directory to
-`Vst3Instance::load` instead of resolving to the inner binary, so `dlopen` fails. Every
-sibling test calls `resolve_bundle` first. Pre-existing, `#[ignore]`d, not fixed here.
-
 **~~`BusFlags::kDefaultActive` is never read.~~ FIXED** — `host/mod.rs::wants_activation`.
 **[verified]**
 

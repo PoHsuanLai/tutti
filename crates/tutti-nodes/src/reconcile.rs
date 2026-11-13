@@ -125,7 +125,7 @@ pub enum Feed {
 #[non_exhaustive]
 pub enum ReconcileError {
     /// The declarations do not compile.
-    #[error("modulation does not compile: {0}")]
+    #[error("modulation does not compile")]
     Compile(#[from] CompileError),
     /// A route from a signal source whose input is downstream of the route's
     /// own target (doc 014 §6): its edge would close a cycle.

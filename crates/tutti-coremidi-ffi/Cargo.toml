@@ -16,25 +16,15 @@ publish = false
 workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# `MIDISourceCreateWithProtocol` and the event list calls, which the safe
-# `coremidi` wrapper does not expose for a source.
 coremidi-sys = { workspace = true }
-# The receive block of a virtual destination, created here because the safe
-# `coremidi` wrapper's block reads the null reference constant CoreMIDI passes.
 block2 = "0.6"
 core-foundation = { workspace = true }
-# `mach_absolute_time` and `mach_timebase_info`: CoreMIDI's packet timestamps
-# (libc marks its copies of these deprecated in favour of this crate).
 mach2 = "0.4"
-# The UMP Endpoint and Function Block classes (macOS 15), read behind a runtime
-# availability check.
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-core-midi = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-# A test creates a virtual UMP endpoint with Function Blocks (macOS 15), so the
-# read has something real to read.
 objc2-core-midi = { workspace = true, features = ["block2", "MIDIUMPMutableEndpoint", "MIDIUMPMutableFunctionBlock"] }
 
 [package.metadata.docs.rs]

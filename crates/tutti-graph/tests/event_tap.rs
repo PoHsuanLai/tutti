@@ -17,14 +17,17 @@
 
 use tutti_graph::testing as common;
 
+use std::sync::{Arc, Mutex};
+
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
 use tutti_fixtures::midi::{m1_note_off, m1_note_on};
-use tutti_graph::{CloseError, EventTapId, EventTapReader};
+use tutti_graph::{CloseError, EventCapacity, EventTapId, EventTapReader};
 use tutti_graph::{
-    Cx, Edge, Editor, Event, EventOut, Executor, ForkByClone, ForkCause, ForkMode, ForkSource,
-    ForkTarget, Forked, InPort, IntoNode, Io, MissingSource, Node, NodeKey, NodeParts, Offset, Op,
-    OutPort, Prepare, Shape, Source, Status, TapAlign, TapEvent, TransportPosition, note_off_room,
+    Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone,
+    ForkCause, ForkMode, ForkSource, ForkTarget, Forked, InPort, IntoNode, Io, MissingSource, Node,
+    NodeKey, NodeParts, Offset, Op, OutPort, Prepare, Shape, Source, Status, TapAlign, TapEvent,
+    TransportPosition, note_off_room,
 };
 use tutti_types::{Frame, Latency, Samples};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
@@ -296,8 +299,13 @@ fn every_event_lands_at_its_frame_across_block_sizes() {
         let mut r = rig(1, false, 0);
         script(&mut r, 1, Script::new(edges()));
         let mut tap =
-            r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 256)
-                .expect("the port exists");
+            r.ed.open_event_tap(
+                EventTapId(1),
+                port(1, 0),
+                TapAlign::Raw,
+                EventCapacity::of(256),
+            )
+            .expect("the port exists");
         assert_eq!(tap.rate(), common::RATE, "frames are on the graph's rate");
         commit(&mut r);
         render(&mut r, sizes, 2000);
@@ -321,8 +329,13 @@ fn a_slow_reader_loses_events_counted_and_a_note_off_is_kept() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(ons.chain(offs).collect()));
     let mut tap =
-        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 8)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(8),
+        )
+        .expect("the port exists");
     commit(&mut r);
     render(&mut r, &[64], 64);
     assert_eq!(tap.available(), 17);
@@ -352,8 +365,13 @@ fn drain_yields_what_was_written_in_order_and_leaves_nothing() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(edges()));
     let mut tap =
-        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 256)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(256),
+        )
+        .expect("the port exists");
     commit(&mut r);
     render(&mut r, &[64], 2000);
     assert_eq!(tap.available(), want.len());
@@ -380,8 +398,13 @@ fn drain_leaves_the_loss_count_to_take_lost() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(ons.chain(offs).collect()));
     let mut tap =
-        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 8)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(8),
+        )
+        .expect("the port exists");
     commit(&mut r);
     render(&mut r, &[64], 64);
     assert_eq!(tap.drain().count(), 17, "what the ring held");
@@ -400,8 +423,13 @@ fn a_drain_dropped_early_leaves_the_rest() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(edges()));
     let mut tap =
-        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 256)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(256),
+        )
+        .expect("the port exists");
     commit(&mut r);
     render(&mut r, &[64], 2000);
     let first: Vec<TapEvent> = tap.drain().take(3).collect();
@@ -420,11 +448,21 @@ fn a_narrowed_port_reads_nothing_and_the_stream_resumes() {
     let s = Script::new(vec![(10, on(1)), (150, on(2)), (250, on(3))]).ports(2);
     script(&mut r, 1, s.clone());
     let mut wide =
-        r.ed.open_event_tap(EventTapId(1), port(1, 1), TapAlign::Raw, 64)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 1),
+            TapAlign::Raw,
+            EventCapacity::of(64),
+        )
+        .expect("the port exists");
     let mut first =
-        r.ed.open_event_tap(EventTapId(2), port(1, 0), TapAlign::Raw, 64)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(2),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(64),
+        )
+        .expect("the port exists");
     commit(&mut r);
     assert_eq!(tap_ops(&r), 2);
     render(&mut r, &[100], 100);
@@ -458,8 +496,13 @@ fn a_removed_node_reads_nothing_and_a_reused_key_is_not_read() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(vec![(10, on(1))]));
     let mut tap =
-        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 64)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(64),
+        )
+        .expect("the port exists");
     commit(&mut r);
     render(&mut r, &[100], 100);
     assert_eq!(drain(&mut tap).len(), 1);
@@ -490,7 +533,7 @@ fn aligned_against_raw_on_a_latent_path() {
         script(&mut r, 1, Script::new(events.clone()));
         script(&mut r, 2, Script::new(events.clone()).latency(15));
         let open = |r: &mut Rig, id, node, align| {
-            r.ed.open_event_tap(EventTapId(id), port(node, 0), align, 64)
+            r.ed.open_event_tap(EventTapId(id), port(node, 0), align, EventCapacity::of(64))
                 .expect("the port exists")
         };
         let mut raw1 = open(&mut r, 1, 1, TapAlign::Raw);
@@ -522,8 +565,13 @@ fn closed_fork_reopen_and_reap() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(vec![(10, on(1)), (110, on(2))]));
     let open = |r: &mut Rig, id| {
-        r.ed.open_event_tap(EventTapId(id), port(1, 0), TapAlign::Raw, 64)
-            .expect("the port exists")
+        r.ed.open_event_tap(
+            EventTapId(id),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(64),
+        )
+        .expect("the port exists")
     };
     let closed = open(&mut r, 1);
     commit(&mut r);
@@ -593,8 +641,13 @@ fn a_reader_dropped_on_the_audio_thread_panics() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(vec![]));
     let tap =
-        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 8)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(8),
+        )
+        .expect("the port exists");
     let _inside = tutti_rt::RtScope::enter();
     drop(tap);
 }
@@ -610,8 +663,13 @@ fn only_midi_is_copied() {
         Script::new(vec![(10, on(1)), (70, on(2))]).resync(),
     );
     let mut tap =
-        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 2)
-            .expect("the port exists");
+        r.ed.open_event_tap(
+            EventTapId(1),
+            port(1, 0),
+            TapAlign::Raw,
+            EventCapacity::of(2),
+        )
+        .expect("the port exists");
     commit(&mut r);
     render(&mut r, &[64], 128);
     assert_eq!(
@@ -629,7 +687,7 @@ fn opening_refuses_a_port_that_does_not_exist_now() {
     let mut r = rig(1, false, 0);
     script(&mut r, 1, Script::new(vec![]).ports(2));
     let open = |r: &mut Rig, p: EventOut| {
-        r.ed.open_event_tap(EventTapId(9), p, TapAlign::Raw, 8)
+        r.ed.open_event_tap(EventTapId(9), p, TapAlign::Raw, EventCapacity::of(8))
             .err()
     };
     assert_eq!(
@@ -657,6 +715,263 @@ fn opening_refuses_a_port_that_does_not_exist_now() {
     assert_eq!(open(&mut r, port(1, 1)), None, "it exists, uncommitted");
 }
 
+/// A node with one event input that records every MIDI event it is handed,
+/// with the frame it was due on: what the node's `process` saw.
+#[derive(Clone)]
+struct Probe {
+    heard: Arc<Mutex<Vec<TapEvent>>>,
+    ports: usize,
+    /// The event capacity the probe declares; 0 declares none.
+    capacity: u32,
+}
+
+impl Node for Probe {
+    fn shape(&self) -> Shape {
+        let shape = Shape::EMPTY.with_events(self.ports as u16, 0);
+        if self.capacity > 0 {
+            shape.with_event_capacity(self.capacity)
+        } else {
+            shape
+        }
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
+        let mut heard = self.heard.lock().unwrap();
+        for e in io.events(0) {
+            if let EventKind::Midi(ump) = e.kind {
+                heard.push(TapEvent {
+                    frame: cx.env.frame_at(e.offset),
+                    ump,
+                });
+            }
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Two scripts, one latent, feed one input of a probe, with events on shared
+/// frames (so the merge's tie-break shows) and a note-off before a note-on.
+fn fan_in(r: &mut Rig, probe_ports: usize) -> Arc<Mutex<Vec<TapEvent>>> {
+    let shared = vec![
+        (5, on(1)),
+        (40, off(1)),
+        (40, on(2)),
+        (100, on(3)),
+        (101, on(4)),
+    ];
+    script(r, 1, Script::new(shared.clone()));
+    script(r, 2, Script::new(shared).latency(15));
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    r.ed.insert(
+        NodeKey(3),
+        "probe",
+        ForkByClone(Probe {
+            heard: Arc::clone(&heard),
+            ports: probe_ports,
+            capacity: 0,
+        }),
+    );
+    for from in [1, 2] {
+        r.ed.spec_mut().connect_events(
+            EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            EventEdge::Direct(port(from, 0)),
+        );
+    }
+    heard
+}
+
+/// A tap of an event input copies exactly what the node's `process` was
+/// handed there: both sources merged in the order the executor delivers them
+/// (sources in key order at equal frames), after the latency delay on the
+/// shorter path, at every block size. The raw tap's frames are the node's own.
+/// An aligned one is later by the gap from the node's input time (15) to the
+/// output time (40).
+#[test]
+fn an_input_tap_reads_what_the_node_heard() {
+    for (workers, sizes) in [
+        (1, &[64usize][..]),
+        (1, &[100]),
+        (1, &[1, 7, 64]),
+        (3, &[100]),
+    ] {
+        let mut r = rig(workers, false, 40);
+        let heard = fan_in(&mut r, 1);
+        let input = EventIn {
+            node: NodeKey(3),
+            port: 0,
+        };
+        let mut raw =
+            r.ed.open_event_tap(EventTapId(1), input, TapAlign::Raw, EventCapacity::of(64))
+                .expect("the input exists");
+        let mut aligned =
+            r.ed.open_event_tap(
+                EventTapId(2),
+                input,
+                TapAlign::ToOutput,
+                EventCapacity::of(64),
+            )
+            .expect("the input exists");
+        commit(&mut r);
+        assert_eq!(tap_ops(&r), 2);
+        render(&mut r, sizes, 300);
+        let node_heard = heard.lock().unwrap().clone();
+        assert_eq!(node_heard.len(), 10, "both sources reached the node");
+        assert_eq!(drain(&mut raw), node_heard, "{sizes:?}");
+        let later: Vec<TapEvent> = node_heard
+            .iter()
+            .map(|e| at(e.frame.get() + 25, e.ump))
+            .collect();
+        assert_eq!(drain(&mut aligned), later, "{sizes:?}");
+        assert_eq!(raw.take_lost(), 0);
+    }
+}
+
+/// An input with a single source is tapped as that source's own slot, and an
+/// input nothing feeds reads no events. Both match what the node heard.
+#[test]
+fn an_input_tap_of_one_source_and_of_none() {
+    let mut r = rig(1, false, 0);
+    let heard = fan_in(&mut r, 2);
+    r.ed.spec_mut().disconnect_events(
+        EventIn {
+            node: NodeKey(3),
+            port: 0,
+        },
+        port(2, 0),
+    );
+    let mut one =
+        r.ed.open_event_tap(
+            EventTapId(1),
+            EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            TapAlign::Raw,
+            EventCapacity::of(64),
+        )
+        .expect("the input exists");
+    let mut none =
+        r.ed.open_event_tap(
+            EventTapId(2),
+            EventIn {
+                node: NodeKey(3),
+                port: 1,
+            },
+            TapAlign::Raw,
+            EventCapacity::of(64),
+        )
+        .expect("the input exists");
+    commit(&mut r);
+    render(&mut r, &[64], 200);
+    let node_heard = heard.lock().unwrap().clone();
+    assert_eq!(node_heard.len(), 5);
+    assert_eq!(drain(&mut one), node_heard);
+    assert!(drain(&mut none).is_empty());
+    assert_eq!(none.take_lost(), 0);
+}
+
+/// What an aligned input tap holds is what the node can receive, not what one
+/// port writes: two sources declaring 16 events each, writing 16 on one frame,
+/// feed a probe that declares 1, and the delayed tap loses none of the 32
+/// the probe heard.
+#[test]
+fn an_aligned_input_tap_is_sized_for_every_source_of_the_input() {
+    let mut r = rig(1, false, 40);
+    let burst: Vec<(u64, Ump)> = (0..16).map(|k| (10, on(k))).collect();
+    for key in [1, 2] {
+        let mut s = Script::new(burst.clone());
+        s.cap = 16;
+        script(&mut r, key, s);
+    }
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    r.ed.insert(
+        NodeKey(3),
+        "probe",
+        ForkByClone(Probe {
+            heard: Arc::clone(&heard),
+            ports: 1,
+            capacity: 1,
+        }),
+    );
+    for from in [1, 2] {
+        r.ed.spec_mut().connect_events(
+            EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            EventEdge::Direct(port(from, 0)),
+        );
+    }
+    let mut tap =
+        r.ed.open_event_tap(
+            EventTapId(1),
+            EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            TapAlign::ToOutput,
+            EventCapacity::of(64),
+        )
+        .expect("the input exists");
+    commit(&mut r);
+    assert_eq!(event_delays(&r), 1, "the aligned tap is delayed");
+    render(&mut r, &[64], 200);
+    let node_heard = heard.lock().unwrap().clone();
+    assert_eq!(node_heard.len(), 32);
+    let later: Vec<TapEvent> = node_heard
+        .iter()
+        .map(|e| at(e.frame.get() + 40, e.ump))
+        .collect();
+    assert_eq!(drain(&mut tap), later);
+    assert_eq!(tap.take_lost(), 0);
+}
+
+/// Opening an input tap refuses a node that is not there and a port past the
+/// node's event inputs, and a node's event output is not an input.
+#[test]
+fn opening_an_input_tap_refuses_a_port_that_does_not_exist_now() {
+    let mut r = rig(1, false, 0);
+    let _heard = fan_in(&mut r, 1);
+    let open = |r: &mut Rig, node: u64, port: u16| {
+        r.ed.open_event_tap(
+            EventTapId(9),
+            EventIn {
+                node: NodeKey(node),
+                port,
+            },
+            TapAlign::Raw,
+            EventCapacity::of(8),
+        )
+        .err()
+    };
+    assert_eq!(
+        open(&mut r, 3, 1),
+        Some(MissingSource::EventInPort {
+            node: NodeKey(3),
+            port: 1,
+            width: 1
+        })
+    );
+    assert_eq!(
+        open(&mut r, 1, 0),
+        Some(MissingSource::EventInPort {
+            node: NodeKey(1),
+            port: 0,
+            width: 0
+        }),
+        "a script has event outputs and no input"
+    );
+    assert_eq!(
+        open(&mut r, 77, 0),
+        Some(MissingSource::Node { node: NodeKey(77) })
+    );
+    assert_eq!(open(&mut r, 3, 0), None);
+}
+
 /// Six scripted nodes of two ports each, every port tapped (raw and aligned
 /// alternately) on a path whose output time is 40 frames.
 fn busy(r: &mut Rig) -> Vec<EventTapReader> {
@@ -674,7 +989,7 @@ fn busy(r: &mut Rig) -> Vec<EventTapReader> {
             };
             let id = EventTapId((k * 2) as u32 + u32::from(p));
             taps.push(
-                r.ed.open_event_tap(id, port(k, p), align, 1 << 10)
+                r.ed.open_event_tap(id, port(k, p), align, EventCapacity::of(1 << 10))
                     .expect("the port exists"),
             );
         }

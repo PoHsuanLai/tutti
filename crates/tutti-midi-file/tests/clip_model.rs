@@ -679,7 +679,7 @@ fn a_long_gap_is_written_as_dcs_then_a_null() {
     );
 }
 
-// ---- M2-116 conformance of the reader and the writer (doc 017 L1) -----------
+// ---- M2-116 conformance of the reader and the writer -----------
 
 /// The packets of a written clip after the file header, in order.
 fn packets_of(bytes: &[u8]) -> Vec<Ump> {

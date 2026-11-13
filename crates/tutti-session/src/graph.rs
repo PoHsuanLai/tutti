@@ -312,7 +312,7 @@ pub struct Graph {
     /// Each open event tap as it was opened (its port, alignment and
     /// capacity), so [`Taps::reopen_events`] can open it
     /// again.
-    event_taps: BTreeMap<EventTapId, (EventOut, TapAlign, EventCapacity)>,
+    event_taps: BTreeMap<EventTapId, (tutti_graph::EventTapSource, TapAlign, EventCapacity)>,
     /// The id the next meter takes (`MASTER_METER` is taken at construction).
     next_meter: u32,
     /// The master meter's reader until a host takes it.

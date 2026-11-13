@@ -122,8 +122,8 @@ pub use input::{Input, InputConfig, InputOpener, OpenedInput, Trim};
 pub use instrument::{AddedInstrument, InstrumentHandle, NotInstrument, SessionInstrument};
 pub use jobs::{Job, JobFailed};
 pub use key::{
-    Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
-    Inlet, Key, MainBus, MainSink, OutPort, Outlet, Root, Weighted, Wire,
+    Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, EventTapPort, Fanin,
+    InPort, Inlet, Key, MainBus, MainSink, OutPort, Outlet, Root, Weighted, Wire,
 };
 #[cfg(feature = "plugin")]
 pub use main_session::{EditorView, MainPlugin, MainSession, Opened};

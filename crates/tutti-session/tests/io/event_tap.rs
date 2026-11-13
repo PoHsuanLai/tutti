@@ -11,7 +11,7 @@ use tutti_graph::{
     Cx, Event, EventCapacity, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign,
     TapEvent, Unforkable,
 };
-use tutti_session::{CloseError, EventOutPort, Session};
+use tutti_session::{CloseError, EventInPort, EventOutPort, Session};
 use tutti_types::ChannelLayout;
 use tutti_types::{Frame, SampleRate};
 use tutti_ump::Ump;
@@ -196,4 +196,63 @@ fn reopening_replaces_the_tap_at_the_new_rate() {
         "the superseded reader is fed no more"
     );
     assert!(!drain(&mut new).is_empty(), "the new reader is");
+}
+
+/// A node with one event input that does nothing with it.
+struct Hears;
+
+impl Node for Hears {
+    fn shape(&self) -> Shape {
+        Shape::EMPTY.with_events(1, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// A tap opened on an event input (`key.events_in()`) copies what the node
+/// hears there: the events its source wrote, on their frames, and the tap
+/// survives a re-rate through `reopen_events`. A port past the node's inputs
+/// is refused as an input.
+#[test]
+fn a_tap_of_an_event_input_hears_what_the_node_hears() {
+    let (mut s, source) = session();
+    let (hears, ()) = s.graph().add(Unforkable(Hears));
+    s.graph()
+        .connect(source, hears.events_in())
+        .expect("both ports exist");
+    assert_eq!(
+        s.graph()
+            .taps()
+            .open_event(
+                EventInPort::new(hears.erase(), 1),
+                TapAlign::Raw,
+                EventCapacity::of(8)
+            )
+            .err(),
+        Some(MissingSource::EventInPort {
+            node: hears.erase(),
+            port: 1,
+            width: 1
+        })
+    );
+    let mut tap = s
+        .graph()
+        .taps()
+        .open_event(hears.events_in(), TapAlign::Raw, EventCapacity::of(64))
+        .expect("the input exists");
+    frames(16, &mut s);
+    assert_eq!(drain(&mut tap), vec![0, 4, 8, 12]);
+    s.graph().set_sample_rate(SampleRate::SR_44K1);
+    let mut readers = s.graph().taps().reopen_events();
+    assert_eq!(readers.len(), 1);
+    let mut new = readers.remove(0);
+    assert_eq!(new.rate(), SampleRate::SR_44K1);
+    frames(8, &mut s);
+    assert!(
+        !drain(&mut new).is_empty(),
+        "the reopened tap still hears it"
+    );
 }

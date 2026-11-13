@@ -6,7 +6,7 @@ use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 #[test]
 fn test_basic_allocation() {
     let config = VoiceAllocatorConfig {
-        max_voices: 4,
+        max_voices: NonZeroUsize::new(4).unwrap(),
         ..Default::default()
     };
     let mut alloc = VoiceAllocator::new(config);
@@ -43,7 +43,7 @@ fn test_basic_allocation() {
 #[test]
 fn test_voice_stealing_oldest() {
     let config = VoiceAllocatorConfig {
-        max_voices: 2,
+        max_voices: NonZeroUsize::new(2).unwrap(),
         strategy: AllocationStrategy::Oldest,
         ..Default::default()
     };
@@ -134,7 +134,7 @@ fn test_sustain_pedal() {
 #[test]
 fn test_mono_mode() {
     let config = VoiceAllocatorConfig {
-        max_voices: 4,
+        max_voices: NonZeroUsize::new(4).unwrap(),
         mode: VoiceMode::Mono,
         ..Default::default()
     };
@@ -194,7 +194,7 @@ fn test_mono_mode() {
 #[test]
 fn test_legato_mode() {
     let config = VoiceAllocatorConfig {
-        max_voices: 4,
+        max_voices: NonZeroUsize::new(4).unwrap(),
         mode: VoiceMode::Legato,
         ..Default::default()
     };
@@ -228,7 +228,7 @@ fn test_legato_mode() {
 #[test]
 fn test_no_steal() {
     let config = VoiceAllocatorConfig {
-        max_voices: 2,
+        max_voices: NonZeroUsize::new(2).unwrap(),
         strategy: AllocationStrategy::NoSteal,
         ..Default::default()
     };
@@ -263,7 +263,7 @@ fn test_no_steal() {
 #[test]
 fn test_voice_stealing_quietest() {
     let config = VoiceAllocatorConfig {
-        max_voices: 2,
+        max_voices: NonZeroUsize::new(2).unwrap(),
         strategy: AllocationStrategy::Quietest,
         ..Default::default()
     };
@@ -317,7 +317,7 @@ fn test_voice_stealing_quietest() {
 #[test]
 fn test_voice_stealing_highest_note() {
     let config = VoiceAllocatorConfig {
-        max_voices: 2,
+        max_voices: NonZeroUsize::new(2).unwrap(),
         strategy: AllocationStrategy::HighestNote,
         ..Default::default()
     };
@@ -358,7 +358,7 @@ fn test_voice_stealing_highest_note() {
 #[test]
 fn test_voice_stealing_lowest_note() {
     let config = VoiceAllocatorConfig {
-        max_voices: 2,
+        max_voices: NonZeroUsize::new(2).unwrap(),
         strategy: AllocationStrategy::LowestNote,
         ..Default::default()
     };
@@ -399,7 +399,7 @@ fn test_voice_stealing_lowest_note() {
 #[test]
 fn test_voice_stealing_newest() {
     let config = VoiceAllocatorConfig {
-        max_voices: 2,
+        max_voices: NonZeroUsize::new(2).unwrap(),
         strategy: AllocationStrategy::Newest,
         ..Default::default()
     };
@@ -661,7 +661,7 @@ fn test_retrigger_same_note() {
 #[test]
 fn test_prefer_stealing_releasing_voices() {
     let config = VoiceAllocatorConfig {
-        max_voices: 2,
+        max_voices: NonZeroUsize::new(2).unwrap(),
         strategy: AllocationStrategy::Oldest,
         ..Default::default()
     };
@@ -766,7 +766,7 @@ fn random_streams_keep_their_invariants() {
         let mode = modes[((stream / 6) % 4) as usize];
         let max = 4;
         let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {
-            max_voices: max,
+            max_voices: NonZeroUsize::new(max).unwrap(),
             strategy,
             mode,
             ..Default::default()
@@ -1010,7 +1010,7 @@ fn expected_victim(
 fn a_return_after_the_voice_ended_starts_a_fresh_one() {
     for mode in [VoiceMode::Mono, VoiceMode::Legato] {
         let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {
-            max_voices: 4,
+            max_voices: NonZeroUsize::new(4).unwrap(),
             mode,
             ..Default::default()
         });
@@ -1049,7 +1049,7 @@ fn a_return_after_the_voice_ended_starts_a_fresh_one() {
 #[test]
 fn a_velocity_is_quantised_to_the_nearest_word() {
     let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {
-        max_voices: 4,
+        max_voices: NonZeroUsize::new(4).unwrap(),
         mode: VoiceMode::Mono,
         ..Default::default()
     });

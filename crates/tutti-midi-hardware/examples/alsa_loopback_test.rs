@@ -15,6 +15,7 @@
 //! cargo run --example alsa_loopback_test
 //! ```
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -41,7 +42,7 @@ fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware
 fn main() {
     // One inlet slot, 256 events, each event placed 20 ms after it arrived.
     let inlets = DeviceInlets::new(
-        1,
+        NonZeroUsize::MIN,
         tutti_graph::EventCapacity::of(256),
         Duration::from_millis(20),
     );

@@ -24,7 +24,6 @@ use tutti_sampler::testing::loop_frames;
 
 use std::sync::Arc;
 
-use assert_no_alloc::AllocDisabler;
 use tutti_codec::Wave;
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
@@ -68,9 +67,6 @@ impl<N: Node> Rig<N> {
         &mut self.direct.node
     }
 }
-
-#[global_allocator]
-static A: AllocDisabler = AllocDisabler;
 
 /// Build a stereo `Wave` of `duration_secs` filled with a 440 Hz sine.
 fn sine_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {

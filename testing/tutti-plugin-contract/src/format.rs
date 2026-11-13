@@ -41,6 +41,14 @@ pub trait Format {
     type L: Loaded;
     /// Where a parameter point lands.
     const PARAM_TIMING: ParamTiming;
+    /// How far a parameter's value may move through the format's own
+    /// representation and still be the value written (design 029 §6.3): 0 for a
+    /// format that keeps a double, the `f32` epsilon for one that keeps a
+    /// single (an AU holds its parameters as `f32` in plain units, so a plain
+    /// default such as 632.4555... comes back as the nearest `f32`). Relative,
+    /// to the figure compared. It applies to a parameter's default and to what
+    /// a write, a save and a restore read back; no other figure.
+    const TOLERANCE: f64 = 0.0;
     /// The cases this format fails, by name. [`contract!`](crate::contract)
     /// is given the number, so adding one is a second edit.
     const GAPS: &'static [(&'static str, Gap)];

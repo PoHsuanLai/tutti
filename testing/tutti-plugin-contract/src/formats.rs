@@ -29,7 +29,7 @@ const NO_TRANSPORT_EVENT: (&str, Gap) = (
     "transport_change_is_told_at_its_frame",
     Gap {
         why: "the format carries one transport per block (VST3's ProcessContext, \
-              VST2's audioMasterGetTime) and has no event for a change inside it",
+              VST2's audioMasterGetTime, AU's host callbacks) and has no event for a change inside it",
         fails_with: "no transport at frame 32",
     },
 );
@@ -90,19 +90,10 @@ impl Format for Vst3Cpp {
     }
 }
 
-/// A case that configures or reads the shared plugin through its state blob (a
-/// mode word, the transcript): the unit under test has none, so the case stops
-/// at the first read of it.
-#[cfg(target_os = "macos")]
-const NEEDS_THE_BLOB: Gap = Gap {
-    why: "the case selects a mode or reads the transcript through the shared plugin's \
-          state blob; AUDelay's state is an AU class-info property list with no such blob",
-    fails_with: "the state holds the plugin's blob",
-};
-
-/// AU, from Apple's AUDelay in `CoreAudio.component`. There is no AU build of
-/// the shared plugin, so this runs every case against a unit that has none of
-/// its mode word, transcript or spec figures: a case that needs them is a gap.
+/// AU, from the shared plugin's Audio Unit shell, registered in this process
+/// (`tutti_shared_plugin::register_au`) and found by the host through a bundle
+/// that declares it (`plugin::au_bundle`). The unit exists in this process
+/// only, so there is no served (out-of-process) run of it.
 #[cfg(target_os = "macos")]
 pub struct Au;
 
@@ -114,62 +105,27 @@ impl Format for Au {
     /// The host schedules each point as an immediate event at its offset
     /// (`AudioUnitScheduleParameters`, from the pre-render notify).
     const PARAM_TIMING: ParamTiming = ParamTiming::SampleAccurate;
+    /// An AU holds a parameter as an `f32`.
+    const TOLERANCE: f64 = f32::EPSILON as f64;
     const GAPS: &'static [(&'static str, Gap)] = &[
-        ("routing_tag_oracle", NEEDS_THE_BLOB),
-        ("reconfigure_keeps_rendering", NEEDS_THE_BLOB),
-        ("buses_reported", NEEDS_THE_BLOB),
-        ("latency_reported", NEEDS_THE_BLOB),
-        ("latency_applied", NEEDS_THE_BLOB),
-        ("reset_clears_the_delay_line", NEEDS_THE_BLOB),
-        ("tail_reported", NEEDS_THE_BLOB),
-        ("active_write_applied", NEEDS_THE_BLOB),
-        ("automation_point_offset", NEEDS_THE_BLOB),
-        ("note_at_offset", NEEDS_THE_BLOB),
-        ("arrival_is_ordered_and_sized", NEEDS_THE_BLOB),
-        ("transport_reaches_the_plugin", NEEDS_THE_BLOB),
-        ("transport_change_is_told_at_its_frame", NEEDS_THE_BLOB),
-        ("loaded_write_reaches_the_audio", NEEDS_THE_BLOB),
-        ("loaded_write_survives_a_save", NEEDS_THE_BLOB),
-        ("reopen_is_a_fresh_instance", NEEDS_THE_BLOB),
-        ("corrupt_state_leaves_plugin_usable", NEEDS_THE_BLOB),
-        ("f64_carries_same_audio", NEEDS_THE_BLOB),
-        ("overflowing_log_fails_the_oracle", NEEDS_THE_BLOB),
-        ("process_does_not_allocate", NEEDS_THE_BLOB),
-        // The case selects the gesture notice through the blob; the AU gesture is
-        // held by `tutti-au-host`'s `a_gesture_in_the_plugins_own_editor_is_reported_in_order`.
-        ("a_gesture_is_reported_in_order", NEEDS_THE_BLOB),
+        NO_TRANSPORT_EVENT,
         (
-            "parameters_listed",
+            "a_gesture_is_reported_in_order",
             Gap {
-                why: "AUDelay lists its own four parameters, under its own names; the spec's \
-                      plugin lists level, aux, mode and tone",
-                fails_with: "Level name",
+                why: "AudioToolbox coalesces the value changes of one gesture that arrive within \
+                      its listener's interval into the last, so a host hears a begin, one change \
+                      and an end where the spec's gesture has two changes; the shell raises no \
+                      notice of its own, and the host's reading of an editor's gesture is \
+                      `tutti-au-host`'s `a_gesture_in_the_plugins_own_editor_is_reported_in_order`",
+                fails_with: "the gesture, in order",
             },
         ),
         (
-            "parameter_conversion_is_the_formats_own",
+            "f64_carries_same_audio",
             Gap {
-                why: "AUDelay has no tone parameter: id 3 is its own lowpass cutoff, which has \
-                      a plain value, where the spec's tone has none under a normalized-only \
-                      surface",
-                fails_with: "tone plain at 0 (loaded)",
-            },
-        ),
-        (
-            "parameter_round_trip",
-            Gap {
-                why: "an AU holds a parameter as an f32 in plain units, so a normalized 0.75 \
-                      reads back as 0.7500000169765675; the case asserts exact equality",
-                fails_with: "0.7500000169765675",
-            },
-        ),
-        (
-            "state_round_trip",
-            Gap {
-                why: "an AU holds a parameter as an f32 in plain units, so a restored \
-                      normalized 0.5 reads back as 0.4999999743455097; the case asserts \
-                      exact equality",
-                fails_with: "0.4999999743455097",
+                why: "an AUv2 unit has no 64-bit render: the host narrows an f64 block to f32 \
+                      and widens the answer, so 0.1 + 1.0 comes back as the f32 sum",
+                fails_with: "ch0",
             },
         ),
     ];
@@ -177,9 +133,9 @@ impl Format for Au {
     fn load() -> Self::L {
         tutti_au_host::AuLoaded::load(
             &main_thread(),
-            std::path::Path::new("/System/Library/Components/CoreAudio.component"),
-            &tutti_plugin_types::Load::new().plugin("au.aufx.dely.appl"),
+            &plugin::au_bundle(),
+            &tutti_plugin_types::Load::new().plugin(tutti_shared_plugin::AU_ID),
         )
-        .expect("AUDelay loads")
+        .expect("the shared AU loads")
     }
 }

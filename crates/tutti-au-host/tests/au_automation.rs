@@ -203,6 +203,70 @@ fn the_tick_does_not_write_the_value_back_over_a_later_one() {
     );
 }
 
+/// A parameter automated in far more blocks than the old ring of ids held
+/// (1024) between two ticks is still told to the listeners once at the tick,
+/// each parameter exactly once and none dropped: a flag is a level, not a count.
+#[test]
+fn many_blocks_between_ticks_tell_each_parameter_once() {
+    use std::sync::{Arc, Mutex};
+    use tutti_au_ffi::{AuEvent, AuParameterListener, EventAddress};
+    use tutti_plugin_types::Control;
+
+    let main = MainThread::claim().unwrap();
+    let (mut processor, mut controller) = activate(delay_loaded());
+    let heard: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
+    let sink = Arc::clone(&heard);
+    let editor = AuParameterListener::new(controller.unit(), move |event| {
+        if let AuEvent::ParameterChanged { id, value, .. } = event {
+            sink.lock().unwrap().push((id, value));
+        }
+    })
+    .expect("a listener registers");
+    for id in [DRY_WET, DELAY_TIME] {
+        editor.watch_parameter(id, EventAddress::GLOBAL).unwrap();
+    }
+
+    const BLOCKS: usize = 3000;
+    for n in 0..BLOCKS {
+        let mut changes = ParameterChanges::reserved(2, 4);
+        let level = (n % 100) as f64 / 100.0;
+        assert!(changes.add_change(ParamId::from(DRY_WET), 100, level));
+        assert!(changes.add_change(ParamId::from(DELAY_TIME), 100, 0.5));
+        render_block(&mut processor, 0.0, &changes);
+    }
+    let mut last = ParameterChanges::reserved(1, 4);
+    assert!(last.add_change(ParamId::from(DRY_WET), 100, 0.75));
+    render_block(&mut processor, 0.0, &last);
+
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(
+        heard.lock().unwrap().is_empty(),
+        "the render notified a listener"
+    );
+
+    Control::flush_edits(&mut controller, &main);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while heard.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Long enough for a surplus notification to arrive.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let heard = heard.lock().unwrap();
+    for id in [DRY_WET, DELAY_TIME] {
+        let told: Vec<_> = heard.iter().filter(|(i, _)| *i == id).collect();
+        assert_eq!(
+            told.len(),
+            1,
+            "parameter {id} told {} times: {heard:?}",
+            told.len()
+        );
+    }
+    assert!(
+        heard.contains(&(DRY_WET, 75.0)),
+        "the last value was told: {heard:?}"
+    );
+}
+
 /// What a listener on another queue is given a moment to deliver.
 fn wait_for_edits(controller: &mut AuController, want: usize) -> Vec<ParamEdit> {
     use tutti_plugin_types::Control;

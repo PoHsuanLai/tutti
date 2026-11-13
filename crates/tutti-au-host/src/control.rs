@@ -11,6 +11,7 @@
 #![cfg(target_os = "macos")]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tutti_au_ffi::AuEditor;
 use tutti_plugin_types::features::probed;
@@ -30,6 +31,7 @@ use crate::edits::Edit;
 use crate::error::AuError;
 use crate::handle::AuHandle;
 use crate::instance::AuLoaded;
+use crate::marks::Marks;
 use crate::parameters;
 use crate::ranges::RangeTable;
 use crate::types::{AudioComponentDescription, fourcc_to_string};
@@ -225,7 +227,12 @@ impl AuLoaded {
     /// moved. The table is what a block denormalizes automation against, so a
     /// list that grew would leave new parameters unwritable.
     pub(crate) fn reread_ranges(&mut self) {
-        self.ranges = RangeTable::read(self.unit());
+        let previous = Arc::clone(self.ranges.marks());
+        self.ranges = RangeTable::read(self.unit(), Some(&previous));
+        if !Arc::ptr_eq(&previous, self.ranges.marks()) {
+            // The render may be setting bits in the old marks for a block yet.
+            self.retired_marks.push(previous);
+        }
         // A parameter the list gained has no subscription yet.
         let ids: Vec<u32> = self.ranges.ids().collect();
         if let Some(watch) = self.watch_mut() {
@@ -248,6 +255,20 @@ impl AuLoaded {
                 ParamEdit::change(ParamId::from(id), self.normalize(id, plain))
             }
         }));
+    }
+
+    /// The marks the render sets bits in: the current table's, and every
+    /// earlier one the render may not have let go of.
+    pub(crate) fn live_marks(&self) -> impl Iterator<Item = &Arc<Marks>> {
+        std::iter::once(self.ranges.marks()).chain(&self.retired_marks)
+    }
+
+    /// Forgets the retired marks only this side holds: the render's last table
+    /// that named them was reclaimed, so nothing sets a bit in them again.
+    /// Call after draining them.
+    pub(crate) fn prune_marks(&mut self) {
+        self.retired_marks
+            .retain(|marks| Arc::strong_count(marks) > 1);
     }
 
     pub(crate) fn range_snapshot(&self) -> RangeTable {

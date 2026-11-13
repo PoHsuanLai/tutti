@@ -38,6 +38,7 @@ use crate::edits::ReportedEdits;
 use crate::error::Result;
 use crate::handle::AuHandle;
 use crate::identity;
+use crate::marks::Marks;
 use crate::midi_map::{self, AuMidiMapping};
 use crate::midi_out::{self, AuMidiOutput, MidiOutSink, MidiOutputInfo};
 use crate::parameters::{self, AuParameter, ParamView};
@@ -83,6 +84,9 @@ pub struct AuLoaded {
     /// The declared plain range of every parameter, read at load and again when
     /// the unit says its parameter list moved.
     pub(crate) ranges: RangeTable,
+    /// Marks of earlier tables that the render may still be setting bits in,
+    /// drained each tick until it has let go of them.
+    pub(crate) retired_marks: Vec<Arc<Marks>>,
     /// The plugin's identity, with the editor measured at construction: a Cocoa
     /// view is a property of the instance, readable before `initialize`.
     descriptor: PluginDescriptor,
@@ -181,7 +185,7 @@ impl AuLoaded {
         config.verify_block_size(&handle)?;
 
         let descriptor = describe(&handle);
-        let ranges = RangeTable::read(handle.unit());
+        let ranges = RangeTable::read(handle.unit(), None);
         Ok(Self {
             watch: None,
             handle,
@@ -191,6 +195,7 @@ impl AuLoaded {
             requests: Arc::new(RequestWord::new()),
             edits: Arc::new(ReportedEdits::default()),
             ranges,
+            retired_marks: Vec::new(),
             descriptor,
             offline: false,
             mode_accepted: false,

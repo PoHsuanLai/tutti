@@ -15,7 +15,7 @@ use tutti_au_ffi::{RenderNotify, Renderer};
 use tutti_plugin_types::{
     Loaded, MainThread, PluginError, Prepare, Refused, RestartRules, Stuck, sysex_assembler,
 };
-use tutti_rt::{ArcLend, edit_ring};
+use tutti_rt::ArcLend;
 
 use crate::automation::{Stage, schedule_pending};
 use crate::control::plugin_error;
@@ -23,11 +23,6 @@ use crate::controller::AuController;
 use crate::error::AuError;
 use crate::instance::AuLoaded;
 use crate::processor::{AuProcessor, ProcessorParts, Rendering, UninitializeOnDrop};
-
-/// Writes to `NonRealTime` parameters one block can hand the control side
-/// before a tick drains them: one per parameter per block, so this is seconds
-/// of every such parameter moving at once.
-const DEFERRED_ROOM: usize = 1024;
 
 impl Loaded for AuLoaded {
     type Processor = AuProcessor;
@@ -197,8 +192,6 @@ impl AuLoaded {
         }
 
         let ranges = Arc::new(ArcLend::new(self.range_snapshot()));
-        let (deferred_in, deferred_out) = edit_ring(DEFERRED_ROOM);
-        let (told_in, told_out) = edit_ring(DEFERRED_ROOM);
         let processor = AuProcessor::new(ProcessorParts {
             rendering,
             unit,
@@ -211,12 +204,7 @@ impl AuLoaded {
             midi_protocol,
             block_size: self.config().block_size,
             stage,
-            deferred: deferred_in,
-            told: told_in,
         });
-        Ok((
-            processor,
-            AuController::new(self, ranges, deferred_out, told_out),
-        ))
+        Ok((processor, AuController::new(self, ranges)))
     }
 }

@@ -55,6 +55,8 @@ mod lifecycle;
 #[cfg(target_os = "macos")]
 mod load;
 #[cfg(target_os = "macos")]
+mod marks;
+#[cfg(target_os = "macos")]
 mod processor;
 #[cfg(target_os = "macos")]
 mod ranges;

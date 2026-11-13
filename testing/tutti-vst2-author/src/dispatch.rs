@@ -7,7 +7,7 @@ use std::{mem, slice};
 use tutti_vst2_ffi::{
     api::{self, AEffect, consts::*},
     buffer::AudioBuffer,
-    editor::{Key, KeyCode, KnobMode, Rect},
+    editor::{Key, KeyCode, Rect},
     interfaces::{copy_string, read_string},
 };
 
@@ -411,14 +411,6 @@ fn dispatch_inner(
                 });
             }
         }
-        Ok(OpCode::EditorSetKnobMode) => {
-            if let Some(editor) = get_editor()
-                && let Ok(knob_mode) = KnobMode::try_from(value)
-            {
-                editor.set_knob_mode(knob_mode);
-            }
-        }
-
         Ok(OpCode::StartProcess) => get_plugin().start_process(),
         Ok(OpCode::StopProcess) => get_plugin().stop_process(),
         // `value` is the width: 0 = 32-bit, anything else = 64-bit.

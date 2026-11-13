@@ -2244,15 +2244,6 @@ impl PluginInstance {
         }
     }
 
-    /// The editor's origin, `effEditGetRect`; `(0, 0)` when the plugin gives no rect.
-    pub fn editor_position(&self, _main: &MainThread) -> (i32, i32) {
-        // Assuming coordinate origins from top-left
-        match self.editor_rect() {
-            None => (0, 0),
-            Some(rect) => (rect.left as i32, rect.top as i32),
-        }
-    }
-
     fn editor_rect(&self) -> Option<Rect> {
         let mut rect: *mut Rect = std::ptr::null_mut();
         let rect_ptr: *mut *mut Rect = &mut rect;
@@ -2316,11 +2307,6 @@ impl PluginInstance {
         self.editor_open = false;
     }
 
-    /// Whether the editor is open.
-    pub fn is_editor_open(&self) -> bool {
-        self.editor_open
-    }
-
     /// Dispatch `effEditIdle` while the editor is open.
     ///
     /// The host calls this on a timer (about 30 Hz) from its main thread;
@@ -2382,15 +2368,6 @@ impl PluginInstance {
     /// [`ChunkError`] when the plugin attempted the save and failed.
     pub fn try_get_preset_data(&self, _main: &MainThread) -> Result<Vec<u8>, ChunkError> {
         self.core.get_chunk(1 /*preset*/)
-    }
-
-    /// Bank counterpart of [`try_get_preset_data`](Self::try_get_preset_data).
-    ///
-    /// # Errors
-    ///
-    /// As [`try_get_preset_data`](Self::try_get_preset_data).
-    pub fn try_get_bank_data(&self, _main: &MainThread) -> Result<Vec<u8>, ChunkError> {
-        self.core.get_chunk(0 /*bank*/)
     }
 
     /// Hand a preset chunk to the plugin (`effSetChunk`, index 1: the current program's).
@@ -3126,6 +3103,31 @@ mod tests {
         assert_eq!(ask("sendVstEvents"), 1);
         assert_eq!(ask("openFileSelector"), -1);
         assert_eq!(ask("somethingElse"), 0);
+    }
+
+    /// **The host has no file dialog and no localization**: `audioMasterOpenFileSelector` and
+    /// `audioMasterCloseFileSelector` answer 0 (declined) without reading the `VstFileSelect`
+    /// the plugin passes, and `audioMasterGetLanguage` answers `kVstLangEnglish` (1), never
+    /// the 0 that names no language.
+    #[test]
+    fn file_selector_is_declined_and_language_is_english() {
+        struct Plain;
+        impl Host for Plain {}
+        let ask = |opcode: OpCode| {
+            // A non-null garbage pointer: a declining arm must not dereference it.
+            interfaces::host_dispatch(
+                &Plain,
+                ptr::null_mut(),
+                opcode as i32,
+                0,
+                0,
+                0x10 as *mut c_void,
+                0.0,
+            )
+        };
+        assert_eq!(ask(OpCode::OpenFileSelector), 0);
+        assert_eq!(ask(OpCode::CloseFileSelector), 0);
+        assert_eq!(ask(OpCode::GetLanguage), 1);
     }
 
     /// **A chunk reaches the plugin as the header lays `effSetChunk` out**: `[index]` is 0 for a

@@ -508,7 +508,7 @@ impl Host for HostState {
             | "sizeWindow"
             | "supportShell"
             | "shellCategory" => Supported::Yes,
-            "supplyIdle" => Supported::No,
+            "supplyIdle" | "openFileSelector" | "closeFileSelector" => Supported::No,
             _ => Supported::Maybe,
         }
     }
@@ -677,7 +677,9 @@ mod tests {
         ] {
             assert_eq!(host.can_do(yes), Supported::Yes, "{yes}");
         }
-        assert_eq!(host.can_do("supplyIdle"), Supported::No, "supplyIdle");
+        for no in ["supplyIdle", "openFileSelector", "closeFileSelector"] {
+            assert_eq!(host.can_do(no), Supported::No, "{no}");
+        }
         assert_eq!(host.can_do("somethingNew"), Supported::Maybe);
     }
 

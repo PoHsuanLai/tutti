@@ -13,6 +13,9 @@ use crate::{
     host::Host,
 };
 
+/// `kVstLangEnglish`, the host's one language: the values are 1-based, so `0` names none.
+const LANGUAGE_ENGLISH: isize = 1;
+
 /// Copy a string into a destination buffer.
 ///
 /// String will be cut at `max` characters.
@@ -154,11 +157,15 @@ pub fn host_dispatch(
         // ever asked for.
         Ok(OpCode::CurrentId) => return host.get_plugin_id() as isize,
 
-        // `audioMasterGetLanguage`. `HostLanguage` is 1-based (`English = 1`),
-        // so the fall-through's `0` is not a language — a plugin indexing a
-        // string table by it reads slot 0. English is the honest answer for a
-        // host with no localization rather than a placeholder.
-        Ok(OpCode::GetLanguage) => return api::HostLanguage::English as isize,
+        // `audioMasterGetLanguage`. `kVstLangEnglish` is 1 and the values are
+        // 1-based, so a `0` is not a language: a plugin indexing a string table
+        // by it reads slot 0. English is the honest answer for a host with no
+        // localization.
+        Ok(OpCode::GetLanguage) => return LANGUAGE_ENGLISH,
+
+        // `audioMasterOpenFileSelector` / `audioMasterCloseFileSelector`. The
+        // host has no file dialog; `0` declines, and `canDo` answers No.
+        Ok(OpCode::OpenFileSelector | OpCode::CloseFileSelector) => return 0,
 
         _ => {
             trace!("VST: Got unimplemented host opcode ({:?})", opcode);

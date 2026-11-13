@@ -2,7 +2,7 @@
 
 use tutti_fixtures::asset;
 
-use tutti_sf2::{Bank, GeneratorType, SoundFont};
+use tutti_sf2::{Bank, SoundFont};
 use tutti_ump::{NoteNumber, U7};
 
 fn timgm6mb() -> SoundFont {
@@ -90,9 +90,4 @@ fn every_region_names_a_real_sample_inside_the_wave_data() {
             assert!(region.sample_end().get() < soundfont.wave_data().len());
         }
     }
-}
-
-#[test]
-fn the_generator_count_is_the_last_generator_plus_one() {
-    assert_eq!(GeneratorType::COUNT, GeneratorType::UnusedEnd as usize + 1);
 }

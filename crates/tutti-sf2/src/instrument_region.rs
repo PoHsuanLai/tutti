@@ -14,11 +14,8 @@ use crate::sample_header::{SampleHeader, Side};
 use crate::zone::Zone;
 
 fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
-    let index = generator.generator_type as usize;
-
-    // Unknown generators should be ignored.
-    if index < gs.len() {
-        gs[index] = generator.value as i16;
+    if let Some(known) = GeneratorType::from_id(generator.generator_type) {
+        gs[known as usize] = generator.value as i16;
     }
 }
 
@@ -320,5 +317,38 @@ impl InstrumentRegion {
     #[must_use]
     pub fn sample_id(&self) -> usize {
         usize::from(self.generator(GeneratorType::SampleId) as u16)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set_parameter;
+    use crate::generator::Generator;
+    use crate::generator_type::GeneratorType;
+
+    /// A zone's generator whose number the spec leaves unused or reserved, `endOper`, or
+    /// a number past the last generator changes no slot of the region (section 8.1.2:
+    /// the reader ignores it); a named generator sets its own.
+    #[test]
+    fn an_unused_or_reserved_generator_is_ignored() {
+        let mut gs = [0i16; GeneratorType::COUNT];
+        for id in [14, 18, 19, 20, 42, 49, 55, 59, 60, 61, u16::MAX] {
+            set_parameter(
+                &mut gs,
+                &Generator {
+                    generator_type: id,
+                    value: 7,
+                },
+            );
+        }
+        assert_eq!(gs, [0; GeneratorType::COUNT]);
+        set_parameter(
+            &mut gs,
+            &Generator {
+                generator_type: GeneratorType::Pan as u16,
+                value: 7,
+            },
+        );
+        assert_eq!(gs[GeneratorType::Pan as usize], 7);
     }
 }

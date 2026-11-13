@@ -638,11 +638,6 @@ impl Modulation {
         Self::default()
     }
 
-    /// The last compile applied.
-    pub fn compiled(&self) -> Option<&Compiled> {
-        self.prev.as_ref()
-    }
-
     /// `target`'s lane: its node key and its controls (a plugin lane's knob
     /// and range, the counters). `None` while it has none.
     pub fn lane(&self, target: TargetKey) -> Option<(NodeKey, &LaneControls)> {

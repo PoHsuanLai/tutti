@@ -174,46 +174,6 @@ impl Tuning {
         tuning
     }
 
-    /// Quarter-comma meantone, twelve degrees given to the nearest whole
-    /// [`Cents`] (0, 76, 193, 310, 386, …), rooted on C and pinned at
-    /// A4 = 440 [`Hz`].
-    ///
-    /// The historical compromise between [`just_intonation`](Self::just_intonation)
-    /// and [`equal_temperament`](Self::equal_temperament): thirds are near-pure
-    /// (386 cents against just's 386 and equal's 400) and the error is pushed
-    /// into the fifths.
-    pub fn meantone() -> Self {
-        let mut cents = Vec::with_capacity(12);
-
-        for i in 0..12 {
-            let c = match i {
-                0 => 0.0,
-                1 => 76.0,
-                2 => 193.0,
-                3 => 310.0,
-                4 => 386.0,
-                5 => 503.0,
-                6 => 579.0,
-                7 => 697.0,
-                8 => 773.0,
-                9 => 890.0,
-                10 => 1007.0,
-                11 => 1083.0,
-                _ => 0.0,
-            };
-            cents.push(ScaleDegree::from_cents(Cents::new(c)));
-        }
-
-        let mut tuning = Self {
-            degrees: cents,
-            freq_table: [Hz(0.0); 128],
-            reference_freq: A4_FREQ,
-            reference_note: A4_NOTE,
-        };
-        tuning.recompute_table();
-        tuning
-    }
-
     /// An arbitrary scale from a list of degrees in cents above the root, e.g.
     /// `[0.0, 50.0, 100.0, …]` for quarter tones.
     ///

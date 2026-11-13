@@ -267,12 +267,6 @@ impl ConvolverNode {
         Self::per_channel(&[ir_l, ir_r], block_size)
     }
 
-    /// L and R summed to mono, then convolved with `ir_l` and `ir_r` into a
-    /// stereo pair. Shorthand for [`folded(&[ir_l, ir_r], …)`](Self::folded).
-    pub fn mono_to_stereo(ir_l: &[f32], ir_r: &[f32], block_size: usize) -> Self {
-        Self::folded(&[ir_l, ir_r], block_size)
-    }
-
     /// How the node's impulse responses map onto its channels.
     ///
     /// Fixed at construction — the config picks which constructor built it, so
@@ -781,8 +775,8 @@ mod golden {
                 vec![(&ir_a[..], 0), (&ir_b[..], 1)],
             ),
             (
-                "mono_to_stereo",
-                ConvolverNode::mono_to_stereo(&ir_a, &ir_b, 16),
+                "folded",
+                ConvolverNode::folded(&[&ir_a, &ir_b], 16),
                 vec![(&ir_a[..], FOLDED), (&ir_b[..], FOLDED)],
             ),
         ];

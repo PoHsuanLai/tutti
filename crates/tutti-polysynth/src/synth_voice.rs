@@ -562,15 +562,4 @@ impl SynthVoice {
         self.tuned = Some(freq);
         self.set_pitch(freq);
     }
-
-    /// Change the number of unison sub-voices this voice drives. The lanes are
-    /// resized by the bank (`VoiceBank::resize_stride`), which starts a new
-    /// sub-voice as a copy of the first; this records the count and snaps the
-    /// lanes' pitch at the next control step, so the copy takes its own
-    /// detuned pitch at once. Gains ramp to the new pans: the lanes are
-    /// sounding.
-    pub(crate) fn resize_unison(&mut self, new_count: usize) {
-        self.sub_voices = new_count.max(1);
-        self.snap_tone = true;
-    }
 }

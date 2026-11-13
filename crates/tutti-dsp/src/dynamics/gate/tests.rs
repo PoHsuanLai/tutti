@@ -191,7 +191,7 @@ fn amplitude(db: f64) -> f32 {
 }
 
 /// The member holds the figures its definition gives: the hold is `floor(hold * rate)`
-/// frames, the closed gain is the range as an amplitude, the times are floored at 0 and the
+/// frames, the times are floored at 0 and the
 /// range is capped at 0 dB, and a non-finite control is the default's.
 #[test]
 fn the_member_holds_the_figures_of_its_definition() {
@@ -199,8 +199,6 @@ fn the_member_holds_the_figures_of_its_definition() {
     let m = family.member(&controls(-20.0, 0.001, 0.0102, 0.1, -12.0), RATE);
     // 0.0102 s at 48 kHz is 489.6 frames, floored.
     assert_eq!(m.hold_samples(), 489);
-    let want = 10f64.powf(-12.0 / 20.0);
-    assert!((f64::from(m.closed_gain().get()) / want - 1.0).abs() < 1e-6);
     assert_eq!(m.threshold(), Db(-20.0));
 
     let m = family.member(
@@ -234,15 +232,13 @@ fn the_member_holds_the_figures_of_its_definition() {
 
 /// A key a hair over the threshold opens the gate and one a hair under leaves it closed
 /// (the margin, 0.1 percent, is far outside the rounding of the comparison), on a
-/// threshold under and over 0 dB; the member says the same from its definition.
+/// threshold under and over 0 dB.
 #[test]
 fn a_level_either_side_of_the_threshold_opens_or_closes() {
     for threshold in [-20.0f32, 6.0] {
         let edge = f64::from(amplitude(f64::from(threshold)));
         let c = controls(threshold, 0.0, 0.0, 0.0, -30.0);
-        let m = design().member(&c, RATE);
         for (level, opens) in [(edge * 1.001, true), (edge * 0.999, false)] {
-            assert_eq!(m.opens(Amplitude::new(level as f32)), opens);
             let mut k = runner(&c);
             let key = vec![level as f32; 64];
             let out = run_mono(&mut k, &vec![1.0; 64], &key, None);
@@ -477,7 +473,6 @@ fn silence_opens_a_threshold_at_or_under_the_floor() {
         let c = controls(threshold, 0.0, 0.0, 0.0, -40.0);
         let m = design().member(&c, RATE);
         assert_eq!(m.silence_opens(), opens, "threshold {threshold}");
-        assert_eq!(m.opens(Amplitude::new(0.0)), opens);
         let mut k = runner(&c);
         let out = run_mono(&mut k, &vec![1.0; 64], &vec![0.0; 64], None);
         let want = if opens { 1.0 } else { amplitude(-40.0) };

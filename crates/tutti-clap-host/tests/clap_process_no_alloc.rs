@@ -988,7 +988,7 @@ fn set_param_output_own(points: u32) {
 }
 
 /// **A parameter flood neither refuses a note-off nor loses a parameter's
-/// final value.** The plugin floods its own four parameters with 2200 points
+/// final value.** The plugin floods its own five parameters with 2200 points
 /// each, every block (8800 parameter events against a parameter room of
 /// 4384),
 /// and echoes a note-on and a note-off after the flood (the probe's note
@@ -998,14 +998,15 @@ fn set_param_output_own(points: u32) {
 /// and nothing is refused. The 4416 parameter values past the room are
 /// coalesced into a latest-value table, so every parameter still ends the
 /// block on its last value, 2199/2200; the points that cost is counted.
-/// Parameters 2 and 3 are wholly past the room: they exist only in the
+/// Parameters 2, 3 and 4 are wholly past the room: they exist only in the
 /// table, which must open their queues.
 ///
 /// Points lost a block: the list holds parameter 0's 2200 points and 2184
 /// of parameter 1's, which their 274-point queues reduce by 1926 and 1910;
 /// the table keeps one value per parameter for the other 16 + 2200 + 2200
 /// (15 + 2199 + 2199 overwritten), and parameter 1's latest replaces its
-/// queue's last point (1 more). 8250.
+/// queue's last point (1 more), and the fifth parameter, table-only like the
+/// third and fourth, overwrites 2199 more. 10449.
 ///
 /// Changed in doc 014 §12.2: the parameter room is 4384 and a queue's 274
 /// (they were 336 and 21), so the flood is 2200 points a parameter (it was
@@ -1038,8 +1039,8 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     let params = tutti_clap_test_plugin::params_state::probe_params();
     assert_eq!(
         params.len(),
-        4,
-        "the counts below assume the probe's four parameters"
+        5,
+        "the counts below assume the probe's five parameters"
     );
     let before = inst.output_param_points_dropped();
 
@@ -1076,7 +1077,7 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     }
     assert_eq!(
         inst.output_param_points_dropped() - before,
-        (BLOCKS + 1) * 8250
+        (BLOCKS + 1) * 10449
     );
 }
 

@@ -88,13 +88,20 @@ static OFFLINE_EXTRA_LATENCY: AtomicU32 = AtomicU32::new(0);
 ///
 /// Environment-selected like the rest of this module because the suites that
 /// need it — a plugin fork by state transfer, `tutti-plugin`'s
-/// `clap_fork.rs` — drive the plugin in another process. Only the plain
-/// `clap.state` entry points read these; the `state-context` refusals are the
-/// in-process `extern "C"` switches in `crate::refusal`.
+/// `clap_fork.rs` — drive the plugin in another process. The plain `clap.state`
+/// entry points and the `state-context` ones both read these; the in-process
+/// `extern "C"` switches in `crate::refusal` refuse the `state-context` ones
+/// alone.
 static REFUSE_STATE_SAVE: AtomicBool = AtomicBool::new(false);
 
 /// Whether the plain `clap.state` load refuses (returns `false`).
 static REFUSE_STATE_LOAD: AtomicBool = AtomicBool::new(false);
+
+/// The only context a state may be restored in, `0` for any:
+/// `TUTTI_CLAP_PROBE_LOAD_ONLY_CONTEXT`. A load in another context (`0` is the
+/// plain `clap.state` entry point), or of a state saved for another, is
+/// refused, which a fork by state transfer reports as a failed restore.
+static LOAD_ONLY_CONTEXT: AtomicU32 = AtomicU32::new(0);
 
 /// `process()` calls seen since load, incremented once per block.
 ///
@@ -235,6 +242,9 @@ pub(crate) fn configure() {
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_INIT") {
         CRASH_ON_INIT.store(n != 0, Ordering::SeqCst);
     }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_LOAD_ONLY_CONTEXT") {
+        LOAD_ONLY_CONTEXT.store(n, Ordering::SeqCst);
+    }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD") {
         REFUSE_STATE_LOAD.store(n != 0, Ordering::SeqCst);
     }
@@ -316,6 +326,12 @@ pub(crate) fn refuse_state_load() -> bool {
         std::thread::sleep(std::time::Duration::from_millis(u64::from(slow)));
     }
     REFUSE_STATE_LOAD.load(Ordering::SeqCst)
+}
+
+/// Whether a state load in `context` of a state saved for `saved` is refused.
+pub(crate) fn refuse_load_in_context(context: u32, saved: Option<u8>) -> bool {
+    let only = LOAD_ONLY_CONTEXT.load(Ordering::SeqCst);
+    only != 0 && (only != context || saved.map(u32::from) != Some(only))
 }
 
 /// Aborts the process if `TUTTI_CLAP_PROBE_CRASH_ON_INIT` is set.

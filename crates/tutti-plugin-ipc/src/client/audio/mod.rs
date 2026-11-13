@@ -29,7 +29,7 @@ use crate::protocol::{
 use crate::transport::shm::AudioSlab;
 use tutti_plugin_types::{
     BlockStatus, BridgeResult, ContentScale, Delivered, EditorError, EditorSize, PluginFailure,
-    StateError,
+    StateError, StateUse,
 };
 use tutti_types::SampleRate;
 
@@ -499,18 +499,20 @@ impl AudioBridge {
 
     // --- Main-thread sync request+response ---
 
-    /// The plugin's state, read through the server. Blocks while it travels.
+    /// The plugin's state for `state_use`, read through the server. Blocks while
+    /// it travels.
     ///
     /// # Errors
     ///
     /// The plugin is dead, refused, or the transfer stalled.
-    pub fn save_state(&self) -> std::result::Result<Vec<u8>, StateError> {
+    pub fn save_state(&self, state_use: StateUse) -> std::result::Result<Vec<u8>, StateError> {
         if self.lifecycle.is_crashed() {
             return Err(StateError::PluginCrashed);
         }
         let (ask_resp, reply) = ask::<std::result::Result<Vec<u8>, StateError>>();
         let progress = StateProgress::new(self.state_progress_timeout);
         if !self.channels.push_command(Command::SaveState {
+            state_use,
             progress: progress.clone(),
             reply,
         }) {
@@ -527,12 +529,17 @@ impl AudioBridge {
         progress.wait(ask_resp)
     }
 
-    /// Restores a state in the plugin. Blocks while it travels.
+    /// Restores a state saved for `state_use` in the plugin. Blocks while it
+    /// travels.
     ///
     /// # Errors
     ///
     /// The plugin is dead, refused it, or the transfer stalled.
-    pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
+    pub fn load_state(
+        &self,
+        data: &[u8],
+        state_use: StateUse,
+    ) -> std::result::Result<(), StateError> {
         if self.lifecycle.is_crashed() {
             return Err(StateError::PluginCrashed);
         }
@@ -549,6 +556,7 @@ impl AudioBridge {
         let (ask_resp, reply) = ask::<std::result::Result<(), StateError>>();
         let progress = StateProgress::new(self.state_progress_timeout);
         if !self.channels.push_command(Command::LoadState {
+            state_use,
             data: data.to_vec(),
             progress: progress.clone(),
             reply,
@@ -871,11 +879,17 @@ mod tests {
         };
         while bridge.channels.push_command(Command::Reset) {}
 
-        assert_eq!(bridge.save_state(), Err(StateError::Busy));
-        assert_eq!(bridge.load_state(&[1, 2, 3]), Err(StateError::Busy));
+        assert_eq!(
+            bridge.save_state(tutti_plugin_types::StateUse::Project),
+            Err(StateError::Busy)
+        );
+        assert_eq!(
+            bridge.load_state(&[1, 2, 3], tutti_plugin_types::StateUse::Project),
+            Err(StateError::Busy)
+        );
         bridge.lifecycle.mark_crashed(PluginFailure::StreamClosed);
         assert_eq!(
-            bridge.load_state(&[1, 2, 3]),
+            bridge.load_state(&[1, 2, 3], tutti_plugin_types::StateUse::Project),
             Err(StateError::PluginCrashed)
         );
     }

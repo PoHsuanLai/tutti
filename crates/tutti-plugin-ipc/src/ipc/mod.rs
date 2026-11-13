@@ -53,7 +53,7 @@ use tutti_plugin_types::{
     BridgeError, BridgeResult, ChunkCounters, Controller, Load, LoadStage, Loaded, LoadedPlugin,
     MainThread, ParameterChanges, ParameterQueue, PluginDescriptor, PluginError, PluginResult,
     PluginTail, Prepare, ProcessWake, Refused, Reopen, Request, RestartRules, SampleFormat,
-    SampleRate, Samples, Stuck,
+    SampleRate, Samples, StateUse, Stuck,
 };
 use tutti_types::AtomicSampleRate;
 
@@ -80,7 +80,8 @@ pub struct IpcOrigin {
 impl IpcOrigin {
     /// A fresh instance of the plugin, from the same file and configuration
     /// in a server of its own (its own socket), at `rate`, with `state`
-    /// restored before it is activated. See [`Ipc::reopen_restoring`].
+    /// restored before it is activated, as the state of a duplicate. See
+    /// [`Ipc::reopen_restoring`].
     ///
     /// # Errors
     ///
@@ -98,6 +99,7 @@ impl IpcOrigin {
             self.load.clone(),
             rate,
             state,
+            StateUse::Duplicate,
             self.load_editor,
         )
     }
@@ -355,7 +357,7 @@ impl Ipc {
     /// `rate` and returns the plugin loaded in it, with what became of `state` if one was given: it is
     /// restored **before the plugin is activated**, the order every format
     /// allows and a plugin that takes its mode from the state at activation
-    /// needs.
+    /// needs. `state_use` is what that state was saved for.
     ///
     /// Blocks while the server launches and handshakes. Needs no main thread.
     ///
@@ -374,9 +376,10 @@ impl Ipc {
         load: Load,
         rate: SampleRate,
         state: Option<&[u8]>,
+        state_use: StateUse,
         load_editor: Option<EditorLoader>,
     ) -> BridgeResult<Launched> {
-        let server = launch(&config, &path, &load, rate, state)?;
+        let server = launch(&config, &path, &load, rate, state, state_use)?;
         let restored = server.state_restore.clone();
         // Guarded before the first fallible step below: an `Err` from
         // `PluginBridge::new` would otherwise drop a bare child process.

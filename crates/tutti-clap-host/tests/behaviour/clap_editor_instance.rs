@@ -75,7 +75,12 @@ fn an_editors_state_is_the_plugins_state() {
     let mut editor = ClapLoaded::load_editor(&main, path, &Load::new()).expect("loads");
 
     let through_editor = editor.save_state(&main).expect("saves");
-    let plugin = Control::save_state(editor.loaded_mut(), &main).expect("saves");
+    let plugin = Control::save_state(
+        editor.loaded_mut(),
+        &main,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("saves");
     assert!(!plugin.is_empty(), "the probe saves a state");
     assert_eq!(through_editor, plugin);
 }

@@ -11,7 +11,7 @@ use tutti_plugin_types::{
     EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Features, Health, LoadedPlugin,
     MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure,
     PluginResult, Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport, Request,
-    SampleRate, StateError, TerminationReason, WindowHandle,
+    SampleRate, StateError, StateUse, TerminationReason, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -64,7 +64,7 @@ macro_rules! served_control {
             }
 
             fn save_state(&self) -> Result<Vec<u8>, StateError> {
-                self.link.bridge.save_state()
+                self.link.bridge.save_state(StateUse::Project)
             }
 
             /// Queued on the command bus as the blocks around it are, so the
@@ -208,14 +208,26 @@ macro_rules! served_control {
                 AnyThread::parameter_value_from_text(self, id, text)
             }
 
-            fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
-                AnyThread::save_state(self).map_err(PluginError::StateFailed)
-            }
-
-            fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+            fn save_state(
+                &mut self,
+                _main: &MainThread,
+                state_use: StateUse,
+            ) -> PluginResult<Vec<u8>> {
                 self.link
                     .bridge
-                    .load_state(main, bytes)
+                    .save_state(state_use)
+                    .map_err(PluginError::StateFailed)
+            }
+
+            fn load_state(
+                &mut self,
+                main: &MainThread,
+                bytes: &[u8],
+                state_use: StateUse,
+            ) -> PluginResult<()> {
+                self.link
+                    .bridge
+                    .load_state(main, bytes, state_use)
                     .map_err(PluginError::StateFailed)
             }
 

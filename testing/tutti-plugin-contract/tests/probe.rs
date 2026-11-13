@@ -156,6 +156,7 @@ fn served_id(plugin: &PluginRef) -> String {
         plugin.load(),
         SampleRate::SR_48K,
         None,
+        tutti_plugin_types::StateUse::Project,
         Some(no_editor),
     )
     .unwrap_or_else(|e| panic!("{plugin:?}: the server loads it: {e:?}"));

@@ -6,7 +6,7 @@ use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin,
     Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, Preset, PresetId, RenderMode, RenderModeSupport, Request,
+    PluginError, PluginResult, Preset, PresetId, RenderMode, RenderModeSupport, Request, StateUse,
     WindowHandle,
 };
 
@@ -166,11 +166,11 @@ impl Control for Vst2Loaded {
         self.set_parameter_from_string(id, text)
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
         self.read_state(main).map_err(plugin_error)
     }
 
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
         self.write_state(main, bytes).map_err(plugin_error)
     }
 

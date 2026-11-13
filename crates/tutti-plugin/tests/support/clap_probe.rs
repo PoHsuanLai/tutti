@@ -319,6 +319,14 @@ impl ProbeEnv {
         self
     }
 
+    /// Make the plugin take a state only in `clap.state-context` `context`
+    /// (CLAP's value: 2 duplicate, 3 project), saved for that same context:
+    /// any other load is refused.
+    pub fn load_only_context(mut self, context: u32) -> Self {
+        self.set("TUTTI_CLAP_PROBE_LOAD_ONLY_CONTEXT", context.to_string());
+        self
+    }
+
     /// Make the plugin's `clap.state` save refuse.
     pub fn refuse_state_save(mut self, on: bool) -> Self {
         self.set(

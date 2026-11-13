@@ -50,6 +50,7 @@ mod process_wake;
 mod render_mode;
 mod requests;
 mod sample_format;
+mod state_use;
 mod sysex;
 mod transport;
 mod wakeups;
@@ -98,6 +99,7 @@ pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
 pub use process_wake::ProcessWake;
 pub use requests::{Edit, EditDrain, EditQueue, EditSink, edits, taken};
+pub use state_use::StateUse;
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
 pub use error::{Delivered, PluginError, PresetError, Result as PluginResult, StateError};

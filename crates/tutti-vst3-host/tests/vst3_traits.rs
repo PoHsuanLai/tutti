@@ -556,13 +556,19 @@ fn a_write_is_in_the_state_saved_before_any_block() {
         .expect("activates");
     controller.set_parameter(&main_thread(), id(PARAM_UI_STATE), Normalized::of(0.375));
     let saved = controller
-        .save_state(&main_thread())
+        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the probe saves");
     let (processor2, mut fresh) = probe
         .load()
         .activate(&main_thread(), prepare())
         .expect("a second instance");
-    fresh.load_state(&main_thread(), &saved).expect("restores");
+    fresh
+        .load_state(
+            &main_thread(),
+            &saved,
+            tutti_plugin_types::StateUse::Project,
+        )
+        .expect("restores");
     assert_eq!(
         fresh
             .parameter(&main_thread(), id(PARAM_UI_STATE))
@@ -665,7 +671,12 @@ fn the_control_surface_is_the_same_loaded_and_active() {
 /// block renders `probe_tag(0, 0) == 1.0` from silence.
 fn default_state(probe: &Probe) -> Vec<u8> {
     let mut fresh = probe.load();
-    Control::save_state(&mut fresh, &main_thread()).expect("the probe saves")
+    Control::save_state(
+        &mut fresh,
+        &main_thread(),
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("the probe saves")
 }
 
 /// What a block renders from silence in the probe's default mode.
@@ -719,7 +730,13 @@ fn a_state_load_on_a_loaded_plugin_drops_the_carried_writes() {
     );
     controller.set_parameter(&main_thread(), id(PARAM_RAMP), Normalized::of(0.3));
     let mut loaded = Vst3Loaded::deactivate(&main_thread(), processor, controller).expect("a pair");
-    Control::load_state(&mut loaded, &main_thread(), &state).expect("restores");
+    Control::load_state(
+        &mut loaded,
+        &main_thread(),
+        &state,
+        tutti_plugin_types::StateUse::Project,
+    )
+    .expect("restores");
     let (mut processor, controller) = loaded
         .activate(&main_thread(), prepare())
         .expect("activates again");
@@ -744,7 +761,11 @@ fn a_state_load_makes_the_queued_writes_stale() {
     );
     controller.set_parameter(&main_thread(), id(PARAM_RAMP), Normalized::of(0.3));
     controller
-        .load_state(&main_thread(), &state)
+        .load_state(
+            &main_thread(),
+            &state,
+            tutti_plugin_types::StateUse::Project,
+        )
         .expect("restores");
     assert_eq!(
         render_f32(&mut processor),

@@ -125,10 +125,10 @@ fn a_non_realtime_parameter_is_written_between_blocks_not_by_the_render() {
 }
 
 /// A block's automation does not reach the unit's other listeners (the plugin's
-/// editor) by itself: only `AUParameterSet` notifies them
-/// (`AudioUnitUtilities.h`), and its listener machinery takes locks and
-/// dispatches, so the render never calls it. The value each parameter ended the
-/// block on is told to them by the control side's tick. A listener of our own
+/// editor) by itself: only `AUParameterSet` and `AUParameterListenerNotify`
+/// notify them (`AudioUnitUtilities.h`), and their listener machinery takes
+/// locks and dispatches, so the render calls neither. The control side's tick
+/// tells them, notifying with no write: they read the unit's value. A listener of our own
 /// (not the host's, which `AUParameterSet` leaves out) hears nothing while the
 /// block has only rendered, and then the block's last value after the tick.
 #[test]
@@ -174,6 +174,32 @@ fn the_blocks_last_value_reaches_other_listeners_at_the_tick_not_the_render() {
         heard.last().copied(),
         Some((DRY_WET, 75.0)),
         "the tick tells the listener the block's last value: {heard:?}"
+    );
+}
+
+/// The tick tells the listeners of an automated value the unit already
+/// applied; it never writes one. A block that ran after the one being told
+/// about may have moved the parameter on, and a write of the older end value
+/// would undo it. So the unit still holds the later value after the tick.
+#[test]
+fn the_tick_does_not_write_the_value_back_over_a_later_one() {
+    use tutti_plugin_types::Control;
+
+    let main = MainThread::claim().unwrap();
+    let (mut processor, mut controller) = activate(delay_loaded());
+
+    let mut changes = ParameterChanges::reserved(1, 4);
+    assert!(changes.add_change(ParamId::from(DRY_WET), 100, 0.75));
+    render_block(&mut processor, 0.0, &changes);
+    assert_eq!(plain(&controller, DRY_WET), 75.0, "the automation landed");
+
+    // As if a later block had moved the parameter on.
+    tutti_au_host::parameters::set(controller.unit(), DRY_WET, 10.0).unwrap();
+    Control::flush_edits(&mut controller, &main);
+    assert_eq!(
+        plain(&controller, DRY_WET),
+        10.0,
+        "the tick wrote the earlier block's end over the later value"
     );
 }
 

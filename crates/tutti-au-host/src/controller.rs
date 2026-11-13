@@ -31,6 +31,9 @@ pub struct AuController {
     /// The writes the Processor handed over for `NonRealTime` parameters, which
     /// [`apply_deferred`](Self::apply_deferred) makes between blocks.
     deferred: EditReader<u64>,
+    /// The parameters whose automated value the unit has already applied, for
+    /// [`apply_deferred`](Self::apply_deferred) to tell the listeners of.
+    told: EditReader<u32>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -61,11 +64,13 @@ impl AuController {
         loaded: AuLoaded,
         ranges: Arc<ArcLend<RangeTable>>,
         deferred: EditReader<u64>,
+        told: EditReader<u32>,
     ) -> Self {
         Self {
             loaded,
             ranges,
             deferred,
+            told,
             _not_sync: PhantomData,
         }
     }
@@ -79,6 +84,13 @@ impl AuController {
         while let Some(word) = self.deferred.pop() {
             let (id, value) = crate::processor::unpack_deferred(word);
             let _ = crate::processor::write_now(&listener, self.loaded.unit(), id, value);
+        }
+        // An automated value the unit already applied is told, never written:
+        // a block may have moved the parameter on since, and a write of the
+        // older value would be heard in it. The listeners read the unit's own
+        // value; the host's listener is the sender, so it does not hear itself.
+        while let Some(id) = self.told.pop() {
+            let _ = crate::processor::notify_now(&listener, self.loaded.unit(), id);
         }
     }
 

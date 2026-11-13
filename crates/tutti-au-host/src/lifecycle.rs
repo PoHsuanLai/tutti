@@ -198,6 +198,7 @@ impl AuLoaded {
 
         let ranges = Arc::new(ArcLend::new(self.range_snapshot()));
         let (deferred_in, deferred_out) = edit_ring(DEFERRED_ROOM);
+        let (told_in, told_out) = edit_ring(DEFERRED_ROOM);
         let processor = AuProcessor::new(ProcessorParts {
             rendering,
             unit,
@@ -211,7 +212,11 @@ impl AuLoaded {
             block_size: self.config().block_size,
             stage,
             deferred: deferred_in,
+            told: told_in,
         });
-        Ok((processor, AuController::new(self, ranges, deferred_out)))
+        Ok((
+            processor,
+            AuController::new(self, ranges, deferred_out, told_out),
+        ))
     }
 }

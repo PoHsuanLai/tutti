@@ -102,10 +102,12 @@ pub struct AuProcessor {
     block_size: u32,
     /// The block's staged automation, which the render notify schedules.
     stage: SharedStage,
-    /// Writes to parameters flagged `NonRealTime`, and the value each automated
-    /// parameter ended a block on (to tell the listeners), packed by
-    /// [`pack_deferred`], for the control side to apply between blocks.
+    /// Writes to parameters flagged `NonRealTime`, packed by [`pack_deferred`],
+    /// for the control side to apply between blocks.
     deferred: EditWriter<u64>,
+    /// The parameters whose automated value the unit applied, which the control
+    /// side tells the listeners of (never writes: `AUParameterListenerNotify`).
+    told: EditWriter<u32>,
 }
 
 /// What `send_midi` delivers through: the protocol the unit takes, the list
@@ -176,6 +178,18 @@ pub(crate) fn write_now(
     }
 }
 
+/// Tells every listener but the host's own that `id` changed, writing nothing.
+pub(crate) fn notify_now(
+    listener: &Option<Arc<AuParameterListener>>,
+    unit: &Unit,
+    id: u32,
+) -> tutti_au_ffi::Result<()> {
+    match listener {
+        Some(listener) => listener.notify_parameter(id, EventAddress::GLOBAL),
+        None => crate::listener::notify_parameter(unit, id, EventAddress::GLOBAL),
+    }
+}
+
 /// A deferred write on the ring: the parameter in the high word, the plain
 /// value's bits in the low.
 pub(crate) fn pack_deferred(id: u32, value: f32) -> u64 {
@@ -207,6 +221,7 @@ pub(crate) struct ProcessorParts {
     pub(crate) block_size: u32,
     pub(crate) stage: SharedStage,
     pub(crate) deferred: EditWriter<u64>,
+    pub(crate) told: EditWriter<u32>,
 }
 
 impl AuProcessor {
@@ -222,6 +237,7 @@ impl AuProcessor {
             block_size,
             stage,
             deferred,
+            told,
         } = parts;
         Self {
             rendering,
@@ -235,6 +251,7 @@ impl AuProcessor {
             block_size,
             stage,
             deferred,
+            told,
         }
     }
 
@@ -559,7 +576,7 @@ impl AuProcessor {
                     // `AudioUnitSetParameter` applies it without notifying
                     // anyone; the control tick tells the listeners.
                     let _ = crate::parameters::set(&self.unit, id, plain);
-                    let _ = self.deferred.push(pack_deferred(id, plain));
+                    let _ = self.told.push(id);
                 }
             }
         }
@@ -589,21 +606,22 @@ impl AuProcessor {
             }
         };
         // The scheduled events do not reach the unit's listeners (the plugin's
-        // editor among them): only `AUParameterSet` notifies them
-        // (`AudioUnitUtilities.h`), and it goes through
-        // `AUParameterListenerNotify`, which may take locks and dispatch to
-        // other queues, so it is not real-time safe and never runs here. Each
-        // staged parameter's end value goes to the control side on the
-        // deferred ring, and `AuController::apply_deferred` (the tick) tells the
-        // listeners then. Only staged parameters are here: a `NonRealTime` one
-        // was handed over above, and one set at the head (no notify, or no room)
-        // was echoed there, so no parameter is told twice for a block. The tick
-        // writes the value the unit already holds, newest last.
+        // editor among them): only `AUParameterSet` and
+        // `AUParameterListenerNotify` do (`AudioUnitUtilities.h`), and both
+        // may take locks and dispatch to other queues, so neither is real-time
+        // safe and neither runs here. Each staged parameter goes to the control
+        // side on the `told` ring, and `AuController::apply_deferred` (the
+        // tick) notifies the listeners then. It notifies and writes nothing,
+        // since a later block may have moved the parameter on and a write of
+        // this block's end would undo it; the listeners read the unit's value.
+        // Only staged parameters are here: a `NonRealTime` one was handed to
+        // the deferred ring above (a real write, made on the tick), and one set
+        // at the head (no notify, or no room) was told there, so no parameter
+        // is told twice for a block.
         let stage = self.stage.borrow();
-        for &(id, value) in stage.ends() {
-            // A full ring counts the refusal; the next block carries the value
-            // again.
-            let _ = self.deferred.push(pack_deferred(id, value));
+        for &(id, _) in stage.ends() {
+            // A full ring counts the refusal; the next block tells again.
+            let _ = self.told.push(id);
         }
         drop(stage);
         // AUv2 reports no per-block MIDI, parameter or note-expression output

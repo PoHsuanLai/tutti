@@ -30,7 +30,7 @@ use crate::{
     AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorSize, EditorWindow,
     KeyEvent, KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
     PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
-    SampleRate, Samples, WindowHandle,
+    ProcessWake, SampleRate, Samples, WindowHandle,
 };
 use crate::{
     FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
@@ -231,6 +231,16 @@ pub trait Control: EditorWindow {
     /// zero is a claim: a format that reports edits in the block's
     /// [`ProcessOutput`] says `0` in its own impl.
     fn dropped_reported_edits(&self) -> u64;
+
+    /// Gives the plugin's host the [`ProcessWake`] to raise when the plugin
+    /// asks to be processed again (CLAP's `request_process`, which a plugin
+    /// that returned `CLAP_PROCESS_SLEEP` calls from any thread). Any thread;
+    /// the plugin's first binding stands, and a host binds one handle for the
+    /// plugin's life. A format with no sleep status keeps the default, which
+    /// drops it.
+    fn bind_wake(&self, wake: ProcessWake) {
+        let _ = wake;
+    }
 }
 
 /// A plugin that is configured but not rendering.
@@ -606,6 +616,10 @@ impl<W: Wraps> Control for W {
 
     fn dropped_reported_edits(&self) -> u64 {
         self.plugin().dropped_reported_edits() + self.lost_reports()
+    }
+
+    fn bind_wake(&self, wake: ProcessWake) {
+        self.plugin().bind_wake(wake);
     }
 }
 

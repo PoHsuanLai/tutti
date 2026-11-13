@@ -3,40 +3,34 @@
 //! principle 1), and a load asks the catalog whether it may ([`Catalog::check`],
 //! `PluginLoad::with_catalog`).
 //!
-//! The caller supplies where the DB lives and which directories to scan —
-//! this crate has no opinion on OS conventions or app names.
+//! The caller supplies the persistence and which directories to scan: this
+//! crate has no opinion on OS conventions, app names or file formats. The
+//! persistence is a closure from `&PluginDb` to a typed `Result`; with the
+//! `serde` feature a `PluginDb` is `Serialize` and `Deserialize`, so the app
+//! picks the format and where the bytes live.
 //!
 //! ```no_run
-//! # #[cfg(feature = "json")]
 //! # fn ex() -> Result<(), tutti_plugin_db::ScanBusy> {
-//! use tutti_plugin::catalog::{Catalog, CatalogConfig};
+//! use tutti_plugin::catalog::{Catalog, CatalogConfig, PersistError};
+//! use tutti_plugin_db::PluginDb;
 //! use std::path::PathBuf;
 //!
-//! let mut catalog = Catalog::open_db(CatalogConfig::new(
-//!     PathBuf::from("/my/app/plugin-db.json"),
-//!     vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
-//! ));
+//! let mut catalog = Catalog::new(
+//!     PluginDb::new(), // or the one the app deserialized
+//!     CatalogConfig::new(
+//!         PathBuf::from("/my/app/state"),
+//!         vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
+//!     ),
+//!     |db| {
+//!         // Write `db` wherever the app keeps it.
+//!         let _ = db;
+//!         Ok::<(), PersistError>(())
+//!     },
+//! );
 //! let scanned = catalog.scan()?;
 //! println!("{} new", scanned.new);
 //! # Ok(())
 //! # }
-//! ```
-//!
-//! The database is a plain [`PluginDb`]; a host that
-//! keeps its rows elsewhere (a CRDT, an application database) builds one from
-//! them and persists it itself, without the `json` feature:
-//!
-//! ```no_run
-//! use std::path::PathBuf;
-//! use tutti_plugin::catalog::{CatalogConfig, Catalog};
-//! use tutti_plugin_db::PluginDb;
-//!
-//! let mut db = PluginDb::new();
-//! // ... db.apply(delta) for each row the host stored ...
-//! let plugins = Catalog::with_db(
-//!     db,
-//!     CatalogConfig::new(PathBuf::from("/unused"), vec![PathBuf::from("/usr/lib/vst3")]),
-//! );
 //! ```
 //!
 //! # Threads
@@ -54,7 +48,7 @@ use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured,
 use crate::host::plugin_ref::PluginRef;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use tutti_plugin_db::{
     BlacklistedFile, Delta, FileFacts, PluginDb, PluginEntry, Scan, ScanBusy, ScanPoll, ScanResult,
     Scanner,
@@ -63,28 +57,46 @@ use tutti_plugin_ipc::{AudioConfig, CatalogConfig};
 use tutti_plugin_types::PluginDescriptor;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
-/// How a catalog writes its database out: the host's own, or the JSON file.
-type Saver = Arc<dyn Fn(&PluginDb) -> std::io::Result<()> + Send + Sync>;
+/// Why the persistence a catalog was given could not store the database.
+///
+/// The persistence closure builds one from whatever failed (an I/O error, a
+/// serializer's error); the catalog hands it back from [`Catalog::save`] and
+/// [`Catalog::take_persist_error`].
+#[derive(Debug, thiserror::Error)]
+#[error("the plugin database could not be persisted: {source}")]
+pub struct PersistError {
+    #[source]
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl PersistError {
+    /// A failure of the persistence, from its underlying error.
+    pub fn new(source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self {
+            source: source.into(),
+        }
+    }
+}
+
+/// How a catalog stores its database: the host's own closure.
+type Persist = Arc<dyn Fn(&PluginDb) -> Result<(), PersistError> + Send + Sync>;
+
+/// The failure of the last save a catalog started itself, until it is taken.
+type Unreported = Arc<Mutex<Option<PersistError>>>;
 
 /// A catalog of scanned plugins that can list and blacklist them, and says
 /// whether a load may open one ([`check`](Self::check)).
 ///
-/// Wraps a [`PluginDb`]; [`Catalog::with_db`] takes your own, and
-/// `Catalog::open_db` reads the versioned JSON file when the `json` feature is
-/// enabled. Every change is in memory until [`save`](Self::save) is called.
-///
-/// With the `json` feature the store is the JSON file at `config.db_path`.
-/// Without it there is no store until the host gives one
-/// ([`with_saver`](Self::with_saver)); until then `save` fails with
-/// [`Unsupported`](std::io::ErrorKind::Unsupported), and so does the save a
-/// crash recovery needs, which keeps the pedal armed (see
-/// [`recover_crash`](Self::recover_crash)).
+/// Wraps a [`PluginDb`] and the persistence the host supplies
+/// ([`Catalog::new`]). Every change is in memory until [`save`](Self::save) is
+/// called, or a scan or a crash recovery saves it.
 pub struct Catalog {
     db: PluginDb,
     scanner: Scanner,
     config: CatalogConfig,
     audio: AudioConfig,
-    saver: Option<Saver>,
+    persist: Persist,
+    unreported: Unreported,
     /// The write a finished rescan started on its own thread.
     pending_save: Option<std::thread::JoinHandle<()>>,
 }
@@ -104,25 +116,27 @@ impl Drop for Catalog {
     }
 }
 
-/// The saver `with_db` installs: the JSON file at the config's path.
-#[cfg(feature = "json")]
-fn file_saver(config: &CatalogConfig) -> Option<Saver> {
-    let path = config.db_path.clone();
-    Some(Arc::new(move |db| tutti_plugin_db::save(db, &path)))
-}
-
-#[cfg(not(feature = "json"))]
-fn file_saver(_config: &CatalogConfig) -> Option<Saver> {
-    None
-}
-
-fn write_through(saver: Option<&Saver>, db: &PluginDb) -> std::io::Result<()> {
-    match saver {
-        Some(save) => save(db),
-        None => Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "this catalog has no store: enable `json` or call `Catalog::with_saver`",
-        )),
+/// Runs `persist` for a save the catalog starts itself. A failure is logged and
+/// kept in `unreported` for [`Catalog::take_persist_error`]; a success clears
+/// an older failure, since the newer table is what is stored.
+fn persist_unattended(
+    persist: &Persist,
+    unreported: &Unreported,
+    db: &PluginDb,
+) -> Result<(), String> {
+    let outcome = persist(db);
+    let mut slot = unreported.lock().unwrap_or_else(PoisonError::into_inner);
+    match outcome {
+        Ok(()) => {
+            *slot = None;
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!("{e}");
+            let message = e.to_string();
+            *slot = Some(e);
+            Err(message)
+        }
     }
 }
 
@@ -134,20 +148,30 @@ fn key(path: &Path) -> PathBuf {
 }
 
 impl Catalog {
-    /// Creates a catalog over a database you built.
+    /// Creates a catalog over `db`, which `persist` stores.
+    ///
+    /// `persist` receives the table and stores it wherever the host keeps it. It
+    /// runs on the owning thread for [`save`](Self::save) and for a crash
+    /// recovery, and on a short-lived thread for the save after a rescan, which
+    /// gets a copy of the table. A crash recovery removes its sentinel only
+    /// after `persist` succeeds.
     ///
     /// Audio settings default ([`AudioConfig::default`]); override with
     /// [`Catalog::with_audio_config`].
     #[must_use]
-    pub fn with_db(db: PluginDb, config: CatalogConfig) -> Self {
+    pub fn new(
+        db: PluginDb,
+        config: CatalogConfig,
+        persist: impl Fn(&PluginDb) -> Result<(), PersistError> + Send + Sync + 'static,
+    ) -> Self {
         let scanner = Scanner::new(config.pedal_path(), probe_plugin);
-        let saver = file_saver(&config);
         Self {
             db,
             scanner,
             config,
             audio: AudioConfig::default(),
-            saver,
+            persist: Arc::new(persist),
+            unreported: Unreported::default(),
             pending_save: None,
         }
     }
@@ -164,38 +188,6 @@ impl Catalog {
     pub fn with_measuring(mut self) -> Self {
         self.scanner = Scanner::new(self.config.pedal_path(), probe_plugin_measured);
         self
-    }
-
-    /// Sets how this catalog persists its database, replacing the JSON file
-    /// (or the absence of one). It runs on the owning thread for `save` and for
-    /// a crash recovery, and on a short-lived thread for the save after a
-    /// rescan, which gets a copy of the table.
-    #[must_use]
-    pub fn with_saver(
-        mut self,
-        saver: impl Fn(&PluginDb) -> std::io::Result<()> + Send + Sync + 'static,
-    ) -> Self {
-        self.saver = Some(Arc::new(saver));
-        self
-    }
-
-    /// Creates an empty catalog without reading `config.db_path`.
-    ///
-    /// With the `json` feature, `save` writes to `config.db_path`.
-    #[must_use]
-    pub fn empty(config: CatalogConfig) -> Self {
-        Self::with_db(PluginDb::new(), config)
-    }
-
-    /// Creates a catalog loaded from the JSON file at `config.db_path`.
-    ///
-    /// See [`tutti_plugin_db::load`] for how a missing, corrupt or
-    /// other-version file is handled. Requires the `json` feature.
-    #[cfg(feature = "json")]
-    #[must_use]
-    pub fn open_db(config: CatalogConfig) -> Self {
-        let db = tutti_plugin_db::load(&config.db_path);
-        Self::with_db(db, config)
     }
 
     /// Sets the audio settings a load that names this catalog applies.
@@ -223,6 +215,13 @@ impl Catalog {
     /// and the rest canonicalize for you.
     pub fn db(&self) -> &PluginDb {
         &self.db
+    }
+
+    /// The save the scanner and the pedal's recovery run: `persist`, with its
+    /// failure kept for [`take_persist_error`](Self::take_persist_error).
+    fn autosave(&self) -> impl FnOnce(&PluginDb) -> std::io::Result<()> + use<> {
+        let (persist, unreported) = (Arc::clone(&self.persist), Arc::clone(&self.unreported));
+        move |db| persist_unattended(&persist, &unreported, db).map_err(std::io::Error::other)
     }
 
     /// Starts a scan of the plugin directories on a background thread.
@@ -264,11 +263,9 @@ impl Catalog {
     /// ```
     pub fn spawn_scan(&mut self) -> std::result::Result<Scan, ScanBusy> {
         self.finish_pending_save();
-        let saver = self.saver.as_ref();
+        let save = self.autosave();
         self.scanner
-            .spawn(&mut self.db, &self.config.scan_dirs, |db| {
-                write_through(saver, db)
-            })
+            .spawn(&mut self.db, &self.config.scan_dirs, save)
     }
 
     /// Applies what a rescan has found so far and reports where it stands.
@@ -276,8 +273,9 @@ impl Catalog {
     ///
     /// A finished scan is saved when this returns [`ScanPoll::Done`]: the table
     /// is copied here and written on a short-lived thread, so the fsync is not
-    /// on the owner's thread. A failed save is logged, not returned. The write
-    /// is finished before the next scan, `save`, `reload` or drop. Drop the
+    /// on the owner's thread. A failed save is logged and kept for
+    /// [`take_persist_error`](Self::take_persist_error). The write is finished
+    /// before the next scan, `save` or drop. Drop the
     /// [`Scan`] once it reports `Done` or `Died`.
     pub fn poll_scan(&mut self, scan: &Scan) -> ScanPoll {
         let poll = scan.poll(&mut self.db);
@@ -291,43 +289,39 @@ impl Catalog {
     /// summary.
     ///
     /// Blocks while each new or changed plugin is probed in a subprocess. The
-    /// in-memory catalog is updated, and saved, before this returns.
+    /// in-memory catalog is updated, and saved, before this returns; a failed
+    /// save is kept for [`take_persist_error`](Self::take_persist_error).
     ///
     /// # Errors
     ///
     /// [`ScanBusy`], as for [`spawn_scan`](Self::spawn_scan).
     pub fn scan(&mut self) -> std::result::Result<ScanResult, ScanBusy> {
         self.finish_pending_save();
-        let saver = self.saver.as_ref();
+        let save = self.autosave();
         let result = self
             .scanner
-            .scan(&mut self.db, &self.config.scan_dirs, |db| {
-                write_through(saver, db)
-            })?;
-        if let Err(e) = write_through(self.saver.as_ref(), &self.db) {
-            tracing::warn!("failed to save the plugin database after a scan: {e}");
-        }
+            .scan(&mut self.db, &self.config.scan_dirs, save)?;
+        // A failure stays for `take_persist_error`; the scan's result is the table.
+        let _ = persist_unattended(&self.persist, &self.unreported, &self.db);
         Ok(result)
     }
 
     /// Writes a copy of the table on its own thread. The clone is the only cost
     /// on the owner's thread. A write still in flight is finished first, so two
-    /// writes never race and the newer table is the one on disk.
+    /// writes never race and the newer table is the one stored.
     fn save_in_background(&mut self) {
         self.finish_pending_save();
-        let Some(saver) = self.saver.clone() else {
-            tracing::warn!("a rescan finished but this catalog has no store to save to");
-            return;
-        };
         let copy = Arc::new(self.db.clone());
-        let for_thread = (Arc::clone(&copy), Arc::clone(&saver));
+        let for_thread = (
+            Arc::clone(&copy),
+            Arc::clone(&self.persist),
+            Arc::clone(&self.unreported),
+        );
         let spawned = std::thread::Builder::new()
             .name("plugin-db-save".into())
             .spawn(move || {
-                let (copy, saver) = for_thread;
-                if let Err(e) = saver(&copy) {
-                    tracing::warn!("failed to save the plugin database after a scan: {e}");
-                }
+                let (copy, persist, unreported) = for_thread;
+                let _ = persist_unattended(&persist, &unreported, &copy);
             });
         match spawned {
             Ok(handle) => self.pending_save = Some(handle),
@@ -335,9 +329,7 @@ impl Catalog {
                 tracing::warn!(
                     "could not start a thread for the database save, saving inline: {e}"
                 );
-                if let Err(e) = saver(&copy) {
-                    tracing::warn!("failed to save the plugin database after a scan: {e}");
-                }
+                let _ = persist_unattended(&self.persist, &self.unreported, &copy);
             }
         }
     }
@@ -346,20 +338,27 @@ impl Catalog {
         if let Some(handle) = self.pending_save.take()
             && handle.join().is_err()
         {
-            tracing::warn!("the plugin database save panicked; the file may be out of date");
+            let panicked = PersistError::new("the persistence panicked");
+            tracing::warn!("{panicked}");
+            *self
+                .unreported
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(panicked);
         }
     }
 
-    /// Replaces the in-memory catalog with the contents of the JSON database
-    /// file.
-    ///
-    /// Useful when another process may have rewritten the file. Unsaved
-    /// in-memory changes are lost. A rescan in flight still applies its deltas
-    /// to the reloaded catalog. Requires the `json` feature.
-    #[cfg(feature = "json")]
-    pub fn reload(&mut self) {
+    /// The failure of the last save this catalog started itself (after
+    /// [`scan`](Self::scan), after a rescan's [`poll_scan`](Self::poll_scan), or
+    /// in a [`recover_crash`](Self::recover_crash)), or `None` if it succeeded or
+    /// the failure was already taken. A later successful save clears an older
+    /// failure: the table it stored is newer. Waits for a rescan's write still in
+    /// flight.
+    pub fn take_persist_error(&mut self) -> Option<PersistError> {
         self.finish_pending_save();
-        self.db = tutti_plugin_db::load(&self.config.db_path);
+        self.unreported
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// Iterates the refs and descriptors of all non-blacklisted plugins.
@@ -557,23 +556,27 @@ impl Catalog {
     ///
     /// The non-blocking half of [`register_path`](Self::register_path): run
     /// [`probe_record`] on any thread (it needs no catalog) and pass the result
-    /// here. Call `save` (feature `json`) to persist.
+    /// here. Call [`save`](Self::save) to persist.
     pub fn apply(&mut self, delta: Delta) {
         self.db.apply(delta);
     }
 
-    /// Writes the in-memory catalog to its store: the JSON file at
-    /// `config.db_path` (atomically; feature `json`), or the host's own saver
-    /// ([`with_saver`](Self::with_saver)).
+    /// Writes the in-memory catalog through the catalog's persistence.
     ///
     /// # Errors
     ///
-    /// Returns the store's I/O error; the previous file is then intact. With no
-    /// store (no `json`, no saver) returns
-    /// [`Unsupported`](std::io::ErrorKind::Unsupported).
-    pub fn save(&mut self) -> std::io::Result<()> {
+    /// The [`PersistError`] the persistence returned; what it stored before is
+    /// then as the persistence leaves it.
+    pub fn save(&mut self) -> Result<(), PersistError> {
         self.finish_pending_save();
-        write_through(self.saver.as_ref(), &self.db)
+        let outcome = (self.persist)(&self.db);
+        if outcome.is_ok() {
+            *self
+                .unreported
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+        }
+        outcome
     }
 
     /// Blacklists the plugin a previous scan was probing when it died.
@@ -589,11 +592,10 @@ impl Catalog {
     /// Idempotent, and a no-op when no sentinel is present. Returns the files
     /// that were blacklisted.
     ///
-    /// The sentinel is removed only after the blacklist is saved. A catalog with
-    /// no store (no `json`, no [`with_saver`](Self::with_saver)) cannot save, so
-    /// the blacklist lives in memory and the sentinel stays armed: the next
-    /// start blacklists the plugin again rather than forgetting it. Give such a
-    /// catalog a saver to let the sentinel go.
+    /// The sentinel is removed only after the blacklist is saved. If the
+    /// persistence fails, the blacklist lives in memory, the sentinel stays armed
+    /// (the next start blacklists the plugin again rather than forgetting it) and
+    /// the failure is kept for [`take_persist_error`](Self::take_persist_error).
     ///
     /// # Errors
     ///
@@ -601,9 +603,8 @@ impl Catalog {
     /// probe, not a crash.
     pub fn recover_crash(&mut self) -> std::result::Result<Vec<PathBuf>, ScanBusy> {
         self.finish_pending_save();
-        let saver = self.saver.as_ref();
-        self.scanner
-            .recover_crash(&mut self.db, |db| write_through(saver, db))
+        let save = self.autosave();
+        self.scanner.recover_crash(&mut self.db, save)
     }
 
     /// Removes rows whose plugin file does not exist and returns their paths.
@@ -640,9 +641,10 @@ mod tests {
         let mut db = PluginDb::new();
         // Rows are keyed by canonical path, as a scan keys them.
         db.apply(Delta::put(key(path), row));
-        Catalog::with_db(
+        Catalog::new(
             db,
-            CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
+            CatalogConfig::new("/nonexistent", crate::catalog::NO_SCAN_DIRS),
+            |_| Ok(()),
         )
     }
 
@@ -831,40 +833,22 @@ mod tests {
                 ),
             ));
         }
-        let mut plugins = Catalog::with_db(
+        let mut plugins = Catalog::new(
             db,
-            CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
+            CatalogConfig::new("/nonexistent", crate::catalog::NO_SCAN_DIRS),
+            |_| Ok(()),
         );
 
         assert_eq!(plugins.prune_missing(), vec![gone]);
         assert_eq!(plugins.iter().count(), 1);
     }
 
-    /// A crash recovered through the catalog is on disk before the pedal is
-    /// gone, and a fresh `load` sees it. The pedal sits beside the database.
-    #[cfg(feature = "json")]
-    #[test]
-    fn a_recovered_crash_is_saved_and_survives_a_restart() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let config = CatalogConfig::new(dir.path().join("db.json"), crate::catalog::NO_SCAN_DIRS);
-        let crashy = dir.path().join("Crashy.vst3");
-        std::fs::write(&crashy, b"x").unwrap();
-        std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
-
-        let mut plugins = Catalog::empty(config.clone());
-        assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
-
-        assert!(!config.pedal_path().exists());
-        let restarted = Catalog::open_db(config);
-        assert!(restarted.is_blacklisted(&crashy));
-    }
-
-    /// A catalog with a saver of its own gets the blacklist before the pedal
+    /// A catalog's persistence gets the blacklist before the pedal
     /// goes, and the pedal goes after.
     #[test]
-    fn a_saver_receives_the_recovered_blacklist_before_the_pedal_goes() {
+    fn the_persistence_receives_the_recovered_blacklist_before_the_pedal_goes() {
         let dir = tempfile::TempDir::new().unwrap();
-        let config = CatalogConfig::new(dir.path().join("db.json"), crate::catalog::NO_SCAN_DIRS);
+        let config = CatalogConfig::new(dir.path(), crate::catalog::NO_SCAN_DIRS);
         let crashy = dir.path().join("Crashy.vst3");
         std::fs::write(&crashy, b"x").unwrap();
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
@@ -873,7 +857,7 @@ mod tests {
         let log = Arc::clone(&seen);
         let key_path = key(&crashy);
 
-        let mut plugins = Catalog::empty(config).with_saver(move |db| {
+        let mut plugins = Catalog::new(PluginDb::new(), config, move |db| {
             log.lock()
                 .unwrap()
                 .push((db.is_blacklisted(&key_path), pedal.exists()));
@@ -885,42 +869,52 @@ mod tests {
         assert!(!plugins.config.pedal_path().exists());
     }
 
-    /// A catalog with no store cannot have saved the blacklist, so the pedal
-    /// stays armed and the blacklist is in memory only.
-    #[cfg(not(feature = "json"))]
+    /// A persistence that always fails cannot have saved the blacklist, so the
+    /// pedal stays armed, the blacklist is in memory only, and the failure
+    /// reaches the caller as the persistence's own error.
     #[test]
-    fn a_catalog_with_no_store_keeps_the_pedal_armed() {
+    fn a_failing_persistence_keeps_the_pedal_armed_and_reports_its_error() {
         let dir = tempfile::TempDir::new().unwrap();
-        let config = CatalogConfig::new(dir.path().join("db.json"), crate::catalog::NO_SCAN_DIRS);
+        let config = CatalogConfig::new(dir.path(), crate::catalog::NO_SCAN_DIRS);
         let crashy = dir.path().join("Crashy.vst3");
         std::fs::write(&crashy, b"x").unwrap();
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
 
-        let mut plugins = Catalog::empty(config.clone());
+        let mut plugins = Catalog::new(PluginDb::new(), config.clone(), |_| {
+            Err(PersistError::new("disk full"))
+        });
         assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
+        let recovery = plugins
+            .take_persist_error()
+            .expect("the recovery's save failed");
+        assert!(recovery.to_string().contains("disk full"), "{recovery}");
+        assert_eq!(plugins.take_persist_error().map(|_| ()), None, "taken once");
         // A rescan recovers first; it must not delete what it could not save.
         plugins.scan().unwrap();
+        let scan = plugins
+            .take_persist_error()
+            .expect("the scan's save failed");
+        assert!(scan.to_string().contains("disk full"), "{scan}");
 
         assert!(plugins.db().is_blacklisted(&key(&crashy)));
         assert!(config.pedal_path().exists());
-        assert_eq!(
-            plugins.save().unwrap_err().kind(),
-            std::io::ErrorKind::Unsupported
-        );
+        let saved = plugins.save().unwrap_err();
+        assert!(saved.to_string().contains("disk full"), "{saved}");
+        assert!(std::error::Error::source(&saved).is_some());
     }
 
     /// The save after a rescan is off the owner's thread: `poll_scan` reports
-    /// `Done` while the saver is still running, and the next `save` waits for
+    /// `Done` while the persistence is still running, and the next `save` waits for
     /// it, and dropping the catalog waits for it.
     #[test]
     fn the_save_after_a_rescan_does_not_block_the_owner() {
         let dir = tempfile::TempDir::new().unwrap();
-        let config = CatalogConfig::new(dir.path().join("db.json"), crate::catalog::NO_SCAN_DIRS);
+        let config = CatalogConfig::new(dir.path(), crate::catalog::NO_SCAN_DIRS);
         let (started_tx, started_rx) = crossbeam_channel::bounded::<()>(8);
         let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
         let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let done = Arc::clone(&writes);
-        let mut plugins = Catalog::empty(config).with_saver(move |_| {
+        let mut plugins = Catalog::new(PluginDb::new(), config, move |_| {
             started_tx.send(()).unwrap();
             let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
             done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -953,14 +947,15 @@ mod tests {
     #[test]
     fn unblacklist_and_remove_drop_the_retained_sentinel_entry() {
         let dir = tempfile::TempDir::new().unwrap();
-        let config = CatalogConfig::new(dir.path().join("db.json"), crate::catalog::NO_SCAN_DIRS);
+        let config = CatalogConfig::new(dir.path(), crate::catalog::NO_SCAN_DIRS);
         let (a, b) = (dir.path().join("A.vst3"), dir.path().join("B.vst3"));
         std::fs::write(&a, b"x").unwrap();
         std::fs::write(&b, b"x").unwrap();
         let entries = format!("{}\0{}", a.display(), b.display());
         std::fs::write(config.pedal_path(), entries).unwrap();
-        let mut plugins =
-            Catalog::empty(config.clone()).with_saver(|_| Err(std::io::Error::other("no disk")));
+        let mut plugins = Catalog::new(PluginDb::new(), config.clone(), |_| {
+            Err(PersistError::new("no disk"))
+        });
         assert_eq!(plugins.recover_crash().unwrap().len(), 2);
         assert!(config.pedal_path().exists(), "kept: the save failed");
 
@@ -988,10 +983,11 @@ mod tests {
             std::fs::write(&real, b"x").unwrap();
             let alias = dir.path().join("Alias.vst3");
             std::os::unix::fs::symlink(&real, &alias).unwrap();
-            let mut plugins = Catalog::empty(CatalogConfig::new(
-                dir.path().join("db.json"),
-                crate::catalog::NO_SCAN_DIRS,
-            ));
+            let mut plugins = Catalog::new(
+                PluginDb::new(),
+                CatalogConfig::new(dir.path(), crate::catalog::NO_SCAN_DIRS),
+                |_| Ok(()),
+            );
 
             plugins.blacklist(&alias, "boom");
 
@@ -1011,10 +1007,11 @@ mod tests {
             std::fs::write(&file, b"x").unwrap();
             let alias_dir = dir.path().join("alias");
             std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
-            let mut plugins = Catalog::empty(CatalogConfig::new(
-                dir.path().join("db.json"),
-                crate::catalog::NO_SCAN_DIRS,
-            ));
+            let mut plugins = Catalog::new(
+                PluginDb::new(),
+                CatalogConfig::new(dir.path(), crate::catalog::NO_SCAN_DIRS),
+                |_| Ok(()),
+            );
             plugins.blacklist(&file, "boom");
             plugins.blacklist(real_dir.join("Also.vst3"), "boom");
             std::fs::remove_file(&file).unwrap();
@@ -1038,9 +1035,9 @@ mod tests {
             std::fs::write(real.join("B.vst3"), b"x").unwrap();
             let root = dir.path().join("root");
             std::os::unix::fs::symlink(&real, &root).unwrap();
-            let config = CatalogConfig::new(root.join("db.json"), crate::catalog::NO_SCAN_DIRS);
+            let config = CatalogConfig::new(&root, crate::catalog::NO_SCAN_DIRS);
             std::fs::write(config.pedal_path(), root.join("A.vst3").to_str().unwrap()).unwrap();
-            let mut plugins = Catalog::empty(config).with_saver(|_| Ok(()));
+            let mut plugins = Catalog::new(PluginDb::new(), config, |_| Ok(()));
 
             let crashed = plugins.recover_crash().unwrap();
             plugins.blacklist(root.join("B.vst3"), "boom");

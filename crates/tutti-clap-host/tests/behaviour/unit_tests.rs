@@ -768,15 +768,12 @@ fn test_host_state_take_clears_flag() {
     use std::sync::atomic::Ordering;
 
     let state = HostState::new(&main_thread());
-    state
-        .lifecycle
-        .process_requested
-        .store(true, Ordering::Release);
+    state.processing.state_dirty.store(true, Ordering::Release);
 
     // First take returns true and clears
-    assert!(state.take(&state.lifecycle.process_requested));
+    assert!(state.take(&state.processing.state_dirty));
     // Second take returns false
-    assert!(!state.take(&state.lifecycle.process_requested));
+    assert!(!state.take(&state.processing.state_dirty));
 }
 
 /// The main thread is the one thread that proved it with a token, and no
@@ -1013,9 +1010,13 @@ fn test_host_request_restart_raises_the_request() {
     assert_eq!(taken(&state.requests).count(), 0, "taken once");
 }
 
+/// `request_process` raises the bound wake once per call, and a request made
+/// before any binding has nobody to wake and changes nothing.
 #[test]
-fn test_host_request_process_sets_flag() {
+fn test_host_request_process_raises_the_bound_wake() {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tutti_plugin_types::ProcessWake;
 
     let state = Arc::new(HostState::new(&main_thread()));
     let host = ClapHost::new(state.clone());
@@ -1023,7 +1024,26 @@ fn test_host_request_process_sets_flag() {
     let request_process = unsafe { (*raw).request_process.unwrap() };
 
     unsafe { request_process(raw) };
-    assert!(state.take(&state.lifecycle.process_requested));
+
+    let raised = Arc::new(AtomicU32::new(0));
+    let count = raised.clone();
+    assert!(
+        state
+            .process_wake
+            .set(ProcessWake::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }))
+            .is_ok()
+    );
+    assert_eq!(
+        raised.load(Ordering::SeqCst),
+        0,
+        "the early request is gone"
+    );
+
+    unsafe { request_process(raw) };
+    unsafe { request_process(raw) };
+    assert_eq!(raised.load(Ordering::SeqCst), 2, "one raise per request");
 }
 
 /// `request_callback` raises `Request::Callback`.

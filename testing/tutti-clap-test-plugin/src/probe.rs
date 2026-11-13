@@ -41,6 +41,8 @@ pub enum ClapSwitch {
     /// Whether the render path scales its output by the `Gain` parameter (0
     /// or 1).
     ApplyGain,
+    /// How many output note ports the plugin declares (0 or 1), read at load.
+    NoteOutPorts,
     /// Milliseconds every `on_timer` takes (0 for none): a slow paint on the
     /// host's main thread.
     TimerStall,
@@ -69,6 +71,7 @@ impl ClapSwitch {
             }
             Self::TailExtension => b"tutti_test_plugin_set_tail_extension\0",
             Self::ApplyGain => b"tutti_test_plugin_set_apply_gain\0",
+            Self::NoteOutPorts => b"tutti_test_plugin_set_note_out_ports\0",
             Self::TimerStall => b"tutti_test_plugin_set_timer_stall_ms\0",
             Self::TimerPeriod => b"tutti_test_plugin_set_timer_period_ms\0",
         }
@@ -131,6 +134,36 @@ impl ClapProbe {
                     get::<extern "C" fn(u32) -> u32>(lib, b"tutti_test_plugin_thread_command\0");
                 f(cmd);
             }
+        }
+    }
+
+    /// Calls the plugin's `host.request_process()` from the calling thread,
+    /// in every image, and turns [`RenderMode::Woken`](crate::RenderMode::Woken)
+    /// to sound: `false` when no instance is initialised in the cargo
+    /// artifact's image.
+    pub fn request_process_now(&self) -> bool {
+        let mut requested = false;
+        for lib in [&self.dot_clap, &self.artifact] {
+            // SAFETY: `tutti_test_plugin_request_process_now` is `#[no_mangle]
+            // pub unsafe extern "C" fn() -> bool` in `subprocess.rs`.
+            requested = unsafe {
+                get::<unsafe extern "C" fn() -> bool>(
+                    lib,
+                    b"tutti_test_plugin_request_process_now\0",
+                )()
+            };
+        }
+        requested
+    }
+
+    /// How many `process` calls the cargo artifact's image has seen since it
+    /// loaded.
+    pub fn blocks_seen(&self) -> u64 {
+        // SAFETY: `tutti_test_plugin_blocks_seen` is `#[no_mangle] pub unsafe
+        // extern "C" fn() -> u64` in `subprocess.rs`.
+        unsafe {
+            get::<unsafe extern "C" fn() -> u64>(&self.artifact, b"tutti_test_plugin_blocks_seen\0")(
+            )
         }
     }
 

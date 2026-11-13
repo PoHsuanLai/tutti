@@ -118,7 +118,7 @@ fn a_clap_plugin_asked_in_process_is_hosted_here() {
     let hosted = s.plugin(node).expect("it is hosted");
     assert_eq!(hosted.diagnostics().server_pid(), None);
     assert_eq!(
-        hosted.handle().descriptor().id,
+        hosted.descriptor().id,
         tutti_clap_test_plugin::PLUGIN_ID.to_str().expect("utf-8")
     );
 }

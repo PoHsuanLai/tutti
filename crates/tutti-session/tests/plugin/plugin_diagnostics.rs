@@ -2,7 +2,7 @@
 //! figures a host shows, whichever hosting runs the plugin, and the graph's bus
 //! handles for wiring it.
 //!
-//! CLAP over the reference plugin in a real `plugin-server` (a sidechain needs
+//! CLAP over the reference plugin in a real `plugin-server` (an aux bus needs
 //! its aux-bus port layout; the server's pid and its termination); VST2 over
 //! the reference plugin in process (a count that is the same figure in both
 //! hostings: lost MIDI).
@@ -60,31 +60,34 @@ mod clap {
         (s, node)
     }
 
-    /// **A plugin's buses are the graph's bus handles, and a sidechain wires.**
-    /// The probe with a mono aux input beside its stereo main: `main_input` is
-    /// bus 0 and `sidechain` bus 1 (the same handles `key.bus_in(i)` names),
-    /// the output buses likewise; a source's bus connects into the sidechain and
-    /// the graph says what feeds it; a bus the plugin lacks is not a handle and
-    /// the graph refuses it as a bus the node does not declare.
+    /// **A plugin's buses are the graph's bus handles, and an aux input is not
+    /// a sidechain.** The probe with a mono aux input beside its stereo main (CLAP
+    /// marks it aux, and no loader marks a sidechain): `main_input` is bus 0,
+    /// `sidechain()` is `None`, and the aux input is bus 1 through `input(1)`,
+    /// the same handle `key.bus_in(1)` names; the output buses likewise; a
+    /// source's bus connects into it and the graph says what feeds it; a bus
+    /// the plugin lacks is not a handle and the graph refuses it as a bus the
+    /// node does not declare.
     #[test]
-    fn a_sidechain_wires_through_the_buses_handle() {
+    fn an_aux_input_wires_through_the_buses_handle_and_is_no_sidechain() {
         let (mut s, node) = loaded(Some("1"));
         let key = node;
         let buses = s.plugin(node).unwrap().buses();
         assert_eq!(buses.main_input(), Some(key.bus_in(0)));
-        assert_eq!(buses.sidechain(), Some(key.bus_in(1)));
+        assert_eq!(buses.sidechain(), None, "an aux input is not a sidechain");
+        assert_eq!(buses.input(1), Some(key.bus_in(1)));
         assert_eq!(buses.output(0), Some(key.bus_out(0)));
         assert_eq!(buses.output(1), Some(key.bus_out(1)));
         assert_eq!((buses.input_count(), buses.output_count()), (2, 2));
         assert_eq!(buses.output(2), None);
         assert_eq!(buses.input(2), None);
 
-        let sidechain = buses.sidechain().expect("the probe has an aux input");
+        let aux = buses.input(1).expect("the probe has an aux input");
         let (kick, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
         s.graph()
-            .connect(kick.bus_out(0), sidechain)
-            .expect("a mono source feeds the mono sidechain");
-        assert_eq!(s.graph().bus_sources(sidechain).unwrap(), [kick.bus_out(0)]);
+            .connect(kick.bus_out(0), aux)
+            .expect("a mono source feeds the mono aux input");
+        assert_eq!(s.graph().bus_sources(aux).unwrap(), [kick.bus_out(0)]);
         let _ = s.update();
 
         let refused = s.graph().connect(kick.bus_out(0), key.bus_in(2));

@@ -246,8 +246,8 @@ doing each thing:
   gives, so a modulation route or an automation lane targets a plugin
   parameter and a native one through one type. Values, text, gestures and
   units go through the view, which holds the plugin's descriptors.
-- **Buses.** `plugin.buses()` hands out the graph's bus handles; a sidechain is
-  `connect(kick.out(0), comp.sidechain())`.
+- **Buses.** `plugin.buses()` hands out the graph's bus handles; a plugin whose loader marks a sidechain wires it with
+  `connect(kick.bus_out(0), comp.buses().sidechain().unwrap())`.
 - **MIDI.** A route targets the plugin node and the Group picks the port (Group
   N to CLAP note port or VST3 event bus N); there is no plugin port index on a
   route. Per-note control is MIDI 2.0's own messages (no note-expression type);
@@ -536,21 +536,27 @@ and a host asks the session (`Session::render_mode`). *Buses:*
 plugin's own bus order (which is the node's: `main_input()`, `sidechain()`,
 `input(i)`, `output(i)`, `input_count()`, `output_count()`), as `BusRef` and
 `BusSource`, the ones `key.bus_in(i)` and `key.bus_out(i)` name:
-`connect(kick.bus_out(0), comp.buses().sidechain().unwrap())`. No format marks
-a bus a sidechain (they say "aux"), so `sidechain()` is the first input bus past
-the main one; a plugin with none answers `None`. The graph tracks `MAX_BUSES`
+`connect(kick.bus_out(0), comp.buses().sidechain().unwrap())` wires a plugin whose loader marks one. No loader maps a
+bus to `BusRole::Sidechain` today (CLAP, VST3 and AU say main or aux, VST2 has
+one bus), so `sidechain()`, the first input whose role is `Sidechain`, is `None`
+for every hosted format until a loader maps one; an aux input is not a
+sidechain and is reached by `input(i)`. The graph tracks `MAX_BUSES`
 per side, and a handle past it is `None`. *`Plugin::handle()`* is not on the
 read view of a host any more: it, `controls()` and `meter()` are behind
-`tutti-session`'s `testing` feature (what only the session's own tests drive: a
-plugin's latency cell, the project-meter cell's reclaim, an editor's idle
-tick), since the views now cover what a host used it for (parameters, state,
+`tutti-session`'s `testing` feature, kept for what has no public read: the plugin's own
+reported values (a modulation lane's delivered value, which the session's mirror
+does not show), the plugin-reported latency cell and the pipeline's
+`chunk_in_flight_answered` and its write seams (`set_latency`), the project-meter
+cell's reclaim, a VST2 plugin's idle tick outside an opened editor, and an owned
+handle on a pool thread. Descriptor, state, parameters sets, health and counts
+have public views, since the views now cover what a host used it for (parameters, state,
 presets, health, diagnostics, the editor); `PluginHandle` stays the layer the
 views are built on. The reference CLAP plugin gained
 `TUTTI_CLAP_PROBE_PORT_LAYOUT` (every server's port layout, as the existing
-`..._RESTART_PORT_LAYOUT` is a replacement's), which the sidechain test uses
+`..._RESTART_PORT_LAYOUT` is a replacement's), which the aux-bus test uses
 (stereo main and a mono aux input). Tests: `plugin_diagnostics.rs` (lost MIDI
 as `Losses` in process, the server named and ended, the latency and tail as the
-graph holds them, a sidechain wired through the handle and a bus past the
+graph holds them, an aux input wired through the handle, an aux input not read as a sidechain and a bus past the
 plugin's own refused). Not done in this step: a VST3 aux bus's activation
 follows what the graph wires (the node does not learn which ports are wired, so
 it stays a `kDefaultActive` wish), VST3 `tresult` and AU `OSStatus` typed into

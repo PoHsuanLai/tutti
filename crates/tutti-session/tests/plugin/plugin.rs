@@ -27,7 +27,6 @@ use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::{PluginRef, PluginState};
-use tutti_plugin_host::PluginStatus;
 use tutti_plugin_types::{BridgeError, PluginFailure, TerminationReason};
 use tutti_session::BufferMaster;
 use tutti_session::{
@@ -100,8 +99,7 @@ fn latency(s: &Session, node: NodeKey) -> Samples {
 /// reply; live, any later control call (a snapshot, a parameter read) carries
 /// it, and here this one does.
 fn round_trip(s: &Session, node: NodeKey) {
-    let handle = s.plugin(node).expect("hosted").handle();
-    let _ = handle.current_preset(&main_thread());
+    let _ = s.plugin(node).expect("hosted").state().save();
 }
 
 /// Waits (up to 10 s) for the probe's latency to read `want`: the
@@ -275,10 +273,7 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     // first block; the bridge notices on a later one).
     let mut out = vec![0.0f32; BLOCK * 2];
     let deadline = Instant::now() + Duration::from_secs(10);
-    while matches!(
-        s.plugin(node).unwrap().handle().status(),
-        PluginStatus::Alive
-    ) {
+    while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
         assert!(Instant::now() < deadline, "the probe never died");
         s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
         std::thread::sleep(Duration::from_millis(5));
@@ -573,9 +568,11 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     // A value worth restoring, and a snapshot of it.
     s.plugin(node)
         .unwrap()
-        .handle()
-        .any_thread()
-        .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
+        .params()
+        .get(id)
+        .expect("the plugin declares the gain")
+        .set(tutti_plugin_types::Normalized::of(0.25))
+        .expect("the gain is writable");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(
@@ -1361,9 +1358,11 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     // A state that is not the plugin's default.
     s.plugin(node)
         .unwrap()
-        .handle()
-        .any_thread()
-        .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
+        .params()
+        .get(id)
+        .expect("the plugin declares the gain")
+        .set(tutti_plugin_types::Normalized::of(0.25))
+        .expect("the gain is writable");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(Instant::now() < deadline, "the probe never took the value");

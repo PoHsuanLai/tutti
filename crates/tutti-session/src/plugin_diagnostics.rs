@@ -136,8 +136,8 @@ impl<'a> Diagnostics<'a> {
 /// [`Plugin::buses`](crate::Plugin::buses): what to wire with
 /// `Graph::connect` ([`BusSource`] into [`BusRef`]).
 ///
-/// `connect(kick.out(0), comp.buses().sidechain().unwrap())` is the plugin's
-/// sidechain. A bus index here is the graph's bus index, the plugin's own bus
+/// `connect(kick.bus_out(0), comp.buses().sidechain().unwrap())` wires a
+/// plugin whose loader marks a sidechain. A bus index here is the graph's bus index, the plugin's own bus
 /// order, so each handle is the one `key.bus_in(i)` and `key.bus_out(i)` name.
 /// The graph tracks [`MAX_BUSES`] of a side: a plugin with more has its later
 /// buses reached by port.
@@ -150,10 +150,18 @@ pub struct PluginBuses<'a> {
 
 impl<'a> PluginBuses<'a> {
     pub(crate) fn new(node: tutti_graph::NodeKey, hosted: &'a HostedPlugin) -> Self {
+        Self::over(
+            node,
+            hosted.handle.input_buses(),
+            hosted.handle.output_buses(),
+        )
+    }
+
+    fn over(node: tutti_graph::NodeKey, inputs: &'a [PluginBus], outputs: &'a [PluginBus]) -> Self {
         Self {
             node,
-            inputs: hosted.handle.input_buses(),
-            outputs: hosted.handle.output_buses(),
+            inputs,
+            outputs,
         }
     }
 
@@ -171,16 +179,18 @@ impl<'a> PluginBuses<'a> {
         self.input(index)
     }
 
-    /// The plugin's sidechain: its first input bus past the main one.
+    /// The plugin's sidechain: its first input bus whose role is
+    /// [`BusRole::Sidechain`], or `None`.
     ///
-    /// No format marks a bus a sidechain (they say "aux"), and an input that is
-    /// not the main one is what a sidechain feeds, so this is the first of
-    /// those; `None` for a plugin with no such bus.
+    /// A bus is a sidechain only when the format's loader says so. Today none
+    /// does (CLAP, VST3 and AU mark a bus main or aux, and VST2 has one), so
+    /// this is `None` for every hosted format until a loader maps one; an aux
+    /// input is not a sidechain, and is reached by [`input`](Self::input).
     pub fn sidechain(&self) -> Option<BusRef> {
         let index = self
             .inputs
             .iter()
-            .position(|bus| bus.role != BusRole::Main)?;
+            .position(|bus| bus.role == BusRole::Sidechain)?;
         self.input(index)
     }
 
@@ -203,5 +213,36 @@ impl<'a> PluginBuses<'a> {
     /// How many output buses the graph tracks.
     pub fn output_count(&self) -> usize {
         self.outputs.len().min(MAX_BUSES)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_types::ChannelLayout;
+
+    fn bus(role: BusRole) -> PluginBus {
+        PluginBus::new(ChannelLayout::STEREO, role)
+    }
+
+    /// **A sidechain is the bus the loader marks `Sidechain`, not any bus past
+    /// the main one.** An aux input first, then a sidechain: the sidechain is
+    /// bus 2 and the aux stays reachable as bus 1; with no `Sidechain` bus there
+    /// is none, whatever aux inputs exist.
+    #[test]
+    fn only_a_bus_marked_sidechain_is_the_sidechain() {
+        let node = tutti_graph::NodeKey::fresh();
+        let ins = [
+            bus(BusRole::Main),
+            bus(BusRole::Aux),
+            bus(BusRole::Sidechain),
+        ];
+        let buses = PluginBuses::over(node, &ins, &[]);
+        assert_eq!(buses.main_input(), Some(BusRef::new(node, 0)));
+        assert_eq!(buses.sidechain(), Some(BusRef::new(node, 2)));
+        assert_eq!(buses.input(1), Some(BusRef::new(node, 1)));
+
+        let aux_only = [bus(BusRole::Main), bus(BusRole::Aux)];
+        assert_eq!(PluginBuses::over(node, &aux_only, &[]).sidechain(), None);
     }
 }

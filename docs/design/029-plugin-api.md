@@ -214,8 +214,8 @@ A `Job` is `Send` and blocks (a server launch, a state round trip, a reload).
 The session hands its due jobs to the spawner and lands their results in the
 next `update()`. The default spawner is `std::thread`, so a headless
 host writes nothing. It is the session's facility, not the plugins', and it was built
-for the MIDI file and SoundFont loads and the recording take (doc 017 L1f-b,
-doc 030 step 8), not here: step 5 only makes the plugin jobs its users. The
+for the MIDI file and SoundFont loads and the recording take (doc 030 step 8),
+not here: step 5 only makes the plugin jobs its users. The
 bounce's job (`bounce_start` / `finish_bounce`) moves onto it later.
 `load_plugin(..).run()` stays for a host that wants the load's latency in its
 own hands.
@@ -231,13 +231,13 @@ Landing is the first thing `Phase::Collect` does, so what a job landed is in the
 graph that update commits. There is no cancel: a job that stops carries its own
 flag, and `Landings::is_closed` (a send returns the message) tells it the session
 is gone. The recording take's pump (doc 030 step 8) and the MIDI file and
-SoundFont loads (doc 017 L1f-b) were its first users, the plugin jobs (step 5)
+SoundFont loads were its first users, the plugin jobs (step 5)
 are its next; the bounce moves onto it later.
 
 ### 3.5 Where it meets the graph and MIDI
 
 Agreed with the graph's surface ([013](013-native-graph.md), "The session
-graph's surface") and MIDI's ([017](017-midi.md)), so a host learns one way of
+graph's surface") and MIDI's (the `tutti-session` MIDI rustdoc), so a host learns one way of
 doing each thing:
 
 - **The key.** `add_plugin` returns `Key<PluginNode>` (the marker is
@@ -565,7 +565,7 @@ the diagnostics, and §6.3's transport items.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 
-**As built (step 5, the spawner).** The facility is doc 017 L1f's (§3.4); step 5
+**As built (step 5, the spawner).** The facility is the session's (§3.4); step 5
 moves the three plugin jobs onto it and deletes what the host did for them.
 `Phase::Plugins` calls the crate-private `submit(work, land)` where it emitted
 an event: the snapshot (`save_state` on a clone of the handle), the parameter

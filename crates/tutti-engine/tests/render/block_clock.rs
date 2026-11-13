@@ -1,6 +1,6 @@
 //! The block clock: each render call publishes the OS time it began and the
 //! graph frame it began at, so a producer thread holding an OS time can place
-//! it on a frame (doc 017 section 5, "Timing at the edge"). Figures are
+//! it on a frame. Figures are
 //! analytic: the frame of call `k` is the frames rendered before it.
 
 use tutti_engine::Engine;

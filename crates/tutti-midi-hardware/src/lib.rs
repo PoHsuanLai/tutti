@@ -56,7 +56,7 @@
 //!   held on it; `Changed` is for backends whose identity survives a rename.
 //! - **macOS:** one process-wide CoreMIDI client runs its run loop on one thread
 //!   for setup notifications, and each [`Devices`] registers with it. A
-//!   [`DeviceId`] is the endpoint's `MIDIUniqueID`.
+//!   [`DeviceId`] is the endpoint's `MIDIUniqueID`. Untested by the author.
 //! - If the watch ends on its own, [`DeviceEvents::recv_timeout`] says why, once the events the watch reported are taken, and the list
 //!   stays as it was.
 //! - **Windows (and Linux without alsa-lib 1.2.10):** the list is empty and stays

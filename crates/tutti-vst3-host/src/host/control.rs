@@ -7,8 +7,8 @@ use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
     LoadedPlugin, Normalized, ParamEdit, ParamId, ParamMapping, ParameterInfo, PluginClass,
-    PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, RenderMode, Request,
-    RescanScope, Samples, Vst3SubCategories, WindowHandle,
+    PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, RenderModeSupport,
+    Request, RescanScope, Samples, Vst3SubCategories, WindowHandle,
 };
 
 use crate::error::Vst3Error;
@@ -114,6 +114,8 @@ impl Vst3Loaded {
         let has_programs = !self.program_lists(main).is_empty();
         features.set(Features::PRESET_LIST, has_programs);
         features.set(Features::PRESET_LOAD, has_programs);
+        // `processMode` is a field of every plugin's `ProcessSetup`.
+        features.insert(Features::RENDER_MODE);
         features
     }
 
@@ -435,11 +437,10 @@ impl Control for Vst3Loaded {
         out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
     }
 
-    /// `false`: VST3 reads the mode only at activation (`setupProcessing`'s
-    /// `kOffline`), so a live change is a reconfigure through the Lifecycle,
-    /// whose `Prepare::mode` the next activation carries.
-    fn set_render_mode(&mut self, _main: &MainThread, _mode: RenderMode) -> bool {
-        false
+    /// `OnActivation`: VST3 reads the mode only in `setupProcessing`
+    /// (`kOffline`), a call on an inactive plugin.
+    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+        RenderModeSupport::OnActivation
     }
 
     /// The edits the plugin's own editor made, in order, as [`ParamEdit`]s:

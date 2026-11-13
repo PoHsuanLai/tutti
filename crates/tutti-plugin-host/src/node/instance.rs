@@ -16,7 +16,7 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
     Event, Hand, HostOp, InProcess, Lifecycle, Load, Loaded, MaxBlock, Notice, Origin, PluginError,
-    Prepare, Processor, RenderMode, SampleRate, Samples, State, standing,
+    Prepare, Processor, RenderMode, RenderModeSupport, SampleRate, Samples, State, standing,
 };
 use tutti_rt::Rt;
 
@@ -218,12 +218,13 @@ impl<F: Loaded> Instance<F> {
     /// Tells the plugin its render mode, and keeps the mode a rate change
     /// activates it in. Main thread.
     ///
-    /// A format that takes it live (VST2: a callback answer; CLAP's
-    /// `render.set`) is told through [`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode). One that
-    /// cannot (`false`) is reconfigured through the lifecycle: the activation
-    /// carries the mode, and the Processor changes at the pump, as a rate
-    /// change's does. Returns whether the plugin now runs in `mode` (or is
-    /// on its way to it).
+    /// What happens is the plugin's
+    /// [`render_mode_support`](tutti_plugin_types::Control::render_mode_support):
+    /// a `Live` plugin is told; an `OnActivation` one is reconfigured through
+    /// the lifecycle, the activation carrying the mode and the Processor
+    /// changing at the pump, as a rate change's does; an `Unsupported` one is
+    /// left running, the mode kept for its next activation. Returns whether
+    /// the plugin now runs in `mode` (or is on its way to it).
     ///
     /// With `rt`, the node's own realtime end out of any executor (a fork
     /// being built), a reconfiguration runs here to the end, as
@@ -239,12 +240,12 @@ impl<F: Loaded> Instance<F> {
     ) -> bool {
         self.prepare = self.prepare.with_mode(mode);
         self.state.set_mode(mode);
-        let live = self
-            .lifecycle
-            .control()
-            .is_some_and(|control| control.set_render_mode(main, mode));
-        if live {
-            return true;
+        if let Some(control) = self.lifecycle.control() {
+            match control.render_mode_support(main) {
+                RenderModeSupport::Live => return control.set_render_mode(main, mode),
+                RenderModeSupport::Unsupported => return false,
+                RenderModeSupport::OnActivation => {}
+            }
         }
         if self.lifecycle.is_poisoned() {
             return false;
@@ -491,5 +492,74 @@ mod tests {
         assert!(instance.renders());
         assert_eq!(instance.rate(), SampleRate::SR_96K);
         assert!(rt.poll(Processor::stop).is_some(), "the new Processor");
+    }
+
+    /// An active fake taking the render mode as `support` says, adopted with
+    /// its realtime end, its log cleared.
+    fn adopted(
+        support: RenderModeSupport,
+    ) -> (
+        Instance<tutti_plugin_types::fake::FakeLoaded>,
+        Rt<tutti_plugin_types::fake::FakeProcessor>,
+        tutti_plugin_types::fake::FakePlugin,
+    ) {
+        use tutti_plugin_types::{Control, Loaded};
+        let (fake, loaded) = tutti_plugin_types::fake::FakePlugin::new();
+        fake.take_render_mode(support);
+        let main = main_thread();
+        let wiring = loaded.wiring(&main);
+        let prepare = Prepare::new(
+            SampleRate::SR_48K,
+            tutti_types::MaxBlock::new(Samples(64)).expect("a block"),
+        );
+        let Ok((processor, controller)) = loaded.activate(&main, prepare) else {
+            panic!("the fake activates");
+        };
+        let (instance, rt) = Instance::adopt(processor, controller, prepare, &wiring);
+        fake.clear_calls();
+        (instance, rt, fake)
+    }
+
+    /// Whether the fake was deactivated or activated since its log was cleared.
+    fn cycled(fake: &tutti_plugin_types::fake::FakePlugin) -> bool {
+        use tutti_plugin_types::fake::Call;
+        fake.calls()
+            .iter()
+            .any(|c| matches!(c, Call::Deactivate | Call::Activate(..)))
+    }
+
+    /// **A plugin that reads the mode at activation is activated again in
+    /// it**: the exchange, run to the end with the realtime end in hand,
+    /// deactivates and activates the plugin, offline.
+    #[test]
+    fn a_mode_read_at_activation_cycles_the_plugin() {
+        let (mut instance, mut rt, fake) = adopted(RenderModeSupport::OnActivation);
+        assert!(instance.set_render_mode(&main_thread(), RenderMode::Offline, Some(&mut rt)));
+        assert!(cycled(&fake), "{:?}", fake.calls());
+        assert_eq!(instance.render_mode(), RenderMode::Offline);
+        assert!(instance.renders());
+    }
+
+    /// **A plugin with no render mode is left running**: the change answers
+    /// `false`, the plugin is neither told nor deactivated, and the mode is
+    /// kept for its next activation.
+    #[test]
+    fn a_plugin_without_a_render_mode_is_not_cycled() {
+        let (mut instance, mut rt, fake) = adopted(RenderModeSupport::Unsupported);
+        assert!(!instance.set_render_mode(&main_thread(), RenderMode::Offline, Some(&mut rt)));
+        assert_eq!(fake.told_render_mode(), None);
+        assert!(!cycled(&fake), "{:?}", fake.calls());
+        assert_eq!(instance.render_mode(), RenderMode::Offline, "kept");
+        assert!(instance.renders());
+    }
+
+    /// **A live plugin is told the mode where it runs**, and is neither
+    /// deactivated nor activated again.
+    #[test]
+    fn a_live_plugin_is_told_and_not_cycled() {
+        let (mut instance, mut rt, fake) = adopted(RenderModeSupport::Live);
+        assert!(instance.set_render_mode(&main_thread(), RenderMode::Offline, Some(&mut rt)));
+        assert_eq!(fake.told_render_mode(), Some(RenderMode::Offline));
+        assert!(!cycled(&fake), "{:?}", fake.calls());
     }
 }

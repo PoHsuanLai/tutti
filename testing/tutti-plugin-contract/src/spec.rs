@@ -247,11 +247,12 @@ pub struct Surface {
     /// The Rust VST3 shell's view embeds only an X11 window, so a host on
     /// Windows or macOS is right to see none.
     pub has_editor: bool,
-    /// What `set_render_mode(Offline)` answers: `true` where the format takes
-    /// the mode live (VST2: the host's own flag), `false` where it is read at
-    /// activation (VST3) or the plugin has no render extension (the shared
-    /// CLAP shell exports none).
-    pub render_mode_live: bool,
+    /// What `render_mode_support` answers: `Live` where the format takes the
+    /// mode while active (VST2: the host's own flag), `OnActivation` where it
+    /// is read at activation (VST3), `Unsupported` where the plugin has no
+    /// render mode (the shared CLAP shell exports no `clap.render`, the AU
+    /// shell implements no `kAudioUnitProperty_OfflineRender`).
+    pub render_mode: tutti_plugin_types::RenderModeSupport,
     /// Whether the shell reads the notice byte ([`NOTICE_ON_LOAD`]): CLAP, VST2
     /// and VST3, which tell the host something on each state load.
     pub notices: bool,
@@ -277,11 +278,12 @@ pub struct Surface {
     pub infinite_tail: Option<tutti_plugin_types::PluginTail>,
 }
 
-/// CLAP: no editor in the plugin, no `clap.render`, a callback request.
+/// CLAP: no editor in the plugin, no `clap.render` (so no render mode), a
+/// callback request.
 pub const CLAP: Surface = Surface {
     selects_editor: false,
     has_editor: false,
-    render_mode_live: false,
+    render_mode: tutti_plugin_types::RenderModeSupport::Unsupported,
     notices: true,
     request: Some(tutti_plugin_types::Request::Callback),
     edits: &[],
@@ -294,7 +296,7 @@ pub const CLAP: Surface = Surface {
 pub const VST2: Surface = Surface {
     selects_editor: false,
     has_editor: false,
-    render_mode_live: true,
+    render_mode: tutti_plugin_types::RenderModeSupport::Live,
     notices: true,
     request: None,
     edits: &[Edit::Change(Param::Level, 0.5)],
@@ -309,7 +311,7 @@ pub const VST2: Surface = Surface {
 pub const VST3: Surface = Surface {
     selects_editor: true,
     has_editor: cfg!(all(unix, not(target_os = "macos"))),
-    render_mode_live: false,
+    render_mode: tutti_plugin_types::RenderModeSupport::OnActivation,
     notices: true,
     request: None,
     edits: &AUX_EDITED,
@@ -323,7 +325,7 @@ pub const VST3: Surface = Surface {
 pub const VST3_CPP: Surface = Surface {
     selects_editor: false,
     has_editor: false,
-    render_mode_live: false,
+    render_mode: tutti_plugin_types::RenderModeSupport::OnActivation,
     notices: true,
     request: None,
     edits: &AUX_EDITED,
@@ -333,14 +335,14 @@ pub const VST3_CPP: Surface = Surface {
 };
 
 /// AU, from the shared plugin's Audio Unit shell: no editor (the shell offers no
-/// Cocoa view), no live render mode (the property is read at initialization, so
-/// an active unit refuses it), no notice (the shell raises none), the tail
+/// Cocoa view), no render mode (the shell refuses
+/// `kAudioUnitProperty_OfflineRender`), no notice (the shell raises none), the tail
 /// byte read, and the host's own linear map over the declared range for `tone`
 /// (an AU has no normalized value). The infinite marker is `+inf` seconds.
 pub const AU: Surface = Surface {
     selects_editor: false,
     has_editor: false,
-    render_mode_live: false,
+    render_mode: tutti_plugin_types::RenderModeSupport::Unsupported,
     notices: false,
     request: None,
     edits: &[],

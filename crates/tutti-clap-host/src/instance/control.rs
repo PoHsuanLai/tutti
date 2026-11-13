@@ -11,8 +11,8 @@ use tutti_plugin_types::{
     BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence, EditorSize,
     EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit, ParamId,
     ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples,
-    TimerId, WindowHandle, Wraps,
+    PluginError, PluginResult, PluginTail, PresetId, RenderMode, RenderModeSupport, Request,
+    RescanScope, Samples, TimerId, WindowHandle, Wraps,
 };
 
 use super::ClapLoaded;
@@ -187,6 +187,10 @@ impl ClapLoaded {
         features.set(Features::PRESET_LOAD, self.supports_preset_load());
         // The format the plugin runs at: 64-bit only while activated as such.
         features.set(Features::F64_AUDIO, self.audio.f64_active);
+        features.set(
+            Features::RENDER_MODE,
+            self.render_mode_support(main) != RenderModeSupport::Unsupported,
+        );
         features
     }
 
@@ -401,10 +405,20 @@ impl Control for ClapLoaded {
         self.take_requests_now(main, out);
     }
 
+    /// `Live` with `clap.render` (`render.set` is a main-thread call on an
+    /// active plugin), `Unsupported` without: the extension is optional, and a
+    /// plugin whose rendering does not depend on the mode leaves it out.
+    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+        if self.plugin.supports(tutti_clap_ffi::Extension::Render) {
+            RenderModeSupport::Live
+        } else {
+            RenderModeSupport::Unsupported
+        }
+    }
+
     /// Switches between real-time and offline rendering per `CLAP_EXT_RENDER`.
     /// `true` when the plugin accepted, `false` when it has no `clap.render` or
-    /// refused (the next activation carries [`Prepare::mode`](tutti_plugin_types::Prepare::mode)
-    /// either way).
+    /// refused.
     fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
         self.plugin.set_render_offline(main, mode.is_offline())
     }

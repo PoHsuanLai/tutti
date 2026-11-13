@@ -208,20 +208,7 @@ fn every_audio_class_survives_a_block() {
         driven + failures.len(),
         failures.join("\n")
     );
-    // Guard the premise: a sweep that drove nothing must not report success.
-    //
-    // This was `driven > 40`, a figure taken from one developer's external SDK
-    // build (~55 audio classes across ~18 bundles). That number is a property of
-    // `VST3_SAMPLE_PLUGIN_DIR`, not of this host, and it is unset on essentially
-    // every machine — so the moment these tests stopped skipping vacuously, the
-    // literal failed on the in-repo corpus of two bundles. A premise guard that
-    // only holds on one machine guards nothing on the others.
-    //
-    // The regression it was aimed at — class enumeration collapsing to
-    // one-per-bundle — is now caught relative to the corpus actually present.
-    // The *other* half of that concern, `load_class` ignoring which class it was
-    // asked for, is caught by the `info.name != name` check above, which is a
-    // per-class assertion and needs no corpus size at all.
+    // The sweep drove at least one audio class per bundle present.
     let bundles = sample_plugins().len();
     assert!(
         driven >= bundles && bundles > 0,
@@ -233,52 +220,26 @@ fn every_audio_class_survives_a_block() {
 
 /// A plugin's sidechain inputs must be staged, not dropped.
 ///
-/// `host-checker` declares a stereo main input plus several `kAux` inputs
-/// (`hostcheckerprocessor.cpp:76-88`). `Vst3Active::activate_buses` loops
-/// over `getBusCount` and activates every one, which is correct VST3: the
-/// plugin's own `activateBus` scores `index > 0` as the informational feature
-/// "IComponent::activateBus for SideChain supported!" rather than an error
-/// (`hostcheckerprocessor.cpp:817-823`). Only an index *outside* the bus list
-/// is a violation.
-///
-/// The observable consequence — and what this asserts — is that the host's own
-/// per-bus staging covers every declared input bus. A host that stopped at bus
-/// 0 would leave a compressor's sidechain reading silence, with no error raised
-/// anywhere: `HostCheck::validate` reports process-time findings only, and the
-/// plugin's `activateBus` log flushes from `setActive`, so neither channel
-/// catches it. That is why this checks geometry rather than findings.
-#[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
+/// `audio-probe` declares a stereo main input beside a mono `kAux` input.
+/// `Vst3Active::activate_buses` loops over `getBusCount` and activates every
+/// one, which is correct VST3. The observable consequence, and what this
+/// asserts, is that the host's own per-bus staging covers every declared input
+/// bus with its declared width. A host that stopped at bus 0 would leave a
+/// compressor's sidechain reading silence, with no error raised anywhere:
+/// `HostCheck::validate` reports process-time findings only. That is why this
+/// checks geometry rather than findings.
 #[test]
 fn sidechain_input_buses_are_staged() {
-    if !harness_ready() {
-        return;
-    }
-    let path = require_host_checker();
+    let path = probe_path();
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
-        .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
+        .unwrap_or_else(|e| panic!("audio-probe failed to load: {e:?}"));
 
-    let buses = &inst.loaded().plugin_info().input_bus_channels;
-    eprintln!("host-checker input buses: {buses:?}");
-
-    // The premise: this plugin must actually declare a sidechain, or the test
-    // proves nothing. Assert it rather than silently passing on a one-bus build.
-    assert!(
-        buses.len() > 1,
-        "host-checker is expected to declare aux inputs beside its main bus, \
-         but the host resolved {} input bus(es) — either the plugin was built \
-         without them or the host is collapsing the bus list",
-        buses.len()
+    assert_eq!(
+        inst.loaded().plugin_info().input_bus_channels,
+        [2, 1],
+        "audio-probe declares a stereo main input and a mono aux input; the host \
+         must resolve both, each at its own width"
     );
-
-    // Every declared bus must carry channels. A staged-but-empty aux bus is the
-    // shape a dropped sidechain takes: present in the count, silent in use.
-    for (index, &channels) in buses.iter().enumerate() {
-        assert!(
-            channels > 0,
-            "input bus {index} of {buses:?} was staged with 0 channels — a \
-             plugin reading its sidechain here would get nothing"
-        );
-    }
 }
 
 /// A plain steady-state block against every sample plugin must produce no

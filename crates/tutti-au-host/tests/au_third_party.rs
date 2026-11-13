@@ -1492,7 +1492,7 @@ fn push_render_is_refused_by_every_third_party_unit() {
 /// a worker. The `harness = false` runner `au_gui_lifecycle_main.rs` is the only
 /// target that owns `main()`, but its test list is registered inside that file —
 /// which this change does not own. So this test carries the same
-/// `pthread_main_np` guard `au_gui_lifecycle.rs` uses: it self-skips on a worker
+/// `pthread_main_np` guard: it self-skips on a worker
 /// thread rather than aborting the process, and runs for real only on a target
 /// that is the main thread. Measured there: 830x598, bit-stable across 3 runs.
 #[test]
@@ -1600,7 +1600,7 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
 /// Whether the caller owns the process main thread.
 ///
 /// `pthread_main_np` is the only way to ask, for the reason
-/// `au_gui_lifecycle.rs` documents: a claimed `MainThread` is the first thread
+/// `au_gui_lifecycle_main.rs` documents: a claimed `MainThread` is the first thread
 /// that claimed, which under the test harness is a worker thread.
 fn is_main_thread() -> bool {
     // SAFETY: `pthread_main_np` takes no arguments and reads no memory.

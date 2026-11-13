@@ -181,7 +181,8 @@ pub struct OutputTiming {
 /// The hardware out's tap, in events: the ring the clock's output is copied
 /// into between two updates (a note-off is kept up to
 /// [`note_off_room`](tutti_graph::note_off_room) of it).
-pub(crate) const MIDI_OUT_TAP_CAPACITY: usize = 1024;
+pub(crate) const MIDI_OUT_TAP_CAPACITY: tutti_graph::EventCapacity =
+    tutti_graph::EventCapacity::of(1024);
 
 /// A UMP MIDI output and its JR stamp stream: where the session's hardware
 /// out goes ([`Midi::set_hardware_out`]).
@@ -1555,7 +1556,7 @@ impl Midi<'_> {
         let source = EventOutPort::new(node, 0);
         self.graph
             .taps()
-            .open_event(source, tutti_graph::TapAlign::Raw, capacity.get() as usize)
+            .open_event(source, tutti_graph::TapAlign::Raw, capacity)
             // The live input was just found or opened in this graph, with its port.
             .map_err(|_| MidiError::NoEventInput(node))
     }

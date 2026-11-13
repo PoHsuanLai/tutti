@@ -8,7 +8,8 @@
 //! taps are opened again at the graph's new rate.
 
 use tutti_graph::{
-    Cx, Event, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign, TapEvent, Unforkable,
+    Cx, Event, EventCapacity, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign,
+    TapEvent, Unforkable,
 };
 use tutti_session::{CloseError, EventOutPort, Session};
 use tutti_types::ChannelLayout;
@@ -93,7 +94,7 @@ fn opening_a_tap_yields_the_events_rendered_since_the_open() {
     let mut tap = s
         .graph()
         .taps()
-        .open_event(source, TapAlign::Raw, 64)
+        .open_event(source, TapAlign::Raw, EventCapacity::of(64))
         .expect("the port exists");
     assert_eq!(tap.rate(), SampleRate::SR_48K);
     frames(15, &mut s);
@@ -108,7 +109,11 @@ fn opening_refuses_a_port_the_graph_does_not_have() {
     assert_eq!(
         s.graph()
             .taps()
-            .open_event(EventOutPort::new(source.node(), 3), TapAlign::Raw, 8)
+            .open_event(
+                EventOutPort::new(source.node(), 3),
+                TapAlign::Raw,
+                EventCapacity::of(8)
+            )
             .err(),
         Some(MissingSource::EventPort {
             node: source.node(),
@@ -126,7 +131,7 @@ fn closing_the_tap_stops_the_copy() {
     let mut tap = s
         .graph()
         .taps()
-        .open_event(source, TapAlign::Raw, 64)
+        .open_event(source, TapAlign::Raw, EventCapacity::of(64))
         .expect("the port exists");
     frames(6, &mut s);
     assert_eq!(tap_ops(&s), 1);
@@ -149,7 +154,7 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
     let tap = s
         .graph()
         .taps()
-        .open_event(source, TapAlign::Raw, 64)
+        .open_event(source, TapAlign::Raw, EventCapacity::of(64))
         .expect("the port exists");
     let _ = s.update();
     assert_eq!(tap_ops(&s), 1, "one op a tap while it is open");
@@ -173,7 +178,7 @@ fn reopening_replaces_the_tap_at_the_new_rate() {
     let mut old = s
         .graph()
         .taps()
-        .open_event(source, TapAlign::Raw, 64)
+        .open_event(source, TapAlign::Raw, EventCapacity::of(64))
         .expect("the port exists");
     frames(5, &mut s);
     assert_eq!(drain(&mut old), vec![0, 4]);

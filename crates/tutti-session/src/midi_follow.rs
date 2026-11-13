@@ -50,7 +50,8 @@ use crate::MidiEvent;
 /// How many events the follower's tap holds between two polls. Set Tempo and
 /// Set Time Signature are rare; a source that floods them loses the oldest
 /// beyond this, counted and logged.
-pub(crate) const FOLLOW_TAP_CAPACITY: usize = 256;
+pub(crate) const FOLLOW_TAP_CAPACITY: tutti_graph::EventCapacity =
+    tutti_graph::EventCapacity::of(256);
 
 /// What [`Midi::follow_tempo`](crate::Midi::follow_tempo) follows.
 ///

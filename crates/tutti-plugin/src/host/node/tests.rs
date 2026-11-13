@@ -88,13 +88,53 @@ fn send_bridge_msg(stream: &interprocess::local_socket::Stream, msg: &BridgeMess
     stream.write_all(&data).unwrap();
 }
 
+/// Accepts the host's audio connection and then its control one, as the
+/// server does (the host connects the second after the first one's `Ready`),
+/// and serves each on its own thread with `lane`. The returned handle is the
+/// audio lane's, which ends with the host; the socket file is removed then.
+fn serve_lanes(
+    listener: &interprocess::local_socket::Listener,
+    path: std::path::PathBuf,
+    lane: impl Fn(&interprocess::local_socket::Stream) + Send + Sync + 'static,
+) -> std::thread::JoinHandle<()> {
+    use interprocess::local_socket::traits::Listener as _;
+    let lane = Arc::new(lane);
+    let ready = BridgeMessage::Ready {
+        protocol_version: PROTOCOL_VERSION,
+    };
+    let audio = listener.accept().unwrap();
+    send_bridge_msg(&audio, &ready);
+    let control = listener.accept().unwrap();
+    send_bridge_msg(&control, &ready);
+    std::thread::Builder::new()
+        .name("mock-plugin-server-control".to_string())
+        .spawn({
+            let lane = Arc::clone(&lane);
+            move || lane(&control)
+        })
+        .unwrap();
+    std::thread::Builder::new()
+        .name("mock-plugin-server".to_string())
+        .spawn(move || {
+            struct Cleanup(std::path::PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_file(&self.0);
+                }
+            }
+            let _cleanup = Cleanup(path);
+            lane(&audio);
+        })
+        .unwrap()
+}
+
 /// Create a `PluginHandle` backed by a responsive mock server. The
 /// `respond` callback is invoked for each inbound `HostMessage`; returning
 /// `Some(..)` sends that `BridgeMessage` back, `None` silently drops.
 fn handle_with_mock_server(
     respond: impl Fn(HostMessage) -> Option<BridgeMessage> + Send + 'static,
 ) -> (PluginHandle, BridgeThread, std::thread::JoinHandle<()>) {
-    use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
+    use interprocess::local_socket::ListenerOptions;
 
     let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
@@ -123,43 +163,26 @@ fn handle_with_mock_server(
     )
     .unwrap();
 
-    let server_stream = listener.accept().unwrap();
-    send_bridge_msg(
-        &server_stream,
-        &BridgeMessage::Ready {
-            protocol_version: PROTOCOL_VERSION,
-        },
-    );
-
-    let path_cleanup = path;
-    let server_thread = std::thread::Builder::new()
-        .name("mock-plugin-server".to_string())
-        .spawn(move || {
-            struct Cleanup(std::path::PathBuf);
-            impl Drop for Cleanup {
-                fn drop(&mut self) {
-                    let _ = std::fs::remove_file(&self.0);
-                }
+    let respond = std::sync::Mutex::new(respond);
+    let server_thread = serve_lanes(&listener, path, move |stream| {
+        loop {
+            let msg = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                recv_host_msg(stream)
+            })) {
+                Ok(msg) => msg,
+                Err(_) => break,
+            };
+            let response = (respond.lock().unwrap())(msg);
+            if let Some(response) = response
+                && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    send_bridge_msg(stream, &response)
+                }))
+                .is_err()
+            {
+                break;
             }
-            let _cleanup = Cleanup(path_cleanup);
-            loop {
-                let msg = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    recv_host_msg(&server_stream)
-                })) {
-                    Ok(msg) => msg,
-                    Err(_) => break,
-                };
-                if let Some(response) = respond(msg)
-                    && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        send_bridge_msg(&server_stream, &response)
-                    }))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .unwrap();
+        }
+    });
 
     // Give the bridge thread time to start up and register I/O.
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -197,7 +220,7 @@ fn handle_with_multi_reply_server(
     BridgeThread,
     std::thread::JoinHandle<()>,
 ) {
-    use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
+    use interprocess::local_socket::ListenerOptions;
 
     let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
@@ -226,45 +249,27 @@ fn handle_with_multi_reply_server(
     )
     .unwrap();
 
-    let server_stream = listener.accept().unwrap();
-    send_bridge_msg(
-        &server_stream,
-        &BridgeMessage::Ready {
-            protocol_version: PROTOCOL_VERSION,
-        },
-    );
-
-    let path_cleanup = path;
-    let server_thread = std::thread::Builder::new()
-        .name("mock-plugin-server".to_string())
-        .spawn(move || {
-            struct Cleanup(std::path::PathBuf);
-            impl Drop for Cleanup {
-                fn drop(&mut self) {
-                    let _ = std::fs::remove_file(&self.0);
+    let respond = std::sync::Mutex::new(respond);
+    let server_thread = serve_lanes(&listener, path, move |stream| {
+        loop {
+            let msg = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                recv_host_msg(stream)
+            })) {
+                Ok(msg) => msg,
+                Err(_) => break,
+            };
+            let replies = (respond.lock().unwrap())(msg);
+            for reply in replies {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    send_bridge_msg(stream, &reply)
+                }))
+                .is_err()
+                {
+                    return;
                 }
             }
-            let _cleanup = Cleanup(path_cleanup);
-            loop {
-                let msg = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    recv_host_msg(&server_stream)
-                })) {
-                    Ok(msg) => msg,
-                    Err(_) => break,
-                };
-                let replies = respond(msg);
-                for reply in replies {
-                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        send_bridge_msg(&server_stream, &reply)
-                    }))
-                    .is_err()
-                    {
-                        return;
-                    }
-                }
-            }
-        })
-        .unwrap();
+        }
+    });
 
     std::thread::sleep(std::time::Duration::from_millis(50));
 

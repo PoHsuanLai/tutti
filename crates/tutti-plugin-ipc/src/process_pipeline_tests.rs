@@ -133,6 +133,22 @@ fn recv_host_msg(stream: &interprocess::local_socket::Stream) -> Option<HostMess
     postcard::from_bytes(&buf).ok()
 }
 
+/// The control connection, accepted after the audio one as the server does:
+/// `Ready` is sent and what the host sends on it is read and dropped (these
+/// servers answer blocks only). Call it once the audio connection's `Ready`
+/// has gone, which is what the host waits for before it connects.
+fn accept_control(listener: &interprocess::local_socket::Listener) {
+    use interprocess::local_socket::traits::Listener as _;
+    let control = listener.accept().unwrap();
+    send_bridge_msg(
+        &control,
+        &BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    );
+    std::thread::spawn(move || while recv_host_msg(&control).is_some() {});
+}
+
 fn send_bridge_msg(stream: &interprocess::local_socket::Stream, msg: &BridgeMessage) {
     use std::io::Write;
     let mut stream = stream;
@@ -215,6 +231,7 @@ fn bridge_with_server(
             protocol_version: PROTOCOL_VERSION,
         },
     );
+    accept_control(&listener);
 
     let path_cleanup = path;
     let server_thread = std::thread::Builder::new()
@@ -1412,6 +1429,7 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
             protocol_version: PROTOCOL_VERSION,
         },
     );
+    accept_control(&listener);
 
     let path_cleanup = path;
     let server_thread = std::thread::Builder::new()
@@ -1785,6 +1803,8 @@ fn two_stale_blocks(
     )
     .unwrap();
     let server_stream = listener.accept().unwrap();
+    let listener = std::sync::Arc::new(listener);
+    let control_listener = Arc::clone(&listener);
     let (release, released) = std::sync::mpsc::channel::<()>();
     let (got_tx, got) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
@@ -1795,6 +1815,7 @@ fn two_stale_blocks(
                 protocol_version: PROTOCOL_VERSION,
             },
         );
+        accept_control(&control_listener);
         while let Some(msg) = recv_host_msg(&server_stream) {
             if let HostMessage::ProcessAudio(data) = msg {
                 let midi: Vec<tutti_plugin_types::WireMidi> = data.midi_events.to_vec();

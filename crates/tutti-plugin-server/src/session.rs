@@ -1,34 +1,19 @@
 //! Pure message dispatch — no I/O, no async, no sockets.
 //!
-//! [`Session`] owns the plugin + shared memory + audio pipeline. [`Session::handle`] translates one [`HostMessage`] into state
+//! [`Session`] owns the plugin's control half and tells the render thread what its blocks read. [`Session::handle`] translates one [`HostMessage`] into state
 //! changes and returns a [`Reaction`] describing what the transport
 //! loop should do next. Because it has no `async` and no `Transport`
 //! dependency, it's unit-testable without tokio or sockets.
 
-use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
+use crate::audio_pipeline::Clock;
+use crate::render::{RenderConfig, RenderLink, RenderSide, ToRender, link};
 use crate::served::AnyServed;
 use tutti_plugin_ipc::state_chunk::{self, ChunkError, Reassembler};
-use tutti_plugin_ipc::{
-    AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, SlabWriter, StagedState,
-};
+use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, StagedState};
 use tutti_plugin_types::{
-    BlockStatus, BridgeResult, EditorError, EditorSize, Load, MainThread, MidiEventVec,
-    ParameterQueue, PluginError, SampleFormat, WindowHandle,
+    BridgeError, BridgeResult, EditorError, EditorSize, Load, MainThread, ParameterQueue,
+    PluginError, SampleFormat, WindowHandle,
 };
-
-/// A block's plugin MIDI-out for the wire. Already capped at
-/// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
-/// carries at most that many; `dropped` is what the cap cost this block, from
-/// a pathological plugin, and is logged.
-fn encode_midi_out(events: &MidiEventVec, dropped: usize) -> MidiEventVec {
-    if dropped > 0 {
-        tracing::warn!(
-            "plugin emitted {} MIDI events this block; dropped {dropped} past the cap",
-            events.len() + dropped,
-        );
-    }
-    events.clone()
-}
 
 /// What [`Session::handle`] asks the transport loop to do.
 // One value per message, moved once to the transport loop; a `BridgeMessage`
@@ -83,22 +68,23 @@ impl Reaction {
     }
 }
 
-/// All state one hosted plugin needs, and the dispatch over it.
+/// What the main thread holds of one hosted plugin, and the dispatch over the
+/// control connection's messages.
 ///
-/// Holds no transport, so a test drives it by calling [`Session::handle`]
-/// directly with a [`HostMessage`].
+/// The blocks are the render thread's ([`RenderSide`]): this holds the
+/// plugin's `Controller` half and tells the render thread what its blocks read
+/// (`RenderLink`). It holds no transport, so a test drives it by calling
+/// [`Session::handle`] directly with a [`HostMessage`].
 pub(crate) struct Session {
     /// The hosted plugin, or `None` before a load and after an unload. Every
     /// handler that needs one refuses explicitly rather than going silent.
     pub(crate) plugin: Option<AnyServed>,
-    /// The shared-memory audio slab, established during the handshake phase.
-    /// `None` until then, and cleared on unload alongside `plugin`.
-    pub(crate) shm: Option<SlabWriter>,
-    /// Per-block scratch and the process driver. Outlives individual plugins so
-    /// its buffers survive a reload without re-allocating.
-    pub(crate) pipeline: AudioPipeline,
+    /// The render thread's queues: what the plugin's blocks are rendered with
+    /// travels to it here (doc 029 section 6.5).
+    pub(crate) render: RenderLink,
     /// Sample rate + negotiated format. Written on load and on an explicit
-    /// `SetSampleRate`; read by every block.
+    /// `SetSampleRate`, and published to the render thread with the rest of
+    /// what a block reads ([`RenderConfig`]).
     pub(crate) clock: Clock,
     /// Why the plugin is not running at the rate the host asked for, while it
     /// is not. A refused plugin renders silence (no block reaches it) and the
@@ -108,9 +94,9 @@ pub(crate) struct Session {
     /// `block_size`), 0 with none loaded. A block past it, or past the slab's
     /// per-channel room, is refused before anything is sized for it.
     pub(crate) max_block: usize,
-    /// Blocks refused for their length (empty, or past `max_block` or the
-    /// slab's room), since the session began.
-    pub(crate) refused_blocks: u64,
+    /// What the render thread was last told its blocks read: the figures are
+    /// sent again only when they change.
+    published: RenderConfig,
     /// Partially-received `LoadStateChunk` sequence, or `None` between loads.
     ///
     /// On the session rather than threaded through `handle` because a chunk
@@ -132,27 +118,61 @@ pub(crate) struct Session {
     /// The editor was closed here on the server's own account (its plugin was
     /// unloaded or replaced): the host is told at the next tick.
     pub(crate) editor_closed_unasked: bool,
+    /// A parameter write was queued to the Processor and no block that reached
+    /// the plugin has been waited for since: a state saved now could miss it
+    /// ([`Session::handle_save_state`]).
+    write_pending: bool,
 }
+
+/// How long a save waits for a block to apply a pending write before it
+/// takes the host to be quiet: a few block periods at the longest block the
+/// slab takes, and a little more.
+const BLOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
 impl Session {
     /// An empty session: no plugin, no slab, and a default
-    /// [`Clock`] that the first load overwrites.
-    pub(crate) fn new() -> Self {
-        let clock = Clock::default();
-        Self {
+    /// [`Clock`] that the first load overwrites; and the render side that
+    /// serves its blocks, which a thread runs once the host's audio connection
+    /// is there ([`RenderThread::spawn`](crate::render::RenderThread::spawn)).
+    pub(crate) fn new() -> (Self, RenderSide) {
+        let (render, side) = link();
+        let published = RenderConfig::new();
+        let session = Self {
             plugin: None,
-            shm: None,
-            pipeline: AudioPipeline::new(clock.format),
-            clock,
+            render,
+            clock: published.clock,
             rate_refused: None,
             max_block: 0,
-            refused_blocks: 0,
+            published,
             state_in: None,
             state_in_refused: None,
             stage_in: None,
             staged: None,
             editor_open: false,
             editor_closed_unasked: false,
+            write_pending: false,
+        };
+        (session, side)
+    }
+
+    /// Tells the render thread what its blocks read, if that changed since it
+    /// was last told: the rate and format, the length the plugin was activated
+    /// for, whether it refused the rate and what it consumes.
+    fn publish(&mut self) {
+        let config = RenderConfig {
+            clock: self.clock,
+            max_block: self.max_block,
+            rate_refused: self.rate_refused.is_some(),
+            features: self
+                .plugin
+                .as_ref()
+                .map_or_else(tutti_plugin_types::Features::empty, |p| {
+                    p.plugin().loaded().features
+                }),
+        };
+        if config != self.published {
+            self.published = config;
+            self.render.send(ToRender::Config(config));
         }
     }
 
@@ -182,6 +202,20 @@ impl Session {
         msg: HostMessage,
         interim: &mut dyn FnMut(BridgeMessage),
     ) -> BridgeResult<Reaction> {
+        let reaction = self.dispatch(main, msg, interim);
+        // What the message changed that a block reads reaches the render thread
+        // before the host is answered, so every block it sends after the answer
+        // runs with it.
+        self.publish();
+        reaction
+    }
+
+    fn dispatch(
+        &mut self,
+        main: &MainThread,
+        msg: HostMessage,
+        interim: &mut dyn FnMut(BridgeMessage),
+    ) -> BridgeResult<Reaction> {
         use HostMessage as M;
         match msg {
             M::LoadPlugin {
@@ -206,31 +240,20 @@ impl Session {
                 self.discard_staged();
                 self.drop_plugin(main);
                 self.rate_refused = None;
-                self.shm = None;
+                self.render.send(ToRender::DropSlab);
                 Ok(Reaction::None)
             }
 
-            M::ProcessAudio(data) => {
-                let midi = &data.midi_events;
-                let extras = ProcessExtras {
-                    param_changes: &data.param_changes,
-                    note_expression: &data.note_expression,
-                    chords: &data.chords,
-                    scales: &data.scales,
-                    expr_texts: &data.expr_texts,
-                    expr_ints: &data.expr_ints,
-                    transport: &data.transport,
-                    transport_changes: &data.transport_changes,
-                };
-                self.handle_process(AudioBlock {
-                    seq: data.seq,
-                    num_samples: data.num_samples,
-                    midi,
-                    extras: Some(extras),
-                })
+            // A block belongs to the audio connection, where the render thread
+            // answers it: one here is a peer that confuses its connections,
+            // and it expects an answer.
+            M::ProcessAudio(_) => Ok(BridgeMessage::Error {
+                message: "ProcessAudio is carried on the audio connection".to_string(),
             }
+            .into()),
 
             M::SetParameter { param_id, value } => {
+                self.write_pending = true;
                 if let Some(plugin) = self.plugin.as_mut() {
                     // The wire's decode refuses an out-of-range or NaN value
                     // (`Normalized::new`), so one from the peer fails the frame
@@ -240,6 +263,7 @@ impl Session {
                 Ok(Reaction::None)
             }
             M::SetAutomationState { mode } => {
+                self.write_pending = true;
                 if let Some(plugin) = self.plugin.as_mut() {
                     plugin.plugin_mut().set_automation_state(main, mode);
                 }
@@ -274,6 +298,7 @@ impl Session {
                 Ok(BridgeMessage::PresetList { presets }.into())
             }
             M::LoadPreset { id } => {
+                self.write_pending = true;
                 let ok = self
                     .plugin
                     .as_mut()
@@ -373,20 +398,12 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
-            // The plugin forgets its signal history (design 016 §6.2), in order
-            // with the `ProcessAudio` blocks on this loop, so a reset is never
-            // reordered against a block. The pipeline is left alone, and the
-            // host depends on that: clearing it on a seek is entirely the
-            // host's job (it drops its in-flight block and never rewinds its
-            // sequence, so a pre-seek block published late is structurally
-            // unmatchable), and anything done to it here would be a second
-            // mechanism that could disagree with the first.
-            M::Reset => {
-                if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.plugin_mut().reset();
-                }
-                Ok(Reaction::None)
-            }
+            // The plugin forgets its signal history, in order with the
+            // blocks: the audio connection's, where the render thread owns the
+            // Processor that forgets (`RenderSide::handle`).
+            M::Reset => Err(BridgeError::ProtocolError(
+                "Reset is carried on the audio connection".to_string(),
+            )),
 
             M::OpenEditor { parent, scale } => {
                 let result = self.open_editor(main, parent, scale);
@@ -411,14 +428,9 @@ impl Session {
 
             M::SetupSharedMemory { shm_name, layout } => {
                 let slab = AudioSlab::open(shm_name, layout)?;
-                // The scratch is sized here, off the audio thread, to the most a
-                // block may carry; `handle_process` refuses any block longer.
-                let layout = slab.layout_ref();
-                self.pipeline.reserve(
-                    layout.input_channels().max(layout.output_channels()),
-                    layout.samples_per_channel,
-                );
-                self.shm = Some(slab);
+                // The render thread sizes its scratch to the most a block may
+                // carry and refuses any block longer.
+                self.render.send(ToRender::Slab(slab));
                 Ok(BridgeMessage::SharedMemoryReady.into())
             }
             M::Shutdown => Ok(Reaction::Shutdown),
@@ -427,16 +439,15 @@ impl Session {
 
     /// Drain async events from the loaded plugin, mapping each into a
     /// `BridgeMessage` the transport can push back. Called from the
-    /// server's audio phase after every message dispatch.
+    /// main thread's loop after every message dispatch and on every tick.
     pub(crate) fn drain_async_events(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
         let Some(plugin) = self.plugin.as_mut() else {
             return Vec::new();
         };
         let events = plugin.plugin_mut().poll(main);
         // A parameter list that changed may have grown past the output
-        // reserved at load. This runs on the audio-phase thread between
-        // blocks, so only a pass that told of a changed list pays for the
-        // count. What it helps: a VST3 `Reloaded` (the reload builds a new
+        // reserved at load. This runs on the main thread between messages, so
+        // only a pass that told of a changed list pays for the count. What it helps: a VST3 `Reloaded` (the reload builds a new
         // instance, whose output lists are sized at its activation) and an AU
         // list change. A VST3 `kParamTitlesChanged` without a reload keeps the
         // instance's activation-time output and emitted queue counts, so the
@@ -451,8 +462,9 @@ impl Session {
             )
         }) {
             let params = plugin.plugin().parameter_count(main);
-            self.pipeline.fit_params(params);
+            self.render.send(ToRender::FitParams(params));
         }
+        self.publish();
         events
     }
 
@@ -547,12 +559,25 @@ impl Session {
 
     /// Lets the plugin go (an unload, or a load that replaces it), closing its
     /// editor first and telling the host it did.
-    fn drop_plugin(&mut self, main: &MainThread) {
+    ///
+    /// The Processor is brought home from the render thread before the plugin
+    /// is destroyed (a block that arrives meanwhile is silence), and only then
+    /// is the render thread's seat taken away: its poll is what returns the
+    /// Processor.
+    pub(crate) fn drop_plugin(&mut self, main: &MainThread) {
         if self.editor_open {
             self.close_editor(main);
             self.editor_closed_unasked = true;
         }
-        self.plugin = None;
+        if let Some(mut plugin) = self.plugin.take() {
+            if !plugin.plugin_mut().quiesce(main) {
+                tracing::error!(
+                    "plugin-server: the render thread did not return the processor;                      the plugin is leaked"
+                );
+            }
+            drop(plugin);
+            self.render.send(ToRender::Unseat);
+        }
     }
 
     /// Forgets a state staged for a load that has not come: the stage belongs to
@@ -602,7 +627,7 @@ impl Session {
         }
         let mut restoring = || interim(BridgeMessage::RestoringState);
         let prefer_f64 = preferred_format == SampleFormat::Float64;
-        let (plugin, state_error) = match AnyServed::load(
+        let (plugin, state_error, seat) = match AnyServed::load(
             main,
             &path,
             load,
@@ -622,118 +647,25 @@ impl Session {
             sample_rate,
             format: negotiated,
         };
-        self.pipeline.set_format(negotiated);
         self.max_block = block_size;
         // The plugin's own parameter output is held in fixed storage
-        // reserved here, off the audio thread: a queue per parameter, each
-        // within a block's chunk room (`ParameterChanges::reserved`).
-        self.pipeline.reserve_params(
-            plugin.plugin().parameter_count(main),
-            ParameterQueue::chunk_room(block_size),
-        );
+        // reserved by the render thread before its first block: a queue per
+        // parameter, each within a block's chunk room
+        // (`ParameterChanges::reserved`).
+        self.render.send(ToRender::Format(negotiated));
+        self.render.send(ToRender::Params {
+            queues: plugin.plugin().parameter_count(main),
+            points: ParameterQueue::chunk_room(block_size),
+        });
         self.plugin = Some(plugin);
         self.rate_refused = None;
+        self.publish();
+        self.render.send(ToRender::Seat(seat));
         Ok(BridgeMessage::PluginLoaded {
             descriptor: Box::new(descriptor),
             loaded,
             negotiated_format: negotiated,
             state_error,
-        }
-        .into())
-    }
-
-    /// Whether a block of `frames` may reach the plugin: not empty, within the
-    /// length it was activated for, and within the slab's per-channel room
-    /// (the scratch's size). The length is the peer's to choose, so it is
-    /// checked here, once, for every format: unchecked, a long one sized the
-    /// scratch to it on the audio thread, and the formats disagreed past the
-    /// activated length (CLAP refused it, VST2 split it, VST3 passed it to the
-    /// plugin). A refused block is counted and reads back as silence.
-    fn block_fits(&mut self, frames: usize) -> bool {
-        let room = self
-            .shm
-            .as_ref()
-            .map_or(0, |slab| slab.layout_ref().samples_per_channel);
-        let fits = frames > 0 && frames <= self.max_block && frames <= room;
-        if !fits {
-            self.refused_blocks += 1;
-        }
-        fits
-    }
-
-    fn handle_process(&mut self, block: AudioBlock<'_>) -> BridgeResult<Reaction> {
-        // Read before `block` is moved into the pipeline: every reply below
-        // echoes it.
-        let seq = block.seq;
-
-        // NOTE — both early returns below reply WITHOUT publishing to the slab,
-        // and that is deliberate. The host's read is gated on the output
-        // sequence, so an unpublished block reads back as silence; there is no
-        // separate "this block failed" signal to send, and none is wanted.
-        // Publishing something here to "answer properly" would be actively
-        // wrong: it would hand the host a slot full of whatever the previous
-        // block left, marked valid.
-        if self.plugin.is_none() {
-            return Ok(BridgeMessage::Error {
-                message: "No plugin loaded".to_string(),
-            }
-            .into());
-        }
-        // A plugin that refused the rate renders silence: no block reaches it
-        // and nothing is published (the host reads an unpublished block as
-        // silence). Its MIDI is dropped; the host cut any open SysEx when it
-        // re-prepared. A block of a length the plugin was not activated for,
-        // or the slab cannot hold, is refused the same way (`block_fits`).
-        if self.rate_refused.is_some() || !self.block_fits(block.num_samples) {
-            return Ok(BridgeMessage::AudioProcessed {
-                latency_us: 0,
-                seq,
-                midi_out: MidiEventVec::new(),
-                status: BlockStatus::Continue,
-            }
-            .into());
-        }
-        // Neither the no-slab return just below nor a block the plugin's host
-        // refuses before staging its MIDI (CLAP's `BlockTooLarge`) can drop
-        // MIDI past a SysEx open in the reassembler, leaving a gap, from
-        // tutti's own host:
-        // it sets the slab up before its bridge sends any block, and its
-        // chunk never exceeds `max_buffer_size`, the `block_size` the plugin
-        // was loaded with, which nothing here changes. A peer that broke
-        // either would splice.
-        // Borrowed here, after `block_fits` needed `&mut self`; the check at
-        // the top already answered a session with no plugin.
-        let Some(plugin) = self.plugin.as_mut() else {
-            return Ok(BridgeMessage::Error {
-                message: "No plugin loaded".to_string(),
-            }
-            .into());
-        };
-        let Some(shm) = self.shm.as_mut() else {
-            // The process path only ever ran under the full `plugin + shm` pair.
-            // Reply so the host's queue stays in step; no publish, so it hears
-            // silence.
-            return Ok(BridgeMessage::AudioProcessed {
-                latency_us: 0,
-                seq,
-                midi_out: MidiEventVec::new(),
-                status: BlockStatus::Continue,
-            }
-            .into());
-        };
-
-        let output = self
-            .pipeline
-            .process(plugin.plugin_mut(), shm, &self.clock, block)?;
-        Ok(BridgeMessage::AudioProcessed {
-            latency_us: output.latency_us,
-            seq,
-            // Borrowed from the pipeline's reusable buffer rather than moved
-            // out of the result: moving it would take the buffer's heap
-            // capacity with it and put the reallocation back on the audio
-            // thread. See [`AudioOutput`](crate::audio_pipeline::AudioOutput).
-            midi_out: encode_midi_out(self.pipeline.midi_out(), self.pipeline.midi_dropped()),
-            status: self.pipeline.status(),
         }
         .into())
     }
@@ -745,9 +677,30 @@ impl Session {
     /// frame carries. The empty cases still emit one terminating chunk — a host
     /// waits for `last`, so answering nothing would hang it rather than tell it
     /// there is no state.
+    ///
+    /// **A save never silences a block that is playing.** A parameter write
+    /// waits in the Processor's ring until a block drains it, so a state saved
+    /// right after one could miss it.
+    /// - Nothing pending: the state is saved at once.
+    /// - A write pending and blocks flowing: a barrier is queued to the render
+    ///   thread and the save waits for the next block that reaches the plugin
+    ///   to run after it ([`RenderLink::barrier`]), then saves. The Processor
+    ///   never leaves the render thread.
+    /// - A write pending and no block within [`BLOCK_WAIT`]: the host is quiet,
+    ///   so the Processor is brought home for the settle, which is silent
+    ///   because nothing is playing.
     fn handle_save_state(&mut self, main: &MainThread) -> Reaction {
+        let settle = self.write_pending && {
+            let id = self.render.barrier();
+            !self.render.wait_applied(id, BLOCK_WAIT)
+        };
+        self.write_pending = false;
         let data = match self.plugin.as_mut() {
-            Some(p) => match p.plugin_mut().save_state(main) {
+            Some(p) => match if settle {
+                p.plugin_mut().save_state(main)
+            } else {
+                p.plugin_mut().save_state_live(main)
+            } {
                 Ok(data) => data,
                 // A plugin that fails to serialise is not a transport problem:
                 // one `Error` frame, and the host reports it as a rejection.
@@ -904,10 +857,102 @@ fn load_failure(e: &PluginError) -> BridgeMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, MutexGuard};
+
+    /// A session with its render side running beside it, as the server runs
+    /// them: a thread steps the side (applies the commands, trades the
+    /// Processor) while the test drives the control messages, and a block is
+    /// served on the test's own thread (the host's audio connection is not
+    /// what these tests are about; `main_loop`'s are).
+    struct Rig {
+        session: Session,
+        side: Arc<Mutex<RenderSide>>,
+        stop: Arc<AtomicBool>,
+        stepper: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let (session, side) = Session::new();
+            let side = Arc::new(Mutex::new(side));
+            let stop = Arc::new(AtomicBool::new(false));
+            let stepper = std::thread::spawn({
+                let (side, stop) = (Arc::clone(&side), Arc::clone(&stop));
+                move || {
+                    while !stop.load(Ordering::Acquire) {
+                        {
+                            let mut side = side.lock().unwrap();
+                            side.drain();
+                            side.poll_seat();
+                        }
+                        std::thread::sleep(std::time::Duration::from_micros(200));
+                    }
+                }
+            });
+            Self {
+                session,
+                side,
+                stop,
+                stepper: Some(stepper),
+            }
+        }
+
+        /// The render side, with what the session queued applied.
+        fn side(&self) -> MutexGuard<'_, RenderSide> {
+            let mut side = self.side.lock().unwrap();
+            side.drain();
+            side
+        }
+
+        /// Attaches the host's slab, as `SetupSharedMemory` does.
+        fn attach(&mut self, slab: tutti_plugin_ipc::SlabWriter) {
+            self.session.render.send(ToRender::Slab(slab));
+        }
+
+        /// One message of either connection: a block or a reset is the render
+        /// side's (the audio connection), the rest the session's (control).
+        fn handle(&mut self, main: &MainThread, msg: HostMessage) -> BridgeResult<Reaction> {
+            match msg {
+                HostMessage::ProcessAudio(_) | HostMessage::Reset => {
+                    let mut side = self.side();
+                    side.poll_seat();
+                    Ok(side.handle(msg)?.map_or(Reaction::None, Reaction::Reply))
+                }
+                other => self.session.handle(main, other),
+            }
+        }
+    }
+
+    impl std::ops::Deref for Rig {
+        type Target = Session;
+        fn deref(&self) -> &Session {
+            &self.session
+        }
+    }
+
+    impl std::ops::DerefMut for Rig {
+        fn deref_mut(&mut self) -> &mut Session {
+            &mut self.session
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            // The plugin goes home before the stepper stops, as the server
+            // does at its end.
+            self.session.drop_plugin(&main_thread());
+            self.stop.store(true, Ordering::Release);
+            if let Some(stepper) = self.stepper.take() {
+                let _ = stepper.join();
+            }
+        }
+    }
     use tutti_fixtures::main_thread;
 
     // `Features` is named only by `load_clap_plugin_f64`, which carries the
     // same gate.
+    use tutti_plugin_ipc::SlabWriter;
     #[cfg(feature = "clap")]
     use tutti_plugin_types::Features;
     use tutti_plugin_types::LoadStage;
@@ -927,13 +972,191 @@ mod tests {
         }
     }
 
+    /// **A block on the control connection is refused, and answered**: blocks
+    /// belong to the audio connection, where the render thread serves them, and
+    /// a peer that confuses its connections is told rather than left waiting.
+    /// A reset there ends the session (it has no answer to carry the refusal).
+    #[test]
+    fn the_control_connection_refuses_a_block() {
+        let mut s = Rig::new();
+        let block = HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData::default());
+        assert_error_contains(
+            s.session.handle(&main_thread(), block).unwrap(),
+            "audio connection",
+        );
+        assert!(matches!(
+            s.session.handle(&main_thread(), HostMessage::Reset),
+            Err(BridgeError::ProtocolError(_))
+        ));
+    }
+
+    /// **The audio connection carries blocks and resets and nothing else**: a
+    /// request for the control connection is a protocol error, not a message to
+    /// drop (the host would wait for its answer).
+    #[test]
+    fn the_audio_connection_refuses_a_control_message() {
+        let s = Rig::new();
+        let refused = s.side().handle(HostMessage::GetParameterList);
+        assert!(matches!(refused, Err(BridgeError::ProtocolError(_))));
+    }
+
+    /// What a save in the middle of steady playback did to the blocks around it.
+    #[cfg(feature = "clap")]
+    struct SteadySave {
+        /// Whether each block after the first few was silent.
+        silent: Vec<bool>,
+        before: Vec<u8>,
+        after: Vec<u8>,
+    }
+
+    /// Plays blocks of a constant signal through the probe, which scales it by
+    /// its `Gain` parameter and so is never silent, saves the state (once with
+    /// `write` first, as a UI parameter write just before a snapshot), and
+    /// reports whether any block was silent.
+    #[cfg(feature = "clap")]
+    fn save_during_playback(name: &str, write: bool) -> SteadySave {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        const FRAMES: usize = 64;
+        // The probe's `Gain` parameter (`params_state::GAIN_PARAM_ID`).
+        const GAIN: u32 = 77;
+        let _lock = crate::test_utils::plugin_load_lock();
+        let _render = crate::test_utils::clap_probe_render_mode(
+            tutti_clap_test_plugin::RenderMode::TagPassthrough as u32,
+        );
+        crate::test_utils::clap().set(tutti_clap_test_plugin::ClapSwitch::ApplyGain, 1);
+        struct GainOff;
+        impl Drop for GainOff {
+            fn drop(&mut self) {
+                crate::test_utils::clap().set(tutti_clap_test_plugin::ClapSwitch::ApplyGain, 0);
+            }
+        }
+        let _gain = GainOff;
+        let (mut s, mut shm) = load_clap(name, SampleFormat::Float32);
+        let before = save_state_bytes(&mut s);
+
+        let side = Arc::clone(&s.side);
+        let stop = Arc::new(AtomicBool::new(false));
+        let player = std::thread::spawn({
+            let stop = Arc::clone(&stop);
+            move || {
+                let mut silent = Vec::new();
+                let mut seq = 0u64;
+                while !stop.load(Ordering::Acquire) {
+                    seq += 1;
+                    for ch in 0..2 {
+                        shm.write::<f32>(seq, ch, &[1.0; FRAMES]).unwrap();
+                    }
+                    shm.publish(seq);
+                    {
+                        let mut side = side.lock().unwrap();
+                        side.drain();
+                        side.poll_seat();
+                        side.handle(HostMessage::ProcessAudio(
+                            tutti_plugin_ipc::ProcessAudioData {
+                                seq,
+                                num_samples: FRAMES,
+                                ..Default::default()
+                            },
+                        ))
+                        .unwrap();
+                    }
+                    let mut out = vec![0.0f32; FRAMES];
+                    let heard = shm.has_output(seq)
+                        && shm.read_output_into::<f32>(seq, 0, &mut out).is_ok()
+                        && out.iter().any(|&x| x != 0.0);
+                    silent.push(!heard);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                silent
+            }
+        });
+        // Let the Processor reach the render side and the blocks settle.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if write {
+            let r = s
+                .handle(
+                    &main_thread(),
+                    HostMessage::SetParameter {
+                        param_id: ParamId::new(GAIN),
+                        value: Normalized::of(0.25),
+                    },
+                )
+                .unwrap();
+            assert_none(r);
+        }
+        let after = save_state_bytes(&mut s);
+        // Snapshots come round after round in a session; each one must leave
+        // the blocks alone.
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            save_state_bytes(&mut s);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        stop.store(true, Ordering::Release);
+        let silent = player.join().unwrap();
+        SteadySave {
+            silent: silent.into_iter().skip(10).collect(),
+            before,
+            after,
+        }
+    }
+
+    /// **A save during steady playback, with a write just before it, returns the
+    /// write and silences no block.** The write waits in the Processor's ring
+    /// for a block; the save waits for the next block to apply it (a barrier
+    /// through the render thread's queue) instead of recalling the Processor,
+    /// which would make one block silent.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_save_after_a_write_during_playback_sees_it_and_silences_no_block() {
+        let r = save_during_playback("save_write", true);
+        assert!(r.silent.len() > 50, "the player ran: {}", r.silent.len());
+        assert_ne!(r.before, r.after, "the save has the write");
+        let silent = r.silent.iter().filter(|&&s| s).count();
+        assert_eq!(silent, 0, "{silent} blocks were silent around the save");
+    }
+
+    /// **A save with nothing pending recalls nothing**: no block around it is
+    /// silent, and the state is the one it was.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_save_with_no_write_pending_recalls_nothing() {
+        let r = save_during_playback("save_plain", false);
+        assert!(r.silent.len() > 50, "the player ran: {}", r.silent.len());
+        assert_eq!(r.before, r.after);
+        let silent = r.silent.iter().filter(|&&s| s).count();
+        assert_eq!(silent, 0, "{silent} blocks were silent around the save");
+    }
+
+    /// **With the host quiet, a save after a write still has the write**: no
+    /// block comes to apply it, so the Processor is brought home for the settle.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_save_after_a_write_with_no_blocks_sees_it() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut s, _shm) = load_clap("save_quiet", SampleFormat::Float32);
+        let before = save_state_bytes(&mut s);
+        let r = s
+            .handle(
+                &main_thread(),
+                HostMessage::SetParameter {
+                    param_id: ParamId::new(77),
+                    value: Normalized::of(0.25),
+                },
+            )
+            .unwrap();
+        assert_none(r);
+        assert_ne!(before, save_state_bytes(&mut s));
+    }
+
     #[test]
     fn new_session_defaults() {
-        let s = Session::new();
+        let s = Rig::new();
         assert_eq!(s.clock.sample_rate, 44100.0);
         assert_eq!(s.clock.format, SampleFormat::Float32);
         assert!(s.plugin.is_none());
-        assert!(s.shm.is_none());
+        assert!(!s.side().has_slab());
     }
 
     /// Every request a host can send before a plugin is loaded must be
@@ -1003,7 +1226,7 @@ mod tests {
         ];
 
         for (name, msg, expect) in cases {
-            let mut s = Session::new();
+            let mut s = Rig::new();
             let r = s
                 .handle(&main_thread(), msg)
                 .unwrap_or_else(|e| panic!("{name} errored with no plugin: {e:?}"));
@@ -1033,7 +1256,7 @@ mod tests {
 
     #[test]
     fn set_sample_rate_no_plugin_updates_clock() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         let r = s
             .handle(
                 &main_thread(),
@@ -1058,7 +1281,7 @@ mod tests {
     /// never happened.
     #[test]
     fn load_state_no_plugin_refuses_rather_than_going_silent() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         let reply = s
             .handle(
                 &main_thread(),
@@ -1084,7 +1307,7 @@ mod tests {
     /// each read as the reply to a later request. A chunk 0 starts afresh.
     #[test]
     fn a_refused_load_sequence_is_answered_once_at_its_end() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         let mut chunk = |seq, last| {
             s.handle(
                 &main_thread(),
@@ -1116,23 +1339,23 @@ mod tests {
 
     #[test]
     fn unload_plugin_clears_shm() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         let r = s.handle(&main_thread(), HostMessage::UnloadPlugin).unwrap();
         assert_none(r);
         assert!(s.plugin.is_none());
-        assert!(s.shm.is_none());
+        assert!(!s.side().has_slab());
     }
 
     #[test]
     fn shutdown_signals_shutdown() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         let r = s.handle(&main_thread(), HostMessage::Shutdown).unwrap();
         assert!(matches!(r, Reaction::Shutdown));
     }
 
     #[test]
     fn load_plugin_missing_path_errors() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         let reply = s
             .handle(
                 &main_thread(),
@@ -1179,8 +1402,8 @@ mod tests {
     /// Returns (session, shm_guard). The guard keeps the creator-side mmap
     /// alive while the session holds its own mapping.
     #[cfg(feature = "clap")]
-    fn load_clap(name: &str, preferred_format: SampleFormat) -> (Session, SlabWriter) {
-        let mut s = Session::new();
+    fn load_clap(name: &str, preferred_format: SampleFormat) -> (Rig, SlabWriter) {
+        let mut s = Rig::new();
         s.handle(
             &main_thread(),
             HostMessage::LoadPlugin {
@@ -1206,14 +1429,14 @@ mod tests {
             outputs: vec![tutti_plugin_types::ChannelLayout::STEREO],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
-        s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
+        s.attach(AudioSlab::open(buffer_name, layout).unwrap());
         (s, shm_guard)
     }
 
     /// The reply to loading the reference CLAP plugin's file with `load`.
     #[cfg(feature = "clap")]
     fn load_clap_choosing(load: Load) -> BridgeMessage {
-        Session::new()
+        Rig::new()
             .handle(
                 &main_thread(),
                 HostMessage::LoadPlugin {
@@ -1265,7 +1488,7 @@ mod tests {
 
     /// Run one block of `input` on both channels through `s`'s slab.
     #[cfg(feature = "clap")]
-    fn process_block(s: &mut Session, shm: &mut SlabWriter, seq: u64, input: f64) {
+    fn process_block(s: &mut Rig, shm: &mut SlabWriter, seq: u64, input: f64) {
         for ch in 0..2 {
             shm.write::<f64>(seq, ch, &[input; F64_FRAMES]).unwrap();
         }
@@ -1305,7 +1528,7 @@ mod tests {
         );
         let (mut s, mut shm) = load_clap("rate_refusal_cycle", SampleFormat::Float64);
         assert_eq!(s.clock.format, SampleFormat::Float64, "fixture");
-        let set = |s: &mut Session, rate: f64| {
+        let set = |s: &mut Rig, rate: f64| {
             s.handle(
                 &main_thread(),
                 HostMessage::SetSampleRate {
@@ -1474,7 +1697,7 @@ mod tests {
         let resets_at_load = visits(Site::Reset);
         let processes_at_load = visits(Site::Process);
 
-        let mut block = |s: &mut Session, seq: u64| {
+        let mut block = |s: &mut Rig, seq: u64| {
             for ch in 0..2 {
                 shm.write::<f32>(seq, ch, &[0.0; F64_FRAMES]).unwrap();
             }
@@ -1537,7 +1760,7 @@ mod tests {
         let visits = |site: Site| clap_probe_sites().sites[site as usize].visits;
         let processes_at_load = visits(Site::Process);
 
-        let mut block = |s: &mut Session, seq: u64, frames: usize| {
+        let mut block = |s: &mut Rig, seq: u64, frames: usize| {
             for ch in 0..2 {
                 shm.write::<f32>(seq, ch, &[0.0; 512]).unwrap();
             }
@@ -1563,7 +1786,7 @@ mod tests {
         for (seq, frames) in [(1, 0), (2, 513), (3, 1 << 40)] {
             assert!(!block(&mut s, seq, frames), "{frames} frames published");
         }
-        assert_eq!(s.refused_blocks, 3);
+        assert_eq!(s.side().refused_blocks(), 3);
         assert_eq!(
             visits(Site::Process),
             processes_at_load,
@@ -1572,7 +1795,7 @@ mod tests {
 
         assert!(block(&mut s, 4, 512), "a block within bounds renders");
         assert_eq!(visits(Site::Process), processes_at_load + 1);
-        assert_eq!(s.refused_blocks, 3);
+        assert_eq!(s.side().refused_blocks(), 3);
     }
 
     /// **A rate no clock can run at is refused at the edge (doc 027 D13).** The
@@ -1764,7 +1987,7 @@ mod tests {
 
     /// Fetch any param_id from the loaded plugin's parameter list.
     #[cfg(feature = "clap")]
-    fn first_param_id(s: &mut Session) -> ParamId {
+    fn first_param_id(s: &mut Rig) -> ParamId {
         let reply = s
             .handle(&main_thread(), HostMessage::GetParameterList)
             .unwrap()
@@ -1867,7 +2090,7 @@ mod tests {
     /// gap — so a server that mis-numbers its chunks fails here rather than
     /// producing a silently short blob.
     #[cfg(feature = "clap")]
-    fn save_state_bytes(s: &mut Session) -> Vec<u8> {
+    fn save_state_bytes(s: &mut Rig) -> Vec<u8> {
         let mut acc = Reassembler::default();
         let mut done = false;
         for m in s
@@ -1896,7 +2119,7 @@ mod tests {
     /// Mirrors `save_state_bytes`: the host splits, so a test that pushed one
     /// frame would leave the multi-chunk accumulation path untested.
     #[cfg(feature = "clap")]
-    fn load_state_bytes(s: &mut Session, data: &[u8]) -> Reaction {
+    fn load_state_bytes(s: &mut Rig, data: &[u8]) -> Reaction {
         let mut last_reaction = Reaction::None;
         for (seq, last, bytes) in state_chunk::split(data) {
             last_reaction = s
@@ -1916,7 +2139,7 @@ mod tests {
     /// Stages `data` as a host does before a load: the whole sequence, and the
     /// final reaction.
     #[cfg(feature = "clap")]
-    fn stage_state_bytes(s: &mut Session, data: &[u8]) -> Reaction {
+    fn stage_state_bytes(s: &mut Rig, data: &[u8]) -> Reaction {
         let mut last_reaction = Reaction::None;
         for (seq, last, bytes) in state_chunk::split(data) {
             last_reaction = s
@@ -1934,7 +2157,7 @@ mod tests {
     }
 
     #[cfg(feature = "clap")]
-    fn load_reply(s: &mut Session, declared: Option<StagedState>) -> Option<String> {
+    fn load_reply(s: &mut Rig, declared: Option<StagedState>) -> Option<String> {
         let reply = s
             .handle(
                 &main_thread(),
@@ -1956,7 +2179,7 @@ mod tests {
         }
     }
 
-    fn load_declaring(s: &mut Session, declared: Option<StagedState>) -> BridgeMessage {
+    fn load_declaring(s: &mut Rig, declared: Option<StagedState>) -> BridgeMessage {
         s.handle(
             &main_thread(),
             HostMessage::LoadPlugin {
@@ -1980,7 +2203,7 @@ mod tests {
     #[cfg(feature = "clap")]
     #[test]
     fn a_failed_second_load_unloads_the_first() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         load_reply(&mut s, None);
         assert!(s.plugin.is_some(), "the first load holds a plugin");
         let reply = load_declaring(&mut s, None);
@@ -1988,7 +2211,7 @@ mod tests {
         assert!(s.plugin.is_none(), "the refused load left the first plugin");
     }
 
-    fn stage(s: &mut Session, seq: u32, last: bool, bytes: &[u8]) -> Reaction {
+    fn stage(s: &mut Rig, seq: u32, last: bool, bytes: &[u8]) -> Reaction {
         s.handle(
             &main_thread(),
             HostMessage::StageStateChunk {
@@ -2016,20 +2239,20 @@ mod tests {
     /// plugin).
     #[test]
     fn a_load_restores_only_the_state_it_declares() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_mismatch(load_declaring(&mut s, Some(StagedState { len: 3 })));
 
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_state_loaded_reply(stage(&mut s, 0, true, &[1, 2, 3]));
         assert_mismatch(load_declaring(&mut s, None));
         assert!(s.staged.is_none(), "and the stage is gone");
 
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_state_loaded_reply(stage(&mut s, 0, true, &[1, 2, 3]));
         assert_mismatch(load_declaring(&mut s, Some(StagedState { len: 4 })));
         assert!(s.staged.is_none());
 
-        let mut s = Session::new();
+        let mut s = Rig::new();
         match load_declaring(&mut s, None) {
             BridgeMessage::Error { message } => {
                 assert!(message.contains("not found"), "{message}");
@@ -2049,7 +2272,7 @@ mod tests {
     /// between discards it, and so does a half-received one.
     #[test]
     fn a_stage_does_not_outlive_the_next_request() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_state_loaded_reply(stage(&mut s, 0, true, &[1]));
         let _ = s.handle(&main_thread(), HostMessage::UnloadPlugin);
         assert!(s.staged.is_none(), "an unload discards the stage");
@@ -2072,7 +2295,7 @@ mod tests {
         let (mut source, _shm) = load_clap("stage_source", SampleFormat::Float32);
         let own = save_state_bytes(&mut source);
 
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_state_loaded(stage_state_bytes(&mut s, &own));
         assert!(s.staged.is_some(), "the state waits for the load");
         assert_eq!(
@@ -2087,7 +2310,7 @@ mod tests {
         );
         assert!(s.staged.is_none(), "and the load consumed it");
 
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_state_loaded(stage_state_bytes(&mut s, &[1, 2, 3]));
         assert!(
             load_reply(&mut s, Some(StagedState { len: 3 })).is_some(),
@@ -2095,7 +2318,7 @@ mod tests {
         );
         assert!(s.plugin.is_some(), "and the plugin is loaded all the same");
 
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_eq!(
             load_reply(&mut s, None),
             None,
@@ -2112,7 +2335,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut source, _shm) = load_clap("announce_source", SampleFormat::Float32);
         let own = save_state_bytes(&mut source);
-        let load = |s: &mut Session, declared: Option<StagedState>| {
+        let load = |s: &mut Rig, declared: Option<StagedState>| {
             let mut heard = Vec::new();
             let reply = s
                 .handle_with(
@@ -2132,7 +2355,7 @@ mod tests {
                 .into_reply();
             (heard, reply)
         };
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_state_loaded(stage_state_bytes(&mut s, &own));
         let (heard, reply) = load(
             &mut s,
@@ -2146,7 +2369,7 @@ mod tests {
         );
         assert!(matches!(reply, BridgeMessage::PluginLoaded { .. }));
 
-        let mut s = Session::new();
+        let mut s = Rig::new();
         let (heard, _) = load(&mut s, None);
         assert!(heard.is_empty(), "{heard:?}");
     }
@@ -2155,7 +2378,7 @@ mod tests {
     #[test]
     #[cfg(feature = "clap")]
     fn a_broken_staging_sequence_stages_nothing() {
-        let mut s = Session::new();
+        let mut s = Rig::new();
         assert_state_loaded(stage_state_bytes(&mut s, &[9, 9]));
         let reply = s
             .handle(
@@ -2236,11 +2459,11 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("unload_clap", SampleFormat::Float32);
         assert!(s.plugin.is_some());
-        assert!(s.shm.is_some());
+        assert!(s.side().has_slab());
         let r = s.handle(&main_thread(), HostMessage::UnloadPlugin).unwrap();
         assert_none(r);
         assert!(s.plugin.is_none());
-        assert!(s.shm.is_none());
+        assert!(!s.side().has_slab());
     }
 
     #[test]
@@ -2272,13 +2495,13 @@ mod tests {
     /// The probe bundle `AnyServed::load` picks the format from, as a session
     /// loads it, with a slab sized to what the plugin declared.
     #[cfg(feature = "vst3")]
-    fn load_vst3_probe(name: &str) -> (Session, SlabWriter) {
+    fn load_vst3_probe(name: &str) -> (Rig, SlabWriter) {
         let bundle = std::path::Path::new(crate::test_utils::vst3_probe_path())
             .ancestors()
             .find(|p| p.extension().is_some_and(|e| e == "vst3"))
             .expect("the probe module is inside its bundle")
             .to_path_buf();
-        let mut s = Session::new();
+        let mut s = Rig::new();
         s.handle(
             &main_thread(),
             HostMessage::LoadPlugin {
@@ -2302,14 +2525,14 @@ mod tests {
         };
         let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
         let guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
-        s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
+        s.attach(AudioSlab::open(buffer_name, layout).unwrap());
         (s, guard)
     }
 
     /// One block of `frames` silent frames through `s`'s slab, and whether it
     /// was published.
     #[cfg(any(feature = "vst3", feature = "clap"))]
-    fn run_silent_block(s: &mut Session, shm: &mut SlabWriter, seq: u64, frames: usize) -> bool {
+    fn run_silent_block(s: &mut Rig, shm: &mut SlabWriter, seq: u64, frames: usize) -> bool {
         let layout = shm.layout_ref().clone();
         for ch in 0..layout.input_channels() {
             shm.write::<f32>(seq, ch, &vec![0.0; frames]).unwrap();
@@ -2354,15 +2577,15 @@ mod tests {
                     "a failed block publishes nothing, so the host reads silence"
                 );
             }
-            assert_eq!(s.pipeline.failed_blocks(), 3);
+            assert_eq!(s.side().pipeline().failed_blocks(), 3);
             assert!(s.drain_async_events(&main_thread()).is_empty());
-            s.pipeline.failed_blocks()
+            s.side().pipeline().failed_blocks()
         };
         assert_eq!(failing, 3);
         // The same server code with a plugin that behaves renders and publishes.
         let (mut s, mut shm) = load_vst3_probe("renders_vst3");
         assert!(run_silent_block(&mut s, &mut shm, 1, 128));
-        assert_eq!(s.pipeline.failed_blocks(), 0);
+        assert_eq!(s.side().pipeline().failed_blocks(), 0);
     }
 
     /// The same for CLAP: a block the plugin fails (`CLAP_PROCESS_ERROR`) is
@@ -2383,13 +2606,13 @@ mod tests {
                 tutti_clap_test_plugin::StatusMode::Error,
             );
             assert!(!run_silent_block(&mut s, &mut shm, 1, 64));
-            assert_eq!(s.pipeline.failed_blocks(), 1);
+            assert_eq!(s.side().pipeline().failed_blocks(), 1);
         }
         assert!(
             run_silent_block(&mut s, &mut shm, 2, 64),
             "the next block renders"
         );
-        assert_eq!(s.pipeline.failed_blocks(), 1);
+        assert_eq!(s.side().pipeline().failed_blocks(), 1);
     }
 
     /// **An idle dispatch allocates nothing**: the drain every message is
@@ -2444,7 +2667,7 @@ mod tests {
             .find(|p| p.extension().is_some_and(|e| e == "vst3"))
             .expect("the probe module is inside its bundle")
             .to_path_buf();
-        let mut s = Session::new();
+        let mut s = Rig::new();
         s.handle(
             &main_thread(),
             HostMessage::LoadPlugin {
@@ -2465,15 +2688,20 @@ mod tests {
             .plugin()
             .parameter_count(&main_thread());
         assert!(params > 1, "the probe has parameters to refit to");
-        assert_eq!(s.pipeline.param_queues(), params, "reserved at load");
+        assert_eq!(
+            s.side().pipeline().param_queues(),
+            params,
+            "reserved at load"
+        );
 
-        s.pipeline
+        s.side()
+            .pipeline_mut()
             .reserve_params(1, ParameterQueue::chunk_room(512));
         assert!(
             s.drain_async_events(&main_thread()).is_empty(),
             "nothing raised yet"
         );
-        assert_eq!(s.pipeline.param_queues(), 1);
+        assert_eq!(s.side().pipeline().param_queues(), 1);
 
         match s.plugin.as_ref().unwrap() {
             AnyServed::Vst3(p) => p.plugin_restart_component(K_PARAM_TITLES_CHANGED),
@@ -2487,7 +2715,7 @@ mod tests {
                 .any(|m| matches!(m, BridgeMessage::PluginParamTitlesChanged)),
             "the restart reaches the session: {messages:?}"
         );
-        assert_eq!(s.pipeline.param_queues(), params);
+        assert_eq!(s.side().pipeline().param_queues(), params);
     }
 
     /// The format's count query, which the load and the refit reserve by,
@@ -2514,6 +2742,7 @@ mod tests {
             false,
             None,
             &mut || {},
+            tutti_plugin_types::Hand::local(),
         )
         .expect("the vendored VST3 probe loads");
         let vst3: &dyn crate::served::ServedPlugin = &vst3;

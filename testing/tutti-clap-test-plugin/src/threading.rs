@@ -394,10 +394,30 @@ static TIMER_SUPPORT: clap_plugin_timer_support = clap_plugin_timer_support {
     on_timer: Some(plugin_on_timer),
 };
 
+/// How long `on_timer` takes, in milliseconds: the stand-in for an editor that
+/// paints slowly on the host's main thread (CLAP's `clap.gui` has no idle of
+/// its own; a plugin paints from its timers and `on_main_thread`). Zero by
+/// default.
+static TIMER_STALL_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Makes every `on_timer` take `millis` milliseconds (0 for none), as a slow
+/// paint does. For the server's test that a slow main loop delays no block.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_set_timer_stall_ms(millis: u32) {
+    TIMER_STALL_MS.store(millis, Ordering::SeqCst);
+}
+
 unsafe extern "C" fn plugin_on_timer(plugin: *const clap_plugin, timer_id: u32) {
     THREADING
         .last_fired_timer_id
         .store(timer_id, Ordering::Release);
+    let stall = TIMER_STALL_MS.load(Ordering::SeqCst);
+    if stall > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(stall)));
+    }
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
     // arguments valid per the CLAP ABI.
     let host = unsafe { crate::plugin_host(plugin) };

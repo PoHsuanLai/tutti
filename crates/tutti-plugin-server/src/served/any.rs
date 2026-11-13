@@ -11,9 +11,10 @@
 
 use std::path::Path;
 
-use tutti_plugin_types::{Load, LoadStage, MainThread, PluginError, PluginResult};
+use tutti_plugin_types::{Hand, Load, LoadStage, MainThread, PluginError, PluginResult};
 
 use super::{Served, ServedPlugin};
+use crate::render::{End, RenderEnd};
 
 macro_rules! served {
     ($($(#[$cfg:meta])* $name:ident($loaded:ty, $extension:literal)),* $(,)?) => {
@@ -29,6 +30,9 @@ macro_rules! served {
         impl AnyServed {
             /// Loads the plugin `load` chooses in the file at `path` and
             /// activates it, choosing the format from the file's extension.
+            /// Its Processor is lent to the render thread: the third value is
+            /// the seat it arrives in ([`crate::render::End`]), which that
+            /// thread installs.
             ///
             /// # Errors
             ///
@@ -45,7 +49,7 @@ macro_rules! served {
                 prefer_f64: bool,
                 state: Option<&[u8]>,
                 before_restore: &mut dyn FnMut(),
-            ) -> PluginResult<(Self, Option<String>)> {
+            ) -> PluginResult<(Self, Option<String>, Box<dyn RenderEnd>)> {
                 if !path.exists() {
                     return Err(PluginError::Load {
                         stage: LoadStage::Scanning,
@@ -59,6 +63,7 @@ macro_rules! served {
                     .to_lowercase();
                 match extension.as_str() {
                     $($(#[$cfg])* $extension => {
+                        let (hand, rt) = Hand::threaded();
                         let (plugin, state_error) = Served::<$loaded>::load(
                             main,
                             path,
@@ -68,8 +73,10 @@ macro_rules! served {
                             prefer_f64,
                             state,
                             before_restore,
+                            hand,
                         )?;
-                        Ok((Self::$name(plugin), state_error))
+                        let end = End::new(rt, plugin.loaded().features);
+                        Ok((Self::$name(plugin), state_error, Box::new(end)))
                     })*
                     _ => {
                         let served: &[&str] = &[$($(#[$cfg])* concat!(".", $extension)),*];

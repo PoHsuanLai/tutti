@@ -4,7 +4,7 @@
 //!   `Error` once imported), implements
 //!   `std::error::Error`: by the derive, or by an `impl ... Error for` in its crate. A
 //!   `pub` type with the name of an error and no impl cannot be `?`-converted into
-//!   `anyhow::Error` or `Box<dyn Error>`.
+//!   anyhow's error type or `Box<dyn Error>`.
 //! - **No hand-written `impl (core::|std::)?(error::)?Error for`** in a crate's
 //!   `src/`, macro bodies included: the derive writes the `Display` beside the
 //!   variant it describes, so the two cannot drift. A hand impl is a row of

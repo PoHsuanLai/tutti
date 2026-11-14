@@ -629,7 +629,7 @@ fn a_graph_prepared_at_another_rate_is_refused() {
 
 /// The graph is handed the render clock's transport, block by block, read
 /// before each block and advanced after: a node walking each block's `Env`
-/// ([`BeatPorts`], what `EnvClock` did) emits the offline timeline's beat on
+/// ([`BeatPorts`]) emits the offline timeline's beat on
 /// every frame, starting at its start beat, and the
 /// timeline ends exactly the render's frames on.
 #[test]

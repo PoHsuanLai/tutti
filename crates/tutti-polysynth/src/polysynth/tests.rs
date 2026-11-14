@@ -96,7 +96,7 @@ impl Hand {
         let events: Vec<tutti_graph::Event> = inside
             .iter()
             .map(|&(index, ump)| {
-                let at = tutti_graph::Offset::new(index, block).expect("inside the block");
+                let at = tutti_graph::Offset::of(tutti_types::Samples(index), block);
                 tutti_graph::Event::midi(at, ump)
             })
             .collect();
@@ -297,7 +297,7 @@ fn test_unison_creates_subvoices() {
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: UnisonVoices::of(3),
-            detune_cents: tutti_types::Cents(15.0),
+            detune_cents: tutti_types::CentsSpan::of(15.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
         }),
@@ -343,7 +343,7 @@ fn detune_is_addressable_with_unison_absent_without() {
     let with_unison = synth(SynthConfig {
         unison: Some(UnisonConfig {
             voice_count: UnisonVoices::of(3),
-            detune_cents: tutti_types::Cents(10.0),
+            detune_cents: tutti_types::CentsSpan::of(10.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
         }),
@@ -365,7 +365,7 @@ fn a_detune_write_recomputes_unison_on_process() {
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: UnisonVoices::of(3),
-            detune_cents: tutti_types::Cents(0.0),
+            detune_cents: tutti_types::CentsSpan::of(0.0),
             stereo_spread: Spread(0.0),
             phase_randomize: false,
         }),
@@ -407,7 +407,7 @@ fn test_unison_stereo_output() {
         }, // Fast attack to get output quickly
         unison: Some(UnisonConfig {
             voice_count: UnisonVoices::of(3),
-            detune_cents: tutti_types::Cents(15.0),
+            detune_cents: tutti_types::CentsSpan::of(15.0),
             stereo_spread: Spread(1.0), // Full stereo spread
             phase_randomize: false,
         }),
@@ -480,7 +480,7 @@ fn test_basic_dsp_chain() {
         &Adsr::new(Seconds(0.001), Seconds(0.1), Amplitude(0.8), Seconds(0.1)),
         tutti_types::SampleRate::SR_44K1,
         1,
-        1,
+        crate::UnisonVoices::ONE,
     );
     bank.set_pitch(0, Hz(440.0));
     bank.set_gains(0, Amplitude::UNITY, Amplitude::UNITY);
@@ -976,7 +976,7 @@ fn test_portamento_with_pitch_bend() {
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: tutti_types::Seconds(0.05), // 50ms glide
+            time: crate::GlideTime::of(tutti_types::Seconds(0.05)), // 50ms glide
             constant_time: true,
         }),
         ..Default::default()
@@ -1700,6 +1700,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
             .unwrap()
             .mpe_state()
             .slide
+            .get()
     };
     assert!(
         (slide(&synth, 60) - 1.0).abs() < 0.01,
@@ -1709,7 +1710,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
     // The unaddressed voice must keep its neutral default (center = no timbre
     // shift), not be dragged along with note 60.
     assert!(
-        (slide(&synth, 64) - crate::mpe::SLIDE_CENTER).abs() < 0.01,
+        (slide(&synth, 64) - crate::mpe::SLIDE_CENTER.get()).abs() < 0.01,
         "note 64 (unaddressed) slide must stay at center, got {}",
         slide(&synth, 64)
     );
@@ -1821,11 +1822,11 @@ fn test_mpe_per_voice_pressure() {
         .unwrap();
 
     assert!(
-        (voice_ch1.mpe_state().pressure - 1.0).abs() < 0.01,
+        (voice_ch1.mpe_state().pressure.get() - 1.0).abs() < 0.01,
         "the addressed note should have full pressure"
     );
     assert!(
-        voice_ch2.mpe_state().pressure.abs() < 0.01,
+        voice_ch2.mpe_state().pressure.get().abs() < 0.01,
         "the other note should have no pressure"
     );
 }
@@ -1875,7 +1876,7 @@ fn test_mpe_per_voice_slide() {
         .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
         .unwrap();
     assert!(
-        (voice.mpe_state().slide - 1.0).abs() < 0.01,
+        (voice.mpe_state().slide.get() - 1.0).abs() < 0.01,
         "the addressed note should have full slide"
     );
 }
@@ -2012,7 +2013,7 @@ fn test_mpe_note_on_resets_expression() {
         .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
         .unwrap();
     assert!(
-        voice.mpe_state().pressure.abs() < 0.01,
+        voice.mpe_state().pressure.get().abs() < 0.01,
         "New note should have reset MPE pressure"
     );
 }
@@ -2146,7 +2147,7 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: Seconds(0.004),
+            time: crate::GlideTime::of(tutti_types::Seconds(0.004)),
             constant_time: true,
         }),
         ..Default::default()
@@ -2220,7 +2221,7 @@ fn process_and_tick_agree_through_a_glide() {
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: Seconds(0.05),
+            time: crate::GlideTime::of(tutti_types::Seconds(0.05)),
             constant_time: true,
         }),
         ..Default::default()
@@ -2282,7 +2283,7 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: UnisonVoices::of(3),
-            detune_cents: tutti_types::Cents(0.0),
+            detune_cents: tutti_types::CentsSpan::of(0.0),
             stereo_spread: Spread(0.0),
             phase_randomize: true,
         }),
@@ -2443,7 +2444,7 @@ fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
             oscillator: OscillatorType::Saw,
             unison: Some(UnisonConfig {
                 voice_count: UnisonVoices::of(3),
-                detune_cents: tutti_types::Cents(15.0),
+                detune_cents: tutti_types::CentsSpan::of(15.0),
                 stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
@@ -2803,7 +2804,7 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
                 attribute: Attribute::None,
             },
         )));
-        let before = voice_of(&synth, 60).mpe_state().slide;
+        let before = voice_of(&synth, 60).mpe_state().slide.get();
         synth.apply_midi(ump(Message::Midi2(
             address(1),
             Voice2::AssignablePerNote {
@@ -2812,7 +2813,7 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
                 value: ControlValue::new(u32::MAX),
             },
         )));
-        (before, voice_of(&synth, 60).mpe_state().slide)
+        (before, voice_of(&synth, 60).mpe_state().slide.get())
     };
     let (before, after) = drive(74);
     assert_ne!(before, after, "index 74 is slide");
@@ -2859,7 +2860,7 @@ fn midi1_values_scale_to_exact_figures() {
             },
         )));
         assert_eq!(
-            voice_of(&synth, 60).mpe_state().pressure,
+            voice_of(&synth, 60).mpe_state().pressure.get(),
             expected,
             "pressure = {value}"
         );
@@ -3312,7 +3313,7 @@ fn a_per_note_pitch_survives_a_glide() {
         c.portamento = Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: Seconds(0.05),
+            time: crate::GlideTime::of(tutti_types::Seconds(0.05)),
             constant_time: true,
         });
     });

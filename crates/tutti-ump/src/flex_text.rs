@@ -2,7 +2,7 @@
 //! Flex text format, the way [`SysexMessage::packets`](crate::SysexMessage::packets) is the
 //! writer of SysEx7.
 
-use std::iter::FusedIterator;
+use core::iter::FusedIterator;
 
 use crate::{Flex, FlexAddress, FlexTextKind, Form, Message, MidiGroup, Ump};
 

@@ -32,7 +32,8 @@
 //! sample. The envelope is the exception: its stages are sample-accurate.
 
 use crate::kernel::{self, V};
-use crate::{Adsr, FilterType, OscillatorType, SvfMode};
+use crate::{Adsr, FilterType, OscillatorType, SvfMode, UnisonVoices};
+use core::num::NonZeroU32;
 use tutti_dsp::{
     LadderCoefficients, LadderCoeffs, LadderType, SvfCoefficients, SvfCoeffs, SvfType, ladder_step,
     svf_step,
@@ -244,7 +245,7 @@ impl VoiceBank {
         envelope: &Adsr,
         sample_rate: SampleRate,
         voices: usize,
-        stride: usize,
+        stride: UnisonVoices,
     ) -> Self {
         let osc = match oscillator {
             OscillatorType::Sine => Osc::Sine,
@@ -285,7 +286,7 @@ impl VoiceBank {
             shape: EnvShape::new(envelope, sample_rate),
             gain_glide: GAIN_GLIDE.one_pole_coeff(sample_rate),
             sample_rate,
-            stride: stride.max(1),
+            stride: usize::from(stride.get()),
             voices,
             phase: Vec::new(),
             inc: Vec::new(),
@@ -328,9 +329,14 @@ impl VoiceBank {
         self.inc_target = vec![zero; groups];
         // Distinct nonzero seeds per lane: xorshift cannot leave zero, and two
         // lanes with one seed would play the same noise in both ears.
-        let mut seeds = (1..).map(seed_from);
+        let mut counter = 0u32;
         self.rng = (0..groups)
-            .map(|_| u32x8::new(core::array::from_fn(|_| seeds.next().unwrap_or(1))))
+            .map(|_| {
+                u32x8::new(core::array::from_fn(|_| {
+                    counter += 1;
+                    seed_from(counter).get()
+                }))
+            })
             .collect();
         self.pink = vec![[zero; 3]; groups];
         self.z = vec![[zero; 4]; groups];
@@ -765,14 +771,20 @@ impl VoiceBank {
 /// that no single sample steps by more than 4% of the change at 48 kHz.
 const GAIN_GLIDE: Seconds = Seconds(0.0005);
 
+/// The seed the one counter that mixes to zero gets instead.
+const ZERO_SEED: NonZeroU32 = match NonZeroU32::new(0x6D2B_79F5) {
+    Some(seed) => seed,
+    None => panic!("the zero-seed stand-in is nonzero"),
+};
+
 /// The `n`th noise seed: a bijective mix (odd multiply, xorshift) of the
 /// counter, so distinct counters give distinct seeds, forced nonzero.
-fn seed_from(n: u32) -> u32 {
+fn seed_from(n: u32) -> NonZeroU32 {
     let mut x = n.wrapping_mul(0x9E37_79B9);
     x ^= x >> 16;
     x = x.wrapping_mul(0x85EB_CA6B);
     x ^= x >> 13;
-    if x == 0 { 0x6D2B_79F5 } else { x }
+    NonZeroU32::new(x).unwrap_or(ZERO_SEED)
 }
 
 /// Group and lane-within-group of a flat lane index.

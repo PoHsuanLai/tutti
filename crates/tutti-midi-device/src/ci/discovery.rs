@@ -148,7 +148,12 @@ pub struct DiscoveryData {
     /// reply it echoes the id from the Discovery that prompted it, which §5.6.1
     /// makes mandatory (the Reply returns the Output Path ID of the Discovery
     /// it answers).
-    pub output_path_id: U7,
+    ///
+    /// `None` for a Message Format Version 1 body, which ends before the field
+    /// (Tables 6 and 8 mark it and the Function Block as added in Version 2):
+    /// the peer sent no path id, which is not path 0. A body written with `None`
+    /// is the Version 1 body, and holds no Function Block either.
+    pub output_path_id: Option<U7>,
     /// **Function Block** this responder represents (Message Version 2, *reply
     /// only*), or `None` (wire `0x7F`) if it represents none. A number the
     /// spec does not give a Function Block (32 to 126) is malformed.
@@ -161,8 +166,8 @@ pub struct DiscoveryData {
 }
 
 impl DiscoveryData {
-    /// A body with the Message-Version-2 fields at their neutral values: path
-    /// id 0 and no Function Block. Use the field setters for a device that
+    /// A Message Format Version 2 body with its fields at their neutral values:
+    /// path id 0 and no Function Block. Use the field setters for a device that
     /// has several MIDI Out connections or sits behind a Function Block.
     #[must_use]
     pub fn new(
@@ -174,7 +179,7 @@ impl DiscoveryData {
             identity,
             categories,
             max_sysex_size,
-            output_path_id: U7::default(),
+            output_path_id: Some(U7::default()),
             function_block: None,
         }
     }
@@ -197,7 +202,10 @@ impl DiscoveryData {
         // 28-bit max size as four little-endian 7-bit bytes.
         let size = self.max_sysex_size.get();
         out.extend([0, 7, 14, 21].map(|shift| ((size >> shift) & 0x7F) as u8));
-        out.extend([self.output_path_id.get()]);
+        let Some(path) = self.output_path_id else {
+            return;
+        };
+        out.extend([path.get()]);
         if is_reply {
             out.extend([self
                 .function_block
@@ -211,11 +219,13 @@ impl DiscoveryData {
     /// is neither 0 to 31 nor `0x7F` (§5.6.2), or a one-byte manufacturer id
     /// followed by a non-zero byte (M2-104 §7.1.3).
     ///
-    /// The Version-2 trailer is read when present and defaulted when absent, so
+    /// The Version-2 trailer is read when present and absent when it is not, so
     /// a Message Format Version 1 peer still decodes: §5.3 requires a receiver
     /// to process only the fields, values and bits of the received version
-    /// when it is lower than its own. A missing Function Block reads as `None`
-    /// rather than block 0, which would be a lie.
+    /// when it is lower than its own, and §5.4 that it parse every earlier
+    /// version. A body that ends after the Receivable Maximum SysEx Message Size
+    /// has no Output Path ID (`None`, not path 0) and no Function Block (`None`,
+    /// not block 0, which would be a lie).
     pub(crate) fn decode_body(is_reply: bool, b: &[u8]) -> Option<DiscoveryData> {
         super::read::discovery_body(is_reply, b)
     }

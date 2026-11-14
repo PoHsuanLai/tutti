@@ -44,7 +44,8 @@
 //! ## Safety
 //!
 //! Outside the `-ffi` crates (the plugin formats, the OS MIDI APIs, the plugin
-//! process edge), this crate and `arc-lend` hold all of the engine's `unsafe`;
+//! process edge), this crate holds all of the engine's `unsafe`, and the external `arc-lend`
+//! crate holds the publish cell's;
 //! every other library carries `#![forbid(unsafe_code)]`. Each site exists because the safe construct would
 //! have cost something on the audio thread:
 //!
@@ -70,14 +71,14 @@
 //!   docs say what it does and does not guarantee.
 //! - `monotonic_ns` (`clock.rs`): the OS clock calls.
 //!
-//! `arc-lend`'s `ArcLend` holds the rest: an `AtomicPtr` to an `Arc::into_raw`
+//! `arc-lend`'s `ArcLend` (an external crate) holds the rest: an `AtomicPtr` to an `Arc::into_raw`
 //! pointer that a `Loan` dereferences under a hazard-slot protocol, so the audio
 //! thread can never free a value (the reason it exists instead of `ArcSwap`).
 //!
 //! What checks it: a loom model per lock-free structure, run against the shipped
-//! code (`tests/*_loom.rs` here, `arc-lend/tests/loom.rs`), and miri over this
-//! crate's unit tests and `arc-lend`'s, in CI's `loom` and `miri` jobs (`cargo
-//! xtask loom`, `cargo xtask miri`). Miri executes no FFI and no x86 intrinsics,
+//! code (`tests/*_loom.rs` here, and arc-lend's own loom model for `ArcLend`), and miri
+//! over this crate's unit tests (arc-lend's CI runs its own), in CI's `loom` and
+//! `miri` jobs (`cargo xtask loom`, `cargo xtask miri`). Miri executes no FFI and no x86 intrinsics,
 //! so the denormal register tests are skipped under it, and it perturbs libm
 //! results, so a green run says nothing about numerics. The plugin formats'
 //! `unsafe` is answered structurally instead: a plugin that corrupts memory
@@ -88,7 +89,7 @@
 //! Real-time-safe shared-memory primitives for the audio thread.
 //!
 //! Interior mutability, fixed-capacity buffers, and the denormals flush: each
-//! is allocation-free on the audio path (`tests/rt_no_alloc.rs` gates it) and
+//! is allocation-free on the audio path (`tests/no_alloc/rt_no_alloc.rs` gates it) and
 //! carries no engine dependency. The crate also holds the one thread-priority
 //! call, [`request_priority`], which says what the OS granted.
 //!
@@ -215,6 +216,6 @@ pub use wake_flag::WakeFlag;
 
 // The cell non-scalar state reaches the audio thread through: a control
 // thread publishes, the audio thread only borrows (`Loan`), so it never frees.
-// Its own crate (`arc-lend`, which names nothing of tutti's); re-exported here
+// The external `arc-lend` crate, which names nothing of tutti's; re-exported here
 // so the engine spells it `tutti_rt::ArcLend`.
 pub use arc_lend::{ArcLend, Loan, Reader};

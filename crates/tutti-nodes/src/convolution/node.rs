@@ -17,12 +17,10 @@
 //! writes them after they are built. Each channel and each fork keeps only
 //! its own running state.
 
-use std::sync::Arc;
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::AtomicF32;
-use tutti_types::{Amplitude, ChannelLayout, Fold, Param, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, Fold, Param, Samples, UnitParam};
 use tutti_types::{Latency, Tail};
 
 use crate::ramp::LastGood;
@@ -90,8 +88,8 @@ pub enum IrChannelConfig {
 ///
 /// # The sample rate is not this node's to fix
 ///
-/// Unlike the other rate-dependent nodes in this crate, `prepare` fixes nothing
-/// here — it stores the rate and nothing else. The IRs are taken as bare
+/// Unlike the other rate-dependent nodes in this crate, `prepare` fixes no
+/// coefficient here, and the node stores no rate. The IRs are taken as bare
 /// `&[f32]` with no rate attached, so the node cannot tell what rate they were
 /// measured at and has nothing to resample from or to.
 ///
@@ -107,15 +105,6 @@ pub struct ConvolverNode {
     config: IrChannelConfig,
     /// The wet path's linear gain, floored at 0.
     gain: Param<Amplitude>,
-    /// The rate the graph last prepared the node at. Seeded at
-    /// [`SampleRate::DEFAULT`] and updated by `prepare`, but **never read** — no coefficient here
-    /// derives from it, because an FIR convolution's only time constant is the
-    /// IR itself. Kept so the node can answer for its rate if a future
-    /// resampling path needs to know what it was built against; see the type
-    /// docs for why resampling is deliberately not done.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
-    sample_rate: SampleRate,
     latency_samples: usize,
     /// The fold of every input to mono, for
     /// [`MonoToStereo`](IrChannelConfig::MonoToStereo); `None` for the other
@@ -140,7 +129,6 @@ impl std::fmt::Debug for ConvolverNode {
             .field("convolvers", &self.convolvers)
             .field("config", &self.config)
             .field("gain", &self.gain)
-            .field("sample_rate", &self.sample_rate)
             .field("latency_samples", &self.latency_samples)
             .field("last", &self.last)
             .field("good", &self.good)
@@ -150,11 +138,6 @@ impl std::fmt::Debug for ConvolverNode {
 
 impl ConvolverNode {
     /// The shared body behind every public constructor.
-    ///
-    /// Seeds the placeholder [`SampleRate::DEFAULT`], which `prepare`
-    /// overwrites without resampling anything — see the type docs.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
     fn build(convolvers: Vec<Convolver>, config: IrChannelConfig) -> Self {
         debug_assert!(!convolvers.is_empty());
         assert!(
@@ -178,7 +161,6 @@ impl ConvolverNode {
             convolvers,
             config,
             gain: Param::new(Amplitude::UNITY),
-            sample_rate: SampleRate::DEFAULT,
             latency_samples,
             fold,
             mono: Vec::new(),
@@ -290,12 +272,13 @@ impl ConvolverNode {
         self.convolvers.len()
     }
 
-    /// The shared wet-path [`Amplitude`] cell.
+    /// A handle on the shared wet-path [`Amplitude`] cell.
     ///
-    /// Writing the raw cell bypasses [`set_gain`](Self::set_gain)'s floor at 0;
+    /// Storing through it bypasses [`set_gain`](Self::set_gain)'s floor at 0;
     /// a negative gain inverts the wet signal's polarity.
-    pub fn gain(&self) -> Arc<AtomicF32> {
-        self.gain.as_atomic()
+    #[must_use]
+    pub fn gain(&self) -> Param<Amplitude> {
+        self.gain.handle()
     }
 
     /// Sets the wet-path [`Amplitude`] for every channel, floored at 0.
@@ -331,6 +314,16 @@ impl ConvolverNode {
         }
     }
 
+    /// Scale `out` by the gain the graph drives on the wet-gain port, frame by
+    /// frame, floored at 0 like the setter. A non-finite value reads as the
+    /// last finite one (see [`LastGood`]).
+    #[inline]
+    fn apply_driven_gain(out: &mut [f32], lane: &[f32], good: &mut LastGood) {
+        for (o, &g) in out.iter_mut().zip(lane) {
+            *o *= good.read(g).max(0.0);
+        }
+    }
+
     /// Read the gain once, and ramp from where the previous block ended. It
     /// scales the output directly — a stepped gain is a click — so a change
     /// between blocks glides across the next one and lands exactly on the new
@@ -345,6 +338,15 @@ impl ConvolverNode {
     }
 }
 
+/// How one piece of a block is scaled by the wet gain.
+enum WetGain<'a> {
+    /// The per-frame values on the wet-gain param port.
+    Driven(&'a [f32]),
+    /// The cell's value, ramped from where the previous block ended; the
+    /// value is `Some` when the ramp is flat.
+    Ramped(Ramp, Option<Amplitude>),
+}
+
 impl ConvolverNode {
     /// Frames `at..at + size` of the block (`size` at most the `mono`
     /// scratch's length): convolve each channel's run, then scale it
@@ -355,16 +357,36 @@ impl ConvolverNode {
         size: usize,
         inputs: &Inputs<'_>,
         outputs: &mut Outputs<'_, '_>,
+        driven: Option<&[f32]>,
     ) {
         let input = |c: usize| &inputs.get(c)[at..at + size];
-        let (ramp, held) = self.begin_block(size);
+        // A driven gain is the graph's signal, which it declicks itself: the
+        // block ramp restarts from the value after it.
+        let gain = match driven {
+            Some(lane) => {
+                self.last = None;
+                WetGain::Driven(&lane[at..at + size])
+            }
+            None => {
+                let (ramp, held) = self.begin_block(size);
+                WetGain::Ramped(ramp, held)
+            }
+        };
         let n = self.width();
+        // Every channel reads the driven lane from the same last finite value.
+        let good = self.good;
         match self.config {
             IrChannelConfig::Mono | IrChannelConfig::Stereo => {
                 for c in 0..n {
                     let out = &mut outputs.get(c)[at..at + size];
                     self.convolvers[c].process_block(input(c), out);
-                    Self::apply_gain(out, &ramp, held);
+                    match &gain {
+                        WetGain::Driven(lane) => {
+                            self.good = good;
+                            Self::apply_driven_gain(out, lane, &mut self.good);
+                        }
+                        WetGain::Ramped(ramp, held) => Self::apply_gain(out, ramp, *held),
+                    }
                 }
             }
             IrChannelConfig::MonoToStereo => {
@@ -376,12 +398,23 @@ impl ConvolverNode {
                 for c in 0..n {
                     let out = &mut outputs.get(c)[at..at + size];
                     self.convolvers[c].process_block(&self.mono[..size], out);
-                    Self::apply_gain(out, &ramp, held);
+                    match &gain {
+                        WetGain::Driven(lane) => {
+                            self.good = good;
+                            Self::apply_driven_gain(out, lane, &mut self.good);
+                        }
+                        WetGain::Ramped(ramp, held) => Self::apply_gain(out, ramp, *held),
+                    }
                 }
             }
         }
     }
 }
+
+// The params a [`ConvolverNode`] lets the graph modulate: the wet gain.
+tutti_graph::declare_params!([] ConvolverNode, n {
+    Volume => Amplitude = &n.gain,
+});
 
 impl Node for ConvolverNode {
     /// `N` in, `N` out; one FFT block of latency for the whole output, and the
@@ -399,10 +432,14 @@ impl Node for ConvolverNode {
                     .max()
                     .unwrap_or(0),
             ))
+            .with_param_addrs(self.declared_ports().as_slice())
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        self.declared_base(k)
     }
 
     fn prepare(&mut self, p: &Prepare) {
-        self.sample_rate = p.sample_rate();
         self.mono = vec![0.0; p.max_block().get()];
     }
 
@@ -410,6 +447,9 @@ impl Node for ConvolverNode {
     /// whole block in partition-sized runs, then the blend runs over the block.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
+        let driven = self
+            .declared_param::<{ UnitParam::Volume as u16 }>(&io)
+            .frames();
         let (inputs, mut outputs) = io.split();
         // One piece in a graph, whose blocks fit the scratch; a longer block
         // driven by hand renders in scratch-sized pieces.
@@ -417,7 +457,7 @@ impl Node for ConvolverNode {
         let mut at = 0;
         while at < size {
             let n = step.min(size - at);
-            self.render(at, n, &inputs, &mut outputs);
+            self.render(at, n, &inputs, &mut outputs, driven);
             at += n;
         }
         Status::Modified
@@ -432,10 +472,9 @@ impl Node for ConvolverNode {
 }
 
 impl ParamNode for ConvolverNode {
-    /// None: the wet gain is a linear trim with no `UnitParam`; it is set
-    /// through the node's handle.
+    /// The wet gain.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder().build()
+        self.declared_set()
     }
 
     /// A node over the same IR spectra (shared: they are read-only) with
@@ -448,7 +487,6 @@ impl ParamNode for ConvolverNode {
             convolvers: self.convolvers.iter().map(Convolver::fresh).collect(),
             config: self.config,
             gain,
-            sample_rate: self.sample_rate,
             latency_samples: self.latency_samples,
             fold: self.fold.clone(),
             mono: vec![0.0; self.mono.len()],
@@ -473,7 +511,9 @@ mod tests {
     use super::super::ir::{generate_room_ir, generate_test_ir};
     use super::*;
     use crate::test_support::{RATE, drive_block, prepared};
+    use std::sync::Arc;
     use tutti_graph::contract::drive;
+    use tutti_types::SampleRate;
     use tutti_types::Seconds;
 
     /// The "control changed between two blocks" experiment.
@@ -550,17 +590,54 @@ mod tests {
         }
     }
 
-    /// The node offers no param to the graph (the mix is the graph's, the gain
-    /// has no address), and a fork keeps the gain as it was when forked and
+    /// The node offers one param to the graph, the wet gain as `Volume` (the mix
+    /// is the graph's), and a fork keeps the gain as it was when forked and
     /// follows no live write.
     #[test]
     fn a_fork_keeps_the_gain_and_shares_no_cell() {
         let node = ConvolverNode::stereo(&[1.0, 0.5], &[0.25], 64);
-        assert_eq!(node.param_set().params().count(), 0);
+        assert_eq!(node.param_set().params().count(), 1);
+        assert!(node.param_set().set(UnitParam::Volume, 0.7));
+        assert_eq!(node.gain().load(), Amplitude(0.7));
         node.set_gain(Amplitude::new(0.3));
         let fork = node.fork_fresh();
         node.set_gain(Amplitude::new(2.0));
         assert_eq!(fork.gain.load(), Amplitude(0.3));
+    }
+
+    /// A gain driven on the `Volume` port replaces the cell, frame by frame: a
+    /// unit impulse response returns the input delayed by the latency, scaled by
+    /// each frame's driven value, and a negative frame is floored at 0.
+    #[test]
+    fn a_driven_gain_scales_each_frame_and_floors_at_zero() {
+        let mut node = prepared(ConvolverNode::new(&[1.0], 64));
+        node.set_gain(Amplitude::new(5.0));
+        let latency = node.latency_samples().get();
+        let lane: Vec<f32> = (0..256).map(|i| [0.5, 1.0, -2.0, 0.25][i % 4]).collect();
+        let out = drive(&mut node, RATE, &[&[1.0; 256]], &[Some(&lane)]);
+        for i in latency..256 {
+            let want = lane[i].max(0.0);
+            assert!(
+                (out[0][i] - want).abs() < 1e-4,
+                "frame {i} is {} want {want}",
+                out[0][i]
+            );
+        }
+    }
+
+    /// A non-finite driven frame reads as the last finite one, and every channel
+    /// reads the same one: a block opening on NaN holds the previous block's
+    /// last value (0.5) on both channels of a stereo node.
+    #[test]
+    fn a_non_finite_driven_frame_holds_the_same_value_on_every_channel() {
+        let mut node = prepared(ConvolverNode::stereo(&[1.0], &[1.0], 64));
+        let ones = [1.0; 256];
+        drive(&mut node, RATE, &[&ones, &ones], &[Some(&[0.5; 256])]);
+        let mut lane = [0.25; 256];
+        lane[0] = f32::NAN;
+        let out = drive(&mut node, RATE, &[&ones, &ones], &[Some(&lane)]);
+        assert_eq!(out[0][0], 0.5);
+        assert_eq!(out[1][0], 0.5);
     }
 
     /// One IR is transformed once: every channel of a shared-IR node, and
@@ -663,9 +740,9 @@ mod tests {
     fn the_gain_is_floored_at_zero() {
         let node = ConvolverNode::new(&[1.0; 64], 64);
         node.set_gain(Amplitude::new(1.5));
-        assert_eq!(node.gain().load(core::sync::atomic::Ordering::Acquire), 1.5);
+        assert_eq!(node.gain().load(), Amplitude::new(1.5));
         node.set_gain(Amplitude::new(-0.5));
-        assert_eq!(node.gain().load(core::sync::atomic::Ordering::Acquire), 0.0);
+        assert_eq!(node.gain().load(), Amplitude::new(0.0));
     }
 
     #[test]
@@ -701,7 +778,7 @@ mod golden {
     use super::super::ir::generate_test_ir;
     use super::*;
     use tutti_graph::contract::{drive, prepared};
-    use tutti_types::Seconds;
+    use tutti_types::{SampleRate, Seconds};
 
     const BLOCK: usize = 64;
     const FRAMES: usize = 1500;

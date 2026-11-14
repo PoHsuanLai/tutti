@@ -59,8 +59,13 @@ impl SoundFontParameters {
                 b"imod" => reader.discard_data(size)?,
                 b"igen" => instrument_generators = Some(Generator::read_from_chunk(reader, size)?),
                 b"shdr" => sample_headers = Some(SampleHeader::read_from_chunk(reader, size)?),
-                // A reader ignores what it does not know (section 4).
-                _ => reader.discard_data(size)?,
+                // Only the INFO list may hold what a reader does not know.
+                _ => {
+                    return Err(Error::UnknownChunk {
+                        list: *b"pdta",
+                        id: *id.as_bytes(),
+                    });
+                }
             }
             skip_pad(reader, size, end)?;
         }

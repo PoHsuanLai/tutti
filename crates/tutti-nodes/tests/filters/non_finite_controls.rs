@@ -319,7 +319,7 @@ fn the_convolver_holds_off_non_finite_controls() {
     survives_node(
         "convolver",
         || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64),
-        |n| vec![("gain", n.gain().into(), 2.0)],
+        |n| vec![("gain", n.gain().cell(), 2.0)],
     );
 }
 
@@ -339,7 +339,7 @@ fn the_distortion_holds_off_non_finite_controls() {
         survives_node(
             "distortion",
             || DistortionNode::new(kind, Drive::new(2.0)),
-            |n| vec![("drive", n.drive().into(), 5.0)],
+            |n| vec![("drive", n.drive().cell(), 5.0)],
         );
     }
 }

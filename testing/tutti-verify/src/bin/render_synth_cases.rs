@@ -24,7 +24,7 @@ use tutti_graph::{Event, Offset};
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
-use tutti_types::{Amplitude, Cents, Hz, Q, Samples, Seconds, Spread};
+use tutti_types::{Amplitude, CentsSpan, Hz, Q, Samples, Seconds, Spread};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
@@ -48,7 +48,7 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
     // Driven as a graph drives it: `Node::process`, the notes on its event
     // input in the first block.
     let mut synth = Direct::new(PolySynth::new(cfg), rate, BLOCK);
-    let at = Offset::new(0, Samples(BLOCK)).expect("inside");
+    let at = Offset::of(Samples(0), Samples(BLOCK));
     let events: Vec<Event> = notes
         .iter()
         .map(|&n| {
@@ -189,7 +189,7 @@ fn main() {
         let mut cfg = base(OscillatorType::Saw);
         cfg.unison = Some(UnisonConfig {
             voice_count: UnisonVoices::new(voices).expect("a unison count"),
-            detune_cents: Cents::new(detune),
+            detune_cents: CentsSpan::new(detune).expect("a non-negative detune"),
             stereo_spread: Spread(0.8),
             ..Default::default()
         });

@@ -55,9 +55,10 @@ std only. A rule the compiler already enforces is not a gate.
 - **Golden digests** go through `tutti_fixtures::assert_golden`: asserted on the recorded
   libm (x86_64, glibc 2.39), skipped elsewhere, required in CI (`TUTTI_GOLDEN=require`).
   Re-record only for an argued libm move, with the owner.
-- **One integration binary per area**: `tests/<area>/main.rs`, one `mod` per file. A file
-  is its own binary only when it must be (a `#[global_allocator]`, `harness = false`,
-  `cfg(loom)`).
+- **One integration binary per area**: `tests/<area>/main.rs`, one `mod` per file. An area
+  binary installs `assert_no_alloc::AllocDisabler` once and its allocation tests are
+  modules in it; a file is its own binary only for a different allocator (counting,
+  no-free), `harness = false`, or `cfg(loom)`.
 - **A test must be able to fail.** It asserts a spec property, an analytic figure or an
   invariant, and its name says which. Delete a test that cannot fail: one that is always
   true, asserts only that nothing panicked, or compares a value with the function that
@@ -130,8 +131,8 @@ std only. A rule the compiler already enforces is not a gate.
   `tutti-alsa-ffi` and `tutti-coremidi-ffi`. Everything above them forbids `unsafe`.
   Test-only `unsafe` is `tutti-fixtures`'.
 - New lock-free or `unsafe` runtime structure goes in `tutti-rt`, with a loom model that
-  runs the shipped code. The publish cell is its own crate, `arc-lend`, which names
-  nothing of tutti's.
+  runs the shipped code. The publish cell is the `arc-lend` crate from its own repository
+  (github.com/tutti-audio/arc-lend); a change to it is made there.
 - Store-load pairs use `SeqCst` fences, not `SeqCst` accesses.
 - A platform difference sits behind one seam: the `cfg` chooses a platform module, never
   each item.
@@ -144,7 +145,7 @@ std only. A rule the compiler already enforces is not a gate.
   tests before adding one, and ship a replacement with any omission.
 - A number becomes a unit with `new` and leaves with `get`; there is no `From` between a
   unit and its raw. Convert between units with the named converters.
-- Measurements are not controls: `Confidence`, `Correlation` and `Pan` are readings.
+- Measurements are not controls: `Confidence`, `Correlation` and `StereoBalance` are readings.
 - Types stop at C ABI, IPC and wire boundaries; say why in a comment there.
 - Add a unit only for a distinct range or a distinct algebra.
 ### Range-checked values
@@ -216,7 +217,7 @@ adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 **Layering.** Normal and build dependencies point strictly down this list
 (dev-dependencies may go anywhere); `cargo xtask check-layout` holds it:
 
-0. `arc-lend`, `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
+0. `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
    `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`, `tutti-codec`,

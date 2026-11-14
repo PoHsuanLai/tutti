@@ -31,6 +31,8 @@ const FLOOR: f64 = 1e-7;
 pub struct LevelFollower {
     attack: Seconds,
     release: Seconds,
+    /// One-pole coefficients at the prepared rate; 0 until `prepare`, so an
+    /// unprepared follower's envelope stays at 0.
     attack_coeff: f32,
     release_coeff: f32,
     /// In `f64`, so a long time constant decays at its own rate: in `f32`,
@@ -46,12 +48,11 @@ impl LevelFollower {
     /// comes at [`prepare`](ControlSource::prepare).
     #[must_use]
     pub fn new(attack: Seconds, release: Seconds) -> Self {
-        let rate = SampleRate::DEFAULT;
         Self {
             attack,
             release,
-            attack_coeff: attack.one_pole_coeff(rate),
-            release_coeff: release.one_pole_coeff(rate),
+            attack_coeff: 0.0,
+            release_coeff: 0.0,
             env: 0.0,
             from: 0.0,
         }

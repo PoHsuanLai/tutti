@@ -1,7 +1,8 @@
-use super::super::testing::{OTHER, OURS, PEER, sent};
+use super::super::testing::{OTHER, OURS, PEER, header_from, sent};
 use super::super::{
-    DataControl, ProcessFeatures, ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY,
-    SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
+    ChunkNo, ChunkPosition, ChunkTotal, DataControl, PeCapabilities, PeChunk, PeRequestId,
+    ProcessFeatures, ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY,
+    SUB_ID2_PROCESS_CAPABILITIES_INQUIRY, SimultaneousRequests,
 };
 use super::super::{DetailsData, InquiryTarget, ProfileChannels, ProfileId, SpecificData};
 use super::super::{Unread, UnreadReason};
@@ -43,7 +44,7 @@ fn device(
 
 fn data(path: u8, block: Option<u8>) -> DiscoveryData {
     let mut data = DiscoveryData::new(identity(), CiCategories::empty(), MaxSysexSize::of(128));
-    data.output_path_id = U7::of(path);
+    data.output_path_id = Some(U7::of(path));
     data.function_block = block.map(|b| FunctionBlockId::new(b).unwrap());
     data
 }
@@ -80,7 +81,7 @@ fn a_new_device_sends_a_discovery_from_its_muid_to_everyone_on_output_path_0() {
     };
     assert_eq!(header.source, Muid::of(OURS));
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
-    assert_eq!(data.output_path_id, U7::of(0));
+    assert_eq!(data.output_path_id, Some(U7::of(0)));
     assert_eq!(data.max_sysex_size, MaxSysexSize::of(512));
     assert_eq!(
         sent(&actions)[0].destination(),
@@ -154,7 +155,7 @@ fn a_discovery_is_answered_to_its_sender_echoing_the_output_path_with_no_functio
     };
     assert_eq!(header.source, Muid::of(OURS));
     assert_eq!(*to, Muid::of(PEER));
-    assert_eq!(data.output_path_id, U7::of(9));
+    assert_eq!(data.output_path_id, Some(U7::of(9)));
     assert_eq!(data.function_block, None);
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
     assert_eq!(device.muid(), Muid::of(OURS));
@@ -249,16 +250,16 @@ fn bytes_of(sub_id2: u8, source: u32, destination: [u8; 4]) -> Vec<u8> {
 
 #[test]
 fn a_message_to_us_we_do_not_support_is_nakked_with_0x01_naming_it() {
-    // §5.3, Appendix E: an Inquiry: Property Exchange Capabilities (0x30) is not supported.
+    // §5.3, Appendix E: a Notify (0x3F), superseded by ACK and NAK, is not supported.
     let (mut device, _, now) = device([OURS]);
-    let decoded = CiMessage::decode(&bytes_of(0x30, PEER, Muid::of(OURS).to_bytes()));
+    let decoded = CiMessage::decode(&bytes_of(0x3F, PEER, Muid::of(OURS).to_bytes()));
     let actions = device.on_message(&decoded, now);
     let [CiMessage::Nak { header, to, nak }] = sent(&actions)[..] else {
         panic!("a NAK, got {actions:?}");
     };
     assert_eq!(header.source, Muid::of(OURS));
     assert_eq!(*to, Muid::of(PEER));
-    assert_eq!(nak.nak_sub_id2, U7::of(0x30));
+    assert_eq!(nak.nak_sub_id2, U7::of(0x3F));
     assert_eq!(nak.status_code, Nak::STATUS_MESSAGE_NOT_SUPPORTED);
 }
 
@@ -764,4 +765,57 @@ fn a_process_reply_or_end_is_the_initiators_and_is_not_answered() {
     });
     assert!(device.on_message(&reply, now).is_empty());
     assert!(device.on_message(&end, now).is_empty());
+}
+
+fn pe_message(kind: PeMessageKind) -> Decoded {
+    let chunk = PeChunk::new(
+        PeRequestId::of(1),
+        ChunkTotal::Known(ChunkNo::FIRST),
+        ChunkPosition::Number(ChunkNo::FIRST),
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    Decoded::Message(CiMessage::PropertyExchange {
+        header: header_from(PEER, CiDeviceId::FunctionBlock),
+        to: Muid::of(OURS),
+        message: PeCiMessage::Chunk { kind, chunk },
+    })
+}
+
+// A device that is no Property Exchange Responder refuses the inquiries of one
+// with the NAK for a message it does not support (M2-101 §5.11, Table 16), as it
+// did before the messages were read; a reply or a Subscription is the Initiator's.
+#[test]
+fn a_property_exchange_inquiry_is_nakked_and_the_rest_is_left_to_the_initiator() {
+    let (mut device, _, now) = device([OURS]);
+    let inquiry = Decoded::Message(CiMessage::PropertyExchange {
+        header: header_from(PEER, CiDeviceId::FunctionBlock),
+        to: Muid::of(OURS),
+        message: PeCiMessage::CapabilitiesInquiry(PeCapabilities::new(SimultaneousRequests::ONE)),
+    });
+    for (message, sub_id2) in [
+        (inquiry, 0x30),
+        (pe_message(PeMessageKind::GET_INQUIRY), 0x34),
+        (pe_message(PeMessageKind::SET_INQUIRY), 0x36),
+    ] {
+        let actions = device.on_message(&message, now);
+        let [CiMessage::Nak { to, nak, .. }] = sent(&actions)[..] else {
+            panic!("one NAK, got {actions:?}");
+        };
+        assert_eq!(*to, Muid::of(PEER));
+        assert_eq!(nak.nak_sub_id2.get(), sub_id2);
+        assert_eq!(nak.status_code, Nak::STATUS_MESSAGE_NOT_SUPPORTED);
+    }
+    for kind in [
+        PeMessageKind::GET_REPLY,
+        PeMessageKind::SET_REPLY,
+        PeMessageKind::SUBSCRIPTION_INQUIRY,
+        PeMessageKind::SUBSCRIPTION_REPLY,
+    ] {
+        assert!(
+            device.on_message(&pe_message(kind), now).is_empty(),
+            "{kind:?}"
+        );
+    }
 }

@@ -7,7 +7,7 @@
 //!
 //! - **Every crate root forbids `unsafe`**, `src/lib.rs` and `src/main.rs`
 //!   alike, except the crates in [`HOMES`]: the `-ffi` crates, `tutti-rt`,
-//!   `arc-lend`, `tutti-plugin-types` (which denies it and allows one
+//!   `tutti-plugin-types` (which denies it and allows one
 //!   constructor). This subsumes the old host
 //!   crates' scans, `plugin-server`'s loaders and the VST2 caller pins. A home
 //!   that forbids `unsafe` after all, or is gone, is a stale entry.
@@ -33,7 +33,6 @@ fn skipped(dir: &str) -> bool {
 
 /// `(crate directory, why it may hold unsafe, the lint it must carry instead)`.
 pub(super) const HOMES: &[(&str, &str, Option<&str>)] = &[
-    ("arc-lend", "the publish cell", None),
     (
         "tutti-rt",
         "the lock-free and unsafe runtime structure",
@@ -254,7 +253,7 @@ mod tests {
         let r = check(&clean());
         assert!(r.passed(), "{:?}", r.findings);
         assert!(
-            r.out[0].starts_with("check-ffi: ok (31 crates"),
+            r.out[0].starts_with("check-ffi: ok (30 crates"),
             "{:?}",
             r.out
         );

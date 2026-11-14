@@ -593,6 +593,16 @@ fn send_note(device: &Virtual) {
         .expect("send failed");
 }
 
+/// Renders blocks until the rig's clock reaches OS time `now`: the audio
+/// thread of a test that runs on the wall clock.
+fn run_to(rig: &mut crate::testing::Rig, now: Instant) {
+    let due =
+        (now.saturating_duration_since(rig.origin).as_secs_f64() * crate::testing::RATE) as u64;
+    while rig.frames + crate::testing::Rig::BLOCK as u64 <= due {
+        rig.run(1);
+    }
+}
+
 /// A device and an input pump connected to its port, with the inlet the pump
 /// fills and the graph (on the wall clock) that plays it.
 struct Pumped {
@@ -640,7 +650,7 @@ impl Pumped {
     fn arrival(&mut self, limit: Duration) -> Option<Duration> {
         let start = Instant::now();
         while start.elapsed() < limit {
-            self.rig.run_to(Instant::now());
+            run_to(&mut self.rig, Instant::now());
             if !self.rig.take().is_empty() {
                 return Some(start.elapsed());
             }
@@ -667,7 +677,7 @@ fn arrive(pumped: &mut Pumped, count: usize) -> Vec<tutti_ump::Ump> {
     let mut got = Vec::new();
     while got.len() < count {
         assert!(Instant::now() < deadline, "only {got:?} arrived");
-        pumped.rig.run_to(Instant::now());
+        run_to(&mut pumped.rig, Instant::now());
         got.extend(pumped.rig.take().into_iter().map(|(_, _, ump)| ump));
         std::thread::yield_now();
     }
@@ -870,7 +880,7 @@ fn events_keep_the_spacing_they_arrived_with_when_the_pump_is_late() {
     let deadline = Instant::now() + PATIENCE;
     while heard.len() < 3 {
         assert!(Instant::now() < deadline, "got {heard:?}");
-        pumped.rig.run_to(Instant::now());
+        run_to(&mut pumped.rig, Instant::now());
         heard.extend(pumped.rig.take().iter().map(|e| e.1));
         std::thread::sleep(Duration::from_millis(5));
     }

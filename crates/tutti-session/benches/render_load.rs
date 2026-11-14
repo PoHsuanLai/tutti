@@ -164,7 +164,7 @@ impl Node for Hold {
                 self.base + (self.sent as u8 * 3) % 48,
                 0xC000,
             );
-            let at = Offset::new(0, Samples(io.frames())).expect("a non-empty block");
+            let at = Offset::of(Samples(0), Samples(io.frames()));
             if io.event_out(0).push(Event::midi(at, note)).is_ok() {
                 self.sent += 1;
             }
@@ -309,10 +309,7 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
             connect_stereo(&mut s, strip, 0, src);
             if reverb {
                 let send = BusStripNode::stereo();
-                send.volume().store(
-                    Db(-12.0).to_amplitude().get(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                send.set_volume(Db(-12.0).to_amplitude());
                 let (send, _) = s.graph().add(send);
                 connect_stereo(&mut s, send, 0, src);
                 sends.push(send);

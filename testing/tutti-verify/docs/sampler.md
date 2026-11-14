@@ -33,7 +33,7 @@ varispeed.
 - **`ok`** — measured within tolerance. Every case is `ok`: 13 tonal cases
   plus the 2 seek cases.
 - **`KNOWN-BUG`** — a real defect, reported rather than hidden. Listed in
-  `KNOWN_BROKEN` in the script (empty at present), and only for its pitch
+  the script's known-broken set (empty at present), and only for its pitch
   symptom: a level or purity regression on the same case still fails. When the
   judge and the engine disagree and the *judge* is right, the case is marked
   here rather than having its tolerance widened until it passes.

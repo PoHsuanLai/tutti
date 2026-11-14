@@ -26,8 +26,8 @@ use tutti_modulation::{
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
 use tutti_types::{
-    Amplitude, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, ParamKey, SampleRate,
-    Samples, Seconds, UnitParam,
+    Amplitude, AtomicF32, Beat, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamKey,
+    SampleRate, Samples, Seconds, UnitParam,
 };
 
 const RATE: f64 = 48_000.0;
@@ -88,7 +88,7 @@ impl Node for Kick {
         for i in 0..n {
             let t = cx
                 .env
-                .transport_at(Offset::new(i, cx.env.block_len).expect("in"));
+                .transport_at(Offset::of(Samples(i), cx.env.block_len));
             let v = if t.playing {
                 let frac = t.beat().get().rem_euclid(1.0);
                 if frac < 0.1 {
@@ -142,7 +142,7 @@ impl Node for Seq {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let n = cx.env.block_len;
         for i in 0..n.get() {
-            let at = Offset::new(i, n).expect("in");
+            let at = Offset::of(Samples(i), n);
             let t = cx.env.transport_at(at);
             let words = if t.playing {
                 let f = t.beat().get().rem_euclid(1.0) * FPB;
@@ -177,12 +177,8 @@ impl Node for Midi {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let (base, n) = (cx.env.frame.get(), cx.env.block_len);
         for &(at, w) in &self.plan {
-            if let Some(o) = at
-                .checked_sub(base)
-                .and_then(|o| Offset::new(o as usize, n))
-            {
+            if let Some(o) = cx.env.offset_of(Frame::new(at)) {
                 io.event_out(0).push(Event::midi(o, Ump(w))).expect("room");
             }
         }
@@ -642,7 +638,7 @@ fn a_follower_and_a_note_envelope_reset_at_play_start() {
     }
     let host = Host::new();
     let mut ch = TransportChanges::NONE;
-    ch.push(Offset::new(37, Samples(128)).expect("in"), host.rolling())
+    ch.push(Offset::of(Samples(37), Samples(128)), host.rolling())
         .expect("room");
     append(&mut all, block(&mut ed, &mut exec, &stopped, &ch, 128));
     for _ in 0..4 {
@@ -947,7 +943,7 @@ fn an_export_is_the_live_render_for_signal_sources() {
 
     let mut host = Host::new();
     let mut ch = TransportChanges::NONE;
-    ch.push(Offset::new(37, Samples(128)).expect("in"), host.rolling())
+    ch.push(Offset::of(Samples(37), Samples(128)), host.rolling())
         .expect("room");
     let mut live = block(&mut ed, &mut exec, &stopped, &ch, 128);
     for c in &mut live {
@@ -992,7 +988,7 @@ fn a_fresh_note_envelope_resets_at_a_start_in_its_first_block() {
     let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let host = Host::new();
     let mut ch = TransportChanges::NONE;
-    ch.push(Offset::new(50, Samples(128)).expect("in"), host.rolling())
+    ch.push(Offset::of(Samples(50), Samples(128)), host.rolling())
         .expect("room");
     let mut all = Vec::new();
     append(&mut all, block(&mut ed, &mut exec, &stopped, &ch, 128));

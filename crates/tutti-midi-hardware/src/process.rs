@@ -157,7 +157,7 @@ pub enum ProcessChange {
 }
 
 /// A [`ReportAsk`] that cannot be made.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReportError {
     /// The device the request was made from is no longer an open input.

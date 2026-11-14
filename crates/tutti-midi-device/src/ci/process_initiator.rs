@@ -110,7 +110,7 @@ pub enum ProcessAction {
 }
 
 /// A report that cannot be asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProcessError {
     /// A report is still waiting for its Reply or its End.

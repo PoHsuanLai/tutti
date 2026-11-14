@@ -86,7 +86,10 @@ mod initiator;
 mod json;
 mod limits;
 pub mod mcoded7;
+mod partial;
 mod reassemble;
+mod resource;
+mod tree;
 mod value;
 mod write;
 
@@ -111,10 +114,27 @@ pub use initiator::{
 pub use limits::{
     MediaType, NotInRange, NotValid, PeMessage, PropertyName, ResourceId, ResourceName, SubscribeId,
 };
+pub use partial::{JsonPointer, PartialError, PartialUpdate};
 pub use reassemble::{
     BufferLimit, PeBuffered, PeExpired, PeFlowControl, PeReassembler, PeReassemblyError,
     PeReassemblyLimits, PeReceived, PeRefused, PeStep, StreamLimit,
 };
+pub use resource::{
+    CallError, CallId, CanSet, CcIndex, ChangeKind, ClusterKind, ColumnSource, CtrlControl,
+    CtrlKind, CtrlRange, CtrlValueKind, CustomResource, DefaultMapNotCc, EntryError, LinkRole,
+    ListedTwice, MAX_LIST_ENTRIES, ModeId, NotVendorName, PaginationFault, ParamPath,
+    PeAllCtrlEntry, PeAllCtrlList, PeBankProgram, PeBasicChannelRx, PeBasicChannelTx,
+    PeChCtrlEntry, PeChCtrlList, PeChannel, PeChannelEntry, PeChannelList, PeChannelMode,
+    PeCluster, PeColumn, PeController, PeCtrl, PeCtrlMapEntry, PeCtrlMapList, PeCurrentMode,
+    PeData, PeDataError, PeDataFault, PeDeviceInfo, PeExtensions, PeExternalSync, PeJsonSchema,
+    PeLink, PeLocalOn, PeMidiMode, PeModeEntry, PeModeList, PeOpaque, PeProgramEntry,
+    PeProgramList, PeResource, PeResourceList, PeText, Priority, PublishError, RequestRefused,
+    ResIdUse, ResourceAction, ResourceDefaults, ResourceEntry, ResourceEvent, ResourceFailure,
+    ResourceGet, ResourceInitiator, ResourceResponder, ResourceSet, ResourceStore, ResourceTarget,
+    ResponderAction, ResponderEvent, ResponderSettings, SetBody, SignificantBits, StepCount,
+    StoreError, TypeHint, UpdateKind,
+};
+pub use tree::{PE_JSON_MAX_DEPTH, PeJson, PeJsonError, PeObject};
 pub use value::{PeDecimal, PeExtra, PeReservedProperty, PeValue};
 
 #[cfg(test)]

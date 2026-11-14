@@ -1,0 +1,51 @@
+//! The standard Resources of Property Exchange, typed (M2-103 §8 to §14, M2-105
+//! to M2-109, M2-112, M2-117).
+
+mod channels;
+mod client;
+mod controllers;
+mod data;
+mod entry;
+mod fields;
+mod info;
+mod kind;
+mod link;
+mod programs;
+mod request;
+mod server;
+mod simple;
+mod store;
+
+pub use channels::{PeChannelEntry, PeChannelList, PeCluster};
+pub use client::{
+    CallError, CallId, MAX_LIST_ENTRIES, PaginationFault, ResourceAction, ResourceEvent,
+    ResourceFailure, ResourceInitiator, UpdateKind,
+};
+pub use controllers::{
+    CcIndex, CtrlControl, CtrlRange, DefaultMapNotCc, ListedTwice, PeAllCtrlEntry, PeAllCtrlList,
+    PeChCtrlEntry, PeChCtrlList, PeController, PeCtrl, PeCtrlMapEntry, PeCtrlMapList,
+};
+pub use data::{PeData, PeOpaque};
+pub use entry::{EntryError, PeResourceList, ResourceEntry};
+pub use fields::{
+    ClusterKind, CtrlKind, CtrlValueKind, LinkRole, ModeId, NotVendorName, ParamPath,
+    PeBankProgram, PeChannel, PeDataError, PeDataFault, PeExtensions, PeMidiMode, PeText, Priority,
+    SignificantBits, StepCount, TypeHint,
+};
+pub use info::{PeDeviceInfo, PeJsonSchema};
+pub use kind::{CanSet, CustomResource, PeResource, ResIdUse, ResourceDefaults};
+pub use link::{ColumnSource, PeColumn, PeLink};
+pub use programs::{PeModeEntry, PeModeList, PeProgramEntry, PeProgramList};
+pub use request::{RequestRefused, ResourceGet, ResourceSet, ResourceTarget, SetBody};
+pub use server::{
+    ChangeKind, PublishError, ResourceResponder, ResponderAction, ResponderEvent, ResponderSettings,
+};
+pub use simple::{
+    PeBasicChannelRx, PeBasicChannelTx, PeChannelMode, PeCurrentMode, PeExternalSync, PeLocalOn,
+};
+pub use store::{ResourceStore, StoreError};
+
+#[cfg(test)]
+mod exchange;
+#[cfg(test)]
+mod tests;

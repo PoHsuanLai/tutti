@@ -3,10 +3,11 @@
 
 use std::fmt::Write as _;
 
+use super::tree::PeJson;
 use super::value::PeValue;
 
 /// Appends `text` to `out` as a JSON string, quotes included.
-fn string(out: &mut String, text: &str) {
+pub(super) fn string(out: &mut String, text: &str) {
     out.push('"');
     for c in text.chars() {
         match c {
@@ -95,5 +96,44 @@ impl Object {
     pub(super) fn finish(mut self) -> Vec<u8> {
         self.out.push('}');
         self.out.into_bytes()
+    }
+}
+
+/// Appends `value` to `out` as compact JSON.
+pub(super) fn json(out: &mut String, value: &PeJson) {
+    match value {
+        PeJson::Null => out.push_str("null"),
+        PeJson::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        PeJson::Integer(n) => {
+            // Writing to a `String` cannot fail.
+            let _ = write!(out, "{n}");
+        }
+        PeJson::Decimal(d) => {
+            // `Debug` keeps a point or an exponent, so a decimal reads back as one.
+            let _ = write!(out, "{:?}", d.get());
+        }
+        PeJson::String(text) => string(out, text),
+        PeJson::Array(items) => {
+            out.push('[');
+            for (at, item) in items.iter().enumerate() {
+                if at > 0 {
+                    out.push(',');
+                }
+                json(out, item);
+            }
+            out.push(']');
+        }
+        PeJson::Object(object) => {
+            out.push('{');
+            for (at, (name, item)) in object.iter().enumerate() {
+                if at > 0 {
+                    out.push(',');
+                }
+                string(out, name);
+                out.push(':');
+                json(out, item);
+            }
+            out.push('}');
+        }
     }
 }

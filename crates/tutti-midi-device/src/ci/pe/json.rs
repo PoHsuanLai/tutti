@@ -18,9 +18,10 @@
 
 use winnow::Parser;
 use winnow::combinator::{alt, delimited, opt, repeat, separated, separated_pair};
-use winnow::error::ContextError;
+use winnow::error::{ContextError, ErrMode};
 use winnow::token::{literal, one_of, take, take_while};
 
+use super::tree::{PE_JSON_MAX_DEPTH, PeJson, PeObject};
 use super::value::{PeDecimal, PeValue};
 
 type Res<T> = winnow::ModalResult<T, ContextError>;
@@ -128,4 +129,75 @@ pub(super) fn object(bytes: &[u8]) -> Result<Vec<Member>, usize> {
     )
     .parse(bytes)
     .map_err(|e| e.offset())
+}
+
+fn white(input: &mut &[u8]) -> Res<()> {
+    take_while(0.., |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+        .void()
+        .parse_next(input)
+}
+
+fn scalar(value: PeValue) -> PeJson {
+    match value {
+        PeValue::Bool(b) => PeJson::Bool(b),
+        PeValue::Integer(n) => PeJson::Integer(n),
+        PeValue::Decimal(d) => PeJson::Decimal(d),
+        PeValue::String(s) => PeJson::String(s),
+    }
+}
+
+/// A value of Property Data at nesting `depth`: whitespace may precede it.
+fn node(input: &mut &[u8], depth: usize) -> Res<PeJson> {
+    if depth > PE_JSON_MAX_DEPTH {
+        return Err(ErrMode::Cut(ContextError::new()));
+    }
+    white(input)?;
+    let value = alt((
+        string.map(PeJson::String),
+        number.map(scalar),
+        literal("true").value(PeJson::Bool(true)),
+        literal("false").value(PeJson::Bool(false)),
+        literal("null").value(PeJson::Null),
+        |i: &mut &[u8]| array(i, depth),
+        |i: &mut &[u8]| object_node(i, depth),
+    ))
+    .parse_next(input)?;
+    white(input)?;
+    Ok(value)
+}
+
+fn array(input: &mut &[u8], depth: usize) -> Res<PeJson> {
+    delimited(
+        literal(b'['),
+        separated(0.., |i: &mut &[u8]| node(i, depth + 1), literal(b',')),
+        literal(b']'),
+    )
+    .map(PeJson::Array)
+    .parse_next(input)
+}
+
+fn object_node(input: &mut &[u8], depth: usize) -> Res<PeJson> {
+    let pair = |i: &mut &[u8]| {
+        white(i)?;
+        let name = string(i)?;
+        white(i)?;
+        literal(b':').parse_next(i)?;
+        Ok((name, node(i, depth + 1)?))
+    };
+    delimited(
+        literal(b'{'),
+        separated(0.., pair, literal(b',')),
+        literal(b'}'),
+    )
+    .verify_map(|members: Vec<(String, PeJson)>| PeObject::from_members(members))
+    .map(PeJson::Object)
+    .parse_next(input)
+}
+
+/// The value the JSON text `bytes` holds, or the offset of the first byte that
+/// is not the grammar.
+pub(super) fn document(bytes: &[u8]) -> Result<PeJson, usize> {
+    (|i: &mut &[u8]| node(i, 0))
+        .parse(bytes)
+        .map_err(|e| e.offset())
 }

@@ -67,6 +67,8 @@ macro_rules! text_type {
     };
 }
 
+pub(super) use text_type;
+
 fn alphanumeric(text: &str) -> bool {
     text.bytes().all(|b| b.is_ascii_alphanumeric())
 }

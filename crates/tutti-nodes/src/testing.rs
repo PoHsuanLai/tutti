@@ -3,9 +3,8 @@
 //!
 //! Available with the `testing` feature; enable it from `[dev-dependencies]`.
 //!
-//! - [`Const`] and [`Osc`] are sources: a constant, or a naive sine, saw,
-//!   square or triangle ([`OscillatorWave`](tutti_dsp::OscillatorWave)), in its naive
-//!   closed form.
+//! - [`Const`] and [`Osc`] are sources: a constant, or a sine, saw, square or
+//!   triangle ([`OscillatorWave`]) in its naive closed form.
 //! - [`vbap_mix()`] and [`bass_send`] wire a panner per source onto the output
 //!   channels (and the LFE's low-passed send, found from the topology).
 //! - [`Through`], [`Split`] and [`Sink`] are plumbing: pass-through, fan-out

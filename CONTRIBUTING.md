@@ -56,9 +56,9 @@ summary of it. A change to `unsafe` code, FFI, `tutti-rt`, the audio thread or a
 breaking public API also gets a second review that reads only soundness and real-time
 safety. A new commit is reviewed again. The review is written in the description's
 "Review" section: who reviewed, the commit they read, each finding marked blocking,
-follow-up or nit, and how it was resolved. Once CI is green and no blocking finding is
-open, the author may queue the pull request; the maintainer can stop or revert any of
-them.
+follow-up or nit, and how it was resolved. Once the review is recorded, CI is green and
+no blocking finding is open, the author may queue the pull request; the maintainer can
+still stop or revert it.
 The reviewer checks:
 
 1. **Correctness.** The change does what it says; each new behaviour has a test that
@@ -109,8 +109,8 @@ The reviewer checks:
 
 ### Landing
 
-Pull requests land through a merge queue: once CI is green and no blocking review
-finding is open, its author (or a maintainer) queues it with
+Pull requests land through a merge queue: once the review is recorded, CI is green and
+no blocking finding is open, its author (or a maintainer) queues it with
 `gh pr merge <number> --squash --auto`.
 CI runs once more on the pull request merged with the latest `main`, and if that
 passes it lands as one commit whose message is the title. There is no need to merge

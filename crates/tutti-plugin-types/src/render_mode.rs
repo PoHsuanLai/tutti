@@ -61,7 +61,7 @@
 /// There is no prefetch variant (VST3 `kPrefetch`, VST2
 /// `ProcessLevel::Prefetch`): it is a live-playback mode that no mainstream
 /// host selects, and a plugin treats it like realtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RenderMode {
     /// Blocks arrive at a realtime cadence; the plugin should process as fast
@@ -108,7 +108,7 @@ impl RenderMode {
 /// [`OnActivation`](Self::OnActivation) one is deactivated and activated again
 /// in the new mode, and an [`Unsupported`](Self::Unsupported) one is left
 /// running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RenderModeSupport {
     /// The plugin takes the mode while active: CLAP's `render.set`, or VST2's
     /// answer to `audioMasterGetCurrentProcessLevel`, which the host changes

@@ -21,7 +21,7 @@
 /// feedback. Global — applies to the whole plugin.
 ///
 /// Exhaustive: the two flags (read, write) make exactly four modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AutomationMode {
     /// The host is neither reading nor writing automation.

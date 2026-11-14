@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 /// The formats agree on the directory layout and disagree on the module's
 /// extension — VST3 names it `.vst3` on Windows where VST2 names it `.dll` —
 /// so the extension cannot be derived from the platform alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleKind {
     /// `.vst` bundles: `.dll` on Windows, `.so` on Linux, extensionless on macOS.
     Vst2,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tutti_fixtures::signal::rms;
 use tutti_ump::{BendValue, ControlValue};
 
-mod support;
+use crate::support;
 
 use support::Hand;
 use tutti_sf2::SoundFont;

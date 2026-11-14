@@ -265,56 +265,33 @@ pub struct Corners {
 }
 
 /// Why [`ControlProgram::new`] refused a program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProgramError {
     /// More than [`MAX_LANE_LAYERS`] layers.
+    #[error("{count} layers, past MAX_LANE_LAYERS ({})", MAX_LANE_LAYERS)]
     TooManyLayers {
         /// How many there were.
         count: usize,
     },
     /// More than [`MAX_LANE_INPUTS`] event-input layers.
+    #[error("{count} input layers, past MAX_LANE_INPUTS ({})", MAX_LANE_INPUTS)]
     TooManyInputs {
         /// How many there were.
         count: usize,
     },
     /// Two layers (or two input layers) with one id.
+    #[error("two layers share id {}", .0.0)]
     DuplicateLayer(LayerId),
     /// A drawn wave whose points are not ascending in `[0, 1)` with finite
     /// values, in this layer.
+    #[error("layer {}: a drawn wave's points must ascend in [0, 1) with finite values", .0.0)]
     BadDrawnWave(LayerId),
     /// A NaN in this layer (a rate, a phase, a beat span, an
     /// anchor, a constant): a program is [`Eq`], and NaN equals nothing.
+    #[error("layer {}: a NaN", .0.0)]
     NotANumber(LayerId),
 }
-
-impl fmt::Display for ProgramError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooManyLayers { count } => {
-                write!(
-                    f,
-                    "{count} layers, past MAX_LANE_LAYERS ({MAX_LANE_LAYERS})"
-                )
-            }
-            Self::TooManyInputs { count } => {
-                write!(
-                    f,
-                    "{count} input layers, past MAX_LANE_INPUTS ({MAX_LANE_INPUTS})"
-                )
-            }
-            Self::DuplicateLayer(id) => write!(f, "two layers share id {}", id.0),
-            Self::BadDrawnWave(id) => write!(
-                f,
-                "layer {}: a drawn wave's points must ascend in [0, 1) with finite values",
-                id.0
-            ),
-            Self::NotANumber(id) => write!(f, "layer {}: a NaN", id.0),
-        }
-    }
-}
-
-impl std::error::Error for ProgramError {}
 
 /// What one target's control lane evaluates: a base, plus offsets.
 ///

@@ -1,5 +1,4 @@
-//! Load a plugin, play a MIDI file, export to WAV (design 015
-//! §5.2).
+//! Load a plugin, play a MIDI file, export to WAV.
 //!
 //! The plugin is loaded as a job and added to an offline session; the file's
 //! events become a clip on the plugin's event input; the project adopts the
@@ -53,7 +52,7 @@ fn report(events: Vec<SessionEvent>) {
     }
 }
 
-/// §5.2, as written there: `plugin` (restored from `state`, if any) plays
+/// Plays `plugin` (restored from `state`, if any)
 /// `midi` into the master `master` names (a file or memory, which `M` says
 /// and the result's type follows).
 fn play<M: Master>(
@@ -170,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    /// **The §5.2 example plays**: the phrase through the reference plugin
+    /// **The example plays**: the phrase through the reference plugin
     /// writes a WAV holding the file's length plus the plugin's tail.
     /// Fails, not skips, without `plugin-server`.
     ///

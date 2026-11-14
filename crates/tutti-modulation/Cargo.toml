@@ -24,4 +24,6 @@ tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = f
 
 # The MIDI a note envelope hears (`Ump`, its held `Key`). Layer 0.
 tutti-ump = { version = "0.0.1", path = "../tutti-ump" }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 

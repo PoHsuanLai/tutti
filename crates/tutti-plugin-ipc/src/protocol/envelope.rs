@@ -318,8 +318,6 @@ pub enum BridgeMessage {
         #[serde(default)]
         state_error: Option<String>,
     },
-    /// The plugin instance was destroyed; the subprocess remains alive.
-    PluginUnloaded,
     /// Acknowledges a processed block. Audio output goes into the block's slot
     /// in the shared `AudioSlab`'s output ring, published there before this
     /// message is sent; the measured latency and any MIDI the plugin emitted

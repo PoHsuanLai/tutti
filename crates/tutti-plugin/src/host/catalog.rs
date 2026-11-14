@@ -44,7 +44,7 @@
 //! Audio knobs are separate and default sensibly; set them with
 //! [`Catalog::with_audio_config`] when the defaults don't fit.
 
-use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured, probe_record};
+use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured};
 use crate::host::plugin_ref::PluginRef;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -156,8 +156,7 @@ impl Catalog {
     /// gets a copy of the table. A crash recovery removes its sentinel only
     /// after `persist` succeeds.
     ///
-    /// Audio settings default ([`AudioConfig::default`]); override with
-    /// [`Catalog::with_audio_config`].
+    /// Audio settings are [`AudioConfig::default`].
     #[must_use]
     pub fn new(
         db: PluginDb,
@@ -187,13 +186,6 @@ impl Catalog {
     #[must_use]
     pub fn with_measuring(mut self) -> Self {
         self.scanner = Scanner::new(self.config.pedal_path(), probe_plugin_measured);
-        self
-    }
-
-    /// Sets the audio settings a load that names this catalog applies.
-    #[must_use]
-    pub fn with_audio_config(mut self, audio: AudioConfig) -> Self {
-        self.audio = audio;
         self
     }
 
@@ -499,36 +491,6 @@ impl Catalog {
         let path = key(path.as_ref());
         self.forget_in_pedal(&path);
         self.db.apply(Delta::remove(path));
-    }
-
-    /// Probes one plugin file and adds it to the catalog, returning its
-    /// [`PluginRef`] (the file's first plugin).
-    ///
-    /// For plugins known by path rather than found by a scan, such as one
-    /// shipped inside an application bundle or a file the user picked.
-    /// **Blocking**: the probe spawns a subprocess and waits on a handshake,
-    /// up to about seven seconds if the plugin hangs. A frame-driven host should
-    /// run [`probe_record`] on a worker and pass the result to
-    /// [`apply`](Self::apply) instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error of [`probe_record`], for example when the file
-    /// extension is not a plugin format or the probe fails.
-    pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> BridgeResult<PluginRef> {
-        let delta = probe_record(plugin_path)?;
-        let key = delta.path().to_path_buf();
-        self.apply(delta);
-        self.db
-            .plugins()
-            .find(|p| p.path == key)
-            .map(|p| PluginRef::from(&p))
-            .or_else(|| PluginRef::file(&key))
-            .ok_or_else(|| BridgeError::LoadFailed {
-                path: key,
-                stage: tutti_plugin_types::LoadStage::Opening,
-                reason: "unrecognized plugin extension".to_string(),
-            })
     }
 
     /// Measures the file `plugin` names and records the result: the tail and

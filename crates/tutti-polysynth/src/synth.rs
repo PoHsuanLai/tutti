@@ -165,16 +165,16 @@ pub struct FilterModConfig {
     /// the base value — velocity only ever darkens. Per-note, latched at
     /// note-on from that voice's velocity.
     pub velocity_depth: Depth,
-    /// LFO rate in [`Hz`]. `0.0` (the default) disables the LFO outright — the
-    /// sweep block is gated on `lfo_rate > 0`, so a nonzero
-    /// [`lfo_depth`](Self::lfo_depth) alone does nothing.
+    /// LFO rate in [`Hz`], above zero. `None` (the default) has no LFO — the
+    /// sweep block is skipped, so a nonzero [`lfo_depth`](Self::lfo_depth)
+    /// alone does nothing.
     ///
     /// The one [`Hz`] among three [`Depth`]s, sitting between two depths that
     /// read nothing like a frequency — as bare floats any permutation of the
     /// four compiles.
-    pub lfo_rate: Hz,
+    pub lfo_rate: Option<Hz>,
     /// How far the LFO sweeps the cutoff, as a [`Depth`] in 0.0..1.0. At 1.0
-    /// the sine sweeps cutoff ±50% around its base. Needs a nonzero
+    /// the sine sweeps cutoff ±50% around its base. Needs an
     /// [`lfo_rate`](Self::lfo_rate) to do anything.
     pub lfo_depth: Depth,
 }

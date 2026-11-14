@@ -486,8 +486,8 @@ impl<U> From<ParamKey<U>> for UnitAddr {
 }
 
 use super::units::{
-    Amplitude, Azimuth, Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Q,
-    Seconds, Spread, StereoWidth,
+    Amplitude, Azimuth, CentsSpan, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz,
+    Mix, Q, Seconds, Spread, StereoWidth,
 };
 
 /// Defines the typed keys, and — from the same lines — the registry
@@ -560,7 +560,7 @@ param_keys! {
         /// Synth / master volume (linear).
         VOLUME = Volume;
     }
-    Cents {
+    CentsSpan {
         /// Unison detune spread.
         DETUNE = Detune;
     }

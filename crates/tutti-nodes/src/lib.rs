@@ -227,9 +227,9 @@ mod ramp;
 mod test_support;
 
 pub use tutti_types::{
-    Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive, Elevation,
-    Feedback, Hz, Mix, Param, Q, Resonance, SampleRate, Seconds, Semitones, Spread, StereoWidth,
-    Unit,
+    Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CentsSpan, CompressionRatio, Db, Depth, Drive,
+    Elevation, Feedback, Hz, Mix, Param, Q, Resonance, SampleRate, Seconds, Semitones, Spread,
+    StereoWidth, Unit,
 };
 
 // The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /

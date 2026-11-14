@@ -12,6 +12,10 @@ pub enum ParamTiming {
     SampleAccurate,
     /// At the head of the block, whatever the offset.
     BlockHead,
+    /// A segment between two points at different offsets as one ramp from its
+    /// start offset over its length; a lone point and a step as a point at
+    /// their offset.
+    Ramped,
 }
 
 /// A case a format cannot pass, and the text its failure must carry.

@@ -101,6 +101,15 @@ pub const TONE_NORMALIZED: Tone = Tone {
 /// Blocks the plugin's transcript keeps; one more overflows it.
 pub const LOG_BLOCKS: usize = 16;
 
+/// The automation the segment case sends: a segment from `(offset, value)` to
+/// `(offset, value)` on the level, then a step at the second offset to
+/// [`SEGMENT_STEP`]. Linear breakpoints: the level moves linearly between the
+/// ends, and the step is two points at one offset.
+pub const SEGMENT: [(i32, f64); 2] = [(8, 0.25), (40, 0.75)];
+
+/// The value the step at the end of [`SEGMENT`] lands on.
+pub const SEGMENT_STEP: f64 = 0.125;
+
 /// An id the plugin does not list.
 pub const UNLISTED: ParamId = ParamId::new(77);
 

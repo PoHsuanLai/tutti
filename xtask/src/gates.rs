@@ -239,7 +239,7 @@ fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
 }
 
 /// `conformance --results <dir> --out <dir>`: the dashboard at `<out>/index.html`,
-/// the landing page beside it at `<out>/../index.html` and the badges at `<out>/../badges/<format>-<os>.json`, from the JUnit files
+/// the landing page beside it at `<out>/../index.html` and the badges at `<out>/../badges/<area>-<os>.json`, from the JUnit files
 /// `<dir>/<os>.xml` (an OS with no file has run nothing).
 pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Result<(), String> {
     let mut texts = Vec::new();
@@ -253,11 +253,13 @@ pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Resul
     files.sort();
     for path in files {
         if path.extension().is_some_and(|x| x == "xml")
-            && let Some(os) = path.file_stem().and_then(|s| s.to_str())
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
         {
+            let os = conformance_site::Os::from_name(stem)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
             let xml =
                 fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-            texts.push((os.to_owned(), String::from_utf8_lossy(&xml).into_owned()));
+            texts.push((os, String::from_utf8_lossy(&xml).into_owned()));
         }
     }
     if texts.is_empty() {
@@ -282,7 +284,8 @@ pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Resul
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     }
     for f in &report {
-        for (os, name) in conformance_site::OSES.iter().enumerate() {
+        for os in conformance_site::Os::ALL {
+            let name = os.name();
             if !f.has_results(os) {
                 println!("{} {name}: no results", f.name);
                 continue;

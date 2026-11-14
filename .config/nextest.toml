@@ -21,3 +21,6 @@ test-group = 'sequencer'
 # CI runs the plugin test tiers with this profile and uploads the file per OS.
 [profile.conformance.junit]
 path = "junit.xml"
+# The plugin contract prints a marker line for a declared gap; the report reads
+# it from a passing case's output.
+store-success-output = true

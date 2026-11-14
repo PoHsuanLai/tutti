@@ -1,6 +1,6 @@
 //! `conformance`: the spec inventories joined to the tests' results, per OS.
 //!
-//! A row of `testing/conformance/<format>*.txt` is claimed by the tests whose
+//! A row of `testing/conformance/<area>[-<part>].txt` is claimed by the tests whose
 //! last doc line is `/// Spec: id, id` ([`super::conformance`]). Each OS's
 //! JUnit file ([`super::junit`]) says how those tests ended there, and the
 //! join gives every (row, OS) one [`Status`]:
@@ -15,9 +15,11 @@
 //!
 //! A plugin-contract case runs once per format and its tag lists every format's
 //! ids, so a result of the binary `tutti-plugin-contract::<format>` covers only
-//! that format's ids, and a case the format declares a `Gap` for (it passes by
-//! failing the way the gap says) covers nothing. Nothing here is declined: a
-//! row is covered, failing, missing, or not applicable by the spec's own text.
+//! that format's ids. A case the format declares a `Gap` for passes by failing
+//! the way the gap says, and the contract prints [`GAP_MARKER`] and the case's
+//! name before it runs: a case whose output carries the line covers nothing.
+//! Nothing here is declined: a row is covered, failing, missing, or not
+//! applicable by the spec's own text.
 //!
 //! Everything is a function of the inventory text, the sources and the JUnit
 //! text, and returns the dashboard and the badges as strings.
@@ -25,14 +27,70 @@
 use super::Tree;
 use super::conformance::{self, Row};
 use super::junit::{self, Case, Outcome};
-use super::lex::blank_keeping_docs;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::{Index, IndexMut};
 
-/// The operating systems a dashboard column is for, in column order.
-pub(super) const OSES: [&str; 3] = ["linux", "macos", "windows"];
+/// The line prefix the plugin contract prints for a declared gap, followed by
+/// the case's name (`testing/tutti-plugin-contract`'s `gap_marker`).
+const GAP_MARKER: &str = "tutti-contract: gap ";
 
 const CONTRACT: &str = "tutti-plugin-contract";
-const TAG: &str = "/// Spec:";
+
+/// An operating system a dashboard column is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Os {
+    Linux,
+    Macos,
+    Windows,
+}
+
+impl Os {
+    /// Every OS, in column order.
+    pub(super) const ALL: [Os; 3] = [Os::Linux, Os::Macos, Os::Windows];
+
+    /// The name that labels a column, a badge and a results file.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Os::Linux => "linux",
+            Os::Macos => "macos",
+            Os::Windows => "windows",
+        }
+    }
+
+    /// The OS a results file stem names.
+    pub(super) fn from_name(name: &str) -> Result<Os, String> {
+        Os::ALL
+            .into_iter()
+            .find(|os| os.name() == name)
+            .ok_or_else(|| {
+                let names: Vec<&str> = Os::ALL.iter().map(|os| os.name()).collect();
+                format!("`{name}` is not an OS ({})", names.join(", "))
+            })
+    }
+}
+
+/// One value per [`Os`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct PerOs<T>([T; 3]);
+
+impl<T> PerOs<T> {
+    pub(super) fn from_fn(mut f: impl FnMut(Os) -> T) -> Self {
+        PerOs(Os::ALL.map(&mut f))
+    }
+}
+
+impl<T> Index<Os> for PerOs<T> {
+    type Output = T;
+    fn index(&self, os: Os) -> &T {
+        &self.0[os as usize]
+    }
+}
+
+impl<T> IndexMut<Os> for PerOs<T> {
+    fn index_mut(&mut self, os: Os) -> &mut T {
+        &mut self.0[os as usize]
+    }
+}
 
 /// One (row, OS) cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,27 +107,27 @@ pub(super) enum Status {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RowReport {
     pub(super) row: Row,
-    pub(super) status: [Status; 3],
+    pub(super) status: PerOs<Status>,
     /// `binary: test` of every claiming test that ran on the OS, with its outcome.
-    pub(super) tests: [Vec<(String, Outcome)>; 3],
+    pub(super) tests: PerOs<Vec<(String, Outcome)>>,
 }
 
-/// The rows of one format, in inventory order.
+/// The rows of one area, in inventory order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FormatReport {
+pub(super) struct AreaReport {
     pub(super) name: String,
     pub(super) rows: Vec<RowReport>,
 }
 
-impl FormatReport {
-    /// Whether any test claiming a row of the area ran on OS column `os`.
-    pub(super) fn has_results(&self, os: usize) -> bool {
+impl AreaReport {
+    /// Whether any test claiming a row of the area ran on `os`.
+    pub(super) fn has_results(&self, os: Os) -> bool {
         self.rows.iter().any(|r| !r.tests[os].is_empty())
     }
 
-    /// `(covered, failing, applicable)` on OS column `os`; a not-applicable
+    /// `(covered, failing, applicable)` on `os`; a not-applicable
     /// row is out of `applicable`.
-    pub(super) fn counts(&self, os: usize) -> (usize, usize, usize) {
+    pub(super) fn counts(&self, os: Os) -> (usize, usize, usize) {
         let count = |s: Status| self.rows.iter().filter(|r| r.status[os] == s).count();
         let (covered, failing, na) = (
             count(Status::Covered),
@@ -81,8 +139,8 @@ impl FormatReport {
 }
 
 /// The file stem of an inventory path up to its first `-`: `midi-m2-104.txt`
-/// is the `midi` format.
-fn format_of(path: &str) -> &str {
+/// is the `midi` area.
+fn area_of(path: &str) -> &str {
     let file = path.rsplit('/').next().unwrap_or(path);
     let stem = file.strip_suffix(".txt").unwrap_or(file);
     stem.split('-').next().unwrap_or(stem)
@@ -97,116 +155,29 @@ fn claims(sources: &[(String, String)]) -> BTreeMap<(String, String), BTreeSet<S
         let (Some(_), Some(package)) = (parts.next(), parts.next()) else {
             continue;
         };
-        let code = blank_keeping_docs(text);
-        let lines: Vec<&str> = code.lines().collect();
-        for (i, l) in lines.iter().enumerate() {
-            let Some(rest) = l.trim_start().strip_prefix(TAG) else {
-                continue;
-            };
-            let Some(name) = lines[i + 1..].iter().take(12).find_map(|n| fn_name(n)) else {
-                continue;
-            };
-            out.entry((package.to_owned(), name))
-                .or_default()
-                .extend(rest.split(',').map(|s| s.trim().to_owned()));
-        }
-    }
-    out
-}
-
-/// The name a line declares with `fn`, when it does.
-fn fn_name(line: &str) -> Option<String> {
-    let t = line.trim_start();
-    if t.starts_with("//") || t.starts_with('#') {
-        return None;
-    }
-    let after = super::lex::find_word(t, "fn").map(|at| &t[at + 2..])?;
-    let name: String = after
-        .trim_start()
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
-    (!name.is_empty()).then_some(name)
-}
-
-/// `(format name, case)` of every case a `Format` impl in `formats_rs` lists
-/// in its `GAPS`: by a string literal that opens a `(case, Gap { .. })` pair,
-/// or by the name of a `const NAME: (&str, Gap)` that does.
-fn gapped(formats_rs: &str) -> BTreeSet<(String, String)> {
-    let first_literal = |s: &str| {
-        let open = s.find('"')? + 1;
-        Some(s[open..open + s[open..].find('"')?].to_owned())
-    };
-    let mut named: BTreeMap<String, String> = BTreeMap::new();
-    for chunk in formats_rs.split("const ").skip(1) {
-        let Some((name, rest)) = chunk.split_once(':') else {
-            continue;
-        };
-        if let Some(pair) = rest.trim_start().strip_prefix("(&str, Gap)")
-            && let Some(case) = first_literal(pair)
-        {
-            named.insert(name.trim().to_owned(), case);
-        }
-    }
-    let mut out = BTreeSet::new();
-    for chunk in formats_rs.split("impl Format for ").skip(1) {
-        let Some(name) = chunk
-            .split_once("const NAME")
-            .and_then(|(_, r)| first_literal(r))
-        else {
-            continue;
-        };
-        let Some(list) = chunk
-            .split_once("const GAPS")
-            .and_then(|(_, r)| r.split_once("= &[")?.1.split_once("];"))
-            .map(|(l, _)| l)
-        else {
-            continue;
-        };
-        for (konst, case) in &named {
-            if list
-                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                .any(|w| w == konst)
-            {
-                out.insert((name.clone(), case.clone()));
-            }
-        }
-        let mut rest = list;
-        while let Some(q) = rest.find('"') {
-            let Some(len) = rest[q + 1..].find('"') else {
-                break;
-            };
-            let lit = &rest[q + 1..q + 1 + len];
-            rest = &rest[q + 2 + len..];
-            if rest
-                .trim_start()
-                .strip_prefix(',')
-                .is_some_and(|r| r.trim_start().starts_with("Gap"))
-            {
-                out.insert((name.clone(), lit.to_owned()));
+        for tag in conformance::tags(path, text).0 {
+            if let Some(item) = tag.item {
+                out.entry((package.to_owned(), item))
+                    .or_default()
+                    .extend(tag.ids);
             }
         }
     }
     out
 }
 
-/// The ids a result of `case` covers: the tag's ids, narrowed to the
-/// result's own format for a plugin-contract case, and none for a gapped one.
-fn covers<'a>(
-    case: &Case,
-    ids: &'a BTreeSet<String>,
-    gaps: &BTreeSet<(String, String)>,
-) -> Vec<&'a str> {
-    let test = case.name.rsplit("::").next().unwrap_or(&case.name);
+/// The ids a result of `case` covers: the tag's ids, narrowed to the result's
+/// own format for a plugin-contract case, and none for a case that declared
+/// its gap.
+fn covers<'a>(case: &Case, ids: &'a BTreeSet<String>) -> Vec<&'a str> {
     let (package, suffix) = case.binary.split_once("::").unwrap_or((&case.binary, ""));
     if package != CONTRACT {
         return ids.iter().map(String::as_str).collect();
     }
-    let format = suffix.replace('_', "-");
-    if gaps.contains(&(format.clone(), test.to_owned())) {
+    if case.output.lines().any(|l| l.starts_with(GAP_MARKER)) {
         return Vec::new();
     }
-    let prefix = format!("{}.", format.split('-').next().unwrap_or(""));
+    let prefix = format!("{}.", suffix.split('_').next().unwrap_or(""));
     ids.iter()
         .map(String::as_str)
         .filter(|id| suffix.is_empty() || id.starts_with(&prefix))
@@ -214,13 +185,10 @@ fn covers<'a>(
 }
 
 /// The report over the checkout `tree` and one JUnit text per OS (`results`:
-/// `(os, xml)`): one [`FormatReport`] per area the inventory files name, in
+/// `(os, xml)`): one [`AreaReport`] per area the inventory files name, in
 /// path order, the parts of an area (`midi-m2-104.txt`, `midi-m2-116.txt`)
 /// joined.
-pub(super) fn report(
-    tree: &dyn Tree,
-    results: &[(String, String)],
-) -> Result<Vec<FormatReport>, String> {
+pub(super) fn report(tree: &dyn Tree, results: &[(Os, String)]) -> Result<Vec<AreaReport>, String> {
     let (rows, errs) = conformance::load(tree);
     if !errs.is_empty() {
         return Err(format!(
@@ -239,26 +207,18 @@ pub(super) fn report(
         }
     }
     let claims = claims(&sources);
-    let gaps = tree
-        .read("testing/tutti-plugin-contract/src/formats.rs")
-        .map(|t| gapped(&t))
-        .unwrap_or_default();
 
     // id -> per OS -> the results of the tests that claim it.
-    let mut seen: BTreeMap<&str, [Vec<(String, Outcome)>; 3]> = BTreeMap::new();
+    let mut seen: BTreeMap<&str, PerOs<Vec<(String, Outcome)>>> = BTreeMap::new();
     for (os, xml) in results {
-        let col = OSES
-            .iter()
-            .position(|o| o == os)
-            .ok_or_else(|| format!("`{os}` is not an OS column ({})", OSES.join(", ")))?;
-        for case in junit::parse(xml).map_err(|e| format!("{os}: {e}"))? {
+        for case in junit::parse(xml).map_err(|e| format!("{}: {e}", os.name()))? {
             let package = case.binary.split("::").next().unwrap_or(&case.binary);
             let test = case.name.rsplit("::").next().unwrap_or(&case.name);
             let Some(ids) = claims.get(&(package.to_owned(), test.to_owned())) else {
                 continue;
             };
-            for id in covers(&case, ids, &gaps) {
-                seen.entry(id).or_default()[col]
+            for id in covers(&case, ids) {
+                seen.entry(id).or_default()[*os]
                     .push((format!("{}: {}", case.binary, case.name), case.outcome));
             }
         }
@@ -266,7 +226,7 @@ pub(super) fn report(
 
     let mut areas: Vec<&str> = Vec::new();
     for (path, _) in &rows {
-        let area = format_of(path);
+        let area = area_of(path);
         if !areas.contains(&area) {
             areas.push(area);
         }
@@ -275,10 +235,10 @@ pub(super) fn report(
     for area in areas {
         let reports = rows
             .iter()
-            .filter(|(path, _)| format_of(path) == area)
+            .filter(|(path, _)| area_of(path) == area)
             .map(|(_, row)| {
                 let tests = seen.get(row.id.as_str()).cloned().unwrap_or_default();
-                let status = std::array::from_fn(|os| {
+                let status = PerOs::from_fn(|os| {
                     let ran = &tests[os];
                     if !row.na_kind.is_empty() {
                         Status::Na
@@ -297,11 +257,11 @@ pub(super) fn report(
                 }
             })
             .collect();
-        let mut report = FormatReport {
+        let mut report = AreaReport {
             name: area.to_owned(),
             rows: reports,
         };
-        for os in 0..OSES.len() {
+        for os in Os::ALL {
             if !report.has_results(os) {
                 for r in &mut report.rows {
                     if r.status[os] == Status::Missing {
@@ -336,9 +296,9 @@ fn json_str(s: &str) -> String {
     out
 }
 
-/// The shields.io endpoint for one format on one OS.
-pub(super) fn badge(format: &FormatReport, os: usize) -> String {
-    let (covered, failing, applicable) = format.counts(os);
+/// The shields.io endpoint for one area on one OS.
+pub(super) fn badge(area: &AreaReport, os: Os) -> String {
+    let (covered, failing, applicable) = area.counts(os);
     let color = if applicable == 0 {
         "lightgrey"
     } else if failing > 0 {
@@ -354,20 +314,22 @@ pub(super) fn badge(format: &FormatReport, os: usize) -> String {
     };
     format!(
         "{{\"schemaVersion\":1,\"label\":{},\"message\":{},\"color\":{}}}\n",
-        json_str(&format!("{} {}", format.name, OSES[os])),
+        json_str(&format!("{} {}", area.name, os.name())),
         json_str(&format!("{covered}/{applicable}")),
         json_str(color),
     )
 }
 
-/// `(path under the site root, contents)` of every badge, `badges/<format>-<os>.json`.
-pub(super) fn badges(formats: &[FormatReport]) -> Vec<(String, String)> {
-    formats
+/// `(file name, contents)` of every badge, `<area>-<os>.json`, for each pair
+/// that has results.
+pub(super) fn badges(areas: &[AreaReport]) -> Vec<(String, String)> {
+    areas
         .iter()
-        .flat_map(|f| {
-            (0..OSES.len())
-                .filter(|&os| f.has_results(os))
-                .map(|os| (format!("{}-{}.json", f.name, OSES[os]), badge(f, os)))
+        .flat_map(|a| {
+            Os::ALL
+                .into_iter()
+                .filter(|&os| a.has_results(os))
+                .map(|os| (format!("{}-{}.json", a.name, os.name()), badge(a, os)))
         })
         .collect()
 }
@@ -393,7 +355,7 @@ var q=box.value.toLowerCase();\
 document.querySelectorAll('tbody tr').forEach(function(tr){\
 tr.classList.toggle('hide',q!==''&&tr.textContent.toLowerCase().indexOf(q)<0);});});";
 
-fn cell(r: &RowReport, os: usize) -> String {
+fn cell(r: &RowReport, os: Os) -> String {
     let (class, text) = match r.status[os] {
         Status::Covered => ("covered", "pass"),
         Status::Failing => ("failing", "FAIL"),
@@ -437,9 +399,9 @@ pub(super) fn landing() -> String {
         .to_owned()
 }
 
-/// The dashboard page: one table per format, rows by OS, with the counts and
+/// The dashboard page: one table per area, rows by OS, with the counts and
 /// a filter box. Plain HTML, inline CSS and JS, no external reference.
-pub(super) fn dashboard(formats: &[FormatReport]) -> String {
+pub(super) fn dashboard(areas: &[AreaReport]) -> String {
     let mut h = String::from(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -448,23 +410,24 @@ pub(super) fn dashboard(formats: &[FormatReport]) -> String {
     h.push_str(STYLE);
     h.push_str("</style></head><body>\n<h1>Plugin spec conformance</h1>\n");
     h.push_str(
-        "<p>Each row is one item of a format's spec. A cell is <b>pass</b> when a test \
+        "<p>Each row is one item of an area's spec. A cell is <b>pass</b> when a test \
 claiming the row passed on that OS, <b>FAIL</b> when one failed, <b>missing</b> when none ran on an OS that has results for the area, \
 <b>no results</b> when nothing of the area ran on that OS, \
 and <b>n/a</b> when the spec itself excludes the row (hover for the citation). \
 <a href=\"../coverage/html/index.html\">Line coverage</a>.</p>\n",
     );
     h.push_str("<nav>");
-    for f in formats {
+    for f in areas {
         h.push_str(&format!("<a href=\"#{0}\">{0}</a>", esc(&f.name)));
     }
     h.push_str("</nav>\n<input id=\"filter\" type=\"search\" placeholder=\"filter rows (id, text, status)\" autocomplete=\"off\">\n");
-    for f in formats {
+    for f in areas {
         h.push_str(&format!(
             "<h2 id=\"{0}\">{0}</h2>\n<p class=\"counts\">",
             esc(&f.name)
         ));
-        for (os, name) in OSES.iter().enumerate() {
+        for os in Os::ALL {
+            let name = os.name();
             if f.has_results(os) {
                 let (covered, failing, applicable) = f.counts(os);
                 h.push_str(&format!(
@@ -475,8 +438,8 @@ and <b>n/a</b> when the spec itself excludes the row (hover for the citation). \
             }
         }
         h.push_str("</p>\n<table><thead><tr><th>id</th><th>side</th><th>kind</th><th>item</th>");
-        for os in OSES {
-            h.push_str(&format!("<th>{os}</th>"));
+        for os in Os::ALL {
+            h.push_str(&format!("<th>{}</th>", os.name()));
         }
         h.push_str("</tr></thead><tbody>\n");
         for r in &f.rows {
@@ -487,7 +450,7 @@ and <b>n/a</b> when the spec itself excludes the row (hover for the citation). \
                 esc(&r.row.kind),
                 esc(&r.row.paraphrase),
             ));
-            for os in 0..OSES.len() {
+            for os in Os::ALL {
                 h.push_str(&cell(r, os));
             }
             h.push_str("</tr>\n");
@@ -518,20 +481,6 @@ pub fn shared<F>() {}
 /// Spec: clap.b, vst3.x
 pub fn gapped_one<F>() {}
 ";
-    const FORMATS: &str = "\
-const NO_X: (&str, Gap) = (
-    \"gapped_one\",
-    Gap { why: \"w\", fails_with: \"f\" },
-);
-impl Format for Clap {
-    const NAME: &'static str = \"clap\";
-    const GAPS: &'static [(&'static str, Gap)] = &[];
-}
-impl Format for Vst3 {
-    const NAME: &'static str = \"vst3\";
-    const GAPS: &'static [(&'static str, Gap)] = &[NO_X];
-}
-";
     const HOST: &str = "/// Spec: clap.c\n#[test]\nfn c_works() {}\n";
 
     fn tree() -> Mem {
@@ -539,7 +488,6 @@ impl Format for Vst3 {
             ("testing/conformance/clap.txt", CLAP),
             ("testing/conformance/vst3.txt", VST3),
             ("testing/tutti-plugin-contract/src/cases.rs", CASES),
-            ("testing/tutti-plugin-contract/src/formats.rs", FORMATS),
             ("crates/tutti-clap-host/src/lib.rs", HOST),
         ])
     }
@@ -554,15 +502,18 @@ impl Format for Vst3 {
         s + "</testsuites>"
     }
 
-    fn run(results: &[(&str, String)]) -> Vec<FormatReport> {
-        let results: Vec<(String, String)> = results
-            .iter()
-            .map(|(o, x)| ((*o).to_owned(), x.clone()))
-            .collect();
-        report(&tree(), &results).unwrap()
+    const LINUX: Os = Os::Linux;
+    const MACOS: Os = Os::Macos;
+    const WINDOWS: Os = Os::Windows;
+
+    /// The marker the contract prints for a declared gap, as nextest keeps it.
+    const GAP_OUT: &str = "<system-out><![CDATA[tutti-contract: gap gapped_one\n]]></system-out>";
+
+    fn run(results: &[(Os, String)]) -> Vec<AreaReport> {
+        report(&tree(), results).unwrap()
     }
 
-    fn status(f: &FormatReport, id: &str, os: usize) -> Status {
+    fn status(f: &AreaReport, id: &str, os: Os) -> Status {
         f.rows.iter().find(|r| r.row.id == id).unwrap().status[os]
     }
 
@@ -572,22 +523,22 @@ impl Format for Vst3 {
             ("tutti-plugin-contract::clap", "shared", ""),
             ("tutti-clap-host", "tests::c_works", "<failure/>"),
         ]);
-        let r = run(&[("linux", linux)]);
+        let r = run(&[(LINUX, linux)]);
         let clap = &r[0];
-        assert_eq!(status(clap, "clap.a", 0), Status::Covered);
+        assert_eq!(status(clap, "clap.a", LINUX), Status::Covered);
         assert_eq!(
-            status(clap, "clap.b", 0),
+            status(clap, "clap.b", LINUX),
             Status::Missing,
             "no result for its case"
         );
-        assert_eq!(status(clap, "clap.c", 0), Status::Failing);
-        assert_eq!(status(clap, "clap.d", 0), Status::Na);
+        assert_eq!(status(clap, "clap.c", LINUX), Status::Failing);
+        assert_eq!(status(clap, "clap.d", LINUX), Status::Na);
         assert_eq!(
-            status(clap, "clap.a", 1),
+            status(clap, "clap.a", MACOS),
             Status::NoResults,
             "no macos file"
         );
-        assert_eq!(status(clap, "clap.d", 2), Status::Na);
+        assert_eq!(status(clap, "clap.d", WINDOWS), Status::Na);
     }
 
     #[test]
@@ -600,63 +551,71 @@ impl Format for Vst3 {
                 "<flakyFailure/>",
             ),
         ]);
-        let clap = &run(&[("linux", linux)])[0];
-        assert_eq!(status(clap, "clap.a", 0), Status::Missing);
-        assert_eq!(status(clap, "clap.b", 0), Status::Covered);
+        let clap = &run(&[(LINUX, linux)])[0];
+        assert_eq!(status(clap, "clap.a", LINUX), Status::Missing);
+        assert_eq!(status(clap, "clap.b", LINUX), Status::Covered);
     }
 
     #[test]
     fn a_contract_case_covers_only_the_format_it_ran_for() {
         let linux = xml(&[("tutti-plugin-contract::clap", "shared", "")]);
-        let r = run(&[("linux", linux)]);
-        assert_eq!(status(&r[0], "clap.a", 0), Status::Covered);
-        assert_eq!(status(&r[1], "vst3.x", 0), Status::NoResults);
+        let r = run(&[(LINUX, linux)]);
+        assert_eq!(status(&r[0], "clap.a", LINUX), Status::Covered);
+        assert_eq!(status(&r[1], "vst3.x", LINUX), Status::NoResults);
         let both = xml(&[
             ("tutti-plugin-contract::clap", "shared", ""),
             ("tutti-plugin-contract::vst3", "shared", ""),
         ]);
         assert_eq!(
-            status(&run(&[("linux", both)])[1], "vst3.x", 0),
+            status(&run(&[(LINUX, both)])[1], "vst3.x", LINUX),
             Status::Covered
         );
     }
 
     #[test]
-    fn a_gapped_case_that_passes_by_failing_covers_nothing_for_its_format() {
+    fn a_case_that_printed_its_gap_covers_nothing_for_its_format() {
         let linux = xml(&[
-            ("tutti-plugin-contract::vst3", "gapped_one", ""),
+            ("tutti-plugin-contract::vst3", "gapped_one", GAP_OUT),
             ("tutti-plugin-contract::clap", "gapped_one", ""),
         ]);
-        let r = run(&[("linux", linux)]);
-        assert_eq!(status(&r[1], "vst3.x", 0), Status::NoResults);
+        let r = run(&[(LINUX, linux)]);
+        assert_eq!(status(&r[1], "vst3.x", LINUX), Status::NoResults);
         assert_eq!(
-            status(&r[0], "clap.b", 0),
+            status(&r[0], "clap.b", LINUX),
             Status::Covered,
-            "clap declares no gap"
+            "clap printed no marker"
         );
     }
 
     #[test]
-    fn the_gaps_are_read_from_consts_and_literals() {
-        let src = format!(
-            "{FORMATS}impl Format for Au {{\n const NAME: &'static str = \"au\";\n const GAPS: &'static [(&'static str, Gap)] = &[\n NO_X,\n (\n \"other\",\n Gap {{ why: \"w\", fails_with: \"f\" }},\n ),\n ];\n}}\n"
+    fn the_marker_must_open_a_line_of_a_contract_cases_output() {
+        let quoted = "<system-out><![CDATA[note: tutti-contract: gap gapped_one\n]]></system-out>";
+        let linux = xml(&[("tutti-plugin-contract::clap", "gapped_one", quoted)]);
+        assert_eq!(
+            status(&run(&[(LINUX, linux)])[0], "clap.b", LINUX),
+            Status::Covered
         );
-        let want: BTreeSet<(String, String)> = [
-            ("vst3", "gapped_one"),
-            ("au", "gapped_one"),
-            ("au", "other"),
-        ]
-        .iter()
-        .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
-        .collect();
-        assert_eq!(gapped(&src), want);
+        let other = xml(&[("tutti-clap-host", "c_works", GAP_OUT)]);
+        assert_eq!(
+            status(&run(&[(LINUX, other)])[0], "clap.c", LINUX),
+            Status::Covered,
+            "only the contract's cases carry the marker's meaning"
+        );
     }
 
     #[test]
-    fn an_unknown_os_or_bad_xml_is_an_error() {
-        let t = tree();
-        assert!(report(&t, &[("beos".into(), "<a/>".into())]).is_err());
-        assert!(report(&t, &[("linux".into(), "<testcase".into())]).is_err());
+    fn an_os_is_named_by_its_file_stem() {
+        for os in Os::ALL {
+            assert_eq!(Os::from_name(os.name()), Ok(os));
+        }
+        let err = Os::from_name("beos").unwrap_err();
+        assert_eq!(err, "`beos` is not an OS (linux, macos, windows)");
+    }
+
+    #[test]
+    fn bad_xml_is_an_error_naming_its_os() {
+        let err = report(&tree(), &[(WINDOWS, "<testcase".into())]).unwrap_err();
+        assert!(err.starts_with("windows: "), "{err}");
     }
 
     #[test]
@@ -667,26 +626,26 @@ impl Format for Vst3 {
             ("tutti-plugin-contract::clap", "shared", ""),
             ("tutti-plugin-contract::vst3", "shared", "<skipped/>"),
         ]);
-        let r = run(&[("linux", linux), ("macos", macos)]);
+        let r = run(&[(LINUX, linux), (MACOS, macos)]);
         let (clap, vst3) = (&r[0], &r[1]);
         assert_eq!(
-            status(clap, "clap.b", 0),
+            status(clap, "clap.b", LINUX),
             Status::Missing,
             "linux has clap results"
         );
         assert_eq!(
-            status(clap, "clap.b", 2),
+            status(clap, "clap.b", WINDOWS),
             Status::NoResults,
             "windows has none"
         );
         assert_eq!(
-            status(clap, "clap.d", 2),
+            status(clap, "clap.d", WINDOWS),
             Status::Na,
             "the spec's own N/A stays"
         );
-        assert_eq!(status(vst3, "vst3.x", 0), Status::NoResults);
+        assert_eq!(status(vst3, "vst3.x", LINUX), Status::NoResults);
         assert_eq!(
-            status(vst3, "vst3.x", 1),
+            status(vst3, "vst3.x", MACOS),
             Status::Missing,
             "a skipped test is a result"
         );
@@ -711,8 +670,8 @@ impl Format for Vst3 {
     #[test]
     fn counts_leave_not_applicable_rows_out_of_the_total() {
         let linux = xml(&[("tutti-plugin-contract::clap", "shared", "")]);
-        let clap = &run(&[("linux", linux)])[0];
-        assert_eq!(clap.counts(0), (1, 0, 3));
+        let clap = &run(&[(LINUX, linux)])[0];
+        assert_eq!(clap.counts(LINUX), (1, 0, 3));
     }
 
     #[test]
@@ -722,9 +681,9 @@ impl Format for Vst3 {
             ("tutti-clap-host", "c_works", ""),
             ("tutti-plugin-contract::clap", "gapped_one", ""),
         ]);
-        let clap = &run(&[("linux", linux)])[0];
+        let clap = &run(&[(LINUX, linux)])[0];
         assert_eq!(
-            badge(clap, 0),
+            badge(clap, LINUX),
             "{\"schemaVersion\":1,\"label\":\"clap linux\",\"message\":\"3/3\",\"color\":\"brightgreen\"}\n"
         );
         let names: Vec<String> = badges(std::slice::from_ref(clap))
@@ -737,8 +696,8 @@ impl Format for Vst3 {
     #[test]
     fn a_failing_row_turns_the_badge_red_and_the_page_shows_it() {
         let linux = xml(&[("tutti-clap-host", "c_works", "<failure/>")]);
-        let r = run(&[("linux", linux)]);
-        assert!(badge(&r[0], 0).contains("\"red\""));
+        let r = run(&[(LINUX, linux)]);
+        assert!(badge(&r[0], LINUX).contains("\"red\""));
         let page = dashboard(&r);
         assert!(page.contains("class=\"s failing\""));
         assert!(page.contains("class=\"s na\" title=\"deprecated: clap 1.2 marks it deprecated\""));
@@ -764,14 +723,14 @@ impl Format for Vst3 {
             "crates/zed-core/src/lib.rs".into(),
             "/// Spec: zed.two\n#[test]\nfn two() {}\n".into(),
         );
-        let results = [("macos".to_owned(), xml(&[("zed-core", "tests::two", "")]))];
+        let results = [(MACOS, xml(&[("zed-core", "tests::two", "")]))];
         let r = report(&mem, &results).unwrap();
         let names: Vec<&str> = r.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["clap", "vst3", "zed"]);
         let zed = &r[2];
         assert_eq!(zed.rows.len(), 2, "the parts are one area");
-        assert_eq!(status(zed, "zed.two", 1), Status::Covered);
-        assert_eq!(status(zed, "zed.one", 1), Status::Missing);
+        assert_eq!(status(zed, "zed.two", MACOS), Status::Covered);
+        assert_eq!(status(zed, "zed.one", MACOS), Status::Missing);
         assert!(badges(&r).iter().any(|(n, _)| n == "zed-macos.json"));
         assert!(dashboard(&r).contains("<h2 id=\"zed\">"));
     }

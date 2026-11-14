@@ -270,8 +270,33 @@ pub(super) fn load(tree: &dyn Tree) -> (Vec<(String, Row)>, Vec<String>) {
     (rows, errs)
 }
 
-/// The tags of one file: `(line, ids)`, and the problems with them.
-fn tags(path: &str, text: &str) -> (Vec<(usize, Vec<String>)>, Vec<String>) {
+/// One `/// Spec:` tag: its line, the ids it claims, and the name of the `fn`
+/// it documents (the first `fn` declared within a dozen lines below it, when
+/// there is one; a tag above something else has none).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Tag {
+    pub(super) line: usize,
+    pub(super) ids: Vec<String>,
+    pub(super) item: Option<String>,
+}
+
+/// The name a line declares with `fn`, when it does.
+fn fn_name(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    if t.starts_with("//") || t.starts_with('#') {
+        return None;
+    }
+    let after = super::lex::find_word(t, "fn").map(|at| &t[at + 2..])?;
+    let name: String = after
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The tags of one file, and the problems with them.
+pub(super) fn tags(path: &str, text: &str) -> (Vec<Tag>, Vec<String>) {
     let code = blank_keeping_docs(text);
     let lines: Vec<&str> = code.lines().collect();
     let (mut out, mut errs) = (Vec::new(), Vec::new());
@@ -293,7 +318,12 @@ fn tags(path: &str, text: &str) -> (Vec<(usize, Vec<String>)>, Vec<String>) {
             errs.push(format!("{path}:{at}: the Spec tag has an empty id"));
             continue;
         }
-        out.push((at, ids));
+        let item = lines[i + 1..].iter().take(12).find_map(|n| fn_name(n));
+        out.push(Tag {
+            line: at,
+            ids,
+            item,
+        });
     }
     (out, errs)
 }
@@ -396,7 +426,7 @@ pub(super) fn check(
             for e in errs {
                 r.fail(e);
             }
-            for (line, ids) in found {
+            for Tag { line, ids, .. } in found {
                 for id in ids {
                     if known.contains(id.as_str()) {
                         tagged.insert(id);
@@ -746,6 +776,28 @@ mod tests {
 
     fn has(r: &Report, needle: &str) -> bool {
         r.findings.iter().any(|f| f.contains(needle))
+    }
+
+    #[test]
+    fn a_tag_names_the_fn_it_documents() {
+        let src = "/// Spec: a.b, c.d\n#[test]\npub async fn first<F>() {}\n\n/// Spec: e.f\nconst X: u8 = 0;\n";
+        let (found, errs) = tags("p.rs", src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(
+            found,
+            [
+                Tag {
+                    line: 1,
+                    ids: vec!["a.b".into(), "c.d".into()],
+                    item: Some("first".into()),
+                },
+                Tag {
+                    line: 5,
+                    ids: vec!["e.f".into()],
+                    item: None,
+                },
+            ]
+        );
     }
 
     #[test]

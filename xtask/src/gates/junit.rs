@@ -1,7 +1,9 @@
 //! A reader for the JUnit XML nextest writes (`[profile.<name>.junit]`): the
 //! `testsuite` and `testcase` elements, and a `testcase`'s `failure`, `error`
-//! and `skipped` children. Everything else (attributes the join does not use,
-//! `system-out`, `flakyFailure`, `rerunFailure`, comments, CDATA) is read past.
+//! and `skipped` children and its `system-out` text (nextest keeps a passing
+//! test's output with `store-success-output`). Everything else (attributes the
+//! join does not use, `system-err`, `flakyFailure`, `rerunFailure`, comments) is
+//! read past.
 
 /// How one test ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,12 +15,14 @@ pub(super) enum Outcome {
 
 /// One `testcase`: nextest's binary id (the `classname`), the test's name
 /// within it, and its outcome. A test that failed and then passed on a retry
-/// carries `flakyFailure` and counts as passed.
+/// carries `flakyFailure` and counts as passed. `output` is the text of the
+/// case's `system-out`, empty when it has none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Case {
     pub(super) binary: String,
     pub(super) name: String,
     pub(super) outcome: Outcome,
+    pub(super) output: String,
 }
 
 /// The test cases of one JUnit document, or what makes it unreadable.
@@ -26,16 +30,24 @@ pub(super) fn parse(xml: &str) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
     let mut suite = String::new();
     let mut open: Option<Case> = None;
+    let mut in_output = false;
     let mut at = 0;
     while let Some(lt) = xml[at..].find('<') {
         let start = at + lt;
         let rest = &xml[start..];
+        if in_output && let Some(c) = open.as_mut() {
+            c.output.push_str(&unescape(&xml[at..start]));
+        }
         if let Some(body) = rest.strip_prefix("<!--") {
             at = start + 4 + skip_to(body, "-->")?;
             continue;
         }
         if let Some(body) = rest.strip_prefix("<![CDATA[") {
-            at = start + 9 + skip_to(body, "]]>")?;
+            let len = skip_to(body, "]]>")?;
+            if in_output && let Some(c) = open.as_mut() {
+                c.output.push_str(&body[..len - 3]);
+            }
+            at = start + 9 + len;
             continue;
         }
         if let Some(body) = rest.strip_prefix("<?") {
@@ -47,8 +59,10 @@ pub(super) fn parse(xml: &str) -> Result<Vec<Case>, String> {
         let tag = &rest[1..end];
         at = start + end + 1;
         if let Some(name) = tag.strip_prefix('/') {
-            if name.trim() == "testcase" {
-                cases.extend(open.take());
+            match name.trim() {
+                "testcase" => cases.extend(open.take()),
+                "system-out" => in_output = false,
+                _ => {}
             }
             continue;
         }
@@ -62,6 +76,7 @@ pub(super) fn parse(xml: &str) -> Result<Vec<Case>, String> {
                     binary: attr(attrs, "classname").unwrap_or_else(|| suite.clone()),
                     name: attr(attrs, "name").ok_or("a testcase has no name")?,
                     outcome: Outcome::Passed,
+                    output: String::new(),
                 };
                 if self_closing {
                     cases.push(case);
@@ -69,6 +84,7 @@ pub(super) fn parse(xml: &str) -> Result<Vec<Case>, String> {
                     open = Some(case);
                 }
             }
+            "system-out" => in_output = open.is_some() && !self_closing,
             "failure" | "error" => {
                 if let Some(c) = open.as_mut() {
                     c.outcome = Outcome::Failed;
@@ -170,6 +186,7 @@ mod tests {
             binary: binary.to_owned(),
             name: name.to_owned(),
             outcome,
+            output: String::new(),
         }
     }
 
@@ -192,16 +209,34 @@ mod tests {
 
     #[test]
     fn each_outcome_is_read_and_comments_and_cdata_are_not_tests() {
+        let mut fails = case("a::b", "fails", Outcome::Failed);
+        fails.output = " 1 < 2 ".to_owned();
         assert_eq!(
             parse(DOC).unwrap(),
             [
                 case("a::b", "passes", Outcome::Passed),
-                case("a::b", "fails", Outcome::Failed),
+                fails,
                 case("a::b", "skips", Outcome::Skipped),
                 case("a::b", "flaky", Outcome::Passed),
                 case("a::c", "mod::q&<x>", Outcome::Passed),
             ]
         );
+    }
+
+    #[test]
+    fn a_passing_cases_system_out_is_kept_whether_cdata_or_escaped_text() {
+        let xml = r#"<testsuite name="s">
+<testcase name="a" classname="b"><system-out><![CDATA[line one
+tutti-contract: gap x < y
+]]></system-out><system-err><![CDATA[ignored]]></system-err></testcase>
+<testcase name="c" classname="b"><system-out>plain &amp; escaped</system-out></testcase>
+<testcase name="d" classname="b"><system-out/></testcase>
+</testsuite>"#;
+        let got = parse(xml).unwrap();
+        assert_eq!(got[0].outcome, Outcome::Passed);
+        assert_eq!(got[0].output, "line one\ntutti-contract: gap x < y\n");
+        assert_eq!(got[1].output, "plain & escaped");
+        assert_eq!(got[2].output, "");
     }
 
     #[test]

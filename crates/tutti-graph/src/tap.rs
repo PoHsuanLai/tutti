@@ -291,7 +291,7 @@ impl TapReader {
     /// answer, then a read that finds nothing, is the end; read first and
     /// ask after, and a frame written between the two is lost. A tap with a
     /// source left, or one whose source was only replaced by a narrower node,
-    /// never ends: its lanes read silence ([the module docs](self)).
+    /// never ends: its lanes read silence ([`Editor::open_tap`](crate::Editor::open_tap)).
     #[must_use]
     pub fn source_gone(&self) -> bool {
         self.end.is_raised()

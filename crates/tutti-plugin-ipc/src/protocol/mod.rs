@@ -712,7 +712,7 @@ mod tests {
     fn audio_processed_midi_out_has_pinned_bytes() {
         #[rustfmt::skip]
         const BYTES: [u8; 26] = [
-            2, // variant
+            1, // variant
             42, // latency_us
             7, // seq
             2, // two events

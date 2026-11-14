@@ -46,6 +46,14 @@
 //!   (§12.2.1). A request that is not answered in time ends [`PeOutcome::TimedOut`]
 //!   and the Initiator sends the NAK that says so (§12.2.3). A time is over at its
 //!   deadline: a message arriving at the instant is late.
+//! - Notify (M2-101 §8.13, M2-103 §12): the superseded message, sub-ID#2 `0x3F`, still
+//!   read for a peer that sends it. It names a transaction by Request ID alone, so it
+//!   acts on the request with that ID and on a Subscription message of the peer's
+//!   with it, and nothing is sent back. Status 144 ends the request
+//!   ([`PeOutcome::Terminated`], by the Responder) and drops the message; 408 ends it
+//!   as the NAK of a timeout ([`PeOutcome::Nak`]) and drops it; 100 holds it one more
+//!   [`PE_TIMEOUT`], as a Timeout Wait whose period the message does not name. A
+//!   Notify with another status, or for no request in flight, changes nothing.
 //! - Status (§7.4.1, Table 15): a reply ends the request with its status, as
 //!   [`PeOutcome::Success`] for 200 and 201, [`PeOutcome::Retry`] for 341 to 343, which
 //!   the table says to retry and this machine leaves to the caller, and
@@ -71,11 +79,16 @@ use super::limits::{MediaType, PeMessage, ResourceId, ResourceName, SubscribeId}
 use super::reassemble::{
     PeFlowControl, PeReassembler, PeReassemblyError, PeReassemblyLimits, PeReceived, PeStep,
 };
-use crate::{CiHeader, CiMessage, Decoded, Destination, MaxSysexSize, Muid, Nak};
+use crate::{CiHeader, CiMessage, Decoded, Destination, MaxSysexSize, Muid, Nak, TimeoutWait};
 
 /// The most times a chunk is sent again, whether for a NAK or for the lack of an
 /// ACK, before the transaction ends (M2-103 §15.5: it fails after three).
 const MAX_RESENDS: u8 = 3;
+
+/// The extra time a Notify with the Timeout Wait status adds: the message names
+/// no period, and one more [`PE_TIMEOUT`] keeps the transaction open as long as
+/// a request that was waiting for the first (3 seconds, 30 tenths).
+const NOTIFY_WAIT: TimeoutWait = TimeoutWait::of(30);
 
 /// What an Initiator holds, fixed for the peer it talks to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -765,6 +778,7 @@ impl PeInitiator {
                 PeCiMessage::Chunk { kind, chunk } => {
                     self.on_chunk(*kind, chunk.clone(), now, &mut actions);
                 }
+                PeCiMessage::Notify(chunk) => self.on_notify(chunk, &mut actions),
                 PeCiMessage::CapabilitiesInquiry(_) => {}
             },
             CiMessage::Ack { ack, .. } => {
@@ -787,6 +801,60 @@ impl PeInitiator {
             _ => {}
         }
         actions
+    }
+
+    /// The superseded Notify message (M2-101 §8.13, M2-103 §12): it names a
+    /// transaction by Request ID alone, so it is read as it would be for any
+    /// transaction of that ID, this Initiator's request or a Subscription message
+    /// the peer is sending, and no NAK answers it.
+    fn on_notify(&mut self, chunk: &PeChunk, actions: &mut Vec<PeAction>) {
+        let id = chunk.request_id();
+        let Some(status) = chunk.notified() else {
+            return;
+        };
+        let at = self.pending.iter().position(|p| p.id == id);
+        match status {
+            // As an ACK that asks to wait, with no period named: one more timeout.
+            PeStatus::TimeoutWait => {
+                let Some(at) = at else { return };
+                NOTIFY_WAIT.extend(&mut self.pending[at].deadline);
+                let kind = self.pending[at].work.reply_kind();
+                self.reassembler.extend(self.peer, kind, id, NOTIFY_WAIT);
+            }
+            // As a NAK that terminates; the peer is the Responder.
+            PeStatus::Terminate => {
+                self.reassembler
+                    .terminate(self.peer, PeMessageKind::SUBSCRIPTION_INQUIRY, id);
+                if let Some(at) = at {
+                    self.conclude(at, PeOutcome::Terminated(PeTerminator::Responder), actions);
+                }
+            }
+            // As a NAK that says a timeout occurred.
+            PeStatus::TimedOut => {
+                self.reassembler
+                    .terminate(self.peer, PeMessageKind::SUBSCRIPTION_INQUIRY, id);
+                if let Some(at) = at {
+                    let signal = PeSignal::TimedOut { request_id: id };
+                    self.conclude(at, PeOutcome::Nak(signal), actions);
+                }
+            }
+            // No other status is one a Notify carries (§12).
+            PeStatus::Ok
+            | PeStatus::Accepted
+            | PeStatus::Unavailable
+            | PeStatus::BadData
+            | PeStatus::TooManyRequests
+            | PeStatus::BadRequest
+            | PeStatus::Forbidden
+            | PeStatus::NotFound
+            | PeStatus::NotAllowed
+            | PeStatus::FlowControlUnsupported
+            | PeStatus::FlowControlRequired
+            | PeStatus::PayloadTooLarge
+            | PeStatus::UnsupportedMedia
+            | PeStatus::InvalidVersion
+            | PeStatus::InternalError => {}
+        }
     }
 
     fn on_chunk(

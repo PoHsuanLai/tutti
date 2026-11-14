@@ -7,6 +7,7 @@ use super::super::{
 use super::super::{DetailsData, InquiryTarget, ProfileChannels, ProfileId, SpecificData};
 use super::super::{Unread, UnreadReason};
 use super::*;
+use crate::PeStatus;
 use tutti_ump::ManufacturerId;
 
 fn identity() -> DeviceIdentity {
@@ -250,17 +251,32 @@ fn bytes_of(sub_id2: u8, source: u32, destination: [u8; 4]) -> Vec<u8> {
 
 #[test]
 fn a_message_to_us_we_do_not_support_is_nakked_with_0x01_naming_it() {
-    // §5.3, Appendix E: a Notify (0x3F), superseded by ACK and NAK, is not supported.
+    // §5.3, Appendix E: a sub-ID#2 no message uses (0x3E) is not supported.
     let (mut device, _, now) = device([OURS]);
-    let decoded = CiMessage::decode(&bytes_of(0x3F, PEER, Muid::of(OURS).to_bytes()));
+    let decoded = CiMessage::decode(&bytes_of(0x3E, PEER, Muid::of(OURS).to_bytes()));
     let actions = device.on_message(&decoded, now);
     let [CiMessage::Nak { header, to, nak }] = sent(&actions)[..] else {
         panic!("a NAK, got {actions:?}");
     };
     assert_eq!(header.source, Muid::of(OURS));
     assert_eq!(*to, Muid::of(PEER));
-    assert_eq!(nak.nak_sub_id2, U7::of(0x3F));
+    assert_eq!(nak.nak_sub_id2, U7::of(0x3E));
     assert_eq!(nak.status_code, Nak::STATUS_MESSAGE_NOT_SUPPORTED);
+}
+
+// M2-101 §8.13: a Notify is still honoured on receipt, so it is neither refused as
+// unsupported nor answered: its reading is the Property Exchange Initiator's.
+#[test]
+fn a_notify_to_us_is_not_nakked() {
+    let (mut device, _, now) = device([OURS]);
+    let notify = CiMessage::PropertyExchange {
+        header: CiHeader::new(Muid::of(PEER)),
+        to: Muid::of(OURS),
+        message: PeCiMessage::Notify(PeChunk::notify(PeRequestId::of(3), PeStatus::Terminate)),
+    };
+    let decoded = CiMessage::decode(&notify.encode());
+    assert_eq!(decoded, Decoded::Message(notify));
+    assert!(device.on_message(&decoded, now).is_empty());
 }
 
 #[test]

@@ -4,7 +4,7 @@
 use super::*;
 use crate::MaxSysexSize;
 use crate::ci::pe::{
-    ChunkNo, ChunkPosition, ChunkTotal, PeHeader, PeRequest, PeRequestId, ResourceName,
+    ChunkNo, ChunkPosition, ChunkTotal, PeHeader, PeRequest, PeRequestId, PeStatus, ResourceName,
 };
 use crate::ci::testing::decoded;
 use crate::ci::{CiHeader, CiMessage, CiVersion, Decoded, Muid, Unread, UnreadReason};
@@ -185,17 +185,16 @@ fn each_chunked_message_is_sent_under_its_sub_id2() {
     }
 }
 
-// The Notify message, 0x3F, is superseded (§8.13) and is not read; the PE
-// messages go to one device (§8), so one sent to everyone is the wrong
-// destination.
+// A sub-ID#2 no message uses (0x3E) is not read; the PE messages go to one device
+// (§8), so one sent to everyone is the wrong destination.
 #[test]
-fn notify_is_unsupported_and_a_broadcast_pe_message_is_misaddressed() {
+fn an_unused_sub_id2_is_unsupported_and_a_broadcast_pe_message_is_misaddressed() {
     let mut bytes = pe(
         CiHeader::new(Muid::of(1)),
         PeCiMessage::CapabilitiesInquiry(PeCapabilities::new(SimultaneousRequests::ONE)),
     )
     .encode();
-    bytes[3] = 0x3F;
+    bytes[3] = 0x3E;
     assert!(matches!(
         CiMessage::decode(&bytes),
         Decoded::Unread(Unread {
@@ -225,4 +224,76 @@ fn the_request_count_is_a_range_checked_value() {
         valid: &[1, 2, 127],
         invalid: &[0, 128, 255],
     });
+}
+
+// M2-101 Table 39: Notify has the fields of a chunk (Request ID, Header Data
+// with its length, the two chunk counts, Property Data with its length) under
+// sub-ID#2 0x3F, and goes to one device.
+#[test]
+fn notify_lays_out_table_39_and_goes_to_one_device() {
+    let chunk = PeChunk::notify(PeRequestId::of(5), PeStatus::Terminate);
+    let message = pe(
+        CiHeader::new(Muid::of(1)),
+        PeCiMessage::Notify(chunk.clone()),
+    );
+    let text = br#"{"status":144}"#;
+    let mut expected = vec![
+        0x7E,
+        0x7F,
+        0x0D,
+        0x3F,
+        0x02,
+        1,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0, // preamble and MUIDs
+        5, // Request ID
+        u8::try_from(text.len()).unwrap(),
+        0,
+    ];
+    expected.extend(text);
+    expected.extend([1, 0, 1, 0, 0, 0]); // 1 of 1, data length 0
+    assert_eq!(message.encode(), expected);
+    assert_eq!(decoded(&expected), message);
+    assert_eq!(chunk.notified(), Some(PeStatus::Terminate));
+
+    // Sent to everyone, it is misaddressed, not a Notify.
+    let mut broadcast = expected;
+    broadcast[9..13].copy_from_slice(&[0x7F; 4]);
+    assert!(matches!(
+        CiMessage::decode(&broadcast),
+        Decoded::Unread(Unread {
+            reason: UnreadReason::WrongDestination,
+            ..
+        })
+    ));
+}
+
+// The three statuses a Notify carries (M2-103 §12) survive the round trip, and
+// Header Data that is not a header with a status is not one.
+#[test]
+fn a_notify_status_is_read_back_from_its_header_data() {
+    for status in [
+        PeStatus::TimeoutWait,
+        PeStatus::Terminate,
+        PeStatus::TimedOut,
+    ] {
+        assert_eq!(
+            PeChunk::notify(PeRequestId::of(0), status).notified(),
+            Some(status)
+        );
+    }
+    let junk = PeChunk::new(
+        PeRequestId::of(0),
+        ChunkTotal::Known(ChunkNo::FIRST),
+        ChunkPosition::Number(ChunkNo::FIRST),
+        br#"{"status":777}"#.to_vec(),
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(junk.notified(), None);
 }

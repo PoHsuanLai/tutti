@@ -10,6 +10,7 @@
 use crate::support;
 
 use support::Sine;
+use tutti_buffers::InterleavedMut;
 use tutti_engine::{Engine, GraphEngineError};
 use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_graph::NodeKey;
@@ -17,7 +18,7 @@ use tutti_graph::{CommitError, Editor, ForkByClone, Prepare};
 use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Hz, SampleRate, Samples};
 
 /// A graph whose root has `outputs` channels, with a sine at key 1 feeding
 /// the channels `wire` picks (the rest explicitly silent).
@@ -50,10 +51,13 @@ fn render_root_to(outputs: usize, target: usize, wire: &[usize]) -> Vec<f32> {
     // widths there. It becomes a layout at exactly this boundary, welded to the
     // buffer, so the engine's frame count is `out.len() / target` by
     // construction rather than a second argument that could disagree with it.
-    engine.process(&mut InterleavedMut::new(
-        &mut out,
-        ChannelLayout::try_from(target).expect("a test width is small"),
-    ));
+    engine.process(
+        &mut InterleavedMut::new(
+            &mut out,
+            ChannelLayout::try_from(target).expect("a test width is small"),
+        )
+        .unwrap(),
+    );
     out
 }
 

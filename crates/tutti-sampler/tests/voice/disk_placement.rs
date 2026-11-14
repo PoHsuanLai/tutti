@@ -21,13 +21,14 @@ use tutti_sampler::testing::loop_frames;
 use std::path::Path;
 use tutti_types::MaxBlock;
 
+use tutti_buffers::FoldError;
 use tutti_graph::contract;
 use tutti_sampler::testing::{MockTransport, settle};
 use tutti_sampler::{
     ByHand, Direction, DiskStreamer, DiskVoice, Loop, OpenError, PlaceError, Placement, Stream,
     StreamReader,
 };
-use tutti_types::{Beat, Bpm, ChannelLayout, ChannelTopology, FoldError, SampleRate};
+use tutti_types::{Beat, Bpm, ChannelLayout, ChannelTopology, SampleRate};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -277,7 +278,7 @@ struct Fixture {
 
 fn fixtures() -> [Fixture; 3] {
     use tutti_types::Speaker::*;
-    let m = tutti_types::M3DB;
+    let m = tutti_buffers::M3DB;
     let v = value;
     [
         // The rears before the sides.

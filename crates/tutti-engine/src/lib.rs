@@ -51,7 +51,8 @@
 //! ```rust
 //! use tutti_types::MaxBlock;
 //! use tutti_graph::{OutPort, Source};
-//! use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples, Tail};
+//! use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, Tail};
+//! use tutti_buffers::InterleavedMut;
 //! use tutti_graph::NodeKey;
 //! use tutti_engine::Engine;
 //! use tutti_transport::{MotionEvent, Timeline, Transport};
@@ -105,7 +106,7 @@
 //!     .expect("the motion queue has room at startup");
 //!
 //! let mut block = vec![0.0f32; 256 * 2];
-//! engine.process(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+//! engine.process(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
 //!
 //! // The first frame carries beat 8 on the node's ports; the block moved the
 //! // playhead on by 256 frames at 90 BPM.

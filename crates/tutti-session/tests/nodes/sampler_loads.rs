@@ -6,13 +6,14 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use tutti_buffers::InterleavedMut;
 use tutti_sampler::{OpenError, Placement, StreamPhase};
 use tutti_session::{
     OutPort, Residency, Root, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerLoad, Session,
     SessionEvent,
 };
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{Beat, ChannelLayout, SampleRate};
 
 const RATE: f64 = 48_000.0;
 /// File frames.
@@ -155,7 +156,7 @@ fn play(clip: tutti_sampler::Clip, frames: usize) -> Vec<f32> {
     let mut out = Vec::new();
     let mut block = vec![0.0f32; BLOCK * 2];
     while out.len() < frames {
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
         out.extend(block.chunks(2).map(|frame| frame[0]));
     }
     out.truncate(frames);

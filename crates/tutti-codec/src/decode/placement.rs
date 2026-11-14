@@ -16,7 +16,7 @@ use tutti_types::{ChannelTopology, Speaker};
 /// its slot and no more: it is a position the format named and [`Speaker`]
 /// cannot, not a channel known to feed no speaker, so it is not
 /// [`Speaker::Unassigned`]. A fold that meets one refuses it
-/// ([`FoldError::Unnamed`](tutti_types::FoldError::Unnamed)) rather than guess
+/// ([`FoldError::Unnamed`](tutti_buffers::FoldError::Unnamed)) rather than guess
 /// where it goes. (The sampler builds that fold when it builds a voice over the
 /// wave, so a file with one is refused there.)
 fn speaker(flag: Position) -> Speaker {

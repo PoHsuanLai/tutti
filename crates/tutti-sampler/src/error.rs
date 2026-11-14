@@ -38,11 +38,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[non_exhaustive]
 pub enum PlaceError {
     /// A channel of the wave has no place in the voice's frame; the
-    /// [`FoldError`](tutti_types::FoldError) says which and why. A file
+    /// [`FoldError`](tutti_buffers::FoldError) says which and why. A file
     /// channel no speaker names (a `Speaker::Unknown` in its topology) is
-    /// [`FoldError::Unnamed`](tutti_types::FoldError::Unnamed).
+    /// [`FoldError::Unnamed`](tutti_buffers::FoldError::Unnamed).
     #[error("the wave cannot be placed: {0}")]
-    Fold(#[from] tutti_types::FoldError),
+    Fold(#[from] tutti_buffers::FoldError),
     /// A streamed clip's width is its stream's, chosen when the stream was
     /// opened ([`DiskStreamer::open_into`](crate::DiskStreamer::open_into));
     /// a clip cannot be placed at another.

@@ -26,12 +26,13 @@ use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use crate::common;
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Executor, NodeKey, Prepare};
 use tutti_midi_runtime::ClockNode;
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::{FadeOut, MotionEvent, Then, Transport};
-use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 use tutti_ump::{Message, System, U14};
 
 const SR: f64 = 48_000.0;
@@ -178,7 +179,7 @@ impl Rig {
         while done < frames {
             let n = block.min(frames - done);
             self.engine
-                .process(&mut InterleavedMut::new(&mut buf[..n], ChannelLayout::MONO));
+                .process(&mut InterleavedMut::new(&mut buf[..n], ChannelLayout::MONO).unwrap());
             done += n;
             loop {
                 let got = self.out.borrow_mut().poll_into(&mut ring);

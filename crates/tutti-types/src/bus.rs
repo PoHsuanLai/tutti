@@ -14,7 +14,7 @@ pub const MAX_BUS_CHANNELS: usize = 16;
 ///
 /// The same list a [`ChannelTopology`] is, bounded by [`MAX_BUS_CHANNELS`] and
 /// `Copy`. It may be empty (a bus the plugin declares with no channels), and
-/// then a fold from or to it is [`FoldError::Empty`](crate::FoldError::Empty),
+/// then a fold from or to it is `tutti_buffers::FoldError::Empty`,
 /// as for any empty topology.
 ///
 /// `new` refuses a list wider than a bus can hold; it never truncates. The

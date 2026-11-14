@@ -4,7 +4,8 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-use tutti_types::{ChannelLayout, Interleaved, SampleRate, Sink, SinkFailed};
+use tutti_buffers::Interleaved;
+use tutti_types::{ChannelLayout, SampleRate, Sink, SinkFailed};
 
 use crate::encoder::Encoder;
 use crate::error::Result;
@@ -143,9 +144,9 @@ impl Sink for FileOut {
     }
 
     /// Writes flat interleaved samples **already at this sink's own width**:
-    /// `frames.len() / layout().count()` whole frames, a short trailing frame
-    /// ignored. A caller feeding another width folds first, through
-    /// [`tutti_types::Fold`].
+    /// whole frames only. A slice that ends mid-frame fails the sink rather
+    /// than rotating the file's channels. A caller feeding another width folds
+    /// first, through [`tutti_buffers::Fold`].
     ///
     /// A failure stops the sink: this write and every later one returns
     /// [`SinkFailed`], and the detail of the first is reported once, from
@@ -155,10 +156,10 @@ impl Sink for FileOut {
         if self.first_error.is_some() {
             return Err(SinkFailed); // already failed; the file is being abandoned
         }
-        // `Interleaved` views whole frames only: a trailing part of one is
-        // ignored, so an odd slice cannot rotate the file's channels.
-        let block = Interleaved::new(frames, self.spec.layout());
-        match self.encoder.write(block) {
+        let written = Interleaved::new(frames, self.spec.layout())
+            .map_err(|e| crate::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))
+            .and_then(|block| self.encoder.write(block));
+        match written {
             Ok(()) => Ok(()),
             Err(e) => {
                 self.first_error = Some(e.into());

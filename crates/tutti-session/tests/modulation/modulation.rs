@@ -11,6 +11,7 @@ use crate::common;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_modulation::{
@@ -24,7 +25,7 @@ use tutti_session::{
 };
 use tutti_transport::MotionEvent;
 use tutti_types::{BeatsPerCycle, Depth, Hz, ParamAddr, UnitParam};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use common::probe::{ProbeUnit, Pulse};
 
@@ -160,7 +161,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut all = [Vec::new(), Vec::new()];
     let mut buf = vec![0.0f32; block * 2];
     for _ in 0..total / block {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         for frame in buf.as_chunks::<2>().0 {
             all[0].push(frame[0]);
             all[1].push(frame[1]);

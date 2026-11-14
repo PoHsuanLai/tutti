@@ -13,7 +13,7 @@
 //!
 //! **It does not downmix.** [`topology`](FileIn::topology) says which speaker
 //! each channel feeds, and a caller wanting another width builds a
-//! [`tutti_types::Fold`] from it, as every other engine edge does.
+//! [`tutti_buffers::Fold`] from it, as every other engine edge does.
 //!
 //! To read from an
 //! arbitrary position, call [`seek`] first — it hooks
@@ -60,7 +60,7 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 /// returns the frames produced; a short count and then [`Pull::Ended`] mark the
 /// end of the file. It does not downmix: [`topology`](Self::topology) says which speaker each
 /// channel feeds, and a caller wanting another width builds a
-/// [`tutti_types::Fold`] from it.
+/// [`tutti_buffers::Fold`] from it.
 ///
 /// [`seek`](Self::seek) positions it at an exact frame. Decoding, seeking and
 /// file I/O all block, so use it from a loader or streaming thread, never the
@@ -514,7 +514,7 @@ impl FileIn {
 /// the error back as a `Result`.
 ///
 /// No downmix happens here: `layout()` describes exactly what `pull`
-/// produces. A caller wanting another width builds a [`tutti_types::Fold`] from
+/// produces. A caller wanting another width builds a [`tutti_buffers::Fold`] from
 /// [`topology`](FileIn::topology).
 ///
 /// A file is synchronous, so it never answers [`Pull::Starved`].

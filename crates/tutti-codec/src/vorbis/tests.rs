@@ -53,7 +53,7 @@ fn a_dropped_writer_has_stopped_its_thread() {
         .map(|i| ((i * 7) % 255) as f32 / 255.0 - 0.5)
         .collect();
     for _ in 0..4 {
-        w.write(Interleaved::new(&samples, ChannelLayout::STEREO))
+        w.write(Interleaved::new(&samples, ChannelLayout::STEREO).unwrap())
             .unwrap();
     }
     drop(w);
@@ -288,7 +288,8 @@ mod round_trip {
             let mut w =
                 VorbisWriter::create(&spec, Quality::HIGHEST, Cursor::new(Vec::new())).unwrap();
             for block in samples.chunks(1_024 * width) {
-                w.write(Interleaved::new(block, spec.layout())).unwrap();
+                w.write(Interleaved::new(block, spec.layout()).unwrap())
+                    .unwrap();
             }
             let bytes = w.finish().unwrap().into_inner();
             let dir = tempfile::tempdir().unwrap();

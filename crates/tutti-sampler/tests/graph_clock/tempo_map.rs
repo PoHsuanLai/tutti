@@ -33,13 +33,14 @@ use tutti_sampler::VoiceWindow;
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_codec::Wave;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, NodeKey, OutPort, Prepare, Source};
 use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool};
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::{MotionEvent, Transport};
-use tutti_types::{Beat, BeatDuration, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, Bpm, ChannelLayout, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 const MAX_BLOCK: usize = 4_096;
@@ -160,7 +161,7 @@ fn render(
     let mut left = Vec::with_capacity(frames + block);
     let mut buf = vec![0.0f32; block * 2];
     while left.len() < frames {
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         left.extend(buf.as_chunks::<2>().0.iter().map(|f| f[0]));
     }
     left.truncate(frames);

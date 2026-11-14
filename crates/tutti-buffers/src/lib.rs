@@ -12,14 +12,16 @@
 //! - [`Mono`] / [`MonoMut`]: one channel;
 //! - [`Interleaved`] / [`InterleavedMut`]: whole frames in one slice, carrying
 //!   their [`ChannelLayout`](tutti_types::ChannelLayout);
-//! - [`Planes`] / [`PlanesMut`]: one equal-length slice per channel.
+//! - [`Planes`] / [`PlanesMut`]: one equal-length slice per channel, and
+//!   [`StereoPlanes`], exactly two.
 //!
 //! Construction checks once and returns a [`BufferError`] for a zero width, a
 //! length that is not whole frames or a ragged plane; nothing truncates. Every
 //! count is [`Samples`](tutti_types::Samples), in frames.
 //!
 //! [`convert()`] changes format, [`interleave`] and [`deinterleave`] change
-//! layout; a mismatch is an error, never a short copy.
+//! layout; a mismatch is an error, never a short copy. [`Fold`] turns one
+//! channel topology into another, built once on the control side.
 //!
 //! ```
 //! use tutti_buffers::{convert, deinterleave, Interleaved, InterleavedMut, PlanesMut};
@@ -46,16 +48,20 @@
 
 mod convert;
 mod error;
+mod fold;
 mod i24;
 mod interleaved;
 mod mono;
 mod planes;
 mod sample;
+mod stereo;
 
 pub use convert::{convert, deinterleave, interleave};
 pub use error::BufferError;
+pub use fold::{Fold, FoldEnd, FoldError, M3DB};
 pub use i24::{I24, I24OutOfRange};
 pub use interleaved::{Interleaved, InterleavedMut};
 pub use mono::{Mono, MonoMut};
 pub use planes::{Planes, PlanesMut};
 pub use sample::{Float, Sample};
+pub use stereo::StereoPlanes;

@@ -5,14 +5,13 @@
 //! Every figure is analytic: constants of exactly representable values, so
 //! `0.5 L + 0.5 R` is exact in `f32`.
 
+use tutti_buffers::{FoldError, InterleavedMut, M3DB};
 use tutti_graph::{BusError, BusRef, BusSource, Buses, NodeKey, Unforkable};
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_session::{
     Committed, ConnectError, Edge, EdgeGainError, InPort, OutPort, Root, Session, SessionEvent,
 };
-use tutti_types::{
-    Amplitude, BusTopology, ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB,
-};
+use tutti_types::{Amplitude, BusTopology, ChannelLayout, ChannelTopology};
 
 const BLOCK: usize = 64;
 
@@ -75,7 +74,7 @@ impl Node for Pass {
 fn out0(s: &mut Session) -> Vec<f32> {
     let _ = s.update();
     let mut block = vec![f32::NAN; BLOCK * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     block.iter().step_by(2).copied().collect()
 }
 
@@ -291,7 +290,7 @@ fn smpte(n: u16) -> ChannelTopology {
 fn stereo_block(s: &mut Session) -> [Vec<f32>; 2] {
     let _ = s.update();
     let mut block = vec![f32::NAN; BLOCK * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     [0, 1].map(|c| block.iter().skip(c).step_by(2).copied().collect())
 }
 

@@ -40,19 +40,20 @@
 //! [`MicConfig::inputs`] defaults to the first two (a mono device's one input on
 //! both sides) and takes any list of them, so "inputs 3 and 4 of 16" is
 //! `Some(vec![2, 3])`. The selection is
-//! [`Fold::select`](tutti_types::Fold::select), applied in the capture callback.
+//! [`Fold::select`](tutti_buffers::Fold::select), applied in the capture callback.
 
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 
+use tutti_buffers::Fold;
 use tutti_codec::{FileOut, Format, Spec};
 use tutti_graph::TapId;
 use tutti_graph::{InletRing, TapReader, TapWriter};
 use tutti_rt::Drained;
 use tutti_types::SampleRate;
 use tutti_types::Samples;
-use tutti_types::{ChannelLayout, ChannelTopology, Fold};
+use tutti_types::{ChannelLayout, ChannelTopology};
 use tutti_types::{Pull, Source};
 
 use crate::driver_seam::device_rate;

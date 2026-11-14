@@ -75,14 +75,15 @@
 //!
 //! Nothing else on a synth that is in a graph is live but its `ParamSet`: the
 //! master volume, and with a unison engine the detune and stereo spread. Before
-//! insertion, `&mut self` setters take typed values (`set_volume(Amplitude)`, `set_mpe(MpeMode)`),
+//! insertion, `&mut self` setters take typed values (`set_volume(Amplitude)`),
 //! and a node cannot be reached by them once it is inserted.
 //!
 //! `SynthConfig::polyphony` is a `NonZeroUsize` (a synth of no voices cannot be
 //! written) with no upper bound. Every voice is built up front, so it is a memory
 //! and CPU budget. A unison stack is `UnisonVoices`, 1 to
-//! 16, and MPE is `MpeMode` (`mpe`): disabled, zones, or single-channel rotation;
-//! a zone's member bend range is the per-note bend range.
+//! 16. MPE zones are not the synth's: classic MPE is rewritten into per-note messages
+//! before it arrives, and the per-note bend range is 48 semitones until a channel's
+//! RPN 0/7 says otherwise.
 //!
 //! ## Real-time behaviour
 //!

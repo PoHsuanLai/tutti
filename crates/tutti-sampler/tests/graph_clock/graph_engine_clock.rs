@@ -20,6 +20,7 @@ use tutti_sampler::VoiceWindow;
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_codec::Wave;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
@@ -27,9 +28,7 @@ use tutti_graph::{CrossfadeCurve, Editor, Fade, Prepare};
 use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool};
 use tutti_transport::{FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transport};
-use tutti_types::{
-    At, Beat, Cents, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples,
-};
+use tutti_types::{At, Beat, Cents, ChannelLayout, Frame, LoopRange, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at 120 BPM and `SR`.
@@ -114,7 +113,7 @@ fn play(
     let mut buf = vec![0.0f32; n * 2];
     for i in 0..blocks {
         between(i);
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         all.extend_from_slice(&buf);
     }
     all

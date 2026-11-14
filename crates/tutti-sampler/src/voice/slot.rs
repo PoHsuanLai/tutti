@@ -435,8 +435,9 @@ impl PlaybackSlot {
                 // 440 Hz into 880 Hz), and folding the rate into the step alone
                 // makes origin and step disagree within each block.
                 //
-                // The origin and the step both come from `placed_positions`, which seats at the gate
-                // with the stretch and steps by `read_rate` with the same
+                // The origin and the step both come from `placed_positions`,
+                // which seats at the gate with the stretch and steps by
+                // `read_rate` with the same
                 // stretch — the two must be derived together or they drift
                 // apart again. (The step is `read_rate`, not the gate's
                 // `window_rate`: a file at another rate than the session's

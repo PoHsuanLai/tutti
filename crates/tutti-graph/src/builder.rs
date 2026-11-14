@@ -669,14 +669,6 @@ impl GraphBuilder {
         live.bus_edges = bus_edges;
         live.root = root;
         live.root_sources = root_sources;
-        // Parameter values set through `spec_mut` ride along too. `insert`
-        // keeps params already recorded for a key, but these were recorded
-        // on the builder's copy, not the editor's.
-        for (key, node) in topology.nodes {
-            if let Some(n) = live.topology.nodes.get_mut(&key) {
-                n.params = node.params;
-            }
-        }
         editor.commit()?;
         executor.apply_pending();
         editor.collect();

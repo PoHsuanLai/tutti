@@ -924,7 +924,7 @@ impl InputEventList {
     /// Groups of MIDI 2.0), `true` for a port that takes the MIDI dialect
     /// only: notes go out as `clap_event_midi`, a MIDI event's per-note
     /// expression is sent as its MIDI 1.0 bytes where it has them (poly
-    /// pressure), and [`add_note_expressions`](Self::add_note_expressions)
+    /// pressure), and `add_note_expressions`
     /// adds nothing for it. A UMP Group is
     /// the note port of its number: Group 0 reaches port 0, Group 1 port 1,
     /// and a Group past the last port is dropped and counted
@@ -1075,7 +1075,7 @@ impl InputEventList {
     /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
     /// `START` or a `SINGLE` on their group, past the buffer's room in one
     /// block, open at a [`reset_sysex`](Self::reset_sysex), or any message
-    /// before [`reserve_sysex`](Self::reserve_sysex). Neither call zeroes
+    /// before `reserve_sysex`. Neither call zeroes
     /// it. See [`SysexAssembler`] for the policy.
     pub fn sysex_dropped(&self) -> u64 {
         self.sysex.dropped()
@@ -1145,7 +1145,7 @@ impl InputEventList {
     /// A SysEx7 packet goes through the list's reassembler: a multi-packet
     /// message (which may span blocks) is appended as one
     /// [`ClapEvent::MidiSysex`], `0xF0 … 0xF7`, at its `END` packet's time.
-    /// Allocation-free once [`reserve_sysex`](Self::reserve_sysex)ed.
+    /// Allocation-free once `reserve_sysex`ed.
     pub fn add_midi(&mut self, event: &UmpAt) -> &mut Self {
         let (offset, ump) = *event;
         match self.sysex.push(ump) {
@@ -1852,7 +1852,7 @@ impl OutputEventList {
     /// activation, with the point budget
     /// ([`ParameterChanges::point_budget`]) for the plugin's parameter count
     /// and the points a block can carry for one parameter
-    /// ([`ParameterQueue::chunk_room`]), and again when the block size
+    /// (`ParameterQueue::chunk_room`), and again when the block size
     /// changes. **Grows only:** a smaller `points` keeps the larger room.
     ///
     /// Past the room, a push for one of `param_ids` is accepted into the
@@ -1941,7 +1941,7 @@ impl OutputEventList {
     /// caller-supplied `ParameterChanges`, **bounded by the room `out` was
     /// reserved with**: build it once, off the audio thread, with
     /// [`ParameterChanges::reserved`] (the plugin's parameter count, and
-    /// [`ParameterQueue::chunk_room`] for the activated block size).
+    /// `ParameterQueue::chunk_room` for the activated block size).
     ///
     /// `out` is emptied with [`ParameterChanges::clear`], which keeps every
     /// queue's point storage as a spare, and each parameter's queue is taken

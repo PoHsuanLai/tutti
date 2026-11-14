@@ -41,8 +41,7 @@
 //! applies them on the owner. The catalog is readable throughout, and nothing
 //! here runs on or reaches the audio thread.
 //!
-//! Audio knobs are separate and default sensibly; set them with
-//! [`Catalog::with_audio_config`] when the defaults don't fit.
+//! Audio knobs are separate and default sensibly ([`AudioConfig::default`]).
 
 use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured};
 use crate::host::plugin_ref::PluginRef;
@@ -513,12 +512,11 @@ impl Catalog {
         Ok(())
     }
 
-    /// Applies a delta to the catalog, such as the one [`probe_record`]
+    /// Applies a delta to the catalog, such as the one `probe_record`
     /// returns.
     ///
-    /// The non-blocking half of [`register_path`](Self::register_path): run
-    /// [`probe_record`] on any thread (it needs no catalog) and pass the result
-    /// here. Call [`save`](Self::save) to persist.
+    /// Run `probe_record` on any thread (it needs no catalog) and pass the
+    /// result here. Call [`save`](Self::save) to persist.
     pub fn apply(&mut self, delta: Delta) {
         self.db.apply(delta);
     }

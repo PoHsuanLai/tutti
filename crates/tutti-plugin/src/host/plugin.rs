@@ -198,7 +198,7 @@ impl Plugin {
         Self::open_with_state(main, audio, plugin, sample_rate, None).map(|(plugin, _)| plugin)
     }
 
-    /// [`open_with`](Self::open_with), restoring `state` into the plugin
+    /// `open_with`, restoring `state` into the plugin
     /// **before it is activated**: every format takes a state on a plugin that is
     /// open and not yet active, and a plugin may take its mode from the state at
     /// activation. The second value is what became of it: `None` when none was

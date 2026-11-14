@@ -624,7 +624,7 @@ impl TransportSource {
     }
 }
 
-/// One block's lend of a [`TransportSource`]. Dropped before the block ends:
+/// One block's lend of a `TransportSource`. Dropped before the block ends:
 /// it holds the meter's loan.
 ///
 /// Public for `tutti-plugin`'s node of a served plugin, which drives the same piece.

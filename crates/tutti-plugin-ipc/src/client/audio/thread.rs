@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::thread;
 use tutti_plugin_types::{BridgeError, PluginFailure};
 
-/// The bridge thread of an [`AudioBridge`](super::AudioBridge): it speaks to
+/// The bridge thread of an `AudioBridge`: it speaks to
 /// the server for the queues. Dropping it shuts it down and joins it.
 pub struct BridgeThread {
     channels: Channels,

@@ -487,7 +487,7 @@ impl ParameterChanges {
     /// one when there is one (with its reserved point room), otherwise one
     /// with no point room (which does not allocate). Returns `false`,
     /// opening nothing, when `queues` has no room left
-    /// ([`has_room`](Self::has_room)). Allocation-free.
+    /// (`has_room`). Allocation-free.
     pub fn open_queue(&mut self, param_id: ParamId) -> bool {
         if !self.has_room() {
             return false;
@@ -539,7 +539,7 @@ impl ParameterChanges {
     /// exist yet, within the set's room ([`push_point`](Self::push_point)).
     /// **Never grows the set**: past the queue's room with the pool spent the
     /// queue keeps its latest value, and an address past every queue
-    /// ([`has_room`](Self::has_room) false) is dropped. Either is counted in
+    /// (`has_room` false) is dropped. Either is counted in
     /// [`points_overflowed`](Self::points_overflowed), and `false` is
     /// returned. So a real-time producer may call it on a set it
     /// [`clear`](Self::clear)s between blocks; a set built

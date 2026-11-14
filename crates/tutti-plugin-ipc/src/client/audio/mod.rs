@@ -35,7 +35,7 @@ use tutti_plugin_types::{
 use tutti_types::SampleRate;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
-/// [`AudioBridge::submit`]'s signature manageable. All default to empty.
+/// `AudioBridge::submit`'s signature manageable. All default to empty.
 #[derive(Debug, Default, Clone)]
 pub struct HarmonyInputs {
     /// Chord changes in the block.
@@ -48,7 +48,7 @@ pub struct HarmonyInputs {
     pub expr_ints: NoteExpressionIntChanges,
 }
 
-/// What [`AudioBridge::submit`] did with a block.
+/// What `AudioBridge::submit` did with a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Submitted {
     /// The bridge accepted the block (its output is collectable later).

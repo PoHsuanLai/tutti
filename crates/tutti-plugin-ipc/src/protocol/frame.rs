@@ -116,7 +116,7 @@ thread_local! {
 ///
 /// # Errors
 ///
-/// [`FrameTooLarge`] (as [`BridgeError::ConnectionFailed`]) when the body is
+/// `FrameTooLarge` (as `BridgeError::ConnectionFailed`) when the body is
 /// over the cap, with nothing written; a serialization or I/O error otherwise.
 pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> BridgeResult<()> {
     OUT.with_borrow_mut(|frame| {
@@ -144,7 +144,7 @@ pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> BridgeResult<(
 ///
 /// # Errors
 ///
-/// An I/O error on EOF or a short read; [`FrameTooLarge`] (as
+/// An I/O error on EOF or a short read; `FrameTooLarge` (as
 /// [`BridgeError::ConnectionFailed`]) for an advertised length over the cap,
 /// before any allocation; a codec error for a body that does not decode as
 /// exactly one message.

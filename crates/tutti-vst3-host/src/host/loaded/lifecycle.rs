@@ -172,7 +172,7 @@ impl Vst3Loaded {
     /// asynchronously between process calls:
     /// - **the return value** — the coalesced [`RestartOutcome`] of every
     ///   `restartComponent` since the last poll (or
-    ///   [`take_restart`](Self::take_restart)). Nothing in it has been acted on:
+    ///   `take_restart`). Nothing in it has been acted on:
     ///   `kIoChanged` and `kLatencyChanged` both need a deactivate/reactivate
     ///   cycle this `&mut Vst3Loaded` cannot run, so the caller does it (the
     ///   core plans it from the same flags, as

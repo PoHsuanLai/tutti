@@ -101,9 +101,9 @@ pub(crate) mod wire;
 /// - **Version 38** writes an editor size as a `dpi::Size`, which says whether it
 ///   is in physical pixels or logical points: `SetEditorSize`, `EditorOpened`,
 ///   `EditorSized` and `EditorWantsSize` carried a pair of integers with no unit.
-/// - **Version 39** removed `PluginUnloaded`, `GetParameterInfo` and
-///   `ParameterInfoResponse`, which nothing sent; the variants after them
-///   renumber.
+/// - **Version 39** removed three messages nothing sent (the server's
+///   instance-destroyed notice, the host's single-parameter declaration query
+///   and its reply); the variants after them renumber.
 pub const PROTOCOL_VERSION: u32 = 39;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.

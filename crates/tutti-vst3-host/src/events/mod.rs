@@ -23,7 +23,7 @@ mod note_expression;
 mod stage;
 
 pub use harmony::{Utf16Chord, Utf16Scale, Utf16Text};
-pub(crate) use midi::MidiEncoder;
+pub use midi::MidiEncoder;
 pub use note_expression::{expression_type_from_id, expression_type_id};
 pub use stage::{InputEvents, Stager, drain_midi};
 pub use tutti_vst3_ffi::{
@@ -34,7 +34,7 @@ pub use tutti_vst3_ffi::{
 use crate::types::NoteExpressionIntValue;
 
 /// Reads an [`Event`] as the engine's types.
-pub(crate) trait EventExt {
+pub trait EventExt {
     /// The event as a UMP [`WireMidi`] (the offset the event carries, unclamped), promoting a MIDI-1 payload to Channel
     /// Voice 2. `None` for the non-MIDI events and for a reassembled
     /// [`Payload::SysEx`] (input-only; the list's buffer holds its bytes). The
@@ -44,7 +44,7 @@ pub(crate) trait EventExt {
 }
 
 /// An engine value that stages as one [`Event`].
-pub(crate) trait ToEvent {
+pub trait ToEvent {
     /// The event, or `None` for a value VST3 cannot encode.
     fn to_event(&self) -> Option<Event>;
 }

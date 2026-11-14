@@ -43,7 +43,7 @@ impl LayoutSupport {
     /// it into `Full` would have a caller ask for a speaker on a bus that never
     /// named one.
     ///
-    /// Completeness is [`LoadedPlugin::topology_is_complete`], which requires
+    /// Completeness is `LoadedPlugin::topology_is_complete`, which requires
     /// more than presence: each topology's width must match the count beside
     /// it, since the count sizes the buffers and two descriptions of one bus
     /// cannot be adjudicated.

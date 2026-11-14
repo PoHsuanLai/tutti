@@ -7,7 +7,7 @@
 //! `tutti-plugin-server` builds the other end of the same wire, so neither
 //! can drift from the other. It knows no plugin format: the
 //! editor-only instance a client opens in this process is loaded by a
-//! function the host passes ([`EditorLoader`]).
+//! function the host passes (`EditorLoader`).
 //!
 //! It has no `unsafe`: the slab's shared mapping and header, and the Windows
 //! pipe peek behind the control socket's deadline, are `tutti-plugin-ipc-ffi`'s

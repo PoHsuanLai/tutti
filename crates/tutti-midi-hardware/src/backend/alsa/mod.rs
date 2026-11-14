@@ -38,7 +38,8 @@ mod watch;
 
 use crate::InputProducerHandle;
 use crate::capability::EndpointInfo;
-use crate::devices::{ChangeSink, os_devices};
+use crate::devices::ChangeSink;
+use crate::devices::reporter::os_devices;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::Result;
 use enumerate::Direction;

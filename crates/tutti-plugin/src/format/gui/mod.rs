@@ -3,7 +3,7 @@
 //! The plugin-server subprocess owns audio processing; the editor must live in
 //! the host process because platform GUI toolkits are host-process-local. Each
 //! format that is [`OutOfProcess`](tutti_plugin_types::OutOfProcess) loads an
-//! editor-only second instance here through `load_editor` (design 021 §5); each
+//! editor-only second instance here through `load_editor`; each
 //! lives in its format's host crate.
 
 use std::path::Path;

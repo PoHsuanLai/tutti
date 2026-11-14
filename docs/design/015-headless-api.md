@@ -476,7 +476,7 @@ thread unchecked. `remove` is not on the list: it frees
 nothing itself, and Bevy calls it from parallel systems (a clip whose target
 lost its event input); the node it removes is freed at the next collect.
 
-- The debug guard (`assert_main_thread`) is gone (doc 016 §2.9a). The entries
+- The debug guard (`assert_main_thread`) is gone. The entries
   that open an in-process plugin, `add_plugin` and `land_reload`, take a
   `MainThread` token; the session's own paths that free a unit keep a
   `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
@@ -1683,7 +1683,7 @@ Two private modules, `plugin` (feature `plugin`) and `export`
 | `plugin_load_promote`'s insert, controls and meter capture | `Session::add_plugin` keeps a `HostedPlugin` record per node (`Session::plugin`, `plugins`); Bevy binds its shadow from it (`CapturedControls::for_hosted`) |
 | `PluginParamValues` as a component, `read_plugin_params`, `PluginParamRead`, `plugin_param_edits` | the record's mirror (`HostedPlugin::param_values`), started in the load job; GUI edits drained into the lanes' knobs by `Phase::Plugins` |
 | `ModKeys::plugin_value` | deleted: `ModHostOver` reads the session's mirror by `NodeKey` |
-| `plugin_health_poll`'s debounce and teardown | `Phase::Plugins`: `PluginLiveness` on the record; a dead (or hung) plugin is reloaded at its node by the pure `Recovery` (doc 016 §9), or, with `plugin_recovery(None)`, its node is removed and `SessionEvent::PluginDied { node, cause }` fires once |
+| `plugin_health_poll`'s debounce and teardown | `Phase::Plugins`: `PluginLiveness` on the record; a dead (or hung) plugin is reloaded at its node by the pure `Recovery`, or, with `plugin_recovery(None)`, its node is removed and `SessionEvent::PluginDied { node, cause }` fires once |
 | `plugin_latency_poll`, `AudioGraphRes::refresh_node_latency` | `Phase::Plugins` → `Graph::refresh_node_latency`, `SessionEvent::PluginLatencyChanged` |
 | `plugin_state_snapshot`'s 512-frame counter and inline task | `SessionEvent::PluginSnapshotDue(PluginSnapshot)` every `SNAPSHOT_INTERVAL` (8 s) of `now`, a job; `Session::land_snapshot(PluginSnapshotTaken)` |
 | `PluginRenderMode`, `RenderModeAnnounced`, `plugin_render_mode_drive` | `Phase::RenderMode` and the export token; `Session::render_mode()`; Bevy's `plugin_render_mode` runs the phase |

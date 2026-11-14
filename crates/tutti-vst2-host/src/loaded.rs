@@ -136,7 +136,7 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// VST2 is [`InProcess`](tutti_plugin_types::InProcess) and not
 /// [`OutOfProcess`](tutti_plugin_types::OutOfProcess): an `AEffect` is one
 /// object for its editor and its audio, so no editor-only second instance can
-/// show what an audio instance in another process holds (design 021 §4). The
+/// show what an audio instance in another process holds. The
 /// absence is a statement, and this checks it (with `impl OutOfProcess for
 /// `Vst2Loaded` the first doctest would compile and fail; a typo in its type
 /// fails with E0412, not the pinned E0277):

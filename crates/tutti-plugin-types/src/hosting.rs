@@ -1,4 +1,4 @@
-//! Where a format can run: the hosting markers (design 021 §2.1, §3).
+//! Where a format can run: the hosting markers.
 //!
 //! A format is [`Loaded`] in its `-host` crate. Whether the host may load it
 //! into its own process, or serve it from another one with an editor-only
@@ -98,7 +98,7 @@ impl Origin {
 /// The format can run in the host's own process.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be hosted in this process",
-    note = "implement `InProcess` only if the plugin can be loaded and run here (design 021 §3)"
+    note = "implement `InProcess` only if the plugin can be loaded and run here"
 )]
 pub trait InProcess: Loaded {
     /// Loads the plugin into this process, not activated, honouring the
@@ -117,13 +117,13 @@ pub trait InProcess: Loaded {
 
 /// The format can be served from another process, with its editor elsewhere.
 ///
-/// The promise (design 021 §3.2): the audio instance runs in another process;
+/// The promise: the audio instance runs in another process;
 /// an editor-only second instance of the same module runs here and shows what
 /// the audio instance holds; state and parameters cross only by id and by
 /// blob, never as a pointer, handle or callback of the plugin's.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be hosted over IPC",
-    note = "its editor cannot run apart from its audio instance (design 021 §4)"
+    note = "its editor cannot run apart from its audio instance"
 )]
 pub trait OutOfProcess: Loaded {
     /// The editor-only instance in the host process.
@@ -331,8 +331,7 @@ pub trait Editor: EditorWindow + Send {
     fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit>;
 
     /// The editor instance's whole state, for the host to give the audio
-    /// instance what the user changed in the editor that is not a parameter
-    /// (design 021 Q8).
+    /// instance what the user changed in the editor that is not a parameter.
     ///
     /// # Errors
     ///

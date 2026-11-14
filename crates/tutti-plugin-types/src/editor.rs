@@ -334,8 +334,7 @@ impl WindowHandle {
     /// Whether a handle's number names the same window in another process: an
     /// X11 window id is an entry in the X server's table, so a server process
     /// can embed into it, where an AppKit view is a pointer into the host's
-    /// address space and a Windows embedding across processes is not built yet
-    /// (doc 029 section 6.5).
+    /// address space and a Windows embedding across processes is not built yet.
     #[must_use]
     pub const fn embeds_across_processes() -> bool {
         cfg!(all(unix, not(target_os = "macos")))

@@ -1,7 +1,7 @@
 //! A VST2 file is refused for out-of-process hosting with a typed error, before
 //! any `plugin-server` is looked for or started: its `AEffect` fuses the editor
 //! and the audio instance, so the instance that renders cannot run apart from
-//! its window (design 021 §4).
+//! its window.
 //!
 //! Needs no server binary: the refusal is the client's.
 

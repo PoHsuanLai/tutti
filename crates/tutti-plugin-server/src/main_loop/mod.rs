@@ -1,4 +1,4 @@
-//! The server's main-thread event loop (doc 029 section 6.5).
+//! The server's main-thread event loop.
 //!
 //! The main thread used to block in a socket read, so nothing ran on it while
 //! the host was quiet: no editor idle, no plugin timer. It now serves **one

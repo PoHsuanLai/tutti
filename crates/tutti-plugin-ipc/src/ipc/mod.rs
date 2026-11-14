@@ -1,10 +1,10 @@
 //! [`Ipc`]: a plugin served by a `plugin-server` process, as a
-//! [`Loaded`] (design 021 step 4b, PR 3a).
+//! [`Loaded`].
 //!
 //! It wraps what a served plugin is today: the [`PluginBridge`] (control
 //! socket and audio slab), the [`ProcessGuard`] that owns the server, the
-//! [`EditorLoader`] the host passed (or none: the editor then lives in the server,
-//! doc 029 section 6.5), and the [`LoadedPlugin`] descriptor the
+//! [`EditorLoader`] the host passed (or none: the editor then lives in the server), and the
+//! [`LoadedPlugin`] descriptor the
 //! server reported. [`activate`](Loaded::activate) splits it into an
 //! [`IpcProcessor`] (the [`Batcher`] behind
 //! [`Processor::process`](tutti_plugin_types::Processor::process)) and an [`IpcController`] (the bridge's control
@@ -14,8 +14,8 @@
 //!
 //! One `Ipc` serves every format by path, as `PluginClient` does: the
 //! `plugin-server` loads whichever format the path names, and its AU loader is
-//! still its own (design 021 §10.4 (c)). It gains `<F: OutOfProcess>` when
-//! step 7 replaces that loader.
+//! still its own. It gains `<F: OutOfProcess>` when
+//! AU is served through the generic loader.
 //!
 //! # Threads
 //!
@@ -367,8 +367,7 @@ impl Ipc {
     ///
     /// `load_editor` is where the editor lives: `Some` loads an editor-only
     /// second instance in this process (CLAP, VST3, AU), `None` opens it on the
-    /// served instance in the server, parented to the host's window (doc 029
-    /// section 6.5).
+    /// served instance in the server, parented to the host's window.
     ///
     /// # Errors
     ///

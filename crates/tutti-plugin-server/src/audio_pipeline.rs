@@ -538,7 +538,7 @@ impl AudioPipeline {
             }
 
             // What the plugin said of itself at the end of the block, for the
-            // reply (doc 023 section 5.3). A sleep is sent only over a silent
+            // reply. A sleep is sent only over a silent
             // block with no MIDI-out, because the host parks its node on it
             // and the executor writes silence for a parked node. A block the
             // plugin failed said nothing (`plugin_output` was cleared).
@@ -581,8 +581,8 @@ impl AudioPipeline {
             // routing, but it is *left in* `plugin_output` and read through
             // `midi_out()` — moving it out here would take the buffer's capacity
             // with it. `param_changes` are not sent to the host (the wire has no
-            // return path for them until the ParamEdit event, doc 029 section
-            // 6.1), but a VST3 plugin's reach the server's own edit controller:
+            // return path for them until the ParamEdit event), but a VST3 plugin's reach the
+            // server's own edit controller:
             // its Processor hands each block's `outputParameterChanges` to the
             // Controller, which applies them with `setParamNormalized` on the
             // tick, so a `getState` or an editor reads them. `note_expression`
@@ -848,7 +848,7 @@ mod tests {
     }
 
     /// **The pipeline reports the plugin's status, and believes a sleep only
-    /// over silence** (doc 023 step 2): the host parks its node on a sleep and
+    /// over silence**: the host parks its node on a sleep and
     /// the executor writes silence for a parked node, so a plugin asleep over
     /// sound is reported as continuing. A tail passes through.
     #[test]

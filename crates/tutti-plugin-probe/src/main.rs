@@ -3,8 +3,8 @@
 //! the result file and exit.
 //!
 //! With `--measure` the probe then activates each plugin and renders it: the
-//! tail and latency it reports against what it makes of an impulse (doc 023
-//! section 6, `tutti_plugin_probe::measure`). The figures are in each
+//! tail and latency it reports against what it makes of an impulse
+//! (`tutti_plugin_probe::measure`). The figures are in each
 //! descriptor's `measured`. A plugin that crashes or hangs while rendering is a
 //! probe that crashed or hung, to the host that spawned it. `--state <file>`
 //! puts the plugin in the state the file holds (what the plugin's own

@@ -71,7 +71,7 @@ fn catalog_with_one_plugin(dir: &tempfile::TempDir) -> (Catalog, std::path::Path
     (catalog, file)
 }
 
-/// **A scan measures only when the catalog was told to** (doc 023 section 6): a
+/// **A scan measures only when the catalog was told to**: a
 /// plain scan leaves `measured` empty, a catalog `with_measuring` records what
 /// the probe found, the configuration it was found at and a verdict.
 #[test]

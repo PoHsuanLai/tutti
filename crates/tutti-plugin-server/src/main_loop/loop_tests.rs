@@ -445,8 +445,8 @@ impl Drop for SlowPaint {
     }
 }
 
-/// **A slow editor paint on the main loop delays no block** (doc 029 section
-/// 6.5). The plugin's timer, served by the loop's tick, takes 250 ms each time,
+/// **A slow editor paint on the main loop delays no block**. The plugin's timer, served by the
+/// loop's tick, takes 250 ms each time,
 /// which is what a slow `editor_idle` does to the loop. The host sends a block
 /// every 5 ms through all of it, and each must be answered well inside a block
 /// deadline, including the blocks sent and answered entirely while the loop

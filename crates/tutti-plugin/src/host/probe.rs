@@ -42,7 +42,7 @@ pub fn probe_metadata_with(
 }
 
 /// [`probe_metadata_with`] that also **measures** each plugin (`plugin-probe
-/// --measure`, doc 023 section 6): the descriptors come back with
+/// --measure`): the descriptors come back with
 /// [`PluginDescriptor::measured`] set where the plugin could be measured. It
 /// renders the plugin, so give it the long deadline
 /// ([`DEFAULT_MEASURE_TIMEOUT`](crate::host::db_probe::DEFAULT_MEASURE_TIMEOUT)):

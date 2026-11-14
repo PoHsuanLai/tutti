@@ -36,7 +36,7 @@ pub enum BridgeError {
 
     /// The plugin's format cannot be hosted out of process: a VST2 plugin's
     /// `AEffect` fuses its editor and its audio instance, so the instance
-    /// that renders cannot run apart from its window (design 021 §4). It is
+    /// that renders cannot run apart from its window. It is
     /// refused before any `plugin-server` is started; a VST2 plugin runs in
     /// the host's own process.
     #[error(

@@ -20,7 +20,7 @@ use super::command::{Steering, SteeringCell, VoiceNodeHandle};
 use super::disk_voice::DiskVoice;
 use super::disk_voice::VoiceHealth;
 use super::slot::{PlaybackSlot, stretch_wanted};
-use super::types::{Playback, SlotId, Voice, VoiceSource};
+use super::types::{Playback, Reach, SlotId, Voice, VoiceSource};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
@@ -90,10 +90,10 @@ pub struct VoiceNode {
     /// The block read's lanes (`PlaybackSlot::render_into`), built here and
     /// sized from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
-    /// Whether nothing can steer the node any more: a fork's, which no handle
-    /// reaches. It decides how exactly the node states its ring-out
+    /// Whether a handle still reaches the node; a fork's is frozen. It
+    /// decides how exactly the node states its ring-out
     /// ([`ring_out`](Self::ring_out)).
-    frozen: bool,
+    reach: Reach,
 }
 
 impl VoiceNode {
@@ -138,7 +138,7 @@ impl VoiceNode {
             clock: Clock::new(),
             tempo: None,
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
-            frozen: false,
+            reach: Reach::Live,
         }
     }
 
@@ -284,7 +284,7 @@ impl VoiceNode {
     /// ([`Voice::ring_out`]), promised as a ceiling while a handle can still
     /// steer the node and exactly in a fork, which none reaches.
     fn ring_out(&self) -> Tail {
-        self.slot.voice.ring_out(!self.frozen)
+        self.slot.voice.ring_out(self.reach)
     }
 
     /// What the node declares to the cost model: `Moderate` for a plain
@@ -482,7 +482,7 @@ impl ForkSource for VoiceNodeFork {
         let health = voice.fault().map(VoiceHealth);
         let mut node = VoiceNode::with_channels(voice, self.channels);
         node.tempo = self.tempo.clone();
-        node.frozen = true;
+        node.reach = Reach::Frozen;
         let forked = Forked::new(Box::new(node));
         Ok(match health {
             Some(h) => forked.with_health(Arc::new(h)),

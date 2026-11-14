@@ -626,11 +626,11 @@ impl MemorySource {
         if self.loop_.is_some() {
             return Tail::Unbounded;
         }
-        let frames =
-            self.duration_samples() as f64 / self.read_rate().get() * f64::from(stretch.get());
+        let wave = SamplePosition::new(0.0).advanced_by(self.wave.len());
+        let played = wave.get() / self.read_rate().get() * f64::from(stretch.get());
         // A figure out of range saturates; the graph counts a finite tail past
         // `MAX_NODE_TAIL` as unbounded.
-        Tail::Finite(Samples(frames.ceil() as usize))
+        Tail::Finite(SamplePosition::new(played).to_samples_ceil())
     }
 
     /// Reads one un-gained frame into `out` (width = `out.len()`).

@@ -1659,26 +1659,23 @@ fn span(
     map: &TempoMap,
     rate: SampleRate,
 ) -> Result<(Beat, Samples), BounceConfigError> {
-    let range = match range {
-        Range::Loop => {
-            let looped = loop_range.ok_or(BounceConfigError::NoRange)?;
-            Range::Beats(looped.start(), looped.end())
+    let beats = |a: Beat, b: Beat| {
+        if !a.get().is_finite() || !b.get().is_finite() || a.get() < 0.0 || b.get() < 0.0 {
+            return Err(BounceConfigError::InvalidRange);
         }
-        Range::Until(end) => Range::Beats(Beat(0.0), end),
-        other => other,
+        let (from, to) = (
+            map.view(rate).frame_at_or_after(a),
+            map.view(rate).frame_at_or_after(b),
+        );
+        Ok((a, to.get().saturating_sub(from.get())))
     };
     let (start, frames) = match range {
-        Range::Loop | Range::Until(_) => unreachable!("replaced by beats above"),
-        Range::Beats(a, b) => {
-            if !a.get().is_finite() || !b.get().is_finite() || a.get() < 0.0 || b.get() < 0.0 {
-                return Err(BounceConfigError::InvalidRange);
-            }
-            let (from, to) = (
-                map.view(rate).frame_at_or_after(a),
-                map.view(rate).frame_at_or_after(b),
-            );
-            (a, to.get().saturating_sub(from.get()))
+        Range::Loop => {
+            let looped = loop_range.ok_or(BounceConfigError::NoRange)?;
+            beats(looped.start(), looped.end())?
         }
+        Range::Until(end) => beats(Beat(0.0), end)?,
+        Range::Beats(a, b) => beats(a, b)?,
         Range::Seconds(a, b) => {
             if !a.get().is_finite() || !b.get().is_finite() || a.get() < 0.0 || b.get() < 0.0 {
                 return Err(BounceConfigError::InvalidRange);

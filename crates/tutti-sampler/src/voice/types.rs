@@ -13,6 +13,16 @@ use super::memory_source::{MemorySource, VoiceWindow};
 use tutti_graph::{ForkCause, ForkMode, Node};
 use tutti_types::{Amplitude, Cents, PlaybackRate, SampleRate, StretchFactor, Tail};
 
+/// Whether anything can still steer a voice node: the live node, which a
+/// handle reaches, or its fork, which nothing does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// A handle can still loop, slow, stretch or add to it.
+    Live,
+    /// A fork: what it holds now is all it will ever play.
+    Frozen,
+}
+
 /// Opaque identifier for one voice slot in a [`VoicePool`](super::VoicePool).
 ///
 /// Deliberately a bare `u128` and not a DAW noun: the engine assigns no meaning
@@ -268,16 +278,16 @@ impl Voice {
     ///
     /// A placed voice, either tier, is the programme: it plays its window of
     /// the transport, so it has none. A free-running memory voice sounds to
-    /// the end of its wave. Where `steerable` (a handle can still loop,
-    /// slow or stretch it) the ceiling it can promise is
-    /// [`Tail::Unbounded`]; otherwise it is the figure of
+    /// the end of its wave. While a handle can still loop, slow or stretch it
+    /// ([`Reach::Live`]) the ceiling it can promise is [`Tail::Unbounded`];
+    /// a fork's ([`Reach::Frozen`]) is the figure of
     /// [`MemorySource::ring_out`].
-    pub(crate) fn ring_out(&self, steerable: bool) -> Tail {
-        match &self.source {
-            VoiceSource::Disk(_) => Tail::None,
-            VoiceSource::Memory(source) if source.is_placed() => Tail::None,
-            VoiceSource::Memory(_) if steerable => Tail::Unbounded,
-            VoiceSource::Memory(source) => source.ring_out(self.play.stretch),
+    pub(crate) fn ring_out(&self, reach: Reach) -> Tail {
+        match (&self.source, reach) {
+            (VoiceSource::Disk(_), _) => Tail::None,
+            (VoiceSource::Memory(source), _) if source.is_placed() => Tail::None,
+            (VoiceSource::Memory(_), Reach::Live) => Tail::Unbounded,
+            (VoiceSource::Memory(source), Reach::Frozen) => source.ring_out(self.play.stretch),
         }
     }
 

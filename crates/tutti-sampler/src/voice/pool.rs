@@ -16,7 +16,7 @@ use super::command::{
 use super::loop_span::Loop;
 use super::memory_source::MemorySource;
 use super::slot::{PlaybackSlot, stretch_wanted};
-use super::types::{Playback, SlotId, Voice, VoiceSource};
+use super::types::{Playback, Reach, SlotId, Voice, VoiceSource};
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
@@ -325,9 +325,10 @@ pub struct VoicePool {
     /// from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
 
-    /// Whether no command can reach the pool: a fork's. It decides how exactly
-    /// the pool states its ring-out ([`ring_out`](Self::ring_out)).
-    frozen: bool,
+    /// Whether a handle still reaches the pool; a fork's is frozen. It
+    /// decides how exactly the pool states its ring-out
+    /// ([`ring_out`](Self::ring_out)).
+    reach: Reach,
 }
 
 // Hand-rolled: `voices` holds non-`Debug` `PlaybackSlot`s (each wraps a sampler +
@@ -368,7 +369,7 @@ impl VoicePool {
             clock: Clock::new(),
             tempo: None,
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
-            frozen: false,
+            reach: Reach::Live,
         }
     }
 
@@ -459,12 +460,12 @@ impl VoicePool {
     /// all it will ever have, so it states the longest of theirs
     /// ([`Voice::ring_out`]).
     fn ring_out(&self) -> Tail {
-        if !self.frozen {
-            return Tail::Unbounded;
+        match self.reach {
+            Reach::Live => Tail::Unbounded,
+            Reach::Frozen => self.voices.iter().fold(Tail::None, |tail, slot| {
+                tail.beside(slot.voice.ring_out(Reach::Frozen))
+            }),
         }
-        self.voices.iter().fold(Tail::None, |tail, slot| {
-            tail.beside(slot.voice.ring_out(false))
-        })
     }
 
     /// Number of voice slots currently materialised (drained from the command
@@ -857,7 +858,7 @@ impl Clone for VoicePool {
             tempo: self.tempo.clone(),
             channels: self.channels,
             scratch: BlockScratch::sized_like(&self.scratch),
-            frozen: self.frozen,
+            reach: self.reach,
         }
     }
 }
@@ -959,19 +960,12 @@ struct PoolFork {
 }
 
 /// Why a pool refused a fork: the voices it holds are not known here.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "a voice pool forks only while its handle has queued nothing: its voices \
+     arrive on the audio thread, where no control-side copy of them exists"
+)]
 struct PoolCommanded;
-
-impl std::fmt::Display for PoolCommanded {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "a voice pool forks only while its handle has queued nothing: its voices \
-             arrive on the audio thread, where no control-side copy of them exists",
-        )
-    }
-}
-
-impl std::error::Error for PoolCommanded {}
 
 impl ForkSource for PoolFork {
     fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
@@ -983,7 +977,7 @@ impl ForkSource for PoolFork {
         for (id, voice) in &self.voices {
             pool.insert_voice(*id, voice.fork_copy(mode)?);
         }
-        pool.frozen = true;
+        pool.reach = Reach::Frozen;
         Ok(Forked::new(Box::new(pool)))
     }
 }

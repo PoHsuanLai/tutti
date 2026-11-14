@@ -47,6 +47,29 @@ pub enum Identity {
         /// The port's name.
         port: String,
     },
+    /// A Windows Multimedia (WinMM) input port. WinMM numbers its ports by
+    /// position in a list that shifts when a device comes or goes, and names a
+    /// port by a product string cut to 31 characters, so the name and the
+    /// driver's manufacturer and product ids stand in. An input and an output
+    /// of one unit share all three, so the direction is part of the identity.
+    WinMmInput {
+        /// The product name the driver reports.
+        name: String,
+        /// The manufacturer id the driver reports.
+        manufacturer: u16,
+        /// The product id the driver reports.
+        product: u16,
+    },
+    /// A Windows Multimedia (WinMM) output port; see
+    /// [`WinMmInput`](Self::WinMmInput).
+    WinMmOutput {
+        /// The product name the driver reports.
+        name: String,
+        /// The manufacturer id the driver reports.
+        manufacturer: u16,
+        /// The product id the driver reports.
+        product: u16,
+    },
 }
 
 impl Identity {
@@ -56,6 +79,26 @@ impl Identity {
         Self::Alsa {
             client: client.into(),
             port: port.into(),
+        }
+    }
+
+    /// A WinMM input port known by the driver's product name and ids.
+    #[must_use]
+    pub fn winmm_input(name: impl Into<String>, manufacturer: u16, product: u16) -> Self {
+        Self::WinMmInput {
+            name: name.into(),
+            manufacturer,
+            product,
+        }
+    }
+
+    /// A WinMM output port known by the driver's product name and ids.
+    #[must_use]
+    pub fn winmm_output(name: impl Into<String>, manufacturer: u16, product: u16) -> Self {
+        Self::WinMmOutput {
+            name: name.into(),
+            manufacturer,
+            product,
         }
     }
 }
@@ -112,6 +155,16 @@ impl fmt::Display for DeviceId {
             Identity::Product(id) => write!(f, "product:{id}")?,
             Identity::CoreMidi(id) => write!(f, "coremidi:{id}")?,
             Identity::Alsa { client, port } => write!(f, "alsa:{client}/{port}")?,
+            Identity::WinMmInput {
+                name,
+                manufacturer,
+                product,
+            } => write!(f, "winmm-in:{name}/{manufacturer:04x}:{product:04x}")?,
+            Identity::WinMmOutput {
+                name,
+                manufacturer,
+                product,
+            } => write!(f, "winmm-out:{name}/{manufacturer:04x}:{product:04x}")?,
         }
         write!(f, "#{}", self.ordinal)
     }

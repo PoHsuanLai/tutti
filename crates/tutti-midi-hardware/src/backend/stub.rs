@@ -1,8 +1,6 @@
 //! The no-backend backend.
 //!
-//! Used where no native-UMP path exists: Windows (no `windows` crate version
-//! binds Windows MIDI Services; WinRT `Devices.Midi` is MIDI-1.0 message types)
-//! and a Linux built against alsa-lib < 1.2.10.
+//! Used where no backend exists: a Linux built against alsa-lib < 1.2.10.
 //!
 //! # It reports "unsupported", not "no devices"
 //!
@@ -28,7 +26,7 @@ use crate::virtual_endpoint::{SourceBackend, VirtualProtocol, VirtualSpec};
 use tutti_midi_device::EndpointId;
 
 /// Why every call here fails, in the error a caller will surface.
-const REASON: &str = "no native-UMP MIDI backend on this platform (Windows, or alsa-lib < 1.2.10)";
+const REASON: &str = "no MIDI backend on this platform (alsa-lib < 1.2.10)";
 
 /// A [`MidiEndpoints`] that has none.
 #[derive(Debug, Default)]
@@ -69,7 +67,7 @@ impl MidiEndpoints for StubEndpoints {
 }
 
 /// Why no virtual endpoint can be published here.
-const VIRTUAL_REASON: &str = "no virtual MIDI endpoints on this platform (no native-UMP backend; Windows MIDI Services is not bound)";
+const VIRTUAL_REASON: &str = "no virtual MIDI endpoints on this platform (no MIDI backend)";
 
 /// Refuses: there is no virtual source to publish.
 pub(crate) fn open_virtual_source(

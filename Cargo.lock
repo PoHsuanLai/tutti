@@ -2721,6 +2721,7 @@ dependencies = [
  "tutti-rt",
  "tutti-types",
  "tutti-ump",
+ "tutti-winmm-ffi",
 ]
 
 [[package]]
@@ -3397,6 +3398,14 @@ dependencies = [
  "tutti-vst3-ffi",
  "tutti-vst3-host",
  "vst3",
+]
+
+[[package]]
+name = "tutti-winmm-ffi"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.21",
+ "windows-sys",
 ]
 
 [[package]]

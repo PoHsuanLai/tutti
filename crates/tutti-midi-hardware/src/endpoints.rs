@@ -1,7 +1,7 @@
 //! The backend seam: enumerate and open this OS's MIDI endpoints.
 //!
-//! One implementation per platform — CoreMIDI, ALSA seq-UMP, and a stub where
-//! neither exists. [`MidiSession::open`](crate::MidiSession::open) picks one, and that is the
+//! One implementation per platform — CoreMIDI, ALSA seq-UMP, winmm, and a stub where
+//! none exists. [`MidiSession::open`](crate::MidiSession::open) picks one, and that is the
 //! **only** place in the crate a `#[cfg(target_os)]` decides anything.
 //!
 //! # Why this trait, and why it stops here
@@ -133,7 +133,7 @@ pub trait MidiEndpoints: Send + Sync {
     ///
     /// As [`open_input`](Self::open_input), plus
     /// [`Error::Unsupported`](crate::Error::Unsupported) from the stub backend
-    /// on a platform with no native-UMP path.
+    /// on a platform with no backend.
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>>;
 }
 

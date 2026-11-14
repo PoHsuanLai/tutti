@@ -25,6 +25,7 @@
           - crates/tutti-voicing/**
           - crates/tutti-alsa-ffi/**
           - crates/tutti-coremidi-ffi/**
+          - crates/tutti-winmm-ffi/**
 "area: plugins":
   - changed-files:
       - any-glob-to-any-file:

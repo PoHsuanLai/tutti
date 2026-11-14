@@ -3,7 +3,7 @@ name = "tutti-midi-hardware"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "MIDI 2.0 device input and output through CoreMIDI on macOS and ALSA on Linux, for tutti"
+description = "MIDI device input and output through CoreMIDI on macOS, ALSA on Linux and Windows Multimedia on Windows, for tutti"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
@@ -41,6 +41,9 @@ tutti-alsa-ffi = { version = "0.0.1", path = "../tutti-alsa-ffi" }
 tutti-coremidi-ffi = { version = "0.0.1", path = "../tutti-coremidi-ffi" }
 coremidi = { workspace = true }
 core-foundation = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+tutti-winmm-ffi = { version = "0.0.1", path = "../tutti-winmm-ffi" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tutti-alsa-ffi = { path = "../tutti-alsa-ffi", features = ["testing"] }

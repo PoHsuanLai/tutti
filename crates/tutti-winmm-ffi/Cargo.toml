@@ -1,0 +1,21 @@
+[package]
+name = "tutti-winmm-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Safe bindings to the Windows Multimedia MIDI API (winmm), for tutti"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["winmm", "midi", "windows", "ffi"]
+categories = ["external-ffi-bindings", "multimedia::audio", "os::windows-apis"]
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+thiserror = { workspace = true }
+windows-sys = { version = "0.61", features = ["Win32_Media", "Win32_Media_Audio"] }
+
+[package.metadata.docs.rs]
+targets = ["x86_64-pc-windows-msvc"]

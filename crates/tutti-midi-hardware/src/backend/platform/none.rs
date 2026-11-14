@@ -1,5 +1,5 @@
-//! A platform with no native backend: Windows, or Linux with an alsa-lib older
-//! than the UMP sequencer API. The stub is its backend.
+//! A platform with no native backend: Linux with an alsa-lib older than the UMP
+//! sequencer API. The stub is its backend.
 
 use crate::InputProducerHandle;
 use crate::endpoints::{InputConnection, MidiEndpoints};

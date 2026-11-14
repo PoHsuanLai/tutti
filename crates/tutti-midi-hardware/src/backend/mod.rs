@@ -17,9 +17,12 @@
 //!   Chosen only when `build.rs` finds that version through `pkg-config`, so a
 //!   distro with an older alsa-lib still *builds* — it reports no endpoints and
 //!   says why, rather than failing to compile.
-//! - **Everything else** — [`stub`]. Windows has no usable UMP API in any
-//!   `windows` crate version (WinRT `Devices.Midi` is MIDI-1.0 message types;
-//!   Windows MIDI Services is not bound), so it enumerates nothing and returns
+//! - **Windows** — Windows Multimedia (winmm), MIDI 1.0 bytes. The OS has no
+//!   UMP in this API, so a port is listed as MIDI 1.0 and its bytes are carried
+//!   as MIDI 1.0 UMP, as a legacy ALSA port is: `legacy_port` holds that logic
+//!   (it runs on every platform, and its tests with it) and `winmm` the calls.
+//!   Windows MIDI Services, the UMP-native API, is not bound.
+//! - **Everything else** — [`stub`]: it enumerates nothing and returns
 //!   [`Error::Unsupported`](crate::error::Error::Unsupported).
 
 #[cfg(midi_backend = "coremidi")]
@@ -29,6 +32,21 @@ mod coremidi;
 // backend is `none`, with a `cargo:warning` explaining why: see `build.rs`.
 #[cfg(midi_backend = "alsa")]
 mod alsa;
+
+#[cfg(midi_backend = "winmm")]
+mod winmm;
+
+// What a backend over a MIDI 1.0 byte API decides, with no OS call in it:
+// always compiled so its tests run everywhere; only `winmm` uses it as a
+// backend.
+#[cfg_attr(
+    not(midi_backend = "winmm"),
+    allow(
+        dead_code,
+        reason = "the byte-port backend is not this platform's, so only the tests use it"
+    )
+)]
+mod legacy_port;
 
 // Always compiled so its tests run everywhere; only the `none` platform uses
 // it as the backend.
@@ -47,6 +65,10 @@ mod platform;
 
 #[cfg(midi_backend = "alsa")]
 #[path = "platform/alsa.rs"]
+mod platform;
+
+#[cfg(midi_backend = "winmm")]
+#[path = "platform/winmm.rs"]
 mod platform;
 
 #[cfg(midi_backend = "none")]

@@ -209,7 +209,8 @@ impl DeviceTable {
     ///   port is told by its name and direction: `Exact` for the one present
     ///   port with both, `Ambiguous` (the unit's ports) when none or several
     ///   have.
-    /// - An ALSA identity is the client and port name: `SameName` for the lone
+    /// - An ALSA or WinMM identity is names alone (the client and port name, or
+    ///   the driver's product name and ids): `SameName` for the lone
     ///   present device when the saved ordinal is 0 and it still goes the
     ///   saved way (it cannot be told from another unit of the same name),
     ///   `Ambiguous` for a saved ordinal above 0, several present devices, or
@@ -239,9 +240,10 @@ impl DeviceTable {
                     _ => Resolved::Ambiguous(owned(if port.is_empty() { &alike } else { &port })),
                 }
             }
-            (Identity::Alsa { .. }, [only])
-                if saved.id.ordinal() == 0 && serves(only.direction, saved.direction) =>
-            {
+            (
+                Identity::Alsa { .. } | Identity::WinMmInput { .. } | Identity::WinMmOutput { .. },
+                [only],
+            ) if saved.id.ordinal() == 0 && serves(only.direction, saved.direction) => {
                 Resolved::SameName((*only).clone())
             }
             _ => Resolved::Ambiguous(owned(&alike)),

@@ -212,6 +212,15 @@ pub(super) const ALLOW: &[Allow] = &[
         "ALSA sequencer C functions (`snd_seq_open`) and constants",
     ),
     (
+        &["crates/tutti-winmm-ffi/", "crates/tutti-midi-hardware/"],
+        |s| {
+            ["MIM_", "MMSYSERR_", "MIDIERR_", "midiIn", "midiOut"]
+                .iter()
+                .any(|p| s.starts_with(p))
+        },
+        "Windows Multimedia MIDI functions (`midiInOpen`) and constants (`MIM_DATA`)",
+    ),
+    (
         &["docs/reference/"],
         |_| true,
         "the SDK interface inventories name the SDKs' items, not the workspace's",

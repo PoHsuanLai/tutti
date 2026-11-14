@@ -129,7 +129,7 @@ std only. A rule the compiler already enforces is not a gate.
 - A library with no `unsafe` carries `#![forbid(unsafe_code)]` (`cargo xtask check-ffi`).
 - Plugin FFI `unsafe` lives only in `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi` and
   `tutti-vst2-ffi`; the process edge's in `tutti-plugin-ipc-ffi`; MIDI's OS calls in
-  `tutti-alsa-ffi` and `tutti-coremidi-ffi`. Everything above them forbids `unsafe`.
+  `tutti-alsa-ffi`, `tutti-coremidi-ffi` and `tutti-winmm-ffi`. Everything above them forbids `unsafe`.
   Test-only `unsafe` is `tutti-fixtures`'.
 - New lock-free or `unsafe` runtime structure goes in `tutti-rt`, with a loom model that
   runs the shipped code. The publish cell is the `arc-lend` crate from its own repository
@@ -220,7 +220,7 @@ adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 **Layering.** Normal and build dependencies point strictly down this list
 (dev-dependencies may go anywhere); `cargo xtask check-layout` holds it:
 
-0. `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
+0. `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-winmm-ffi`, `tutti-ump`, `tutti-types`,
    `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`,
    `tutti-buffers`

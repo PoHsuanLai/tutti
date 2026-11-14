@@ -52,6 +52,7 @@ pub(super) const LAYERS: &[&[&str]] = &[
     &[
         "tutti-alsa-ffi",
         "tutti-coremidi-ffi",
+        "tutti-winmm-ffi",
         "tutti-ump",
         "tutti-types",
         "tutti-plugin-ipc-ffi",
@@ -666,7 +667,7 @@ mod tests {
     fn a_layered_workspace_passes() {
         let r = run(&base());
         assert!(r.passed(), "{:?}", r.findings);
-        assert_eq!(r.out[0], "check-layout: ok (6 members, 47 ranked)");
+        assert_eq!(r.out[0], "check-layout: ok (6 members, 48 ranked)");
     }
 
     #[test]

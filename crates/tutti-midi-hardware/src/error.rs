@@ -1,7 +1,7 @@
 //! The crate's [`Error`](enum@Error) and [`Result`].
 //!
-//! One enum for every OS edge. The two platform arms ([`Error::CoreMidi`],
-//! [`Error::Alsa`]) carry the raw OS status alongside the call that produced it,
+//! One enum for every OS edge. The platform arms ([`Error::CoreMidi`],
+//! [`Error::Alsa`], [`Error::WinMm`]) carry the raw OS status alongside the call that produced it,
 //! because that pair is what makes a driver failure diagnosable — a bare string
 //! loses the code a caller may want to match on.
 
@@ -89,6 +89,16 @@ pub enum Error {
         code: i32,
     },
 
+    /// A Windows Multimedia call returned a non-zero `MMRESULT`.
+    #[error("winmm error: {operation} ({code})")]
+    WinMm {
+        /// The winmm call that failed, as a static label
+        /// (`"midiInOpen"`, `"midiOutLongMsg"`).
+        operation: &'static str,
+        /// The `MMRESULT` winmm returned: an `MMSYSERR_*` or `MIDIERR_*` value.
+        code: u32,
+    },
+
     /// Every slot for an input device is taken: a device is an event input of
     /// the graph's ingest node, and it has as many as the session was built
     /// with.
@@ -102,11 +112,12 @@ pub enum Error {
     /// No MIDI backend exists for this build.
     ///
     /// Distinct from "no devices found", which is an empty list and not an
-    /// error. This says the *platform* has no native-UMP path compiled in —
-    /// Windows, or a Linux built against an alsa-lib older than 1.2.10. A caller
+    /// error. This says the *platform* has no backend compiled in (a Linux built
+    /// against an alsa-lib older than 1.2.10), or that its API cannot do what
+    /// was asked (Windows Multimedia has no virtual ports). A caller
     /// that shows the user "no MIDI devices" for this case is hiding a build
     /// fact behind a runtime one.
-    #[error("no native-UMP MIDI backend on this platform: {0}")]
+    #[error("MIDI backend unavailable: {0}")]
     Unsupported(&'static str),
 
     /// A MIDI 2.0 message sent into a MIDI 1.0 virtual endpoint has no MIDI 1.0

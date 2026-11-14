@@ -44,6 +44,7 @@ pub(super) const HOMES: &[(&str, &str, Option<&str>)] = &[
         "all CoreMIDI and Mach clock unsafe",
         None,
     ),
+    ("tutti-winmm-ffi", "all winmm MIDI unsafe", None),
     ("tutti-clap-ffi", "all CLAP unsafe", None),
     ("tutti-vst3-ffi", "all VST3 unsafe", None),
     ("tutti-au-ffi", "all AU unsafe", None),
@@ -64,12 +65,19 @@ const FFI: &[&str] = &[
     "tutti-vst2-ffi",
     "tutti-alsa-ffi",
     "tutti-coremidi-ffi",
+    "tutti-winmm-ffi",
 ];
 const LINTS: &[&str] = &["undocumented_unsafe_blocks", "missing_safety_doc"];
 
 const MIDI: &str = "crates/tutti-midi-hardware";
 /// Dependencies that exist only to make unsafe calls: the `-ffi` crates' own.
-const RAW_DEPS: &[&str] = &["libc", "coremidi-sys", "mach2", "tutti-alsa-ump-sys"];
+const RAW_DEPS: &[&str] = &[
+    "libc",
+    "coremidi-sys",
+    "mach2",
+    "tutti-alsa-ump-sys",
+    "windows-sys",
+];
 
 pub(super) fn check(tree: &dyn Tree) -> Report {
     let mut bad: Vec<String> = Vec::new();
@@ -253,7 +261,7 @@ mod tests {
         let r = check(&clean());
         assert!(r.passed(), "{:?}", r.findings);
         assert!(
-            r.out[0].starts_with("check-ffi: ok (30 crates"),
+            r.out[0].starts_with("check-ffi: ok (31 crates"),
             "{:?}",
             r.out
         );
@@ -342,6 +350,12 @@ mod tests {
         );
         assert_eq!(r.findings.len(), 3);
         assert!(r.findings[1].contains("`libc`") && r.findings[2].contains("`mach2`"));
+        let r = with(
+            clean(),
+            "crates/tutti-midi-hardware/Cargo.toml",
+            "[target.'cfg(windows)'.dependencies]\nwindows-sys = \"0.61\"\n",
+        );
+        assert!(r.findings[1].contains("`windows-sys`"));
     }
 
     #[test]

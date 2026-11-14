@@ -352,6 +352,33 @@ fn a_saved_ordinal_above_zero_is_ambiguous_even_with_one_device_present() {
     );
 }
 
+/// An input and an output of one WinMM unit share a name and driver ids, so
+/// each is told by its direction: neither takes the other's ordinal.
+#[test]
+fn a_winmm_input_and_output_of_one_unit_are_both_ordinal_zero() {
+    let mut table = DeviceTable::default();
+    let on = |n, identity, direction| OsDevice {
+        handle: handle(n),
+        identity,
+        name: "USB MIDI".into(),
+        direction,
+    };
+    let input = added(table.apply(OsChange::Present(on(
+        1,
+        Identity::winmm_input("USB MIDI", 1, 2),
+        PortDirection::Input,
+    ))));
+    let output = added(table.apply(OsChange::Present(on(
+        2,
+        Identity::winmm_output("USB MIDI", 1, 2),
+        PortDirection::Output,
+    ))));
+    assert_eq!((input.id.ordinal(), output.id.ordinal()), (0, 0));
+    assert_eq!(table.resolve(&input), Resolved::SameName(input.clone()));
+    assert_eq!(table.resolve(&output), Resolved::SameName(output.clone()));
+    assert_eq!(input.id.to_string(), "winmm-in:USB MIDI/0001:0002#0");
+}
+
 #[test]
 fn nothing_alike_is_missing() {
     let mut table = DeviceTable::default();

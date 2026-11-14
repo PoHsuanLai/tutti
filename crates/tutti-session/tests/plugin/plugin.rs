@@ -1087,10 +1087,17 @@ fn process_ended(pid: u32) -> bool {
 
 /// A policy that suspects a hang after 16 blocks and 100 ms of the clock the
 /// test drives (20 ms a step).
-fn quick_hang_policy() -> tutti_session::RecoveryPolicy {
+fn quick_hang_policy() -> tutti_session::HangPolicy {
+    tutti_session::HangPolicy {
+        blocks: 16,
+        window: Duration::from_millis(100),
+        ..Default::default()
+    }
+}
+
+/// A reload one millisecond after a death.
+fn quick_reload_policy() -> tutti_session::RecoveryPolicy {
     tutti_session::RecoveryPolicy {
-        hang_blocks: 16,
-        hang_window: Duration::from_millis(100),
         backoff: Duration::from_millis(1),
         ..Default::default()
     }
@@ -1119,7 +1126,8 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
             ("TUTTI_CLAP_PROBE_BLOCK_FROM", "20"),
         ],
         |b| {
-            b.plugin_recovery(Some(quick_hang_policy()))
+            b.plugin_hang(quick_hang_policy())
+                .plugin_recovery(Some(quick_reload_policy()))
                 .spawn_with(move |job| {
                     if seen.load(Ordering::SeqCst) {
                         let pid = pid_cell.load(Ordering::SeqCst);
@@ -1195,6 +1203,63 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
     }
 }
 
+/// **With recovery off, a plugin that stops answering is declared hung and
+/// removed.** The same probe as above parks in `process()` for good; no policy
+/// reloads it, yet the hang is detected: the session ends its server, the death
+/// reads "stopped answering", and `PluginChange::Died` names it and removes the
+/// node, as for any dead plugin with recovery off.
+#[test]
+fn a_plugin_that_stops_answering_is_declared_hung_with_recovery_off() {
+    let once = once_file("recovery-off-hang.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_BLOCK_FROM", "20"),
+        ],
+        |b| b.plugin_hang(quick_hang_policy()).plugin_recovery(None),
+    );
+    let (node, _) = wired_probe(&mut s);
+
+    let mut drive = Drive::new();
+    drive.until(&mut s, "died", |e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Died { .. },
+                ..
+            })
+        )
+    });
+    let Some(SessionEvent::Plugin(PluginEvent {
+        node: died,
+        change: PluginChange::Died { cause },
+        ..
+    })) = drive.events.iter().find(|e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Died { .. },
+                ..
+            })
+        )
+    })
+    else {
+        unreachable!()
+    };
+    assert_eq!(*died, node);
+    assert!(
+        matches!(
+            cause,
+            PluginFailure::Terminated {
+                reason: tutti_plugin_types::TerminationReason::Hung { .. }
+            }
+        ),
+        "{cause:?}"
+    );
+    assert!(!s.graph_ref().contains(node), "the hung plugin is removed");
+}
+
 /// **A slow plugin that still answers is not declared hung.** Every block
 /// takes the probe 80 ms, far over the bridge's budget for a 512-frame block:
 /// blocks are abandoned all the time, and every one's reply comes back late.
@@ -1205,7 +1270,10 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
 fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
     let mut s = session_built(
         &[PASSTHROUGH, ("TUTTI_CLAP_PROBE_STALL_US", "80000")],
-        |b| b.plugin_recovery(Some(quick_hang_policy())),
+        |b| {
+            b.plugin_hang(quick_hang_policy())
+                .plugin_recovery(Some(quick_reload_policy()))
+        },
     );
     let (node, _) = wired_probe(&mut s);
     let mut drive = Drive::new();

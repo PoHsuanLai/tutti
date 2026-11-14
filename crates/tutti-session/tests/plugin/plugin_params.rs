@@ -346,11 +346,15 @@ fn a_typed_parameter_goes_through_the_range_and_the_plugins_map() {
         .typed::<Hz>(CUTOFF)
         .unwrap();
     // The fake started it at 0.5: 20 + 19980 / 2.
-    assert_eq!(cutoff.get(), Hz::new(10_010.0));
+    assert_eq!(cutoff.get(), Ok(Hz::new(10_010.0)));
 
     cutoff.set(Hz::new(20.0 + 19_980.0 * 0.25)).unwrap();
     assert_eq!(fake.sets(), [(CUTOFF, 0.25)]);
-    assert_eq!(cutoff.get(), Hz::new(5_015.0), "read-your-writes, in Hz");
+    assert_eq!(
+        cutoff.get(),
+        Ok(Hz::new(5_015.0)),
+        "read-your-writes, in Hz"
+    );
     assert_eq!(cutoff.param().normalized(), Normalized::of(0.25));
 
     assert_eq!(
@@ -362,6 +366,50 @@ fn a_typed_parameter_goes_through_the_range_and_the_plugins_map() {
         Err(PluginParamError::OutOfRange(CUTOFF))
     );
     assert_eq!(fake.sets().len(), 1, "a refused value reaches nothing");
+}
+
+/// **A typed read of a plugin that stops answering its map is an error**, not
+/// the declared default: the fake declared `1000 Hz` as the default, and once it
+/// answers no plain value `get` names the parameter instead of reading it.
+#[test]
+fn a_typed_read_of_a_silent_plugin_is_an_error_not_the_default() {
+    let (s, node, fake, _) = ready();
+    let cutoff = s
+        .plugin(node)
+        .unwrap()
+        .params()
+        .typed::<Hz>(CUTOFF)
+        .unwrap();
+    assert_eq!(cutoff.get(), Ok(Hz::new(10_010.0)));
+
+    locked(&fake.infos).clear();
+    assert_eq!(cutoff.get(), Err(PluginParamError::NoPlainValue(CUTOFF)));
+}
+
+/// **A typed write of a NaN or an infinity is `NotFinite`, not `OutOfRange`**,
+/// and a finite value outside the range is still `OutOfRange`; nothing reaches
+/// the plugin.
+#[test]
+fn a_non_finite_typed_write_is_not_finite_and_out_of_range_stays_out_of_range() {
+    let (s, node, fake, _) = ready();
+    let cutoff = s
+        .plugin(node)
+        .unwrap()
+        .params()
+        .typed::<Hz>(CUTOFF)
+        .unwrap();
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(
+            cutoff.set(Hz::new(bad)),
+            Err(PluginParamError::NotFinite(CUTOFF)),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        cutoff.set(Hz::new(30_000.0)),
+        Err(PluginParamError::OutOfRange(CUTOFF))
+    );
+    assert!(fake.sets().is_empty());
 }
 
 /// **An id the plugin does not declare is refused**, by `get` and by `typed`,

@@ -456,6 +456,9 @@ pub struct Session {
     /// What a hosted plugin's death or hang does; `None`: it is removed.
     #[cfg(feature = "plugin")]
     pub(crate) recovery: Option<crate::RecoveryPolicy>,
+    /// When a hosted plugin's unanswered blocks are a hang.
+    #[cfg(feature = "plugin")]
+    pub(crate) hang: crate::HangPolicy,
     /// The `now` of the last `Phase::Plugins`: the time a landing reload is
     /// measured at.
     #[cfg(feature = "plugin")]

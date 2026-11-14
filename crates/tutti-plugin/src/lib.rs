@@ -415,7 +415,7 @@ pub mod catalog {
     };
     pub use tutti_plugin_types::{Helper, Locator};
     // Named in `Plugin::role` and `Catalog::iter`.
-    pub use crate::host::catalog::{Catalog, PersistError};
+    pub use crate::host::catalog::{BlacklistView, Catalog, PersistError};
     pub use crate::host::plugin::{BoundPlugin, Plugin};
     pub use crate::host::plugin_ref::{Hosting, PluginRef, PluginState};
     pub use tutti_plugin_db::PluginDb;

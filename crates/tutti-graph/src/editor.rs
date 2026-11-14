@@ -26,7 +26,7 @@
 //! the box comes back as soon as it is applied. The fade's outgoing unit
 //! comes back on its own, on the fade-return ring, when the fade ends (or
 //! is cut), and `collect` drains that ring too. Each fade a commit starts
-//! takes one of [`FADE_CAPACITY`] slots on it, reserved before the commit
+//! takes one of [`FADE_CAPACITY`](crate::FADE_CAPACITY) slots on it, reserved before the commit
 //! is sent; a commit that would need more is `Backpressure` too — a cap no
 //! session reaches in practice.
 //!
@@ -59,20 +59,17 @@ use crate::{
     TapId, TapSpec,
 };
 use crate::{MAX_NODE_LATENCY, MAX_NODE_TAIL};
-use ringbuf::traits::{Consumer, Producer};
 use tutti_types::{Latency, Samples, Tail};
 
 use tutti_types::At;
 
 use crate::bus_edge::{BusError, BusFold, BusRef, BusSource, Lowering};
-use crate::command::{CommandId, CommandTx, ScheduleError, command_channel};
+use crate::command::{CommandId, ScheduleError, command_channel};
 use crate::compile::{CompileError, Shapes, VerifyError, compile};
 use crate::event::EventKind;
 use crate::event_tap::{EventTapReader, EventTapWriter};
 use crate::exec::Opened;
-use crate::exec::{
-    Channels, Commit, DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY, channels,
-};
+use crate::exec::{Commit, DEFAULT_EVENT_CAPACITY, Executor, QUEUE_CAPACITY, channels};
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::gain::{EdgeFade, EdgeGain, GainCell};
@@ -86,7 +83,9 @@ use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGr
 use crate::tap::{TapReader, TapWriter};
 use crate::wake::Wake;
 
+mod link;
 mod outlets;
+use link::Link;
 use outlets::{Closed, Outlets};
 use tutti_types::{Amplitude, Mix, ParamCell};
 
@@ -440,15 +439,8 @@ pub enum MissingSource {
 /// assert_eq!(output[0], 0.5);
 /// ```
 pub struct Editor {
-    channels: Channels,
-    commands: CommandTx,
-    /// Commits sent and not yet drained back.
-    out: usize,
-    /// Crossfades sent (started or waiting) and not yet drained back from
-    /// the fade-return ring: its slots in use.
-    fades_out: usize,
-    /// Commits sent, ever: the sequence number of the last one.
-    sent: u64,
+    /// The rings to the paired executor.
+    link: Link,
     prepare: Prepare,
     spec: GraphSpec,
     shapes: Shapes,
@@ -466,13 +458,6 @@ pub struct Editor {
     latency_cuts: BTreeSet<NodeKey>,
     /// The open taps: each reader's width and end latch.
     taps: Outlets<TapId, TapWriter, TapOpened>,
-    /// Taps taken out of the plan because every node they read was removed,
-    /// each with the commit (by `sent`) that leaves them out, once one was
-    /// sent; their latch is raised when the executor has applied it.
-    ending_taps: Vec<(Option<u64>, std::sync::Arc<tutti_rt::FaultLatch>)>,
-    /// Commits the executor has handed back so far: it applied each one
-    /// before it did, and every commit is handed back once.
-    acked: u64,
     /// The open event taps.
     event_taps: Outlets<EventTapId, EventTapWriter, ()>,
     /// The open meters: each one's lane capacity.
@@ -527,9 +512,7 @@ pub struct Editor {
 impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Editor")
-            .field("out", &self.out)
-            .field("fades_out", &self.fades_out)
-            .field("sent", &self.sent)
+            .field("link", &self.link)
             .field("prepare", &self.prepare)
             .field("fades", &self.fades)
             .field("latency_cuts", &self.latency_cuts)
@@ -1035,11 +1018,7 @@ impl Editor {
         let (channels, ends) = channels();
         let (commands, command_rx) = command_channel();
         let editor = Self {
-            channels,
-            commands,
-            out: 0,
-            fades_out: 0,
-            sent: 0,
+            link: Link::new(channels, commands),
             prepare,
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
@@ -1048,8 +1027,6 @@ impl Editor {
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
             taps: Outlets::new(),
-            ending_taps: Vec::new(),
-            acked: 0,
             event_taps: Outlets::new(),
             meters: Outlets::new(),
             next_gen: BTreeMap::new(),
@@ -1121,7 +1098,7 @@ impl Editor {
     /// Whether `executor` is the one this editor sends to: the two were
     /// built together by [`Editor::new`].
     pub fn is_paired_with(&self, executor: &Executor) -> bool {
-        self.commands.same_pair(executor.commands())
+        self.link.is_paired_with(executor)
     }
 
     /// The paired executor's play clock (`Env::play`), as it published it
@@ -1131,7 +1108,7 @@ impl Editor {
     /// 0). What the modulation compiler dates a rate edit's anchor from
     /// (doc 014 §4.3).
     pub fn play_reading(&self) -> crate::PlayReading {
-        self.channels.play.read()
+        self.link.play_reading()
     }
 
     /// The output ports that lost events since the last call, one entry per
@@ -1145,16 +1122,14 @@ impl Editor {
     /// the ring (256 entries) fill, leaves entries out and the total stands.
     /// Drain it from the tick that collects (the session's `Collect` phase).
     pub fn take_event_losses(&mut self) -> impl Iterator<Item = crate::EventLoss> + '_ {
-        std::iter::from_fn(|| self.channels.losses.try_pop())
+        std::iter::from_fn(|| self.link.pop_loss())
     }
 
     /// Refusals since the last call that [`take_event_losses`](Self::take_event_losses)
     /// did not name: a merge's, and those the per-block log (64 places) or the
     /// ring (256 entries) had no room for. Control thread.
     pub fn take_unreported_event_losses(&mut self) -> u64 {
-        self.channels
-            .unreported
-            .swap(0, std::sync::atomic::Ordering::Relaxed)
+        self.link.take_unreported()
     }
 
     /// The graph value.
@@ -1283,14 +1258,14 @@ impl Editor {
 
     /// Crossfades sent and not yet drained back: running, waiting, or
     /// ended and waiting for [`collect`](Self::collect). At most
-    /// [`FADE_CAPACITY`].
+    /// [`FADE_CAPACITY`](crate::FADE_CAPACITY).
     pub fn fades_in_flight(&self) -> usize {
-        self.fades_out
+        self.link.fades_in_flight()
     }
 
     /// Commits sent and not yet drained back.
     pub fn in_flight(&self) -> usize {
-        self.out
+        self.link.in_flight()
     }
 
     /// Whether a [`reprepare`](Self::reprepare) is between its two commits:
@@ -1368,7 +1343,7 @@ impl Editor {
     ///   [`collect`](Self::collect), which reports its key.
     /// - The fade holds no commit: the next [`commit`](Self::commit) and
     ///   [`reprepare`](Self::reprepare) go through while it runs. Each
-    ///   running or waiting fade takes one of [`FADE_CAPACITY`] slots
+    ///   running or waiting fade takes one of [`FADE_CAPACITY`](crate::FADE_CAPACITY) slots
     ///   ([`fades_in_flight`](Self::fades_in_flight)) until `collect` drains
     ///   it.
     /// - New events go to the incoming unit only.
@@ -1918,7 +1893,7 @@ impl Editor {
     /// Control thread. Cheap when nothing ended: a pop of an empty ring.
     pub fn settle_fades(&mut self) -> bool {
         let mut changed = false;
-        while let Some((id, kind)) = self.channels.edge_fades.try_pop() {
+        while let Some((id, kind)) = self.link.pop_edge_fade() {
             changed |= self.settle_edge(id, kind);
         }
         if !self.leaving.is_empty() {
@@ -2480,7 +2455,7 @@ impl Editor {
                         // will be written.
                         end.raise();
                     } else {
-                        self.ending_taps.push((None, end));
+                        self.link.end_tap(end);
                     }
                 }
             }
@@ -2567,9 +2542,7 @@ impl Editor {
     /// half, this re-prepares the units it carries and sends the second.
     pub fn collect(&mut self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
-        while let Some(done) = self.channels.returned.try_pop() {
-            self.out -= 1;
-            self.acked += 1;
+        while let Some(done) = self.link.pop_returned() {
             if done.is_suspend() {
                 self.resume(done);
                 continue;
@@ -2578,18 +2551,9 @@ impl Editor {
             drop(done);
         }
         // The executor applies a commit before it hands the box back, so a
-        // tap the commit left out has had its last block written. The ring
-        // that carried the box orders those writes before this raise.
-        let acked = self.acked;
-        self.ending_taps.retain(|(at, end)| match at {
-            Some(sent) if *sent <= acked => {
-                end.raise();
-                false
-            }
-            _ => true,
-        });
-        while let Some(x) = self.channels.faded.try_pop() {
-            self.fades_out -= 1;
+        // tap the commit left out has had its last block written.
+        self.link.end_applied_taps();
+        while let Some(x) = self.link.pop_faded() {
             keys.extend(std::iter::repeat_n(x.key(), x.units()));
             drop(x);
         }
@@ -2597,12 +2561,9 @@ impl Editor {
     }
 
     /// `Backpressure` if the crossfades `delta` starts would take more than
-    /// [`FADE_CAPACITY`] slots on the fade-return ring.
+    /// [`FADE_CAPACITY`](crate::FADE_CAPACITY) slots on the fade-return ring.
     fn fade_room(&self, delta: &Delta) -> Result<(), CommitError> {
-        if self.fades_out + starting(delta) > FADE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
-        Ok(())
+        self.link.check_fade_room(starting(delta))
     }
 
     /// Where `key`'s forks come from, and the generation of the unit that
@@ -2703,9 +2664,7 @@ impl Editor {
         if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
-        if self.out >= QUEUE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
+        self.link.check_room()?;
         // A re-prepare recompiles the spec as it stands, so it is a commit
         // of that spec too.
         self.limits.block(prepare.max_block().get())?;
@@ -2753,12 +2712,8 @@ impl Editor {
             return Err(CommitError::Poisoned { cause });
         }
         let units = self.life.plan().map_or(0, |p| p.units().len());
-        let suspend = Commit::suspend(self.sent + 1, prepare, units);
-        if self.channels.to_executor.try_push(suspend).is_err() {
-            unreachable!("the queue has a free slot for every credit");
-        }
-        self.sent += 1;
-        self.out += 1;
+        let suspend = Commit::suspend(self.link.next_seq(), prepare, units);
+        self.link.send_suspend(suspend);
         self.prepare = prepare;
         self.life = Lifecycle::Repreparing {
             plan: self.life.take().into_plan(),
@@ -2921,7 +2876,7 @@ impl Editor {
     /// Validates, compiles against the plan sent last, and sends the result
     /// with the units it places. Returns `Backpressure` — having compiled and sent
     /// nothing — when [`QUEUE_CAPACITY`] commits are out, or when the fades
-    /// it starts would put more than [`FADE_CAPACITY`] in flight. A running
+    /// it starts would put more than [`FADE_CAPACITY`](crate::FADE_CAPACITY) in flight. A running
     /// fade holds neither: its commit comes back when applied, and its slot
     /// on the fade-return ring is its own.
     ///
@@ -2960,9 +2915,7 @@ impl Editor {
         if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
-        if self.out >= QUEUE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
+        self.link.check_room()?;
         self.check_spec()?;
         if self.pending.is_empty()
             && !self.taps.has_pending()
@@ -3069,9 +3022,7 @@ impl Editor {
         if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
-        if self.out >= QUEUE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
+        self.link.check_room()?;
         self.limits.outputs(plan.global_outputs())?;
         self.fade_room(&delta)?;
         plan.verify_fades(self.base().map(|p| &**p), &delta)
@@ -3146,7 +3097,7 @@ impl Editor {
         {
             return Err(ScheduleError::ResolutionTooCoarse { to, sink });
         }
-        self.commands.send(self.sent, at, to, kind)
+        self.link.schedule(at, to, kind)
     }
 
     /// Takes back scheduled command `id`, if it has not landed — freeing its
@@ -3164,7 +3115,7 @@ impl Editor {
         if self.poison_cause().is_some() {
             return Err(ScheduleError::Poisoned);
         }
-        self.commands.cancel(id)
+        self.link.cancel(id)
     }
 
     /// Takes back every command scheduled so far that has not landed.
@@ -3177,18 +3128,16 @@ impl Editor {
         if self.poison_cause().is_some() {
             return Err(ScheduleError::Poisoned);
         }
-        self.commands.cancel_all()
+        self.link.cancel_all()
     }
 
     /// Scheduled commands sent and not yet delivered.
     pub fn commands_outstanding(&self) -> usize {
-        self.commands.outstanding() as usize
+        self.link.commands_outstanding()
     }
 
-    /// Enqueue, then advance. The push cannot fail: at most `out` boxes sit in
-    /// a queue of `QUEUE_CAPACITY`, and `out < QUEUE_CAPACITY` was checked.
-    /// Its crossfades take their slots on the fade-return ring here
-    /// (checked by `fade_room`).
+    /// Builds the commit of `plan` and sends it: the caller checked the
+    /// link's room (`check_room`, `fade_room`), so the send cannot fail.
     fn send(
         &mut self,
         plan: Plan,
@@ -3197,8 +3146,7 @@ impl Editor {
         bus_weights: &BusLanes,
     ) {
         self.touch();
-        self.fades_out += starting(&delta);
-        debug_assert!(self.fades_out <= FADE_CAPACITY);
+        let fades = starting(&delta);
         let plan = Arc::new(plan);
         let (ranges, spec) = (&mut self.param_ranges, &self.spec);
         let params = |key: NodeKey, ports: usize, max: usize| {
@@ -3275,7 +3223,7 @@ impl Editor {
         let event_taps = self.event_taps.take_pending();
         let meters = self.meters.take_pending();
         let commit = Commit::build(
-            self.sent + 1,
+            self.link.next_seq(),
             Arc::clone(&plan),
             delta,
             units,
@@ -3296,15 +3244,7 @@ impl Editor {
         }
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
         self.mode_cells.retain(|k, _| plan.unit(*k).is_some());
-        if self.channels.to_executor.try_push(commit).is_err() {
-            unreachable!("the queue has a free slot for every credit");
-        }
-        self.sent += 1;
-        self.out += 1;
-        // A tap removed since the last commit is left out of this one.
-        for (at, _) in &mut self.ending_taps {
-            at.get_or_insert(self.sent);
-        }
+        self.link.send(commit, fades);
         self.life = Lifecycle::Running(plan);
     }
 }

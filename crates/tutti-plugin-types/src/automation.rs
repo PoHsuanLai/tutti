@@ -2,8 +2,12 @@
 
 use crate::{Normalized, ParamId, PointBuf, PointPool};
 
-/// One automation sample: the value at a specific sample offset within
+/// One automation breakpoint: the value at a specific sample offset within
 /// the current process block.
+///
+/// The points of a [`ParameterQueue`] are linear breakpoints: between two
+/// points the value moves linearly from the first to the second, and a step is
+/// two points at one `sample_offset`.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterPoint {
@@ -41,6 +45,12 @@ fn point(sample_offset: i32, value: f64) -> ParameterPoint {
 }
 
 /// The automation points for one parameter within one process block.
+///
+/// The points are linear breakpoints, as VST3's `IParamValueQueue` reads them:
+/// between two consecutive points the value moves linearly, a step is two
+/// points at one `sample_offset`, and a lone point sets the value at its
+/// offset. A format that ramps natively (AU) receives each segment as a ramp;
+/// one that takes points (CLAP, VST3) receives the points.
 ///
 /// **Its point storage is fixed when it is built** ([`PointBuf`]): built
 /// [`with_capacity`](Self::with_capacity) off the audio thread, cleared

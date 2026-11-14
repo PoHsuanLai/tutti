@@ -33,6 +33,19 @@ pub enum Kind {
     KeyDown,
     /// A key release, recorded as [`Kind::KeyDown`] is.
     KeyUp,
+    /// An AU ramped parameter event: the `offset` is its start offset in the
+    /// block (negative when it began in an earlier one), the `value` its start
+    /// value, and [`Logged::ramp`] the rest.
+    Ramp,
+}
+
+/// The part of a ramped parameter event beyond a point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ramp {
+    /// Frames the ramp lasts.
+    pub duration: u32,
+    /// The value it ends on, in the parameter's plain units.
+    pub end: f64,
 }
 
 /// An event as the plugin received it.
@@ -40,12 +53,15 @@ pub enum Kind {
 pub struct Logged {
     /// What it was.
     pub kind: Kind,
-    /// Its sample offset in the block.
+    /// Its sample offset in the block; for a ramp the start offset, whose
+    /// two's-complement bits read as `i32` when the ramp began before the block.
     pub offset: u32,
     /// The parameter id or the key.
     pub id: u32,
-    /// The parameter value (0 for a note).
+    /// The parameter value (0 for a note); a ramp's start value.
     pub value: f64,
+    /// A ramp's duration and end value; `None` for every other kind.
+    pub ramp: Option<Ramp>,
 }
 
 /// A transport as the plugin received it, before it read anything from it.
@@ -192,14 +208,30 @@ impl Transcript {
                     7 => Kind::Flush,
                     8 => Kind::KeyDown,
                     9 => Kind::KeyUp,
+                    10 => Kind::Ramp,
                     other => panic!("the transcript holds event kind {other}"),
                 };
-                let id = c.u64() as u32;
+                let id_word = c.u64();
+                let value_word = c.u64();
+                if kind == Kind::Ramp {
+                    let (start, end) = (value_word as u32, (value_word >> 32) as u32);
+                    return Logged {
+                        kind,
+                        offset: head as u32,
+                        id: id_word as u32,
+                        value: f64::from(f32::from_bits(start)),
+                        ramp: Some(Ramp {
+                            duration: (id_word >> 32) as u32,
+                            end: f64::from(f32::from_bits(end)),
+                        }),
+                    };
+                }
                 Logged {
                     kind,
                     offset: head as u32,
-                    id,
-                    value: c.f64(),
+                    id: id_word as u32,
+                    value: f64::from_bits(value_word),
+                    ramp: None,
                 }
             })
             .collect();

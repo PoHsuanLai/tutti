@@ -9,7 +9,7 @@
 //! beside the correlation it is defined from and smoothed independently of it,
 //! so the smoothed pair contradicts the invariant the kernel guarantees.
 
-use tutti_types::{Amplitude, Correlation, Db, Pan, Seconds, StereoPlanes, StereoWidth};
+use tutti_types::{Amplitude, Correlation, Db, Seconds, StereoBalance, StereoPlanes, StereoWidth};
 
 /// Mid/side and per-channel levels.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -61,8 +61,8 @@ pub struct StereoReading {
     /// `0` uncorrelated, `-1` polarity inverted. A measurement, deliberately
     /// not `Depth` despite the coinciding range.
     pub correlation: Correlation,
-    /// Where the energy sits on the left/right axis, as a [`Pan`] reading.
-    pub balance: Pan,
+    /// Where the energy sits on the left/right axis.
+    pub balance: StereoBalance,
     /// Mid/side and per-channel RMS levels for this block.
     pub levels: StereoLevels,
 }
@@ -137,9 +137,9 @@ pub fn correlate(planes: StereoPlanes<'_>) -> StereoReading {
     let (level_l, level_r) = (rms(sum_ll), rms(sum_rr));
     let total = level_l.get() + level_r.get();
     let balance = if total > 1e-20 {
-        Pan::new_clamped((level_r.get() - level_l.get()) / total)
+        StereoBalance::new_clamped((level_r.get() - level_l.get()) / total)
     } else {
-        Pan::CENTER
+        StereoBalance::CENTER
     };
 
     StereoReading {
@@ -256,7 +256,8 @@ pub fn step_ballistics(
         state.current.correlation.get(),
         instant.correlation.get(),
     ));
-    let balance = Pan::new_clamped(smooth(state.current.balance.get(), instant.balance.get()));
+    let balance =
+        StereoBalance::new_clamped(smooth(state.current.balance.get(), instant.balance.get()));
 
     let levels = StereoLevels {
         mid: Amplitude(smooth(
@@ -330,9 +331,12 @@ mod tests {
         let signal = tone(1000, 1.0);
         let silence = vec![0.0f32; 1000];
 
-        assert!(correlate(pair(&signal, &silence)).balance < Pan(-0.9));
-        assert!(correlate(pair(&silence, &signal)).balance > Pan(0.9));
-        assert_eq!(correlate(pair(&silence, &silence)).balance, Pan::CENTER);
+        assert!(correlate(pair(&signal, &silence)).balance < StereoBalance(-0.9));
+        assert!(correlate(pair(&silence, &signal)).balance > StereoBalance(0.9));
+        assert_eq!(
+            correlate(pair(&silence, &silence)).balance,
+            StereoBalance::CENTER
+        );
     }
 
     /// The standard ballistics are a 10 ms attack and a 100 ms release: over a

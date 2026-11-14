@@ -39,7 +39,11 @@ fn heard(session: &mut Session, device: u16) -> Vec<f32> {
 }
 
 fn offline(builder: SessionBuilder, device: u16) -> Result<Session, Error> {
-    builder.build_offline(RATE, ChannelLayout::from(device), MaxBlock::of(Samples(64)))
+    builder
+        .sample_rate(RATE)
+        .outputs(ChannelLayout::from(device))
+        .max_block(MaxBlock::of(Samples(64)))
+        .build()
 }
 
 fn buses(n: u16) -> ChannelTopology {

@@ -15,7 +15,9 @@ fn report(events: Vec<SessionEvent>) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut live = SessionBuilder::default().build_device(Default::default())?;
+    let mut live = SessionBuilder::default()
+        .device(Default::default())
+        .build()?;
     let tone = Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2));
     let (tone, _) = live.session_mut().graph().add(ForkByClone(tone));
     live.session_mut().graph().connect(tone, Root).unwrap();

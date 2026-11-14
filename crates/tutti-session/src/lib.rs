@@ -18,7 +18,7 @@
 //!
 //! let mut s = Session::builder()
 //!     .outputs_floor(ChannelLayout::MONO)
-//!     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(512)))
+//!     .outputs(ChannelLayout::MONO).max_block(MaxBlock::of(Samples(512))).build()
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
 //! s.graph().connect(osc, Root).unwrap();
@@ -113,7 +113,9 @@ pub use bounce::{
     BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, BufferStem, ExportClock,
     FileMaster, FileStem, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
-pub use builder::{SessionBuilder, Workers, root_width};
+#[cfg(feature = "device")]
+pub use builder::OnDevice;
+pub use builder::{Offline, SessionBuilder, Workers, root_width};
 #[cfg(feature = "device")]
 pub use device::{
     Device, DeviceEvent, DeviceLatency, DeviceRestart, DeviceRestarted, LiveSession, RestartError,

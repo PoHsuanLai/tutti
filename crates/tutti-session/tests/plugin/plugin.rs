@@ -76,7 +76,9 @@ fn session_built(
     // in the next `Collect`, in a deterministic order. A test that wants another
     // spawner says so in `build`.
     build(Session::builder().spawn_with(|job| job.run()))
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds")
 }
 

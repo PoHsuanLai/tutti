@@ -13,10 +13,7 @@ use crate::common;
 
 use tutti_graph::ForkByClone;
 use tutti_session::{Edge, ModTarget, OutPort, ParamRef, Root, RouteSpec, Session};
-use tutti_types::MaxBlock;
-use tutti_types::{
-    Amplitude, ChannelLayout, Depth, InterleavedMut, SampleRate, Samples, UnitParam,
-};
+use tutti_types::{Amplitude, ChannelLayout, Depth, InterleavedMut, SampleRate, UnitParam};
 
 use common::probe::Pulse;
 
@@ -28,11 +25,8 @@ const B: f32 = 0.25;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 

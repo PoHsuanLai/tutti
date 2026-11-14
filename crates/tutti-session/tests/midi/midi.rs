@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_graph::UmpAt;
 use tutti_session::Stamp;
-use tutti_types::MaxBlock;
 
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
@@ -17,7 +16,7 @@ use tutti_graph::Refused;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, Frame, SampleRate};
 use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
@@ -379,11 +378,8 @@ fn route_rules_wire_the_hardware_input() {
 fn a_route_rule_names_a_group() {
     let mut s = Session::builder()
         .midi_groups(MidiGroup::of(1))
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     let (a, _) = tap(&mut s);
@@ -613,11 +609,8 @@ fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounte
         tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
     let s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     (s, fake)
 }
@@ -732,11 +725,8 @@ fn keyboards(
     let mut s = Session::builder()
         .midi_hardware_over(backend)
         .midi_devices(devices)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let (synth, seen) = tap(&mut s);
     s.midi()
@@ -1615,11 +1605,8 @@ fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
         tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
     let mut s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let (synth, seen) = tap(&mut s);
     s.midi()

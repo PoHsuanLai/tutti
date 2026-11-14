@@ -21,8 +21,8 @@
 //! a test binary's root cannot be gated from a parent, so the whole file is the
 //! platform unit. In `src/` an inner platform cfg is a violation like any other.
 //!
-//! Exempt: the `tutti-*-ffi` crates, where the platform code lives (CLAUDE.md:
-//! plugin, process-edge and MIDI OS `unsafe` sits in them). Out of scope: a
+//! Exempt: the `tutti-*-ffi` crates, where the platform code lives (the plugin,
+//! process-edge and MIDI OS `unsafe` sits in them). Out of scope: a
 //! `[target.'cfg(..)'.dependencies]` table in a manifest, `build.rs`,
 //! `examples/` and `benches/`.
 //!

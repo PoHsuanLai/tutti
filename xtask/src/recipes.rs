@@ -222,6 +222,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "a #[test] asserts something; a per-file ratchet",
     ),
     (
+        "check-comments",
+        "",
+        "no comment gains a citation of a design doc, audit, pull request, commit or CLAUDE.md",
+    ),
+    (
         "check-alloc-binaries",
         "",
         "no top-level test file installs AllocDisabler: allocation tests are modules of the area binary",
@@ -538,6 +543,7 @@ impl Planner<'_> {
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
             "check-doc-idents" => self.out.push(Step::Gate(Gate::DocIdents)),
             "check-passive-tests" => self.out.push(Step::Gate(Gate::PassiveTests)),
+            "check-comments" => self.out.push(Step::Gate(Gate::Comments)),
             "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance" => {
@@ -646,7 +652,7 @@ impl Planner<'_> {
                     "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
                     "check-layout", "check-range-types", "check-hosting", "check-lints",
                     "check-value-traits", "check-submodule-pins", "check-doc-refs",
-                    "check-pointers", "check-platform-seam", "check-doc-idents",
+                    "check-pointers", "check-comments", "check-platform-seam", "check-doc-idents",
                     "check-passive-tests", "check-alloc-binaries",
                 ] {
                     self.dep(d)?;

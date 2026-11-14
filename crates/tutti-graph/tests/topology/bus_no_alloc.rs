@@ -1,8 +1,8 @@
-//! The audio thread's side of the buses allocates nothing (doc 013, "Buses and
-//! coercion between declared layouts"): a bus edge's weighted lanes, a bypass
-//! that is the fold of the main buses, and a node at `Mix::DRY` that reads the
-//! same fold through the blend, each on the serial executor and on a pool whose
-//! every participant runs inside `assert_no_alloc`.
+//! The audio thread's side of the buses allocates nothing: a bus edge's
+//! weighted lanes, a bypass that is the fold of the main buses, and a node at
+//! `Mix::DRY` that reads the same fold through the blend, each on the serial
+//! executor and on a pool whose every participant runs inside
+//! `assert_no_alloc`.
 //!
 //! The renders are not compared: the figures are `bus_edges.rs`'s and
 //! `mode.rs`'s. This pins the cost.

@@ -208,7 +208,7 @@ fn a_published_tempo_map_is_taken_without_allocating() {
 /// it; the clock really takes the steps (`tempo_in_force` reaches the last
 /// step's tempo), so a walk that never ran would not pass.
 ///
-/// The ramp case (doc 020, stage 4) runs the same calls over a ramp, whose
+/// The ramp case runs the same calls over a ramp, whose
 /// cells are a change each: the graph takes 4 096-frame blocks, so a call
 /// crosses 32 cell edges and the engine cuts it at every 8th change; loop
 /// wraps inside the ramp re-seat on a cell, and a seek back and a map swap

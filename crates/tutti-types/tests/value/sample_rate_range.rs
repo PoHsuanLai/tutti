@@ -1,4 +1,5 @@
-//! `SampleRate` keeps the range-checked contract (`CLAUDE.md`, "Range-checked values").
+//! `SampleRate` keeps the range-checked contract: `new` refuses, `TryFrom` and serde
+//! agree with it.
 #![cfg(feature = "serde")]
 
 use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};

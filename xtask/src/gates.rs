@@ -11,6 +11,7 @@
 mod alloc_binaries;
 mod canonical_paths;
 mod clap_sys;
+mod comments;
 mod conformance;
 mod conformance_site;
 mod decode_boundary;
@@ -127,6 +128,9 @@ pub(crate) enum Gate {
     DocIdents,
     /// A `#[test]` asserts something (a per-file ratchet).
     PassiveTests,
+    /// No comment holds more citations of design docs, audits, pull requests,
+    /// commits, mutation runs or `CLAUDE.md` than its baseline.
+    Comments,
     /// An allocation test is a module of its area binary, not a binary of its own.
     AllocBinaries,
     /// A platform cfg stands only on a `mod` declaration.
@@ -154,6 +158,7 @@ impl Gate {
             Gate::Pointers => "gate check-pointers".to_owned(),
             Gate::DocIdents => "gate check-doc-idents".to_owned(),
             Gate::PassiveTests => "gate check-passive-tests".to_owned(),
+            Gate::Comments => "gate check-comments".to_owned(),
             Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
             Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
@@ -184,6 +189,7 @@ impl Gate {
             Gate::Pointers => pointers::check(&tree),
             Gate::DocIdents => doc_idents::check(&tree),
             Gate::PassiveTests => passive_tests::check(&tree),
+            Gate::Comments => comments::check(&tree),
             Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
             Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {

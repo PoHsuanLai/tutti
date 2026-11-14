@@ -109,6 +109,11 @@ pub enum Error {
     #[error("no native-UMP MIDI backend on this platform: {0}")]
     Unsupported(&'static str),
 
+    /// A MIDI 2.0 message sent into a MIDI 1.0 virtual endpoint has no MIDI 1.0
+    /// message to become; nothing was sent.
+    #[error(transparent)]
+    NoMidi1Form(#[from] tutti_midi_protocol::NoMidi1Form),
+
     /// A virtual endpoint declared Function Blocks, and the platform cannot
     /// publish them: its endpoints carry a name and a protocol only. The same
     /// spec without blocks opens.

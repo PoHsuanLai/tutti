@@ -13,8 +13,8 @@ use crate::error::Result;
 use crate::guard::Guard;
 use crate::{InputProducerHandle, Pushed};
 use tutti_alsa_ffi::{
-    CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpVersion,
-    Wait,
+    Blocking, CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC,
+    UmpVersion, Wait,
 };
 use tutti_midi_device::EndpointId;
 use tutti_ump::split_stream;
@@ -133,7 +133,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     // Non-blocking, so the pump reads until the queue is empty and then waits in
     // `poll`, which the stop descriptor can interrupt. One client per connection
     // — see `client::open`.
-    let seq = super::client::open("tutti-in", true, UmpVersion::Midi2)?;
+    let seq = super::client::open("tutti-in", Blocking::NonBlock, UmpVersion::Midi2)?;
     // What the source can speak decides what this client is delivered: a MIDI
     // 1.0 source arrives as MIDI 1.0 UMP (type 2) and the ingest node's
     // `Translator` widens it, so the kernel never converts it.

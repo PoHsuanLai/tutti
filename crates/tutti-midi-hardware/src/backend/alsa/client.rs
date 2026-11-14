@@ -1,7 +1,7 @@
 //! Opening a UMP-mode ALSA sequencer client, through `tutti-alsa-ffi`.
 
 use crate::error::Result;
-use tutti_alsa_ffi::{Client, UmpVersion};
+use tutti_alsa_ffi::{Blocking, Client, UmpVersion};
 
 /// Sequencer clients this process has opened, for the tests that a quiet path
 /// opens none: every open is announced to every watch on the machine.
@@ -18,8 +18,8 @@ pub(super) static OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 /// client would have every input pump contending on one handle, and one device
 /// going quiet would stall the others. Enumeration opens a short-lived client of
 /// its own for the same reason: it must not block behind a pump.
-pub(super) fn open(name: &str, nonblock: bool, version: UmpVersion) -> Result<Client> {
+pub(super) fn open(name: &str, blocking: Blocking, version: UmpVersion) -> Result<Client> {
     #[cfg(test)]
     OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    Ok(Client::open(name, nonblock, version)?)
+    Ok(Client::open(name, blocking, version)?)
 }

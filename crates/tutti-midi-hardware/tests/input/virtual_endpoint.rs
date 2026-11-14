@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 use super::listener::Listener;
 
 use tutti_alsa_ffi::{
-    CAP_READ, CAP_WRITE, Client, PROTO_MIDI1, PROTO_MIDI2, PortEntry, Read, TYPE_APPLICATION,
-    TYPE_MIDI_GENERIC, UmpVersion,
+    Blocking, CAP_READ, CAP_WRITE, Client, PROTO_MIDI1, PROTO_MIDI2, PortEntry, Read,
+    TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpVersion,
 };
-use tutti_fixtures::midi::{m1_note_on, note_on};
+use tutti_fixtures::midi::{m1_note_on, note_on, per_note_pitch_bend};
 use tutti_graph::EventCapacity;
 use tutti_midi_device::{BlockName, EndpointName, FunctionBlock};
 use tutti_midi_hardware::{
@@ -39,7 +39,12 @@ fn find(peer: &Client, spec: &VirtualSpec) -> Option<PortEntry> {
 }
 
 fn peer(caps: u32) -> (Client, i32) {
-    let client = Client::open("tutti-virt-peer", true, UmpVersion::Midi2).expect("a sequencer");
+    peer_in(caps, UmpVersion::Midi2)
+}
+
+/// A peer client delivered `version`.
+fn peer_in(caps: u32, version: UmpVersion) -> (Client, i32) {
+    let client = Client::open("tutti-virt-peer", Blocking::NonBlock, version).expect("a sequencer");
     let port = client
         .open_port("peer", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)
         .expect("a port");
@@ -165,13 +170,14 @@ fn the_published_endpoint_record_carries_the_protocol_and_the_blocks() {
 }
 
 /// An endpoint created as MIDI 1.0 reports MIDI 1.0 and publishes it, and the
-/// MIDI 1.0 channel voice message (type 2) a client sends it reaches the graph
-/// whole.
+/// MIDI 1.0 channel voice message (type 2) a client sends it reaches the graph's
+/// ingest node as it does from a MIDI 1.0 device, which widens it: velocity
+/// `0x40` is `0x8000` (M2-115).
 #[test]
-fn a_midi1_destination_reports_midi1_and_delivers_midi1_messages() {
+fn a_midi1_destination_reports_midi1_and_its_messages_arrive_widened() {
     let spec = spec("midi1").with_protocol(VirtualProtocol::Midi1);
     let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(8), Duration::ZERO);
-    let mut listener = Listener::over(&inlets);
+    let mut listener = Listener::over_ingest(&inlets);
     let ports = HardwareMidiInputs::new(std::sync::Arc::clone(&inlets));
     let producer = ports.open_input_port("virtual").expect("a slot");
     listener.apply();
@@ -187,5 +193,68 @@ fn a_midi1_destination_reports_midi1_and_delivers_midi1_messages() {
     peer.send_to_subscribers(u8::try_from(port).unwrap(), note.words())
         .expect("sends");
     let heard = listener.listen(Duration::from_millis(300));
-    assert_eq!(heard, [note]);
+    assert_eq!(heard, [note_on(MidiChannel::of(2), 60, 0x8000)]);
+}
+
+/// A MIDI 2.0 note sent into a MIDI 1.0 source reaches a subscriber as the
+/// MIDI 1.0 note (type 2): the 16-bit velocity `0x8100` is the 7-bit `0x40`
+/// (M2-115).
+#[test]
+fn a_midi2_note_sent_into_a_midi1_source_arrives_as_a_midi1_note() {
+    let spec = spec("narrow").with_protocol(VirtualProtocol::Midi1);
+    let source = VirtualSource::open(&spec).expect("a virtual source");
+    assert_eq!(source.protocol(), VirtualProtocol::Midi1);
+    let (peer, port) = peer_in(CAP_WRITE, UmpVersion::Midi1);
+    let found = find(&peer, &spec).expect("listed");
+    peer.connect_from(port, found.client, found.port)
+        .expect("subscribes");
+
+    source
+        .send(note_on(MidiChannel::of(2), 60, 0x8100))
+        .expect("sends");
+    let got = read(&peer, 1);
+    let want = m1_note_on(MidiChannel::of(2), 60, U7::of(0x40));
+    assert_eq!(&got[0][..want.words().len()], want.words());
+}
+
+/// A MIDI 2.0 message with no MIDI 1.0 form (M2-104 Appendix D.2: a per-note
+/// pitch bend) is refused by name by a MIDI 1.0 source, and nothing reaches the
+/// subscriber.
+#[test]
+fn a_message_with_no_midi1_form_is_refused_by_a_midi1_source() {
+    let spec = spec("noform").with_protocol(VirtualProtocol::Midi1);
+    let source = VirtualSource::open(&spec).expect("a virtual source");
+    let (peer, port) = peer_in(CAP_WRITE, UmpVersion::Midi1);
+    let found = find(&peer, &spec).expect("listed");
+    peer.connect_from(port, found.client, found.port)
+        .expect("subscribes");
+
+    let bend = per_note_pitch_bend(MidiChannel::of(2), 60, 0x8000_0000);
+    assert!(matches!(
+        source.send(bend),
+        Err(tutti_midi_hardware::Error::NoMidi1Form(
+            tutti_midi_protocol::NoMidi1Form::PerNote
+        ))
+    ));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(matches!(peer.read_event(), Ok(Read::Empty)));
+}
+
+/// A MIDI 1.0 note sent into a MIDI 2.0 source reaches a subscriber widened:
+/// velocity `0x40` is `0x8000` (M2-115).
+#[test]
+fn a_midi1_note_sent_into_a_midi2_source_arrives_widened() {
+    let spec = spec("widen");
+    let source = VirtualSource::open(&spec).expect("a virtual source");
+    let (peer, port) = peer(CAP_WRITE);
+    let found = find(&peer, &spec).expect("listed");
+    peer.connect_from(port, found.client, found.port)
+        .expect("subscribes");
+
+    source
+        .send(m1_note_on(MidiChannel::of(2), 60, U7::of(0x40)))
+        .expect("sends");
+    let got = read(&peer, 1);
+    let want = note_on(MidiChannel::of(2), 60, 0x8000);
+    assert_eq!(&got[0][..want.words().len()], want.words());
 }

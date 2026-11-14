@@ -20,7 +20,10 @@
 //! input does, so its events are stamped on the same clock and reach the graph
 //! through the same inlets.
 
+use std::sync::{Mutex, PoisonError};
+
 use tutti_midi_device::{EndpointName, FunctionBlock};
+use tutti_midi_protocol::{Translator, narrow_message};
 use tutti_ump::Ump;
 
 use crate::InputProducerHandle;
@@ -96,10 +99,21 @@ pub(crate) trait SourceBackend: Send + Sync {
     fn send(&self, words: &[u32]) -> Result<()>;
 }
 
+/// How a source brings a message to its protocol.
+enum Conversion {
+    /// A MIDI 1.0 endpoint: MIDI 2.0 voice messages narrow.
+    Narrow,
+    /// A MIDI 2.0 endpoint: MIDI 1.0 voice messages widen, holding the
+    /// Registered and Assignable Controller runs a MIDI 1.0 stream spreads over
+    /// several messages.
+    Widen(Box<Mutex<Translator>>),
+}
+
 /// An endpoint other applications read from.
 #[must_use = "dropping it removes the endpoint"]
 pub struct VirtualSource {
     backend: Box<dyn SourceBackend>,
+    conversion: Conversion,
     name: EndpointName,
     protocol: VirtualProtocol,
 }
@@ -124,23 +138,52 @@ impl VirtualSource {
     /// platform's own error when the OS refuses the endpoint.
     pub fn open(spec: &VirtualSpec) -> Result<Self> {
         let (backend, protocol) = backend::open_virtual_source(spec)?;
+        let conversion = match protocol {
+            VirtualProtocol::Midi1 => Conversion::Narrow,
+            VirtualProtocol::Midi2 => Conversion::Widen(Box::new(Mutex::new(Translator::new()))),
+        };
         Ok(Self {
             backend,
+            conversion,
             name: spec.name,
             protocol,
         })
     }
 
-    /// Sends `ump` to everything connected to the endpoint.
+    /// Sends `ump` to everything connected to the endpoint, in the endpoint's
+    /// [`protocol`](Self::protocol).
     ///
-    /// The message is sent as it is: this call does not convert it to
-    /// [`protocol`](Self::protocol), and whether the OS does for a subscriber is
-    /// the OS's.
+    /// A MIDI 2.0 voice message narrows to its MIDI 1.0 message on a MIDI 1.0
+    /// endpoint (M2-115), and a MIDI 1.0 voice message widens on a MIDI 2.0 one.
+    /// A MIDI 1.0 Registered or Assignable Controller is several messages, so
+    /// the widened controller is sent with the message that completes it and
+    /// the earlier ones send nothing. Any other message is sent as it is.
     ///
     /// # Errors
     ///
-    /// The platform's error when the OS refuses the message.
+    /// [`Error::NoMidi1Form`](crate::Error::NoMidi1Form) for a MIDI 2.0 message
+    /// on a MIDI 1.0 endpoint that has no single MIDI 1.0 message (a per-note
+    /// controller, a registered or assignable controller, per-note management);
+    /// nothing is sent. Otherwise the platform's error when the OS refuses the
+    /// message.
     pub fn send(&self, ump: Ump) -> Result<()> {
+        let ump = match &self.conversion {
+            Conversion::Narrow => match ump.decode() {
+                Ok(message) => Ump::from(narrow_message(message)?),
+                // A packet no message is defined for is forwarded as it is.
+                Err(_) => ump,
+            },
+            Conversion::Widen(translator) => {
+                let widened = translator
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .translate(ump);
+                match widened {
+                    Some(ump) => ump,
+                    None => return Ok(()),
+                }
+            }
+        };
         self.backend.send(ump.words())
     }
 

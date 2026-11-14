@@ -45,7 +45,7 @@ use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::Result;
 use enumerate::Direction;
 use std::sync::{Mutex, PoisonError};
-use tutti_alsa_ffi::{Client, UmpVersion};
+use tutti_alsa_ffi::{Blocking, Client, UmpVersion};
 use tutti_midi_device::{EndpointId, OsDevice};
 
 /// The Linux [`MidiEndpoints`] implementation.
@@ -82,7 +82,7 @@ impl AlsaEndpoints {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if held.is_none() {
-            *held = client::open("tutti-enum", true, UmpVersion::Midi2)
+            *held = client::open("tutti-enum", Blocking::NonBlock, UmpVersion::Midi2)
                 .inspect_err(|e| tracing::debug!("ALSA enumeration: {e}"))
                 .ok();
         }

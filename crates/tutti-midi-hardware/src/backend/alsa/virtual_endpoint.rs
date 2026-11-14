@@ -8,9 +8,9 @@
 //! reads the protocol it carries instead of taking it for a legacy port.
 
 use tutti_alsa_ffi::{
-    BLOCK_IS_LOWSPEED, BLOCK_IS_MIDI1, CAP_READ, CAP_SUBS_READ, CAP_SUBS_WRITE, CAP_WRITE, Client,
-    DIR_BIDIRECTION, DIR_INPUT, DIR_OUTPUT, PROTO_MIDI1, PROTO_MIDI2, TYPE_APPLICATION,
-    TYPE_MIDI_GENERIC, UmpBlock, UmpEndpoint, UmpVersion,
+    BLOCK_IS_LOWSPEED, BLOCK_IS_MIDI1, Blocking, CAP_READ, CAP_SUBS_READ, CAP_SUBS_WRITE,
+    CAP_WRITE, Client, DIR_BIDIRECTION, DIR_INPUT, DIR_OUTPUT, PROTO_MIDI1, PROTO_MIDI2,
+    TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpBlock, UmpEndpoint, UmpVersion,
 };
 use tutti_midi_device::FunctionBlock;
 use tutti_ump::Direction;
@@ -34,9 +34,9 @@ fn version_of(protocol: VirtualProtocol) -> UmpVersion {
 
 /// Opens the endpoint's client in the protocol the spec asks for, or in MIDI 1.0
 /// when the kernel refuses a MIDI 2.0 client; the protocol it got goes with it.
-fn open_client(spec: &VirtualSpec, nonblock: bool) -> Result<(Client, VirtualProtocol)> {
+fn open_client(spec: &VirtualSpec, blocking: Blocking) -> Result<(Client, VirtualProtocol)> {
     let name = spec.name().as_str();
-    match super::client::open(name, nonblock, version_of(spec.protocol())) {
+    match super::client::open(name, blocking, version_of(spec.protocol())) {
         Ok(client) => Ok((client, spec.protocol())),
         Err(Error::Alsa {
             operation: SET_VERSION,
@@ -44,7 +44,7 @@ fn open_client(spec: &VirtualSpec, nonblock: bool) -> Result<(Client, VirtualPro
         }) if spec.protocol() == VirtualProtocol::Midi2 => {
             tracing::debug!("virtual MIDI endpoint falls back to MIDI 1.0 ({code})");
             Ok((
-                super::client::open(name, nonblock, UmpVersion::Midi1)?,
+                super::client::open(name, blocking, UmpVersion::Midi1)?,
                 VirtualProtocol::Midi1,
             ))
         }
@@ -84,6 +84,10 @@ fn publish(client: &Client, spec: &VirtualSpec, protocol: VirtualProtocol) -> Re
         VirtualProtocol::Midi1 => PROTO_MIDI1,
         VirtualProtocol::Midi2 => PROTO_MIDI2,
     };
+    // The record names the MIDI protocol only: neither the protocol in use nor
+    // the protocols offered carry `PROTO_JRTS_TX` or `PROTO_JRTS_RX`, so the
+    // endpoint declares that it sends and receives no JR Timestamps (the spec
+    // has no JR support).
     client.publish_ump_endpoint(&UmpEndpoint {
         protocol: bits,
         protocol_caps: bits,
@@ -114,7 +118,7 @@ impl SourceBackend for AlsaVirtualSource {
 
 /// Publishes a virtual source for `spec`.
 pub(crate) fn source(spec: &VirtualSpec) -> Result<(AlsaVirtualSource, VirtualProtocol)> {
-    let (client, protocol) = open_client(spec, false)?;
+    let (client, protocol) = open_client(spec, Blocking::Block)?;
     let port = client.open_port(
         spec.name().as_str(),
         CAP_READ | CAP_SUBS_READ,
@@ -137,7 +141,7 @@ pub(crate) fn destination(
     spec: &VirtualSpec,
     producer: InputProducerHandle,
 ) -> Result<(AlsaInput, VirtualProtocol)> {
-    let (client, protocol) = open_client(spec, true)?;
+    let (client, protocol) = open_client(spec, Blocking::NonBlock)?;
     let port = client.open_port(
         spec.name().as_str(),
         CAP_WRITE | CAP_SUBS_WRITE,

@@ -17,7 +17,7 @@ use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::Samples;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 
 /// Frames from a note's onset to its first non-zero sample on the fixture's
 /// preset 0 at 48 kHz.
@@ -42,7 +42,7 @@ fn font() -> Arc<SoundFont> {
 
 fn soundfont_row() -> Row {
     let font = font();
-    let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+    let note = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
     Row::new(
         "SoundFontUnit",
         move || {

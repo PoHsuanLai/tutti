@@ -151,6 +151,9 @@ fn resource_name_limits() {
     assert!(ResourceName::new("Cha-nnel").is_none());
     assert!(ResourceName::new("Channel\u{e9}").is_none());
     assert!(ResourceName::new("X-MyResource").is_some());
+    // Table 13: 36 characters in all, the `X-` of a custom name among them (§8.4).
+    assert!(ResourceName::new(&format!("X-{}", "a".repeat(34))).is_some());
+    assert!(ResourceName::new(&format!("X-{}", "a".repeat(35))).is_none());
     assert!(ResourceName::new("X-").is_none());
     assert!(ResourceName::new(&format!("X-{}", "a".repeat(34))).is_some());
     assert!(ResourceName::new(&format!("X-{}", "a".repeat(35))).is_none());
@@ -298,17 +301,17 @@ fn a_property_value_is_a_number_boolean_or_string() {
         );
     }
     let got = request(r#"{"resource":"A","x-i":-12,"x-d":2.5,"x-e":1e3,"x-b":false,"x-s":"t"}"#);
-    assert_eq!(got.extra.get("x-i"), Some(&PeValue::Integer(-12)));
+    assert_eq!(got.extra.get("x-i"), Some(&PeJson::Integer(-12)));
     assert_eq!(
         got.extra.get("x-d"),
-        Some(&PeValue::Decimal(PeDecimal::new(2.5).unwrap()))
+        Some(&PeJson::Decimal(PeDecimal::new(2.5).unwrap()))
     );
     assert_eq!(
         got.extra.get("x-e"),
-        Some(&PeValue::Decimal(PeDecimal::new(1000.0).unwrap()))
+        Some(&PeJson::Decimal(PeDecimal::new(1000.0).unwrap()))
     );
-    assert_eq!(got.extra.get("x-b"), Some(&PeValue::Bool(false)));
-    assert_eq!(got.extra.get("x-s"), Some(&PeValue::String("t".into())));
+    assert_eq!(got.extra.get("x-b"), Some(&PeJson::Bool(false)));
+    assert_eq!(got.extra.get("x-s"), Some(&PeJson::String("t".into())));
 }
 
 #[test]
@@ -414,11 +417,11 @@ fn a_property_of_another_shape_is_not_an_extra() {
         Err(PeHeaderError::Misplaced(_))
     ));
     let mut extra = PeExtra::default();
-    assert!(extra.insert(name("status"), PeValue::Bool(true)).is_err());
-    assert!(extra.insert(name("x-a"), PeValue::Bool(true)).is_ok());
-    assert!(extra.insert(name("x-a"), PeValue::Integer(1)).is_ok());
+    assert!(extra.insert(name("status"), PeJson::Bool(true)).is_err());
+    assert!(extra.insert(name("x-a"), PeJson::Bool(true)).is_ok());
+    assert!(extra.insert(name("x-a"), PeJson::Integer(1)).is_ok());
     assert_eq!(extra.iter().count(), 1);
-    assert_eq!(extra.get("x-a"), Some(&PeValue::Integer(1)));
+    assert_eq!(extra.get("x-a"), Some(&PeJson::Integer(1)));
 }
 
 #[test]
@@ -525,26 +528,23 @@ fn everything() -> Vec<PeHeader> {
     full.extra
         .insert(
             name("x-text"),
-            PeValue::String("q\"\\/\u{e9}\u{1f3b9}\u{1}".into()),
+            PeJson::String("q\"\\/\u{e9}\u{1f3b9}\u{1}".into()),
         )
         .unwrap();
     full.extra
-        .insert(name("x-int"), PeValue::Integer(i64::MIN))
+        .insert(name("x-int"), PeJson::Integer(i64::MIN))
         .unwrap();
     full.extra
-        .insert(
-            name("x-dec"),
-            PeValue::Decimal(PeDecimal::new(1.0).unwrap()),
-        )
+        .insert(name("x-dec"), PeJson::Decimal(PeDecimal::new(1.0).unwrap()))
         .unwrap();
     full.extra
         .insert(
             name("x-big"),
-            PeValue::Decimal(PeDecimal::new(1.5e300).unwrap()),
+            PeJson::Decimal(PeDecimal::new(1.5e300).unwrap()),
         )
         .unwrap();
     full.extra
-        .insert(name("x-bool"), PeValue::Bool(true))
+        .insert(name("x-bool"), PeJson::Bool(true))
         .unwrap();
 
     let mut answer = PeReply::new(PeStatus::Terminate);
@@ -556,7 +556,7 @@ fn everything() -> Vec<PeHeader> {
     answer.media_type = MediaType::new("audio/midi");
     answer
         .extra
-        .insert(name("future"), PeValue::Bool(false))
+        .insert(name("future"), PeJson::Bool(false))
         .unwrap();
 
     vec![
@@ -597,7 +597,7 @@ fn a_header_is_held_to_the_receivable_sysex_size() {
         let mut request = PeRequest::new(ResourceName::new("A").unwrap());
         request
             .extra
-            .insert(name("x-a"), PeValue::String("a".repeat(len)))
+            .insert(name("x-a"), PeJson::String("a".repeat(len)))
             .unwrap();
         PeHeader::Request(request)
     };

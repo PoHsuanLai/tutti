@@ -17,7 +17,7 @@ use crate::common;
 use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Instant;
-use tutti_fixtures::midi::m1_note_on;
+
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 use tutti_graph::NodeKey;
@@ -39,6 +39,7 @@ use tutti_types::{
 };
 
 use common::probe::{ProbeUnit, Pulse};
+use tutti_ump::{Message, Voice1};
 
 const RATE: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm::of(120.0);
@@ -133,7 +134,10 @@ impl Node for Held {
             io.event_out(0)
                 .push(Event::midi(
                     o,
-                    m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)),
+                    Message::midi1(
+                        MidiChannel::FIRST,
+                        Voice1::note_on(NoteNumber::of(60), U7::of(100)),
+                    ),
                 ))
                 .expect("room");
         }

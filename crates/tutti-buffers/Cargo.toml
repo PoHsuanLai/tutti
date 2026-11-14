@@ -1,0 +1,33 @@
+[package]
+name = "tutti-buffers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Audio sample formats and borrowed buffer views: mono, interleaved and planar, with spec'd conversions between formats and layouts"
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+keywords = ["audio", "buffer", "sample", "interleaved"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+# No features: a view is a borrowed slice and a `Sample` is a plain `Copy` value.
+
+[dependencies]
+# `Samples`, the frame count every view speaks, and `ChannelLayout`, its width.
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+# Pure-Rust `rint`, `sqrt`, `exp` and kin, so a conversion or a `Float`'s math does
+# not depend on the platform's C math library.
+libm = "0.2.15"
+# The `Error` derive of `BufferError` and `I24OutOfRange`.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The fold's allocation gate: the test binary installs `AllocDisabler`.
+assert_no_alloc = { version = "1", default-features = false }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]

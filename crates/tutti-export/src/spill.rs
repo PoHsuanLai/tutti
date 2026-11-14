@@ -12,7 +12,8 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use tutti_types::{ChannelLayout, InterleavedMut, Samples};
+use tutti_buffers::InterleavedMut;
+use tutti_types::{ChannelLayout, Samples};
 
 use crate::render::Replay;
 
@@ -215,14 +216,14 @@ impl Replay for SpillReplay<'_> {
         let width = usize::from(out.layout().count());
         match self {
             Self::Memory { held, at } => {
-                let n = (held.len() - *at).min(out.len() * width);
+                let n = (held.len() - *at).min(out.len().get() * width);
                 let n = n - n % width;
                 out.samples_mut()[..n].copy_from_slice(&held[*at..*at + n]);
                 *at += n;
                 Ok(n / width)
             }
             Self::File { reader, bytes } => {
-                let want = out.len() * width;
+                let want = out.len().get() * width;
                 bytes.resize(want * 4, 0);
                 let mut got = 0;
                 while got < bytes.len() {

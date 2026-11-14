@@ -2,8 +2,8 @@ use super::*;
 use crate::test_support::at;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
-use tutti_ump::{Address, CCNumber, KeyEvent, Message, Voice2};
+use tutti_midi_protocol::{MpeZoneConfig, MpeZones, widen_bend, widen_value, widen_velocity};
+use tutti_ump::{Address, CCNumber, KeyEvent, Message, U7, U14, Voice2};
 
 /// What the ingest sends, collected: the tests read it as a list.
 trait Collected {
@@ -34,31 +34,25 @@ fn note_on(channel: u8, note: u8, vel_u7: u8) -> UmpAt {
     at(
         0,
         midi::note_on(
-            MidiGroup::FIRST,
             MidiChannel::of(channel),
             note,
-            tutti_fixtures::midi::wide_velocity(vel_u7),
+            widen_velocity(U7::of(vel_u7)).get(),
         ),
     )
 }
 fn pitch_bend14(channel: u8, bend14: u16) -> UmpAt {
     at(
         0,
-        midi::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(channel),
-            tutti_fixtures::midi::wide_bend(bend14),
-        ),
+        midi::pitch_bend(MidiChannel::of(channel), widen_bend(U14::of(bend14)).get()),
     )
 }
 fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> UmpAt {
     at(
         0,
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::of(channel),
             cc_num,
-            tutti_fixtures::midi::wide_value(value_u7),
+            widen_value(U7::of(value_u7)).get(),
         ),
     )
 }
@@ -130,10 +124,7 @@ fn member_channel_pressure_becomes_per_note_pressure() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     ingest.translated(&note_on(2, 60, 100));
     let out = ingest
-        .translated(&at(
-            0,
-            midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(2), 0xFFFF_FFFF),
-        ))
+        .translated(&at(0, midi::channel_pressure(MidiChannel::of(2), u32::MAX)))
         .next()
         .expect("emits");
     assert_cv2!(out, _, Voice2::PolyPressure { note, .. } if note.get() == 60);
@@ -151,7 +142,7 @@ fn native_per_note_passes_through() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     let native = at(
         0,
-        midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF),
+        midi::per_note_pitch_bend(MidiChannel::FIRST, 60, u32::MAX),
     );
     let out = ingest.translated(&native).next().expect("passes");
     assert_cv2!(out, _, Voice2::PerNotePitchBend { .. });
@@ -200,8 +191,8 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
     assert_eq!(
         ranges_only(reset.iter().copied()).len(),
-        8,
-        "master and seven members"
+        15,
+        "the master's range, and on each of seven members the channel's and the per-note one"
     );
     assert!(!reset.contains(&mcm));
     assert!(
@@ -269,12 +260,14 @@ fn mcm_with_zero_members_disables_the_zone() {
     // only come off the wire: build it directly.)
     let disable = at(
         0,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST, // lower-zone master channel
-            Rpn::MPE_CONFIGURATION,
-            0, // 0 members → disable
-        ),
+        Ump::from(Message::midi2(
+            MidiChannel::FIRST,
+            Voice2::registered(
+                // lower-zone master channel
+                Rpn::MPE_CONFIGURATION,
+                ControlValue::MIN,
+            ),
+        )),
     );
     assert_eq!(
         ranges_only(ingest.translated(&disable)).len(),
@@ -375,7 +368,15 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     assert!(reset.iter().all(|ev| ev.0.get() == 9));
     assert_eq!(
         ranges_after(ranges_only(reset.iter().copied())),
-        vec![(15, 0, 2.0), (12, 7, 48.0), (13, 7, 48.0), (14, 7, 48.0)]
+        vec![
+            (15, 0, 2.0),
+            (12, 0, 2.0),
+            (13, 0, 2.0),
+            (14, 0, 2.0),
+            (12, 7, 48.0),
+            (13, 7, 48.0),
+            (14, 7, 48.0)
+        ]
     );
     // An upper member set to ±12, then the upper MCM again: the upper
     // members are back at ±48, the lower zone's ±12 stands.
@@ -411,12 +412,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 
     let disable = at(
         0,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::of(15),
-            Rpn::MPE_CONFIGURATION,
-            0,
-        ),
+        midi::registered(MidiChannel::of(15), Rpn::MPE_CONFIGURATION, 0),
     );
     assert_eq!(
         ranges_only(ingest.translated(&disable)).len(),
@@ -427,14 +423,17 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     // A host-set dual-zone mode: each zone's ranges, lower first.
     ingest.set_mode(tutti_fixtures::midi::dual_zones(2, 1));
     let defaults = ranges_only(ingest.defaults(MidiGroup::FIRST, Offset::ZERO));
-    assert_eq!(defaults.len(), 5);
+    assert_eq!(defaults.len(), 8);
     assert_eq!(
         ranges_after(defaults),
         vec![
             (0, 0, 2.0),
+            (1, 0, 2.0),
+            (2, 0, 2.0),
             (1, 7, 48.0),
             (2, 7, 48.0),
             (15, 0, 2.0),
+            (14, 0, 2.0),
             (14, 7, 48.0)
         ]
     );
@@ -448,8 +447,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
     at(
         17,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
+        midi::registered(
             MidiChannel::of(channel),
             Rpn::PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(semitones).to_rpn_bits(),
@@ -471,8 +469,13 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
 
     let master = bend_sensitivity(0, 2);
     let out: Vec<UmpAt> = ingest.translated(&master).collect();
-    assert_eq!(out, vec![master], "the master's own range passes through");
-    assert!(!receiver.observe(&out[0].1));
+    assert_eq!(out[0], master, "the master's own range passes through");
+    assert_eq!(
+        ranges_after(out[1..].iter().copied()),
+        vec![(1, 0, 2.0), (2, 0, 2.0), (3, 0, 2.0)],
+        "and is each member's channel range, which carries the master's bend"
+    );
+    assert!(out.iter().all(|ev| !receiver.observe(&ev.1)));
 
     for (member, semitones, channels) in [(2, 12, 1..=3), (13, 24, 12..=14)] {
         let fanned = ingest.translated(&bend_sensitivity(member, semitones));
@@ -505,10 +508,7 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
 #[test]
 fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
-    let on0 = at(
-        0,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::of(2), 60, 0),
-    );
+    let on0 = at(0, midi::note_on(MidiChannel::of(2), 60, 0));
     assert_eq!(ingest.translated(&on0).collect::<Vec<_>>(), vec![on0]);
     let out = ingest
         .translated(&pitch_bend14(2, 16383))
@@ -528,18 +528,22 @@ fn a_groups_member_channels_hold_notes_of_their_own() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
     let group2 = MidiGroup::of(1);
     let channel = MidiChannel::of(2);
-    let bend = tutti_fixtures::midi::wide_bend(16383);
+    let bend = widen_bend(U14::of(16383)).get();
     ingest.translated(&at(
         0,
-        midi::note_on(group2, channel, 60, midi::wide_velocity(100)),
+        midi::note_on(
+            Address::new(group2, channel),
+            60,
+            widen_velocity(U7::of(100)).get(),
+        ),
     ));
-    let first_group = at(0, midi::pitch_bend(MidiGroup::FIRST, channel, bend));
+    let first_group = at(0, midi::pitch_bend(channel, bend));
     assert_eq!(
         ingest.translated(&first_group).count(),
         0,
         "Group 1's channel 2 holds no note"
     );
-    let second_group = at(0, midi::pitch_bend(group2, channel, bend));
+    let second_group = at(0, midi::pitch_bend(Address::new(group2, channel), bend));
     let out = ingest.translated(&second_group).next().expect("emits");
     assert_cv2!(
         out,
@@ -558,11 +562,10 @@ fn an_mcm_configures_its_own_group_only() {
     let group2 = MidiGroup::of(1);
     let mcm = at(
         0,
-        midi::registered_rpn(
-            group2,
-            MidiChannel::FIRST,
+        midi::registered(
+            Address::new(group2, MidiChannel::FIRST),
             Rpn::MPE_CONFIGURATION,
-            7 << 25, // seven members
+            7 << 25,
         ),
     );
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
@@ -573,8 +576,8 @@ fn an_mcm_configures_its_own_group_only() {
     ));
     assert_eq!(
         ranges_only(reset.iter().copied()).len(),
-        8,
-        "master and seven members"
+        15,
+        "the master's range, and on each of seven members the channel's and the per-note one"
     );
     assert!(
         reset.iter().all(|ev| ev.1.group() == Some(group2)),
@@ -585,17 +588,11 @@ fn an_mcm_configures_its_own_group_only() {
 // ---- the state a note starts with (M1-100 sections 2.2.6 to 2.2.8) ----------
 
 fn note_off(channel: u8, note: u8) -> UmpAt {
-    at(
-        0,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0),
-    )
+    at(0, midi::note_off(MidiChannel::of(channel), note, 0))
 }
 
 fn pressure(channel: u8, value: u32) -> UmpAt {
-    at(
-        0,
-        midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(channel), value),
-    )
+    at(0, midi::channel_pressure(MidiChannel::of(channel), value))
 }
 
 /// What `ingest` sends for `event`, as decoded `(channel, message)` pairs.
@@ -626,7 +623,7 @@ fn a_member_bend_before_the_note_on_is_the_notes_start() {
     assert!(matches!(
         out[0],
         (2, Voice2::PerNotePitchBend { note, value })
-            if note.get() == 60 && value == BendValue::new(tutti_fixtures::midi::wide_bend(16383))
+            if note.get() == 60 && value == widen_bend(U14::of(16383))
     ));
     assert!(matches!(out[1], (2, Voice2::NoteOn { .. })));
 }
@@ -650,7 +647,7 @@ fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
     assert!(matches!(
         out[1],
         (3, Voice2::AssignablePerNote { note, controller: 74, value })
-            if note.get() == 64 && value == ControlValue::new(tutti_fixtures::midi::wide_value(64))
+            if note.get() == 64 && value == widen_value(U7::of(64))
     ));
     assert!(matches!(out[2], (3, Voice2::NoteOn { .. })));
 }
@@ -763,10 +760,13 @@ fn the_receive_table_ignores_what_it_prohibits() {
         (9, 120, true),
         (9, 125, true),
     ] {
-        let out = ingest
-            .translated(&cc(channel, number(controller), 0))
-            .count();
-        assert_eq!(out == 1, passes, "CC {controller} on channel {channel}");
+        let sent = cc(channel, number(controller), 0);
+        let out: Vec<UmpAt> = ingest.translated(&sent).collect();
+        assert_eq!(
+            out.contains(&sent),
+            passes,
+            "CC {controller} on channel {channel}"
+        );
     }
 }
 
@@ -780,12 +780,7 @@ fn an_mcm_on_a_member_channel_is_ignored() {
     let mcm_on = |channel: u8| {
         at(
             0,
-            midi::registered_rpn(
-                MidiGroup::FIRST,
-                MidiChannel::of(channel),
-                Rpn::MPE_CONFIGURATION,
-                3 << 25,
-            ),
+            midi::registered(MidiChannel::of(channel), Rpn::MPE_CONFIGURATION, 3 << 25),
         )
     };
     assert_eq!(ingest.translated(&mcm_on(3)).count(), 0);
@@ -809,12 +804,7 @@ fn an_mcm_on_a_member_channel_is_ignored() {
 #[test]
 fn program_change_on_a_member_follows_the_zones_midi_mode() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
-    let program = |channel: u8| {
-        at(
-            0,
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(channel), 5, None),
-        )
-    };
+    let program = |channel: u8| at(0, midi::program_change(MidiChannel::of(channel), 5, None));
     assert_eq!(ingest.translated(&program(3)).count(), 0, "Mode 3");
     assert_eq!(ingest.translated(&program(0)).count(), 1, "the manager's");
     ingest.translated(&cc(0, CCNumber::of(126), 0));
@@ -844,10 +834,7 @@ fn an_mpe_1_1_zone_starts_in_the_mode_its_response_names() {
     .unwrap()
     .with_channel_response(ChannelResponse::Monophonic);
     let mut ingest = MpeIngest::new(MpeMode::Zones(MpeZones::single(zone)));
-    let program = at(
-        0,
-        midi::program_change(MidiGroup::FIRST, MidiChannel::of(3), 5, None),
-    );
+    let program = at(0, midi::program_change(MidiChannel::of(3), 5, None));
     assert_eq!(ingest.translated(&program).count(), 1, "Mode 4");
     ingest.translated(&cc(1, CCNumber::of(127), 0));
     assert_eq!(ingest.translated(&program).count(), 0, "Mode 3 again");
@@ -901,7 +888,7 @@ fn an_mcm_stops_only_the_channels_it_moves() {
     );
     let out: Vec<UmpAt> = ingest.translated(&grow).collect();
     assert_eq!(stopped(out.iter().copied()), [4, 5]);
-    assert_eq!(ranges_only(out).len(), 6, "and the zone's ranges");
+    assert_eq!(ranges_only(out).len(), 11, "and the zone's ranges");
 
     // Channel 2 kept its note: a bend still folds onto it.
     let bent = decoded(&mut ingest, &pitch_bend14(2, 16383));
@@ -973,12 +960,7 @@ fn a_disabling_mcm_stops_every_channel_of_the_zone() {
     ingest.translated(&note_on(1, 60, 100));
     let disable = at(
         0,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            Rpn::MPE_CONFIGURATION,
-            0,
-        ),
+        midi::registered(MidiChannel::FIRST, Rpn::MPE_CONFIGURATION, 0),
     );
     assert_eq!(stopped(ingest.translated(&disable)), [0, 1, 2]);
     // Channel 1 is conventional again: nothing of the zone is left to fold.
@@ -1075,7 +1057,13 @@ fn enabling_the_profile_starts_every_channel_at_48_semitones() {
     let forty_eight = PitchBendSensitivity::of(48).to_rpn_bits();
     assert_eq!(
         rpns(out.iter().copied(), Rpn::PITCH_BEND_SENSITIVITY),
-        [(2, forty_eight)]
+        [
+            (2, forty_eight),
+            (3, forty_eight),
+            (4, forty_eight),
+            (5, forty_eight)
+        ],
+        "the manager's, and each member's channel range under it"
     );
     assert_eq!(
         rpns(out.iter().copied(), Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY),
@@ -1085,9 +1073,10 @@ fn enabling_the_profile_starts_every_channel_at_48_semitones() {
     // MPE 1.1, by contrast, starts the manager at 2.
     let mpe11 = MpeIngest::new(midi::lower_zone(3));
     let out: Vec<UmpAt> = mpe11.defaults(MidiGroup::FIRST, Offset::ZERO).collect();
+    let two = PitchBendSensitivity::of(2).to_rpn_bits();
     assert_eq!(
         rpns(out, Rpn::PITCH_BEND_SENSITIVITY),
-        [(0, PitchBendSensitivity::of(2).to_rpn_bits())]
+        [(0, two), (1, two), (2, two), (3, two)]
     );
 }
 
@@ -1148,10 +1137,13 @@ fn the_profile_receive_table_for_channel_mode_messages() {
         (9, 126, true),
         (9, 127, true),
     ] {
-        let out = ingest
-            .translated(&cc(channel, number(controller), 0))
-            .count();
-        assert_eq!(out == 1, passes, "CC {controller} on channel {channel}");
+        let sent = cc(channel, number(controller), 0);
+        let out: Vec<UmpAt> = ingest.translated(&sent).collect();
+        assert_eq!(
+            out.contains(&sent),
+            passes,
+            "CC {controller} on channel {channel}"
+        );
     }
 }
 
@@ -1167,7 +1159,10 @@ fn the_two_specifications_receive_different_tables() {
     assert_eq!(ingest.translated(&sound_off).count(), 0, "MPE 1.1");
     assert_eq!(ingest.translated(&reset).count(), 1, "MPE 1.1");
     enable(&mut ingest, MpeZones::single(zone(0, 6)));
-    assert_eq!(ingest.translated(&sound_off).count(), 1, "the Profile");
+    assert!(
+        ingest.translated(&sound_off).any(|e| e == sound_off),
+        "the Profile"
+    );
     assert_eq!(ingest.translated(&reset).count(), 0, "the Profile");
     disable(&mut ingest);
     assert_eq!(ingest.translated(&sound_off).count(), 0, "MPE 1.1 again");
@@ -1184,8 +1179,7 @@ fn the_pitch_bend_sensitivity_is_the_managers() {
     let sensitivity = |channel: u8, semitones: u8| {
         at(
             0,
-            midi::registered_rpn(
-                MidiGroup::FIRST,
+            midi::registered(
                 MidiChannel::of(channel),
                 Rpn::PITCH_BEND_SENSITIVITY,
                 PitchBendSensitivity::of(semitones).to_rpn_bits(),
@@ -1201,8 +1195,8 @@ fn the_pitch_bend_sensitivity_is_the_managers() {
     );
     assert_eq!(
         rpns(out, Rpn::PITCH_BEND_SENSITIVITY),
-        [(0, twelve)],
-        "and the manager's own passes"
+        [(0, twelve), (1, twelve), (2, twelve), (3, twelve)],
+        "and the manager's own passes, copied onto each member"
     );
     assert_eq!(ingest.translated(&sensitivity(2, 7)).count(), 0);
 
@@ -1231,12 +1225,7 @@ fn the_pitch_bend_sensitivity_is_the_managers() {
 /// and does nothing.
 #[test]
 fn program_change_on_a_member_follows_the_channel_response() {
-    let program = |channel: u8| {
-        at(
-            0,
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(channel), 5, None),
-        )
-    };
+    let program = |channel: u8| at(0, midi::program_change(MidiChannel::of(channel), 5, None));
     let mut poly = profiled(0, 4);
     assert_eq!(poly.translated(&program(0)).count(), 1, "the manager's");
     assert_eq!(poly.translated(&program(2)).count(), 0, "polyphonic");
@@ -1292,7 +1281,7 @@ fn what_a_member_was_told_goes_ahead_of_its_note_on() {
     ingest.translated(&cc(2, CCNumber::BRIGHTNESS, 40));
     ingest.translated(&at(
         0,
-        midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(0), 0x4000_0000),
+        midi::channel_pressure(MidiChannel::of(0), 0x4000_0000),
     ));
     let out: Vec<UmpAt> = ingest.translated(&note_on(2, 60, 100)).collect();
     assert_eq!(out.len(), 4, "bend, pressure, CC 74, then the note");
@@ -1325,7 +1314,7 @@ fn a_configuration_message_does_nothing_while_the_profile_is_enabled() {
         MpeMode::Disabled
     ));
     disable(&mut ingest);
-    assert_eq!(ranges_only(ingest.translated(&mcm)).len(), 8, "absorbed");
+    assert_eq!(ranges_only(ingest.translated(&mcm)).len(), 15, "absorbed");
     assert!(matches!(
         ingest.mode_of(MidiGroup::FIRST),
         MpeMode::Zones(_)
@@ -1339,9 +1328,10 @@ fn disabling_the_profile_restores_the_mpe_11_zones_at_their_ranges() {
     let mut ingest = MpeIngest::new(midi::lower_zone(3));
     enable(&mut ingest, MpeZones::single(zone(4, 4)));
     let out = disable(&mut ingest);
+    let two = PitchBendSensitivity::of(2).to_rpn_bits();
     assert_eq!(
         rpns(out.iter().copied(), Rpn::PITCH_BEND_SENSITIVITY),
-        [(0, PitchBendSensitivity::of(2).to_rpn_bits())]
+        [(0, two), (1, two), (2, two), (3, two)]
     );
     assert_eq!(
         rpns(out.iter().copied(), Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY).len(),
@@ -1362,7 +1352,10 @@ fn a_group_has_its_own_profile_zones() {
     let mut ingest = profiled(0, 4);
     let other = MidiGroup::of(1);
     assert_eq!(ingest.profile(other), None);
-    let bend = at(0, midi::pitch_bend(other, MidiChannel::of(2), 0xFFFF_FFFF));
+    let bend = at(
+        0,
+        midi::pitch_bend(Address::new(other, MidiChannel::of(2)), 0xFFFF_FFFF),
+    );
     let out = ingest.translated(&bend).next().expect("passes");
     assert_cv2!(out, _, Voice2::PitchBend(_));
 }
@@ -1377,4 +1370,136 @@ fn a_note_on_the_manager_channel_passes() {
         .next()
         .expect("passes");
     assert!(matches!(out.1.key_event(), Some(KeyEvent::On(_))));
+}
+
+/// **A Manager Channel's zone-wide message is every channel of its zone's**
+/// (M1-100 section 2.3.1: certain messages, the Damper Pedal for one, affect
+/// all sounding notes across the Manager Channel and all Member Channels, and
+/// are sent only on the Manager Channel): the pedals, All Notes Off and Reset
+/// All Controllers go on, and are sent on each member channel with the same
+/// value, ahead of nothing and after the manager's own. A channel outside the
+/// zone hears nothing.
+#[test]
+fn a_managers_zone_wide_message_is_sent_on_every_member_channel() {
+    for controller in [
+        CCNumber::SUSTAIN,
+        CCNumber::SOSTENUTO,
+        CCNumber::ALL_NOTES_OFF,
+        CCNumber::RESET_ALL,
+    ] {
+        let mut ingest = MpeIngest::new(midi::lower_zone(3));
+        let sent = cc(0, controller, 127);
+        let out = decoded(&mut ingest, &sent);
+        let channels: Vec<u8> = out.iter().map(|(c, _)| *c).collect();
+        assert_eq!(channels, [0, 1, 2, 3], "CC {}", controller.get());
+        assert!(
+            out.iter().all(|(_, v)| matches!(v,
+                Voice2::ControlChange { controller: c, value }
+                    if *c == controller && *value == ControlValue::new(u32::MAX))),
+            "CC {}: {out:?}",
+            controller.get()
+        );
+    }
+}
+
+/// The upper zone counts down from the channel below its manager: a pedal on
+/// 15 is on 15 and on 13 and 14 (RP-053), and not on the lower zone's channels.
+#[test]
+fn the_upper_zones_pedal_reaches_its_own_members_only() {
+    let mut ingest = MpeIngest::new(midi::dual_zones(2, 2));
+    let out = decoded(&mut ingest, &cc(15, CCNumber::SUSTAIN, 127));
+    let channels: Vec<u8> = out.iter().map(|(c, _)| *c).collect();
+    assert_eq!(channels, [15, 13, 14]);
+}
+
+/// A member's pedal and panic are its own channel's alone (M1-100 section
+/// 2.3.1: the zone-wide ones are sent only on the Manager Channel), and a
+/// channel in no zone is conventional.
+#[test]
+fn a_members_message_and_a_conventional_channels_stay_on_their_channel() {
+    let mut ingest = MpeIngest::new(midi::lower_zone(3));
+    for channel in [2, 9] {
+        for controller in [
+            CCNumber::SUSTAIN,
+            CCNumber::ALL_NOTES_OFF,
+            CCNumber::RESET_ALL,
+        ] {
+            let sent = cc(channel, controller, 127);
+            assert_eq!(
+                ingest.translated(&sent).collect::<Vec<_>>(),
+                vec![sent],
+                "CC {} on channel {channel}",
+                controller.get()
+            );
+        }
+    }
+}
+
+/// The Profile takes All Sounds Off on its Manager (M2-120 Table 15) and it is
+/// the zone's: sent on each member too.
+#[test]
+fn a_profile_managers_all_sound_off_is_sent_on_every_member() {
+    let mut ingest = profiled(0, 4);
+    let out = decoded(&mut ingest, &cc(0, CCNumber::ALL_SOUND_OFF, 0));
+    let channels: Vec<u8> = out.iter().map(|(c, _)| *c).collect();
+    assert_eq!(channels, [0, 1, 2, 3]);
+}
+
+/// **The manager's Pitch Bend is each member channel's own channel bend**
+/// (RP-053: the manager's bend moves every note of the zone; a member's own is
+/// per-note and a receiver sums the two, M2-104 section 7.4.13): it goes on,
+/// then the same bend word on each member channel, and none beyond the zone.
+#[test]
+fn a_managers_bend_is_copied_onto_each_member_channel() {
+    let mut ingest = MpeIngest::new(midi::dual_zones(3, 2));
+    let bend = pitch_bend14(0, 12288);
+    let Ok(Message::Midi2(_, Voice2::PitchBend(word))) = bend.1.decode() else {
+        panic!("a bend");
+    };
+    let out = decoded(&mut ingest, &bend);
+    assert_eq!(
+        out,
+        (0..=3)
+            .map(|c| (c, Voice2::PitchBend(word)))
+            .collect::<Vec<_>>()
+    );
+    // The upper zone's manager bends its own.
+    let out = decoded(&mut ingest, &pitch_bend14(15, 100));
+    assert_eq!(
+        out.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+        [15, 13, 14]
+    );
+    // A member's own bend is per-note and does not touch the channel bend.
+    ingest.translated(&note_on(2, 60, 100));
+    let own = decoded(&mut ingest, &pitch_bend14(2, 16383));
+    assert!(matches!(
+        own.as_slice(),
+        [(2, Voice2::PerNotePitchBend { .. })]
+    ));
+}
+
+/// **A member's Reset All Controllers does not lose the manager's bend it
+/// carries**: the reset centres the member's wheel, so the manager's, which has
+/// not moved, is sent again after it. With no manager bend there is nothing to
+/// send; and a manager's own reset centres the copies too, so a member reset
+/// after it sends none.
+#[test]
+fn a_members_reset_sends_the_managers_bend_again() {
+    let mut ingest = MpeIngest::new(midi::lower_zone(3));
+    let reset = cc(2, CCNumber::RESET_ALL, 0);
+    assert_eq!(ingest.translated(&reset).collect::<Vec<_>>(), vec![reset]);
+
+    let bend = pitch_bend14(0, 12288);
+    let Ok(Message::Midi2(_, Voice2::PitchBend(word))) = bend.1.decode() else {
+        panic!("a bend");
+    };
+    ingest.translated(&bend);
+    let out: Vec<UmpAt> = ingest.translated(&reset).collect();
+    assert_eq!(out[0], reset, "the reset first");
+    assert_eq!(out.len(), 2);
+    assert_cv2!(out[1], Address { channel, .. }, Voice2::PitchBend(w)
+        if channel.get() == 2 && w == word);
+
+    ingest.translated(&cc(0, CCNumber::RESET_ALL, 0));
+    assert_eq!(ingest.translated(&reset).collect::<Vec<_>>(), vec![reset]);
 }

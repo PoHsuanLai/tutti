@@ -14,7 +14,7 @@ use core_foundation::string::CFString;
 use coremidi_sys::{
     ByteCount, MIDIClientCreate, MIDIClientRef, MIDIEndpointDispose, MIDIEndpointRef,
     MIDIEventList, MIDIEventListAdd, MIDIEventListInit, MIDIProtocolID, MIDIReceivedEventList,
-    MIDISourceCreateWithProtocol, MIDITimeStamp, kMIDIProtocol_2_0,
+    MIDISourceCreateWithProtocol, MIDITimeStamp, kMIDIProtocol_1_0, kMIDIProtocol_2_0,
 };
 use std::mem::MaybeUninit;
 use std::sync::Mutex;
@@ -27,6 +27,26 @@ pub struct Error {
     pub operation: &'static str,
     /// The `OSStatus` CoreMIDI returned (`-1` where no call returned one).
     pub status: i32,
+}
+
+/// The UMP protocol a virtual endpoint carries (`MIDIProtocolID`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Protocol {
+    /// MIDI 1.0 channel voice messages in UMP packets (`kMIDIProtocol_1_0`).
+    Midi1,
+    /// MIDI 2.0 Protocol messages (`kMIDIProtocol_2_0`).
+    Midi2,
+}
+
+impl Protocol {
+    /// CoreMIDI's id for the protocol.
+    pub(crate) fn id(self) -> MIDIProtocolID {
+        let id = match self {
+            Self::Midi1 => kMIDIProtocol_1_0,
+            Self::Midi2 => kMIDIProtocol_2_0,
+        };
+        id as MIDIProtocolID
+    }
 }
 
 /// The process-wide raw client every source's endpoint belongs to.
@@ -66,7 +86,7 @@ pub(crate) fn shared_raw_client() -> Result<MIDIClientRef, i32> {
 /// Send this timestamp to mean "now" (CoreMIDI treats 0 as immediate delivery).
 const MIDI_TIMESTAMP_NOW: MIDITimeStamp = 0;
 
-/// A CoreMIDI virtual source that speaks the **MIDI 2.0 (UMP) protocol**.
+/// A CoreMIDI virtual source that speaks the UMP protocol it was created with.
 ///
 /// It carries UMP words end to end, so JR Timestamps and other MIDI-2-only
 /// messages survive to the wire. Owns its endpoint, which is disposed on drop.
@@ -77,16 +97,17 @@ const MIDI_TIMESTAMP_NOW: MIDITimeStamp = 0;
 #[must_use = "dropping it removes the virtual source"]
 pub struct UmpSource {
     source: MIDIEndpointRef,
+    protocol: Protocol,
 }
 
 impl UmpSource {
-    /// Creates a MIDI-2.0 virtual source named `name`, visible to other apps as
-    /// a UMP-capable MIDI source.
+    /// Creates a virtual source named `name` carrying `protocol`, visible to
+    /// other apps as a UMP-capable MIDI source.
     ///
     /// # Errors
     ///
     /// CoreMIDI's status if it refuses the client or the endpoint.
-    pub fn new(name: &str) -> Result<Self, Error> {
+    pub fn new(name: &str, protocol: Protocol) -> Result<Self, Error> {
         let source_name = CFString::new(name);
         let client = shared_raw_client().map_err(|status| Error {
             operation: "create client (ump source)",
@@ -100,7 +121,7 @@ impl UmpSource {
             MIDISourceCreateWithProtocol(
                 client,
                 source_name.as_concrete_TypeRef(),
-                kMIDIProtocol_2_0 as MIDIProtocolID,
+                protocol.id(),
                 &mut source,
             )
         };
@@ -110,7 +131,7 @@ impl UmpSource {
                 status,
             });
         }
-        Ok(Self { source })
+        Ok(Self { source, protocol })
     }
 
     /// Publishes one UMP message to the endpoint's subscribers.
@@ -140,7 +161,7 @@ impl UmpSource {
         // after both calls have run. `list_size` is that allocation's real size,
         // so `Add` cannot write past it, and `words` outlives the call.
         let status = unsafe {
-            let mut packet = MIDIEventListInit(list_ptr, kMIDIProtocol_2_0 as MIDIProtocolID);
+            let mut packet = MIDIEventListInit(list_ptr, self.protocol.id());
             packet = MIDIEventListAdd(
                 list_ptr,
                 list_size as ByteCount,
@@ -196,7 +217,7 @@ mod tests {
     /// error, not written past it; an empty one is a no-op.
     #[test]
     fn a_message_that_does_not_fit_is_refused() {
-        let source = UmpSource::new("tutti-ffi-test").expect("CoreMIDI");
+        let source = UmpSource::new("tutti-ffi-test", Protocol::Midi2).expect("CoreMIDI");
         assert_eq!(source.send(&[]), Ok(()));
         let err = source.send(&[0; 100_000]).unwrap_err();
         assert_eq!(err.operation, "add ump packet");

@@ -16,7 +16,7 @@ use tutti_session::{
 use tutti_tempo::TempoMap;
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, ChannelLayout, MaxBlock, SampleRate, Samples, Seconds};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Voice2};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -59,7 +59,10 @@ fn an_in_process_instrument_without_a_live_render_mode_bounces_its_clip() {
     session.graph().connect(node, Root).unwrap();
     let on = tutti_midi_runtime::TimedMidiEvent::new(
         Beat(1.0),
-        tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        Message::midi2(
+            MidiChannel::FIRST,
+            Voice2::note_on(NoteNumber::of(60), NoteVelocity::MAX),
+        ),
     )
     .unwrap();
     session

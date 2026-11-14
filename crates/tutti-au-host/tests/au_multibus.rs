@@ -56,7 +56,8 @@ use support::corpus::{
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_ELEMENT;
 use tutti_au_host::{AuChannelConfig, AuChannelCount, AuError, BusDirection};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_fixtures::midi;
+use tutti_ump::MidiChannel;
 
 /// Same rationale as `au_conformance.rs`'s `AU_LOCK`: AudioToolbox tolerates
 /// concurrent use of distinct units, but component discovery walks a
@@ -718,7 +719,6 @@ fn the_default_parameter_address_is_still_global_element_zero() {
 #[test]
 fn a_multi_bus_instrument_still_renders_its_primary_bus() {
     let _g = lock();
-    use tutti_fixtures::midi;
     use tutti_graph::Offset;
 
     let mut au = DLS_SYNTH.open(RATE, BLOCK);
@@ -728,10 +728,7 @@ fn a_multi_bus_instrument_still_renders_its_primary_bus() {
         "the premise: this unit really does have two output buses"
     );
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
 
     // No input bus, so render from an empty input.
     let input: Vec<Vec<f32>> = Vec::new();
@@ -764,7 +761,6 @@ fn a_multi_bus_instrument_still_renders_its_primary_bus() {
 #[test]
 fn querying_the_topology_does_not_reconfigure_the_unit() {
     let _g = lock();
-    use tutti_fixtures::midi;
     use tutti_graph::Offset;
 
     let mut au = DLS_SYNTH.open(RATE, BLOCK);
@@ -778,10 +774,7 @@ fn querying_the_topology_does_not_reconfigure_the_unit() {
         au.bus_count(BusDirection::Output),
     );
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
     let mut baseline = 0.0f32;
     for _ in 0..10 {
         let mut output = silence(channels, BLOCK as usize);
@@ -817,10 +810,7 @@ fn querying_the_topology_does_not_reconfigure_the_unit() {
         "the AU must still be initialized after a topology walk"
     );
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0xC000),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 64, 0xC000))]);
     let mut after = 0.0f32;
     for _ in 0..10 {
         let mut output = silence(channels, BLOCK as usize);

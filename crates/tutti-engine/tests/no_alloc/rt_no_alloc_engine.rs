@@ -24,11 +24,13 @@
 //! over arc-lend's stress test, both run by arc-lend's own CI.
 
 use std::sync::Arc;
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
+use tutti_fixtures::midi;
 use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_transport::{LoopEdit, Transport};
 use tutti_types::LoopRange;
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate};
 
 /// A stereo source that reads the transport per frame from its `Env`, so
 /// the gated loop below exercises `transport_at` and the executor's change
@@ -72,13 +74,12 @@ impl tutti_graph::Node for TransportTone {
 /// so the split into graph blocks runs too.
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
-    use tutti_fixtures::midi::m1_note_on;
     use tutti_graph::NodeKey;
     use tutti_graph::{Editor, EventIn, EventKind, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
     use tutti_transport::{MotionEvent, TransportCommand};
     use tutti_types::{At, Beat, Frame};
-    use tutti_ump::{MidiChannel, NoteNumber, U7};
+    use tutti_ump::{MidiChannel, U7};
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(SampleRate::of(sample_rate));
@@ -99,7 +100,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     let mut output = vec![0.0f32; 1024 * 2];
     // Applying the commit allocates; that is the control side's price and
     // happens before the gate.
-    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
     ed.collect();
     let to = EventIn {
         node: NodeKey(1),
@@ -109,11 +110,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         ed.schedule(
             At::Beat(Beat(0.25 * b as f64)),
             to,
-            EventKind::Midi(m1_note_on(
-                MidiChannel::FIRST,
-                NoteNumber::of(60),
-                U7::of(100),
-            )),
+            EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100))),
         )
         .expect("room");
     }
@@ -149,7 +146,8 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
             m.schedule(At::Frame(Frame::new(base + 7600)), LoopEdit::armed(true))
                 .expect("room");
             for _ in 0..8 {
-                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+                engine
+                    .process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
             }
             m.cancel_scheduled();
         }
@@ -186,13 +184,14 @@ fn a_published_tempo_map_is_taken_without_allocating() {
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let mut output = vec![0.0f32; 1024 * 2];
-    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
     for round in 0..20u32 {
         let bpm = Bpm::of(80.0 + f64::from(round));
         transport.settings().set_tempo(bpm);
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..3 {
-                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+                engine
+                    .process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
             }
         });
         assert_eq!(transport.settings().tempo_in_force(), bpm, "round {round}");
@@ -258,7 +257,7 @@ fn a_step_map_is_followed_without_allocating() {
         .try_send(MotionEvent::play_from(Beat(0.0)))
         .expect("room");
     let mut output = vec![0.0f32; 1024 * 2];
-    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
     // 1 024 frames: past all 41 steps (the last at frame 960).
     assert_eq!(transport.settings().tempo_in_force(), Bpm::of(160.0));
     for round in 0..10u32 {
@@ -275,7 +274,8 @@ fn a_step_map_is_followed_without_allocating() {
         m.try_send(MotionEvent::play_from(Beat(0.0))).expect("room");
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..4 {
-                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+                engine
+                    .process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
             }
         });
         // Looping over beats 0 to 0.02 keeps the tempo among the first 21.
@@ -324,7 +324,7 @@ fn a_step_map_is_followed_without_allocating() {
         .try_send(MotionEvent::play_from(Beat(0.0)))
         .expect("room");
     let mut output = vec![0.0f32; 4_096 * 2];
-    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
     let slowed = transport.settings().tempo_in_force().get();
     assert!(
         (60.0..119.0).contains(&slowed),
@@ -348,7 +348,8 @@ fn a_step_map_is_followed_without_allocating() {
         m.try_send(MotionEvent::play_from(Beat(0.2))).expect("room");
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..4 {
-                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+                engine
+                    .process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
             }
         });
         // Looping over beats 0.1 to 0.3 of a ramp that starts at 120 keeps the
@@ -390,7 +391,7 @@ fn the_heard_tap_is_allocation_free() {
     let taps = engine.heard_taps();
     let mut output = vec![0.0f32; 1024 * 2];
     let layout = ChannelLayout::STEREO;
-    engine.process(&mut InterleavedMut::new(&mut output, layout));
+    engine.process(&mut InterleavedMut::new(&mut output, layout).unwrap());
     ed.collect();
 
     // 16 frames of ring against 1024-frame blocks: every block overflows.
@@ -401,7 +402,7 @@ fn the_heard_tap_is_allocation_free() {
         .expect("the audio thread is not behind");
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..8 {
-            engine.process(&mut InterleavedMut::new(&mut output, layout));
+            engine.process(&mut InterleavedMut::new(&mut output, layout).unwrap());
         }
     });
     drop(first);
@@ -414,12 +415,12 @@ fn the_heard_tap_is_allocation_free() {
         .expect("the audio thread is not behind");
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..8 {
-            engine.process(&mut InterleavedMut::new(&mut output, layout));
+            engine.process(&mut InterleavedMut::new(&mut output, layout).unwrap());
         }
     });
     taps.close().unwrap();
     assert_no_alloc::assert_no_alloc(|| {
-        engine.process(&mut InterleavedMut::new(&mut output, layout));
+        engine.process(&mut InterleavedMut::new(&mut output, layout).unwrap());
     });
     taps.reclaim();
     assert_eq!(
@@ -498,7 +499,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     let four = ChannelLayout::from_count(4);
     let mut output = vec![0.0f32; 1024 * 4];
     // Applying the commit allocates; that is the control side's price.
-    engine.process(&mut InterleavedMut::new(&mut output, four));
+    engine.process(&mut InterleavedMut::new(&mut output, four).unwrap());
     ed.collect();
     let _ = transport.motion().try_send(MotionEvent::Play);
 
@@ -522,7 +523,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
             )
             .expect("room");
             for _ in 0..8 {
-                engine.process(&mut InterleavedMut::new(&mut output, four));
+                engine.process(&mut InterleavedMut::new(&mut output, four).unwrap());
                 // Channel 0 of each frame: the click's left.
                 clicked |= output.iter().step_by(4).any(|&s| s != 0.0);
             }
@@ -618,11 +619,11 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
     assert!(exec.is_parallel(), "the plan spreads over the pool");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let mut output = vec![0.0f32; 512 * 2];
-    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
     ed.collect();
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..200 {
-            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
         }
     });
     // Idle long enough for every helper to park, then render again: the
@@ -630,7 +631,7 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..20 {
-            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
         }
     });
     assert!(output.iter().any(|&x| x != 0.0), "the graph rendered");

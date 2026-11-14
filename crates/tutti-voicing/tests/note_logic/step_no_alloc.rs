@@ -6,9 +6,8 @@ use std::num::{NonZeroU16, NonZeroUsize};
 
 use assert_no_alloc::assert_no_alloc;
 use tutti_midi_protocol::{
-    Addressee, ChannelMask, GeneralMidi, Heard, KeyChange, KeyChanges, KeyTable, MpeZoneConfig,
-    MpeZones, OctaveOffsets, PitchBendSensitivity, Timing, TuningFrequency, TuningMessage,
-    TuningName, Universal,
+    Addressee, ChannelMask, GeneralMidi, Heard, KeyChange, KeyChanges, KeyTable, OctaveOffsets,
+    Timing, TuningFrequency, TuningMessage, TuningName, Universal,
 };
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{
@@ -46,14 +45,6 @@ fn rules(mode: Mode) -> Rules {
 fn step_is_allocation_free_in_every_mode() {
     for mode in [Mode::Poly, Mode::Mono, Mode::Legato] {
         let mut core = Voicing::new(rules(mode));
-        core.set_zones(MpeZones::new(
-            MpeZoneConfig::lower(
-                3,
-                PitchBendSensitivity::MPE_MASTER_DEFAULT,
-                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
-            ),
-            None,
-        ));
         let mut voices: Vec<(VoiceId, Amplitude)> = Vec::with_capacity(4096);
         let ch = |n| MidiChannel::of(n);
         let cc = |n: u8, v: u32| Voice2::ControlChange {
@@ -67,7 +58,7 @@ fn step_is_allocation_free_in_every_mode() {
                 let msgs = [
                     Voice2::NoteOn {
                         note: NoteNumber::of(k),
-                        velocity: NoteVelocity::new(0x8000),
+                        velocity: NoteVelocity::CENTER,
                         attribute: Attribute::None,
                     },
                     Voice2::NoteOn {
@@ -77,7 +68,7 @@ fn step_is_allocation_free_in_every_mode() {
                     },
                     Voice2::NoteOff {
                         note: NoteNumber::of(k + 3),
-                        velocity: NoteVelocity::new(0x8000),
+                        velocity: NoteVelocity::CENTER,
                         attribute: Attribute::None,
                     },
                     // Per-note state: stored before and during a note, set
@@ -113,7 +104,7 @@ fn step_is_allocation_free_in_every_mode() {
                     },
                     Voice2::NoteOn {
                         note: NoteNumber::of(k),
-                        velocity: NoteVelocity::new(0x8000),
+                        velocity: NoteVelocity::CENTER,
                         attribute: Attribute::Pitch(60 << 9),
                     },
                     cc(64, round % 2 * 127),
@@ -139,7 +130,7 @@ fn step_is_allocation_free_in_every_mode() {
                     Voice2::PitchBend(BendValue::new(round.wrapping_mul(0x0101_0101))),
                     Voice2::NoteOff {
                         note: NoteNumber::of(k),
-                        velocity: NoteVelocity::new(0x8000),
+                        velocity: NoteVelocity::CENTER,
                         attribute: Attribute::None,
                     },
                     cc([120, 121, 123, 124][(round % 4) as usize], 0),
@@ -205,7 +196,7 @@ fn per_note_state_is_allocation_free() {
                 },
                 Voice2::NoteOn {
                     note,
-                    velocity: NoteVelocity::new(0x8000),
+                    velocity: NoteVelocity::CENTER,
                     attribute: Attribute::Pitch(60 << 9),
                 },
                 Voice2::PerNoteManagement {
@@ -243,7 +234,7 @@ fn universal_is_allocation_free() {
     );
     let on = |k: u8| Voice2::NoteOn {
         note: NoteNumber::of(k),
-        velocity: NoteVelocity::new(0x8000),
+        velocity: NoteVelocity::CENTER,
         attribute: Attribute::None,
     };
     assert_no_alloc(|| {
@@ -291,7 +282,7 @@ fn mts_is_allocation_free() {
         );
         let on = |k: u8| Voice2::NoteOn {
             note: NoteNumber::of(k),
-            velocity: NoteVelocity::new(0x8000),
+            velocity: NoteVelocity::CENTER,
             attribute: Attribute::None,
         };
         let select = |rpn: Rpn, v: u8| Voice2::Registered {

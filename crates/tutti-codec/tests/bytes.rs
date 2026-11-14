@@ -19,8 +19,9 @@
 ))]
 
 use std::io::Cursor;
+use tutti_buffers::Interleaved;
 use tutti_codec::{Encoder, Format, Spec};
-use tutti_types::{ChannelLayout, Interleaved, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 
 fn fnv(bytes: &[u8]) -> u64 {
     let mut h = tutti_fixtures::Fnv::new();
@@ -50,10 +51,10 @@ fn written(format: Format, channels: u16, frames: usize) -> (usize, u64) {
     let cut = frames / 3 * usize::from(channels);
     let mut encoder = Encoder::create(&spec, Cursor::new(Vec::new())).unwrap();
     encoder
-        .write(Interleaved::new(&samples[..cut], layout))
+        .write(Interleaved::new(&samples[..cut], layout).unwrap())
         .unwrap();
     encoder
-        .write(Interleaved::new(&samples[cut..], layout))
+        .write(Interleaved::new(&samples[cut..], layout).unwrap())
         .unwrap();
     let bytes = encoder.finish().unwrap().into_inner();
     (bytes.len(), fnv(&bytes))
@@ -115,7 +116,9 @@ fn decoded(format: Format, channels: u16, frames: usize) -> Vec<Vec<f32>> {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("written");
     let mut encoder = Encoder::create_file(&spec, &path).unwrap();
-    encoder.write(Interleaved::new(&samples, layout)).unwrap();
+    encoder
+        .write(Interleaved::new(&samples, layout).unwrap())
+        .unwrap();
     encoder.finish().unwrap();
     let wave = tutti_codec::Wave::read(&path).unwrap();
     assert_eq!(

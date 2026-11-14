@@ -10,20 +10,22 @@ use tutti_graph::UmpAt;
 use tutti_session::Stamp;
 
 use std::time::{Duration, Instant};
-use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::Refused;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_types::{Beat, BeatDuration, Frame, SampleRate};
+#[cfg(feature = "midi-hardware")]
 use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
+use tutti_fixtures::midi;
 use tutti_session::{
     EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiError, MidiEvent, MidiRouteRule,
     NoSuchMidiRoute, PHASES, PhaseCx, RouteDeclarer, Session, SessionEvent, UmpOut,
 };
+use tutti_ump::{Message, Voice2};
 
 /// Every phase at `now`: one update, at a time the test picks.
 fn update_at(s: &mut Session, now: Instant) -> Vec<SessionEvent> {
@@ -250,15 +252,14 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     );
     let mut fed = s.graph_ref().sources(EventInPort::new(new, 0)).unwrap();
     fed.sort_by_key(|e| e.node());
-    let mut want = vec![EventOutPort::new(clip, 0), EventOutPort::new(inlet, 0)];
+    // The clip feeds the target through its MPE transform.
+    let transform = s.graph_ref().feed(new, Feeder::Sequencer)[0];
+    let mut want = vec![transform, EventOutPort::new(inlet, 0)];
     want.sort_by_key(|e| e.node());
     assert_eq!(fed, want);
 
-    live.push(
-        Stamp::NextBlock,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, MF),
-    )
-    .unwrap();
+    live.push(Stamp::NextBlock, midi::note_on(MidiChannel::FIRST, 72, MF))
+        .unwrap();
     roll(&s, 9_000);
     let heard = note_ons(&new_seen);
     assert!(heard.contains(&(8_000, 60)), "the clip plays it: {heard:?}");
@@ -755,7 +756,7 @@ fn connect(s: &mut Session, name: &str) {
 /// A note-on on channel `channel`.
 #[cfg(feature = "midi-hardware")]
 fn key(channel: u8, n: u8) -> Ump {
-    midi::note_on(MidiGroup::FIRST, MidiChannel::of(channel), n, MF)
+    midi::note_on(MidiChannel::of(channel), n, MF)
 }
 
 /// **A connected device's note reaches the synth its channel routes to**
@@ -1231,9 +1232,11 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .unwrap();
     let clip = s.midi().clip(synth).expect("the target's clip");
     let _ = s.update();
+    // The clip feeds the target through its MPE transform.
+    let transform = s.graph_ref().feed(synth, Feeder::Sequencer)[0];
     assert_eq!(
         sorted(s.graph_ref().sources(input(synth)).unwrap()),
-        sorted(vec![hand.events_out(), EventOutPort::new(clip, 0)]),
+        sorted(vec![hand.events_out(), transform]),
         "the sequencer's clip joins the hand-wired one"
     );
     roll(&s, 9_000);
@@ -1247,7 +1250,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .unwrap();
     assert_eq!(
         sorted(s.graph_ref().sources(input(synth)).unwrap()),
-        sorted(vec![hand2.events_out(), EventOutPort::new(clip, 0)]),
+        sorted(vec![hand2.events_out(), transform]),
         "the host's call sets its own edges, beside the feed's"
     );
 
@@ -1271,11 +1274,9 @@ fn a_port_that_loses_events_is_reported() {
     let chord = (0..1_100u32).map(|i| {
         TimedMidiEvent::new(
             Beat(0.0),
-            midi::note_on(
-                MidiGroup::FIRST,
+            Message::midi2(
                 MidiChannel::of(((i / 128) % 16) as u8),
-                (i % 128) as u8,
-                MF,
+                Voice2::note_on(NoteNumber::of((i % 128) as u8), NoteVelocity::new(MF)),
             ),
         )
         .unwrap()

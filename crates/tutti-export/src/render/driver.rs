@@ -15,7 +15,7 @@
 //! any positive count renders — 3- and 5-wide masters included.
 //!
 //! A fold from the graph's real output width onto a target's
-//! ([`tutti_types::Fold`], built once, before the first block) downmixes a
+//! ([`tutti_buffers::Fold`], built once, before the first block) downmixes a
 //! wider graph rather than truncating it, and zero-fills a narrower one
 //! rather than duplicating.
 
@@ -23,8 +23,9 @@ use crate::control::{Control, Outcome, Stage};
 use crate::render::BlockCursor;
 use crate::{ConfigError, RenderGraph};
 use std::ops::Range;
+use tutti_buffers::{Fold, InterleavedMut};
 use tutti_transport::RenderClock;
-use tutti_types::{ChannelLayout, ChannelTopology, Fold, InterleavedMut, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, Samples};
 
 /// What a target's channels are, for the fold from the graph's outputs or a
 /// tap's lanes: its width, and the speakers they feed when it states them.
@@ -46,18 +47,18 @@ impl FileChannels<'_> {
     /// [`ConfigError::Placement`] when the file's topology cannot take the
     /// graph's channels, or the declared root is
     /// not as wide as the graph, or the graph has more channels than a layout
-    /// holds ([`FoldError::TooWide`](tutti_types::FoldError::TooWide)).
+    /// holds ([`FoldError::TooWide`](tutti_buffers::FoldError::TooWide)).
     pub(crate) fn fold_from(
         &self,
         outputs: usize,
         root: Option<&ChannelTopology>,
     ) -> crate::Result<Fold> {
         let graph = ChannelLayout::try_from(outputs)
-            .map_err(|_| ConfigError::Placement(tutti_types::FoldError::TooWide(outputs)))?;
+            .map_err(|_| ConfigError::Placement(tutti_buffers::FoldError::TooWide(outputs)))?;
         if let Some(root) = root
             && root.layout() != graph
         {
-            return Err(ConfigError::Placement(tutti_types::FoldError::RootWidth {
+            return Err(ConfigError::Placement(tutti_buffers::FoldError::RootWidth {
                 declared: root.layout(),
                 requested: graph,
             })
@@ -369,22 +370,21 @@ impl Replay for PlaneSource<'_> {
             .planes
             .first()
             .map_or(0, |p| p.len().saturating_sub(self.pos.get()));
-        let n = out.len().min(available);
-        let layout = out.layout();
-        let block = &mut out.samples_mut()[..n * usize::from(layout.count())];
+        let n = out.len().get().min(available);
+        let block = out.window_mut(Samples::ZERO..Samples(n));
         let pos = self.pos.get();
         match &self.fold {
             Some(fold) => {
                 let planes = self.planes;
-                fold.planar_to_interleaved(
-                    |c| &planes[c][pos..pos + n],
-                    InterleavedMut::new(block, layout),
-                );
+                fold.planar_to_interleaved(|c| &planes[c][pos..pos + n], block);
             }
             // `interleave_from` writes every sample of every frame (rather
             // than leaving whatever the buffer held), which matters because
             // the caller's block is reused across iterations.
-            None => InterleavedMut::new(block, layout).interleave_from(self.planes, pos),
+            None => {
+                let mut block = block;
+                block.interleave_from(self.planes, Samples(pos));
+            }
         }
         self.pos = Samples(self.pos.get() + n);
         Ok(n)

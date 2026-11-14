@@ -451,8 +451,9 @@ fn buffers_report_their_own_shape() {
 /// reports. The crate does not hide this, which is why it can stream.
 #[test]
 fn a_caller_can_compose_normalization() {
+    use tutti_buffers::Interleaved;
     use tutti_measure::{LoudnessConfig, measure_loudness};
-    use tutti_types::{Db, Interleaved};
+    use tutti_types::Db;
 
     // Longer than R128's 400 ms gating block, or the meter reports nothing
     // passed the gate and there is no loudness to normalize toward.
@@ -462,11 +463,19 @@ fn a_caller_can_compose_normalization() {
 
     let cfg = LoudnessConfig::new(out.sample_rate(), ChannelLayout::STEREO);
     let flat = out.interleaved();
-    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO)).unwrap();
+    let before = measure_loudness(
+        &cfg,
+        Interleaved::new(&flat, ChannelLayout::STEREO).unwrap(),
+    )
+    .unwrap();
     let gain = before.gain_to(Db(-14.0), Db(-1.0));
     out.apply_gain(gain);
     let flat = out.interleaved();
-    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO)).unwrap();
+    let after = measure_loudness(
+        &cfg,
+        Interleaved::new(&flat, ChannelLayout::STEREO).unwrap(),
+    )
+    .unwrap();
 
     // Assert what `gain_to` actually promises, not merely that `apply_gain` is
     // linear. The earlier form checked `after ≈ before + gain`, which is
@@ -710,9 +719,10 @@ fn normalized_export_lifts_the_level_toward_the_target() {
 #[test]
 fn peak_normalization_lands_on_the_requested_dbtp() {
     use crate::support::render_normalized_to_file;
+    use tutti_buffers::Interleaved;
     use tutti_export::Normalize;
     use tutti_measure::{LoudnessConfig, measure_loudness};
-    use tutti_types::{Db, Interleaved};
+    use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
     let mut cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
@@ -734,8 +744,11 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
         .map(|s| s.unwrap())
         .collect();
     let meter = LoudnessConfig::new(cfg.render.sample_rate, ChannelLayout::STEREO);
-    let measured =
-        measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO)).unwrap();
+    let measured = measure_loudness(
+        &meter,
+        Interleaved::new(&samples, ChannelLayout::STEREO).unwrap(),
+    )
+    .unwrap();
 
     assert!(
         (measured.true_peak.get() - (-1.0)).abs() < 0.2,
@@ -754,8 +767,8 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
 /// True peak, in dBTP, of a stereo WAV on disk (float or integer), measured
 /// with the same R128 meter the export normalizes by.
 fn file_true_peak(path: &std::path::Path) -> f32 {
+    use tutti_buffers::Interleaved;
     use tutti_measure::{LoudnessConfig, measure_loudness};
-    use tutti_types::Interleaved;
 
     let reader = hound::WavReader::open(path).unwrap();
     let spec = reader.spec();
@@ -773,10 +786,13 @@ fn file_true_peak(path: &std::path::Path) -> f32 {
         SampleRate::of(f64::from(spec.sample_rate)),
         ChannelLayout::STEREO,
     );
-    measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO))
-        .expect("stereo is measurable")
-        .true_peak
-        .get()
+    measure_loudness(
+        &meter,
+        Interleaved::new(&samples, ChannelLayout::STEREO).unwrap(),
+    )
+    .expect("stereo is measurable")
+    .true_peak
+    .get()
 }
 
 /// The trap `loudness.rs::a_reading_is_always_finite_even_below_the_gate` names,
@@ -1000,9 +1016,10 @@ fn normalizing_silence_is_refused() {
 #[test]
 fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     use crate::support::render_normalized_to_file;
+    use tutti_buffers::Interleaved;
     use tutti_export::Normalize;
     use tutti_measure::{LoudnessConfig, measure_loudness};
-    use tutti_types::{Db, Interleaved};
+    use tutti_types::Db;
 
     // Energy near Nyquist, with its true peak *between* samples, is what SRC
     // overshoots on; a DC constant barely moves and would hide the bug entirely.
@@ -1057,8 +1074,11 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
         tutti_types::SampleRate::of(rate as f64),
         ChannelLayout::STEREO,
     );
-    let measured = measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO))
-        .expect("stereo at 48k is measurable");
+    let measured = measure_loudness(
+        &meter,
+        Interleaved::new(&samples, ChannelLayout::STEREO).unwrap(),
+    )
+    .expect("stereo at 48k is measurable");
 
     assert!(
         (measured.true_peak.get() - (-1.0)).abs() < 0.05,
@@ -1279,7 +1299,7 @@ fn a_graph_with_no_place_in_the_file_is_refused() {
             matches!(
                 err,
                 Err(Error::InvalidConfig(ConfigError::Placement(
-                    tutti_types::FoldError::Unplaced { channel, .. }
+                    tutti_buffers::FoldError::Unplaced { channel, .. }
                 ))) if channel == usize::from(width)
             ),
             "five into {width}: {:?}",
@@ -1318,8 +1338,9 @@ fn first_frame(graph: &mut RenderGraph, width: u16) -> Result<Vec<f32>, tutti_ex
 /// that is not as wide as the graph, is `ConfigError::Placement`.
 #[test]
 fn a_declared_root_is_what_the_file_is_placed_from() {
+    use tutti_buffers::FoldError;
     use tutti_export::ConfigError;
-    use tutti_types::{ChannelTopology, FoldError, Speaker};
+    use tutti_types::{ChannelTopology, Speaker};
     let mut graph = four_buses(None);
     assert_eq!(
         first_frame(&mut graph, 6).unwrap(),
@@ -1355,7 +1376,7 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
     let swapped = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
     assert!(swapped.index_of(Speaker::FrontLeft).is_some());
     let mut six = six_channels(swapped);
-    let m = tutti_types::M3DB;
+    let m = tutti_buffers::M3DB;
     let stereo = first_frame(&mut six, 2).unwrap();
     assert_eq!(stereo, [1.0 + m * 3.0 + m * 5.0, 2.0 + m * 3.0 + m * 6.0]);
     // The same six, the front pair declared the other way round.

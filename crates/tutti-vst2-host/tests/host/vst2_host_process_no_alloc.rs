@@ -21,14 +21,14 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{MaxBlock, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 use tutti_vst2_host::{TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 
 use crate::active::{self, Active, ActiveExt};
+use tutti_fixtures::midi;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -269,14 +269,8 @@ fn process_f32_with_midi_does_not_allocate() {
         let ins: &[&[f32]] = &[];
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let warm = [
-            (
-                Offset::ZERO,
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
-            ),
-            (
-                Offset::ZERO,
-                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-            ),
+            (Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0x4000)),
+            (Offset::ZERO, midi::note_off(MidiChannel::FIRST, 60, 0)),
         ];
         let ctx = Vst2ProcessContext::new(SAMPLE_RATE)
             .midi(&warm)
@@ -285,14 +279,8 @@ fn process_f32_with_midi_does_not_allocate() {
     }
     drive_silent(&mut inst, 32, &transport);
 
-    let on_event = [(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
-    )];
-    let off_event = [(
-        Offset::ZERO,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-    )];
+    let on_event = [(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0x4000))];
+    let off_event = [(Offset::ZERO, midi::note_off(MidiChannel::FIRST, 60, 0))];
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {

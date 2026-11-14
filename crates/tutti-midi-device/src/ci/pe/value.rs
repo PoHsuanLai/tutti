@@ -2,39 +2,7 @@
 //! keeps those properties.
 
 use super::limits::PropertyName;
-
-/// A finite non-integer number, as a header property carries one (M2-103 §7.1.1:
-/// a property is a number, a boolean or a string).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PeDecimal(f64);
-
-impl PeDecimal {
-    /// The number, or `None` for NaN and infinity, which JSON cannot write.
-    #[must_use]
-    pub fn new(raw: f64) -> Option<Self> {
-        raw.is_finite().then_some(Self(raw))
-    }
-
-    /// The number.
-    #[must_use]
-    pub fn get(self) -> f64 {
-        self.0
-    }
-}
-
-/// The value of a header property: a number, a boolean or a string (M2-103
-/// §7.1.1), never an object, an array or `null`.
-#[derive(Clone, Debug, PartialEq)]
-pub enum PeValue {
-    /// `true` or `false`.
-    Bool(bool),
-    /// A number written without a point or an exponent.
-    Integer(i64),
-    /// A number written with a point or an exponent.
-    Decimal(PeDecimal),
-    /// A string, unescaped.
-    String(String),
-}
+use super::tree::PeJson;
 
 /// The property names the header types carry themselves.
 const RESERVED: &[&str] = &[
@@ -55,27 +23,37 @@ const RESERVED: &[&str] = &[
     "endedBy",
 ];
 
-/// A property name that a header type carries as a field, so it is not an extra
-/// property of that header.
+/// A property that cannot be an extra property of a header.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{0:?} is a property of the header types, not an extra property")]
-pub struct PeReservedProperty(pub String);
+pub enum PeExtraError {
+    /// The name is one the header types carry as a field.
+    #[error("{0:?} is a property of the header types, not an extra property")]
+    Reserved(String),
+    /// A header property is a number, a boolean or a string (M2-103 §7.1.1).
+    #[error("a header property is a scalar, not an object, an array or null")]
+    NotScalar,
+}
 
 /// The properties of a header that the spec does not name here: those of a later
 /// version (M2-103 §7.6) and manufacturer-specific `x-` properties (§6.1.4), in
 /// the order they were read or added. A name holds one value.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct PeExtra(Vec<(PropertyName, PeValue)>);
+pub struct PeExtra(Vec<(PropertyName, PeJson)>);
 
 impl PeExtra {
     /// Adds a property, replacing the value of one with the same name.
     ///
     /// # Errors
     ///
-    /// [`PeReservedProperty`] for a name the header types carry as a field.
-    pub fn insert(&mut self, name: PropertyName, value: PeValue) -> Result<(), PeReservedProperty> {
+    /// [`PeExtraError::Reserved`] for a name the header types carry as a field,
+    /// and [`PeExtraError::NotScalar`] for a value that is not a number, a
+    /// boolean or a string.
+    pub fn insert(&mut self, name: PropertyName, value: PeJson) -> Result<(), PeExtraError> {
         if RESERVED.contains(&name.as_str()) {
-            return Err(PeReservedProperty(name.into()));
+            return Err(PeExtraError::Reserved(name.into()));
+        }
+        if !value.is_scalar() {
+            return Err(PeExtraError::NotScalar);
         }
         match self.0.iter_mut().find(|(n, _)| *n == name) {
             Some((_, old)) => *old = value,
@@ -86,7 +64,7 @@ impl PeExtra {
 
     /// The value of the property `name`.
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&PeValue> {
+    pub fn get(&self, name: &str) -> Option<&PeJson> {
         self.0
             .iter()
             .find(|(n, _)| n.as_str() == name)
@@ -94,7 +72,7 @@ impl PeExtra {
     }
 
     /// The properties, in order.
-    pub fn iter(&self) -> impl Iterator<Item = (&PropertyName, &PeValue)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&PropertyName, &PeJson)> {
         self.0.iter().map(|(n, v)| (n, v))
     }
 

@@ -6,10 +6,11 @@ use tutti_graph::testing as common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 use common::{Kind, TestNode, prepare};
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, Cx, Editor, Executor, IntoNode, Io, Node, NodeParts, Prepare, QUEUE_CAPACITY,
@@ -17,6 +18,7 @@ use tutti_graph::{
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Amplitude, ChannelLayout, Latency, Param, Samples, Tail};
+use tutti_ump::{Message, Voice1};
 
 const SRC: NodeKey = NodeKey(1);
 const FX: NodeKey = NodeKey(2);
@@ -792,7 +794,7 @@ fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
         "on",
         Unforkable(OneShot {
             at: on_at,
-            words: m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)).0,
+            words: midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100)).0,
         }),
     );
     ed.insert(
@@ -800,7 +802,7 @@ fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
         "off",
         Unforkable(OneShot {
             at: off_at,
-            words: m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0)).0,
+            words: midi::m1_note_off(MidiChannel::FIRST, 60, U7::of(0)).0,
         }),
     );
     ed.insert(key, "synth", Unforkable(synth));
@@ -866,7 +868,10 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
                     io.event_out(0)
                         .push(tutti_graph::Event::midi(
                             tutti_graph::Offset::ZERO,
-                            m1_note_off(MidiChannel::FIRST, NoteNumber::of(n), U7::of(0)),
+                            Message::midi1(
+                                MidiChannel::FIRST,
+                                Voice1::note_off(NoteNumber::of(n), U7::of(0)),
+                            ),
                         ))
                         .expect("30 fit in 32");
                 }

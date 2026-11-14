@@ -62,7 +62,8 @@
 //! ```rust,no_run
 //! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
-//! use tutti_ump::{MidiChannel, MidiGroup};
+//! use tutti_fixtures::midi;
+//! use tutti_ump::{MidiChannel, NoteVelocity};
 //! use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
 //! use tutti_vst3_host::{
 //!     AudioBuffer, InputEvents, LoadOptions, TransportInfo, Vst3Loaded,
@@ -95,7 +96,7 @@
 //! // the engine's unit newtypes deliberately stop.
 //! let midi: [(Offset, Ump); 1] = [(
 //!     Offset::ZERO,
-//!     tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
+//!     midi::note_on(MidiChannel::FIRST, 60, 0xC000),
 //! )];
 //! let events = InputEvents {
 //!     midi: &midi,

@@ -603,9 +603,7 @@ fn header_words(events: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_fixtures::midi;
     use tutti_plugin_types::Samples;
-    use tutti_ump::ControlValue;
     use tutti_ump::Ump;
 
     /// A plugin-side event at a raw frame (`WireMidi` is unchecked, as `from_midi` reads it).
@@ -659,18 +657,16 @@ mod tests {
         assert_eq!(io.out_overflow(), 2 * 256, "the second piece's, counted");
     }
 
+    use tutti_fixtures::midi;
+    use tutti_midi_protocol::{widen_bend, widen_value, widen_velocity};
+    use tutti_ump::{Bank, Rpn, Sysex7Packets, System, U7, U14};
     use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     /// Spec: vst2.event.kVstMidiType
     #[test]
     fn note_on_off_roundtrip() {
         let event = wire(
-            midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                60,
-                tutti_fixtures::midi::wide_velocity(127),
-            ),
+            midi::note_on(MidiChannel::of(1), 60, widen_velocity(U7::of(127)).get()),
             10,
         );
         let api = from_midi(&event).expect("NoteOn should convert");
@@ -680,12 +676,7 @@ mod tests {
         assert_eq!(api.delta_frames, 10);
 
         let event = wire(
-            midi::note_off(
-                MidiGroup::FIRST,
-                MidiChannel::of(9),
-                48,
-                tutti_fixtures::midi::wide_velocity(64),
-            ),
+            midi::note_off(MidiChannel::of(9), 48, widen_velocity(U7::of(64)).get()),
             0,
         );
         let api = from_midi(&event).expect("NoteOff should convert");
@@ -708,12 +699,7 @@ mod tests {
     #[test]
     fn a_huge_frame_offset_saturates_rather_than_going_negative() {
         let event = wire(
-            midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                tutti_fixtures::midi::wide_velocity(100),
-            ),
+            midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
             u32::MAX,
         );
         let api = from_midi(&event).expect("NoteOn should convert");
@@ -740,10 +726,9 @@ mod tests {
     fn cc_roundtrip() {
         let event = wire(
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::of(1),
                 CCNumber::BRIGHTNESS,
-                tutti_fixtures::midi::wide_value(100),
+                widen_value(U7::of(100)).get(),
             ),
             0,
         );
@@ -756,11 +741,7 @@ mod tests {
     #[test]
     fn pitch_bend_roundtrip() {
         let event = wire(
-            midi::pitch_bend(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                tutti_fixtures::midi::wide_bend(8192),
-            ),
+            midi::pitch_bend(MidiChannel::of(1), widen_bend(U14::of(8192)).get()),
             0,
         );
         let api = from_midi(&event).expect("PitchBend should convert");
@@ -773,11 +754,7 @@ mod tests {
         );
 
         let event = wire(
-            midi::pitch_bend(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                tutti_fixtures::midi::wide_bend(0),
-            ),
+            midi::pitch_bend(MidiChannel::of(1), widen_bend(U14::of(0)).get()),
             0,
         );
         let api = from_midi(&event).expect("PitchBend min should convert");
@@ -785,11 +762,7 @@ mod tests {
         assert_eq!(api.midi_data[2], 0x00);
 
         let event = wire(
-            midi::pitch_bend(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                tutti_fixtures::midi::wide_bend(16383),
-            ),
+            midi::pitch_bend(MidiChannel::of(1), widen_bend(U14::of(16383)).get()),
             0,
         );
         let api = from_midi(&event).expect("PitchBend max should convert");
@@ -799,10 +772,7 @@ mod tests {
 
     #[test]
     fn program_change_roundtrip() {
-        let event = wire(
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 42, None),
-            0,
-        );
+        let event = wire(midi::program_change(MidiChannel::of(1), 42, None), 0);
         let api = from_midi(&event).expect("ProgramChange should convert");
         assert_eq!(api.midi_data[0], 0xC1);
         assert_eq!(api.midi_data[1], 42);
@@ -815,14 +785,18 @@ mod tests {
     #[test]
     fn from_midi_is_one_message_or_none() {
         let banked = wire(
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+            midi::program_change(
+                MidiChannel::of(1),
+                9,
+                Some(Bank {
+                    msb: U7::of(1),
+                    lsb: U7::of(5),
+                }),
+            ),
             0,
         );
         assert!(from_midi(&banked).is_none());
-        let silent_on = wire(
-            midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
-            0,
-        );
+        let silent_on = wire(midi::note_on(MidiChannel::of(1), 60, 0), 0);
         let api = from_midi(&silent_on).expect("a Note On converts");
         assert_eq!(api.midi_data, [0x91, 60, 1]);
     }
@@ -830,11 +804,7 @@ mod tests {
     #[test]
     fn channel_pressure_roundtrip() {
         let event = wire(
-            midi::channel_pressure(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                tutti_fixtures::midi::wide_value(100),
-            ),
+            midi::channel_pressure(MidiChannel::of(1), widen_value(U7::of(100)).get()),
             0,
         );
         let api = from_midi(&event).expect("ChannelPressure should convert");
@@ -846,12 +816,7 @@ mod tests {
     #[test]
     fn poly_pressure_roundtrip() {
         let event = wire(
-            midi::poly_pressure(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                60,
-                tutti_fixtures::midi::wide_value(80),
-            ),
+            midi::poly_pressure(MidiChannel::of(1), 60, widen_value(U7::of(80)).get()),
             0,
         );
         let api = from_midi(&event).expect("PolyPressure should convert");
@@ -894,10 +859,7 @@ mod tests {
                 assert_eq!(address.channel, MidiChannel::of(1));
                 assert_eq!(controller, CCNumber::of(74));
                 // Widened to 32-bit, not left as 7-bit.
-                assert_eq!(
-                    value,
-                    ControlValue::new(tutti_fixtures::midi::wide_value(100))
-                );
+                assert_eq!(value, widen_value(U7::of(100)));
             }
             other => panic!("expected CV2 ControlChange, got {other:?}"),
         }
@@ -929,10 +891,9 @@ mod tests {
                 at(
                     i,
                     midi::note_on(
-                        MidiGroup::FIRST,
                         MidiChannel::of(1),
                         60 + i as u8,
-                        tutti_fixtures::midi::wide_velocity(100),
+                        widen_velocity(U7::of(100)).get(),
                     ),
                 )
             })
@@ -958,10 +919,9 @@ mod tests {
     /// `delta_frames` and either the MIDI bytes or the SysEx bytes, read
     /// through the pointers it is handed.
     fn note(frame: u32, key: u8) -> UmpAt {
-        use tutti_ump::{MidiChannel, MidiGroup};
         at(
             frame as usize,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0x4000),
+            midi::note_on(MidiChannel::FIRST, key, 0x4000),
         )
     }
 
@@ -1077,7 +1037,9 @@ mod tests {
     }
 
     fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
-        midi::sysex7_packets(payload)
+        Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
+            .expect("a payload of 7-bit bytes")
+            .collect::<Vec<Ump>>()
             .into_iter()
             .map(|e| at(frame as usize, e))
             .collect()
@@ -1094,7 +1056,14 @@ mod tests {
     fn a_banked_program_change_stages_as_three_events() {
         let pc = at(
             5,
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+            midi::program_change(
+                MidiChannel::of(1),
+                9,
+                Some(Bank {
+                    msb: U7::of(1),
+                    lsb: U7::of(5),
+                }),
+            ),
         );
         let mut buf = MidiSendBuffer::new();
         let staged = read_staged(buf.stage_piece(&[pc], 0, 64, 64).expect("events staged"));
@@ -1113,12 +1082,7 @@ mod tests {
         // Room for the note and one more: the note stays, the bank does not.
         let note = at(
             0,
-            midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(1),
-                60,
-                tutti_fixtures::midi::wide_velocity(100),
-            ),
+            midi::note_on(MidiChannel::of(1), 60, widen_velocity(U7::of(100)).get()),
         );
         let mut tight = MidiSendBuffer::with_capacity(3);
         let staged = read_staged(tight.stage_piece(&[note, pc], 0, 64, 64).expect("the note"));
@@ -1146,12 +1110,7 @@ mod tests {
     #[test]
     fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         let body: Vec<u8> = (0..40).collect();
-        let note = midi::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of(0),
-            60,
-            tutti_fixtures::midi::wide_velocity(100),
-        );
+        let note = midi::note_on(MidiChannel::of(0), 60, widen_velocity(U7::of(100)).get());
         let mut midi = vec![at(1, note)];
         midi.extend(sysex_packets(&body, 3));
         midi.push(at(4, note));
@@ -1192,12 +1151,7 @@ mod tests {
     fn staging_the_whole_cap_does_not_allocate() {
         let note = at(
             0,
-            midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(0),
-                60,
-                tutti_fixtures::midi::wide_velocity(100),
-            ),
+            midi::note_on(MidiChannel::of(0), 60, widen_velocity(U7::of(100)).get()),
         );
         let single = sysex_packets(&[1, 2, 3], 0);
         assert_eq!(single.len(), 1);
@@ -1260,12 +1214,7 @@ mod tests {
     fn the_staged_events_pointer_is_8_aligned() {
         let note = at(
             0,
-            midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(0),
-                60,
-                tutti_fixtures::midi::wide_velocity(100),
-            ),
+            midi::note_on(MidiChannel::of(0), 60, widen_velocity(U7::of(100)).get()),
         );
         let mut buf = MidiSendBuffer::new();
         for n in 1..=MIDI_STACK_CAPACITY {
@@ -1319,18 +1268,31 @@ mod tests {
         let group = |n| MidiGroup::new(n).unwrap();
         let mut buf = MidiSendBuffer::new();
         let midi = [
-            at(0, midi::note_on(group(0), MidiChannel::FIRST, 60, 0x8000)),
-            at(0, midi::note_on(group(1), MidiChannel::FIRST, 61, 0x8000)),
+            at(
+                0,
+                midi::note_on(
+                    tutti_ump::Address::new(group(0), MidiChannel::FIRST),
+                    60,
+                    0x8000,
+                ),
+            ),
+            at(
+                0,
+                midi::note_on(
+                    tutti_ump::Address::new(group(1), MidiChannel::FIRST),
+                    61,
+                    0x8000,
+                ),
+            ),
             at(
                 0,
                 midi::cc(
-                    group(2),
-                    MidiChannel::FIRST,
+                    tutti_ump::Address::new(group(2), MidiChannel::FIRST),
                     tutti_ump::CCNumber::BRIGHTNESS,
                     0,
                 ),
             ),
-            at(0, midi::timing_clock(group(1))),
+            at(0, Ump::from(Message::System(group(1), System::TimingClock))),
         ];
         assert_eq!(
             staged_bytes(&mut buf, &midi),
@@ -1345,11 +1307,11 @@ mod tests {
     /// parameter, across blocks, and is sent in full again after a reset.
     #[test]
     fn an_rpn_is_four_control_changes_and_the_select_is_not_repeated() {
-        use tutti_ump::{MidiChannel, MidiGroup};
+        use tutti_ump::MidiChannel;
         let rpn = |value| {
             at(
                 0,
-                midi::registered_controller(MidiGroup::FIRST, MidiChannel::of(1), 0, 0, value),
+                midi::registered(MidiChannel::of(1), Rpn::new(U7::of(0), U7::of(0)), value),
             )
         };
         let mut buf = MidiSendBuffer::new();
@@ -1375,31 +1337,42 @@ mod tests {
     /// one is sent in full.
     #[test]
     fn a_bank_is_resent_only_when_it_changes() {
-        use tutti_ump::{MidiChannel, MidiGroup};
-        let pc = |program, bank| {
-            at(
-                0,
-                midi::program_change(MidiGroup::FIRST, MidiChannel::FIRST, program, bank),
-            )
-        };
-        let bank = Some(5 << 7 | 9);
+        use tutti_ump::MidiChannel;
+        let pc = |program, bank| at(0, midi::program_change(MidiChannel::FIRST, program, bank));
+        let bank = Some(Bank {
+            msb: U7::of(5),
+            lsb: U7::of(9),
+        });
         let mut buf = MidiSendBuffer::new();
         assert_eq!(
             staged_bytes(&mut buf, &[pc(3, bank)]),
             [vec![0xB0, 0, 5], vec![0xB0, 32, 9], vec![0xC0, 3, 0]]
         );
         assert_eq!(staged_bytes(&mut buf, &[pc(4, bank)]), [vec![0xC0, 4, 0]]);
-        assert_eq!(staged_bytes(&mut buf, &[pc(4, Some(6 << 7))]).len(), 3);
+        assert_eq!(
+            staged_bytes(
+                &mut buf,
+                &[pc(
+                    4,
+                    Some(Bank {
+                        msb: U7::of(6),
+                        lsb: U7::of(0)
+                    })
+                )]
+            )
+            .len(),
+            3
+        );
 
         // A buffer with room for three: a note then the three-message bank for
         // bank B does not fit, so the bank is refused whole, and the narrower
         // forgets it sent bank B: the next Program Change of B is in full.
-        let note = at(
-            0,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-        );
+        let note = at(0, midi::note_on(MidiChannel::FIRST, 60, 0x8000));
         let mut tight = MidiSendBuffer::with_capacity(3);
-        let bank_b = Some(7 << 7);
+        let bank_b = Some(Bank {
+            msb: U7::of(7),
+            lsb: U7::of(0),
+        });
         assert_eq!(staged_bytes(&mut tight, &[pc(3, bank)]).len(), 3);
         assert_eq!(staged_bytes(&mut tight, &[note, pc(4, bank_b)]).len(), 1);
         assert_eq!(tight.events_dropped(), 3);

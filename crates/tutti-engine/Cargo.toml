@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+tutti-buffers = { version = "0.0.1", path = "../tutti-buffers" }
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 bytemuck = { version = "1.16", features = ["derive"] }

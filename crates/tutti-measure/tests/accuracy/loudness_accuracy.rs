@@ -13,9 +13,10 @@
 //! Confirmed to fail against a meter with the sample rate hardcoded to 48 kHz —
 //! the defect `LoudnessConfig` makes unrepresentable.
 
+use tutti_buffers::Interleaved;
 use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_types::ChannelLayout;
-use tutti_types::{Amplitude, Db, Interleaved, SampleRate};
+use tutti_types::{Amplitude, Db, SampleRate};
 
 /// Interleaved stereo sine, both channels identical.
 fn stereo_sine(rate: f64, freq: f64, secs: f64, amp: f64) -> Vec<f32> {
@@ -31,7 +32,8 @@ fn stereo_sine(rate: f64, freq: f64, secs: f64, amp: f64) -> Vec<f32> {
 fn measure(rate: f64, amp: f64) -> tutti_measure::Loudness {
     let cfg = LoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO);
     let buf = stereo_sine(rate, 1000.0, 3.0, amp);
-    measure_loudness(&cfg, Interleaved::new(&buf, ChannelLayout::STEREO)).expect("stereo meters")
+    measure_loudness(&cfg, Interleaved::new(&buf, ChannelLayout::STEREO).unwrap())
+        .expect("stereo meters")
 }
 
 /// True peak of a sine is its amplitude — a value with a closed form.
@@ -158,8 +160,11 @@ fn a_steady_tone_has_no_loudness_range() {
 fn silence_reads_the_gate_not_negative_infinity() {
     let cfg = LoudnessConfig::new(SampleRate::SR_48K, ChannelLayout::STEREO);
     let silence = vec![0.0f32; 48_000 * 2];
-    let l = measure_loudness(&cfg, Interleaved::new(&silence, ChannelLayout::STEREO))
-        .expect("stereo meters");
+    let l = measure_loudness(
+        &cfg,
+        Interleaved::new(&silence, ChannelLayout::STEREO).unwrap(),
+    )
+    .expect("stereo meters");
 
     assert!(
         l.lufs.get().is_finite(),

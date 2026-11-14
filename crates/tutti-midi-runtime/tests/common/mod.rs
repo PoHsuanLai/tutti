@@ -4,14 +4,14 @@
 
 #![allow(dead_code)]
 
-use tutti_fixtures::midi::{note_off, note_on};
+use tutti_fixtures::midi;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, EventTapId, EventTapReader, NodeKey, TapAlign, TapEvent,
     TransportPosition,
 };
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_types::{Beat, Bpm};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, Ump};
 
 /// Frames in a beat at 120 BPM and 48 kHz, so a frame is exact in beats.
 pub const FRAMES_PER_BEAT: f64 = 24_000.0;
@@ -33,12 +33,12 @@ pub fn at(frame: u64, event: Ump) -> TimedMidiEvent {
 
 /// A full-velocity Note On of key `n` on the first Group and Channel.
 pub fn on(n: u8) -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
+    midi::note_on(MidiChannel::FIRST, n, 0xFFFF)
 }
 
 /// A Note Off of key `n` on the first Group and Channel.
 pub fn off(n: u8) -> Ump {
-    note_off(MidiGroup::FIRST, MidiChannel::FIRST, n, 0)
+    midi::note_off(MidiChannel::FIRST, n, 0)
 }
 
 /// Wires event output 0 of node `from` to event input 0 of node `to`.

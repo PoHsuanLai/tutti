@@ -8,13 +8,14 @@ use std::error::Error as _;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tutti_buffers::{Interleaved, Sink, SinkFailed};
 use tutti_cpal::{ManualStream, ManualStreamDriver, MicConfig, OutputSpec};
 use tutti_graph::{InletRing, TapWriter};
 use tutti_session::{
     Armed, Input, InputConfig, InputOpener, OpenedInput, Punch, Recorded, Session, SessionEvent,
     Start, Take, TakeEnd, TakeError, TakeEvent, TakeTarget, Trim,
 };
-use tutti_types::{At, Beat, ChannelLayout, Frame, SampleRate, Samples, Sink, SinkFailed};
+use tutti_types::{At, Beat, ChannelLayout, Frame, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 256;
@@ -459,11 +460,13 @@ struct Failing {
 }
 
 impl Sink for Failing {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+    fn write(&mut self, _: Interleaved<'_>) -> Result<(), SinkFailed> {
         if self.ok == 0 {
             return Err(SinkFailed);
         }
@@ -549,10 +552,12 @@ fn what_cannot_be_armed_is_refused_where_it_is_made() {
 
     struct Mono;
     impl Sink for Mono {
+        type Sample = f32;
+
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::MONO
         }
-        fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+        fn write(&mut self, _: Interleaved<'_>) -> Result<(), SinkFailed> {
             Ok(())
         }
         fn finalize(self) -> std::io::Result<()> {
@@ -591,10 +596,12 @@ fn a_take_makes_a_clip_only_from_a_file() {
     rig.events.clear();
     struct Clean;
     impl Sink for Clean {
+        type Sample = f32;
+
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+        fn write(&mut self, _: Interleaved<'_>) -> Result<(), SinkFailed> {
             Ok(())
         }
         fn finalize(self) -> std::io::Result<()> {

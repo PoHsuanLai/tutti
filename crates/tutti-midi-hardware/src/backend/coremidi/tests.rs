@@ -1,4 +1,6 @@
 use super::*;
+use crate::virtual_endpoint::VirtualProtocol;
+use tutti_fixtures::midi;
 
 /// Enumeration must not panic on a machine with no MIDI devices, and must
 /// return well-formed records where there are some. CI boxes have none; a
@@ -136,13 +138,14 @@ fn a_scheduled_packet_is_held_until_its_time_and_now_goes_at_once() {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
     use tutti_midi_runtime::{Outgoing, SendAt};
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     let (tx, rx) = mpsc::channel();
-    let _destination = UmpVirtualDestination::new("tutti-sched-out", move |ump| {
-        let _ = tx.send((Instant::now(), ump));
-    })
-    .expect("a virtual UMP destination");
+    let _destination =
+        UmpVirtualDestination::new("tutti-sched-out", VirtualProtocol::Midi2, move |ump| {
+            let _ = tx.send((Instant::now(), ump));
+        })
+        .expect("a virtual UMP destination");
     let backend = CoreMidiEndpoints::new();
     let id = backend
         .outputs()
@@ -153,7 +156,7 @@ fn a_scheduled_packet_is_held_until_its_time_and_now_goes_at_once() {
     let out = backend.open_output(id).expect("opens");
     out.follow(Protocol::Midi2);
 
-    let note = |n| tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF);
+    let note = |n| midi::note_on(MidiChannel::FIRST, n, 0xFFFF);
     let start = Instant::now();
     let due = start + Duration::from_millis(150);
     let sent = out.queue_timed(&[

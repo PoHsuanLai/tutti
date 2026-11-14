@@ -1,6 +1,10 @@
 use super::*;
-use tutti_fixtures::midi::{m1_cc, note_off, note_on, pitch_bend};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, U7};
+
+use tutti_fixtures::midi;
+use tutti_ump::{
+    Address, BendValue, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7,
+    Voice1, Voice2,
+};
 
 const G0: MidiGroup = MidiGroup::FIRST;
 const G1: MidiGroup = MidiGroup::of(1);
@@ -15,7 +19,7 @@ fn drain(held: &mut HeldState, group: Option<MidiGroup>) -> Vec<Ump> {
 }
 
 fn on(group: MidiGroup, channel: u8, note: u8) -> Ump {
-    note_on(group, MidiChannel::of(channel), note, 0xFFFF)
+    midi::note_on(Address::new(group, MidiChannel::of(channel)), note, 0xFFFF)
 }
 
 /// **A release ends exactly what was started**: two keys down and one up,
@@ -26,9 +30,15 @@ fn a_release_ends_the_keys_still_down_and_only_those() {
     let mut held = HeldState::new();
     held.observe(on(G0, 0, 60));
     held.observe(on(G0, 0, 64));
-    held.observe(note_off(G0, MidiChannel::of(0), 60, 0));
+    held.observe(Message::midi2(
+        Address::new(G0, MidiChannel::of(0)),
+        Voice2::note_off(NoteNumber::of(60), NoteVelocity::MIN),
+    ));
     let sent = drain(&mut held, None);
-    assert_eq!(sent, vec![note_off(G0, MidiChannel::of(0), 64, 0)]);
+    assert_eq!(
+        sent,
+        vec![midi::note_off(Address::new(G0, MidiChannel::of(0)), 64, 0)]
+    );
     assert!(held.is_empty());
     assert!(drain(&mut held, None).is_empty());
 }
@@ -39,8 +49,7 @@ fn a_release_ends_the_keys_still_down_and_only_those() {
 #[test]
 fn a_midi1_note_on_at_velocity_zero_ends_the_key() {
     let mut held = HeldState::new();
-    let m1_on =
-        |v: u8| tutti_fixtures::midi::m1_note_on(MidiChannel::of(2), NoteNumber::of(60), U7::of(v));
+    let m1_on = |v: u8| midi::m1_note_on(MidiChannel::of(2), 60, U7::of(v));
     held.observe(m1_on(100));
     assert!(!held.is_empty());
     held.observe(m1_on(0));
@@ -56,15 +65,27 @@ fn a_release_ends_notes_before_it_lifts_pedals_and_centres_the_bend() {
     let mut held = HeldState::new();
     let ch = MidiChannel::of(3);
     held.observe(on(G0, 3, 60));
-    held.observe(m1_cc(ch, CCNumber::SUSTAIN, U7::of(127)));
-    held.observe(m1_cc(ch, CCNumber::SOSTENUTO, U7::of(127)));
-    held.observe(m1_cc(ch, CCNumber::SOSTENUTO, U7::of(0)));
-    held.observe(pitch_bend(G0, ch, 0xC000_0000));
+    held.observe(Message::midi1(
+        ch,
+        Voice1::control_change(CCNumber::SUSTAIN, U7::of(127)),
+    ));
+    held.observe(Message::midi1(
+        ch,
+        Voice1::control_change(CCNumber::SOSTENUTO, U7::of(127)),
+    ));
+    held.observe(Message::midi1(
+        ch,
+        Voice1::control_change(CCNumber::SOSTENUTO, U7::of(0)),
+    ));
+    held.observe(Message::midi2(
+        Address::new(G0, ch),
+        Voice2::PitchBend(BendValue::new(0xC000_0000)),
+    ));
     let sent = drain(&mut held, None);
     assert_eq!(sent.len(), 3, "{sent:?}");
-    assert_eq!(sent[0], note_off(G0, ch, 60, 0));
-    assert_eq!(sent[1], m1_cc(ch, CCNumber::SUSTAIN, U7::of(0)));
-    assert_eq!(sent[2], pitch_bend(G0, ch, 0x8000_0000));
+    assert_eq!(sent[0], midi::note_off(Address::new(G0, ch), 60, 0));
+    assert_eq!(sent[1], midi::m1_cc(ch, CCNumber::SUSTAIN, U7::of(0)));
+    assert_eq!(sent[2], midi::pitch_bend(Address::new(G0, ch), 0x8000_0000));
 }
 
 /// **A release for one Group leaves the other's alone** (a Group is a cable,
@@ -77,10 +98,16 @@ fn a_release_for_one_group_leaves_the_others_held() {
     held.observe(on(G0, 0, 60));
     held.observe(on(G1, 0, 61));
     let sent = drain(&mut held, Some(G1));
-    assert_eq!(sent, vec![note_off(G1, MidiChannel::of(0), 61, 0)]);
+    assert_eq!(
+        sent,
+        vec![midi::note_off(Address::new(G1, MidiChannel::of(0)), 61, 0)]
+    );
     assert!(!held.is_empty());
     let rest = drain(&mut held, Some(G0));
-    assert_eq!(rest, vec![note_off(G0, MidiChannel::of(0), 60, 0)]);
+    assert_eq!(
+        rest,
+        vec![midi::note_off(Address::new(G0, MidiChannel::of(0)), 60, 0)]
+    );
 }
 
 /// **A receiver with no room is asked again for what it refused**: refusing
@@ -103,8 +130,8 @@ fn a_refused_release_stays_held_for_the_next() {
     assert_eq!(
         rest,
         vec![
-            note_off(G0, MidiChannel::of(0), 61, 0),
-            note_off(G0, MidiChannel::of(0), 62, 0)
+            midi::note_off(Address::new(G0, MidiChannel::of(0)), 61, 0),
+            midi::note_off(Address::new(G0, MidiChannel::of(0)), 62, 0)
         ]
     );
 }

@@ -1,5 +1,5 @@
 use super::*;
-use tutti_fixtures::midi::note_off;
+use tutti_fixtures::midi;
 
 /// **The off the ledger writes is the MIDI 2.0 Note Off at velocity 0 that
 /// `note_off` builds**, on the key's group, channel and note.
@@ -11,7 +11,7 @@ fn an_owed_off_is_the_note_off_the_wire_types_build() {
         note: NoteNumber::of(61),
     };
     let off = key.off(Offset::ZERO);
-    let want = note_off(key.group, key.channel, 61, 0);
+    let want = midi::note_off(tutti_ump::Address::new(key.group, key.channel), 61, 0);
     assert_eq!(off, Event::midi(Offset::ZERO, want));
 }
 

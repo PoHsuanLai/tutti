@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
 use crate::common::{at, beat_of, connect};
-use tutti_fixtures::midi::{note_off, note_on};
+
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventKind, EventLoss, Executor, Io, Node, Prepare, Shape, Status,
@@ -17,7 +18,7 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_types::{Bpm, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, Ump};
 
 /// `(note-ons, note-offs)` the sink received, and the keys it ends holding.
 #[derive(Default)]
@@ -61,12 +62,12 @@ fn key(i: u32) -> (MidiChannel, u8) {
 
 fn on(i: u32) -> Ump {
     let (c, n) = key(i);
-    note_on(MidiGroup::FIRST, c, n, 0xFFFF)
+    midi::note_on(c, n, 0xFFFF)
 }
 
 fn off(i: u32) -> Ump {
     let (c, n) = key(i);
-    note_off(MidiGroup::FIRST, c, n, 0)
+    midi::note_off(c, n, 0)
 }
 
 struct Rig {

@@ -82,7 +82,8 @@
 //!     OnsetConfig, PeakConfig, YinConfig,
 //! };
 //! use tutti_dsp::{FftScratch, StftGeometry};
-//! use tutti_types::{ChannelLayout, Interleaved, SampleRate, Samples, StereoPlanes};
+//! use tutti_types::{ChannelLayout, SampleRate, Samples};
+//! use tutti_buffers::{Interleaved, StereoPlanes};
 //!
 //! let sample_rate = SampleRate::SR_44K1;
 //! let samples: Vec<f32> = vec![0.0; 44100];
@@ -91,7 +92,7 @@
 //! // Waveform blocks for display — one series per channel.
 //! let blocks = summarize(
 //!     &PeakConfig::new(Samples(512), ChannelLayout::STEREO),
-//!     Interleaved::new(&samples, ChannelLayout::STEREO),
+//!     Interleaved::new(&samples, ChannelLayout::STEREO).unwrap(),
 //! );
 //! let left = blocks.channel(0).expect("stereo has a channel 0");
 //! // A meter wants one number per block; a waveform draws both channels.
@@ -128,7 +129,8 @@
 //! use tutti_measure::correlate;
 //! use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, TransportPosition, Unforkable};
 //! use tutti_graph::{OutPort, Source};
-//! use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, StereoPlanes};
+//! use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
+//! use tutti_buffers::StereoPlanes;
 //! use tutti_graph::NodeKey;
 //! use tutti_graph::{TapAlign, TapId};
 //!

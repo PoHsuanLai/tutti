@@ -8,10 +8,9 @@
 use crate::conformance_support;
 
 use tutti_fixtures::main_thread;
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel};
 use tutti_vst3_host::{AudioBuffer, InputEvents, PrefetchSupport, TransportInfo};
 
 /// A block longer than any offset these tests place an event at.
@@ -23,6 +22,7 @@ fn at(k: usize) -> Offset {
 }
 
 use conformance_support::*;
+use tutti_fixtures::midi;
 
 // ── Controller-side surfaces ─────────────────────────────────────────────────
 //
@@ -79,21 +79,11 @@ fn midi_learn_forwards_from_the_main_thread() {
     let cc = [
         (
             at(0),
-            midi::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::VOLUME,
-                0x8000_0000,
-            ),
+            midi::cc(MidiChannel::FIRST, CCNumber::VOLUME, 0x8000_0000),
         ),
         (
             at(64),
-            midi::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::PAN,
-                0x4000_0000,
-            ),
+            midi::cc(MidiChannel::FIRST, CCNumber::PAN, 0x4000_0000),
         ),
     ];
     let ins: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; 512]).collect();

@@ -8,14 +8,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_fixtures::midi;
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{EventCapacity, TapAlign, UmpAt};
 use tutti_midi_runtime::MidiOut;
 use tutti_transport::MotionEvent;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 use tutti_ump::{MidiGroup, Ump};
 
 use tutti_session::{EventOutPort, MidiEvent, Session, SessionEvent, UmpOut};
+use tutti_ump::{Message, System};
 
 const RATE: f64 = 48_000.0;
 
@@ -58,14 +59,16 @@ fn rig(wire: &Wire) -> Session {
 fn render(s: &Session, frames: usize) {
     let mut buf = vec![0.0f32; 512 * 2];
     for _ in 0..frames.div_ceil(512) {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
     }
 }
 
 fn ticks(batch: &[UmpAt]) -> Vec<u32> {
     batch
         .iter()
-        .filter(|(_, ump)| *ump == midi::timing_clock(MidiGroup::FIRST))
+        .filter(|(_, ump)| {
+            *ump == Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock))
+        })
         .map(|(at, _)| at.get())
         .collect()
 }

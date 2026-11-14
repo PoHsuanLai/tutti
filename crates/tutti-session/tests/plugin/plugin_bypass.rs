@@ -23,10 +23,11 @@ use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_plugin::catalog::PluginRef;
 use tutti_session::{InPort, NodeMode, OutPort, PluginLoadRequest, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 1_024;
@@ -116,7 +117,7 @@ impl Rig {
         let mut block = vec![f32::NAN; BLOCK * 2];
         for _ in 0..blocks {
             self.s
-                .render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+                .render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
             out.extend(block.iter().step_by(2));
         }
         out

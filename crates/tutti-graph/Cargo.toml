@@ -26,6 +26,7 @@ contract = []
 testing = ["dep:assert_no_alloc"]
 
 [dependencies]
+tutti-buffers = { version = "0.0.1", path = "../tutti-buffers" }
 # The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
 # tail vocabulary.
 tutti-types = { version = "0.0.1", path = "../tutti-types" }

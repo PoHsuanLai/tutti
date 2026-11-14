@@ -12,15 +12,15 @@ use tutti_plugin_types::Control;
 use tutti_vst2_host::{Samples, TransportInfo, Vst2ProcessContext};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 use tutti_vst2_test_plugin::{PROBE_UNIQUE_ID, ProcessCapture, ProcessEntry, channel_tag};
 
 #[path = "support/active.rs"]
 mod active;
 
 use active::{Active, ActiveExt};
+use tutti_fixtures::midi;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 128;
@@ -146,11 +146,11 @@ fn capture_round_trips_what_the_host_sent() {
     let midi = vec![
         (
             Offset::of(Samples(7), Samples(BLOCK)),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
+            midi::note_on(MidiChannel::FIRST, 60, 100),
         ),
         (
             Offset::of(Samples(64), Samples(BLOCK)),
-            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_off(MidiChannel::FIRST, 60, 0),
         ),
     ];
 

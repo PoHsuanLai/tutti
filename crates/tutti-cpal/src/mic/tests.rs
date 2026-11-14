@@ -1,15 +1,21 @@
 use super::*;
 
-use tutti_types::Sink;
+use tutti_buffers::{Interleaved, InterleavedMut, Sink};
 
 /// A device that supports `[min, max]` at `format`.
 fn range(min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
     cpal::SupportedStreamConfigRange::new(2, min, max, cpal::SupportedBufferSize::Unknown, format)
 }
 
+/// One pull into `buf`, viewed at the mic's own width.
+fn pull_into(mic: &mut MicIn, buf: &mut [f32]) -> Pull {
+    let out = InterleavedMut::new(buf, Source::layout(mic)).unwrap();
+    mic.pull(out)
+}
+
 /// What a pull of an empty ring answers, whatever width the mic has.
 fn verdict(mic: &mut MicIn) -> Pull {
-    mic.pull(&mut [0.0; 16])
+    pull_into(mic, &mut [0.0; 16])
 }
 
 fn fallback(rate: u32) -> cpal::SupportedStreamConfig {
@@ -185,7 +191,7 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
     );
     assert_eq!(mic.device_inputs(), ChannelLayout::from(16u16));
     let mut out = [0.0f32; 8];
-    assert_eq!(mic.pull(&mut out), Pull::Frames(Samples(3)));
+    assert_eq!(pull_into(&mut mic, &mut out), Pull::Frames(Samples(3)));
     assert_eq!(out[..6], [2.0, 3.0, 102.0, 103.0, 202.0, 203.0]);
 
     let mut node =
@@ -212,13 +218,13 @@ fn a_six_input_interface_is_six_inputs_not_five_point_one() {
     let (mut cap, mut mic, _ring) = capture(6, &[0, 1, 2, 3, 4, 5], 64);
     cap.block(&[0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6]);
     let mut out = [0.0f32; 6];
-    assert_eq!(mic.pull(&mut out), Pull::Frames(Samples(1)));
+    assert_eq!(pull_into(&mut mic, &mut out), Pull::Frames(Samples(1)));
     assert_eq!(out, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
 
     let (mut cap, mut mic, _ring) = capture(1, &[0, 0], 64);
     cap.block(&[0.25f32, -0.5]);
     let mut out = [0.0f32; 4];
-    assert_eq!(mic.pull(&mut out), Pull::Frames(Samples(2)));
+    assert_eq!(pull_into(&mut mic, &mut out), Pull::Frames(Samples(2)));
     assert_eq!(out, [0.25, 0.25, -0.5, -0.5]);
 }
 
@@ -233,7 +239,7 @@ fn a_big_callback_runs_in_chunks_and_integers_convert() {
     let data: Vec<i16> = (0..150).flat_map(|f| [0, f as i16 * 100]).collect();
     cap.block(&data);
     let mut out = vec![0.0f32; 200];
-    let n = mic.pull(&mut out);
+    let n = pull_into(&mut mic, &mut out);
     assert_eq!(n, Pull::Frames(Samples(150)));
     for (f, &s) in out[..150].iter().enumerate() {
         let want = f32::from(f as i16 * 100) / 32768.0;
@@ -257,13 +263,13 @@ fn an_input_past_the_devices_last_is_an_error() {
     assert!(
         matches!(
             err,
-            Error::Inputs(tutti_types::FoldError::NoSuchChannel { channel: 4, .. })
+            Error::Inputs(tutti_buffers::FoldError::NoSuchChannel { channel: 4, .. })
         ),
         "{err}"
     );
     assert!(matches!(
         Error::from(Fold::select(ChannelLayout::STEREO, &[]).unwrap_err()),
-        Error::Inputs(tutti_types::FoldError::Empty(_))
+        Error::Inputs(tutti_buffers::FoldError::Empty(_))
     ));
 }
 
@@ -314,15 +320,16 @@ fn a_disconnected_mic_hands_over_its_buffered_frames_then_reads_failed() {
     faults.record(&cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
     // The pump's pass: the frame the ring held is written first.
     let mut scratch = [0.0f32; 8];
-    let Pull::Frames(n) = mic.pull(&mut scratch) else {
+    let Pull::Frames(n) = pull_into(&mut mic, &mut scratch) else {
         panic!("the buffered frame is delivered before the failure");
     };
     assert_eq!(n, Samples(1));
-    sink.write(&scratch[..n.interleaved_len(mic.layout())])
-        .expect("the file takes it");
+    let layout = Source::layout(&mic);
+    let written = Interleaved::new(&scratch[..n.interleaved_len(layout)], layout).unwrap();
+    sink.write(written).expect("the file takes it");
     // Then nothing more comes, and the source says why.
     assert_eq!(
-        mic.pull(&mut scratch),
+        pull_into(&mut mic, &mut scratch),
         Pull::Failed,
         "the take is over: the device is gone"
     );

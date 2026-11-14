@@ -93,7 +93,12 @@ pub(crate) mod wire;
 ///   to be processed again (CLAP's `request_process`), so a host that parked
 ///   the node on the plugin's *sleep* wakes it. It follows every earlier
 ///   variant, which keep their numbers.
-pub const PROTOCOL_VERSION: u32 = 36;
+/// - **Version 37** appends the host's `SetTrackInfo` (what the host says of
+///   the plugin's track, for CLAP's `track-info`) and the server's
+///   `TransportRequested` (the plugin's request to the transport, CLAP's
+///   `transport-control`). Both follow every earlier variant, which keep their
+///   numbers.
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

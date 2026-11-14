@@ -206,6 +206,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-platform-seam",
+        "",
+        "a platform cfg stands only on a mod declaration, bar the temporary rows",
+    ),
+    (
         "check-conformance",
         "",
         "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
@@ -464,6 +469,7 @@ impl Planner<'_> {
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance-inventory" => {
                 let [f] = Self::params(name, args, ["clap"])?;
@@ -498,17 +504,17 @@ impl Planner<'_> {
             "verify-audio" => {
                 let [out] = Self::params(name, args, ["/tmp/tutti-verify"])?;
                 self.lines(&[
-                    format!("cargo run --locked --release -p tutti-sampler --example render_cases -- {out}/sampler"),
-                    format!("cargo run --locked --release -p tutti-export --example render_export_cases -- {out}/export"),
-                    format!("cargo run --locked --release -p tutti-measure --example render_analysis_cases -- {out}/analysis"),
-                    format!("cargo run --locked --release -p tutti-polysynth --example render_synth_cases -- {out}/synth"),
-                    format!("cargo run --locked --release -p tutti-dsp --example render_dsp_cases -- {out}/dsp"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_sampler_cases -- {out}/sampler"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_export_cases -- {out}/export"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_analysis_cases -- {out}/analysis"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_synth_cases -- {out}/synth"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_dsp_cases -- {out}/dsp"),
                     "uv sync --quiet".to_owned(),
-                    format!("uv run python crates/tutti-sampler/examples/verify_sampler.py {out}/sampler"),
-                    format!("uv run python crates/tutti-export/examples/verify_export.py {out}/export"),
-                    format!("uv run python crates/tutti-measure/examples/verify_analysis.py {out}/analysis"),
-                    format!("uv run python crates/tutti-polysynth/examples/verify_synth.py {out}/synth"),
-                    format!("uv run python crates/tutti-dsp/examples/verify_dsp.py {out}/dsp"),
+                    format!("uv run python testing/tutti-verify/py/verify_sampler.py {out}/sampler"),
+                    format!("uv run python testing/tutti-verify/py/verify_export.py {out}/export"),
+                    format!("uv run python testing/tutti-verify/py/verify_analysis.py {out}/analysis"),
+                    format!("uv run python testing/tutti-verify/py/verify_synth.py {out}/synth"),
+                    format!("uv run python testing/tutti-verify/py/verify_dsp.py {out}/dsp"),
                 ]);
             }
             "release" => {
@@ -528,7 +534,8 @@ impl Planner<'_> {
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-errors", "check-layout", "check-range-types", "check-hosting",
                     "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-conformance",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers",
+                    "check-platform-seam", "check-conformance",
                     "check-features", "package",
                     "check-no-std", "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

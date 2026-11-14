@@ -173,14 +173,14 @@ impl Sweep {
 
     /// The least depth the sweep takes: a smaller one reads as it.
     #[must_use]
-    pub const fn depth_min(&self) -> Seconds {
+    pub(crate) const fn depth_min(&self) -> Seconds {
         self.depth_min
     }
 
     /// The greatest depth the sweep takes: a larger one reads as it, which is what keeps
     /// the sweep inside the line (chorus) or inside comb-filter range (flanger).
     #[must_use]
-    pub const fn depth_max(&self) -> Seconds {
+    pub(crate) const fn depth_max(&self) -> Seconds {
         self.depth_max
     }
 

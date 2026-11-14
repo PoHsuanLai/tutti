@@ -19,12 +19,12 @@ workspace = true
 default = []
 # `PluginDb` derives `Serialize` and `Deserialize`: the app picks the file format
 # and where the bytes live. Deserializing refuses a database of another version.
-serde = ["dep:serde", "dep:thiserror", "tutti-plugin-types/serde"]
+serde = ["dep:serde", "tutti-plugin-types/serde"]
 
 [dependencies]
 tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 serde = { version = "1", features = ["derive"], optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror.workspace = true
 tracing = "0.1"
 # The scan's progress and delta channels.
 crossbeam-channel = "0.5"

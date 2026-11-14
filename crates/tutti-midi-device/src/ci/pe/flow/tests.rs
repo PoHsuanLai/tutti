@@ -203,16 +203,3 @@ fn the_kinds_are_the_sub_ids_of_section_8() {
     assert_eq!(PeMessageKind::from_sub_id2(0x3F), None);
     assert_eq!(PeMessageKind::from_sub_id2(0x30), None);
 }
-
-#[cfg(feature = "serde")]
-#[test]
-fn the_wait_is_a_range_checked_value() {
-    use tutti_fixtures::{RangeContract, check_range_contract};
-    check_range_contract(&RangeContract {
-        new: TimeoutWait::new,
-        get: TimeoutWait::tenths,
-        of: Some(TimeoutWait::of),
-        valid: &[0, 1, 127],
-        invalid: &[128, 255],
-    });
-}

@@ -194,7 +194,7 @@ impl CosineWindow {
     /// repeats with period 1; a caller bounds it.
     #[inline]
     #[must_use]
-    pub fn centred(&self, x: f64) -> f64 {
+    pub(crate) fn centred(&self, x: f64) -> f64 {
         let phase = core::f64::consts::TAU * x;
         self.terms
             .iter()

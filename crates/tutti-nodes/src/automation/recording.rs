@@ -52,7 +52,7 @@ impl RecordMode {
     /// first [`record`](Recorder::record).
     #[inline]
     #[must_use]
-    pub fn starts_on_touch(self) -> bool {
+    fn starts_on_touch(self) -> bool {
         matches!(self, Self::Touch | Self::Latch)
     }
 
@@ -190,11 +190,6 @@ impl Recorder {
         self.config = config;
     }
 
-    /// The trajectory written so far, including the take in progress.
-    pub fn trajectory(&self) -> &Trajectory {
-        &self.trajectory
-    }
-
     /// Whether a take is currently open (capturing, or latch-held).
     #[must_use]
     pub fn is_taking(&self) -> bool {
@@ -325,7 +320,7 @@ mod tests {
         r.record(Beat(0.0), 0.1);
         r.record(Beat(1.0), 0.2);
         r.record(Beat(2.0), 0.3);
-        assert_eq!(r.trajectory().len(), 3);
+        assert_eq!(r.trajectory.len(), 3);
     }
 
     #[test]
@@ -335,7 +330,7 @@ mod tests {
             r.record(Beat(0.0), 0.5);
             r.record(Beat(1.0), 0.6);
             assert!(
-                r.trajectory().is_empty(),
+                r.trajectory.is_empty(),
                 "{mode:?} must not capture before touch"
             );
             assert!(!r.is_taking());
@@ -346,7 +341,7 @@ mod tests {
     fn touch_on_write_is_a_noop() {
         let mut r = recorder(RecordMode::Write);
         r.touch(Beat(0.0), 0.5);
-        assert!(r.trajectory().is_empty());
+        assert!(r.trajectory.is_empty());
         assert!(!r.is_taking());
     }
 
@@ -356,14 +351,14 @@ mod tests {
     fn touch_records_then_release_ends_the_take() {
         let mut r = recorder(RecordMode::Touch);
         r.touch(Beat(0.0), 0.5);
-        assert_eq!(r.trajectory().len(), 1);
+        assert_eq!(r.trajectory.len(), 1);
 
         r.record(Beat(1.0), 0.6);
         r.record(Beat(2.0), 0.7);
-        assert_eq!(r.trajectory().len(), 3);
+        assert_eq!(r.trajectory.len(), 3);
 
         r.release(Beat(3.0), 0.8);
-        assert_eq!(r.trajectory().len(), 4, "release writes a final point");
+        assert_eq!(r.trajectory.len(), 4, "release writes a final point");
         assert!(!r.is_taking(), "Touch ends the take on release");
     }
 
@@ -372,11 +367,11 @@ mod tests {
         let mut r = recorder(RecordMode::Touch);
         r.touch(Beat(0.0), 0.5);
         r.release(Beat(1.0), 0.6);
-        let after_release = r.trajectory().len();
+        let after_release = r.trajectory.len();
 
         r.record(Beat(2.0), 0.9);
         assert_eq!(
-            r.trajectory().len(),
+            r.trajectory.len(),
             after_release,
             "a released Touch take must not resume on further samples"
         );
@@ -407,11 +402,11 @@ mod tests {
         let mut r = recorder(RecordMode::Latch);
         r.touch(Beat(0.0), 0.5);
         r.release(Beat(1.0), 0.7);
-        let held = r.trajectory().len();
+        let held = r.trajectory.len();
 
         r.record(Beat(2.0), 0.9);
         assert_eq!(
-            r.trajectory().len(),
+            r.trajectory.len(),
             held,
             "a held latch take freezes; samples do not land"
         );
@@ -422,7 +417,7 @@ mod tests {
     fn release_without_a_take_is_a_noop() {
         let mut r = recorder(RecordMode::Touch);
         r.release(Beat(1.0), 0.5);
-        assert!(r.trajectory().is_empty());
+        assert!(r.trajectory.is_empty());
         assert!(!r.is_taking());
     }
 
@@ -469,7 +464,7 @@ mod tests {
         r.record(Beat(0.1), 0.6); // +0.1 — too soon
         r.record(Beat(0.4), 0.7); // +0.4 from 0.0 — still too soon
         r.record(Beat(0.5), 0.8); // +0.5 — writes
-        assert_eq!(r.trajectory().len(), 2);
+        assert_eq!(r.trajectory.len(), 2);
     }
 
     #[test]
@@ -488,7 +483,7 @@ mod tests {
         );
         r.record(Beat(4.0), 0.5);
         r.record(Beat(0.0), 0.9);
-        assert_eq!(r.trajectory().len(), 2, "the seek-back point must land");
+        assert_eq!(r.trajectory.len(), 2, "the seek-back point must land");
     }
 
     #[test]
@@ -500,7 +495,7 @@ mod tests {
         for i in 0..=10 {
             r.record(Beat(i as f64), i as f32 / 10.0);
         }
-        let dense = r.trajectory().len();
+        let dense = r.trajectory.len();
         let env = r.finish();
         assert!(
             env.len() < dense,
@@ -526,14 +521,14 @@ mod tests {
         let mut r = recorder(RecordMode::Latch);
         r.touch(Beat(0.0), 0.5);
         r.record(Beat(1.0), 0.6);
-        let captured = r.trajectory().len();
+        let captured = r.trajectory.len();
 
         r.set_mode(RecordMode::Write);
         assert!(
             !r.is_taking(),
             "the old discipline's take does not carry over"
         );
-        assert_eq!(r.trajectory().len(), captured, "captured points survive");
+        assert_eq!(r.trajectory.len(), captured, "captured points survive");
     }
 
     #[test]
@@ -553,12 +548,12 @@ mod tests {
         env.add_breakpoint(Breakpoint::new(Beat(8.0), 0.4));
 
         let mut r = Recorder::overdub(RecordMode::Touch, env);
-        assert_eq!(r.trajectory().len(), 2);
+        assert_eq!(r.trajectory.len(), 2);
         assert!(!r.is_taking());
 
         r.touch(Beat(4.0), 0.9);
         assert_eq!(
-            r.trajectory().len(),
+            r.trajectory.len(),
             3,
             "the new point joins the existing ones"
         );

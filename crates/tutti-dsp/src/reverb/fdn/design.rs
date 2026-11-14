@@ -120,7 +120,7 @@ pub struct FdnFamily {
 
 impl FdnFamily {
     /// The lines of the default network.
-    pub const LINES: usize = 8;
+    const LINES: usize = 8;
 
     /// A design of `lines` lines (2 to 16, even: half feed each ear), RT60s up
     /// to `max_decay` (at most [`MaxDecay::CAP`]), which holds its tail
@@ -147,12 +147,6 @@ impl FdnFamily {
     #[must_use]
     pub fn lines(&self) -> usize {
         self.lines
-    }
-
-    /// The longest RT60 a control may ask for.
-    #[must_use]
-    pub fn max_decay(&self) -> Seconds {
-        self.max_decay
     }
 
     /// Whether the freeze control does anything.

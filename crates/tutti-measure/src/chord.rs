@@ -18,7 +18,7 @@
 //!
 //! The 25 states are then smoothed by a Viterbi search in the manner of Mauch
 //! (2010): an emission of `sharpness * score` per frame, a probability
-//! [`self_transition`](ChordConfig::self_transition) of staying in a state and
+//! [`with_self_transition`](ChordConfig::with_self_transition) of staying in a state and
 //! the rest shared evenly among the other 24. A short flicker costs two
 //! switches and a short chord pays for them, so the prior sets how many frames
 //! a chord must last, which depends on the hop.
@@ -175,20 +175,6 @@ impl ChordConfig {
     #[must_use]
     pub fn geometry(&self) -> StftGeometry {
         self.geometry
-    }
-
-    /// The probability of staying in a state per frame.
-    #[inline]
-    #[must_use]
-    pub fn self_transition(&self) -> f32 {
-        self.self_transition
-    }
-
-    /// The emission weight of similarity.
-    #[inline]
-    #[must_use]
-    pub fn sharpness(&self) -> f32 {
-        self.sharpness
     }
 }
 

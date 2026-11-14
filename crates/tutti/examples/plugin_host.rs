@@ -1,4 +1,4 @@
-//! A plugin host, end to end (design 029): scan, pick, load, wire, play,
+//! A plugin host, end to end: scan, pick, load, wire, play,
 //! set a parameter, save the state, read its health, diagnostics and presets, bounce.
 //!
 //! ```text

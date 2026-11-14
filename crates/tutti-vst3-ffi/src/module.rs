@@ -644,6 +644,7 @@ mod factory_flag_tests {
     /// wrong, every assertion would still pass while silently matching a
     /// different flag. `1 << 1` (`kLicenseCheck`, deprecated) and `1 << 2`
     /// (unassigned) are deliberately absent from `FactoryFlags`.
+    /// Spec: vst3.IPluginFactory.getFactoryInfo
     #[test]
     fn the_factory_flag_bits_are_the_ones_the_sdk_defines() {
         assert_eq!(FactoryFlags::CLASSES_DISCARDABLE.bits(), 1 << 0);

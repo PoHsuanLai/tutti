@@ -173,6 +173,7 @@ mod tests {
             .with_loop(true, 0.0, 8.0)
     }
 
+    /// Spec: vst2.timeinfo.kVstTransportRecording, vst2.timeinfo.kVstTransportCycleActive, vst2.timeinfo.kVstTransportPlaying, vst2.timeinfo.kVstPpqPosValid, vst2.timeinfo.kVstTempoValid
     #[test]
     fn flags_recording_and_cycle_active() {
         // Recording + cycle-active + playing, with real tempo/position values,
@@ -214,6 +215,7 @@ mod tests {
     /// The host's automation mode reaches the snapshot as `kVstAutomationReading` (bit 7) and
     /// `kVstAutomationWriting` (bit 6), each set only by a mode that reads or writes, and
     /// no transport bit moves with it.
+    /// Spec: vst2.timeinfo.kVstAutomationReading, vst2.timeinfo.kVstAutomationWriting
     #[test]
     fn automation_mode_sets_exactly_its_flags() {
         use vst::api::TimeInfoFlags as F;
@@ -281,6 +283,7 @@ mod tests {
     /// this test asserted that as correct — so a tempo-synced delay or
     /// arpeggiator retriggered every 64 samples and never advanced, and a
     /// reverb flushed its tail every block.
+    /// Spec: vst2.timeinfo.kVstTransportChanged
     #[test]
     fn transport_changed_is_an_edge_not_a_level() {
         let stopped = TransportInfo::new();
@@ -362,6 +365,7 @@ mod tests {
     /// A zeroed transport carries `tempo = 0.0`; advertising
     /// `kVstTempoValid` alongside it hands the plugin a divisor of zero, and
     /// `60.0 / tempo` puts an infinity on the master bus.
+    /// Spec: vst2.timeinfo.kVstTempoValid
     #[test]
     fn tempo_valid_is_withheld_for_a_zero_tempo() {
         let transport = TransportInfo::new().with_tempo(0.0);
@@ -405,6 +409,7 @@ mod tests {
 
     /// `CYCLE_POS_VALID` is gated on the boundaries, not just on the cycle
     /// being switched on.
+    /// Spec: vst2.timeinfo.kVstCyclePosValid
     #[test]
     fn cycle_pos_valid_requires_usable_boundaries() {
         let bad = TransportInfo::new().with_loop(true, 0.0, f64::NAN);

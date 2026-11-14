@@ -108,6 +108,7 @@ fn a_block_is_skipped_while_the_plugin_holds_a_parameter_queue() {
 /// Processing resumes lazily after a stop, and the refusal used to be dropped
 /// (`let _ =`), so the plugin rendered while the host believed it was
 /// processing.
+/// Spec: vst3.IAudioProcessor.setProcessing
 #[test]
 fn a_refused_set_processing_fails_the_block() {
     let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");

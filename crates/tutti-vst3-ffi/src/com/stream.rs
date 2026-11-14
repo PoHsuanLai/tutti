@@ -175,6 +175,7 @@ mod tests {
         f(stream.to_com_ptr::<IBStream>().unwrap())
     }
 
+    /// Spec: vst3.IBStream.write, vst3.IBStream.read, vst3.IBStream.tell
     #[test]
     fn test_stream_write_read() {
         let stream = BStream::new();
@@ -246,6 +247,7 @@ mod tests {
     }
 
     /// A negative absolute seek is refused, and leaves the position where it was.
+    /// Spec: vst3.IBStream.seek
     #[test]
     fn test_stream_seek_set_negative_is_invalid() {
         let stream = BStream::from_data(vec![1, 2, 3]);

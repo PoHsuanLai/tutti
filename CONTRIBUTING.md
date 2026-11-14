@@ -45,9 +45,14 @@ reasons behind the rules are in
 
 Make one change per pull request, and title it as a
 [Conventional Commit](https://www.conventionalcommits.org/): `fix(graph): …`,
-or `feat(session)!: …` for a breaking change. Pull requests are squash-merged,
-and the title and description become the commit on `main`. The description
-says what changed and, for a breaking change, how to migrate.
+or `feat(session)!: …` for a breaking change. The description says what
+changed and, for a breaking change, how to migrate.
+
+Pull requests land through a merge queue: once one is green and reviewed, a
+maintainer queues it with `gh pr merge <number> --squash --auto`. CI runs once
+more on the pull request merged with the latest `main`, and if that passes it
+lands as one commit whose message is the title. There is no need to merge
+`main` into a branch just to rerun CI.
 
 ## License
 

@@ -8,17 +8,16 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use crate::common::{at, beat_of, connect};
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Cx, Editor, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node, Prepare,
-    Shape, Status, TransportPosition, Unforkable,
+    Cx, Editor, EventKind, EventLoss, Executor, Io, Node, Prepare, Shape, Status,
+    TransportPosition, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_types::{Beat, Bpm, SampleRate, Samples};
+use tutti_types::{Bpm, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
-
-const FRAMES_PER_BEAT: f64 = 24_000.0;
 
 /// `(note-ons, note-offs)` the sink received, and the keys it ends holding.
 #[derive(Default)]
@@ -55,10 +54,6 @@ impl Node for Sink {
     fn reset(&mut self) {}
 }
 
-fn beat_of(frame: u64) -> Beat {
-    Beat(frame as f64 / FRAMES_PER_BEAT)
-}
-
 /// Note `i` as a key: 128 notes on each of 16 channels.
 fn key(i: u32) -> (MidiChannel, u8) {
     (MidiChannel::of(((i / 128) % 16) as u8), (i % 128) as u8)
@@ -74,10 +69,6 @@ fn off(i: u32) -> Ump {
     note_off(MidiGroup::FIRST, c, n, 0)
 }
 
-fn at(frame: u64, event: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(beat_of(frame), event).unwrap()
-}
-
 struct Rig {
     ed: Editor,
     exec: Executor,
@@ -90,16 +81,7 @@ fn rig(events: impl IntoIterator<Item = TimedMidiEvent>, max: usize) -> Rig {
     ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
     let tally = Arc::new(Mutex::new(Tally::default()));
     ed.insert(NodeKey(2), "sink", Unforkable(Sink(Arc::clone(&tally))));
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    connect(&mut ed, 1, 2);
     ed.commit().expect("commits");
     Rig { ed, exec, tally }
 }

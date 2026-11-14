@@ -8,17 +8,7 @@ use tutti_ump::{
     U7, Ump, Voice1, Voice2,
 };
 
-fn at(group: u8, channel: u8) -> Address {
-    Address {
-        group: MidiGroup::of(group),
-        channel: MidiChannel::of(channel),
-    }
-}
-
-const A: Address = Address {
-    group: MidiGroup::FIRST,
-    channel: MidiChannel::FIRST,
-};
+const A: Address = Address::first(MidiChannel::FIRST);
 
 fn feed(n: &mut Narrower, message: Message) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
@@ -70,7 +60,15 @@ fn a_registered_controller_is_four_control_changes() {
 #[test]
 fn an_assignable_controller_selects_with_nrpn_controllers() {
     let mut n = Narrower::new();
-    let out = feed(&mut n, nrpn(at(0, 3), 5, 9, 0x8000_0000));
+    let out = feed(
+        &mut n,
+        nrpn(
+            Address::new(MidiGroup::of(0), MidiChannel::of(3)),
+            5,
+            9,
+            0x8000_0000,
+        ),
+    );
     // Min-Center-Max centre (0x8000_0000) narrows by shift to 14-bit 0x2000.
     assert_eq!(
         out,
@@ -99,12 +97,20 @@ fn the_select_is_skipped_for_the_parameter_already_selected() {
     );
     assert_eq!(feed(&mut n, rpn(A, 0, 1, 0)).len(), 4, "back to the RPN");
     assert_eq!(
-        feed(&mut n, rpn(at(0, 1), 0, 1, 0)).len(),
+        feed(
+            &mut n,
+            rpn(Address::new(MidiGroup::of(0), MidiChannel::of(1)), 0, 1, 0)
+        )
+        .len(),
         4,
         "another channel"
     );
     assert_eq!(
-        feed(&mut n, rpn(at(1, 0), 0, 1, 0)).len(),
+        feed(
+            &mut n,
+            rpn(Address::new(MidiGroup::of(1), MidiChannel::of(0)), 0, 1, 0)
+        )
+        .len(),
         4,
         "another group"
     );
@@ -256,7 +262,7 @@ fn relative_controllers_send_nothing() {
 fn the_round_trip_returns_the_controller_sequence() {
     let cc = |n: u8, c: CCNumber, v: u8| -> Ump {
         Message::Midi1(
-            at(0, n),
+            Address::new(MidiGroup::of(0), MidiChannel::of(n)),
             Voice1::ControlChange {
                 controller: c,
                 value: U7::of(v),

@@ -219,6 +219,8 @@ mod output_plan;
 mod schedule;
 mod sync;
 mod tempo_follower;
+#[cfg(test)]
+mod test_support;
 mod traits;
 
 pub use clock_map::{ClockMap, ClockReading, GAIN, Observed, RESYNC};

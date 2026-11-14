@@ -710,8 +710,9 @@ impl Editor {
     ///
     /// # Errors
     ///
-    /// [`CloseError::Tap`] when no such tap is open (never opened, or closed
-    /// already); nothing changes.
+    /// [`CloseError::Tap`] when no such tap is open (never opened, closed
+    /// already, or ended because every node it copied was removed); nothing
+    /// changes.
     pub fn close_tap(&mut self, id: TapId) -> Result<(), CloseError> {
         if !self.spec.topology.taps.contains_key(&id) {
             return Err(CloseError::Tap(id));

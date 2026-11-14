@@ -444,7 +444,7 @@ pub struct Recorded {
 }
 
 /// Why a take ended ([`Recorded::end`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TakeEnd {
     /// By its punch-out, or by [`Take::finish`] (or the handle's drop).

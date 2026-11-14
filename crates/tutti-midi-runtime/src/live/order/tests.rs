@@ -6,7 +6,7 @@ use tutti_ump::{KeyEvent, MidiChannel, MidiGroup};
 
 /// A note at `offset`, which may lie past the 64-frame block the placement test
 /// uses.
-fn note_at(note: u8, offset: u32) -> UmpAt {
+fn note_at(note: u8, offset: usize) -> UmpAt {
     at(
         offset,
         // 7-bit velocity 100, widened (M2-115).

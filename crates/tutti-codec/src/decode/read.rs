@@ -8,13 +8,18 @@ use std::fs::File;
 use std::path::Path;
 use tutti_types::{SampleRate, Samples};
 
-use symphonia::core::audio::{AudioBuffer, Signal};
-use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
+use symphonia::core::audio::AudioSpec;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::codecs::audio::well_known::CODEC_ID_VORBIS;
+use symphonia::core::codecs::audio::{
+    AudioCodecParameters, AudioDecoder, AudioDecoderOptions, CODEC_ID_NULL_AUDIO,
+};
 use symphonia::core::errors::Error;
-use symphonia::core::formats::{FormatOptions, FormatReader, Packet};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader, Track};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use symphonia::core::packet::Packet;
 
 use super::error::convert;
 use super::placement::{topology_of, unstated};
@@ -53,26 +58,82 @@ impl WaveMetadata {
     }
 }
 
-/// Decode one packet into `dest`, reusing the buffer across calls to avoid
-/// per-packet allocation. On success returns the filled buffer together with
-/// its frame count. This is the single decode-a-packet primitive shared by the
-/// whole-file load and [`FileIn`](crate::FileIn): given a packet already known
-/// to belong to the selected track, it runs `decoder.decode` then `clear` /
-/// `render_silence` / `convert` into the planar `AudioBuffer<f32>` that callers
-/// read from.
-pub(super) fn decode_packet_into<'d>(
-    decoder: &mut dyn Decoder,
-    packet: &Packet,
-    dest: &'d mut Option<AudioBuffer<f32>>,
-) -> Result<(&'d AudioBuffer<f32>, usize), Error> {
-    let decoded = decoder.decode(packet)?;
-    let buf = dest
-        .get_or_insert_with(|| AudioBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec()));
-    buf.clear();
-    buf.render_silence(Some(decoded.frames()));
-    decoded.convert(buf);
-    let buffer_len = decoded.frames();
-    Ok((buf, buffer_len))
+/// A decoder for one audio track, producing planar `f32` a packet at a time.
+///
+/// Gapless trimming is off, so it hands back every frame its codec decodes,
+/// delay and padding included. A Vorbis stream's first packet after a reset
+/// only primes the codec's overlap: it decodes to no frames.
+pub(super) struct PacketDecoder {
+    decoder: Box<dyn AudioDecoder>,
+    /// Whether the codec's first packet after a reset decodes to no frames.
+    primes: bool,
+    /// Whether a packet has decoded since the last reset.
+    primed: bool,
+    /// The last packet's frames, one vector per channel.
+    planes: Vec<Vec<f32>>,
+}
+
+impl PacketDecoder {
+    /// A decoder for the track whose parameters are `params`.
+    pub(super) fn new(params: &AudioCodecParameters) -> Result<Self, Error> {
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(params, &AudioDecoderOptions::default().gapless(false))?;
+        Ok(Self {
+            decoder,
+            primes: params.codec == CODEC_ID_VORBIS,
+            primed: false,
+            planes: Vec::new(),
+        })
+    }
+
+    /// Forgets the codec's overlap: the next packet is not continuous with the
+    /// last one, as after a seek.
+    pub(super) fn reset(&mut self) {
+        self.decoder.reset();
+        self.primed = false;
+    }
+
+    /// Decodes one packet into [`planes`](Self::planes), reusing the vectors
+    /// across calls to avoid per-packet allocation. Returns the frame count,
+    /// which every plane holds. This is the single decode-a-packet primitive
+    /// shared by the whole-file load and [`FileIn`](crate::FileIn): given a
+    /// packet already known to belong to the selected track.
+    pub(super) fn decode(&mut self, packet: &Packet) -> Result<usize, Error> {
+        let decoded = self.decoder.decode(packet)?;
+        let priming = self.primes && !self.primed;
+        self.primed = true;
+        if priming {
+            self.planes.clear();
+            return Ok(0);
+        }
+        decoded.copy_to_vecs_planar::<f32>(&mut self.planes);
+        Ok(decoded.frames())
+    }
+
+    /// The frames of the last packet, one slice per channel.
+    pub(super) fn planes(&self) -> &[Vec<f32>] {
+        &self.planes
+    }
+
+    /// The format of the last decoded packet.
+    pub(super) fn spec(&self) -> AudioSpec {
+        self.decoder.last_decoded().spec().clone()
+    }
+}
+
+/// The frame count of a track's whole decode: the container's count of valid
+/// frames with the delay and padding frames the decoder also returns. A codec
+/// whose first packet only primes (Vorbis) returns no frames for the delay,
+/// which is that packet.
+pub(super) fn total_frames_of(track: &Track, params: &AudioCodecParameters) -> Option<u64> {
+    let delay = if params.codec == CODEC_ID_VORBIS {
+        0
+    } else {
+        track.delay.unwrap_or(0)
+    };
+    track
+        .num_frames
+        .map(|valid| valid + u64::from(delay) + u64::from(track.padding.unwrap_or(0)))
 }
 
 /// Open `path` and probe its container, hinting the format from the extension.
@@ -90,24 +151,28 @@ pub(super) fn probe_path(path: &Path) -> Result<Box<dyn FormatReader>, Error> {
 
 fn probe_source(source: Box<dyn MediaSource>, hint: &Hint) -> Result<Box<dyn FormatReader>, Error> {
     let stream = MediaSourceStream::new(source, Default::default());
-    let format_opts = FormatOptions {
-        enable_gapless: false,
-        ..Default::default()
-    };
-    let metadata_opts: MetadataOptions = Default::default();
-    let probed =
-        symphonia::default::get_probe().format(hint, stream, &format_opts, &metadata_opts)?;
-    Ok(probed.format)
+    symphonia::default::get_probe().probe(
+        hint,
+        stream,
+        FormatOptions::default(),
+        MetadataOptions::default(),
+    )
 }
 
-/// The first track with a known codec — the one every loader here decodes.
+/// The first track with a known audio codec, with its audio parameters: the
+/// one every loader here decodes.
 pub(super) fn first_audio_track(
     reader: &dyn FormatReader,
-) -> Result<&symphonia::core::formats::Track, DecodeError> {
+) -> Result<(&Track, &AudioCodecParameters), DecodeError> {
     reader
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find_map(|track| match &track.codec_params {
+            Some(CodecParameters::Audio(params)) if params.codec != CODEC_ID_NULL_AUDIO => {
+                Some((track, params))
+            }
+            _ => None,
+        })
         .ok_or(DecodeError::NoAudioTrack)
 }
 
@@ -115,9 +180,7 @@ pub(super) fn first_audio_track(
 /// states none is refused, never given a rate of ours.
 ///
 /// A rate of 0 states none.
-pub(super) fn sample_rate_of(
-    params: &symphonia::core::codecs::CodecParameters,
-) -> Result<SampleRate, DecodeError> {
+pub(super) fn sample_rate_of(params: &AudioCodecParameters) -> Result<SampleRate, DecodeError> {
     params
         .sample_rate
         .and_then(SampleRate::from_hz)
@@ -132,8 +195,9 @@ impl Wave {
     /// [`decodable_extensions`](crate::decodable_extensions). The wave keeps
     /// the file's own sample rate and channel count; nothing is resampled. Its
     /// [`topology`](Wave::topology) is what the container names, in the order
-    /// the samples are in: a mono file is the centre, and a speaker the
-    /// vocabulary has no name for (a second LFE) is
+    /// the samples are in: a mono file is the centre, a channel that names no
+    /// position is [`Speaker::Unassigned`](tutti_types::Speaker::Unassigned), and
+    /// a position the vocabulary has no name for is
     /// [`Speaker::Unknown`](tutti_types::Speaker::Unknown). Reads and
     /// decodes the whole file on the calling thread, so do not call it on the
     /// audio thread.
@@ -170,14 +234,11 @@ impl Wave {
     /// rate ([`DecodeError::NoSampleRate`]).
     pub fn read_metadata(path: impl AsRef<Path>) -> Result<WaveMetadata, DecodeError> {
         let reader = probe_path(path.as_ref()).map_err(convert)?;
-        let track = first_audio_track(&*reader)?;
+        let (track, params) = first_audio_track(&*reader)?;
         Ok(WaveMetadata {
-            total_frames: track.codec_params.n_frames,
-            sample_rate: sample_rate_of(&track.codec_params)?,
-            topology: track
-                .codec_params
-                .channels
-                .map_or_else(unstated, topology_of),
+            total_frames: total_frames_of(track, params),
+            sample_rate: sample_rate_of(params)?,
+            topology: params.channels.as_ref().map_or_else(unstated, topology_of),
         })
     }
 
@@ -195,18 +256,13 @@ impl Wave {
 
 /// Decode the first audio track of a probed container to its end.
 fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
-    let track = first_audio_track(&*reader)?;
+    let (track, params) = first_audio_track(&*reader)?;
     let track_id = track.id;
 
-    let total_frames = track.codec_params.n_frames;
-    let sample_rate = sample_rate_of(&track.codec_params)?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(convert)?;
-    let topology = track
-        .codec_params
-        .channels
-        .map_or_else(unstated, topology_of);
+    let total_frames = total_frames_of(track, params);
+    let sample_rate = sample_rate_of(params)?;
+    let mut decoder = PacketDecoder::new(params).map_err(convert)?;
+    let topology = params.channels.as_ref().map_or_else(unstated, topology_of);
 
     // Pre-allocate using the metadata frame count when available (WAV, FLAC).
     let mut wave: Option<Wave> = total_frames.map(|total| {
@@ -217,44 +273,46 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
         wave
     });
 
-    // Reuse a single decode buffer across all packets to avoid per-packet
-    // allocation.
-    let mut dest: Option<AudioBuffer<f32>> = None;
-
     loop {
         let packet = match reader.next_packet() {
-            Ok(packet) => packet,
-            // Any read error ends the stream — symphonia reports a clean end
-            // of file as an `IoError`.
+            Ok(Some(packet)) => packet,
+            // A clean end of stream. A file with no packet at all is empty, not a
+            // wave.
+            Ok(None) => return wave.ok_or_else(end_of_stream),
+            // Any read error ends the stream.
             Err(err) => return wave.ok_or_else(|| convert(err)),
         };
 
         // A packet of another track is not ours to decode.
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
-        let (buf, buffer_len) =
-            decode_packet_into(&mut *decoder, &packet, &mut dest).map_err(convert)?;
+        let buffer_len = decoder.decode(&packet).map_err(convert)?;
         let wave_output = match &mut wave {
             Some(wave) => wave,
             none => {
-                let spec = *buf.spec();
-                let rate = SampleRate::from_hz(spec.rate).ok_or(DecodeError::NoSampleRate)?;
-                none.insert(Wave::with_topology(topology_of(spec.channels), rate))
+                let spec = decoder.spec();
+                let rate = SampleRate::from_hz(spec.rate()).ok_or(DecodeError::NoSampleRate)?;
+                none.insert(Wave::with_topology(topology_of(spec.channels()), rate))
             }
         };
 
         // Batch-append all channels at once.
-        let num_ch = buf.spec().channels.count();
         let old_len = wave_output.len();
-        for ch in 0..num_ch {
-            wave_output
-                .channel_vec_mut(ch)
-                .extend_from_slice(&buf.chan(ch)[..buffer_len]);
+        for (ch, plane) in decoder.planes().iter().enumerate() {
+            wave_output.channel_vec_mut(ch).extend_from_slice(plane);
         }
         wave_output.set_len(old_len + Samples(buffer_len));
     }
+}
+
+/// What a stream with no packet at all is refused with.
+pub(super) fn end_of_stream() -> DecodeError {
+    DecodeError::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "end of stream",
+    ))
 }
 
 #[cfg(all(test, feature = "decode-wav"))]

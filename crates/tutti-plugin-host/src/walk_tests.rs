@@ -35,7 +35,7 @@ fn point(beat: f64, bpm: f64, shape: Transition) -> TempoPoint {
 fn block(len: usize, transport: TransportPosition, changes: &[(usize, TransportPosition)]) -> Env {
     let mut list = TransportChanges::NONE;
     for &(at, to) in changes {
-        list.push(Offset::new(at, Samples(len)).expect("inside the block"), to)
+        list.push(Offset::of(Samples(at), Samples(len)), to)
             .expect("a change");
     }
     Env {
@@ -108,7 +108,7 @@ impl Rig {
                 let (meter, steady, project, block_ns) = block.parts();
                 if at == 0 {
                     self.changes.clear();
-                    let offset = Offset::new(0, Samples(frames)).expect("inside the block");
+                    let offset = Offset::of(Samples(0), Samples(frames));
                     let mut s = Snapshot::at(&cx, offset, steady.at(0), project, block_ns);
                     let mut view = self.tempo.view(env.sample_rate);
                     let settled = s.settle(&mut view);

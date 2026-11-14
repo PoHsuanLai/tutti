@@ -29,7 +29,7 @@ use tutti_plugin_types::{PluginInvalidation, PluginRefresh, TransportRequest};
 /// Cloneable and shared: the side that hears the plugin holds one end and
 /// feeds it with [`fire`](Self::fire), and every subscriber hears each
 /// notification until its [`Subscription`] drops. (Not called `Sink`:
-/// `tutti_types::Sink` is the engine's audio edge.)
+/// `tutti_buffers::Sink` is the engine's audio edge.)
 pub struct Listener<A> {
     inner: Arc<Mutex<Subscribers<A>>>,
 }

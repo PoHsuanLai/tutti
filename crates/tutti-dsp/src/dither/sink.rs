@@ -1,7 +1,8 @@
 //! [`DitherSink`]: the dither noise as a [`Sink`] adapter, the one path an
 //! export and a live recording share.
 
-use tutti_types::{Amplitude, ChannelLayout, Samples, Sink, SinkFailed};
+use tutti_buffers::{Interleaved, Sink, SinkFailed};
+use tutti_types::{Amplitude, ChannelLayout, Samples};
 
 use crate::dither::{DitherNoise, DitherShape};
 
@@ -37,7 +38,7 @@ pub struct DitherSpec {
 /// goes to the inner sink as it came, uncopied. Frames in are frames out, the
 /// layout is the inner sink's, a write the inner sink refuses is refused
 /// here ([`SinkFailed`]), and [`finalize`](Sink::finalize) is the inner
-/// sink's. A trailing partial frame is ignored, as every sink does.
+/// sink's. A view whose width is not the inner sink's fails the write.
 ///
 /// Nothing allocates after [`new`](Self::new): the scratch is one chunk of
 /// 1024 frames, sized there.
@@ -45,14 +46,16 @@ pub struct DitherSpec {
 /// # Examples
 ///
 /// ```
+/// use tutti_buffers::{Interleaved, Sink, SinkFailed};
 /// use tutti_dsp::{DitherShape, DitherSink, DitherSpec};
-/// use tutti_types::{Amplitude, ChannelLayout, Sink, SinkFailed};
+/// use tutti_types::{Amplitude, ChannelLayout};
 ///
 /// struct Count(usize);
 /// impl Sink for Count {
+///     type Sample = f32;
 ///     fn layout(&self) -> ChannelLayout { ChannelLayout::MONO }
-///     fn write(&mut self, block: &[f32]) -> Result<(), SinkFailed> {
-///         self.0 += block.len();
+///     fn write(&mut self, frames: Interleaved<'_, f32>) -> Result<(), SinkFailed> {
+///         self.0 += frames.samples().len();
 ///         Ok(())
 ///     }
 ///     fn finalize(self) -> std::io::Result<()> { Ok(()) }
@@ -61,7 +64,7 @@ pub struct DitherSpec {
 /// let lsb = Amplitude(1.0 / 32768.0); // 16 bit
 /// let spec = DitherSpec { shape: DitherShape::Triangular, lsb };
 /// let mut sink = DitherSink::new(Count(0), Some(spec));
-/// sink.write(&[0.0; 64]).unwrap();
+/// sink.write(Interleaved::new(&[0.0; 64], ChannelLayout::MONO).unwrap()).unwrap();
 /// assert_eq!(sink.into_inner().0, 64);
 /// ```
 #[derive(Debug)]
@@ -72,7 +75,7 @@ pub struct DitherSink<S> {
     scratch: Vec<f32>,
 }
 
-impl<S: Sink> DitherSink<S> {
+impl<S: Sink<Sample = f32>> DitherSink<S> {
     /// Wraps `inner`, dithering with `spec`, or passing through with `None`.
     pub fn new(inner: S, spec: Option<DitherSpec>) -> Self {
         let scratch = match spec {
@@ -104,27 +107,32 @@ impl<S: Sink> DitherSink<S> {
     }
 }
 
-impl<S: Sink> Sink for DitherSink<S> {
+impl<S: Sink<Sample = f32>> Sink for DitherSink<S> {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.inner.layout()
     }
 
-    fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed> {
-        let Some(spec) = self.spec else {
-            return self.inner.write(interleaved);
-        };
+    fn write(&mut self, frames: Interleaved<'_, f32>) -> Result<(), SinkFailed> {
         let layout = self.inner.layout();
-        let whole =
-            Samples::from_interleaved_len(interleaved.len(), layout).interleaved_len(layout);
-        let step = CHUNK.interleaved_len(layout);
-        if step == 0 {
-            return Ok(());
+        if frames.layout() != layout {
+            return Err(SinkFailed);
         }
-        for chunk in interleaved[..whole].chunks(step) {
+        let Some(spec) = self.spec else {
+            return self.inner.write(frames);
+        };
+        let mut at = Samples::ZERO;
+        while at < frames.len() {
+            let end = (at + CHUNK).min(frames.len());
             self.scratch.clear();
-            self.scratch.extend_from_slice(chunk);
+            self.scratch
+                .extend_from_slice(frames.window(at..end).samples());
             self.noise.apply(spec.shape, spec.lsb, &mut self.scratch);
-            self.inner.write(&self.scratch)?;
+            // The scratch holds whole frames at `layout`, so the view builds.
+            let dithered = Interleaved::new(&self.scratch, layout).map_err(|_| SinkFailed)?;
+            self.inner.write(dithered)?;
+            at = end;
         }
         Ok(())
     }

@@ -6,8 +6,9 @@
 //! run it with `audio-io`.
 #![cfg(feature = "io")]
 
+use tutti::buffers::Sink;
 use tutti::codec::{FileOut, Format, Pcm, Spec};
-use tutti::types::{ChannelLayout, SampleRate, Sink};
+use tutti::types::{ChannelLayout, SampleRate};
 
 #[test]
 fn io_reaches_a_wav_sink_without_a_format_feature() {

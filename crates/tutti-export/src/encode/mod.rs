@@ -23,10 +23,10 @@ use crate::output::FileTarget;
 use crate::render::{PlaneSource, REPLAY_BLOCK, RenderPlan, Replay};
 use crate::{Error, Written};
 use std::path::Path;
-use tutti_buffers::{Interleaved, InterleavedMut};
+use tutti_buffers::{Interleaved, InterleavedMut, Sink, SinkFailed};
 use tutti_codec::{Encoder, Finalized, Spec};
 use tutti_dsp::{DitherSink, StreamingResampler};
-use tutti_types::{Amplitude, ChannelLayout, SampleRate, Samples, Sink, SinkFailed};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate, Samples};
 
 /// The rate the file is written at: the resample target, else the rate it is
 /// rendered at.
@@ -147,26 +147,31 @@ struct EncoderSink {
 }
 
 impl Sink for EncoderSink {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    fn write(&mut self, interleaved: &[f32]) -> std::result::Result<(), SinkFailed> {
+    fn write(&mut self, block: Interleaved<'_>) -> std::result::Result<(), SinkFailed> {
         if self.error.is_some() {
             return Err(SinkFailed);
         }
-        if self.counts_clipping {
-            self.clipped += clipped_in(interleaved);
+        if block.layout() != self.layout {
+            self.error = Some(Error::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a block of another width than the encoder's",
+            )));
+            return Err(SinkFailed);
         }
-        let written = match Interleaved::new(interleaved, self.layout) {
-            Ok(block) => self.encoder.write(block).map_err(Error::from),
-            Err(e) => Err(Error::from(e)),
-        };
-        written.map_err(|e| {
-            self.error = Some(e);
+        if self.counts_clipping {
+            self.clipped += clipped_in(block.samples());
+        }
+        self.encoder.write(block).map_err(|e| {
+            self.error = Some(Error::from(e));
             SinkFailed
         })?;
-        self.frames += Samples::from_interleaved_len(interleaved.len(), self.layout);
+        self.frames += block.len();
         Ok(())
     }
 
@@ -284,11 +289,12 @@ impl Chain {
             self.staging.clear();
             self.staging
                 .extend(block.samples().iter().map(|s| s * gain.get()));
-            self.sink.write(&self.staging).map_err(|_| self.failure())
+            let staged = Interleaved::new(&self.staging, self.layout)?;
+            self.sink.write(staged).map_err(|_| self.failure())
         } else {
             // With no dither the adapter hands the gated block straight on,
             // uncopied.
-            self.sink.write(block.samples()).map_err(|_| self.failure())
+            self.sink.write(block).map_err(|_| self.failure())
         }
     }
 
@@ -341,7 +347,9 @@ fn emit_planes(
             *s *= gain.get();
         }
     }
-    let r = sink.write(staging).map_err(|_| failure_of(sink));
+    let r = Interleaved::new(staging, layout)
+        .map_err(Error::from)
+        .and_then(|block| sink.write(block).map_err(|_| failure_of(sink)));
     for p in out.iter_mut() {
         p.clear();
     }

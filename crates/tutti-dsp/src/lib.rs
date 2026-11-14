@@ -146,7 +146,7 @@
 //! - **Resampling** (`resample/`): [`WindowedSinc`], [`FftResampler`] (failing with a
 //!   [`ResampleError`]) and [`StreamingResampler`], sized by a [`ChunkSize`].
 //! - **Dither** (`dither/`): [`DitherNoise`] ([`DitherShape`]) and [`DitherSink`], the
-//!   `tutti_types::Sink` adapter export and recording share.
+//!   `tutti_buffers::Sink` adapter export and recording share.
 //! - **Oscillator** (`oscillator.rs`): [`Oscillator`], a sine, or a saw, square or
 //!   triangle band-limited by PolyBLEP and PolyBLAMP ([`OscillatorWave`]).
 //! - **Small kernels**: [`cubic_hermite`], [`ShapeKind`] and [`Shaper`], [`Smoother`],

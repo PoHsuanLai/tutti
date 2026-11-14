@@ -11,14 +11,16 @@
 
 use std::path::PathBuf;
 
+use tutti_buffers::{InterleavedMut, Pull, Source};
 use tutti_codec::{FileIn, Wave};
 use tutti_fixtures::Fnv;
-use tutti_types::{Pull, Samples, Source};
+use tutti_types::Samples;
 
 /// The frames one pull produced, `0` for any verdict (these loops read until
 /// the file stops, and each asserts a clean file reaches its end).
 fn read(dec: &mut FileIn, buf: &mut [f32]) -> usize {
-    match dec.pull(buf) {
+    let out = InterleavedMut::new(buf, dec.layout()).unwrap();
+    match dec.pull(out) {
         Pull::Frames(n) => n.get(),
         _ => 0,
     }

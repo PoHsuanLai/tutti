@@ -38,8 +38,9 @@ use std::sync::{Arc, Weak};
 use crate::TapId;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
+use tutti_buffers::{InterleavedMut, Pull, Source};
 use tutti_rt::{FaultLatch, RtScope};
-use tutti_types::{ChannelLayout, Frame, Pull, Samples, Source};
+use tutti_types::{ChannelLayout, Frame, Samples};
 
 use crate::slots::AudioSlots;
 
@@ -471,12 +472,14 @@ impl TapReader {
 /// Like every [`Source`] it carries no sample rate: a tap runs at the graph's,
 /// so build a sink at that rate or the file plays at the wrong speed.
 impl Source for TapReader {
+    type Sample = f32;
+
     /// As wide as the tap: one channel a lane.
     fn layout(&self) -> ChannelLayout {
         TapReader::layout(self)
     }
 
-    /// Pops up to `out.len() / width` frames into `out` ([`pop_into`](TapReader::pop_into)).
+    /// Pops up to `out.len()` frames into `out` ([`pop_into`](TapReader::pop_into)).
     ///
     /// **The graph does not end**, so an empty tap is [`Starved`](Pull::Starved):
     /// it means the graph has not rendered since the last pull (the audio
@@ -486,10 +489,13 @@ impl Source for TapReader {
     /// sources can end: once every node it read was removed and the frames
     /// before the removal are read, it answers [`Ended`](Pull::Ended)
     /// ([`source_gone`](TapReader::source_gone)).
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_, f32>) -> Pull {
+        if out.layout() != TapReader::layout(self) {
+            return Pull::Failed;
+        }
         // The latch first, then the ring: `FaultLatch::drain`'s order.
         let gone = self.source_gone();
-        let frames = self.pop_into(out);
+        let frames = self.pop_into(out.samples_mut());
         if !frames.is_zero() {
             Pull::Frames(frames)
         } else if gone {

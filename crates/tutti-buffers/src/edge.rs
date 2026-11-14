@@ -1,5 +1,5 @@
-//! The engine's edge vocabulary: [`Source`] (frames pulled in) and [`Sink`]
-//! (frames written out), and [`Pull`], what a pull answers.
+//! The edge vocabulary: [`Source`] (frames pulled in), [`Sink`] (frames written
+//! out) and [`Pull`], what a pull answers.
 //!
 //! An **edge** is a stream on a clock other than the graph's, read by pulling
 //! interleaved frames that may starve or end: a microphone, a decoded file, a
@@ -7,7 +7,7 @@
 //! called by the graph's clock, planar, one block at a time; the rings in
 //! `tutti-graph` (the tap going out, the inlet coming in) are where an edge
 //! meets the graph. Disk streaming inside the sampler is positional and is not
-//! this vocabulary (doc 025). A future edge (a network socket, a generator) would
+//! this vocabulary. A future edge (a network socket, a generator) would
 //! implement these traits; none exists today.
 //!
 //! ```text
@@ -18,9 +18,6 @@
 //! Recording is a source pumped into a sink: pull a block, write it, repeat.
 //! `tutti-session`'s `PumpLoop` is that pass and its `Recorder` the thread that
 //! runs it.
-//!
-//! Homed in `tutti-types`, the root leaf, so every subsystem can implement
-//! these without depending on any particular engine crate.
 //!
 //! # The verdict comes back from the call
 //!
@@ -33,27 +30,26 @@
 //! with no error anywhere; the type makes that a match arm the source wrote, not a
 //! flag a caller had to remember.
 //!
-//! # The buffer: a flat interleaved `&[f32]`, width from [`ChannelLayout`]
+//! # The buffer: a checked view over the source's [`Sample`]
 //!
-//! Both traits take a flat interleaved slice. The channel count is a runtime
+//! Both traits take an [`Interleaved`] or [`InterleavedMut`] view of the
+//! implementor's `Sample` format. The view was checked once at construction: a
+//! whole number of frames at a non-zero width. The width is a runtime
 //! [`ChannelLayout`] the source or sink reports from `layout`, because a width
 //! that is a property of the *data* (a decoded file, a device a user just plugged
-//! in) cannot be a const parameter.
+//! in) cannot be a const parameter. A view whose width is not `layout()` is the
+//! caller's bug: a source answers [`Pull::Failed`], a sink fails the write.
 //!
 //! # Counts are in FRAMES. Always. Everywhere.
 //!
 //! - [`Source::pull`] answers [`Pull::Frames`] with a frame count, a
-//!   [`Samples`]. The samples it wrote are
-//!   [`returned.interleaved_len(layout())`](Samples::interleaved_len).
-//! - [`Sink::write`] is handed
-//!   [`Samples::from_interleaved_len(interleaved.len(), layout())`](Samples::from_interleaved_len)
-//!   frames. A trailing partial frame is not a frame.
+//!   [`Samples`], bounded by `out.len()`.
+//! - [`Sink::write`] is handed a view whose `len()` is its frame count.
 //!
-//! Those two conversions are the only crossings between the units, so a stride
-//! mistake has one home. A bare `usize` from a slice length does not type-check
-//! where a frame count is expected.
+//! Crossing to a slice length goes through [`Samples::interleaved_len`] and
+//! [`Samples::from_interleaved_len`], so a stride mistake has one home.
 //!
-//! # Width agreement is a runtime check
+//! # Width agreement between two edges is a runtime check
 //!
 //! "A stereo source cannot feed a 6-channel sink" is not a type error with a
 //! runtime width. Two runtime checks carry it, both load-bearing: a recorder's
@@ -65,7 +61,9 @@
 //! Neither trait is invoked per sample on the audio thread. They move frames in
 //! blocks on a cold or background path (a capture pump, an offline render).
 
-use crate::{ChannelLayout, Samples};
+use tutti_types::{ChannelLayout, Samples};
+
+use crate::{Interleaved, InterleavedMut, Sample};
 
 /// What one [`Source::pull`] found.
 ///
@@ -139,10 +137,11 @@ impl<V> Pull<V> {
 
 /// A source of audio frames, pulled in order on a clock the graph does not keep.
 ///
-/// Fills a caller-owned **flat interleaved** buffer and answers with a
-/// [`Pull`]. The channel count is runtime, reported by [`layout`](Self::layout):
-/// see the [module docs](self) for why, and for the frames-not-samples rule that
-/// governs every count here.
+/// Fills a caller-owned [`InterleavedMut`] view and answers with a [`Pull`].
+/// The channel count is runtime, reported by [`layout`](Self::layout), because
+/// a width that is a property of the data (a decoded file, a device just
+/// plugged in) cannot be a const parameter. Every count is in frames
+/// ([`Samples`]), never samples.
 ///
 /// # Rules
 ///
@@ -154,6 +153,9 @@ impl<V> Pull<V> {
 ///   One enum serves both kinds: [`Pull::ready`] maps the arm that cannot occur
 ///   to an `Err`.
 pub trait Source {
+    /// The format this source produces.
+    type Sample: Sample;
+
     /// How many channels one frame of this source carries.
     ///
     /// Fixed for the life of the source: a caller sizes its buffer from this
@@ -162,13 +164,11 @@ pub trait Source {
 
     /// Fills the front of `out` with the next available frames.
     ///
-    /// `out` is flat interleaved at [`layout`](Self::layout)'s width, so it
-    /// holds [`Samples::from_interleaved_len(out.len(), layout())`](Samples::from_interleaved_len)
-    /// frames and a [`Frames`](Pull::Frames) count is bounded by that. Samples
-    /// past `n.interleaved_len(layout())` are left untouched, and a trailing
-    /// partial frame is never partly filled: a short frame desynchronises the
-    /// interleave for everything after it.
-    fn pull(&mut self, out: &mut [f32]) -> Pull;
+    /// A [`Frames`](Pull::Frames) count is bounded by `out.len()`. Frames past
+    /// the count are left untouched. A view whose width is not
+    /// [`layout`](Self::layout) is a caller's bug, and the source answers
+    /// [`Failed`](Pull::Failed) for it.
+    fn pull(&mut self, out: InterleavedMut<'_, Self::Sample>) -> Pull;
 
     /// The frames this source discarded since the last call, and clears the
     /// count: a gap in what `pull` delivered.
@@ -197,7 +197,7 @@ pub trait FiniteSource: Source {}
 
 /// A sink for audio frames: written incrementally, then closed once.
 ///
-/// Takes blocks of **flat interleaved** samples, then is closed with
+/// Takes [`Interleaved`] views of its [`Sample`] format, then is closed with
 /// [`finalize`](Self::finalize). The channel count is runtime, reported by
 /// [`layout`](Self::layout).
 ///
@@ -208,27 +208,25 @@ pub trait FiniteSource: Source {}
 /// write after finalizing" a compile-time guarantee and gives the commit a
 /// place to surface I/O errors.
 pub trait Sink {
+    /// The format this sink takes.
+    type Sample: Sample;
+
     /// How many channels one frame of this destination carries.
     ///
     /// Fixed for the life of the sink: it is what the file header was already
     /// told, and it cannot be renegotiated mid-stream.
     fn layout(&self) -> ChannelLayout;
 
-    /// Appends `interleaved`, flat interleaved **samples** at
-    /// [`layout`](Self::layout)'s width: [`Samples::from_interleaved_len(interleaved.len(), layout())`](Samples::from_interleaved_len)
-    /// **frames**. A trailing partial frame is ignored rather than written
-    /// short, because a short frame desynchronises the interleave for
-    /// everything after it.
-    ///
-    /// A caller computes the slice length with [`Samples::interleaved_len`],
-    /// never by hand.
+    /// Appends `frames`, a whole number of frames at
+    /// [`layout`](Self::layout)'s width. A view of another width is a caller's
+    /// bug and fails the write.
     ///
     /// # Errors
     ///
     /// [`SinkFailed`] once a write has failed; later writes are skipped and
     /// fail the same way. The detail of the *first* failure comes from
     /// [`finalize`](Self::finalize).
-    fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed>;
+    fn write(&mut self, frames: Interleaved<'_, Self::Sample>) -> Result<(), SinkFailed>;
 
     /// Closes the destination, flushing and committing.
     ///

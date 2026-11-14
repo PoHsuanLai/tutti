@@ -163,9 +163,9 @@ std only. A rule the compiler already enforces is not a gate.
 
 ### Edges and buffers
 
-- `Source`/`Sink` are edges: interleaved `&[f32]`, a runtime `ChannelLayout`, every count
-  in frames (`Samples`). Cross to a slice length only with `Samples::interleaved_len` /
-  `from_interleaved_len`.
+- `Source`/`Sink` are edges over a `Sample` format: a checked `Interleaved`/`InterleavedMut`
+  view, a runtime `ChannelLayout`, every count in frames (`Samples`). Cross to a slice
+  length only with `Samples::interleaved_len` / `from_interleaved_len`.
 - Width is runtime: never a const-generic channel count. A channel fold goes through
   `tutti_buffers::Fold`, built on the control side; a narrowing by index is refused, never
   truncated.
@@ -226,7 +226,7 @@ adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`,
    `tutti-buffers`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`, `tutti-codec`,
-   `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
+   `tutti-tempo`, `tutti-voicing`, `tutti-sf2`, `tutti-midi-network`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
 4. `tutti-engine`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`, `tutti-clap-ffi`,
    `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`, `tutti-plugin-db`, `tutti-plugin-ipc`

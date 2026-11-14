@@ -65,6 +65,7 @@ pub(super) const LAYERS: &[&[&str]] = &[
         "tutti-buffers",
     ],
     &[
+        "tutti-midi-network",
         "tutti-graph",
         "tutti-dsp",
         "tutti-modulation",
@@ -109,6 +110,7 @@ pub(super) const LAYERS: &[&[&str]] = &[
 const ONLY: &[(&str, &[&str])] = &[
     ("tutti-midi-protocol", &["tutti-ump", "tutti-types"]),
     ("tutti-midi-device", &["tutti-ump"]),
+    ("tutti-midi-network", &["tutti-ump", "tutti-midi-device"]),
     ("tutti-metering", &["tutti-types"]),
     ("tutti-codec", &["tutti-types", "tutti-buffers"]),
     ("tutti-tempo", &["tutti-types"]),

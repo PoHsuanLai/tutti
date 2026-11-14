@@ -2,6 +2,7 @@
 
 use super::super::limits::MediaType;
 use super::super::tree::{PeJson, PeJsonError};
+use super::super::value::PeExtra;
 use super::channels::PeChannelList;
 use super::controllers::{PeAllCtrlList, PeChCtrlList, PeCtrlMapList};
 use super::entry::PeResourceList;
@@ -12,6 +13,7 @@ use super::programs::{PeModeList, PeProgramList};
 use super::simple::{
     PeBasicChannelRx, PeBasicChannelTx, PeChannelMode, PeCurrentMode, PeExternalSync, PeLocalOn,
 };
+use super::state::{PeState, PeStateList};
 
 /// What the Property Data of a Resource without a type holds.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,6 +126,10 @@ pub enum PeData {
     ChCtrlList(PeChCtrlList),
     /// CtrlMapList.
     CtrlMapList(PeCtrlMapList),
+    /// StateList.
+    StateList(PeStateList),
+    /// State.
+    State(PeState),
     /// A Resource with no type here.
     Opaque(PeOpaque),
 }
@@ -153,6 +159,8 @@ impl PeData {
             Self::AllCtrlList(_) => PeResource::AllCtrlList,
             Self::ChCtrlList(_) => PeResource::ChCtrlList,
             Self::CtrlMapList(_) => PeResource::CtrlMapList,
+            Self::StateList(_) => PeResource::StateList,
+            Self::State(_) => PeResource::State,
             Self::Opaque(opaque) => opaque.resource.clone(),
         }
     }
@@ -177,6 +185,11 @@ impl PeData {
             Self::AllCtrlList(v) => v.to_json(),
             Self::ChCtrlList(v) => v.to_json(),
             Self::CtrlMapList(v) => v.to_json(),
+            Self::StateList(v) => v.to_json(),
+            Self::State(v) => match v.body() {
+                OpaqueBody::Json(json) => json.clone(),
+                OpaqueBody::Binary { .. } => return None,
+            },
             Self::Opaque(v) => v.json()?.clone(),
         })
     }
@@ -189,6 +202,10 @@ impl PeData {
                 body: OpaqueBody::Binary { media_type, .. },
                 ..
             }) => Some(media_type),
+            Self::State(state) => match state.body() {
+                OpaqueBody::Binary { media_type, .. } => Some(media_type),
+                OpaqueBody::Json(_) => None,
+            },
             _ => None,
         }
     }
@@ -202,6 +219,7 @@ impl PeData {
                 body: OpaqueBody::Binary { media_type, bytes },
                 ..
             }) => (Some(media_type.clone()), bytes.clone()),
+            Self::State(state) => state.to_wire(),
             other => (
                 None,
                 other.to_json().map(|j| j.encode()).unwrap_or_default(),
@@ -243,6 +261,10 @@ impl PeData {
             PeResource::CtrlMapList => {
                 Self::CtrlMapList(PeCtrlMapList::from_items(items(resource, json)?)?)
             }
+            PeResource::StateList => {
+                Self::StateList(PeStateList::from_items(items(resource, json)?)?)
+            }
+            PeResource::State => Self::State(PeState::json(json.clone())),
             other => match PeOpaque::new(other.clone(), json.clone()) {
                 Some(opaque) => Self::Opaque(opaque),
                 None => {
@@ -268,6 +290,9 @@ impl PeData {
         media_type: Option<&MediaType>,
         bytes: &[u8],
     ) -> Result<Self, PeDataError> {
+        if *resource == PeResource::State {
+            return PeState::from_wire(media_type, bytes).map(Self::State);
+        }
         match media_type.filter(|m| !is_json(m)) {
             None => {
                 let json = PeJson::parse(bytes).map_err(|e| {
@@ -282,6 +307,26 @@ impl PeData {
                         PeDataError::new(resource.as_str(), PeDataFault::NotValid("media type"))
                     })
             }
+        }
+    }
+
+    /// Writes the properties of a reply's header the data carries: the revision
+    /// and time of a state (M2-111 §3.2).
+    pub(super) fn write_header(&self, extra: &mut PeExtra) {
+        if let Self::State(state) = self {
+            state.write_header(extra);
+        }
+    }
+
+    /// The data with the properties of a reply's header it takes.
+    ///
+    /// # Errors
+    ///
+    /// [`PeDataError`] for a property the data cannot take.
+    pub(super) fn read_header(self, extra: &PeExtra) -> Result<Self, PeDataError> {
+        match self {
+            Self::State(state) => state.read_header(extra).map(Self::State),
+            other => Ok(other),
         }
     }
 
@@ -348,5 +393,7 @@ convert! {
     AllCtrlList(PeAllCtrlList),
     ChCtrlList(PeChCtrlList),
     CtrlMapList(PeCtrlMapList),
+    StateList(PeStateList),
+    State(PeState),
     Opaque(PeOpaque),
 }

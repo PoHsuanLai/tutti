@@ -2,6 +2,7 @@
 //! Get, Set and Start Subscription for one Resource, with the entry of it, its
 //! page and its encoding (M2-103 §7.2, §8.5, §8.6.2, §10, §11).
 
+use super::super::body::BodyLimit;
 use super::super::header::PeEncoding;
 use super::super::header::PePage;
 use super::super::limits::{MediaType, ResourceId};
@@ -157,6 +158,7 @@ pub struct ResourceGet {
     page: Option<PePage>,
     encoding: PeEncoding,
     flow: PeFlowControl,
+    limit: Option<BodyLimit>,
 }
 
 impl ResourceGet {
@@ -168,7 +170,22 @@ impl ResourceGet {
             page: None,
             encoding: PeEncoding::Ascii,
             flow: PeFlowControl::Off,
+            limit: None,
         }
+    }
+
+    /// Ends the Get, telling the Responder to stop, if the reply's Property Data
+    /// grows past `limit`.
+    #[must_use]
+    pub fn limited(mut self, limit: BodyLimit) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// The most the reply may be.
+    #[must_use]
+    pub fn limit(&self) -> Option<BodyLimit> {
+        self.limit
     }
 
     /// Asks for a page of a List Resource: `offset` and `limit` together

@@ -21,6 +21,7 @@ use super::entry::{PeResourceList, ResourceEntry};
 use super::fields::PeDataError;
 use super::kind::PeResource;
 use super::request::{RequestRefused, ResourceGet, ResourceSet, ResourceTarget, SetBody};
+use super::state::StateStamp;
 use crate::{CiMessage, Decoded, Muid};
 
 /// The most entries of a List Resource a walk gathers, so a peer that never
@@ -139,6 +140,10 @@ pub enum ResourceEvent {
         resource: PeResource,
         /// The status of the reply, 200 or 201, or why not.
         result: Result<PeStatus, ResourceFailure>,
+        /// What the device made of a State it accepted: its new revision and time
+        /// (M2-111 §3.3). `None` for a Resource that is not State, and for a Set
+        /// that did not succeed.
+        stamp: Option<StateStamp>,
     },
     /// A Subscription started and the Resource is being got.
     Subscribed {
@@ -603,11 +608,20 @@ impl ResourceInitiator {
             }
             Op::Walk(walk) => self.walked(walk, reply, now, out),
             Op::Set { call, resource } => {
-                let result = reply.map(|r| r.status());
+                let (result, stamp) = match reply {
+                    Ok(r) if resource == PeResource::State => {
+                        match StateStamp::read(&r.header.extra) {
+                            Ok(stamp) => (Ok(r.status()), Some(stamp)),
+                            Err(error) => (Err(error.into()), None),
+                        }
+                    }
+                    other => (other.map(|r| r.status()), None),
+                };
                 out.push(event(ResourceEvent::Set {
                     call,
                     resource,
                     result,
+                    stamp,
                 }));
             }
             Op::Subscribe { call, target } => match reply {
@@ -854,6 +868,7 @@ fn pe_get(get: &ResourceGet) -> PeGet {
         page: get.page(),
         encoding: get.encoding(),
         flow_control: get.flow(),
+        reply_limit: get.limit(),
     }
 }
 
@@ -863,14 +878,11 @@ fn parse(response: &PeResponse) -> Result<PeJson, ResourceFailure> {
 
 /// The data of a reply: JSON, or the bytes of its media type.
 fn decode(resource: &PeResource, response: &PeResponse) -> Result<PeData, ResourceFailure> {
-    match response.header.media_type.as_ref() {
-        Some(media_type) => Ok(PeData::decode_bytes(
-            resource,
-            Some(media_type),
-            &response.body,
-        )?),
-        None => Ok(PeData::decode(resource, &parse(response)?)?),
-    }
+    let data = match response.header.media_type.as_ref() {
+        Some(media_type) => PeData::decode_bytes(resource, Some(media_type), &response.body)?,
+        None => PeData::decode(resource, &parse(response)?)?,
+    };
+    Ok(data.read_header(&response.header.extra)?)
 }
 
 fn read_full(

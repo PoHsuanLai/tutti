@@ -121,6 +121,10 @@ pub struct PeGet {
     pub encoding: PeEncoding,
     /// Whether the reply is sent under Flow Control (§15.2).
     pub flow_control: PeFlowControl,
+    /// The most the reply's Property Data may be: a reply that grows past it ends
+    /// the request with [`PeOutcome::TooLarge`], and the Responder is told to stop
+    /// (§10.2). `None` for no limit of this request's own.
+    pub reply_limit: Option<BodyLimit>,
 }
 
 impl PeGet {
@@ -134,6 +138,7 @@ impl PeGet {
             page: None,
             encoding: PeEncoding::Ascii,
             flow_control: PeFlowControl::Off,
+            reply_limit: None,
         }
     }
 
@@ -304,6 +309,9 @@ pub enum PeOutcome {
     /// The peer ended the request with a NAK that terminates it (§12.1), or this
     /// Initiator did after a chunk it could not get acknowledged.
     Terminated(PeTerminator),
+    /// The reply's Property Data grew past the limit the request set, and this
+    /// Initiator told the Responder to stop (§10.2).
+    TooLarge(BodyLimit),
     /// The peer ended the request with the NAK of a failure other than a
     /// terminate: out of sequence, malformed or a timeout.
     Nak(PeSignal),
@@ -438,6 +446,7 @@ impl RequestIds {
 enum Work {
     Get {
         flow: PeFlowControl,
+        limit: Option<BodyLimit>,
     },
     Set {
         chunks: Vec<PeChunk>,
@@ -481,7 +490,7 @@ impl Work {
 
     fn flow(&self) -> PeFlowControl {
         match self {
-            Self::Get { flow } | Self::Subscribe { flow, .. } | Self::Set { flow, .. } => *flow,
+            Self::Get { flow, .. } | Self::Subscribe { flow, .. } | Self::Set { flow, .. } => *flow,
             Self::Unsubscribe => PeFlowControl::Off,
         }
     }
@@ -653,6 +662,7 @@ impl PeInitiator {
                 Vec::new(),
                 Work::Get {
                     flow: get.flow_control,
+                    limit: get.reply_limit,
                 },
             ),
             PeCall::Set(set) => (
@@ -881,12 +891,18 @@ impl PeInitiator {
         };
         match self.reassembler.push(self.peer, kind, chunk, flow, now) {
             Ok(PeStep::Pending { send }) => {
+                if kind.reply && self.stop_if_too_large(id, kind, None, actions) {
+                    return;
+                }
                 actions.extend(send.map(|s| self.signal_action(kind.transaction, s)));
                 if let Some(at) = self.find(id, kind) {
                     self.pending[at].deadline = now + PE_TIMEOUT;
                 }
             }
             Ok(PeStep::Complete { message, send }) => {
+                if kind.reply && self.stop_if_too_large(id, kind, Some(&message), actions) {
+                    return;
+                }
                 actions.extend(send.map(|s| self.signal_action(kind.transaction, s)));
                 if kind.reply {
                     self.on_reply(*message, actions);
@@ -914,6 +930,57 @@ impl PeInitiator {
                 }
             }
         }
+    }
+
+    /// Ends the Get at `id` when its reply is certain to be past the limit the
+    /// request set, telling the Responder to stop. `whole` is the reply when it is
+    /// complete. The size is judged from the bytes as sent, less what the encoding
+    /// adds: zlib's inflation is not known before the body is decoded, so a
+    /// `zlib+Mcoded7` reply is judged by the decoder's own limit.
+    fn stop_if_too_large(
+        &mut self,
+        id: PeRequestId,
+        kind: PeMessageKind,
+        whole: Option<&PeReceived>,
+        actions: &mut Vec<PeAction>,
+    ) -> bool {
+        let Some(at) = self.find(id, kind) else {
+            return false;
+        };
+        let Work::Get {
+            limit: Some(limit), ..
+        } = self.pending[at].work
+        else {
+            return false;
+        };
+        let (header, sent) = match whole {
+            Some(received) => (Some(&received.header), received.body.len()),
+            None => match self.reassembler.held(self.peer, kind, id) {
+                Some(held) => (Some(held.header), held.data.len()),
+                None => (None, 0),
+            },
+        };
+        let encoding = match header {
+            Some(PeHeader::Reply(reply)) => reply.mutual_encoding.unwrap_or(PeEncoding::Ascii),
+            _ => PeEncoding::Ascii,
+        };
+        let at_least = match encoding {
+            PeEncoding::Ascii => sent,
+            PeEncoding::Mcoded7 => sent - sent.div_ceil(8),
+            PeEncoding::ZlibMcoded7 => 0,
+        };
+        if at_least <= limit.get() {
+            return false;
+        }
+        let signal = PeSignal::Terminate {
+            request_id: id,
+            by: PeTerminator::Initiator,
+        };
+        if whole.is_none() {
+            actions.push(self.signal_action(PeTransaction::Get, signal));
+        }
+        self.conclude(at, PeOutcome::TooLarge(limit), actions);
+        true
     }
 
     /// A reply whole: the request it answers ends.

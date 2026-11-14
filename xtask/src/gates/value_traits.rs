@@ -21,12 +21,6 @@ pub(super) const MIN_FILES: usize = 100;
 
 /// `(file, type, reason)`.
 pub(super) const ALLOW: &[(&str, &str, &str)] = &[
-    // dsp (20)
-    (
-        "crates/tutti-nodes/src/testing.rs",
-        "Waveform",
-        "temporary: the dsp session adds Hash",
-    ),
     // plugins (39)
     (
         "crates/tutti-au-ffi/src/bundle.rs",

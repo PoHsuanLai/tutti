@@ -50,6 +50,7 @@ const ONSET_EPSILON: f64 = 1e-3;
 
 /// Metronome operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
 pub enum MetronomeMode {
     /// Metronome is disabled.
@@ -63,22 +64,17 @@ pub enum MetronomeMode {
     Always,
 }
 
-impl From<u8> for MetronomeMode {
-    fn from(value: u8) -> Self {
-        debug_assert!(value <= 3, "invalid MetronomeMode discriminant: {value}");
-        match value {
-            1 => MetronomeMode::PrerollOnly,
-            2 => MetronomeMode::RecordingOnly,
-            3 => MetronomeMode::Always,
-            _ => MetronomeMode::Off,
+impl MetronomeMode {
+    /// The mode a settings cell holds. Only [`ClickSettings::set_mode`] and the
+    /// constructors write the cell, each a mode's discriminant, so every byte it
+    /// can hold is one of the four.
+    fn from_cell(bits: u8) -> Self {
+        match bits {
+            1 => Self::PrerollOnly,
+            2 => Self::RecordingOnly,
+            3 => Self::Always,
+            _ => Self::Off,
         }
-    }
-}
-
-impl From<MetronomeMode> for u8 {
-    #[inline]
-    fn from(mode: MetronomeMode) -> u8 {
-        mode as u8
     }
 }
 
@@ -185,12 +181,12 @@ impl ClickSettings {
     /// Choose when the metronome sounds. Takes effect on the audio thread's
     /// next block.
     pub fn set_mode(&self, mode: MetronomeMode) {
-        self.mode.store(mode.into(), Ordering::Release);
+        self.mode.store(mode as u8, Ordering::Release);
     }
 
     /// The mode in force.
     pub fn mode(&self) -> MetronomeMode {
-        MetronomeMode::from(self.mode.load(Ordering::Acquire))
+        MetronomeMode::from_cell(self.mode.load(Ordering::Acquire))
     }
 
     /// A fresh cell holding this one's volume, mode and meter now, sharing no
@@ -663,6 +659,37 @@ mod tests {
     use tutti_types::SampleRate;
     use tutti_types::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_types::{Bpm, FrameClock};
+
+    /// A project saves a mode by name and reads it back; a name that is not a
+    /// mode is refused, never read as `Off`.
+    #[test]
+    fn a_mode_round_trips_through_serde_and_an_unknown_one_is_refused() {
+        for mode in [
+            MetronomeMode::Off,
+            MetronomeMode::PrerollOnly,
+            MetronomeMode::RecordingOnly,
+            MetronomeMode::Always,
+        ] {
+            let text = serde_json::to_string(&mode).unwrap();
+            assert_eq!(serde_json::from_str::<MetronomeMode>(&text).unwrap(), mode);
+        }
+        assert!(serde_json::from_str::<MetronomeMode>("\"Sometimes\"").is_err());
+    }
+
+    /// The settings cell gives back the mode last set, for each of the four.
+    #[test]
+    fn the_settings_cell_holds_each_mode() {
+        let settings = ClickSettings::new();
+        for mode in [
+            MetronomeMode::PrerollOnly,
+            MetronomeMode::RecordingOnly,
+            MetronomeMode::Always,
+            MetronomeMode::Off,
+        ] {
+            settings.set_mode(mode);
+            assert_eq!(settings.mode(), mode);
+        }
+    }
 
     const SR: f64 = 44_100.0;
 

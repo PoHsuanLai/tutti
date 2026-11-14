@@ -14,4 +14,4 @@ mod ir;
 mod node;
 
 pub use ir::{generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into};
-pub use node::{ConvolverNode, IrChannelConfig};
+pub use node::{ConvolverError, ConvolverNode, IrChannelConfig};

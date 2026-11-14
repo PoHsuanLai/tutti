@@ -100,7 +100,7 @@ impl MidiLearn {
 }
 
 /// What a bus carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MediaType {
     /// Audio.
     Audio,
@@ -126,7 +126,7 @@ impl MediaType {
 }
 
 /// Which way a bus faces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BusDirection {
     /// An input bus.
     Input,

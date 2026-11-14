@@ -16,7 +16,7 @@
 //! or empty; `section` is free text or empty; `paraphrase` is the item in our
 //! own words and is not empty in a committed row; `facts` is empty or
 //! space-separated `name=int` pairs (`name` a lowercase identifier, `int`
-//! decimal or `0x` hex, no name
+//! decimal (negative with a leading `-`) or `0x` hex, no name
 //! twice). `na-kind` (`deprecated`, `forbidden-for-side`, `other-side`) and
 //! `cite` (the spec location) are both empty or both set. A row with the wrong
 //! column count or any invalid column is an error naming the file and line;
@@ -52,13 +52,25 @@
 //! kind, section, facts)` quadruples equal the extracted ones. The MIDI specs
 //! are not in the repo and not in CI, so with the text absent the comparison
 //! is skipped and said so, and only `TUTTI_CONFORMANCE=require-all` (which
-//! also requires the `clap-sys` source) makes the absence a finding. CI sets
+//! also requires the `clap-sys` source and the SoundFont text) makes the
+//! absence a finding. CI sets
 //! `require`, which never demands the MIDI text; `require-all` is for a local
 //! run on a machine that holds the specs.
+//!
+//! `sf2.txt` (SoundFont 2.04) mixes the two kinds. The rows in the families
+//! [`super::sf2_spec`] extracts (`sf2.gen.`, `sf2.mod.default.`, the modulator
+//! enumerations, the INFO and pdta sub-chunks, `sf2.sampletype.`) are held to
+//! the spec text in the directory `TUTTI_SF2_SPEC` points at: the committed
+//! `(id, kind, section, facts)` quadruples equal the extracted ones. Every
+//! other `sf2.` row is written by hand, and its `section` must be a section
+//! number the text has (`SF2 §7.2`). The text is not in the repo and not in
+//! CI, so with it absent the comparison is skipped and said so, and only
+//! `TUTTI_CONFORMANCE=require-all` makes the absence a finding.
 
 use super::clap_sys::{self, Item};
 use super::lex::blank_keeping_docs;
 use super::midi_spec;
+use super::sf2_spec;
 use super::vst3_sdk;
 use super::{Report, Tree};
 use std::collections::{BTreeMap, BTreeSet};
@@ -140,9 +152,10 @@ fn check_facts(facts: &str) -> Result<(), String> {
         let ok = match value.strip_prefix("0x") {
             Some(h) => !h.is_empty() && u64::from_str_radix(h, 16).is_ok(),
             None => {
-                !value.is_empty()
-                    && value.bytes().all(|b| b.is_ascii_digit())
-                    && value.parse::<u64>().is_ok()
+                let digits = value.strip_prefix('-').unwrap_or(value);
+                !digits.is_empty()
+                    && digits.bytes().all(|b| b.is_ascii_digit())
+                    && value.parse::<i64>().is_ok()
             }
         };
         if !ok {
@@ -243,7 +256,7 @@ pub(super) fn pinned_clap_sys(lock: &str) -> Option<String> {
 }
 
 /// Every inventory file's rows (all files read, every error collected).
-fn load(tree: &dyn Tree) -> (Vec<(String, Row)>, Vec<String>) {
+pub(super) fn load(tree: &dyn Tree) -> (Vec<(String, Row)>, Vec<String>) {
     let (mut rows, mut errs) = (Vec::new(), Vec::new());
     let mut owner: BTreeMap<String, String> = BTreeMap::new();
     for path in tree.files(DIR, &skipped) {
@@ -270,8 +283,33 @@ fn load(tree: &dyn Tree) -> (Vec<(String, Row)>, Vec<String>) {
     (rows, errs)
 }
 
-/// The tags of one file: `(line, ids)`, and the problems with them.
-fn tags(path: &str, text: &str) -> (Vec<(usize, Vec<String>)>, Vec<String>) {
+/// One `/// Spec:` tag: its line, the ids it claims, and the name of the `fn`
+/// it documents (the first `fn` declared within a dozen lines below it, when
+/// there is one; a tag above something else has none).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Tag {
+    pub(super) line: usize,
+    pub(super) ids: Vec<String>,
+    pub(super) item: Option<String>,
+}
+
+/// The name a line declares with `fn`, when it does.
+fn fn_name(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    if t.starts_with("//") || t.starts_with('#') {
+        return None;
+    }
+    let after = super::lex::find_word(t, "fn").map(|at| &t[at + 2..])?;
+    let name: String = after
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The tags of one file, and the problems with them.
+pub(super) fn tags(path: &str, text: &str) -> (Vec<Tag>, Vec<String>) {
     let code = blank_keeping_docs(text);
     let lines: Vec<&str> = code.lines().collect();
     let (mut out, mut errs) = (Vec::new(), Vec::new());
@@ -293,7 +331,12 @@ fn tags(path: &str, text: &str) -> (Vec<(usize, Vec<String>)>, Vec<String>) {
             errs.push(format!("{path}:{at}: the Spec tag has an empty id"));
             continue;
         }
-        out.push((at, ids));
+        let item = lines[i + 1..].iter().take(12).find_map(|n| fn_name(n));
+        out.push(Tag {
+            line: at,
+            ids,
+            item,
+        });
     }
     (out, errs)
 }
@@ -311,22 +354,25 @@ pub(super) struct Require {
     pub(super) clap: bool,
     pub(super) vst3: bool,
     pub(super) midi: bool,
+    pub(super) sf2: bool,
 }
 
 impl Require {
     /// `require` demands the `clap-sys` source and the VST3 SDK; `require-all`
-    /// also the MIDI spec text.
+    /// also the MIDI and SoundFont spec texts.
     pub(super) fn parse(value: Option<&str>) -> Require {
         match value {
             Some("require") => Require {
                 clap: true,
                 vst3: true,
                 midi: false,
+                sf2: false,
             },
             Some("require-all") => Require {
                 clap: true,
                 vst3: true,
                 midi: true,
+                sf2: true,
             },
             _ => Require::default(),
         }
@@ -374,6 +420,7 @@ pub(super) fn check(
     tree: &dyn Tree,
     clap: Result<&dyn Tree, String>,
     midi: &dyn Fn(&midi_spec::Doc) -> Result<String, String>,
+    sf2: &dyn Fn() -> Result<String, String>,
     require: Require,
 ) -> Report {
     let mut r = Report::default();
@@ -396,7 +443,7 @@ pub(super) fn check(
             for e in errs {
                 r.fail(e);
             }
-            for (line, ids) in found {
+            for Tag { line, ids, .. } in found {
                 for id in ids {
                     if known.contains(id.as_str()) {
                         tagged.insert(id);
@@ -485,6 +532,74 @@ pub(super) fn check(
             Err(why) if require.midi => r.fail(format!("{label} inventory not checked: {why}")),
             Err(why) => r.say(format!("{label} inventory not checked: {why}")),
         }
+    }
+    // A hand-written SF2 row names its section as `SF2 §<n>[.<n>]*`, checked with or
+    // without the text; that the section exists is checked below, against the text.
+    for (path, row) in &rows {
+        if row.id.starts_with("sf2.")
+            && !sf2_spec::owns(&row.id)
+            && sf2_spec::section_number(&row.section).is_none()
+        {
+            r.fail(format!(
+                "{path}: the SF2 row `{}` has section `{}`, which is not `SF2 §<n>`",
+                row.id, row.section
+            ));
+        }
+    }
+    match sf2().and_then(|text| sf2_spec::extract(&text)) {
+        Ok(spec) => {
+            let want: BTreeSet<[String; 4]> = spec
+                .items
+                .iter()
+                .map(|i| {
+                    [
+                        i.id.clone(),
+                        i.kind.to_owned(),
+                        i.section.clone(),
+                        i.facts.clone(),
+                    ]
+                })
+                .collect();
+            let have: BTreeSet<[String; 4]> = rows
+                .iter()
+                .map(|(_, r)| r)
+                .filter(|r| sf2_spec::owns(&r.id))
+                .map(|r| {
+                    [
+                        r.id.clone(),
+                        r.kind.clone(),
+                        r.section.clone(),
+                        r.facts.clone(),
+                    ]
+                })
+                .collect();
+            for q in want.difference(&have) {
+                r.fail(format!(
+                    "{DIR}: the SF2 text gives `{}` ({}, {}, {}) that no row matches; run `cargo xtask conformance-inventory sf2`",
+                    q[0], q[1], q[2], q[3]
+                ));
+            }
+            for q in have.difference(&want) {
+                r.fail(format!(
+                    "{DIR}: the SF2 row `{}` ({}, {}, {}) is not what the text gives; run `cargo xtask conformance-inventory sf2`",
+                    q[0], q[1], q[2], q[3]
+                ));
+            }
+            for (path, row) in &rows {
+                if row.id.starts_with("sf2.") && !sf2_spec::owns(&row.id) {
+                    let known = sf2_spec::section_number(&row.section)
+                        .is_some_and(|n| spec.headings.contains(n));
+                    if sf2_spec::section_number(&row.section).is_some() && !known {
+                        r.fail(format!(
+                            "{path}: the SF2 row `{}` has section `{}`, a section the text does not have",
+                            row.id, row.section
+                        ));
+                    }
+                }
+            }
+        }
+        Err(why) if require.sf2 => r.fail(format!("SF2 inventory not checked: {why}")),
+        Err(why) => r.say(format!("SF2 inventory not checked: {why}")),
     }
     r.say(format!(
         "check-conformance: {} rows, {} ids tagged",
@@ -712,6 +827,60 @@ pub(super) fn regenerate_midi(
     Ok((out, added, old.into_keys().collect()))
 }
 
+/// The comment lines of `sf2.txt` are kept as written; this is the text of
+/// the file for the extracted `items`: every extracted row keeps its side,
+/// maturity, paraphrase and the rest of its hand columns and takes the
+/// extracted kind, section and facts; a hand-written row and the comments stay
+/// where they are; a new extracted id is appended as a `todo` row with no
+/// paraphrase (the gate refuses it). Also the ids added and removed.
+pub(super) fn regenerate_sf2(
+    existing: &str,
+    items: &[sf2_spec::Item],
+) -> Result<(String, Vec<String>, Vec<String>), String> {
+    let mut want: BTreeMap<&str, &sf2_spec::Item> =
+        items.iter().map(|i| (i.id.as_str(), i)).collect();
+    let (mut out, mut removed) = (String::new(), Vec::new());
+    for (n, line) in existing.lines().enumerate() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut row = parse_row(t).map_err(|e| format!("sf2.txt:{}: {e}", n + 1))?;
+        if !sf2_spec::owns(&row.id) {
+            out.push_str(line);
+            out.push('\n');
+        } else if let Some(it) = want.remove(row.id.as_str()) {
+            row.kind = it.kind.to_owned();
+            row.section = it.section.clone();
+            row.facts = it.facts.clone();
+            out.push_str(&row.render());
+            out.push('\n');
+        } else {
+            removed.push(row.id);
+        }
+    }
+    let mut added = Vec::new();
+    for it in items.iter().filter(|i| want.contains_key(i.id.as_str())) {
+        added.push(it.id.clone());
+        let row = Row {
+            id: it.id.clone(),
+            side: "todo".to_owned(),
+            maturity: String::new(),
+            kind: it.kind.to_owned(),
+            section: it.section.clone(),
+            paraphrase: String::new(),
+            facts: it.facts.clone(),
+            na_kind: String::new(),
+            cite: String::new(),
+        };
+        out.push_str(&row.render());
+        out.push('\n');
+    }
+    Ok((out, added, removed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,6 +905,7 @@ mod tests {
             &mem,
             Err("absent".to_owned()),
             &|_| Err("no specs".to_owned()),
+            &|| Err("no sf2".to_owned()),
             Require::default(),
         )
     }
@@ -746,6 +916,28 @@ mod tests {
 
     fn has(r: &Report, needle: &str) -> bool {
         r.findings.iter().any(|f| f.contains(needle))
+    }
+
+    #[test]
+    fn a_tag_names_the_fn_it_documents() {
+        let src = "/// Spec: a.b, c.d\n#[test]\npub async fn first<F>() {}\n\n/// Spec: e.f\nconst X: u8 = 0;\n";
+        let (found, errs) = tags("p.rs", src);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(
+            found,
+            [
+                Tag {
+                    line: 1,
+                    ids: vec!["a.b".into(), "c.d".into()],
+                    item: Some("first".into()),
+                },
+                Tag {
+                    line: 5,
+                    ids: vec!["e.f".into()],
+                    item: None,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -791,6 +983,7 @@ mod tests {
             c.join(" | ")
         };
         assert!(parse_row(&base(0, "a.b")).is_ok());
+        assert!(parse_row(&base(6, "x=-12000 y=0x2")).is_ok());
         for (i, v, why) in [
             (0, "a b", "id"),
             (0, "a.b!", "id"),
@@ -802,6 +995,8 @@ mod tests {
             (6, "x", "not name=int"),
             (6, "x=abc", "not an integer"),
             (6, "x=0x", "not an integer"),
+            (6, "x=-", "not an integer"),
+            (6, "x=--1", "not an integer"),
             (6, "X=1", "lowercase identifier"),
             (6, "x=1 x=2", "twice"),
             (7, "gone", "na-kind"),
@@ -908,6 +1103,7 @@ mod tests {
                 &mem,
                 Ok(&sys),
                 &|_| Err("no specs".to_owned()),
+                &|| Err("no sf2".to_owned()),
                 Require::default(),
             )
         };
@@ -935,6 +1131,7 @@ mod tests {
             &mem,
             Err("clap-sys 0.5.0 not found".to_owned()),
             &|_| Err("no specs".to_owned()),
+            &|| Err("no sf2".to_owned()),
             Require::default(),
         );
         assert!(skipped.passed());
@@ -948,6 +1145,7 @@ mod tests {
             &mem,
             Err("clap-sys 0.5.0 not found".to_owned()),
             &|_| Err("no specs".to_owned()),
+            &|| Err("no sf2".to_owned()),
             Require::parse(Some("require")),
         );
         assert!(has(&required, "clap-sys 0.5.0 not found"));
@@ -1022,6 +1220,7 @@ mod tests {
                 &mem,
                 Err("absent".to_owned()),
                 &only_104,
+                &|| Err("no sf2".to_owned()),
                 Require::default(),
             )
         };
@@ -1057,6 +1256,7 @@ mod tests {
                 &lock,
                 Ok(&sys),
                 &|_| Err("TUTTI_MIDI_SPECS is not set".to_owned()),
+                &|| Err("TUTTI_SF2_SPEC is not set".to_owned()),
                 Require::parse(v),
             )
         };
@@ -1085,6 +1285,7 @@ mod tests {
                 ]),
                 Err("absent".to_owned()),
                 &|_| Err("no specs".to_owned()),
+                &|| Err("no sf2".to_owned()),
                 Require::default(),
             )
         };
@@ -1141,6 +1342,136 @@ mod tests {
         assert!(has(&r, "has an empty paraphrase"));
     }
 
+    fn sf2_rows() -> String {
+        let spec = sf2_spec::extract(sf2_spec::SAMPLE).unwrap();
+        let (text, added, removed) = regenerate_sf2("", &spec.items).unwrap();
+        assert_eq!(added.len(), spec.items.len());
+        assert!(removed.is_empty());
+        text.lines()
+            .map(|l| {
+                let mut c: Vec<&str> = l.split(" | ").collect();
+                c[1] = "player";
+                c[5] = "words";
+                c.join(" | ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn sf2_run(inv: &str, text: Result<&str, String>, require: Require) -> Report {
+        let mem = Mem::with(&[("testing/conformance/sf2.txt", inv)]);
+        check(
+            &mem,
+            Err("absent".to_owned()),
+            &|_| Err("no specs".to_owned()),
+            &|| text.clone().map(str::to_owned),
+            require,
+        )
+    }
+
+    #[test]
+    fn the_sf2_extracted_rows_must_equal_what_the_text_gives() {
+        let good = sf2_rows();
+        let ok = sf2_run(&good, Ok(sf2_spec::SAMPLE), Require::default());
+        assert!(ok.passed(), "{:?}", ok.findings);
+        let wrong_fact = good.replacen("def=0 inst_only=1", "def=1 inst_only=1", 1);
+        let r = sf2_run(&wrong_fact, Ok(sf2_spec::SAMPLE), Require::default());
+        assert!(has(&r, "the SF2 row `sf2.gen.alpha`"));
+        assert!(has(&r, "the SF2 text gives `sf2.gen.alpha`"));
+        let wrong_kind = good.replacen("| recommended |", "| required |", 1);
+        assert!(has(
+            &sf2_run(&wrong_kind, Ok(sf2_spec::SAMPLE), Require::default()),
+            "the SF2 row `sf2.gen.alpha` (required"
+        ));
+        let dropped: String = good.lines().skip(1).collect::<Vec<_>>().join("\n");
+        let r = sf2_run(&dropped, Ok(sf2_spec::SAMPLE), Require::default());
+        assert!(has(&r, "the SF2 text gives `sf2.gen.alpha`"));
+        let extra = format!("{good}\nsf2.gen.omega | player | | | SF2 §8.1.2 | words | num=99 | |");
+        assert!(has(
+            &sf2_run(&extra, Ok(sf2_spec::SAMPLE), Require::default()),
+            "the SF2 row `sf2.gen.omega`"
+        ));
+    }
+
+    #[test]
+    fn a_hand_written_sf2_row_must_name_a_section_the_text_has() {
+        let hand = |section: &str| {
+            format!(
+                "{}\nsf2.riff.form | reader | | | {section} | words | | |",
+                sf2_rows()
+            )
+        };
+        for section in ["SF2 §1.1", "SF2 §4.5"] {
+            let r = sf2_run(&hand(section), Ok(sf2_spec::SAMPLE), Require::default());
+            assert!(r.passed(), "{section}: {:?}", r.findings);
+        }
+        for section in ["SF2 §9.9", "§1.1", "1.1", ""] {
+            let r = sf2_run(&hand(section), Ok(sf2_spec::SAMPLE), Require::default());
+            assert!(
+                has(&r, "the SF2 row `sf2.riff.form` has section"),
+                "{section}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hand_written_sf2_section_is_well_formed_even_without_the_text() {
+        let hand = |section: &str| {
+            format!(
+                "{}\nsf2.riff.form | reader | | | {section} | words | | |",
+                sf2_rows()
+            )
+        };
+        let absent = || Err("TUTTI_SF2_SPEC is not set".to_owned());
+        for section in ["SF2 §1.1", "SF2 §9.9", "SF2 §8.1.2"] {
+            let r = sf2_run(&hand(section), absent(), Require::default());
+            assert!(r.passed(), "{section}: {:?}", r.findings);
+        }
+        for section in ["SF2 §", "SF2 §1.", "SF2 §x.1", "SF2 §1..2", "§1.1", ""] {
+            let r = sf2_run(&hand(section), absent(), Require::default());
+            assert!(
+                has(&r, "the SF2 row `sf2.riff.form` has section"),
+                "{section}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_the_sf2_text_the_check_is_skipped_unless_require_all() {
+        let inv = sf2_rows();
+        let absent = || Err("TUTTI_SF2_SPEC is not set".to_owned());
+        let r = sf2_run(&inv, absent(), Require::default());
+        assert!(r.passed(), "{:?}", r.findings);
+        assert!(has_out(&r, "SF2 inventory not checked: TUTTI_SF2_SPEC"));
+        // `require` demands the other sources, never the SoundFont text.
+        let r = sf2_run(&inv, absent(), Require::parse(Some("require")));
+        assert!(!has(&r, "SF2"), "{:?}", r.findings);
+        assert!(has_out(&r, "SF2 inventory not checked: TUTTI_SF2_SPEC"));
+        let r = sf2_run(&inv, absent(), Require::parse(Some("require-all")));
+        assert!(has(&r, "SF2 inventory not checked: TUTTI_SF2_SPEC"));
+    }
+
+    #[test]
+    fn sf2_regeneration_keeps_hand_rows_and_columns_and_reports_added_and_removed() {
+        let spec = sf2_spec::extract(sf2_spec::SAMPLE).unwrap();
+        let existing = "# header\nsf2.riff.form | reader | | | SF2 §1.1 | mine | | |\nsf2.gen.alpha | reader | | required | stale | my words | num=9 | |\nsf2.gen.gone | player | | | | old | | |\n";
+        let (out, added, removed) = regenerate_sf2(existing, &spec.items).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "# header");
+        assert_eq!(
+            lines[1],
+            "sf2.riff.form | reader | | | SF2 §1.1 | mine | | |"
+        );
+        assert_eq!(
+            lines[2],
+            "sf2.gen.alpha | reader |  | recommended | SF2 §8.1.2 | my words | num=0 min=0 def=0 inst_only=1 |  |"
+        );
+        assert_eq!(removed, ["sf2.gen.gone"]);
+        assert_eq!(added.len(), spec.items.len() - 1);
+        assert!(lines.iter().any(|l| l.starts_with("sf2.gen.beta | todo |")));
+        assert!(regenerate_sf2("bad line\n", &spec.items).is_err());
+    }
+
     #[test]
     fn each_document_is_held_to_its_own_text() {
         let text_116 = "RUNNING\n 1\n\x0cRUNNING\n 2\n\x0cRUNNING\n 3\n\x0c1 Alpha\nA frob shall spin.\nTable 5 Header\nByte 1  Byte 2\nValue  0x53 0x4D 0x46 0x32 0x43 0x4C 0x49 0x50\nFigure 1 End\n";
@@ -1171,6 +1502,7 @@ mod tests {
                         Err("no M2-104 text".to_owned())
                     }
                 },
+                &|| Err("no sf2".to_owned()),
                 Require::default(),
             )
         };

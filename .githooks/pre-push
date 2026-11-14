@@ -1,0 +1,5 @@
+#!/bin/sh
+# The checks CI runs first, before the workspace builds: rustfmt, xtask's own
+# tests and every source gate (`cargo xtask gates`, a few seconds).
+# Install once per clone: git config core.hooksPath .githooks
+exec cargo xtask gates

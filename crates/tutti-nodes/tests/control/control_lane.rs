@@ -123,12 +123,8 @@ impl Node for Feed {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let (base, n) = (cx.env.frame.get(), cx.env.block_len);
         for &(at, seg) in &self.plan {
-            if let Some(o) = at
-                .checked_sub(base)
-                .and_then(|o| Offset::new(o as usize, n))
-            {
+            if let Some(o) = cx.env.offset_of(Frame::new(at)) {
                 io.event_out(0).push(Event::segment(o, seg)).expect("room");
             }
         }
@@ -571,11 +567,8 @@ fn an_export_is_the_live_render_bit_for_bit() {
 
     let mut host = Host::new();
     let mut ch = TransportChanges::NONE;
-    ch.push(
-        Offset::new(37, Samples(128)).expect("inside"),
-        host.rolling(),
-    )
-    .expect("room");
+    ch.push(Offset::of(Samples(37), Samples(128)), host.rolling())
+        .expect("room");
     let mut live = block(&mut ed, &mut exec, &stopped, &ch, 128);
     for c in &mut live {
         c.drain(..37);

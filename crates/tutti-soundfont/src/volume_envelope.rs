@@ -178,6 +178,7 @@ mod tests {
 
     /// Release: from the level at key-off, `fraction` of the release time on is
     /// `fraction` of 100 dB down.
+    /// Spec: sf2.synth.env.release-time, sf2.gen.releaseVolEnv
     #[test]
     fn a_release_falls_100_db_in_its_time() {
         // Key-off from full level, and from the sustain at -6 dB: the fall is
@@ -205,6 +206,7 @@ mod tests {
 
     /// Decay: the same figure, to a sustain level of 0 (a 100 dB sustain is
     /// below the voice's end).
+    /// Spec: sf2.synth.env.decay-time, sf2.synth.env.decay-linear, sf2.gen.decayVolEnv
     #[test]
     fn a_decay_falls_100_db_in_its_time() {
         let mut envelope = envelope(2.0, 0.0, 1.0);
@@ -223,6 +225,7 @@ mod tests {
 
     /// The quick release of an exclusive class falls 100 dB in its time too, so
     /// it is -50 dB after half of it.
+    /// Spec: sf2.gen.exclusiveClass
     #[test]
     fn a_quick_release_falls_100_db_in_its_time() {
         let mut envelope = envelope(10.0, 1.0, 5.0);

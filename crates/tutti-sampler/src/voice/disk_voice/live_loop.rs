@@ -232,7 +232,7 @@ fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> 
     let mut changes = TransportChanges::NONE;
     changes
         .push(
-            Offset::new(at, Samples(BLOCK)).expect("inside the block"),
+            Offset::new(Samples(at), Samples(BLOCK)).expect("inside the block"),
             MockTransport::rolling(Beat::new(beat), clock.tempo()).transport(),
         )
         .expect("one change");

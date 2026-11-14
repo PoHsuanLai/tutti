@@ -62,6 +62,7 @@
 //! audio graph can carry packets without linking a MIDI stack.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), no_std)]
 
 mod bend_value;
 mod cc_number;

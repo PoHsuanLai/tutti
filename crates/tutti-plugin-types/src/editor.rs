@@ -429,12 +429,14 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn a_content_scale_keeps_the_range_contract() {
-        tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        let c = tutti_fixtures::RangeContract {
             new: ContentScale::new,
             get: ContentScale::get,
             of: None,
             valid: &[f64::MIN_POSITIVE, 0.5, 1.0, 2.0, 3.0, 100.0, f64::MAX],
             invalid: &[0.0, -0.0, -2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY],
-        });
+        };
+        tutti_fixtures::check_range_contract(&c);
+        tutti_fixtures::check_range_serde(&c);
     }
 }

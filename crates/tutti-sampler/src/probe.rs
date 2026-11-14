@@ -54,8 +54,7 @@ pub struct SampleFacts {
     /// Which speaker each channel of the file feeds, in sample order.
     ///
     /// What a voice over this file would place by: a channel no speaker names
-    /// (a second LFE, a wide or high speaker) is
-    /// [`Speaker::Unknown`](tutti_types::Speaker::Unknown), and a
+    /// is [`Speaker::Unknown`](tutti_types::Speaker::Unknown), and a
     /// memory voice over such a file is refused
     /// ([`PlaceError`](crate::PlaceError)). A host that wants to say so before
     /// it loads the file reads it here.

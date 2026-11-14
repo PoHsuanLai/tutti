@@ -47,3 +47,17 @@ jobs:
       - name: Ignored tests
         run: |
           cargo nextest run --locked --workspace --no-fail-fast --run-ignored only
+
+  # The advisory check against the lock as it stands: a pull request runs it
+  # only when the dependencies change, so a new advisory against an unchanged
+  # lock shows here (and on the next push to main).
+  deny:
+    name: cargo deny (advisories)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check advisories

@@ -287,6 +287,28 @@ terms:
   the root; code derived from elsewhere carries its notice and licence file
   (`tutti-soundfont`'s rustysynth notice is the model).
 
+## S. Crates that support `no_std`
+
+A crate that runs on a target with no operating system follows these rules; the
+list of such crates is `NO_STD_CRATES` in `xtask/src/recipes.rs`.
+
+- **S1. `#![no_std]`** at the root, with `extern crate alloc` only in a crate
+  that allocates. A crate that needs no allocator does not link `alloc`.
+- **S2. `std` is a feature that adds** (`C9`): it turns on items that need the
+  operating system and never changes what the rest does. It is on by default
+  only when the crate already had `std`-only API; a new crate leaves it off.
+- **S3. Errors implement `core::error::Error`**, not `std::error::Error`
+  (`E1`). `thiserror` 2 with `default-features = false` derives it.
+- **S4. Float maths is `libm`**, on every build, never the `std` float methods
+  (`f32::sin`, `powf`, ...), so a result does not depend on the target's
+  libm.
+- **S5. No spin locks.** A `no_std` crate takes no lock; shared state goes
+  through `tutti-rt` (`CLAUDE.md`).
+- **S6. The build is the check.** `cargo xtask check-no-std` builds each listed
+  crate, bare and with each of its features, for `thumbv7em-none-eabihf`
+  (`rustup target add thumbv7em-none-eabihf`); CI's dark-features job runs it.
+  A `std` use fails to compile there, so no text gate looks for the attribute.
+
 ---
 
 ## Departures from upstream

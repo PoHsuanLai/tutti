@@ -1,13 +1,13 @@
 //! `Bpm` keeps the range-checked contract (`CLAUDE.md`, "Range-checked values").
 #![cfg(feature = "serde")]
 
-use tutti_fixtures::{RangeContract, check_range_contract};
+use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
 use tutti_types::{Bpm, BpmOutOfRange};
 
 /// A tempo is finite and above zero, with no musical floor or ceiling.
 #[test]
 fn a_tempo_is_finite_and_above_zero() {
-    check_range_contract(&RangeContract {
+    let c = RangeContract {
         new: Bpm::new,
         get: Bpm::get,
         of: Some(Bpm::of),
@@ -20,7 +20,9 @@ fn a_tempo_is_finite_and_above_zero() {
             f64::INFINITY,
             f64::NAN,
         ],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
     assert_eq!(Bpm::try_from(0.0), Err(BpmOutOfRange(0.0)));
     assert!(BpmOutOfRange(-5.0).to_string().contains("-5"));
 }

@@ -115,26 +115,30 @@ fn six_channel_sink_writes_six_samples_per_frame() {
 /// the buffer through to it, so the failure lands on a write rather than on
 /// the final flush.
 #[cfg(target_os = "linux")]
-#[test]
-fn a_failed_write_surfaces_from_finalize() {
-    let mut sink =
-        wav("/dev/full", 48_000.0, 2u16, Pcm::Float32).expect("/dev/full opens for writing");
+mod full_device {
+    use super::*;
 
-    // 64 KiB of samples: well past the 8 KiB buffer.
-    assert_eq!(
-        sink.write(&vec![0.5; 16 * 1024]),
-        Err(SinkFailed),
-        "the full device must have refused a write"
-    );
+    #[test]
+    fn a_failed_write_surfaces_from_finalize() {
+        let mut sink =
+            wav("/dev/full", 48_000.0, 2u16, Pcm::Float32).expect("/dev/full opens for writing");
 
-    let err = sink
-        .finalize()
-        .expect_err("a failed write must be reported, not swallowed");
-    assert_eq!(
-        err.kind(),
-        std::io::ErrorKind::StorageFull,
-        "the cause rides out as the OS gave it, not flattened: {err}"
-    );
+        // 64 KiB of samples: well past the 8 KiB buffer.
+        assert_eq!(
+            sink.write(&vec![0.5; 16 * 1024]),
+            Err(SinkFailed),
+            "the full device must have refused a write"
+        );
+
+        let err = sink
+            .finalize()
+            .expect_err("a failed write must be reported, not swallowed");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::StorageFull,
+            "the cause rides out as the OS gave it, not flattened: {err}"
+        );
+    }
 }
 
 /// After a failure the sink stops writing and the bytes that did land stay

@@ -10,9 +10,6 @@ pub(crate) struct PresetInfo {
     pub(crate) bank_number: u16,
     pub(crate) zone_start_index: i32,
     pub(crate) zone_end_index: i32,
-    pub(crate) library: u32,
-    pub(crate) genre: u32,
-    pub(crate) morphology: u32,
 }
 
 impl PresetInfo {
@@ -21,9 +18,10 @@ impl PresetInfo {
         let patch_number = reader.read_u16()?;
         let bank_number = reader.read_u16()?;
         let zone_start_index = reader.read_u16()? as i32;
-        let library = reader.read_u32()?;
-        let genre = reader.read_u32()?;
-        let morphology = reader.read_u32()?;
+        // `dwLibrary`, `dwGenre` and `dwMorphology` are reserved (SF2 2.04 section 7.2).
+        for _ in 0..3 {
+            reader.read_u32()?;
+        }
 
         Ok(Self {
             name,
@@ -31,9 +29,6 @@ impl PresetInfo {
             bank_number,
             zone_start_index,
             zone_end_index: 0,
-            library,
-            genre,
-            morphology,
         })
     }
 

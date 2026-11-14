@@ -308,16 +308,9 @@ impl From<Depth> for f32 {
 
 /// A raw number that is not a depth: NaN, infinite or outside `-1..=1` (see
 /// [`Depth::new`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("a depth is within -1..=1, got {0}")]
 pub struct DepthOutOfRange(pub f32);
-
-impl core::fmt::Display for DepthOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "a depth is within -1..=1, got {}", self.0)
-    }
-}
-
-impl core::error::Error for DepthOutOfRange {}
 
 unit! {
     /// Waveshaper drive — how hard a signal is pushed into a nonlinearity.

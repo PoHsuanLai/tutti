@@ -173,20 +173,6 @@ impl TempoConfig {
     pub fn range(&self) -> (Bpm, Bpm) {
         (self.min, self.max)
     }
-
-    /// The tempo the prior favours.
-    #[inline]
-    #[must_use]
-    pub fn centre(&self) -> Bpm {
-        self.centre
-    }
-
-    /// The beat tracker's tightness.
-    #[inline]
-    #[must_use]
-    pub fn tightness(&self) -> f32 {
-        self.tightness
-    }
 }
 
 /// A tempo other than the winner.

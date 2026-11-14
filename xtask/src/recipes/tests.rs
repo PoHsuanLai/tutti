@@ -62,7 +62,7 @@ fn release_takes_one_plain_version() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 44);
+    assert_eq!(RECIPES.len(), 45);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -89,6 +89,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
     for (recipe, gate) in [
         ("check-layout", "gate check-layout"),
         ("check-ffi", "gate check-ffi"),
+        ("check-errors", "gate check-errors"),
         ("check-guards", "gate check-guards"),
         ("check-hosting", "gate check-hosting"),
         ("check-session", "gate check-session"),
@@ -108,6 +109,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-canonical-paths",
         "gate check-layout",
         "gate check-ffi",
+        "gate check-errors",
         "gate check-guards",
         "gate check-hosting",
         "gate check-session",
@@ -302,7 +304,7 @@ fn profile_bench_keeps_its_defaults_and_its_glob() {
 fn verify_audio_defaults_its_out_dir() {
     let s = dry("verify-audio", &[]);
     assert_eq!(s.len(), 11);
-    assert!(s[0].ends_with("render_cases -- /tmp/tutti-verify/sampler"));
+    assert!(s[0].ends_with("render_sampler_cases -- /tmp/tutti-verify/sampler"));
     assert!(dry("verify-audio", &["o"])[10].ends_with("verify_dsp.py o/dsp"));
 }
 

@@ -15,6 +15,8 @@
 //! - General MIDI System On and Off (M1 p.52, `09 01` and `09 02`).
 //! - Master Volume and Master Balance (M1 p.57, `04 01` and `04 02`).
 //! - Master Fine Tuning and Master Coarse Tuning (CA-025, `04 03` and `04 04`).
+//! - The MTC Full Message (Real Time `01 01`, M1 p.53 and T-9): a whole SMPTE
+//!   position in one message, as [`MtcFullMessage`].
 //! - The MIDI Tuning Standard (`08`): [`TuningMessage`], with its
 //!   [frequency data](crate::TuningFrequency). A dump whose checksum does not hold is
 //!   [`Read::BadChecksum`], not `Unread`.
@@ -36,6 +38,7 @@
 
 mod read;
 
+use crate::smpte::MtcRate;
 use crate::tuning::TuningMessage;
 
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexMessage, SysexStep, U7, U14, Ump};
@@ -100,6 +103,87 @@ impl TryFrom<U7> for SysexDeviceId {
     }
 }
 
+/// An MTC Full Message (Real Time `01 01`, M1 p.53 and T-9): one SMPTE position
+/// and its rate, sent in place of Quarter Frames when a generator locates.
+///
+/// The fields are the position's labels, checked against their ranges, so a
+/// value of this type is a position some clock can read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MtcFullMessage {
+    rate: MtcRate,
+    hours: u8,
+    minutes: u8,
+    seconds: u8,
+    frames: u8,
+}
+
+impl MtcFullMessage {
+    /// The position `hours:minutes:seconds:frames` at `rate`, or `None` when a
+    /// field is out of range: hours 0..=23, minutes and seconds 0..=59, frames
+    /// below [`MtcRate::labels_per_second`].
+    #[must_use]
+    pub const fn new(
+        rate: MtcRate,
+        hours: u8,
+        minutes: u8,
+        seconds: u8,
+        frames: u8,
+    ) -> Option<Self> {
+        if hours < 24 && minutes < 60 && seconds < 60 && frames < rate.labels_per_second() {
+            Some(Self {
+                rate,
+                hours,
+                minutes,
+                seconds,
+                frames,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// The frame rate.
+    #[must_use]
+    pub const fn rate(self) -> MtcRate {
+        self.rate
+    }
+
+    /// Hours, 0..=23.
+    #[must_use]
+    pub const fn hours(self) -> u8 {
+        self.hours
+    }
+
+    /// Minutes, 0..=59.
+    #[must_use]
+    pub const fn minutes(self) -> u8 {
+        self.minutes
+    }
+
+    /// Seconds, 0..=59.
+    #[must_use]
+    pub const fn seconds(self) -> u8 {
+        self.seconds
+    }
+
+    /// Frames within the second, below the rate's label count.
+    #[must_use]
+    pub const fn frames(self) -> u8 {
+        self.frames
+    }
+
+    /// The message of the four data bytes `hr mn sc fr` that follow `01 01`:
+    /// `hr` is `0rrhhhhh`, the rate code over the hours. `None` for a byte
+    /// that is not a data byte or a field out of range.
+    #[must_use]
+    pub(crate) const fn from_wire(hr: u8, mn: u8, sc: u8, fr: u8) -> Option<Self> {
+        if hr >= 0x80 {
+            return None;
+        }
+        Self::new(MtcRate::masked(hr >> 5), hr & 0x1F, mn, sc, fr)
+    }
+}
+
 /// Who a Universal message's header names: every device (`7F`) or one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Recipient {
@@ -156,6 +240,8 @@ pub enum Universal {
     MasterCoarseTuning(U7),
     /// A MIDI Tuning Standard message (`08`, CA-020 and CA-021).
     Tuning(TuningMessage),
+    /// An MTC Full Message (Real Time `01 01`, M1 p.53 and T-9).
+    MtcFullMessage(MtcFullMessage),
 }
 
 /// A Universal message and who its header names.

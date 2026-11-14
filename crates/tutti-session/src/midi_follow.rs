@@ -33,15 +33,40 @@
 //!
 //! **The meter** lands at the next bar line at or after that beat (a meter
 //! change always begins a bar; M2-104 §7.5.4), on the same overlay.
+//!
+//! # Following a MIDI clock
+//!
+//! [`Midi::follow_clock`](crate::Midi::follow_clock) follows MIDI Beat Clock or
+//! MIDI Time Code from one Group the same way: a tap on its channelless port,
+//! drained in `Phase::Poll`, read by the pure
+//! `tutti_midi_runtime::ClockFollower` with each event's arrival on the graph's
+//! frame clock: seconds since graph frame 0 (the tap's frame over its rate). A tempo it fits goes through the
+//! overlay above, as a Flex Set Tempo does. Play, stop and locate go to the
+//! transport as commands at `At::NextBlock`.
+//!
+//! **A locate is placed where the source is by then.** The message arrived at
+//! some frame; the transport takes the command at the first frame of the next
+//! block. While the source is rolling it has moved on by the difference, so the
+//! position is advanced by it: seconds for MTC, and for Beat Clock beats at the
+//! tempo in force. A locate while the source is stopped is not advanced. The
+//! lag is at most a block and one update's interval; the placement of a
+//! command at a frame inside a block is not done, so it is not removed.
+//!
+//! MTC `00:00:00:00` is beat 0 of the project's tempo map: a position in time
+//! is a beat through the map in force.
 
 use std::sync::Arc;
 
 use tutti_engine::Playhead;
 use tutti_graph::EventTapReader;
-use tutti_midi_runtime::{Followed, TempoFollower};
+use tutti_midi_runtime::{
+    ClockEvent, ClockFollower, ClockKind, ClockPosition, Followed, TempoFollower,
+};
 use tutti_tempo::{TempoError, TempoMap, Transition};
 use tutti_transport::{ProjectMeter, TransportSettings};
-use tutti_types::{BarCount, Beat, Bpm, Frame, Meter, MeterChange, MeterMap, TimeSignature};
+use tutti_types::{
+    BarCount, Beat, Bpm, Frame, Meter, MeterChange, MeterMap, Seconds, TimeSignature,
+};
 use tutti_ump::MidiGroup;
 
 use crate::MidiEvent;
@@ -54,11 +79,10 @@ pub(crate) const FOLLOW_TAP_CAPACITY: tutti_graph::EventCapacity =
 
 /// What [`Midi::follow_tempo`](crate::Midi::follow_tempo) follows.
 ///
-/// The only source today is a Group's Flex Data Set Tempo (and Set Time
-/// Signature) on the session's MIDI input node
-/// ([`MidiNodes::input`](crate::MidiNodes::input)). **MIDI Clock and MIDI
-/// Time Code are not followed yet**: a device that sends only those changes
-/// nothing, and this struct has no field to choose a source.
+/// The source is a Group's Flex Data Set Tempo (and Set Time Signature) on the
+/// session's MIDI input node ([`MidiNodes::input`](crate::MidiNodes::input)).
+/// MIDI Beat Clock and MIDI Time Code are followed with
+/// [`Midi::follow_clock`](crate::Midi::follow_clock) and [`FollowClock`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FollowTempo {
     /// The Group followed. A Group is a cable of its own (M2-104 §2.1.2,
@@ -69,13 +93,34 @@ pub struct FollowTempo {
     pub meter: bool,
 }
 
-/// The one follower a session has: its core, its tap and the maps.
-pub(crate) struct Follow {
-    core: TempoFollower,
-    tap: EventTapReader,
-    /// The tempo map the project had when following began: what
-    /// `unfollow_tempo` publishes again. The session has no project tempo
-    /// apart from the published map, so this is the map it found.
+/// How many events a clock follower's tap holds between two polls: Timing
+/// Clocks come at up to 120 a second (300 bpm) and Quarter Frames at 120, so a
+/// poll interval of several seconds is held.
+pub(crate) const CLOCK_TAP_CAPACITY: tutti_graph::EventCapacity =
+    tutti_graph::EventCapacity::of(1024);
+
+/// What [`Midi::follow_clock`](crate::Midi::follow_clock) follows.
+///
+/// One Group of the session's MIDI input
+/// ([`MidiNodes::input`](crate::MidiNodes::input)) is read for one kind of
+/// clock. A device that sends both Beat Clock and MTC is followed for one: the
+/// session has one transport and one authority for its position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FollowClock {
+    /// The Group followed. A Group is a cable of its own (M2-104 §2.1.2,
+    /// Appendix B.1); the Group must be one the input hears
+    /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
+    pub group: MidiGroup,
+    /// Which clock it sends.
+    pub kind: ClockKind,
+}
+
+/// The maps a follower overlays: the project's, and what the follower has
+/// published over them.
+struct Overlay {
+    /// The tempo map the project had when following began: what an unfollow
+    /// publishes again. The session has no project tempo apart from the
+    /// published map, so this is the map it found.
     project_tempo: Arc<TempoMap>,
     /// The project's meter, likewise.
     project_meter: Arc<MeterMap>,
@@ -85,11 +130,41 @@ pub(crate) struct Follow {
     meter: Arc<MeterMap>,
 }
 
+/// The one tempo follower a session has: its core, its tap and the maps.
+pub(crate) struct Follow {
+    core: TempoFollower,
+    tap: EventTapReader,
+    overlay: Overlay,
+}
+
 /// What a `Poll` phase reads besides the follower.
 pub(crate) struct FollowCx<'a> {
     pub(crate) settings: &'a TransportSettings,
     pub(crate) meter: &'a ProjectMeter,
     pub(crate) playhead: Playhead,
+}
+
+impl Overlay {
+    /// An overlay over the project's maps, with nothing published yet.
+    fn new(project_tempo: Arc<TempoMap>, project_meter: Arc<MeterMap>) -> Self {
+        Self {
+            tempo: Arc::clone(&project_tempo),
+            meter: Arc::clone(&project_meter),
+            project_tempo,
+            project_meter,
+        }
+    }
+
+    /// What the project had, to publish again, for the maps this overlay
+    /// changed (`None` for one it never touched).
+    fn restore(&self) -> (Option<Arc<TempoMap>>, Option<Arc<MeterMap>>) {
+        (
+            (!Arc::ptr_eq(&self.tempo, &self.project_tempo))
+                .then(|| Arc::clone(&self.project_tempo)),
+            (!Arc::ptr_eq(&self.meter, &self.project_meter))
+                .then(|| Arc::clone(&self.project_meter)),
+        )
+    }
 }
 
 impl Follow {
@@ -103,10 +178,7 @@ impl Follow {
         Self {
             core,
             tap,
-            tempo: Arc::clone(&project_tempo),
-            meter: Arc::clone(&project_meter),
-            project_tempo,
-            project_meter,
+            overlay: Overlay::new(project_tempo, project_meter),
         }
     }
 
@@ -120,12 +192,7 @@ impl Follow {
     /// What the project had, to publish again, for the maps this follower
     /// changed (`None` for one it never touched).
     pub(crate) fn restore(&self) -> (Option<Arc<TempoMap>>, Option<Arc<MeterMap>>) {
-        (
-            (!Arc::ptr_eq(&self.tempo, &self.project_tempo))
-                .then(|| Arc::clone(&self.project_tempo)),
-            (!Arc::ptr_eq(&self.meter, &self.project_meter))
-                .then(|| Arc::clone(&self.project_meter)),
-        )
+        self.overlay.restore()
     }
 
     /// The tap's rate, to compare with the graph's.
@@ -162,6 +229,14 @@ impl Follow {
         cx: &FollowCx<'_>,
         out: &mut Vec<crate::SessionEvent>,
     ) {
+        self.overlay.apply(heard, cx, out);
+    }
+}
+
+impl Overlay {
+    /// Places what was heard at the next block start and publishes the new
+    /// maps. The events say what was applied.
+    fn apply(&mut self, heard: &[Followed], cx: &FollowCx<'_>, out: &mut Vec<crate::SessionEvent>) {
         if heard.is_empty() {
             return;
         }
@@ -203,6 +278,152 @@ impl Follow {
         if !Arc::ptr_eq(&meter_before, &self.meter) {
             cx.meter.set_meter(Arc::clone(&self.meter));
         }
+    }
+}
+
+/// What a followed clock asks of the transport, placed on the project's beats.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ClockAction {
+    /// Roll from where the transport stands.
+    Play,
+    /// Stop where the transport stands.
+    Stop,
+    /// Jump to the beat, keeping whatever the transport is doing.
+    Locate(Beat),
+    /// Jump to the beat and roll from it.
+    PlayFrom(Beat),
+}
+
+/// The one clock follower a session has: its core, its tap and, for Beat Clock,
+/// the tempo overlay.
+pub(crate) struct ClockFollow {
+    core: ClockFollower,
+    tap: EventTapReader,
+    /// The maps the clock's tempo is published over; `None` for MTC, which
+    /// carries no tempo.
+    overlay: Option<Overlay>,
+    /// Whether the source has said Play and not Stop since.
+    rolling: bool,
+}
+
+impl ClockFollow {
+    /// A follower of `core` reading `tap`. A Beat Clock follower overlays the
+    /// project's maps; an MTC one leaves them.
+    pub(crate) fn new(
+        core: ClockFollower,
+        tap: EventTapReader,
+        project_tempo: Arc<TempoMap>,
+        project_meter: Arc<MeterMap>,
+    ) -> Self {
+        let overlay = (core.kind() == ClockKind::BeatClock)
+            .then(|| Overlay::new(project_tempo, project_meter));
+        Self {
+            core,
+            tap,
+            overlay,
+            rolling: false,
+        }
+    }
+
+    /// Whether it publishes a tempo, so nothing else may.
+    pub(crate) fn owns_tempo(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    /// What the project had, to publish again, for the maps this follower
+    /// changed.
+    pub(crate) fn restore(&self) -> (Option<Arc<TempoMap>>, Option<Arc<MeterMap>>) {
+        self.overlay.as_ref().map_or((None, None), Overlay::restore)
+    }
+
+    /// The tap's rate, to compare with the graph's.
+    pub(crate) fn tap_rate(&self) -> tutti_types::SampleRate {
+        self.tap.rate()
+    }
+
+    /// The tap's id.
+    pub(crate) fn tap_id(&self) -> tutti_graph::EventTapId {
+        self.tap.id()
+    }
+
+    /// Replaces a tap the graph re-rated.
+    pub(crate) fn set_tap(&mut self, tap: EventTapReader) {
+        self.tap = tap;
+    }
+
+    /// Reads the tap, publishes the tempo it heard and reports lock changes
+    /// into `out`; what the transport is asked to do, placed on beats, in order.
+    pub(crate) fn heard(
+        &mut self,
+        cx: &FollowCx<'_>,
+        out: &mut Vec<crate::SessionEvent>,
+    ) -> Vec<ClockAction> {
+        let rate = self.tap.rate();
+        let instant = |frame: Frame| frame.to_seconds(rate);
+        let mut events = Vec::new();
+        for event in self.tap.drain() {
+            self.core
+                .step(event.ump, instant(event.frame), &mut |e| events.push(e));
+        }
+        let lost = self.tap.take_lost();
+        if lost > 0 {
+            tracing::warn!("midi: the clock follower's tap lost {lost} events");
+        }
+        self.core
+            .poll(instant(cx.playhead.frame()), &mut |e| events.push(e));
+
+        // The first frame of the next block: where a command lands.
+        let next = cx.playhead.frame() + cx.playhead.span();
+        let lands = instant(next);
+        let rolling = events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                ClockEvent::Play => Some(true),
+                ClockEvent::Stop => Some(false),
+                _ => None,
+            })
+            .unwrap_or(self.rolling);
+        self.rolling = rolling;
+        let map = cx.settings.tempo_map();
+        let tempo = cx.settings.tempo_in_force();
+        let beat_of = |position: ClockPosition, at: Seconds| {
+            let lag = if rolling {
+                (lands - at).get().max(0.0)
+            } else {
+                0.0
+            };
+            match position {
+                ClockPosition::Beat(beat) => Beat::new(beat.get() + lag * tempo.get() / 60.0),
+                ClockPosition::Time(time) => map.beat_at_seconds(Seconds::new(time.get() + lag)),
+            }
+        };
+
+        let kind = self.core.kind();
+        let mut tempos = Vec::new();
+        let mut actions = Vec::new();
+        let mut events = events.into_iter().peekable();
+        while let Some(event) = events.next() {
+            match event {
+                ClockEvent::Locate { position, at } => {
+                    let beat = beat_of(position, at);
+                    if events.next_if(|e| *e == ClockEvent::Play).is_some() {
+                        actions.push(ClockAction::PlayFrom(beat));
+                    } else {
+                        actions.push(ClockAction::Locate(beat));
+                    }
+                }
+                ClockEvent::Play => actions.push(ClockAction::Play),
+                ClockEvent::Stop => actions.push(ClockAction::Stop),
+                ClockEvent::Tempo(tempo) => tempos.push(Followed::Tempo(tempo)),
+                ClockEvent::Locked => out.push(MidiEvent::ClockLocked { kind }.into()),
+                ClockEvent::Unlocked => out.push(MidiEvent::ClockUnlocked { kind }.into()),
+            }
+        }
+        if let Some(overlay) = &mut self.overlay {
+            overlay.apply(&tempos, cx, out);
+        }
+        actions
     }
 }
 

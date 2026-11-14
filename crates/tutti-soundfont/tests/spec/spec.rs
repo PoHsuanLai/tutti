@@ -1,0 +1,618 @@
+//! What the SoundFont 2.04 specification requires of the player, as tests. The
+//! section numbers are the spec's (`sfspec24`); the wording is ours. Where the
+//! spec is silent the behaviour is a tutti rule, named in `player.rs` and
+//! tested in `tutti-voicing` (a key struck again, who gives way, the pedals'
+//! numbers).
+//!
+//! The pitch is read off the sine of the built fonts (441 Hz at key 69, one
+//! voice a zone); the level off the summed magnitude of a render.
+
+use crate::support;
+
+use support::font::{Inst, Preset, font, one_preset};
+use support::rig::{Rig, timgm6mb};
+use tutti_fixtures::sf2::{generator, range};
+use tutti_graph::Node;
+use tutti_types::Tail;
+use tutti_ump::CCNumber;
+
+/// A violin: a held key sustains, a released one rings out in about a second.
+fn violin() -> Rig {
+    let mut rig = Rig::dry(&timgm6mb());
+    rig.program(0, 40);
+    rig
+}
+
+/// Long enough for any release of the violin to have ended.
+const RING_OUT: usize = 44_100 * 20;
+
+// ---- 9.2 pedals and panics ----------------------------------------------------
+
+/// 9.2, CC 64: active from 64 up. A key-off while it is active is stored, not
+/// run, and runs when it goes inactive. (CC 64 at 63 is inactive.)
+#[test]
+fn sustain_stores_key_offs_until_it_goes_inactive() {
+    for (pedal, held) in [(63, false), (64, true)] {
+        let mut rig = violin();
+        rig.cc(0, CCNumber::SUSTAIN, pedal);
+        rig.note_on(0, 69, 100);
+        rig.energy(4096);
+        rig.note_off(0, 69);
+        rig.energy(RING_OUT);
+        let after = rig.energy(512);
+        assert_eq!(after > 1.0, held, "pedal {pedal}: {after}");
+        if held {
+            rig.cc(0, CCNumber::SUSTAIN, 0);
+            rig.energy(RING_OUT);
+            assert_eq!(rig.energy(512), 0.0, "and the stored key-off runs at 0");
+        }
+    }
+}
+
+/// 9.2, CC 64: the pedal holds notes in the key-on state. A note already
+/// released when the pedal goes down is not in it.
+#[test]
+fn sustain_down_after_the_key_off_holds_nothing() {
+    let mut rig = violin();
+    rig.note_on(0, 69, 100);
+    rig.energy(4096);
+    rig.note_off(0, 69);
+    rig.energy(64);
+    rig.cc(0, CCNumber::SUSTAIN, 127);
+    rig.energy(RING_OUT);
+    assert_eq!(rig.energy(512), 0.0);
+}
+
+/// 9.2 lists CC 66 as "soft" and CC 67 as "sostenuto"; MIDI 1.0 numbers them
+/// the other way (66 sostenuto, 67 soft), and a keyboard sends MIDI's. The
+/// listing is an erratum in the spec's text, which this player does not copy (the
+/// owner decided so on 2026-11-08):
+/// CC 66 is the sostenuto here, and CC 67 holds nothing. The behaviour is the
+/// spec's: sostenuto holds the notes in key-on when it goes active; a note
+/// struck after it behaves normally; and what it holds stays held through the
+/// sustain pedal going on and off.
+#[test]
+fn sostenuto_holds_what_sounded_when_it_went_active() {
+    // A note struck after the pedal went down behaves normally.
+    let mut after = violin();
+    after.cc(0, CCNumber::SOSTENUTO, 127);
+    after.note_on(0, 69, 100);
+    after.energy(4096);
+    after.note_off(0, 69);
+    after.energy(RING_OUT);
+    assert_eq!(after.energy(512), 0.0, "a later note is released normally");
+
+    // A note sounding when it went down is held, through the sustain pedal.
+    let mut held = violin();
+    held.note_on(0, 69, 100);
+    held.energy(4096);
+    held.cc(0, CCNumber::SOSTENUTO, 127);
+    held.cc(0, CCNumber::SUSTAIN, 127);
+    held.note_off(0, 69);
+    held.energy(RING_OUT);
+    assert!(held.energy(512) > 1.0, "the sostenuto holds the note");
+    held.cc(0, CCNumber::SUSTAIN, 0);
+    held.energy(RING_OUT);
+    assert!(
+        held.energy(512) > 1.0,
+        "and the sustain pedal going on and off does not let it go"
+    );
+    held.cc(0, CCNumber::SOSTENUTO, 0);
+    held.energy(RING_OUT);
+    assert_eq!(held.energy(512), 0.0, "until the sostenuto goes inactive");
+
+    // CC 67 is MIDI's soft pedal: it holds nothing.
+    let mut soft = violin();
+    soft.note_on(0, 69, 100);
+    soft.energy(4096);
+    soft.cc(0, CCNumber::SOFT_PEDAL, 127);
+    soft.note_off(0, 69);
+    soft.energy(RING_OUT);
+    assert_eq!(soft.energy(512), 0.0, "CC 67 is not the sostenuto");
+}
+
+/// 9.2, CC 120: every note in key-on skips its release and is shut off,
+/// whatever the sustain or sostenuto positions: silent in the next block, with
+/// a key still down, a pedal down, or a sostenuto holding.
+#[test]
+fn all_sound_off_shuts_off_even_pedal_held_notes() {
+    let mut rig = violin();
+    rig.cc(0, CCNumber::SUSTAIN, 127);
+    rig.note_on(0, 69, 100);
+    rig.note_on(0, 72, 100);
+    rig.energy(4096);
+    rig.note_off(0, 72);
+    rig.cc(0, CCNumber::SOSTENUTO, 127);
+    rig.energy(4096);
+    assert!(rig.energy(512) > 1.0, "both held notes sound");
+    rig.cc(0, CCNumber::ALL_SOUND_OFF, 0);
+    assert_eq!(rig.energy(512), 0.0, "shut off at once, not released");
+}
+
+/// 9.2, CC 123: every note in key-on enters its release at once (a tail, not a
+/// cut), pending its status under the sustain or sostenuto pedal.
+#[test]
+fn all_notes_off_releases_unless_a_pedal_holds() {
+    let mut rig = violin();
+    rig.note_on(0, 69, 100);
+    rig.energy(4096);
+    rig.cc(0, CCNumber::ALL_NOTES_OFF, 0);
+    assert!(rig.energy(64) > 0.0, "it enters its release, it is not cut");
+    rig.energy(RING_OUT);
+    assert_eq!(rig.energy(512), 0.0, "and the release ends");
+
+    let mut pedal = violin();
+    pedal.cc(0, CCNumber::SUSTAIN, 127);
+    pedal.note_on(0, 69, 100);
+    pedal.energy(4096);
+    pedal.cc(0, CCNumber::ALL_NOTES_OFF, 0);
+    pedal.energy(RING_OUT);
+    assert!(pedal.energy(512) > 1.0, "the sustain pedal holds it");
+    pedal.cc(0, CCNumber::SUSTAIN, 0);
+    pedal.energy(RING_OUT);
+    assert_eq!(pedal.energy(512), 0.0, "until it lifts");
+
+    let mut sostenuto = violin();
+    sostenuto.note_on(0, 69, 100);
+    sostenuto.energy(4096);
+    sostenuto.cc(0, CCNumber::SOSTENUTO, 127);
+    sostenuto.cc(0, CCNumber::ALL_NOTES_OFF, 0);
+    sostenuto.energy(RING_OUT);
+    assert!(sostenuto.energy(512) > 1.0, "the sostenuto holds it");
+}
+
+/// 9.2, CC 121: the continuous controllers go to their defaults, and the notes
+/// sounding are not stopped by it. (Which defaults is MIDI's, RP-015.)
+#[test]
+fn reset_all_controllers_restores_the_defaults_and_stops_nothing() {
+    let mut rig = violin();
+    rig.note_on(0, 69, 100);
+    rig.energy(4096);
+    let level = rig.energy(2048);
+    rig.cc(0, CCNumber::EXPRESSION, 0);
+    rig.energy(64);
+    assert_eq!(rig.energy(2048), 0.0, "expression 0 silences it");
+    rig.cc(0, CCNumber::RESET_ALL, 0);
+    let back = rig.energy(2048);
+    assert!(
+        (back / level - 1.0).abs() < 0.2,
+        "the expression is back: {back} against {level}"
+    );
+}
+
+// ---- 8.1.2 generators 43 and 44, 9.4 ranges ---------------------------------
+
+/// A level to compare against: the sine of one zone at full velocity.
+fn level(font: &std::sync::Arc<tutti_sf2::SoundFont>, key: u8, velocity: u8) -> f32 {
+    let mut rig = Rig::dry(font);
+    rig.note_on(0, key, velocity);
+    rig.energy(4096)
+}
+
+/// 8.1.2, generator 43 (keyRange): an instrument zone answers its keys, ends
+/// included, and no others.
+#[test]
+fn a_zone_answers_the_keys_of_its_range() {
+    let font = one_preset(vec![vec![(generator::KEY_RANGE, range(60, 72))]]);
+    for (key, sounds) in [(59, false), (60, true), (72, true), (73, false)] {
+        assert_eq!(level(&font, key, 100) > 1.0, sounds, "key {key}");
+    }
+}
+
+/// 8.1.2, generator 44 (velRange): an instrument zone answers its velocities,
+/// ends included, and no others.
+#[test]
+fn a_zone_answers_the_velocities_of_its_range() {
+    let font = one_preset(vec![vec![(generator::VEL_RANGE, range(30, 90))]]);
+    for (velocity, sounds) in [(29, false), (30, true), (90, true), (91, false)] {
+        assert_eq!(
+            level(&font, 60, velocity) > 0.1,
+            sounds,
+            "velocity {velocity}"
+        );
+    }
+}
+
+/// 9.4: a range generator at the preset level is an intersection filter on the
+/// instrument's range, not an addition to it. The instrument zone answers
+/// 60 to 72, the preset zone 66 to 80: the note is heard from 66 to 72.
+#[test]
+fn a_preset_range_intersects_the_instruments() {
+    let font = font(
+        &[Preset {
+            name: "p",
+            bank: 0,
+            program: 0,
+            zones: vec![(vec![(generator::KEY_RANGE, range(66, 80))], 0)],
+        }],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![(generator::KEY_RANGE, range(60, 72))]],
+        }],
+    );
+    for (key, sounds) in [
+        (62, false),
+        (65, false),
+        (66, true),
+        (72, true),
+        (75, false),
+    ] {
+        assert_eq!(level(&font, key, 100) > 1.0, sounds, "key {key}");
+    }
+}
+
+/// 8.1.2 and 9.4: every pair of a preset zone and an instrument zone whose
+/// ranges hold the note plays (this is tutti's reading of "voice"). Two zones
+/// on one key sound together, at twice the level of one; the executor plays
+/// the zone each pair names: a loud zone and a silent one on different keys
+/// are told apart.
+#[test]
+fn each_matching_pair_is_a_voice_and_plays_its_own_zone() {
+    let one = one_preset(vec![vec![]]);
+    let two = one_preset(vec![vec![], vec![]]);
+    let ratio = level(&two, 60, 100) / level(&one, 60, 100);
+    assert!(
+        (ratio - 2.0).abs() < 0.05,
+        "two zones, twice the level: {ratio}"
+    );
+
+    let split = one_preset(vec![
+        vec![
+            (generator::KEY_RANGE, range(0, 59)),
+            (generator::INITIAL_ATTENUATION, 1440),
+        ],
+        vec![(generator::KEY_RANGE, range(60, 127))],
+    ]);
+    assert!(level(&split, 60, 100) > 1.0, "key 60 plays the loud zone");
+    assert!(level(&split, 59, 100) < 0.01, "key 59 plays the silent one");
+}
+
+// ---- 8.1.2 generator 57: the exclusive class --------------------------------
+
+/// A kit: key 60 a loud sine of class 1 whose own release is 5 s, key 62 a
+/// silent one of class 1, key 64 a silent one of class 0, key 65 a loud sine
+/// of class 2, and keys 66 and 67 a loud sine of class 0. Presets 0 and 1 (bank 0) both play it.
+fn kit() -> std::sync::Arc<tutti_sf2::SoundFont> {
+    // Absolute timecents of 5 s: 1200 * log2(5).
+    const FIVE_SECONDS: i16 = 2786;
+    let silent = |key: u8, class: i16| {
+        vec![
+            (generator::KEY_RANGE, range(key, key)),
+            (generator::INITIAL_ATTENUATION, 1440),
+            (generator::EXCLUSIVE_CLASS, class),
+        ]
+    };
+    font(
+        &[
+            Preset {
+                name: "kit0",
+                bank: 0,
+                program: 0,
+                zones: vec![(vec![], 0)],
+            },
+            Preset {
+                name: "kit1",
+                bank: 0,
+                program: 1,
+                zones: vec![(vec![], 0)],
+            },
+        ],
+        &[Inst {
+            name: "kit",
+            zones: vec![
+                vec![
+                    (generator::KEY_RANGE, range(60, 60)),
+                    (generator::RELEASE_VOL_ENV, FIVE_SECONDS),
+                    (generator::EXCLUSIVE_CLASS, 1),
+                ],
+                silent(62, 1),
+                silent(64, 0),
+                vec![
+                    (generator::KEY_RANGE, range(65, 65)),
+                    (generator::EXCLUSIVE_CLASS, 2),
+                ],
+                vec![(generator::KEY_RANGE, range(66, 67))],
+            ],
+        }],
+    )
+}
+
+fn kit_rig() -> Rig {
+    let mut rig = Rig::dry(&kit());
+    rig.note_on(0, 60, 100);
+    rig.energy(4096);
+    rig
+}
+
+/// 8.1.2, generator 57: a note with an exclusive class ends any other sounding
+/// note of that class. The key is still down, and the zone's own release is 5
+/// s; the note is gone within a tenth of a second. A note of class 0 (none) and
+/// one of another class leave it be.
+#[test]
+fn a_note_of_an_exclusive_class_ends_the_others_of_it() {
+    let mut same = kit_rig();
+    same.note_on(0, 62, 100);
+    same.energy(4410);
+    assert!(
+        same.energy(512) < 0.01,
+        "gone within 100 ms, with its key down"
+    );
+
+    for other in [64, 65] {
+        let mut rig = kit_rig();
+        rig.note_on(0, other, 100);
+        rig.energy(4410);
+        assert!(
+            rig.energy(512) > 1.0,
+            "key {other} is not of its class: it sounds on"
+        );
+    }
+
+    // Class 0 is no class: two notes of it do not end each other.
+    let mut none = Rig::dry(&kit());
+    none.note_on(0, 66, 100);
+    none.energy(4410);
+    let alone = none.energy(512);
+    none.note_on(0, 67, 100);
+    none.energy(4410);
+    assert!(none.energy(512) > alone * 1.5, "both sound");
+}
+
+/// 8.1.2, generator 57: the other notes are terminated quickly, not shut off:
+/// the note still sounds in the first millisecond (a cut is silent in the same
+/// block) and has fallen by a tenth of a second. The release is quick whatever
+/// the zone's own is (5 s here).
+#[test]
+fn the_class_is_ended_quickly_not_cut_and_not_released_slowly() {
+    let mut rig = kit_rig();
+    let sounding = {
+        let mut still = kit_rig();
+        still.energy(64)
+    };
+    rig.note_on(0, 62, 100);
+    let first = rig.energy(64);
+    assert!(
+        first > sounding * 0.1,
+        "still sounding in the first block: {first} against {sounding}"
+    );
+    assert!(
+        first < sounding,
+        "and already falling: {first} against {sounding}"
+    );
+    rig.energy(4410);
+    assert!(rig.energy(512) < 0.01, "a tenth of a second on, it is gone");
+}
+
+/// 8.1.2, generator 57: an exclusive class is scoped to its preset. The same
+/// class in another preset is another class; another channel playing the same
+/// preset shares it.
+#[test]
+fn the_scope_of_an_exclusive_class_is_the_preset() {
+    // Channel 1 plays preset 1: its class 1 is not preset 0's.
+    let mut other_preset = kit_rig();
+    other_preset.program(1, 1);
+    other_preset.note_on(1, 62, 100);
+    other_preset.energy(4410);
+    assert!(other_preset.energy(512) > 1.0, "another preset leaves it");
+
+    // Channel 2 plays preset 0 too: the same preset, so the same class.
+    let mut same_preset = kit_rig();
+    same_preset.note_on(2, 62, 100);
+    same_preset.energy(4410);
+    assert!(
+        same_preset.energy(512) < 0.01,
+        "the preset is shared across channels"
+    );
+}
+
+/// 8.1.2, generator 57 with 9.4: the voices of one note do not end each other.
+/// Two zones of class 1 on one key both sound.
+#[test]
+fn the_zones_one_note_starts_do_not_end_each_other() {
+    let class = |class: i16| {
+        one_preset(vec![
+            vec![(generator::EXCLUSIVE_CLASS, class)],
+            vec![(generator::EXCLUSIVE_CLASS, class)],
+        ])
+    };
+    let classed = level(&class(1), 60, 100);
+    let free = level(&class(0), 60, 100);
+    assert!(
+        classed > 1.0 && (classed / free - 1.0).abs() < 0.05,
+        "{classed} {free}"
+    );
+}
+
+// ---- 8.4.1 and 9.1.7: what a note does ---------------------------------------
+
+/// 8.4.1: a harder key is louder. (The scale is the player's.)
+#[test]
+fn a_harder_key_is_louder() {
+    let font = one_preset(vec![vec![]]);
+    assert!(level(&font, 60, 120) > level(&font, 60, 60) * 1.5);
+}
+
+/// 9.1.7: a key-off makes the envelope fall to zero in its release phase: the
+/// note ends, after a tail. (A pedal-less key-off.)
+#[test]
+fn a_key_off_ends_the_note_after_its_release() {
+    let mut rig = violin();
+    rig.note_on(0, 69, 100);
+    rig.energy(4096);
+    rig.note_off(0, 69);
+    assert!(rig.energy(64) > 0.0, "it rings on at first");
+    rig.energy(RING_OUT);
+    assert_eq!(rig.energy(512), 0.0);
+}
+
+// ---- the node: reset and tail --------------------------------------------------
+
+/// The node's tail is the longest release any voice can have (the zone's 5 s
+/// here, a generator-38 figure of 2786 timecents, 9.3: a time ratio 2^(t/1200)
+/// from one second) and nothing more: the effects after the unit declare their
+/// own tails, so none is added here.
+#[test]
+fn the_unit_declares_the_longest_release_as_its_tail() {
+    let font = kit();
+    let Tail::Finite(n) = Rig::dry(&font).hand.shape().tail else {
+        panic!("not a finite tail")
+    };
+    let seconds = n.get() as f64 / 44_100.0;
+    assert!(
+        (seconds - 2f64.powf(2786.0 / 1200.0)).abs() < 0.01,
+        "{seconds} s"
+    );
+}
+
+/// The longest release is over every zone the font can start, not the first
+/// preset's: a quiet corner of the font with a long release sets the tail.
+#[test]
+fn the_tail_covers_every_preset() {
+    let long = font(
+        &[
+            Preset {
+                name: "short",
+                bank: 0,
+                program: 0,
+                zones: vec![(vec![], 0)],
+            },
+            Preset {
+                name: "long",
+                bank: 0,
+                program: 1,
+                zones: vec![(vec![], 1)],
+            },
+        ],
+        &[
+            Inst {
+                name: "short",
+                zones: vec![vec![]],
+            },
+            Inst {
+                name: "long",
+                zones: vec![vec![(generator::RELEASE_VOL_ENV, 2786)]],
+            },
+        ],
+    );
+    let rig = Rig::dry(&long);
+    let Tail::Finite(n) = rig.hand.shape().tail else {
+        panic!("finite")
+    };
+    assert!(n.get() > 4 * 44_100);
+}
+
+/// `Node::reset` returns the node to the state of a freshly prepared one:
+/// every voice is cut (silent in the next block), the pedals and held keys are
+/// forgotten, and what the host selected stays (the program here).
+#[test]
+fn reset_cuts_the_voices_forgets_the_pedals_and_keeps_the_program() {
+    let mut rig = violin();
+    rig.cc(0, CCNumber::SUSTAIN, 127);
+    rig.note_on(0, 69, 100);
+    rig.energy(4096);
+    rig.note_off(0, 69);
+    rig.energy(64);
+    Node::reset(&mut *rig.hand);
+    assert_eq!(rig.energy(512), 0.0, "cut, not released");
+
+    // The pedal is up again: a note played and let go ends.
+    rig.note_on(0, 69, 100);
+    rig.energy(4096);
+    rig.note_off(0, 69);
+    rig.energy(RING_OUT);
+    assert_eq!(rig.energy(512), 0.0, "the pedal was forgotten");
+
+    // The program is still the violin: it sustains (a piano would not).
+    rig.note_on(0, 69, 100);
+    rig.energy(44_100 * 3);
+    assert!(rig.energy(512) > 1.0, "still the violin");
+}
+
+// ---- 7.10 sample types, 8.1.2 generators 46 and 47 ---------------------------
+
+/// 7.10: the two samples of a stereo pair are a left one and a right one, and
+/// each sounds on its own side whatever the zone's pan. Here the left sample is
+/// four times the right one's amplitude, and both zones' pan is centre: the left
+/// output carries the left sample alone (and the right output the right alone),
+/// so the left is four times the right. A zone of a mono sample takes its pan.
+#[test]
+fn the_samples_of_a_stereo_pair_sound_on_their_own_sides() {
+    use tutti_fixtures::sf2::SampleSpec;
+    let spec = |sample_type, link, gain| SampleSpec {
+        sample_type,
+        link,
+        gain,
+        rate: 44_100,
+    };
+    let zone = |sample: i16| vec![(generator::SAMPLE_MODES, 1), (generator::SAMPLE_ID, sample)];
+    let font = support::font::one_preset_with_samples(
+        vec![zone(0), zone(1)],
+        &[spec(4, 1, 1.0), spec(2, 0, 0.25)],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    let (left, right) = rig.energy_lr(4096);
+    assert!(right > 1.0, "the right sample is heard: {right}");
+    let ratio = left / right;
+    assert!(
+        (ratio - 4.0).abs() < 0.4,
+        "left {left} against right {right}"
+    );
+
+    // The left sample alone is not heard on the right.
+    let font =
+        support::font::one_preset_with_samples(vec![zone(0)], &[spec(4, 1, 1.0), spec(2, 0, 0.25)]);
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    let (left, right) = rig.energy_lr(4096);
+    assert!(left > 1.0 && right < 1e-3 * left, "{left} {right}");
+
+    // A mono sample keeps the zone's pan: hard right here.
+    let font = support::font::one_preset_with_samples(
+        vec![vec![
+            (generator::SAMPLE_MODES, 1),
+            (generator::PAN, 500),
+            (generator::SAMPLE_ID, 0),
+        ]],
+        &[spec(1, 0, 1.0)],
+    );
+    let mut rig = Rig::dry(&font);
+    rig.note_on(0, 69, 100);
+    let (left, right) = rig.energy_lr(4096);
+    assert!(right > 1.0 && left < 1e-3 * right, "{left} {right}");
+}
+
+/// 8.1.2, generator 46 (keynum): the zone sounds as if the key were the forced
+/// one. The sample is 441 Hz at key 69 and the zone forces 81 (an octave up), so
+/// a note at key 69 sounds at 882 Hz: twice the zero crossings of the same note
+/// in a zone without it.
+#[test]
+fn keynum_forces_the_key_of_a_zone() {
+    let crossings = |zone: Vec<(u16, i16)>| {
+        let mut rig = Rig::dry(&one_preset(vec![zone]));
+        rig.note_on(0, 69, 100);
+        let (left, _) = rig.render(8192);
+        left.windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count()
+    };
+    let plain = crossings(vec![]);
+    let forced = crossings(vec![(generator::KEY_NUM, 81)]);
+    assert!(plain > 50, "{plain}");
+    let ratio = forced as f32 / plain as f32;
+    assert!((ratio - 2.0).abs() < 0.1, "{forced} against {plain}");
+}
+
+/// 8.1.2, generator 47 (velocity): the zone sounds as if the velocity were the
+/// forced one. A strike at 127 in a zone forcing 32 is as loud as a strike at 32
+/// in a plain zone, and quieter than a plain 127.
+#[test]
+fn velocity_forces_the_velocity_of_a_zone() {
+    let plain = one_preset(vec![vec![]]);
+    let forced = one_preset(vec![vec![(generator::VELOCITY, 32)]]);
+    let loud = level(&plain, 69, 127);
+    let soft = level(&plain, 69, 32);
+    let got = level(&forced, 69, 127);
+    assert!(loud > 1.5 * soft, "{loud} {soft}");
+    assert!((got / soft - 1.0).abs() < 0.05, "{got} against {soft}");
+}

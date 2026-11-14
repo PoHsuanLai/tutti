@@ -862,31 +862,17 @@ impl State {
 pub struct Executor {
     prepare: Prepare,
     event_cap: usize,
-    queue: HeapCons<Box<Commit>>,
-    back: HeapProd<Box<Commit>>,
-    /// Where crossfades go back (see the module docs, "Crossfades").
-    fade_back: HeapProd<Box<Crossfade>>,
+    /// The executor's end of the rings to its editor.
+    inbox: Inbox,
     plan: Option<Arc<Plan>>,
     store: Vec<Option<Unit>>,
     state: State,
-    frame: Frame,
+    /// Where the graph is in time.
+    clock: Clock,
     /// Events dropped: the running total, and this block's log of where.
     dropped: Dropped,
-    /// Where each block's log goes, for the editor to drain.
-    losses: HeapProd<EventLoss>,
-    unreported: Arc<AtomicU64>,
-    /// Where an edge whose declick fade ended is reported.
-    edge_fades: HeapProd<(EdgeId, EdgeFade)>,
-    commands: CommandRx,
-    /// `seq` of the last commit applied.
-    applied: u64,
-    /// Between a re-prepare's two commits: every unit is checked out, and
-    /// blocks render silence.
-    suspended: bool,
-    /// The `Prepare` a pending re-prepare will adopt when its resume commit
-    /// lands. Not before: until then the device may still hand blocks sized
-    /// for the old one (a shrinking `MaxBlock` must not fail them).
-    next_prepare: Option<Prepare>,
+    /// Whether a re-prepare has the units out.
+    suspension: Suspension,
     /// The held-key tables of the units a re-prepare checked out, for the
     /// resume commit to hand back.
     parked: Vec<(NodeKey, Keys)>,
@@ -894,17 +880,55 @@ pub struct Executor {
     /// (`Node::chase`), sized when a plan is built from what its nodes
     /// declare (`Shape::chase`), so the swap never allocates it.
     chase: Vec<Event>,
-    /// The sample rate changed in a re-prepare: the next rebuild carries no
-    /// time-based state (see `Editor::reprepare`).
-    reset_time: bool,
+    /// The pool blocks run on, if any (see [`set_pool`](Self::set_pool)).
+    pool: Option<Arc<dyn Pool>>,
+}
+
+/// The executor's end of the rings to its editor, and the commands it
+/// delivers.
+struct Inbox {
+    queue: HeapCons<Box<Commit>>,
+    back: HeapProd<Box<Commit>>,
+    /// Where crossfades go back (see the module docs, "Crossfades").
+    fade_back: HeapProd<Box<Crossfade>>,
+    /// Where each block's log of dropped events goes, for the editor to
+    /// drain.
+    losses: HeapProd<EventLoss>,
+    unreported: Arc<AtomicU64>,
+    /// Where an edge whose declick fade ended is reported.
+    edge_fades: HeapProd<(EdgeId, EdgeFade)>,
+    commands: CommandRx,
+    /// `seq` of the last commit applied.
+    applied: u64,
+}
+
+/// Where the graph is in time.
+struct Clock {
+    frame: Frame,
     /// The transport over the last frames, for nodes behind a latent path
     /// (`Cx::transport_at`). Fed every block, whatever it renders.
     history: TransportHistory,
     /// The graph's play clock (`src/play.rs`): kept here, handed to every
     /// node in its `Env`, published for the editor.
     play: PlayState,
-    /// The pool blocks run on, if any (see [`set_pool`](Self::set_pool)).
-    pool: Option<Arc<dyn Pool>>,
+}
+
+/// Whether a re-prepare has the units out.
+#[derive(Clone, Copy, Debug)]
+enum Suspension {
+    /// The units are in the store.
+    Running,
+    /// Between a re-prepare's two commits: every unit is checked out, and
+    /// blocks render silence.
+    Suspended {
+        /// The `Prepare` the resume commit adopts when it lands. Not
+        /// before: until then the device may still hand blocks sized for
+        /// the old one (a shrinking `MaxBlock` must not fail them).
+        next: Prepare,
+        /// The sample rate changed: the resume's rebuild carries no
+        /// time-based state (see [`Editor::reprepare`](crate::Editor::reprepare)).
+        reset_time: bool,
+    },
 }
 
 impl std::fmt::Debug for Executor {
@@ -913,13 +937,11 @@ impl std::fmt::Debug for Executor {
             .field("prepare", &self.prepare)
             .field("event_cap", &self.event_cap)
             .field("planned", &self.plan.is_some())
-            .field("frame", &self.frame)
+            .field("frame", &self.clock.frame)
             .field("dropped", &self.dropped.total())
-            .field("applied", &self.applied)
-            .field("suspended", &self.suspended)
-            .field("next_prepare", &self.next_prepare)
-            .field("reset_time", &self.reset_time)
-            .field("play", &self.play)
+            .field("applied", &self.inbox.applied)
+            .field("suspension", &self.suspension)
+            .field("play", &self.clock.play)
             .field("pool", &self.pool)
             .finish_non_exhaustive()
     }
@@ -970,26 +992,28 @@ impl Executor {
         Self {
             prepare,
             event_cap: cap,
-            queue: ends.queue,
-            back: ends.back,
-            fade_back: ends.fade_back,
+            inbox: Inbox {
+                queue: ends.queue,
+                back: ends.back,
+                fade_back: ends.fade_back,
+                losses: ends.losses,
+                unreported: ends.unreported,
+                edge_fades: ends.edge_fades,
+                commands,
+                applied: 0,
+            },
             plan: None,
             store: Vec::new(),
             state: State::empty(prepare.max_block().get()),
-            frame: Frame::ZERO,
+            clock: Clock {
+                frame: Frame::ZERO,
+                history: TransportHistory::new(),
+                play: PlayState::new(ends.play),
+            },
             dropped: Dropped::new(),
-            losses: ends.losses,
-            unreported: ends.unreported,
-            edge_fades: ends.edge_fades,
-            commands,
-            applied: 0,
-            suspended: false,
-            next_prepare: None,
+            suspension: Suspension::Running,
             parked: Vec::new(),
             chase: Vec::new(),
-            reset_time: false,
-            history: TransportHistory::new(),
-            play: PlayState::new(ends.play),
             pool: None,
         }
     }
@@ -1037,7 +1061,7 @@ impl Executor {
 
     /// The command ring's executor end, for the pair check.
     pub(crate) fn commands(&self) -> &CommandRx {
-        &self.commands
+        &self.inbox.commands
     }
 
     /// What this executor, and every unit it runs, is prepared for. During a
@@ -1057,7 +1081,10 @@ impl Executor {
     /// transport clock, its own frame-timed commands) follows the rate here,
     /// on the same block the executor's clock moves, not a resume later.
     pub fn pending_prepare(&self) -> Option<&Prepare> {
-        self.next_prepare.as_ref()
+        match &self.suspension {
+            Suspension::Running => None,
+            Suspension::Suspended { next, .. } => Some(next),
+        }
     }
 
     /// The plan running now.
@@ -1071,14 +1098,14 @@ impl Executor {
     /// rescales it (and every pending frame-timed command) to the same
     /// wall-clock time at the new rate, rounded to the nearest frame.
     pub fn frame(&self) -> Frame {
-        self.frame
+        self.clock.frame
     }
 
     /// The play clock (`Env::play`) at the next block's first frame, before
     /// a play start there: what the last block left it at. The control side
     /// reads the same through [`Editor::play_reading`](crate::Editor::play_reading).
     pub fn play_reading(&self) -> PlayReading {
-        self.play.reading()
+        self.clock.play.reading()
     }
 
     /// Events refused so far: writer overflow, and delay or feedback FIFO
@@ -1109,18 +1136,18 @@ impl Executor {
     /// first saw them, and so landed at offset 0 of that block instead of on
     /// their frame. Never dropped — see [`Editor::schedule`](crate::Editor::schedule).
     pub fn late_command_count(&self) -> u64 {
-        self.commands.late()
+        self.inbox.commands.late()
     }
 
     /// Scheduled commands whose node or event port was gone by the time they
     /// fell due, so there was nowhere to deliver them.
     pub fn unrouted_command_count(&self) -> u64 {
-        self.commands.unrouted()
+        self.inbox.commands.unrouted()
     }
 
     /// Scheduled commands cancelled before they landed.
     pub fn cancelled_command_count(&self) -> u64 {
-        self.commands.cancelled()
+        self.inbox.commands.cancelled()
     }
 
     /// Applies every queued commit, in the order the editor sent them, and
@@ -1140,14 +1167,14 @@ impl Executor {
     /// [`Editor::package`](crate::Editor::package)).
     pub fn apply_pending(&mut self) {
         let _rt = RtScope::enter();
-        while let Some(mut commit) = self.queue.try_pop() {
+        while let Some(mut commit) = self.inbox.queue.try_pop() {
             self.apply(&mut commit);
-            send_back(&mut self.back, commit);
+            send_back(&mut self.inbox.back, commit);
         }
     }
 
     fn apply(&mut self, c: &mut Commit) {
-        self.applied = c.seq;
+        self.inbox.applied = c.seq;
         if let Some(prepare) = c.suspend {
             // Check every unit out, into the box, for the editor to
             // re-prepare on the control thread. The plan and every piece of
@@ -1166,7 +1193,7 @@ impl Executor {
                     };
                     // The unit a cut displaced still owes its keys: they close
                     // in the first block after the resume.
-                    if let Some(stale) = cut_fades(&mut unit, &mut self.fade_back) {
+                    if let Some(stale) = cut_fades(&mut unit, &mut self.inbox.fade_back) {
                         c.spare_held.push(unit.keys.park(stale));
                     }
                     c.retired.push((u.key, unit.node));
@@ -1175,6 +1202,7 @@ impl Executor {
                     self.parked.push((u.key, unit.keys));
                 }
             }
+            let mut reset_time = false;
             let (old, new) = (
                 self.prepare.sample_rate().get(),
                 prepare.sample_rate().get(),
@@ -1184,22 +1212,30 @@ impl Executor {
                 // start. Graph time tracks device time, so the clock and
                 // every pending frame-timed command move to the same
                 // wall-clock time at the new rate.
-                self.reset_time = true;
+                reset_time = true;
                 // Frames at the old rate name nothing at the new one.
-                self.history.clear();
+                self.clock.history.clear();
                 let ratio = new / old;
-                self.frame = crate::command::rescale(self.frame, ratio);
-                self.play.rescale(ratio);
-                self.commands.rescale(ratio, c.seq);
+                self.clock.frame = crate::command::rescale(self.clock.frame, ratio);
+                self.clock.play.rescale(ratio);
+                self.inbox.commands.rescale(ratio, c.seq);
             }
-            self.next_prepare = Some(prepare);
-            self.suspended = true;
+            self.suspension = Suspension::Suspended {
+                next: prepare,
+                reset_time,
+            };
             return;
         }
-        if let Some(p) = self.next_prepare.take() {
-            // The resume commit of a re-prepare: its plan is for this.
-            self.prepare = p;
-        }
+        // The resume commit of a re-prepare: its plan is for the `Prepare`
+        // the suspend carried, and its rebuild carries time-based state
+        // unless the rate changed.
+        let carry = match std::mem::replace(&mut self.suspension, Suspension::Running) {
+            Suspension::Running => true,
+            Suspension::Suspended { next, reset_time } => {
+                self.prepare = next;
+                !reset_time
+            }
+        };
         let plan = c
             .plan
             .take()
@@ -1311,7 +1347,7 @@ impl Executor {
                 c.spare_params.push(u.params);
                 c.spare_modes.push(u.mode);
                 for f in [u.fade, u.queued].into_iter().flatten() {
-                    retire_fade(&mut self.fade_back, f);
+                    retire_fade(&mut self.inbox.fade_back, f);
                 }
             }
         }
@@ -1326,7 +1362,7 @@ impl Executor {
                     u.generation, p.generation,
                     "cutting the unit the delta named"
                 );
-                if let Some(stale) = cut_fades(u, &mut self.fade_back) {
+                if let Some(stale) = cut_fades(u, &mut self.inbox.fade_back) {
                     departed.held.push((p.key, stale));
                 }
             }
@@ -1360,7 +1396,7 @@ impl Executor {
                     if u.fade.is_some() {
                         x.waiting = Some(node);
                         if let Some(q) = u.queued.replace(x) {
-                            retire_fade(&mut self.fade_back, q);
+                            retire_fade(&mut self.inbox.fade_back, q);
                         }
                     } else {
                         x.out = Some(std::mem::replace(&mut u.node, node));
@@ -1377,7 +1413,7 @@ impl Executor {
                     // Nothing to fade from (reachable only through
                     // `package`): the crossfade goes back unused.
                     if let Some(x) = fade {
-                        retire_fade(&mut self.fade_back, x);
+                        retire_fade(&mut self.inbox.fade_back, x);
                     }
                 }
             }
@@ -1395,7 +1431,13 @@ impl Executor {
         c.relined = relined;
 
         let old_plan = self.plan.take();
-        let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed, &mut c.opened);
+        let new_state = self.rebuild(
+            &plan,
+            old_plan.as_deref(),
+            &mut departed,
+            &mut c.opened,
+            carry,
+        );
         self.chase = std::mem::take(&mut departed.chase_events);
         self.chase.clear();
         let wanted: usize = plan
@@ -1407,8 +1449,6 @@ impl Executor {
         self.chase.reserve(wanted);
         c.spare_held.extend(departed.held.drain(..).map(|(_, k)| k));
         c.spare_held.append(&mut departed.spare);
-        self.suspended = false;
-        self.reset_time = false;
         // Which units' mix this plan drives: a lane's state is built here for
         // a unit that has none (the plan's own sizing, as a driven edge's).
         let max_block = self.prepare.max_block().get();
@@ -1434,6 +1474,7 @@ impl Executor {
         old_plan: Option<&Plan>,
         departed: &mut Gone,
         opened: &mut Opened,
+        carry: bool,
     ) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
@@ -1441,7 +1482,6 @@ impl Executor {
         // and FIFO below starts fresh, and the old event FIFOs, left behind,
         // are flushed by the pass that flushes vanished delays (see
         // `Editor::reprepare` for the rule).
-        let carry = !self.reset_time;
         let old = &mut self.state;
 
         // PDC rings and FIFOs, by key.
@@ -2062,7 +2102,7 @@ impl Executor {
         // `move` captures `self` as one pointer; the precise capture of every
         // field the body names is a large struct built per block.
         with_no_denormals(move || {
-            if self.suspended {
+            if let Suspension::Suspended { next, .. } = self.suspension {
                 // Between a re-prepare's two commits the units are on the control
                 // thread: render silence, for whatever block arrives — the device
                 // may be on either side of the change, so no bound applies here.
@@ -2073,20 +2113,20 @@ impl Executor {
                 for o in outputs.iter_mut() {
                     o[..frames].fill(0.0);
                 }
-                let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
+                let rate = next.sample_rate();
                 let mut env = Env {
-                    frame: self.frame,
+                    frame: self.clock.frame,
                     sample_rate: rate,
                     block_len: Samples(frames),
                     transport: *transport,
                     changes: *changes,
                     play: PlayClock::ZERO,
                 };
-                env.play = self.play.begin(transport.playing, env.play_starts());
-                self.commands.observe(&env);
-                self.history.observe(&env);
-                self.play.end(&env);
-                self.frame += Samples(frames);
+                env.play = self.clock.play.begin(transport.playing, env.play_starts());
+                self.inbox.commands.observe(&env);
+                self.clock.history.observe(&env);
+                self.clock.play.end(&env);
+                self.clock.frame += Samples(frames);
                 return;
             }
             let max = self.prepare.max_block();
@@ -2102,26 +2142,30 @@ impl Executor {
             let Self {
                 prepare,
                 event_cap,
-                queue: _,
-                back: _,
-                fade_back,
+                inbox:
+                    Inbox {
+                        queue: _,
+                        back: _,
+                        fade_back,
+                        losses,
+                        unreported,
+                        edge_fades,
+                        commands,
+                        applied,
+                    },
                 plan,
                 store,
                 state,
-                frame,
+                clock:
+                    Clock {
+                        frame,
+                        history,
+                        play,
+                    },
                 dropped,
-                losses,
-                unreported,
-                edge_fades,
-                commands,
-                applied,
-                suspended: _,
-                next_prepare: _,
+                suspension: _,
                 parked: _,
                 chase: _,
-                reset_time: _,
-                history,
-                play,
                 pool,
             } = self;
             let mut env = Env {
@@ -3577,7 +3621,7 @@ mod tests {
         // The command is pulled first, against the plan still running.
         let plan = Arc::clone(exec.plan.as_ref().expect("a plan"));
         let env = Env {
-            frame: exec.frame,
+            frame: exec.clock.frame,
             sample_rate: prepare.sample_rate(),
             block_len: Samples(64),
             transport: TransportPosition::default(),
@@ -3585,8 +3629,9 @@ mod tests {
             play: crate::PlayClock::ZERO,
         };
         let mut has_due = vec![false; plan.units.len()];
-        exec.commands
-            .gather(&env, &plan, exec.applied, &mut has_due);
+        exec.inbox
+            .commands
+            .gather(&env, &plan, exec.inbox.applied, &mut has_due);
         assert_eq!(
             exec.unrouted_command_count(),
             0,

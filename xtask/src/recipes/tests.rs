@@ -410,3 +410,16 @@ fn coverage_takes_a_package_list_in_place_of_the_workspace() {
     );
     assert!(!run.contains("--workspace"));
 }
+
+/// Each no_std crate is built bare and once per listed feature, for the bare-metal target.
+#[test]
+fn check_no_std_builds_each_listed_crate_for_the_bare_metal_target() {
+    let steps = dry("check-no-std", &[]);
+    assert_eq!(
+        steps,
+        [
+            "cargo build --locked -p tutti-ump --no-default-features --target thumbv7em-none-eabihf",
+            "cargo build --locked -p tutti-ump --no-default-features --target thumbv7em-none-eabihf --features serde",
+        ]
+    );
+}

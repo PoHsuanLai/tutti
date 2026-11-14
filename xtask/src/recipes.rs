@@ -280,6 +280,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     ("check-loom", "", "clippy under --cfg loom"),
     (
+        "check-no-std",
+        "",
+        "build each no_std crate for a bare-metal target (needs `rustup target add thumbv7em-none-eabihf`)",
+    ),
+    (
         "verify-audio",
         "[OUT=/tmp/tutti-verify]",
         "render the audio cases and verify them with the Python checks (needs uv)",
@@ -357,6 +362,21 @@ impl Planner<'_> {
     fn lines<S: AsRef<str>>(&mut self, lines: &[S]) {
         for l in lines {
             self.run(Cmd::sh(l.as_ref()));
+        }
+    }
+
+    /// Each crate of `NO_STD_CRATES` built for `NO_STD_TARGET` without its default
+    /// features, and once more with each feature it lists: a `std` use in the crate
+    /// has no such target to link against, so the build fails.
+    fn check_no_std(&mut self) {
+        for (krate, features) in NO_STD_CRATES {
+            let build = format!(
+                "cargo build --locked -p {krate} --no-default-features --target {NO_STD_TARGET}"
+            );
+            self.run(Cmd::sh(&build));
+            for f in *features {
+                self.run(Cmd::sh(&format!("{build} --features {f}")));
+            }
         }
     }
 
@@ -561,6 +581,7 @@ impl Planner<'_> {
                     r#"RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps"#,
                 ]);
             }
+            "check-no-std" => self.check_no_std(),
             "check-loom" => self.lines(&[
                 r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
             ]),
@@ -616,7 +637,7 @@ impl Planner<'_> {
                 for d in [
                     "gates", "lint", "deny", "check-conformance",
                     "check-features", "package",
-                    "check-loom", "test", "test-features", "test-doc",
+                    "check-no-std", "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",
                 ] {
                     self.dep(d)?;
@@ -670,6 +691,13 @@ impl Planner<'_> {
         }
     }
 }
+
+/// A target with no `std`: a crate that builds for it uses only `core` and `alloc`.
+const NO_STD_TARGET: &str = "thumbv7em-none-eabihf";
+
+/// The `#![no_std]` crates, each with the features (besides `std`) built on top of
+/// the bare build. A crate that becomes `no_std` is one line here.
+const NO_STD_CRATES: &[(&str, &[&str])] = &[("tutti-ump", &["serde"])];
 
 const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings"#,

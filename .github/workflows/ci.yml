@@ -474,6 +474,13 @@ jobs:
           cargo clippy --locked -p tutti-plugin-db --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
 
+      # The `#![no_std]` crates (`NO_STD_CRATES` in xtask) build for a target
+      # with no `std`, so a `std` use in one fails here.
+      - name: no_std build
+        run: |
+          rustup target add thumbv7em-none-eabihf
+          cargo xtask check-no-std
+
       # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin/plugin.rs` and
       # tutti's `plugin_midi_export` example) spawn the `plugin-server`
       # binary, which no test build produces (it would be a dependency cycle through

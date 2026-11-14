@@ -55,11 +55,11 @@
 //! - **Unlocked** when [`MTC_DROPOUT`](ClockFollower::MTC_DROPOUT) passes with no
 //!   Quarter Frame or Full Message, which also stops the transport.
 
-use tutti_midi_protocol::{Addressed, Read, Universal, read};
+use tutti_midi_protocol::{Addressed, Read, SmpteTimecode, Universal, read};
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{Message, SysexAssembler, SysexStep, System, Ump};
 
-use super::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteTimecode};
+use super::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 
 /// Which outside clock a [`ClockFollower`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -389,22 +389,14 @@ impl MtcFollower {
             }) = read(self.sysex.message(done))
             {
                 self.last_heard = Some(at);
-                if let Some(code) = SmpteTimecode::new(
-                    full.hours(),
-                    full.minutes(),
-                    full.seconds(),
-                    full.frames(),
-                    full.rate().into(),
-                ) {
-                    // The partial cycle and the last one belong to the old position.
-                    self.decoder.reset();
-                    self.last_cycle = None;
-                    self.run = 0;
-                    out(ClockEvent::Locate {
-                        position: ClockPosition::Time(code.to_seconds()),
-                        at,
-                    });
-                }
+                // The partial cycle and the last one belong to the old position.
+                self.decoder.reset();
+                self.last_cycle = None;
+                self.run = 0;
+                out(ClockEvent::Locate {
+                    position: ClockPosition::Time(full.time_code().timecode().to_seconds()),
+                    at,
+                });
             }
             return;
         }

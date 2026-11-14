@@ -49,8 +49,7 @@ use tutti_types::{
 };
 use tutti_ump::{Message, MidiGroup, System, U7, U14, Ump};
 
-use crate::SmpteTimecode;
-use tutti_midi_protocol::{MtcRate, SmpteFrameRate};
+use tutti_midi_protocol::{MtcRate, SmpteFrameRate, SmpteTimecode};
 
 /// Below this beat, a play edge is treated as "from the top" → Start (0xFA)
 /// rather than Continue (0xFB). Wide enough to absorb float jitter at beat 0.

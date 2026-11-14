@@ -143,6 +143,17 @@ impl Session {
         self.capacity = capacity;
     }
 
+    /// Whether the peer is in a Session, or an Invitation or challenge is
+    /// open with it: what a Host keeps an entry for.
+    pub(crate) fn holds_session(&self) -> bool {
+        matches!(
+            self.state(),
+            SessionState::PendingInvitation
+                | SessionState::AuthenticationRequired
+                | SessionState::Established
+        )
+    }
+
     pub(crate) fn state(&self) -> SessionState {
         match self.phase {
             Phase::Idle => SessionState::Idle,
@@ -614,7 +625,7 @@ impl Session {
                 &command,
                 |admission, nonce| match admission {
                     Admission::SharedSecret(secret) => {
-                        Verdict::from(Digest::of_secret(nonce, secret).matches(digest))
+                        verdict(&Digest::of_secret(nonce, secret), digest)
                     }
                     _ => Verdict::Wrong,
                 },
@@ -632,7 +643,7 @@ impl Session {
                     .iter()
                     .find(|(name, _)| name == &auth.username)
                     .map_or(Verdict::UnknownUser, |(name, password)| {
-                        Verdict::from(Digest::of_user(nonce, name, password).matches(&auth.digest))
+                        verdict(&Digest::of_user(nonce, name, password), &auth.digest)
                     }),
                 _ => Verdict::Wrong,
             },
@@ -829,9 +840,12 @@ enum Verdict {
     Ignored,
 }
 
-impl From<bool> for Verdict {
-    fn from(right: bool) -> Self {
-        if right { Self::Right } else { Self::Wrong }
+/// The verdict on a digest: right when it is the one the Host computes.
+fn verdict(expected: &Digest, got: &Digest) -> Verdict {
+    if expected.matches(got) {
+        Verdict::Right
+    } else {
+        Verdict::Wrong
     }
 }
 

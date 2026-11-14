@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use tutti_ump::Ump;
@@ -168,6 +169,8 @@ impl Endpoint for Client {
     }
 }
 
+const DEFAULT_MAX_SESSIONS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+
 /// How a Host is set up.
 #[derive(Clone, Debug)]
 pub struct HostConfig {
@@ -176,7 +179,7 @@ pub struct HostConfig {
     /// How an Invitation becomes a Session.
     pub admission: Admission,
     /// How many Clients are served at once.
-    pub max_sessions: usize,
+    pub max_sessions: NonZeroUsize,
     /// How each Session sends, repeats and recovers.
     pub session: SessionConfig,
 }
@@ -189,7 +192,7 @@ impl HostConfig {
         Self {
             identity,
             admission: Admission::Open,
-            max_sessions: 16,
+            max_sessions: DEFAULT_MAX_SESSIONS,
             session: SessionConfig::default(),
         }
     }
@@ -299,37 +302,46 @@ impl Host {
         }
     }
 
-    fn serving(&self) -> usize {
+    /// How many peers the Host holds a Session, an open Invitation or a
+    /// challenge with. A peer that only sent a stray command is not counted.
+    #[must_use]
+    pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
 }
 
 impl Endpoint for Host {
     fn handle_datagram(&mut self, now: Instant, from: SocketAddr, datagram: &[u8]) {
-        let full = self.serving() >= self.config.max_sessions;
-        let config = &self.config;
-        let nonce_source = self.nonce_source;
-        let is_new = !self.sessions.contains_key(&from);
-        let session = self.sessions.entry(from).or_insert_with(|| {
-            Session::new(
-                Role::Host {
-                    admission: config.admission.clone(),
-                    nonce_source,
-                },
-                config.session,
-                config.identity,
-                from,
-                now,
-            )
-        });
-        session.set_capacity(if full && is_new {
+        if let Some(session) = self.sessions.get_mut(&from) {
+            feed(session, now, datagram);
+            self.outbox.drain(from, session);
+            self.forget_if_idle(from);
+            return;
+        }
+        // No Session with this peer: answer it from a session that lives for
+        // this datagram. Only an Invitation that opens something is kept, so a
+        // stranger costs the Host no state; over the limit the Invitation is
+        // refused the same way.
+        let mut session = Session::new(
+            Role::Host {
+                admission: self.config.admission.clone(),
+                nonce_source: self.nonce_source,
+            },
+            self.config.session,
+            self.config.identity,
+            from,
+            now,
+        );
+        session.set_capacity(if self.session_count() >= self.config.max_sessions.get() {
             Capacity::Full
         } else {
             Capacity::Available
         });
-        feed(session, now, datagram);
-        self.outbox.drain(from, session);
-        self.forget_if_idle(from);
+        feed(&mut session, now, datagram);
+        self.outbox.drain(from, &mut session);
+        if session.holds_session() {
+            self.sessions.insert(from, session);
+        }
     }
 
     fn handle_timeout(&mut self, now: Instant) {

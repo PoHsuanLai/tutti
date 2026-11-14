@@ -198,7 +198,7 @@ fn a_malformed_invitation_is_a_protocol_error_bye() {
 #[test]
 fn a_host_at_its_limit_turns_a_newcomer_away_with_too_many_sessions() {
     let mut config = host_with(Admission::Open);
-    config.max_sessions = 1;
+    config.max_sessions = std::num::NonZeroUsize::MIN;
     let mut sim = Sim::new(config, Credentials::none(), SessionConfig::default());
     sim.connect();
     let other = "10.0.0.3:6000".parse().unwrap();
@@ -1252,4 +1252,47 @@ fn a_client_ignores_datagrams_from_any_address_but_its_host() {
     );
     sim.flush();
     assert_eq!(sim.client.state(), SessionState::Established);
+}
+
+#[test]
+fn a_stranger_that_is_not_inviting_is_answered_statelessly_and_costs_the_host_no_entry() {
+    let mut sim = Sim::open();
+    let stranger = "10.0.0.50:9000".parse().unwrap();
+    let replies = |sim: &mut Sim, bytes: &[u8]| {
+        sim.host.handle_datagram(sim.now, stranger, bytes);
+        let mut out = Vec::new();
+        while let Some(t) = sim.host.poll_transmit() {
+            assert_eq!(t.to, stranger);
+            out.extend(
+                tutti_midi_network::parse(&t.payload)
+                    .unwrap()
+                    .map(Result::unwrap),
+            );
+        }
+        out
+    };
+    let data = Command::UmpData(UmpData::new(SequenceNumber::ZERO, &[note_on(60)]).unwrap());
+    assert_eq!(
+        replies(&mut sim, &datagram(&data)),
+        vec![Command::Bye(Bye::new(ByeReason::SessionNotEstablished))]
+    );
+    assert_eq!(sim.host.session_count(), 0);
+    assert_eq!(
+        replies(&mut sim, &datagram(&Command::Ping(PingId(5)))),
+        vec![Command::PingReply(PingId(5))]
+    );
+    assert_eq!(sim.host.session_count(), 0);
+    assert_eq!(
+        replies(&mut sim, &datagram(&Command::SessionReset)),
+        vec![Command::Bye(Bye::new(ByeReason::SessionNotEstablished))]
+    );
+    assert_eq!(sim.host.session_count(), 0);
+    assert_eq!(sim.host.state(stranger), SessionState::Idle);
+}
+
+#[test]
+fn only_an_invitation_below_capacity_creates_a_host_entry() {
+    let mut sim = Sim::open();
+    sim.connect();
+    assert_eq!(sim.host.session_count(), 1);
 }

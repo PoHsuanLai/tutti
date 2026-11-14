@@ -48,8 +48,9 @@ pub use simple::{
     PeBasicChannelRx, PeBasicChannelTx, PeChannelMode, PeCurrentMode, PeExternalSync, PeLocalOn,
 };
 pub use state::{
-    CommonState, PeState, PeStateEntry, PeStateList, RestoreError, SavedState, StateId, StateRev,
-    StateSize, UnixSeconds, WrongDevice,
+    Arrival, CommonState, GetStateError, PeState, PeStateEntry, PeStateList, RefusedAt,
+    RestoreError, SavedState, StateDevice, StateId, StateRev, StateSize, StateStamp, UnixSeconds,
+    Verdict, WrongDevice,
 };
 pub use store::{ResourceStore, StoreError};
 

@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use tutti_ump::DeviceIdentity;
 
+use super::super::body::BodyLimit;
 use super::super::chunk::ranged;
 use super::super::header::PeEncoding;
 use super::super::limits::{MediaType, NotInRange, NotValid, PropertyName, ResourceId, text_type};
@@ -344,6 +345,45 @@ impl PeState {
 
     /// Writes the revision and time into the header of a reply.
     pub(super) fn write_header(&self, extra: &mut PeExtra) {
+        StateStamp {
+            rev: self.rev.clone(),
+            timestamp: self.timestamp,
+        }
+        .write(extra);
+    }
+
+    /// The state with the revision and time a reply's header carries.
+    ///
+    /// # Errors
+    ///
+    /// [`PeDataError`] for a `stateRev` that is no string and a `timestamp` that is
+    /// no time.
+    pub(super) fn read_header(mut self, extra: &PeExtra) -> Result<Self, PeDataError> {
+        let stamp = StateStamp::read(extra)?;
+        self.rev = stamp.rev.or(self.rev);
+        self.timestamp = stamp.timestamp.or(self.timestamp);
+        Ok(self)
+    }
+
+    pub(super) fn stamped_with(mut self, stamp: StateStamp) -> Self {
+        self.rev = stamp.rev;
+        self.timestamp = stamp.timestamp;
+        self
+    }
+}
+
+/// The revision and time a device gives a state: the `stateRev` and `timestamp` of
+/// the header of a reply to Get State and to Set State (M2-111 §3.2, §3.3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StateStamp {
+    /// The device's mark of the state's content.
+    pub rev: Option<StateRev>,
+    /// When the device last changed the state.
+    pub timestamp: Option<UnixSeconds>,
+}
+
+impl StateStamp {
+    pub(super) fn write(&self, extra: &mut PeExtra) {
         // Both names are no field of the header types and both values scalars, so an
         // insert cannot be refused.
         if let (Some(rev), Some(name)) = (&self.rev, PropertyName::new("stateRev")) {
@@ -354,27 +394,108 @@ impl PeState {
         }
     }
 
-    /// The state with the revision and time a reply's header carries.
+    /// The stamp a reply's header carries.
     ///
     /// # Errors
     ///
     /// [`PeDataError`] for a `stateRev` that is no string and a `timestamp` that is
     /// no time.
-    pub(super) fn read_header(mut self, extra: &PeExtra) -> Result<Self, PeDataError> {
-        if let Some(json) = extra.get("stateRev") {
-            self.rev = Some(text(json).and_then(StateRev::new).ok_or_else(|| {
+    pub(super) fn read(extra: &PeExtra) -> Result<Self, PeDataError> {
+        let rev = match extra.get("stateRev") {
+            Some(json) => Some(text(json).and_then(StateRev::new).ok_or_else(|| {
                 PeDataError::new("State.stateRev", PeDataFault::WrongType("a string"))
-            })?);
-        }
-        if let Some(json) = extra.get("timestamp") {
-            self.timestamp = Some(unix_seconds(json).ok_or_else(|| {
+            })?),
+            None => None,
+        };
+        let timestamp = match extra.get("timestamp") {
+            Some(json) => Some(unix_seconds(json).ok_or_else(|| {
                 PeDataError::new(
                     "State.timestamp",
                     PeDataFault::NotValid("time in Unix seconds"),
                 )
-            })?);
+            })?),
+            None => None,
+        };
+        Ok(Self { rev, timestamp })
+    }
+}
+
+/// How much of a state's body a [`StateDevice`] is judging.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Arrival<'a> {
+    /// The start of the body, decoded, while chunks are still coming. It is the
+    /// whole of what the device can read yet: an encoding that cannot be read in
+    /// part (zlib) gives no prefix, and the device judges the whole body.
+    Prefix(&'a [u8]),
+    /// The whole body, decoded.
+    Whole(&'a PeState),
+}
+
+/// What a [`StateDevice`] makes of a state's body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Verdict {
+    /// Not enough to tell yet.
+    Undecided,
+    /// The body is the device's.
+    Sound,
+    /// The body is not correct. Mid-transfer the Responder sends Terminate Inquiry
+    /// and drops the rest; at the end it answers 400.
+    Refuse,
+}
+
+/// The device's say over the states its Responder is sent (M2-111 §3.3): whether a
+/// body is its own, and what revision and time an accepted one gets.
+pub trait StateDevice: std::fmt::Debug {
+    /// Judges the body of the state `id` that an Initiator is setting. It is called
+    /// after each chunk with the prefix that has come, until it answers
+    /// [`Sound`](Verdict::Sound) or [`Refuse`](Verdict::Refuse), and once more
+    /// with the whole body. [`Undecided`](Verdict::Undecided) at the end accepts.
+    fn judge(&mut self, id: &StateId, arrival: Arrival<'_>) -> Verdict;
+
+    /// The revision and time of the state `id` just accepted, which the reply
+    /// carries and the StateList then lists.
+    fn stamp(&mut self, id: &StateId, state: &PeState) -> StateStamp;
+}
+
+/// Where a state was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RefusedAt {
+    /// Before the body was all in: the Responder ended the transfer.
+    Midway,
+    /// With the body all in: the Responder answered 400.
+    End,
+}
+
+impl ResourceStore {
+    /// Lists the state `id` as `state` is: its revision, time and size, with the
+    /// title, description and extensions of an entry already there. A state the
+    /// list lacks is listed with its id as the title.
+    pub(super) fn note_state(&mut self, id: &StateId, state: &PeState) -> Result<(), StoreError> {
+        let target = ResourceTarget::new(PeResource::StateList)
+            .unwrap_or_else(|_| unreachable!("StateList has no resId"));
+        let mut entries = match self.get(&target) {
+            Some(PeData::StateList(list)) => list.clone().into_entries(),
+            _ => Vec::new(),
+        };
+        let (_, bytes) = state.to_wire();
+        let size = StateSize::new(bytes.len() as u64);
+        match entries.iter_mut().find(|e| e.state_id == *id) {
+            Some(entry) => {
+                entry.rev = state.rev.clone();
+                entry.timestamp = state.timestamp;
+                entry.size = size;
+            }
+            None => {
+                let title = PeText::new(id.as_str())
+                    .unwrap_or_else(|| unreachable!("a state id is not empty"));
+                let mut entry = PeStateEntry::new(id.clone(), title);
+                entry.rev = state.rev.clone();
+                entry.timestamp = state.timestamp;
+                entry.size = size;
+                entries.push(entry);
+            }
         }
-        Ok(self)
+        self.put(None, PeData::StateList(PeStateList::new(entries)))
     }
 }
 
@@ -448,6 +569,23 @@ pub struct WrongDevice {
     pub saved: DeviceIdentity,
     /// The identity of the device it was to be restored to.
     pub peer: DeviceIdentity,
+}
+
+/// A fetch of a state that cannot be made.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum GetStateError {
+    /// The StateList says the state is bigger than the caller takes.
+    #[error("the state is {} bytes, past the limit of {}", .size.get(), .limit.get())]
+    TooLarge {
+        /// The size the entry gives.
+        size: StateSize,
+        /// The caller's limit.
+        limit: BodyLimit,
+    },
+    /// The Get cannot be made.
+    #[error(transparent)]
+    Call(#[from] CallError),
 }
 
 /// A restore that cannot be made.
@@ -635,21 +773,32 @@ impl ResourceInitiator {
         self.get_list(&get, page_size, now)
     }
 
-    /// Gets the state `id`, under Flow Control when the entry declares it. The
-    /// result is a [`ResourceEvent::Got`](super::ResourceEvent::Got) with a
-    /// [`PeData::State`].
+    /// Gets the state `entry` lists, under Flow Control when the entry of State
+    /// declares it, as long as it stays within `limit`. The result is a
+    /// [`ResourceEvent::Got`](super::ResourceEvent::Got) with a
+    /// [`PeData::State`], or a [`PeOutcome::TooLarge`](super::super::PeOutcome::TooLarge)
+    /// failure when the body grew past `limit` and the Responder was told to stop
+    /// (M2-111 §3.2).
     ///
     /// # Errors
     ///
-    /// As for [`get`](Self::get).
+    /// [`GetStateError::TooLarge`] before anything is sent when `entry` gives a size
+    /// past `limit`, and [`GetStateError::Call`] as for [`get`](Self::get).
     pub fn get_state(
         &mut self,
-        id: &StateId,
+        entry: &PeStateEntry,
+        limit: BodyLimit,
         now: Instant,
-    ) -> Result<(CallId, Vec<super::ResourceAction>), CallError> {
-        let target = ResourceTarget::entry(PeResource::State, id.resource_id())?;
-        let get = self.state_get(target);
-        self.get(&get, now)
+    ) -> Result<(CallId, Vec<super::ResourceAction>), GetStateError> {
+        if let Some(size) = entry.size
+            && size.get() > limit.get() as u64
+        {
+            return Err(GetStateError::TooLarge { size, limit });
+        }
+        let target = ResourceTarget::entry(PeResource::State, entry.state_id.resource_id())
+            .map_err(CallError::from)?;
+        let get = self.state_get(target).limited(limit);
+        Ok(self.get(&get, now)?)
     }
 
     /// Restores a saved state to the device `peer`, the identity of which the

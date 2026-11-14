@@ -126,26 +126,26 @@ pub use limits::{
 };
 pub use partial::{JsonPointer, PartialError, PartialUpdate};
 pub use reassemble::{
-    BufferLimit, PeBuffered, PeExpired, PeFlowControl, PeReassembler, PeReassemblyError,
+    BufferLimit, PeBuffered, PeExpired, PeFlowControl, PeHeld, PeReassembler, PeReassemblyError,
     PeReassemblyLimits, PeReceived, PeRefused, PeStep, StreamLimit,
 };
 pub use resource::{
-    ActionError, CallError, CallId, CanSet, CcIndex, ChangeKind, ClusterKind, ColumnSource,
-    CommonState, ConfirmIcon, ConfirmType, Confirmation, CtrlControl, CtrlKind, CtrlRange,
-    CtrlValueKind, CustomResource, DefaultMapNotCc, EntryError, LinkRole, ListedTwice,
-    MAX_LIST_ENTRIES, ModeId, NotVendorName, OpaqueBody, PaginationFault, ParamPath,
+    ActionError, Arrival, CallError, CallId, CanSet, CcIndex, ChangeKind, ClusterKind,
+    ColumnSource, CommonState, ConfirmIcon, ConfirmType, Confirmation, CtrlControl, CtrlKind,
+    CtrlRange, CtrlValueKind, CustomResource, DefaultMapNotCc, EntryError, GetStateError, LinkRole,
+    ListedTwice, MAX_LIST_ENTRIES, ModeId, NotVendorName, OpaqueBody, PaginationFault, ParamPath,
     PeAllCtrlEntry, PeAllCtrlList, PeBankProgram, PeBasicChannelRx, PeBasicChannelTx,
     PeChCtrlEntry, PeChCtrlList, PeChannel, PeChannelEntry, PeChannelList, PeChannelMode,
     PeCluster, PeColumn, PeController, PeCtrl, PeCtrlMapEntry, PeCtrlMapList, PeCurrentMode,
     PeData, PeDataError, PeDataFault, PeDeviceInfo, PeExtensions, PeExternalSync, PeJsonSchema,
     PeLink, PeLocalOn, PeMidiMode, PeModeEntry, PeModeList, PeOpaque, PeProgramEntry,
     PeProgramList, PeResource, PeResourceList, PeState, PeStateEntry, PeStateList, PeText,
-    Priority, PublishError, RequestRefused, ResIdUse, ResourceAction, ResourceDefaults,
+    Priority, PublishError, RefusedAt, RequestRefused, ResIdUse, ResourceAction, ResourceDefaults,
     ResourceEntry, ResourceEvent, ResourceFailure, ResourceGet, ResourceInitiator,
     ResourceResponder, ResourceSet, ResourceStore, ResourceTarget, ResponderAction, ResponderEvent,
     ResponderSettings, RestoreError, RoleName, SavedState, SelectorAction, SetBody,
-    SignificantBits, SimpleAction, StateId, StateRev, StateSize, StepCount, StoreError, TypeHint,
-    UnixSeconds, UpdateKind, WrongDevice,
+    SignificantBits, SimpleAction, StateDevice, StateId, StateRev, StateSize, StateStamp,
+    StepCount, StoreError, TypeHint, UnixSeconds, UpdateKind, Verdict, WrongDevice,
 };
 pub use tree::{PE_JSON_MAX_DEPTH, PeDecimal, PeJson, PeJsonError, PeObject};
 pub use value::{PeExtra, PeExtraError};

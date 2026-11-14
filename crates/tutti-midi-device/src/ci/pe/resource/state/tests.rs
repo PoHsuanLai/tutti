@@ -2,11 +2,17 @@
 
 use std::num::NonZeroU32;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use tutti_ump::{DeviceIdentity, ManufacturerId, U7};
 
+use super::super::super::body::BodyLimit;
 use super::super::super::capabilities::PeCiMessage;
 use super::super::super::flow::PeMessageKind;
+use super::super::super::flow::{PeSignal, PeTerminator};
 use super::super::super::header::{PeEncoding, PeHeader, PeStatus};
+use super::super::super::initiator::PeOutcome;
 use super::super::super::limits::{MediaType, PropertyName};
 use super::super::super::tree::PeJson;
 use super::super::super::value::PeExtra;
@@ -64,6 +70,17 @@ fn store_with(states: &[(&str, PeState)]) -> ResourceStore {
         store.put_state(entry, state.clone()).unwrap();
     }
     store
+}
+
+/// Gets the state `id` the way an Initiator with no size in hand does.
+fn fetch(link: &mut Link, id: &str, limit: usize) -> CallId {
+    let entry = PeStateEntry::new(state_id(id), text(id));
+    let (call, actions) = link
+        .init
+        .get_state(&entry, BodyLimit::new(limit).unwrap(), link.now)
+        .unwrap();
+    link.run(actions, Vec::new());
+    call
 }
 
 fn page() -> NonZeroU32 {
@@ -212,8 +229,7 @@ fn a_state_is_listed_fetched_and_restored_over_many_chunks() {
     assert_eq!(buffer.size.unwrap().get(), 3000);
     assert_eq!(buffer.rev.as_ref().unwrap().as_str(), "buui890adj");
 
-    let made = link.init.get_state(&state_id("buffer"), link.now);
-    let call = link.call(made);
+    let call = fetch(&mut link, "buffer", 1 << 20);
     let Ok(PeData::State(got)) = link.got(call) else {
         panic!("{:?}", link.events);
     };
@@ -278,8 +294,7 @@ fn chunks(link: &Link, to_responder: bool, kind: PeMessageKind) -> usize {
 #[test]
 fn the_reply_header_carries_the_media_type_state_rev_and_timestamp() {
     let mut link = Link::new(store_with(&[("buffer", stored(10))]), 4096);
-    let made = link.init.get_state(&state_id("buffer"), link.now);
-    link.call(made);
+    fetch(&mut link, "buffer", 1 << 20);
     let reply = link
         .wire
         .iter()
@@ -330,12 +345,11 @@ fn a_reply_header_with_a_bad_timestamp_is_refused() {
 #[test]
 fn a_state_the_device_does_not_have_is_answered_404() {
     let mut link = Link::new(store_with(&[("buffer", stored(10))]), 256);
-    let made = link.init.get_state(&state_id("samples"), link.now);
-    let call = link.call(made);
+    let call = fetch(&mut link, "samples", 1 << 20);
     let Err(ResourceFailure::Peer(outcome)) = link.got(call) else {
         panic!("{:?}", link.events);
     };
-    let super::super::super::initiator::PeOutcome::Failed(response) = *outcome else {
+    let PeOutcome::Failed(response) = *outcome else {
         panic!("not a failure");
     };
     assert_eq!(response.status(), PeStatus::NotFound);
@@ -495,4 +509,308 @@ fn an_inquiry_for_state_without_a_res_id_is_refused_by_the_type() {
         ResourceTarget::entry(PeResource::StateList, state_id("buffer").resource_id()),
         Err(RequestRefused::ResIdUnused(_))
     ));
+}
+
+/// A device that logs what it is asked and answers as told.
+#[derive(Debug)]
+struct Device {
+    /// Each prefix length judged, and `usize::MAX` for the whole body.
+    asked: Rc<RefCell<Vec<(usize, bool)>>>,
+    /// The prefixes judged, kept for comparison.
+    seen: Rc<RefCell<Vec<u8>>>,
+    refuse_prefix_from: Option<usize>,
+    refuse_whole: bool,
+}
+
+impl Device {
+    fn new() -> (Self, Rc<RefCell<Vec<(usize, bool)>>>, Rc<RefCell<Vec<u8>>>) {
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let device = Self {
+            asked: asked.clone(),
+            seen: seen.clone(),
+            refuse_prefix_from: None,
+            refuse_whole: false,
+        };
+        (device, asked, seen)
+    }
+}
+
+impl StateDevice for Device {
+    fn judge(&mut self, _: &StateId, arrival: Arrival<'_>) -> Verdict {
+        match arrival {
+            Arrival::Prefix(prefix) => {
+                self.asked.borrow_mut().push((prefix.len(), false));
+                *self.seen.borrow_mut() = prefix.to_vec();
+                match self.refuse_prefix_from {
+                    Some(at) if prefix.len() >= at => Verdict::Refuse,
+                    _ => Verdict::Undecided,
+                }
+            }
+            Arrival::Whole(state) => {
+                self.asked
+                    .borrow_mut()
+                    .push((state.to_wire().1.len(), true));
+                if self.refuse_whole {
+                    Verdict::Refuse
+                } else {
+                    Verdict::Sound
+                }
+            }
+        }
+    }
+
+    fn stamp(&mut self, _: &StateId, _: &PeState) -> StateStamp {
+        StateStamp {
+            rev: StateRev::new("fejwiofij2w"),
+            timestamp: Some(UnixSeconds::of(1_586_786_400)),
+        }
+    }
+}
+
+fn big_link() -> Link {
+    let mut store = store_with(&[("buffer", stored(3000))]);
+    store.declare(
+        ResourceEntry::device_state()
+            .with_fc_on_get(true)
+            .unwrap()
+            .with_fc_on_set(true)
+            .unwrap(),
+    );
+    Link::new(store, 256)
+}
+
+fn restore(link: &mut Link, state: PeState) -> CallId {
+    let saved = SavedState::new(device(), state_id("buffer"), state);
+    let (call, actions) = link
+        .init
+        .restore_state(&saved, &device(), link.now)
+        .unwrap();
+    link.run(actions, Vec::new());
+    call
+}
+
+fn terminates(link: &Link, to_responder: bool) -> bool {
+    link.wire.iter().any(|(to, message)| {
+        *to == to_responder
+            && match message {
+                CiMessage::Nak { nak, .. } => PeSignal::from_nak(nak),
+                CiMessage::Ack { ack, .. } => PeSignal::from_ack(ack),
+                _ => None,
+            }
+            .is_some_and(|(_, signal)| matches!(signal, PeSignal::Terminate { .. }))
+    })
+}
+
+fn stored_state(link: &Link, id: &str) -> PeState {
+    let target = ResourceTarget::entry(PeResource::State, state_id(id).resource_id()).unwrap();
+    let Some(PeData::State(state)) = link.resp.store().get(&target) else {
+        panic!("no state");
+    };
+    state.clone()
+}
+
+fn listed(link: &Link, id: &str) -> PeStateEntry {
+    let Some(PeData::StateList(list)) = link.resp.store().get(&target(PeResource::StateList))
+    else {
+        panic!("no list");
+    };
+    list.entry(&state_id(id)).unwrap().clone()
+}
+
+// M2-111 §3.3: the reply to a Set of State carries the state's `stateRev` and
+// `timestamp`; the device gives them, and the Initiator reads them typed.
+#[test]
+fn the_set_reply_carries_the_state_rev_and_timestamp_the_device_gave() {
+    let mut link = big_link();
+    let (device, ..) = Device::new();
+    link.resp.set_state_device(Box::new(device));
+    let call = restore(&mut link, PeState::octets(bytes(500)));
+    assert_eq!(link.set_result(call), Ok(PeStatus::Ok));
+    let stamp = link
+        .events
+        .iter()
+        .find_map(|e| match e {
+            ResourceEvent::Set { stamp, .. } => Some(stamp.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let expected = StateStamp {
+        rev: StateRev::new("fejwiofij2w"),
+        timestamp: Some(UnixSeconds::of(1_586_786_400)),
+    };
+    assert_eq!(stamp, Some(expected.clone()));
+    let held = stored_state(&link, "buffer");
+    assert_eq!(
+        (held.rev().cloned(), held.timestamp()),
+        (expected.rev, expected.timestamp)
+    );
+}
+
+// M2-111 §2.3: StateList describes the states as they are, so a state a wire Set
+// changed is listed with its new size, revision and time, and its title stays.
+#[test]
+fn an_accepted_set_refreshes_the_state_list_entry() {
+    let mut link = big_link();
+    let (device, ..) = Device::new();
+    link.resp.set_state_device(Box::new(device));
+    assert_eq!(listed(&link, "buffer").size.unwrap().get(), 3000);
+    restore(&mut link, PeState::octets(bytes(500)));
+    let entry = listed(&link, "buffer");
+    assert_eq!(entry.size.unwrap().get(), 500);
+    assert_eq!(entry.rev.unwrap().as_str(), "fejwiofij2w");
+    assert_eq!(entry.timestamp.unwrap().get(), 1_586_786_400);
+    assert_eq!(entry.title.as_str(), "buffer");
+}
+
+// M2-111 §2.3: with no device to stamp, the old revision no longer names the
+// content, so the entry drops it; a state the list lacked is listed.
+#[test]
+fn a_set_without_a_device_clears_the_stale_revision_and_lists_a_new_state() {
+    let mut link = big_link();
+    restore(&mut link, PeState::octets(bytes(70)));
+    let entry = listed(&link, "buffer");
+    assert_eq!((entry.size.unwrap().get(), entry.rev), (70, None));
+    let saved = SavedState::new(device(), state_id("fresh"), PeState::octets(bytes(9)));
+    let (_, actions) = link
+        .init
+        .restore_state(&saved, &device(), link.now)
+        .unwrap();
+    link.run(actions, Vec::new());
+    assert_eq!(listed(&link, "fresh").size.unwrap().get(), 9);
+}
+
+// M2-111 §3.3: a Responder that finds the body wrong while it comes sends Terminate
+// Inquiry; the Initiator's Set ends terminated, the body sent stops short, and the
+// state it held stays.
+#[test]
+fn a_refused_body_is_ended_midway_with_terminate_inquiry() {
+    let mut link = big_link();
+    let (mut device, asked, _) = Device::new();
+    device.refuse_prefix_from = Some(40);
+    link.resp.set_state_device(Box::new(device));
+    let before = stored_state(&link, "buffer");
+    let sent = chunks(&link, true, PeMessageKind::SET_INQUIRY);
+    let call = restore(&mut link, PeState::octets(bytes(3000)));
+    let Err(ResourceFailure::Peer(outcome)) = link.set_result(call) else {
+        panic!("{:?}", link.events);
+    };
+    assert_eq!(*outcome, PeOutcome::Terminated(PeTerminator::Responder));
+    assert!(terminates(&link, false));
+    let used = chunks(&link, true, PeMessageKind::SET_INQUIRY) - sent;
+    assert!(used < 5, "{used} chunks of the body were sent");
+    assert!(asked.borrow().iter().all(|(_, whole)| !whole));
+    assert_eq!(stored_state(&link, "buffer"), before);
+    assert!(matches!(
+        link.served.last(),
+        Some(ResponderEvent::StateRefused {
+            at: RefusedAt::Midway,
+            ..
+        })
+    ));
+}
+
+// M2-111 §3.3: the device judges what has come as it comes: each prefix is the start
+// of the body, decoded, and longer than the last, and the whole body is judged once.
+#[test]
+fn the_device_is_asked_after_each_chunk_with_the_decoded_start_of_the_body() {
+    let mut link = big_link();
+    let (device, asked, seen) = Device::new();
+    link.resp.set_state_device(Box::new(device));
+    let body = bytes(3000);
+    let call = restore(&mut link, PeState::octets(body.clone()));
+    assert_eq!(link.set_result(call), Ok(PeStatus::Ok));
+    let asked = asked.borrow();
+    let (whole, prefixes): (Vec<&(usize, bool)>, Vec<&(usize, bool)>) =
+        asked.iter().partition(|(_, w)| *w);
+    assert_eq!(whole, [&(3000, true)]);
+    assert!(prefixes.len() > 10);
+    assert!(prefixes.windows(2).all(|w| w[0].0 < w[1].0));
+    let last = seen.borrow();
+    assert_eq!(&body[..last.len()], &last[..]);
+}
+
+// M2-111 §3.3: a body that is only found wrong with all of it in is answered 400, and
+// the state the device held stays.
+#[test]
+fn a_body_refused_at_the_end_is_answered_400() {
+    let mut link = big_link();
+    let (mut device, ..) = Device::new();
+    device.refuse_whole = true;
+    link.resp.set_state_device(Box::new(device));
+    let before = stored_state(&link, "buffer");
+    let call = restore(&mut link, PeState::octets(bytes(400)));
+    let Err(ResourceFailure::Peer(outcome)) = link.set_result(call) else {
+        panic!("{:?}", link.events);
+    };
+    let PeOutcome::Failed(response) = *outcome else {
+        panic!("not a failure");
+    };
+    assert_eq!(response.status(), PeStatus::BadRequest);
+    assert_eq!(stored_state(&link, "buffer"), before);
+    assert!(matches!(
+        link.served.last(),
+        Some(ResponderEvent::StateRefused {
+            at: RefusedAt::End,
+            ..
+        })
+    ));
+}
+
+// M2-111 §3.2: a State with no declared size that grows past the Initiator's limit is
+// ended with Terminate Inquiry, and the call says it was too large.
+#[test]
+fn a_state_that_outgrows_the_limit_is_ended_with_terminate_inquiry() {
+    let mut link = big_link();
+    let whole = {
+        let mut other = big_link();
+        let call = fetch(&mut other, "buffer", 1 << 20);
+        assert!(other.got(call).is_ok());
+        chunks(&other, false, PeMessageKind::GET_REPLY)
+    };
+    let call = fetch(&mut link, "buffer", 1000);
+    let Err(ResourceFailure::Peer(outcome)) = link.got(call) else {
+        panic!("{:?}", link.events);
+    };
+    assert_eq!(*outcome, PeOutcome::TooLarge(BodyLimit::new(1000).unwrap()));
+    assert!(terminates(&link, true));
+    let got = chunks(&link, false, PeMessageKind::GET_REPLY);
+    assert!(got < whole / 2, "{got} of {whole} chunks came");
+}
+
+// M2-111 §3.2: a body that fits the limit is not cut.
+#[test]
+fn a_state_within_the_limit_is_fetched_whole() {
+    let mut link = big_link();
+    let call = fetch(&mut link, "buffer", 3000);
+    assert!(matches!(link.got(call), Ok(PeData::State(_))));
+    assert!(!terminates(&link, true));
+}
+
+// M2-111 §2.3, §3.2: a StateList size past the caller's limit refuses the Get before
+// anything is sent.
+#[test]
+fn a_listed_size_past_the_limit_refuses_the_get_before_it_is_sent() {
+    let mut link = big_link();
+    let mut entry = PeStateEntry::new(state_id("buffer"), text("Buffer"));
+    entry.size = StateSize::new(5000);
+    let sent = link.wire.len();
+    let error = link
+        .init
+        .get_state(&entry, BodyLimit::new(1000).unwrap(), link.now)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        GetStateError::TooLarge {
+            size: StateSize::of(5000),
+            limit: BodyLimit::new(1000).unwrap(),
+        }
+    );
+    assert_eq!(link.wire.len(), sent);
+    entry.size = StateSize::new(1000);
+    assert!(
+        link.init
+            .get_state(&entry, BodyLimit::new(1000).unwrap(), link.now)
+            .is_ok()
+    );
 }

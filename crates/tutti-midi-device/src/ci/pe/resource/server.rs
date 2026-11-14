@@ -23,6 +23,7 @@ use super::data::PeData;
 use super::fields::PeDataError;
 use super::kind::{CanSet, PeResource};
 use super::request::ResourceTarget;
+use super::state::{Arrival, PeState, RefusedAt, StateDevice, StateId, Verdict};
 use super::store::{ResourceStore, StoreError};
 use crate::{CiHeader, CiMessage, Decoded, Destination, MaxSysexSize, Muid, TimeoutWait};
 
@@ -85,6 +86,15 @@ pub enum ResponderEvent {
         subscribe_id: SubscribeId,
         /// Which device ended it.
         by: PeEndedBy,
+    },
+    /// The device refused the body of a state an Initiator was setting.
+    StateRefused {
+        /// The Initiator.
+        peer: Muid,
+        /// The state.
+        state_id: StateId,
+        /// Whether the transfer was ended or the whole body answered.
+        at: RefusedAt,
     },
     /// An inquiry for a Resource marked busy is held, and the Initiator was asked to
     /// wait (M2-103 §12.2.1). It is answered when the Resource is ready.
@@ -245,6 +255,7 @@ pub struct ResourceResponder {
     own: Muid,
     settings: ResponderSettings,
     store: ResourceStore,
+    device: Option<Box<dyn StateDevice>>,
     peers: Vec<Peer>,
     reassembler: PeReassembler,
     subs: Vec<Served>,
@@ -296,6 +307,7 @@ impl ResourceResponder {
             own,
             settings,
             store,
+            device: None,
             peers: Vec::new(),
             reassembler: PeReassembler::new(settings.reassembly),
             subs: Vec::new(),
@@ -307,6 +319,13 @@ impl ResourceResponder {
             next_sub: 1,
             next_request: 0,
         }
+    }
+
+    /// Gives the device a say over the states Initiators set: it judges each body
+    /// as it comes and gives an accepted state its revision and time (M2-111
+    /// §3.3). Without one every state is accepted with no stamp.
+    pub fn set_state_device(&mut self, device: Box<dyn StateDevice>) {
+        self.device = Some(device);
     }
 
     /// The Resources served.
@@ -608,11 +627,17 @@ impl ResourceResponder {
         if !inquiry.contains(&kind) {
             return;
         }
+        let request_id = chunk.request_id();
         match self
             .reassembler
             .push(peer, kind, chunk, PeFlowControl::Off, now)
         {
             Ok(PeStep::Pending { send }) => {
+                if kind == PeMessageKind::SET_INQUIRY
+                    && self.state_refused_midway(peer, request_id, out)
+                {
+                    return;
+                }
                 out.extend(send.map(|s| self.signal(peer, kind, s)));
             }
             Ok(PeStep::Complete { message, send }) => {
@@ -622,6 +647,66 @@ impl ResourceResponder {
             Ok(PeStep::Abandoned) => {}
             Err(refused) => out.extend(refused.send.map(|s| self.signal(peer, kind, s))),
         }
+    }
+
+    /// Asks the device about the body so far of a State being set, and ends the
+    /// transfer with Terminate Inquiry when it refuses (M2-111 §3.3). Returns
+    /// whether it did.
+    fn state_refused_midway(
+        &mut self,
+        peer: Muid,
+        request_id: PeRequestId,
+        out: &mut Vec<ResponderAction>,
+    ) -> bool {
+        let Some(device) = self.device.as_mut() else {
+            return false;
+        };
+        let Some(held) = self
+            .reassembler
+            .held(peer, PeMessageKind::SET_INQUIRY, request_id)
+        else {
+            return false;
+        };
+        let PeHeader::Request(request) = held.header else {
+            return false;
+        };
+        if PeResource::from_name(&request.resource) != PeResource::State {
+            return false;
+        }
+        let Some(id) = request
+            .res_id
+            .as_ref()
+            .and_then(|r| StateId::new(r.as_str()))
+        else {
+            return false;
+        };
+        let prefix = match request.mutual_encoding.unwrap_or(PeEncoding::Ascii) {
+            PeEncoding::Ascii => Some(held.data.to_vec()),
+            // Whole groups of 8 bytes decode; the rest waits for its chunk.
+            PeEncoding::Mcoded7 => {
+                crate::ci::pe::mcoded7::decode_vec(&held.data[..held.data.len() / 8 * 8]).ok()
+            }
+            PeEncoding::ZlibMcoded7 => None,
+        };
+        let Some(prefix) = prefix else {
+            return false;
+        };
+        if device.judge(&id, Arrival::Prefix(&prefix)) != Verdict::Refuse {
+            return false;
+        }
+        self.reassembler
+            .terminate(peer, PeMessageKind::SET_INQUIRY, request_id);
+        let terminate = PeSignal::Terminate {
+            request_id,
+            by: PeTerminator::Responder,
+        };
+        out.push(self.signal(peer, PeMessageKind::SET_INQUIRY, terminate));
+        out.push(ResponderAction::Event(ResponderEvent::StateRefused {
+            peer,
+            state_id: id,
+            at: RefusedAt::Midway,
+        }));
+        true
     }
 
     fn signal(&self, peer: Muid, kind: PeMessageKind, signal: PeSignal) -> ResponderAction {
@@ -922,6 +1007,15 @@ impl ResourceResponder {
                 (data, Announce::Partial(update), ChangeKind::Partial)
             }
         };
+        let mut reply = PeReply::new(PeStatus::Ok);
+        let data = match data {
+            PeData::State(state) => {
+                let state = self.accept_state(peer, &target, state, out)?;
+                state.write_header(&mut reply.extra);
+                PeData::State(state)
+            }
+            other => other,
+        };
         self.store
             .put(target.res_id().cloned(), data)
             .map_err(|e| refusal(PeStatus::InternalError, e.to_string()))?;
@@ -931,7 +1025,42 @@ impl ResourceResponder {
             how,
         }));
         self.announce(&target, announce, now, out);
-        Ok(Answer::Reply(PeReply::new(PeStatus::Ok), Vec::new()))
+        Ok(Answer::Reply(reply, Vec::new()))
+    }
+
+    /// A State set whole: the device judges the body, gives it its stamp, and the
+    /// StateList lists it as it is now (M2-111 §3.3).
+    fn accept_state(
+        &mut self,
+        peer: Muid,
+        target: &ResourceTarget,
+        state: PeState,
+        out: &mut Vec<ResponderAction>,
+    ) -> Result<PeState, Refusal> {
+        let id = target
+            .res_id()
+            .and_then(|r| StateId::new(r.as_str()))
+            .ok_or_else(|| refusal(PeStatus::BadRequest, "State needs a resId"))?;
+        let mut state = state;
+        if let Some(device) = self.device.as_mut() {
+            if device.judge(&id, Arrival::Whole(&state)) == Verdict::Refuse {
+                out.push(ResponderAction::Event(ResponderEvent::StateRefused {
+                    peer,
+                    state_id: id,
+                    at: RefusedAt::End,
+                }));
+                return Err(refusal(
+                    PeStatus::BadRequest,
+                    "the device refused the state",
+                ));
+            }
+            let stamp = device.stamp(&id, &state);
+            state = state.stamped_with(stamp);
+        }
+        self.store
+            .note_state(&id, &state)
+            .map_err(|e| refusal(PeStatus::InternalError, e.to_string()))?;
+        Ok(state)
     }
 
     /// The data of `target` with `update` made.

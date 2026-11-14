@@ -31,9 +31,6 @@ pub(crate) struct Voices {
     polyphony: usize,
     active: Vec<Slot>,
     free: Vec<Voice>,
-    /// Voices not started because their sample states no rate (SF2 sample
-    /// header rate 0), counted here and read through `unrated_starts`.
-    unrated: u64,
 }
 
 impl Clone for Voices {
@@ -45,7 +42,6 @@ impl Clone for Voices {
             polyphony: self.polyphony,
             active: Vec::with_capacity(self.polyphony),
             free: Vec::with_capacity(self.polyphony),
-            unrated: self.unrated,
         };
         copy.active.extend(self.active.iter().cloned());
         copy.free.extend(self.free.iter().cloned());
@@ -54,16 +50,10 @@ impl Clone for Voices {
 }
 
 impl Voices {
-    /// How many voices were not started for want of a sample rate.
-    pub(crate) fn unrated(&self) -> u64 {
-        self.unrated
-    }
-
     pub(crate) fn new(render: &Render, polyphony: usize) -> Self {
         Self {
             polyphony,
             active: Vec::with_capacity(polyphony),
-            unrated: 0,
             free: {
                 let mut free = Vec::with_capacity(polyphony);
                 free.extend((0..polyphony).map(|_| Voice::new(render)));
@@ -101,14 +91,6 @@ impl Voices {
                     let preset_zone = &font.presets()[spec.scope as usize].regions()[p];
                     let instrument_zone =
                         &font.instruments()[preset_zone.instrument_id()].regions()[i];
-                    // A sample whose header states no rate cannot be played at
-                    // any pitch: the voice is not started (a stolen one stays
-                    // silenced) and the skip is counted.
-                    if instrument_zone.sample_rate().is_none() {
-                        self.unrated += 1;
-                        self.free.push(voice);
-                        continue;
-                    }
                     voice.start(
                         &RegionPair::new(preset_zone, instrument_zone),
                         i32::from(channel.get()),

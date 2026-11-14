@@ -1022,31 +1022,38 @@ fn a_reset_per_note_pitch_is_forgotten_by_the_next_note() {
     );
 }
 
-/// A sample whose header states no rate (0) starts no voice: nothing sounds,
-/// and the skip is counted, rather than the sample playing at a made-up rate.
+/// SF2 2.04 section 7.10: a header rate of 0 is illegal and the nearest
+/// practical rate, 400 Hz, is used in its place. The fixture's sine is 441 Hz
+/// when read at 44 100 Hz, so read at 400 Hz it is 441 * 400 / 44 100 = 4 Hz
+/// at its root key: eight zero crossings in one second, where the same sample
+/// stating 44 100 Hz crosses 882 times. A rate it states above 0 is kept.
+/// Spec: sf2.pdta.shdr.rate.zero
 #[test]
-fn a_sample_with_no_rate_is_skipped_and_counted() {
+fn a_sample_stating_rate_zero_plays_at_the_nearest_practical_rate() {
     use tutti_fixtures::sf2::SampleSpec;
     let zone = vec![(generator::SAMPLE_MODES, 1), (generator::SAMPLE_ID, 0)];
-    let sample = |rate| SampleSpec {
-        sample_type: 1,
-        link: 0,
-        gain: 1.0,
-        rate,
+    let crossings = |rate| {
+        let sample = SampleSpec {
+            sample_type: 1,
+            link: 0,
+            gain: 1.0,
+            rate,
+        };
+        let mut rig = Rig::dry(&support::font::one_preset_with_samples(
+            vec![zone.clone()],
+            &[sample],
+        ));
+        rig.note_on(0, 69, 100);
+        rig.energy(4096);
+        let (left, _) = rig.render(44_100);
+        left.windows(2).filter(|w| w[0] * w[1] < 0.0).count()
     };
-    let mut rig = Rig::dry(&support::font::one_preset_with_samples(
-        vec![zone.clone()],
-        &[sample(0)],
-    ));
-    rig.note_on(0, 69, 100);
-    assert!(rig.energy(4096) < 1e-6, "an unrated sample sounds");
-    assert_eq!(rig.hand.unrated_starts(), 1);
-
-    let mut rig = Rig::dry(&support::font::one_preset_with_samples(
-        vec![zone],
-        &[sample(44_100)],
-    ));
-    rig.note_on(0, 69, 100);
-    assert!(rig.energy(4096) > 1.0, "a rated sample sounds");
-    assert_eq!(rig.hand.unrated_starts(), 0);
+    assert!(
+        (7..=9).contains(&crossings(0)),
+        "a rate of 0 plays at 400 Hz"
+    );
+    assert!(
+        (860..=900).contains(&crossings(44_100)),
+        "a stated rate is kept"
+    );
 }

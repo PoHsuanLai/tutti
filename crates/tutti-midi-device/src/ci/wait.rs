@@ -61,10 +61,10 @@ impl TimeoutWait {
         }
     }
 
-    /// Pushes `deadline` out to `now` plus this wait when that is later than it
-    /// already is.
-    pub(crate) fn extend(self, deadline: &mut Instant, now: Instant) {
-        *deadline = (*deadline).max(now + self.duration());
+    /// Adds this wait to the time a transaction has left (M2-103 §12.2.1): a
+    /// deadline not yet passed ends at least the wait after the ACK.
+    pub(crate) fn extend(self, deadline: &mut Instant) {
+        *deadline += self.duration();
     }
 }
 

@@ -4,6 +4,7 @@
 
 use crate::render::Render;
 use tutti_sf2::{LoopMode, Pcm24, SamplePool};
+use tutti_types::SampleRate;
 
 // In this class, fixed-point numbers are used for speed-up.
 // A fixed-point number is expressed by Int64, whose lower 24 bits represent the fraction part,
@@ -41,7 +42,6 @@ pub(crate) struct Oscillator {
     synthesizer_sample_rate: i32,
 
     loop_mode: LoopMode,
-    sample_sample_rate: i32,
     start: i32,
     end: i32,
     start_loop: i32,
@@ -65,7 +65,6 @@ impl Oscillator {
         Self {
             synthesizer_sample_rate: settings.hz(),
             loop_mode: LoopMode::NoLoop,
-            sample_sample_rate: 0,
             start: 0,
             end: 0,
             start_loop: 0,
@@ -82,7 +81,7 @@ impl Oscillator {
     pub(crate) fn start(
         &mut self,
         loop_mode: LoopMode,
-        sample_rate: i32,
+        sample_rate: SampleRate,
         start: i32,
         end: i32,
         start_loop: i32,
@@ -93,7 +92,6 @@ impl Oscillator {
         scale_tuning: i32,
     ) {
         self.loop_mode = loop_mode;
-        self.sample_sample_rate = sample_rate;
         self.start = start;
         self.end = end;
         self.start_loop = start_loop;
@@ -102,7 +100,8 @@ impl Oscillator {
 
         self.tune = coarse_tune as f32 + 0.01_f32 * fine_tune as f32;
         self.pitch_change_scale = 0.01_f32 * scale_tuning as f32;
-        self.sample_rate_ratio = sample_rate as f32 / self.synthesizer_sample_rate as f32;
+        // Both rates are whole hertz: a header states its rate as a `u32`.
+        self.sample_rate_ratio = sample_rate.get() as f32 / self.synthesizer_sample_rate as f32;
         self.looping = self.loop_mode != LoopMode::NoLoop;
         self.position_fp = (start as i64) << Oscillator::FRAC_BITS;
     }
@@ -201,7 +200,6 @@ mod tests {
     use std::io::Cursor;
     use tutti_fixtures::sf2::{Inst, Preset, bytes, with_pool};
     use tutti_sf2::SoundFont;
-    use tutti_types::SampleRate;
 
     /// A font of 2100 points: `smpl` words that walk the 16-bit range and
     /// `sm24` bytes that walk the byte range.
@@ -243,18 +241,7 @@ mod tests {
     fn read(pool: SamplePool<'_>, count: usize) -> Vec<f32> {
         let rate = SampleRate::SR_44K1;
         let mut oscillator = Oscillator::new(&Render::new(rate));
-        oscillator.start(
-            LoopMode::NoLoop,
-            rate.get() as i32,
-            0,
-            2000,
-            0,
-            0,
-            60,
-            0,
-            0,
-            100,
-        );
+        oscillator.start(LoopMode::NoLoop, rate, 0, 2000, 0, 0, 60, 0, 0, 100);
         let mut block = vec![0_f32; count];
         assert!(oscillator.process(pool, &mut block, 60.0));
         block

@@ -187,6 +187,16 @@ impl AudioBridge {
         }
     }
 
+    /// Tells the listener of a transport request made in the editor instance
+    /// the host holds (it is not the server's to report), on the calling
+    /// thread, as it tells one the server sent.
+    pub(super) fn report_transport(&self, request: tutti_plugin_types::TransportRequest) {
+        let listener = self.listener.lock().clone();
+        if let Some(listener) = listener {
+            listener(BridgeEvent::Transport { request });
+        }
+    }
+
     /// Whether the server died or the bridge lost it. Latched.
     pub fn is_crashed(&self) -> bool {
         self.lifecycle.is_crashed()

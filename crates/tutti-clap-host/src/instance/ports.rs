@@ -168,41 +168,6 @@ impl ClapLoaded {
         })
     }
 
-    /// Whether the plugin takes `set_audio_port_active` while it is
-    /// processing (`audio-ports-activation.can_activate_while_processing`);
-    /// `false` for a plugin without the extension.
-    #[must_use]
-    pub fn can_activate_audio_port_while_processing(&self, main: &MainThread) -> bool {
-        self.plugin.can_activate_audio_port_while_processing(main)
-    }
-
-    /// Switches one audio port on or off (`audio-ports-activation.set_active`),
-    /// and returns whether the plugin took it. Ports start active, and a
-    /// configuration select or a port-list rescan makes them active again.
-    ///
-    /// An active plugin is told the sample size its buffers have (32 or 64
-    /// bits); an inactive one is told none. A plugin that is processing and
-    /// cannot activate ports then is not called, and the answer is `false`.
-    /// Buffers for an inactive port are still passed and are silent
-    /// (`constant_mask` set): this call decides what the plugin computes, not
-    /// what it is handed.
-    pub fn set_audio_port_active(
-        &mut self,
-        main: &MainThread,
-        is_input: bool,
-        port_index: u32,
-        active: bool,
-    ) -> bool {
-        let sample_size = match (self.flags.active, self.audio.f64_active) {
-            (false, _) => 0,
-            (true, false) => 32,
-            (true, true) => 64,
-        };
-        self.plugin
-            .set_audio_port_active(main, is_input, port_index, active, sample_size)
-            .unwrap_or(false)
-    }
-
     /// Asks the plugin to switch to a previously reported port configuration.
     /// Returns whether the plugin accepted the request.
     pub fn select_audio_port_config(&mut self, main: &MainThread, config_id: u32) -> bool {

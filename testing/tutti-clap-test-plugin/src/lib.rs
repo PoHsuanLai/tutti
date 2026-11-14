@@ -129,17 +129,16 @@ pub mod holes;
 
 pub use holes::HOLE_NONE;
 
-/// HOST-EXTENSION probe: `clap.audio-ports-activation`, `clap.track-info` and
-/// `clap.transport-control`, from the plugin's side. Separate module for the
+/// HOST-EXTENSION probe: `clap.track-info` and `clap.transport-control`, from
+/// the plugin's side. Separate module for the
 /// same reason as the others: its own capture channel and commands.
 pub mod host_ext;
 
 pub use host_ext::{
-    CapturedActivation, CapturedTrack, HOSTEXT_CMD_CONTINUE, HOSTEXT_CMD_ENABLE_LOOP,
-    HOSTEXT_CMD_JUMP, HOSTEXT_CMD_LOOP_REGION, HOSTEXT_CMD_PAUSE, HOSTEXT_CMD_RECORD,
-    HOSTEXT_CMD_START, HOSTEXT_CMD_START_BURST, HOSTEXT_CMD_STOP, HOSTEXT_CMD_TOGGLE_LOOP,
-    HOSTEXT_CMD_TOGGLE_PLAY, HOSTEXT_CMD_TOGGLE_RECORD, HOSTEXT_CMD_TRACK_GET, HostExtCapture,
-    MAX_CAPTURED_ACTIVATIONS,
+    CapturedTrack, HOSTEXT_CMD_CONTINUE, HOSTEXT_CMD_ENABLE_LOOP, HOSTEXT_CMD_JUMP,
+    HOSTEXT_CMD_LOOP_REGION, HOSTEXT_CMD_PAUSE, HOSTEXT_CMD_RECORD, HOSTEXT_CMD_START,
+    HOSTEXT_CMD_START_BURST, HOSTEXT_CMD_STOP, HOSTEXT_CMD_TOGGLE_LOOP, HOSTEXT_CMD_TOGGLE_PLAY,
+    HOSTEXT_CMD_TOGGLE_RECORD, HOSTEXT_CMD_TRACK_GET, HostExtCapture,
 };
 
 /// THREAD-POOL probe: `clap.thread-pool`, advertised only while a test asks
@@ -644,7 +643,7 @@ unsafe extern "C" fn plugin_get_extension(
     if !gui_ext.is_null() {
         return gui_ext;
     }
-    // HOST EXTENSIONS (`clap.audio-ports-activation`, `clap.track-info`) —
+    // HOST EXTENSION (`clap.track-info`) —
     // see `host_ext.rs`.
     let host_ext_ext = host_ext::get_extension(id);
     if !host_ext_ext.is_null() {

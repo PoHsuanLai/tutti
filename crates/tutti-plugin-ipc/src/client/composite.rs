@@ -667,6 +667,13 @@ impl PluginBridge {
             }
             // Forward GUI-originated parameter changes to the audio bridge.
             self.forward_edits(gui.poll_edits(main));
+            // What the editor's own buttons asked of the transport goes where
+            // the server's requests go.
+            let mut transport = Vec::new();
+            gui.take_transport_requests(main, &mut transport);
+            for request in transport {
+                self.audio.report_transport(request);
+            }
             // The plugin said its state changed: give the audio instance the
             // editor's state now rather than at close.
             if gui.take_dirty(main) {

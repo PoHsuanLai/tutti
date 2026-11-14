@@ -8,20 +8,6 @@
 
 use tutti_types::ChannelLayout;
 
-/// An 8-bit-per-channel colour with opacity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TrackColor {
-    /// Red.
-    pub red: u8,
-    /// Green.
-    pub green: u8,
-    /// Blue.
-    pub blue: u8,
-    /// Opacity; 255 is opaque.
-    pub alpha: u8,
-}
-
 /// What kind of track a plugin sits on.
 ///
 /// Exhaustive: the four kinds a mixer has.
@@ -47,8 +33,8 @@ pub enum TrackKind {
 pub struct TrackInfo {
     /// The track's name.
     pub name: Option<String>,
-    /// The track's colour.
-    pub color: Option<TrackColor>,
+    /// The track's colour, with its opacity.
+    pub color: Option<rgb::RGBA8>,
     /// The width of the track's audio, mono and stereo being named.
     pub audio: Option<ChannelLayout>,
     /// The kind of track.

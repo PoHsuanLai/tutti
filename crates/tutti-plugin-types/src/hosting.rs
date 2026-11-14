@@ -16,8 +16,8 @@ use std::time::Instant;
 
 use crate::{
     AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, KeyEvent, KeyUse,
-    Loaded, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Wakeups,
-    WindowHandle,
+    Loaded, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready,
+    TransportRequest, Wakeups, WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -342,6 +342,15 @@ pub trait Editor: EditorWindow + Send {
     fn take_dirty(&mut self, main: &MainThread) -> bool {
         let _ = main;
         false
+    }
+
+    /// What the plugin asked the host's transport to do through the editor
+    /// instance since the last call, oldest first, appended to `out` (CLAP
+    /// `transport-control`: a plugin's own buttons call the host of the
+    /// instance that shows them). A format without the extension keeps the
+    /// default and appends nothing.
+    fn take_transport_requests(&mut self, main: &MainThread, out: &mut Vec<TransportRequest>) {
+        let _ = (main, out);
     }
 
     /// Shows the host's automation mode in the editor. No-op for a format

@@ -10,7 +10,7 @@ use std::path::Path;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
     EditorWindow, InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
-    PluginResult, Request, RescanScope, WindowHandle,
+    PluginResult, Request, RescanScope, TransportRequest, WindowHandle,
 };
 
 use super::ClapLoaded;
@@ -50,6 +50,9 @@ pub struct ClapEditor {
     /// FFI call per parameter to find one id — acceptable once at load, not on
     /// every knob movement.
     param_ranges: Vec<ParamBounds>,
+    /// What the plugin asked of the transport since the last
+    /// [`take_transport_requests`](Editor::take_transport_requests).
+    transport: Vec<TransportRequest>,
 }
 
 impl ClapEditor {
@@ -65,6 +68,7 @@ impl ClapEditor {
         Ok(Self {
             inner,
             param_ranges,
+            transport: Vec::new(),
         })
     }
 
@@ -155,6 +159,10 @@ impl Editor for ClapEditor {
         Control::set_automation_state(&mut self.inner, main, mode);
     }
 
+    fn take_transport_requests(&mut self, _main: &MainThread, out: &mut Vec<TransportRequest>) {
+        out.append(&mut self.transport);
+    }
+
     fn take_dirty(&mut self, _main: &MainThread) -> bool {
         // `state.mark_dirty` from the editor instance: the user changed
         // something the plugin saves.
@@ -226,6 +234,9 @@ impl EditorWindow for ClapEditor {
                 Request::Fd(id) => self.inner.service_fd(main, id),
                 // A rescan that re-described the parameters re-reads their bounds.
                 Request::RescanParams(RescanScope::Info | RescanScope::All) => reread = true,
+                // The plugin's own buttons ask the host of the instance that
+                // shows them; the host of the session answers.
+                Request::Transport(asked) => self.transport.push(asked),
                 // Nothing else is this instance's to serve: it never activates,
                 // so a restart or a latency change has nothing to restart.
                 _ => {}

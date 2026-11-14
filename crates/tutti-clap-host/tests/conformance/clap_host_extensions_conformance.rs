@@ -1,9 +1,7 @@
 //! Host-conformance harness for the extensions a host offers a plugin or tells
-//! it about: **audio-ports-activation**, **track-info** and
-//! **transport-control**, driven by a real plugin across the real CLAP FFI.
+//! it about: **track-info** and **transport-control**, driven by a real plugin across the real CLAP FFI.
 //!
-//! The reference plugin records what the host handed it (which thread, which
-//! sample size, what `track-info.get` answered) and issues the transport
+//! The reference plugin records what the host handed it (what `track-info.get` answered) and issues the transport
 //! requests on command. The expected figures are here, not in the plugin. Its
 //! capture and command words are process-globals, so every test holds
 //! [`PROBE_LOCK`] for its whole scenario.
@@ -20,11 +18,9 @@ use tutti_clap_test_plugin::{
     HOSTEXT_CMD_CONTINUE, HOSTEXT_CMD_ENABLE_LOOP, HOSTEXT_CMD_JUMP, HOSTEXT_CMD_LOOP_REGION,
     HOSTEXT_CMD_PAUSE, HOSTEXT_CMD_RECORD, HOSTEXT_CMD_START, HOSTEXT_CMD_START_BURST,
     HOSTEXT_CMD_STOP, HOSTEXT_CMD_TOGGLE_LOOP, HOSTEXT_CMD_TOGGLE_PLAY, HOSTEXT_CMD_TOGGLE_RECORD,
-    HOSTEXT_CMD_TRACK_GET, HostExtCapture, PORTS_64BIT_INPUTS, PORTS_64BIT_OUTPUTS,
+    HOSTEXT_CMD_TRACK_GET, HostExtCapture,
 };
-use tutti_plugin_types::{
-    ChannelLayout, Control, Request, TrackColor, TrackInfo, TrackKind, TransportRequest,
-};
+use tutti_plugin_types::{ChannelLayout, Control, Request, TrackInfo, TrackKind, TransportRequest};
 use tutti_types::{Beat, BeatDuration};
 
 /// `clap_beattime` is 2^31 units to the beat (`fixedpoint.h`); pinned here so a
@@ -86,13 +82,6 @@ impl Probe {
         inst.on_main_thread(&main_thread());
     }
 
-    fn set_can_activate_while_processing(&self, can: bool) {
-        call::<unsafe extern "C" fn(bool)>(
-            b"tutti_test_plugin_hostext_set_can_activate_while_processing\0",
-            |f| unsafe { f(can) },
-        );
-    }
-
     fn process_command(&self, cmd: u32) {
         call::<unsafe extern "C" fn(u32, i64, i64)>(
             b"tutti_test_plugin_hostext_process_command\0",
@@ -125,153 +114,13 @@ fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
 }
 
 // ---------------------------------------------------------------------------
-// audio-ports-activation
-// ---------------------------------------------------------------------------
-
-/// A port switched on an inactive plugin reaches it on the main thread with
-/// the port, the direction and the state, and no sample size: nothing is
-/// processing yet, so none is promised.
-/// Spec: clap.ext.audio_ports_activation.set_active
-#[test]
-fn an_inactive_plugin_is_told_the_port_on_the_main_thread_with_no_sample_size() {
-    let probe = Probe::acquire();
-    let mut inst = probe.load();
-
-    assert!(inst.set_audio_port_active(&main_thread(), true, 0, false));
-
-    let cap = probe.capture();
-    assert_eq!(cap.activation_calls, 1);
-    let call = cap.activations[0];
-    assert!(call.is_input && !call.is_active);
-    assert_eq!(call.port_index, 0);
-    assert_eq!(call.sample_size, 0, "no sample size while inactive");
-    assert!(
-        call.on_main_thread && !call.on_audio_thread,
-        "`[active ? audio-thread : main-thread]`: inactive is the main thread"
-    );
-}
-
-/// An active plugin is told from the audio-thread role, and the sample size is
-/// the one its buffers have.
-/// Spec: clap.ext.audio_ports_activation.set_active
-#[test]
-fn an_active_plugin_is_told_from_the_audio_thread_with_its_buffer_width() {
-    let probe = Probe::acquire();
-    let mut inst = probe.activate();
-
-    assert!(
-        inst.loaded_mut()
-            .set_audio_port_active(&main_thread(), false, 0, false)
-    );
-
-    let call = probe.capture().activations[0];
-    assert!(!call.is_input && !call.is_active);
-    assert_eq!(call.sample_size, 32, "an f32 activation names 32 bits");
-    assert!(
-        call.on_audio_thread && !call.on_main_thread,
-        "an active plugin's `set_active` is an audio-thread call"
-    );
-}
-
-/// An f64 activation names 64 bits.
-/// Spec: clap.ext.audio_ports_activation.set_active
-#[test]
-fn an_f64_activation_names_64_bit_buffers() {
-    let probe = Probe::acquire();
-    call::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_ports_64bit\0", |f| unsafe {
-        f(PORTS_64BIT_INPUTS | PORTS_64BIT_OUTPUTS);
-    });
-    let mut inst = probe
-        .load()
-        .activate_at::<f64>(48_000.0, 512)
-        .map_err(|(_, e)| e)
-        .expect("the reference plugin takes 64-bit audio");
-
-    assert!(
-        inst.loaded_mut()
-            .set_audio_port_active(&main_thread(), true, 0, true)
-    );
-
-    assert_eq!(probe.capture().activations[0].sample_size, 64);
-}
-
-/// The plugin's refusal of a port it does not have reaches the caller.
-/// Spec: clap.ext.audio_ports_activation.set_active
-#[test]
-fn a_port_the_plugin_does_not_have_is_refused() {
-    let probe = Probe::acquire();
-    let mut inst = probe.load();
-
-    assert!(!inst.set_audio_port_active(&main_thread(), true, 99, false));
-
-    assert_eq!(probe.capture().activation_calls, 1, "the plugin was asked");
-}
-
-/// What the plugin answers to `can_activate_while_processing` is what the host
-/// reports.
-/// Spec: clap.ext.audio_ports_activation.can_activate_while_processing
-#[test]
-fn the_host_reports_whether_the_plugin_can_activate_a_port_while_processing() {
-    let probe = Probe::acquire();
-    let inst = probe.load();
-    assert!(!inst.can_activate_audio_port_while_processing(&main_thread()));
-
-    probe.set_can_activate_while_processing(true);
-    assert!(inst.can_activate_audio_port_while_processing(&main_thread()));
-}
-
-/// A processing plugin that cannot activate a port while processing is not
-/// called: the spec allows the change only while it is deactivated.
-/// Spec: clap.ext.audio_ports_activation.can_activate_while_processing
-#[test]
-fn a_processing_plugin_that_cannot_is_not_asked_to_switch_a_port() {
-    let probe = Probe::acquire();
-    let mut inst = probe.activate();
-    drive_block(&mut inst, 128, &ClapProcessContext::default());
-
-    assert!(
-        !inst
-            .loaded_mut()
-            .set_audio_port_active(&main_thread(), true, 0, false)
-    );
-
-    assert_eq!(
-        probe.capture().activation_calls,
-        0,
-        "the plugin is not called"
-    );
-}
-
-/// A processing plugin that says it can is called.
-/// Spec: clap.ext.audio_ports_activation.can_activate_while_processing
-#[test]
-fn a_processing_plugin_that_can_is_asked_to_switch_a_port() {
-    let probe = Probe::acquire();
-    probe.set_can_activate_while_processing(true);
-    let mut inst = probe.activate();
-    drive_block(&mut inst, 128, &ClapProcessContext::default());
-
-    let took = inst
-        .loaded_mut()
-        .set_audio_port_active(&main_thread(), true, 0, false);
-
-    assert_eq!(probe.capture().activation_calls, 1, "the plugin was asked");
-    assert!(took);
-}
-
-// ---------------------------------------------------------------------------
 // track-info
 // ---------------------------------------------------------------------------
 
 fn stereo_track() -> TrackInfo {
     TrackInfo {
         name: Some("Lead".to_owned()),
-        color: Some(TrackColor {
-            red: 10,
-            green: 20,
-            blue: 30,
-            alpha: 40,
-        }),
+        color: Some(rgb::RGBA8::new(10, 20, 30, 40)),
         audio: Some(ChannelLayout::STEREO),
         kind: TrackKind::Track,
     }

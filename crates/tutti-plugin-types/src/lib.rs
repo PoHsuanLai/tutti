@@ -267,7 +267,7 @@ pub use points::{PointBuf, PointPool};
 pub use process_wake::ProcessWake;
 pub use requests::{Edit, EditDrain, EditQueue, EditSink, edits, taken};
 pub use state_use::StateUse;
-pub use track_info::{TrackColor, TrackInfo, TrackKind};
+pub use track_info::{TrackInfo, TrackKind};
 pub use transport_request::TransportRequest;
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.

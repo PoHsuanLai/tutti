@@ -1,27 +1,22 @@
-//! HOST-EXTENSION probe: `clap.audio-ports-activation`, `clap.track-info` and
-//! `clap.transport-control`, from the plugin's side.
+//! HOST-EXTENSION probe: `clap.track-info` and `clap.transport-control`, from
+//! the plugin's side.
 //!
-//! The plugin answers the host's `set_active` and `changed` calls and records
-//! what it was handed (which thread, which sample size); a latched command makes
+//! The plugin answers the host's `changed` call and records what it was handed;
+//! a latched command makes
 //! it call the host's `track-info.get` or one of the transport requests, from
 //! `on_main_thread` (where CLAP allows both) or from the next `process` (where
 //! it does not, so a host that queues the request there is caught). The
 //! expected figures live in the tests, never here.
 //!
-//! The activation records are lock-free (a `set_active` may arrive on the audio
-//! thread); the rest sits behind a mutex the main thread alone takes.
+//! The capture sits behind a mutex the main thread alone takes.
 
 use std::ffi::{CStr, c_void};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 
-use clap_sys::ext::audio_ports_activation::{
-    CLAP_EXT_AUDIO_PORTS_ACTIVATION, clap_plugin_audio_ports_activation,
-};
 use clap_sys::ext::draft::transport_control::{
     CLAP_EXT_TRANSPORT_CONTROL, clap_host_transport_control,
 };
-use clap_sys::ext::thread_check::{CLAP_EXT_THREAD_CHECK, clap_host_thread_check};
 use clap_sys::ext::track_info::{
     CLAP_EXT_TRACK_INFO, clap_host_track_info, clap_plugin_track_info, clap_track_info,
 };
@@ -29,9 +24,6 @@ use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
 
 use crate::threading::host_ext;
-
-/// The most `set_active` calls recorded.
-pub const MAX_CAPTURED_ACTIVATIONS: usize = 16;
 
 /// Command: call `track-info.get` and record the answer.
 pub const HOSTEXT_CMD_TRACK_GET: u32 = 1;
@@ -59,24 +51,6 @@ pub const HOSTEXT_CMD_RECORD: u32 = 19;
 pub const HOSTEXT_CMD_TOGGLE_RECORD: u32 = 20;
 /// Command: `request_start`, `a` times in a row.
 pub const HOSTEXT_CMD_START_BURST: u32 = 21;
-
-/// One `audio-ports-activation.set_active` call as the plugin received it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CapturedActivation {
-    /// The port's direction.
-    pub is_input: bool,
-    /// The state asked for.
-    pub is_active: bool,
-    /// Whether the host's thread-check called the thread the audio thread.
-    pub on_audio_thread: bool,
-    /// Whether the host's thread-check called the thread the main thread.
-    pub on_main_thread: bool,
-    /// The sample size the host named: 32, 64, or 0 for unspecified.
-    pub sample_size: u32,
-    /// The port.
-    pub port_index: u32,
-}
 
 /// A `clap_track_info` as the host filled it.
 #[repr(C)]
@@ -126,11 +100,6 @@ impl CapturedTrack {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostExtCapture {
-    /// `set_active` calls, which may exceed [`MAX_CAPTURED_ACTIVATIONS`];
-    /// `activations` holds the first ones in call order.
-    pub activation_calls: u32,
-    /// The recorded calls.
-    pub activations: [CapturedActivation; MAX_CAPTURED_ACTIVATIONS],
     /// `track-info.changed` calls.
     pub track_changed_calls: u32,
     /// What `get` answered inside the last `changed`.
@@ -145,23 +114,10 @@ pub struct HostExtCapture {
     pub transport_offered: bool,
 }
 
-static CAN_WHILE_PROCESSING: AtomicBool = AtomicBool::new(false);
-static ACTIVATION_CALLS: AtomicU32 = AtomicU32::new(0);
-static ACTIVATIONS: [AtomicU64; MAX_CAPTURED_ACTIVATIONS] =
-    [const { AtomicU64::new(0) }; MAX_CAPTURED_ACTIVATIONS];
 static CAPTURE: Mutex<HostExtCapture> = Mutex::new(empty_capture());
 
 const fn empty_capture() -> HostExtCapture {
     HostExtCapture {
-        activation_calls: 0,
-        activations: [CapturedActivation {
-            is_input: false,
-            is_active: false,
-            on_audio_thread: false,
-            on_main_thread: false,
-            sample_size: 0,
-            port_index: 0,
-        }; MAX_CAPTURED_ACTIVATIONS],
         track_changed_calls: 0,
         track_at_changed: CapturedTrack::EMPTY,
         track_queries: 0,
@@ -173,53 +129,6 @@ const fn empty_capture() -> HostExtCapture {
 
 fn with_capture<R>(f: impl FnOnce(&mut HostExtCapture) -> R) -> R {
     f(&mut CAPTURE.lock().unwrap_or_else(|p| p.into_inner()))
-}
-
-// ---------------------------------------------------------------------------
-// The plugin's side of `audio-ports-activation`.
-// ---------------------------------------------------------------------------
-
-static ACTIVATION_EXT: clap_plugin_audio_ports_activation = clap_plugin_audio_ports_activation {
-    can_activate_while_processing: Some(can_activate_while_processing),
-    set_active: Some(set_active),
-};
-
-unsafe extern "C" fn can_activate_while_processing(_plugin: *const clap_plugin) -> bool {
-    CAN_WHILE_PROCESSING.load(Ordering::SeqCst)
-}
-
-unsafe extern "C" fn set_active(
-    plugin: *const clap_plugin,
-    is_input: bool,
-    port_index: u32,
-    is_active: bool,
-    sample_size: u32,
-) -> bool {
-    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it
-    // was handed.
-    let host = unsafe { crate::plugin_host(plugin) };
-    // SAFETY: the host this plugin was created with, live until `destroy`.
-    let tc = unsafe { host_ext::<clap_host_thread_check>(host, CLAP_EXT_THREAD_CHECK) };
-    // SAFETY: the host's own thread-check entries, called with its host.
-    let ask = |f: Option<unsafe extern "C" fn(*const clap_host) -> bool>| {
-        f.is_some_and(|f| unsafe { f(host) })
-    };
-    let audio = ask(tc.and_then(|t| t.is_audio_thread));
-    let main = ask(tc.and_then(|t| t.is_main_thread));
-    let n = ACTIVATION_CALLS.fetch_add(1, Ordering::SeqCst) as usize;
-    if let Some(slot) = ACTIVATIONS.get(n) {
-        let word = u64::from(is_input)
-            | u64::from(is_active) << 1
-            | u64::from(audio) << 2
-            | u64::from(main) << 3
-            | u64::from(sample_size & 0xff) << 8
-            | u64::from(port_index) << 16;
-        // The word is never zero once written (the sample size or index may
-        // be, the call is marked by bit 63).
-        slot.store(word | 1 << 63, Ordering::SeqCst);
-    }
-    // A port past the ones the plugin has is an invalid parameter.
-    port_index < unsafe { crate::audio_ports_count(plugin, is_input) }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,16 +218,6 @@ pub unsafe extern "C" fn tutti_test_plugin_hostext_process_command(cmd: u32, a: 
     PROCESS_COMMAND.store(cmd, Ordering::SeqCst);
 }
 
-/// Whether the plugin says it can activate a port while processing. Set
-/// before the host asks.
-///
-/// # Safety
-/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn tutti_test_plugin_hostext_set_can_activate_while_processing(can: bool) {
-    CAN_WHILE_PROCESSING.store(can, Ordering::SeqCst);
-}
-
 /// Clears the capture and any latched command.
 ///
 /// # Safety
@@ -327,11 +226,6 @@ pub unsafe extern "C" fn tutti_test_plugin_hostext_set_can_activate_while_proces
 pub unsafe extern "C" fn tutti_test_plugin_hostext_reset() {
     COMMAND.store(0, Ordering::SeqCst);
     PROCESS_COMMAND.store(0, Ordering::SeqCst);
-    CAN_WHILE_PROCESSING.store(false, Ordering::SeqCst);
-    ACTIVATION_CALLS.store(0, Ordering::SeqCst);
-    for slot in &ACTIVATIONS {
-        slot.store(0, Ordering::SeqCst);
-    }
     with_capture(|c| *c = empty_capture());
 }
 
@@ -344,19 +238,7 @@ pub unsafe extern "C" fn tutti_test_plugin_hostext_capture(out: *mut HostExtCapt
     if out.is_null() {
         return false;
     }
-    let mut snapshot = with_capture(|c| *c);
-    snapshot.activation_calls = ACTIVATION_CALLS.load(Ordering::SeqCst);
-    for (dst, slot) in snapshot.activations.iter_mut().zip(&ACTIVATIONS) {
-        let word = slot.load(Ordering::SeqCst);
-        *dst = CapturedActivation {
-            is_input: word & 1 != 0,
-            is_active: word & 2 != 0,
-            on_audio_thread: word & 4 != 0,
-            on_main_thread: word & 8 != 0,
-            sample_size: ((word >> 8) & 0xff) as u32,
-            port_index: ((word >> 16) & 0xffff_ffff) as u32,
-        };
-    }
+    let snapshot = with_capture(|c| *c);
     // SAFETY: non-null and writable per the contract above.
     unsafe { out.write(snapshot) };
     true
@@ -447,11 +329,24 @@ fn call_if<F: Copy>(entry: Option<F>, call: impl FnOnce(F)) {
     }
 }
 
+/// Latches a command for the plugin's next `on_main_thread`, and has the
+/// plugin ask its host for that callback now, so a host that serves the
+/// callback on its own tick (an editor instance's idle) runs it.
+///
+/// # Safety
+/// The host recorded at `init` must still be alive.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_hostext_command_via_callback(
+    cmd: u32,
+    a: i64,
+    b: i64,
+) -> bool {
+    unsafe { tutti_test_plugin_hostext_command(cmd, a, b) };
+    crate::subprocess::request_callback_now()
+}
+
 /// This module's vtable for `id`, or null.
 pub(crate) fn get_extension(id: &CStr) -> *const c_void {
-    if id == CLAP_EXT_AUDIO_PORTS_ACTIVATION {
-        return (&raw const ACTIVATION_EXT).cast::<c_void>();
-    }
     if id == CLAP_EXT_TRACK_INFO {
         return (&raw const TRACK_INFO_EXT).cast::<c_void>();
     }

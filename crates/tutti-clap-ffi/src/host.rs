@@ -633,10 +633,10 @@ fn encode_track_info(track: &TrackInfo) -> clap_track_info {
     if let Some(color) = track.color {
         flags |= CLAP_TRACK_INFO_HAS_TRACK_COLOR;
         out.color = clap_sys::color::clap_color {
-            alpha: color.alpha,
-            red: color.red,
-            green: color.green,
-            blue: color.blue,
+            alpha: color.a,
+            red: color.r,
+            green: color.g,
+            blue: color.b,
         };
     }
     if let Some(audio) = track.audio {

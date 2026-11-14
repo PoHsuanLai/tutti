@@ -1414,9 +1414,19 @@ mod tests {
         let scan = scanner.spawn(&mut db, [&plugins_dir], no_save).unwrap();
         parked.recv_timeout(Duration::from_secs(30)).unwrap();
         let progress = scan.progress_rx.clone();
+        let stop = Arc::clone(&scan.stop);
 
-        // The drop waits for the parked probe: release it from another thread.
+        // The drop waits for the parked probe: release it from this thread,
+        // once the drop has asked the worker to stop.
         let dropping = std::thread::spawn(move || drop(scan));
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !stop.load(Ordering::Relaxed) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the drop never asked the worker to stop"
+            );
+            std::thread::yield_now();
+        }
         release.send(()).unwrap();
         dropping.join().unwrap();
         worker_exited(&progress);

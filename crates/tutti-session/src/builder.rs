@@ -648,7 +648,7 @@ impl<S> SessionBuilder<S> {
     #[cfg(feature = "plugin")]
     #[must_use]
     pub fn plugin_hang(mut self, policy: crate::HangPolicy) -> Self {
-        self.hang = policy;
+        self.opts.hang = policy;
         self
     }
 
@@ -849,7 +849,7 @@ impl<S> SessionBuilder<S> {
             #[cfg(feature = "plugin")]
             recovery: self.opts.recovery,
             #[cfg(feature = "plugin")]
-            hang: self.hang,
+            hang: self.opts.hang,
             #[cfg(feature = "plugin")]
             plugins_now: std::time::Instant::now(),
             #[cfg(feature = "plugin")]

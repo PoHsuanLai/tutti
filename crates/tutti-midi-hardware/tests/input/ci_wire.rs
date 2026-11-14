@@ -27,7 +27,7 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
     // `function_block` is reply-only, so `None` is the value
     // section 5.6.2 names for a device that represents none.
     let probe = CiMessage::Discovery {
-        header: CiHeader::new(Muid::new(0x1234).expect("a valid MUID")),
+        header: CiHeader::new(Muid::of(0x1234)),
         data: DiscoveryData {
             identity: DeviceIdentity {
                 manufacturer: ManufacturerId::of(0xA109),

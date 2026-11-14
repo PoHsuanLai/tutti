@@ -60,7 +60,7 @@ fn presets() -> Vec<(&'static str, SpeakerLayout, &'static [Position])> {
 
 fn tuples_of(layout: &SpeakerLayout) -> Vec<Vec<u16>> {
     layout
-        .tuples()
+        .tuples
         .iter()
         .map(|t| t.speakers().to_vec())
         .collect()
@@ -299,10 +299,7 @@ fn gains_are_not_negative() {
 #[test]
 fn a_source_uses_at_most_a_tuple() {
     for (name, layout, _) in presets() {
-        let most = match layout.mode() {
-            PanningMode::Horizontal => 2,
-            PanningMode::Spherical => 3,
-        };
+        let most = layout.tuples[0].speakers().len();
         for a in -180..180 {
             for e in (-90..=90).step_by(5) {
                 let (a, e) = (f64::from(a) + 0.37, f64::from(e));
@@ -384,7 +381,7 @@ fn gains_are_continuous_across_every_tuple_edge() {
 fn a_shared_edge_has_the_same_gains_on_both_sides() {
     let layout = SpeakerLayout::atmos_7_1_4();
     let mut edges: Vec<((u16, u16), usize)> = Vec::new();
-    for t in layout.tuples() {
+    for t in &layout.tuples {
         let s = t.speakers();
         for (i, j) in [(0, 1), (0, 2), (1, 2)] {
             let e = (s[i].min(s[j]), s[i].max(s[j]));

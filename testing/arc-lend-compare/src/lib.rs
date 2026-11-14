@@ -353,6 +353,17 @@ fn cpu_model() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// Whether `/proc/cpuinfo` reports a hypervisor flag on this OS, so a missing one
+/// means "no hypervisor" rather than "not detectable".
+#[cfg(target_os = "linux")]
+mod host {
+    pub(super) const DETECTS_HYPERVISOR: bool = true;
+}
+#[cfg(not(target_os = "linux"))]
+mod host {
+    pub(super) const DETECTS_HYPERVISOR: bool = false;
+}
+
 fn virtualization() -> String {
     let hypervisor_flag =
         cpuinfo_field("flags").is_some_and(|f| f.split(' ').any(|x| x == "hypervisor"));
@@ -365,7 +376,7 @@ fn virtualization() -> String {
     };
     if hypervisor_flag {
         format!("yes: the CPU reports the `hypervisor` flag{dmi}")
-    } else if cfg!(target_os = "linux") {
+    } else if host::DETECTS_HYPERVISOR {
         format!("no `hypervisor` flag{dmi}")
     } else {
         "unknown (only detected on Linux)".into()

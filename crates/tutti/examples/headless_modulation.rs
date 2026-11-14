@@ -1,4 +1,4 @@
-//! Headless modulation (design 015 §5.1): an LFO and an envelope
+//! Headless modulation: an LFO and an envelope
 //! follower on a filter's native params, declared on an offline session
 //! ([`Session::mods`]) and applied by its update.
 //!

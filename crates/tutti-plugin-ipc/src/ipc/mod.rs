@@ -178,6 +178,10 @@ impl Events {
                     wake.raise();
                 }
             }
+            // A transport request reaches the application through the
+            // listener, in order. Nothing is queued for `take_requests`, which
+            // a served plugin's host does not drain: a request kept here would
+            // only pile up.
             _ => {}
         }
         let forward = self

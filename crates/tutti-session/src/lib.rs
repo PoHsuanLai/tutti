@@ -139,7 +139,7 @@ pub use midi::{
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;
 #[cfg(feature = "midi")]
-pub use midi_follow::FollowTempo;
+pub use midi_follow::{FollowClock, FollowTempo};
 #[cfg(feature = "midi-hardware")]
 pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]

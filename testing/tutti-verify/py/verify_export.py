@@ -1,6 +1,6 @@
 """Independent verification of tutti-export output.
 
-Judges files written by `examples/render_export_cases.rs` using
+Judges files written by `src/bin/render_export_cases.rs` using
 soundfile/numpy/scipy. Expectations are derived here from the case NAME and
 first principles -- a 1 kHz tone is 1 kHz whatever container it lands in, one
 LSB at 16-bit is 1/32767, an 18 kHz tone above the new Nyquist must be gone
@@ -14,8 +14,8 @@ which is what makes "does the FLAC hold the same samples as the WAV" answerable
 at all.
 
 Usage:
-    cargo run --release -p tutti-export --example render_export_cases -- /tmp/exports
-    uv run python crates/tutti-export/examples/verify_export.py /tmp/exports
+    cargo run --release -p tutti-verify --bin render_export_cases -- /tmp/exports
+    uv run python testing/tutti-verify/py/verify_export.py /tmp/exports
 """
 
 import pathlib

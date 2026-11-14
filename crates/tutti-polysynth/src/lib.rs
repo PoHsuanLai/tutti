@@ -108,11 +108,10 @@
 //! The `tutti` crate re-exports this one as `tutti::polysynth` behind its
 //! `synth` feature.
 //!
-//! ## Examples
+//! ## Verification
 //!
-//! `examples/render_synth_cases.rs` renders a set of configurations to disk;
-//! `examples/verify_synth.py` checks the output against synthesis theory. See
-//! `examples/README.md`.
+//! `testing/tutti-verify` renders a set of configurations to disk and checks
+//! the output against synthesis theory (`cargo xtask verify-audio`).
 //!
 //! ## Features
 //!

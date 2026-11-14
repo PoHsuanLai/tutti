@@ -682,6 +682,12 @@ fn change_of(notice: Notice) -> Option<PluginChange> {
     })
 }
 
+/// A plugin handle a swap replaced, and whether its editor was open.
+pub(crate) struct Outgoing {
+    handle: PluginHandle,
+    editor_open: bool,
+}
+
 /// What a removal or a replacement took out of the session, held until the
 /// main thread drops it (`MainSession::update`).
 ///
@@ -697,6 +703,9 @@ pub(crate) struct Graveyard {
     /// Held to be dropped: a removed plugin's record, or the handle a
     /// crossfade replaced.
     retired: Vec<Box<dyn std::any::Any + Send>>,
+    /// Handles whose editor was open when they were retired: closed by
+    /// [`exhume`](Self::exhume) before the drop.
+    editors: Vec<PluginHandle>,
     warned: bool,
 }
 
@@ -706,11 +715,17 @@ impl Graveyard {
 
     pub(crate) fn bury(&mut self, record: HostedPlugin) {
         record.gate.end();
+        if record.editor_open {
+            self.editors.push(record.handle.clone());
+        }
         self.retired.push(Box::new(record));
     }
 
-    pub(crate) fn bury_handle(&mut self, handle: PluginHandle) {
-        self.retired.push(Box::new(handle));
+    pub(crate) fn bury_handle(&mut self, outgoing: Outgoing) {
+        if outgoing.editor_open {
+            self.editors.push(outgoing.handle.clone());
+        }
+        self.retired.push(Box::new(outgoing.handle));
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -718,7 +733,10 @@ impl Graveyard {
     }
 
     /// Drops everything in the yard, on the main thread. Returns how many.
-    pub(crate) fn exhume(&mut self, _main: &MainThread) -> usize {
+    pub(crate) fn exhume(&mut self, main: &MainThread) -> usize {
+        for handle in self.editors.drain(..) {
+            handle.close_editor(main);
+        }
         let n = self.retired.len();
         self.retired.clear();
         self.warned = false;
@@ -932,15 +950,15 @@ impl HostedPlugin {
     /// The outgoing mirror's report callback was on the outgoing handle,
     /// which reports nothing here once it is gone.
     ///
-    /// Returns the outgoing handle, for the graveyard: its drop may close the
-    /// outgoing plugin's editor.
+    /// Returns the outgoing handle, for the graveyard, which closes its editor
+    /// on the main thread if it was open.
     #[must_use = "the outgoing handle goes to the graveyard"]
     pub(crate) fn replace(
         &mut self,
         handle: PluginHandle,
         controls: PluginControls,
         plugin: PluginRef,
-    ) -> PluginHandle {
+    ) -> Outgoing {
         self.plugin = plugin;
         let outgoing = self.adopt(handle);
         self.node = Some((*controls).clone());
@@ -950,7 +968,7 @@ impl HostedPlugin {
 
     /// [`replace`](Self::replace)'s handle half: everything but the
     /// controls.
-    fn adopt(&mut self, handle: PluginHandle) -> PluginHandle {
+    fn adopt(&mut self, handle: PluginHandle) -> Outgoing {
         let (mirror, read) = tutti_plugin_host::PluginParamValues::start(&handle);
         self.mirror = mirror;
         self.param_read = Some(read);
@@ -960,8 +978,10 @@ impl HostedPlugin {
         self.gate = Gate::default();
         // What the outgoing plugin reported and nobody drained is its own.
         (self.notices, self.hearing) = hear(&handle);
-        let outgoing = std::mem::replace(&mut self.handle, handle);
-        self.editor_open = false;
+        let outgoing = Outgoing {
+            handle: std::mem::replace(&mut self.handle, handle),
+            editor_open: std::mem::replace(&mut self.editor_open, false),
+        };
         self.liveness = Liveness::new();
         self.hang = HangDetector::default();
         self.status = PluginLiveness::Healthy;
@@ -2500,6 +2520,56 @@ mod tests {
             assert!(
                 rig.session.graph_ref().contains(rig.node),
                 "the native replacement stays in the graph (crossfade: {crossfade})"
+            );
+        }
+    }
+
+    /// **A swap closes the outgoing plugin's open editor** when the main
+    /// thread empties the graveyard: `adopt` clears the record's flag for the
+    /// incoming plugin, and the outgoing handle's editor is closed first, not
+    /// left to the drop. An editor that was not open is not closed.
+    #[test]
+    fn a_swap_closes_the_outgoing_editor() {
+        use tutti_plugin_types::fake::{Call, FakePlugin};
+        let main = MainThread::claim().expect("one test, one process");
+        for open in [true, false] {
+            let (fake, control) = FakePlugin::new();
+            fake.with_editor(true);
+            let control: Arc<dyn tutti_plugin_host::MainThreadControl> = Arc::new(control);
+            let outgoing = PluginHandle::from_backend(
+                Arc::new(Fake {
+                    state: None,
+                    saves: Arc::default(),
+                    dead: Arc::default(),
+                    params: Vec::new(),
+                    unlisted: Arc::default(),
+                }),
+                Some(control),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            let mut record = HostedPlugin::new(
+                outgoing,
+                PluginRef::file("fake.clap").expect("a plugin file"),
+            );
+            record.editor_open = open;
+            let (incoming, _) = fake_handle(None, Vec::new());
+            let mut yard = Graveyard::default();
+            yard.bury_handle(record.adopt(incoming));
+            assert!(
+                !record.editor_open,
+                "the incoming plugin has no editor open"
+            );
+            assert!(
+                !fake.calls().contains(&Call::CloseEditor),
+                "not before the main thread"
+            );
+            yard.exhume(&main);
+            assert_eq!(
+                fake.calls().contains(&Call::CloseEditor),
+                open,
+                "editor open: {open}"
             );
         }
     }

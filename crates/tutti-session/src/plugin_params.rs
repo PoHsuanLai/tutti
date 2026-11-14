@@ -123,10 +123,12 @@ pub enum PluginParamError {
     /// crossfade or a reload) or stopped declaring the parameter (a rescan).
     #[error("the plugin of the gesture on parameter {0} is gone")]
     Gone(ParamId),
-    /// The value lies outside the range the parameter declares, or is not
-    /// finite.
+    /// The value is finite and lies outside the range the parameter declares.
     #[error("the value lies outside the range parameter {0} declares")]
     OutOfRange(ParamId),
+    /// The value is NaN or infinite.
+    #[error("the value for parameter {0} is not finite")]
+    NotFinite(ParamId),
     /// The format has no plain value for the parameter (VST2 without an integer
     /// range, a plugin that no longer answers).
     #[error("the format has no plain value for parameter {0}")]
@@ -546,12 +548,16 @@ impl<'a, U: PlainUnit> TypedParam<'a, U> {
     ///
     /// # Errors
     ///
+    /// [`PluginParamError::NotFinite`] for a NaN or an infinity,
     /// [`PluginParamError::OutOfRange`] for a value outside the declared range,
     /// [`ReadOnly`](PluginParamError::ReadOnly), and
     /// [`NoPlainValue`](PluginParamError::NoPlainValue) where the format has no
     /// plain value.
     pub fn set(&self, value: U) -> Result<(), PluginParamError> {
         let plain = value.to_plain(self.unit);
+        if !plain.is_finite() {
+            return Err(PluginParamError::NotFinite(self.param.id()));
+        }
         if !(self.min..=self.max).contains(&plain) {
             return Err(PluginParamError::OutOfRange(self.param.id()));
         }

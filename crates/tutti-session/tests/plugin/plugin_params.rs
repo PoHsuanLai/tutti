@@ -355,6 +355,32 @@ fn a_typed_read_of_a_silent_plugin_is_an_error_not_the_default() {
     assert_eq!(cutoff.get(), Err(PluginParamError::NoPlainValue(CUTOFF)));
 }
 
+/// **A typed write of a NaN or an infinity is `NotFinite`, not `OutOfRange`**,
+/// and a finite value outside the range is still `OutOfRange`; nothing reaches
+/// the plugin.
+#[test]
+fn a_non_finite_typed_write_is_not_finite_and_out_of_range_stays_out_of_range() {
+    let (s, node, fake, _) = ready();
+    let cutoff = s
+        .plugin(node)
+        .unwrap()
+        .params()
+        .typed::<Hz>(CUTOFF)
+        .unwrap();
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(
+            cutoff.set(Hz::new(bad)),
+            Err(PluginParamError::NotFinite(CUTOFF)),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        cutoff.set(Hz::new(30_000.0)),
+        Err(PluginParamError::OutOfRange(CUTOFF))
+    );
+    assert!(fake.sets().is_empty());
+}
+
 /// **An id the plugin does not declare is refused**, by `get` and by `typed`,
 /// and before the parameters are read nothing resolves.
 #[test]

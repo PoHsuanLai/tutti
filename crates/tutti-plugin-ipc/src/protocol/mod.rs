@@ -317,7 +317,7 @@ mod tests {
         /// and `CloseEditor` ahead of it). Pinned as a literal so a shift is
         /// a failure here rather than an agreement between two expressions that
         /// move together.
-        const V13_LAST_TAG: u32 = 14;
+        const V13_LAST_TAG: u32 = 13;
 
         // A tag under 128 is one varint byte; a larger one would need decoding.
         let tag = |bytes: &[u8]| {
@@ -540,7 +540,7 @@ mod tests {
         /// `GetCurrentPreset`'s tag — the last request variant v14 shipped (20 until v21
         /// removed the request ahead of it, 19 until v25 removed `OpenEditor` and
         /// `CloseEditor` ahead of it).
-        const V16_LAST_REQUEST_TAG: u32 = 17;
+        const V16_LAST_REQUEST_TAG: u32 = 16;
 
         // A tag under 128 is one varint byte; a larger one would need decoding.
         let tag = |bytes: &[u8]| {

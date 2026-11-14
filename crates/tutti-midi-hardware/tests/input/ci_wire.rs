@@ -37,7 +37,7 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
             },
             categories: CiCategories::PROFILE_CONFIGURATION,
             max_sysex_size: MaxSysexSize::of(512),
-            output_path_id: U7::of(3),
+            output_path_id: Some(U7::of(3)),
             function_block: None,
         },
     };

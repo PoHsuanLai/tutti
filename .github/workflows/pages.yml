@@ -1,5 +1,5 @@
 # The conformance dashboard, its badges and the coverage report, published to
-# GitHub Pages from main. Each OS runs the spec-tagged test tiers with nextest's
+# GitHub Pages from main, nightly. Each OS runs the spec-tagged test tiers with nextest's
 # `conformance` profile (JUnit), `cargo xtask conformance` joins the three
 # files to the spec inventories, and `cargo xtask coverage` adds the line
 # coverage. The tiers run here, not downloaded from CI: a CI run is per pull
@@ -8,9 +8,12 @@
 
 name: Pages
 
+# Nightly and on demand, not per push: a run takes four jobs across three
+# OSes, longer than the gap between merges, so a per-push run is cancelled by
+# the next merge before it publishes.
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -18,7 +21,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always

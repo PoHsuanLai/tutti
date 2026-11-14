@@ -86,7 +86,7 @@ units! {
         tutti_nodes::HrtfBinauralNode { Azimuth => Azimuth, Elevation => Elevation, Wet => Mix }
     }
     the_synths_params_are_in_their_declared_unit #[cfg(feature = "synth")] {
-        tutti_polysynth::PolySynth { Volume => Amplitude, Detune => tutti_types::Cents, StereoSpread => Spread }
+        tutti_polysynth::PolySynth { Volume => Amplitude, Detune => tutti_types::CentsSpan, StereoSpread => Spread }
     }
     the_samplers_params_are_in_their_declared_unit #[cfg(feature = "sampler")] {
         tutti_sampler::VoiceNode { Volume => Amplitude }

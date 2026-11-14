@@ -7,7 +7,6 @@ use std::io::Cursor;
 
 use tutti_fixtures::sf2::{Inst, Preset, bytes};
 use tutti_sf2::{Error, InstrumentGenerator, SoundFont};
-use tutti_types::SampleRate;
 
 fn preset(name: &'static str, program: u16, zones: usize) -> Preset {
     Preset {
@@ -173,10 +172,9 @@ fn the_dwords_of_a_header_are_unsigned() {
     put(&mut file, shdr + 36, 0x8000_0000 + 44_100, 4);
     let font = load(file).expect("the rate is not a range");
     assert_eq!(
-        font.sample_headers()[0].sample_rate().map(SampleRate::get),
-        Some(f64::from(0x8000_0000_u32 + 44_100))
+        font.sample_headers()[0].sample_rate().get(),
+        f64::from(0x8000_0000_u32 + 44_100)
     );
-    assert!(font.instruments()[0].regions()[0].sample_rate().is_some());
     let _ = SHDR_RECORD;
 }
 
@@ -205,4 +203,46 @@ fn an_unused_number_after_the_sample_id_leaves_the_zone_local() {
     let regions = font.instruments()[0].regions();
     assert_eq!(regions.len(), 1, "the zone is local");
     assert_eq!(regions[0].generator(InstrumentGenerator::Pan), 4);
+}
+
+/// 7.10: a rate of 0 is illegal and the nearest practical rate is used in its
+/// place: 400 Hz, the low end of the practical range 400 to 50 000 Hz, on the
+/// header and on the region that names it.
+/// Spec: sf2.pdta.shdr.rate.zero
+#[test]
+fn a_header_rate_of_zero_reads_as_the_nearest_practical_rate() {
+    let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
+    let shdr = chunk(&file, b"shdr");
+    for (stated, played) in [(0, 400.0), (44_100, 44_100.0)] {
+        let mut file = file.clone();
+        put(&mut file, shdr + 36, stated, 4);
+        let font = load(file).unwrap();
+        assert_eq!(font.sample_headers()[0].sample_rate().get(), played);
+        assert_eq!(
+            font.instruments()[0].regions()[0].sample_rate().get(),
+            played
+        );
+    }
+    assert_eq!(tutti_sf2::NEAREST_PRACTICAL_RATE.get(), 400.0);
+}
+
+/// 7.10: a rate outside 400 to 50 000 Hz other than 0 may be replaced by the
+/// nearest practical one; it is kept as stated, so a sample plays at the pitch
+/// it was recorded for, on the header and on the region that names it.
+/// Spec: sf2.pdta.shdr.rate.impractical
+#[test]
+fn a_rate_outside_the_practical_range_is_kept_as_stated() {
+    let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
+    let shdr = chunk(&file, b"shdr");
+    for stated in [1, 200, 399, 50_001, 96_000, 192_000] {
+        let mut file = file.clone();
+        put(&mut file, shdr + 36, stated, 4);
+        let font = load(file).unwrap();
+        let played = f64::from(stated);
+        assert_eq!(font.sample_headers()[0].sample_rate().get(), played);
+        assert_eq!(
+            font.instruments()[0].regions()[0].sample_rate().get(),
+            played
+        );
+    }
 }

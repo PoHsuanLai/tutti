@@ -41,8 +41,8 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_protocol::widen_velocity;
 use tutti_polysynth::{
-    Adsr, FilterType, OscillatorType, PolySynth, PortamentoConfig, PortamentoMode, SvfMode,
-    SynthConfig, UnisonConfig,
+    Adsr, FilterType, GlideTime, OscillatorType, PolySynth, PortamentoConfig, PortamentoMode,
+    SvfMode, SynthConfig, UnisonConfig,
 };
 use tutti_types::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
 use tutti_ump::{
@@ -216,7 +216,7 @@ fn bench_portamento(c: &mut Criterion) {
                 portamento: Some(PortamentoConfig {
                     mode: PortamentoMode::Always,
                     curve,
-                    time: Seconds(10_000.0),
+                    time: GlideTime::of(Seconds(10_000.0)),
                     constant_time: true,
                 }),
                 ..config()

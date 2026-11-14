@@ -14,7 +14,7 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
     assert!(errors.failed(), "the {MAX_DRAIN_ERRORS}th in a row ends it");
 }
 
-use crate::devices::os_devices;
+use crate::devices::reporter::os_devices;
 use crate::test_support::endpoint;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;

@@ -41,7 +41,6 @@ use super::{Report, Tree};
 
 const CORE: &str = "temporary: core moves it behind a module seam";
 const DSP: &str = "temporary: dsp moves it behind a module seam";
-const MIDI: &str = "temporary: midi moves it behind a module seam";
 const PLUGINS: &str = "temporary: plugins moves it behind a module seam";
 
 /// `(file, platform cfgs outside a mod declaration, reason)`.
@@ -75,12 +74,6 @@ pub(super) const ALLOW: &[(&str, usize, &str)] = &[
     ("testing/tutti-fixtures/src/plugin.rs", 2, CORE),
     ("testing/tutti-fixtures/src/vst3_cpp.rs", 2, CORE),
     ("crates/tutti-dsp/src/resample/fft/tests.rs", 1, DSP),
-    ("crates/tutti-midi-hardware/src/backend/mod.rs", 3, MIDI),
-    ("crates/tutti-midi-hardware/src/devices.rs", 4, MIDI),
-    ("crates/tutti-midi-hardware/src/error.rs", 2, MIDI),
-    ("crates/tutti-midi-hardware/src/lib.rs", 1, MIDI),
-    ("crates/tutti-midi-hardware/src/stamp.rs", 2, MIDI),
-    ("crates/tutti-midi-hardware/src/testing.rs", 1, MIDI),
     ("crates/tutti-au-host/src/unit_code.rs", 1, PLUGINS),
     (
         "crates/tutti-au-host/tests/au_gui_lifecycle_main.rs",

@@ -64,10 +64,9 @@ impl SoundFontInfo {
                 b"isng" => target_sound_engine = Some(reader.read_fixed_length_string(size)?),
                 b"INAM" => bank_name = Some(reader.read_fixed_length_string(size)?),
                 b"irom" => rom_name = Some(reader.read_fixed_length_string(size)?),
-                b"iver" => {
-                    expect_size(id, size, 4)?;
-                    rom_version = Some(SoundFontVersion::new(reader)?);
-                }
+                // An `iver` that is not four bytes is ignored: the file is taken
+                // to use no ROM samples.
+                b"iver" if size == 4 => rom_version = Some(SoundFontVersion::new(reader)?),
                 b"ICRD" => creation_date = Some(reader.read_fixed_length_string(size)?),
                 b"IENG" => author = Some(reader.read_fixed_length_string(size)?),
                 b"IPRD" => target_product = Some(reader.read_fixed_length_string(size)?),

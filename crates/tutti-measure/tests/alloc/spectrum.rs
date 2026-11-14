@@ -5,7 +5,10 @@
 
 use tutti_dsp::{FftScratch, FrameCount, StftGeometry};
 use tutti_fixtures::allocations;
-use tutti_measure::{Banding, Smoothing, SpectrumConfig, SpectrumState, step_spectrum};
+use tutti_measure::{
+    Banding, BandsPerOctave, PeakDecay, Smoothing, SpectrumConfig, SpectrumState, SpectrumTime,
+    step_spectrum,
+};
 use tutti_types::{Db, Hz, SampleRate, Samples, Seconds};
 
 /// Construction allocates (so the counter is live); then many frames across
@@ -17,14 +20,13 @@ fn a_spectrum_step_does_not_allocate() {
     let plain = SpectrumConfig::new(geometry).unwrap();
     let banded = plain
         .with_banding(Banding::Octave {
-            per_octave: 3,
+            per_octave: BandsPerOctave::of(3),
             min: Hz(400.0),
             max: Hz(20_000.0),
         })
         .unwrap()
-        .with_smoothing(Smoothing::Average(Seconds(0.2)))
-        .unwrap()
-        .with_peak_hold(Seconds(0.5), Db(20.0))
+        .with_smoothing(Smoothing::Average(SpectrumTime::of(Seconds(0.2))))
+        .with_peak_hold(SpectrumTime::of(Seconds(0.5)), PeakDecay::of(Db(20.0)))
         .unwrap()
         .with_spectrogram(FrameCount(7))
         .unwrap();

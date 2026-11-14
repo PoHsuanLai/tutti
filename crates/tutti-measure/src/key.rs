@@ -101,12 +101,14 @@ pub struct KeyEstimate {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidTonalParameter`] when the grid is not 12 columns wide or
-/// holds a negative value; [`Error::NonFiniteInput`] for a NaN or infinity;
+/// [`Error::NotTwelveClasses`] when the grid is not 12 columns wide;
+/// [`Error::NegativeInput`] when it holds a negative value; [`Error::NonFiniteInput`] for a NaN or infinity;
 /// [`Error::NoTonalContent`] when it has no frames, is silent or is flat.
 pub fn estimate_key(chroma: &Grid<f32>, profile: KeyProfile) -> Result<KeyEstimate> {
     if chroma.bins().get() != CLASSES {
-        return Err(Error::InvalidTonalParameter("chroma: not 12 columns wide"));
+        return Err(Error::NotTwelveClasses {
+            columns: chroma.bins().get(),
+        });
     }
     let mean = mean_of_rows(chroma);
     estimate_key_from_mean(&mean, profile)
@@ -123,7 +125,7 @@ pub fn estimate_key_from_mean(mean: &[f32; CLASSES], profile: KeyProfile) -> Res
         return Err(Error::NonFiniteInput);
     }
     if mean.iter().any(|&v| v < 0.0) {
-        return Err(Error::InvalidTonalParameter("chroma: negative value"));
+        return Err(Error::NegativeInput);
     }
     let x = mean.map(f64::from);
     let (centered, norm) = center(&x);
@@ -325,12 +327,12 @@ mod tests {
         x[3] = f32::INFINITY;
         assert_eq!(e(&x), Error::NonFiniteInput);
         x[3] = -0.1;
-        assert!(matches!(e(&x), Error::InvalidTonalParameter(_)));
+        assert_eq!(e(&x), Error::NegativeInput);
         let wide = Grid::new(vec![0.5; 13], FrameCount(1), BinCount(13)).unwrap();
-        assert!(matches!(
+        assert_eq!(
             estimate_key(&wide, KeyProfile::Krumhansl),
-            Err(Error::InvalidTonalParameter(_))
-        ));
+            Err(Error::NotTwelveClasses { columns: 13 })
+        );
     }
 
     /// The grid form averages its frames: a loud frame of one key and a quiet

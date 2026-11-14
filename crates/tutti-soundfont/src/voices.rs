@@ -5,7 +5,7 @@
 //! The voices that sound, and the commands that start and end them.
 
 use tutti_midi_protocol::narrow_velocity;
-use tutti_sf2::SoundFont;
+use tutti_sf2::{SamplePool, SoundFont};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{MidiChannel, NoteVelocity};
 use tutti_voicing::{ChannelState, Command, VoiceId};
@@ -170,7 +170,7 @@ impl Voices {
     /// Renders one chunk of every voice, and drops the ones that have ended.
     pub(crate) fn process(
         &mut self,
-        data: &[i16],
+        data: SamplePool<'_>,
         channels: &[Channel],
         states: &[ChannelState; MidiChannel::COUNT as usize],
         bends: &[Semitones; MidiChannel::COUNT as usize],

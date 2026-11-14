@@ -54,7 +54,8 @@ use crate::{Error, Result};
 use tutti_dsp::Complex32;
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
-use tutti_dsp::{BinCount, Grid};
+use tutti_dsp::{BinCount, FrameCount, Grid};
+use tutti_types::ranged;
 
 /// The pitch classes in a chroma frame.
 pub(crate) const CLASSES: usize = 12;
@@ -71,19 +72,46 @@ pub(crate) const MAX_FRAMES: usize = 1 << 19;
 /// bounds the cost of a tiny hop.
 const MAX_OVERLAP: usize = 64;
 
-/// The most subharmonics one peak votes for.
-const MAX_HARMONICS: usize = 16;
-
 /// A frame whose strongest in-band partial is below this holds no pitch, as in
 /// note transcription.
 const SILENCE_FLOOR: Db = Db(-90.0);
 
-/// The lowest `peak_floor` accepted: the f32 range of a magnitude ratio.
-const MIN_PEAK_FLOOR: Db = Db(-120.0);
-
 /// Smallest positive magnitude, standing in for an empty neighbour bin before
 /// its logarithm is taken.
 const TINY: f64 = 1e-30;
+
+ranged! {
+    /// How many partials a peak may be, itself included: `1..=16`. 1 folds a
+    /// peak to its own class only.
+    Harmonics(usize), HarmonicsError, "a harmonic count within 1..=16",
+    |raw| raw >= 1 && raw <= 16
+}
+
+ranged! {
+    /// The weight of a subharmonic, per order past the first: finite and in
+    /// `(0, 1]`.
+    HarmonicDecay(f32), HarmonicDecayError, "a harmonic decay within (0, 1]",
+    |raw| raw > 0.0 && raw <= 1.0
+}
+
+ranged! {
+    /// How far under a frame's strongest peak a peak is still counted: within
+    /// `-120..=0` dB, the f32 range of a magnitude ratio.
+    PeakFloor(Db), PeakFloorError, "a peak floor within -120..=0 dB",
+    |raw| raw.get() >= -120.0 && raw.get() <= 0.0
+}
+
+ranged! {
+    /// A fixed offset from A4 = 440 Hz, within `-50..=50` cents: the range a
+    /// tuning is read in, since a peak folds to its nearest class.
+    TuningOffset(Cents), TuningOffsetError, "a tuning offset within -50..=50 cents",
+    |raw| raw.get() >= -50.0 && raw.get() <= 50.0
+}
+
+impl TuningOffset {
+    /// In tune: no offset.
+    pub const NONE: TuningOffset = TuningOffset(Cents(0.0));
+}
 
 /// How the tuning a frame is folded with is found.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,8 +119,8 @@ const TINY: f64 = 1e-30;
 pub enum Tuning {
     /// The circular mean of the peaks' distance from the equal-tempered grid.
     Estimate,
-    /// This offset from A4 = 440 Hz, within `-50..=50` cents.
-    Fixed(Cents),
+    /// This offset from A4 = 440 Hz.
+    Fixed(TuningOffset),
 }
 
 /// What [`chroma`] and [`step_chroma`] fold with. Immutable once built.
@@ -101,9 +129,9 @@ pub struct ChromaConfig {
     geometry: StftGeometry,
     min_freq: Hz,
     max_freq: Hz,
-    harmonics: usize,
-    harmonic_decay: f32,
-    peak_floor: Db,
+    harmonics: Harmonics,
+    harmonic_decay: HarmonicDecay,
+    peak_floor: PeakFloor,
     tuning: Tuning,
 }
 
@@ -115,27 +143,33 @@ impl ChromaConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidTonalParameter`] for a window under 64 or over 262144
-    /// samples, or a hop under a sixty-fourth of the window;
-    /// [`Error::EmptyFrequencyRange`] when the band holds fewer than three bins.
+    /// [`Error::WindowOutOfRange`] for a window under 64 or over 262144
+    /// samples; [`Error::TooManyOverlaps`] for a hop under a sixty-fourth of
+    /// the window; [`Error::EmptyFrequencyRange`] when the band holds fewer than three bins.
     pub fn new(geometry: StftGeometry) -> Result<Self> {
         let window = geometry.window().get();
         if !(MIN_WINDOW..=MAX_WINDOW).contains(&window) {
-            return Err(Error::InvalidTonalParameter("window: outside 64..=262144"));
+            return Err(Error::WindowOutOfRange {
+                window: Samples(window),
+                min: Samples(MIN_WINDOW),
+                max: Samples(MAX_WINDOW),
+            });
         }
         if window.div_ceil(geometry.hop().get()) > MAX_OVERLAP {
-            return Err(Error::InvalidTonalParameter(
-                "hop: more than 64 frames per window",
-            ));
+            return Err(Error::TooManyOverlaps {
+                window: Samples(window),
+                hop: geometry.hop(),
+                max: MAX_OVERLAP,
+            });
         }
         let nyquist = geometry.sample_rate().get() as f32 / 2.0;
         let config = Self {
             geometry,
             min_freq: Hz(100.0),
             max_freq: Hz(5000.0f32.min(nyquist)),
-            harmonics: 4,
-            harmonic_decay: 0.6,
-            peak_floor: Db(-40.0),
+            harmonics: Harmonics::of(4),
+            harmonic_decay: HarmonicDecay::of(0.6),
+            peak_floor: PeakFloor::of(Db(-40.0)),
             tuning: Tuning::Estimate,
         };
         config.band()?;
@@ -155,66 +189,32 @@ impl ChromaConfig {
         Ok(self)
     }
 
-    /// How many partials a peak may be, itself included: 1 folds a peak to its
-    /// own class only.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTonalParameter`] unless within `1..=16`.
-    pub fn with_harmonics(mut self, harmonics: usize) -> Result<Self> {
-        if !(1..=MAX_HARMONICS).contains(&harmonics) {
-            return Err(Error::InvalidTonalParameter("harmonics: outside 1..=16"));
-        }
+    /// How many partials a peak may be, itself included.
+    #[must_use]
+    pub fn with_harmonics(mut self, harmonics: Harmonics) -> Self {
         self.harmonics = harmonics;
-        Ok(self)
+        self
     }
 
     /// The weight of a subharmonic, per order past the first.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTonalParameter`] unless finite and in `(0, 1]`.
-    pub fn with_harmonic_decay(mut self, decay: f32) -> Result<Self> {
-        if !(decay > 0.0 && decay <= 1.0) {
-            return Err(Error::InvalidTonalParameter(
-                "harmonic decay: outside (0, 1]",
-            ));
-        }
+    #[must_use]
+    pub fn with_harmonic_decay(mut self, decay: HarmonicDecay) -> Self {
         self.harmonic_decay = decay;
-        Ok(self)
+        self
     }
 
     /// Peaks this far under the frame's strongest are ignored.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTonalParameter`] unless finite and within `-120..=0` dB.
-    pub fn with_peak_floor(mut self, floor: Db) -> Result<Self> {
-        if !(floor.get() >= MIN_PEAK_FLOOR.get() && floor.get() <= 0.0) {
-            return Err(Error::InvalidTonalParameter(
-                "peak floor: outside -120..=0 dB",
-            ));
-        }
+    #[must_use]
+    pub fn with_peak_floor(mut self, floor: PeakFloor) -> Self {
         self.peak_floor = floor;
-        Ok(self)
+        self
     }
 
     /// Folds with a fixed or an estimated tuning.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTonalParameter`] for a fixed offset that is not finite or
-    /// is outside `-50..=50` cents.
-    pub fn with_tuning(mut self, tuning: Tuning) -> Result<Self> {
-        if let Tuning::Fixed(cents) = tuning
-            && (cents.get().is_nan() || cents.get().abs() > 50.0)
-        {
-            return Err(Error::InvalidTonalParameter(
-                "tuning: outside -50..=50 cents",
-            ));
-        }
+    #[must_use]
+    pub fn with_tuning(mut self, tuning: Tuning) -> Self {
         self.tuning = tuning;
-        Ok(self)
+        self
     }
 
     /// The window, hop and sample rate frames are taken at.
@@ -271,7 +271,7 @@ impl ChromaConfig {
         if amplitude.is_nan() || amplitude < SILENCE_FLOOR.to_amplitude().get() {
             return false;
         }
-        let floor = top * self.peak_floor.to_amplitude().get();
+        let floor = top * self.peak_floor.get().to_amplitude().get();
         let width = self.bin_width();
         for i in lo..=hi {
             let m = magnitudes[i];
@@ -301,14 +301,14 @@ impl ChromaConfig {
     /// Folds a peak into the twelve classes at `tuning` semitones sharp.
     fn fold(&self, frequency: f64, energy: f32, tuning: Semitones, frame: &mut [f32; CLASSES]) {
         let mut weight = energy;
-        for order in 1..=self.harmonics {
+        for order in 1..=self.harmonics.get() {
             let sub = frequency / order as f64;
             if sub < f64::from(self.min_freq.get()) {
                 break;
             }
             let class = class_of(sub, tuning);
             frame[class] += weight;
-            weight *= self.harmonic_decay;
+            weight *= self.harmonic_decay.get();
         }
     }
 }
@@ -355,10 +355,15 @@ struct TuningSums {
 }
 
 impl TuningSums {
-    /// The mean distance, within `-50..=50` cents; 0 with no peak.
-    fn cents(self) -> Cents {
+    /// The mean distance, within `-50..=50` cents; 0 with no peak. `atan2` is
+    /// within a half turn, so the offset is within a half semitone.
+    fn offset(self) -> TuningOffset {
         let turns = self.sin.atan2(self.cos) / std::f64::consts::TAU;
-        Semitones(turns as f32).to_cents()
+        TuningOffset::new(Semitones(turns as f32).to_cents()).unwrap_or(TuningOffset::NONE)
+    }
+
+    fn cents(self) -> Cents {
+        self.offset().get()
     }
 }
 
@@ -453,7 +458,7 @@ impl ChromaState {
     #[must_use]
     pub fn tuning(&self) -> Cents {
         match self.config.map(|c| c.tuning) {
-            Some(Tuning::Fixed(cents)) => cents,
+            Some(Tuning::Fixed(offset)) => offset.get(),
             _ => self.sums.cents(),
         }
     }
@@ -491,7 +496,7 @@ impl ChromaState {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidTonalParameter`] when `samples` is not one window long;
+/// [`Error::FrameLengthMismatch`] when `samples` is not one window long;
 /// [`Error::NonFiniteInput`] when it holds a NaN or infinity.
 pub fn step_chroma(
     cfg: &ChromaConfig,
@@ -502,9 +507,10 @@ pub fn step_chroma(
     // Checked before the state adopts the config, so a bad frame leaves the
     // carry as it was.
     if samples.len() != cfg.geometry.window().get() {
-        return Err(Error::InvalidTonalParameter(
-            "frame: length differs from the window",
-        ));
+        return Err(Error::FrameLengthMismatch {
+            got: Samples(samples.len()),
+            window: cfg.geometry.window(),
+        });
     }
     if samples.iter().any(|s| !s.is_finite()) {
         return Err(Error::NonFiniteInput);
@@ -514,7 +520,7 @@ pub fn step_chroma(
 
     let mut frame = [0.0f32; CLASSES];
     let tuning = match cfg.tuning {
-        Tuning::Fixed(cents) => cents,
+        Tuning::Fixed(offset) => offset.get(),
         Tuning::Estimate => {
             let sums = &mut state.sums;
             cfg.peaks(&state.magnitudes, |f, e| ChromaConfig::tune(f, e, sums));
@@ -549,7 +555,7 @@ pub fn step_chroma(
 ///
 /// [`Error::NonFiniteInput`] for a NaN or infinite sample;
 /// [`Error::InsufficientInput`] for less than one window;
-/// [`Error::InvalidTonalParameter`] for more than 524288 frames.
+/// [`Error::TooManyFrames`] for more than 524288 frames.
 pub fn chroma(samples: &[f32], cfg: &ChromaConfig, fft: &mut FftScratch) -> Result<Chroma> {
     if samples.iter().any(|s| !s.is_finite()) {
         return Err(Error::NonFiniteInput);
@@ -563,7 +569,10 @@ pub fn chroma(samples: &[f32], cfg: &ChromaConfig, fft: &mut FftScratch) -> Resu
     }
     let frames = cfg.geometry.frames_for(Samples(samples.len()));
     if frames.get() > MAX_FRAMES {
-        return Err(Error::InvalidTonalParameter("input: too many frames"));
+        return Err(Error::TooManyFrames {
+            frames,
+            max: FrameCount(MAX_FRAMES),
+        });
     }
     let frame_at = |i: usize| {
         let at = i * cfg.geometry.hop().get();
@@ -571,7 +580,7 @@ pub fn chroma(samples: &[f32], cfg: &ChromaConfig, fft: &mut FftScratch) -> Resu
     };
 
     let tuning = match cfg.tuning {
-        Tuning::Fixed(cents) => cents,
+        Tuning::Fixed(offset) => offset,
         Tuning::Estimate => {
             let mut state = ChromaState::new();
             state.adopt(cfg);
@@ -580,7 +589,7 @@ pub fn chroma(samples: &[f32], cfg: &ChromaConfig, fft: &mut FftScratch) -> Resu
                 let sums = &mut state.sums;
                 cfg.peaks(&state.magnitudes, |f, e| ChromaConfig::tune(f, e, sums));
             }
-            state.sums.cents()
+            state.sums.offset()
         }
     };
 
@@ -595,7 +604,7 @@ pub fn chroma(samples: &[f32], cfg: &ChromaConfig, fft: &mut FftScratch) -> Resu
     }
     Ok(Chroma {
         grid: Grid::new(data, frames, BinCount(CLASSES))?,
-        tuning,
+        tuning: tuning.get(),
     })
 }
 
@@ -707,7 +716,7 @@ mod tests {
     /// (a third of it) reads `0.09 / 1.3`.
     #[test]
     fn the_harmonic_decay_weighs_the_subharmonic_votes() {
-        let cfg = cfg().with_harmonic_decay(0.3).unwrap();
+        let cfg = cfg().with_harmonic_decay(HarmonicDecay::of(0.3));
         let c = run(&sine(392.0, 8192, 0.5), &cfg).mean();
         assert!((c[7] - 1.0).abs() < 1e-6);
         assert!((c[0] - 0.09 / 1.3).abs() < 0.01, "{c:?}");
@@ -723,10 +732,10 @@ mod tests {
             .zip(sine(330.0, 8192, 0.5 * 10f64.powf(-50.0 / 20.0)))
             .map(|(a, b)| a + b)
             .collect();
-        let only = cfg().with_harmonics(1).unwrap();
-        let ignored = run(&x, &only.with_peak_floor(Db(-40.0)).unwrap()).mean();
+        let only = cfg().with_harmonics(Harmonics::of(1));
+        let ignored = run(&x, &only.with_peak_floor(PeakFloor::of(Db(-40.0)))).mean();
         assert_eq!(ignored[4], 0.0);
-        let heard = run(&x, &only.with_peak_floor(Db(-80.0)).unwrap()).mean();
+        let heard = run(&x, &only.with_peak_floor(PeakFloor::of(Db(-80.0)))).mean();
         assert!(heard[4] > 0.0, "{heard:?}");
     }
 
@@ -762,7 +771,7 @@ mod tests {
     fn a_fixed_tuning_moves_the_fold() {
         let x = sine(440.0 * (30.0f64 / 1200.0).exp2(), 8192, 0.5);
         let at = |cents: f32| {
-            let cfg = cfg().with_tuning(Tuning::Fixed(Cents(cents))).unwrap();
+            let cfg = cfg().with_tuning(Tuning::Fixed(TuningOffset::new(Cents(cents)).unwrap()));
             let c = run(&x, &cfg);
             assert_eq!(c.tuning(), Cents(cents));
             c.mean()
@@ -781,7 +790,7 @@ mod tests {
             .map(|(a, b)| a + b)
             .collect();
         let batch = run(&x, &cfg());
-        let fixed = cfg().with_tuning(Tuning::Fixed(batch.tuning())).unwrap();
+        let fixed = cfg().with_tuning(Tuning::Fixed(TuningOffset::new(batch.tuning()).unwrap()));
         let (mut state, mut fft) = (ChromaState::new(), FftScratch::new());
         for (i, row) in batch.grid().rows().enumerate() {
             let at = i * 1024;
@@ -810,7 +819,7 @@ mod tests {
         let (mut state, mut fft) = (ChromaState::new(), FftScratch::new());
         let x = sine(440.0, 4096, 0.5);
         step_chroma(&cfg(), &mut state, &x, &mut fft).unwrap();
-        let other = cfg().with_harmonics(1).unwrap();
+        let other = cfg().with_harmonics(Harmonics::of(1));
         step_chroma(&other, &mut state, &sine(330.0, 4096, 0.5), &mut fft).unwrap();
         let mean = state.mean();
         assert_eq!((mean[4], mean[9]), (1.0, 0.0), "{mean:?}");
@@ -824,7 +833,7 @@ mod tests {
         let x = sine(440.0 * (25.0f64 / 1200.0).exp2(), 4096, 0.5);
         step_chroma(&cfg(), &mut state, &x, &mut fft).unwrap();
         let (mean, tuning) = (state.mean(), state.tuning());
-        let other = cfg().with_harmonics(1).unwrap();
+        let other = cfg().with_harmonics(Harmonics::of(1));
         let mut nan = x.clone();
         nan[7] = f32::NAN;
         assert!(step_chroma(&other, &mut state, &nan, &mut fft).is_err());
@@ -836,29 +845,23 @@ mod tests {
         assert_eq!(state.tuning(), Cents(0.0));
     }
 
-    /// Every setting is validated, NaN and infinity included.
+    /// The geometry is validated against what the fold can afford, and the band
+    /// against the bins it holds.
     #[test]
-    fn settings_are_validated() {
-        let bad = |r: Result<ChromaConfig>| matches!(r, Err(Error::InvalidTonalParameter(_)));
-        assert!(bad(ChromaConfig::new(geometry(32, 8))));
-        assert!(bad(ChromaConfig::new(geometry(1 << 19, 1 << 17))));
-        assert!(bad(ChromaConfig::new(geometry(4096, 32))));
+    fn the_geometry_and_band_are_validated() {
+        assert!(matches!(
+            ChromaConfig::new(geometry(32, 8)),
+            Err(Error::WindowOutOfRange { .. })
+        ));
+        assert!(matches!(
+            ChromaConfig::new(geometry(1 << 19, 1 << 17)),
+            Err(Error::WindowOutOfRange { .. })
+        ));
+        assert!(matches!(
+            ChromaConfig::new(geometry(4096, 32)),
+            Err(Error::TooManyOverlaps { .. })
+        ));
         assert!(ChromaConfig::new(geometry(4096, 64)).is_ok());
-        for harmonics in [0, 17] {
-            assert!(bad(cfg().with_harmonics(harmonics)));
-        }
-        for decay in [0.0, -0.1, 1.5, f32::NAN, f32::INFINITY] {
-            assert!(bad(cfg().with_harmonic_decay(decay)), "{decay}");
-        }
-        for floor in [1.0, -121.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(bad(cfg().with_peak_floor(Db(floor))), "{floor}");
-        }
-        for cents in [51.0, -51.0, f32::NAN, f32::INFINITY] {
-            assert!(
-                bad(cfg().with_tuning(Tuning::Fixed(Cents(cents)))),
-                "{cents}"
-            );
-        }
         let empty = |r: Result<ChromaConfig>| matches!(r, Err(Error::EmptyFrequencyRange { .. }));
         for (lo, hi) in [
             (500.0, 100.0),
@@ -906,7 +909,7 @@ mod tests {
         let long = vec![0.0; MAX_FRAMES + 64];
         assert!(matches!(
             chroma(&long, &tiny, &mut fft),
-            Err(Error::InvalidTonalParameter(_))
+            Err(Error::TooManyFrames { .. })
         ));
         // A NaN between two frames is in no window but is still refused.
         let sparse = ChromaConfig::new(geometry(64, 128)).unwrap();
@@ -917,10 +920,13 @@ mod tests {
             Error::NonFiniteInput
         );
         let mut state = ChromaState::new();
-        assert!(matches!(
+        assert_eq!(
             step_chroma(&cfg(), &mut state, &x[..4000], &mut fft),
-            Err(Error::InvalidTonalParameter(_))
-        ));
+            Err(Error::FrameLengthMismatch {
+                got: Samples(4000),
+                window: Samples(4096)
+            })
+        );
         x[100] = f32::NAN;
         assert_eq!(
             step_chroma(&cfg(), &mut state, &x[..4096], &mut fft).unwrap_err(),

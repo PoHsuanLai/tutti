@@ -176,13 +176,7 @@ fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
         "the refused open left the server serving"
     );
     let resize = ipc
-        .set_editor_size(
-            &main,
-            tutti_plugin_types::EditorSize {
-                width: 100,
-                height: 100,
-            },
-        )
+        .set_editor_size(&main, dpi::PhysicalSize::new(100, 100).into())
         .expect_err("no editor is open");
     assert!(resize.to_string().contains("not open"), "{resize}");
 }

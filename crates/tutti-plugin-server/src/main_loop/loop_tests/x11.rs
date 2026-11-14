@@ -4,12 +4,13 @@
 
 use std::time::Duration;
 
+use dpi::{PhysicalSize, Size};
 use tutti_clap_test_plugin::{
     GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_WIDTH,
     GuiMode,
 };
 use tutti_plugin_ipc::{BridgeMessage, HostMessage};
-use tutti_plugin_types::{ContentScale, EditorSize};
+use tutti_plugin_types::ContentScale;
 
 use super::*;
 
@@ -44,10 +45,7 @@ fn the_editor_opens_resizes_and_closes_on_the_served_instance() {
     let probe = crate::test_utils::clap();
     probe.gui_command(GUI_CMD_REQUEST_RESIZE);
     let (mut session, _slab) = session("editor");
-    let wanted = EditorSize {
-        width: 801,
-        height: 601,
-    };
+    let wanted = Size::Physical(PhysicalSize::new(801, 601));
     let mut script = Script::new([
         Step::Send(load_message()),
         Step::Send(HostMessage::OpenEditor {
@@ -73,17 +71,16 @@ fn the_editor_opens_resizes_and_closes_on_the_served_instance() {
         .expect("the open is answered");
     assert_eq!(
         opened,
-        Ok(Some(EditorSize {
-            width: GUI_WIDTH,
-            height: GUI_HEIGHT
-        })),
+        Ok(Some(Size::Physical(PhysicalSize::new(
+            GUI_WIDTH, GUI_HEIGHT
+        )))),
         "the plugin's own size"
     );
     assert!(
         script.heard.iter().any(|m| matches!(
             m,
             BridgeMessage::EditorWantsSize { size }
-                if *size == EditorSize { width: GUI_REQUESTED_RESIZE_W, height: GUI_REQUESTED_RESIZE_H }
+                if *size == Size::Physical(PhysicalSize::new(GUI_REQUESTED_RESIZE_W, GUI_REQUESTED_RESIZE_H))
         )),
         "the plugin's resize request reached the host: {:?}",
         script.heard
@@ -96,7 +93,9 @@ fn the_editor_opens_resizes_and_closes_on_the_served_instance() {
             _ => None,
         })
         .expect("the resize is answered");
-    let took = sized.expect("the plugin takes a size");
+    let took = sized
+        .expect("the plugin takes a size")
+        .to_physical::<u32>(1.0);
     let cap = probe.gui_capture();
     assert_eq!(
         (cap.last_set_size_w, cap.last_set_size_h),

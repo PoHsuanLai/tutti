@@ -98,7 +98,10 @@ pub(crate) mod wire;
 ///   `TransportRequested` (the plugin's request to the transport, CLAP's
 ///   `transport-control`). Both follow every earlier variant, which keep their
 ///   numbers.
-pub const PROTOCOL_VERSION: u32 = 37;
+/// - **Version 38** writes an editor size as a `dpi::Size`, which says whether it
+///   is in physical pixels or logical points: `SetEditorSize`, `EditorOpened`,
+///   `EditorSized` and `EditorWantsSize` carried a pair of integers with no unit.
+pub const PROTOCOL_VERSION: u32 = 38;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

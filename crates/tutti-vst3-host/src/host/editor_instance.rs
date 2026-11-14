@@ -7,10 +7,11 @@
 
 use std::path::Path;
 
+use dpi::Size;
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
-    EditorWindow, InProcess, KeyEvent, KeyUse, Load, MainThread, Normalized, ParamEdit, ParamId,
-    PluginError, PluginResult, WindowHandle,
+    AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow,
+    InProcess, KeyEvent, KeyUse, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
+    PluginResult, WindowHandle,
 };
 
 use super::loaded::Vst3Loaded;
@@ -145,15 +146,10 @@ impl EditorWindow for Vst3Editor {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let size = self
-            .inner
+    ) -> PluginResult<Size> {
+        self.inner
             .embed_editor(main, parent, scale)
-            .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
+            .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))
     }
 
     fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
@@ -199,33 +195,13 @@ impl EditorWindow for Vst3Editor {
         }
     }
 
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
-        let snapped = self
-            .inner
-            .resize_editor(
-                main,
-                EditorSize {
-                    width: requested.width,
-                    height: requested.height,
-                },
-            )
-            .map_err(|e| editor_error(format!("VST3 resize_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: snapped.width,
-            height: snapped.height,
-        })
+    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size> {
+        self.inner
+            .resize_editor(main, requested)
+            .map_err(|e| editor_error(format!("VST3 resize_editor failed: {e}")))
     }
 
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
-        self.inner
-            .poll_editor_resize_request(main)
-            .map(|sz| EditorSize {
-                width: sz.width,
-                height: sz.height,
-            })
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
+        self.inner.poll_editor_resize_request(main)
     }
 }

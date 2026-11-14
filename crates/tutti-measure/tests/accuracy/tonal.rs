@@ -7,8 +7,8 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 use tutti_dsp::{FftScratch, StftGeometry};
 use tutti_measure::Error;
 use tutti_measure::{
-    ChordConfig, ChordQuality, ChromaConfig, Key, KeyProfile, Mode, PitchClass, Tuning, chroma,
-    detect_chords, estimate_key,
+    ChordConfig, ChordQuality, ChromaConfig, Harmonics, Key, KeyProfile, Mode, PitchClass, Tuning,
+    TuningOffset, chroma, detect_chords, estimate_key,
 };
 use tutti_types::{Cents, SampleRate, Samples};
 
@@ -95,7 +95,7 @@ fn a_triad_of_sines_has_chroma_at_its_classes() {
     let mut x = vec![0.0; SR as usize * 2];
     chord_tones(&mut x, 0, 2.0, 0, false, 1);
 
-    let only = mean_chroma(&x, &config().with_harmonics(1).unwrap());
+    let only = mean_chroma(&x, &config().with_harmonics(Harmonics::of(1)));
     assert_eq!(top(&only, 3), [0, 4, 7]);
     let sidelobes = 6.0 * 10f32.powf(-3.1);
     for (class, &v) in only.iter().enumerate() {
@@ -227,7 +227,7 @@ fn a_detuned_scale_resolves_and_its_tuning_is_read() {
         );
     }
     // Fixed tuning is reported as given.
-    let fixed = cfg.with_tuning(Tuning::Fixed(Cents(12.0))).unwrap();
+    let fixed = cfg.with_tuning(Tuning::Fixed(TuningOffset::of(Cents(12.0))));
     let c = chroma(&melody(&[0], 0.5, 1, 0.0), &fixed, &mut FftScratch::new()).unwrap();
     assert_eq!(c.tuning(), Cents(12.0));
 }

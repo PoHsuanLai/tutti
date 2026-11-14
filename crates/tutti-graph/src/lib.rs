@@ -626,8 +626,7 @@ pub use bus_edge::{BusError, BusFeed, BusFold, BusRef, BusSide, BusSource, Lower
 pub use gain::{EDGE_DECLICK, EdgeFade, EdgeGain};
 pub use graph::{
     Edge, EdgeId, EventTapId, EventTapSource, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId,
-    MeterSpec, NodeKey, NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec,
-    Topology, Valid,
+    MeterSpec, NodeKey, NodeSpec, OutPort, Sink, Source, TapAlign, TapId, TapSpec, Topology, Valid,
 };
 pub use history::TransportHistory;
 pub use inlet::{InletNode, InletRing};

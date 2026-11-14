@@ -28,7 +28,9 @@ use parking_lot::Mutex;
 use vst3::Steinberg::{IPlugFrame, IPlugView, ViewRect, kInvalidArgument, kResultOk, tresult};
 use vst3::{Class, ComWrapper};
 
-use tutti_plugin_types::EditorSize;
+use dpi::Size;
+
+use crate::view::size_of_rect;
 
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
@@ -42,7 +44,7 @@ use super::run_loop::RunLoop;
 /// given, and where its `resizeView` requests land until the host takes them.
 pub(crate) struct HostPlugFrame {
     /// The latest `resizeView` request not yet taken.
-    resize_request: Mutex<Option<EditorSize>>,
+    resize_request: Mutex<Option<Size>>,
     /// Shared with `HostApplication` — see `run_loop.rs`.
     #[cfg(target_os = "linux")]
     run_loop: Arc<RunLoop>,
@@ -79,7 +81,7 @@ impl HostPlugFrame {
     }
 
     /// The latest size the plugin asked for since the last take, if any.
-    pub(crate) fn take_resize_request(&self) -> Option<EditorSize> {
+    pub(crate) fn take_resize_request(&self) -> Option<Size> {
         self.resize_request.lock().take()
     }
 }
@@ -95,17 +97,10 @@ impl vst3::Steinberg::IPlugFrameTrait for HostPlugFrame {
             let rect = unsafe { *new_size };
             // A rect that is inverted, or whose extent does not fit in `i32`
             // arithmetic, is not a size: refuse it and keep the last request.
-            let (Some(width), Some(height)) = (
-                rect.right
-                    .checked_sub(rect.left)
-                    .and_then(|w| u32::try_from(w).ok()),
-                rect.bottom
-                    .checked_sub(rect.top)
-                    .and_then(|h| u32::try_from(h).ok()),
-            ) else {
+            let Some(size) = size_of_rect(&rect) else {
                 return kInvalidArgument;
             };
-            *self.resize_request.lock() = Some(EditorSize { width, height });
+            *self.resize_request.lock() = Some(size);
             kResultOk
         })
     }
@@ -120,6 +115,14 @@ opaque_debug!(HostPlugFrame);
 mod tests {
     use super::*;
     use vst3::Steinberg::IPlugFrameTrait;
+
+    /// The pending request, in pixels (a request is the same pair in either unit
+    /// at scale 1).
+    fn requested(frame: &ComWrapper<HostPlugFrame>) -> Option<dpi::PhysicalSize<u32>> {
+        frame
+            .take_resize_request()
+            .map(|size| size.to_physical(1.0))
+    }
 
     fn frame() -> ComWrapper<HostPlugFrame> {
         HostPlugFrame::new(
@@ -157,13 +160,7 @@ mod tests {
             }
         }
 
-        assert_eq!(
-            frame.take_resize_request(),
-            Some(EditorSize {
-                width: 800,
-                height: 600
-            })
-        );
+        assert_eq!(requested(&frame), Some(dpi::PhysicalSize::new(800, 600)));
         assert_eq!(frame.take_resize_request(), None);
 
         // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
@@ -174,13 +171,7 @@ mod tests {
             ptr.resizeView(std::ptr::null_mut(), &mut r);
             ptr.resizeView(std::ptr::null_mut(), std::ptr::null_mut());
         }
-        assert_eq!(
-            frame.take_resize_request(),
-            Some(EditorSize {
-                width: 320,
-                height: 240
-            })
-        );
+        assert_eq!(requested(&frame), Some(dpi::PhysicalSize::new(320, 240)));
     }
 
     /// A rect that is inverted, or whose extent overflows `i32`, is refused and
@@ -214,12 +205,6 @@ mod tests {
                 kInvalidArgument
             );
         }
-        assert_eq!(
-            frame.take_resize_request(),
-            Some(EditorSize {
-                width: 640,
-                height: 480
-            })
-        );
+        assert_eq!(requested(&frame), Some(dpi::PhysicalSize::new(640, 480)));
     }
 }

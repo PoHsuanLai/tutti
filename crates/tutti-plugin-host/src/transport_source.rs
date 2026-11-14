@@ -278,7 +278,7 @@ fn played_between(
         // The engine seats a change on the first frame at or after its time
         // ([`first_frame_at_or_after`]) with the map's beat there, so a
         // slowing change's beats at `from`'s tempo fall short of the frames
-        // by under one: the count is that rule's, not a rounding.
+        // by under one: a count is the frame the engine seats the change on.
         let frames_at =
             |tempo: Bpm| first_frame_at_or_after(beats * 60.0 / tempo.get() * rate.get()) as f64;
         let least = frames_at(from.tempo.max(to.tempo));
@@ -334,6 +334,8 @@ fn continued_without_origin(
 /// between the reads) is off by `n · |1 − r|` frames, `r` the tempo they
 /// played at over the tempo counted, up to the whole gap at a 2 : 1 change.
 /// `None` for anything else: a move back, or further than the gap plays.
+/// The count rounds: no change is seated between the reads, so the beats
+/// moved are whole frames up to float noise.
 fn played_across(
     from: &TransportPosition,
     gap: usize,
@@ -1507,7 +1509,7 @@ mod tests {
         const LEN: usize = 64;
         let rate = 48_000.0;
         for to_bpm in [90.0, 60.0, 40.0, 240.0, 360.0] {
-            for fraction in [0.1, 0.3, 0.5, 0.7, 0.9] {
+            for fraction in [0.0, 0.1, 0.3, 0.5, 0.7, 0.9] {
                 let x = 31.0 + fraction;
                 let (old, new) = (120.0 / 60.0 / rate, to_bpm / 60.0 / rate);
                 let change_beat = 4.0;

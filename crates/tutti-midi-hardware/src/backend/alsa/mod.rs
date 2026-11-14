@@ -34,6 +34,7 @@ mod enumerate;
 mod input;
 mod output;
 mod poll;
+pub(super) mod virtual_endpoint;
 mod watch;
 
 use crate::InputProducerHandle;

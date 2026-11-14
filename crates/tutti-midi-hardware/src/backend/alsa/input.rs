@@ -155,7 +155,22 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     let clock = seq.stamp_port(port)?;
 
     seq.connect_from(port, src_client, src_port)?;
+    Ok(Box::new(start(seq, clock, producer)?))
+}
 
+/// Starts pumping what the client's ports receive into `producer`: the pump
+/// owns `seq` and ends, closing it, when the returned connection drops.
+///
+/// # Errors
+///
+/// [`Error::Alsa`](crate::Error::Alsa) if the client's descriptors cannot be
+/// polled, and [`Error::MidiDevice`](crate::Error::MidiDevice) if the stop pair
+/// or the pump thread cannot be made.
+pub(super) fn start(
+    seq: Client,
+    clock: QueueClock,
+    producer: InputProducerHandle,
+) -> Result<AlsaInput> {
     let (stop_tx, stop_rx) = UnixStream::pair()
         .map_err(|e| crate::error::Error::device_from("MIDI pump stop pair", e))?;
     let polls = Poller::new(&seq, stop_rx.as_raw_fd())?;
@@ -173,12 +188,12 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
         })
         .map_err(|e| crate::error::Error::device_from("spawn MIDI pump", e))?;
 
-    Ok(Box::new(AlsaInput {
+    Ok(AlsaInput {
         stop: Some(stop_tx),
         died,
         ended,
         thread: Some(thread),
-    }))
+    })
 }
 
 /// Read UMP events until the stop pair closes. Reads until the queue is empty,
@@ -256,6 +271,11 @@ fn pump(
             }
         };
         errors.read();
+        // A subscription to the port, or a change of its Endpoint, is the
+        // sequencer's notice and not music.
+        if !received.is_ump() {
+            continue;
+        }
         let words = received.ump;
         let now = match received.stamp {
             Some(t) => arrivals.at(&seq, t),

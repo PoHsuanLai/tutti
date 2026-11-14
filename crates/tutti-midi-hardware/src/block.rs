@@ -38,6 +38,43 @@ pub(crate) struct RawBlock<'a> {
     pub name: Option<&'a str>,
 }
 
+impl<'a> RawBlock<'a> {
+    /// The record an OS is told for `block`: [`function_block`](Self::function_block)'s
+    /// inverse, field for field.
+    #[cfg_attr(
+        not(midi_backend = "alsa"),
+        allow(dead_code, reason = "only a backend that publishes blocks writes them")
+    )]
+    pub(crate) fn of(block: &'a FunctionBlock) -> Self {
+        Self {
+            id: u32::from(block.id().get()),
+            active: block.active(),
+            direction: match block.direction() {
+                BlockDirection::Input => 1,
+                BlockDirection::Output => 2,
+                BlockDirection::Bidirectional => 3,
+                BlockDirection::Reserved(_) => 0,
+            },
+            first_group: u32::from(block.first_group().get()),
+            groups: u32::from(block.groups().get()),
+            midi1: match block.midi1() {
+                Midi1Port::Unrestricted => 1,
+                Midi1Port::Restricted => 2,
+                Midi1Port::No | Midi1Port::Reserved(_) => 0,
+            },
+            ui_hint: match block.ui_hint() {
+                UiHint::Unknown => 0,
+                UiHint::Receiver => 1,
+                UiHint::Sender => 2,
+                UiHint::Both => 3,
+            },
+            midi_ci_version: u32::from(block.midi_ci_version()),
+            sysex8_streams: u32::from(block.max_sysex8_streams()),
+            name: block.name().map(BlockName::as_str),
+        }
+    }
+}
+
 impl RawBlock<'_> {
     /// The Function Block this is; `None` for one the UMP spec cannot hold (a
     /// number above 31, Groups past 16, a reserved direction). Never clamps.

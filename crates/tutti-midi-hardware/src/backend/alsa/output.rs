@@ -191,7 +191,7 @@ pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
 
 /// A client or port id as the sequencer's address byte; ids come from the
 /// sequencer and fit, so a wider one is reported rather than truncated.
-fn seq_addr_byte(id: i32, operation: &'static str) -> Result<u8> {
+pub(super) fn seq_addr_byte(id: i32, operation: &'static str) -> Result<u8> {
     u8::try_from(id).map_err(|_| Error::Alsa {
         operation,
         code: -EINVAL,

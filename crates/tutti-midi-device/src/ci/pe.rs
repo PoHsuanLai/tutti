@@ -31,6 +31,14 @@
 //! [`PeCall`], each ending in a [`PeOutcome`]. The messages it sends and reads are
 //! [`CiMessage::PropertyExchange`](crate::CiMessage::PropertyExchange).
 //!
+//! The Resources ride on that: [`PeData`] is the Property Data of a standard Resource
+//! (ResourceList, DeviceInfo, ChannelList, JSONSchema, ModeList, CurrentMode,
+//! ChannelMode, BasicChannelRx and Tx, ProgramList, LocalOn, ExternalSync, AllCtrlList,
+//! ChCtrlList, CtrlMapList), typed; [`ResourceInitiator`] makes checked Get, Set and
+//! Subscribe calls over [`PeInitiator`], walks paginated lists and keeps the data of a
+//! Subscription; [`ResourceResponder`] serves a [`ResourceStore`] and tells subscribers
+//! what changes. [`PartialUpdate`] is a Partial Set or `partial` update, applied to the data.
+//!
 //! ```
 //! use tutti_midi_device::{PeHeader, MaxSysexSize, PeRequest, ResourceName};
 //!

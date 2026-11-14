@@ -85,7 +85,7 @@ pub enum PeResource {
     DeviceInfo,
     /// `ChannelList`: the Channels in use (M2-105 §4).
     ChannelList,
-    /// `JSONSchema`: a JSON Schema a ResourceList entry refers to (M2-105 §5).
+    /// JSONSchema: a JSON Schema a ResourceList entry refers to (M2-105 §5).
     JsonSchema,
     /// `ModeList`: the Modes of the device (M2-106 §2).
     ModeList,
@@ -199,7 +199,7 @@ impl PeResource {
     }
 
     /// How an inquiry for the Resource names an entry. `ProgramList`,
-    /// `ChCtrlList`, `CtrlMapList` and `JSONSchema` each have a set of entries
+    /// `ChCtrlList`, `CtrlMapList` and JSONSchema each have a set of entries
     /// and so need a `resId`.
     #[must_use]
     pub fn res_id_use(&self) -> ResIdUse {

@@ -654,7 +654,7 @@ fn resource_names_follow_8_4_and_8_6() {
 }
 
 // M2-103 §14.1 Table 82: ResourceList entries, the `encodings` of one spelled
-// `MCoded7`, and defaults filled in where an entry names nothing (§14.3).
+// MCoded7, and defaults filled in where an entry names nothing (§14.3).
 #[test]
 fn resource_list_reads_table_82() {
     let text = r#"[{"resource":"DeviceInfo"},{"resource":"ChannelList","canSubscribe":true},

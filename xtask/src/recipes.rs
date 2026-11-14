@@ -477,17 +477,17 @@ impl Planner<'_> {
             "verify-audio" => {
                 let [out] = Self::params(name, args, ["/tmp/tutti-verify"])?;
                 self.lines(&[
-                    format!("cargo run --locked --release -p tutti-sampler --example render_cases -- {out}/sampler"),
-                    format!("cargo run --locked --release -p tutti-export --example render_export_cases -- {out}/export"),
-                    format!("cargo run --locked --release -p tutti-measure --example render_analysis_cases -- {out}/analysis"),
-                    format!("cargo run --locked --release -p tutti-polysynth --example render_synth_cases -- {out}/synth"),
-                    format!("cargo run --locked --release -p tutti-dsp --example render_dsp_cases -- {out}/dsp"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_sampler_cases -- {out}/sampler"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_export_cases -- {out}/export"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_analysis_cases -- {out}/analysis"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_synth_cases -- {out}/synth"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_dsp_cases -- {out}/dsp"),
                     "uv sync --quiet".to_owned(),
-                    format!("uv run python crates/tutti-sampler/examples/verify_sampler.py {out}/sampler"),
-                    format!("uv run python crates/tutti-export/examples/verify_export.py {out}/export"),
-                    format!("uv run python crates/tutti-measure/examples/verify_analysis.py {out}/analysis"),
-                    format!("uv run python crates/tutti-polysynth/examples/verify_synth.py {out}/synth"),
-                    format!("uv run python crates/tutti-dsp/examples/verify_dsp.py {out}/dsp"),
+                    format!("uv run python testing/tutti-verify/py/verify_sampler.py {out}/sampler"),
+                    format!("uv run python testing/tutti-verify/py/verify_export.py {out}/export"),
+                    format!("uv run python testing/tutti-verify/py/verify_analysis.py {out}/analysis"),
+                    format!("uv run python testing/tutti-verify/py/verify_synth.py {out}/synth"),
+                    format!("uv run python testing/tutti-verify/py/verify_dsp.py {out}/dsp"),
                 ]);
             }
             "release" => {

@@ -3,8 +3,8 @@
 
 Run:
     cargo run --release \
-        -p tutti-synth --example render_synth_cases -- /tmp/tutti-synth
-    uv run python crates/tutti-polysynth/examples/verify_synth.py /tmp/tutti-synth
+        -p tutti-verify --bin render_synth_cases -- /tmp/tutti-synth
+    uv run python testing/tutti-verify/py/verify_synth.py /tmp/tutti-synth
 
 The Rust half renders audio and encodes each case's parameters in its filename;
 this half re-derives what the file should contain from that name and from

@@ -3193,6 +3193,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-verify"
+version = "0.0.0"
+dependencies = [
+ "tutti-codec",
+ "tutti-dsp",
+ "tutti-export",
+ "tutti-fixtures",
+ "tutti-graph",
+ "tutti-measure",
+ "tutti-nodes",
+ "tutti-polysynth",
+ "tutti-sampler",
+ "tutti-transport",
+ "tutti-types",
+ "tutti-ump",
+]
+
+[[package]]
 name = "tutti-voicing"
 version = "0.0.1"
 dependencies = [

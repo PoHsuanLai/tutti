@@ -17,7 +17,7 @@ use tutti_types::{Beat, Bpm, Samples};
 /// How far the tempo must move before the clock takes it (and starts a new
 /// segment). Comparing for equality would restart on every buffer from ULP
 /// noise.
-const TEMPO_EPSILON: f64 = 0.001;
+const TEMPO_EPSILON: Bpm = Bpm::of(0.001);
 
 /// The tempo a clock running at `in_force` takes when asked for `asked`:
 /// `asked`, unless it is within the hysteresis of `in_force`. The one

@@ -13,7 +13,7 @@
 //! expected to have harmonics at 1/k because that is what a sawtooth *is*, not
 //! because the Rust said so.
 //!
-//! Run: `cargo run --release -p tutti-polysynth --example render_synth_cases -- <outdir>`
+//! Run: `cargo run --release -p tutti-verify --bin render_synth_cases -- <outdir>`
 
 use std::path::Path;
 use tutti_polysynth::UnisonVoices;

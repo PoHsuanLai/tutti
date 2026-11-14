@@ -3,10 +3,10 @@
 Renders a matrix of sampler cases to WAV, then judges them with numpy/scipy.
 
 ```bash
-cargo run --release -p tutti-sampler --example render_cases -- /tmp/wavs
+cargo run --release -p tutti-verify --bin render_sampler_cases -- /tmp/wavs
 
 uv venv && uv pip install numpy scipy
-.venv/bin/python crates/tutti-sampler/examples/verify_sampler.py /tmp/wavs
+.venv/bin/python testing/tutti-verify/py/verify_sampler.py /tmp/wavs
 ```
 
 ## Why this exists
@@ -21,7 +21,7 @@ principles — an octave is 2x, a fifth is `2**(7/12)` — never from the Rust. 
 re-measures frequency by FFT peak with parabolic interpolation, plus purity,
 level, and block-RMS ripple. It is a second opinion, not a restatement.
 
-`render_cases` drives the real `VoicePool` (placement gate, `MemorySource`, the
+`render_sampler_cases` drives the real `VoicePool` (placement gate, `MemorySource`, the
 resident stretch filter, a transport advanced block by block, as a host
 advances it), not `stretch::Unit` in isolation: the unit has its own tests, and
 what this checks is the assembly. A time-stretched case must keep its pitch

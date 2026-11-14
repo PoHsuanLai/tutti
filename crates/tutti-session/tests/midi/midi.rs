@@ -18,6 +18,7 @@ use tutti_graph::Refused;
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, SampleRate, Samples};
+#[cfg(feature = "midi-hardware")]
 use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 

@@ -15,8 +15,6 @@ use tutti_session::{MidiError, Session, SessionNode, TakePlacement};
 use tutti_types::{Beat, ChannelLayout, Frame, MaxBlock, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Voice2};
 
-const RATE: f64 = 48_000.0;
-
 /// Plays as an instrument (five outputs and an event input).
 struct Probe(ForkByClone<Five>);
 
@@ -406,7 +404,7 @@ mod hardware {
         let s = Session::builder()
             .midi_hardware_over(backend)
             .build_offline(
-                SampleRate::of(RATE),
+                SampleRate::SR_48K,
                 ChannelLayout::STEREO,
                 MaxBlock::of(Samples(1_024)),
             )

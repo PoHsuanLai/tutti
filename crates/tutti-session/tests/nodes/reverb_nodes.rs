@@ -5,15 +5,12 @@
 use tutti_nodes::{FamilyNode, FdnControls, FdnFamily, FdnNode};
 use tutti_session::{ParamError, Session};
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, SampleRate, Samples, Seconds, Tail, UnitAddr, UnitParam};
+use tutti_types::{Samples, Seconds, Tail, UnitAddr, UnitParam};
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(256)),
-        )
+        .max_block(MaxBlock::of(Samples(256)))
+        .build()
         .expect("builds")
 }
 

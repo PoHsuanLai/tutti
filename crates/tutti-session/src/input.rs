@@ -276,6 +276,13 @@ impl Inputs {
         self.held.iter().find(|h| h.node == node)
     }
 
+    /// Closes and forgets the input whose inlet node is `node`, if it is one:
+    /// its capture stream drops, and no restart reopens it.
+    pub(crate) fn forget(&mut self, node: tutti_graph::NodeKey) {
+        self.held
+            .retain(|h| tutti_graph::NodeKey::from(h.node) != node);
+    }
+
     /// What a take reads the device's delay through.
     pub(crate) fn latency_probe(&self) -> crate::take::LatencyProbe {
         crate::take::LatencyProbe::new(Arc::clone(&self.latency), self.output_latency.clone())

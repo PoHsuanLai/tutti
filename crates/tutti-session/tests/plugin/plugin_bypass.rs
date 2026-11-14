@@ -85,7 +85,9 @@ struct Rig {
 fn rig(mode: NodeMode) -> Rig {
     set_server();
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds");
     let plugin = s
         .add_plugin_blocking(

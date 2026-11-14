@@ -322,6 +322,9 @@ pub struct Graph {
     master_meter: Option<MeterReader>,
     /// Crossfades refused `Busy`, in request order.
     parked: VecDeque<Parked>,
+    /// The nodes [`remove`](Self::remove) took out since the session last
+    /// forgot what it declared on them ([`Graph::take_removed`]).
+    removed: Vec<NodeKey>,
     next_crossfade: u64,
     /// What the root's channels are, when a host declared it
     /// ([`Session::declare_root_topology`](crate::Session::declare_root_topology));
@@ -480,6 +483,7 @@ impl Graph {
             next_meter: 1,
             master_meter: Some(master_meter),
             parked: VecDeque::new(),
+            removed: Vec::new(),
             next_crossfade: 0,
             root: None,
             output: None,
@@ -841,18 +845,25 @@ impl Graph {
     ///
     /// # Errors
     ///
-    /// [`NoSuchNode`] when `node` is not in the graph
-    /// (nothing is hosted).
+    /// [`HostPluginError::NoSuchNode`](crate::HostPluginError::NoSuchNode) when
+    /// `node` is not in the graph;
+    /// [`HostPluginError::AlreadyHosted`](crate::HostPluginError::AlreadyHosted)
+    /// when it already hosts a plugin (a plugin's record is freed on the main
+    /// thread, through the graveyard, never replaced where it stands). Nothing
+    /// is hosted on an error.
     #[cfg(feature = "plugin")]
     pub fn host_plugin(
         &mut self,
         node: impl Into<NodeKey>,
         handle: tutti_plugin_host::PluginHandle,
         plugin: tutti_plugin::catalog::PluginRef,
-    ) -> Result<Key<crate::PluginNode>, crate::NoSuchNode> {
+    ) -> Result<Key<crate::PluginNode>, crate::HostPluginError> {
         let node = node.into();
         if !self.nodes.contains_key(&node) {
-            return Err(crate::NoSuchNode::new(node));
+            return Err(crate::NoSuchNode::new(node).into());
+        }
+        if self.plugins.contains_key(&node) {
+            return Err(crate::HostPluginError::AlreadyHosted(node));
         }
         self.plugins
             .insert(node, crate::plugin::HostedPlugin::new(handle, plugin));
@@ -1540,7 +1551,10 @@ impl Graph {
     ///
     /// The graph's one removal for a node, whatever it is (a plugin, an inlet,
     /// a clip). The edges fade out first (a declicked removal): the node stays
-    /// in the editor, rendering, until they have.
+    /// in the editor, rendering, until they have. A crossfade waiting on it is
+    /// dropped, and the session forgets what it declared on it (modulation,
+    /// MIDI routes, an input's capture) at its next update, as
+    /// [`Session::remove`](crate::Session::remove) does at once.
     ///
     /// # Errors
     ///
@@ -1555,6 +1569,10 @@ impl Graph {
         if let Some(record) = self.plugins.remove(&node) {
             self.graveyard.bury(record);
         }
+        // A crossfade waiting on it would only fail at its retry, dropping
+        // the incoming node then: drop it here, on the control thread.
+        self.parked.retain(|p| p.node != node);
+        self.removed.push(node);
         // The edges it feeds fade out first: the node stays in the editor,
         // rendering, until they have.
         self.editor.remove_declicked(node);
@@ -1573,6 +1591,14 @@ impl Graph {
         self.fed_edges.retain(|_, s| !s.is_empty());
         self.edited = true;
         Ok(())
+    }
+
+    /// The nodes removed since the last call: what the session forgets its
+    /// own declarations on (modulation, MIDI, inputs), whichever way the
+    /// removal came, [`Session::remove`](crate::Session::remove) or the
+    /// graph's own.
+    pub(crate) fn take_removed(&mut self) -> Vec<NodeKey> {
+        std::mem::take(&mut self.removed)
     }
 
     /// How many nodes the graph holds.

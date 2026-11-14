@@ -24,11 +24,8 @@ const RATE: f64 = 48_000.0;
 /// (the live engine's `LIVE_MAX_BLOCK`).
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 
@@ -889,11 +886,10 @@ fn a_project_the_device_cannot_take_is_refused_at_build() {
     let build = |floor: usize, device: u16| {
         Session::builder()
             .outputs_floor(ChannelLayout::clamped(floor))
-            .build_offline(
-                SampleRate::of(RATE),
-                ChannelLayout::from(device),
-                MaxBlock::of(Samples(256)),
-            )
+            .sample_rate(SampleRate::of(RATE))
+            .outputs(ChannelLayout::from(device))
+            .max_block(MaxBlock::of(Samples(256)))
+            .build()
     };
     assert!(matches!(
         build(6, 5),

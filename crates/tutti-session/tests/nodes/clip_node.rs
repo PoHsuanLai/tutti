@@ -3,17 +3,14 @@
 use tutti_graph::NodeKey;
 use tutti_sampler::Clip;
 use tutti_session::{OutPort, Root, Session};
-use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, SampleRate};
 
 const RATE: f64 = 48_000.0;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 

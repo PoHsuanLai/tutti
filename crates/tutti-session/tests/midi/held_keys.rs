@@ -4,7 +4,6 @@
 //! gains it hears the later off of a note it never started, which ends nothing.
 
 use std::sync::{Arc, Mutex};
-use tutti_types::MaxBlock;
 
 use crate::common::{Seen, blocks, offline, tap};
 use tutti_fixtures::midi;
@@ -12,7 +11,7 @@ use tutti_graph::{Cx, Event, IntoNode, Io, Node, NodeParts, Offset, Prepare, Sha
 use tutti_midi_runtime::{MIDI_INPUT_PORTS, MidiInputPorts, TimedMidiEvent};
 use tutti_session::{MidiRouteRule, Session, SessionNode};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const MF: u16 = 0x8000;
@@ -179,11 +178,7 @@ impl SessionNode for GroupSrc {}
 fn a_group_route_cut_with_keys_held_ends_them_at_the_next_block_then_nothing() {
     let mut s = Session::builder()
         .midi_groups(MidiGroup::of(1))
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .build()
         .expect("builds");
     let ports = s
         .midi_nodes()

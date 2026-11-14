@@ -12,7 +12,7 @@ use tutti_graph::{
 };
 use tutti_midi_protocol::MpeMode;
 use tutti_session::{MidiError, Session, SessionInstrument, SessionNode, TakePlacement};
-use tutti_types::{ChannelLayout, Frame, MaxBlock, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
 const RATE: f64 = 48_000.0;
@@ -263,11 +263,8 @@ fn the_sessions_mpe_mode_reaches_the_ingest_and_the_next_instrument() {
     };
     let mut s = Session::builder()
         .mpe_mode(rotation)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     assert_eq!(s.midi().mpe(), rotation, "the builder's mode to begin with");
 
@@ -352,11 +349,8 @@ mod hardware {
         let (backend, fake) = FakeBackend::build_with(vec![], vec![], usize::MAX);
         let s = Session::builder()
             .midi_hardware_over(backend)
-            .build_offline(
-                SampleRate::of(RATE),
-                ChannelLayout::STEREO,
-                MaxBlock::of(Samples(1_024)),
-            )
+            .sample_rate(SampleRate::of(RATE))
+            .build()
             .expect("builds");
         (s, fake)
     }

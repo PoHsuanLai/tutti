@@ -15,18 +15,9 @@ and the channel fold/upmix paths.
 
 ### Why a Python judge, when `tests/` exists
 
-The Rust tests read files back with `hound`, which only speaks WAV. FLAC, AIFF
-and Ogg are checked there by frame count and header — never by content. So
-"does the FLAC hold the same samples as the WAV" is not a question the Rust suite
-can ask. A FLAC quantizer that **truncated** where `tutti_codec::Pcm` rounds
-would encode 0.7 as 22936 in a FLAC and 22937 in a WAV from the same render,
-and a unit test at 0.0 and ±1.0, where truncation and rounding agree, would not
-notice.
-
-`soundfile` decodes all four containers uniformly, which makes the comparison
-possible at all. And the resampler's actual quality — passband flatness, alias
-rejection — needs a spectral analysis that a hand-rolled DFT in a test would be
-reimplementing badly.
+`soundfile` decodes all four containers the same way, so one comparison spans
+them. The resampler's quality (passband flatness, alias rejection) needs a
+spectral analysis, which the judge does with numpy's FFT.
 
 The judge derives every expectation from the case **name** and first principles
 (a 1 kHz tone is 1 kHz whatever container it lands in; one LSB at 16-bit is

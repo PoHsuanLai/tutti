@@ -12,10 +12,6 @@ use std::time::{Duration, Instant};
 /// the OS's read `os`: as long before `os` as `stamped` is before `clock`. An
 /// event stamped after the reading (it should not be), or one that reaches back
 /// past what an `Instant` can hold, is at `os`.
-#[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
-    allow(dead_code, reason = "only the OS backends convert a stamp")
-)]
 pub(crate) fn arrival(os: Instant, clock: Duration, stamped: Duration) -> Instant {
     os.checked_sub(clock.saturating_sub(stamped)).unwrap_or(os)
 }
@@ -25,10 +21,6 @@ pub(crate) fn arrival(os: Instant, clock: Duration, stamped: Duration) -> Instan
 /// after `os` (less as long before, never below zero). `None` where the
 /// reading is past what a `Duration` holds. The one rule both backends
 /// schedule by: it is their conversion of a send time to the wire's clock.
-#[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
-    allow(dead_code, reason = "only the OS backends schedule")
-)]
 pub(crate) fn departure(os: Instant, clock: Duration, at: Instant) -> Option<Duration> {
     match at.checked_duration_since(os) {
         Some(after) => clock.checked_add(after),

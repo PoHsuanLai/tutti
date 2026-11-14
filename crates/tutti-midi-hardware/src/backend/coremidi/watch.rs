@@ -31,7 +31,8 @@ use std::time::{Duration, Instant};
 use core_foundation::runloop::CFRunLoop;
 use coremidi::{Client, Notification};
 
-use crate::devices::{ChangeSink, Reporter};
+use crate::devices::ChangeSink;
+use crate::devices::reporter::Reporter;
 use crate::endpoints::{NoWatch, Watch};
 use crate::error::Result;
 use tutti_midi_device::OsDevice;

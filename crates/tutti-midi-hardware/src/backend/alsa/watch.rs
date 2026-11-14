@@ -44,7 +44,8 @@ use super::enumerate::{pack_id, unpack_id};
 use super::poll::ErrorRun;
 #[cfg(test)]
 use super::poll::MAX_DRAIN_ERRORS;
-use crate::devices::{ChangeSink, Reporter};
+use crate::devices::ChangeSink;
+use crate::devices::reporter::Reporter;
 use crate::endpoints::Watch;
 use crate::error::{Error, Result};
 use tutti_alsa_ffi::{

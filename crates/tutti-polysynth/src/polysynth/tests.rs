@@ -521,7 +521,6 @@ fn test_note_off_respects_channel() {
     });
 
     // Play same note (C4=60) on channel 0 and channel 1
-    // note_on(MidiGroup::of(0), MidiChannel::of(channel), note, velocity)
     let note_on_ch0 = ev_note_on(0, 60, 100);
     let note_on_ch1 = ev_note_on(1, 60, 100);
     queue_midi(&mut synth, &[note_on_ch0, note_on_ch1]);
@@ -532,7 +531,6 @@ fn test_note_off_respects_channel() {
     assert_eq!(synth.active_voice_count(), 2, "Should have 2 active voices");
 
     // Note off on channel 0 only
-    // note_off(MidiGroup::of(0), MidiChannel::of(channel), note, velocity)
     let note_off_ch0 = ev_note_off(0, 60);
     queue_midi(&mut synth, &[note_off_ch0]);
     synth.tick(&[], &mut output);

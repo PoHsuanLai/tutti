@@ -530,7 +530,7 @@ impl ParameterChanges {
 
     /// Whether one more queue fits in the reserved capacity.
     #[must_use]
-    pub fn has_room(&self) -> bool {
+    pub(crate) fn has_room(&self) -> bool {
         self.queues.len() < self.queues.capacity()
     }
 

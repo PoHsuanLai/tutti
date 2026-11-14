@@ -184,7 +184,7 @@ impl Vst3PlugType {
     /// Matching is exact and case-sensitive, as the SDK spells the constants —
     /// a plugin that writes `"instrument"` has not written `kInstrument`, and
     /// silently accepting it would let this table drift from the header.
-    pub fn parse_facet(facet: &str) -> Self {
+    pub(crate) fn parse_facet(facet: &str) -> Self {
         match facet {
             "Fx" => Self::Fx,
             "Instrument" => Self::Instrument,
@@ -661,7 +661,7 @@ impl ClapFeature {
 /// than one primary role. First-wins over the plugin's own ordering: that is
 /// the only ranking the format supplies, and inventing one here would override
 /// what the plugin chose to put first.
-pub fn clap_features_role(features: &[ClapFeature]) -> PluginRole {
+pub(crate) fn clap_features_role(features: &[ClapFeature]) -> PluginRole {
     features
         .iter()
         .find_map(ClapFeature::role)

@@ -58,7 +58,7 @@ impl PointBuf {
 
     /// Whether one more point fits.
     #[must_use]
-    pub fn has_room(&self) -> bool {
+    pub(crate) fn has_room(&self) -> bool {
         self.len < self.slots.len()
     }
 

@@ -106,7 +106,7 @@ impl EditorPresence {
     /// distinguish "no GUI" from "not yet known" should match on the variant
     /// instead — that is why this is not a `From` impl.
     #[must_use]
-    pub fn is_present(self) -> bool {
+    pub(crate) fn is_present(self) -> bool {
         self == Self::Present
     }
 }
@@ -209,7 +209,7 @@ impl PluginClass {
             PluginClass::Unknown => PluginRole::Unknown,
             PluginClass::Vst2 { category } => category.role(),
             PluginClass::Vst3 { category } => category.role(),
-            PluginClass::Clap { features } => crate::clap_features_role(features),
+            PluginClass::Clap { features } => crate::classification::clap_features_role(features),
             PluginClass::Au { component_type } => component_type.role(),
         }
     }

@@ -634,7 +634,7 @@ impl State {
 
     /// Whether a plan is under way, so an effect's reply is awaited.
     #[must_use]
-    pub fn is_busy(&self) -> bool {
+    pub(crate) fn is_busy(&self) -> bool {
         self.plan.wait != Wait::Idle
     }
 }

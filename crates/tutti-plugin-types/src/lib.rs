@@ -250,7 +250,7 @@ pub use channels::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, MAX_BLOCK_CHANNELS, Sample,
 };
 pub use classification::{
-    ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories, clap_features_role,
+    ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories,
 };
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use driver::{Hand, Lifecycle, Seat};
@@ -311,8 +311,7 @@ pub use pipeline::{BlockCounts, ChunkCounters, MAX_CHUNK};
 pub use presets::{Preset, PresetId, PresetSupport};
 #[cfg(feature = "probe-wire")]
 pub use probe_wire::{
-    ProbeOutcome, ResultError, decode_result, encode_result, read_result, result_tmp_path,
-    write_result,
+    ProbeOutcome, ResultError, read_result, write_result,
 };
 pub use process::{BlockStatus, ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::{RenderMode, RenderModeSupport};

@@ -63,7 +63,7 @@ pub enum ResultError {
 ///
 /// Never in practice: a [`ProbeOutcome`] holds strings, numbers and enums, which
 /// postcard writes to a `Vec` without failing.
-pub fn encode_result(outcome: &ProbeOutcome) -> Vec<u8> {
+pub(crate) fn encode_result(outcome: &ProbeOutcome) -> Vec<u8> {
     let payload = postcard::to_allocvec(outcome).expect("a ProbeOutcome serializes to a Vec");
     let mut bytes = Vec::with_capacity(HEADER + payload.len());
     bytes.extend_from_slice(&MAGIC);
@@ -83,7 +83,7 @@ pub fn encode_result(outcome: &ProbeOutcome) -> Vec<u8> {
 /// # Panics
 ///
 /// Never: the eight-byte slice converts to an array by construction.
-pub fn decode_result(bytes: &[u8]) -> Result<ProbeOutcome, ResultError> {
+pub(crate) fn decode_result(bytes: &[u8]) -> Result<ProbeOutcome, ResultError> {
     let Some((magic, rest)) = bytes.split_at_checked(MAGIC.len()) else {
         return Err(ResultError::Truncated);
     };
@@ -110,7 +110,7 @@ pub fn decode_result(bytes: &[u8]) -> Result<ProbeOutcome, ResultError> {
 }
 
 /// Where `write_result` stages `result` before it renames it into place.
-pub fn result_tmp_path(result: &Path) -> PathBuf {
+pub(crate) fn result_tmp_path(result: &Path) -> PathBuf {
     let mut name: OsString = result.as_os_str().to_owned();
     name.push(".tmp");
     PathBuf::from(name)

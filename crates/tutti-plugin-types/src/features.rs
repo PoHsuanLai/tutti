@@ -10,7 +10,6 @@
 //!
 //! Numeric wiring (bus widths, latency samples) is not here: it lives on
 //! [`LoadedPlugin`](crate::LoadedPlugin) as plain fields, with
-//! [`multi_bus`](crate::LoadedPlugin::multi_bus) and
 //! [`latency`](crate::LoadedPlugin::latency) derived from them.
 //!
 //! With the `serde` feature, [`Features`] serializes as its underlying bits.

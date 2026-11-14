@@ -52,25 +52,17 @@ env:
 # the file.
 
 jobs:
-  fmt:
-    name: rustfmt
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      # The toolchain `rust-toolchain.toml` pins, with its components.
-      - run: rustup toolchain install
-      - run: cargo fmt --all --check
-
   # Advisories (`deny.toml`): a RustSec vulnerability, a yanked crate or an
   # unmaintained one not named there fails the job. The advisory DB is fetched
   # fresh on the runner; a failed fetch is an error, never a pass. `bans` and
-  # `licenses` are not checked (see `deny.toml`).
+  # `licenses` are not checked (see `deny.toml`). A pull request or merge group
+  # runs it only when the dependencies change (`deps` below); every push to
+  # main and the nightly run it whatever changed, which is where a new advisory
+  # against an unchanged lock shows.
   deny:
     name: cargo deny (advisories)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -95,6 +87,13 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins: the gates below that are
       # `cargo xtask` recipes build `xtask` (std only, a few seconds).
       - run: rustup toolchain install
+      # The two cheapest checks first, so a pull request that fails one fails
+      # in a minute, not after the workspace builds: the formatting, and
+      # xtask's own tests (a recipe or gate whose tests break in a merged tree
+      # once cost a full test run per merge group). `cargo xtask gates` runs
+      # these and the source gates below locally; `.githooks/pre-push` runs it.
+      - run: cargo fmt --all --check
+      - run: cargo test --locked -p xtask
       # Engine types are imported from a crate's root or prelude, never through
       # its modules. Neither rustc nor clippy has a lint for a redundant path,
       # and doc comments in ```text / ```ignore blocks are never compiled — so
@@ -290,7 +289,7 @@ jobs:
   clippy-macos:
     name: clippy (macos)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -592,11 +591,6 @@ jobs:
           cargo bench --locked -p tutti-midi-runtime --bench clip_node -- --test
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
           cargo bench --locked -p tutti-plugin-host --bench vst2_in_process -- --test
-          cargo bench --locked -p arc-lend --bench lend -- --test
-          # `cargo xtask bench-compare --test`: the comparison harness at tiny
-          # counts. Never the full run here: it takes minutes, and a shared
-          # runner's tails mean nothing.
-          cargo bench --locked -p arc-lend-compare --bench compare -- --test
 
   test:
     name: test (${{ matrix.os }})
@@ -627,6 +621,8 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per OS for `test` and `test-more`; `test` writes it.
+          shared-key: test
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
@@ -679,7 +675,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.changes.outputs.test_os) }}
+        os: ${{ fromJSON(needs.changes.outputs.test_more_os) }}
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     env:
       TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
@@ -695,18 +691,18 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: test
+          save-if: false
       - uses: taiki-e/install-action@nextest
 
       # The RT primitives in release. Some of their properties only exist
       # with `debug_assertions` off: `AudioThreadCell`'s borrow check was
       # debug-only once (two `&mut T` from safe code in release), and nothing
-      # but this run would have caught it outside the loom job. `arc-lend`
-      # too: its stress test runs far more interleavings at release speed.
+      # but this run would have caught it outside the loom job.
       # `tutti-graph`'s executor guards (a caller bug asserts in debug and
       # renders silence in release) have a test per build.
-      - name: Test tutti-types, tutti-rt, arc-lend and tutti-graph (release)
-        run: cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph
+      - name: Test tutti-types, tutti-rt and tutti-graph (release)
+        run: cargo nextest run --locked --release -p tutti-types -p tutti-rt -p tutti-graph
 
       # nextest does NOT run doctests, and says nothing about skipping them.
       # That is not a rounding error here: these are the only tests covering the
@@ -787,7 +783,7 @@ jobs:
   doc-macos:
     name: rustdoc (macos)
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
+    if: needs.changes.outputs.macos_main == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -808,8 +804,8 @@ jobs:
   # structural answer there instead. Of what is left, the ones that matter
   # are `tutti-rt`'s: the aliasing in `AudioThreadCell`, the claims behind
   # `SplitMut`/`SplitRw`, `JobGate`'s job cell and `edit_ring`'s slot words
-  # (their unit tests, `--lib` below, run under miri), and `arc-lend`'s
-  # hazard-slot reclamation (`ArcLend`, its own crate).
+  # (their unit tests, `--lib` below, run under miri). `arc-lend` is an
+  # external crate whose own CI runs its miri and loom models.
   #
   # Its own job because it needs nightly and is slow — minutes, not seconds —
   # and because a failure here should read as "a memory-safety claim broke",
@@ -819,16 +815,12 @@ jobs:
   # machine that wrote it (installing nightly there failed repeatedly), so CI
   # is the first thing to run it. A check nobody has run is not a check.
   miri:
-    name: miri (${{ matrix.crate }})
+    name: miri (tutti-rt)
     needs: changes
-    # Miri runs `tutti-rt` and `arc-lend` only, and they depend on no other
-    # workspace crate, so it runs when the `loom` filter says one of them (or the
-    # lock, the toolchain or this file) changed.
+    # Miri runs `tutti-rt` only, which depends on no other workspace crate, so
+    # it runs when the `loom` filter says it (or the lock, the toolchain or
+    # this file) changed.
     if: needs.changes.outputs.loom == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        crate: [tutti-rt, arc-lend]
     runs-on: ubuntu-24.04
     # About 10 minutes on main: a hang (a test miri cannot finish) fails here,
     # not at GitHub's six-hour cap. A test that is slow only because it is a
@@ -848,50 +840,30 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
         with:
-          # One cache for both crates; tutti-rt writes it.
           shared-key: miri
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.crate == 'tutti-rt' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
       # rather than vanishing, so the run says what it did not cover. So are
       # `rt/parked.rs`'s two: a thousand-odd publishes each, against a retired
       # list parked loans keep growing, is quadratic and runs past this job's
       # timeout under miri. They test a debug-only policy check, which the
-      # native nextest run covers; `ArcLend`'s protocol is miri-tested below.
-      - if: matrix.crate == 'tutti-rt'
-        run: cargo +nightly miri test --locked -p tutti-rt --lib
+      # native nextest run covers.
+      - run: cargo +nightly miri test --locked -p tutti-rt --lib
       # The thread hand-over of `edit_ring` under 16 schedules: one seed
       # explores one interleaving.
-      - if: matrix.crate == 'tutti-rt'
-        run: cargo +nightly miri test --locked -p tutti-rt --lib edits
-        env:
-          MIRIFLAGS: -Zmiri-many-seeds=0..16
-      # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
-      - if: matrix.crate == 'arc-lend'
-        run: cargo +nightly miri test --locked -p arc-lend
-      # Its unit tests again over 16 scheduling seeds: the small
-      # concurrent-readers stress test reports a race on a freed value if
-      # either `SeqCst` fence in `ArcLend` goes, on some seeds only. (A plain
-      # x86 run rarely does: only a store-buffer reordering shows it, which is
-      # why this job and the loom one both exist.)
-      - if: matrix.crate == 'arc-lend'
-        run: cargo +nightly miri test --locked -p arc-lend --lib
+      - run: cargo +nightly miri test --locked -p tutti-rt --lib edits
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
 
-  # The loom models: `ArcLend`'s reclamation protocol and `PosRing`'s no-tear
-  # protocol (both run against the shipped code — their atomics switch to
-  # loom's under the flag) and the plugin
+  # The loom models: `PosRing`'s no-tear protocol (run against the shipped
+  # code — its atomics switch to loom's under the flag) and the plugin
   # shm header's Release/Acquire protocol (a replica, for the reasons in
   # `tutti-shm-model/Cargo.toml`). `--cfg loom` is global, so each is built for
   # its own target only, never the workspace.
   #
-  # Release, because loom explores every interleaving in-process. Seven of
-  # the eight `ArcLend` models run unbounded (exhaustive, about 10 s together);
-  # `registering_and_dropping_readers` runs at a preemption bound of 4
-  # (about a minute), and every recorded mutation fails at a bound of 3. That
-  # model at 5 (about 6 minutes) is `cargo xtask loom-full`, for a change to `arc-lend`'s
-  # protocol code itself; at 6 it did not finish in 25 minutes.
+  # Release, because loom explores every interleaving in-process. The
+  # `ArcLend` models are arc-lend's own CI's.
   # What a pull request or a merge group changed, read once for the jobs that
   # can skip it. A skipped job counts as passing in `CI result`. A pull request
   # is diffed against its base; a merge group against the base of its queue
@@ -901,23 +873,27 @@ jobs:
   #
   # `code`: false when every changed file is prose that nothing compiles: under
   # top-level `docs/`, or a `*.md` at the repository root. A crate's README
-  # and `arc-lend`'s `src/docs/design.md` are pulled into rustdoc by
-  # `include_str!`, so they live under `crates/` and count as code. A prose PR
+  # is pulled into rustdoc by `include_str!`, so it lives under `crates/` and
+  # counts as code. A prose PR
   # still runs `canonical paths`, which scans `*.md`. Before this, a doc-only
   # PR ran the whole matrix (about 17 minutes) for nothing it could change.
   #
   # `loom`: whether the change can affect a loom model. The models run the
-  # shipped code of `arc-lend` and `tutti-rt` (and `tutti-shm-model`'s mirror
-  # of the plugin slab header), so a PR that touches none of those, nor the
+  # shipped code of `tutti-rt` (and `tutti-shm-model`'s mirror
+  # of the plugin slab header), so a PR that touches neither, nor the
   # lock, the toolchain or this file, cannot change their result. `loom` is the
   # slowest job (about 12 minutes); it runs on the PRs that can change it.
   #
   # `macos`: whether the change touches code that differs on macOS: the crates
   # with a macOS path (thread priority in `tutti-rt`, CoreAudio through
   # `tutti-cpal`, CoreMIDI, the AU host and the plugin stack's process and
-  # bundle code), the test plugins, or the build. A pull request that touches
-  # none of those runs `clippy (macos)` only; its macOS tests and rustdoc run on
-  # the push to main.
+  # bundle code), the test plugins and the contract, or the build. It gates
+  # `clippy (macos)` and the macOS `test`; a change outside it runs no macOS job
+  # before the push to main. The macOS editor, release and doctest runs
+  # (`test-more`) and the macOS rustdoc (`macos_main`) are the push's alone.
+  #
+  # `deps`: whether a manifest, the lock, `deny.toml`, the toolchain or this
+  # file changed, which is what `cargo deny` reads.
   changes:
     name: what changed?
     runs-on: ubuntu-24.04
@@ -925,7 +901,10 @@ jobs:
       code: ${{ steps.diff.outputs.code }}
       loom: ${{ steps.diff.outputs.loom }}
       macos: ${{ steps.diff.outputs.macos }}
+      macos_main: ${{ steps.diff.outputs.macos_main }}
       test_os: ${{ steps.diff.outputs.test_os }}
+      test_more_os: ${{ steps.diff.outputs.test_more_os }}
+      deps: ${{ steps.diff.outputs.deps }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -939,7 +918,10 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "loom=true" >> "$GITHUB_OUTPUT"
             echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo "macos_main=true" >> "$GITHUB_OUTPUT"
             echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            echo 'test_more_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            echo "deps=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # HEAD is the pull request's merge commit, or the merge group's head.
@@ -950,12 +932,22 @@ jobs:
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(crates/arc-lend/|crates/tutti-rt/|testing/tutti-shm-model/|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+          if echo "$changed" | grep -qE '^(crates/tutti-rt/|testing/tutti-shm-model/|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
             echo "loom=true" >> "$GITHUB_OUTPUT"
           else
             echo "loom=false" >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(crates/(arc-lend|tutti-rt|tutti-cpal|tutti-midi-hardware|tutti-coremidi-ffi|tutti-au-[a-z]+|tutti-vst2-[a-z]+|tutti-vst3-[a-z]+|tutti-clap-[a-z]+|tutti-plugin[a-z-]*)/|crates/tutti-session/(src|tests)/plugin|testing/|vendor/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+          # The editor, release and doctest runs and the macOS rustdoc are the
+          # push's alone: Linux runs the same tests, and what only macOS
+          # compiles is linted by `clippy (macos)` here.
+          echo "macos_main=false" >> "$GITHUB_OUTPUT"
+          echo 'test_more_os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          if echo "$changed" | grep -qE '^(Cargo\.(toml|lock)|deny\.toml|rust-toolchain\.toml|\.github/workflows/ci\.yml)$|/Cargo\.toml$'; then
+            echo "deps=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deps=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(crates/(tutti-rt|tutti-cpal|tutti-midi-hardware|tutti-coremidi-ffi|tutti-au-[a-z]+|tutti-vst2-[a-z]+|tutti-vst3-[a-z]+|tutti-clap-[a-z]+|tutti-plugin[a-z-]*)/|crates/tutti-session/(src|tests)/plugin|testing/tutti-(shared-plugin[a-z0-9-]*|clap-test-plugin|vst2-[a-z]+|vst2-test-plugin|plugin-contract|fixtures)/|vendor/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
             echo "macos=true" >> "$GITHUB_OUTPUT"
             echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
           else
@@ -997,13 +989,7 @@ jobs:
       # (`PROGRESS_EVERY` is 1, so `% PROGRESS_EVERY` tripped `modulo_one`),
       # and no other job compiles that configuration.
       - if: matrix.group == 'rest'
-        run: cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings
-      - if: matrix.group == 'rest'
-        run: cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
-      - if: matrix.group == 'rest'
-        run: cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
-        env:
-          LOOM_MAX_PREEMPTIONS: 4
+        run: cargo clippy --locked -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings
       # `PosRing`'s no-tear protocol (the disk stream's ring), against the
       # shipped code: nine models, about five minutes at this bound (the
       # shrink models a minute each); every recorded mutation fails at it but
@@ -1093,7 +1079,6 @@ jobs:
     name: CI result
     if: always()
     needs:
-      - fmt
       - deny
       - paths
       - clippy

@@ -9,6 +9,8 @@ fn timgm6mb() -> SoundFont {
     SoundFont::open(asset("soundfonts/TimGM6mb.sf2")).unwrap()
 }
 
+/// The reference font reads as presets, instruments and 16-bit sample data.
+/// Spec: sf2.sdta.smpl.pcm16
 #[test]
 fn the_file_has_presets_instruments_and_samples() {
     let soundfont = timgm6mb();
@@ -41,6 +43,8 @@ const FLUTE_TB: [(u8, u8, usize); 10] = [
     (95, 108, 7),
 ];
 
+/// The first instrument's regions carry the key ranges and sample ids of the file, and no velocity range.
+/// Spec: sf2.gen.keyRange, sf2.gen.sampleID
 #[test]
 fn the_first_instrument_has_the_regions_decoded_from_the_file() {
     let soundfont = timgm6mb();
@@ -59,6 +63,8 @@ fn the_first_instrument_has_the_regions_decoded_from_the_file() {
 
 // The fixture has no velocity range, so the velocity half of `contains` is covered by
 // `tutti-soundfont`'s `a_region_answers_only_the_velocities_of_its_range`.
+/// A region contains exactly the keys of its range, ends included.
+/// Spec: sf2.gen.keyRange
 #[test]
 fn a_region_contains_the_keys_and_velocities_of_the_decoded_ranges() {
     let soundfont = timgm6mb();
@@ -80,6 +86,8 @@ fn a_region_contains_the_keys_and_velocities_of_the_decoded_ranges() {
     assert!(!(0..regions.len()).any(|r| contains(r, 109, 64)));
 }
 
+/// Every region names a sample whose addresses lie inside the wave data.
+/// Spec: sf2.pdta.shdr.addresses.in-range
 #[test]
 fn every_region_names_a_real_sample_inside_the_wave_data() {
     let soundfont = timgm6mb();

@@ -32,6 +32,17 @@ pub(crate) enum Step {
     DocFeatures,
     /// `conformance-inventory <format>`: rewrite an inventory from its spec source.
     ConformanceInventory(String),
+    /// `conformance`: the dashboard and badges from per-OS JUnit files
+    /// (`gates/conformance_site.rs`).
+    Conformance {
+        results: PathBuf,
+        out: PathBuf,
+    },
+    /// Run the command with the environment `cargo llvm-cov show-env` prints,
+    /// so it builds into the target directory the instrumented tests run from.
+    InLlvmCovEnv(Cmd),
+    /// `coverage`'s probe: fails with the install hint when cargo-llvm-cov is missing.
+    RequireLlvmCov,
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
     /// The release edits (`release.rs`): the workspace version, the path
@@ -51,6 +62,15 @@ impl Step {
             Step::Gate(g) => g.display(),
             Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <fs>, each member with its features together (private items), then each feature of tutti-session and tutti alone".to_owned(),
             Step::ConformanceInventory(f) => format!("conformance-inventory {f}"),
+            Step::Conformance { results, out } => format!(
+                "conformance: join {}/<os>.xml to the inventories, write {}/index.html, ../index.html and ../badges/*.json",
+                results.display(),
+                out.display()
+            ),
+            Step::InLlvmCovEnv(c) => format!("(cargo llvm-cov show-env) {}", c.display()),
+            Step::RequireLlvmCov => {
+                "cargo llvm-cov --version || fail (cargo install cargo-llvm-cov --locked)".to_owned()
+            }
             Step::RequireCargoDeny => {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
@@ -98,20 +118,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "run the suites a workspace run leaves dark (see check-features)",
     ),
-    (
-        "miri",
-        "",
-        "miri over tutti-rt and arc-lend (needs nightly + miri)",
-    ),
+    ("miri", "", "miri over tutti-rt (needs nightly + miri)"),
     (
         "loom",
         "[<model>...]",
         "the loom models, as CI runs them (or only those named, e.g. handoff_loom)",
-    ),
-    (
-        "loom-full",
-        "",
-        "the ArcLend loom models at the deeper preemption bound",
     ),
     (
         "check-jack",
@@ -142,11 +153,6 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "bench-smoke",
         "",
         "run every bench exactly once, no measurement",
-    ),
-    (
-        "bench-compare",
-        "[harness args]",
-        "arc-lend against arc-swap, basedrop, left-right and locks",
     ),
     (
         "profile-bench",
@@ -216,9 +222,19 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
     ),
     (
+        "conformance",
+        "--results <dir> [--out site/conformance]",
+        "the spec conformance dashboard and badges (one table per inventory area) from per-OS nextest JUnit files (<dir>/linux.xml, macos.xml, windows.xml)",
+    ),
+    (
+        "coverage",
+        "[--out site/coverage] [--package a,b]",
+        "line coverage of the workspace as HTML (needs cargo-llvm-cov)",
+    ),
+    (
         "conformance-inventory",
-        "[clap|vst3|midi]",
-        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS)",
+        "[clap|vst3|midi|sf2]",
+        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS; sf2: TUTTI_SF2_SPEC)",
     ),
     (
         "check-range-types",
@@ -245,6 +261,12 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "rustdoc over every member's features together, and per feature for tutti-session and tutti",
     ),
+    (
+        "gates",
+        "",
+        "rustfmt, xtask's own tests and every source gate: no workspace build (the pre-push hook)",
+    ),
+    ("fmt", "", "cargo fmt --check"),
     ("lint", "", "cargo fmt --check and workspace clippy"),
     (
         "check-windows",
@@ -269,6 +291,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     ("deny", "", "RustSec advisories (needs cargo-deny)"),
     (
+        "book",
+        "[OUT]",
+        "build the book with mdbook into book/build, or into OUT (relative to book/)",
+    ),
+    (
         "package",
         "",
         "package every crate under crates/ the way crates.io takes it, without building",
@@ -280,6 +307,31 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     ("ci", "", "everything CI runs"),
 ];
+
+/// `--key value` pairs, each key one of `allowed` and given once.
+fn options(
+    recipe: &str,
+    args: &[String],
+    allowed: &[&str],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut it = args.iter();
+    while let Some(key) = it.next() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!(
+                "`{recipe}` takes {}, got `{key}`",
+                allowed.join(", ")
+            ));
+        }
+        let value = it
+            .next()
+            .ok_or_else(|| format!("`{recipe}`: `{key}` needs a value"))?;
+        if out.insert(key.clone(), value.clone()).is_some() {
+            return Err(format!("`{recipe}`: `{key}` is given twice"));
+        }
+    }
+    Ok(out)
+}
 
 /// Plans `name` with `args`; an error is a usage error (exit 2).
 pub(crate) fn plan(name: &str, args: &[String], ctx: &Ctx) -> Result<Vec<Step>, String> {
@@ -365,15 +417,17 @@ impl Planner<'_> {
             "test"
                 | "test-doc"
                 | "bench"
-                | "bench-compare"
                 | "check-paths"
                 | "loom"
                 | "bench-save"
                 | "bench-cmp"
                 | "profile-bench"
                 | "verify-audio"
+                | "book"
                 | "release"
                 | "conformance-inventory"
+                | "conformance"
+                | "coverage"
         );
         if !takes_args && !args.is_empty() {
             return Err(format!(
@@ -392,7 +446,7 @@ impl Planner<'_> {
                 self.run(Cmd::sh("cargo test --locked --doc -p tutti-session --all-features").args(args));
             }
             "test-release" => self.lines(&[
-                "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph",
+                "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p tutti-graph",
             ]),
             "test-all" => {
                 for d in ["test", "test-features", "test-doc", "test-release"] {
@@ -418,7 +472,6 @@ impl Planner<'_> {
                     .collect();
                 self.lines(&chosen);
             }
-            "loom-full" => self.lines(LOOM_FULL),
             "check-jack" => self.lines(&[
                 "cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings",
             ]),
@@ -437,9 +490,7 @@ impl Planner<'_> {
             }
             "bench-smoke" => {
                 self.bench(&["--".into(), "--test".into()]);
-                self.bench_compare(&["--test".into()]);
             }
-            "bench-compare" => self.bench_compare(args),
             "profile-bench" => {
                 let [bench, pkg, secs] =
                     Self::params(name, args, ["engine_render", "tutti-nodes", "10"])?;
@@ -471,6 +522,38 @@ impl Planner<'_> {
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
             "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
+            "conformance" => {
+                let o = options(name, args, &["--results", "--out"])?;
+                let results = o.get("--results").map(String::as_str).ok_or("`conformance` needs `--results <dir>`")?;
+                let out = o.get("--out").map_or("site/conformance", String::as_str);
+                self.out.push(Step::Conformance {
+                    results: self.ctx.root.join(results),
+                    out: self.ctx.root.join(out),
+                });
+            }
+            "coverage" => {
+                let o = options(name, args, &["--out", "--package"])?;
+                let out = o.get("--out").map_or("site/coverage", String::as_str);
+                self.out.push(Step::RequireLlvmCov);
+                // The fixtures look for the plugin binaries beside the running
+                // test binary, which llvm-cov builds under its own target
+                // directory: build them there.
+                for bin in ["plugin-server", "plugin-probe"] {
+                    self.out.push(Step::InLlvmCovEnv(Cmd::sh(&format!(
+                        "cargo build --locked -p tutti-{bin} --bin {bin}"
+                    ))));
+                }
+                let mut run = Cmd::sh("cargo llvm-cov nextest --locked --ignore-run-fail");
+                match o.get("--package") {
+                    Some(list) => {
+                        for p in list.split(',') {
+                            run = run.arg("-p").arg(p);
+                        }
+                    }
+                    None => run = run.arg("--workspace"),
+                }
+                self.run(run.arg("--html").arg("--output-dir").arg(out));
+            }
             "conformance-inventory" => {
                 let [f] = Self::params(name, args, ["clap"])?;
                 self.out.push(Step::ConformanceInventory(f));
@@ -479,10 +562,11 @@ impl Planner<'_> {
             "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
             "check-paths" => self.out.push(Step::Gate(Gate::CanonicalPaths(args.to_vec()))),
-            "lint" => self.lines(&[
-                "cargo fmt --all --check",
-                "cargo clippy --locked --workspace --all-targets -- -D warnings",
-            ]),
+            "fmt" => self.lines(&["cargo fmt --all --check"]),
+            "lint" => {
+                self.dep("fmt")?;
+                self.lines(&["cargo clippy --locked --workspace --all-targets -- -D warnings"]);
+            }
             "check-windows" => self.check_windows(),
             "doc" => {
                 self.lines(&[
@@ -499,8 +583,16 @@ impl Planner<'_> {
             }
             "check-no-std" => self.check_no_std(),
             "check-loom" => self.lines(&[
-                r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
+                r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
             ]),
+            "book" => {
+                let [out] = Self::params(name, args, [""])?;
+                if out.is_empty() {
+                    self.lines(&["mdbook build book"]);
+                } else {
+                    self.lines(&[format!("mdbook build book --dest-dir {out}")]);
+                }
+            }
             "verify-audio" => {
                 let [out] = Self::params(name, args, ["/tmp/tutti-verify"])?;
                 self.lines(&[
@@ -529,13 +621,21 @@ impl Planner<'_> {
                 self.out.push(Step::RequireCargoDeny);
                 self.lines(&["cargo deny --locked check advisories"]);
             }
+            "gates" => {
+                self.dep("fmt")?;
+                self.lines(&["cargo test --locked -p xtask"]);
+                for d in [
+                    "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
+                    "check-layout", "check-range-types", "check-hosting", "check-lints",
+                    "check-value-traits", "check-submodule-pins", "check-doc-refs",
+                    "check-pointers", "check-platform-seam",
+                ] {
+                    self.dep(d)?;
+                }
+            }
             "ci" => {
                 for d in [
-                    "lint", "deny", "check-paths", "check-session", "check-guards",
-                    "check-ffi", "check-errors", "check-layout", "check-range-types", "check-hosting",
-                    "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers",
-                    "check-platform-seam", "check-conformance",
+                    "gates", "lint", "deny", "check-conformance",
                     "check-features", "package",
                     "check-no-std", "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",
@@ -553,10 +653,6 @@ impl Planner<'_> {
         for l in BENCH {
             self.run(Cmd::sh(l).args(args));
         }
-    }
-
-    fn bench_compare(&mut self, args: &[String]) {
-        self.run(Cmd::sh("cargo bench --locked -p arc-lend-compare --bench compare --").args(args));
     }
 
     /// The justfile wrote the stub header to `${TMPDIR:-/tmp}/tutti-winstub`;
@@ -580,7 +676,7 @@ impl Planner<'_> {
             ));
         };
         win(
-            "--workspace --all-targets --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract",
+            "--workspace --all-targets --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract --exclude tutti-verify",
         );
         for a in [
             "-p tutti-shared-plugin --all-targets",
@@ -676,13 +772,9 @@ const TEST_FEATURES: &[&str] = &[
 const MIRI: &[&str] = &[
     r#"cargo +nightly miri test --locked -p tutti-rt --lib"#,
     r#"MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p tutti-rt --lib edits"#,
-    r#"cargo +nightly miri test --locked -p arc-lend"#,
-    r#"MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p arc-lend --lib"#,
 ];
 
 const LOOM: &[&str] = &[
-    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers"#,
-    r#"LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact"#,
     r#"LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test pos_ring_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test packed_atomic_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test seq_cell_loom"#,
@@ -701,11 +793,6 @@ const LOOM: &[&str] = &[
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test wake_flag_loom"#,
 ];
 
-const LOOM_FULL: &[&str] = &[
-    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers"#,
-    r#"LOOM_MAX_PREEMPTIONS=5 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact"#,
-];
-
 /// Adding a bench means adding a line here: there is no sweep that would pick
 /// one up silently (the justfile's contract, which CI mirrors).
 const BENCH: &[&str] = &[
@@ -718,7 +805,6 @@ const BENCH: &[&str] = &[
     r#"cargo bench --locked -p tutti-midi-runtime --bench clip_node"#,
     r#"cargo bench --locked -p tutti-sampler   --bench voice_pool"#,
     r#"cargo bench --locked -p tutti-plugin-host --bench vst2_in_process"#,
-    r#"cargo bench --locked -p arc-lend --bench lend"#,
 ];
 
 #[cfg(test)]

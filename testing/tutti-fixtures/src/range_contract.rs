@@ -17,20 +17,17 @@ pub struct RangeContract<'a, T, R> {
 
 /// Panics, naming the raw, when the type breaks the contract.
 ///
-/// For each valid raw, `new`, `get`, `TryFrom`, `Into` and `of` agree and serde
-/// round-trips as the bare raw. For each invalid raw, `new` is `None`,
-/// `TryFrom` errs with an error that carries the raw (its `Debug` shows it),
-/// `of` panics and serde refuses. NaN and infinity reach serde as JSON `null`.
+/// For each valid raw, `new`, `get`, `TryFrom`, `Into` and `of` agree. For each
+/// invalid raw, `new` is `None`, `TryFrom` errs with an error that carries the
+/// raw (its `Debug` shows it) and `of` panics. The serde half is
+/// [`check_range_serde`].
 pub fn check_range_contract<T, R>(c: &RangeContract<'_, T, R>)
 where
-    T: TryFrom<R> + Into<R> + Copy + PartialEq + Debug + Serialize + DeserializeOwned,
-    R: Copy + Debug + PartialEq + Serialize,
+    T: TryFrom<R> + Into<R> + Copy + PartialEq + Debug,
+    R: Copy + Debug + PartialEq,
     <T as TryFrom<R>>::Error: Debug,
 {
-    assert!(
-        !c.valid.is_empty() && !c.invalid.is_empty(),
-        "state both sides of the range"
-    );
+    both_sides(c);
     for &r in c.valid {
         let t = (c.new)(r).unwrap_or_else(|| panic!("new refused valid {r:?}"));
         assert_eq!((c.get)(t), r, "get(new({r:?}))");
@@ -39,17 +36,6 @@ where
         if let Some(of) = c.of {
             assert_eq!(of(r), t, "of({r:?})");
         }
-        let json = serde_json::to_string(&t).unwrap();
-        assert_eq!(
-            json,
-            serde_json::to_string(&r).unwrap(),
-            "serialises as the bare raw"
-        );
-        assert_eq!(
-            serde_json::from_str::<T>(&json).unwrap(),
-            t,
-            "serde round trip of {r:?}"
-        );
     }
     for &r in c.invalid {
         assert!((c.new)(r).is_none(), "new accepted {r:?}");
@@ -64,6 +50,35 @@ where
                 "of accepted {r:?}"
             );
         }
+    }
+}
+
+/// Panics, naming the raw, when the type's serde form is not its range.
+///
+/// For each valid raw, the value serialises as the bare raw and deserialises
+/// back to itself. For each invalid raw, deserialising refuses. NaN and
+/// infinity reach serde as JSON `null`.
+pub fn check_range_serde<T, R>(c: &RangeContract<'_, T, R>)
+where
+    T: Copy + PartialEq + Debug + Serialize + DeserializeOwned,
+    R: Copy + Debug + Serialize,
+{
+    both_sides(c);
+    for &r in c.valid {
+        let t = (c.new)(r).unwrap_or_else(|| panic!("new refused valid {r:?}"));
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(
+            json,
+            serde_json::to_string(&r).unwrap(),
+            "serialises as the bare raw"
+        );
+        assert_eq!(
+            serde_json::from_str::<T>(&json).unwrap(),
+            t,
+            "serde round trip of {r:?}"
+        );
+    }
+    for &r in c.invalid {
         // JSON writes NaN and infinity as `null`, which must be refused too.
         let json = serde_json::to_string(&r).unwrap();
         assert!(
@@ -71,6 +86,13 @@ where
             "deserialize accepted {r:?}"
         );
     }
+}
+
+fn both_sides<T, R>(c: &RangeContract<'_, T, R>) {
+    assert!(
+        !c.valid.is_empty() && !c.invalid.is_empty(),
+        "state both sides of the range"
+    );
 }
 
 #[cfg(test)]
@@ -128,6 +150,7 @@ mod tests {
     #[test]
     fn a_type_that_keeps_the_contract_passes() {
         check_range_contract(&contract(Good::new, |g| g.0));
+        check_range_serde(&contract(Good::new, |g| g.0));
     }
 
     #[test]
@@ -139,7 +162,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "deserialize accepted 10")]
     fn a_serde_bypass_fails() {
-        check_range_contract(&contract(Bypass::new, |g| g.0));
+        check_range_serde(&contract(Bypass::new, |g| g.0));
     }
 
     #[test]

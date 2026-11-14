@@ -199,6 +199,7 @@ mod tests {
     /// The numbers section 8.1.2 leaves unused or reserved (14, 18 to 20, 42, 49, 55,
     /// 59), `endOper` (60) and every number past it name no generator; every named
     /// generator is found by its own number.
+    /// Spec: sf2.genrule.number-table, sf2.genrule.unused.ignored, sf2.gen.unused1, sf2.gen.unused2, sf2.gen.unused3, sf2.gen.unused4, sf2.gen.reserved1, sf2.gen.reserved2, sf2.gen.reserved3, sf2.gen.unused5, sf2.gen.endOper
     #[test]
     fn a_number_names_a_generator_only_where_the_spec_defines_one() {
         for id in [14, 18, 19, 20, 42, 49, 55, 59, 60, 61, 1000, u16::MAX] {

@@ -852,7 +852,7 @@ fn a_sweep_with_no_feedback_ignores_the_control_and_is_a_pure_delay() {
 
 // ---- the checked constants --------------------------------------------------
 //
-// `check_range_contract` reads a type through one raw (`new`, `get`, serde): a `Sweep` and a
+// `check_range_contract` reads a type through one raw (`new`, `get`): a `Sweep` and a
 // `Stagger` are checked on several raws at once, and nothing persists them, so their rules
 // are stated here one by one, each with a value on each side of it.
 

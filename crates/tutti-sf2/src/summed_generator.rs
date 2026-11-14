@@ -121,6 +121,7 @@ mod tests {
     /// `exclusiveClass`, `overridingRootKey`, `sampleID`, `instrument` and the two
     /// ranges are not summed; the other 35 convert, and each reads the same
     /// generator at the preset and the instrument level.
+    /// Spec: sf2.genrule.preset-adds-to-instrument, sf2.genrule.substitution-sample.preset-illegal
     #[test]
     fn only_a_value_generator_legal_at_both_levels_is_summed() {
         let not_summed = [

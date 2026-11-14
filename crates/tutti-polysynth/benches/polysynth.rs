@@ -83,7 +83,7 @@ fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
         ..cfg
     };
     let mut synth = Direct::new(PolySynth::new(cfg), SampleRate::of(SR), BLOCK);
-    let at = Offset::new(0, Samples(BLOCK)).expect("inside");
+    let at = Offset::of(Samples(0), Samples(BLOCK));
     let events: Vec<Event> = (0..n)
         .map(|i| {
             midi::note_on(
@@ -273,7 +273,7 @@ fn bench_events(c: &mut Criterion) {
     ];
     let events: Vec<Event> = (0..BLOCK)
         .map(|i| {
-            let at = Offset::new(i, Samples(BLOCK)).expect("inside");
+            let at = Offset::of(Samples(i), Samples(BLOCK));
             Event::midi(at, Ump::from(wire[i % wire.len()]))
         })
         .collect();

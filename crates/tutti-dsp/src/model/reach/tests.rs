@@ -1,22 +1,6 @@
-use serde::{Deserialize, Serialize};
 use tutti_fixtures::{RangeContract, check_range_contract};
 
 use super::*;
-
-// The shape `check_range_contract` checks is serde's; `MaxDecay` has none
-// in the library (it was never persisted), so the check runs on the same
-// `try_from` shape written here.
-impl Serialize for MaxDecay {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for MaxDecay {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Self::try_from(Seconds::deserialize(d)?).map_err(serde::de::Error::custom)
-    }
-}
 
 /// `MaxDecay` keeps the range-checked shape: `new` refuses and
 /// never clamps, `TryFrom` agrees and carries the refused raw.

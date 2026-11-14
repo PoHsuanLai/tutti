@@ -134,6 +134,16 @@ impl From<&str> for DeviceQuery {
 }
 
 impl DeviceQuery {
+    /// Whether this names `device`: its id, or a name that is a
+    /// case-insensitive substring of the device's.
+    #[must_use]
+    pub fn matches(&self, device: &DeviceInfo) -> bool {
+        match &self.0 {
+            Query::Id(id) => *id == device.id,
+            Query::Name(name) => device.name.to_lowercase().contains(&name.to_lowercase()),
+        }
+    }
+
     /// The device this picks among `list`, or the error naming what was
     /// searched. An id is taken as it is (the open reports a stale one).
     fn pick(&self, list: Vec<DeviceInfo>) -> Result<DeviceId> {

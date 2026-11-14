@@ -776,6 +776,9 @@ pub(crate) struct MidiState {
     /// next one carries on ([`Midi::connect_output`]).
     #[cfg(feature = "midi-hardware")]
     pub(crate) parked_stream: Option<tutti_midi_runtime::JrStream>,
+    /// What the app connected and the OS took away, wanted back.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) lost: crate::midi_hardware::Lost,
     /// The session's one MPE mode ([`Midi::set_mpe`]).
     mpe: MpeMode,
     /// The hardware out's tap on the clock, which `Phase::MidiOut` drains;
@@ -923,29 +926,23 @@ impl MidiState {
         out: &mut Vec<crate::SessionEvent>,
     ) -> bool {
         let Some(io) = io else { return false };
-        let events = self.device_events.as_ref();
-        for event in events.into_iter().flat_map(|events| events.try_iter()) {
+        // Drained first: reopening a device takes the state mutably.
+        let pending: Vec<_> = self
+            .device_events
+            .iter()
+            .flat_map(tutti_midi_hardware::DeviceEvents::try_iter)
+            .collect();
+        for event in pending {
             out.push(MidiEvent::of_device(event.clone()).into());
-            if let tutti_midi_hardware::DeviceEvent::Removed(device) = event {
-                // Held ones are closed here, not left to fail on a dead
-                // handle: the port goes and the lists agree.
-                if io.disconnect_input(&device.id) {
-                    out.push(
-                        MidiEvent::InputLost {
-                            info: device.clone(),
-                        }
-                        .into(),
-                    );
+            match event {
+                tutti_midi_hardware::DeviceEvent::Removed(device) => {
+                    self.lose(io, &device, out);
                 }
-                if self
-                    .out
-                    .as_ref()
-                    .and_then(UmpOut::device)
-                    .is_some_and(|open| *open.id() == device.id)
-                {
-                    self.out = None;
-                    out.push(MidiEvent::OutputLost { info: device }.into());
+                tutti_midi_hardware::DeviceEvent::Added(device) => {
+                    let rate = graph.prepared().sample_rate();
+                    self.restore(io, rate, &device, out);
                 }
+                _ => {}
             }
         }
         // The devices' UMP Stream negotiations take their step at `now`: the
@@ -999,7 +996,10 @@ impl MidiState {
         }
         let wired = wire_inlets(&mut self.inlet_keys, io.ports().inlets(), nodes, graph);
         if !self.watch_failure_reported
-            && let Some(why) = events.and_then(tutti_midi_hardware::DeviceEvents::failure)
+            && let Some(why) = self
+                .device_events
+                .as_ref()
+                .and_then(tutti_midi_hardware::DeviceEvents::failure)
         {
             self.watch_failure_reported = true;
             out.push(MidiEvent::WatchFailed(why).into());

@@ -637,6 +637,15 @@ fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
             SessionEvent::Midi(MidiEvent::OutputLost { info }) => {
                 Some(("output lost", info.name.clone()))
             }
+            SessionEvent::Midi(MidiEvent::InputRestored { info }) => {
+                Some(("input restored", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::OutputRestored { info }) => {
+                Some(("output restored", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::RestoreFailed { info, .. }) => {
+                Some(("restore failed", info.name.clone()))
+            }
             _ => None,
         })
         .collect()
@@ -931,6 +940,203 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
         ]
     );
     assert!(s.midi().output().is_none());
+}
+
+/// Plugs a device the OS tells for certain across a replug
+/// (a CoreMIDI identity), which is what a returning device must be to be
+/// reconnected unasked.
+#[cfg(feature = "midi-hardware")]
+fn plug_persistent(
+    fake: &tutti_midi_hardware::test_support::FakeCounters,
+    raw: u32,
+    name: &str,
+    d: PortDirection,
+) {
+    fake.plug(
+        tutti_midi_hardware::test_support::persistent_endpoint(raw, name),
+        d,
+    );
+}
+
+/// The device events of an update, with the notices of the list itself
+/// (added, removed, changed) left out.
+#[cfg(feature = "midi-hardware")]
+fn restores(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
+    device_events(events)
+        .into_iter()
+        .filter(|(kind, _)| kind.contains("restore"))
+        .collect()
+}
+
+/// **A connected input whose device is removed and returns is open again**,
+/// and the update that saw it return says so.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_removed_input_that_returns_is_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    assert!(!hw(&s).is_any_input_connected());
+
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert_eq!(
+        restores(&s.update()),
+        [("input restored", "Keys".to_string())]
+    );
+    assert_eq!(hw(&s).connected_input_names(), ["Keys"]);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
+}
+
+/// **An input the app disconnected is not reconnected when its device
+/// returns**: only a removal keeps a device wanted.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn an_input_the_app_disconnected_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    s.midi().disconnect_input("keys").expect("disconnects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A lost input the app then disconnects is forgotten**, and a second
+/// disconnect names that nothing is held.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn disconnecting_a_lost_input_forgets_it() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    s.midi().disconnect_input("keys").expect("forgets");
+    assert!(s.midi().disconnect_input("keys").is_err());
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A returning device that is only the same name is not bound unasked**:
+/// an ALSA identity cannot tell two units of a model apart.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_returning_input_known_only_by_name_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A device that is not the lost one leaves it wanted**: another keyboard
+/// arriving binds nothing, and the lost one is still reconnected on return.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn another_devices_arrival_does_not_restore_a_lost_input() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug_persistent(&fake, 2, "Pads", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert_eq!(
+        restores(&s.update()),
+        [("input restored", "Keys".to_string())]
+    );
+}
+
+/// **A connected output whose device is removed and returns is open again.**
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_removed_output_that_returns_is_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    assert!(s.midi().output().is_none());
+
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("output restored", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_some());
+}
+
+/// **An output the app disconnected is not reconnected on return**, and
+/// neither is one known only by name.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn an_output_the_app_disconnected_or_that_is_only_a_name_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    s.midi().disconnect_output().expect("disconnects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert!(restores(&s.update()).is_empty());
+    assert!(s.midi().output().is_none());
+
+    plug(&fake, 11, "Other", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("other").expect("connects");
+    fake.unplug(EndpointId::from_raw(11));
+    let _ = s.update();
+    plug(&fake, 11, "Other", PortDirection::Output);
+    assert!(restores(&s.update()).is_empty());
+    assert!(s.midi().output().is_none());
+}
+
+/// **A reconnection that fails is reported, and the device stays wanted**:
+/// it is tried again when it next returns.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_reconnection_that_fails_is_reported_and_retried_on_the_next_return() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+
+    fake.refuse_output_opens(true);
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("restore failed", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_none());
+
+    fake.refuse_output_opens(false);
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("output restored", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_some());
 }
 
 /// **A watch that dies is reported once**, with its reason: the list is frozen

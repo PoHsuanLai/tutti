@@ -23,6 +23,10 @@ members = [
     # layer 1, `tutti-types` alone. The graph, the modulation compiler and the
     # automation lanes evaluate the same `Law`.
     "crates/tutti-curve",
+    # The sample formats (`Sample`, `Float`, `I24`) and the borrowed mono, interleaved
+    # and planar views over them, with the conversions between formats and layouts:
+    # layer 1, `tutti-types` alone (and `libm`).
+    "crates/tutti-buffers",
     "crates/tutti-cpal",
     "crates/tutti-types",
     # The audio file encoders (WAV, AIFF, FLAC, Ogg Vorbis) behind one `Encoder`

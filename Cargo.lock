@@ -2418,6 +2418,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-buffers"
+version = "0.0.1"
+dependencies = [
+ "libm",
+ "thiserror 2.0.21",
+ "tutti-fixtures",
+ "tutti-types",
+]
+
+[[package]]
 name = "tutti-clap-ffi"
 version = "0.0.1"
 dependencies = [

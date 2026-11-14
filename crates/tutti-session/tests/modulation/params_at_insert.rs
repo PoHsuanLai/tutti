@@ -14,14 +14,13 @@ use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tutti_types::MaxBlock;
 
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::NodeKey;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_session::{OutPort, ParamRef, Root, RouteSpec, Session};
 use tutti_types::AtomicF32;
-use tutti_types::{ChannelLayout, Depth, Drive, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{ChannelLayout, Depth, Drive, Seconds, UnitParam};
 
 use common::probe::ProbeUnit;
 
@@ -29,11 +28,8 @@ const BASE: f32 = 5.0;
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::MONO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .outputs(ChannelLayout::MONO)
+        .build()
         .expect("builds")
 }
 

@@ -15,10 +15,11 @@ use crate::load_stage::LoadStage;
 /// Deliberately narrow: only the failure modes a format loader can hit. The
 /// `tutti-plugin` host crate widens this into its `BridgeError` (which adds
 /// the IPC/subprocess variants) via `From<PluginError>`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PluginError {
     /// A plugin failed to load at a specific phase. `reason` carries the
     /// format-native error text.
+    #[error("plugin load failed at {stage} stage: {reason}")]
     Load {
         /// Which phase of loading failed — the load path's own progress marker,
         /// so a caller can tell "the file was not found" from "the plugin
@@ -28,54 +29,28 @@ pub enum PluginError {
         reason: String,
     },
     /// Saving or restoring plugin state failed.
+    #[error("plugin state error: {0}")]
     State(String),
     /// Saving or restoring state failed for a reason the host side knows
     /// exactly (the plugin crashed, the bridge was busy, the transfer stalled):
     /// the [`StateError`] a served plugin's bridge answered, kept whole so a
     /// caller reaching it through [`Control`](crate::Control) loses nothing.
-    StateFailed(StateError),
+    #[error("plugin state error: {0}")]
+    StateFailed(#[source] StateError),
     /// Processing an audio block failed.
+    #[error("plugin process error: {0}")]
     Process(String),
     /// A block failed for a reason that is a constant. Unlike
     /// [`Process`](Self::Process) it owns no heap memory, so the audio thread
     /// can build it for every errored block without allocating.
+    #[error("plugin process error: {0}")]
     Block(&'static str),
     /// Opening / resizing the plugin editor failed.
-    Editor(EditorError),
+    #[error("plugin editor error: {0}")]
+    Editor(#[from] EditorError),
     /// Any other failure that doesn't fit the categories above.
+    #[error("plugin error: {0}")]
     Other(String),
-}
-
-impl core::fmt::Display for PluginError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Load { stage, reason } => {
-                write!(f, "plugin load failed at {stage} stage: {reason}")
-            }
-            Self::State(msg) => write!(f, "plugin state error: {msg}"),
-            Self::StateFailed(e) => write!(f, "plugin state error: {e}"),
-            Self::Process(msg) => write!(f, "plugin process error: {msg}"),
-            Self::Block(why) => write!(f, "plugin process error: {why}"),
-            Self::Editor(e) => write!(f, "plugin editor error: {e}"),
-            Self::Other(msg) => write!(f, "plugin error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for PluginError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Editor(e) => Some(e),
-            Self::StateFailed(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<EditorError> for PluginError {
-    fn from(e: EditorError) -> Self {
-        Self::Editor(e)
-    }
 }
 
 /// Result alias for the plugin-instance capability trait methods.
@@ -93,7 +68,7 @@ pub type Result<T> = core::result::Result<T, PluginError>;
 /// neither condition produces one — and these calls sit on the RT-adjacent
 /// queue path where an allocation would not be welcome. A `Result` whose error
 /// is a fieldless single variant implies a reason that does not exist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[must_use = "a command that was not delivered did not reach the plugin"]
 pub enum Delivered {
     /// Queued for the audio thread.
@@ -114,11 +89,11 @@ impl Delivered {
     }
 }
 
-/// Why a preset call did not do what it was asked (design 029 section 2.4).
+/// Why a preset call did not do what it was asked.
 ///
 /// Three answers a bare `Option<bool>` kept in one value: the plugin has no
 /// route to presets, it was asked and refused, or it is gone.
-#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PresetError {
     /// This plugin cannot do that with presets: it has no preset route, or the

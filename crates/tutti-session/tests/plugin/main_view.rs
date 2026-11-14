@@ -1,4 +1,4 @@
-//! The main-thread view (design 029 step 2): `MainSession::update` services
+//! The main-thread view: `MainSession::update` services
 //! the editors opened through the view and reports what they ask for, the
 //! editor's `open`, `resize`-side `rescale` and `close`, and the graveyard a
 //! removal parks a plugin in until the view empties it.

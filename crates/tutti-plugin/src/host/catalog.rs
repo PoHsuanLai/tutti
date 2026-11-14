@@ -1,6 +1,6 @@
 //! The [`Catalog`]: scans plugin directories, keeps what it found and says what
-//! is blacklisted. It does not open a plugin: the session loads one (design 029
-//! principle 1), and a load asks the catalog whether it may ([`Catalog::check`],
+//! is blacklisted. It does not open a plugin: the session loads one, and a load asks the catalog
+//! whether it may ([`Catalog::check`],
 //! `PluginLoad::with_catalog`).
 //!
 //! The caller supplies the persistence and which directories to scan: this
@@ -257,8 +257,8 @@ impl Catalog {
         }
     }
 
-    /// Makes this catalog's scans **measure** the plugins they probe (doc 023
-    /// section 6): each new or changed file is also rendered, in the probe's own
+    /// Makes this catalog's scans **measure** the plugins they probe: each new or changed file
+    /// is also rendered, in the probe's own
     /// process, and its descriptors carry [`measured`](PluginDescriptor::measured).
     /// Off by default: measuring renders each plugin at two configurations, which
     /// costs seconds a plain probe does not, and a plugin that crashes or hangs
@@ -599,8 +599,8 @@ impl Catalog {
     }
 
     /// Measures the file `plugin` names and records the result: the tail and
-    /// latency each of its plugins reports, against what it renders (doc 023
-    /// section 6), in each descriptor's [`measured`](PluginDescriptor::measured).
+    /// latency each of its plugins reports, against what it renders, in each descriptor's
+    /// [`measured`](PluginDescriptor::measured).
     /// The row is replaced, so the file is probed again too.
     ///
     /// **Blocking**: the probe renders each plugin at two configurations, up to

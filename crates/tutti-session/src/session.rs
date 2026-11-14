@@ -250,8 +250,7 @@ pub enum SessionEvent {
     /// failed to. See [`SamplerEvent`](crate::SamplerEvent).
     #[cfg(feature = "sampler")]
     Sampler(crate::SamplerEvent),
-    /// A hosted plugin's event, by area (design 029 section 3.3, design 030
-    /// convention 1): what the plugin reported (its own edit of a parameter, a
+    /// A hosted plugin's event, by area: what the plugin reported (its own edit of a parameter, a
     /// new tail) and every transition of its life (died, reloading, recovered,
     /// gave up). See [`PluginEvent`](crate::PluginEvent).
     #[cfg(feature = "plugin")]
@@ -369,7 +368,7 @@ pub enum RootTopologyStatus {
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
 ///     .outputs_floor(ChannelLayout::MONO)
-///     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(64)))
+///     .outputs(ChannelLayout::MONO).max_block(MaxBlock::of(Samples(64))).build()
 ///     .unwrap();
 /// let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
 /// session.graph().set_sources_hard(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
@@ -475,9 +474,22 @@ pub struct Session {
 }
 
 impl Session {
-    /// A builder with the defaults.
-    pub fn builder() -> crate::SessionBuilder {
+    /// A builder with the defaults: offline, 48 kHz, stereo, blocks of up to
+    /// [`LIVE_MAX_BLOCK`](crate::LIVE_MAX_BLOCK) frames
+    /// ([`SessionBuilder`](crate::SessionBuilder) has the options and the
+    /// device state).
+    pub fn builder() -> crate::SessionBuilder<crate::Offline> {
         crate::SessionBuilder::default()
+    }
+
+    /// An offline session at `rate` with every other option at its default:
+    /// shorthand for `Session::builder().sample_rate(rate).build()`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SessionBuilder::build`](crate::SessionBuilder::build).
+    pub fn new(rate: tutti_types::SampleRate) -> crate::Result<Self> {
+        Self::builder().sample_rate(rate).build()
     }
 
     /// The graph, to edit. An edit marks it edited; the next
@@ -509,7 +521,7 @@ impl Session {
     /// places the file from the declaration (`tutti_export::Setup::with_root`, set by the export's fork).
     ///
     /// The device a declaration must place on is the one the session renders
-    /// to (`build_offline`'s layout, or the open device's, and the new one on a
+    /// to (the offline `outputs`, or the open device's, and the new one on a
     /// restart); a detached session has none, and the file is checked at the
     /// export.
     ///
@@ -602,6 +614,8 @@ impl Session {
             Phase::Collect => {
                 // First, so what a job landed is in the graph this update commits.
                 self.land_jobs(out);
+                // What the graph's own removals left declared.
+                self.forget_removed();
                 // Before the collect, as a frame's spawns run before its
                 // commit: a crossfade lands on the update that first finds
                 // the re-prepare resumed.
@@ -862,11 +876,28 @@ impl Session {
     pub fn remove(&mut self, node: impl Into<NodeKey>) -> Result<(), RemoveError> {
         let node = node.into();
         self.graph.remove(node)?;
-        #[cfg(feature = "modulation")]
-        self.mods.own.forget_node(node);
-        #[cfg(feature = "midi")]
-        self.midi_state.forget_node(node);
+        self.forget_removed();
         Ok(())
+    }
+
+    /// Forgets what the session declared on every node removed since the
+    /// last call, through this session's [`remove`](Self::remove) or the
+    /// graph's own: modulation, MIDI routes, the capture of an input.
+    fn forget_removed(&mut self) {
+        for node in self.graph.take_removed() {
+            #[cfg(feature = "modulation")]
+            self.mods.own.forget_node(node);
+            #[cfg(feature = "midi")]
+            self.midi_state.forget_node(node);
+            #[cfg(all(feature = "device", feature = "audio-io"))]
+            self.inputs.forget(node);
+            #[cfg(not(any(
+                feature = "modulation",
+                feature = "midi",
+                all(feature = "device", feature = "audio-io")
+            )))]
+            let _ = node;
+        }
     }
 
     /// The session's own modulation declarations, read: its routes and
@@ -924,12 +955,12 @@ impl Session {
     /// # Panics
     ///
     /// On a session not built with
-    /// [`build_offline`](crate::SessionBuilder::build_offline): its engine
+    /// [`build`](crate::SessionBuilder::build): its engine
     /// is a device's callback, or there is none.
     pub fn render(&self, output: &mut tutti_types::InterleavedMut<'_>) {
         self.engine
             .as_ref()
-            .expect("render needs an offline session (SessionBuilder::build_offline)")
+            .expect("render needs an offline session (SessionBuilder::build)")
             .process(output);
     }
 

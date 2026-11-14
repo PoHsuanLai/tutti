@@ -1,4 +1,4 @@
-//! A hosted plugin's parameters as views (design 029 section 2.3):
+//! A hosted plugin's parameters as views:
 //! [`Params`], [`Param`], [`TypedParam`] and [`ParamGesture`].
 //!
 //! Every one of them borrows the session through [`Plugin`](crate::Plugin), so
@@ -376,8 +376,8 @@ impl<'a> Param<'a> {
         Ok(value)
     }
 
-    /// The value now in the plugin's own units, through the format's own map
-    /// (design 029 section 6.1); `None` where the format has none.
+    /// The value now in the plugin's own units, through the format's own map;
+    /// `None` where the format has none.
     ///
     /// A bare `f64`, on purpose: a plugin's plain value has no tutti unit unless
     /// the plugin declares one, and [`Params::typed`] is the typed door for that.

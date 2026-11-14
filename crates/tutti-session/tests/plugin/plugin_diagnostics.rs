@@ -1,4 +1,4 @@
-//! A hosted plugin's diagnostics and buses (design 029 step 4): the counts and
+//! A hosted plugin's diagnostics and buses: the counts and
 //! figures a host shows, whichever hosting runs the plugin, and the graph's bus
 //! handles for wiring it.
 //!
@@ -21,7 +21,9 @@ fn main_thread() -> MainThread {
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds")
 }
 

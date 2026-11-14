@@ -17,34 +17,44 @@ use crate::plugin::{Core, PortLayout};
 use crate::pool::{PoolHandle, PoolRequest};
 
 /// Why a block did not run, or ran and failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ProcessError {
     /// The instance was destroyed (its `Plugin` dropped); nothing was called.
+    #[error("the plugin instance was destroyed")]
     Retired,
     /// `start_processing` answered `false` (or the plugin refused it).
+    #[error("start_processing failed")]
     StartFailed,
     /// A channel slice is shorter than the block; nothing was called.
+    #[error("a channel slice is shorter than the block")]
     BufferTooShort,
     /// The block is longer than the plugin was activated for, or than the
     /// scratch was sized for; nothing was called.
+    #[error("the block is longer than the plugin was activated for")]
     BlockTooLarge,
     /// The block is shorter than the plugin was activated for (`min_frames`,
     /// at least one); nothing was called.
+    #[error("the block is shorter than the plugin was activated for")]
     BlockTooSmall,
     /// The call's port channel counts are not the plugin's own audio ports as
     /// of the activation; nothing was called.
+    #[error("the call's port channel counts are not the plugin's audio ports")]
     PortsMismatch,
     /// The port layout in the call needs more channel pointers or port
     /// buffers than the scratch was sized for (`resize_for`); nothing was
     /// called, and nothing allocated.
+    #[error("the port layout needs more channel pointers or port buffers than the scratch holds")]
     LayoutMismatch,
     /// The block's sample width is not the width the scratch was made for;
     /// nothing was called.
+    #[error("the block's sample width is not the one the scratch was made for")]
     FormatMismatch,
     /// The plugin returned `CLAP_PROCESS_ERROR`; its outputs were zeroed.
+    #[error("the plugin returned CLAP_PROCESS_ERROR")]
     PluginReturnedError,
     /// The main thread held the instance (a lifecycle change or a parameter
     /// flush) and the block does not wait for it; nothing was called.
+    #[error("the main thread holds the instance")]
     Busy,
 }
 

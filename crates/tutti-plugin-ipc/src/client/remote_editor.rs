@@ -1,4 +1,4 @@
-//! The editor that lives in the server (doc 029 section 6.5).
+//! The editor that lives in the server.
 //!
 //! A served plugin's editor is in one of two places. CLAP, VST3 and AU keep an
 //! editor-only second instance in the host, which the host's

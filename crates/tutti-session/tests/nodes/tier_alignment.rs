@@ -20,7 +20,6 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use tutti_types::MaxBlock;
 
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
@@ -74,11 +73,9 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     write_ramp(&path);
 
     let mut s = Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::QUAD,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .outputs(ChannelLayout::QUAD)
+        .build()
         .expect("builds");
 
     // The latent path, on output 2.

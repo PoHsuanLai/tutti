@@ -5,7 +5,7 @@
 //!
 //! Needs `cargo build -p tutti-plugin-server --no-default-features --features
 //! clap,vst3` first. VST2 is not here: the server does not serve it (its
-//! `AEffect` fuses editor and audio, design 021 §4), and its in-process
+//! `AEffect` fuses editor and audio), and its in-process
 //! hosting is the contract's own `hostings`.
 
 use std::path::PathBuf;
@@ -195,8 +195,8 @@ fn a_served_value_keeps_its_f64_width<F: Format>(path: PathBuf) {
         .set_parameter(&main, Param::Level.id(), Normalized::of(SENT));
     // A control-side write reaches the plugin at the head of a block after the
     // server's main thread has read it, not in step with a particular block:
-    // it travels on the control connection and the blocks on the audio one
-    // (doc 029 section 6.5). So blocks run until the value has moved, and the
+    // it travels on the control connection and the blocks on the audio one.
+    // So blocks run until the value has moved, and the
     // value it moved to is the one checked.
     let mut got = before;
     for _ in 0..200 {

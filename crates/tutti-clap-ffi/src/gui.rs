@@ -1,7 +1,6 @@
 //! `clap.gui`: the editor entries, as the sequences a host runs them in.
 
 use std::ffi::{CStr, c_char};
-use std::fmt;
 
 use clap_sys::ext::gui::{
     CLAP_WINDOW_API_COCOA, clap_gui_resize_hints, clap_plugin_gui, clap_window, clap_window_handle,
@@ -13,53 +12,44 @@ use tutti_plugin_types::{ContentScale, EditorUnit, MainThread, WindowHandle};
 use crate::plugin::Plugin;
 
 /// A `clap.gui` step that did not succeed. `Display` is the text a host shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum GuiError {
     /// The plugin has no `clap.gui`.
+    #[error("No GUI extension")]
     NoExtension,
     /// The plugin does not support this host's window API (embedded).
+    #[error("GUI embedded window API not supported")]
     EmbeddedUnsupported,
     /// The plugin does not support this host's window API (floating).
+    #[error("GUI floating window API not supported")]
     FloatingUnsupported,
     /// `create` answered `false` (embedded).
+    #[error("GUI create failed")]
     CreateFailed,
     /// `create` answered `false` (floating).
+    #[error("GUI create (floating) failed")]
     CreateFloatingFailed,
     /// `set_parent` answered `false`.
+    #[error("Set parent failed")]
     SetParentFailed,
     /// `adjust_size` found no usable size.
+    #[error("adjust_size: no usable size fits the request")]
     AdjustRefused,
     /// The plugin has no `set_size`.
+    #[error("set_size unsupported")]
     SetSizeMissing,
     /// `set_size` answered `false`.
+    #[error("set_size refused")]
     SetSizeRefused,
     /// An entry that CLAP orders after `create` was asked for before it (or
     /// after `destroy`); the plugin was not called.
+    #[error("the editor has not been created")]
     NotCreated,
     /// `create` while the previous editor is still created; the plugin was not
     /// called.
+    #[error("the editor is already created")]
     AlreadyCreated,
 }
-
-impl fmt::Display for GuiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::NoExtension => "No GUI extension",
-            Self::EmbeddedUnsupported => "GUI embedded window API not supported",
-            Self::FloatingUnsupported => "GUI floating window API not supported",
-            Self::CreateFailed => "GUI create failed",
-            Self::CreateFloatingFailed => "GUI create (floating) failed",
-            Self::SetParentFailed => "Set parent failed",
-            Self::AdjustRefused => "adjust_size: no usable size fits the request",
-            Self::SetSizeMissing => "set_size unsupported",
-            Self::SetSizeRefused => "set_size refused",
-            Self::NotCreated => "the editor has not been created",
-            Self::AlreadyCreated => "the editor is already created",
-        })
-    }
-}
-
-impl std::error::Error for GuiError {}
 
 /// What opening an embedded editor produced.
 #[derive(Debug, Clone, Copy, PartialEq)]

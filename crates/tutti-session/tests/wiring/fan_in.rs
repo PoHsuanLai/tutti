@@ -9,21 +9,14 @@
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{InPort, OutPort, Root, Session};
-use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut, Samples};
 
 const A: f32 = 0.25;
 const B: f32 = 0.5;
 const C: f32 = 0.125;
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 /// Commits and renders one 64-frame block; returns output channel 0.

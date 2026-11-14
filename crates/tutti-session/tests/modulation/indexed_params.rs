@@ -10,9 +10,8 @@ use tutti_graph::Params;
 use tutti_modulation::Lfo;
 use tutti_session::{OutPort, ParamError, ParamRef, Root, RouteSpec, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::MaxBlock;
 use tutti_types::{BeatsPerCycle, Db, Depth, ParamAddr, UnitAddr, UnitParam};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 
 use common::bands::{BAND0, BAND1, Bands};
 
@@ -24,11 +23,8 @@ const DECLICK: usize = 256;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 

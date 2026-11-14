@@ -18,7 +18,7 @@ use tutti_fixtures::StandInWindow;
 use tutti_plugin::catalog::{Hosting, PluginRef};
 use tutti_plugin_types::ContentScale;
 use tutti_session::{PluginLoadRequest, Session};
-use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{MaxBlock, Samples};
 
 use crate::support::clap_probe;
 
@@ -44,11 +44,8 @@ fn session_with_open_editor(command: u32) -> Session {
     probe.thread_reset();
     probe.thread_command(command);
     let mut s = Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(512)),
-        )
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()
         .expect("an offline session builds");
     let plugin = PluginRef::file(clap_probe())
         .expect("a plugin file")

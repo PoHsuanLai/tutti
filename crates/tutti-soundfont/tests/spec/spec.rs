@@ -250,6 +250,37 @@ fn a_preset_range_intersects_the_instruments() {
     }
 }
 
+/// 9.1.3, the filter's resonance: the DC gain falls below the gain at zero
+/// resonance by half the resonance value, so the peak stands half the value
+/// above that gain. The 441 Hz sine is read through a cutoff of 12 300 cents
+/// (about 10.3 kHz), where a 2-pole low-pass is flat to 0.02 dB at any of these
+/// resonances, so the level at a resonance of `q` centibels is `-q / 20` dB
+/// against the level at 0.
+/// Spec: sf2.synth.filter.resonance.dc-gain, sf2.gen.initialFilterQ
+#[test]
+fn the_dc_gain_falls_by_half_the_resonance() {
+    let level_at = |centibels: i16| {
+        let font = one_preset(vec![vec![
+            (generator::INITIAL_FILTER_FC, 12_300),
+            (generator::INITIAL_FILTER_Q, centibels),
+        ]]);
+        let mut rig = Rig::dry(&font);
+        rig.note_on(0, 69, 127);
+        // Past the attack, then ten whole periods of the sine.
+        let _ = rig.render(4096);
+        rig.energy(1000)
+    };
+    let flat = level_at(0);
+    for centibels in [100_i16, 200, 300] {
+        let db = 20.0 * (level_at(centibels) / flat).log10();
+        let want = -f32::from(centibels) / 20.0;
+        assert!(
+            (db - want).abs() < 0.05,
+            "resonance {centibels} cB: {db} dB against {want} dB"
+        );
+    }
+}
+
 /// 8.1.2 and 9.4: every pair of a preset zone and an instrument zone whose
 /// ranges hold the note plays (this is tutti's reading of "voice"). Two zones
 /// on one key sound together, at twice the level of one; the executor plays

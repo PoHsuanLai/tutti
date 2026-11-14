@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// One of the host's helper executables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Helper {
     /// The out-of-process host (`plugin-server`, `TUTTI_PLUGIN_SERVER`).
     Server,

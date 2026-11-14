@@ -70,16 +70,16 @@ pub(crate) mod wire;
 /// - **Version 32** adds `status` to `AudioProcessed`: what the plugin said of
 ///   itself at the end of the block (`BlockStatus`: CLAP's process status as
 ///   *continue*, *tail* or *sleep*), so the node can report no tail and park
-///   when the plugin sleeps (doc 023 step 2). It is a field of every block's
+///   when the plugin sleeps. It is a field of every block's
 ///   reply, so a version-31 server's replies read differently from the first
 ///   byte after the MIDI.
-/// - **Version 33** appends the editor messages (doc 029 section 6.5): the
+/// - **Version 33** appends the editor messages: the
 ///   host's `OpenEditor { parent, scale }`, `CloseEditor` and `SetEditorSize`,
 ///   and the server's `EditorOpened`, `EditorSized`, `EditorWantsSize` and
 ///   `EditorClosed`, so a served plugin's editor can live in the server. They
 ///   follow every earlier variant, which keep their numbers.
-/// - **Version 34** splits the audio phase into two connections (doc 029
-///   section 6.5). No message changed: the host connects a third time after the
+/// - **Version 34** splits the audio phase into two connections. No message changed: the host
+///   connects a third time after the
 ///   audio connection, the server sends `Ready` on it, and the audio connection
 ///   carries `ProcessAudio` and `Reset` alone (the server's render thread
 ///   serves it) while the control connection carries every other request and

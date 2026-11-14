@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-//! The format-generic half of plugin hosting (design 021, step 4a).
+//! The format-generic half of plugin hosting.
 //!
 //! What a loaded plugin's host side needs whatever process the plugin runs in,
 //! and whatever its format: the main-thread control surface

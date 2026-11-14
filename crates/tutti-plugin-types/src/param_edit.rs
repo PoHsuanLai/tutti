@@ -4,7 +4,7 @@
 //! parameters": VST3's `beginEdit`, `performEdit` and `endEdit`, VST2's
 //! `audioMasterBeginEdit`, `audioMasterAutomate` and `audioMasterEndEdit`,
 //! CLAP's gesture and value output events, AU's parameter listener. They are
-//! one event here (doc 029 section 6.1).
+//! one event here.
 //!
 //! The two ends of a gesture carry no value in any format, so the type has
 //! none for them: only [`Change`](ParamEdit::Change) holds a value. A host that

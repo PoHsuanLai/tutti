@@ -104,7 +104,8 @@ std only. A rule the compiler already enforces is not a gate.
   `Graph::connect(from, to)` over ports taken from keys; params are methods of the key.
 - **One failure rule:** a call that names a node or port that does not exist fails at the
   call with a named error, never later and never as a default. A port that goes missing
-  after a successful call reads silence. Removal returns a `#[must_use] Result`.
+  after a successful call reads silence, except a tap whose every source was removed:
+  it ends (`Pull::Ended`) once drained. Removal returns a `#[must_use] Result`.
 - The session graph declicks wiring (`connect` fades in unless `.hard()`); a test that
   renders a session wire for another reason wires `.hard()`.
 - An inlet whose rate is not the graph's is refused, never resampled.

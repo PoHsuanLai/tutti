@@ -18,8 +18,7 @@ use tutti_session::{
     InPort, MixRef, ModRefusal, ModTarget, OutPort, ParamRef, PassError, Problem, Root, RouteSpec,
     Session, TargetName,
 };
-use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, SampleRate, Samples, UnitParam};
+use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, UnitParam};
 
 const BLOCK: usize = 128;
 /// The constant source's level.
@@ -46,13 +45,7 @@ impl Node for Halve {
 }
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 fn settle(s: &mut Session) {

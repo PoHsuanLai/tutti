@@ -142,8 +142,6 @@ impl std::fmt::Display for Status {
     }
 }
 
-impl std::error::Error for Status {}
-
 #[cfg(test)]
 mod tests {
     use super::*;

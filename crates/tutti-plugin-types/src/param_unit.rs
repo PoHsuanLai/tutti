@@ -1,5 +1,5 @@
 //! What a parameter's number measures: [`ParamUnit`], and the one-way read of a
-//! plain value into a tutti unit, [`PlainUnit`] (doc 023 §5.2).
+//! plain value into a tutti unit, [`PlainUnit`].
 //!
 //! A format declares a unit in a different way each time (AU a numeric code,
 //! VST3 and VST2 a display string, CLAP not at all), and every one of them is
@@ -10,7 +10,7 @@
 //! [`ParameterInfo::unit`](crate::ParameterInfo::unit) whatever this says.
 //!
 //! `ParamUnit` is a runtime tag and lives here, with the hosts, not in
-//! `tutti-types` beside the compile-time units (doc 023 Q9): a second name for
+//! `tutti-types` beside the compile-time units: a second name for
 //! `Hz` or `Db` there would be two names for one behaviour.
 
 use crate::ParamRange;
@@ -85,7 +85,7 @@ impl ParamUnit {
     /// Case-sensitive, after trimming ASCII space (and only that: a no-break
     /// space is not trimmed). Everything else (`kHz`, `Db`, `dB(A)`,
     /// `semitones`, the empty string) is `None`. The list grows only from a
-    /// corpus run (doc 023 §6), because the cost of a wrong accept is a
+    /// corpus run, because the cost of a wrong accept is a
     /// mislabelled parameter.
     ///
     /// ```
@@ -156,7 +156,7 @@ impl ParamUnit {
 }
 
 /// A tutti unit that a plain value measured in a declared [`ParamUnit`] reads
-/// into and writes back out of (doc 023 §5.2, doc 029 §2.3).
+/// into and writes back out of.
 ///
 /// This is the one place a percent becomes a fraction (`/ 100`) and a
 /// millisecond becomes a second (`/ 1000`), in both directions, so the scaling

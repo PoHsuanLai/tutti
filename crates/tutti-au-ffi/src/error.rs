@@ -1,11 +1,10 @@
 //! The errors the safe handles return.
 
-use std::fmt;
-
 use crate::status::Status;
 
 /// A failed AudioToolbox call: which one, and the `OSStatus` it answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{function} failed with OSStatus {status}")]
 pub struct OsError {
     /// The AudioToolbox function that failed, for diagnostics.
     pub function: &'static str,
@@ -20,29 +19,25 @@ impl OsError {
     }
 }
 
-impl fmt::Display for OsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} failed with OSStatus {}", self.function, self.status)
-    }
-}
-
-impl std::error::Error for OsError {}
-
 /// What a safe handle can fail with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// An AudioToolbox call answered a non-zero `OSStatus`.
-    Os(OsError),
+    #[error(transparent)]
+    Os(#[from] OsError),
     /// A value the caller handed over, or one the system handed back, was not
     /// usable (a plist that does not decode, a size the property does not
     /// have). The text says which.
+    #[error("invalid: {0}")]
     Invalid(String),
     /// A system function this macOS does not have (one added after the host's
     /// minimum deployment target, looked up at run time).
+    #[error("{0} is not available on this macOS")]
     Unavailable(&'static str),
     /// A render call failed; `last` is the unit's own last-render-error
     /// property, when it reports one.
+    #[error("{function} failed with OSStatus {status}")]
     RenderFailed {
         /// The AudioToolbox function that failed.
         function: &'static str,
@@ -61,27 +56,6 @@ impl Error {
             Error::RenderFailed { status, .. } => Some(*status),
             Error::Invalid(_) | Error::Unavailable(_) => None,
         }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Os(e) => e.fmt(f),
-            Error::Invalid(why) => write!(f, "invalid: {why}"),
-            Error::Unavailable(function) => write!(f, "{function} is not available on this macOS"),
-            Error::RenderFailed {
-                function, status, ..
-            } => write!(f, "{function} failed with OSStatus {status}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<OsError> for Error {
-    fn from(e: OsError) -> Self {
-        Error::Os(e)
     }
 }
 

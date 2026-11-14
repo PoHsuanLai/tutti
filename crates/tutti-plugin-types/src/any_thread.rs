@@ -24,7 +24,7 @@ use crate::{
 ///   answers "unavailable" when it passes (`None`, `false`,
 ///   [`StateError::Unavailable`], or the write is dropped).
 /// - **Served**, a bridge answers from any thread, concurrently with the main
-///   thread's own calls, so no hop is added (design 021 §10.4 (d)). A host
+///   thread's own calls, so no hop is added. A host
 ///   that blocks its main thread on a snapshot or a parameter read would be
 ///   told "unavailable" if it hopped, for a call the bridge can answer.
 ///

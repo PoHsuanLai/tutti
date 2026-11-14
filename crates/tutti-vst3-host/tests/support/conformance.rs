@@ -29,7 +29,7 @@
 //! Nothing here skips: a missing artifact panics with its build command
 //! (`require_probe`, `require_twin`, `require_sample`).
 //!
-//! The `harness_ready()` gate asserts (its two requirements are met by any
+//! The `require_harness()` gate asserts (its two requirements are met by any
 //! recursive checkout, so absence has one cause and one fix).
 //!
 //! The plugins the suites drive are all built from this repository: `audio-probe`
@@ -269,7 +269,7 @@ pub fn first_parameter_id(path: &Path) -> Option<u32> {
 /// handles: without it, the file does not compile in and nothing claims to
 /// have run.
 #[track_caller]
-pub fn harness_ready() -> bool {
+pub fn require_harness() {
     assert_eq!(
         AVAILABLE, "1",
         "the HostChecker sources are missing, so this suite cannot validate \
@@ -285,7 +285,6 @@ pub fn harness_ready() -> bool {
          `conformance` feature is on, so an empty list means the build did not \
          produce it — not that this machine lacks plugins."
     );
-    true
 }
 
 /// Resolve a sample plugin that **must** be present, panicking by name if not.

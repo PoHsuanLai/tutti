@@ -84,3 +84,37 @@ fn an_editors_state_is_the_plugins_state() {
     assert!(!plugin.is_empty(), "the probe saves a state");
     assert_eq!(through_editor, plugin);
 }
+
+/// A request the plugin makes through the editor instance's host is kept for
+/// the application, not dropped by the idle that serves the instance: the
+/// plugin's own buttons call the host of the instance that shows them.
+/// Spec: clap.ext.transport_control.host.request_start
+#[test]
+fn a_transport_request_the_editor_instance_makes_is_taken_from_it() {
+    use tutti_clap_test_plugin::HOSTEXT_CMD_START;
+    use tutti_plugin_types::{Request, TransportRequest};
+
+    let path = tutti_fixtures::clap_probe();
+    let main = main_thread();
+    let mut editor = ClapLoaded::load_editor(&main, path, &Load::new()).expect("loads");
+    // SAFETY: the reference plugin's library, already loaded by the editor.
+    let lib = unsafe { libloading::Library::new(path) }.expect("re-opens");
+    // SAFETY: the reference plugin exports this symbol with this signature.
+    let command: libloading::Symbol<unsafe extern "C" fn(u32, i64, i64)> =
+        unsafe { lib.get(b"tutti_test_plugin_hostext_command\0") }.expect("symbol");
+
+    // SAFETY: plain integers latched by the plugin.
+    unsafe { command(HOSTEXT_CMD_START, 0, 0) };
+    editor.loaded_mut().on_main_thread(&main);
+    editor.editor_idle(&main);
+
+    let mut asked = Vec::new();
+    editor.take_requests(&main, &mut asked);
+    assert_eq!(asked, [Request::Transport(TransportRequest::Start)]);
+    editor.take_requests(&main, &mut asked);
+    assert_eq!(
+        asked,
+        [Request::Transport(TransportRequest::Start)],
+        "taken once"
+    );
+}

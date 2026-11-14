@@ -1,6 +1,6 @@
 [package]
 name = "tutti-graph"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "An audio graph you can change while it plays: add processors, connect them, render block by block"
@@ -29,9 +29,9 @@ testing = ["dep:assert_no_alloc"]
 # The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
 # tail vocabulary.
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
-tutti-rt = { path = "../tutti-rt" }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 # `Law`, the closed set of easings a param segment and a ramp move along.
-tutti-curve = { path = "../tutti-curve" }
+tutti-curve = { version = "0.0.1", path = "../tutti-curve" }
 # `Ump`, the packet an event carries, and its note-off test. No other tutti
 # crate and no codec: this is why the packet is not in `tutti-types`.
 tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
@@ -47,6 +47,8 @@ bytemuck = { version = "1.16", features = ["derive"] }
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 # `testing` only: `TestPool::no_alloc` runs each participant under the gate.
 assert_no_alloc = { version = "1", default-features = false, optional = true }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # Turns `contract` and `testing` on for this crate's own tests (the pattern

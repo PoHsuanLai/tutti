@@ -181,8 +181,8 @@ fn rem_euclid_wraps_negative_overshoot_inside_the_span() {
 #[test]
 fn bpm_differs_from_ignores_ulp_noise() {
     let a = Bpm::of(120.0);
-    assert!(!a.differs_from(Bpm::of(120.000_000_1), 0.001));
-    assert!(a.differs_from(Bpm::of(140.0), 0.001));
+    assert!(!a.differs_from(Bpm::of(120.000_000_1), Bpm::of(0.001)));
+    assert!(a.differs_from(Bpm::of(140.0), Bpm::of(0.001)));
 }
 
 #[test]
@@ -356,5 +356,23 @@ fn a_converted_read_position_does_not_drift_over_an_hour() {
             "{file} -> {session}: {} vs {exact}",
             pos.get()
         );
+    }
+}
+
+/// **A beat of half a second is exactly 120 bpm, and a beat of no length has no tempo.**
+#[test]
+fn a_beat_period_is_sixty_over_its_seconds() {
+    assert_eq!(
+        Bpm::from_beat_period(Seconds::new(0.5)),
+        Some(Bpm::of(120.0))
+    );
+    assert_eq!(
+        Bpm::from_beat_period(Seconds::new(2.0)),
+        Some(Bpm::of(30.0))
+    );
+    for bad in [0.0, -0.5, f64::NAN, f64::INFINITY] {
+        let tempo = Bpm::from_beat_period(Seconds::new(bad));
+        // An infinite period is a tempo of zero, which is none either.
+        assert_eq!(tempo, None, "{bad}");
     }
 }

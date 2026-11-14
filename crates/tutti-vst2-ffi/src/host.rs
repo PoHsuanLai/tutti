@@ -7,7 +7,6 @@ use libloading::Library;
 use std::cell::{Cell, UnsafeCell};
 use std::collections::BTreeSet;
 use std::convert::TryFrom;
-use std::error::Error;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -303,43 +302,32 @@ pub trait Host {
 }
 
 /// All possible errors that can occur when loading a VST plugin.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum PluginLoadError {
     /// Could not load given path.
+    #[error("could not open the requested path")]
     InvalidPath,
 
     /// Given path is not a VST plugin.
+    #[error("the given path does not contain a VST2.4 compatible library")]
     NotAPlugin,
 
     /// Failed to create an instance of this plugin.
     ///
     /// This can happen for many reasons, such as if the plugin requires a different version of
     /// the VST API to be used, or due to improper licensing.
+    #[error("failed to create a plugin instance")]
     InstanceFailed,
 
     /// The API version which the plugin used is not supported by this library.
+    #[error("the plugin API version is not compatible with this library")]
     InvalidApiVersion,
 
     /// The entry point returned an `AEffect` that is not one: its `magic` is not
     /// `VstP`, or it has no dispatcher. Nothing was called on it.
+    #[error("the plugin entry point returned an invalid AEffect")]
     InvalidEffect,
 }
-
-impl fmt::Display for PluginLoadError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::PluginLoadError::*;
-        let description = match self {
-            InvalidPath => "Could not open the requested path",
-            NotAPlugin => "The given path does not contain a VST2.4 compatible library",
-            InstanceFailed => "Failed to create a plugin instance",
-            InvalidApiVersion => "The plugin API version is not compatible with this library",
-            InvalidEffect => "The plugin entry point returned an invalid AEffect",
-        };
-        write!(f, "{}", description)
-    }
-}
-
-impl Error for PluginLoadError {}
 
 /// Wrapper for an externally loaded VST plugin.
 ///
@@ -2742,6 +2730,7 @@ mod tests {
     /// positional, so inserting a variant above these shifts every opcode below
     /// it and silently re-points the dispatch. The SDK fixes
     /// `effStartProcess = 71` and `effStopProcess = 72`.
+    /// Spec: vst2.eff.StartProcess, vst2.eff.StopProcess
     #[test]
     fn start_and_stop_process_opcodes_match_the_sdk() {
         assert_eq!(plugin::OpCode::StartProcess as i32, 71);
@@ -2762,6 +2751,7 @@ mod tests {
     /// `effSetProcessPrecision = 77`, pinned for the same reason as the pair
     /// above. It sits four variants below `effStopProcess`, so it is the one
     /// most exposed to a variant inserted anywhere in that range.
+    /// Spec: vst2.eff.SetProcessPrecision
     #[test]
     fn set_precision_opcode_matches_the_sdk() {
         assert_eq!(plugin::OpCode::SetPrecision as i32, 77);
@@ -2795,6 +2785,7 @@ mod tests {
     /// `slice::from_raw_parts(ptr, len as usize)` with no null check and no
     /// sign check. This is the project-*save* path, so each of these is a real
     /// crash on a real user's save.
+    /// Spec: vst2.eff.GetChunk
     #[test]
     fn get_chunk_rejects_unreadable_plugin_answers() {
         // `effFlagsProgramChunks` set but nothing to save yet: the plugin
@@ -2844,6 +2835,7 @@ mod tests {
     /// `result == 1` (rejecting truthy non-1 answers some plugins give);
     /// neither `open` nor `close` checked `is_open`, so a repeat open leaked the
     /// first window and a host's two teardown paths double-closed.
+    /// Spec: vst2.eff.EditOpen, vst2.eff.EditClose
     #[test]
     fn the_editor_opens_once_closes_once_and_accepts_a_truthy_open() {
         use crate::api::DispatcherProc;
@@ -2940,6 +2932,7 @@ mod tests {
     /// only then.
     ///
     /// An idle that dispatched nothing would freeze editors that animate in `effEditIdle`.
+    /// Spec: vst2.eff.EditIdle
     #[test]
     fn idle_dispatches_effeditidle_only_while_the_editor_is_open() {
         use crate::api::DispatcherProc;
@@ -2990,6 +2983,7 @@ mod tests {
     /// Before the arm existed the opcode logged the query and fell through to
     /// `0`, so a plugin gating a feature on `canDo("sendVstEvents")` was told
     /// "don't know" for everything.
+    /// Spec: vst2.audioMaster.CanDo
     #[test]
     fn host_can_do_reaches_the_host_and_maps_to_the_three_answers() {
         struct Answers;
@@ -3024,6 +3018,7 @@ mod tests {
     /// `audioMasterCloseFileSelector` answer 0 (declined) without reading the `VstFileSelect`
     /// the plugin passes, and `audioMasterGetLanguage` answers `kVstLangEnglish` (1), never
     /// the 0 that names no language.
+    /// Spec: vst2.audioMaster.GetLanguage, vst2.language.kVstLangEnglish
     #[test]
     fn file_selector_is_declined_and_language_is_english() {
         struct Plain;
@@ -3050,6 +3045,7 @@ mod tests {
     /// return value is not part of that layout (`aeffect.h` documents none), and a plugin
     /// that returns 0 after a successful load, as a JUCE plugin does, must not be told it
     /// failed: the call has no way to report a refusal, so none is invented.
+    /// Spec: vst2.eff.SetChunk
     #[test]
     fn a_chunk_reaches_the_plugin_with_its_index_and_size() {
         use crate::api::DispatcherProc;

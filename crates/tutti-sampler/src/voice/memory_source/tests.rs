@@ -1137,8 +1137,9 @@ fn with_channels_declares_the_width() {
     );
 }
 
-/// The node's shape is its declared width, a generator's: no inputs, no
-/// latency, never skipped (its tail is unbounded).
+/// The node's shape is its declared width, a source's: no inputs, no latency,
+/// and a free-running one rings out its wave (32 frames at the rate it was
+/// written at, which is the render's).
 #[test]
 fn the_shape_is_the_declared_width() {
     for w in [1usize, 2, 6, 8] {
@@ -1151,7 +1152,7 @@ fn the_shape_is_the_declared_width() {
         assert_eq!(shape.audio_out().count() as usize, w, "width {w}");
         assert_eq!(shape.audio_in().count(), 0);
         assert_eq!(shape.latency.samples(), Samples(0));
-        assert_eq!(shape.tail, Tail::Unbounded);
+        assert_eq!(shape.tail, Tail::Finite(Samples(32)));
     }
 }
 

@@ -6,48 +6,16 @@
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use crate::common::{Seen, blocks, offline, tap};
 use tutti_fixtures::midi;
-use tutti_graph::NodeKey;
-use tutti_graph::{
-    Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
-};
+use tutti_graph::{Cx, Event, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status};
 use tutti_midi_runtime::{MIDI_INPUT_PORTS, MidiInputPorts, TimedMidiEvent};
 use tutti_session::{MidiRouteRule, Session, SessionNode};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const MF: u16 = 0x8000;
-type Seen = Arc<Mutex<Vec<(u64, [u32; 4])>>>;
-
-struct Tap(Seen);
-
-impl Node for Tap {
-    fn shape(&self) -> Shape {
-        Shape::EMPTY.with_events(1, 0)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
-        for e in io.events(0) {
-            if let EventKind::Midi(Ump(w)) = e.kind {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((cx.env.frame.get() + u64::from(e.offset.get()), w));
-            }
-        }
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
-impl IntoNode for Tap {
-    type Controls = ();
-    fn into_parts(self) -> NodeParts<()> {
-        IntoNode::into_parts(tutti_graph::Unforkable(self))
-    }
-}
-impl SessionNode for Tap {}
-
 /// Stands in for the hardware input: sends what it is mailed on port 0.
 struct Src(Arc<Mutex<Vec<[u32; 4]>>>);
 impl Node for Src {
@@ -71,29 +39,6 @@ impl IntoNode for Src {
 }
 impl SessionNode for Src {}
 
-fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
-}
-
-fn tap(s: &mut Session) -> (NodeKey, Seen) {
-    let seen = Seen::default();
-    let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
-    (node.erase(), seen)
-}
-
-fn blocks(s: &Session, n: usize) {
-    let mut buf = vec![0.0f32; 512 * 2];
-    for _ in 0..n {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-    }
-}
-
 fn is_off(w: &[u32; 4]) -> bool {
     Ump(*w).is_note_off()
 }
@@ -101,14 +46,14 @@ fn ons(seen: &Seen) -> usize {
     seen.lock()
         .unwrap()
         .iter()
-        .filter(|(_, w)| !is_off(w) && matches!(w[0] >> 28, 2 | 4) && (w[0] >> 20) & 0xf == 9)
+        .filter(|(_, Ump(w))| !is_off(w) && matches!(w[0] >> 28, 2 | 4) && (w[0] >> 20) & 0xf == 9)
         .count()
 }
 fn offs(seen: &Seen) -> usize {
     seen.lock()
         .unwrap()
         .iter()
-        .filter(|(_, w)| is_off(w))
+        .filter(|(_, Ump(w))| is_off(w))
         .count()
 }
 
@@ -277,7 +222,7 @@ fn a_group_route_cut_with_keys_held_ends_them_at_the_next_block_then_nothing() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, w)| is_off(w))
+        .filter(|(_, Ump(w))| is_off(w))
         .map(|(frame, _)| *frame)
         .collect();
     assert_eq!(

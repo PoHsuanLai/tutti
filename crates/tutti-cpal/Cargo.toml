@@ -1,6 +1,6 @@
 [package]
 name = "tutti-cpal"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Plays and records audio through the sound card with cpal, for tutti"
@@ -38,19 +38,19 @@ capture = ["dep:tutti-codec", "tutti-codec/encode-wav"]
 jack = ["cpal/jack"]
 
 [dependencies]
-cpal = "0.15"
+cpal = "0.18"
 thiserror.workspace = true
 
-tutti-transport = { path = "../tutti-transport" }
-tutti-engine = { path = "../tutti-engine" }
+tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
+tutti-engine = { version = "0.0.1", path = "../tutti-engine" }
 # `TapReader` and `TapWriter`, the mic's rings.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # `FileOut`, `Format` and `Spec`: the sink `MicIn::matching_sink` opens.
-tutti-codec = { path = "../tutti-codec", optional = true }
+tutti-codec = { version = "0.0.1", path = "../tutti-codec", optional = true }
 
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-rt = { path = "../tutti-rt" }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 
 [dev-dependencies]
 # `contract::prepared`, to drive the inlet node by hand in the capture tests.

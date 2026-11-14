@@ -87,7 +87,7 @@
 //! // The inlets inbound events land in (four devices, 1024 events each, placed
 //! // 10 ms after they arrive), then a session over this platform's backend.
 //! let inlets = DeviceInlets::new(std::num::NonZeroUsize::new(4).unwrap(), tutti_graph::EventCapacity::of(1024), std::time::Duration::from_millis(10));
-//! let session = MidiSession::open(Arc::clone(&inlets))?;
+//! let mut session = MidiSession::open(Arc::clone(&inlets))?;
 //!
 //! // The devices present now; capability (protocol, function blocks) is read from
 //! // the OS.
@@ -102,22 +102,22 @@
 //! // Or by name: one `DeviceQuery` form for connect and disconnect.
 //! session.disconnect_input("keystep");
 //!
-//! // Outbound: `send` returns how many events were accepted, 0 when nothing is
-//! // connected.
-//! session.connect_output("iac")?;
+//! // Outbound: the output is a value the caller owns; `queue` returns how many
+//! // events the device accepted.
+//! let mut output = session.connect_output("iac")?;
 //! let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-//! assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
+//! assert_eq!(output.queue(&[(Offset::ZERO, note)]), 1);
 //! # Ok::<(), tutti_midi_hardware::Error>(())
 //! ```
 //!
 //! ## Main types
 //!
 //! - [`Devices`]: the devices present, and the changes to them.
-//! - [`MidiSession`]: connect, disconnect and send; owns a [`Devices`] and the
+//! - [`MidiSession`]: connect and disconnect inputs; owns a [`Devices`] and the
 //!   [`HardwareMidiInputs`] over the inlets it was opened with. `connect_input`,
 //!   `disconnect_input` and `connect_output` take a [`DeviceQuery`] (a
-//!   `&DeviceId` or a `&str`); `output()` reads the open output as an
-//!   [`OutputInfo`].
+//!   `&DeviceId` or a `&str`); `connect_output` returns the [`OpenOutput`], which
+//!   the caller owns and sends through.
 //! - [`HardwareMidiInputs`]: the open input ports, each named by its
 //!   [`DeviceSlot`] (one id: the slot of the [`DeviceInlets`] and which device
 //!   took it) and the [`InputProducerHandle`] its driver thread pushes through,
@@ -178,18 +178,12 @@
 //!
 //! ## Examples
 //!
-//! The loopback examples drive real hardware, so they need a device present:
-//!
-//! ```bash
-//! cargo run --example list_devices          # list, then watch hot-plug for ten seconds
-//! cargo run --example iac_loopback_test     # macOS, needs the IAC Driver enabled
-//! cargo run --example alsa_loopback_test    # Linux, uses `Midi Through`
-//! ```
-//!
-//! Two things the Linux example documents that are easy to get wrong: **VirMIDI does
+//! `cargo run --example list_devices` lists the devices, then watches hot-plug
+//! for ten seconds. The ALSA loopback suite (`sequencer-tests`) sends UMP out
+//! through the kernel's `Midi Through` client and reads it back. **VirMIDI does
 //! not echo** (writing to it feeds the raw-MIDI device, not that port's own
-//! subscribers, so a send/receive pair on one virmidi port receives nothing), and
-//! `Midi Through` is the kernel's actual loopback.
+//! subscribers, so a send/receive pair on one virmidi port receives nothing),
+//! and `Midi Through` is the kernel's actual loopback.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
@@ -218,6 +212,7 @@ mod error;
 )]
 mod guard;
 mod port;
+mod process;
 mod profiles;
 mod session;
 mod stamp;
@@ -240,11 +235,12 @@ pub use devices::{
 pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, Pushed, StreamDrain};
+pub use process::{ProcessChange, ReportAsk, ReportError, ReportPeer};
 pub use profiles::{
     ChannelCount, ChannelProfile, ListedProfile, PeerProfiles, ProfileError, ProfileSwitch,
     ProfilesChange, Whole, WholeProfile,
 };
-pub use session::{DeviceQuery, MidiSession, OutputInfo, Polled};
+pub use session::{DeviceQuery, MidiSession, Polled};
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{
     BindPolicy, Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId,

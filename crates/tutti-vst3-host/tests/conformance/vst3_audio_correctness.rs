@@ -181,12 +181,10 @@ fn probe_path() -> PathBuf {
 ///
 /// Returns `Option` only so call sites keep their existing shape; a load
 /// failure is a hard error, because the probe is ours and built from this tree.
-fn load_probe(block_size: usize) -> Option<Active> {
+fn load_probe(block_size: usize) -> Active {
     let path = probe_path();
-    match Active::<f32>::load(&path, 48_000.0, block_size) {
-        Ok(i) => Some(i),
-        Err(e) => panic!("audio-probe failed to load from {path:?}: {e:?}"),
-    }
+    Active::<f32>::load(&path, 48_000.0, block_size)
+        .unwrap_or_else(|e| panic!("audio-probe failed to load from {path:?}: {e:?}"))
 }
 
 /// Put the probe into `mode` and confirm it took effect.
@@ -278,19 +276,6 @@ fn render(
     Rendered { out: grouped }
 }
 
-/// Kept as a no-op so every test still names its precondition at the top.
-///
-/// [`probe_path`] panics when the probe is missing, because the probe is built
-/// from this tree rather than found on the machine. Returning a constant `true`
-/// keeps the call sites honest without adding a path where a test reports
-/// success having run nothing.
-fn harness_ready() -> bool {
-    // Resolve eagerly: this is what turns a missing probe into a failure at the
-    // start of the test rather than a confusing error part-way through.
-    let _ = probe_path();
-    true
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 /// Every (bus, channel) slot must carry the samples the host claims it does.
@@ -302,13 +287,8 @@ fn harness_ready() -> bool {
 /// invisible to structural checking.
 #[test]
 fn every_bus_and_channel_carries_its_own_audio() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(0));
 
     const FRAMES: usize = 128;
@@ -374,13 +354,8 @@ fn every_bus_and_channel_carries_its_own_audio() {
 /// through the host's own normalisation on the way in.
 #[test]
 fn automation_ramp_is_rendered_at_the_right_offsets() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(1));
 
     const FRAMES: usize = 512;
@@ -431,13 +406,8 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
 /// (the setup's `max_block` and the bound channels' capacity); this pins it through the host.
 #[test]
 fn a_block_past_the_activated_length_is_refused() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(64) else {
-        return;
-    };
+    let mut inst = load_probe(64);
     let info = inst.loaded().plugin_info().clone();
     let (ins, outs) = (info.num_inputs.max(1), info.num_outputs.max(1));
     let block = |inst: &mut Active, frames: usize| {
@@ -480,13 +450,8 @@ fn a_block_past_the_activated_length_is_refused() {
 /// can locate precisely.
 #[test]
 fn consecutive_blocks_are_delivered_in_order() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(2));
 
     const FRAMES: usize = 64;
@@ -538,13 +503,8 @@ fn consecutive_blocks_are_delivered_in_order() {
 /// owns activation, and the restart method lives here.
 #[test]
 fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(8));
 
     let activations_before = render(&mut inst, 512, &[], None, |_, _, _| 0.0).out[0][0][0];
@@ -601,13 +561,8 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
 /// calling at the wrong time rather than the plugin declining.
 #[test]
 fn a_sample_rate_change_deactivates_the_plugin_around_setup_processing() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(10));
 
     let before = render(&mut inst, 512, &[], None, |_, _, _| 0.0).out[0][0][0];
@@ -681,9 +636,6 @@ impl Drop for ProbeMisbehaviour {
 /// connect-minus-disconnect count. Only that count separates the two.
 #[test]
 fn a_half_refused_connection_is_unwound_on_the_component_half() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
 
     // `TUTTI_PROBE_MISBEHAVIOUR` is process-global and the probe reads it at
@@ -694,9 +646,7 @@ fn a_half_refused_connection_is_unwound_on_the_component_half() {
     let _misbehaviour = ProbeMisbehaviour::set("10");
 
     let balance = {
-        let Some(mut inst) = load_probe(512) else {
-            return;
-        };
+        let mut inst = load_probe(512);
         set_mode(&mut inst, mode(7));
         let rendered = render(&mut inst, 512, &[], None, |_, _, _| 0.0);
         rendered.out[0][0][0]
@@ -731,13 +681,8 @@ fn a_half_refused_connection_is_unwound_on_the_component_half() {
 /// which is why `kModeEventBusActive` asks it directly.
 #[test]
 fn event_buses_are_activated_not_merely_counted() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(6));
 
     const FRAMES: usize = 512;
@@ -766,13 +711,8 @@ fn event_buses_are_activated_not_merely_counted() {
 /// than asserting the event list merely looked well-formed.
 #[test]
 fn note_on_takes_effect_at_its_sample_offset() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(4));
 
     const FRAMES: usize = 512;
@@ -815,9 +755,6 @@ fn note_on_takes_effect_at_its_sample_offset() {
 /// crash. Structural checks only verify the *declaration* is consistent.
 #[test]
 fn f64_path_carries_the_same_audio() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
     let path = probe_path();
     // The probe declares f64 support, so a failure here is a real one — either
@@ -910,13 +847,8 @@ fn f64_path_carries_the_same_audio() {
 /// is precisely a dropped note-off.
 #[test]
 fn full_midi_event_list_survives_intact() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(5));
 
     const FRAMES: usize = 512;
@@ -1007,13 +939,8 @@ fn full_midi_event_list_survives_intact() {
 /// asks it.
 #[test]
 fn only_main_and_default_active_buses_are_activated() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(9));
 
     const FRAMES: usize = 512;
@@ -1057,9 +984,6 @@ fn only_main_and_default_active_buses_are_activated() {
 /// memory that was never cleared.
 #[test]
 fn controller_only_ui_state_survives_a_save_and_restore() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
 
     // A value no default could be confused with, and exactly representable in
@@ -1067,9 +991,7 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
     const UI_VALUE: f64 = 0.625;
 
     let saved = {
-        let Some(mut inst) = load_probe(512) else {
-            return;
-        };
+        let mut inst = load_probe(512);
         inst.set_parameter(PARAM_UI_STATE, UI_VALUE);
         assert_eq!(
             inst.get_parameter(PARAM_UI_STATE),
@@ -1080,9 +1002,7 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
         inst.get_state().expect("probe should expose state")
     };
 
-    let Some(mut restored) = load_probe(512) else {
-        return;
-    };
+    let mut restored = load_probe(512);
     assert_eq!(
         restored.get_parameter(PARAM_UI_STATE),
         0.0,
@@ -1111,13 +1031,8 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
 /// the first check alone and silently misalign every compensated graph.
 #[test]
 fn reported_latency_matches_the_plugins_actual_delay() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(3));
 
     // The probe only reports latency while in latency mode, so this must be
@@ -1161,13 +1076,8 @@ fn reported_latency_matches_the_plugins_actual_delay() {
 /// `kNoteExpressionBaseCode + typeId + value`, so both survive or neither does.
 #[test]
 fn note_expression_reaches_the_plugin_with_its_value() {
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(5));
 
     const FRAMES: usize = 512;
@@ -1257,14 +1167,8 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     use tutti_midi_protocol::PitchBendSensitivity;
     use tutti_midi_protocol::signed_f32_to_bend;
-
-    if !harness_ready() {
-        return;
-    }
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     set_mode(&mut inst, mode(5));
 
     const FRAMES: usize = 512;
@@ -1349,6 +1253,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
 /// never drains the output list silently drops everything an arpeggiator or
 /// MIDI-effect plugin produces. A block without a gain point emits nothing, so
 /// a host that invented events fails too.
+/// Spec: vst3.IEventList.addEvent
 #[test]
 fn midi_emitted_by_the_plugin_reaches_the_host() {
     const GAIN: u32 = 102;
@@ -1404,6 +1309,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 /// the getter and `dataexchange` in its constructor, so both answer identically
 /// however early they are asked. The probe answers `0` before `initialize` and
 /// `kNeedTempo` after, which is the only way to tell the two orderings apart.
+/// Spec: vst3.IProcessContextRequirements.getProcessContextRequirements
 #[test]
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
@@ -1437,9 +1343,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     use tutti_vst3_host::{NOTIFICATION_CAPACITY, PluginNotification};
 
     let _guard = plugin_guard();
-    let Some(mut inst) = load_probe(512) else {
-        return;
-    };
+    let mut inst = load_probe(512);
     let _ = inst
         .loaded_mut()
         .poll_plugin_notifications(&main_thread(), |_| {});
@@ -1485,7 +1389,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
 #[test]
 fn a_sysex_open_across_a_stop_is_dropped() {
     let _guard = plugin_guard();
-    let mut inst = load_probe(64).expect("probe");
+    let mut inst = load_probe(64);
     let packets = |len: usize| {
         let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
         let mut out = Vec::new();
@@ -1513,6 +1417,7 @@ fn a_sysex_open_across_a_stop_is_dropped() {
 /// index, in the plugin's own order. The probe's ids are `100..=106`, none of
 /// them its position, so a host that listed positions, or stopped short of the
 /// count, fails here.
+/// Spec: vst3.IEditController.getParameterCount, vst3.IEditController.getParameterInfo
 #[test]
 fn the_listed_parameter_ids_are_the_plugins_own_in_order() {
     let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())

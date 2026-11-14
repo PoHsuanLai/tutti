@@ -4,6 +4,7 @@
 
 use crate::cmd::Cmd;
 use crate::gates::Gate;
+use crate::release::Version;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -33,6 +34,12 @@ pub(crate) enum Step {
     ConformanceInventory(String),
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
+    /// The release edits (`release.rs`): the workspace version, the path
+    /// dependency pins and the changelog section.
+    Release(Version),
+    /// `cargo package --no-verify` over every crate under `crates/`, listed
+    /// when the step runs.
+    Package,
 }
 
 impl Step {
@@ -48,6 +55,13 @@ impl Step {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
             }
+            Step::Package => {
+                "cargo package --locked --no-verify -p <each crate under crates/>".to_owned()
+            }
+            Step::Release(v) => format!(
+                "release {}: set the workspace version and path pins, write the changelog section",
+                v.display()
+            ),
         }
     }
 }
@@ -162,6 +176,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "unsafe lives only in the -ffi crates (plugin formats and MIDI), everything else forbids it",
     ),
     (
+        "check-errors",
+        "",
+        "every error type derives thiserror::Error, and a public one is an Error",
+    ),
+    (
         "check-lints",
         "",
         "every crate takes the workspace lints and missing_debug_implementations denies",
@@ -187,14 +206,19 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-platform-seam",
+        "",
+        "a platform cfg stands only on a mod declaration, bar the temporary rows",
+    ),
+    (
         "check-conformance",
         "",
-        "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys",
+        "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
     ),
     (
         "conformance-inventory",
-        "[clap|midi]",
-        "regenerate an inventory's generated columns from the spec source (midi: TUTTI_MIDI_SPECS)",
+        "[clap|vst3|midi]",
+        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS)",
     ),
     (
         "check-range-types",
@@ -239,6 +263,16 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "render the audio cases and verify them with the Python checks (needs uv)",
     ),
     ("deny", "", "RustSec advisories (needs cargo-deny)"),
+    (
+        "package",
+        "",
+        "package every crate under crates/ the way crates.io takes it, without building",
+    ),
+    (
+        "release",
+        "<version>",
+        "a release pull request's edits: the shared version, the path pins and the changelog section",
+    ),
     ("ci", "", "everything CI runs"),
 ];
 
@@ -318,6 +352,7 @@ impl Planner<'_> {
                 | "bench-cmp"
                 | "profile-bench"
                 | "verify-audio"
+                | "release"
                 | "conformance-inventory"
         );
         if !takes_args && !args.is_empty() {
@@ -407,12 +442,14 @@ impl Planner<'_> {
             "check-session" => self.out.push(Step::Gate(Gate::Session)),
             "check-guards" => self.out.push(Step::Gate(Gate::Guards)),
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
+            "check-errors" => self.out.push(Step::Gate(Gate::Errors)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
             "check-lints" => self.out.push(Step::Gate(Gate::Lints)),
             "check-value-traits" => self.out.push(Step::Gate(Gate::ValueTraits)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance-inventory" => {
                 let [f] = Self::params(name, args, ["clap"])?;
@@ -446,19 +483,27 @@ impl Planner<'_> {
             "verify-audio" => {
                 let [out] = Self::params(name, args, ["/tmp/tutti-verify"])?;
                 self.lines(&[
-                    format!("cargo run --locked --release -p tutti-sampler --example render_cases -- {out}/sampler"),
-                    format!("cargo run --locked --release -p tutti-export --example render_export_cases -- {out}/export"),
-                    format!("cargo run --locked --release -p tutti-measure --example render_analysis_cases -- {out}/analysis"),
-                    format!("cargo run --locked --release -p tutti-polysynth --example render_synth_cases -- {out}/synth"),
-                    format!("cargo run --locked --release -p tutti-dsp --example render_dsp_cases -- {out}/dsp"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_sampler_cases -- {out}/sampler"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_export_cases -- {out}/export"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_analysis_cases -- {out}/analysis"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_synth_cases -- {out}/synth"),
+                    format!("cargo run --locked --release -p tutti-verify --bin render_dsp_cases -- {out}/dsp"),
                     "uv sync --quiet".to_owned(),
-                    format!("uv run python crates/tutti-sampler/examples/verify_sampler.py {out}/sampler"),
-                    format!("uv run python crates/tutti-export/examples/verify_export.py {out}/export"),
-                    format!("uv run python crates/tutti-measure/examples/verify_analysis.py {out}/analysis"),
-                    format!("uv run python crates/tutti-polysynth/examples/verify_synth.py {out}/synth"),
-                    format!("uv run python crates/tutti-dsp/examples/verify_dsp.py {out}/dsp"),
+                    format!("uv run python testing/tutti-verify/py/verify_sampler.py {out}/sampler"),
+                    format!("uv run python testing/tutti-verify/py/verify_export.py {out}/export"),
+                    format!("uv run python testing/tutti-verify/py/verify_analysis.py {out}/analysis"),
+                    format!("uv run python testing/tutti-verify/py/verify_synth.py {out}/synth"),
+                    format!("uv run python testing/tutti-verify/py/verify_dsp.py {out}/dsp"),
                 ]);
             }
+            "release" => {
+                let [version] = Self::params(name, args, [""])?;
+                let v = Version::parse(&version).ok_or_else(|| {
+                    format!("`release` takes a version MAJOR.MINOR.PATCH, got `{version}`")
+                })?;
+                self.out.push(Step::Release(v));
+            }
+            "package" => self.out.push(Step::Package),
             "deny" => {
                 self.out.push(Step::RequireCargoDeny);
                 self.lines(&["cargo deny --locked check advisories"]);
@@ -466,10 +511,11 @@ impl Planner<'_> {
             "ci" => {
                 for d in [
                     "lint", "deny", "check-paths", "check-session", "check-guards",
-                    "check-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-ffi", "check-errors", "check-layout", "check-range-types", "check-hosting",
                     "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-conformance",
-                    "check-features",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers",
+                    "check-platform-seam", "check-conformance",
+                    "check-features", "package",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",
                 ] {

@@ -44,12 +44,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use tutti_graph::{Losses, Offset, TransportPosition, UmpAt};
 use tutti_types::{
-    AtomicSampleRate, Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples,
+    AtomicSampleRate, Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, Seconds,
     first_frame_at_or_after,
 };
 use tutti_ump::{Message, MidiGroup, System, U7, U14, Ump};
 
-use crate::{SmpteFrameRate, SmpteTimecode};
+use tutti_midi_protocol::{MtcRate, SmpteFrameRate, SmpteTimecode};
 
 /// Below this beat, a play edge is treated as "from the top" → Start (0xFA)
 /// rather than Continue (0xFB). Wide enough to absorb float jitter at beat 0.
@@ -64,12 +64,12 @@ const SEEK_EPSILON_BEATS: f64 = 1e-3;
 /// thread reads the three of one store, never a mix of two.
 ///
 /// Layout of the word: bit 0 is enabled, bit 1 is MTC, bits 8 to 15 are the
-/// frame rate's index in [`SmpteFrameRate::ALL`].
+/// MTC rate's two-bit code ([`MtcRate::code`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Settings {
     enabled: bool,
     send_mtc: bool,
-    fps: SmpteFrameRate,
+    fps: MtcRate,
 }
 
 impl Settings {
@@ -80,11 +80,11 @@ impl Settings {
     const OFF: Self = Self {
         enabled: false,
         send_mtc: false,
-        fps: SmpteFrameRate::Fps25,
+        fps: MtcRate::Fps25,
     };
 
     fn bits(self) -> u32 {
-        let mut word = (self.fps as u32) << Self::FPS_SHIFT;
+        let mut word = u32::from(self.fps.code()) << Self::FPS_SHIFT;
         if self.enabled {
             word |= Self::ENABLED;
         }
@@ -94,15 +94,14 @@ impl Settings {
         word
     }
 
-    /// The settings `bits` is the word of. Total: the frame rate is the index
-    /// modulo the number of rates, so a word that no `bits` wrote reads as some
-    /// rate instead of needing an arm that cannot run for the words that do.
+    /// The settings `bits` is the word of. Total: the rate is the low two bits
+    /// of its byte (`MtcRate::masked`), so a word that no `bits` wrote reads as
+    /// some rate instead of needing an arm that cannot run for the words that do.
     fn from_bits(word: u32) -> Self {
-        let index = (word >> Self::FPS_SHIFT) as usize % SmpteFrameRate::ALL.len();
         Self {
             enabled: word & Self::ENABLED != 0,
             send_mtc: word & Self::SEND_MTC != 0,
-            fps: SmpteFrameRate::ALL[index],
+            fps: MtcRate::masked((word >> Self::FPS_SHIFT) as u8),
         }
     }
 }
@@ -163,13 +162,13 @@ impl ClockControls {
     /// (frame-rate × 4) and encoded into the hours nibble. Changing it does not
     /// reset the quarter-frame phase, so a receiver sees the new rate from the
     /// next complete 8-piece cycle.
-    pub fn set_mtc_fps(&self, fps: SmpteFrameRate) {
+    pub fn set_mtc_fps(&self, fps: MtcRate) {
         self.update(|s| s.fps = fps);
     }
 
     /// The MTC frame rate last set.
     #[must_use]
-    pub fn mtc_fps(&self) -> SmpteFrameRate {
+    pub fn mtc_fps(&self) -> MtcRate {
         self.settings().fps
     }
 
@@ -230,7 +229,7 @@ pub struct ClockMaster {
     /// The device rate: what turns the transport's beats into frame offsets.
     sample_rate: SampleRate,
     /// The MTC frame rate in force, as of the last tick.
-    fps: SmpteFrameRate,
+    fps: MtcRate,
     /// What the previous tick saw of the transport.
     prev: PrevTick,
     /// The MTC quarter-frame grid.
@@ -370,8 +369,10 @@ impl ClockMaster {
 
     /// Frames from the MTC grid segment's first frame to quarter-frame `k`,
     /// at `rate` and `fps`: closed form, never accumulated.
-    fn mtc_due(&self, k: u64, rate: SampleRate, fps: SmpteFrameRate) -> f64 {
-        self.mtc.lead + (k.saturating_sub(self.mtc.base) as f64 * rate.get()) / (fps.fps() * 4.0)
+    fn mtc_due(&self, k: u64, rate: SampleRate, fps: MtcRate) -> f64 {
+        self.mtc.lead
+            + (k.saturating_sub(self.mtc.base) as f64 * rate.get())
+                / (SmpteFrameRate::from(fps).fps() * 4.0)
     }
 
     /// Start a new MTC grid segment at the next quarter-frame due, the
@@ -379,7 +380,7 @@ impl ClockMaster {
     /// wall-clock time at `new_rate` (a quarter-frame already due stays
     /// due). `old_fps` only places the pending one: a new fps spaces the
     /// ones after it.
-    fn rebase_mtc(&mut self, old_rate: SampleRate, old_fps: SmpteFrameRate, new_rate: SampleRate) {
+    fn rebase_mtc(&mut self, old_rate: SampleRate, old_fps: MtcRate, new_rate: SampleRate) {
         let next = self.mtc.next;
         let left = self.mtc_due(next, old_rate, old_fps) - self.mtc.frames as f64;
         self.mtc.base = next;
@@ -607,7 +608,7 @@ impl ClockMaster {
         // change moves the timeline under a grid fixed in samples, and the
         // label (read from the beat at each piece 0) follows within a frame.
         if std::mem::take(&mut self.mtc.align) {
-            let (num, den) = fps.ratio();
+            let (num, den) = SmpteFrameRate::from(fps).ratio();
             let period = 2.0 * rate.get() * den as f64 / num as f64;
             let cycles = block_pos / period;
             let k = if (cycles - cycles.round()).abs() < 1e-6 {
@@ -631,7 +632,7 @@ impl ClockMaster {
             // A cycle's timecode is that of the sample piece 0 goes out on;
             // the receiver adds the two frames the cycle takes.
             if piece == 0 {
-                let tc = timecode_at(block_pos + qf_sample, rate, fps);
+                let tc = timecode_at(Seconds::new((block_pos + qf_sample) / rate.get()), fps);
                 cycle = mtc_cycle_nibbles(&tc, fps);
             }
             let nibble = (piece << 4) | ((cycle >> (4 * u32::from(piece))) & 0x0F) as u8;
@@ -671,31 +672,22 @@ fn beats_to_midi_beats(beat: Beat) -> U14 {
     U14::new(sixteenths as u16).unwrap_or(U14::MAX)
 }
 
-/// The timecode at `position` samples from transport beat 0 at `rate`: the
+/// The timecode at `position` from transport beat 0: the
 /// nearest frame, on an even one (a cycle's eight pieces span two frames).
 /// Rounding, not flooring, so a position a float's width short of a frame
 /// boundary still reads as that frame.
-fn timecode_at(position: f64, rate: SampleRate, fps: SmpteFrameRate) -> SmpteTimecode {
+fn timecode_at(position: Seconds, fps: MtcRate) -> SmpteTimecode {
+    let fps = SmpteFrameRate::from(fps);
     let (num, den) = fps.ratio();
-    let frames = (position * num as f64 / (den as f64 * rate.get()))
-        .round()
-        .max(0.0) as u64;
+    let frames = (position.get() * num as f64 / den as f64).round().max(0.0) as u64;
     SmpteTimecode::from_frame_count(frames & !1, fps)
 }
 
 /// The eight MTC nibbles of `tc`, piece `p` in bits `4p..4p+4`: the inverse of
 /// the assembly in [`MtcDecoder`](crate::MtcDecoder).
 ///
-/// MTC has four rate codes (24, 25, 29.97 drop-frame, 30) and no 29.97
-/// non-drop one. [`SmpteFrameRate::Fps2997Ndf`] goes out with the 29.97
-/// code, so a receiver reads its non-drop labels as drop-frame.
-fn mtc_cycle_nibbles(tc: &SmpteTimecode, fps: SmpteFrameRate) -> u32 {
-    let rate2 = match fps {
-        SmpteFrameRate::Fps24 => 0u8,
-        SmpteFrameRate::Fps25 => 1,
-        SmpteFrameRate::Fps2997Df | SmpteFrameRate::Fps2997Ndf => 2,
-        SmpteFrameRate::Fps30 => 3,
-    };
+fn mtc_cycle_nibbles(tc: &SmpteTimecode, fps: MtcRate) -> u32 {
+    let rate2 = fps.code();
     let (h, m, s, f) = (tc.hours(), tc.minutes(), tc.seconds(), tc.frames());
     let nibbles = [
         f & 0x0F,

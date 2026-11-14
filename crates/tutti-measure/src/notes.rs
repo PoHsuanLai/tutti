@@ -232,13 +232,6 @@ impl NoteConfig {
         Ok(self)
     }
 
-    /// The pitch detector.
-    #[inline]
-    #[must_use]
-    pub fn yin(&self) -> &YinConfig {
-        &self.yin
-    }
-
     /// The onset detector.
     #[inline]
     #[must_use]
@@ -258,27 +251,6 @@ impl NoteConfig {
     #[must_use]
     pub fn frame(&self) -> Samples {
         self.yin.buffer_size()
-    }
-
-    /// Notes shorter than this are dropped, in [`Samples`].
-    #[inline]
-    #[must_use]
-    pub fn min_length(&self) -> Samples {
-        self.min_length
-    }
-
-    /// The pitch change that splits a note.
-    #[inline]
-    #[must_use]
-    pub fn pitch_split(&self) -> Cents {
-        self.pitch_split
-    }
-
-    /// The pitch-change persistence, in [`Samples`].
-    #[inline]
-    #[must_use]
-    pub fn smoothing(&self) -> Samples {
-        self.smoothing
     }
 
     /// The dropout bridged inside a note, in [`Samples`], before the cap.
@@ -1019,7 +991,7 @@ mod tests {
             c.timing_tolerance()
         ));
 
-        let track = yin_track(c.yin(), &x, c.hop()).unwrap();
+        let track = yin_track(&c.yin, &x, c.hop()).unwrap();
         let levels = frame_levels(&c, &x);
         assert_eq!(notes_from_track(&c, &track, &levels, &[]).unwrap().len(), 1);
     }
@@ -1315,7 +1287,7 @@ mod tests {
             0.9,
         );
         let long = c.with_hold(Seconds(60.0)).unwrap();
-        let t = yin_track(long.yin(), &x, long.hop()).unwrap();
+        let t = yin_track(&long.yin, &x, long.hop()).unwrap();
         let notes = notes_from_track(&long, &t, &frame_levels(&long, &x), &[]).unwrap();
         assert_eq!(notes.len(), 2, "{notes:?}");
     }
@@ -1552,13 +1524,13 @@ mod tests {
     #[test]
     fn the_defaults_are_the_documented_ones() {
         let c = cfg();
-        assert_eq!(c.min_length(), Samples(2646));
-        assert_eq!(c.smoothing(), Samples(1323));
+        assert_eq!(c.min_length, Samples(2646));
+        assert_eq!(c.smoothing, Samples(1323));
         assert_eq!(c.hold(), Samples(441));
-        assert_eq!(c.pitch_split(), Cents(50.0));
+        assert_eq!(c.pitch_split, Cents(50.0));
         assert_eq!(c.floor(), Db(-60.0));
-        assert!((secs(c.min_length()) - 0.06).abs() < 1e-6);
-        let d = NoteConfig::new(*c.yin(), *c.onset()).unwrap();
+        assert!((secs(c.min_length) - 0.06).abs() < 1e-6);
+        let d = NoteConfig::new(c.yin, *c.onset()).unwrap();
         assert_eq!(d.hop().get(), d.frame().get() / 8);
     }
 }

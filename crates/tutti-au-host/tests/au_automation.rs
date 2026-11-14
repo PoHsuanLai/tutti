@@ -75,6 +75,7 @@ fn plain(controller: &AuController, id: u32) -> f32 {
 /// `AUDelay`'s Delay Time carries `kAudioUnitParameterFlag_NonRealTime`
 /// ("changing the parameter in real-time will cause a glitch"), Dry/Wet does
 /// not. The flag is read from the unit's own parameter info.
+/// Spec: au.param.flag.NonRealTime
 #[test]
 fn the_non_realtime_flag_is_read_from_the_unit() {
     let au = delay_loaded();

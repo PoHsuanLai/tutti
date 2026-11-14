@@ -1,6 +1,6 @@
 [package]
 name = "tutti-modulation"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Describes how LFOs, envelopes and other sources drive settings, and works out what each setting does"
@@ -16,12 +16,14 @@ workspace = true
 [dependencies]
 # `Law`, the project's response-curve vocabulary, and the automation trajectory
 # that is a `Curve`.
-tutti-curve = { path = "../tutti-curve" }
+tutti-curve = { version = "0.0.1", path = "../tutti-curve" }
 
 # The value vocabulary: `Depth`, `Beat`, `PhaseIncrement`, `ParamAddr` (a
 # target's param), `PlayReading`.
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 
 # The MIDI a note envelope hears (`Ump`, its held `Key`). Layer 0.
-tutti-ump = { path = "../tutti-ump" }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump" }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 

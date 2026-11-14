@@ -63,6 +63,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 /// Every instantiable unit hands back the exact context name written.
 ///
 /// Asserts the **read-back**, not the write status.
+/// Spec: au.prop.ContextName
 #[test]
 fn every_unit_round_trips_a_context_name() {
     let _g = lock();
@@ -115,6 +116,7 @@ fn a_context_name_can_be_replaced() {
 ///
 /// The second write is what makes this falsifiable. A `nick_name` that ignored
 /// its argument and echoed a cached first value would pass a single-write test.
+/// Spec: au.prop.NickName
 #[test]
 fn a_nick_name_round_trips_and_can_be_replaced() {
     let _g = lock();
@@ -359,6 +361,7 @@ fn the_string_readers_report_a_missing_property_as_an_error() {
 /// last entry (they only check what is present), and corrupting `element`
 /// (nothing else asserts it). The counts are the AU's own, re-derived from the
 /// property size rather than hardcoded, so this tracks the machine.
+/// Spec: au.prop.ParametersForOverview
 #[test]
 fn the_overview_decodes_every_entry_the_au_reported() {
     let _g = lock();
@@ -409,6 +412,7 @@ fn the_overview_decodes_every_entry_the_au_reported() {
 /// A URL that does not resolve is worse than none — a browser row would show a
 /// broken image. Asserting existence is what separates "the AU answered" from
 /// "the answer is usable".
+/// Spec: au.prop.IconLocation
 #[test]
 fn an_icon_url_names_a_file_that_exists() {
     let _g = lock();

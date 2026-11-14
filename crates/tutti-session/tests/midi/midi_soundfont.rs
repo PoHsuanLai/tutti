@@ -19,37 +19,18 @@ use tutti_fixtures::signal::rms;
 use tutti_session::Root;
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi::{note_off, note_on};
+use crate::common::{note, play};
+use tutti_fixtures::midi::note_on;
 use tutti_graph::{EventCapacity, NodeKey};
-use tutti_midi_runtime::{MidiIngestNode, TimedMidiEvent};
+use tutti_midi_runtime::MidiIngestNode;
 use tutti_session::Stamp;
 use tutti_session::{EventInPort, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_transport::MotionEvent;
 use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const RATE: SampleRate = SampleRate::SR_48K;
-
-/// A note-on/note-off pair at full velocity, which is what a clip holds.
-///
-/// These tests assert *audible output*, so velocity is pinned at the 16-bit
-/// maximum rather than left to a default.
-fn note(number: u8, start: Beat, duration: BeatDuration) -> Vec<TimedMidiEvent> {
-    vec![
-        TimedMidiEvent::new(
-            start,
-            note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, u16::MAX),
-        )
-        .unwrap(),
-        TimedMidiEvent::new(
-            start + duration,
-            note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
-        )
-        .unwrap(),
-    ]
-}
 
 /// The repo's test soundfont, panicking with the resolved path when it is
 /// missing (it is committed, so that is a broken checkout).
@@ -94,13 +75,6 @@ fn render(s: &Session, frames: usize) -> Vec<f32> {
     out
 }
 
-fn play(s: &Session) {
-    s.transport()
-        .motion()
-        .try_send(MotionEvent::Play)
-        .expect("room");
-}
-
 /// **A declared note makes sound.** The end-to-end claim: `Midi::play_clip`
 /// → clip node → event edge → engine beat→offset → SoundFont player →
 /// samples. Silence here means a break anywhere along it.
@@ -108,7 +82,11 @@ fn play(s: &Session) {
 fn a_declared_note_produces_audio() {
     let (mut s, synth) = rig();
     s.midi()
-        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(2.0)))
+        .play_clip(
+            synth,
+            Beat(0.0),
+            note(60, u16::MAX, Beat(0.0), BeatDuration(2.0)),
+        )
         .expect("a synth takes a clip");
     let _ = s.update();
     play(&s);
@@ -131,7 +109,11 @@ fn a_declared_note_produces_audio() {
 fn the_note_waits_for_its_beat() {
     let (mut s, synth) = rig();
     s.midi()
-        .play_clip(synth, Beat(0.0), note(60, Beat(4.0), BeatDuration(4.0)))
+        .play_clip(
+            synth,
+            Beat(0.0),
+            note(60, u16::MAX, Beat(4.0), BeatDuration(4.0)),
+        )
         .expect("a synth takes a clip");
     let _ = s.update();
     play(&s);
@@ -164,7 +146,11 @@ fn preview_still_sounds_under_an_installed_clip() {
     // A clip whose first note is far in the future, so anything audible in
     // the next quarter-second can only be the preview.
     s.midi()
-        .play_clip(synth, Beat(0.0), note(60, Beat(100.0), BeatDuration(1.0)))
+        .play_clip(
+            synth,
+            Beat(0.0),
+            note(60, u16::MAX, Beat(100.0), BeatDuration(1.0)),
+        )
         .expect("a synth takes a clip");
     let _ = s.update();
     play(&s);

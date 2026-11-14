@@ -1,6 +1,6 @@
 [package]
 name = "tutti-rt"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Small data structures safe to use from an audio callback, which must never wait, allocate or lock"
@@ -12,7 +12,6 @@ categories = ["multimedia::audio", "concurrency"]
 # Not published: it carries the engine's `unsafe` (the denormals guard, the
 # parallel executor's claims), and whether it is offered as a crate of its own
 # is the maintainer's call. Its `unsafe` is listed in the README's "Safety".
-publish = false
 
 [lints]
 workspace = true
@@ -23,7 +22,7 @@ thread-priority = "3.1"
 # `ArcLend`/`Loan`/`Reader`, re-exported at the root: the cell non-scalar state
 # reaches the audio thread through. A general-purpose crate that names no tutti
 # crate.
-arc-lend = { path = "../arc-lend" }
+arc-lend = { version = "0.0.1", path = "../arc-lend" }
 # The fixed inline storage behind `RtVec` (`vec.rs`): a run of `N` slots that
 # cannot grow, so the cap is the type's, not a check beside it.
 arrayvec = "0.7"
@@ -43,6 +42,9 @@ bytemuck = "1.16"
 # it, `arc-lend`, does so by the same design (its atomics become loom's too).
 # `monotonic_ns`: the OS clock read, `clock_gettime` on Unix and
 # `QueryPerformanceCounter` on Windows.
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

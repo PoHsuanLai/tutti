@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Reference VST2 plugin used as a host-conformance probe in tutti-vst2-host tests"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/tutti-audio/tutti"
 readme = "README.md"
 publish = false
 

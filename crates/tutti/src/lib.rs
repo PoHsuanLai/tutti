@@ -341,8 +341,8 @@ pub mod midi {
     #[cfg(feature = "midi-hardware")]
     pub use tutti_midi_hardware::{
         ChannelCount, ChannelProfile, CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery,
-        Learned, ListedProfile, Match, PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange,
-        SavedDevice, Whole, WholeProfile,
+        Learned, ListedProfile, Match, PeerId, PeerProfiles, ProfileError, ProfileSwitch,
+        ProfilesChange, SavedDevice, Whole, WholeProfile,
     };
     #[cfg(all(feature = "session", feature = "midi-hardware"))]
     pub use tutti_session::Resolution;

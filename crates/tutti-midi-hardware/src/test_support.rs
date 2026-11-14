@@ -332,6 +332,16 @@ pub fn endpoint(raw: u64, name: &str) -> EndpointInfo {
     }
 }
 
+/// Like [`endpoint`], but known by a CoreMIDI unique id (the raw id), the way
+/// a device is told for certain across a replug.
+#[must_use]
+pub fn persistent_endpoint(raw: u32, name: &str) -> EndpointInfo {
+    EndpointInfo {
+        identity: Identity::CoreMidi(raw.cast_signed()),
+        ..endpoint(u64::from(raw), name)
+    }
+}
+
 impl FakeBackend {
     /// The default backend: inputs `Keystep Pro` (id 1) and `IAC Bus 1` (id 2),
     /// outputs `Synth A` (id 10) and `IAC Bus 1` (id 11). Its sink accepts

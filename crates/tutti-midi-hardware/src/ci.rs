@@ -157,11 +157,11 @@ const CATEGORIES: CiCategories =
 #[derive(Default)]
 pub(crate) struct CiChanges {
     /// Peers found, updated or lost.
-    pub(crate) peers: Vec<CiChange>,
+    pub(crate) peers: Vec<(PeerId, CiChange)>,
     /// Peers' Profiles.
-    pub(crate) profiles: Vec<ProfilesChange>,
+    pub(crate) profiles: Vec<(PeerId, ProfilesChange)>,
     /// Peers' Process Inquiry.
-    pub(crate) process: Vec<ProcessChange>,
+    pub(crate) process: Vec<(PeerId, ProcessChange)>,
 }
 
 impl CiChanges {
@@ -201,27 +201,44 @@ impl<'a> Heard<'a> {
     }
 }
 
-/// A peer of a device: the Group it was found on, its MUID, and what Discovery
-/// and the Endpoint Inquiry told of it.
+/// One MIDI-CI peer of a device: the Group it was found on (the Group of the
+/// MIDI-CI Device that found it) and its MUID. Every change
+/// [`MidiSession::poll`](crate::MidiSession::poll) reports about a peer names it
+/// with one of these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PeerId {
+    /// The Group it was found on.
+    pub group: MidiGroup,
+    /// Its MUID.
+    pub muid: Muid,
+}
+
+/// A peer of a device: who it is, and what Discovery and the Endpoint Inquiry
+/// told of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CiPeerInfo {
-    group: MidiGroup,
-    muid: Muid,
+    id: PeerId,
     peer: CiPeer,
 }
 
 impl CiPeerInfo {
+    /// The peer: its Group and MUID.
+    #[must_use]
+    pub const fn id(&self) -> PeerId {
+        self.id
+    }
+
     /// The Group of the connection it answered on: the Group of the
     /// MIDI-CI Device that found it.
     #[must_use]
     pub const fn group(&self) -> MidiGroup {
-        self.group
+        self.id.group
     }
 
     /// Its MUID.
     #[must_use]
     pub const fn muid(&self) -> Muid {
-        self.muid
+        self.id.muid
     }
 
     /// What it declared: identity, categories, receivable size, Function
@@ -232,23 +249,20 @@ impl CiPeerInfo {
     }
 }
 
-/// A change of the peers found on a device, once each from
+/// A change of one peer found on a device (named by the [`PeerId`] beside it in
+/// [`Polled::Ci`](crate::Polled::Ci)), once each from
 /// [`MidiSession::poll`](crate::MidiSession::poll).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CiChange {
-    /// A peer answered Discovery.
-    Found(CiPeerInfo),
-    /// What a found peer holds changed (its Product Instance Id arrived).
-    Updated(CiPeerInfo),
-    /// A peer is gone: it was invalidated, collided, went with the device's
+    /// The peer answered Discovery; this is what it declared.
+    Found(CiPeer),
+    /// What the peer holds changed (its Product Instance Id arrived); this is
+    /// what it holds now.
+    Updated(CiPeer),
+    /// The peer is gone: it was invalidated, collided, went with the device's
     /// own MUID (which a collision changes), or MIDI-CI was disabled.
-    Lost {
-        /// The Group it was found on.
-        group: MidiGroup,
-        /// Its MUID.
-        muid: Muid,
-    },
+    Lost,
 }
 
 /// The MUID source: std's OS-seeded hasher keys over a counter.
@@ -535,8 +549,10 @@ impl Ci {
             .iter()
             .flat_map(|member| {
                 member.device.peers().map(|(muid, peer)| CiPeerInfo {
-                    group: member.group,
-                    muid,
+                    id: PeerId {
+                        group: member.group,
+                        muid,
+                    },
                     peer: peer.clone(),
                 })
             })
@@ -647,27 +663,28 @@ fn stop_members(members: &[Member], out: &mut OpenOutput, changes: &mut CiChange
                 target: muid,
             },
         ));
-        changes
-            .peers
-            .extend(member.device.peers().map(|(peer, _)| CiChange::Lost {
-                group: member.group,
-                muid: peer,
-            }));
+        let peer = |muid| PeerId {
+            group: member.group,
+            muid,
+        };
+        changes.peers.extend(
+            member
+                .device
+                .peers()
+                .map(|(muid, _)| (peer(muid), CiChange::Lost)),
+        );
         changes.profiles.extend(
             member
                 .initiators
                 .keys()
-                .map(|&peer| ProfilesChange::Dropped {
-                    group: member.group,
-                    muid: peer,
-                }),
+                .map(|&muid| (peer(muid), ProfilesChange::Dropped)),
         );
-        changes
-            .process
-            .extend(member.process.keys().map(|&peer| ProcessChange::Dropped {
-                group: member.group,
-                muid: peer,
-            }));
+        changes.process.extend(
+            member
+                .process
+                .keys()
+                .map(|&muid| (peer(muid), ProcessChange::Dropped)),
+        );
     }
     send(out, &sends);
 }
@@ -774,29 +791,27 @@ impl Member {
             match action {
                 CiAction::Send(message) => sends.push((self.group, message)),
                 CiAction::Found(muid) => {
-                    changes.peers.extend(self.info(muid).map(CiChange::Found));
+                    changes.peers.extend(
+                        self.info(muid)
+                            .map(|info| (info.id, CiChange::Found(info.peer))),
+                    );
                     self.initiate(muid, now, sends, changes);
                     self.initiate_process(muid, now, sends, changes);
                 }
                 CiAction::Updated(muid) => {
-                    changes.peers.extend(self.info(muid).map(CiChange::Updated));
+                    changes.peers.extend(
+                        self.info(muid)
+                            .map(|info| (info.id, CiChange::Updated(info.peer))),
+                    );
                 }
                 CiAction::Lost(muid) => {
-                    changes.peers.push(CiChange::Lost {
-                        group: self.group,
-                        muid,
-                    });
+                    let id = self.peer_id(muid);
+                    changes.peers.push((id, CiChange::Lost));
                     if self.initiators.remove(&muid).is_some() {
-                        changes.profiles.push(ProfilesChange::Dropped {
-                            group: self.group,
-                            muid,
-                        });
+                        changes.profiles.push((id, ProfilesChange::Dropped));
                     }
                     if self.process.remove(&muid).is_some() {
-                        changes.process.push(ProcessChange::Dropped {
-                            group: self.group,
-                            muid,
-                        });
+                        changes.process.push((id, ProcessChange::Dropped));
                     }
                 }
                 // The device's own MUID changing reaches the app as every peer
@@ -807,10 +822,16 @@ impl Member {
         }
     }
 
-    fn info(&self, muid: Muid) -> Option<CiPeerInfo> {
-        self.device.peer(muid).map(|peer| CiPeerInfo {
+    const fn peer_id(&self, muid: Muid) -> PeerId {
+        PeerId {
             group: self.group,
             muid,
+        }
+    }
+
+    fn info(&self, muid: Muid) -> Option<CiPeerInfo> {
+        self.device.peer(muid).map(|peer| CiPeerInfo {
+            id: self.peer_id(muid),
             peer: peer.clone(),
         })
     }
@@ -922,11 +943,9 @@ impl Member {
         };
         match initiator.report(ask.request, now) {
             Ok(actions) => self.carry_out_process(ask.peer.muid, actions, sends, changes),
-            Err(error) => changes.process.push(ProcessChange::NotSent {
-                group: self.group,
-                muid: ask.peer.muid,
-                error,
-            }),
+            Err(error) => changes
+                .process
+                .push((self.peer_id(ask.peer.muid), ProcessChange::NotSent(error))),
         }
     }
 
@@ -938,36 +957,23 @@ impl Member {
         sends: &mut Vec<(MidiGroup, CiMessage)>,
         changes: &mut CiChanges,
     ) {
-        let group = self.group;
+        let id = self.peer_id(muid);
         for action in actions {
-            changes.process.push(match action {
+            let change = match action {
                 ProcessAction::Send(message) => {
-                    sends.push((group, message));
+                    sends.push((self.group, message));
                     continue;
                 }
-                ProcessAction::Capabilities(features) => ProcessChange::Capabilities {
-                    group,
-                    muid,
-                    features,
-                },
-                ProcessAction::CapabilitiesTimedOut => {
-                    ProcessChange::CapabilitiesTimedOut { group, muid }
-                }
-                ProcessAction::CapabilitiesRefused(_) => {
-                    ProcessChange::CapabilitiesRefused { group, muid }
-                }
-                ProcessAction::ReportBegan { declared } => ProcessChange::ReportBegan {
-                    group,
-                    muid,
-                    declared,
-                },
-                ProcessAction::ReportEnded => ProcessChange::ReportEnded { group, muid },
-                ProcessAction::ReportRefused(nak) => {
-                    ProcessChange::ReportRefused { group, muid, nak }
-                }
-                ProcessAction::ReportTimedOut => ProcessChange::ReportTimedOut { group, muid },
+                ProcessAction::Capabilities(features) => ProcessChange::Capabilities(features),
+                ProcessAction::CapabilitiesTimedOut => ProcessChange::CapabilitiesTimedOut,
+                ProcessAction::CapabilitiesRefused(_) => ProcessChange::CapabilitiesRefused,
+                ProcessAction::ReportBegan { declared } => ProcessChange::ReportBegan(declared),
+                ProcessAction::ReportEnded => ProcessChange::ReportEnded,
+                ProcessAction::ReportRefused(nak) => ProcessChange::ReportRefused(nak),
+                ProcessAction::ReportTimedOut => ProcessChange::ReportTimedOut,
                 _ => continue,
-            });
+            };
+            changes.process.push((id, change));
         }
     }
 
@@ -1022,12 +1028,13 @@ impl Member {
         };
         match started {
             Ok(actions) => self.carry_out(switch.muid, actions, sends, changes),
-            Err(error) => changes.profiles.push(ProfilesChange::NotSent {
-                group: self.group,
-                muid: switch.muid,
-                profile: switch.profile,
-                error,
-            }),
+            Err(error) => changes.profiles.push((
+                self.peer_id(switch.muid),
+                ProfilesChange::NotSent {
+                    profile: switch.profile,
+                    error,
+                },
+            )),
         }
     }
 
@@ -1039,46 +1046,40 @@ impl Member {
         sends: &mut Vec<(MidiGroup, CiMessage)>,
         changes: &mut CiChanges,
     ) {
-        let group = self.group;
+        let id = self.peer_id(muid);
         for action in actions {
-            changes.profiles.push(match action {
+            let change = match action {
                 ProfileAction::Send(message) => {
-                    sends.push((group, message));
+                    sends.push((self.group, message));
                     continue;
                 }
-                ProfileAction::ProfilesKnown => ProfilesChange::Known { group, muid },
-                ProfileAction::InquiryTimedOut => ProfilesChange::InquiryTimedOut { group, muid },
-                ProfileAction::InquiryRefused(_) => ProfilesChange::InquiryRefused { group, muid },
+                ProfileAction::ProfilesKnown => ProfilesChange::Known,
+                ProfileAction::InquiryTimedOut => ProfilesChange::InquiryTimedOut,
+                ProfileAction::InquiryRefused(_) => ProfilesChange::InquiryRefused,
                 ProfileAction::Changed {
                     address,
                     profile,
                     change,
                 } => ProfilesChange::Changed {
-                    group,
-                    muid,
                     address,
                     profile,
                     change,
                 },
-                ProfileAction::Resolved { request, outcome } => ProfilesChange::Resolved {
-                    group,
-                    muid,
-                    request,
-                    outcome,
-                },
+                ProfileAction::Resolved { request, outcome } => {
+                    ProfilesChange::Resolved { request, outcome }
+                }
                 ProfileAction::SpecificData {
                     address,
                     profile,
                     data,
                 } => ProfilesChange::SpecificData {
-                    group,
-                    muid,
                     address,
                     profile,
                     data,
                 },
                 _ => continue,
-            });
+            };
+            changes.profiles.push((id, change));
         }
     }
 }

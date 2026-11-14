@@ -1,4 +1,4 @@
-//! Where VST2 runs: in the host's process only (design 021 §4; the reason is on
+//! Where VST2 runs: in the host's process only (the reason is on
 //! [`Vst2Loaded`]).
 
 use std::path::Path;

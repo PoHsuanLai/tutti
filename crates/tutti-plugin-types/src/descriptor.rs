@@ -52,7 +52,7 @@ pub struct PluginDescriptor {
     #[cfg_attr(feature = "serde", serde(default))]
     pub editor: EditorPresence,
     /// What `plugin-probe --measure` found of the plugin's tail and latency, if
-    /// a measuring probe has looked (doc 023 section 6). `None` is "nobody
+    /// a measuring probe has looked. `None` is "nobody
     /// measured it", never "it measured nothing".
     ///
     /// Rides the descriptor's row in the catalog, so a file whose modification

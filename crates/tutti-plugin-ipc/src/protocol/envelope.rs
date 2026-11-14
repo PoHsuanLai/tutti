@@ -254,7 +254,7 @@ pub enum HostMessage {
         plain: f64,
     },
     /// Open the plugin's editor on the served instance itself, in this server
-    /// process (doc 029 section 6.5), answered by
+    /// process, answered by
     /// [`BridgeMessage::EditorOpened`].
     ///
     /// `parent` is the host window's platform number
@@ -341,7 +341,7 @@ pub enum BridgeMessage {
         #[serde(default, with = "super::wire::midi")]
         midi_out: MidiEventVec,
         /// What the plugin said of itself at the end of the block (CLAP's
-        /// process status, doc 023 section 5.3). `Sleep` is sent only when the
+        /// process status). `Sleep` is sent only when the
         /// block's output was silent, so the host may park on it.
         #[serde(default)]
         status: BlockStatus,

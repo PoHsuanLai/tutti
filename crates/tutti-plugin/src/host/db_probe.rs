@@ -14,14 +14,13 @@ use tutti_plugin_types::Locator;
 use tutti_plugin_types::PluginDescriptor;
 
 /// How long a measuring probe may take, spawn, load and both renders included
-/// (doc 023 section 6: two configurations, each up to the render budget of `MAX_NODE_TAIL` and 5 s of
+/// (two configurations, each up to the render budget of `MAX_NODE_TAIL` and 5 s of
 /// audio, which a plugin slower than real time cannot meet in 15 s).
 pub const DEFAULT_MEASURE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The blacklist decision for a failed probe: whether the scan may blacklist
 /// the plugin, and why. One function, so the tests exercise this code rather
-/// than a copy of it. (It was `From<BridgeError> for ProbeFailure`; the two
-/// types are in different crates from this one since design 021 step 3.)
+/// than a copy of it.
 ///
 /// The split is "did we learn something about the plugin, or about our own
 /// environment?" — not severity. A crash and a broken library are equally
@@ -156,8 +155,8 @@ pub fn probe_record_with(
     Ok(Delta::put(key, FileRow::probed(format, &facts, plugins)))
 }
 
-/// [`probe_record`] that also **measures** each plugin the file holds (doc 023
-/// section 6): the delta's row carries every descriptor's
+/// [`probe_record`] that also **measures** each plugin the file holds: the delta's row carries
+/// every descriptor's
 /// [`measured`](PluginDescriptor::measured), the tail and latency the plugin
 /// reports against what it renders. The way to measure one file, or one a scan
 /// already probed without measuring (a scan skips a file whose time has not

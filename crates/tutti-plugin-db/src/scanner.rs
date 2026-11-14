@@ -702,7 +702,7 @@ mod tests {
     }
 
     /// **A file whose time changed loses its measurement with its row, and one
-    /// that did not keeps it** (doc 023 section 6): a scan re-probes the changed
+    /// that did not keeps it**: a scan re-probes the changed
     /// file, whose new row replaces the measured one, and skips the unchanged
     /// file, whose row stands. Through the scan's own detection of a change.
     #[test]

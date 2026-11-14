@@ -1,5 +1,4 @@
-//! One parameter's map between its normalized position and its plain value
-//! (doc 029 section 6.1, item 1).
+//! One parameter's map between its normalized position and its plain value.
 
 use crate::Normalized;
 

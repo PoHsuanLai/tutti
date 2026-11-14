@@ -593,7 +593,7 @@ impl AudioBridge {
         }
     }
 
-    // --- The editor in the server (doc 029 section 6.5) ---
+    // --- The editor in the server ---
 
     /// Opens the editor in the server: embedded in `parent` (the platform
     /// number of the host's window), or the plugin's own floating window for

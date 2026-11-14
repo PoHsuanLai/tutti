@@ -142,8 +142,7 @@ const ONLY: &[(&str, &[&str])] = &[
             "tutti-plugin-ipc-ffi",
         ],
     ),
-    // The server is `Ipc` hosting over the served formats (design 021 sections
-    // 2.3 and 6.1): the wire, the vocabulary and the CLAP, VST3 and AU hosts.
+    // The server is `Ipc` hosting over the served formats: the wire, the vocabulary and the CLAP, VST3 and AU hosts.
     // Not the facade, not `-host`, not VST2 (not served: editor and audio are
     // one object): the banned ones below hold for a dev-dependency too.
     (

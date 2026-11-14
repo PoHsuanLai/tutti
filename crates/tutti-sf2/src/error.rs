@@ -47,17 +47,24 @@ pub enum Error {
         actual: [u8; 4],
     },
     /// A chunk's size reaches past the end of its list, or is not the size its
-    /// id has (`ifil` and `iver` are four bytes). The id is shown with any
+    /// id has (`ifil` is four bytes). The id is shown with any
     /// byte that is not printable ASCII as `?`; `????` when not even a chunk
     /// header fits in what is left of the list.
     #[error("the '{}' chunk has an invalid size", Code(.0))]
     InvalidChunkSize([u8; 4]),
-    /// The file has no usable `smpl` chunk.
-    #[error("no valid sample data was found")]
-    SampleDataNotFound,
     /// The sample data is compressed (SoundFont 3).
     #[error("SoundFont3 is not yet supported")]
     UnsupportedSampleFormat,
+    /// A list has a sub-chunk the format does not define there. Only the INFO
+    /// list may carry sub-chunks a reader does not know (and skips); an unknown
+    /// one in `sdta` or `pdta` is a structural error (section 10.2).
+    #[error("the '{}' list has an unknown '{}' sub-chunk", Code(.list), Code(.id))]
+    UnknownChunk {
+        /// The list type, `sdta` or `pdta`.
+        list: [u8; 4],
+        /// The sub-chunk's id; a byte that is not printable ASCII is `?`.
+        id: [u8; 4],
+    },
     /// A required sub-chunk is missing.
     #[error("the '{}' sub-chunk was not found", Code(.0))]
     SubChunkNotFound([u8; 4]),

@@ -51,7 +51,7 @@ changed and, for a breaking change, how to migrate.
 ### Review
 
 Every pull request is reviewed by someone other than its author before it is queued.
-The reviewer reads the diff, this checklist and the design it builds, not the author's
+The reviewer reads the diff, this checklist and the plan it builds, not the author's
 summary of it. A change to `unsafe` code, FFI, `tutti-rt`, the audio thread or a
 breaking public API also gets a second review that reads only soundness and real-time
 safety. A new commit is reviewed again. The review is written in the description's
@@ -68,13 +68,14 @@ The reviewer checks:
 3. **Real time.** Nothing on the audio thread allocates, frees, locks or waits; a full
    queue is counted, never waited on; the area's `AllocDisabler` test covers the new
    path.
-4. **Public API.** The [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/):
-   naming (`as_`/`to_`/`into_` by cost, no `get_` prefix, `try_` for a fallible twin),
+4. **Public API.** The
+   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/): naming (`as_`/`to_`/`into_` by cost, no `get_` prefix, `try_` for a fallible twin),
    the common traits (`Debug`, `Clone`, `PartialEq`, `Default` where they make sense;
    `From`/`TryFrom` over ad-hoc converters), `#[must_use]` where dropping loses
    something, `#[non_exhaustive]` on what will grow, `Send` and `Sync` stated. By
    tutti's own rules, an error type derives `thiserror::Error` and a standalone one
-   ends in `Error`, and no call hands out a lower layer's controller.
+   ends in `Error`, and a call never hands out a lower crate's object that skips the
+   checks the call makes, so there is one way in.
 5. **Breaking changes.** Marked `!` in the title, the migration in "Breaking changes and
    migration", and the old shape deleted in the same pull request, with no
    compatibility shim.
@@ -89,12 +90,14 @@ The reviewer checks:
 9. **Platforms.** `cargo xtask check-windows` for shared code, macOS for AU and
    CoreMIDI, and a platform difference behind one module seam.
 10. **Scope.** One concern; the CLAUDE.md lines it makes false are updated in it and
-    listed in the description; a departure from the design is raised before merge.
+    listed in the description; a change of the agreed plan is raised before merge, not
+    after.
 11. **Coherence.** One concept has one name and one type across the workspace (the
     units, the buffer views such as `Interleaved`, `Samples` for a count of frames,
-    `Source` for audio only); the change adds no second way to do what an existing
-    item does and duplicates no helper; it uses the crate's constructor, error and module shapes; a new pattern
-    replaces the old one everywhere in the same pull request, or is not introduced.
+    `Source` for audio, not events). The change adds no second way to do what an
+    existing item does and duplicates no helper. It uses the crate's constructor, error
+    and module shapes. A new pattern replaces the old one everywhere in the same pull
+    request, or is not introduced.
 12. **Idiomatic Rust.** `rustfmt` and `clippy -D warnings` clean; `?`, iterators and
     borrowing where they fit; generics and `impl Trait` as the guidelines advise; no
     `unwrap` or `expect` in library code except on a stated invariant; no `as` cast
@@ -104,10 +107,9 @@ The reviewer checks:
 ### Landing
 
 Pull requests land through a merge queue: once CI is green and no blocking review
-finding is open, a
-maintainer queues it with `gh pr merge <number> --squash --auto`. CI runs once
-more on the pull request merged with the latest `main`, and if that passes it
-lands as one commit whose message is the title. There is no need to merge
+finding is open, a maintainer queues it with `gh pr merge <number> --squash --auto`.
+CI runs once more on the pull request merged with the latest `main`, and if that
+passes it lands as one commit whose message is the title. There is no need to merge
 `main` into a branch just to rerun CI.
 
 ## License

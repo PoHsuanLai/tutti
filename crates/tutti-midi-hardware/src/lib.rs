@@ -232,7 +232,7 @@ mod wire;
 pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};
-pub use ci::{CiChange, CiPeerInfo};
+pub use ci::{CiChange, CiPeerInfo, PeerId};
 pub use devices::{
     ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, Pending, RecvTimeoutError, SeedError,
     WatchFailure,

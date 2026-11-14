@@ -69,7 +69,9 @@ pub enum MidiEvent {
     CiPeer {
         /// The device.
         device: tutti_midi_hardware::DeviceId,
-        /// What happened to the peer.
+        /// The peer.
+        peer: tutti_midi_hardware::PeerId,
+        /// What happened to it.
         change: tutti_midi_hardware::CiChange,
     },
     /// A MIDI-CI peer's Profiles became known or changed, a request to switch one
@@ -81,6 +83,8 @@ pub enum MidiEvent {
     CiProfiles {
         /// The device.
         device: tutti_midi_hardware::DeviceId,
+        /// The peer.
+        peer: tutti_midi_hardware::PeerId,
         /// What happened.
         change: tutti_midi_hardware::ProfilesChange,
     },
@@ -96,6 +100,8 @@ pub enum MidiEvent {
     CiProcess {
         /// The device.
         device: tutti_midi_hardware::DeviceId,
+        /// The peer.
+        peer: tutti_midi_hardware::PeerId,
         /// What happened.
         change: tutti_midi_hardware::ProcessChange,
     },

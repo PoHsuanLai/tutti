@@ -34,7 +34,7 @@ use std::time::Instant;
 
 use crate::HardwareMidiInputs;
 use crate::backend;
-use crate::ci::{CiChange, CiPeerInfo, Heard};
+use crate::ci::{CiChange, CiPeerInfo, Heard, PeerId};
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
@@ -164,14 +164,15 @@ pub enum Polled {
     /// changed.
     /// (Boxed: an Endpoint is large.)
     Stream(DeviceId, Box<DeviceStream>),
-    /// A MIDI-CI peer of the device was found, changed or lost.
-    Ci(DeviceId, CiChange),
+    /// A MIDI-CI peer of the device (named by its [`PeerId`]) was found, changed
+    /// or lost.
+    Ci(DeviceId, PeerId, CiChange),
     /// A MIDI-CI peer's Profiles became known or changed, a switch ended, or
     /// the peer's Profiles were dropped.
-    Profile(DeviceId, ProfilesChange),
+    Profile(DeviceId, PeerId, ProfilesChange),
     /// A MIDI-CI peer answered Process Inquiry, a MIDI Message Report began or
     /// ended, or the peer's Process Inquiry was dropped.
-    Process(DeviceId, ProcessChange),
+    Process(DeviceId, PeerId, ProcessChange),
 }
 
 impl MidiSession {
@@ -449,19 +450,19 @@ impl MidiSession {
                 stepped
                     .ci
                     .into_iter()
-                    .map(|change| Polled::Ci(id.clone(), change)),
+                    .map(|(peer, change)| Polled::Ci(id.clone(), peer, change)),
             );
             polled.extend(
                 stepped
                     .profiles
                     .into_iter()
-                    .map(|change| Polled::Profile(id.clone(), change)),
+                    .map(|(peer, change)| Polled::Profile(id.clone(), peer, change)),
             );
             polled.extend(
                 stepped
                     .process
                     .into_iter()
-                    .map(|change| Polled::Process(id.clone(), change)),
+                    .map(|(peer, change)| Polled::Process(id.clone(), peer, change)),
             );
         }
         polled.into_iter()

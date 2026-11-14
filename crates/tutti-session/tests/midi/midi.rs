@@ -1227,8 +1227,13 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     for ms in 0..40 {
         let now = start + Duration::from_millis(ms);
         for event in update_at(&mut s, now) {
-            if let SessionEvent::Midi(MidiEvent::CiPeer { device, change }) = event {
-                found.push((device, change));
+            if let SessionEvent::Midi(MidiEvent::CiPeer {
+                device,
+                peer,
+                change,
+            }) = event
+            {
+                found.push((device, peer, change));
             }
         }
         let mut answers: Vec<Ump> = Vec::new();
@@ -1259,7 +1264,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
         }
     }
     assert!(replied, "the session sent a Discovery");
-    let [(device_id, CiChange::Found(info))] = found.as_slice() else {
+    let [(device_id, id, CiChange::Found(declared))] = found.as_slice() else {
         panic!("one peer found, got {found:?}");
     };
     assert_eq!(
@@ -1270,12 +1275,15 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
             .map(|d| d.name.as_str()),
         Some("Wire")
     );
-    assert_eq!(info.muid(), peer);
-    assert_eq!(info.peer().discovery(), &data);
-    assert_eq!(
-        &s.midi().ci_peers(device_id)[..],
-        std::slice::from_ref(info)
-    );
+    assert_eq!(id.muid, peer);
+    assert_eq!(id.group, MidiGroup::FIRST);
+    assert_eq!(declared.discovery(), &data);
+    let listed = s.midi().ci_peers(device_id);
+    let [info] = &listed[..] else {
+        panic!("one peer listed, got {listed:?}");
+    };
+    assert_eq!(info.id(), *id);
+    assert_eq!(info.peer(), declared);
 }
 
 /// **A MIDI-CI peer's Profiles are the session's, and it switches them as the
@@ -1361,9 +1369,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
             }
         }
         if !switched
-            && seen
-                .iter()
-                .any(|c| matches!(c, ProfilesChange::Known { .. }))
+            && seen.iter().any(|c| matches!(c, ProfilesChange::Known))
             && let Some(id) = &device_id
         {
             let peers = s.midi().profiles(id);
@@ -1648,7 +1654,7 @@ fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
             clock.set(clock.get() + 1);
             let now = start + Duration::from_millis(clock.get());
             for event in update_at(s, now) {
-                if let SessionEvent::Midi(MidiEvent::CiProfiles { device, change }) = event {
+                if let SessionEvent::Midi(MidiEvent::CiProfiles { device, change, .. }) = event {
                     changes.push((device, change));
                 }
             }
@@ -1660,7 +1666,7 @@ fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
     let changes = run(&mut s, 60);
     let (device, _) = changes
         .iter()
-        .find(|(_, c)| matches!(c, ProfilesChange::Known { .. }))
+        .find(|(_, c)| matches!(c, ProfilesChange::Known))
         .expect("the peer's Profiles are known");
     let device = device.clone();
     let all: Vec<_> = s.midi().profiles(&device)[0].listed().collect();
@@ -1833,7 +1839,7 @@ fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
         if !asked_for
             && seen
                 .iter()
-                .any(|c| matches!(c, ProcessChange::Capabilities { .. }))
+                .any(|c| matches!(c, ProcessChange::Capabilities(_)))
             && let Some(id) = &device_id
         {
             let peers = s.midi().report_peers(id);
@@ -1917,19 +1923,12 @@ fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
         "one Inquiry: MIDI Message Report, on the Function Block, as asked"
     );
     let ended = [
-        ProcessChange::ReportBegan {
-            group: MidiGroup::FIRST,
-            muid: peer,
-            declared: asked,
-        },
-        ProcessChange::ReportEnded {
-            group: MidiGroup::FIRST,
-            muid: peer,
-        },
+        ProcessChange::ReportBegan(asked),
+        ProcessChange::ReportEnded,
     ];
     let report: Vec<_> = seen
         .iter()
-        .filter(|c| !matches!(c, ProcessChange::Capabilities { .. }))
+        .filter(|c| !matches!(c, ProcessChange::Capabilities(_)))
         .collect();
     assert_eq!(report, ended.iter().collect::<Vec<_>>());
 }

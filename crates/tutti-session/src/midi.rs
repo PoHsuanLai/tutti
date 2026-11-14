@@ -907,17 +907,27 @@ impl MidiState {
                     tutti_midi_hardware::Polled::Stream(device, stream) => {
                         MidiEvent::StreamSettled { device, stream }
                     }
-                    tutti_midi_hardware::Polled::Ci(device, change) => {
-                        MidiEvent::CiPeer { device, change }
-                    }
-                    tutti_midi_hardware::Polled::Profile(device, change) => {
+                    tutti_midi_hardware::Polled::Ci(device, peer, change) => MidiEvent::CiPeer {
+                        device,
+                        peer,
+                        change,
+                    },
+                    tutti_midi_hardware::Polled::Profile(device, peer, change) => {
                         if !profile_peers.contains(&device) {
                             profile_peers.push(device.clone());
                         }
-                        MidiEvent::CiProfiles { device, change }
+                        MidiEvent::CiProfiles {
+                            device,
+                            peer,
+                            change,
+                        }
                     }
-                    tutti_midi_hardware::Polled::Process(device, change) => {
-                        MidiEvent::CiProcess { device, change }
+                    tutti_midi_hardware::Polled::Process(device, peer, change) => {
+                        MidiEvent::CiProcess {
+                            device,
+                            peer,
+                            change,
+                        }
                     }
                     // A kind of report this session does not know is not one.
                     _ => continue,

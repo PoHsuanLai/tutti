@@ -465,6 +465,15 @@ pub struct Editor {
     pending_taps: Vec<(TapId, TapWriter)>,
     /// Each open tap's reader, to see which were dropped.
     tap_readers: BTreeMap<TapId, (usize, std::sync::Weak<()>)>,
+    /// Each open tap's end latch, raised when every node it read was removed.
+    tap_ends: BTreeMap<TapId, std::sync::Arc<tutti_rt::FaultLatch>>,
+    /// Taps taken out of the plan because every node they read was removed,
+    /// each with the commit (by `sent`) that leaves them out, once one was
+    /// sent; their latch is raised when the executor has applied it.
+    ending_taps: Vec<(Option<u64>, std::sync::Arc<tutti_rt::FaultLatch>)>,
+    /// Commits the executor has handed back so far: it applied each one
+    /// before it did, and every commit is handed back once.
+    acked: u64,
     /// Event tap producers opened since the last commit, sent with the next.
     pending_event_taps: Vec<(EventTapId, EventTapWriter)>,
     /// Each open event tap's reader, to see which were dropped.
@@ -614,6 +623,7 @@ impl Editor {
         self.pending_taps.push((id, writer));
         self.tap_readers
             .insert(id, (reader.width(), reader.watch()));
+        self.tap_ends.insert(id, reader.end_latch());
         self.spec_mut()
             .topology
             .taps
@@ -655,6 +665,7 @@ impl Editor {
         self.pending_taps.push((id, writer));
         self.tap_readers
             .insert(id, (reader.width(), reader.watch()));
+        self.tap_ends.insert(id, reader.end_latch());
         self.spec_mut()
             .topology
             .taps
@@ -707,6 +718,7 @@ impl Editor {
         }
         self.pending_taps.retain(|(k, _)| *k != id);
         self.tap_readers.remove(&id);
+        self.tap_ends.remove(&id);
         self.spec_mut().topology.taps.remove(&id);
         Ok(())
     }
@@ -1003,6 +1015,9 @@ impl Editor {
             latency_cuts: BTreeSet::new(),
             pending_taps: Vec::new(),
             tap_readers: BTreeMap::new(),
+            tap_ends: BTreeMap::new(),
+            ending_taps: Vec::new(),
+            acked: 0,
             pending_event_taps: Vec::new(),
             event_tap_readers: BTreeMap::new(),
             pending_meters: Vec::new(),
@@ -1402,11 +1417,12 @@ impl Editor {
         if !fits {
             return Err(CommitError::FadeShape { node: key });
         }
-        let kind = self.spec.topology.nodes[&key].kind.clone();
+        // The unit that runs at the key names itself, not the one it replaced.
+        let kind = N::kind();
         // As `insert`: the new unit's fork source, or none — a replace with
         // an unforkable unit makes the key unforkable. Only past the checks,
         // so a refused replace changes nothing.
-        self.place(key, &kind, unit, wake, shape, fork);
+        self.place(key, kind, unit, wake, shape, fork);
         self.fades.insert(key, fade);
         Ok(controls)
     }
@@ -1441,13 +1457,12 @@ impl Editor {
         if self.repreparing.is_some() {
             return Err(CommitError::Repreparing);
         }
-        let kind = self
-            .spec
-            .topology
-            .nodes
-            .get(&key)
-            .map(|n| n.kind.clone())
-            .expect("replace_or_swap names a node in the spec");
+        assert!(
+            self.spec.topology.nodes.contains_key(&key),
+            "replace_or_swap names a node in the spec"
+        );
+        // The unit that runs at the key names itself, not the one it replaced.
+        let kind = N::kind();
         let running = self
             .plan
             .as_ref()
@@ -1475,7 +1490,7 @@ impl Editor {
                 && shape.event_capacity == r.event_capacity
                 && shape.params == r.params
         });
-        self.place(key, &kind, unit, wake, shape, fork);
+        self.place(key, kind, unit, wake, shape, fork);
         if fits {
             self.fades.insert(key, fade);
         }
@@ -2420,12 +2435,35 @@ impl Editor {
         if !leaving {
             // A key is the author's and can be inserted again after a removal, so
             // a tap left naming it would read the new node.
-            for spec in t.taps.values_mut() {
+            let mut over = Vec::new();
+            for (&id, spec) in &mut t.taps {
                 if let TapSpec::Ports { sources, .. } = spec {
-                    for s in sources {
+                    let mut rewrote = false;
+                    for s in sources.iter_mut() {
                         if matches!(s, Source::Node(p) if p.node == key) {
                             *s = Source::Zero;
+                            rewrote = true;
                         }
+                    }
+                    if rewrote && sources.iter().all(|s| matches!(s, Source::Zero)) {
+                        over.push(id);
+                    }
+                }
+            }
+            // A tap with nothing left to copy leaves the plan, as a closed one
+            // does, and its reader is told once the plan without it runs.
+            for id in over {
+                t.taps.remove(&id);
+                self.tap_readers.remove(&id);
+                let unsent = self.pending_taps.iter().any(|(k, _)| *k == id);
+                self.pending_taps.retain(|(k, _)| *k != id);
+                if let Some(end) = self.tap_ends.remove(&id) {
+                    if unsent {
+                        // The executor never held its writer: nothing more
+                        // will be written.
+                        end.raise();
+                    } else {
+                        self.ending_taps.push((None, end));
                     }
                 }
             }
@@ -2514,6 +2552,7 @@ impl Editor {
         let mut keys = Vec::new();
         while let Some(done) = self.channels.returned.try_pop() {
             self.out -= 1;
+            self.acked += 1;
             if done.is_suspend() {
                 self.resume(done);
                 continue;
@@ -2521,6 +2560,17 @@ impl Editor {
             keys.extend(done.retired());
             drop(done);
         }
+        // The executor applies a commit before it hands the box back, so a
+        // tap the commit left out has had its last block written. The ring
+        // that carried the box orders those writes before this raise.
+        let acked = self.acked;
+        self.ending_taps.retain(|(at, end)| match at {
+            Some(sent) if *sent <= acked => {
+                end.raise();
+                false
+            }
+            _ => true,
+        });
         while let Some(x) = self.channels.faded.try_pop() {
             self.fades_out -= 1;
             keys.extend(std::iter::repeat_n(x.key(), x.units()));
@@ -3191,6 +3241,10 @@ impl Editor {
         }
         self.sent += 1;
         self.out += 1;
+        // A tap removed since the last commit is left out of this one.
+        for (at, _) in &mut self.ending_taps {
+            at.get_or_insert(self.sent);
+        }
         self.plan = Some(plan);
     }
 }

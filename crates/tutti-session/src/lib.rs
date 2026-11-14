@@ -100,6 +100,8 @@ pub use device::{
     RestartOutcome,
 };
 pub use edge::EdgeGainError;
+#[cfg(feature = "plugin")]
+pub use error::HostPluginError;
 pub use error::{
     ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result, ScheduleError,
     TempoError,
@@ -179,8 +181,8 @@ pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
 #[cfg(all(feature = "device", feature = "audio-io"))]
 pub use take::{
-    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeError,
-    TakeEvent, TakeId, TakeTarget, Terms, Window,
+    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeEnd,
+    TakeError, TakeEvent, TakeId, TakeTarget, Terms, Window,
 };
 #[cfg(any(feature = "record", feature = "export"))]
 pub use tutti_dsp::DitherShape;

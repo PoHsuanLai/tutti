@@ -440,9 +440,27 @@ pub struct Recorded {
     placement: Placement,
     frames: Samples,
     lost: Samples,
+    end: TakeEnd,
+}
+
+/// Why a take ended ([`Recorded::end`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TakeEnd {
+    /// By its punch-out, or by [`Take::finish`] (or the handle's drop).
+    Completed,
+    /// The input's node was removed from the graph: the take holds what the
+    /// input played until then, and nothing after.
+    InputRemoved,
 }
 
 impl Recorded {
+    /// Why the take ended.
+    #[must_use]
+    pub fn end(&self) -> TakeEnd {
+        self.end
+    }
+
     /// The file the take was written to; `None` for a sink of the caller's.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
@@ -511,8 +529,9 @@ pub enum TakeEvent {
         /// Where it belongs.
         placement: Placement,
     },
-    /// The take ended, by its punch-out or by [`Take::finish`], and its sink
-    /// closed. Reported once.
+    /// The take ended, by its punch-out, by [`Take::finish`] or because its
+    /// input was removed ([`Recorded::end`]), and its sink closed. Reported
+    /// once.
     Finished {
         /// The take.
         id: TakeId,
@@ -914,10 +933,20 @@ impl Pump {
         let mut cursor: Option<Frame> = None;
         let (mut written, mut lost) = (0usize, 0usize);
         let mut failed = false;
+        let mut removed = false;
 
         'pump: while !self.stop.load(Ordering::Acquire) && !landings.is_closed() {
+            // The tap's end before its ring, so a frame written before the end
+            // is never missed.
+            let gone = self.reader.source_gone();
             let run = self.reader.contiguous().get().min(PASS_FRAMES);
             if run == 0 {
+                // Every frame the input played is read and its node is gone:
+                // nothing more will come.
+                if gone {
+                    removed = true;
+                    break 'pump;
+                }
                 std::thread::sleep(IDLE_PARK);
                 continue;
             }
@@ -963,6 +992,7 @@ impl Pump {
         // A punch-out the tap's gap straddled: silence up to it, so the take is
         // exactly the frames the punch names.
         if !failed
+            && !removed
             && let (Some(end), Some(next)) = (self.window.end, cursor)
             && self.reader.next_frame() >= end
         {
@@ -988,6 +1018,11 @@ impl Pump {
             placement,
             frames: Samples(written),
             lost: Samples(lost),
+            end: if removed {
+                TakeEnd::InputRemoved
+            } else {
+                TakeEnd::Completed
+            },
         })
     }
 

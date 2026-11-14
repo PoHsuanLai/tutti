@@ -83,6 +83,23 @@ impl NoSuchNode {
     }
 }
 
+/// [`Graph::host_plugin`](crate::Graph::host_plugin) refused.
+#[cfg(feature = "plugin")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum HostPluginError {
+    /// The node is not in the graph.
+    #[error(transparent)]
+    NoSuchNode(#[from] NoSuchNode),
+    /// The node already hosts a plugin (added by
+    /// [`Session::add_plugin`](crate::Session::add_plugin),
+    /// [`Graph::insert_plugin`](crate::Graph::insert_plugin) or an earlier
+    /// `host_plugin`): a plugin record is freed on the main thread, so a
+    /// second one is never put over the first.
+    #[error("{0:?} already hosts a plugin")]
+    AlreadyHosted(tutti_graph::NodeKey),
+}
+
 impl From<tutti_transport::ScheduleFull> for Error {
     fn from(full: tutti_transport::ScheduleFull) -> Self {
         Self::Schedule(full.into())

@@ -12,7 +12,7 @@ use tutti_graph::{
     Node, NodeParts, Op, TapReader, TransportPosition,
 };
 use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
-use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Samples};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Pull, Samples, Source as _};
 
 /// A `Kind` whose fork is a fresh node of the same kind.
 struct Forkable(Kind);
@@ -608,6 +608,75 @@ fn removing_a_tapped_node_silences_its_lane() {
     );
 }
 
+/// Reads `tap` through its `Source` until it answers anything but frames:
+/// the frames it handed out, and the answer that stopped it.
+fn pull_all(tap: &mut TapReader) -> (Vec<f32>, Pull) {
+    let mut got = Vec::new();
+    let mut buf = vec![0.0f32; tap.width() * 64];
+    loop {
+        match tap.pull(&mut buf) {
+            Pull::Frames(n) => got.extend_from_slice(&buf[..n.get() * tap.width()]),
+            other => return (got, other),
+        }
+    }
+}
+
+/// **A tap whose every source was removed ends**: its reader hands out every
+/// frame written before the removal, and then answers `Ended`, not `Starved`
+/// (the graph does not end, but this tap's sources have). The commit that
+/// carries the removal still succeeds, and the zeros the plan goes on writing
+/// are never handed out.
+#[test]
+fn a_tap_whose_every_source_was_removed_drains_then_ends() {
+    let mut r = rig(1, false);
+    let mut tap =
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(1024))
+            .expect("the sources exist");
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    let (got, answer) = pull_all(&mut tap);
+    assert_eq!(got.len(), 100);
+    assert_eq!(answer, Pull::Starved, "a live tap is not over");
+    block(&mut r, 100, 100);
+    r.ed.remove(NodeKey(20));
+    commit(&mut r);
+    block(&mut r, 100, 200);
+    block(&mut r, 100, 300);
+    let (got, answer) = pull_all(&mut tap);
+    assert_eq!(
+        got,
+        (100..200).map(|t| chain_at(0, 0, t)).collect::<Vec<_>>(),
+        "every frame written before the removal, and none after"
+    );
+    assert_eq!(answer, Pull::Ended, "its source is gone for good");
+    let (again, answer) = pull_all(&mut tap);
+    assert!(again.is_empty());
+    assert_eq!(answer, Pull::Ended, "and stays over");
+}
+
+/// **A tap with a source left does not end**: only the lane of the removed
+/// node goes silent, as `removing_a_tapped_node_silences_its_lane` holds, and
+/// the reader keeps reading the other.
+#[test]
+fn a_tap_with_a_source_left_does_not_end() {
+    let mut r = rig(1, false);
+    let mut tap =
+        r.ed.open_tap(
+            TapId(1),
+            vec![r.gains[0], r.gains[1]],
+            TapAlign::Raw,
+            Samples(1024),
+        )
+        .expect("the sources exist");
+    commit(&mut r);
+    r.ed.remove(NodeKey(21));
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    let (got, answer) = pull_all(&mut tap);
+    assert_eq!(got.len(), 200);
+    assert_eq!(answer, Pull::Starved, "one lane is still live");
+}
+
 /// Closing a tap twice, or one that never opened, is refused by name and
 /// changes nothing: the plan stays the graph's own.
 #[test]
@@ -997,12 +1066,13 @@ fn a_reused_key_is_not_read_by_the_old_tap() {
     block(&mut r, 100, 100);
     let mut got = Vec::new();
     drain(&mut tap, &mut got);
-    assert_eq!(got.len(), 200);
-    assert!(got[..100].iter().all(|&x| x == 0.25));
-    assert!(
-        got[100..].iter().all(|&x| x == 0.0),
-        "the tap followed the removal, not the key"
+    assert_eq!(
+        got.len(),
+        100,
+        "the tap ended with the removal: nothing of the new node, or of silence, follows"
     );
+    assert!(got.iter().all(|&x| x == 0.25));
+    assert!(tap.source_gone(), "its only source is gone for good");
 }
 
 /// An aligned tap across a narrowing: the lane that lost its port goes silent

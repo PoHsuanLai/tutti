@@ -12,7 +12,7 @@ use tutti_cpal::{ManualStream, ManualStreamDriver, MicConfig, OutputSpec};
 use tutti_graph::{InletRing, TapWriter};
 use tutti_session::{
     Armed, Input, InputConfig, InputOpener, OpenedInput, Punch, Recorded, Session, SessionEvent,
-    Start, Take, TakeError, TakeEvent, TakeTarget, Trim,
+    Start, Take, TakeEnd, TakeError, TakeEvent, TakeTarget, Trim,
 };
 use tutti_types::{At, Beat, ChannelLayout, Frame, SampleRate, Samples, Sink, SinkFailed};
 
@@ -408,6 +408,46 @@ fn an_open_ended_take_is_finished_by_its_handle() {
         rig.takes()
             .iter()
             .any(|e| matches!(e, TakeEvent::Finished { .. }))
+    );
+}
+
+/// **A take ends when its input is removed**, instead of recording silence to
+/// the end: it reports `Finished` once with what the input played before the
+/// removal and nothing after (the file holds no frame of the silence a removed
+/// node's tap reads).
+#[test]
+fn a_take_ends_when_its_input_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(InputConfig::default(), Samples(0));
+    rig.step(256);
+    let path = wav(&dir, "r.wav");
+    let _take = rig
+        .session
+        .record(&rig.input, Punch::now(), TakeTarget::wav(path.clone()))
+        .expect("armed");
+    rig.run_until(|events| {
+        events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::Take(TakeEvent::Started { .. })))
+    });
+    rig.step(BLOCK);
+    rig.session.remove(rig.input.node()).unwrap();
+    rig.run_until(finished);
+    for _ in 0..8 {
+        rig.step(BLOCK);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let takes = rig.takes();
+    assert_eq!(takes.len(), 2, "started, then finished once: {takes:?}");
+    let done = recorded(&rig.events);
+    assert_eq!(done.end(), TakeEnd::InputRemoved);
+    let frames = read(&path);
+    assert_eq!(frames.len(), done.frames().get());
+    assert!(!frames.is_empty());
+    // The ramp's frame i is [i, -i]: silence would be [0, 0] past frame 0.
+    assert!(
+        frames.iter().all(|f| f[0] == -f[1]) && frames.iter().skip(1).all(|f| f[0] != 0.0),
+        "no silence recorded after the removal"
     );
 }
 

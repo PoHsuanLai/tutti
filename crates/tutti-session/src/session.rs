@@ -598,6 +598,8 @@ impl Session {
             Phase::Collect => {
                 // First, so what a job landed is in the graph this update commits.
                 self.land_jobs(out);
+                // What the graph's own removals left declared.
+                self.forget_removed();
                 // Before the collect, as a frame's spawns run before its
                 // commit: a crossfade lands on the update that first finds
                 // the re-prepare resumed.
@@ -858,11 +860,28 @@ impl Session {
     pub fn remove(&mut self, node: impl Into<NodeKey>) -> Result<(), RemoveError> {
         let node = node.into();
         self.graph.remove(node)?;
-        #[cfg(feature = "modulation")]
-        self.mods.own.forget_node(node);
-        #[cfg(feature = "midi")]
-        self.midi_state.forget_node(node);
+        self.forget_removed();
         Ok(())
+    }
+
+    /// Forgets what the session declared on every node removed since the
+    /// last call, through this session's [`remove`](Self::remove) or the
+    /// graph's own: modulation, MIDI routes, the capture of an input.
+    fn forget_removed(&mut self) {
+        for node in self.graph.take_removed() {
+            #[cfg(feature = "modulation")]
+            self.mods.own.forget_node(node);
+            #[cfg(feature = "midi")]
+            self.midi_state.forget_node(node);
+            #[cfg(all(feature = "device", feature = "audio-io"))]
+            self.inputs.forget(node);
+            #[cfg(not(any(
+                feature = "modulation",
+                feature = "midi",
+                all(feature = "device", feature = "audio-io")
+            )))]
+            let _ = node;
+        }
     }
 
     /// The session's own modulation declarations, read: its routes and

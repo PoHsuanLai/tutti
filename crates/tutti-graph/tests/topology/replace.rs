@@ -701,6 +701,26 @@ fn the_reference_cuts_a_fade_on_a_latency_change() {
     );
 }
 
+/// **A replace gives the key the incoming unit's own kind**, not the kind
+/// the key was inserted under: a key that held one type of node and now holds
+/// another must not name the old type in the spec (the kind is what
+/// diagnostics print), whether the replace fades or swaps.
+#[test]
+fn a_replace_takes_the_incoming_units_kind() {
+    let fade = Fade::new(Samples(100), CrossfadeCurve::EqualAmplitude);
+    for incoming in [gain(3.0), TestNode::new(Kind::Lag { latency: 3 })] {
+        let (mut ed, _exec) = gain_graph(1.0);
+        assert_eq!(ed.spec().topology.nodes[&NODE].kind, "gain");
+        ed.replace_or_swap(NODE, Unforkable(incoming), fade)
+            .expect("not poisoned, not re-preparing");
+        assert_eq!(
+            ed.spec().topology.nodes[&NODE].kind,
+            std::any::type_name::<TestNode>(),
+            "the spec names the unit that runs at the key"
+        );
+    }
+}
+
 /// **`replace_or_swap` fades where `replace` would, and swaps where
 /// `replace` refuses**: a unit that fits the running one fades in; one that
 /// does not (here: a latency the plan was not compiled for) lands whole on
@@ -747,5 +767,9 @@ fn replace_or_swap_fades_when_it_fits_and_swaps_when_it_does_not() {
         .expect("swaps");
     ed.commit().expect("commits");
     assert_eq!(ed.fades_in_flight(), 0);
-    assert_eq!(ed.spec().topology.nodes[&NodeKey(5)].kind, "gain");
+    assert_eq!(
+        ed.spec().topology.nodes[&NodeKey(5)].kind,
+        std::any::type_name::<TestNode>(),
+        "the swapped-in unit's kind (a replace names the unit that runs)"
+    );
 }

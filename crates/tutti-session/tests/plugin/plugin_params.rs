@@ -14,7 +14,8 @@ use tutti_plugin_types::{
     ParamUnit, ParameterInfo, PluginFailure, PluginRefresh, RenderMode,
 };
 use tutti_session::{
-    Key, PluginChange, PluginEvent, PluginNode, PluginParamError, Session, SessionEvent,
+    HostPluginError, Key, PluginChange, PluginEvent, PluginNode, PluginParamError, Session,
+    SessionEvent,
 };
 use tutti_types::{ChannelLayout, Db, Hz, SampleRate};
 
@@ -204,6 +205,36 @@ fn cutoff(s: &Session, node: NodeKey) -> tutti_session::Param<'_> {
 
 fn changes(events: Vec<PluginEvent>) -> Vec<PluginChange> {
     events.into_iter().map(|e| e.change).collect()
+}
+
+/// **A node is hosted once**: a second `host_plugin` on a key that already
+/// has a plugin is refused by name and changes nothing, so the first record is
+/// not dropped off the main thread through a discarded `insert`.
+#[test]
+fn a_second_hosting_of_a_node_is_refused() {
+    let (mut s, key, _fake, _) = session_keyed();
+    let handle = PluginHandle::from_backend(
+        Fake::new(),
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    let refused = s
+        .graph()
+        .host_plugin(
+            key,
+            handle,
+            tutti_plugin::catalog::PluginRef::file("other.clap").expect("a plugin file"),
+        )
+        .expect_err("the node already hosts a plugin");
+    assert_eq!(refused, HostPluginError::AlreadyHosted(key.erase()));
+    let kept = s.plugin(key).expect("still hosted").plugin().clone();
+    assert_eq!(
+        kept.path(),
+        std::path::Path::new("fake.clap"),
+        "the first record stays"
+    );
 }
 
 /// **A gesture guard that is dropped in the middle of a drag ends the

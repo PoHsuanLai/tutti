@@ -48,6 +48,8 @@ fn a_session_is_send() {
 #[derive(Clone)]
 struct Knob {
     drive: Param<Drive>,
+    /// Held to see when the node is dropped (a test counts the owners).
+    _token: Option<std::sync::Arc<()>>,
 }
 
 impl Knob {
@@ -60,7 +62,13 @@ impl Knob {
     fn at(drive: f32) -> Self {
         Self {
             drive: Param::new(Drive(drive)),
+            _token: None,
         }
+    }
+
+    fn holding(mut self, token: &std::sync::Arc<()>) -> Self {
+        self._token = Some(std::sync::Arc::clone(token));
+        self
     }
 }
 
@@ -498,6 +506,47 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
     s.graph().set_param(knob.drive(), Drive(9.0)).unwrap();
     side.tick(&[], &mut out);
     assert_eq!(out[0], 9.0, "and its params are addressed");
+}
+
+/// **Removing a node purges the crossfades parked on it**: the graph
+/// re-prepares, a crossfade waits, the node is removed, and the later updates
+/// report no `CrossfadeFailed` for it (before, the retry failed `NoSuchNode`
+/// and dropped the incoming node then); the incoming node is dropped at the
+/// removal.
+#[test]
+fn removing_a_node_purges_the_crossfades_parked_on_it() {
+    use std::sync::Arc;
+
+    let mut s = detached(1);
+    let mut side = s.graph().take_audio_side();
+    let (knob, _) = s.graph().add(Params(Knob::new()));
+    assert!(s.update().is_empty());
+    s.graph().set_sample_rate(SampleRate::SR_44K1);
+    let token = Arc::new(());
+    let waiting = s.graph().crossfade(
+        knob,
+        Params(Knob::at(3.0).holding(&token)),
+        Seconds(0.005),
+        CrossfadeCurve::EqualAmplitude,
+    );
+    assert!(matches!(waiting, Ok(Crossfade::Waiting(_))), "{waiting:?}");
+    assert_eq!(s.graph_ref().testing().waiting_crossfades(), 1);
+
+    s.graph().remove(knob).unwrap();
+    assert_eq!(s.graph_ref().testing().waiting_crossfades(), 0, "purged");
+    assert_eq!(Arc::strong_count(&token), 1, "the incoming node dropped");
+
+    let mut out = [0.0f32];
+    for _ in 0..8 {
+        let events = s.update();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, SessionEvent::CrossfadeFailed { .. })),
+            "{events:?}"
+        );
+        side.tick(&[], &mut out);
+    }
 }
 
 /// **On a poisoned graph a crossfade is refused**: nothing is parked (no

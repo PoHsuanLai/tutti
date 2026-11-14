@@ -10,27 +10,36 @@ use vst3::Steinberg::{
 /// `kResultTrue` is `kResultOk` in the SDK (both are `0`), so a call whose
 /// "false" is a real answer, as opposed to a failure, reports a `bool` and not
 /// this: the wrapper says so where it is documented.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum Vst3Error {
     /// `kResultFalse`: the call ran and the answer is "no".
+    #[error("kResultFalse")]
     False,
     /// `kInvalidArgument`.
+    #[error("kInvalidArgument")]
     InvalidArgument,
     /// `kNotImplemented`: the plugin does not offer this call.
+    #[error("kNotImplemented")]
     NotImplemented,
     /// `kInternalError`.
+    #[error("kInternalError")]
     InternalError,
     /// `kNotInitialized`: the plugin is not in a state that takes the call.
+    #[error("kNotInitialized")]
     NotInitialized,
     /// `kOutOfMemory`.
+    #[error("kOutOfMemory")]
     OutOfMemory,
     /// `kNoInterface`: a `queryInterface` the object does not answer.
+    #[error("kNoInterface")]
     NoInterface,
     /// Not a `tresult`: the audio half of the plugin is out, so the plugin's
     /// state cannot change under it.
+    #[error("the audio half is out")]
     Busy,
     /// Any other code, passed through unmapped.
+    #[error("tresult {0}")]
     Other(i32),
 }
 
@@ -66,24 +75,6 @@ impl Vst3Error {
         }
     }
 }
-
-impl std::fmt::Display for Vst3Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::False => f.write_str("kResultFalse"),
-            Self::InvalidArgument => f.write_str("kInvalidArgument"),
-            Self::NotImplemented => f.write_str("kNotImplemented"),
-            Self::InternalError => f.write_str("kInternalError"),
-            Self::NotInitialized => f.write_str("kNotInitialized"),
-            Self::OutOfMemory => f.write_str("kOutOfMemory"),
-            Self::NoInterface => f.write_str("kNoInterface"),
-            Self::Busy => f.write_str("the audio half is out"),
-            Self::Other(code) => write!(f, "tresult {code}"),
-        }
-    }
-}
-
-impl std::error::Error for Vst3Error {}
 
 /// `kResultOk` (and so `kResultTrue`) is success; any other code is the error
 /// it names.

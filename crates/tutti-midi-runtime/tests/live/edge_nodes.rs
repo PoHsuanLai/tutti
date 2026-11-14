@@ -728,7 +728,7 @@ fn a_requested_mpe_mode_is_adopted_once() {
 /// Reset All Controllers once, ahead of the block's events.
 #[test]
 fn a_devices_profile_zones_switch_its_rules_alone() {
-    let reset = |frame: u32| cc_at(frame, 2, CCNumber::RESET_ALL, 0);
+    let reset = |frame: usize| cc_at(frame, 2, CCNumber::RESET_ALL, 0);
     let device = || Script::new(vec![vec![reset(0)], vec![reset(1)], vec![reset(2)]]);
     let inlets = DeviceInlets::new(
         NonZeroUsize::new(2).unwrap(),

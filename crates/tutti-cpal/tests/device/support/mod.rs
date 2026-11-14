@@ -1,0 +1,108 @@
+//! Shared fixtures for this crate's integration tests.
+//!
+//! The rolling-graph fixture: a sine through a filter, rendered by an
+//! `Engine` whole blocks at a time. `output.rs`'s unit tests carry their own
+//! copy (`build_callback_state`) because a `#[cfg(test)]` module cannot see
+//! `tests/`.
+//!
+//! `rt_no_alloc.rs` keeps its own copy too, deliberately — every line it runs before the gate has to be
+//! auditable in one file.
+
+#![allow(dead_code)]
+// Each integration-test binary compiles this tree separately, and no single
+// binary uses every item. Same reason, and same allow, as the plugin hosts'
+// `tests/support/mod.rs`.
+
+use std::sync::Arc;
+use tutti_cpal::{AudioCallbackState, OutputSpec};
+use tutti_engine::Engine;
+use tutti_graph::NodeKey;
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_graph::{Editor, Prepare};
+use tutti_nodes::testing::{Const, Osc};
+use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_transport::{MotionEvent, Transport};
+use tutti_types::MaxBlock;
+use tutti_types::{Bpm, ChannelLayout, Hz, Q, SampleRate, Samples};
+
+pub const SAMPLE_RATE: f64 = 48_000.0;
+
+/// An engine over `transport` rendering the graph `build` wires into
+/// a fresh editor (prepared for 512-frame blocks at [`SAMPLE_RATE`]). The
+/// editor is leaked: a test process is the whole lifetime, and nothing here
+/// commits again.
+pub fn graph_engine(transport: &Transport, build: impl FnOnce(&mut Editor)) -> Engine {
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(SAMPLE_RATE),
+        MaxBlock::of(Samples(512)),
+    ));
+    build(&mut ed);
+    ed.commit().expect("commits");
+    let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
+    Box::leak(Box::new(ed));
+    engine
+}
+
+/// Every one of `outputs` global outputs reads `node`'s output 0.
+pub fn fan(ed: &mut Editor, node: NodeKey, outputs: usize) {
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort { node, port: 0 }); outputs]);
+}
+
+/// A rolling transport driving a sine through a filter, at `outputs` width.
+///
+/// The graph has to actually render: a graph with nothing wired renders
+/// silence, and any assertion over it is vacuous.
+pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
+    let transport = Transport::new(SampleRate::of(SAMPLE_RATE));
+    let engine = graph_engine(&transport, |ed| {
+        let (source, filter) = (NodeKey(1), NodeKey(2));
+        ed.insert(source, "sine", Osc::sine(Hz(220.0)));
+        ed.insert(
+            filter,
+            "filter",
+            SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(2_000.0), Q(0.7)),
+        );
+        ed.spec_mut().topology.edges.insert(
+            InPort {
+                node: filter,
+                port: 0,
+            },
+            vec![Edge::Direct(Source::Node(OutPort {
+                node: source,
+                port: 0,
+            }))],
+        );
+        fan(ed, filter, outputs);
+    });
+    let state = AudioCallbackState::new(engine);
+
+    transport.settings().set_tempo(Bpm::of(120.0));
+    let _ = transport.motion().try_send(MotionEvent::Play);
+
+    (transport, Arc::new(state))
+}
+
+/// A graph emitting a constant `level` on **every** output channel.
+///
+/// DC rather than a tone, for the reason `tutti-export`'s `dc_net` gives: every
+/// frame carries the same known value, so an expected result can be computed
+/// in closed form instead of sampled. That is what makes the sample-format
+/// matrix assertable.
+pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
+    let engine = graph_engine(&Transport::new(SampleRate::of(SAMPLE_RATE)), |ed| {
+        ed.insert(NodeKey(1), "dc", Const::mono(level));
+        fan(ed, NodeKey(1), outputs);
+    });
+    Arc::new(AudioCallbackState::new(engine))
+}
+
+/// A spec with no device behind it, at `channels` width and `format`.
+pub fn spec(channels: usize, format: cpal::SampleFormat) -> OutputSpec {
+    OutputSpec::new(
+        SampleRate::of(SAMPLE_RATE),
+        ChannelLayout::try_from(channels).expect("a test width is small"),
+        format,
+    )
+}

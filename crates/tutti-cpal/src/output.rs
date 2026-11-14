@@ -56,7 +56,7 @@ impl AudioCallbackState {
 /// **Runs on the audio thread. Must not allocate, lock, or block.** Every
 /// buffer it touches is sized once at stream build to [`MAX_FRAMES`]; a longer
 /// callback is clamped and its tail silenced rather than reallocating here.
-/// `tests/rt_no_alloc.rs` gates this against a disabled allocator.
+/// `tests/device/rt_no_alloc.rs` gates this against a disabled allocator.
 ///
 /// # Panics
 ///

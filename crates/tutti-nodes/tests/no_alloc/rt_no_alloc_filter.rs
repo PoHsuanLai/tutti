@@ -1,0 +1,143 @@
+//! Regression gate: filter / EQ nodes must not allocate per-buffer.
+//!
+//! Covers `LadderFilterNode`, `EqBandNode`, `SvfFilterNode`, and
+//! the wide `SvfFilterNode`. The shared risk is the coefficient cache: the
+//! `maybe_update` hot path conditionally recomputes coeffs when params
+//! change. A regression that recomputes every sample is still alloc-free
+//! today, but a regression that *materialises* a coeff history (e.g. for
+//! parameter smoothing) would land here.
+
+use tutti_graph::IntoNode;
+use tutti_graph::contract::BlockRig;
+use tutti_nodes::{EqBandNode, LadderFilterNode, LadderType, SvfFilterNode, SvfType};
+use tutti_types::Db;
+use tutti_types::Hz;
+use tutti_types::Q;
+use tutti_types::Resonance;
+use tutti_types::SampleRate;
+
+/// A node through `BlockRig`: 16 warm-up blocks, then 2 000 blocks
+/// under `assert_no_alloc`, `between` run before each (a control move).
+fn gate<N: IntoNode>(node: N, mut between: impl FnMut(&N::Controls, usize)) {
+    let (mut rig, controls) = BlockRig::new(node, SampleRate::SR_48K, 64);
+    // A 32-frame square: low enough that every filter here passes some of
+    // it (a Nyquist square through a low-pass is silence, and the silence
+    // check below would fail for the wrong reason).
+    for c in rig.inputs_mut() {
+        for (i, x) in c.iter_mut().enumerate() {
+            *x = if (i / 16) % 2 == 0 { 0.5 } else { -0.5 };
+        }
+    }
+    for i in 0..16 {
+        between(&controls, i);
+        rig.block();
+    }
+    assert!(
+        rig.output(0).iter().any(|s| s.abs() > 1e-6),
+        "the node rendered silence; the gate would walk no DSP"
+    );
+    assert_no_alloc::assert_no_alloc(|| {
+        for i in 0..2_000 {
+            between(&controls, i);
+            rig.block();
+        }
+    });
+}
+
+#[test]
+fn ladder_filter_process_is_allocation_free() {
+    gate(
+        LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1_000.0), Resonance::new(0.6)),
+        |_, _| {},
+    );
+}
+
+#[test]
+fn eq_band_process_is_allocation_free() {
+    gate(
+        EqBandNode::<f64>::new(SvfType::Bell, Hz::new(1_000.0), Q::new(1.0), Db::new(6.0)),
+        |_, _| {},
+    );
+}
+
+#[test]
+fn svf_filter_mono_process_is_allocation_free() {
+    gate(
+        SvfFilterNode::<f64>::new(SvfType::LowPass, Hz::new(800.0), Q::new(0.707)),
+        |_, _| {},
+    );
+}
+
+#[test]
+fn svf_filter_stereo_process_is_allocation_free() {
+    gate(
+        SvfFilterNode::<f64>::with_channels(
+            tutti_types::ChannelLayout::STEREO,
+            SvfType::HighPass,
+            Hz::new(200.0),
+            Q::new(0.707),
+        ),
+        |_, _| {},
+    );
+}
+
+#[test]
+fn svf_filter_wide_6ch_process_is_allocation_free() {
+    // The per-channel integrator Vec must be built at construction — a
+    // regression that (re)allocated it per buffer, or per-channel scratch in
+    // `process`, would trip here.
+    gate(
+        SvfFilterNode::<f64>::with_channels(6u16, SvfType::LowPass, Hz::new(800.0), Q::new(0.707)),
+        |_, _| {},
+    );
+}
+
+#[test]
+fn ladder_filter_wide_6ch_process_is_allocation_free() {
+    gate(
+        LadderFilterNode::<f64>::with_channels(
+            6u16,
+            LadderType::LP24,
+            Hz::new(1_000.0),
+            Resonance::new(0.6),
+        ),
+        |_, _| {},
+    );
+}
+
+#[test]
+fn svf_filter_with_parameter_changes_is_allocation_free() {
+    // Exercises the moved-control branch: every block nudges the cutoff
+    // (through the node's `ParamSet`, as a host sets it), forcing a
+    // coefficient solve ramped across the block.
+    let mut hz = 500.0f32;
+    gate(
+        SvfFilterNode::<f64>::new(SvfType::Bell, Hz::new(1_000.0), Q::new(1.0)),
+        move |params, _| {
+            hz = if hz > 4_000.0 { 500.0 } else { hz + 1.0 };
+            params.set(tutti_types::UnitParam::Cutoff, hz);
+        },
+    );
+}
+
+#[test]
+fn ladder_with_moving_cutoff_and_drive_is_allocation_free() {
+    // A cutoff or drive that moved since the last block takes the ramped
+    // path: a coefficient solve every 16 samples and a per-sample drive ramp.
+    // Both must stay on the stack. Moved through the node's `ParamSet`, as a
+    // host sets them.
+    let mut hz = 500.0f32;
+    gate(
+        LadderFilterNode::<f64>::with_channels(
+            6u16,
+            LadderType::LP24,
+            Hz::new(1_000.0),
+            Resonance::new(0.6),
+        ),
+        move |params, i| {
+            hz = if hz > 4_000.0 { 500.0 } else { hz + 7.0 };
+            params.set(tutti_types::UnitParam::Cutoff, hz);
+            params.set(tutti_types::UnitParam::Drive, 1.0 + (i % 7) as f32);
+        },
+    );
+}

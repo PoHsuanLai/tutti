@@ -247,8 +247,8 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     (
         "conformance-inventory",
-        "[clap|vst3|midi]",
-        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS)",
+        "[clap|vst3|midi|sf2]",
+        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS; sf2: TUTTI_SF2_SPEC)",
     ),
     (
         "check-range-types",

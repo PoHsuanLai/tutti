@@ -410,6 +410,8 @@ fn test_note_on_produces_audio() {
     assert!(level > 0.001, "Note should produce audio, RMS={}", level);
 }
 
+/// A louder note-on velocity gives a louder note.
+/// Spec: sf2.mod.default.1
 #[test]
 fn test_velocity_affects_volume() {
     let sf = load_test_soundfont();
@@ -446,6 +448,8 @@ fn test_velocity_affects_volume() {
     );
 }
 
+/// A note-off lets the note fall to near silence after its release.
+/// Spec: sf2.synth.env.release
 #[test]
 fn test_note_off_stops_sound() {
     let sf = load_test_soundfont();

@@ -27,7 +27,7 @@ use tutti_vst3_ffi::{
 use crate::error::{LoadCause, LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
-    ContentScale, EditorCapabilities, EditorSize, PluginInfo, PrefetchSupport, Vst3KeyswitchInfo,
+    ContentScale, EditorCapabilities, PluginInfo, PrefetchSupport, Vst3KeyswitchInfo,
     Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo, WindowHandle,
 };
 

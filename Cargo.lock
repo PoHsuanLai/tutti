@@ -726,6 +726,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
+name = "dpi"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "ebur128"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2376,6 +2385,7 @@ dependencies = [
  "core-foundation-sys",
  "coreaudio-sys",
  "coremidi-sys",
+ "dpi",
  "objc2",
  "objc2-foundation",
  "tutti-midi-protocol",
@@ -2392,6 +2402,7 @@ dependencies = [
  "core-foundation",
  "core-foundation-sys",
  "coreaudio-sys",
+ "dpi",
  "thiserror 2.0.21",
  "tutti-au-ffi",
  "tutti-au-host",
@@ -2412,6 +2423,7 @@ dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
  "clap-sys",
+ "dpi",
  "libc",
  "libloading 0.9.1",
  "log",
@@ -2430,6 +2442,7 @@ dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
  "clap-sys",
+ "dpi",
  "libloading 0.9.1",
  "raw-window-handle",
  "rgb",
@@ -2620,6 +2633,7 @@ dependencies = [
  "ebur128",
  "pitch-detection",
  "rand",
+ "serde",
  "thiserror 2.0.21",
  "tutti-dsp",
  "tutti-fixtures",
@@ -2761,6 +2775,7 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "crossbeam-channel",
+ "dpi",
  "interprocess",
  "libc",
  "libloading 0.9.1",
@@ -2840,6 +2855,7 @@ dependencies = [
  "assert_no_alloc",
  "atomic_float",
  "criterion",
+ "dpi",
  "libloading 0.9.1",
  "parking_lot",
  "tracing",
@@ -2866,6 +2882,7 @@ dependencies = [
  "bytemuck",
  "crossbeam",
  "crossbeam-channel",
+ "dpi",
  "getrandom",
  "interprocess",
  "parking_lot",
@@ -2919,6 +2936,7 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "bytemuck",
+ "dpi",
  "interprocess",
  "libc",
  "memmap2",
@@ -2947,6 +2965,7 @@ dependencies = [
  "arrayvec",
  "assert_no_alloc",
  "bitflags 2.13.2",
+ "dpi",
  "keyboard-types",
  "postcard",
  "proptest",
@@ -3042,6 +3061,7 @@ name = "tutti-session"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
+ "dpi",
  "hound",
  "libloading 0.9.1",
  "raw-window-handle",
@@ -3260,6 +3280,7 @@ dependencies = [
  "assert_no_alloc",
  "bytemuck",
  "crossbeam-queue",
+ "dpi",
  "keyboard-types",
  "libloading 0.9.1",
  "parking_lot",
@@ -3301,6 +3322,7 @@ dependencies = [
  "bitflags 2.13.2",
  "core-foundation-sys",
  "crossbeam-queue",
+ "dpi",
  "libloading 0.9.1",
  "parking_lot",
  "tempfile",
@@ -3321,6 +3343,7 @@ dependencies = [
  "cc",
  "crossbeam-channel",
  "crossbeam-queue",
+ "dpi",
  "keyboard-types",
  "parking_lot",
  "raw-window-handle",

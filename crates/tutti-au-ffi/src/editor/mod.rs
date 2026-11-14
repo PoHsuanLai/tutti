@@ -14,7 +14,8 @@ use objc2::runtime::AnyObject;
 use objc2_foundation::NSRect;
 use std::os::raw::c_void;
 
-use tutti_plugin_types::{EditorSize, WindowHandle};
+use dpi::LogicalSize;
+use tutti_plugin_types::WindowHandle;
 
 use crate::error::Result;
 use crate::property::{CocoaUi, Element, Scope};
@@ -65,8 +66,9 @@ impl AuEditor {
     /// the caller's parent `NSView`. Pass `None` to instantiate the view
     /// without attaching it to a parent hierarchy.
     ///
-    /// `preferred` is the size the host would like, passed to the factory as
-    /// `inPreferredSize` (`AUCocoaUIView.h:47-48`). It is a *hint*: the plugin
+    /// `preferred` is the size the host would like, in points (a Cocoa view lays
+    /// out in them), passed to the factory as `inPreferredSize`
+    /// (`AUCocoaUIView.h:47-48`). It is a *hint*: the plugin
     /// may return a view of any size, so read the actual frame back afterwards
     /// rather than assuming the request was honoured. It must be the host's real
     /// window size: a fixed figure tells every AU the host wants that size
@@ -78,7 +80,11 @@ impl AuEditor {
     /// # Errors
     /// `Error::Invalid` off the OS main thread (`pthread_main_np`), or if the AU
     /// advertises no Cocoa view or the view factory fails to load.
-    pub fn open(unit: &Unit, parent: Option<WindowHandle>, preferred: EditorSize) -> Result<Self> {
+    pub fn open(
+        unit: &Unit,
+        parent: Option<WindowHandle>,
+        preferred: LogicalSize<u32>,
+    ) -> Result<Self> {
         if !on_main_thread() {
             return Err(crate::Error::Invalid(
                 "an AU editor opens only on the main thread".into(),
@@ -131,22 +137,16 @@ impl AuEditor {
         }
     }
 
-    /// Editor view frame size in points. Returns
-    /// `EditorSize { width: 0, height: 0 }` after [`close`](Self::close).
-    pub fn editor_size(&self) -> EditorSize {
+    /// Editor view frame size in points, rounded to whole points. Returns a
+    /// zero size after [`close`](Self::close).
+    pub fn editor_size(&self) -> LogicalSize<u32> {
         if self.view.is_null() || !on_main_thread() {
-            return EditorSize {
-                width: 0,
-                height: 0,
-            };
+            return LogicalSize::new(0, 0);
         }
         // SAFETY: `view` is the live view this editor owns (non-null, checked).
         unsafe {
             let frame: NSRect = msg_send![self.view, frame];
-            EditorSize {
-                width: frame.size.width as u32,
-                height: frame.size.height as u32,
-            }
+            LogicalSize::new(frame.size.width, frame.size.height).cast()
         }
     }
 
@@ -218,10 +218,7 @@ mod tests {
         let comp = ComponentRef::first_matching(&desc).expect("AUDelay should be present");
         let unit = Unit::new(comp).expect("instantiate");
         let refused = std::thread::spawn(move || {
-            let size = EditorSize {
-                width: 100,
-                height: 100,
-            };
+            let size = LogicalSize::new(100, 100);
             match AuEditor::open(&unit, None, size) {
                 Err(crate::Error::Invalid(why)) => why.contains("main thread"),
                 _ => false,

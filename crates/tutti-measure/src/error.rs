@@ -4,7 +4,8 @@
 //! setting deserves to know which invariant broke, and a caller feeding a
 //! short buffer deserves better than a panic on the audio path.
 
-use tutti_types::{Bpm, Db, Hz, Samples};
+use tutti_dsp::FrameCount;
+use tutti_types::{Bpm, ChannelLayout, Db, Hz, SampleRate, Samples};
 
 /// Everything that can go wrong constructing or feeding an analysis.
 ///
@@ -53,20 +54,6 @@ pub enum Error {
         /// The faster bound, in [`Bpm`].
         max: Bpm,
     },
-    /// A tempo setting that is not finite or not above zero.
-    #[error("invalid tempo parameter: {0}")]
-    InvalidTempoParameter(&'static str),
-    /// A note-transcription setting or input that is out of range; the text
-    /// names it.
-    #[error("invalid note parameter: {0}")]
-    InvalidNoteParameter(&'static str),
-    /// A chroma, key or chord setting or input that is out of range; the text
-    /// names it.
-    #[error("invalid tonal parameter: {0}")]
-    InvalidTonalParameter(&'static str),
-    /// A windowed-loudness setting or input that is out of range; the text names it.
-    #[error("invalid loudness parameter: {0}")]
-    InvalidLoudnessParameter(&'static str),
     /// A spectrum band that holds no bin: the window is too short for it.
     #[error(
         "band {band} ({lower}..{upper}) holds no bin: a window of {window} samples \
@@ -83,9 +70,172 @@ pub enum Error {
         /// needs, so that every band holds a bin.
         window: Samples,
     },
-    /// A spectrum setting or input that is out of range; the text names it.
-    #[error("invalid spectrum parameter: {0}")]
-    InvalidSpectrumParameter(&'static str),
+    /// A window outside what the analysis accepts: the FFT works on the
+    /// window, so an absurd one would ask for gigabytes, and a tiny one
+    /// resolves nothing.
+    #[error("window of {window} is outside {min}..={max}")]
+    WindowOutOfRange {
+        /// The geometry's window, in [`Samples`].
+        window: Samples,
+        /// The smallest accepted window.
+        min: Samples,
+        /// The largest accepted window.
+        max: Samples,
+    },
+    /// A hop wider than the window or frame: samples between frames would be
+    /// read by none.
+    #[error("hop {hop} is wider than the window {window}")]
+    HopWiderThanWindow {
+        /// The hop, in [`Samples`].
+        hop: Samples,
+        /// The window or frame, in [`Samples`].
+        window: Samples,
+    },
+    /// A hop so small that more than `max` frames overlap in one window; each
+    /// frame is a whole transform, so this bounds the cost of a tiny hop.
+    #[error("a hop of {hop} makes more than {max} frames overlap in a window of {window}")]
+    TooManyOverlaps {
+        /// The window or frame, in [`Samples`].
+        window: Samples,
+        /// The hop, in [`Samples`].
+        hop: Samples,
+        /// The most overlapping frames accepted.
+        max: usize,
+    },
+    /// A sample rate outside the range an analysis is built for.
+    #[error("sample rate {rate} is outside {min}..={max}")]
+    SampleRateOutOfRange {
+        /// The rate refused.
+        rate: SampleRate,
+        /// The lowest accepted rate.
+        min: SampleRate,
+        /// The highest accepted rate.
+        max: SampleRate,
+    },
+    /// More frames than one call analyses, which bounds its output.
+    #[error("{frames} frames is more than the {max} one call analyses")]
+    TooManyFrames {
+        /// The frames the input would make.
+        frames: FrameCount,
+        /// The most accepted.
+        max: FrameCount,
+    },
+    /// A frame that is not one window long.
+    #[error("frame of {got} samples is not the window of {window}")]
+    FrameLengthMismatch {
+        /// What the caller supplied, in [`Samples`].
+        got: Samples,
+        /// The window, in [`Samples`].
+        window: Samples,
+    },
+    /// A state built for another config than the one stepped with.
+    #[error("state was built for another config")]
+    StateMismatch,
+    /// A grid of chroma that is not twelve columns wide.
+    #[error("chroma is {columns} columns wide, not 12")]
+    NotTwelveClasses {
+        /// The grid's width.
+        columns: usize,
+    },
+    /// A value that must not be negative is.
+    #[error("input holds a negative value")]
+    NegativeInput,
+    /// A chord span whose position is beyond what a sample count holds.
+    #[error("a span lies beyond a sample count")]
+    SpanBeyondSampleCount,
+    /// A YIN frame longer than a note analysis accepts (a `min_freq` that low
+    /// is not a note).
+    #[error("yin frame of {frame} is longer than {max}")]
+    YinFrameTooLong {
+        /// The YIN frame, in [`Samples`].
+        frame: Samples,
+        /// The longest accepted.
+        max: Samples,
+    },
+    /// An onset detector that is not spectral flux, the only function whose
+    /// peak has a known lag behind its attack.
+    #[error("note onsets need spectral flux")]
+    OnsetNotSpectralFlux,
+    /// A pitch and an onset analysis at different sample rates.
+    #[error("onset sample rate {onset} differs from yin's {yin}")]
+    SampleRateMismatch {
+        /// The onset geometry's rate.
+        onset: SampleRate,
+        /// YIN's rate.
+        yin: SampleRate,
+    },
+    /// A velocity range whose floor is not below its ceiling.
+    #[error("velocity floor {floor} is not below ceiling {ceiling}")]
+    EmptyVelocityRange {
+        /// The level read as velocity 1.
+        floor: Db,
+        /// The level read as velocity 127.
+        ceiling: Db,
+    },
+    /// Levels and a pitch track of different lengths.
+    #[error("{levels} levels for a pitch track of {track} frames")]
+    LevelsLengthMismatch {
+        /// Levels supplied.
+        levels: usize,
+        /// Frames in the track.
+        track: usize,
+    },
+    /// A smoothing span of more frames than the median's cost allows.
+    #[error("smoothing of {frames} frames is more than {max}")]
+    SmoothingTooLong {
+        /// The span, in frames at the hop in use.
+        frames: FrameCount,
+        /// The most accepted.
+        max: FrameCount,
+    },
+    /// A voiced frequency of zero or below.
+    #[error("a voiced frequency is not above zero")]
+    NonPositiveFrequency,
+    /// A tempo whose beat period is not between two frames and the novelty
+    /// curve's length.
+    #[error("tempo {bpm} has no beat period between two frames and the curve's length")]
+    UntrackableTempo {
+        /// The tempo refused.
+        bpm: Bpm,
+    },
+    /// More spectrum bands than are accepted.
+    #[error("{bands} bands is more than {max}")]
+    TooManyBands {
+        /// The bands the banding makes.
+        bands: usize,
+        /// The most accepted.
+        max: usize,
+    },
+    /// A spectrogram of more cells than are accepted.
+    #[error("a spectrogram of {cells} cells is more than {max}")]
+    SpectrogramTooLarge {
+        /// Columns times outputs.
+        cells: usize,
+        /// The most accepted.
+        max: usize,
+    },
+    /// A peak hold of more frames than the counter holds.
+    #[error("a peak hold of {frames} frames is more than {max}")]
+    PeakHoldTooLong {
+        /// The hold, in frames at the hop in use.
+        frames: usize,
+        /// The most accepted.
+        max: usize,
+    },
+    /// A chunk whose layout is not the config's.
+    #[error("chunk layout {chunk:?} differs from the config's {config:?}")]
+    ChunkLayoutMismatch {
+        /// The chunk's layout.
+        chunk: ChannelLayout,
+        /// The config's layout.
+        config: ChannelLayout,
+    },
+    /// The loudness meter could not be built.
+    #[error("the loudness meter could not be built")]
+    MeterUnavailable,
+    /// The loudness meter refused the frames fed to it.
+    #[error("the loudness meter rejected the frames")]
+    MeterRejectedFrames,
     /// No pitch to read a key from: no frames, silent, or a chroma so flat
     /// that every key correlates alike.
     #[error("no tonal content: silent or flat chroma")]

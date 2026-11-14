@@ -1570,17 +1570,9 @@ impl Editor {
             *g += 1;
             this
         };
-        let params = self
-            .spec
-            .topology
-            .nodes
-            .remove(&key)
-            .map(|s| s.params)
-            .unwrap_or_default();
-        let mut spec = NodeSpec::new(kind, shape.audio_in(), shape.audio_out())
+        let spec = NodeSpec::new(kind, shape.audio_in(), shape.audio_out())
             .with_latency(shape.latency.samples())
             .with_tail(shape.tail);
-        spec.params = params;
         self.spec.topology.nodes.insert(key, spec);
         self.spec.generations.insert(key, generation);
         self.shapes.insert(key, shape);

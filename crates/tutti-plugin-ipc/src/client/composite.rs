@@ -7,13 +7,14 @@ use crate::protocol::{
     Preset, PresetId, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
+use dpi::Size;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tutti_plugin_types::{
     BridgeResult, Delivered, EditorError, PluginError, PluginFailure, Request, StateError,
 };
-use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
+use tutti_plugin_types::{ContentScale, EditorCapabilities, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
 use tutti_plugin_types::{Editor, EditorWindow, Load, Origin};
 use tutti_types::SampleRate;
@@ -463,7 +464,7 @@ impl PluginBridge {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> std::result::Result<EditorSize, EditorError> {
+    ) -> std::result::Result<Size, EditorError> {
         if self.audio.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
@@ -498,11 +499,7 @@ impl PluginBridge {
         let size = gui
             .open_editor(main, parent, scale)
             .map_err(|e| EditorError::PluginError(e.to_string()))?;
-        tracing::info!(
-            "[bridge] open_editor: editor opened {}x{}",
-            size.width,
-            size.height
-        );
+        tracing::info!("[bridge] open_editor: editor opened {size:?}");
 
         // Sync state after editor is open (some plugins need the view attached first).
         if let Ok(state) = state_to_sync {
@@ -858,8 +855,8 @@ impl PluginBridge {
     pub fn set_editor_size(
         &self,
         main: &MainThread,
-        requested: EditorSize,
-    ) -> std::result::Result<EditorSize, EditorError> {
+        requested: Size,
+    ) -> std::result::Result<Size, EditorError> {
         if self.load_editor.is_none() {
             return self.remote(|remote| remote.set_editor_size(main, requested));
         }
@@ -897,7 +894,7 @@ impl PluginBridge {
     }
 
     /// A size the open editor asked its window to take since the last poll.
-    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
+    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<Size> {
         if self.load_editor.is_none() {
             return self.remote.lock().ok()?.poll_editor_resize_request(main);
         }
@@ -1031,7 +1028,7 @@ mod state_back_tests {
             _: &MainThread,
             _: WindowHandle,
             _: ContentScale,
-        ) -> PluginResult<EditorSize> {
+        ) -> PluginResult<Size> {
             unreachable!("the state-back never opens")
         }
 
@@ -1051,8 +1048,8 @@ mod state_back_tests {
         fn set_editor_size(
             &mut self,
             _main: &tutti_plugin_types::MainThread,
-            _requested: tutti_plugin_types::EditorSize,
-        ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+            _requested: dpi::Size,
+        ) -> tutti_plugin_types::PluginResult<dpi::Size> {
             Err(tutti_plugin_types::PluginError::Editor(
                 tutti_plugin_types::EditorError::PluginError(
                     "set_editor_size not supported".into(),
@@ -1064,7 +1061,7 @@ mod state_back_tests {
         fn poll_editor_resize_request(
             &mut self,
             _main: &tutti_plugin_types::MainThread,
-        ) -> Option<tutti_plugin_types::EditorSize> {
+        ) -> Option<dpi::Size> {
             None
         }
     }

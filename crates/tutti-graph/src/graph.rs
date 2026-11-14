@@ -192,53 +192,6 @@ pub enum Edge {
     Feedback(FeedbackFrom),
 }
 
-/// A parameter's initial value, by name.
-///
-/// Block-rate by construction: a [`Topology`] is compiled on the control thread,
-/// so a value here is read when a node is *built*, never per sample. A genuinely
-/// per-sample control is a signal and belongs on an input port.
-#[derive(Clone, Copy, Debug)]
-pub enum ParamValue {
-    /// A continuous value, in the parameter's own unit.
-    Scalar(f32),
-}
-
-// `PartialEq` and `Hash` are both hand-written over the same bit-pattern key, so
-// that they agree — the `Hash`/`Eq` contract, and not a formality here: derived
-// float equality says `0.0 == -0.0` while their bit patterns differ, so a
-// derived `PartialEq` beside a bit-pattern `Hash` would put two "equal" specs in
-// two hash buckets.
-//
-// Bit patterns are the right relation for both. This is a *structural*
-// comparison deciding whether two graphs are the same graph, not a numeric one:
-// two params differing by an ULP are two different graphs, and collapsing them
-// would let a recompile keep a node built from the old number.
-//
-// It also makes `Eq` honest, which derived float equality cannot be — `NaN != NaN`
-// is not reflexive, and a `NaN` param would otherwise make a spec unequal to
-// itself and a `Topology` unfindable in its own map.
-impl PartialEq for ParamValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.key() == other.key()
-    }
-}
-
-impl Eq for ParamValue {}
-
-impl std::hash::Hash for ParamValue {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.key().hash(state);
-    }
-}
-
-impl ParamValue {
-    fn key(&self) -> (u8, u64) {
-        match *self {
-            ParamValue::Scalar(v) => (0, v.to_bits() as u64),
-        }
-    }
-}
-
 /// What kind of node this is, by **catalog id** — never a boxed unit.
 ///
 /// The whole point of the split: a spec is `Clone + Eq + Hash` and carries no
@@ -266,9 +219,6 @@ pub struct NodeSpec {
     /// How long it rings after its input stops, counted once its `latency`
     /// is compensated: a tail excludes latency ([`Tail`]).
     pub tail: Tail,
-    /// Initial parameter values by name. `BTreeMap` so the whole spec hashes
-    /// deterministically — a `HashMap` here would make `Topology: Hash` a lie.
-    pub params: BTreeMap<String, ParamValue>,
 }
 
 impl NodeSpec {
@@ -285,7 +235,6 @@ impl NodeSpec {
             outputs,
             latency: Samples::ZERO,
             tail: Tail::None,
-            params: BTreeMap::new(),
         }
     }
 
@@ -301,24 +250,6 @@ impl NodeSpec {
     pub fn with_tail(mut self, tail: Tail) -> Self {
         self.tail = tail;
         self
-    }
-
-    /// Returns this spec with one more initial parameter value.
-    #[must_use]
-    pub fn with_param(mut self, name: impl Into<String>, value: ParamValue) -> Self {
-        self.params.insert(name.into(), value);
-        self
-    }
-
-    /// Returns the scalar value of `name`, if it has one.
-    ///
-    /// The lookup a catalog performs to build a node, written once here rather
-    /// than open-coded per kind.
-    pub fn scalar(&self, name: &str) -> Option<f32> {
-        match self.params.get(name) {
-            Some(ParamValue::Scalar(v)) => Some(*v),
-            _ => None,
-        }
     }
 }
 

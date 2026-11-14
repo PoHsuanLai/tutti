@@ -154,7 +154,7 @@ impl Drop for ClapController {
         // thread has no token to deactivate with: the FFI plugin then leaks
         // the instance instead (its drop).
         if let Some(mut loaded) = self.loaded.take()
-            && let Some(main) = MainThread::current()
+            && let Some(main) = MainThread::new()
         {
             loaded.deactivate_plugin(&main);
         }

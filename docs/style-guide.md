@@ -126,7 +126,7 @@ until it is un-parked. `vendor/` is third-party and never restyled.
   everywhere, never `(target, spec)` in one place).
 - **T18. No global state** (`M-AVOID-STATICS`): a `static` holding mutable
   state is a finding unless it is one of the process-wide facts `CLAUDE.md`
-  names (`MainThread::claim`, the play clock's epoch counter).
+  names (the play clock's epoch counter, the stranded-work count `MainWork::stranded`).
 
 ## E. Errors and panics
 

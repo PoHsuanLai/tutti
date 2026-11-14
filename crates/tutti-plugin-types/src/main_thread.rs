@@ -1,253 +1,158 @@
-//! The main-thread token, shared by every plugin-host crate.
+//! The main-thread token and the work handed to it.
 //!
 //! All native plugin formats (VST2, VST3, CLAP, AU) require that the calls
 //! other than the real-time audio path (the editor, state, parameter
-//! enumeration, timers and the run loop) run on the host's main/UI thread.
-//! Violating that is a spec breach that tends to surface as silent state
-//! corruption or a crash several blocks later, the hardest class of bug to
-//! trace back.
+//! enumeration, timers and the run loop) run on the host's main/UI thread. The
+//! rule is in the types: an entry that must run there takes a `&`[`MainThread`],
+//! `tutti_rt`'s proof that the holder is on the OS's main thread, and runs no
+//! check of its own.
 //!
-//! The rule is in the types. A [`MainThread`] is `!Send` and `!Sync`, so a
-//! value of it exists only on the thread that claimed it, and an entry that
-//! must run on the main thread takes a `&MainThread`. Holding one is the proof:
-//! the entries run no check of their own, in debug or in release.
+//! A `Drop` cannot take a token. One that releases something the formats close
+//! on the main thread, and finds itself on another, hands the close to its
+//! owner's [`MainWork`] through a [`MainWorkHandle`], and the owner runs it
+//! on its next main-thread tick.
 //!
-//! # Claiming
+//! # One collector per owner
 //!
-//! [`MainThread::claim`] is the only way to make one. The first thread to
-//! claim becomes the process's main thread; a later claim on that same thread
-//! succeeds again (a copy of the same proof) and a claim on any other thread is
-//! refused with [`NotMainThread`]. The host claims once, on its UI thread, at
-//! startup, and hands the token down.
+//! [`MainWork::new`] makes a collector and the [`MainWorkHandle`] every plugin
+//! the owner loads holds a clone of. Nothing is shared between owners: two
+//! sessions in one process each run only the work their own plugins sent.
 //!
-//! **Who claims.** The claim is first-come, and nothing checks that the first
-//! claimer is the UI thread: `claim` does not ask the OS (a test runner's
-//! threads are not the OS main thread, and every test claims). So the host must
-//! claim from its UI or OS main thread, first, at startup; a thread that claims
-//! earlier becomes "the main thread" for the process, and the real one is then
-//! refused. A format whose soundness needs the OS's main thread still asks
-//! the OS itself (the AU editor re-checks `pthread_main_np`).
+//! The queue is unbounded, so a send never waits and nothing is lost to a full
+//! queue. [`MainWork::run`] runs what has arrived, on the main thread, with the
+//! token in hand.
 //!
-//! The claim is **once per process**, not once per test. Under `cargo nextest`
-//! every test is its own process, so a test claims freely; under plain
-//! `cargo test` the tests of one binary share a process and run on different
-//! threads, so only the first to claim would win. The workspace runs its tests
-//! with nextest (`CLAUDE.md`), and a doctest is a process of its own.
+//! A send whose collector is gone (its owner already dropped) runs the work at
+//! once when the sender is on the main thread; otherwise nothing can run it, and
+//! the work is counted in [`MainWork::stranded`].
 
-use std::marker::PhantomData;
-use std::sync::OnceLock;
-use std::thread::ThreadId;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
-static MAIN: OnceLock<ThreadId> = OnceLock::new();
+pub use tutti_rt::MainThread;
 
-/// Proof that the holder is on the process's main thread.
-///
-/// `!Send` and `!Sync`: a copy cannot leave the thread that claimed it, so
-/// `Copy` and `Clone` are free. Made by [`MainThread::claim`].
+/// Work a thread that is not the main thread hands to it.
+type Work = Box<dyn FnOnce(&MainThread) + Send>;
+
+/// Work that found no collector and no main thread to run it.
+static STRANDED: AtomicU64 = AtomicU64::new(0);
+
+/// The collector of the work other threads hand to the main thread: owned by
+/// the owner of the plugins that send it (a session), drained on the main
+/// thread.
 ///
 /// ```
-/// use tutti_plugin_types::MainThread;
+/// use tutti_plugin_types::{MainThread, MainWork};
 ///
-/// let main = MainThread::claim().unwrap();
-/// let again = main; // `Copy`
-/// let _ = (main, again);
+/// let main = MainThread::new().expect("on the main thread");
+/// let (work, handle) = MainWork::new();
+/// std::thread::spawn(move || handle.defer(|_main| {})).join().unwrap();
+/// assert_eq!(work.run(&main), 1);
+/// assert_eq!(work.run(&main), 0, "and once");
 /// ```
-///
-/// It cannot be sent to another thread, so a spawned thread cannot use a
-/// main-thread entry:
-///
-/// ```compile_fail
-/// use tutti_plugin_types::MainThread;
-///
-/// let main = MainThread::claim().unwrap();
-/// std::thread::spawn(move || {
-///     drop(main);
-/// });
-/// ```
-///
-/// Nor shared by reference (`!Sync`):
-///
-/// ```compile_fail
-/// use tutti_plugin_types::MainThread;
-///
-/// let main = MainThread::claim().unwrap();
-/// std::thread::scope(|s| {
-///     s.spawn(|| {
-///         let shared: &MainThread = &main;
-///         drop(*shared);
-///     });
-/// });
-/// ```
-#[derive(Debug, Clone, Copy)]
-pub struct MainThread {
-    // A raw pointer is neither `Send` nor `Sync`.
-    _not_send: PhantomData<*const ()>,
+#[derive(Debug)]
+pub struct MainWork {
+    queue: Receiver<Work>,
 }
 
-impl MainThread {
-    /// Claims the calling thread as the process's main thread.
-    ///
-    /// The first call in the process wins; later calls on the same thread
-    /// succeed again.
-    ///
-    /// # Errors
-    ///
-    /// [`NotMainThread`] if another thread has claimed already.
-    pub fn claim() -> Result<MainThread, NotMainThread> {
-        let this = std::thread::current().id();
-        if *MAIN.get_or_init(|| this) == this {
-            Ok(MainThread {
-                _not_send: PhantomData,
-            })
+/// The send side of a [`MainWork`]: a plugin's way to hand a close to the main
+/// thread from a `Drop` that is not on it. Cheap to clone; every plugin the
+/// collector's owner loads holds one.
+#[derive(Clone, Debug)]
+pub struct MainWorkHandle {
+    queue: Sender<Work>,
+}
+
+impl MainWork {
+    /// A collector and the handle that feeds it.
+    #[must_use]
+    pub fn new() -> (MainWork, MainWorkHandle) {
+        let (queue, inbox) = channel();
+        (MainWork { queue: inbox }, MainWorkHandle { queue })
+    }
+
+    /// Runs the work handed over so far, on the calling (main) thread, and says
+    /// how many ran. Work that defers more work leaves it for the next call.
+    pub fn run(&self, main: &MainThread) -> usize {
+        let arrived: Vec<Work> = self.queue.try_iter().collect();
+        let ran = arrived.len();
+        for work in arrived {
+            work(main);
+        }
+        ran
+    }
+
+    /// How many pieces of work, process-wide since the process began, were sent
+    /// to a collector that was already gone from a thread that is not the main
+    /// thread, so nothing ran them: each is a plugin close that never happened.
+    /// A diagnostic only; it changes no behaviour. The owner of the plugins
+    /// should have closed them on the main thread (`Session::close`).
+    #[must_use]
+    pub fn stranded() -> u64 {
+        STRANDED.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for MainWork {
+    /// Work still queued when the collector goes runs now on the main thread; off
+    /// it nothing can run it, and each piece is counted in [`MainWork::stranded`].
+    fn drop(&mut self) {
+        let pending: Vec<Work> = self.queue.try_iter().collect();
+        if pending.is_empty() {
+            return;
+        }
+        if let Some(main) = MainThread::new() {
+            for work in pending {
+                work(&main);
+            }
         } else {
-            Err(NotMainThread)
+            STRANDED.fetch_add(pending.len() as u64, Ordering::Relaxed);
+            // As in `MainWorkHandle::defer`: dropping a piece of work here would drop
+            // what it holds off the main thread, which defers again to this
+            // collector. The plugins leak instead.
+            std::mem::forget(pending);
         }
     }
+}
 
-    /// Whether the process's main thread has been claimed by a thread other than
-    /// the caller. `false` while nobody has claimed, so a debug check built on
-    /// it is silent in a process with no main thread (a headless rig), and trips
-    /// only for a free that happens on the wrong thread.
+impl MainWorkHandle {
+    /// Hands `work` to the collector's main thread, to run at its next
+    /// [`MainWork::run`]. Never waits and never loses the work to a full queue.
     ///
-    /// For the paths that cannot be handed a token (a `Drop`, an off-main
-    /// call that must be posted to the main thread instead). An entry that can
-    /// take a [`MainThread`] takes one instead, and checks nothing.
-    #[must_use]
-    pub fn claimed_elsewhere() -> bool {
-        MAIN.get()
-            .is_some_and(|main| *main != std::thread::current().id())
-    }
-
-    /// The proof, if the calling thread is the one that claimed, and `None`
-    /// otherwise, including while nobody has claimed. It never claims.
+    /// If the collector is gone, the work runs now when the caller is on the
+    /// main thread, and otherwise is counted in [`MainWork::stranded`].
     ///
-    /// For the code that cannot be handed a token, a `Drop` above all: it can
-    /// run on whichever thread releases the last owner, and does main-thread
-    /// work only when that happens to be the main thread.
-    #[must_use]
-    pub fn current() -> Option<MainThread> {
-        (MAIN.get() == Some(&std::thread::current().id())).then_some(MainThread {
-            _not_send: PhantomData,
-        })
-    }
-}
-
-/// Work a thread that is not the main thread hands to it: what a `Drop` off the claimed
-/// thread cannot do itself (a plugin's `effClose`, say) and must not skip.
-type Deferred = Box<dyn FnOnce(&MainThread) + Send>;
-
-static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::new());
-
-/// Hands `work` to the main thread, to run at its next [`run_deferred`].
-///
-/// **Someone must call [`run_deferred`] on the main thread.** `Session::update`
-/// does, in `Phase::Collect`, when it runs on the claiming thread (and
-/// `MainSession::update` always does), so a host that drives the session from
-/// another thread must call [`run_deferred`] from its main-thread loop. Without a pump, work posted here never runs; a caller that
-/// waits for it (the in-process plugin handle's off-main calls) gets its
-/// "unavailable" answer when its deadline expires.
-///
-/// For a `Drop` that finds itself off the claimed thread and owns something that must be
-/// released there: it cannot be handed a token, so it hands over the release.
-///
-/// # Never from an audio thread
-///
-/// This takes a `std::sync::Mutex` (it can block) and boxes the work (it allocates). Callable
-/// from any control-side or pool thread, **not from the audio callback**. The callers keep to
-/// that by an invariant of the graph, not by a check here: a unit leaves the plan on the
-/// control side. The executor moves a retired, replaced or crossfaded-out unit into the commit
-/// box it sends back (`tutti-graph`'s `exec.rs`: `c.retired.push` in `apply_pending`, the
-/// `faded` ring for a crossfade's outgoing unit), `Editor::collect` drops it on the control
-/// thread, and a `NodeBox`, `Crossfade` or `Commit` dropped inside the audio scope panics in a
-/// debug build (`RtScope::check_outside`). When a session ends, the stream's owner thread is
-/// joined before the driver releases the last `Arc` of the callback state (`tutti-cpal`'s
-/// `TuttiDriver` field order, `owner.rs`'s join), so the executor and its units drop on the
-/// control thread. So the `RenderHandle` of a plugin node (in its `Processor`) is never dropped
-/// on the audio thread, and its deferral here never runs there. The in-process VST2 suite pins
-/// it: `tutti-plugin-host/tests/node/vst2_in_process_retire.rs`.
-pub fn defer_to_main(work: impl FnOnce(&MainThread) + Send + 'static) {
-    DEFERRED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(Box::new(work));
-}
-
-/// Runs the work other threads handed over by [`defer_to_main`], on the calling (main) thread,
-/// and says how many ran. A main-thread tick the host already has calls this: the session's
-/// `Phase::Collect` (which runs on the claiming thread, as `Session::update` must). A host that
-/// does not call `Session::update` on its main thread calls this from its main-thread loop.
-/// Work that defers more work leaves it for the next call.
-pub fn run_deferred(main: &MainThread) -> usize {
-    let work = std::mem::take(
-        &mut *DEFERRED
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    );
-    let ran = work.len();
-    for work in work {
-        work(main);
-    }
-    ran
-}
-
-/// A [`MainThread::claim`] on a thread other than the one that claimed first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the process's main thread was claimed by another thread")]
-pub struct NotMainThread;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_claim_is_refused_on_another_thread_and_repeats_on_the_first() {
-        assert!(MainThread::current().is_none(), "nobody has claimed yet");
-        assert!(!MainThread::claimed_elsewhere(), "nobody has claimed yet");
-        let first = MainThread::claim();
-        assert!(first.is_ok());
-        assert!(MainThread::claim().is_ok(), "the same thread claims again");
-        // The token itself cannot cross back, so the thread reports the error.
-        let other = std::thread::spawn(|| MainThread::claim().err())
-            .join()
-            .unwrap();
-        assert_eq!(other, Some(NotMainThread));
-        // `current` follows the claim and never makes one.
-        assert!(MainThread::current().is_some());
-        let elsewhere = std::thread::spawn(|| MainThread::current().is_none())
-            .join()
-            .unwrap();
-        assert!(elsewhere, "only the claiming thread holds the proof");
-        assert!(
-            !MainThread::claimed_elsewhere(),
-            "the claimer is not elsewhere"
-        );
-        let off = std::thread::spawn(MainThread::claimed_elsewhere)
-            .join()
-            .unwrap();
-        assert!(off, "another thread is elsewhere once a thread has claimed");
-    }
-
-    #[test]
-    fn work_deferred_off_the_main_thread_runs_on_it() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let main = MainThread::claim().unwrap();
-        let ran_on_main = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&ran_on_main);
-        let main_id = std::thread::current().id();
-        std::thread::spawn(move || {
-            defer_to_main(move |_main| {
-                flag.store(std::thread::current().id() == main_id, Ordering::SeqCst);
-            });
-        })
-        .join()
-        .unwrap();
-        assert!(
-            !ran_on_main.load(Ordering::SeqCst),
-            "not run by the deferring thread"
-        );
-        assert_eq!(run_deferred(&main), 1);
-        assert!(ran_on_main.load(Ordering::SeqCst), "run on the main thread");
-        assert_eq!(run_deferred(&main), 0, "and once");
+    /// # Never from an audio thread
+    ///
+    /// This allocates (the box and the queue's node). Callable from any
+    /// control-side or pool thread, **not from the audio callback**. The callers
+    /// keep to that by an invariant of the graph, not by a check here: a unit
+    /// leaves the plan on the control side. The executor moves a retired,
+    /// replaced or crossfaded-out unit into the commit box it sends back
+    /// (`tutti-graph`'s `exec.rs`: `c.retired.push` in `apply_pending`, the
+    /// `faded` ring for a crossfade's outgoing unit), `Editor::collect` drops it
+    /// on the control thread, and a `NodeBox`, `Crossfade` or `Commit` dropped
+    /// inside the audio scope panics in a debug build (`RtScope::check_outside`).
+    /// When a session ends, the stream's owner thread is joined before the driver
+    /// releases the last `Arc` of the callback state (`tutti-cpal`'s
+    /// `TuttiDriver` field order, `owner.rs`'s join), so the executor and its
+    /// units drop on the control thread. So the `RenderHandle` of a plugin node
+    /// (in its `Processor`) is never dropped on the audio thread, and its
+    /// deferral here never runs there. The in-process VST2 suite pins it:
+    /// `tutti-plugin-host/tests/node/vst2_in_process_retire.rs`.
+    pub fn defer(&self, work: impl FnOnce(&MainThread) + Send + 'static) {
+        let Err(gone) = self.queue.send(Box::new(work)) else {
+            return;
+        };
+        match MainThread::new() {
+            Some(main) => (gone.0)(&main),
+            None => {
+                STRANDED.fetch_add(1, Ordering::Relaxed);
+                // Dropping the work would drop what it holds on this thread, and a
+                // plugin dropped off the main thread defers its close again: here, to
+                // the same gone collector. The plugin leaks instead.
+                std::mem::forget(gone.0);
+            }
+        }
     }
 }

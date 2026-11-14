@@ -61,8 +61,12 @@ impl Probe {
     }
 
     fn load(&self) -> Vst2Loaded {
-        let loaded = Vst2Loaded::load(&main_thread(), tutti_fixtures::vst2_probe())
-            .expect("the plugin loads");
+        let loaded = Vst2Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            tutti_fixtures::vst2_probe(),
+        )
+        .expect("the plugin loads");
         // The plugin is built; clearing keeps the variable from outliving it.
         // SAFETY: as in `acquire`.
         unsafe { std::env::remove_var("TUTTI_VST2_PROBE_F64") };

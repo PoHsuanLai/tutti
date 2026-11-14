@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 use tutti_plugin_probe::describe;
-use tutti_plugin_types::{InProcess, Load, MainThread, PluginRole};
+use tutti_plugin_types::{InProcess, Load, PluginRole};
 use tutti_vst2_host::Vst2Loaded;
 use tutti_vst2_shell_plugin::{ALPHA_ID, ALPHA_NAME, BETA_ID, BETA_NAME, SHELL_ID, SHELL_NAME};
 
@@ -31,7 +31,7 @@ fn id(unique: i32) -> String {
 #[test]
 fn the_probe_lists_every_sub_plugin_of_a_shell() {
     let dir = tempfile::tempdir().unwrap();
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let plugins = describe(&main, &shell(&dir)).expect("probes");
 
     let ids: Vec<_> = plugins.iter().map(|p| p.id.clone()).collect();
@@ -52,9 +52,11 @@ fn the_probe_lists_every_sub_plugin_of_a_shell() {
 fn a_load_by_id_is_that_sub_plugin() {
     let dir = tempfile::tempdir().unwrap();
     let path = shell(&dir);
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
 
-    let first = Vst2Loaded::load_in_process(&main, &path, &Load::new()).expect("the shell");
+    let first =
+        Vst2Loaded::load_in_process(&main, &tutti_fixtures::detached_work(), &path, &Load::new())
+            .expect("the shell");
     assert_eq!(first.metadata().id, id(SHELL_ID));
     assert_eq!(first.metadata().name, SHELL_NAME);
     assert_eq!(first.origin().load().chosen(), None);
@@ -62,7 +64,9 @@ fn a_load_by_id_is_that_sub_plugin() {
 
     for (unique, name) in [(BETA_ID, BETA_NAME), (ALPHA_ID, ALPHA_NAME)] {
         let load = Load::new().plugin(id(unique));
-        let loaded = Vst2Loaded::load_in_process(&main, &path, &load).expect("a sub-plugin");
+        let loaded =
+            Vst2Loaded::load_in_process(&main, &tutti_fixtures::detached_work(), &path, &load)
+                .expect("a sub-plugin");
         assert_eq!(loaded.metadata().id, id(unique));
         assert_eq!(loaded.metadata().name, name);
         assert_eq!(
@@ -79,14 +83,18 @@ fn a_load_by_id_is_that_sub_plugin() {
 fn an_id_the_shell_does_not_have_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = shell(&dir);
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
 
     let unknown = Load::new().plugin(id(0x1234_5678));
-    let refused = Vst2Loaded::load_in_process(&main, &path, &unknown);
+    let refused =
+        Vst2Loaded::load_in_process(&main, &tutti_fixtures::detached_work(), &path, &unknown);
     assert!(
         refused.is_err_and(|e| e.to_string().contains("no plugin")),
         "the shell's default is not the plugin asked for"
     );
     let malformed = Load::new().plugin("clap.some.plugin");
-    assert!(Vst2Loaded::load_in_process(&main, &path, &malformed).is_err());
+    assert!(
+        Vst2Loaded::load_in_process(&main, &tutti_fixtures::detached_work(), &path, &malformed)
+            .is_err()
+    );
 }

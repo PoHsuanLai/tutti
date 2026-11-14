@@ -64,6 +64,24 @@ assert_no_alloc = { version = "1", default-features = false }
 libloading.workspace = true
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 
+# The in-process node tells a plugin its rate, and forks it, on the process's
+# main thread only (`MainThread::new` asks the OS), which the default harness never
+# runs a test on: these targets own `main()` (`tutti_fixtures::main_thread_cases`).
+[[test]]
+name = "vst2_in_process_params"
+path = "tests/vst2_in_process_params.rs"
+harness = false
+
+[[test]]
+name = "vst2_in_process_rt_lifecycle"
+path = "tests/vst2_in_process_rt_lifecycle.rs"
+harness = false
+
+[[test]]
+name = "vst2_in_process_render_mode"
+path = "tests/vst2_in_process_render_mode.rs"
+harness = false
+
 [[bench]]
 name = "vst2_in_process"
 harness = false

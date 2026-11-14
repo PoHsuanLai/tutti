@@ -11,7 +11,7 @@
 //! back at the audio thread's next poll.
 
 use std::path::Path;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{MainThread, MainWorkHandle};
 
 use tutti_plugin_types::{
     Event, Hand, HostOp, InProcess, Lifecycle, Load, Loaded, MaxBlock, Notice, Origin, PluginError,
@@ -77,13 +77,14 @@ impl<F: InProcess> Instance<F> {
     /// fail the load (a plugin at its defaults beats none).
     pub(super) fn load(
         main: &MainThread,
+        work: &MainWorkHandle,
         path: &Path,
         load: &Load,
         sample_rate: SampleRate,
         block_size: usize,
         restore: Option<&mut dyn FnMut(&mut F) -> Result<(), String>>,
     ) -> Result<(Self, Rt<F::Processor>, Option<Result<(), String>>), (LoadStage, String)> {
-        let mut loaded = F::load_in_process(main, path, load).map_err(|e| match e {
+        let mut loaded = F::load_in_process(main, work, path, load).map_err(|e| match e {
             PluginError::Load { stage, reason } => (stage, reason),
             other => (LoadStage::Opening, other.to_string()),
         })?;
@@ -428,6 +429,7 @@ mod tests {
     fn a_load_with_no_block_is_refused() {
         match Instance::<Vst2Loaded>::load(
             &main_thread(),
+            &tutti_fixtures::detached_work(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
             SampleRate::SR_48K,
@@ -449,6 +451,7 @@ mod tests {
     fn a_rate_the_plugin_takes_reports_nothing() {
         let (mut instance, _rt, _) = Instance::<Vst2Loaded>::load(
             &main_thread(),
+            &tutti_fixtures::detached_work(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
             SampleRate::SR_48K,
@@ -476,6 +479,7 @@ mod tests {
         let main = main_thread();
         let (mut instance, mut rt, _) = Instance::<Vst2Loaded>::load(
             &main,
+            &tutti_fixtures::detached_work(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
             SampleRate::SR_48K,

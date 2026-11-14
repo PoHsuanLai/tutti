@@ -18,7 +18,9 @@ use tutti_plugin_types::{Editor, EditorWindow, Load, OutOfProcess};
 fn a_timer_the_editor_registers_ticks_on_idle() {
     let path = tutti_fixtures::clap_probe();
     let main = main_thread();
-    let mut editor = ClapLoaded::load_editor(&main, path, &Load::new()).expect("loads");
+    let mut editor =
+        ClapLoaded::load_editor(&main, &tutti_fixtures::detached_work(), path, &Load::new())
+            .expect("loads");
 
     // The probe's switches are `extern "C"` symbols in the image this
     // instance loaded: re-open the same path, not the linked rlib.
@@ -72,7 +74,9 @@ fn an_editors_state_is_the_plugins_state() {
 
     let path = tutti_fixtures::clap_probe();
     let main = main_thread();
-    let mut editor = ClapLoaded::load_editor(&main, path, &Load::new()).expect("loads");
+    let mut editor =
+        ClapLoaded::load_editor(&main, &tutti_fixtures::detached_work(), path, &Load::new())
+            .expect("loads");
 
     let through_editor = editor.save_state(&main).expect("saves");
     let plugin = Control::save_state(
@@ -96,7 +100,9 @@ fn a_transport_request_the_editor_instance_makes_is_taken_from_it() {
 
     let path = tutti_fixtures::clap_probe();
     let main = main_thread();
-    let mut editor = ClapLoaded::load_editor(&main, path, &Load::new()).expect("loads");
+    let mut editor =
+        ClapLoaded::load_editor(&main, &tutti_fixtures::detached_work(), path, &Load::new())
+            .expect("loads");
     // SAFETY: the reference plugin's library, already loaded by the editor.
     let lib = unsafe { libloading::Library::new(path) }.expect("re-opens");
     // SAFETY: the reference plugin exports this symbol with this signature.

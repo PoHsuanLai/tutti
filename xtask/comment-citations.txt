@@ -236,7 +236,7 @@
 1 crates/tutti-session/tests/plugin/plugin_params.rs
 1 crates/tutti-session/tests/plugin/plugin_presets.rs
 1 crates/tutti-session/tests/plugin/plugin.rs
-2 crates/tutti-session/tests/plugin/vst2_modulation.rs
+2 crates/tutti-session/tests/main_thread/vst2_modulation.rs
 1 crates/tutti-session/tests/plugin/vst2_params.rs
 3 crates/tutti-session/tests/wiring/bus_edges.rs
 1 crates/tutti-session/tests/wiring/declick.rs

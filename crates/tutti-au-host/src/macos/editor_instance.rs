@@ -10,7 +10,8 @@ use std::path::Path;
 use dpi::Size;
 use tutti_plugin_types::{
     ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow, InProcess, Load,
-    MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, WindowHandle,
+    MainThread, MainWorkHandle, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
+    WindowHandle,
 };
 
 use crate::instance::AuLoaded;
@@ -38,8 +39,13 @@ pub struct AuEditorInstance {
 impl AuEditorInstance {
     /// Loads the editor-only instance, resolved by [`AuLoaded::load`] so it
     /// finds the same component the audio path does.
-    pub(crate) fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
-        let mut inner = AuLoaded::load_in_process(main, path, load)?;
+    pub(crate) fn load(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self> {
+        let mut inner = AuLoaded::load_in_process(main, work, path, load)?;
         // The unit's own view changes parameters through `AudioUnitSetParameter`,
         // which only a parameter listener hears: the one `AuLoaded` installs for
         // the audio instance, so `poll_edits` reports what the user does in it.
@@ -141,8 +147,10 @@ mod tests {
     #[test]
     fn the_gui_mirror_denormalizes_against_the_declared_range() {
         let main = tutti_fixtures::main_thread();
+        let (_collector, work) = tutti_plugin_types::MainWork::new();
         let mut gui = AuEditorInstance::load(
             &main,
+            &work,
             Path::new("/System/Library/Components/CoreAudio.component"),
             &Load::new().plugin("au.aufx.dely.appl"),
         )

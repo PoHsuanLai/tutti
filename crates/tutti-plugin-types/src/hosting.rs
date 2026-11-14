@@ -18,8 +18,8 @@ use dpi::Size;
 
 use crate::{
     AutomationMode, ContentScale, EditorCapabilities, EditorError, KeyEvent, KeyUse, Loaded,
-    MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Request, Wakeups,
-    WindowHandle,
+    MainThread, MainWorkHandle, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready,
+    Request, Wakeups, WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -108,11 +108,24 @@ pub trait InProcess: Loaded {
     ///
     /// The file cannot be opened, the chosen plugin is not in it, or the
     /// plugin refuses to be created.
-    fn load_in_process(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self>;
+    ///
+    /// `work` is the collector of the instance's owner: a drop that finds
+    /// itself off the main thread hands its close there (see
+    /// [`MainWork`](crate::MainWork)).
+    fn load_in_process(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self>;
 
     /// Where this instance came from, however it was loaded: what [`Reopen`]
     /// loads again.
     fn origin(&self) -> &Origin;
+
+    /// The collector this instance hands a close to from a drop off the main
+    /// thread: what [`Reopen`] gives the instance it loads.
+    fn main_work(&self) -> &MainWorkHandle;
 }
 
 /// The format can be served from another process, with its editor elsewhere.
@@ -134,7 +147,12 @@ pub trait OutOfProcess: Loaded {
     /// # Errors
     ///
     /// As [`InProcess::load_in_process`].
-    fn load_served(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self>;
+    fn load_served(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self>;
 
     /// What the host calls to build the editor instance. It is never
     /// activated and never renders.
@@ -142,7 +160,12 @@ pub trait OutOfProcess: Loaded {
     /// # Errors
     ///
     /// As [`InProcess::load_in_process`].
-    fn load_editor(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self::Editor>;
+    fn load_editor(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self::Editor>;
 }
 
 /// A loaded plugin can be loaded again the same way, in the same hosting: what
@@ -163,7 +186,7 @@ pub trait Reopen: Loaded {
 impl<F: InProcess> Reopen for F {
     fn reopen(&self, main: &MainThread) -> PluginResult<Self> {
         let origin = self.origin();
-        F::load_in_process(main, origin.path(), origin.load())
+        F::load_in_process(main, self.main_work(), origin.path(), origin.load())
     }
 }
 

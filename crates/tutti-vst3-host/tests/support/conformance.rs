@@ -305,8 +305,13 @@ pub fn require_sample(bundle: &str) -> Vst3Loaded {
                 .collect::<Vec<_>>()
         )
     });
-    Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
-        .unwrap_or_else(|e| panic!("{bundle} is present at {path:?} but failed to load: {e:?}"))
+    Vst3Loaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        &path,
+        LoadOptions::new(),
+    )
+    .unwrap_or_else(|e| panic!("{bundle} is present at {path:?} but failed to load: {e:?}"))
 }
 
 // ── Driving one block through the real host path ─────────────────────────────
@@ -540,7 +545,13 @@ pub fn probe_path() -> PathBuf {
 #[track_caller]
 pub fn require_twin() -> Vst3Loaded {
     let module = tutti_fixtures::vst3_cpp_module();
-    Vst3Loaded::load(&main_thread(), &module, LoadOptions::new()).unwrap_or_else(|e| {
+    Vst3Loaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        &module,
+        LoadOptions::new(),
+    )
+    .unwrap_or_else(|e| {
         panic!(
             "the C++ twin at {} failed to load: {e:?}; rebuild it with \
              `cargo build -p tutti-shared-plugin-vst3-cpp`",

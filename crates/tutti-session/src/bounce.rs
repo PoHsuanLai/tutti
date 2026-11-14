@@ -1943,7 +1943,7 @@ impl Session {
     /// the render produced.
     ///
     /// Drops what the bounce left, here: an in-process plugin in it closes on the
-    /// main thread (`tutti_plugin_types::defer_to_main`).
+    /// main thread, or hands its close to the session's `MainWork` off it.
     ///
     /// # Errors
     ///
@@ -1977,7 +1977,7 @@ impl Session {
     /// or the plugins stay Offline once the last bounce ends.
     ///
     /// Drops what the bounce left, here: an in-process plugin in it closes on the
-    /// main thread (`tutti_plugin_types::defer_to_main`).
+    /// main thread, or hands its close to the session's `MainWork` off it.
     ///
     /// # Errors
     ///

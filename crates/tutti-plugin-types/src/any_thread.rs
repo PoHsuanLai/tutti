@@ -19,7 +19,7 @@ use crate::{
 /// reach the plugin from a thread that is not the main one:
 ///
 /// - **In-process**, the plugin may only be touched on the main thread, so the
-///   hosting hops there (`defer_to_main`) and calls `Control`; off the main
+///   hosting hops there (through its owner's `MainWork`) and calls `Control`; off the main
 ///   thread the call waits for the next main-thread tick up to a deadline, and
 ///   answers "unavailable" when it passes (`None`, `false`,
 ///   [`StateError::Unavailable`], or the write is dropped).

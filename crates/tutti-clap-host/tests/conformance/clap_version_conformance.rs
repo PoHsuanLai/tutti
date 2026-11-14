@@ -60,7 +60,12 @@ impl Probe {
         let path = Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
+        ClapLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().library(path),
+        )
     }
 
     /// The lighter of the two entry points. Covered separately because it does

@@ -62,6 +62,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
     }
     let (_client, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::pumped_work(),
         &path,
         &Load::new(),
         tutti_plugin_types::SampleRate::of(SAMPLE_RATE),

@@ -95,6 +95,9 @@ struct State {
     /// module's own `IRunLoop` (the factory's host context), which cannot say
     /// which plugin it serves: see [`RunLoop::scope`].
     scope: Option<Owner>,
+    /// The thread of the last call that held a [`MainThread`]: the one UI thread
+    /// the loop's registrations are accepted from.
+    ui: Option<std::thread::ThreadId>,
     /// Dispatch tallies. Test-only: see [`RunLoopActivity`](crate::RunLoopActivity).
     #[cfg(feature = "conformance")]
     timers_fired: u64,
@@ -124,6 +127,16 @@ pub(crate) struct RunLoop {
 
 opaque_debug!(RunLoop);
 
+impl State {
+    /// Whether the caller is the thread of the last call that held a
+    /// [`MainThread`]. `IRunLoop` is UI-thread by spec, and a registration from
+    /// another thread would put a handler in a table only the UI thread may
+    /// dispatch from: it is refused (`kResultFalse`).
+    fn on_ui_thread(&self) -> bool {
+        self.ui == Some(std::thread::current().id())
+    }
+}
+
 /// One handler due this iteration, copied out from under the lock.
 enum Due {
     Timer(usize, *mut ITimerHandler, Option<Owner>),
@@ -140,14 +153,6 @@ impl Drop for OwnedScope {
     fn drop(&mut self) {
         self.run_loop.state().scope = self.previous;
     }
-}
-
-/// Whether the caller is the thread that claimed the process's main thread.
-/// `IRunLoop` is UI-thread by spec, and a registration from another thread
-/// would put a handler in a table only the UI thread may dispatch from: it is
-/// refused (`kResultFalse`).
-fn on_main_thread() -> bool {
-    MainThread::current().is_some()
 }
 
 /// While it lives, registrations that name no owner belong to one
@@ -236,7 +241,7 @@ impl RunLoop {
     /// The handlers are the plugin's UI-thread objects, which the `&MainThread`
     /// proves this thread to be the owner of; the host crate (which forbids
     /// `unsafe`) calls it as it calls every other main-thread entry.
-    pub(crate) fn dispatch(&self, _main: &MainThread, ready: &[Ready], now: Instant) {
+    pub(crate) fn dispatch(&self, main: &MainThread, ready: &[Ready], now: Instant) {
         let mut due: Vec<Due> = Vec::new();
         {
             let mut state = self.state();
@@ -266,7 +271,7 @@ impl RunLoop {
             match item {
                 Due::Timer(_, handler, owner) => {
                     // What the callback registers is its owner's.
-                    let _scope = owner.map(|o| self.scope(o));
+                    let _scope = owner.map(|o| self.scope(o, main));
                     // SAFETY: the plugin registered `handler` and keeps it alive
                     // until it unregisters it (`register_timer`'s contract); it was
                     // still registered a moment ago, on this (the UI) thread, and
@@ -281,7 +286,7 @@ impl RunLoop {
                     }
                 }
                 Due::Fd(fd, handler, owner) => {
-                    let _scope = owner.map(|o| self.scope(o));
+                    let _scope = owner.map(|o| self.scope(o, main));
                     // SAFETY: as for the timer: registered, alive until
                     // unregistered, UI thread, lock released.
                     if let Some(ready) = unsafe { ComRef::from_raw(handler) } {
@@ -301,8 +306,8 @@ impl RunLoop {
     /// the module's host context, which every plugin shares) is `owner`'s. The
     /// host wraps the calls that make a plugin register (`attached`) and the
     /// handlers' own callbacks in one.
-    pub(crate) fn scope(&self, owner: Owner) -> Scope<'_> {
-        let previous = self.state().scope.replace(owner);
+    pub(crate) fn scope(&self, owner: Owner, main: &MainThread) -> Scope<'_> {
+        let previous = self.enter(owner, main);
         Scope {
             run_loop: self,
             previous,
@@ -310,12 +315,25 @@ impl RunLoop {
     }
 
     /// [`scope`](Self::scope), holding the loop by `Arc` instead of borrowing it.
-    pub(crate) fn scope_owned(self: &Arc<Self>, owner: Owner) -> OwnedScope {
-        let previous = self.state().scope.replace(owner);
+    pub(crate) fn scope_owned(self: &Arc<Self>, owner: Owner, main: &MainThread) -> OwnedScope {
+        let previous = self.enter(owner, main);
         OwnedScope {
             run_loop: Arc::clone(self),
             previous,
         }
+    }
+
+    /// Makes the calling thread, which holds `main`, the UI thread: the one
+    /// registrations are accepted from.
+    pub(crate) fn bind(&self, _main: &MainThread) {
+        self.state().ui = Some(std::thread::current().id());
+    }
+
+    /// Makes `owner` the scope and binds the calling thread; returns the scope
+    /// it replaced.
+    fn enter(&self, owner: Owner, main: &MainThread) -> Option<Owner> {
+        self.bind(main);
+        self.state().scope.replace(owner)
     }
 
     /// Forgets every registration, owned or not. The module calls it as it
@@ -376,10 +394,10 @@ impl RunLoop {
         if handler.is_null() {
             return kResultOk;
         }
-        if !on_main_thread() {
+        let mut state = self.state();
+        if !state.on_ui_thread() {
             return kResultFalse;
         }
-        let mut state = self.state();
         let owner = owner.or(state.scope);
         state.event_handlers.insert(fd, FdEntry { handler, owner });
         kResultOk
@@ -412,13 +430,13 @@ impl RunLoop {
         if handler.is_null() {
             return kResultOk;
         }
-        if !on_main_thread() {
-            return kResultFalse;
-        }
         // Zero would mean "every iteration"; clamp so a misbehaving plugin
         // cannot spin the host's UI loop.
         let period = Duration::from_millis(milliseconds.max(1));
         let mut state = self.state();
+        if !state.on_ui_thread() {
+            return kResultFalse;
+        }
         let owner = owner.or(state.scope);
         state.timers.insert(
             handler as usize,
@@ -540,15 +558,15 @@ mod tests {
             .expect("the class implements ITimerHandler")
             .as_ptr();
         handler.me.store(ptr, Ordering::SeqCst);
-        let _main = MainThread::claim().unwrap();
+        run_loop.bind(&tutti_fixtures::main_thread());
         // SAFETY: `ptr` is the live `handler` above, which outlives its
         // registration (it unregisters itself, and is dropped after the test).
         unsafe { run_loop.register_timer(ptr, 1, None) };
 
         std::thread::sleep(Duration::from_millis(5));
-        run_loop.run_iteration(&MainThread::claim().unwrap());
+        run_loop.run_iteration(&tutti_fixtures::main_thread());
         std::thread::sleep(Duration::from_millis(5));
-        run_loop.run_iteration(&MainThread::claim().unwrap());
+        run_loop.run_iteration(&tutti_fixtures::main_thread());
 
         assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     }
@@ -577,7 +595,8 @@ mod tests {
     #[test]
     fn a_purge_takes_back_one_owners_registrations() {
         let run_loop = RunLoop::new();
-        let _main = MainThread::claim().unwrap();
+        let main = tutti_fixtures::main_thread();
+        run_loop.bind(&main);
         let (a, b, scoped, unowned) = (Owner::next(), Owner::next(), idle(), idle());
         let (named_a, named_b) = (idle(), idle());
         // SAFETY: every handler outlives the registrations, which the test
@@ -586,7 +605,7 @@ mod tests {
             run_loop.register_timer(named_a.1, 10, Some(a));
             run_loop.register_timer(named_b.1, 10, Some(b));
             run_loop.register_timer(unowned.1, 10, None);
-            let _scope = run_loop.scope(a);
+            let _scope = run_loop.scope(a, &main);
             run_loop.register_timer(scoped.1, 10, None);
         }
         assert_eq!(run_loop.state().timers.len(), 4);
@@ -612,18 +631,19 @@ mod tests {
         let run_loop = RunLoop::new();
         let handler = ComWrapper::new(Counting(AtomicUsize::new(0)));
         let ptr = handler.as_com_ref::<RawTimerHandler>().unwrap().as_ptr();
-        let _main = MainThread::claim().unwrap();
+        run_loop.bind(&tutti_fixtures::main_thread());
         let owner = Owner::next();
         // SAFETY: `handler` outlives the registration.
         unsafe { run_loop.register_timer(ptr, 1, Some(owner)) };
         run_loop.purge(owner);
         std::thread::sleep(Duration::from_millis(5));
-        run_loop.run_iteration(&MainThread::claim().unwrap());
+        run_loop.run_iteration(&tutti_fixtures::main_thread());
         assert_eq!(handler.0.load(Ordering::SeqCst), 0);
     }
 
-    /// **A registration from a thread that is not the main thread is refused,
-    /// and `clear_all` empties the table.** `IRunLoop` is UI-thread by spec.
+    /// **A registration from a thread other than the UI thread is refused, and
+    /// `clear_all` empties the table.** `IRunLoop` is UI-thread by spec; the UI
+    /// thread is the one that last held a `MainThread` in a call into the loop.
     #[test]
     fn registration_is_main_thread_only_and_clear_all_empties() {
         let run_loop = RunLoop::new();
@@ -631,7 +651,7 @@ mod tests {
         let off = {
             let run_loop = run_loop.clone();
             let ptr = ptr as usize;
-            let _main = MainThread::claim().unwrap();
+            run_loop.bind(&tutti_fixtures::main_thread());
             std::thread::spawn(move || {
                 // SAFETY: `handler` outlives the call, which registers nothing.
                 unsafe { run_loop.register_timer(ptr as *mut RawTimerHandler, 1, None) }

@@ -113,6 +113,12 @@ impl ClapLoaded {
         descriptor_of(&self.info, EditorPresence::measured(bits.has_editor))
     }
 
+    /// The descriptor with the editor measured, asking the plugin the first time.
+    fn measured(&self, main: &MainThread) -> &PluginDescriptor {
+        self.descriptor
+            .get_or_init(|| self.measured_descriptor(main))
+    }
+
     /// What the plugin declares on its audio ports now: per port, its width,
     /// what `clap.surround` says (`None` for a port the plugin will not answer
     /// for: no extension, or no `get_channel_map`) and its role.
@@ -248,17 +254,16 @@ impl ClapLoaded {
 }
 
 impl Control for ClapLoaded {
-    /// The editor is measured from the plugin on the first ask, which only the
-    /// main thread may make; any other thread gets the unmeasured descriptor
+    /// The editor is measured from the plugin on the first ask that holds a
+    /// `MainThread` (`wiring`, or this one on the main thread); a thread that
+    /// holds none before then gets the unmeasured descriptor
     /// ([`EditorPresence::Unknown`]) and measures nothing.
     fn info(&self) -> &PluginDescriptor {
         if let Some(measured) = self.descriptor.get() {
             return measured;
         }
-        match MainThread::current() {
-            Some(main) => self
-                .descriptor
-                .get_or_init(|| self.measured_descriptor(&main)),
+        match MainThread::new() {
+            Some(main) => self.measured(&main),
             None => &self.unmeasured,
         }
     }
@@ -267,6 +272,7 @@ impl Control for ClapLoaded {
     /// plugin is active, which is when CLAP lets it change; a loaded plugin
     /// reports none.
     fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+        self.measured(main);
         let layout = self.layout(main);
         let latency_samples = if self.flags.active {
             Samples(self.latency_samples(main) as usize)

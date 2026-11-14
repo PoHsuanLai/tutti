@@ -4,7 +4,9 @@
 use std::path::Path;
 
 use tutti_plugin_types::bundle::{ModuleKind, native_module_path};
-use tutti_plugin_types::{InProcess, Load, MainThread, Origin, OutOfProcess, PluginResult};
+use tutti_plugin_types::{
+    InProcess, Load, MainThread, MainWorkHandle, Origin, OutOfProcess, PluginResult,
+};
 
 use super::ClapLoaded;
 use super::editor_instance::ClapEditor;
@@ -19,24 +21,43 @@ fn options(load: &Load) -> LoadOptions {
 }
 
 impl InProcess for ClapLoaded {
-    fn load_in_process(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
+    fn load_in_process(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self> {
         let module = native_module_path(path, ModuleKind::Clap)?;
-        ClapLoaded::load(main, &module, options(load)).map_err(plugin_error)
+        ClapLoaded::load(main, work, &module, options(load)).map_err(plugin_error)
     }
 
     fn origin(&self) -> &Origin {
         &self.origin
+    }
+
+    fn main_work(&self) -> &MainWorkHandle {
+        &self.work
     }
 }
 
 impl OutOfProcess for ClapLoaded {
     type Editor = ClapEditor;
 
-    fn load_served(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
-        Self::load_in_process(main, path, load)
+    fn load_served(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self> {
+        Self::load_in_process(main, work, path, load)
     }
 
-    fn load_editor(main: &MainThread, path: &Path, load: &Load) -> PluginResult<ClapEditor> {
-        ClapEditor::load(main, path, load)
+    fn load_editor(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<ClapEditor> {
+        ClapEditor::load(main, work, path, load)
     }
 }

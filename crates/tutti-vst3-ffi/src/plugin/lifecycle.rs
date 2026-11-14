@@ -286,8 +286,9 @@ impl Drop for Parts {
         // control-side teardown that must not hold it.
         drop(state);
         // Drop has no token and may run on any thread: the editor is detached
-        // only if this is the main thread (`release_editor`).
-        self.release_editor(MainThread::current().as_ref());
+        // only on the thread the plugin was made on (`release_editor`).
+        let here = self.home.here().copied();
+        self.release_editor(here.as_ref());
         // Registered with the run loop outside any editor (a plugin may do so
         // from `initialize`): gone with the plugin.
         self.purge_run_loop();

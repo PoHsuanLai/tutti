@@ -4,11 +4,11 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{MainThread, MainWorkHandle};
 
 use parking_lot::Mutex;
 
-use super::client::{Declared, InProcClient};
+use super::client::{Declared, InProcClient, Reload};
 use super::control_backend::ControlBackend;
 use super::instance::Instance;
 use crate::PluginHandle;
@@ -38,6 +38,8 @@ const MAX_BLOCK_SIZE: usize = 4096;
 /// (it is a `tutti_graph::Node`). The node and handle share the plugin
 /// instance; drop both to drop the plugin. Editors are opened through the
 /// handle, and audio runs on whatever thread the graph's executor runs on.
+/// `work` is the collector of the plugin's owner: what an off-main call through
+/// the handle waits on, and where a drop off the main thread hands its close.
 /// Blocks while the plugin loads, so call it off the audio thread.
 ///
 /// # Errors
@@ -46,6 +48,7 @@ const MAX_BLOCK_SIZE: usize = 4096;
 /// the plugin fails to initialize.
 pub fn load_client<F>(
     main: &MainThread,
+    work: &MainWorkHandle,
     path: &Path,
     load: &Load,
     sample_rate: impl Into<tutti_types::SampleRate>,
@@ -54,7 +57,7 @@ where
     F: InProcess + 'static,
     F::Processor: 'static,
 {
-    load_client_restoring(main, path, load, sample_rate, None)
+    load_client_restoring(main, work, path, load, sample_rate, None)
         .map(|(client, handle, _)| (client, handle))
 }
 
@@ -66,6 +69,7 @@ where
 /// As [`load_client`].
 pub fn load_client_restoring<F>(
     main: &MainThread,
+    work: &MainWorkHandle,
     path: &Path,
     load: &Load,
     sample_rate: impl Into<tutti_types::SampleRate>,
@@ -81,7 +85,7 @@ where
 {
     let sample_rate = sample_rate.into();
     let (inner, rt, restored) =
-        Instance::<F>::load(main, path, load, sample_rate, MAX_BLOCK_SIZE, restore).map_err(
+        Instance::<F>::load(main, work, path, load, sample_rate, MAX_BLOCK_SIZE, restore).map_err(
             |(stage, reason)| BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage,
@@ -89,7 +93,10 @@ where
             },
         )?;
 
-    let origin = inner.origin().cloned();
+    let origin = inner.origin().cloned().map(|origin| Reload {
+        origin,
+        work: work.clone(),
+    });
     let Wired {
         client,
         inner,
@@ -114,6 +121,7 @@ where
         invalidate_sink: invalidate_sink.clone(),
         transport_sink: transport_sink.clone(),
         format: descriptor.class.format_name(),
+        work: work.clone(),
     });
 
     // The one backend serves all three slots, so a mode set through the handle
@@ -147,7 +155,7 @@ fn wire<H>(
     main: &MainThread,
     mut inner: Instance<H>,
     rt: tutti_rt::Rt<H::Processor>,
-    origin: Option<tutti_plugin_types::Origin>,
+    origin: Option<Reload>,
     sample_rate: f64,
     spares: usize,
 ) -> Result<Wired<H>, (LoadStage, String)>

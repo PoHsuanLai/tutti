@@ -3058,7 +3058,8 @@ impl Graph {
 
     /// Drain what the executor sent back, freeing the retired units here. A
     /// retired in-process plugin closes on the main thread whichever thread
-    /// this is (`tutti_plugin_types::defer_to_main`).
+    /// this is: off the main thread it hands its close to the session's
+    /// `MainWork`.
     pub(crate) fn collect(&mut self) {
         self.editor.collect();
         // An edge whose declick fade has ended leaves the spec (or forgets the

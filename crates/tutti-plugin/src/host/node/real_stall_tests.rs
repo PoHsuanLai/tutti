@@ -127,6 +127,7 @@ fn load_probe(env: &mut ScopedEnv, render_mode: u32) -> (PluginClient, PluginHan
     );
     let client = PluginClient::new(
         BridgeConfig::default(),
+        &tutti_fixtures::detached_work(),
         &crate::catalog::PluginRef::file(tutti_fixtures::clap_probe()).expect("a plugin file"),
         SampleRate::of(SAMPLE_RATE),
     )

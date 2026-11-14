@@ -62,7 +62,8 @@
 //! on disk.
 //!
 //! ```rust,no_run
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
 //! use tutti_graph::Offset;
 //! use tutti_ump::{MidiChannel, MidiGroup};
 //! use tutti_clap_host::{
@@ -72,7 +73,7 @@
 //!
 //! // `ClapLoaded` is the GUI / parameter / state stage. The rate and the block
 //! // length are not load parameters: they are the activation's.
-//! let loaded = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+//! let loaded = ClapLoaded::load(&main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 //! println!("{} by {}", loaded.info().name, loaded.info().vendor);
 //!
 //! // A refusal hands the plugin back in the error, so a plugin that declines f64
@@ -113,8 +114,9 @@
 //! # use tutti_clap_host::{ClapLoaded, LoadOptions, StateContext};
 //! use tutti_plugin_types::{Control, Normalized, ParamId, StateUse};
 //! # fn ex() -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-//! let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
+//! let mut plugin = ClapLoaded::load(&main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 //!
 //! // CLAP addresses parameters by an opaque, plugin-chosen `clap_id`, never by
 //! // position. `parameters` projects them into the shared `ParameterInfo`, so a
@@ -149,8 +151,9 @@
 //! # use tutti_clap_host::{ClapLoaded, ContentScale, LoadOptions, WindowHandle};
 //! # use tutti_plugin_types::{Control, EditorWindow};
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-//! # let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
+//! # let mut plugin = ClapLoaded::load(&main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 //! if plugin.has_editor(&main) {
 //!     // Any winit or other `raw-window-handle` window.
 //!     let handle = WindowHandle::from_window(window)?;

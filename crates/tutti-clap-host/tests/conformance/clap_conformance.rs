@@ -87,8 +87,13 @@ fn load_plugin() -> Active<f32> {
     let path = Path::new(tutti_fixtures::clap_probe());
     // The artifact is a bare dylib — pass it as both bundle and library so
     // the host dlopens it directly (no .clap bundle structure needed).
-    let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-        .expect("reference plugin should load");
+    let loaded = ClapLoaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        path,
+        LoadOptions::new().library(path),
+    )
+    .expect("reference plugin should load");
     loaded
         .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)

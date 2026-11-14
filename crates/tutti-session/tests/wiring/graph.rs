@@ -771,7 +771,7 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
 #[test]
 fn a_removal_a_commit_and_an_update_run_on_any_thread() {
     // The test thread is the process's main thread; the work below is not on it.
-    let _main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
+    let _main = tutti_fixtures::main_thread();
     let mut s = detached(1);
     let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
     let _ = s.update();

@@ -7,7 +7,7 @@
 //! note expression, reached here through capability accessors.
 
 use crate::host::plugin_ref::{Hosting, PluginRef};
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{MainThread, MainWorkHandle};
 
 use crate::host::node::PluginClient;
 #[cfg(any(
@@ -96,7 +96,8 @@ macro_rules! placed {
 /// use tutti_plugin::catalog::PluginRef;
 ///
 /// let file = PluginRef::file("/usr/lib/vst3/MyPlugin.vst3").expect("a plugin file");
-/// let plugin = Plugin::open(None, &file, SampleRate::SR_48K)?;
+/// let (_collector, work) = tutti_plugin_types::MainWork::new();
+/// let plugin = Plugin::open(None, &work, &file, SampleRate::SR_48K)?;
 /// println!("{} ({:?})", plugin.descriptor().name, plugin.role());
 /// if plugin.takes_midi() {
 ///     // wire a MIDI source to the node's event input
@@ -130,7 +131,8 @@ impl Plugin {
     /// # fn ex() -> tutti_plugin_types::BridgeResult<()> {
     /// use tutti_plugin::catalog::{Plugin, PluginRef};
     /// let foo = PluginRef::file("/Library/Audio/Plug-Ins/VST3/Foo.vst3").expect("a plugin file");
-    /// let plugin = Plugin::open(None, &foo, tutti_types::SampleRate::SR_48K)?;
+    /// let (_collector, work) = tutti_plugin_types::MainWork::new();
+    /// let plugin = Plugin::open(None, &work, &foo, tutti_types::SampleRate::SR_48K)?;
     /// # Ok(()) }
     /// ```
     ///
@@ -176,10 +178,11 @@ impl Plugin {
     /// [`AudioConfig`]: crate::BridgeConfig
     pub fn open(
         main: Option<&MainThread>,
+        work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
     ) -> BridgeResult<Self> {
-        Self::open_with(main, &AudioConfig::default(), plugin, sample_rate)
+        Self::open_with(main, work, &AudioConfig::default(), plugin, sample_rate)
     }
 
     /// Opens a plugin file with explicit bridge settings.
@@ -191,11 +194,13 @@ impl Plugin {
     /// The same as [`open`](Self::open).
     pub(crate) fn open_with(
         main: Option<&MainThread>,
+        work: &MainWorkHandle,
         audio: &AudioConfig,
         plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
     ) -> BridgeResult<Self> {
-        Self::open_with_state(main, audio, plugin, sample_rate, None).map(|(plugin, _)| plugin)
+        Self::open_with_state(main, work, audio, plugin, sample_rate, None)
+            .map(|(plugin, _)| plugin)
     }
 
     /// `open_with`, restoring `state` into the plugin
@@ -210,6 +215,7 @@ impl Plugin {
     /// The same as [`open`](Self::open).
     pub fn open_with_state(
         main: Option<&MainThread>,
+        work: &MainWorkHandle,
         audio: &AudioConfig,
         plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
@@ -229,11 +235,11 @@ impl Plugin {
                         .into(),
                 });
             };
-            return Self::open_in_process(main, plugin, sample_rate, state);
+            return Self::open_in_process(main, work, plugin, sample_rate, state);
         }
 
         let ((client, restored), handle) =
-            PluginClient::open(audio.to_bridge_config(), plugin, sample_rate, state).map(
+            PluginClient::open(audio.to_bridge_config(), work, plugin, sample_rate, state).map(
                 |(client, restored)| {
                     let handle = client.handle();
                     ((client, restored), handle)
@@ -263,6 +269,7 @@ impl Plugin {
     #[allow(unused_variables)]
     fn open_in_process(
         main: &MainThread,
+        work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: SampleRate,
         state: Option<&[u8]>,
@@ -271,6 +278,7 @@ impl Plugin {
             #[cfg(feature = "vst2")]
             PluginFormat::Vst2 => Self::load_in_process::<tutti_vst2_host::Vst2Loaded>(
                 main,
+                work,
                 plugin,
                 sample_rate,
                 state,
@@ -279,6 +287,7 @@ impl Plugin {
             #[cfg(feature = "clap")]
             PluginFormat::Clap => Self::load_in_process::<tutti_clap_host::ClapLoaded>(
                 main,
+                work,
                 plugin,
                 sample_rate,
                 state,
@@ -287,6 +296,7 @@ impl Plugin {
             #[cfg(feature = "vst3")]
             PluginFormat::Vst3 => Self::load_in_process::<tutti_vst3_host::Vst3Loaded>(
                 main,
+                work,
                 plugin,
                 sample_rate,
                 state,
@@ -295,6 +305,7 @@ impl Plugin {
             #[cfg(all(feature = "au", target_os = "macos"))]
             PluginFormat::AudioUnit => Self::load_in_process::<tutti_au_host::AuLoaded>(
                 main,
+                work,
                 plugin,
                 sample_rate,
                 state,
@@ -319,6 +330,7 @@ impl Plugin {
     ))]
     fn load_in_process<F>(
         main: &MainThread,
+        work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: SampleRate,
         state: Option<&[u8]>,
@@ -341,6 +353,7 @@ impl Plugin {
         });
         let (client, handle, restored) = tutti_plugin_host::load_client_restoring(
             main,
+            work,
             plugin.path(),
             &plugin.load(),
             sample_rate,

@@ -406,7 +406,7 @@ impl Drop for ClapLoaded {
         // gui.destroy() before plugin.destroy(). A `ClapLoaded` that is dropped
         // is never active (the Controller deactivates the plugin before it lets
         // go of it), so there is no stop/deactivate to do here.
-        if let Some(main) = tutti_plugin_types::MainThread::current() {
+        if let Some(main) = tutti_plugin_types::MainThread::new() {
             self.destroy_editor(&main);
         }
 

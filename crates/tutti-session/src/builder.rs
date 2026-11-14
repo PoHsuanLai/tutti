@@ -797,6 +797,8 @@ impl<S> SessionBuilder<S> {
         let load = engine
             .as_mut()
             .and_then(tutti_engine::Engine::take_load_meter);
+        #[cfg(feature = "plugin")]
+        let (main_work, work) = tutti_plugin_types::MainWork::new();
         Ok(Session {
             graph: parts.graph,
             transport: parts.transport,
@@ -857,6 +859,10 @@ impl<S> SessionBuilder<S> {
             #[cfg(feature = "export")]
             bounce: Default::default(),
             jobs: crate::jobs::Jobs::new(self.opts.spawner.clone()),
+            #[cfg(feature = "plugin")]
+            work,
+            #[cfg(feature = "plugin")]
+            main_work,
         })
     }
 

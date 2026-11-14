@@ -85,8 +85,13 @@ impl Probe {
         let path = Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-            .expect("reference plugin should load")
+        ClapLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().library(path),
+        )
+        .expect("reference plugin should load")
     }
 
     /// Load + activate the reference plugin through the real host.
@@ -787,13 +792,13 @@ fn host_routes_plugin_log_lines_at_every_severity() {
 /// `poll_timers` and `on_main_thread` are the two `[main-thread]` methods an
 /// embedder is most likely to reach from a UI framework's tick, which is not
 /// obliged to run on the thread that loaded the plugin. Both take a
-/// `&MainThread`, which is `!Send` and which a second thread cannot claim, so
+/// `&MainThread`, which is `!Send` and which the OS grants only the main thread, so
 /// a timer thread has no way to name the call: the rule is in the types, in
 /// debug and in release alike, and no panic is left to observe.
 ///
 /// What this test can pin is the second half: the thread that is not the main
 /// one is refused the proof. (That a `MainThread` cannot be moved over is the
-/// `compile_fail` doctest of `tutti_plugin_types::MainThread`.)
+/// `compile_fail` doctest of `tutti_rt::MainThread`.)
 #[test]
 fn a_timer_thread_is_refused_the_proof_the_main_thread_methods_take() {
     let probe = Probe::acquire();
@@ -803,13 +808,13 @@ fn a_timer_thread_is_refused_the_proof_the_main_thread_methods_take() {
     inst.on_main_thread(&main);
 
     let refused = std::thread::scope(|s| {
-        s.spawn(|| tutti_plugin_types::MainThread::claim().err())
+        s.spawn(|| tutti_plugin_types::MainThread::new().is_none())
             .join()
     })
-    .expect("the claim does not panic");
+    .expect("the query does not panic");
     assert!(
-        refused.is_some(),
-        "a thread other than the one that claimed first must not obtain a MainThread"
+        refused,
+        "a thread other than the process's main thread must not obtain a MainThread"
     );
 }
 
@@ -830,29 +835,37 @@ fn main_thread_methods_run_on_the_loading_thread() {
 }
 
 /// `Control::info` has no token, and the editor's presence is a question put
-/// to the plugin (`gui.is_api_supported`, a `[main-thread]` entry), so off the
-/// thread that holds the main role it answers from the factory alone
-/// (`EditorPresence::Unknown`) and asks nothing; on the main thread it
-/// measures, and keeps the measurement.
+/// to the plugin (`gui.is_api_supported`, a `[main-thread]` entry), so a thread
+/// that holds no `MainThread` before the first token-bearing call answers from
+/// the factory alone (`EditorPresence::Unknown`) and asks nothing; the first
+/// call that holds one (`wiring`) measures, and every thread then reads the
+/// measurement.
 #[test]
-fn info_off_the_main_thread_asks_the_plugin_nothing() {
+fn info_asks_the_plugin_nothing_until_a_main_thread_call_measures() {
     use tutti_plugin_types::{Control, EditorPresence};
 
     let probe = Probe::acquire();
     let inst = probe.load();
-    let _main = main_thread();
-    let (inst, off) = std::thread::spawn(move || {
+    let (inst, before) = std::thread::spawn(move || {
         let editor = Control::info(&inst).editor;
         (inst, editor)
     })
     .join()
     .expect("info does not panic");
-    assert_eq!(off, EditorPresence::Unknown);
+    assert_eq!(before, EditorPresence::Unknown);
+    let _ = Control::wiring(&inst, &main_thread());
+    let (inst, after) = std::thread::spawn(move || {
+        let editor = Control::info(&inst).editor;
+        (inst, editor)
+    })
+    .join()
+    .expect("info does not panic");
     assert_ne!(
-        Control::info(&inst).editor,
+        after,
         EditorPresence::Unknown,
-        "the main thread measures"
+        "the main thread call measured"
     );
+    assert_eq!(Control::info(&inst).editor, after);
 }
 
 /// `deactivate` is `[main-thread]`, so what a plugin calls from it is legal: a

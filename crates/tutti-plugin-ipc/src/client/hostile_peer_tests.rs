@@ -71,6 +71,7 @@ const STATE_PROGRESS_TIMEOUT: Duration = Duration::from_millis(400);
 /// These peers never open an editor; one that tried is refused.
 fn no_editor(
     _: &tutti_plugin_types::MainThread,
+    _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     _: &tutti_plugin_types::Load,
 ) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
@@ -356,7 +357,10 @@ impl MockServer {
             path.clone(),
             slab,
             tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-            Some(no_editor),
+            Some(crate::EditorLoader::new(
+                no_editor,
+                tutti_fixtures::detached_work(),
+            )),
             SampleRate::SR_48K,
             state_progress_timeout,
         )

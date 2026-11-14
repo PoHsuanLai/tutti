@@ -62,6 +62,7 @@ impl Mock {
 
 fn no_editor(
     _: &tutti_plugin_types::MainThread,
+    _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     _: &tutti_plugin_types::Load,
 ) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
@@ -75,7 +76,7 @@ fn no_editor(
 fn mock() -> (Ipc, Mock) {
     mock_loading(
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        no_editor,
+        crate::EditorLoader::new(no_editor, tutti_fixtures::detached_work()),
     )
 }
 
@@ -400,6 +401,7 @@ static EDITOR_LOAD: Mutex<Option<tutti_plugin_types::Load>> = Mutex::new(None);
 
 fn recording_editor(
     _: &tutti_plugin_types::MainThread,
+    _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     load: &tutti_plugin_types::Load,
 ) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
@@ -422,7 +424,7 @@ fn the_editor_instance_is_loaded_with_the_choice_the_bridge_was_made_for() {
     let chosen = tutti_plugin_types::Load::new().plugin("the.second.plugin");
     let (ipc, _peer) = mock_loading(
         tutti_plugin_types::Origin::new("bundle.clap", chosen.clone()),
-        recording_editor,
+        crate::EditorLoader::new(recording_editor, tutti_fixtures::detached_work()),
     );
     let refused = ipc.bridge().open_floating_editor(&main_thread());
     assert!(refused.is_err(), "the recording loader loads no editor");

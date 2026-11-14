@@ -31,7 +31,7 @@ impl Parts {
     /// the view refuses, or an `attached` that fails.
     pub fn open_editor(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<Option<Size>, EditorError> {
@@ -47,10 +47,7 @@ impl Parts {
         );
         // A plugin registers with the module's own run loop (the factory's host
         // context) while `attached` runs; the scope says whose that is.
-        #[cfg(target_os = "linux")]
-        let run_loop = self.module.run_loop();
-        #[cfg(target_os = "linux")]
-        let _scope = run_loop.scope(self.owner);
+        let _scope = self.scoped(main);
         let (editor, size) = match Editor::open(view, parent, scale, frame) {
             Ok(opened) => opened,
             Err(error) => {
@@ -70,7 +67,7 @@ impl Parts {
     }
 
     /// [`close_editor`](Self::close_editor), and for `Drop`, which has no
-    /// token: it passes what [`MainThread::current`] finds. An editor is
+    /// token: it passes the one the plugin was made with, on the thread it was made on. An editor is
     /// detached on the main thread only. `Drop` never gets here off the main
     /// thread with an editor open (it hands the whole plugin to the main thread first, see
     /// [`Plugin`]'s `Drop`), so the `None` arm is only the last guard: it leaks

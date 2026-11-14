@@ -47,7 +47,7 @@ path = "src/lib.rs"
 [dev-dependencies]
 # `tests/vst2_not_activated.rs`: the reference VST2 plugin, found beside the test
 # binary, and `libloading` to read what it recorded.
-tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # `tests/vst2_shell.rs`: a VST2 file of two plugins.
 tutti-vst2-shell-plugin = { path = "../../testing/tutti-vst2-shell-plugin" }

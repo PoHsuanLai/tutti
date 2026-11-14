@@ -33,7 +33,7 @@ fn probe() -> &'static ClapProbe {
 }
 
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 /// A session with the reference plugin hosted in this process, an editor open
@@ -66,7 +66,6 @@ fn session_with_open_editor(command: u32) -> Session {
 /// **A descriptor the plugin registered is served by the view's `update` the
 /// moment it is readable**, and by no other call: the view looks at the
 /// plugin's descriptors without waiting and hands back what is ready.
-#[test]
 fn an_in_process_editors_descriptor_is_served_by_the_views_update() {
     let mut s = session_with_open_editor(CMD_REGISTER_FD);
     let probe = probe();
@@ -101,7 +100,6 @@ fn an_in_process_editors_descriptor_is_served_by_the_views_update() {
 
 /// **A timer the plugin registered is served by the view's `update` once its
 /// period has passed**, and not before.
-#[test]
 fn an_in_process_editors_timer_is_served_by_the_views_update_at_its_period() {
     probe().set(ClapSwitch::TimerPeriod, 200);
     let mut s = session_with_open_editor(CMD_REGISTER_TIMER);
@@ -119,3 +117,15 @@ fn an_in_process_editors_timer_is_served_by_the_views_update_at_its_period() {
     assert_eq!(ticks(), 1, "and its period restarts");
     probe.set(ClapSwitch::TimerPeriod, 0);
 }
+
+/// The cases of this module, run by `main`.
+pub(crate) const CASES: &[(&str, fn())] = &[
+    (
+        "plugin_event_sources::an_in_process_editors_descriptor_is_served_by_the_views_update",
+        an_in_process_editors_descriptor_is_served_by_the_views_update,
+    ),
+    (
+        "plugin_event_sources::an_in_process_editors_timer_is_served_by_the_views_update_at_its_period",
+        an_in_process_editors_timer_is_served_by_the_views_update_at_its_period,
+    ),
+];

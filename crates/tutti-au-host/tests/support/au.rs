@@ -78,6 +78,7 @@ impl Au {
     pub fn shared(rate: SampleRate, block: u32) -> Self {
         let loaded = AuLoaded::load(
             &main_thread(),
+            &tutti_fixtures::detached_work(),
             &tutti_fixtures::au_bundle(),
             &tutti_plugin_types::Load::new().plugin(tutti_shared_plugin::AU_ID),
         )

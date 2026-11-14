@@ -163,7 +163,13 @@ fn a_plugin_without_the_tail_extension_has_an_unknown_tail() {
 fn the_buses_are_those_the_plugin_has_at_activation() {
     let _lock = crate::test_utils::plugin_load_lock();
     let path = Path::new(clap_plugin());
-    let opened = ClapInstance::open(&main_thread(), path, &Load::new()).expect("open");
+    let opened = ClapInstance::open(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        path,
+        &Load::new(),
+    )
+    .expect("open");
 
     let _layout = crate::test_utils::clap_probe_port_layout(
         tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
@@ -229,7 +235,13 @@ fn a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit() {
     let both =
         tutti_clap_test_plugin::PORTS_64BIT_INPUTS | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
     let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
-    let opened = ClapInstance::open(&main_thread(), path, &Load::new()).expect("open");
+    let opened = ClapInstance::open(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        path,
+        &Load::new(),
+    )
+    .expect("open");
     assert!(opened.supports_f64(), "fixture: flagged at open");
 
     let _dropped = crate::test_utils::clap_probe_ports_64bit(0);

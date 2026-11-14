@@ -310,6 +310,7 @@ fn plain_range_probe_recovers_real_ranges() {
         let resolved = resolve_bundle(path);
         let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(
             &main_thread(),
+            &tutti_fixtures::detached_work(),
             &resolved,
             tutti_vst3_host::LoadOptions::new(),
         ) else {

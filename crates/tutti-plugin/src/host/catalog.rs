@@ -813,8 +813,13 @@ mod tests {
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
         assert!(plugins.is_blacklisted(&path), "fixture should be recorded");
 
-        let err = Plugin::open(None, &PluginRef::file(&path).unwrap(), SampleRate::SR_48K)
-            .expect_err("the fixture is not a loadable plugin");
+        let err = Plugin::open(
+            None,
+            &tutti_fixtures::detached_work(),
+            &PluginRef::file(&path).unwrap(),
+            SampleRate::SR_48K,
+        )
+        .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
             "Plugin::open has no catalog and cannot refuse on one, got {err:?}"

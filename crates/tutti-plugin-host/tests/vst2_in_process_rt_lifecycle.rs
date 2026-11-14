@@ -115,6 +115,7 @@ fn load() -> Loaded {
     reset_probe(&path);
     let (unit, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::detached_work(),
         &path,
         &Load::new(),
         SampleRate::of(SAMPLE_RATE),
@@ -186,7 +187,6 @@ fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
 /// did not move rather than that they hold some absolute value — `load` itself
 /// resumes once, and hard-coding that constant would make the test a statement
 /// about the loader instead of about `reset`.
-#[test]
 fn reset_dispatches_no_mains_changed_to_the_plugin() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -220,7 +220,6 @@ fn reset_dispatches_no_mains_changed_to_the_plugin() {
 /// The render scratch is the Processor's, sized at the activation to the block
 /// the plugin was told, so a prepare has nothing to resize and never grows
 /// anything on the audio thread.
-#[test]
 fn blocks_past_64_frames_reach_the_plugin_after_a_prepare() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -262,7 +261,6 @@ fn prepare_off_main_thread(unit: &mut PluginNode<Vst2Loaded>, rate: SampleRate) 
 /// mains counters: a host that skipped the bracket but still dispatched
 /// `effSetSampleRate` would leave the counters clean while reconfiguring a
 /// running plugin, which is the same class of bug one opcode narrower.
-#[test]
 fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -306,7 +304,6 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
 /// The drain recalls the Processor, which is on the audio thread; the next
 /// block hands it back (and renders silence), and the next drain runs the
 /// change.
-#[test]
 fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -353,7 +350,6 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
 /// the call: the node is out of any executor while it is prepared, so its
 /// realtime end hands the Processor back and takes the new one there, with no
 /// block of silence and no pump.
-#[test]
 fn a_prepare_on_the_main_thread_tells_the_plugin_at_once() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -381,7 +377,6 @@ fn a_prepare_on_the_main_thread_tells_the_plugin_at_once() {
 /// `effMainsChanged` is not documented as idempotent and the probe counts each
 /// direction, so a drain that fired unconditionally would suspend and resume a
 /// running plugin on every editor frame.
-#[test]
 fn a_drain_with_nothing_parked_dispatches_nothing() {
     let _guard = lock_probe();
     let loaded = load();
@@ -411,7 +406,6 @@ fn a_drain_with_nothing_parked_dispatches_nothing() {
 /// a channel table left pointing at an earlier block's staging, an offset
 /// slice, or a swapped channel each shows as a wrong sample. Every value is
 /// a small integer, so the comparison is exact on every platform.
-#[test]
 fn the_output_is_what_the_plugin_wrote() {
     use tutti_graph::{Env, Node, Prepare, TransportChanges, TransportPosition};
     use tutti_vst2_test_plugin::channel_tag;
@@ -493,7 +487,6 @@ impl tutti_graph::Node for Fill {
 /// the plugin's outputs are placed, and an output the node leaves unwritten
 /// shows what the first one left there. Channels within the tables are the
 /// plugin's (`in + tag(ch)`); the two past them are zero.
-#[test]
 fn outputs_past_the_tables_are_silent() {
     use tutti_graph::{GraphBuilder, Prepare, TransportPosition, Unforkable};
     use tutti_types::{ChannelLayout, Samples};
@@ -515,6 +508,7 @@ fn outputs_past_the_tables_are_silent() {
     }
     let loaded = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::detached_work(),
         &path,
         &Load::new(),
         SampleRate::of(SAMPLE_RATE),
@@ -581,7 +575,6 @@ fn outputs_past_the_tables_are_silent() {
 ///
 /// The second block's count is the first's plus the whole burst, so the
 /// assertion does not depend on the queue's capacity.
-#[test]
 fn the_handle_counts_lost_parameter_reports() {
     const BURST: u32 = 600;
 
@@ -618,7 +611,6 @@ fn the_handle_counts_lost_parameter_reports() {
 /// 8192 (`DEFAULT_BLOCK_CAPACITY`, more with `Engine::with_capacity`). An
 /// 8192-frame block is rendered as two calls of 4096, and the largest call
 /// the plugin saw is the announced maximum.
-#[test]
 fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -641,7 +633,6 @@ fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
 /// `PluginHandle::subscribe` as its new latency and an I/O change, on the
 /// next editor pump (the main-thread tick an in-process plugin has), and the
 /// node's shape declares the new latency.
-#[test]
 fn an_io_change_reaches_a_subscriber_and_the_shape() {
     use std::sync::{Arc, Mutex};
     use tutti_graph::Node as _;
@@ -702,7 +693,6 @@ fn an_io_change_reaches_a_subscriber_and_the_shape() {
 ///
 /// Whether `shape` fills the buses at all is `chunked_node`'s test (this plugin states
 /// no placement, so the default buses are what it declares as well).
-#[test]
 fn the_shape_declares_the_plugins_buses() {
     use tutti_graph::{BusRole, Node as _};
     use tutti_types::Speaker;
@@ -731,4 +721,59 @@ fn the_shape_declares_the_plugins_buses() {
 /// The project's tempo map the node under test is bound to.
 fn tempo() -> tutti_transport::TempoReader {
     tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
+}
+
+/// The cases run on the process's main thread (`harness = false`): the node's `prepare`
+/// and a fork tell the plugin at once only there.
+fn main() {
+    tutti_fixtures::main_thread_cases(&[
+        (
+            "reset_dispatches_no_mains_changed_to_the_plugin",
+            reset_dispatches_no_mains_changed_to_the_plugin,
+        ),
+        (
+            "blocks_past_64_frames_reach_the_plugin_after_a_prepare",
+            blocks_past_64_frames_reach_the_plugin_after_a_prepare,
+        ),
+        (
+            "set_sample_rate_parks_the_rate_instead_of_dispatching_it",
+            set_sample_rate_parks_the_rate_instead_of_dispatching_it,
+        ),
+        (
+            "the_parked_rate_reaches_the_plugin_on_the_main_thread_drain",
+            the_parked_rate_reaches_the_plugin_on_the_main_thread_drain,
+        ),
+        (
+            "a_prepare_on_the_main_thread_tells_the_plugin_at_once",
+            a_prepare_on_the_main_thread_tells_the_plugin_at_once,
+        ),
+        (
+            "a_drain_with_nothing_parked_dispatches_nothing",
+            a_drain_with_nothing_parked_dispatches_nothing,
+        ),
+        (
+            "the_output_is_what_the_plugin_wrote",
+            the_output_is_what_the_plugin_wrote,
+        ),
+        (
+            "outputs_past_the_tables_are_silent",
+            outputs_past_the_tables_are_silent,
+        ),
+        (
+            "the_handle_counts_lost_parameter_reports",
+            the_handle_counts_lost_parameter_reports,
+        ),
+        (
+            "a_block_past_the_announced_maximum_is_split_before_the_plugin",
+            a_block_past_the_announced_maximum_is_split_before_the_plugin,
+        ),
+        (
+            "an_io_change_reaches_a_subscriber_and_the_shape",
+            an_io_change_reaches_a_subscriber_and_the_shape,
+        ),
+        (
+            "the_shape_declares_the_plugins_buses",
+            the_shape_declares_the_plugins_buses,
+        ),
+    ]);
 }

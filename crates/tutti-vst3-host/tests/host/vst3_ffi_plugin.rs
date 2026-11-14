@@ -43,7 +43,13 @@ fn plugin() -> (Arc<Module>, Plugin) {
         .classes()
         .find(|c| c.category.contains("Audio"))
         .expect("the probe exports an audio class");
-    let mut plugin = module.create_plugin(&class.cid).expect("a plugin");
+    let mut plugin = module
+        .create_plugin(
+            &tutti_fixtures::main_thread(),
+            &tutti_fixtures::detached_work(),
+            &class.cid,
+        )
+        .expect("a plugin");
     plugin
         .initialize_component(&main_thread())
         .expect("initialize");

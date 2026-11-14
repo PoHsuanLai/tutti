@@ -23,6 +23,7 @@ fn a_vst2_path_is_refused_with_a_typed_error_before_a_server_starts() {
         let path = PathBuf::from(name);
         match PluginClient::new(
             BridgeConfig::default(),
+            &tutti_fixtures::pumped_work(),
             &tutti_plugin::catalog::PluginRef::file(path.clone()).expect("a plugin file"),
             tutti_types::SampleRate::SR_48K,
         ) {

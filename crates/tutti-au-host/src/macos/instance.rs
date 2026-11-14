@@ -103,6 +103,11 @@ pub struct AuLoaded {
     /// ([`new`](Self::new)) has no bundle, so its origin is an empty path, and
     /// reopening it fails at the `Scanning` stage rather than finding another unit.
     pub(crate) origin: tutti_plugin_types::Origin,
+    /// The collector of this unit's owner, which a reopen gives its new instance.
+    /// A unit made straight from a component has no owner: its collector is gone,
+    /// so work sent to it runs at once on the main thread and is otherwise counted
+    /// ([`MainWork::stranded`](tutti_plugin_types::MainWork::stranded)).
+    pub(crate) work: tutti_plugin_types::MainWorkHandle,
 }
 
 impl std::fmt::Debug for AuLoaded {
@@ -207,6 +212,7 @@ impl AuLoaded {
             mode_accepted,
             last_latency: Cell::new(Samples::ZERO),
             origin: tutti_plugin_types::Origin::new("", tutti_plugin_types::Load::new()),
+            work: tutti_plugin_types::MainWork::new().1,
         })
     }
 

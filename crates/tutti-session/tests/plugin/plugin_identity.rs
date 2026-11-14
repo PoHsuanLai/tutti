@@ -22,7 +22,7 @@ fn second_id() -> &'static str {
 }
 
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 fn session() -> Session {

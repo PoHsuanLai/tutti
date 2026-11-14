@@ -349,7 +349,10 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
         SR,
         None,
         tutti_plugin_types::StateUse::Project,
-        Some(crate::format::gui::load_gui_instance),
+        Some(tutti_plugin_ipc::EditorLoader::new(
+            crate::format::gui::load_gui_instance,
+            tutti_fixtures::detached_work(),
+        )),
     )
     .expect("the reference plugin loads in a real server")
     .ipc;
@@ -360,7 +363,7 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
     let first_pid = first.guard().pid();
     let reopened = std::thread::spawn(move || {
         assert!(
-            tutti_plugin_types::MainThread::current().is_none(),
+            tutti_plugin_types::MainThread::new().is_none(),
             "no main thread here"
         );
         first.reopen_restoring(Some(&state)).map(|r| (first, r))
@@ -400,7 +403,10 @@ fn a_chosen_plugin_is_the_one_a_reopen_loads() {
         SR,
         None,
         tutti_plugin_types::StateUse::Project,
-        Some(crate::format::gui::load_gui_instance),
+        Some(tutti_plugin_ipc::EditorLoader::new(
+            crate::format::gui::load_gui_instance,
+            tutti_fixtures::detached_work(),
+        )),
     )
     .expect("the factory's second plugin loads in a real server")
     .ipc;

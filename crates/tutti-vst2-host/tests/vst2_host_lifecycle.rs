@@ -257,8 +257,12 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
     );
 
     clear_trace();
-    let loaded =
-        Vst2Loaded::load(&main_thread(), tutti_fixtures::vst2_probe()).expect("the probe loads");
+    let loaded = Vst2Loaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        tutti_fixtures::vst2_probe(),
+    )
+    .expect("the probe loads");
     drop(loaded);
     assert_eq!(
         trace(),

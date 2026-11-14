@@ -152,6 +152,14 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Thre
 
 # docs.rs renders with every feature on; otherwise it would publish a page with
 # the feature-gated half of the public API missing.
+# The fork of an in-process plugin is made on the process's main thread, so the target
+# owns `main()` (`harness = false`).
+[[test]]
+name = "vst2_fork"
+path = "tests/vst2_fork/main.rs"
+harness = false
+required-features = ["vst2"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

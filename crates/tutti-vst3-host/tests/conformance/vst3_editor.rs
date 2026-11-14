@@ -33,8 +33,13 @@ const LARGEST: PhysicalSize<u32> = PhysicalSize::new(800, 600);
 fn plugin_with_editor(editor: u32) -> Vst3Loaded {
     let main = main_thread();
     let module = tutti_fixtures::vst3_module();
-    let mut plugin = Vst3Loaded::load(&main, &module, LoadOptions::new())
-        .unwrap_or_else(|e| panic!("the shared plugin at {} loads: {e:?}", module.display()));
+    let mut plugin = Vst3Loaded::load(
+        &main,
+        &tutti_fixtures::detached_work(),
+        &module,
+        LoadOptions::new(),
+    )
+    .unwrap_or_else(|e| panic!("the shared plugin at {} loads: {e:?}", module.display()));
     let mut state = plugin
         .save_state(&main, tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");

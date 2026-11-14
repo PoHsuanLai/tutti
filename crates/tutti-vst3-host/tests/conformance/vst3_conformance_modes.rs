@@ -413,7 +413,12 @@ fn host_context_is_borrowed_not_consumed() {
     let mut exercised = 0usize;
 
     for (name, path) in sample_plugins() {
-        let Ok(loaded) = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()) else {
+        let Ok(loaded) = Vst3Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            &path,
+            LoadOptions::new(),
+        ) else {
             eprintln!("  {name}: skipped (load failed)");
             continue;
         };

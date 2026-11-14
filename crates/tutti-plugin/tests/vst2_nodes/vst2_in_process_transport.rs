@@ -102,6 +102,7 @@ fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
     let (client, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::pumped_work(),
         path,
         &Load::new(),
         SampleRate::of(SAMPLE_RATE),
@@ -369,6 +370,7 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     reset_probe();
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
+        &tutti_fixtures::pumped_work(),
         &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
             .expect("a plugin file"),
         SampleRate::of(SAMPLE_RATE),

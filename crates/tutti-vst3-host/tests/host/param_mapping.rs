@@ -9,7 +9,13 @@ use tutti_vst3_host::{LoadOptions, Vst3Loaded};
 
 fn load() -> Vst3Loaded {
     let path = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
-    Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("the plugin loads")
+    Vst3Loaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        &path,
+        LoadOptions::new(),
+    )
+    .expect("the plugin loads")
 }
 
 /// **The controller's own maps hold the mapping laws**, whatever their shape:

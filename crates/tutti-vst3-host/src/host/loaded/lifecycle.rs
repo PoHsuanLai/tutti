@@ -1,7 +1,7 @@
 //! Loading, initialization and the plugin's requests and notifications.
 
 use super::*;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{MainThread, MainWorkHandle};
 
 impl Vst3Loaded {
     /// Reads a plugin's metadata without initializing it.
@@ -91,7 +91,12 @@ impl Vst3Loaded {
     /// lists the bundle's classes by id and name when the class id is missing), or the component
     /// cannot be created; returns [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
-    pub fn load(main: &MainThread, path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
+    pub fn load(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: impl AsRef<Path>,
+        options: LoadOptions,
+    ) -> Result<Self> {
         Self::reap_retired();
         let path = path.as_ref();
         let class_id = options.class_id.as_deref();
@@ -105,7 +110,7 @@ impl Vst3Loaded {
         };
         let plugin = library
             .module()
-            .create_plugin(&class.cid)
+            .create_plugin(main, work, &class.cid)
             .map_err(|e| match e {
                 CreateError::NoAudioProcessor => Vst3Error::LoadFailed {
                     path: path.to_path_buf(),
@@ -130,7 +135,7 @@ impl Vst3Loaded {
             None => tutti_plugin_types::Load::new(),
         };
         let origin = tutti_plugin_types::Origin::new(path, load);
-        let mut loaded = Self::assemble(library, plugin, info, origin);
+        let mut loaded = Self::assemble(library, plugin, info, origin, work.clone());
         loaded.initialize(main)?;
         // Whether there is an editor is asked of the plugin here, on the main
         // thread; `Control::info` has no token and reads the answer.
@@ -145,6 +150,7 @@ impl Vst3Loaded {
         plugin: Plugin,
         info: PluginInfo,
         origin: tutti_plugin_types::Origin,
+        work: MainWorkHandle,
     ) -> Self {
         Self {
             _library: library,
@@ -152,6 +158,7 @@ impl Vst3Loaded {
             midi_learn: MidiLearnConsumer::new(plugin.midi_learn()),
             plugin,
             origin,
+            work,
             descriptor: OnceLock::new(),
             active: Activation::default(),
             carried: Vec::new(),

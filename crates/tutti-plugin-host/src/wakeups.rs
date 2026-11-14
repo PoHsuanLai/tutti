@@ -110,7 +110,7 @@ mod tests {
         fn a_pass_wakes_the_plugin_with_what_fired_and_not_otherwise() {
             use std::io::Write;
             use std::os::fd::AsRawFd;
-            let main = MainThread::claim().expect("one test, one process");
+            let main = tutti_fixtures::main_thread();
             let (reader, mut writer) = std::io::pipe().unwrap();
             let mut plugin = Asks {
                 fd: FdId(reader.as_raw_fd()),

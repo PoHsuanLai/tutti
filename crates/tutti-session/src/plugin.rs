@@ -22,13 +22,12 @@
 //!
 //! An in-process plugin's handle (`PluginHandle`, VST2 today) works from any
 //! thread, which is what the snapshot and parameter-read jobs below need: a
-//! call off the main thread is posted to it (`tutti_plugin_types::defer_to_main`)
-//! and the caller waits, for at most two seconds, for the main thread's next
-//! tick to run it ([`MainSession::update`](crate::MainSession::update), or
-//! `Phase::Collect` on the claiming thread, calls `run_deferred`). A host
-//! that does not call either on its main thread must call
-//! `tutti_plugin_types::run_deferred` from its main-thread loop, or those calls
-//! answer "unavailable" at the deadline (`StateError::Unavailable`, `None`,
+//! call off the main thread is posted to the session's
+//! [`MainWork`](tutti_plugin_types::MainWork) and the caller waits, for at most two
+//! seconds, for the main thread's next tick to run it
+//! ([`MainSession::update`](crate::MainSession::update), or `Phase::Collect` on the
+//! process's main thread, drains it). A host that calls neither on its main thread
+//! has those calls answer "unavailable" at the deadline (`StateError::Unavailable`, `None`,
 //! `false`). A host blocking its main thread on such a job (joining it there)
 //! gets the same.
 //!
@@ -198,6 +197,8 @@ pub struct PluginLoad {
     /// A catalog's blacklist ([`with_catalog`](Self::with_catalog)), asked by
     /// [`run`](Self::run) as the load opens.
     blacklist: Option<BlacklistView>,
+    /// The session's collector of main-thread work, which the plugin's handles hold.
+    work: tutti_plugin_types::MainWorkHandle,
 }
 
 impl std::fmt::Debug for PluginLoad {
@@ -301,6 +302,7 @@ impl PluginLoad {
         // it is not silent.
         let (plugin, restore) = match HostPlugin::open_with_state(
             main,
+            &self.work,
             &self.config,
             &self.plugin,
             self.rate,
@@ -1270,6 +1272,7 @@ impl Session {
             config: AudioConfig::default(),
             state: request.state,
             blacklist: None,
+            work: self.work.clone(),
         }
     }
 
@@ -1823,6 +1826,7 @@ impl Session {
             config: origin.config,
             state: hosted.snapshot.clone(),
             blacklist: None,
+            work: self.work.clone(),
         };
         let token = Arc::clone(&hosted.reload.token);
         let snapshot_age = hosted
@@ -2538,7 +2542,7 @@ mod tests {
     #[test]
     fn a_swap_closes_the_outgoing_editor() {
         use tutti_plugin_types::fake::{Call, FakePlugin};
-        let main = MainThread::claim().expect("one test, one process");
+        let main = tutti_fixtures::main_thread();
         for open in [true, false] {
             let (fake, control) = FakePlugin::new();
             fake.with_editor(true);
@@ -2831,7 +2835,7 @@ mod tests {
     #[cfg(feature = "clap")]
     #[test]
     fn a_reload_that_resolves_in_process_is_refused_unopened() {
-        assert!(MainThread::current().is_none(), "nobody claimed");
+        assert!(MainThread::new().is_none(), "nobody claimed");
         let mut rig = rig(None);
         rig.recovering_in_process();
         let job = rig.plugins_at(0).pop().expect("the reload is submitted");
@@ -2852,7 +2856,7 @@ mod tests {
             ),
             "{cause:?}"
         );
-        assert!(MainThread::current().is_none(), "still nobody claimed");
+        assert!(MainThread::new().is_none(), "still nobody claimed");
     }
 
     /// **A reload job that outlives its node lands nowhere, silently.** The

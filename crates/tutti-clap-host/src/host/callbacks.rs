@@ -238,9 +238,7 @@ mod tests {
     /// buffer's shape is set; a cosmetic name change asks for nothing.
     #[test]
     fn a_ports_rescan_asks_for_a_restart_only_for_a_change_of_shape() {
-        let state = HostState::new(
-            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
-        );
+        let state = HostState::new(&tutti_fixtures::main_thread());
 
         state.audio_ports_rescan(AudioPortsRescanFlags::NAMES);
         assert_eq!(tutti_plugin_types::taken(&state.requests).count(), 0);
@@ -253,9 +251,7 @@ mod tests {
     /// Two rescans between takes keep both requests, each once.
     #[test]
     fn rescans_between_takes_accumulate_rather_than_overwrite() {
-        let state = HostState::new(
-            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
-        );
+        let state = HostState::new(&tutti_fixtures::main_thread());
 
         state.params_rescan(ParamsRescanFlags::VALUES);
         state.params_rescan(ParamsRescanFlags::TEXT | ParamsRescanFlags::VALUES);
@@ -272,9 +268,7 @@ mod tests {
     /// A restart, a callback, a latency and a tail change each reach the word.
     #[test]
     fn the_plain_callbacks_raise_their_requests() {
-        let state = HostState::new(
-            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
-        );
+        let state = HostState::new(&tutti_fixtures::main_thread());
         state.request_restart();
         state.request_callback();
         state.latency_changed();

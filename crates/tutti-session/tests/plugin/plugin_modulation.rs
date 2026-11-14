@@ -42,7 +42,7 @@ fn set_env(key: &str, value: impl AsRef<std::ffi::OsStr>) {
 }
 
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 /// A detached stereo session at 48 kHz, the probe's server in the
@@ -279,6 +279,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
 
     let incoming = PluginClient::new(
         tutti_plugin::BridgeConfig::default(),
+        &tutti_fixtures::detached_work(),
         &PluginRef::file(clap_probe()).expect("a plugin file"),
         RATE,
     )

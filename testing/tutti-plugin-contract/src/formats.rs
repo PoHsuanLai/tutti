@@ -16,6 +16,7 @@ impl Format for Clap {
     fn load() -> Self::L {
         tutti_clap_host::ClapLoaded::load(
             &main_thread(),
+            &tutti_fixtures::detached_work(),
             plugin::clap(),
             tutti_clap_host::LoadOptions::new(),
         )
@@ -47,14 +48,23 @@ impl Format for Vst2 {
     const GAPS: &'static [(&'static str, Gap)] = &[NO_TRANSPORT_EVENT];
 
     fn load() -> Self::L {
-        tutti_vst2_host::Vst2Loaded::load(&main_thread(), plugin::library())
-            .expect("the plugin loads")
+        tutti_vst2_host::Vst2Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            plugin::library(),
+        )
+        .expect("the plugin loads")
     }
 }
 
 fn vst3(module: std::path::PathBuf) -> tutti_vst3_host::Vst3Loaded {
-    tutti_vst3_host::Vst3Loaded::load(&main_thread(), module, tutti_vst3_host::LoadOptions::new())
-        .expect("the plugin loads")
+    tutti_vst3_host::Vst3Loaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        module,
+        tutti_vst3_host::LoadOptions::new(),
+    )
+    .expect("the plugin loads")
 }
 
 /// VST3, from the Rust plugin: one object that is both the component and the
@@ -136,6 +146,7 @@ impl Format for Au {
     fn load() -> Self::L {
         tutti_au_host::AuLoaded::load(
             &main_thread(),
+            &tutti_fixtures::detached_work(),
             &plugin::au_bundle(),
             &tutti_plugin_types::Load::new().plugin(tutti_shared_plugin::AU_ID),
         )

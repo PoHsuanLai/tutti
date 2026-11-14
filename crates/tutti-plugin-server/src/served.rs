@@ -22,11 +22,11 @@ use std::time::{Duration, Instant};
 use tutti_plugin_ipc::BridgeMessage;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, AutomationMode, Control, Effect, Event, Features, Hand, HostOp,
-    Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized,
-    Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
-    PluginIo, PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, ProcessWake,
-    Processor, RenderMode, RenderModeSupport, Request, Sample, SampleFormat, SampleRate, Samples,
-    Seat, Stage, State, StateUse, TrackInfo,
+    Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MainWorkHandle,
+    MaxBlock, Normalized, Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo,
+    PluginDescriptor, PluginError, PluginIo, PluginResult, Prepare, Preset, PresetId,
+    ProcessContext, ProcessOutput, ProcessWake, Processor, RenderMode, RenderModeSupport, Request,
+    Sample, SampleFormat, SampleRate, Samples, Seat, Stage, State, StateUse, TrackInfo,
 };
 
 mod any;
@@ -232,8 +232,13 @@ impl<F: ServerSide> Served<F> {
     /// # Errors
     ///
     /// [`PluginError::Load`], with how far the load got.
-    pub(crate) fn open(main: &MainThread, path: &Path, load: &Load) -> PluginResult<F> {
-        let mut loaded = F::load_served(main, path, load)?;
+    pub(crate) fn open(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<F> {
+        let mut loaded = F::load_served(main, work, path, load)?;
         loaded.adopt();
         Ok(loaded)
     }
@@ -246,6 +251,7 @@ impl<F: ServerSide> Served<F> {
     #[allow(clippy::too_many_arguments)] // one load's parameters, as the wire carries them
     pub(crate) fn load(
         main: &MainThread,
+        work: &MainWorkHandle,
         path: &Path,
         load: &Load,
         sample_rate: SampleRate,
@@ -257,7 +263,7 @@ impl<F: ServerSide> Served<F> {
     ) -> PluginResult<(Self, Option<String>)> {
         Self::activate(
             main,
-            Self::open(main, path, load)?,
+            Self::open(main, work, path, load)?,
             sample_rate,
             block_size,
             prefer_f64,

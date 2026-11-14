@@ -65,6 +65,8 @@ pub struct Vst3Loaded {
     pub(super) midi_learn: MidiLearnConsumer,
     /// What `rebuild` and `Reopen` load again.
     pub(super) origin: tutti_plugin_types::Origin,
+    /// The collector of this plugin's owner, which a reload gives its new instance.
+    pub(super) work: tutti_plugin_types::MainWorkHandle,
     /// The catalog identity, with the editor measured on first ask.
     pub(super) descriptor: OnceLock<PluginDescriptor>,
     /// Whether the plugin is activated, and at which width.

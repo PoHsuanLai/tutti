@@ -78,8 +78,13 @@ fn load(tasks: u32, task_us: u32, nested: bool) -> Active<f32> {
         f();
     }
     let path = Path::new(tutti_fixtures::clap_probe());
-    let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-        .expect("reference plugin loads");
+    let loaded = ClapLoaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        path,
+        LoadOptions::new().library(path),
+    )
+    .expect("reference plugin loads");
     assert!(
         loaded.supports_thread_pool(),
         "the armed probe offers clap.thread-pool"

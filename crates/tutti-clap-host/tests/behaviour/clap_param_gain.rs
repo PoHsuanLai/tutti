@@ -130,8 +130,13 @@ impl GainSession<'_> {
 
     fn activate(&self) -> Active<f32> {
         let path = Path::new(tutti_fixtures::clap_probe());
-        let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-            .expect("reference plugin should load");
+        let loaded = ClapLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().library(path),
+        )
+        .expect("reference plugin should load");
         loaded
             .activate_at::<f32>(SAMPLE_RATE, MAX_FRAMES)
             .map_err(|(_, e)| e)
@@ -402,8 +407,13 @@ fn the_host_reports_the_probes_declared_gain_range() {
     let session = GainSession::begin();
     let loaded = {
         let path = Path::new(tutti_fixtures::clap_probe());
-        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-            .expect("reference plugin should load")
+        ClapLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().library(path),
+        )
+        .expect("reference plugin should load")
     };
 
     let (min, max) = loaded

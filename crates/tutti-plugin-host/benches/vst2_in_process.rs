@@ -44,6 +44,7 @@ const BLOCK: usize = 64;
 fn unit() -> Direct<PluginNode<Vst2Loaded>> {
     let (unit, _handle) = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::detached_work(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
         SampleRate::of(SR),

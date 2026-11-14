@@ -53,8 +53,13 @@ impl Probe {
 
     fn load(&self) -> ClapLoaded {
         let path = Path::new(tutti_fixtures::clap_probe());
-        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-            .expect("the plugin loads")
+        ClapLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().library(path),
+        )
+        .expect("the plugin loads")
     }
 }
 

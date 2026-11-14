@@ -147,6 +147,7 @@ fn load_with(tempo: tutti_transport::TempoReader) -> (PluginNode<Vst2Loaded>, Pl
     let path = tutti_fixtures::vst2_probe();
     let (client, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::pumped_work(),
         path,
         &Load::new(),
         tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
@@ -196,7 +197,6 @@ fn chunk_state(payload: &[u8]) -> Vec<u8> {
 ///
 /// The probe's default chunk starts `t` (116); the live one is handed one that
 /// starts 7, so only a restored chunk renders `tag + 7`.
-#[test]
 fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
     let _lock = lock_probe();
     reset_probe();
@@ -233,7 +233,6 @@ fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
 /// The live instance is moved to program 1 and `param0 = 0.75`: the DC is
 /// `1000 · 0.75 + 10 000 · 1 = 10 750`. The probe's program change moves no
 /// parameter, so each term is restored or not on its own.
-#[test]
 fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     let _lock = lock_probe();
     reset_probe();
@@ -285,7 +284,6 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
 /// **A fork prepared at another rate tells the plugin that rate**, from its
 /// own `prepare` — nothing pumps a fork's editor, so a rate parked for the
 /// main thread (the live node's route) would never reach it.
-#[test]
 fn a_fork_at_another_rate_tells_the_plugin_its_rate() {
     let _lock = lock_probe();
     reset_probe();
@@ -319,7 +317,6 @@ fn a_fork_at_another_rate_tells_the_plugin_its_rate() {
 /// **A fork source whose live instance is gone says so**, without loading a
 /// second instance: `PluginForkError::LiveGone`. The source holds the live
 /// instance weakly, so it cannot keep a dropped plugin alive either.
-#[test]
 fn a_fork_of_a_dropped_plugin_is_live_gone() {
     let _lock = lock_probe();
     reset_probe();
@@ -349,13 +346,13 @@ fn a_fork_of_a_dropped_plugin_is_live_gone() {
 /// Not on macOS: there the probe builds as a `.dylib`, which `Plugin::open`
 /// does not read as VST2 (a macOS VST2 is a `.vst` bundle).
 #[cfg(not(target_os = "macos"))]
-#[test]
 fn a_plugin_handed_back_by_into_client_forks() {
     let _lock = lock_probe();
     reset_probe();
     let _env = ProbeEnv::new(true);
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
+        &tutti_fixtures::pumped_work(),
         &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
             .expect("a plugin file"),
         tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
@@ -394,7 +391,6 @@ fn a_plugin_handed_back_by_into_client_forks() {
 /// fork's graph 93 BPM at beat 5. The probe records what
 /// `audioMasterGetTime` answered on its last block — the fork's — so it must
 /// read 93 BPM at quarter 5, in 7/8 (whose bar 2 starts at quarter 3.5).
-#[test]
 fn a_fork_reads_its_transport_from_the_render() {
     let _lock = lock_probe();
     reset_probe();
@@ -456,7 +452,6 @@ fn a_fork_reads_its_transport_from_the_render() {
 /// **A live fork keeps the live instance's render mode**: a host that set the
 /// live plugin offline gets an offline fork from `ForkMode::Live` too (and a
 /// realtime one otherwise).
-#[test]
 fn a_live_fork_keeps_the_live_render_mode() {
     let _lock = lock_probe();
     reset_probe();
@@ -489,7 +484,6 @@ fn a_live_fork_keeps_the_live_render_mode() {
 /// instance's id is not the live one's, so the live state is not loaded into
 /// it. The probe's `uniqueId` is changed between the two loads (as a plugin
 /// replaced on disk would be).
-#[test]
 fn a_second_instance_of_another_plugin_is_a_mismatch() {
     let _lock = lock_probe();
     reset_probe();
@@ -516,7 +510,6 @@ fn a_second_instance_of_another_plugin_is_a_mismatch() {
 /// `LoadState`**, not a fork at program 0: the live instance is at program 1
 /// of 2, and the second instance (constructed with one program) has no
 /// program 1.
-#[test]
 fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     let _lock = lock_probe();
     reset_probe();
@@ -542,3 +535,44 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
 fn client_id(handle: &PluginHandle) -> String {
     handle.descriptor().id.clone()
 }
+
+/// The cases, run by `main`.
+pub(crate) const CASES: &[(&str, fn())] = &[
+    (
+        "a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline",
+        a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline,
+    ),
+    (
+        "a_plugin_without_chunks_forks_with_its_program_and_parameters",
+        a_plugin_without_chunks_forks_with_its_program_and_parameters,
+    ),
+    (
+        "a_fork_at_another_rate_tells_the_plugin_its_rate",
+        a_fork_at_another_rate_tells_the_plugin_its_rate,
+    ),
+    (
+        "a_fork_of_a_dropped_plugin_is_live_gone",
+        a_fork_of_a_dropped_plugin_is_live_gone,
+    ),
+    #[cfg(not(target_os = "macos"))]
+    (
+        "a_plugin_handed_back_by_into_client_forks",
+        a_plugin_handed_back_by_into_client_forks,
+    ),
+    (
+        "a_fork_reads_its_transport_from_the_render",
+        a_fork_reads_its_transport_from_the_render,
+    ),
+    (
+        "a_live_fork_keeps_the_live_render_mode",
+        a_live_fork_keeps_the_live_render_mode,
+    ),
+    (
+        "a_second_instance_of_another_plugin_is_a_mismatch",
+        a_second_instance_of_another_plugin_is_a_mismatch,
+    ),
+    (
+        "a_live_program_out_of_the_second_instances_range_is_a_named_error",
+        a_live_program_out_of_the_second_instances_range_is_a_named_error,
+    ),
+];

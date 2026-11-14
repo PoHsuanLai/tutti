@@ -62,11 +62,12 @@
 //! `no_run`: the load needs a real VST2 binary on disk.
 //!
 //! ```rust,no_run
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
 //! use tutti_plugin_types::{Loaded, MaxBlock, Prepare, SampleRate, Samples};
 //! use tutti_vst2_host::{Vst2ProcessContext, Vst2Loaded};
 //!
-//! let plugin = Vst2Loaded::load(&main, "path/to/plugin.vst")?;
+//! let plugin = Vst2Loaded::load(&main, &work, "path/to/plugin.vst")?;
 //! let (inputs_width, outputs_width) = plugin.pins();
 //!
 //! // The rate, block size and precision are the activation's.
@@ -111,8 +112,9 @@
 //! # use tutti_plugin_types::{Control, Normalized};
 //! # use tutti_vst2_host::Vst2Loaded;
 //! # fn ex() -> tutti_vst2_host::Result<()> {
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-//! let mut plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
+//! let mut plugin = Vst2Loaded::load(&main, &work, "/usr/lib/vst/MyPlugin.so")?;
 //!
 //! for info in plugin.parameters(&main) {
 //!     println!("{}: {} ({:?})", info.id(), info.qualified_name(), info.bounds());
@@ -131,8 +133,9 @@
 //! # use tutti_plugin_types::ContentScale;
 //! # use tutti_vst2_host::{Vst2Loaded, WindowHandle};
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-//! # let mut plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
+//! # let mut plugin = Vst2Loaded::load(&main, &work, "/usr/lib/vst/MyPlugin.so")?;
 //! // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
 //! // fallback; `load_state` reads the header back and reports a refusal rather
 //! // than swallowing it.

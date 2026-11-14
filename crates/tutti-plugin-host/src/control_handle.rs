@@ -1032,7 +1032,7 @@ mod tests {
     #[test]
     fn no_preset_route_is_not_an_empty_preset_list() {
         assert_eq!(
-            handle_with(None).presets(&MainThread::claim().unwrap()),
+            handle_with(None).presets(&tutti_fixtures::main_thread()),
             Err(PresetError::Unsupported),
             "a handle with no preset capability must be unsupported, not an empty list"
         );
@@ -1043,7 +1043,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            empty.presets(&MainThread::claim().unwrap()),
+            empty.presets(&tutti_fixtures::main_thread()),
             Ok(Vec::new()),
             "a capability that listed nothing must report an empty list"
         );
@@ -1058,7 +1058,7 @@ mod tests {
         let id = PresetId::Number(0);
 
         assert_eq!(
-            handle_with(None).load_preset(&MainThread::claim().unwrap(), &id),
+            handle_with(None).load_preset(&tutti_fixtures::main_thread(), &id),
             Err(PresetError::Unsupported),
             "no route must stay distinct from a refusal"
         );
@@ -1069,7 +1069,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            refusing.load_preset(&MainThread::claim().unwrap(), &id),
+            refusing.load_preset(&tutti_fixtures::main_thread(), &id),
             Err(PresetError::Refused),
             "a refusal must report a present route that said no"
         );
@@ -1080,7 +1080,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            accepting.load_preset(&MainThread::claim().unwrap(), &id),
+            accepting.load_preset(&tutti_fixtures::main_thread(), &id),
             Ok(()),
             "an accepted load must be Ok"
         );
@@ -1104,7 +1104,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            handle.presets(&MainThread::claim().unwrap()),
+            handle.presets(&tutti_fixtures::main_thread()),
             Ok(listed),
             "the handle must not reorder or renumber what the plugin listed"
         );
@@ -1124,7 +1124,7 @@ mod tests {
     /// route to a plugin that is lost.
     #[test]
     fn set_track_info_says_yes_dropped_or_plugin_dead_each_by_itself() {
-        let main = MainThread::claim().unwrap();
+        let main = tutti_fixtures::main_thread();
         let info = TrackInfo::default();
         let with = |track| {
             handle_with(Some(FakePresets {

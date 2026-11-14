@@ -9,7 +9,7 @@ use tutti_session::{PluginLoadRequest, Session};
 use tutti_types::{MaxBlock, Samples};
 
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 fn session() -> Session {

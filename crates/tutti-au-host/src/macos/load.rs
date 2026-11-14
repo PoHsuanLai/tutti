@@ -9,8 +9,8 @@ use std::path::Path;
 
 use tutti_au_ffi::declared_components;
 use tutti_plugin_types::{
-    EditorPresence, Load, LoadStage, MainThread, Origin, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, SampleRate,
+    EditorPresence, Load, LoadStage, MainThread, MainWorkHandle, Origin, PluginClass,
+    PluginDescriptor, PluginError, PluginResult, SampleRate,
 };
 
 use crate::bus::BusDirection;
@@ -151,7 +151,12 @@ impl AuLoaded {
     /// is not a bundle that declares an Audio Unit, the choice is not among its
     /// units, or the chosen unit is not registered, `Instantiation` when the component cannot be
     /// created, `Initialization` for a bus no channel layout holds.
-    pub fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
+    pub fn load(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self> {
         let _ = main;
         let units = declared(path)?;
         let desc = select(path, &units, load.chosen())?;
@@ -183,6 +188,7 @@ impl AuLoaded {
         let _ = loaded.install_host_callbacks();
         let _ = loaded.watch_properties();
         loaded.origin = Origin::new(path, load.clone());
+        loaded.work = work.clone();
         Ok(loaded)
     }
 }

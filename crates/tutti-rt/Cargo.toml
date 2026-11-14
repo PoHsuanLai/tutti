@@ -49,7 +49,12 @@ thiserror = { workspace = true }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Performance"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Performance",
+    "Win32_System_Threading",
+] }
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
@@ -61,3 +66,10 @@ assert_no_alloc = { version = "1", default-features = false }
 # and sets their scheduling policy: `sched_setaffinity`, `pthread_setschedparam`.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2"
+
+# `MainThread::new` against the process's real main thread: the default harness
+# runs every test on a spawned thread.
+[[test]]
+name = "main_thread"
+path = "tests/main_thread/main.rs"
+harness = false

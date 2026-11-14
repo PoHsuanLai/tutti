@@ -51,6 +51,7 @@ mod env;
 mod glibc;
 mod golden;
 mod machine_lock;
+mod main_thread;
 pub mod midi;
 #[cfg(feature = "plugin")]
 mod plugin;
@@ -68,8 +69,11 @@ pub use digest::{Fnv, Noise, digest, digest_planes, noise};
 pub use env::{ScopedEnv, cases};
 pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 pub use machine_lock::{MachineLock, machine_lock};
+pub use main_thread::{main_thread, main_thread_cases};
 #[cfg(feature = "plugin")]
-pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread, vst3_module};
+pub use plugin::{
+    Activation, Active, Pump, StandInWindow, Whole, detached_work, pump, pumped_work, vst3_module,
+};
 pub use range_contract::{RangeContract, check_range_contract, check_range_serde};
 pub use round_trip::check_round_trip;
 #[cfg(feature = "vst3-cpp")]

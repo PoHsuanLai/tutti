@@ -81,6 +81,9 @@ pub struct ClapLoaded {
     /// The file and plugin this instance was loaded from, what a reopen
     /// loads again.
     pub(crate) origin: tutti_plugin_types::Origin,
+    /// The collector of this instance's owner: where a drop off the main
+    /// thread hands its destruction, and what a reopen gives its new instance.
+    pub(crate) work: tutti_plugin_types::MainWorkHandle,
 }
 
 impl std::fmt::Debug for ClapLoaded {

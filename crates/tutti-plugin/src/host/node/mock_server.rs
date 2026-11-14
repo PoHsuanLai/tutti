@@ -77,6 +77,7 @@ fn layout() -> SlabLayout {
 
 fn no_editor(
     _: &tutti_plugin_types::MainThread,
+    _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     _: &tutti_plugin_types::Load,
 ) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
@@ -174,7 +175,10 @@ pub(super) fn rig(label: &str) -> Rig {
         path.clone(),
         Arc::clone(slab.slab()),
         tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
-        Some(no_editor),
+        Some(tutti_plugin_ipc::EditorLoader::new(
+            no_editor,
+            tutti_fixtures::detached_work(),
+        )),
         SR,
     )
     .unwrap();

@@ -14,7 +14,7 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper, Interface};
 
-use tutti_plugin_types::LoadStage;
+use tutti_plugin_types::{LoadStage, MainThread, MainWorkHandle};
 
 use crate::com::{BStream, HostApplication};
 use crate::error::{Vst3Error, check};
@@ -398,15 +398,22 @@ impl Module {
     }
 
     /// Creates a plugin from an audio class: the component, its audio
-    /// processor and its edit controller, not yet initialized.
+    /// processor and its edit controller, not yet initialized. `main` is the
+    /// thread the plugin lives on, and `work` is where a drop with an editor
+    /// open off that thread hands its teardown.
     ///
     /// # Errors
     ///
     /// [`CreateError`] if the factory refuses the class or the component has no
     /// `IAudioProcessor`.
-    pub fn create_plugin(self: &Arc<Self>, cid: &[i8; 16]) -> Result<Plugin, CreateError> {
+    pub fn create_plugin(
+        self: &Arc<Self>,
+        main: &MainThread,
+        work: &MainWorkHandle,
+        cid: &[i8; 16],
+    ) -> Result<Plugin, CreateError> {
         let component = self.create_component(cid).map_err(CreateError::Create)?;
-        Plugin::assemble(self, component)
+        Plugin::assemble(self, component, main, work.clone())
     }
 
     /// Creates the edit controller of a component whose controller is a

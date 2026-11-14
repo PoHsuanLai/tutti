@@ -91,7 +91,7 @@ fn handle_with(cause: Option<PluginFailure>) -> PluginHandle {
 }
 
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 /// A detached session with a fake plugin (reporting `cause`) hosted at a dc

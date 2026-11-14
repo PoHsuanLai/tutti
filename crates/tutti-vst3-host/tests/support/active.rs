@@ -194,8 +194,13 @@ impl<T: Vst3Sample> ActiveExt<T> for Active<T> {
         frames: usize,
         mode: ProcessMode,
     ) -> Result<Self, LoadError> {
-        let loaded =
-            Vst3Loaded::load(&main_thread(), path, LoadOptions::new()).map_err(LoadError::Load)?;
+        let loaded = Vst3Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new(),
+        )
+        .map_err(LoadError::Load)?;
         loaded
             .activate_in::<T>(rate, frames, mode)
             .map_err(|(_, reason)| LoadError::Activate(reason))
@@ -209,8 +214,13 @@ impl<T: Vst3Sample> ActiveExt<T> for Active<T> {
             .map(|info| class_id(&info))
             .expect("the bundle exports a class under that name");
         drop(library);
-        let loaded = Vst3Loaded::load(&main_thread(), path, LoadOptions::new().class_id(id))
-            .map_err(LoadError::Load)?;
+        let loaded = Vst3Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().class_id(id),
+        )
+        .map_err(LoadError::Load)?;
         loaded
             .activate_at::<T>(rate, frames)
             .map_err(|(_, reason)| LoadError::Activate(reason))

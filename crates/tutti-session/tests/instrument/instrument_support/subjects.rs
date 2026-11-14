@@ -161,5 +161,5 @@ impl Subject for Plugin {
 /// This process's main thread. Each test is its own process under nextest, so
 /// the claim cannot be refused.
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }

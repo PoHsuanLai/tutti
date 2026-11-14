@@ -633,10 +633,15 @@ mod scratch_resolution_tests {
     /// to panic there and now keeps the layout the instance already has.
     #[test]
     fn a_bus_too_wide_for_a_layout_keeps_the_old_scratch() {
-        let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
+        let main = tutti_fixtures::main_thread();
         let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
-        let loaded = Vst3Loaded::load(&main, &library, crate::LoadOptions::new())
-            .expect("the shared plugin loads");
+        let loaded = Vst3Loaded::load(
+            &main,
+            &tutti_fixtures::detached_work(),
+            &library,
+            crate::LoadOptions::new(),
+        )
+        .expect("the shared plugin loads");
         let mut staged =
             Staged::<f32>::stage(&main, loaded, SampleRate::SR_48K, 64, ProcessMode::Realtime)
                 .unwrap_or_else(|(_, error)| panic!("the plugin stages: {error}"));

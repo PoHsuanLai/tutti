@@ -189,7 +189,12 @@ fn units_enumerate_with_resolvable_parents() {
     // whether the interface is there at all.
     let mut silent = 0usize;
     for (name, path) in sample_plugins() {
-        let Ok(loaded) = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()) else {
+        let Ok(loaded) = Vst3Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            &path,
+            LoadOptions::new(),
+        ) else {
             continue;
         };
         if loaded.units(&main_thread()).is_empty() {
@@ -217,7 +222,12 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
     let mut dangling = Vec::new();
 
     for (name, path) in sample_plugins() {
-        let Ok(loaded) = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()) else {
+        let Ok(loaded) = Vst3Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            &path,
+            LoadOptions::new(),
+        ) else {
             continue;
         };
         let lists = loaded.program_lists(&main_thread());

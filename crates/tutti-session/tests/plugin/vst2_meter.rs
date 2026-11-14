@@ -59,7 +59,7 @@ fn an_in_process_vst2_plugin_is_given_the_project_meter() {
             Beat(0.0),
             TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
         )])));
-    let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
+    let main = tutti_fixtures::main_thread();
     let node = s
         .add_plugin_blocking(
             &main,

@@ -43,6 +43,8 @@ core-foundation-sys = "0.8"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
+# `main_thread`: the token a test passes where an entry wants the main thread.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # `module_entry`'s macOS bundle-directory test builds a bundle on disk.
 tempfile = "3"
 

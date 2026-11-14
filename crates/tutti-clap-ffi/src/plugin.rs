@@ -99,7 +99,7 @@ use clap_sys::plugin::clap_plugin;
 use crate::host::Host;
 use crate::library::{Bundle, LoadError, Stage};
 use crate::roles::ThreadRoles;
-use tutti_plugin_types::{ContentScale, MainThread};
+use tutti_plugin_types::{ContentScale, MainThread, MainWorkHandle};
 
 macro_rules! extensions {
     ($($(#[$m:meta])* $field:ident: $ty:ty = [$($id:expr),+];)*) => {
@@ -241,6 +241,8 @@ pub struct Plugin {
     // plugin runs.
     _host: ManuallyDrop<Host>,
     _bundle: ManuallyDrop<Bundle>,
+    /// Where a drop off the main thread hands the instance's destruction.
+    work: MainWorkHandle,
     // `Send` but not `Sync`: two threads never call the instance's main-thread
     // entries at once.
     _not_sync: PhantomData<Cell<()>>,
@@ -344,6 +346,7 @@ impl Plugin {
         bundle: Bundle,
         host: Host,
         roles: Arc<ThreadRoles>,
+        work: MainWorkHandle,
     ) -> Result<Self, LoadError> {
         let plugin = NonNull::new(raw.cast_mut()).expect("a created plugin is non-null");
         // From here the instance is destroyed on every early return.
@@ -390,6 +393,7 @@ impl Plugin {
             gui_scale: ContentScale::IDENTITY,
             _host: ManuallyDrop::new(host),
             _bundle: ManuallyDrop::new(bundle),
+            work,
             _not_sync: PhantomData,
         })
     }
@@ -1101,8 +1105,8 @@ impl Plugin {
 }
 
 /// How many [`Plugin`]s have been dropped off the main thread since the process began. Each
-/// one's destruction was handed to the main thread
-/// ([`tutti_plugin_types::run_deferred`], which the session's `Phase::Collect` calls); a
+/// one's destruction was handed to its owner's main-thread collector
+/// ([`tutti_plugin_types::MainWork`], which the session's `Phase::Collect` drains); a
 /// nonzero count is worth a look, since the owner should have dropped it there.
 pub fn off_thread_drops() -> u64 {
     OFF_THREAD_DROPS.load(Ordering::Relaxed)
@@ -1119,15 +1123,16 @@ impl Drop for Plugin {
             // plugin's `destroy` would run on the wrong thread, which a plugin
             // may not survive, and skipping them leaks the instance, its host
             // and its library. So the whole value is rebuilt from this one's
-            // parts and handed to the main thread, to drop at its next
-            // `run_deferred` (the session's collect tick); the core stays
+            // parts and handed to the owner's main-thread collector
+            // (`MainWork`), to drop at its next run (the session's collect tick);
+            // the core stays
             // alive in it, so any `AudioSide` still running keeps a valid
             // plugin until then.
             //
             // Never the audio thread: the `Plugin` is the controller's half,
             // not the render side's (`AudioSide` holds the core only, and its
             // drop destroys nothing), and a unit leaves the graph on the
-            // control side (`defer_to_main`, "Never from an audio thread").
+            // control side (`MainWorkHandle::defer`, "Never from an audio thread").
             //
             // SAFETY: each `ManuallyDrop` field is taken once and `self` is
             // not used again; `self`'s own drop frees nothing but `core`.
@@ -1143,6 +1148,7 @@ impl Drop for Plugin {
                 gui_scale: self.gui_scale,
                 _host: ManuallyDrop::new(host),
                 _bundle: ManuallyDrop::new(bundle),
+                work: self.work.clone(),
                 _not_sync: PhantomData,
             };
             let count = OFF_THREAD_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1150,7 +1156,7 @@ impl Drop for Plugin {
                 "a CLAP plugin was dropped off the main thread ({count} so far); its \
                  destruction is handed to the main thread"
             );
-            tutti_plugin_types::defer_to_main(move |_main| drop(moved));
+            self.work.defer(move |_main| drop(moved));
             return;
         }
         // CLAP: `gui.destroy` comes before `plugin.destroy`. A caller that

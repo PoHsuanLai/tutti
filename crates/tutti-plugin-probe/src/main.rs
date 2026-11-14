@@ -61,8 +61,8 @@ fn main() -> ExitCode {
         }
     };
     // This process runs one probe on one thread, which is its main thread.
-    let Ok(main) = MainThread::claim() else {
-        eprintln!("plugin-probe: the main thread is already claimed");
+    let Some(main) = MainThread::new() else {
+        eprintln!("plugin-probe: not running on the process's main thread");
         return ExitCode::from(3);
     };
     let described = if measure {

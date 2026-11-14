@@ -19,9 +19,9 @@
 //! calls from any thread and the session calls them from pool jobs. Here they
 //! work from any thread too, through `on_main`: on the main thread the call runs
 //! at once; off it the
-//! work is posted with [`defer_to_main`] and the caller waits for the answer,
-//! which costs one main-thread tick (`Session::update` runs
-//! [`run_deferred`](tutti_plugin_types::run_deferred) every tick). The wait has
+//! work is posted to the owner's [`MainWork`](tutti_plugin_types::MainWork) and the
+//! caller waits for the answer, which costs one main-thread tick (`Session::update`
+//! runs the session's `MainWork` every tick). The wait has
 //! a deadline ([`OFF_MAIN_DEADLINE`]): the host's main thread must keep
 //! pumping, and a host that blocks its main thread on such a call (joining the
 //! job from the main thread) gets the trait's "unavailable" answer (`None`,
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::sync_channel;
 use std::time::Duration;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{MainThread, MainWorkHandle};
 
 use parking_lot::Mutex;
 
@@ -41,7 +41,6 @@ use crate::MainThreadControl;
 use crate::ParameterChangeSink;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, Control, Health, InProcess, StateError,
-    defer_to_main,
 };
 use tutti_plugin_types::{
     Normalized, ParamId, ParameterInfo, PluginFailure, RenderMode, TerminationReason,
@@ -65,6 +64,9 @@ pub(crate) struct ControlBackend<F: InProcess> {
     /// The plugin's format name, for the refusal of an advisory no in-process
     /// format carries.
     pub(crate) format: &'static str,
+    /// The collector of the plugin's owner: where an off-main call posts its
+    /// work for the main thread's next tick.
+    pub(crate) work: MainWorkHandle,
 }
 
 /// How long an off-main-thread call waits for the main thread to run its work
@@ -83,38 +85,34 @@ where
     F::Processor: 'static,
 {
     /// Runs `work` on the plugin on the main thread, under the instance lock,
-    /// from whichever thread asks. `None` when it cannot be answered: no main
-    /// thread has been claimed, or the main thread did not run the work within
-    /// [`OFF_MAIN_DEADLINE`].
+    /// from whichever thread asks. `None` when it cannot be answered: the main
+    /// thread did not run the work within [`OFF_MAIN_DEADLINE`].
     fn on_main<R: Send + 'static>(
         &self,
         work: impl FnOnce(&MainThread, &mut Instance<F>) -> R + Send + 'static,
     ) -> Option<R> {
-        if let Some(main) = MainThread::current() {
+        if let Some(main) = MainThread::new() {
             return Some(work(&main, &mut self.inner.lock()));
-        }
-        if !MainThread::claimed_elsewhere() {
-            return None;
         }
         let (answer, wait) = sync_channel(1);
         let inner = Arc::clone(&self.inner);
-        defer_to_main(move |main| {
+        self.work.defer(move |main| {
             let _ = answer.send(work(main, &mut inner.lock()));
         });
         wait.recv_timeout(OFF_MAIN_DEADLINE).ok()
     }
 
-    /// `work` on the main thread without waiting: at once on it, posted off it
-    /// (and dropped when no main thread exists). Skipped when the instance is
-    /// locked, as a write has always been.
+    /// `work` on the main thread without waiting: at once on it, posted to the
+    /// owner's collector off it. Skipped when the instance is locked, as a write
+    /// has always been.
     fn post(&self, work: impl FnOnce(&MainThread, &mut Instance<F>) + Send + 'static) {
-        if let Some(main) = MainThread::current() {
+        if let Some(main) = MainThread::new() {
             if let Some(mut instance) = self.inner.try_lock() {
                 work(&main, &mut instance);
             }
-        } else if MainThread::claimed_elsewhere() {
+        } else {
             let inner = Arc::clone(&self.inner);
-            defer_to_main(move |main| {
+            self.work.defer(move |main| {
                 if let Some(mut instance) = inner.try_lock() {
                     work(main, &mut instance);
                 }
@@ -327,18 +325,33 @@ where
 mod off_main_tests {
     use tutti_fixtures::main_thread;
     use tutti_plugin_types::{
-        AutomationMode, AutomationModeError, Load, Normalized, ParamId, RenderMode, StateError,
-        run_deferred,
+        AutomationMode, AutomationModeError, Load, MainWork, MainWorkHandle, Normalized, ParamId,
+        RenderMode, StateError,
     };
     use tutti_types::SampleRate;
     use tutti_vst2_host::Vst2Loaded;
 
     use crate::PluginHandle;
 
-    /// The probe, loaded in process, with parameter 1 written to 0.75.
-    fn loaded() -> (crate::InProcClient<Vst2Loaded>, PluginHandle) {
+    /// The probe, loaded in process on this thread, which is not the main thread
+    /// (the harness runs tests on threads it spawns), with a thread standing in for
+    /// the main thread's tick: every call through the handle hops to it.
+    fn loaded() -> (
+        crate::InProcClient<Vst2Loaded>,
+        PluginHandle,
+        tutti_fixtures::Pump,
+    ) {
+        let (collector, work) = MainWork::new();
+        let (client, handle) = load(&work);
+        (client, handle, tutti_fixtures::pump(collector))
+    }
+
+    /// The probe, loaded in process, with parameter 1 written to 0.75; its main-thread
+    /// work goes to `work`.
+    fn load(work: &MainWorkHandle) -> (crate::InProcClient<Vst2Loaded>, PluginHandle) {
         let (client, handle) = crate::load_client::<Vst2Loaded>(
             &main_thread(),
+            work,
             tutti_fixtures::vst2_probe(),
             &Load::new(),
             SampleRate::SR_48K,
@@ -356,8 +369,7 @@ mod off_main_tests {
     /// session's snapshot and parameter-mirror jobs do.
     #[test]
     fn a_pool_threads_calls_are_answered_by_the_main_threads_tick() {
-        let main = main_thread();
-        let (_client, handle) = loaded();
+        let (_client, handle, _pump) = loaded();
         let expected = handle
             .any_thread()
             .save_state()
@@ -372,10 +384,6 @@ mod off_main_tests {
                 )
             })
         };
-        while !job.is_finished() {
-            run_deferred(&main);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
         let (state, value) = job.join().expect("the job returns");
         assert_eq!(state.expect("saved off the main thread"), expected);
         assert_eq!(value.map(Normalized::get), Some(0.75));
@@ -385,8 +393,8 @@ mod off_main_tests {
     /// "unavailable" after the deadline**, not never.
     #[test]
     fn an_unpumped_main_thread_gets_the_unavailable_answer() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_collector, work) = MainWork::new();
+        let (_client, handle) = load(&work);
         let id = ParamId::new(1);
         let (state, value) = std::thread::spawn(move || {
             (
@@ -406,8 +414,7 @@ mod off_main_tests {
     /// default that looks like an answer).
     #[test]
     fn the_parameter_reads_answer_on_the_main_thread() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_client, handle, _pump) = loaded();
         let any = handle.any_thread();
         let catalog = any.parameter_descriptors().expect("the probe lists");
         assert!(catalog.iter().any(|p| p.id() == ParamId::new(1)));
@@ -431,8 +438,7 @@ mod off_main_tests {
     /// once, under the instance's lock).
     #[test]
     fn a_parameter_write_lands_on_the_plugin() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_client, handle, _pump) = loaded();
         handle
             .any_thread()
             .set_parameter_value(ParamId::new(1), Normalized::of(0.25));
@@ -449,8 +455,7 @@ mod off_main_tests {
     /// `Unavailable` (nothing waited) and not empty.
     #[test]
     fn the_state_saves_on_the_main_thread() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_client, handle, _pump) = loaded();
         let state = handle.any_thread().save_state().expect("the probe saves");
         assert!(!state.is_empty());
     }
@@ -459,8 +464,7 @@ mod off_main_tests {
     /// host callback, so there is nothing to decline).
     #[test]
     fn the_render_mode_is_accepted_on_the_main_thread() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_client, handle, _pump) = loaded();
         assert!(handle.any_thread().set_render_mode(RenderMode::Offline));
         assert!(handle.any_thread().set_render_mode(RenderMode::Realtime));
     }
@@ -470,8 +474,7 @@ mod off_main_tests {
     /// no such route always did.
     #[test]
     fn the_automation_advisory_is_not_supported_in_process() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_client, handle, _pump) = loaded();
         let refused = handle
             .set_automation_mode(AutomationMode::Writing)
             .expect_err("no in-process format carries it");
@@ -485,8 +488,7 @@ mod off_main_tests {
     /// zero block counts, and a `terminate` that ends nothing.
     #[test]
     fn an_in_process_plugin_is_never_observed_dead() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_client, handle, _pump) = loaded();
         assert!(!handle.is_crashed());
         assert!(matches!(handle.status(), crate::PluginStatus::Alive));
         assert_eq!(
@@ -509,8 +511,8 @@ mod off_main_tests {
     /// (The advisory needs no main thread: it refuses at once.)
     #[test]
     fn an_unpumped_main_thread_refuses_the_other_calls_too() {
-        let _main = main_thread();
-        let (_client, handle) = loaded();
+        let (_collector, work) = MainWork::new();
+        let (_client, handle) = load(&work);
         let (catalog, text, from_text, mode, automation) = std::thread::spawn(move || {
             (
                 handle.any_thread().parameter_descriptors(),

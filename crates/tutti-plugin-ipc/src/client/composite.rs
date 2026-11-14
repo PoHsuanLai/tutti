@@ -15,7 +15,7 @@ use tutti_plugin_types::{
     BridgeResult, Delivered, EditorError, PluginError, PluginFailure, Request, StateError,
 };
 use tutti_plugin_types::{ContentScale, EditorCapabilities, WindowHandle};
-use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
+use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, MainWorkHandle, ParamEdit, edits};
 use tutti_plugin_types::{Editor, EditorWindow, Load, Origin};
 use tutti_types::SampleRate;
 
@@ -90,11 +90,38 @@ impl std::fmt::Debug for PluginBridge {
     }
 }
 
-/// Loads the editor-only instance of the plugin `load` chooses in the file at
-/// a path, in this process (`OutOfProcess::load_editor` for the path's
-/// format). The host passes its own: which formats it was built with is the
-/// host's, not the bridge's.
-pub type EditorLoader = fn(&MainThread, &Path, &Load) -> BridgeResult<Box<dyn Editor>>;
+/// What loads the editor-only instance of the plugin `load` chooses in the file
+/// at a path, in this process (`OutOfProcess::load_editor` for the path's
+/// format), and the collector of the plugin's owner that instance hands its close
+/// to. The host passes its own: which formats it was built with is the host's, not
+/// the bridge's.
+#[derive(Clone)]
+pub struct EditorLoader {
+    load: fn(&MainThread, &MainWorkHandle, &Path, &Load) -> BridgeResult<Box<dyn Editor>>,
+    work: MainWorkHandle,
+}
+
+impl EditorLoader {
+    /// A loader that makes the editor instance with `load`, which hands its close
+    /// to `work`.
+    #[must_use]
+    pub fn new(
+        load: fn(&MainThread, &MainWorkHandle, &Path, &Load) -> BridgeResult<Box<dyn Editor>>,
+        work: MainWorkHandle,
+    ) -> Self {
+        Self { load, work }
+    }
+
+    fn load(&self, main: &MainThread, path: &Path, load: &Load) -> BridgeResult<Box<dyn Editor>> {
+        (self.load)(main, &self.work, path, load)
+    }
+}
+
+impl std::fmt::Debug for EditorLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EditorLoader").finish_non_exhaustive()
+    }
+}
 
 /// How many parameter writes wait for the next editor idle. A full ring drops
 /// the newest: the mirror is cosmetic, and the audio command is authoritative.
@@ -439,11 +466,12 @@ impl PluginBridge {
             Some(gui) => Ok(gui),
             empty => {
                 tracing::info!("[bridge] lazy-loading the in-process GUI");
-                let load_editor = self.load_editor.ok_or_else(|| {
+                let load_editor = self.load_editor.as_ref().ok_or_else(|| {
                     EditorError::PluginError("this bridge has no in-process editor loader".into())
                 })?;
-                let instance =
-                    load_editor(main, self.origin.path(), self.origin.load()).map_err(|e| {
+                let instance = load_editor
+                    .load(main, self.origin.path(), self.origin.load())
+                    .map_err(|e| {
                         EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
                     })?;
                 Ok(empty.insert(instance))
@@ -922,7 +950,7 @@ impl Drop for PluginBridge {
         // be on the main thread; off it, the instance is leaked below with its
         // editor still open, which is what an app that closes the editor first
         // (the `NonSend` editor system) never meets.
-        if let Some(main) = MainThread::current() {
+        if let Some(main) = MainThread::new() {
             self.close_editor(&main);
         }
         if let Ok(mut guard) = self.gui.lock()

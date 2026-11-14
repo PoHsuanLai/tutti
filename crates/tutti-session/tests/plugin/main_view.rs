@@ -77,7 +77,7 @@ impl tutti_plugin_types::Health for Inert {
 }
 
 fn main_thread() -> MainThread {
-    MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 /// A detached session with a fake plugin (with an editor) at a node.

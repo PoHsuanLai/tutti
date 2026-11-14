@@ -691,7 +691,13 @@ mod owed_tests {
         path: &std::path::Path,
         rate: SampleRate,
     ) -> tutti_plugin_types::BridgeResult<(InProcClient<Vst2Loaded>, PluginHandle)> {
-        crate::load_client::<Vst2Loaded>(main, path, &Load::new(), rate)
+        crate::load_client::<Vst2Loaded>(
+            main,
+            &tutti_fixtures::pumped_work(),
+            path,
+            &Load::new(),
+            rate,
+        )
     }
 
     /// A reader of a constant 120 BPM map, for nodes these tests drive.
@@ -711,7 +717,7 @@ mod owed_tests {
     /// **A fork told its rate off the main thread is refused, not left at the
     /// wrong rate.** A fork's `prepare` dispatches the rate under the main
     /// thread's proof; off that thread it cannot, so the node records the
-    /// refusal, renders silence, and a `prepare` on the main thread clears it.
+    /// refusal, renders silence, and only a `prepare` on the main thread clears it.
     ///
     /// The silence `process` renders while refused is not covered here.
     #[test]
@@ -733,9 +739,14 @@ mod owed_tests {
         .join()
         .expect("the thread returns");
         assert!(refused, "off the main thread the rate cannot be told");
+        // The harness thread is not the process's main thread either, so a second
+        // `prepare` is refused too: only the main thread's clears the refusal.
         let mut fork = fork;
         fork.set_rate(SampleRate::SR_96K);
-        assert!(!fork.rate_refused, "a prepare on the main thread clears it");
+        assert!(
+            fork.rate_refused,
+            "a prepare off the main thread cannot clear it"
+        );
     }
 
     /// Starts a rate change the way one parked for the main thread's pump

@@ -88,6 +88,7 @@ fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
     let (client, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::detached_work(),
         path,
         &Load::new(),
         SampleRate::of(SAMPLE_RATE),
@@ -117,7 +118,6 @@ fn ramp(at: usize, id: u32, value: f32) -> Event {
 /// after the block the plugin holds each one's last value in it. Every point
 /// is counted as sent, none dropped or merged; a block with no event leaves
 /// the plugin's values where they are.
-#[test]
 fn a_moving_parameter_reaches_the_plugin() {
     let _lock = lock_probe();
     let _env = ProbeEnv::new().params(8);
@@ -163,7 +163,6 @@ fn a_moving_parameter_reaches_the_plugin() {
 /// (through the plugin handle, as an edit in its editor would be); the host
 /// keeps sending 0.25 and the plugin keeps 0.75, with nothing more sent;
 /// then the host moves to 0.5 and the plugin takes it.
-#[test]
 fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
     let _lock = lock_probe();
     let _env = ProbeEnv::new().params(8);
@@ -215,7 +214,6 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
 /// the live node delivered (0.25), so the fork's fresh lane, which sends its
 /// 0.25 on its first block (doc 014 §10's fork requirement), is not passed
 /// on, and the export renders 501 too.
-#[test]
 fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let _lock = lock_probe();
     let _env = ProbeEnv::new().params(4).state_dc();
@@ -279,4 +277,23 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
 /// The project's tempo map the node under test is bound to.
 fn tempo() -> tutti_transport::TempoReader {
     tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
+}
+
+/// The cases run on the process's main thread (`harness = false`): the node's `prepare`
+/// and a fork tell the plugin at once only there.
+fn main() {
+    tutti_fixtures::main_thread_cases(&[
+        (
+            "a_moving_parameter_reaches_the_plugin",
+            a_moving_parameter_reaches_the_plugin,
+        ),
+        (
+            "a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it",
+            a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it,
+        ),
+        (
+            "an_export_renders_an_edit_made_in_the_plugin_as_live_does",
+            an_export_renders_an_edit_made_in_the_plugin_as_live_does,
+        ),
+    ]);
 }

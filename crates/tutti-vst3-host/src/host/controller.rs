@@ -590,7 +590,7 @@ impl Loaded for Vst3Loaded {
             Some(class) => super::loaded::LoadOptions::new().class_id(class),
             None => super::loaded::LoadOptions::new(),
         };
-        let mut fresh = match Vst3Loaded::load(main, self.origin.path(), options) {
+        let mut fresh = match Vst3Loaded::load(main, &self.work, self.origin.path(), options) {
             Ok(fresh) => fresh,
             Err(error) => {
                 return Err(Refused {

@@ -112,9 +112,9 @@ use tutti_plugin_ipc::{
     BridgeConfig, BridgeEvent, Ipc, IpcController, IpcOrigin, Launched, PluginBridge,
 };
 use tutti_plugin_types::{
-    BridgeError, BridgeResult, Features, LoadStage, LoadedPlugin, MaxBlock, Normalized, ParamId,
-    ParameterChanges, PluginDescriptor, PluginInvalidation, PluginTail, Prepare, ResyncClass,
-    SampleFormat,
+    BridgeError, BridgeResult, Features, LoadStage, LoadedPlugin, MainWorkHandle, MaxBlock,
+    Normalized, ParamId, ParameterChanges, PluginDescriptor, PluginInvalidation, PluginTail,
+    Prepare, ResyncClass, SampleFormat,
 };
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
@@ -237,6 +237,8 @@ impl PluginClient<Unbound> {
     /// [`PluginRef::file`] is the explicit "the file's first".
     ///
     /// Blocks while the subprocess launches and completes its handshake. The
+    /// `work` is the collector of the plugin's owner, which the editor instance
+    /// hands its close to. The
     /// subprocess exits when the graph has dropped the node and every
     /// [`PluginHandle`] built from this
     /// client has been dropped.
@@ -250,10 +252,11 @@ impl PluginClient<Unbound> {
     /// format's own load failure), or the IPC bridge cannot be set up.
     pub fn new(
         config: BridgeConfig,
+        work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
     ) -> BridgeResult<Self> {
-        Self::open(config, plugin, sample_rate, None).map(|(client, _)| client)
+        Self::open(config, work, plugin, sample_rate, None).map(|(client, _)| client)
     }
 
     /// [`new`](Self::new), restoring `state` into the plugin **before it is
@@ -268,6 +271,7 @@ impl PluginClient<Unbound> {
     /// As [`new`](Self::new).
     pub fn open(
         config: BridgeConfig,
+        work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
@@ -288,7 +292,10 @@ impl PluginClient<Unbound> {
             sample_rate.into(),
             state,
             tutti_plugin_types::StateUse::Project,
-            Some(crate::format::gui::load_gui_instance),
+            Some(tutti_plugin_ipc::EditorLoader::new(
+                crate::format::gui::load_gui_instance,
+                work.clone(),
+            )),
         )?;
         Self::over(ipc).map(|client| (client, restored))
     }

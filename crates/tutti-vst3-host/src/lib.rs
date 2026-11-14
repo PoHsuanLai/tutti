@@ -60,7 +60,8 @@
 //! bundle on disk.
 //!
 //! ```rust,no_run
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
 //! use tutti_ump::{MidiChannel, MidiGroup};
 //! use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
 //! use tutti_vst3_host::{
@@ -72,7 +73,7 @@
 //! // Initialized. Parameters and the editor are reachable here, with no
 //! // activation cost paid. The rate and the block length are not load
 //! // parameters: they are the activation's.
-//! let loaded = Vst3Loaded::load(&main, "/usr/lib/vst3/MyPlugin.vst3", LoadOptions::new())?;
+//! let loaded = Vst3Loaded::load(&main, &work, "/usr/lib/vst3/MyPlugin.vst3", LoadOptions::new())?;
 //! println!("{} by {}", loaded.plugin_info().name, loaded.plugin_info().vendor);
 //!
 //! // Activated. `T` fixes the sample width: `f64` is refused unless the plugin
@@ -124,8 +125,9 @@
 //! # use tutti_plugin_types::{Control, Normalized, ParamId, StateUse};
 //! # use tutti_vst3_host::{LoadOptions, Vst3Loaded};
 //! # fn ex() -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-//! let mut plugin = Vst3Loaded::load(&main, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
+//! let mut plugin = Vst3Loaded::load(&main, &work, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 //!
 //! // Parameters are addressed by an opaque, plugin-chosen `ParamID`, never by
 //! // position: `parameter_ids` lists them, `parameter_info` reads one by id, and
@@ -176,8 +178,9 @@
 //! # use tutti_plugin_types::{Control, EditorWindow};
 //! # use tutti_vst3_host::{ContentScale, LoadOptions, Vst3Loaded, WindowHandle};
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-//! # let mut plugin = Vst3Loaded::load(&main, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
+//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let (_collector, work) = tutti_plugin_types::MainWork::new();
+//! # let mut plugin = Vst3Loaded::load(&main, &work, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 //! if plugin.has_editor(&main) {
 //!     // Any winit or other `raw-window-handle` window.
 //!     let handle = WindowHandle::from_window(window)?;

@@ -36,7 +36,7 @@ fn set_server() {
 }
 
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 /// An offline stereo session at 48 kHz whose block is the plugin's pipeline
@@ -222,6 +222,7 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
 
     let incoming = PluginClient::new(
         tutti_plugin::BridgeConfig::default(),
+        &tutti_fixtures::detached_work(),
         &PluginRef::file(clap_probe()).expect("a plugin file"),
         RATE,
     )
@@ -288,6 +289,7 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
 
     let client = PluginClient::new(
         tutti_plugin::BridgeConfig::default(),
+        &tutti_fixtures::detached_work(),
         &PluginRef::file(clap_probe()).expect("a plugin file"),
         RATE,
     )

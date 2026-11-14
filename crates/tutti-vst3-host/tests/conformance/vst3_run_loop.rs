@@ -29,16 +29,32 @@ fn module() -> Arc<Module> {
 }
 
 fn create(module: &Arc<Module>) -> Plugin {
+    create_for(module, &tutti_fixtures::detached_work())
+}
+
+/// A plugin whose off-thread drop is handed to `work`.
+fn create_for(module: &Arc<Module>, work: &tutti_plugin_types::MainWorkHandle) -> Plugin {
     let class = module
         .classes()
         .find(|c| c.category.contains("Audio"))
         .expect("an audio class");
-    module.create_plugin(&class.cid).expect("a plugin")
+    module
+        .create_plugin(&tutti_fixtures::main_thread(), work, &class.cid)
+        .expect("a plugin")
 }
 
 /// A plugin initialized, with its editor behaviour set through its state.
 fn plugin_with_editor(module: &Arc<Module>, editor: u32) -> Plugin {
-    let mut plugin = create(module);
+    plugin_with_editor_for(module, editor, &tutti_fixtures::detached_work())
+}
+
+/// [`plugin_with_editor`], whose off-thread drop is handed to `work`.
+fn plugin_with_editor_for(
+    module: &Arc<Module>,
+    editor: u32,
+    work: &tutti_plugin_types::MainWorkHandle,
+) -> Plugin {
+    let mut plugin = create_for(module, work);
     plugin
         .initialize_component(&main_thread())
         .expect("initialize");
@@ -75,7 +91,7 @@ fn registered(plugin: &Plugin) -> (usize, usize) {
 /// Spec: vst3.IRunLoop.registerEventHandler, vst3.IRunLoop.registerTimer, vst3.IRunLoop.unregisterEventHandler, vst3.IRunLoop.unregisterTimer
 #[test]
 fn a_tidy_editor_registers_and_unregisters() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, TIDY);
     open(&mut plugin, &main);
@@ -91,7 +107,7 @@ fn a_tidy_editor_registers_and_unregisters() {
 /// handler only when it is reported readable (not when it is reported writable).
 #[test]
 fn the_run_loop_is_described_and_what_the_wait_found_is_run() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, TIDY);
     open(&mut plugin, &main);
@@ -142,7 +158,7 @@ fn the_run_loop_is_described_and_what_the_wait_found_is_run() {
 /// for any plugin of the module, would call them.
 #[test]
 fn a_leaked_registration_is_purged_when_the_editor_closes() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, LEAKY);
     open(&mut plugin, &main);
@@ -164,7 +180,7 @@ fn a_leaked_registration_is_purged_when_the_editor_closes() {
 /// its registrations to the module's other plugins.**
 #[test]
 fn a_dropped_plugin_leaves_nothing_in_the_run_loop() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
     let mut leaky = plugin_with_editor(&module, LEAKY);
     open(&mut leaky, &main);
@@ -182,7 +198,7 @@ fn a_dropped_plugin_leaves_nothing_in_the_run_loop() {
 /// before failing has no editor to be closed with.
 #[test]
 fn a_failed_attach_leaves_nothing_in_the_run_loop() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, FAILING);
     assert!(try_open(&mut plugin, &main).is_err());
@@ -198,7 +214,7 @@ fn a_failed_attach_leaves_nothing_in_the_run_loop() {
 /// every token-taking call runs under is what names one.
 #[test]
 fn a_registration_from_a_later_call_is_purged_on_close() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, LATE);
     open(&mut plugin, &main);
@@ -221,7 +237,13 @@ fn a_plugin_whose_initialize_failed_is_not_terminated() {
         .classes()
         .find(|c| c.name.contains("refused"))
         .expect("the class that refuses initialize");
-    let mut plugin = module.create_plugin(&class.cid).expect("a plugin");
+    let mut plugin = module
+        .create_plugin(
+            &tutti_fixtures::main_thread(),
+            &tutti_fixtures::detached_work(),
+            &class.cid,
+        )
+        .expect("a plugin");
     assert!(plugin.initialize_component(&main_thread()).is_err());
     drop(plugin);
 }
@@ -240,14 +262,15 @@ fn a_plugin_never_initialized_is_not_terminated() {
 /// attached it, and `setActive(0)`/`terminate` are main-thread calls (the
 /// shared plugin aborts the process if `removed` runs off the attaching thread
 /// or `terminate` off the initializing one, as a real plugin may crash).
-/// `Drop` has no token, so the plugin is handed to the main thread
-/// (`defer_to_main`, as the CLAP and VST2 hosts do): still registered on the
-/// run loop after the drop, torn down at the main thread's next `run_deferred`.
+/// `Drop` has no token, so the plugin is handed to its owner's collector
+/// (`MainWork`, as the CLAP and VST2 hosts do): still registered on the run loop
+/// after the drop, torn down at the collector's next run on the main thread.
 #[test]
 fn a_plugin_dropped_off_the_main_thread_is_torn_down_on_it_later() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
-    let mut plugin = plugin_with_editor(&module, TIDY);
+    let (work, handle) = tutti_plugin_types::MainWork::new();
+    let mut plugin = plugin_with_editor_for(&module, TIDY, &handle);
     open(&mut plugin, &main);
     let bystander = create(&module);
     assert_eq!(registered(&bystander), (1, 1));
@@ -257,7 +280,7 @@ fn a_plugin_dropped_off_the_main_thread_is_torn_down_on_it_later() {
         (1, 1),
         "nothing was torn down on the dropping thread"
     );
-    assert_eq!(tutti_plugin_types::run_deferred(&main), 1);
+    assert_eq!(work.run(&main), 1);
     assert_eq!(
         registered(&bystander),
         (0, 0),
@@ -271,7 +294,7 @@ fn a_plugin_dropped_off_the_main_thread_is_torn_down_on_it_later() {
 /// Spec: vst3.IComponent.activateBus
 #[test]
 fn activate_bus_reports_a_refusal() {
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = create(&module);
     plugin.initialize_component(&main).expect("initialize");

@@ -14,8 +14,8 @@ use dpi::Size;
 use tutti_plugin_ipc::state_chunk::{self, Reassembler};
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, StagedState};
 use tutti_plugin_types::{
-    BridgeError, BridgeResult, EditorError, Load, MainThread, ParameterQueue, PluginError, Ready,
-    SampleFormat, SampleRate, StateUse, Wakeups, WindowHandle,
+    BridgeError, BridgeResult, EditorError, Load, MainThread, MainWork, MainWorkHandle,
+    ParameterQueue, PluginError, Ready, SampleFormat, SampleRate, StateUse, Wakeups, WindowHandle,
 };
 
 /// What [`Session::handle`] asks the transport loop to do.
@@ -82,6 +82,11 @@ pub(crate) struct Session {
     /// The hosted plugin, or `None` before a load and after an unload. Every
     /// handler that needs one refuses explicitly rather than going silent.
     pub(crate) plugin: Option<AnyServed>,
+    /// What the plugin's drops off the main thread hand over: run on every tick and
+    /// after an unload.
+    work: MainWork,
+    /// The plugin's way to that collector.
+    work_handle: MainWorkHandle,
     /// The render thread's queues: what the plugin's blocks are rendered with
     /// travels to it here.
     pub(crate) render: RenderLink,
@@ -145,8 +150,11 @@ impl Session {
     pub(crate) fn new() -> (Self, RenderSide) {
         let (render, side) = link();
         let published = RenderConfig::new();
+        let (work, work_handle) = MainWork::new();
         let session = Self {
             plugin: None,
+            work,
+            work_handle,
             render,
             clock: published.clock,
             rate_refused: None,
@@ -502,6 +510,7 @@ impl Session {
     /// the plugin asked its window to take, and the news that the editor was
     /// closed here. Allocates only to hold what it tells the host.
     pub(crate) fn tick(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
+        self.work.run(main);
         let mut told = self.drain_async_events(main);
         if self.editor_open
             && let Some(control) = self
@@ -600,6 +609,7 @@ impl Session {
                 );
             }
             drop(plugin);
+            self.work.run(main);
             self.render.send(ToRender::Unseat);
         }
     }
@@ -653,6 +663,7 @@ impl Session {
         let prefer_f64 = preferred_format == SampleFormat::Float64;
         let (plugin, state_error, seat) = match AnyServed::load(
             main,
+            &self.work_handle,
             &path,
             load,
             sample_rate,
@@ -2771,6 +2782,7 @@ mod tests {
 
         let (vst3, _) = crate::served::Served::<tutti_vst3_host::Vst3Loaded>::load(
             &main_thread(),
+            &tutti_fixtures::detached_work(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
             &Load::new(),
             SampleRate::SR_48K,

@@ -17,6 +17,7 @@ const CORE_AUDIO: &str = "/System/Library/Components/CoreAudio.component";
 fn load_id(id: &str) -> Result<AuLoaded, PluginError> {
     AuLoaded::load(
         &main_thread(),
+        &tutti_fixtures::detached_work(),
         Path::new(CORE_AUDIO),
         &Load::new().plugin(id),
     )
@@ -53,8 +54,13 @@ fn each_declared_id_loads_the_unit_with_that_triple() {
 /// precedes it in `CoreAudio.component` is never chosen.
 #[test]
 fn no_choice_loads_the_first_audio_unit_and_never_an_afil_entry() {
-    let loaded = AuLoaded::load(&main_thread(), Path::new(CORE_AUDIO), &Load::new())
-        .expect("the first unit loads");
+    let loaded = AuLoaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        Path::new(CORE_AUDIO),
+        &Load::new(),
+    )
+    .expect("the first unit loads");
     // CoreAudio.component's array opens with `afil MooV appl`, then
     // `aufx nbeq appl` (measured, macOS 15.6).
     assert_eq!(loaded.info().id, "au.aufx.nbeq.appl");
@@ -99,7 +105,12 @@ fn a_path_that_is_not_a_bundle_is_refused() {
         Path::new("/nonexistent/x.component"),
         &file,
     ] {
-        let reason = scanning_reason(AuLoaded::load(&main_thread(), path, &Load::new()));
+        let reason = scanning_reason(AuLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            &Load::new(),
+        ));
         assert!(reason.contains("not an Audio Unit bundle"), "{reason}");
     }
 }

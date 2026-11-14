@@ -160,6 +160,20 @@ tempfile = "3.10"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+# Plugins hosted in this process, through the session, on the process's main thread:
+# `MainThread::new` asks the OS, so the target owns `main()` (`harness = false`).
+[[test]]
+name = "main_thread"
+harness = false
+required-features = ["plugin"]
+
+# The shared plugin hosted in this process and bounced: a fork of an in-process plugin is
+# made on the process's main thread, so the target owns `main()` (`harness = false`).
+[[test]]
+name = "bounce_in_process"
+harness = false
+required-features = ["clap", "export"]
+
 # The instrument contract (`tests/instrument/instrument_support`): the same cases
 # against `PolySynth`, the SoundFont unit and a hosted plugin. The plugin subject
 # needs a built `plugin-server`, and fails without it.

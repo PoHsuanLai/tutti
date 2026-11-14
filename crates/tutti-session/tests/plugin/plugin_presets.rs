@@ -13,7 +13,7 @@ use tutti_session::{PluginLoadRequest, PresetKind, Session};
 use tutti_types::{ChannelLayout, SampleRate};
 
 fn main_thread() -> MainThread {
-    MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 #[cfg(feature = "clap")]

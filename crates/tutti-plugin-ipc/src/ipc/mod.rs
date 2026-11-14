@@ -100,7 +100,7 @@ impl IpcOrigin {
             rate,
             state,
             StateUse::Duplicate,
-            self.load_editor,
+            self.load_editor.clone(),
         )
     }
 }
@@ -391,7 +391,7 @@ impl Ipc {
             config.socket_path.clone(),
             Arc::clone(server.slab.slab()),
             tutti_plugin_types::Origin::new(path.clone(), load.clone()),
-            load_editor,
+            load_editor.clone(),
             rate,
         )?;
         guard.attach(thread);

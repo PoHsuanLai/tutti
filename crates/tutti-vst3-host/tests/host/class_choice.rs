@@ -27,8 +27,13 @@ fn a_load_by_class_id_picks_that_class() {
     let (id, name) = classes.last().unwrap().clone();
     assert_ne!(Some(&id), classes.first().map(|c| &c.0));
 
-    let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new().class_id(&id))
-        .expect("the class loads");
+    let loaded = Vst3Loaded::load(
+        &main_thread(),
+        &tutti_fixtures::detached_work(),
+        &path,
+        LoadOptions::new().class_id(&id),
+    )
+    .expect("the class loads");
     let info = loaded.plugin_info();
     assert_eq!(info.id, id);
     assert_eq!(info.name, name);
@@ -45,8 +50,13 @@ fn an_unknown_class_id_is_refused_naming_the_classes() {
         "vst3.00000000-00000000-00000000-00000000",
         classes[0].1.as_str(),
     ] {
-        let err = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new().class_id(wanted))
-            .expect_err("no class has this id");
+        let err = Vst3Loaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            &path,
+            LoadOptions::new().class_id(wanted),
+        )
+        .expect_err("no class has this id");
         let Vst3Error::LoadFailed {
             stage: LoadStage::Factory,
             cause: LoadCause::ClassNotFound { wanted: w, offered },

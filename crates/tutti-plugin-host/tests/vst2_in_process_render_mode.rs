@@ -119,6 +119,7 @@ fn load() -> Loaded {
     reset_probe(&path);
     let (unit, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
+        &tutti_fixtures::detached_work(),
         &path,
         &Load::new(),
         SampleRate::of(SAMPLE_RATE),
@@ -172,7 +173,6 @@ fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frame
 /// reporting exactly what a plugin that *declined* the mode reports. The two
 /// were indistinguishable to a caller, which is why this asserts the plain
 /// boolean before anything reads the plugin's side.
-#[test]
 fn the_handle_accepts_a_render_mode() {
     let _guard = lock_probe();
     let loaded = load();
@@ -192,7 +192,6 @@ fn the_handle_accepts_a_render_mode() {
 /// The baseline, and the half that makes the offline assertion meaningful: an
 /// implementation that hard-coded `4` would pass the next test and fail this
 /// one.
-#[test]
 fn a_plugin_renders_at_realtime_level_by_default() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -215,7 +214,6 @@ fn a_plugin_renders_at_realtime_level_by_default() {
 ///
 /// The whole point: this is the call a bounce driver makes, and the level the
 /// plugin reads is the one it would size an oversampling buffer from.
-#[test]
 fn an_offline_mode_set_on_the_handle_reaches_the_plugin() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -243,7 +241,6 @@ fn an_offline_mode_set_on_the_handle_reaches_the_plugin() {
 /// does not — leaves every plugin in offline mode for the rest of the session,
 /// which is the failure the driver's guard design exists to prevent; this pins
 /// that the underlying call can actually undo itself.
-#[test]
 fn restoring_realtime_reaches_the_plugin() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -280,7 +277,6 @@ fn restoring_realtime_reaches_the_plugin() {
 /// **A rate change keeps the render mode**: re-activating the plugin at a new
 /// rate (a rejoin and an activation) must not put it back to realtime. An export
 /// sets the mode and then prepares at its own rate.
-#[test]
 fn a_rate_change_keeps_the_render_mode() {
     let _guard = lock_probe();
     let mut loaded = load();
@@ -308,4 +304,31 @@ fn a_rate_change_keeps_the_render_mode() {
 /// The project's tempo map the node under test is bound to.
 fn tempo() -> tutti_transport::TempoReader {
     tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
+}
+
+/// The cases run on the process's main thread (`harness = false`): the node's `prepare`
+/// and a fork tell the plugin at once only there.
+fn main() {
+    tutti_fixtures::main_thread_cases(&[
+        (
+            "the_handle_accepts_a_render_mode",
+            the_handle_accepts_a_render_mode,
+        ),
+        (
+            "a_plugin_renders_at_realtime_level_by_default",
+            a_plugin_renders_at_realtime_level_by_default,
+        ),
+        (
+            "an_offline_mode_set_on_the_handle_reaches_the_plugin",
+            an_offline_mode_set_on_the_handle_reaches_the_plugin,
+        ),
+        (
+            "restoring_realtime_reaches_the_plugin",
+            restoring_realtime_reaches_the_plugin,
+        ),
+        (
+            "a_rate_change_keeps_the_render_mode",
+            a_rate_change_keeps_the_render_mode,
+        ),
+    ]);
 }

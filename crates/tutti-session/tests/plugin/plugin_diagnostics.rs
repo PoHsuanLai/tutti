@@ -16,7 +16,7 @@ const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
 
 fn main_thread() -> MainThread {
-    MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 fn offline() -> Session {

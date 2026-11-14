@@ -21,6 +21,7 @@ impl<F: ServerSide> Served<F> {
     ) -> PluginResult<Self> {
         Self::load(
             main,
+            &tutti_fixtures::detached_work(),
             path,
             &Load::new(),
             SampleRate::of(rate),
@@ -45,6 +46,7 @@ impl<F: ServerSide> Served<F> {
     ) -> PluginResult<Self> {
         Self::load(
             main,
+            &tutti_fixtures::detached_work(),
             path,
             load,
             SampleRate::of(rate),
@@ -73,6 +75,7 @@ use tutti_fixtures::main_thread;
 fn load_any(path: &Path) -> PluginResult<AnyServed> {
     AnyServed::load(
         &main_thread(),
+        &tutti_fixtures::detached_work(),
         path,
         &Load::new(),
         SampleRate::SR_44K1,

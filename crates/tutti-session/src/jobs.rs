@@ -254,7 +254,7 @@ impl Jobs {
     /// runs on the thread that calls `update()`, which need not be the main
     /// thread: a landing takes no main-thread proof (the plugin reload's does
     /// not), and what must be done on the main
-    /// thread is posted to it (`tutti_plugin_types::defer_to_main`).
+    /// thread is posted to the session's `MainWork` (`tutti_plugin_types`).
     #[cfg_attr(
         not(any(test, feature = "midi", feature = "sampler")),
         expect(

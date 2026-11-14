@@ -10,8 +10,8 @@ use std::path::Path;
 use dpi::Size;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow,
-    InProcess, KeyEvent, KeyUse, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
-    PluginResult, WindowHandle,
+    InProcess, KeyEvent, KeyUse, Load, MainThread, MainWorkHandle, Normalized, ParamEdit, ParamId,
+    PluginError, PluginResult, WindowHandle,
 };
 
 use super::loaded::Vst3Loaded;
@@ -46,9 +46,14 @@ pub struct Vst3Editor {
 impl Vst3Editor {
     /// Loads the editor-only instance. It is never activated and never
     /// processes audio: the audio instance runs elsewhere.
-    pub(crate) fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
+    pub(crate) fn load(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self> {
         Ok(Self {
-            inner: Vst3Loaded::load_in_process(main, path, load)?,
+            inner: Vst3Loaded::load_in_process(main, work, path, load)?,
             edits: Vec::new(),
             dirty: false,
         })

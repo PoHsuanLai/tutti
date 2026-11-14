@@ -12,6 +12,8 @@ use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_fact
 use clap_sys::plugin::clap_plugin_descriptor;
 use clap_sys::version::{CLAP_VERSION_MAJOR, clap_version, clap_version_is_compatible};
 
+use tutti_plugin_types::MainWorkHandle;
+
 use crate::guard::lossy;
 use crate::host::Host;
 use crate::plugin::Plugin;
@@ -445,7 +447,8 @@ impl Bundle {
         Ok(index)
     }
 
-    /// Creates and initialises descriptor `index`'s plugin on `host`.
+    /// Creates and initialises descriptor `index`'s plugin on `host`. `work` is
+    /// where the plugin's drop off the main thread hands its destruction.
     ///
     /// # Errors
     /// The factory cannot create it or its `init` fails; the half-made
@@ -458,6 +461,7 @@ impl Bundle {
         index: usize,
         host: Host,
         roles: Arc<ThreadRoles>,
+        work: MainWorkHandle,
     ) -> Result<Plugin, LoadError> {
         let id = &self.descriptors[index].id;
         let id_cstr =
@@ -475,7 +479,7 @@ impl Bundle {
         if plugin.is_null() {
             return Err(LoadError::CreateFailed);
         }
-        Plugin::from_created(plugin, self, host, roles)
+        Plugin::from_created(plugin, self, host, roles, work)
     }
 }
 

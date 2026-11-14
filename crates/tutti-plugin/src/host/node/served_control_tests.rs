@@ -40,7 +40,10 @@ fn the_served_control_and_any_thread_answer_alike() {
         SampleRate::SR_48K,
         None,
         tutti_plugin_types::StateUse::Project,
-        Some(crate::format::gui::load_gui_instance),
+        Some(tutti_plugin_ipc::EditorLoader::new(
+            crate::format::gui::load_gui_instance,
+            tutti_fixtures::detached_work(),
+        )),
     )
     .expect("the probe launches in a real plugin-server");
     let main = main_thread();
@@ -115,7 +118,10 @@ fn a_live_served_load_reaches_the_plugin_in_the_context_it_names() {
         SampleRate::SR_48K,
         None,
         tutti_plugin_types::StateUse::Project,
-        Some(crate::format::gui::load_gui_instance),
+        Some(tutti_plugin_ipc::EditorLoader::new(
+            crate::format::gui::load_gui_instance,
+            tutti_fixtures::detached_work(),
+        )),
     )
     .expect("the probe launches in a real plugin-server");
     let main = main_thread();

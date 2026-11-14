@@ -372,7 +372,11 @@ pub fn measure<L: InProcess>(
     descriptor: &PluginDescriptor,
     state: Option<&[u8]>,
 ) -> Result<Option<Measured>, String> {
-    let Ok(mut loaded) = L::load_in_process(main, path, &Load::new().plugin(&descriptor.id)) else {
+    // The plugin closes on this thread when `loaded` drops, so the collector it is
+    // given never receives work.
+    let (_collector, work) = tutti_plugin_types::MainWork::new();
+    let Ok(mut loaded) = L::load_in_process(main, &work, path, &Load::new().plugin(&descriptor.id))
+    else {
         return Ok(None);
     };
     if let Some(bytes) = state {

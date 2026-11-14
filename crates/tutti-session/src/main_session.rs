@@ -2,16 +2,16 @@
 //! plugin format requires on the UI thread, and the servicing they need.
 //!
 //! A [`Session`] is `Send` and has no main thread of its own: a headless
-//! session has none to be handed. A caller that has one (it claimed it with
-//! [`MainThread::claim`], once, on its UI thread) makes a [`MainSession`] with
+//! session has none to be handed. A caller that has one (the app makes it once,
+//! on its main thread, with [`MainThread::new`]) makes a [`MainSession`] with
 //! [`Session::main`], which is `&mut Session` and that proof, and nothing else.
 //!
 //! What only the main thread may do is reachable only through the view:
 //!
 //! - [`MainSession::update`] runs [`Session::update`], then drops what the
 //!   session retired (a removed plugin, the outgoing plugin of a crossfade: the
-//!   graveyard), runs the work other threads handed to the main thread
-//!   (`tutti_plugin_types::run_deferred`) and services every open editor.
+//!   graveyard), runs the work other threads handed to the session
+//!   ([`MainWork`](tutti_plugin_types::MainWork)) and services every open editor.
 //! - [`MainPlugin::editor`] is the editor: `open`, `resize`, `rescale`, `close`.
 //! - [`MainPlugin::presets`] lists and loads presets.
 //!
@@ -26,7 +26,7 @@
 //! # use tutti_graph::NodeKey;
 //! # use tutti_plugin_types::{ContentScale, MainThread};
 //! # fn open(session: &mut Session, node: NodeKey, window: &impl raw_window_handle::HasWindowHandle) {
-//! let main = MainThread::claim().expect("the UI thread claims first");
+//! let main = MainThread::new().expect("the app's main thread makes the token");
 //! let mut ui = session.main(main);
 //! let _events = ui.update();
 //! let _ = ui.plugin(node).unwrap().editor().open(window, ContentScale::IDENTITY);
@@ -87,7 +87,7 @@ pub struct MainSession<'a> {
 
 impl Session {
     /// The main-thread view of this session, for the caller that holds the
-    /// proof ([`MainThread::claim`]). `MainThread` is a `Copy`, zero-sized
+    /// proof ([`MainThread::new`]). `MainThread` is a `Copy`, zero-sized
     /// value passed as it is.
     pub fn main(&mut self, main: MainThread) -> MainSession<'_> {
         MainSession {
@@ -128,7 +128,7 @@ impl MainSession<'_> {
         // Before the servicing: a plugin the update removed has no editor left
         // to service.
         self.session.graph.graveyard.exhume(&main);
-        tutti_plugin_types::run_deferred(&main);
+        self.session.main_work.run(&main);
         for (&node, hosted) in &self.session.graph.plugins {
             if !hosted.editor_open {
                 continue;

@@ -29,6 +29,7 @@ fn through_server<F: Format>(path: PathBuf) {
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", tutti_fixtures::plugin_server()) };
     let client = PluginClient::new(
         BridgeConfig::default(),
+        &tutti_fixtures::detached_work(),
         &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
         tutti_plugin_types::SampleRate::SR_48K,
     )
@@ -97,7 +98,12 @@ fn vst3_cpp_mode_and_transcript_cross_the_process_boundary() {
 }
 
 /// No editor in these tests: the served plugin is driven through `Ipc` alone.
-fn no_editor(_: &MainThread, path: &std::path::Path, _: &Load) -> BridgeResult<Box<dyn Editor>> {
+fn no_editor(
+    _: &MainThread,
+    _: &tutti_plugin_types::MainWorkHandle,
+    path: &std::path::Path,
+    _: &Load,
+) -> BridgeResult<Box<dyn Editor>> {
     Err(BridgeError::LoadFailed {
         path: path.to_path_buf(),
         stage: LoadStage::Opening,
@@ -122,7 +128,10 @@ fn served<F: Format>(
         SampleRate::of(RATE),
         None,
         tutti_plugin_types::StateUse::Project,
-        Some(no_editor),
+        Some(tutti_plugin_ipc::EditorLoader::new(
+            no_editor,
+            tutti_fixtures::detached_work(),
+        )),
     )
     .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));
     let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

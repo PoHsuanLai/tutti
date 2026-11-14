@@ -58,7 +58,7 @@ pub(super) const ALLOW: &[(&str, usize, &str)] = &[
         CORE,
     ),
     (
-        "crates/tutti-session/tests/plugin/export_fork_plugin.rs",
+        "crates/tutti-session/tests/main_thread/export_fork_plugin.rs",
         2,
         CORE,
     ),
@@ -153,8 +153,8 @@ pub(super) const ALLOW: &[(&str, usize, &str)] = &[
         PLUGINS,
     ),
     (
-        "crates/tutti-plugin/tests/vst2_nodes/vst2_in_process_fork.rs",
-        1,
+        "crates/tutti-plugin/tests/vst2_fork/vst2_in_process_fork.rs",
+        2,
         PLUGINS,
     ),
     (

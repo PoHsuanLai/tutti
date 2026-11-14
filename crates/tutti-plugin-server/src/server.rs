@@ -82,7 +82,11 @@ impl PluginServer {
         // recorded here, and recording it later would sample a reaper instead
         // of the real spawner. See `main_loop::record_parent_pid`.
         crate::main_loop::record_parent_pid();
-        let main = MainThread::claim().map_err(|e| BridgeError::ProtocolError(e.to_string()))?;
+        let main = MainThread::new().ok_or_else(|| {
+            BridgeError::ProtocolError(
+                "the plugin server must be built on the process's main thread".into(),
+            )
+        })?;
         let (session, render) = Session::new();
         Ok(Self {
             config,

@@ -97,6 +97,11 @@ impl HostCallbacks for Recorder {
 }
 
 fn load(callbacks: Arc<Recorder>) -> Plugin {
+    load_with(callbacks, &tutti_fixtures::detached_work())
+}
+
+/// [`load`], with the collector the plugin hands an off-thread drop to.
+fn load_with(callbacks: Arc<Recorder>, work: &tutti_plugin_types::MainWorkHandle) -> Plugin {
     library();
     let bundle = Bundle::open(Path::new(probe_path()), None).expect("opens");
     let index = bundle
@@ -104,7 +109,12 @@ fn load(callbacks: Arc<Recorder>) -> Plugin {
         .expect("selects");
     let host = Host::new(callbacks);
     bundle
-        .instantiate(index, host, Arc::new(ThreadRoles::new(&main_thread())))
+        .instantiate(
+            index,
+            host,
+            Arc::new(ThreadRoles::new(&main_thread())),
+            work.clone(),
+        )
         .expect("instantiates")
 }
 
@@ -963,15 +973,16 @@ fn dropping_a_plugin_destroys_its_open_editor() {
 
 /// A drop off the main thread calls nothing in the plugin there, and does not skip the
 /// destruction: `gui.destroy` and `destroy` are main-thread entries, so the whole `Plugin` is
-/// handed to the main thread (`defer_to_main`) and destroyed at its next `run_deferred`, once,
-/// and the drop is counted.
+/// handed to its owner's collector (`MainWork`) and destroyed at its next run, once, and the
+/// drop is counted.
 #[test]
 fn a_drop_off_the_main_thread_is_destroyed_on_the_main_threads_next_tick() {
     let _g = lock();
     let main = main_thread();
     switch_u32(b"tutti_test_plugin_set_gui_mode\0", 1);
     gui_reset();
-    let mut plugin = load(Arc::default());
+    let (work, handle) = tutti_plugin_types::MainWork::new();
+    let mut plugin = load_with(Arc::default(), &handle);
     let parent = {
         // SAFETY: the reference plugin never dereferences its parent.
         unsafe { tutti_plugin_types::WindowHandle::from_u64(0) }
@@ -987,13 +998,13 @@ fn a_drop_off_the_main_thread_is_destroyed_on_the_main_threads_next_tick() {
         "nothing was called on the wrong thread"
     );
     assert_eq!(tutti_clap_ffi::off_thread_drops(), before + 1, "counted");
-    assert!(tutti_plugin_types::run_deferred(&main) >= 1);
+    assert!(work.run(&main) >= 1);
     assert_eq!(
         gui_capture().create_balance,
         0,
         "the main thread's tick destroyed the editor and the instance"
     );
-    assert_eq!(tutti_plugin_types::run_deferred(&main), 0, "once");
+    assert_eq!(work.run(&main), 0, "once");
     switch_u32(b"tutti_test_plugin_set_gui_mode\0", 0);
 }
 

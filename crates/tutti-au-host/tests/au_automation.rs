@@ -38,7 +38,7 @@ fn delay_loaded() -> AuLoaded {
 
 fn activate(au: AuLoaded) -> (AuProcessor, AuController) {
     let prepare = Prepare::new(RATE, MaxBlock::of(tutti_types::Samples(BLOCK as _)));
-    au.activate(&MainThread::claim().unwrap(), prepare)
+    au.activate(&tutti_fixtures::main_thread(), prepare)
         .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
 }
 
@@ -92,7 +92,7 @@ fn the_non_realtime_flag_is_read_from_the_unit() {
 #[test]
 fn a_non_realtime_parameter_is_written_between_blocks_not_by_the_render() {
     use tutti_plugin_types::Control;
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let (mut processor, mut controller) = activate(delay_loaded());
     let delay_before = plain(&controller, DELAY_TIME);
     let mix_before = plain(&controller, DRY_WET);
@@ -134,7 +134,7 @@ fn the_blocks_last_value_reaches_other_listeners_at_the_tick_not_the_render() {
     use tutti_au_ffi::{AuEvent, AuParameterListener, EventAddress};
     use tutti_plugin_types::Control;
 
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let (mut processor, mut controller) = activate(delay_loaded());
     let heard: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
     let sink = Arc::clone(&heard);
@@ -182,7 +182,7 @@ fn the_blocks_last_value_reaches_other_listeners_at_the_tick_not_the_render() {
 fn the_tick_does_not_write_the_value_back_over_a_later_one() {
     use tutti_plugin_types::Control;
 
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let (mut processor, mut controller) = activate(delay_loaded());
 
     let mut changes = ParameterChanges::reserved(1, 4);
@@ -209,7 +209,7 @@ fn many_blocks_between_ticks_tell_each_parameter_once() {
     use tutti_au_ffi::{AuEvent, AuParameterListener, EventAddress};
     use tutti_plugin_types::Control;
 
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let (mut processor, mut controller) = activate(delay_loaded());
     let heard: Arc<Mutex<Vec<(u32, f32)>>> = Arc::default();
     let sink = Arc::clone(&heard);
@@ -267,7 +267,7 @@ fn many_blocks_between_ticks_tell_each_parameter_once() {
 /// What a listener on another queue is given a moment to deliver.
 fn wait_for_edits(controller: &mut AuController, want: usize) -> Vec<ParamEdit> {
     use tutti_plugin_types::Control;
-    let main = MainThread::claim().unwrap();
+    let main = tutti_fixtures::main_thread();
     let mut heard = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while heard.len() < want && std::time::Instant::now() < deadline {

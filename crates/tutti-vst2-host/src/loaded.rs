@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{MainThread, MainWorkHandle};
 
 use vst::host::{PluginInstance, PluginLoader};
 use vst::plugin::Category;
@@ -161,8 +161,9 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// ```no_run
 /// use tutti_vst2_host::Vst2Loaded;
 ///
-/// let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
-/// let plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
+/// let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+/// let (_collector, work) = tutti_plugin_types::MainWork::new();
+/// let plugin = Vst2Loaded::load(&main, &work, "/usr/lib/vst/MyPlugin.so")?;
 /// println!("{} by {}", plugin.metadata().name, plugin.metadata().vendor);
 /// # Ok::<(), tutti_vst2_host::Vst2Error>(())
 /// ```
@@ -200,6 +201,8 @@ pub struct Vst2Loaded {
     /// The module opened and the choice of plugin in it (a shell's sub-plugin, as
     /// `vst2.<uniqueID>`), what a reopen loads again.
     pub(crate) origin: tutti_plugin_types::Origin,
+    /// The collector of this plugin's owner, which a reopen gives its new instance.
+    pub(crate) work: MainWorkHandle,
 }
 
 /// What the realtime half keeps between activations: the transport snapshot the
@@ -242,8 +245,8 @@ impl Vst2Loaded {
     /// module ([`LoadStage::Factory`]) or the plugin's entry point fails to
     /// produce an instance ([`LoadStage::Instantiation`]).
     ///
-    pub fn load(main: &MainThread, path: impl AsRef<Path>) -> Result<Self> {
-        Self::open(main, path.as_ref(), None)
+    pub fn load(main: &MainThread, work: &MainWorkHandle, path: impl AsRef<Path>) -> Result<Self> {
+        Self::open(main, work, path.as_ref(), None)
     }
 
     /// Opens the plugin of `path` whose `uniqueID` is `id`: a shell's sub-plugin (the host
@@ -254,8 +257,13 @@ impl Vst2Loaded {
     ///
     /// As [`load`](Self::load), and [`LoadStage::Instantiation`] when the plugin that
     /// came up is not the one with `id` (a shell that does not know it creates its default).
-    pub fn load_plugin(main: &MainThread, path: impl AsRef<Path>, id: i32) -> Result<Self> {
-        Self::open(main, path.as_ref(), Some(id))
+    pub fn load_plugin(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: impl AsRef<Path>,
+        id: i32,
+    ) -> Result<Self> {
+        Self::open(main, work, path.as_ref(), Some(id))
     }
 
     /// Every plugin the file at `path` holds, as the catalog describes them: the one plugin
@@ -273,7 +281,10 @@ impl Vst2Loaded {
         path: impl AsRef<Path>,
     ) -> Result<Vec<PluginDescriptor>> {
         let path = path.as_ref();
-        let first = Self::load(main, path)?;
+        // Every instance here closes on this thread before the next opens, so its
+        // collector never receives work.
+        let (_collector, work) = tutti_plugin_types::MainWork::new();
+        let first = Self::load(main, &work, path)?;
         if first.metadata.category != Vst2Category::Shell {
             return Ok(vec![first.descriptor.clone()]);
         }
@@ -289,7 +300,7 @@ impl Vst2Loaded {
         }
         Ok(subs
             .into_iter()
-            .map(|sub| match Self::load_plugin(main, path, sub.id) {
+            .map(|sub| match Self::load_plugin(main, &work, path, sub.id) {
                 Ok(loaded) => loaded.descriptor.clone(),
                 Err(_) => PluginDescriptor {
                     id: format!("vst2.{}", sub.id),
@@ -306,7 +317,12 @@ impl Vst2Loaded {
             .collect())
     }
 
-    fn open(main: &MainThread, path: &Path, chosen: Option<i32>) -> Result<Self> {
+    fn open(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        chosen: Option<i32>,
+    ) -> Result<Self> {
         // Loading runs the plugin's init sequence and probes its editor — VST2
         // requires this happen on the host main thread, which `main` proves.
 
@@ -327,6 +343,7 @@ impl Vst2Loaded {
         // `HostState`'s fields are already lock-free (a seqlock, a request word
         // and two `ArrayQueue`s), so the lock bought nothing.
         let host = Arc::new(HostState::new(
+            main,
             Arc::clone(&param_q),
             Arc::clone(&midi_out_q),
             time_info.reader(),
@@ -343,11 +360,13 @@ impl Vst2Loaded {
             }
         })?;
 
-        let mut instance = loader.instance(main).map_err(|e| Vst2Error::LoadFailed {
-            path: path.to_path_buf(),
-            stage: LoadStage::Instantiation,
-            reason: format!("loader.instance failed: {:?}", e),
-        })?;
+        let mut instance = loader
+            .instance(main, work)
+            .map_err(|e| Vst2Error::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Instantiation,
+                reason: format!("loader.instance failed: {:?}", e),
+            })?;
 
         instance.init(main);
 
@@ -460,6 +479,7 @@ impl Vst2Loaded {
             metadata,
             descriptor,
             origin: tutti_plugin_types::Origin::new(resolved, load),
+            work: work.clone(),
         })
     }
 

@@ -32,37 +32,20 @@ mod plugin_latency;
 // crossfade, and an export equal to the live render.
 #[cfg(all(feature = "clap", feature = "modulation", feature = "export"))]
 mod plugin_modulation;
-// A hosted plugin exported through a fork of its own server: fails without
-// `plugin-server`, by design.
-#[cfg(all(feature = "export", feature = "clap"))]
-mod export_fork_plugin;
 // The main-thread view: editors serviced by its update, the sizes they ask
 // for, and the graveyard it empties; a fake plugin with an editor.
 #[cfg(feature = "plugin")]
 mod main_view;
-// A hosted plugin's own event sources, served by the view's update: the
-// reference CLAP plugin in process, with an editor open (an X11 window id).
-#[cfg(all(feature = "clap", unix, not(target_os = "macos")))]
-mod plugin_event_sources;
 // A hosted plugin's parameters through the session's views: gestures, typed units, rescans; a
 // fake backend.
 #[cfg(feature = "plugin")]
 mod plugin_params;
-// Work handed to the main thread runs on the session's update.
-#[cfg(feature = "plugin")]
-mod deferred_main;
+// What plugins hand to the main thread: each session runs its own, and `close` runs what is owed.
+#[cfg(feature = "vst2")]
+mod main_work;
+// The reference VST2 plugin, in process: the project meter it is given.
 #[cfg(feature = "vst2")]
 mod vst2_meter;
-#[cfg(all(feature = "vst2", feature = "modulation"))]
-mod vst2_modulation;
-// The reference VST2 plugin, in process: the project meter it is given, and
-// modulation lanes on its parameters.
-#[cfg(feature = "vst2")]
-mod vst2_off_main_handle;
-// `typed` over a real format's own value map: the reference VST2 plugin's
-// integer-ranged parameter, in process.
-#[cfg(feature = "vst2")]
-mod vst2_params;
 // Presets through the main-thread view: a list that loads by id (VST2, in
 // process) and a file that loads by path (CLAP, in a real `plugin-server`).
 #[cfg(any(feature = "clap", feature = "vst2"))]

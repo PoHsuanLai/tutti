@@ -152,8 +152,13 @@ impl ProbeSession<'_> {
     /// Load + activate an instance against the currently-selected layout.
     fn activate(&self) -> Active<f32> {
         let path = Path::new(tutti_fixtures::clap_probe());
-        let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-            .expect("reference plugin should load");
+        let loaded = ClapLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().library(path),
+        )
+        .expect("reference plugin should load");
         loaded
             .activate_at::<f32>(SAMPLE_RATE, MAX_FRAMES)
             .map_err(|(_, e)| e)
@@ -163,8 +168,13 @@ impl ProbeSession<'_> {
     /// Load without activating — for the pure metadata queries.
     fn load(&self) -> ClapLoaded {
         let path = Path::new(tutti_fixtures::clap_probe());
-        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
-            .expect("reference plugin should load")
+        ClapLoaded::load(
+            &main_thread(),
+            &tutti_fixtures::detached_work(),
+            path,
+            LoadOptions::new().library(path),
+        )
+        .expect("reference plugin should load")
     }
 }
 

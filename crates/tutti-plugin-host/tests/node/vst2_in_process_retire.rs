@@ -1,8 +1,8 @@
 //! **A removed in-process VST2 node is dropped on the control side, never on the audio thread.**
 //!
 //! The node holds the plugin's `Processor` and so its `RenderHandle`. Dropping the last
-//! `RenderHandle` (the instance having closed first) hands the core to the main thread with
-//! `defer_to_main`, which locks and allocates: it must never run on the audio thread. What
+//! `RenderHandle` (the instance having closed first) hands the core to its owner's `MainWork`
+//! (`MainWorkHandle::defer`), which allocates: it must never run on the audio thread. What
 //! keeps it off is the graph: the executor moves a retired unit into the commit box it sends
 //! back (`tutti-graph`'s `exec.rs`, the `retired` pushes in `apply_pending`), the editor's
 //! `collect` drops it on the control side, and a unit dropped inside the audio scope panics in
@@ -53,11 +53,16 @@ fn block(exec: &mut tutti_graph::Executor, left: &mut [f32], right: &mut [f32]) 
 
 #[test]
 fn a_removed_vst2_node_is_dropped_on_the_control_side() {
-    let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
+    let main = tutti_fixtures::main_thread();
     let path = tutti_fixtures::vst2_probe().to_path_buf();
-    let (unit, handle) =
-        load_client::<Vst2Loaded>(&main, &path, &Load::new(), SampleRate::of(RATE))
-            .expect("the probe loads in process");
+    let (unit, handle) = load_client::<Vst2Loaded>(
+        &main,
+        &tutti_fixtures::pumped_work(),
+        &path,
+        &Load::new(),
+        SampleRate::of(RATE),
+    )
+    .expect("the probe loads in process");
 
     let key = NodeKey(1);
     let (mut editor, mut exec) = Editor::new(Prepare::new(

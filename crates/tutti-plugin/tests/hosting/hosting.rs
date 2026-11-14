@@ -22,7 +22,12 @@ fn a_vst2_plugin_asked_for_out_of_process_is_refused_at_load() {
             .expect("a plugin file")
             .with_hosting(Hosting::OutOfProcess);
         assert_eq!(plugin.hosting(), Hosting::OutOfProcess);
-        match Plugin::open(None, &plugin, SampleRate::of(RATE)) {
+        match Plugin::open(
+            None,
+            &tutti_fixtures::detached_work(),
+            &plugin,
+            SampleRate::of(RATE),
+        ) {
             Err(BridgeError::NotOutOfProcess { format, .. }) => assert_eq!(format, "VST2"),
             Err(other) => panic!("{name}: expected NotOutOfProcess, got {other:?}"),
             Ok(_) => panic!("{name}: a VST2 file must not be served"),
@@ -33,7 +38,6 @@ fn a_vst2_plugin_asked_for_out_of_process_is_refused_at_load() {
 #[cfg(feature = "clap")]
 mod clap {
     use super::*;
-    use tutti_plugin_types::MainThread;
 
     fn clap(hosting: Hosting) -> PluginRef {
         PluginRef::file(tutti_fixtures::clap_probe())
@@ -53,8 +57,13 @@ mod clap {
     #[test]
     fn auto_serves_a_clap_plugin() {
         let _env = with_server();
-        let plugin = Plugin::open(None, &clap(Hosting::Auto), SampleRate::of(RATE))
-            .expect("the reference plugin loads through a server");
+        let plugin = Plugin::open(
+            None,
+            &tutti_fixtures::detached_work(),
+            &clap(Hosting::Auto),
+            SampleRate::of(RATE),
+        )
+        .expect("the reference plugin loads through a server");
         assert_eq!(plugin.hosting(), Hosting::OutOfProcess);
         assert!(plugin.handle().server_pid().is_some());
     }
@@ -63,8 +72,13 @@ mod clap {
     #[test]
     fn out_of_process_serves_a_clap_plugin() {
         let _env = with_server();
-        let plugin = Plugin::open(None, &clap(Hosting::OutOfProcess), SampleRate::of(RATE))
-            .expect("the reference plugin loads through a server");
+        let plugin = Plugin::open(
+            None,
+            &tutti_fixtures::detached_work(),
+            &clap(Hosting::OutOfProcess),
+            SampleRate::of(RATE),
+        )
+        .expect("the reference plugin loads through a server");
         assert_eq!(plugin.hosting(), Hosting::OutOfProcess);
         assert!(plugin.handle().server_pid().is_some());
     }
@@ -78,16 +92,26 @@ mod clap {
         env.set("TUTTI_PLUGIN_SERVER", "/nonexistent/plugin-server");
         let asked = clap(Hosting::InProcess);
 
-        match Plugin::open(None, &asked, SampleRate::of(RATE)) {
+        match Plugin::open(
+            None,
+            &tutti_fixtures::detached_work(),
+            &asked,
+            SampleRate::of(RATE),
+        ) {
             Err(BridgeError::LoadFailed { reason, .. }) => {
                 assert!(reason.contains("main thread"), "{reason}");
             }
             other => panic!("an in-process load without the main thread: {other:?}"),
         }
 
-        let main = MainThread::claim().expect("one test, one process");
-        let plugin = Plugin::open(Some(&main), &asked, SampleRate::of(RATE))
-            .expect("the reference plugin loads in this process");
+        let main = tutti_fixtures::main_thread();
+        let plugin = Plugin::open(
+            Some(&main),
+            &tutti_fixtures::detached_work(),
+            &asked,
+            SampleRate::of(RATE),
+        )
+        .expect("the reference plugin loads in this process");
         assert_eq!(plugin.hosting(), Hosting::InProcess);
         assert_eq!(plugin.handle().server_pid(), None);
         assert_eq!(
@@ -104,9 +128,10 @@ fn auto_hosts_a_vst2_plugin_in_process() {
     // The probe is a plain cdylib; a host meets VST2 under a `.vst` name.
     let staged = std::env::temp_dir().join("tutti-hosting-auto.vst");
     std::fs::copy(tutti_fixtures::vst2_probe(), &staged).expect("stage the probe as a .vst");
-    let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
+    let main = tutti_fixtures::main_thread();
     let plugin = Plugin::open(
         Some(&main),
+        &tutti_fixtures::detached_work(),
         &PluginRef::file(&staged).expect("a plugin file"),
         SampleRate::of(RATE),
     )

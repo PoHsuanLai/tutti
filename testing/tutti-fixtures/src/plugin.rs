@@ -5,14 +5,63 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use crate::cdylib;
-use tutti_plugin_types::{Loaded, MainThread, PluginError, Prepare, WindowHandle};
+use crate::{cdylib, main_thread};
+use tutti_plugin_types::{Loaded, MainWork, MainWorkHandle, PluginError, Prepare, WindowHandle};
+use tutti_rt::MainThread;
 
-/// This process's main thread, claimed by the calling thread. Each test is its
-/// own process under nextest, so the claim cannot be refused; a test that calls
-/// it from two threads panics, which is the point.
-pub fn main_thread() -> MainThread {
-    MainThread::claim().expect("one test, one process")
+/// A [`MainWorkHandle`] whose collector is gone: for a test that loads a plugin
+/// and does not look at what an off-thread drop hands over. A close sent to it
+/// runs at once on the main thread and is otherwise counted in
+/// [`MainWork::stranded`]; a test that checks the hand-over makes its own
+/// [`MainWork::new`].
+pub fn detached_work() -> MainWorkHandle {
+    MainWork::new().1
+}
+
+/// A thread that runs a [`MainWork`] as the main thread's tick does, until it is
+/// dropped: for a test that calls a plugin handle from its own thread, which is
+/// off the main thread, and needs something to answer the hop.
+pub struct Pump {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Runs `work` on a new thread, every millisecond, with a token of its own.
+pub fn pump(work: MainWork) -> Pump {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let main = main_thread();
+        while !seen.load(std::sync::atomic::Ordering::Acquire) {
+            work.run(&main);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        work.run(&main);
+    });
+    Pump {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+impl Drop for Pump {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A [`MainWorkHandle`] whose collector a thread of this process runs for the
+/// rest of its life: for a test that calls a plugin handle from its own thread
+/// (off the main thread, so each call hops to the collector) and ends with its
+/// process. A test that stops the pump, or looks at what was handed over, makes
+/// its own with [`MainWork::new`] and [`pump`].
+pub fn pumped_work() -> MainWorkHandle {
+    let (work, handle) = MainWork::new();
+    std::mem::forget(pump(work));
+    handle
 }
 
 /// A window that names no window, for a test whose plugin, or whose host path,

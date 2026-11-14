@@ -17,7 +17,7 @@ use crate::{
 /// The test process's main thread: nextest runs each test in its own process,
 /// so the claim always succeeds.
 fn main() -> MainThread {
-    MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 fn prepare(rate: f64) -> Prepare {

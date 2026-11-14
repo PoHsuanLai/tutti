@@ -10,8 +10,8 @@ use std::path::Path;
 use dpi::Size;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow,
-    InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
-    Request, RescanScope, WindowHandle,
+    InProcess, Load, MainThread, MainWorkHandle, Normalized, ParamEdit, ParamId, PluginError,
+    PluginResult, Request, RescanScope, WindowHandle,
 };
 
 use super::ClapLoaded;
@@ -59,8 +59,13 @@ pub struct ClapEditor {
 impl ClapEditor {
     /// Loads the editor-only instance. It is never activated and never
     /// processes audio: the audio instance runs elsewhere.
-    pub(crate) fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
-        let inner = ClapLoaded::load_in_process(main, path, load)?;
+    pub(crate) fn load(
+        main: &MainThread,
+        work: &MainWorkHandle,
+        path: &Path,
+        load: &Load,
+    ) -> PluginResult<Self> {
+        let inner = ClapLoaded::load_in_process(main, work, path, load)?;
         // One pass over the catalog instead of a scan per write. Params are
         // readable on an unactivated instance, which is what this GUI-only
         // load is.

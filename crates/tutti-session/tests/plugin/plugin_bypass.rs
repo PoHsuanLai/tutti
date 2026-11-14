@@ -46,7 +46,7 @@ fn set_server() {
 }
 
 fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    tutti_fixtures::main_thread()
 }
 
 /// `1.0` at absolute frame [`FIRE`], `+0.0` everywhere else.

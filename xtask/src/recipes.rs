@@ -212,6 +212,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-alloc-binaries",
+        "",
+        "no top-level test file installs AllocDisabler: allocation tests are modules of the area binary",
+    ),
+    (
         "check-platform-seam",
         "",
         "a platform cfg stands only on a mod declaration, bar the temporary rows",
@@ -515,6 +520,7 @@ impl Planner<'_> {
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
             "check-errors" => self.out.push(Step::Gate(Gate::Errors)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
+            "check-alloc-binaries" => self.out.push(Step::Gate(Gate::AllocBinaries)),
             "check-lints" => self.out.push(Step::Gate(Gate::Lints)),
             "check-value-traits" => self.out.push(Step::Gate(Gate::ValueTraits)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
@@ -628,7 +634,7 @@ impl Planner<'_> {
                     "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
                     "check-layout", "check-range-types", "check-hosting", "check-lints",
                     "check-value-traits", "check-submodule-pins", "check-doc-refs",
-                    "check-pointers", "check-platform-seam",
+                    "check-pointers", "check-platform-seam", "check-alloc-binaries",
                 ] {
                     self.dep(d)?;
                 }

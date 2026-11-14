@@ -8,6 +8,7 @@
 //! `grep -E` or a Python regex is plain string code, written to the same
 //! language the pattern accepted (each gate's docs say how).
 
+mod alloc_binaries;
 mod canonical_paths;
 mod clap_sys;
 mod conformance;
@@ -119,6 +120,8 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// An allocation test is a module of its area binary, not a binary of its own.
+    AllocBinaries,
     /// A platform cfg stands only on a `mod` declaration.
     PlatformSeam,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
@@ -142,6 +145,7 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
             Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
@@ -169,6 +173,7 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
             Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);

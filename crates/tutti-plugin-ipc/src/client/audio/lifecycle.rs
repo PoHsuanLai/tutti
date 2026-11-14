@@ -1,9 +1,10 @@
 //! Shared running/crashed flags between the audio-bridge handle and the
 //! bridge thread.
 
+use dpi::Size;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tutti_plugin_types::{EditorSize, PluginFailure};
+use tutti_plugin_types::PluginFailure;
 use tutti_types::SampleRate;
 
 #[derive(Clone)]
@@ -38,7 +39,7 @@ pub(super) struct Lifecycle {
     rate_timeout_ms: Arc<AtomicU64>,
     /// The size the server's editor asked its window to take
     /// (`EditorWantsSize`), until the host takes it.
-    editor_wants: Arc<Mutex<Option<EditorSize>>>,
+    editor_wants: Arc<Mutex<Option<Size>>>,
     /// The server said it closed the editor on its own account
     /// (`EditorClosed`), until the remote editor takes the news.
     editor_closed: Arc<AtomicBool>,
@@ -61,14 +62,14 @@ impl Lifecycle {
     }
 
     /// The server's editor asked for `size`; the latest ask stands.
-    pub(super) fn set_editor_wants(&self, size: EditorSize) {
+    pub(super) fn set_editor_wants(&self, size: Size) {
         if let Ok(mut slot) = self.editor_wants.lock() {
             *slot = Some(size);
         }
     }
 
     /// The size the server's editor asked for since the last call.
-    pub(super) fn take_editor_wants(&self) -> Option<EditorSize> {
+    pub(super) fn take_editor_wants(&self) -> Option<Size> {
         self.editor_wants.lock().ok().and_then(|mut s| s.take())
     }
 

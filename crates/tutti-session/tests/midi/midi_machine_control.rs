@@ -19,7 +19,7 @@ use tutti_session::{
     SessionEvent, TempoError, UmpOut,
 };
 use tutti_transport::FadeOut;
-use tutti_types::{Beat, ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{Beat, SampleRate};
 use tutti_ump::{Message, MidiGroup, Sysex7Packets, Ump};
 
 const RATE: f64 = 48_000.0;
@@ -31,11 +31,8 @@ fn rig() -> (Session, FakeCounters) {
     let (backend, fake) = FakeBackend::build_with(vec![endpoint(KEYS, "Keys")], vec![], usize::MAX);
     let mut s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let _ = s.update();
     s.midi().connect_input("keys").expect("connects");
@@ -331,11 +328,8 @@ impl Wire {
 
 fn sender(wire: &Wire, to: Recipient) -> Session {
     let mut s = Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let _ = s.update();
     s.midi().set_hardware_out(Some(UmpOut::new(

@@ -7,9 +7,7 @@ use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeKey, NodeParts, Prepare
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_session::{Session, SessionNode};
 use tutti_transport::MotionEvent;
-use tutti_types::{
-    Beat, BeatDuration, ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples,
-};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut};
 use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2};
 
 /// The mezzo-forte default: MIDI 2.0's center velocity.
@@ -49,13 +47,7 @@ impl SessionNode for Tap {}
 
 /// An offline session at 48 kHz, stereo: the builder's MIDI nodes in.
 pub fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 /// A tap in `s`'s graph, and what it hears.

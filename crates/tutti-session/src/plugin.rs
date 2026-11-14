@@ -69,6 +69,13 @@
 //!   plugin's snapshot token until it lands, whether the job ran, panicked or
 //!   was dropped.
 //!
+//! # Hang
+//!
+//! With or without recovery, `PluginHandle::block_counts` is observed each
+//! phase against the session's [`HangPolicy`](crate::HangPolicy); a verdict
+//! ends the server (`PluginHandle::terminate`), so a hung plugin dies like a
+//! crashed one: [`PluginChange::Died`] with recovery off, a reload with it on.
+//!
 //! # Recovery
 //!
 //! With a [`RecoveryPolicy`](crate::RecoveryPolicy) (the default; `SessionBuilder::plugin_recovery`),
@@ -76,9 +83,6 @@
 //! reloaded at its own node instead of removed. The policy is the pure
 //! [`Recovery`]; this module carries out what it decides:
 //!
-//! - **Hang.** `PluginHandle::block_counts` is observed each phase; a
-//!   verdict ends the server (`PluginHandle::terminate`), so a hung plugin
-//!   dies like a crashed one, and the load below never races a live server.
 //! - **Death.** The node stays in the graph, silent, with its wiring and
 //!   every lane fed to it; [`PluginChange::Reloading`].
 //! - **Load.** When the backoff passes, the existing [`PluginLoad`] (with
@@ -109,9 +113,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tutti_plugin::MainThread;
 
+use dpi::Size;
 use tutti_graph::NodeKey;
 use tutti_plugin::catalog::{
-    AudioConfig, Catalog, Hosting, Plugin as HostPlugin, PluginRef, PluginState,
+    AudioConfig, BlacklistView, Catalog, Hosting, Plugin as HostPlugin, PluginRef, PluginState,
 };
 use tutti_plugin::error::StateError;
 use tutti_plugin_host::{Liveness, Verdict};
@@ -119,15 +124,15 @@ use tutti_plugin_host::{
     NodeControls, Notice, PluginControls, PluginHandle, PluginStatus, Subscription,
 };
 use tutti_plugin_types::{
-    BridgeError, EditorSize, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation,
-    PluginRefresh, PluginTail,
+    BridgeError, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation, PluginRefresh,
+    PluginTail,
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::plugin_diagnostics::Figures;
 use crate::{
-    Diagnostics, GiveUp, JobFailed, Key, Params, PluginBuses, PortCounts, Recovery, RecoveryAction,
-    RecoveryEvent, RecoveryFailure, ReloadCause, Session, SessionEvent,
+    Diagnostics, GiveUp, HangDetector, JobFailed, Key, Params, PluginBuses, PortCounts, Recovery,
+    RecoveryAction, RecoveryEvent, RecoveryFailure, ReloadCause, Session, SessionEvent,
 };
 
 /// How often a healthy plugin's state is captured, by default: 8 s (design 015 §4.4).
@@ -190,9 +195,9 @@ pub struct PluginLoad {
     rate: SampleRate,
     config: AudioConfig,
     state: Option<PluginState>,
-    /// A catalog's refusal ([`with_catalog`](Self::with_catalog)), landed by
-    /// [`run`](Self::run) as the load's failure.
-    refusal: Option<Box<BridgeError>>,
+    /// A catalog's blacklist ([`with_catalog`](Self::with_catalog)), asked by
+    /// [`run`](Self::run) as the load opens.
+    blacklist: Option<BlacklistView>,
 }
 
 impl std::fmt::Debug for PluginLoad {
@@ -213,16 +218,17 @@ impl PluginLoad {
     }
 
     /// This load under `catalog`: its audio settings
-    /// ([`Catalog::audio_config`]) and its blacklist ([`Catalog::check`]),
-    /// asked now and answered by [`run`](Self::run) (and so by
-    /// [`add_plugin`](Session::add_plugin)) as the load's failure,
+    /// ([`Catalog::audio_config`]) and its blacklist
+    /// ([`Catalog::blacklist_view`]), asked by [`run`](Self::run) when the load
+    /// opens, so a plugin blacklisted after this call is refused too. The
+    /// refusal is the load's failure ([`add_plugin`](Session::add_plugin)),
     /// [`BridgeError::Blacklisted`] with the recorded reason, before any
     /// server starts or library loads. The catalog is not borrowed past this
     /// call, so the load stays `Send`; a load that does not name a catalog
     /// consults no blacklist (a host offering to load a plugin anyway).
     pub fn with_catalog(mut self, catalog: &Catalog) -> Self {
         self.config = catalog.audio_config().clone();
-        self.refusal = catalog.check(&self.plugin).err().map(Box::new);
+        self.blacklist = Some(catalog.blacklist_view());
         self
     }
 
@@ -266,13 +272,13 @@ impl PluginLoad {
     /// A load the catalog refuses, or whose hosting the format cannot have
     /// ([`BridgeError::NotOutOfProcess`] for VST2 asked to be served), is
     /// refused here, before anything is opened.
-    pub fn run(mut self) -> PluginLoaded {
+    pub fn run(self) -> PluginLoaded {
         let plugin = self.plugin.clone();
         let config = self.config.clone();
         let refused = self
-            .refusal
-            .take()
-            .map(|refusal| *refusal)
+            .blacklist
+            .as_ref()
+            .and_then(|blacklist| blacklist.check(&self.plugin).err())
             .or_else(|| HostPlugin::hosting_of(&self.plugin).err());
         let opened = if let Some(refusal) = refused {
             Opened::Done(Box::new(Open::refused(refusal)))
@@ -477,7 +483,7 @@ pub(crate) enum PluginLiveness {
     },
 }
 
-/// How a hosted plugin is doing ([`Plugin::health`], design 029 section 2.6):
+/// How a hosted plugin is doing ([`Plugin::health`]):
 /// one reading of what the engine latched, the session's debounce and its
 /// recovery.
 ///
@@ -491,8 +497,8 @@ pub enum PluginHealth {
     /// Answering normally.
     Running,
     /// Alive, but its blocks go unanswered: the bridge is abandoning them and
-    /// has not yet declared a hang. With recovery off the session does not
-    /// watch for this, and it is never read.
+    /// has not yet declared a hang ([`HangPolicy`](crate::HangPolicy)), with
+    /// recovery on or off.
     Stalled,
     /// The engine reports it dead, and the session has not yet written it off
     /// (it waits out a debounce first). It then becomes
@@ -514,8 +520,7 @@ pub enum PluginHealth {
 }
 
 /// What happened to a hosted plugin, as the session's
-/// [`SessionEvent::Plugin`] reports it (design 029
-/// section 3.3): the node, and what changed.
+/// [`SessionEvent::Plugin`] reports it: the node, and what changed.
 ///
 /// One stream carries both what a plugin reports (its own edit of a
 /// parameter, a new tail) and every transition of its life (death, reload,
@@ -583,9 +588,9 @@ pub enum PluginChange {
     /// collapsing panel), found while [`MainSession::update`](crate::MainSession::update)
     /// serviced the editor. Answer with
     /// [`EditorView::resize`](crate::EditorView::resize) after sizing the window
-    /// it lives in. The size is in the platform's own pixels, as
-    /// [`EditorSize`] says.
-    EditorWantsSize(EditorSize),
+    /// it lives in. The size is in the plugin's format's own unit, as
+    /// [`Opened::Embedded`](crate::Opened::Embedded)'s is.
+    EditorWantsSize(Size),
     /// A hosted plugin was declared dead
     /// (`tutti_plugin_host::Liveness`) with recovery off: its node was
     /// removed. Reported once. With recovery on the death is
@@ -676,6 +681,12 @@ fn change_of(notice: Notice) -> Option<PluginChange> {
     })
 }
 
+/// A plugin handle a swap replaced, and whether its editor was open.
+pub(crate) struct Outgoing {
+    handle: PluginHandle,
+    editor_open: bool,
+}
+
 /// What a removal or a replacement took out of the session, held until the
 /// main thread drops it (`MainSession::update`).
 ///
@@ -691,6 +702,9 @@ pub(crate) struct Graveyard {
     /// Held to be dropped: a removed plugin's record, or the handle a
     /// crossfade replaced.
     retired: Vec<Box<dyn std::any::Any + Send>>,
+    /// Handles whose editor was open when they were retired: closed by
+    /// [`exhume`](Self::exhume) before the drop.
+    editors: Vec<PluginHandle>,
     warned: bool,
 }
 
@@ -700,11 +714,17 @@ impl Graveyard {
 
     pub(crate) fn bury(&mut self, record: HostedPlugin) {
         record.gate.end();
+        if record.editor_open {
+            self.editors.push(record.handle.clone());
+        }
         self.retired.push(Box::new(record));
     }
 
-    pub(crate) fn bury_handle(&mut self, handle: PluginHandle) {
-        self.retired.push(Box::new(handle));
+    pub(crate) fn bury_handle(&mut self, outgoing: Outgoing) {
+        if outgoing.editor_open {
+            self.editors.push(outgoing.handle.clone());
+        }
+        self.retired.push(Box::new(outgoing.handle));
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -712,7 +732,10 @@ impl Graveyard {
     }
 
     /// Drops everything in the yard, on the main thread. Returns how many.
-    pub(crate) fn exhume(&mut self, _main: &MainThread) -> usize {
+    pub(crate) fn exhume(&mut self, main: &MainThread) -> usize {
+        for handle in self.editors.drain(..) {
+            handle.close_editor(main);
+        }
         let n = self.retired.len();
         self.retired.clear();
         self.warned = false;
@@ -746,6 +769,7 @@ pub(crate) struct HostedPlugin {
     /// every plugin the session added; `None` for one the host inserted itself.
     pub(crate) node: Option<NodeControls>,
     liveness: Liveness,
+    hang: HangDetector,
     status: PluginLiveness,
     /// Told a render mode since it was added (or crossfaded in).
     pub(crate) told: bool,
@@ -884,6 +908,7 @@ impl HostedPlugin {
             controls: None,
             node: None,
             liveness: Liveness::new(),
+            hang: HangDetector::default(),
             status: PluginLiveness::Healthy,
             told: false,
             snapshot: None,
@@ -924,15 +949,15 @@ impl HostedPlugin {
     /// The outgoing mirror's report callback was on the outgoing handle,
     /// which reports nothing here once it is gone.
     ///
-    /// Returns the outgoing handle, for the graveyard: its drop may close the
-    /// outgoing plugin's editor.
+    /// Returns the outgoing handle, for the graveyard, which closes its editor
+    /// on the main thread if it was open.
     #[must_use = "the outgoing handle goes to the graveyard"]
     pub(crate) fn replace(
         &mut self,
         handle: PluginHandle,
         controls: PluginControls,
         plugin: PluginRef,
-    ) -> PluginHandle {
+    ) -> Outgoing {
         self.plugin = plugin;
         let outgoing = self.adopt(handle);
         self.node = Some((*controls).clone());
@@ -942,7 +967,7 @@ impl HostedPlugin {
 
     /// [`replace`](Self::replace)'s handle half: everything but the
     /// controls.
-    fn adopt(&mut self, handle: PluginHandle) -> PluginHandle {
+    fn adopt(&mut self, handle: PluginHandle) -> Outgoing {
         let (mirror, read) = tutti_plugin_host::PluginParamValues::start(&handle);
         self.mirror = mirror;
         self.param_read = Some(read);
@@ -952,9 +977,12 @@ impl HostedPlugin {
         self.gate = Gate::default();
         // What the outgoing plugin reported and nobody drained is its own.
         (self.notices, self.hearing) = hear(&handle);
-        let outgoing = std::mem::replace(&mut self.handle, handle);
-        self.editor_open = false;
+        let outgoing = Outgoing {
+            handle: std::mem::replace(&mut self.handle, handle),
+            editor_open: std::mem::replace(&mut self.editor_open, false),
+        };
         self.liveness = Liveness::new();
+        self.hang = HangDetector::default();
         self.status = PluginLiveness::Healthy;
         self.told = false;
         self.snapshot = None;
@@ -1018,6 +1046,13 @@ impl HostedPlugin {
             .map(|v| v.map(|v| v.get() as f32))
     }
 
+    /// Queues the announcement that every parameter value changed, as the
+    /// plugin's own would arrive: a load the host made moves values the plugin
+    /// may not report, and the next `Phase::Plugins` reads them again.
+    pub(crate) fn refresh_values(&self) {
+        queue(&self.notices, Notice::Refresh(PluginRefresh::ParamValues));
+    }
+
     /// Asks for the parameters to be read again (the plugin announced a
     /// rescan): a fresh read, handed to the host at the next
     /// `Phase::Plugins`, and a fresh token, so a read still in flight lands
@@ -1063,7 +1098,7 @@ impl Key<PluginNode> {
 }
 
 /// A hosted plugin, lent by [`Session::plugin`]: its identity, and the
-/// surfaces the session holds for it (design 029 section 3.1).
+/// surfaces the session holds for it.
 ///
 /// A view borrows the session, so it cannot outlive the plugin it names: a
 /// node that is removed or replaced while one is held is a borrow error, and
@@ -1113,7 +1148,7 @@ impl<'a> Plugin<'a> {
     }
 
     /// How the plugin is doing: running, stalled, dead and about to be
-    /// written off, or being reloaded (design 029 section 2.6).
+    /// written off, or being reloaded.
     pub fn health(&self) -> PluginHealth {
         let hosted = self.hosted;
         match &hosted.status {
@@ -1126,22 +1161,20 @@ impl<'a> Plugin<'a> {
             },
             PluginLiveness::Healthy | PluginLiveness::Failing => match hosted.handle.status() {
                 PluginStatus::Dead { cause } => PluginHealth::Died { cause },
-                _ if hosted.recovery.as_ref().is_some_and(Recovery::is_stalled) => {
-                    PluginHealth::Stalled
-                }
+                _ if hosted.hang.is_stalled() => PluginHealth::Stalled,
                 _ => PluginHealth::Running,
             },
         }
     }
 
     /// The plugin's diagnostics: its server, its dropouts and losses, and the
-    /// latency and tail the graph holds for it (design 029 section 2.7).
+    /// latency and tail the graph holds for it.
     pub fn diagnostics(&self) -> Diagnostics<'a> {
         Diagnostics::new(self.hosted, self.figures)
     }
 
     /// The plugin's buses as the graph's bus handles, to wire with
-    /// `Graph::connect` (design 029 section 3.5).
+    /// `Graph::connect`.
     pub fn buses(&self) -> PluginBuses<'a> {
         PluginBuses::new(self.node, self.hosted)
     }
@@ -1155,7 +1188,7 @@ impl<'a> Plugin<'a> {
 
     /// The plugin's parameters: what it declares, read at load and again when
     /// it announces a rescan, and the value of each, kept current from what the
-    /// plugin reports and the host sets (design 029 section 2.3).
+    /// plugin reports and the host sets.
     pub fn params(&self) -> Params<'a> {
         Params::new(self.node, self.hosted)
     }
@@ -1198,7 +1231,8 @@ impl<'a> StateView<'a> {
         Ok(PluginState::new(self.hosted.plugin.clone(), bytes))
     }
 
-    /// Restores `state` into the plugin.
+    /// Restores `state` into the plugin. The parameter mirror is read again by
+    /// the next `Phase::Plugins`, whatever values the state moved.
     ///
     /// # Errors
     ///
@@ -1207,7 +1241,9 @@ impl<'a> StateView<'a> {
     /// [`StateError`].
     pub fn restore(&self, main: &MainThread, state: &PluginState) -> Result<(), StateError> {
         state.check_for(&self.hosted.plugin)?;
-        self.hosted.handle.load_state(main, state.bytes())
+        self.hosted.handle.load_state(main, state.bytes())?;
+        self.hosted.refresh_values();
+        Ok(())
     }
 }
 
@@ -1235,7 +1271,7 @@ impl Session {
             rate: self.graph.prepared().sample_rate(),
             config: AudioConfig::default(),
             state: request.state,
-            refusal: None,
+            blacklist: None,
         }
     }
 
@@ -1725,7 +1761,7 @@ impl Session {
                 tracing::error!("plugin {node:?}: reload failed ({reason}); giving up: {why}");
                 gave_up.push((node, why));
             }
-            RecoveryAction::Wait | RecoveryAction::Terminate { .. } => {}
+            RecoveryAction::Wait => {}
         }
     }
 
@@ -1788,7 +1824,7 @@ impl Session {
             rate,
             config: origin.config,
             state: hosted.snapshot.clone(),
-            refusal: None,
+            blacklist: None,
         };
         let token = Arc::clone(&hosted.reload.token);
         let snapshot_age = hosted
@@ -1843,6 +1879,7 @@ impl Session {
         let now = cx.now;
         self.plugins_now = now;
         let interval = self.snapshot_interval;
+        let hang_policy = self.hang;
         let mut dead = Vec::new();
         let mut gave_up = Vec::new();
         let nodes: Vec<NodeKey> = self.graph.plugins.keys().copied().collect();
@@ -1952,17 +1989,11 @@ impl Session {
             // A plugin that is alive but never returns from `process()` is
             // ended here, and dies by the path above.
             if cause.is_none()
-                && let Some(recovery) = hosted.recovery.as_mut()
-                && let RecoveryAction::Terminate { reason } = recovery.step(
-                    {
-                        let counts = hosted.handle.block_counts();
-                        RecoveryEvent::Starved {
-                            abandoned: counts.abandoned,
-                            replies: counts.replies,
-                        }
-                    },
-                    now,
-                )
+                && let counts = hosted.handle.block_counts()
+                && let Some(reason) =
+                    hosted
+                        .hang
+                        .observe(hang_policy, counts.abandoned, counts.replies, now)
             {
                 tracing::error!(
                     "plugin '{}' ({node:?}): {reason}; ending its server",
@@ -2498,6 +2529,56 @@ mod tests {
             assert!(
                 rig.session.graph_ref().contains(rig.node),
                 "the native replacement stays in the graph (crossfade: {crossfade})"
+            );
+        }
+    }
+
+    /// **A swap closes the outgoing plugin's open editor** when the main
+    /// thread empties the graveyard: `adopt` clears the record's flag for the
+    /// incoming plugin, and the outgoing handle's editor is closed first, not
+    /// left to the drop. An editor that was not open is not closed.
+    #[test]
+    fn a_swap_closes_the_outgoing_editor() {
+        use tutti_plugin_types::fake::{Call, FakePlugin};
+        let main = MainThread::claim().expect("one test, one process");
+        for open in [true, false] {
+            let (fake, control) = FakePlugin::new();
+            fake.with_editor(true);
+            let control: Arc<dyn tutti_plugin_host::MainThreadControl> = Arc::new(control);
+            let outgoing = PluginHandle::from_backend(
+                Arc::new(Fake {
+                    state: None,
+                    saves: Arc::default(),
+                    dead: Arc::default(),
+                    params: Vec::new(),
+                    unlisted: Arc::default(),
+                }),
+                Some(control),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            let mut record = HostedPlugin::new(
+                outgoing,
+                PluginRef::file("fake.clap").expect("a plugin file"),
+            );
+            record.editor_open = open;
+            let (incoming, _) = fake_handle(None, Vec::new());
+            let mut yard = Graveyard::default();
+            yard.bury_handle(record.adopt(incoming));
+            assert!(
+                !record.editor_open,
+                "the incoming plugin has no editor open"
+            );
+            assert!(
+                !fake.calls().contains(&Call::CloseEditor),
+                "not before the main thread"
+            );
+            yard.exhume(&main);
+            assert_eq!(
+                fake.calls().contains(&Call::CloseEditor),
+                open,
+                "editor open: {open}"
             );
         }
     }

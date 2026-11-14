@@ -85,7 +85,7 @@ pub(crate) trait ServedPlugin: Render {
     }
     /// The plugin's control surface, which is also its editor's window calls
     /// ([`EditorWindow`](tutti_plugin_types::EditorWindow)): the editor of a
-    /// served plugin opens on the instance itself (doc 029 section 6.5).
+    /// served plugin opens on the instance itself.
     /// `None` when the plugin is lost.
     fn control_mut(&mut self) -> Option<&mut dyn Control>;
     /// Acts on what the plugin asked of the host since the last call, and

@@ -58,7 +58,10 @@ fn session() -> Result<Session, Error> {
         } else {
             builder
         };
-        builder.build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        builder
+            .sample_rate(RATE)
+            .max_block(MaxBlock::of(Samples(BLOCK)))
+            .build()
     };
     // A machine with no MIDI sequencer fails to open the OS layer: say so, and
     // run on without it.

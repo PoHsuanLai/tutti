@@ -233,12 +233,9 @@ impl HostState {
 
     /// The editor size the plugin asked for since the last call, if any: what the shared
     /// layer's `poll_editor_resize_request` hands the host.
-    pub(crate) fn take_size_request(&self) -> Option<tutti_plugin_types::EditorSize> {
+    pub(crate) fn take_size_request(&self) -> Option<dpi::Size> {
         let packed = self.size_request.swap(0, Ordering::AcqRel);
-        (packed != 0).then_some(tutti_plugin_types::EditorSize {
-            width: (packed >> 32) as u32,
-            height: packed as u32,
-        })
+        (packed != 0).then(|| crate::editor::rect_size((packed >> 32) as u32, packed as u32))
     }
 
     /// Records the block size the plugin is about to be told, for
@@ -736,12 +733,10 @@ mod tests {
         assert_eq!(host.take_size_request(), None, "nothing asked yet");
         assert!(host.size_window(640, 480));
         assert!(host.size_window(800, 600));
+        // At scale 1 a size is the same pair in either unit.
         assert_eq!(
-            host.take_size_request(),
-            Some(tutti_plugin_types::EditorSize {
-                width: 800,
-                height: 600
-            })
+            host.take_size_request().map(|s| s.to_physical::<u32>(1.0)),
+            Some(dpi::PhysicalSize::new(800, 600))
         );
         assert_eq!(host.take_size_request(), None, "consumed");
         assert!(!host.size_window(0, 480), "no width");

@@ -7,21 +7,22 @@ use crate::protocol::{
     Preset, PresetId, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
+use dpi::Size;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tutti_plugin_types::{
     BridgeResult, Delivered, EditorError, PluginError, PluginFailure, Request, StateError,
 };
-use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
+use tutti_plugin_types::{ContentScale, EditorCapabilities, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
 use tutti_plugin_types::{Editor, EditorWindow, Load, Origin};
 use tutti_types::SampleRate;
 
 /// Gives the audio instance the editor instance's state when the user changed
 /// it: the half of the mirror that carries what the user changed in the editor
-/// and is not a parameter (a sample loaded in the plugin's UI, a mode switch;
-/// design 021 Q8). Parameters already travel as edits.
+/// and is not a parameter (a sample loaded in the plugin's UI, a mode switch). Parameters
+/// already travel as edits.
 ///
 /// **"Changed" is against `baseline`**, the editor's own state when it was
 /// last in step with the audio instance (read right after the open's sync,
@@ -58,7 +59,7 @@ fn pull_editor_state(
 /// GUI instance. Audio processing goes through `AudioBridge` (IPC to
 /// plugin-server child process). Editor/GUI operations load the plugin
 /// in-process on first `open_editor` call, or, for a bridge made with no
-/// [`EditorLoader`], run in the server (doc 029 section 6.5).
+/// [`EditorLoader`], run in the server.
 pub struct PluginBridge {
     audio: AudioBridge,
     /// The file and the plugin in it, which the editor-only instance loads
@@ -463,7 +464,7 @@ impl PluginBridge {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> std::result::Result<EditorSize, EditorError> {
+    ) -> std::result::Result<Size, EditorError> {
         if self.audio.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
@@ -498,11 +499,7 @@ impl PluginBridge {
         let size = gui
             .open_editor(main, parent, scale)
             .map_err(|e| EditorError::PluginError(e.to_string()))?;
-        tracing::info!(
-            "[bridge] open_editor: editor opened {}x{}",
-            size.width,
-            size.height
-        );
+        tracing::info!("[bridge] open_editor: editor opened {size:?}");
 
         // Sync state after editor is open (some plugins need the view attached first).
         if let Ok(state) = state_to_sync {
@@ -623,7 +620,7 @@ impl PluginBridge {
             // Flush pending GUI param changes before closing.
             self.forward_edits(gui.poll_edits(main));
             // What the user changed in the editor that is not a parameter
-            // reaches the audio instance (design 021 Q8). Read while the view
+            // reaches the audio instance. Read while the view
             // is still attached.
             self.pull_editor_state(main, gui.as_mut());
             gui.close_editor(main);
@@ -858,8 +855,8 @@ impl PluginBridge {
     pub fn set_editor_size(
         &self,
         main: &MainThread,
-        requested: EditorSize,
-    ) -> std::result::Result<EditorSize, EditorError> {
+        requested: Size,
+    ) -> std::result::Result<Size, EditorError> {
         if self.load_editor.is_none() {
             return self.remote(|remote| remote.set_editor_size(main, requested));
         }
@@ -897,7 +894,7 @@ impl PluginBridge {
     }
 
     /// A size the open editor asked its window to take since the last poll.
-    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
+    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<Size> {
         if self.load_editor.is_none() {
             return self.remote.lock().ok()?.poll_editor_resize_request(main);
         }
@@ -993,7 +990,7 @@ mod gui_mirror_tests {
 
 #[cfg(test)]
 mod state_back_tests {
-    //! The editor's state reaching the audio instance (design 021 Q8), on a
+    //! The editor's state reaching the audio instance, on a
     //! stand-in editor: the decision is the bridge's, and each format's
     //! `save_state` is its host crate's.
     use super::*;
@@ -1031,7 +1028,7 @@ mod state_back_tests {
             _: &MainThread,
             _: WindowHandle,
             _: ContentScale,
-        ) -> PluginResult<EditorSize> {
+        ) -> PluginResult<Size> {
             unreachable!("the state-back never opens")
         }
 
@@ -1051,8 +1048,8 @@ mod state_back_tests {
         fn set_editor_size(
             &mut self,
             _main: &tutti_plugin_types::MainThread,
-            _requested: tutti_plugin_types::EditorSize,
-        ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+            _requested: dpi::Size,
+        ) -> tutti_plugin_types::PluginResult<dpi::Size> {
             Err(tutti_plugin_types::PluginError::Editor(
                 tutti_plugin_types::EditorError::PluginError(
                     "set_editor_size not supported".into(),
@@ -1064,7 +1061,7 @@ mod state_back_tests {
         fn poll_editor_resize_request(
             &mut self,
             _main: &tutti_plugin_types::MainThread,
-        ) -> Option<tutti_plugin_types::EditorSize> {
+        ) -> Option<dpi::Size> {
             None
         }
     }

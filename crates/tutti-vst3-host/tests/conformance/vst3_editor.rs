@@ -10,11 +10,12 @@
 
 #![cfg(feature = "conformance")]
 
+use dpi::{PhysicalSize, Size};
 use keyboard_types::{Code, Key as KeyboardKey, KeyState, Modifiers, NamedKey};
 use tutti_fixtures::{StandInWindow, main_thread};
 use tutti_plugin_types::{Control, EditorWindow, KeyEvent, KeyUse, ModifierConvention};
 use tutti_shared_plugin::transcript::{Kind, Transcript, find_blob};
-use tutti_vst3_host::{ContentScale, EditorSize, LoadOptions, Vst3Loaded};
+use tutti_vst3_host::{ContentScale, LoadOptions, Vst3Loaded};
 
 /// `core::EDITOR_*`, from the plugin's spec.
 const NONE: u32 = 0;
@@ -23,22 +24,10 @@ const LIVE: u32 = 5;
 
 /// The size every view opens at, and what `EDITOR_LIVE` asks its frame for once
 /// attached, clamps to at least and at most.
-const OPEN: EditorSize = EditorSize {
-    width: 200,
-    height: 100,
-};
-const REQUESTED: EditorSize = EditorSize {
-    width: 300,
-    height: 150,
-};
-const SMALLEST: EditorSize = EditorSize {
-    width: 100,
-    height: 50,
-};
-const LARGEST: EditorSize = EditorSize {
-    width: 800,
-    height: 600,
-};
+const OPEN: PhysicalSize<u32> = PhysicalSize::new(200, 100);
+const REQUESTED: PhysicalSize<u32> = PhysicalSize::new(300, 150);
+const SMALLEST: PhysicalSize<u32> = PhysicalSize::new(100, 50);
+const LARGEST: PhysicalSize<u32> = PhysicalSize::new(800, 600);
 
 /// The shared plugin, loaded, with its editor behaviour set through its state.
 fn plugin_with_editor(editor: u32) -> Vst3Loaded {
@@ -63,12 +52,21 @@ fn plugin_with_editor(editor: u32) -> Vst3Loaded {
     plugin
 }
 
-fn open(plugin: &mut Vst3Loaded) -> Result<EditorSize, tutti_plugin_types::PluginError> {
-    plugin.open_editor(
-        &main_thread(),
-        StandInWindow.handle(),
-        ContentScale::IDENTITY,
-    )
+/// `size` in pixels. Every test here runs at `ContentScale::IDENTITY`, where a size is
+/// the same pair in either unit, so the expected figures need not know which unit the
+/// platform's `ViewRect` is in.
+fn pixels(size: Size) -> PhysicalSize<u32> {
+    size.to_physical(1.0)
+}
+
+fn open(plugin: &mut Vst3Loaded) -> Result<PhysicalSize<u32>, tutti_plugin_types::PluginError> {
+    plugin
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
+        .map(pixels)
 }
 
 /// What the host's run loop holds for the plugin: a timer and a descriptor on
@@ -171,42 +169,38 @@ fn editor_resize_respects_capabilities() {
         "the view says it resizes"
     );
 
-    let absurd = EditorSize {
-        width: 10_000,
-        height: 10_000,
-    };
+    let absurd = PhysicalSize::new(10_000, 10_000);
     assert_eq!(
-        plugin.check_editor_size_constraint(&main, absurd),
+        plugin
+            .check_editor_size_constraint(&main, absurd.into())
+            .map(pixels),
         Some(LARGEST),
         "the view clamps an oversized request to its largest"
     );
     assert_eq!(
         plugin
-            .resize_editor(&main, absurd)
+            .resize_editor(&main, absurd.into())
+            .map(pixels)
             .expect("a snapped size is legal"),
         LARGEST,
         "the host applies the constrained rect, not the raw request"
     );
 
-    let tiny = EditorSize {
-        width: 10,
-        height: 10,
-    };
+    let tiny = PhysicalSize::new(10, 10);
     assert_eq!(
         plugin
-            .resize_editor(&main, tiny)
+            .resize_editor(&main, tiny.into())
+            .map(pixels)
             .expect("a snapped size is legal"),
         SMALLEST,
         "the view clamps an undersized request to its smallest"
     );
 
-    let within = EditorSize {
-        width: 400,
-        height: 300,
-    };
+    let within = PhysicalSize::new(400, 300);
     assert_eq!(
         plugin
-            .resize_editor(&main, within)
+            .resize_editor(&main, within.into())
+            .map(pixels)
             .expect("an in-range size is legal"),
         within,
         "a request within the limits is granted as asked"
@@ -227,13 +221,13 @@ fn a_closed_editor_reports_no_resize_request() {
     let main = main_thread();
 
     assert_eq!(
-        plugin.poll_editor_resize_request(&main),
+        plugin.poll_editor_resize_request(&main).map(pixels),
         None,
         "an editor that was never opened reported a pending resize"
     );
     open(&mut plugin).expect("the view opens");
     assert_eq!(
-        plugin.poll_editor_resize_request(&main),
+        plugin.poll_editor_resize_request(&main).map(pixels),
         Some(REQUESTED),
         "the view asked its frame for 300x150 when attached"
     );
@@ -245,7 +239,7 @@ fn a_closed_editor_reports_no_resize_request() {
     open(&mut plugin).expect("the view opens again");
     plugin.close_editor(&main);
     assert_eq!(
-        plugin.poll_editor_resize_request(&main),
+        plugin.poll_editor_resize_request(&main).map(pixels),
         None,
         "a closed editor still reported a pending resize request: it would be \
          applied to whichever editor is opened next"

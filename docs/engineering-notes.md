@@ -743,7 +743,7 @@ comments and docs, and treat it as a bug when you find it:
   safety argument into a type error (a `compile_fail` doctest pins it).
 
   `bevy_tutti::plugin_host` is a *module* of the adapter, not a package; the
-  `tutti-plugin-host` package (doc 021) is the format-generic half of plugin
+  `tutti-plugin-host` package is the format-generic half of plugin
   hosting (the control handle, the node's controls and the in-process node),
   unrelated to it.
 

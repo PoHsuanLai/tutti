@@ -1,4 +1,4 @@
-//! A plugin's per-block status in the plugin node (doc 023 step 2): CLAP's
+//! A plugin's per-block status in the plugin node: CLAP's
 //! *sleep* is the node's `report_tail(Tail::None)` and `Status::Idle`, and
 //! nothing else narrows or parks.
 //!

@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_graph::UmpAt;
 use tutti_session::Stamp;
-use tutti_types::MaxBlock;
 
 use std::time::{Duration, Instant};
 use tutti_graph::NodeKey;
@@ -16,8 +15,10 @@ use tutti_graph::Refused;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, SampleRate, Samples};
-use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Ump};
+use tutti_types::{Beat, BeatDuration, Frame, SampleRate};
+#[cfg(feature = "midi-hardware")]
+use tutti_ump::Ump;
+use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
 use tutti_fixtures::midi;
 use tutti_session::{
@@ -376,11 +377,8 @@ fn route_rules_wire_the_hardware_input() {
 fn a_route_rule_names_a_group() {
     let mut s = Session::builder()
         .midi_groups(MidiGroup::of(1))
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     let (a, _) = tap(&mut s);
@@ -610,11 +608,8 @@ fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounte
         tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
     let s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     (s, fake)
 }
@@ -633,6 +628,15 @@ fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
             }
             SessionEvent::Midi(MidiEvent::OutputLost { info }) => {
                 Some(("output lost", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::InputRestored { info }) => {
+                Some(("input restored", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::OutputRestored { info }) => {
+                Some(("output restored", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::RestoreFailed { info, .. }) => {
+                Some(("restore failed", info.name.clone()))
             }
             _ => None,
         })
@@ -729,11 +733,8 @@ fn keyboards(
     let mut s = Session::builder()
         .midi_hardware_over(backend)
         .midi_devices(devices)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let (synth, seen) = tap(&mut s);
     s.midi()
@@ -928,6 +929,203 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
         ]
     );
     assert!(s.midi().output().is_none());
+}
+
+/// Plugs a device the OS tells for certain across a replug
+/// (a CoreMIDI identity), which is what a returning device must be to be
+/// reconnected unasked.
+#[cfg(feature = "midi-hardware")]
+fn plug_persistent(
+    fake: &tutti_midi_hardware::test_support::FakeCounters,
+    raw: u32,
+    name: &str,
+    d: PortDirection,
+) {
+    fake.plug(
+        tutti_midi_hardware::test_support::persistent_endpoint(raw, name),
+        d,
+    );
+}
+
+/// The device events of an update, with the notices of the list itself
+/// (added, removed, changed) left out.
+#[cfg(feature = "midi-hardware")]
+fn restores(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
+    device_events(events)
+        .into_iter()
+        .filter(|(kind, _)| kind.contains("restore"))
+        .collect()
+}
+
+/// **A connected input whose device is removed and returns is open again**,
+/// and the update that saw it return says so.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_removed_input_that_returns_is_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    assert!(!hw(&s).is_any_input_connected());
+
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert_eq!(
+        restores(&s.update()),
+        [("input restored", "Keys".to_string())]
+    );
+    assert_eq!(hw(&s).connected_input_names(), ["Keys"]);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
+}
+
+/// **An input the app disconnected is not reconnected when its device
+/// returns**: only a removal keeps a device wanted.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn an_input_the_app_disconnected_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    s.midi().disconnect_input("keys").expect("disconnects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A lost input the app then disconnects is forgotten**, and a second
+/// disconnect names that nothing is held.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn disconnecting_a_lost_input_forgets_it() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    s.midi().disconnect_input("keys").expect("forgets");
+    assert!(s.midi().disconnect_input("keys").is_err());
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A returning device that is only the same name is not bound unasked**:
+/// an ALSA identity cannot tell two units of a model apart.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_returning_input_known_only_by_name_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A device that is not the lost one leaves it wanted**: another keyboard
+/// arriving binds nothing, and the lost one is still reconnected on return.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn another_devices_arrival_does_not_restore_a_lost_input() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug_persistent(&fake, 2, "Pads", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert_eq!(
+        restores(&s.update()),
+        [("input restored", "Keys".to_string())]
+    );
+}
+
+/// **A connected output whose device is removed and returns is open again.**
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_removed_output_that_returns_is_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    assert!(s.midi().output().is_none());
+
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("output restored", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_some());
+}
+
+/// **An output the app disconnected is not reconnected on return**, and
+/// neither is one known only by name.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn an_output_the_app_disconnected_or_that_is_only_a_name_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    s.midi().disconnect_output().expect("disconnects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert!(restores(&s.update()).is_empty());
+    assert!(s.midi().output().is_none());
+
+    plug(&fake, 11, "Other", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("other").expect("connects");
+    fake.unplug(EndpointId::from_raw(11));
+    let _ = s.update();
+    plug(&fake, 11, "Other", PortDirection::Output);
+    assert!(restores(&s.update()).is_empty());
+    assert!(s.midi().output().is_none());
+}
+
+/// **A reconnection that fails is reported, and the device stays wanted**:
+/// it is tried again when it next returns.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_reconnection_that_fails_is_reported_and_retried_on_the_next_return() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+
+    fake.refuse_output_opens(true);
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("restore failed", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_none());
+
+    fake.refuse_output_opens(false);
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("output restored", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_some());
 }
 
 /// **A watch that dies is reported once**, with its reason: the list is frozen
@@ -1222,8 +1420,13 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     for ms in 0..40 {
         let now = start + Duration::from_millis(ms);
         for event in update_at(&mut s, now) {
-            if let SessionEvent::Midi(MidiEvent::CiPeer { device, change }) = event {
-                found.push((device, change));
+            if let SessionEvent::Midi(MidiEvent::CiPeer {
+                device,
+                peer,
+                change,
+            }) = event
+            {
+                found.push((device, peer, change));
             }
         }
         let mut answers: Vec<Ump> = Vec::new();
@@ -1254,7 +1457,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
         }
     }
     assert!(replied, "the session sent a Discovery");
-    let [(device_id, CiChange::Found(info))] = found.as_slice() else {
+    let [(device_id, id, CiChange::Found(declared))] = found.as_slice() else {
         panic!("one peer found, got {found:?}");
     };
     assert_eq!(
@@ -1265,12 +1468,15 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
             .map(|d| d.name.as_str()),
         Some("Wire")
     );
-    assert_eq!(info.muid(), peer);
-    assert_eq!(info.peer().discovery(), &data);
-    assert_eq!(
-        &s.midi().ci_peers(device_id)[..],
-        std::slice::from_ref(info)
-    );
+    assert_eq!(id.muid, peer);
+    assert_eq!(id.group, MidiGroup::FIRST);
+    assert_eq!(declared.discovery(), &data);
+    let listed = s.midi().ci_peers(device_id);
+    let [info] = &listed[..] else {
+        panic!("one peer listed, got {listed:?}");
+    };
+    assert_eq!(info.id(), *id);
+    assert_eq!(info.peer(), declared);
 }
 
 /// **A MIDI-CI peer's Profiles are the session's, and it switches them as the
@@ -1356,9 +1562,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
             }
         }
         if !switched
-            && seen
-                .iter()
-                .any(|c| matches!(c, ProfilesChange::Known { .. }))
+            && seen.iter().any(|c| matches!(c, ProfilesChange::Known))
             && let Some(id) = &device_id
         {
             let peers = s.midi().profiles(id);
@@ -1610,11 +1814,8 @@ fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
         tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
     let mut s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let (synth, seen) = tap(&mut s);
     s.midi()
@@ -1643,7 +1844,7 @@ fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
             clock.set(clock.get() + 1);
             let now = start + Duration::from_millis(clock.get());
             for event in update_at(s, now) {
-                if let SessionEvent::Midi(MidiEvent::CiProfiles { device, change }) = event {
+                if let SessionEvent::Midi(MidiEvent::CiProfiles { device, change, .. }) = event {
                     changes.push((device, change));
                 }
             }
@@ -1655,7 +1856,7 @@ fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
     let changes = run(&mut s, 60);
     let (device, _) = changes
         .iter()
-        .find(|(_, c)| matches!(c, ProfilesChange::Known { .. }))
+        .find(|(_, c)| matches!(c, ProfilesChange::Known))
         .expect("the peer's Profiles are known");
     let device = device.clone();
     let all: Vec<_> = s.midi().profiles(&device)[0].listed().collect();
@@ -1828,7 +2029,7 @@ fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
         if !asked_for
             && seen
                 .iter()
-                .any(|c| matches!(c, ProcessChange::Capabilities { .. }))
+                .any(|c| matches!(c, ProcessChange::Capabilities(_)))
             && let Some(id) = &device_id
         {
             let peers = s.midi().report_peers(id);
@@ -1912,43 +2113,27 @@ fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
         "one Inquiry: MIDI Message Report, on the Function Block, as asked"
     );
     let ended = [
-        ProcessChange::ReportBegan {
-            group: MidiGroup::FIRST,
-            muid: peer,
-            declared: asked,
-        },
-        ProcessChange::ReportEnded {
-            group: MidiGroup::FIRST,
-            muid: peer,
-        },
+        ProcessChange::ReportBegan(asked),
+        ProcessChange::ReportEnded,
     ];
     let report: Vec<_> = seen
         .iter()
-        .filter(|c| !matches!(c, ProcessChange::Capabilities { .. }))
+        .filter(|c| !matches!(c, ProcessChange::Capabilities(_)))
         .collect();
     assert_eq!(report, ended.iter().collect::<Vec<_>>());
 }
 
-/// **The hardware out JR-stamps only as its device's configuration says**
-/// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
-/// Configuration Notification has said it receives them). The
-/// session asks for JR off, so the output is unstamped when the device
-/// settles; when the device notifies that it receives JR the next `MidiOut`
-/// phase stamps, and the wire carries the JR messages; when it notifies the
-/// reverse the stamps stop. There is no switch of the session's own.
+/// Runs the Stream negotiation of the open duplex device `raw` to its end,
+/// answering as an Endpoint that receives no JR does. Returns the time it
+/// started at.
 #[cfg(feature = "midi-hardware")]
-#[test]
-fn the_hardware_out_stamps_as_the_devices_configuration_says() {
+fn settle(
+    s: &mut Session,
+    fake: &tutti_midi_hardware::test_support::FakeCounters,
+    raw: EndpointId,
+) -> Instant {
     use tutti_midi_hardware::{Capabilities, Endpoint};
-    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
-
-    let (mut s, fake) = hot_plug_session();
-    plug(&fake, 7, "Dev", PortDirection::Duplex);
-    let _ = s.update();
-    let raw = EndpointId::from_raw(7);
-    s.midi().connect_input("dev").expect("connects");
-    s.midi().connect_output("dev").expect("connects");
-
+    use tutti_ump::Message;
     // The device answers the session's Stream messages as an Endpoint does.
     let mut device = Endpoint::new(Capabilities {
         midi1: true,
@@ -1960,7 +2145,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     let mut settled = false;
     for ms in 0..8 {
         let now = start + Duration::from_millis(ms);
-        let events = update_at(&mut s, now);
+        let events = update_at(s, now);
         settled |= events
             .iter()
             .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::StreamSettled { .. })));
@@ -1975,6 +2160,29 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
         }
     }
     assert!(settled, "the negotiation settled");
+    start
+}
+
+/// **The hardware out JR-stamps only as its device's configuration says**
+/// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
+/// Configuration Notification has said it receives them). The
+/// session asks for JR off, so the output is unstamped when the device
+/// settles; when the device notifies that it receives JR the next `MidiOut`
+/// phase stamps, and the wire carries the JR messages; when it notifies the
+/// reverse the stamps stop. There is no switch of the session's own.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn the_hardware_out_stamps_as_the_devices_configuration_says() {
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
+    let _ = s.update();
+    let raw = EndpointId::from_raw(7);
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
+
+    let start = settle(&mut s, &fake, raw);
     let stamping = |s: &mut Session| s.midi().hardware_out().out.map(|o| o.is_stamping());
     assert_eq!(stamping(&mut s), Some(false), "asked for JR off");
 
@@ -2007,4 +2215,86 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     assert_eq!(stamping(&mut s), Some(false));
     assert!(!sent.iter().any(|u| u.is_jr()), "{sent:?}");
     assert_eq!(sent.len(), 2);
+}
+
+/// Opens the duplex device 7 as input and output, settled, and has it
+/// receive JR Timestamps.
+#[cfg(feature = "midi-hardware")]
+fn jr_session() -> (
+    Session,
+    tutti_midi_hardware::test_support::FakeCounters,
+    EndpointId,
+) {
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
+    let _ = s.update();
+    let raw = EndpointId::from_raw(7);
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
+    settle(&mut s, &fake, raw);
+    let ump = Ump::from(Message::Stream(Stream::StreamConfigurationNotification(
+        StreamConfig {
+            protocol: Protocol::Midi2,
+            rx_jr: true,
+            tx_jr: false,
+        },
+    )));
+    let now = Instant::now();
+    assert!(fake.send_input(raw, ump, now));
+    update_at(&mut s, now + Duration::from_millis(20));
+    fake.take_sent(raw);
+    (s, fake, raw)
+}
+
+/// **The JR stamp stream carries on across a disconnect and reconnect of the
+/// output**: a stream that restarted at origin 0 would stamp the next
+/// events earlier than ones already sent. Two events 480 frames apart move
+/// the origin to 481; after the output is closed and opened again it is still
+/// 481.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn the_stamp_stream_survives_a_disconnected_output() {
+    let (mut s, _fake, _raw) = jr_session();
+    s.midi()
+        .hardware_out()
+        .route(&[(Frame::new(0), key(0, 60)), (Frame::new(480), key(0, 61))]);
+    let origin = |s: &mut Session| s.midi().hardware_out().out.map(|o| o.origin());
+    assert_eq!(origin(&mut s), Some(Frame::new(481)));
+    s.midi().disconnect_output().expect("it was open");
+    s.midi().connect_output("dev").expect("connects");
+    assert_eq!(
+        origin(&mut s),
+        Some(Frame::new(481)),
+        "the stream carried on"
+    );
+}
+
+/// **`reconnect_saved` is all or nothing**: a duplex device whose output
+/// refuses to open leaves the input it would have opened closed; an input
+/// that was open before the call stays open.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_refused_output_leaves_no_input_opened_by_reconnect_saved() {
+    let (mut s, fake) = hot_plug_session();
+    let mut dev = tutti_midi_hardware::test_support::endpoint(7, "Dev");
+    dev.identity = tutti_midi_hardware::Identity::Product("unit".into());
+    fake.plug(dev, PortDirection::Duplex);
+    let _ = s.update();
+    let saved = s.midi().devices().remove(0);
+    fake.refuse_output_opens(true);
+
+    assert!(matches!(
+        s.midi().reconnect_saved(&saved),
+        Err(MidiError::Hardware(_))
+    ));
+    assert!(hw(&s).connected_input_names().is_empty(), "rolled back");
+
+    s.midi().connect_input("dev").expect("connects");
+    assert!(s.midi().reconnect_saved(&saved).is_err());
+    assert_eq!(
+        hw(&s).connected_input_names(),
+        ["Dev"],
+        "it was open before"
+    );
 }

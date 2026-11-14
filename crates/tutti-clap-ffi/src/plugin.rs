@@ -99,7 +99,7 @@ use clap_sys::plugin::clap_plugin;
 use crate::host::Host;
 use crate::library::{Bundle, LoadError, Stage};
 use crate::roles::ThreadRoles;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{ContentScale, MainThread};
 
 macro_rules! extensions {
     ($($(#[$m:meta])* $field:ident: $ty:ty = [$($id:expr),+];)*) => {
@@ -231,6 +231,9 @@ pub struct Plugin {
     /// CLAP requires every other `clap.gui` entry to follow, kept here so a
     /// caller cannot break it.
     pub(crate) gui_created: bool,
+    /// The scale the editor was opened with or last given: what a size in the
+    /// other unit is converted at.
+    pub(crate) gui_scale: ContentScale,
     // Dropped after `Plugin::drop` has destroyed the instance: the host the
     // plugin called, then the library its code lives in.
     // `ManuallyDrop` so a drop off the main thread can move them to the main
@@ -252,34 +255,42 @@ impl std::fmt::Debug for Plugin {
 }
 
 /// An extension call that did not run to a result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum CallError {
     /// The plugin does not implement the extension.
+    #[error("the plugin does not implement the extension")]
     NoExtension,
     /// The plugin implements the extension but not this entry.
+    #[error("the plugin does not implement the entry")]
     NoFunction,
     /// The entry ran and answered `false`.
+    #[error("the entry answered false")]
     Failed,
     /// The entry is only legal in the other activation state (CLAP's
     /// `[!active]` and `[active ? audio-thread : main-thread]` annotations):
     /// nothing was called.
+    #[error("the entry is not legal in the current activation state")]
     WrongState,
 }
 
 /// Why [`Plugin::activate`] did not activate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ActivateError {
     /// An [`AudioSide`](crate::AudioSide) of an earlier activation is still
     /// alive; drop it (rejoin the halves) first. The plugin was not called.
+    #[error("the audio half of the previous activation is still alive")]
     ProcessorStillAlive,
     /// The plugin is already active; `deactivate` it first. The plugin was
     /// not called.
+    #[error("the plugin is already active")]
     AlreadyActive,
     /// The sample rate is not finite and positive, `min_frames` is zero, or
     /// `min_frames` exceeds `max_frames`: CLAP forbids all three. The plugin
     /// was not called.
+    #[error("the sample rate or block range is one CLAP forbids")]
     BadConfig,
     /// The plugin has no `activate` entry or answered `false`.
+    #[error("the plugin has no activate entry or refused it")]
     Refused,
 }
 
@@ -376,6 +387,7 @@ impl Plugin {
         Ok(Self {
             core,
             gui_created: false,
+            gui_scale: ContentScale::IDENTITY,
             _host: ManuallyDrop::new(host),
             _bundle: ManuallyDrop::new(bundle),
             _not_sync: PhantomData,
@@ -1128,6 +1140,7 @@ impl Drop for Plugin {
             let moved = Plugin {
                 core: Arc::clone(&self.core),
                 gui_created: self.gui_created,
+                gui_scale: self.gui_scale,
                 _host: ManuallyDrop::new(host),
                 _bundle: ManuallyDrop::new(bundle),
                 _not_sync: PhantomData,
@@ -1213,7 +1226,7 @@ pub struct AudioPortInfo {
 }
 
 /// A port type string, as CLAP names the ones it defines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortKind {
     /// `CLAP_PORT_MONO`.
     Mono,

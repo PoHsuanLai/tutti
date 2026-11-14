@@ -12,7 +12,7 @@
 //!
 //! # The scene
 //!
-//! An offline session (`SessionBuilder::build_offline`), 48 kHz stereo,
+//! An offline session (`Session::builder().build()`), 48 kHz stereo,
 //! rolling:
 //!
 //! - 8 `PolySynth` instruments, saw through a Moog ladder at 1.2 kHz, 16
@@ -228,11 +228,9 @@ fn add_stereo(
 fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     let mut s = Session::builder()
         .render_workers(workers)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(block)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .max_block(MaxBlock::of(Samples(block)))
+        .build()
         .expect("builds");
 
     let mut strips = Vec::new();

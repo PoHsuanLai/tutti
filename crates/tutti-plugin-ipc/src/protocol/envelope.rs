@@ -17,7 +17,8 @@ use super::Samples;
 use super::process::ProcessAudioData;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
-use tutti_plugin_types::{BlockStatus, ContentScale, EditorSize, Load, StateUse};
+use dpi::Size;
+use tutti_plugin_types::{BlockStatus, ContentScale, Load, StateUse};
 use tutti_types::SampleRate;
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
@@ -253,7 +254,7 @@ pub enum HostMessage {
         plain: f64,
     },
     /// Open the plugin's editor on the served instance itself, in this server
-    /// process (doc 029 section 6.5), answered by
+    /// process, answered by
     /// [`BridgeMessage::EditorOpened`].
     ///
     /// `parent` is the host window's platform number
@@ -274,8 +275,13 @@ pub enum HostMessage {
     /// Ask the open editor to take `size`, answered by
     /// [`BridgeMessage::EditorSized`].
     SetEditorSize {
-        /// The size the host's window has, in pixels.
-        size: EditorSize,
+        /// The size the host's window has, in either unit: the server's format
+        /// converts it at the scale the editor opened with. A `dpi::Size` crosses
+        /// the wire serialized through `dpi`'s `serde` feature, the unit part of
+        /// the value; a logical one that is not finite and non-negative is
+        /// refused on decode (see `wire::size`).
+        #[serde(with = "super::wire::size")]
+        size: Size,
     },
     /// What the host says of the track the plugin sits on, for the formats
     /// that tell their plugin (CLAP `track-info`). Fire-and-forget; a format
@@ -335,7 +341,7 @@ pub enum BridgeMessage {
         #[serde(default, with = "super::wire::midi")]
         midi_out: MidiEventVec,
         /// What the plugin said of itself at the end of the block (CLAP's
-        /// process status, doc 023 section 5.3). `Sleep` is sent only when the
+        /// process status). `Sleep` is sent only when the
         /// block's output was silent, so the host may park on it.
         #[serde(default)]
         status: BlockStatus,
@@ -533,20 +539,23 @@ pub enum BridgeMessage {
     /// embedded, `None` for a floating one, or why it did not open.
     EditorOpened {
         /// The size, or the refusal as the server formatted it.
-        result: Result<Option<EditorSize>, String>,
+        #[serde(with = "super::wire::size_opt_result")]
+        result: Result<Option<Size>, String>,
     },
     /// Answers a [`HostMessage::SetEditorSize`]: the size the editor took, or
     /// why it did not.
     EditorSized {
         /// The size taken, or the refusal as the server formatted it.
-        result: Result<EditorSize, String>,
+        #[serde(with = "super::wire::size_result")]
+        result: Result<Size, String>,
     },
     /// The plugin asked its window to take `size` (CLAP's
     /// `gui.request_resize`): the host resizes the window it gave the editor
     /// and answers with [`HostMessage::SetEditorSize`].
     EditorWantsSize {
-        /// The size the plugin asked for, in pixels.
-        size: EditorSize,
+        /// The size the plugin asked for, in its format's unit.
+        #[serde(with = "super::wire::size")]
+        size: Size,
     },
     /// The server closed the editor on its own account: the plugin it belongs
     /// to was unloaded or replaced. Not an answer to a

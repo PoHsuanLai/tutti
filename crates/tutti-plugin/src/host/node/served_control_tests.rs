@@ -3,8 +3,8 @@
 //!
 //! [`IpcController`] answers a call twice over: through [`Control`] (with the
 //! main-thread token the trait takes) and through [`AnyThread`] (with none).
-//! The two exist because a handle's off-thread calls have no token to give
-//! (design 021 §10.4, "PR 4 as built"), and each call has **one** body, in
+//! The two exist because a handle's off-thread calls have no token to give,
+//! and each call has **one** body, in
 //! `AnyThread`, which `Control` forwards to. This suite is what holds the
 //! forwards to it: a `Control` call that answered a default instead of
 //! forwarding would pass every test that reads only one surface.
@@ -135,7 +135,7 @@ fn a_live_served_load_reaches_the_plugin_in_the_context_it_names() {
 }
 
 /// **A client launched with no editor loader asks the real server for its
-/// editor** (doc 029 section 6.5): the open crosses the wire to a real
+/// editor**: the open crosses the wire to a real
 /// `plugin-server`, which opens the editor on the served instance through the
 /// format's own call, and the plugin's refusal comes back as the editor's error.
 /// The probe presents no `clap.gui` in a server process (its shape is a switch
@@ -176,13 +176,7 @@ fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
         "the refused open left the server serving"
     );
     let resize = ipc
-        .set_editor_size(
-            &main,
-            tutti_plugin_types::EditorSize {
-                width: 100,
-                height: 100,
-            },
-        )
+        .set_editor_size(&main, dpi::PhysicalSize::new(100, 100).into())
         .expect_err("no editor is open");
     assert!(resize.to_string().contains("not open"), "{resize}");
 }

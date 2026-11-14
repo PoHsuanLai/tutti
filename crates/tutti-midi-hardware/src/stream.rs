@@ -72,7 +72,7 @@ use tutti_ump::{
 
 use crate::capability::UmpCapability;
 use crate::ci::{
-    Ci, CiChange, CiChanges, CiPeerInfo, Heard, groups_after_settle, groups_of_a_midi1_port,
+    Ci, CiChange, CiChanges, CiPeerInfo, Heard, PeerId, groups_after_settle, groups_of_a_midi1_port,
 };
 use crate::devices::OpenOutput;
 use crate::process::{self, ProcessChange, ReportAsk, ReportError};
@@ -182,11 +182,11 @@ pub(crate) struct Stepped {
     /// The stream, when this call settled it or changed it.
     pub(crate) stream: Option<DeviceStream>,
     /// The MIDI-CI peers that came, changed or went.
-    pub(crate) ci: Vec<CiChange>,
+    pub(crate) ci: Vec<(PeerId, CiChange)>,
     /// The Profiles of the peers that changed.
-    pub(crate) profiles: Vec<ProfilesChange>,
+    pub(crate) profiles: Vec<(PeerId, ProfilesChange)>,
     /// The Process Inquiry of the peers that changed.
-    pub(crate) process: Vec<ProcessChange>,
+    pub(crate) process: Vec<(PeerId, ProcessChange)>,
 }
 
 /// The Identity Request of a MIDI 1.0 port that has an output (the module's

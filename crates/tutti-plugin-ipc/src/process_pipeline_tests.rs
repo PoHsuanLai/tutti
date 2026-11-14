@@ -1538,7 +1538,7 @@ impl crate::Chunks for StatusProbe {
 }
 
 /// **The status a server replies with crosses the wire and reaches the host
-/// with the chunk it belongs to** (doc 023 step 2). The server says a
+/// with the chunk it belongs to**. The server says a
 /// different status for each of blocks 1, 2 and 3 (continue, tail, sleep);
 /// the batcher collects block `n` as it starts chunk `n + 1`, and hands the
 /// host block `n`'s status then: nothing's before any chunk is in flight

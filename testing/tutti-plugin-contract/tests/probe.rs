@@ -320,7 +320,7 @@ fn a_plugin_that_prints_during_init_still_probes() {
     assert_shared_plugin(&d, "clap");
 }
 
-// ---- the measuring probe (doc 023 section 6) --------------------------------------
+// ---- the measuring probe --------------------------------------
 
 /// The shared plugin of format `F` at `path`, put in the state with ring
 /// behaviour `rings` and tail behaviour `tail` and measured through the real

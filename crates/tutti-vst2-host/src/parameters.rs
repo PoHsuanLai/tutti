@@ -336,7 +336,7 @@ fn declared_steps(
     }
 }
 
-/// What a VST2 parameter's label says it measures (doc 023 §5.2): the closed
+/// What a VST2 parameter's label says it measures: the closed
 /// list of [`ParamUnit::from_label`], and **only** over a plain range that fits,
 /// which is what `effGetParameterProperties` gives when the plugin answers it.
 /// VST2's native value is normalized, so a label without a range cannot be

@@ -120,6 +120,95 @@ fn checked<E: serde::de::Error>(raw: f64) -> Result<tutti_plugin_types::Normaliz
     })
 }
 
+/// An editor size as a [`dpi::Size`], in the encoding `dpi`'s `serde` feature gives it.
+///
+/// A logical extent is an `f64`, so on decode one that is not finite or is
+/// negative is refused, as `Normalized::new` refuses its own: a peer that sends
+/// one is broken, and the frame fails rather than carrying a size made up for
+/// it. A physical size is any pair of `u32`. Used as
+/// `#[serde(with = "wire::size")]`, and [`size_result`] and [`size_opt_result`]
+/// for the answers that carry one.
+pub mod size {
+    use dpi::Size;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// A [`Size`] that decodes only if it is a size.
+    #[derive(Deserialize)]
+    #[serde(try_from = "Size")]
+    pub(super) struct Checked(pub(super) Size);
+
+    impl TryFrom<Size> for Checked {
+        type Error = String;
+
+        fn try_from(size: Size) -> Result<Self, String> {
+            match size {
+                Size::Logical(l)
+                    if ![l.width, l.height]
+                        .iter()
+                        .all(|e| e.is_finite() && *e >= 0.0) =>
+                {
+                    Err(format!(
+                        "a logical size needs finite, non-negative extents, got {}x{}",
+                        l.width, l.height
+                    ))
+                }
+                _ => Ok(Self(size)),
+            }
+        }
+    }
+
+    /// Encodes the size as `dpi` does.
+    pub fn serialize<S: Serializer>(value: &Size, s: S) -> Result<S::Ok, S::Error> {
+        value.serialize(s)
+    }
+
+    /// Decodes a size, refusing a logical one that is not finite and non-negative.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Size, D::Error> {
+        Ok(Checked::deserialize(d)?.0)
+    }
+}
+
+/// A `Result<Size, String>` carried as [`size`] does.
+pub mod size_result {
+    use dpi::Size;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::size::Checked;
+
+    /// Encodes the result as it is.
+    pub fn serialize<S: Serializer>(value: &Result<Size, String>, s: S) -> Result<S::Ok, S::Error> {
+        value.serialize(s)
+    }
+
+    /// Decodes the result, refusing a bad size in `Ok`.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Result<Size, String>, D::Error> {
+        Ok(Result::<Checked, String>::deserialize(d)?.map(|c| c.0))
+    }
+}
+
+/// A `Result<Option<Size>, String>` carried as [`size`] does.
+pub mod size_opt_result {
+    use dpi::Size;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::size::Checked;
+
+    /// Encodes the result as it is.
+    pub fn serialize<S: Serializer>(
+        value: &Result<Option<Size>, String>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.serialize(s)
+    }
+
+    /// Decodes the result, refusing a bad size in `Ok(Some(_))`.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Result<Option<Size>, String>, D::Error> {
+        Ok(Result::<Option<Checked>, String>::deserialize(d)?.map(|o| o.map(|c| c.0)))
+    }
+}
+
 /// A byte field (a state chunk) as one byte string on the wire.
 ///
 /// Serde writes a plain `Vec<u8>` as a sequence, which the codec encodes one
@@ -329,18 +418,23 @@ mod tests {
     /// widths the spec's rules give.** A variant tag is a varint over declaration
     /// order, so the earlier variants keep their numbers (`SetSampleRate` is 8
     /// above) and the new ones sit at the end (host: 23 to 25; server: 28 to 31);
-    /// a size is two varints, a scale an `f64`, a parent an `Option<u64>`.
+    /// a size is a unit tag then two varints (physical) or two `f64` (logical), a
+    /// scale an `f64`, a parent an `Option<u64>`.
     #[test]
     fn the_editor_messages_follow_every_earlier_variant() {
         use crate::protocol::{BridgeMessage, HostMessage};
-        use tutti_plugin_types::{ContentScale, EditorSize};
+        use dpi::{LogicalSize, PhysicalSize, Size};
+        use tutti_plugin_types::ContentScale;
 
-        let size = EditorSize {
-            width: 640,
-            height: 480,
-        };
-        // 640 = 0x280 and 480 = 0x1e0, seven bits a byte, low group first.
-        let size_bytes = [0x80, 0x05, 0xe0, 0x03];
+        let size = Size::Physical(PhysicalSize::new(640, 480));
+        // Tag 0 (physical), then 640 = 0x280 and 480 = 0x1e0, seven bits a byte, low
+        // group first.
+        let size_bytes = [0x00, 0x80, 0x05, 0xe0, 0x03];
+        // Tag 1 (logical), then 1.0 and 2.0 as little-endian `f64`.
+        assert_eq!(
+            postcard::to_allocvec(&Size::Logical(LogicalSize::new(1.0, 2.0))).unwrap(),
+            [1, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0x40]
+        );
         let open = HostMessage::OpenEditor {
             parent: None,
             scale: ContentScale::IDENTITY,
@@ -404,6 +498,48 @@ mod tests {
         let mut nan = vec![23, 0];
         nan.extend(f64::NAN.to_le_bytes());
         assert!(postcard::from_bytes::<HostMessage>(&nan).is_err());
+    }
+
+    /// **A logical size that is not finite and non-negative is refused on
+    /// decode**, in each message that carries a size; a physical one and a good
+    /// logical one decode.
+    #[test]
+    fn a_bad_logical_size_is_refused_on_decode() {
+        use crate::protocol::{BridgeMessage, HostMessage};
+        use dpi::{LogicalSize, PhysicalSize, Size};
+
+        let logical = |w: f64, h: f64| Size::Logical(LogicalSize::new(w, h));
+        let bad = [
+            logical(f64::NAN, 1.0),
+            logical(1.0, f64::INFINITY),
+            logical(-1.0, 1.0),
+            logical(1.0, f64::NEG_INFINITY),
+        ];
+        let roundtrips = |size: Size| {
+            let host = postcard::to_allocvec(&HostMessage::SetEditorSize { size }).unwrap();
+            let wants = postcard::to_allocvec(&BridgeMessage::EditorWantsSize { size }).unwrap();
+            let sized =
+                postcard::to_allocvec(&BridgeMessage::EditorSized { result: Ok(size) }).unwrap();
+            let opened = postcard::to_allocvec(&BridgeMessage::EditorOpened {
+                result: Ok(Some(size)),
+            })
+            .unwrap();
+            [
+                postcard::from_bytes::<HostMessage>(&host).is_ok(),
+                postcard::from_bytes::<BridgeMessage>(&wants).is_ok(),
+                postcard::from_bytes::<BridgeMessage>(&sized).is_ok(),
+                postcard::from_bytes::<BridgeMessage>(&opened).is_ok(),
+            ]
+        };
+        for size in bad {
+            assert_eq!(roundtrips(size), [false; 4], "{size:?}");
+        }
+        for size in [
+            logical(0.0, 480.5),
+            Size::Physical(PhysicalSize::new(0, u32::MAX)),
+        ] {
+            assert_eq!(roundtrips(size), [true; 4], "{size:?}");
+        }
     }
 
     #[test]

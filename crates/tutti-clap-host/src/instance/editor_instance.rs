@@ -7,10 +7,11 @@
 
 use std::path::Path;
 
+use dpi::Size;
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
-    EditorWindow, InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
-    PluginResult, Request, RescanScope, WindowHandle,
+    AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow,
+    InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
+    Request, RescanScope, WindowHandle,
 };
 
 use super::ClapLoaded;
@@ -32,7 +33,7 @@ fn lookup_range(table: &[ParamBounds], id: u32) -> Option<&ParamBounds> {
 ///
 /// It is what [`OutOfProcess::load_editor`](tutti_plugin_types::OutOfProcess)
 /// builds: `ClapLoaded` is hostable in this process and over IPC (the twin of
-/// the refusal on `Vst2Loaded`, design 021 §3.4):
+/// the refusal on `Vst2Loaded`):
 ///
 /// ```
 /// use tutti_plugin_types::{InProcess, OutOfProcess};
@@ -180,15 +181,10 @@ impl EditorWindow for ClapEditor {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let size = self
-            .inner
+    ) -> PluginResult<Size> {
+        self.inner
             .embed_editor(main, parent, scale)
-            .map_err(|e| editor_error(format!("CLAP open_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
+            .map_err(|e| editor_error(format!("CLAP open_editor failed: {e}")))
     }
 
     fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
@@ -277,34 +273,14 @@ impl EditorWindow for ClapEditor {
         }
     }
 
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
-        let snapped = self
-            .inner
-            .resize_editor(
-                main,
-                EditorSize {
-                    width: requested.width,
-                    height: requested.height,
-                },
-            )
-            .map_err(|e| editor_error(format!("CLAP resize_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: snapped.width,
-            height: snapped.height,
-        })
+    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size> {
+        self.inner
+            .resize_editor(main, requested)
+            .map_err(|e| editor_error(format!("CLAP resize_editor failed: {e}")))
     }
 
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
-        self.inner
-            .take_editor_resize_request()
-            .map(|sz| EditorSize {
-                width: sz.width,
-                height: sz.height,
-            })
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<Size> {
+        self.inner.take_editor_resize_request()
     }
 }
 

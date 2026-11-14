@@ -46,7 +46,7 @@
 //!
 //! ## What it does not own
 //!
-//! **The shared vocabulary.** `EditorSize`, `TransportInfo` and
+//! **The shared vocabulary.** `TransportInfo` and
 //! `WindowHandle` come from `tutti-plugin-types`, and `Samples` / `Seconds` from
 //! `tutti-types`; all are re-exported here.
 //!
@@ -216,14 +216,14 @@ mod platform;
 pub use platform::*;
 
 pub use component::{AuComponentInfo, AuType};
-pub use error::{AuError, LoadFailedError, LoadStage, PresetFileError, PresetMismatch, Result};
+pub use error::{AuError, LoadFailure, LoadStage, PresetFileFailure, PresetMismatch, Result};
 pub use unit_code::{unit_measures, unit_role};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
 // `WindowHandle` is consumed by the GUI bridge; `TransportInfo` is the input type of
 // `AuLoaded::set_transport`, which publishes it for the AU's host callbacks to
 // pull during render.
-pub use tutti_plugin_types::{EditorSize, TransportInfo, WindowHandle};
+pub use tutti_plugin_types::{TransportInfo, WindowHandle};
 
 // Unit types this crate's API hands back: `Samples` from `get_latency`,
 // `Seconds` from `get_tail_time`. Re-exported because a consumer that cannot

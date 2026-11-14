@@ -31,13 +31,12 @@ au = ["dep:tutti-au-host"]
 # In-process VST2 hosting (audio + native editor on the host process).
 # Unlike VST3/CLAP/AU, VST2 is in-process today: its `AEffect` fuses the
 # editor and audio processor into one instance, so it has no editor-only
-# instance for the host to load. Serving it with its editor in the server
-# is design 029 §6.5.
+# instance for the host to load.
 vst2 = ["dep:tutti-vst2-host"]
 
 [dependencies]
 # The format-generic half of hosting: the handle, the node's controls, the
-# transport and parameter delivery, and the in-process node (design 021 4a).
+# transport and parameter delivery, and the in-process node.
 tutti-plugin-host = { version = "0.0.1", path = "../tutti-plugin-host" }
 
 # The transport the hosted plugins read.
@@ -54,7 +53,7 @@ tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 tutti-midi-runtime = { version = "0.0.1", path = "../tutti-midi-runtime" }
 
 # The process edge: the wire, the slab, the server's launch and the client of a
-# served plugin (design 021 step 3).
+# served plugin.
 tutti-plugin-ipc = { version = "0.0.1", path = "../tutti-plugin-ipc" }
 
 # Shared value vocabulary used across host crates + IPC protocol.
@@ -84,6 +83,8 @@ tempfile = "3"
 
 [dev-dependencies]
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+# A size for `set_editor_size`.
+dpi.workspace = true
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # The tests' mock listeners.

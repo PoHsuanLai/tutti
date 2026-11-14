@@ -2,16 +2,17 @@
 //! ([`IpcController`]): the same calls either way, answered by the bridge.
 //!
 //! None of them reads its [`MainThread`] token: the bridge answers from any
-//! thread (design 021 §10.4 (d)), and the token is the in-process trait's
+//! thread, and the token is the in-process trait's
 //! proof, not a hop. A caller with no token uses the bridge directly
 //! ([`Ipc::bridge`]).
 
+use dpi::Size;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, BlockCounts, ContentScale, Control, Delivered,
-    EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Features, Health, LoadedPlugin,
-    MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure,
-    PluginResult, Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport, Request,
-    SampleRate, StateError, StateUse, TerminationReason, TrackInfo, WindowHandle,
+    EditorCapabilities, EditorPresence, EditorWindow, Features, Health, LoadedPlugin, MainThread,
+    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure, PluginResult,
+    Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport, Request, SampleRate, StateError,
+    StateUse, TerminationReason, TrackInfo, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -97,7 +98,7 @@ macro_rules! served_control {
                 main: &MainThread,
                 parent: WindowHandle,
                 scale: ContentScale,
-            ) -> PluginResult<EditorSize> {
+            ) -> PluginResult<Size> {
                 Ok(self.link.bridge.open_editor(main, parent, scale)?)
             }
 
@@ -141,12 +142,12 @@ macro_rules! served_control {
             fn set_editor_size(
                 &mut self,
                 main: &MainThread,
-                requested: EditorSize,
-            ) -> PluginResult<EditorSize> {
+                requested: Size,
+            ) -> PluginResult<Size> {
                 Ok(self.link.bridge.set_editor_size(main, requested)?)
             }
 
-            fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
+            fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
                 self.link.bridge.poll_editor_resize_request(main)
             }
         }

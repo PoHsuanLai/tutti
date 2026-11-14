@@ -14,14 +14,14 @@ use tutti_plugin_types::{BridgeError, BridgeResult, Load};
 /// Where a plugin runs: in the host's own process or in a `plugin-server`
 /// process. A choice made per plugin, as a [`PluginRef`] field
 /// ([`PluginRef::with_hosting`]); everything a loaded plugin offers is the same
-/// either way (design 029 principle 4).
+/// either way.
 ///
-/// The default, [`Auto`](Self::Auto), is the format's own (design 021 Q3):
+/// The default, [`Auto`](Self::Auto), is the format's own:
 /// CLAP, VST3 and AU run [out of process](Self::OutOfProcess), which isolates a
 /// crash and keeps the plugin out of the host's address space; VST2 runs [in
 /// process](Self::InProcess), the only way it can run, since its `AEffect`
 /// fuses the editor and the audio instance. `Auto` never moves a plugin the
-/// catalog has blacklisted into the host's process (021 Q11): a blacklisted
+/// catalog has blacklisted into the host's process: a blacklisted
 /// plugin is refused at the load, whatever the hosting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -319,7 +319,7 @@ mod tests {
         }
     }
 
-    /// **`Auto` is the format's default** (design 021 Q3): CLAP, VST3 and AU
+    /// **`Auto` is the format's default**: CLAP, VST3 and AU
     /// are served, whatever the build holds.
     #[test]
     fn auto_serves_every_format_but_vst2() {

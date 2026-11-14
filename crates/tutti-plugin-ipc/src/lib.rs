@@ -5,7 +5,7 @@
 //!
 //! `tutti-plugin` builds its out-of-process node on this crate and
 //! `tutti-plugin-server` builds the other end of the same wire, so neither
-//! can drift from the other (design 021 §6.1). It knows no plugin format: the
+//! can drift from the other. It knows no plugin format: the
 //! editor-only instance a client opens in this process is loaded by a
 //! function the host passes ([`EditorLoader`]).
 //!

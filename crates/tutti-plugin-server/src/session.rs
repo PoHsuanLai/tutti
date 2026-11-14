@@ -10,11 +10,12 @@ use std::time::Instant;
 use crate::audio_pipeline::Clock;
 use crate::render::{RenderConfig, RenderLink, RenderSide, ToRender, link};
 use crate::served::AnyServed;
-use tutti_plugin_ipc::state_chunk::{self, ChunkError, Reassembler};
+use dpi::Size;
+use tutti_plugin_ipc::state_chunk::{self, Reassembler};
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, StagedState};
 use tutti_plugin_types::{
-    BridgeError, BridgeResult, EditorError, EditorSize, Load, MainThread, ParameterQueue,
-    PluginError, Ready, SampleFormat, SampleRate, StateUse, Wakeups, WindowHandle,
+    BridgeError, BridgeResult, EditorError, Load, MainThread, ParameterQueue, PluginError, Ready,
+    SampleFormat, SampleRate, StateUse, Wakeups, WindowHandle,
 };
 
 /// What [`Session::handle`] asks the transport loop to do.
@@ -82,7 +83,7 @@ pub(crate) struct Session {
     /// handler that needs one refuses explicitly rather than going silent.
     pub(crate) plugin: Option<AnyServed>,
     /// The render thread's queues: what the plugin's blocks are rendered with
-    /// travels to it here (doc 029 section 6.5).
+    /// travels to it here.
     pub(crate) render: RenderLink,
     /// Sample rate + negotiated format. Written on load and on an explicit
     /// `SetSampleRate`, and published to the render thread with the rest of
@@ -114,8 +115,7 @@ pub(crate) struct Session {
     /// A state received and waiting for the next load, which restores it into
     /// the plugin before activating it.
     pub(crate) staged: Option<Vec<u8>>,
-    /// Whether the plugin's editor is open in this process (doc 029 section
-    /// 6.5): what the idle tick serves.
+    /// Whether the plugin's editor is open in this process: what the idle tick serves.
     pub(crate) editor_open: bool,
     /// The editor was closed here on the server's own account (its plugin was
     /// unloaded or replaced): the host is told at the next tick.
@@ -537,7 +537,7 @@ impl Session {
         main: &MainThread,
         parent: Option<u64>,
         scale: tutti_plugin_types::ContentScale,
-    ) -> Result<Option<EditorSize>, String> {
+    ) -> Result<Option<Size>, String> {
         if self.editor_open {
             return Err("an editor is already open".into());
         }
@@ -574,11 +574,7 @@ impl Session {
     }
 
     /// Asks the open editor to take `size`; the size it took.
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        size: EditorSize,
-    ) -> Result<EditorSize, String> {
+    fn set_editor_size(&mut self, main: &MainThread, size: Size) -> Result<Size, String> {
         if !self.editor_open {
             return Err("editor not open".into());
         }
@@ -788,7 +784,7 @@ impl Session {
             Err(e) => {
                 self.stage_in = None;
                 self.staged = None;
-                let error = chunk_refusal(e);
+                let error = e.to_string();
                 BridgeMessage::StateLoaded { error: Some(error) }.into()
             }
         }
@@ -840,7 +836,7 @@ impl Session {
             Ok(done) => done,
             Err(e) => {
                 self.state_in = None;
-                let error = chunk_refusal(e);
+                let error = e.to_string();
                 if last {
                     return BridgeMessage::StateLoaded { error: Some(error) }.into();
                 }
@@ -870,19 +866,6 @@ impl Session {
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
         BridgeMessage::StateLoaded { error }.into()
-    }
-}
-
-/// Why a state chunk sequence was refused, as the reply's text.
-fn chunk_refusal(e: ChunkError) -> String {
-    match e {
-        ChunkError::TooLarge { bytes, limit } => {
-            format!("state is {bytes} bytes, over the {limit}-byte limit")
-        }
-        ChunkError::OutOfOrder { got, expected } => {
-            format!("state chunk {got} arrived where {expected} was expected")
-        }
-        ChunkError::Empty { seq } => format!("state chunk {seq} is empty and not the last"),
     }
 }
 
@@ -1774,8 +1757,8 @@ mod tests {
         crate::test_utils::clap().thread_capture()
     }
 
-    /// **A reset reaches the plugin, between the blocks it was sent between**
-    /// (design 016 §6.2). The server dropped `HostMessage::Reset`, so a seek
+    /// **A reset reaches the plugin, between the blocks it was sent between**.
+    /// The server dropped `HostMessage::Reset`, so a seek
     /// left every out-of-process CLAP and VST3 plugin's delay lines, reverb
     /// tails and filter memories sounding across the jump.
     ///

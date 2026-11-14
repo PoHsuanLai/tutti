@@ -20,6 +20,8 @@ workspace = true
 testing = []
 
 [dependencies]
+# The editor's sizes, which name their unit (`dpi::Size`); they cross the wire serialized.
+dpi = { workspace = true, features = ["serde"] }
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }

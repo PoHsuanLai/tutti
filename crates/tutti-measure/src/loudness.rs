@@ -33,6 +33,7 @@ use ebur128::{EbuR128, Mode};
 use tutti_types::{ChannelLayout, Db, Interleaved, SampleRate};
 
 use crate::{Error, Result};
+use tutti_types::ranged;
 
 /// What the meter is measuring: the rate and channel layout of the frames fed
 /// to [`step_loudness`].
@@ -246,17 +247,22 @@ fn true_peak_db(peak_linear: f64) -> Db {
     }
 }
 
-/// The slowest and fastest rate a windowed meter is built for. The window the
-/// meter keeps is three seconds of every channel, so the upper bound caps its
-/// allocation.
-const WINDOWED_RATES: core::ops::RangeInclusive<f64> = 8_000.0..=192_000.0;
+// The window a windowed meter keeps is three seconds of every channel, so the
+// upper bounds below cap its allocation.
+ranged! {
+    /// A rate a windowed meter is built for: within 8 kHz..=192 kHz.
+    WindowedRate(SampleRate), WindowedRateError, "a windowed rate within 8 kHz..=192 kHz",
+    |raw| raw.get() >= 8_000.0 && raw.get() <= 192_000.0
+}
 
-/// The most channels a windowed meter is built for (the same cap, for the same
-/// reason).
-const WINDOWED_MAX_CHANNELS: u16 = 16;
+ranged! {
+    /// A layout a windowed meter is built for: 1..=16 channels.
+    WindowedLayout(ChannelLayout), WindowedLayoutError, "a windowed layout of 1..=16 channels",
+    |raw| raw.count() >= 1 && raw.count() <= 16
+}
 
 /// What a [`WindowedLoudnessState`] meters: the rate and layout of the frames fed
-/// to [`step_windowed_loudness`]. Validated on construction.
+/// to [`step_windowed_loudness`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowedLoudnessConfig {
     rate: SampleRate,
@@ -265,24 +271,12 @@ pub struct WindowedLoudnessConfig {
 
 impl WindowedLoudnessConfig {
     /// A config for frames at `rate` in `layout`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidLoudnessParameter`] unless `rate` is within
-    /// 8 kHz..=192 kHz, and `layout` has 1..=16 channels.
-    pub fn new(rate: impl Into<SampleRate>, layout: ChannelLayout) -> Result<Self> {
-        let rate = rate.into();
-        if !WINDOWED_RATES.contains(&rate.get()) {
-            return Err(Error::InvalidLoudnessParameter(
-                "rate: outside 8000..=192000 Hz",
-            ));
+    #[must_use]
+    pub fn new(rate: WindowedRate, layout: WindowedLayout) -> Self {
+        Self {
+            rate: rate.get(),
+            layout: layout.get(),
         }
-        if !(1..=WINDOWED_MAX_CHANNELS).contains(&layout.count()) {
-            return Err(Error::InvalidLoudnessParameter(
-                "layout: outside 1..=16 channels",
-            ));
-        }
-        Ok(Self { rate, layout })
     }
 
     /// The rate the fed frames are denominated at.
@@ -361,7 +355,7 @@ impl WindowedLoudnessState {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidLoudnessParameter`] if the meter cannot be built.
+    /// [`Error::MeterUnavailable`] if the meter cannot be built.
     pub fn new(cfg: &WindowedLoudnessConfig) -> Result<Self> {
         let channels = cfg.layout.count();
         let meter = EbuR128::new(
@@ -369,7 +363,7 @@ impl WindowedLoudnessState {
             cfg.rate.get().round() as u32,
             Mode::M | Mode::S | Mode::TRUE_PEAK,
         )
-        .map_err(|_| Error::InvalidLoudnessParameter("meter: could not be built"))?;
+        .map_err(|_| Error::MeterUnavailable)?;
         Ok(Self {
             cfg: *cfg,
             meter,
@@ -399,7 +393,7 @@ impl WindowedLoudnessState {
         }
         self.meter
             .add_frames_f32(samples)
-            .map_err(|_| Error::InvalidLoudnessParameter("meter: rejected the frames"))?;
+            .map_err(|_| Error::MeterRejectedFrames)?;
         self.frames += (samples.len() / usize::from(self.cfg.layout.count())) as u64;
         Ok(())
     }
@@ -433,8 +427,8 @@ fn windowed_db(frames: u64, needed: u64, lufs: Option<f64>) -> Db {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidLoudnessParameter`] when `state` was built for another
-/// config or `chunk` is not `cfg`'s width; [`Error::NonFiniteInput`] for a NaN
+/// [`Error::StateMismatch`] when `state` was built for another config;
+/// [`Error::ChunkLayoutMismatch`] when `chunk` is not `cfg`'s layout; [`Error::NonFiniteInput`] for a NaN
 /// or infinite sample. The state is untouched on error.
 pub fn step_windowed_loudness(
     cfg: &WindowedLoudnessConfig,
@@ -442,14 +436,13 @@ pub fn step_windowed_loudness(
     chunk: Interleaved<'_>,
 ) -> Result<WindowedReading> {
     if state.cfg != *cfg {
-        return Err(Error::InvalidLoudnessParameter(
-            "state: built for another config",
-        ));
+        return Err(Error::StateMismatch);
     }
     if chunk.layout() != cfg.layout {
-        return Err(Error::InvalidLoudnessParameter(
-            "chunk: width differs from the config's layout",
-        ));
+        return Err(Error::ChunkLayoutMismatch {
+            chunk: chunk.layout(),
+            config: cfg.layout,
+        });
     }
     let samples = chunk.samples();
     if samples.iter().any(|s| !s.is_finite()) {
@@ -790,7 +783,10 @@ mod tests {
     }
 
     fn windowed_cfg(rate: f64) -> WindowedLoudnessConfig {
-        WindowedLoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO).unwrap()
+        WindowedLoudnessConfig::new(
+            WindowedRate::new(SampleRate::of(rate)).unwrap(),
+            WindowedLayout::of(ChannelLayout::STEREO),
+        )
     }
 
     /// Feeds `buf` in `frames`-frame chunks, returning the reading after each.
@@ -962,7 +958,10 @@ mod tests {
     #[test]
     fn a_ragged_chunk_keeps_channels_in_place() {
         let layout = ChannelLayout::from(6u16);
-        let cfg = WindowedLoudnessConfig::new(SampleRate::SR_48K, layout).unwrap();
+        let cfg = WindowedLoudnessConfig::new(
+            WindowedRate::of(SampleRate::SR_48K),
+            WindowedLayout::new(layout).unwrap(),
+        );
         let buf: Vec<f32> = (0..48_000 * 4)
             .flat_map(|i| {
                 let s = 0.5 * (TAU * 1_000.0 * i as f32 / 48_000.0).sin();
@@ -1017,7 +1016,10 @@ mod tests {
     #[test]
     fn reset_drops_a_carried_part_frame() {
         let layout = ChannelLayout::from(6u16);
-        let cfg = WindowedLoudnessConfig::new(SampleRate::SR_48K, layout).unwrap();
+        let cfg = WindowedLoudnessConfig::new(
+            WindowedRate::of(SampleRate::SR_48K),
+            WindowedLayout::new(layout).unwrap(),
+        );
         let lfe = |frames: usize| -> Vec<f32> {
             (0..frames)
                 .flat_map(|i| {
@@ -1065,30 +1067,9 @@ mod tests {
         }
     }
 
-    /// Every setting is checked, and a bad chunk is
-    /// refused without touching the meter.
+    /// A bad chunk is refused without touching the meter.
     #[test]
     fn bad_settings_and_input_are_errors() {
-        for rate in [7_999.0, 192_001.0] {
-            assert!(
-                matches!(
-                    WindowedLoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO),
-                    Err(Error::InvalidLoudnessParameter(_))
-                ),
-                "rate {rate}"
-            );
-        }
-        for channels in [0u16, 17] {
-            assert!(matches!(
-                WindowedLoudnessConfig::new(SampleRate::SR_48K, ChannelLayout::from(channels)),
-                Err(Error::InvalidLoudnessParameter(_))
-            ));
-        }
-        assert!(WindowedLoudnessConfig::new(SampleRate::SR_8K, ChannelLayout::MONO).is_ok());
-        assert!(
-            WindowedLoudnessConfig::new(SampleRate::SR_192K, ChannelLayout::from(16u16)).is_ok()
-        );
-
         let cfg = windowed_cfg(48_000.0);
         let mut state = WindowedLoudnessState::new(&cfg).unwrap();
         let tone = windowed_sine(48_000.0, 0.5, |_| 0.1);
@@ -1110,7 +1091,7 @@ mod tests {
                 &mut state,
                 Interleaved::new(&tone, ChannelLayout::QUAD)
             ),
-            Err(Error::InvalidLoudnessParameter(_))
+            Err(Error::ChunkLayoutMismatch { .. })
         ));
         assert_eq!(state.frames_seen(), frames);
 
@@ -1121,7 +1102,7 @@ mod tests {
                 &mut state,
                 Interleaved::new(&tone, ChannelLayout::STEREO)
             ),
-            Err(Error::InvalidLoudnessParameter(_))
+            Err(Error::StateMismatch)
         ));
     }
 }

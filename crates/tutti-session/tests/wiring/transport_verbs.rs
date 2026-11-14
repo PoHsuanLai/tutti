@@ -9,11 +9,8 @@ use tutti_types::{
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_000)),
-        )
+        .max_block(MaxBlock::of(Samples(1_000)))
+        .build()
         .expect("builds")
 }
 

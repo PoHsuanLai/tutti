@@ -485,7 +485,7 @@ fn alternating_continue_sleep_does_not_allocate() {
 }
 
 /// **The host turns the plugin's `clap_process_status` into the shared
-/// per-block status the graph node reads** (doc 023 step 2): *sleep* and
+/// per-block status the graph node reads**: *sleep* and
 /// *tail* as themselves, *continue* and *continue if not quiet* as
 /// `Continue` (neither narrows anything), checked through the real
 /// `Processor::process` path, not the raw status the tests above read.

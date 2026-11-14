@@ -568,6 +568,7 @@ fn editor_idle_reaches_an_open_editor() {
         .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
         .expect("the probe opens");
     // `effEditGetRect` is the probe's 320 by 240, read before `effEditOpen`.
+    let size = size.to_physical::<u32>(1.0);
     assert_eq!((size.width, size.height), (320, 240));
     instance.loaded_mut().editor_idle(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());

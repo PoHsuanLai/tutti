@@ -1,5 +1,5 @@
 //! The generic plugin node over a Processor that renders in chunks
-//! (`Processor::chunk`, design 021 §10.4, step 4b PR 2): where it cuts a
+//! (`Processor::chunk`): where it cuts a
 //! block, the transport each piece reads, `reset`, the loss reports in
 //! `ProcessOutput`, harmony, and that the audio path stays allocation-free.
 //!
@@ -24,10 +24,10 @@ use tutti_midi_protocol::widen_velocity;
 use tutti_plugin_host::{InProcClient, NodeControls, PluginNode, load_client};
 use tutti_plugin_types::{
     AudioBufferMut, BusRole, ChannelLayout, ChannelTopology, ContentScale, Control, Controller,
-    EditorError, EditorSize, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin,
-    MainThread, Normalized, Origin, ParamId, ParameterInfo, PluginBus, PluginDescriptor,
-    PluginError, PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused,
-    RenderModeSupport, RestartRules, Samples, Speaker, Stuck, WindowHandle,
+    EditorError, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin, MainThread,
+    Normalized, Origin, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError, PluginIo,
+    PluginResult, PluginTail, Prepare, Processor, Refused, RenderModeSupport, RestartRules,
+    Samples, Speaker, Stuck, WindowHandle,
 };
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
@@ -185,7 +185,7 @@ macro_rules! rec_control {
                 _: &MainThread,
                 _: WindowHandle,
                 _: ContentScale,
-            ) -> PluginResult<EditorSize> {
+            ) -> PluginResult<dpi::Size> {
                 Err(PluginError::Editor(EditorError::PluginError("none".into())))
             }
             fn close_editor(&mut self, _: &MainThread) {}
@@ -203,8 +203,8 @@ macro_rules! rec_control {
             fn set_editor_size(
                 &mut self,
                 _main: &tutti_plugin_types::MainThread,
-                _requested: tutti_plugin_types::EditorSize,
-            ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+                _requested: dpi::Size,
+            ) -> tutti_plugin_types::PluginResult<dpi::Size> {
                 Err(tutti_plugin_types::PluginError::Editor(
                     tutti_plugin_types::EditorError::PluginError(
                         "set_editor_size not supported".into(),
@@ -216,7 +216,7 @@ macro_rules! rec_control {
             fn poll_editor_resize_request(
                 &mut self,
                 _main: &tutti_plugin_types::MainThread,
-            ) -> Option<tutti_plugin_types::EditorSize> {
+            ) -> Option<dpi::Size> {
                 None
             }
         }
@@ -445,7 +445,7 @@ fn note_on(frame: usize, len: usize) -> Event {
 /// then 28+64+8, then 56+44, then 20+64+16. The audio the pieces carry joins
 /// back to the block bit for bit (the plugin copies its input), and **every
 /// piece reads the transport at its chunk's first frame** (the contract of
-/// `Processor::chunk`, amended in design 021 step 4b PR 3a: the transport is
+/// `Processor::chunk`: the transport is
 /// chunk-level, like the parameters).
 #[test]
 fn a_block_is_cut_at_the_chunk_edges_and_each_piece_reads_its_chunks_transport() {

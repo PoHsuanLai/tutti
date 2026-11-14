@@ -53,7 +53,9 @@ fn soundfont() -> Arc<SoundFont> {
 fn rig() -> (Session, NodeKey) {
     let unit = SoundFontUnit::new(soundfont(), Settings::new()).expect("builds the unit");
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(128)))
+        .build()
         .expect("builds");
     let (synth, _) = s.graph().add(unit);
     // The dry pair; the unit's other outputs are sends.

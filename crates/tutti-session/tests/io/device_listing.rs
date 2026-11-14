@@ -16,6 +16,7 @@ use tutti_types::{ChannelLayout, SampleRate};
 fn a_blocked_enumeration_does_not_hold_the_update_and_lands_when_it_answers() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut s, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(
             OutputSpec::new(
                 SampleRate::SR_48K,
@@ -67,6 +68,7 @@ fn a_blocked_enumeration_does_not_hold_the_update_and_lands_when_it_answers() {
 fn a_failed_listing_reports_the_typed_error() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut s, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(
             OutputSpec::new(
                 SampleRate::SR_48K,

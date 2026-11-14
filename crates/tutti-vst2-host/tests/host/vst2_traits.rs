@@ -12,10 +12,10 @@ use assert_no_alloc::assert_no_alloc;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, AutomationMode, Control, Controller, EditorSize, EditorWindow,
-    Event, Hand, HostOp, Lifecycle, Loaded, MaxBlock, Normalized, Notice, ParamId,
-    ParameterChanges, PluginError, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor,
-    RenderMode, SampleFormat, SampleRate, Samples, Stage,
+    AudioBuffer, AudioBufferMut, AutomationMode, Control, Controller, EditorWindow, Event, Hand,
+    HostOp, Lifecycle, Loaded, MaxBlock, Normalized, Notice, ParamId, ParameterChanges,
+    PluginError, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor, RenderMode,
+    SampleFormat, SampleRate, Samples, Stage,
 };
 use tutti_ump::MidiChannel;
 use tutti_vst2_host::{Vst2Controller, Vst2Loaded, Vst2Processor};
@@ -876,11 +876,9 @@ fn a_size_window_request_reaches_the_resize_slot() {
     });
     assert_eq!(answered, 1, "supported");
     assert_eq!(
-        EditorWindow::poll_editor_resize_request(&mut controller, &main_thread()),
-        Some(EditorSize {
-            width: 900,
-            height: 640
-        })
+        EditorWindow::poll_editor_resize_request(&mut controller, &main_thread())
+            .map(|s| s.to_physical::<u32>(1.0)),
+        Some(dpi::PhysicalSize::new(900, 640))
     );
     assert_eq!(
         EditorWindow::poll_editor_resize_request(&mut controller, &main_thread()),

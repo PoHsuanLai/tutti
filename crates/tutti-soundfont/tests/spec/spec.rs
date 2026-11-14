@@ -250,6 +250,37 @@ fn a_preset_range_intersects_the_instruments() {
     }
 }
 
+/// 9.1.3, the filter's resonance: the DC gain falls below the gain at zero
+/// resonance by half the resonance value, so the peak stands half the value
+/// above that gain. The 441 Hz sine is read through a cutoff of 12 300 cents
+/// (about 10.3 kHz), where a 2-pole low-pass is flat to 0.02 dB at any of these
+/// resonances, so the level at a resonance of `q` centibels is `-q / 20` dB
+/// against the level at 0.
+/// Spec: sf2.synth.filter.resonance.dc-gain, sf2.gen.initialFilterQ
+#[test]
+fn the_dc_gain_falls_by_half_the_resonance() {
+    let level_at = |centibels: i16| {
+        let font = one_preset(vec![vec![
+            (generator::INITIAL_FILTER_FC, 12_300),
+            (generator::INITIAL_FILTER_Q, centibels),
+        ]]);
+        let mut rig = Rig::dry(&font);
+        rig.note_on(0, 69, 127);
+        // Past the attack, then ten whole periods of the sine.
+        let _ = rig.render(4096);
+        rig.energy(1000)
+    };
+    let flat = level_at(0);
+    for centibels in [100_i16, 200, 300] {
+        let db = 20.0 * (level_at(centibels) / flat).log10();
+        let want = -f32::from(centibels) / 20.0;
+        assert!(
+            (db - want).abs() < 0.05,
+            "resonance {centibels} cB: {db} dB against {want} dB"
+        );
+    }
+}
+
 /// 8.1.2 and 9.4: every pair of a preset zone and an instrument zone whose
 /// ranges hold the note plays (this is tutti's reading of "voice"). Two zones
 /// on one key sound together, at twice the level of one; the executor plays
@@ -636,4 +667,50 @@ fn velocity_forces_the_velocity_of_a_zone() {
     let got = level(&forced, 69, 127);
     assert!(loud > 1.5 * soft, "{loud} {soft}");
     assert!((got / soft - 1.0).abs() < 0.05, "{got} against {soft}");
+}
+
+// ---- 6.2 the sm24 sample pool -----------------------------------------------
+
+/// A font of the built sample whose 2100 `smpl` points are all zero, with an
+/// `sm24` chunk of 2100 bytes of 0x80 under `ifil` `version`.
+fn silent_smpl_with_sm24(
+    version: (u16, u16),
+    sm24_bytes: usize,
+) -> std::sync::Arc<tutti_sf2::SoundFont> {
+    let file = tutti_fixtures::sf2::bytes(
+        &[Preset {
+            name: "p",
+            bank: 0,
+            program: 0,
+            zones: vec![(vec![], 0)],
+        }],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![]],
+        }],
+    );
+    let file = tutti_fixtures::sf2::with_pool(
+        &file,
+        version,
+        Some(&vec![0; 4200]),
+        Some(&vec![0x80; sm24_bytes]),
+    );
+    std::sync::Arc::new(tutti_sf2::SoundFont::from_reader(&mut std::io::Cursor::new(file)).unwrap())
+}
+
+/// 6.2: the player renders the `smpl` points alone when `sm24` is ignored, and
+/// the 24-bit points when it counts. The `smpl` points are all zero, so the
+/// render is exact silence when only they sound, and a low byte of 0x80 (one
+/// half of a `smpl` step, 2^-16 of full scale) makes the same note audible.
+/// Spec: sf2.sdta.sm24.ignored.render-smpl-only, sf2.sdta.sm24.low-byte
+#[test]
+fn an_ignored_sm24_is_not_rendered_and_a_valid_one_is() {
+    let heard = |version, size| {
+        let mut rig = Rig::dry(&silent_smpl_with_sm24(version, size));
+        rig.note_on(0, 69, 127);
+        rig.energy(4096)
+    };
+    assert!(heard((2, 4), 2100) > 0.0, "a valid sm24 sounds");
+    assert_eq!(heard((2, 3), 2100), 0.0, "an ifil before 2.04");
+    assert_eq!(heard((2, 4), 2099), 0.0, "a size that is not half of smpl");
 }

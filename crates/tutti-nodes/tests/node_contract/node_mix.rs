@@ -170,13 +170,13 @@ fn the_convolver_is_blended_by_the_graph() {
     );
     check(
         "convolver (shared IR, six channels)",
-        &|| ConvolverNode::shared_ir(6u16, &[1.0, 0.5], 128),
+        &|| ConvolverNode::shared_ir(6u16, &[1.0, 0.5], 128).unwrap(),
         6,
         128,
     );
     check(
         "convolver (folded, stereo)",
-        &|| ConvolverNode::folded(&[&ir, &ir2], 32),
+        &|| ConvolverNode::folded(&[&ir, &ir2], 32).unwrap(),
         2,
         32,
     );

@@ -8,7 +8,10 @@
 //! (`AUComponent.h`). So the block's points cannot be written from `render`
 //! before it calls `AudioUnitRender`: they are staged here, and the notify the
 //! activation installs ([`schedule_pending`]) hands them to the unit from inside
-//! that call, each as an immediate event at its buffer offset.
+//! that call. A queue's points are linear breakpoints, so each segment between
+//! two points at different offsets is one ramped event (start value, end value,
+//! start offset, duration in frames) and a step or a lone point is an immediate
+//! event.
 //!
 //! Both halves run on one thread, one after the other, inside a render; the
 //! [`AudioThreadCell`] is the checked form of that, not a lock.
@@ -61,9 +64,11 @@ impl Stage {
         self.ends.clear();
     }
 
-    /// Stages `queue` for parameter `id`: an immediate event at each point's
-    /// offset, in plain units. `false` when it does not fit, with nothing
-    /// staged, for the caller to write the parameter at the head instead.
+    /// Stages `queue` for parameter `id`, in plain units: a ramped event for
+    /// each segment between two points at different offsets, and an immediate
+    /// event for a lone point and for the value a step lands on. `false` when
+    /// it does not fit, with nothing staged, for the caller to write the
+    /// parameter at the head instead.
     pub(crate) fn stage(&mut self, queue: &ParameterQueue, bounds: ParamBounds) -> bool {
         let points = queue.points.len();
         if points == 0 {
@@ -72,14 +77,26 @@ impl Stage {
         if self.runs.len() == RUN_ROOM || self.events.len() + points > EVENT_ROOM {
             return false;
         }
-        let mut end = 0.0;
-        for point in queue.points.iter() {
-            end = bounds.plain(point.value) as f32;
-            self.events.push(ParamEvent::Immediate {
-                buffer_offset: u32::try_from(point.sample_offset).unwrap_or(0),
-                value: end,
-            });
+        let points = &queue.points[..];
+        let offset = |i: usize| points[i].sample_offset.max(0);
+        let plain = |i: usize| bounds.plain(points[i].value) as f32;
+        for i in 0..points.len() {
+            let next = i + 1;
+            if next < points.len() && offset(next) > offset(i) {
+                self.events.push(ParamEvent::Ramped {
+                    start_buffer_offset: offset(i),
+                    duration_frames: (offset(next) - offset(i)) as u32,
+                    start_value: plain(i),
+                    end_value: plain(next),
+                });
+            } else if next == points.len() && (i == 0 || offset(i - 1) == offset(i)) {
+                self.events.push(ParamEvent::Immediate {
+                    buffer_offset: offset(i) as u32,
+                    value: plain(i),
+                });
+            }
         }
+        let end = plain(points.len() - 1);
         let id = queue.param_id.get();
         self.runs.push((id, self.events.len()));
         self.ends.push((id, end));
@@ -148,20 +165,20 @@ mod tests {
         runs
     }
 
-    /// Every point of a queue becomes an immediate event at its own offset, in
-    /// the AU's plain units, not only the last point and not at the head
-    /// (`AUComponent.h`, `AudioUnitScheduleParameters`: "intra-buffer changes
-    /// to the value of a parameter"). Two parameters keep their own runs.
+    /// A segment between two points at different offsets is one ramped event
+    /// with its start and end values in the AU's plain units, its start offset
+    /// and its length in frames; a lone point is an immediate event. Two
+    /// parameters keep their own runs.
     #[test]
-    fn each_point_is_scheduled_at_its_offset_in_plain_units() {
+    fn a_segment_is_a_ramp_and_a_lone_point_is_immediate() {
         let stage = Stage::shared();
         let mut stage = stage.borrow_mut();
         let bounds = ParamBounds {
             min: 0.0,
             max: 100.0,
         };
-        assert!(stage.stage(&queue(7, &[(3, 0.5), (25, 0.75)]), bounds));
-        assert!(stage.stage(&queue(9, &[(0, 0.25)]), bounds));
+        assert!(stage.stage(&queue(7, &[(3, 0.5), (25, 0.75), (30, 0.25)]), bounds));
+        assert!(stage.stage(&queue(9, &[(4, 0.25)]), bounds));
 
         assert_eq!(
             drained(&mut stage),
@@ -169,27 +186,71 @@ mod tests {
                 (
                     7,
                     vec![
-                        ParamEvent::Immediate {
-                            buffer_offset: 3,
-                            value: 50.0
+                        ParamEvent::Ramped {
+                            start_buffer_offset: 3,
+                            duration_frames: 22,
+                            start_value: 50.0,
+                            end_value: 75.0
                         },
-                        ParamEvent::Immediate {
-                            buffer_offset: 25,
-                            value: 75.0
+                        ParamEvent::Ramped {
+                            start_buffer_offset: 25,
+                            duration_frames: 5,
+                            start_value: 75.0,
+                            end_value: 25.0
                         },
                     ]
                 ),
                 (
                     9,
                     vec![ParamEvent::Immediate {
-                        buffer_offset: 0,
+                        buffer_offset: 4,
                         value: 25.0
                     }]
                 ),
             ]
         );
-        assert_eq!(stage.ends(), [(7, 75.0), (9, 25.0)]);
+        assert_eq!(stage.ends(), [(7, 25.0), (9, 25.0)]);
         assert!(drained(&mut stage).is_empty(), "a render schedules once");
+    }
+
+    /// Two points at one offset are a step: the later value lands there as an
+    /// immediate event, and a ramp that follows starts from it.
+    #[test]
+    fn two_points_at_one_offset_are_a_step() {
+        let stage = Stage::shared();
+        let mut stage = stage.borrow_mut();
+        let bounds = ParamBounds { min: 0.0, max: 1.0 };
+        assert!(stage.stage(&queue(1, &[(0, 0.0), (10, 0.5), (10, 1.0)]), bounds));
+        assert!(stage.stage(&queue(2, &[(10, 0.25), (10, 0.5), (30, 1.0)]), bounds));
+        assert_eq!(
+            drained(&mut stage),
+            [
+                (
+                    1,
+                    vec![
+                        ParamEvent::Ramped {
+                            start_buffer_offset: 0,
+                            duration_frames: 10,
+                            start_value: 0.0,
+                            end_value: 0.5
+                        },
+                        ParamEvent::Immediate {
+                            buffer_offset: 10,
+                            value: 1.0
+                        },
+                    ]
+                ),
+                (
+                    2,
+                    vec![ParamEvent::Ramped {
+                        start_buffer_offset: 10,
+                        duration_frames: 20,
+                        start_value: 0.5,
+                        end_value: 1.0
+                    }]
+                ),
+            ]
+        );
     }
 
     /// A queue that does not fit stages nothing at all, so the caller writes

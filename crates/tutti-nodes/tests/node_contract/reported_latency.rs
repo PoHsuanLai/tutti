@@ -336,15 +336,21 @@ mod convolver {
     fn stereo_convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         type Build = fn() -> ConvolverNode;
         let builds: [(&str, Build); 6] = [
-            ("mono", || ConvolverNode::shared_ir(2u16, &[1.0], 128)),
+            ("mono", || {
+                ConvolverNode::shared_ir(2u16, &[1.0], 128).unwrap()
+            }),
             ("stereo", || ConvolverNode::stereo(&[1.0], &[1.0], 128)),
-            ("folded", || ConvolverNode::folded(&[&[1.0], &[1.0]], 128)),
-            ("shared x6", || ConvolverNode::shared_ir(6u16, &[1.0], 128)),
+            ("folded", || {
+                ConvolverNode::folded(&[&[1.0], &[1.0]], 128).unwrap()
+            }),
+            ("shared x6", || {
+                ConvolverNode::shared_ir(6u16, &[1.0], 128).unwrap()
+            }),
             ("per_channel x6", || {
-                ConvolverNode::per_channel(&[&[1.0_f32][..]; 6], 128)
+                ConvolverNode::per_channel(&[&[1.0_f32][..]; 6], 128).unwrap()
             }),
             ("folded x6", || {
-                ConvolverNode::folded(&[&[1.0_f32][..]; 6], 128)
+                ConvolverNode::folded(&[&[1.0_f32][..]; 6], 128).unwrap()
             }),
         ];
         for (name, build) in builds {

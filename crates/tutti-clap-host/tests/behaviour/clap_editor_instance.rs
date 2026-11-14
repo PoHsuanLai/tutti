@@ -59,7 +59,7 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
 }
 
 /// **The editor's `save_state` is the plugin's own state**, what the host
-/// gives the audio instance when the editor closes (design 021 Q8).
+/// gives the audio instance when the editor closes.
 ///
 /// The probe keeps its parameter values in process globals, which every
 /// instance in this process shares, so a round trip between two instances

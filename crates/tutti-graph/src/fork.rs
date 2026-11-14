@@ -334,9 +334,6 @@ impl PendingFork {
         fork.gains = spec.gains;
         fork.modes = spec.modes;
         fork.mixes = spec.mixes;
-        for (key, node) in fork.topology.nodes.iter_mut() {
-            node.params = spec.topology.nodes[key].params.clone();
-        }
         if let Err(e) = editor.commit() {
             let remains = ForkRemains {
                 units: Vec::new(),

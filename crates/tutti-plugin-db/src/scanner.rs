@@ -868,7 +868,7 @@ mod tests {
     }
 
     /// An mtime change, from a reinstall or a vendor update, must re-admit a
-    /// blacklisted plugin. `classify` therefore consults `needs_rescan` before
+    /// blacklisted plugin. `classify` therefore consults the file time before
     /// the blacklist; checking the flag first makes a false positive permanent
     /// short of hand-editing the JSON.
     #[test]
@@ -917,13 +917,15 @@ mod tests {
         assert_eq!(db.blacklisted().count(), 2);
         assert_eq!(db.plugins().count(), 0);
         // Blacklisting stamps the live mtime, so the entry is "unchanged".
-        assert!(!db.needs_rescan(&a, &FileFacts::read(&a)));
+        assert!(matches!(
+            facts::classify(db.row(&a), &FileFacts::read(&a)),
+            ScanDecision::Blacklisted
+        ));
 
         assert!(db.unblacklist(&a));
         assert!(!db.is_blacklisted(&a));
         // A lifted file is probed again: a blacklisted row holds no plugins to
         // serve.
-        assert!(db.needs_rescan(&a, &FileFacts::read(&a)));
         assert!(matches!(
             facts::classify(db.row(&a), &FileFacts::read(&a)),
             ScanDecision::Probe
@@ -934,7 +936,10 @@ mod tests {
         let cleared = db.clear_blacklist();
         assert_eq!(cleared, vec![b.clone()]);
         assert_eq!(db.blacklisted().count(), 0);
-        assert!(db.needs_rescan(&b, &FileFacts::read(&b)));
+        assert!(matches!(
+            facts::classify(db.row(&b), &FileFacts::read(&b)),
+            ScanDecision::Probe
+        ));
     }
 
     #[test]

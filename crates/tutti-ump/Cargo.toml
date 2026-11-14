@@ -20,8 +20,7 @@ serde = ["dep:serde"]
 
 [dependencies]
 bytemuck = { version = "1.16", features = ["derive"] }
-# No `std` feature: the derive implements `core::error::Error`, so the crate builds without std.
-thiserror = { version = "2", default-features = false }
+thiserror = { workspace = true }
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 
 [dev-dependencies]

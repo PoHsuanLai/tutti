@@ -9,11 +9,11 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, BusRole, ChannelLayout, ClapFeature, ContentScale, Control, Delivered,
-    EditorPresence, EditorSize, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized,
-    ParamEdit, ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses,
-    PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake,
-    RenderMode, RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, TrackInfo,
-    WindowHandle, Wraps,
+    EditorPresence, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit,
+    ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass,
+    PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake, RenderMode,
+    RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, TrackInfo, WindowHandle,
+    Wraps,
 };
 
 use super::ClapLoaded;
@@ -520,7 +520,8 @@ impl EditorWindow for ClapLoaded {
 
     /// Creates the plugin editor and embeds it into the given native `parent`
     /// window, whose backing-store scale is `scale`, returning the editor's
-    /// initial size.
+    /// initial size, in the unit of the window api (physical pixels; logical points on
+    /// cocoa).
     ///
     /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
     /// `set_scale(scale)` → `get_size` → `set_parent` → `show`. See
@@ -535,7 +536,7 @@ impl EditorWindow for ClapLoaded {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<dpi::Size> {
         self.embed_editor(main, parent, scale).map_err(plugin_error)
     }
 
@@ -610,17 +611,14 @@ impl EditorWindow for ClapLoaded {
     fn set_editor_size(
         &mut self,
         main: &MainThread,
-        requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+        requested: dpi::Size,
+    ) -> PluginResult<dpi::Size> {
         ClapLoaded::resize_editor(self, main, requested).map_err(plugin_error)
     }
 
     /// The plugin's pending `gui.request_resize`, once
     /// ([`ClapLoaded::take_editor_resize_request`]).
-    fn poll_editor_resize_request(
-        &mut self,
-        _main: &MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<dpi::Size> {
         ClapLoaded::take_editor_resize_request(self)
     }
 }

@@ -7,6 +7,7 @@
 use crate::{
     InvalidateSink, Notice, ParameterChangeSink, RefreshSink, Subscription, TransportSink,
 };
+use dpi::Size;
 use std::sync::Arc;
 use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::MainThread;
@@ -14,7 +15,7 @@ use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, Control, EditorCapabilities, EditorError,
     Health, PluginError, PluginFailure, StateError, TerminationReason, WindowHandle,
 };
-use tutti_plugin_types::{ContentScale, EditorSize, KeyEvent, KeyUse};
+use tutti_plugin_types::{ContentScale, KeyEvent, KeyUse};
 use tutti_plugin_types::{Delivered, TrackInfo};
 use tutti_plugin_types::{
     LayoutSupport, LoadedPlugin, PluginBus, PluginDescriptor, Preset, PresetError, PresetId,
@@ -570,7 +571,7 @@ impl PluginHandle {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> Result<EditorSize, EditorError> {
+    ) -> Result<Size, EditorError> {
         let control = self.editor_route()?;
         Self::editor_call(control, |c| c.open_editor(main, parent, scale))
     }
@@ -667,11 +668,7 @@ impl PluginHandle {
     /// route, and otherwise any error of
     /// [`EditorWindow::set_editor_size`](tutti_plugin_types::EditorWindow::set_editor_size),
     /// such as an editor that cannot be resized.
-    pub fn set_editor_size(
-        &self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> Result<EditorSize, EditorError> {
+    pub fn set_editor_size(&self, main: &MainThread, requested: Size) -> Result<Size, EditorError> {
         let control = self.editor_route()?;
         Self::editor_call(control, |c| c.set_editor_size(main, requested))
     }
@@ -725,7 +722,7 @@ impl PluginHandle {
     /// plugin has not asked" are the same answer to a poll — nothing to do —
     /// whereas `set_editor_size` is a request that deserves to be told it went
     /// nowhere.
-    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
+    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<Size> {
         lent(self.control.as_deref()?, |c| {
             c.poll_editor_resize_request(main)
         })?
@@ -810,7 +807,7 @@ mod tests {
             _main: &MainThread,
             _parent: WindowHandle,
             _scale: ContentScale,
-        ) -> tutti_plugin_types::PluginResult<EditorSize> {
+        ) -> tutti_plugin_types::PluginResult<Size> {
             Err(PluginError::Editor(EditorError::PluginError("none".into())))
         }
         fn close_editor(&mut self, _main: &MainThread) {}
@@ -828,8 +825,8 @@ mod tests {
         fn set_editor_size(
             &mut self,
             _main: &tutti_plugin_types::MainThread,
-            _requested: tutti_plugin_types::EditorSize,
-        ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+            _requested: dpi::Size,
+        ) -> tutti_plugin_types::PluginResult<dpi::Size> {
             Err(tutti_plugin_types::PluginError::Editor(
                 tutti_plugin_types::EditorError::PluginError(
                     "set_editor_size not supported".into(),
@@ -841,7 +838,7 @@ mod tests {
         fn poll_editor_resize_request(
             &mut self,
             _main: &tutti_plugin_types::MainThread,
-        ) -> Option<tutti_plugin_types::EditorSize> {
+        ) -> Option<dpi::Size> {
             None
         }
     }

@@ -25,11 +25,13 @@
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
+use dpi::Size;
+
 use crate::{
-    AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorSize, EditorWindow,
-    KeyEvent, KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
-    ProcessWake, SampleRate, Samples, WindowHandle,
+    AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorWindow, KeyEvent,
+    KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, ProcessWake,
+    SampleRate, Samples, WindowHandle,
 };
 use crate::{Delivered, ParamEdit};
 use crate::{
@@ -651,7 +653,7 @@ impl<W: Wraps> EditorWindow for W {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<Size> {
         self.plugin_mut().open_editor(main, parent, scale)
     }
 
@@ -687,15 +689,11 @@ impl<W: Wraps> EditorWindow for W {
         self.plugin_mut().editor_capabilities(main)
     }
 
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
+    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size> {
         self.plugin_mut().set_editor_size(main, requested)
     }
 
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
         self.plugin_mut().poll_editor_resize_request(main)
     }
 }

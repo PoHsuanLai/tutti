@@ -37,7 +37,7 @@
 //! ## What it does not own
 //!
 //! **The shared vocabulary.** [`ParameterChanges`], [`TransportInfo`],
-//! [`WindowHandle`], [`EditorSize`] and the `ParameterInfo` that
+//! [`WindowHandle`] and the `ParameterInfo` that
 //! [`parameter_list`][`ClapLoaded::parameter_list`] hands back are
 //! [`tutti-plugin-types`](../tutti-plugin-types)' — re-exported here so a caller
 //! can stay format-agnostic, not defined here. MIDI is the workspace-wide UMP: an event in is a
@@ -155,7 +155,7 @@
 //!     // Any winit or other `raw-window-handle` window.
 //!     let handle = WindowHandle::from_window(window)?;
 //!     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
-//!     println!("editor is {}x{}", size.width, size.height);
+//!     println!("editor is {size:?}");
 //! }
 //! plugin.close_editor(&main);
 //! # Ok(()) }
@@ -261,7 +261,6 @@
 //! [`ParameterChanges`]: crate::ParameterChanges
 //! [`TransportInfo`]: crate::TransportInfo
 //! [`WindowHandle`]: crate::WindowHandle
-//! [`EditorSize`]: crate::EditorSize
 //! [`WireMidi`]: crate::WireMidi
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // Every `unsafe` the CLAP host needs is in `tutti-clap-ffi`.
@@ -290,8 +289,8 @@ pub use types::ClapNoteExpression;
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout, Color,
-    ContentScale, EditorCapabilities, EditorSize, NoteDialect, NoteDialects, NoteExpressionType,
-    NoteName, NotePortInfo, ParamAutomationState, ParameterChanges, ParameterPoint, ParameterQueue,
+    ContentScale, EditorCapabilities, NoteDialect, NoteDialects, NoteExpressionType, NoteName,
+    NotePortInfo, ParamAutomationState, ParameterChanges, ParameterPoint, ParameterQueue,
     PluginInfo, StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle, WireMidi,
 };
 

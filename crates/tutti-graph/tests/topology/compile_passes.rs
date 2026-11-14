@@ -182,8 +182,8 @@ fn kinds_for(t: &Topology) -> BTreeMap<NodeKey, Kind> {
         .iter()
         .map(|(&k, s)| {
             let behaviour = match s.kind.as_str() {
-                "dc" => SpecBehaviour::Dc(s.scalar("value").unwrap_or(0.5)),
-                "gain" => SpecBehaviour::Gain(s.scalar("gain").unwrap_or(0.75)),
+                "dc" => SpecBehaviour::Dc(0.5),
+                "gain" => SpecBehaviour::Gain(0.75),
                 "sum" => SpecBehaviour::Sum,
                 _ => SpecBehaviour::Fan,
             };

@@ -27,9 +27,10 @@ use crate::protocol::{
     ScaleChanges, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
+use dpi::Size;
 use tutti_plugin_types::{
-    BlockStatus, BridgeResult, ContentScale, Delivered, EditorError, EditorSize, PluginFailure,
-    StateError, StateUse,
+    BlockStatus, BridgeResult, ContentScale, Delivered, EditorError, PluginFailure, StateError,
+    StateUse,
 };
 use tutti_types::SampleRate;
 
@@ -606,11 +607,11 @@ impl AudioBridge {
         &self,
         parent: Option<u64>,
         scale: ContentScale,
-    ) -> std::result::Result<Option<EditorSize>, EditorError> {
+    ) -> std::result::Result<Option<Size>, EditorError> {
         if self.lifecycle.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
-        let (ask_resp, reply) = ask::<std::result::Result<Option<EditorSize>, String>>();
+        let (ask_resp, reply) = ask::<std::result::Result<Option<Size>, String>>();
         if !self.channels.push_command(Command::OpenEditor {
             parent,
             scale,
@@ -640,14 +641,11 @@ impl AudioBridge {
     /// # Errors
     ///
     /// As [`open_editor_in_server`](Self::open_editor_in_server).
-    pub fn set_editor_size_in_server(
-        &self,
-        size: EditorSize,
-    ) -> std::result::Result<EditorSize, EditorError> {
+    pub fn set_editor_size_in_server(&self, size: Size) -> std::result::Result<Size, EditorError> {
         if self.lifecycle.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
-        let (ask_resp, reply) = ask::<std::result::Result<EditorSize, String>>();
+        let (ask_resp, reply) = ask::<std::result::Result<Size, String>>();
         if !self
             .channels
             .push_command(Command::SetEditorSize { size, reply })
@@ -663,7 +661,7 @@ impl AudioBridge {
 
     /// The size the server's editor asked its window to take since the last
     /// call.
-    pub fn take_editor_wants_size(&self) -> Option<EditorSize> {
+    pub fn take_editor_wants_size(&self) -> Option<Size> {
         self.lifecycle.take_editor_wants()
     }
 

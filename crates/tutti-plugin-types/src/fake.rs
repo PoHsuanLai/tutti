@@ -16,14 +16,15 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
+use dpi::{PhysicalSize, Size};
 use tutti_rt::RequestWord;
 
 use crate::{
     AudioBufferMut, ChannelLayout, ContentScale, Control, Controller, EditDrain, EditSink,
-    EditorError, EditorSize, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThread,
-    Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError,
-    PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, RenderModeSupport,
-    Request, RescanScope, RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
+    EditorError, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThread, Normalized,
+    ParamEdit, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError, PluginIo,
+    PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, RenderModeSupport, Request,
+    RescanScope, RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
 };
 
 /// One call the fake received.
@@ -447,8 +448,9 @@ impl FakePlugin {
     }
 
     /// The plugin asks its window to take `size`; the host's next
-    /// `poll_editor_resize_request` answers it, once.
-    pub fn request_editor_size(&self, size: EditorSize) {
+    /// `poll_editor_resize_request` answers it, once. The fake counts in device
+    /// pixels, as it answers `open_editor`.
+    pub fn request_editor_size(&self, size: PhysicalSize<u32>) {
         let packed = (u64::from(size.width) << 32) | u64::from(size.height);
         self.0.resize_request.store(packed, Ordering::Relaxed);
     }
@@ -641,17 +643,14 @@ macro_rules! fake_control {
                 _main: &MainThread,
                 _parent: WindowHandle,
                 _scale: ContentScale,
-            ) -> PluginResult<EditorSize> {
+            ) -> PluginResult<Size> {
                 if !self.shared.editor.load(Ordering::Relaxed) {
                     return Err(PluginError::Editor(EditorError::PluginError(
                         "the fake plugin has no editor".into(),
                     )));
                 }
                 self.shared.log.push(Call::OpenEditor);
-                Ok(EditorSize {
-                    width: 640,
-                    height: 480,
-                })
+                Ok(PhysicalSize::new(640, 480).into())
             }
 
             fn set_editor_scale(
@@ -688,8 +687,8 @@ macro_rules! fake_control {
             fn set_editor_size(
                 &mut self,
                 _main: &crate::MainThread,
-                _requested: crate::EditorSize,
-            ) -> crate::PluginResult<crate::EditorSize> {
+                _requested: dpi::Size,
+            ) -> crate::PluginResult<dpi::Size> {
                 Err(crate::PluginError::Editor(crate::EditorError::PluginError(
                     "set_editor_size not supported".into(),
                 )))
@@ -699,13 +698,12 @@ macro_rules! fake_control {
             fn poll_editor_resize_request(
                 &mut self,
                 _main: &crate::MainThread,
-            ) -> Option<crate::EditorSize> {
+            ) -> Option<dpi::Size> {
                 match self.shared.resize_request.swap(0, Ordering::Relaxed) {
                     0 => None,
-                    packed => Some(crate::EditorSize {
-                        width: (packed >> 32) as u32,
-                        height: packed as u32,
-                    }),
+                    packed => {
+                        Some(dpi::PhysicalSize::new((packed >> 32) as u32, packed as u32).into())
+                    }
                 }
             }
         }

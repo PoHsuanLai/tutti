@@ -708,7 +708,7 @@ fn the_editor_is_created_once_and_destroyed_once() {
     };
 
     assert_eq!(
-        plugin.resize_gui(&main_thread(), 10, 10),
+        plugin.resize_gui(&main_thread(), dpi::PhysicalSize::new(10, 10).into()),
         Err(tutti_clap_ffi::GuiError::NotCreated)
     );
     assert!(
@@ -719,12 +719,20 @@ fn the_editor_is_created_once_and_destroyed_once() {
     assert_eq!(gui_capture().call_count, 0, "nothing reached the plugin");
 
     plugin
-        .open_embedded(&main_thread(), &parent, 1.0)
+        .open_embedded(
+            &main_thread(),
+            &parent,
+            tutti_plugin_types::ContentScale::IDENTITY,
+        )
         .expect("opens");
     assert_eq!(gui_capture().create_balance, 1);
     assert_eq!(
         plugin
-            .open_embedded(&main_thread(), &parent, 1.0)
+            .open_embedded(
+                &main_thread(),
+                &parent,
+                tutti_plugin_types::ContentScale::IDENTITY
+            )
             .unwrap_err(),
         tutti_clap_ffi::GuiError::AlreadyCreated
     );
@@ -941,7 +949,11 @@ fn dropping_a_plugin_destroys_its_open_editor() {
         unsafe { tutti_plugin_types::WindowHandle::from_u64(0) }
     };
     plugin
-        .open_embedded(&main_thread(), &parent, 1.0)
+        .open_embedded(
+            &main_thread(),
+            &parent,
+            tutti_plugin_types::ContentScale::IDENTITY,
+        )
         .expect("opens");
     assert_eq!(gui_capture().create_balance, 1);
     drop(plugin);
@@ -964,7 +976,9 @@ fn a_drop_off_the_main_thread_is_destroyed_on_the_main_threads_next_tick() {
         // SAFETY: the reference plugin never dereferences its parent.
         unsafe { tutti_plugin_types::WindowHandle::from_u64(0) }
     };
-    plugin.open_embedded(&main, &parent, 1.0).expect("opens");
+    plugin
+        .open_embedded(&main, &parent, tutti_plugin_types::ContentScale::IDENTITY)
+        .expect("opens");
     let before = tutti_clap_ffi::off_thread_drops();
     std::thread::spawn(move || drop(plugin)).join().unwrap();
     assert_eq!(

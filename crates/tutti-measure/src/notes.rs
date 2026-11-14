@@ -65,12 +65,14 @@
 //! These are offline or UI-thread calls: they allocate the pitch track, the
 //! levels and the notes.
 
+use tutti_dsp::FrameCount;
 use tutti_types::{Amplitude, Cents, Db, Note, SampleRate, Samples, Seconds};
 
 use crate::onset::{DetectionFunction, OnsetConfig, detect_onsets, onset_lag};
 use crate::yin::{PitchEstimate, YinConfig, yin_track};
 use crate::{Error, Result};
 use tutti_dsp::FftScratch;
+use tutti_types::ranged;
 
 /// The longest YIN frame accepted. YIN allocates several buffers of about this
 /// size, so an absurd `min_freq` would otherwise ask for gigabytes.
@@ -87,11 +89,20 @@ const MAX_OVERLAP: usize = 64;
 /// The most frames in one smoothing span, bounding the median's cost.
 const MAX_SMOOTHING_FRAMES: usize = 1024;
 
-/// The longest time setting accepted, in seconds.
-const MAX_SECONDS: f64 = 60.0;
-
 /// Input whose peak is below this is silence, as in tempo estimation.
 const SILENCE_FLOOR: Db = Db(-90.0);
+
+ranged! {
+    /// A time setting of a note analysis: within `0..=60` seconds.
+    NoteSpan(Seconds), NoteSpanError, "a note time within 0..=60 s",
+    |raw| raw.get() >= 0.0 && raw.get() <= 60.0
+}
+
+ranged! {
+    /// A pitch change that splits a note: within `(0, 1200]` cents.
+    PitchSplit(Cents), PitchSplitError, "a pitch split within (0, 1200] cents",
+    |raw| raw.get() > 0.0 && raw.get() <= 1200.0
+}
 
 /// What [`transcribe`] and [`notes_from_track`] segment with. Immutable once
 /// built.
@@ -101,7 +112,7 @@ pub struct NoteConfig {
     onset: OnsetConfig,
     hop: Samples,
     min_length: Samples,
-    pitch_split: Cents,
+    pitch_split: PitchSplit,
     smoothing: Samples,
     hold: Samples,
     floor: Db,
@@ -114,22 +125,28 @@ impl NoteConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidNoteParameter`] when the YIN frame is longer than
-    /// 262144 samples (a `min_freq` that low is not a note), when `onset` is
-    /// not [`DetectionFunction::SpectralFlux`] (the only function whose peak
-    /// has a known lag behind its attack), or when the two sample rates differ.
+    /// [`Error::YinFrameTooLong`] when the YIN frame is longer than 262144
+    /// samples (a `min_freq` that low is not a note);
+    /// [`Error::OnsetNotSpectralFlux`] when `onset` is not
+    /// [`DetectionFunction::SpectralFlux`] (the only function whose peak has a
+    /// known lag behind its attack); [`Error::SampleRateMismatch`] when the two
+    /// sample rates differ.
     pub fn new(yin: YinConfig, onset: OnsetConfig) -> Result<Self> {
         let frame = yin.buffer_size().get();
         if frame > MAX_FRAME {
-            return Err(Error::InvalidNoteParameter("yin: analysis frame too long"));
+            return Err(Error::YinFrameTooLong {
+                frame: Samples(frame),
+                max: Samples(MAX_FRAME),
+            });
         }
         if onset.function() != DetectionFunction::SpectralFlux {
-            return Err(Error::InvalidNoteParameter("onset: not spectral flux"));
+            return Err(Error::OnsetNotSpectralFlux);
         }
         if onset.geometry().sample_rate() != yin.sample_rate() {
-            return Err(Error::InvalidNoteParameter(
-                "onset: sample rate differs from yin's",
-            ));
+            return Err(Error::SampleRateMismatch {
+                onset: onset.geometry().sample_rate(),
+                yin: yin.sample_rate(),
+            });
         }
         let rate = yin.sample_rate();
         Ok(Self {
@@ -137,7 +154,7 @@ impl NoteConfig {
             onset,
             hop: Samples((frame / 8).max(1)),
             min_length: seconds(0.06, rate),
-            pitch_split: Cents(50.0),
+            pitch_split: PitchSplit::of(Cents(50.0)),
             smoothing: seconds(0.03, rate),
             hold: seconds(0.01, rate),
             floor: Db(-60.0),
@@ -148,8 +165,9 @@ impl NoteConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::ZeroHop`] for zero; [`Error::InvalidNoteParameter`] for a hop
-    /// wider than the YIN frame (frames would leave gaps) or under 1/64 of it.
+    /// [`Error::ZeroHop`] for zero; [`Error::HopWiderThanWindow`] for a hop
+    /// wider than the YIN frame (frames would leave gaps);
+    /// [`Error::TooManyOverlaps`] for a hop under 1/64 of it.
     pub fn with_hop(mut self, hop: impl Into<Samples>) -> Result<Self> {
         let hop = hop.into();
         let frame = self.frame().get();
@@ -157,63 +175,52 @@ impl NoteConfig {
             return Err(Error::ZeroHop);
         }
         if hop.get() > frame {
-            return Err(Error::InvalidNoteParameter("hop: wider than the yin frame"));
+            return Err(Error::HopWiderThanWindow {
+                hop,
+                window: Samples(frame),
+            });
         }
         if frame.div_ceil(hop.get()) > MAX_OVERLAP {
-            return Err(Error::InvalidNoteParameter(
-                "hop: under 1/64 of the yin frame",
-            ));
+            return Err(Error::TooManyOverlaps {
+                window: Samples(frame),
+                hop,
+                max: MAX_OVERLAP,
+            });
         }
         self.hop = hop;
         Ok(self)
     }
 
     /// Notes shorter than this are dropped. Zero keeps every piece.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidNoteParameter`] unless finite and within `0..=60` s.
-    pub fn with_min_length(mut self, length: impl Into<Seconds>) -> Result<Self> {
-        self.min_length = checked_seconds(length.into(), self.yin.sample_rate(), "min length")?;
-        Ok(self)
+    #[must_use]
+    pub fn with_min_length(mut self, length: NoteSpan) -> Self {
+        self.min_length = self.samples(length);
+        self
     }
 
     /// A pitch change above this splits a note. Under a semitone it reads
     /// vibrato as notes; over it, a step as one.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidNoteParameter`] unless finite and in `(0, 1200]` cents.
-    pub fn with_pitch_split(mut self, split: impl Into<Cents>) -> Result<Self> {
-        let split = split.into();
-        if !(split.get() > 0.0 && split.get() <= 1200.0) {
-            return Err(Error::InvalidNoteParameter("pitch split"));
-        }
+    #[must_use]
+    pub fn with_pitch_split(mut self, split: PitchSplit) -> Self {
         self.pitch_split = split;
-        Ok(self)
+        self
     }
 
     /// How long a pitch change must last to split a note: the median span each
     /// side of a candidate. Shorter blips, and vibrato whose half period is
     /// shorter, do not split. At least one frame is used.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidNoteParameter`] unless finite and within `0..=60` s.
-    pub fn with_smoothing(mut self, span: impl Into<Seconds>) -> Result<Self> {
-        self.smoothing = checked_seconds(span.into(), self.yin.sample_rate(), "smoothing")?;
-        Ok(self)
+    #[must_use]
+    pub fn with_smoothing(mut self, span: NoteSpan) -> Self {
+        self.smoothing = self.samples(span);
+        self
     }
 
     /// The longest pitch dropout bridged inside a note, capped for the hop in
     /// use below the shortest true rest, so a rest is never bridged.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidNoteParameter`] unless finite and within `0..=60` s.
-    pub fn with_hold(mut self, hold: impl Into<Seconds>) -> Result<Self> {
-        self.hold = checked_seconds(hold.into(), self.yin.sample_rate(), "hold")?;
-        Ok(self)
+    #[must_use]
+    pub fn with_hold(mut self, hold: NoteSpan) -> Self {
+        self.hold = self.samples(hold);
+        self
     }
 
     /// Frames whose RMS is below this are unvoiced. Absolute, in dBFS, so a
@@ -302,6 +309,11 @@ impl NoteConfig {
         hold.min(rest.saturating_sub(1))
     }
 
+    /// `span` in samples at the analysis rate.
+    fn samples(&self, span: NoteSpan) -> Samples {
+        span.get().to_samples(self.yin.sample_rate())
+    }
+
     /// Frames in the smoothing span, at least one.
     fn smoothing_frames(&self) -> usize {
         self.smoothing.get().div_ceil(self.hop.get()).max(1)
@@ -315,13 +327,6 @@ impl NoteConfig {
 
 fn seconds(s: f64, rate: SampleRate) -> Samples {
     Seconds(s).to_samples(rate)
-}
-
-fn checked_seconds(s: Seconds, rate: SampleRate, what: &'static str) -> Result<Samples> {
-    if !(s.get() >= 0.0 && s.get() <= MAX_SECONDS) {
-        return Err(Error::InvalidNoteParameter(what));
-    }
-    Ok(s.to_samples(rate))
 }
 
 /// One note.
@@ -382,7 +387,7 @@ impl VelocityRange {
     /// # Errors
     ///
     /// [`Error::InvalidThreshold`] for a bound that is NaN or infinite;
-    /// [`Error::InvalidNoteParameter`] unless `floor < ceiling`.
+    /// [`Error::EmptyVelocityRange`] unless `floor < ceiling`.
     pub fn new(floor: impl Into<Db>, ceiling: impl Into<Db>) -> Result<Self> {
         let (floor, ceiling) = (floor.into(), ceiling.into());
         for bound in [floor, ceiling] {
@@ -391,7 +396,7 @@ impl VelocityRange {
             }
         }
         if floor >= ceiling {
-            return Err(Error::InvalidNoteParameter("velocity range"));
+            return Err(Error::EmptyVelocityRange { floor, ceiling });
         }
         Ok(Self { floor, ceiling })
     }
@@ -419,7 +424,7 @@ impl VelocityRange {
 /// [`Error::NonFiniteInput`] for a NaN or infinite sample;
 /// [`Error::InsufficientInput`] when shorter than one YIN frame;
 /// [`Error::NoSignal`] when the peak is under -90 dBFS;
-/// [`Error::InvalidNoteParameter`] when the hop would make more than 4194304
+/// [`Error::TooManyFrames`] when the hop would make more than 4194304
 /// frames. Noise gives no notes rather than an error, and a buffer shorter
 /// than the onset window (but not than a YIN frame) has no onsets, so only
 /// pitch changes split it.
@@ -443,7 +448,10 @@ pub fn transcribe(
         return Err(Error::NoSignal);
     }
     if too_many_frames(samples.len(), frame.get(), cfg.hop.get()) {
-        return Err(Error::InvalidNoteParameter("hop: too many frames"));
+        return Err(Error::TooManyFrames {
+            frames: FrameCount((samples.len() - frame.get()) / cfg.hop.get() + 1),
+            max: FrameCount(MAX_FRAMES),
+        });
     }
 
     let track = yin_track(&cfg.yin, samples, cfg.hop)?;
@@ -493,11 +501,12 @@ pub fn frame_levels(cfg: &NoteConfig, samples: &[f32]) -> Vec<Amplitude> {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidNoteParameter`] when `levels` and `track` differ in length,
-/// when a level is negative, when the smoothing span is over 1024 frames or
-/// when the track is over 4194304 frames; [`Error::NonFiniteInput`] for a
-/// non-finite level or voiced frequency; [`Error::InvalidNoteParameter`] also
-/// for a voiced frequency of zero or below.
+/// [`Error::LevelsLengthMismatch`] when `levels` and `track` differ in length;
+/// [`Error::NegativeInput`] when a level is negative;
+/// [`Error::SmoothingTooLong`] when the smoothing span is over 1024 frames;
+/// [`Error::TooManyFrames`] when the track is over 4194304 frames;
+/// [`Error::NonFiniteInput`] for a non-finite level or voiced frequency;
+/// [`Error::NonPositiveFrequency`] for a voiced frequency of zero or below.
 pub fn notes_from_track(
     cfg: &NoteConfig,
     track: &[PitchEstimate],
@@ -505,15 +514,22 @@ pub fn notes_from_track(
     onsets: &[Samples],
 ) -> Result<Vec<NoteEvent>> {
     if track.len() != levels.len() {
-        return Err(Error::InvalidNoteParameter(
-            "levels: length differs from the pitch track",
-        ));
+        return Err(Error::LevelsLengthMismatch {
+            levels: levels.len(),
+            track: track.len(),
+        });
     }
     if track.len() > MAX_FRAMES {
-        return Err(Error::InvalidNoteParameter("track: too many frames"));
+        return Err(Error::TooManyFrames {
+            frames: FrameCount(track.len()),
+            max: FrameCount(MAX_FRAMES),
+        });
     }
     if cfg.smoothing_frames() > MAX_SMOOTHING_FRAMES {
-        return Err(Error::InvalidNoteParameter("smoothing: too many frames"));
+        return Err(Error::SmoothingTooLong {
+            frames: FrameCount(cfg.smoothing_frames()),
+            max: FrameCount(MAX_SMOOTHING_FRAMES),
+        });
     }
     let frames = voiced_frames(track, levels, cfg.floor.to_amplitude())?;
     let mut onset_frames: Vec<(usize, usize)> = onsets
@@ -567,7 +583,7 @@ fn voiced_frames(
                 return Err(Error::NonFiniteInput);
             }
             if level.get() < 0.0 {
-                return Err(Error::InvalidNoteParameter("level: negative"));
+                return Err(Error::NegativeInput);
             }
             let Some(pitch) = pitch.pitch() else {
                 return Ok(None);
@@ -577,7 +593,7 @@ fn voiced_frames(
                 return Err(Error::NonFiniteInput);
             }
             if frequency <= 0.0 {
-                return Err(Error::InvalidNoteParameter("pitch: non-positive frequency"));
+                return Err(Error::NonPositiveFrequency);
             }
             Ok((*level >= floor).then(|| Voiced {
                 cents: Cents::from_pitch_ratio(frequency / a4),
@@ -647,7 +663,7 @@ fn split_run(
         .iter()
         .map(|&f| frames[f].map_or(0.0, |v| v.cents.get()))
         .collect();
-    for pos in pitch_changes(&cents, span, cfg.pitch_split.get()) {
+    for pos in pitch_changes(&cents, span, cfg.pitch_split.get().get()) {
         if cuts.iter().all(|&(p, _)| p.abs_diff(pos) >= span) {
             // Midway between the centres of the last old and first new frame.
             let centre = |f: usize| f * hop + span_of(cfg) / 2;
@@ -1050,7 +1066,7 @@ mod tests {
     /// a frame (80 over a span) splits once, in the middle of the slide.
     #[test]
     fn a_fast_slide_splits_and_a_slow_one_does_not() {
-        let c = cfg().with_min_length(Seconds(0.0)).unwrap();
+        let c = cfg().with_min_length(NoteSpan::of(Seconds(0.0)));
         assert_eq!(c.smoothing_frames(), 10);
         let slide = |per_frame: f32| {
             let t: Vec<Option<f32>> = (0..60)
@@ -1069,7 +1085,7 @@ mod tests {
         assert_eq!(fast[0].end.get(), (centre(29) + centre(30)) / 2);
 
         // The split is the threshold: 80 cents over a span is under 200.
-        let loose = c.with_pitch_split(Cents(200.0)).unwrap();
+        let loose = c.with_pitch_split(PitchSplit::of(Cents(200.0)));
         let t: Vec<Option<f32>> = (0..60)
             .map(|i| Some(440.0 * (8.0 * i as f32 / 1200.0).exp2()))
             .collect();
@@ -1123,11 +1139,11 @@ mod tests {
             &[tone(0.1, 0.16, 440.0, 0.5), tone(0.4, 0.7, 523.2511, 0.5)],
             0.9,
         );
-        let c = cfg().with_min_length(Seconds(0.1)).unwrap();
+        let c = cfg().with_min_length(NoteSpan::of(Seconds(0.1)));
         let notes = run(&c, &x);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert_eq!(u8::try_from(notes[0].note), Ok(72));
-        let kept = run(&cfg().with_min_length(Seconds(0.02)).unwrap(), &x);
+        let kept = run(&cfg().with_min_length(NoteSpan::of(Seconds(0.02))), &x);
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert_eq!(u8::try_from(kept[0].note), Ok(69));
     }
@@ -1286,7 +1302,7 @@ mod tests {
             &[tone(0.1, 0.4, 440.0, 0.5), tone(0.42, 0.7, 440.0, 0.5)],
             0.9,
         );
-        let long = c.with_hold(Seconds(60.0)).unwrap();
+        let long = c.with_hold(NoteSpan::of(Seconds(60.0)));
         let t = yin_track(&long.yin, &x, long.hop()).unwrap();
         let notes = notes_from_track(&long, &t, &frame_levels(&long, &x), &[]).unwrap();
         assert_eq!(notes.len(), 2, "{notes:?}");
@@ -1297,7 +1313,7 @@ mod tests {
     /// any order, repeated, or at the run's own start give the same cut.
     #[test]
     fn an_onset_splits_at_its_first_whole_frame() {
-        let c = cfg().with_min_length(Seconds(0.0)).unwrap();
+        let c = cfg().with_min_length(NoteSpan::of(Seconds(0.0)));
         let hop = c.hop().get();
         let t = track(&vec![Some(440.0); 40]);
         let at = 17 * hop + 50;
@@ -1381,37 +1397,43 @@ mod tests {
         assert!((notes[1].velocity.get() - Amplitude(0.8).to_db().get()).abs() < 1e-3);
     }
 
-    /// Every setting is validated, so absurd ones cannot allocate or overflow.
+    /// The rules across settings and the shape of the inputs are validated, so
+    /// absurd ones cannot allocate or overflow.
     #[test]
     fn settings_and_inputs_are_validated() {
         let g = StftGeometry::new(SampleRate::of(RATE), Samples(1024), Samples(256)).unwrap();
         let flux = OnsetConfig::new(g, DetectionFunction::SpectralFlux);
-        let bad = |e: Error| matches!(e, Error::InvalidNoteParameter(_));
         let huge = YinConfig::new(SampleRate::of(RATE), Hz(0.01), Hz(1000.0)).unwrap();
-        assert!(bad(NoteConfig::new(huge, flux).unwrap_err()));
+        assert!(matches!(
+            NoteConfig::new(huge, flux).unwrap_err(),
+            Error::YinFrameTooLong { .. }
+        ));
         let yin = YinConfig::new(SampleRate::of(RATE), Hz(80.0), Hz(1000.0)).unwrap();
         let energy = OnsetConfig::new(g, DetectionFunction::Energy);
-        assert!(bad(NoteConfig::new(yin, energy).unwrap_err()));
+        assert_eq!(
+            NoteConfig::new(yin, energy).unwrap_err(),
+            Error::OnsetNotSpectralFlux
+        );
         let other = StftGeometry::new(SampleRate::SR_48K, Samples(1024), Samples(256)).unwrap();
         let other = OnsetConfig::new(other, DetectionFunction::SpectralFlux);
-        assert!(bad(NoteConfig::new(yin, other).unwrap_err()));
+        assert!(matches!(
+            NoteConfig::new(yin, other).unwrap_err(),
+            Error::SampleRateMismatch { .. }
+        ));
 
         let c = cfg();
         let frame = c.frame().get();
         assert_eq!(c.with_hop(Samples(0)).unwrap_err(), Error::ZeroHop);
-        assert!(bad(c.with_hop(Samples(frame + 1)).unwrap_err()));
-        assert!(bad(c.with_hop(Samples(frame / 64 - 1)).unwrap_err()));
+        assert!(matches!(
+            c.with_hop(Samples(frame + 1)).unwrap_err(),
+            Error::HopWiderThanWindow { .. }
+        ));
+        assert!(matches!(
+            c.with_hop(Samples(frame / 64 - 1)).unwrap_err(),
+            Error::TooManyOverlaps { .. }
+        ));
         assert!(c.with_hop(Samples(frame)).is_ok());
         assert!(c.with_hop(Samples(frame.div_ceil(64))).is_ok());
-        for v in [-1.0, f64::NAN, f64::INFINITY, 61.0] {
-            assert!(bad(c.with_min_length(Seconds(v)).unwrap_err()), "{v}");
-            assert!(bad(c.with_smoothing(Seconds(v)).unwrap_err()), "{v}");
-            assert!(bad(c.with_hold(Seconds(v)).unwrap_err()), "{v}");
-        }
-        for v in [0.0, -5.0, f32::NAN, 1201.0, f32::INFINITY] {
-            assert!(bad(c.with_pitch_split(Cents(v)).unwrap_err()), "{v}");
-        }
-        assert!(c.with_pitch_split(Cents(1200.0)).is_ok());
         for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(matches!(
                 c.with_floor(Db(v)),
@@ -1420,24 +1442,39 @@ mod tests {
         }
 
         let t = track(&[Some(440.0); 10]);
-        assert!(bad(notes_from_track(&c, &t, &loud(9), &[]).unwrap_err()));
+        assert_eq!(
+            notes_from_track(&c, &t, &loud(9), &[]),
+            Err(Error::LevelsLengthMismatch {
+                levels: 9,
+                track: 10
+            })
+        );
         let mut neg = loud(10);
         neg[3] = Amplitude(-0.1);
-        assert!(bad(notes_from_track(&c, &t, &neg, &[]).unwrap_err()));
+        assert_eq!(
+            notes_from_track(&c, &t, &neg, &[]),
+            Err(Error::NegativeInput)
+        );
         neg[3] = Amplitude(f32::NAN);
         assert_eq!(
             notes_from_track(&c, &t, &neg, &[]),
             Err(Error::NonFiniteInput)
         );
         let zero = track(&[Some(0.0); 10]);
-        assert!(bad(notes_from_track(&c, &zero, &loud(10), &[]).unwrap_err()));
+        assert_eq!(
+            notes_from_track(&c, &zero, &loud(10), &[]),
+            Err(Error::NonPositiveFrequency)
+        );
         let nan = track(&[Some(f32::NAN); 10]);
         assert_eq!(
             notes_from_track(&c, &nan, &loud(10), &[]),
             Err(Error::NonFiniteInput)
         );
-        let wide = c.with_smoothing(Seconds(60.0)).unwrap();
-        assert!(bad(notes_from_track(&wide, &t, &loud(10), &[]).unwrap_err()));
+        let wide = c.with_smoothing(NoteSpan::of(Seconds(60.0)));
+        assert!(matches!(
+            notes_from_track(&wide, &t, &loud(10), &[]),
+            Err(Error::SmoothingTooLong { .. })
+        ));
         assert!(notes_from_track(&c, &[], &[], &[]).unwrap().is_empty());
         assert!(
             notes_from_track(&c, &track(&[None; 10]), &loud(10), &[])
@@ -1460,7 +1497,10 @@ mod tests {
         let x = vec![0.1f32; MAX_FRAMES + c.frame().get() + 1];
         assert_eq!(
             transcribe(&c, &x, &mut FftScratch::new()),
-            Err(Error::InvalidNoteParameter("hop: too many frames"))
+            Err(Error::TooManyFrames {
+                frames: FrameCount(MAX_FRAMES + 2),
+                max: FrameCount(MAX_FRAMES)
+            })
         );
     }
 
@@ -1527,7 +1567,7 @@ mod tests {
         assert_eq!(c.min_length, Samples(2646));
         assert_eq!(c.smoothing, Samples(1323));
         assert_eq!(c.hold(), Samples(441));
-        assert_eq!(c.pitch_split, Cents(50.0));
+        assert_eq!(c.pitch_split, PitchSplit::of(Cents(50.0)));
         assert_eq!(c.floor(), Db(-60.0));
         assert!((secs(c.min_length) - 0.06).abs() < 1e-6);
         let d = NoteConfig::new(c.yin, *c.onset()).unwrap();

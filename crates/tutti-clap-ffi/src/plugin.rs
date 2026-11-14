@@ -99,7 +99,7 @@ use clap_sys::plugin::clap_plugin;
 use crate::host::Host;
 use crate::library::{Bundle, LoadError, Stage};
 use crate::roles::ThreadRoles;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{ContentScale, MainThread};
 
 macro_rules! extensions {
     ($($(#[$m:meta])* $field:ident: $ty:ty = [$($id:expr),+];)*) => {
@@ -231,6 +231,9 @@ pub struct Plugin {
     /// CLAP requires every other `clap.gui` entry to follow, kept here so a
     /// caller cannot break it.
     pub(crate) gui_created: bool,
+    /// The scale the editor was opened with or last given: what a size in the
+    /// other unit is converted at.
+    pub(crate) gui_scale: ContentScale,
     // Dropped after `Plugin::drop` has destroyed the instance: the host the
     // plugin called, then the library its code lives in.
     // `ManuallyDrop` so a drop off the main thread can move them to the main
@@ -376,6 +379,7 @@ impl Plugin {
         Ok(Self {
             core,
             gui_created: false,
+            gui_scale: ContentScale::IDENTITY,
             _host: ManuallyDrop::new(host),
             _bundle: ManuallyDrop::new(bundle),
             _not_sync: PhantomData,
@@ -1128,6 +1132,7 @@ impl Drop for Plugin {
             let moved = Plugin {
                 core: Arc::clone(&self.core),
                 gui_created: self.gui_created,
+                gui_scale: self.gui_scale,
                 _host: ManuallyDrop::new(host),
                 _bundle: ManuallyDrop::new(bundle),
                 _not_sync: PhantomData,

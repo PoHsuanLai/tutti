@@ -51,7 +51,8 @@ pub const RATE_ANCHOR_MARGIN: Samples = Samples(12_288);
 /// re-anchors at [`RATE_ANCHOR_MARGIN`] instead (see `anchored`).
 const ANCHOR_REUSE_MIN: Samples = Samples(8_192);
 
-/// A source's key: the host's identity for it. Only compared. The session's own declarations name a source with a
+/// A source's key: the host's identity for it. Only compared. The session's own
+/// declarations name a source with a
 /// minted `ModSourceId` instead, and a host's keys are for `ModInput`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SourceKey(pub u64);
@@ -323,7 +324,8 @@ pub struct Compiled {
     /// compile dates its rate edits from it.
     pub clocks: BTreeMap<SourceKey, Clock>,
     /// The id the next new signal source takes: one past every id this
-    /// lineage of compiles has given, so no id is ever given twice. It wraps after `2^32` sources, skipping the ids still held.
+    /// lineage of compiles has given, so no id is ever given twice. It wraps after `2^32`
+    /// sources, skipping the ids still held.
     pub next_source: SourceId,
 }
 
@@ -363,7 +365,8 @@ pub enum CompileError {
         route: RouteKey,
     },
     /// A source whose params are out of their domain: a NaN anywhere, a
-    /// clock's rate, period or phase or a constant that is not finite, a negative or infinite time, a sustain outside `[0, 1]`, a drawn wave
+    /// clock's rate, period or phase or a constant that is not finite, a negative or
+    /// infinite time, a sustain outside `[0, 1]`, a drawn wave
     /// whose points do not ascend in `[0, 1)` with finite values.
     BadSource(SourceKey),
     /// An LFO declared with a rate anchor: anchors are the compiler's.
@@ -490,7 +493,8 @@ pub fn layer_id(route: RouteKey, depth_by: Option<RouteKey>) -> LayerId {
 ///
 /// `prev` (the last compile) and `now` (the executor's next play reading,
 /// `Editor::play_reading`) and `rate` (the graph's sample rate) are read
-/// only to keep signal sources' ids and to date rate-edit anchors; the function is pure. With equal inputs it returns equal
+/// only to keep signal sources' ids and to date rate-edit anchors; the function is pure.
+/// With equal inputs it returns equal
 /// results, whatever order the declarations come in.
 ///
 /// # Errors

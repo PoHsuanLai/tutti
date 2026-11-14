@@ -1,4 +1,5 @@
-//! A beat-locked sampler voice follows the project's tempo map: a real render of a `VoicePool` through the live engine over a
+//! A beat-locked sampler voice follows the project's tempo map: a real render of a
+//! `VoicePool` through the live engine over a
 //! published `TempoMap`, the voice's output read back as the source position
 //! it played.
 //!

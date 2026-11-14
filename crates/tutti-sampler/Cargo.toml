@@ -25,7 +25,8 @@ serde = ["dep:serde"]
 # Drive the streamer's cycle by hand instead of by its thread.
 #
 # Exposes `DiskStreamer::manual` + `step_once`, which run the *same*
-# `StreamerCycle::step` the streamer thread runs. Also exposes `testing`: a transport a test moves between blocks, and the
+# `StreamerCycle::step` the streamer thread runs. Also exposes `testing`: a transport a
+# test moves between blocks, and the
 # block driver that hands a node its `Env` (which needs `tutti-graph`'s
 # `contract` harness).
 testing = ["tutti-graph/contract"]

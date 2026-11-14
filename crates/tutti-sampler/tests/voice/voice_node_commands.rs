@@ -20,7 +20,8 @@
 //!    stops hearing its handle.
 //!
 //! 2. A fork must not take the live node's edits. A read of a published
-//!    cell consumes nothing, so this is structural; [`a_fork_steals_no_commands`] stays as the end-to-end
+//! cell consumes nothing, so this is structural; [`a_fork_steals_no_commands`] stays as
+//! the end-to-end
 //!    check.
 //!
 //! 3. A fork must still play where the clip was last moved to: the

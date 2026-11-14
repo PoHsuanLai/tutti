@@ -55,7 +55,7 @@ use tutti_graph::{
 };
 use tutti_graph::{
     EventCapacity, EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec, MissingSource,
-    TapAlign,
+    TapAlign, Topology,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -2773,6 +2773,18 @@ impl Graph {
     /// a request is not or a declaration is made.
     pub(crate) fn widen_refusal(&self) -> Option<tutti_types::FoldError> {
         self.widen_refusal
+    }
+
+    /// The audio wiring as it stands: the nodes, the edges into every input
+    /// port, the root's output sources and its input width, including edits
+    /// no commit has sent yet ([`is_edited`](Self::is_edited)). A read-only
+    /// view of what [`connect`](Self::connect) and its kin write; the
+    /// graph's other declarations (event edges, params, modes) are not part
+    /// of it.
+    ///
+    /// An edge that is fading out stays here until its fade ends.
+    pub fn topology(&self) -> &Topology {
+        &self.editor.spec().topology
     }
 
     /// The topology the root was declared with, if one was.

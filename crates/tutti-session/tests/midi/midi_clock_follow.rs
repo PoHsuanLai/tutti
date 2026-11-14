@@ -9,7 +9,6 @@
 use crate::common::blocks;
 use std::time::{Duration, Instant};
 
-use tutti_fixtures::midi;
 use tutti_midi_hardware::EndpointId;
 use tutti_midi_hardware::test_support::{FakeBackend, FakeCounters, endpoint};
 use tutti_midi_runtime::{ClockKind, MidiClockDecoder};
@@ -18,12 +17,16 @@ use tutti_session::{
 };
 use tutti_transport::MotionEvent;
 use tutti_types::{At, Bpm, ChannelLayout, MaxBlock, SampleRate, Samples};
-use tutti_ump::{Message, MidiGroup, System, U7, Ump};
+use tutti_ump::{Message, MidiGroup, Sysex7Packets, System, U7, U14, Ump};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: f64 = 512.0;
 const KEYS: u64 = 1;
 const G: MidiGroup = MidiGroup::FIRST;
+
+fn system(message: System) -> Ump {
+    Message::System(G, message).into()
+}
 
 fn rig() -> (Session, FakeCounters) {
     let (backend, fake) = FakeBackend::build_with(vec![endpoint(KEYS, "Keys")], vec![], usize::MAX);
@@ -79,15 +82,12 @@ fn until(s: &mut Session, limit: usize, done: impl Fn(&[MidiEvent]) -> bool) -> 
 /// Timing Clocks `count` of them, `period` apart from `start`, sent at once.
 fn send_ticks(fake: &FakeCounters, start: Instant, period: Duration, count: u32) {
     for i in 0..count {
-        send(fake, midi::timing_clock(G), start + period * i);
+        send(fake, system(System::TimingClock), start + period * i);
     }
 }
 
 fn quarter(piece: u8, nibble: u8) -> Ump {
-    Ump::from(Message::System(
-        G,
-        System::TimeCode(U7::of(piece << 4 | nibble)),
-    ))
+    system(System::TimeCode(U7::of(piece << 4 | nibble)))
 }
 
 /// A cycle at 25 fps (rate code 1) spelling `00:00:ss:ff`, from `start`.
@@ -117,10 +117,10 @@ fn start_plays_from_zero_and_stop_stops() {
     let (mut s, fake) = rig();
     follow(&mut s, ClockKind::BeatClock);
     assert!(!s.playhead().playing());
-    send(&fake, midi::start(G), Instant::now());
+    send(&fake, system(System::Start), Instant::now());
     until_rolling(&mut s, true, 50);
     assert!(s.playhead().beat().get() < 0.5, "{:?}", s.playhead().beat());
-    send(&fake, midi::stop(G), Instant::now());
+    send(&fake, system(System::Stop), Instant::now());
     until_rolling(&mut s, false, 50);
 }
 
@@ -128,7 +128,7 @@ fn start_plays_from_zero_and_stop_stops() {
 #[test]
 fn without_a_follow_a_start_changes_nothing() {
     let (mut s, fake) = rig();
-    send(&fake, midi::start(G), Instant::now());
+    send(&fake, system(System::Start), Instant::now());
     for _ in 0..40 {
         pump(&mut s);
         assert!(!s.playhead().playing());
@@ -141,7 +141,11 @@ fn without_a_follow_a_start_changes_nothing() {
 fn a_song_position_pointer_locates_to_its_sixteenths() {
     let (mut s, fake) = rig();
     follow(&mut s, ClockKind::BeatClock);
-    send(&fake, midi::song_position(G, 20), Instant::now());
+    send(
+        &fake,
+        system(System::SongPosition(U14::of(20))),
+        Instant::now(),
+    );
     for _ in 0..40 {
         pump(&mut s);
         if (s.playhead().beat().get() - 5.0).abs() < 1e-6 {
@@ -210,7 +214,9 @@ fn a_steady_clock_locks_and_sets_the_tempo_and_a_dropout_unlocks() {
 fn an_mtc_full_message_locates() {
     let (mut s, fake) = rig();
     follow(&mut s, ClockKind::Mtc);
-    for ump in midi::sysex7_packets(&[0x7F, 0x7F, 0x01, 0x01, 1 << 5, 0, 2, 0]) {
+    for ump in Sysex7Packets::from_payload(G, &[0x7F, 0x7F, 0x01, 0x01, 1 << 5, 0, 2, 0])
+        .expect("a 7-bit payload")
+    {
         send(&fake, ump, Instant::now());
     }
     for _ in 0..40 {
@@ -302,7 +308,7 @@ fn a_beat_clock_follower_owns_the_tempo_and_mtc_does_not() {
 fn a_clock_command_the_transport_refuses_is_counted() {
     let (mut s, fake) = rig();
     follow(&mut s, ClockKind::BeatClock);
-    send(&fake, midi::start(G), Instant::now());
+    send(&fake, system(System::Start), Instant::now());
     let mut refused = 0;
     for _ in 0..50 {
         blocks(&s, 1);

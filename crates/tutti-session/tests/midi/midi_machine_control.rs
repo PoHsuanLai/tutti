@@ -10,7 +10,6 @@ use crate::common::blocks;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use tutti_fixtures::midi;
 use tutti_midi_hardware::EndpointId;
 use tutti_midi_hardware::test_support::{FakeBackend, FakeCounters, endpoint};
 use tutti_midi_protocol::{MtcRate, Recipient, SysexDeviceId};
@@ -21,7 +20,7 @@ use tutti_session::{
 };
 use tutti_transport::FadeOut;
 use tutti_types::{Beat, ChannelLayout, MaxBlock, SampleRate, Samples};
-use tutti_ump::{Message, MidiGroup, Ump};
+use tutti_ump::{Message, MidiGroup, Sysex7Packets, Ump};
 
 const RATE: f64 = 48_000.0;
 const KEYS: u64 = 1;
@@ -58,7 +57,7 @@ fn follow(s: &mut Session) {
 fn command(fake: &FakeCounters, device: u8, commands: &[u8]) {
     let mut payload = vec![0x7F, device, 0x06];
     payload.extend_from_slice(commands);
-    for ump in midi::sysex7_packets(&payload) {
+    for ump in Sysex7Packets::from_payload(G, &payload).expect("a 7-bit payload") {
         assert!(fake.send_input(EndpointId::from_raw(KEYS), ump, Instant::now()));
     }
 }

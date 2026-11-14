@@ -1,12 +1,12 @@
 #![doc = include_str!("../README.md")]
-//! Typed quantities and shapes shared by every engine crate: unit newtypes,
-//! channel layouts, and the `Source`/`Sink` I/O traits.
+//! Typed quantities and shapes shared by every engine crate: unit newtypes and
+//! channel layouts.
 //!
 //! ## What this is
 //!
 //! The common definitions every other Tutti crate shares rather than duplicating.
-//! Use it directly when you need only the vocabulary (a crate that implements
-//! `Source`, or one that only needs `Beat`); otherwise reach it through the
+//! Use it directly when you need only the vocabulary (a crate that only needs
+//! `Beat`); otherwise reach it through the
 //! `tutti` umbrella, which re-exports it as `tutti::types`. What is in it:
 //!
 //! - **`value`** — what a parameter *is* and how it is carried: the `Unit` marker
@@ -17,17 +17,14 @@
 //!   subsystem shares instead of a bare integer. `ChannelTopology` + `Speaker`
 //!   answer the *different* question of which speaker each channel feeds; distinct
 //!   questions, so distinct types.
-//! - **`io`** — `Source`, `Sink` and `Pull`: the edge vocabulary, a stream on a clock
-//!   other than the graph's (mic, file, tap, file encoder). A `Pull` says whether an
-//!   empty read is late, finished or broken.
 //! - **`meter`** — musical meter: `TimeSignature`, the `MeterMap` timeline of
 //!   changes, and the `Meter` trait that turns a `Beat` into a bar and beat. Pure
 //!   musical math, so it layers *over* a transport rather than living inside one.
 //!
 //! **The root is the API.** The common names are re-exported there, so
-//! `tutti_types::Bpm` and `tutti_types::Source` resolve directly — import from the
-//! root. Three of the modules are
-//! public (`value`, `io`, `meter`), because each holds items the root does not
+//! `tutti_types::Bpm` and `tutti_types::Samples` resolve directly — import from the
+//! root. Two of the modules are
+//! public (`value`, `meter`), because each holds items the root does not
 //! re-export; the others (`bus`, `channels`, `topology`)
 //! are private and fully re-exported. The graph as a value (`Topology`), the
 //! latency pass and the tail fold are `tutti-graph`'s.
@@ -39,11 +36,8 @@
 //! dependencies are `atomic_float` and `libm`, plus `serde`
 //! behind its feature) and `#![forbid(unsafe_code)]`. The lock-free and `unsafe`
 //! runtime primitives, the graph runtime, the engine, the device and the file
-//! codecs are other crates'. Two consequences make the split load-bearing:
+//! codecs are other crates'. One consequence makes the split load-bearing:
 //!
-//! - The `Source`/`Sink` traits are homed here so *any* subsystem can implement
-//!   them without an absurd dependency edge. A crate implementing `Source` must
-//!   not have to depend on the device layer to name the trait.
 //! - Unit newtypes are **mandatory** across the engine, so their home has to be
 //!   reachable from everywhere. A crate that only needs `Beat` gets `Beat` and
 //!   nothing else.
@@ -138,8 +132,6 @@ mod bus;
 mod channels;
 mod topology;
 
-// Public: `io` holds items the root does not re-export.
-pub mod io;
 pub mod meter;
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
@@ -175,9 +167,6 @@ pub use channels::{ChannelCountOutOfRange, ChannelLayout};
 // Channel topology — which speaker each channel feeds. Distinct from the count
 // above, and additive to it: a width-only caller keeps using `ChannelLayout`.
 pub use topology::{ChannelTopology, Speaker};
-
-// I/O edge.
-pub use io::{FiniteSource, Pull, Sink, SinkFailed, Source, Stop};
 
 // Musical meter.
 pub use meter::{

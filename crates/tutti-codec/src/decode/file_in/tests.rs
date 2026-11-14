@@ -2,8 +2,14 @@ use super::super::read::probe_path;
 use super::*;
 use crate::Wave;
 use symphonia::core::errors::Error;
+use tutti_buffers::{InterleavedMut, Stop};
 use tutti_types::Seconds;
-use tutti_types::Stop;
+
+/// One pull of `src` into `buf`, viewed at the source's own width.
+fn pull_into<S: Source<Sample = f32>>(src: &mut S, buf: &mut [f32]) -> Pull {
+    let out = InterleavedMut::new(buf, src.layout()).unwrap();
+    src.pull(out)
+}
 
 /// Write `wave` as a 16-bit WAV named `name` and return its path.
 ///
@@ -69,7 +75,7 @@ fn full_sequential_read_matches_full_load() {
     let mut pos = 0usize;
     while pos < frames {
         let end = (pos + chunk).min(frames);
-        let n = dec.pull(got[pos..end].as_flattened_mut());
+        let n = pull_into(&mut dec, got[pos..end].as_flattened_mut());
         assert_eq!(n, Pull::Frames(Samples(end - pos)));
         pos = end;
     }
@@ -99,7 +105,7 @@ fn seek_then_poll_matches_slice() {
     dec.seek(Samples(start as usize)).expect("seek");
     assert_eq!(dec.cursor(), Samples(start as usize));
     let mut got = vec![[0.0f32; 2]; len];
-    let n = dec.pull(got.as_flattened_mut());
+    let n = pull_into(&mut dec, got.as_flattened_mut());
     assert_eq!(n, Pull::Frames(Samples(len)));
 
     for i in 0..len {
@@ -130,7 +136,7 @@ fn poll_past_eof_returns_short_count() {
     dec.seek(Samples(start as usize)).expect("seek");
     // Pre-fill with a sentinel so we can assert the untouched tail stays put.
     let mut got = vec![[1.0f32; 2]; len];
-    let n = dec.pull(got.as_flattened_mut());
+    let n = pull_into(&mut dec, got.as_flattened_mut());
     assert_eq!(
         n,
         Pull::Frames(Samples(500)),
@@ -151,7 +157,7 @@ fn poll_past_eof_returns_short_count() {
     }
     // A further pull at EOF is a clean end.
     let mut more = [[0.0f32; 2]; 8];
-    assert_eq!(dec.pull(more.as_flattened_mut()), Pull::Ended);
+    assert_eq!(pull_into(&mut dec, more.as_flattened_mut()), Pull::Ended);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -174,7 +180,7 @@ fn drain(dec: &mut FileIn) -> usize {
     let mut buf = vec![0.0f32; 1024 * usize::from(dec.layout().count())];
     let mut frames = 0;
     loop {
-        match dec.pull(&mut buf) {
+        match pull_into(dec, &mut buf) {
             Pull::Frames(n) => frames += n.get(),
             _ => return frames,
         }
@@ -206,7 +212,7 @@ fn a_truncated_flac_is_a_fault_not_a_clean_end() {
     assert!(frames > 0 && frames < total, "{frames} of {total}");
     assert!(dec.error().is_some());
     assert!(dec.fill_sequential_interleaved(&mut buf).is_err(), "sticky");
-    assert_eq!(dec.pull(&mut buf), Pull::Failed);
+    assert_eq!(pull_into(&mut dec, &mut buf), Pull::Failed);
     dec.seek(Samples(0)).expect("seek");
     assert!(dec.error().is_none(), "a successful seek clears the fault");
     let _ = std::fs::remove_file(&path);
@@ -301,7 +307,10 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
 
     let mut clean = FileIn::open(&path).expect("open");
     let mut first = vec![0.0f32; 4096 * 2];
-    assert_eq!(clean.pull(&mut first), Pull::Frames(Samples(4096)));
+    assert_eq!(
+        pull_into(&mut clean, &mut first),
+        Pull::Frames(Samples(4096))
+    );
 
     // Fail on the packet after the first: the first packet's frames are
     // what the stream holds. Read more than they cover.
@@ -325,14 +334,14 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
         &{
             let mut c = FileIn::open(&path).expect("open");
             let mut v = vec![0.0f32; got * 2];
-            assert_eq!(c.pull(&mut v), Pull::Frames(Samples(got)));
+            assert_eq!(pull_into(&mut c, &mut v), Pull::Frames(Samples(got)));
             v
         }[..]
     );
 
     let mut dec = open(1);
-    assert_eq!(dec.pull(&mut buf), Pull::Frames(Samples(got)));
-    assert_eq!(dec.pull(&mut buf), Pull::Failed);
+    assert_eq!(pull_into(&mut dec, &mut buf), Pull::Frames(Samples(got)));
+    assert_eq!(pull_into(&mut dec, &mut buf), Pull::Failed);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -342,11 +351,11 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
 /// `tests/io/file_in_pump.rs`.)
 #[test]
 fn a_decode_fault_reads_as_failed_through_the_trait() {
-    fn frames_then_stop<I: Source>(src: &mut I) -> (usize, Stop) {
+    fn frames_then_stop<I: Source<Sample = f32>>(src: &mut I) -> (usize, Stop) {
         let mut buf = vec![0.0f32; 1024 * usize::from(src.layout().count())];
         let mut frames = 0;
         loop {
-            match src.pull(&mut buf) {
+            match pull_into(src, &mut buf) {
                 Pull::Frames(n) => frames += n.get(),
                 verdict => return (frames, verdict.stop().expect("not frames")),
             }
@@ -362,7 +371,7 @@ fn a_decode_fault_reads_as_failed_through_the_trait() {
     dec.seek(Samples(0)).expect("seek");
     let mut buf = vec![0.0f32; 1024 * 2];
     assert!(
-        matches!(dec.pull(&mut buf), Pull::Frames(_)),
+        matches!(pull_into(&mut dec, &mut buf), Pull::Frames(_)),
         "a seek clears the fault"
     );
 
@@ -380,7 +389,7 @@ fn a_clean_end_of_file_has_no_error() {
     let mut dec = FileIn::open(&path).expect("open");
     let mut buf = vec![0.0f32; 4096 * 2];
     let end = loop {
-        match dec.pull(&mut buf) {
+        match pull_into(&mut dec, &mut buf) {
             Pull::Frames(_) => {}
             verdict => break verdict,
         }
@@ -502,7 +511,7 @@ fn pull_delivers_the_files_own_width() {
     assert_eq!(decoder.layout().count(), 6u16, "the trait reports the file");
 
     let mut out = [0.0f32; 6 * 16];
-    assert!(matches!(decoder.pull(&mut out), Pull::Frames(_)));
+    assert!(matches!(pull_into(&mut decoder, &mut out), Pull::Frames(_)));
 
     // Frame 0, channel by channel: the centre survived and nothing leaked
     // into the front pair. A fold would put ~0.35 in both L and R.
@@ -542,7 +551,7 @@ fn a_mono_file_is_not_widened() {
     assert_eq!(decoder.layout(), ChannelLayout::MONO, "no widening");
 
     let mut out = [0.0f32; 16];
-    assert!(matches!(decoder.pull(&mut out), Pull::Frames(_)));
+    assert!(matches!(pull_into(&mut decoder, &mut out), Pull::Frames(_)));
 
     // One sample per frame, so consecutive slots differ by one ramp step.
     // A duplicating read would deliver them in equal pairs.
@@ -573,7 +582,10 @@ fn a_caller_can_still_fold_to_stereo_itself() {
     let mut decoder = FileIn::open(&path).expect("open");
     let ch = decoder.layout().count() as usize;
     let mut native = vec![0.0f32; ch * 16];
-    assert!(matches!(decoder.pull(&mut native), Pull::Frames(_)));
+    assert!(matches!(
+        pull_into(&mut decoder, &mut native),
+        Pull::Frames(_)
+    ));
 
     let mut stereo = [0.0f32; 2];
     tutti_buffers::Fold::to_width(decoder.topology(), tutti_types::ChannelLayout::STEREO)

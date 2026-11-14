@@ -34,7 +34,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use thiserror::Error;
-use tutti_types::{ChannelLayout, FiniteSource, Pull, Samples, Sink, SinkFailed, Source};
+use tutti_buffers::{FiniteSource, InterleavedMut, Pull, Sample, Sink, SinkFailed, Source};
+use tutti_types::{ChannelLayout, Samples};
 
 /// How long a [`Recorder`] parks when a [`Starved`](Pull::Starved) source
 /// yields nothing, unless the caller names another
@@ -118,12 +119,11 @@ impl RecorderError {
 ///
 /// Pulls as many frames as `buf` holds from `src` and writes exactly what it
 /// produced to `dst`. The loop and the stop condition are the caller's policy
-/// ([`PumpLoop`], [`Recorder`]). `buf` is flat interleaved and therefore
+/// ([`PumpLoop`], [`Recorder`]). `buf` is interleaved and therefore
 /// *sized* in samples ([`Samples::interleaved_len`]); everything returned is in
 /// frames.
 ///
-/// Not `tutti-types`' (doc 025, decision 12 in §10): it is behaviour, and its one
-/// caller is [`PumpLoop::pump_once`].
+/// Behaviour, not vocabulary: its one caller is [`PumpLoop::pump_once`].
 ///
 /// # Panics
 ///
@@ -132,10 +132,10 @@ impl RecorderError {
 /// (which a shipped binary relies on, so panicking a pump thread mid-take is
 /// the wrong response here). In any build, if `src` claims more frames than
 /// `buf` holds, which breaks the [`Source::pull`] contract.
-fn pump<I, O>(src: &mut I, dst: &mut O, buf: &mut [f32]) -> Result<Pull, SinkFailed>
+fn pump<I, O>(src: &mut I, dst: &mut O, buf: &mut [I::Sample]) -> Result<Pull, SinkFailed>
 where
     I: Source + ?Sized,
-    O: Sink + ?Sized,
+    O: Sink<Sample = I::Sample> + ?Sized,
 {
     debug_assert_eq!(
         src.layout(),
@@ -143,12 +143,15 @@ where
         "pump source and sink must agree on channel width; \
          a mismatch rotates the sink's channels every frame"
     );
-    let pull = src.pull(buf);
+    // The scratch is sized whole frames of `src.layout()` by `PumpLoop::new`, so
+    // the view builds; only a zero width does not, and a source of no channels
+    // has nothing to pump.
+    let Ok(mut out) = InterleavedMut::new(buf, src.layout()) else {
+        return Ok(Pull::Failed);
+    };
+    let pull = src.pull(out.reborrow());
     if let Pull::Frames(n) = pull {
-        // The one frames -> samples crossing on this path, and it is named: an
-        // `n * ch` written by hand here is where a count in the wrong unit
-        // would slip through.
-        dst.write(&buf[..n.interleaved_len(src.layout())])?;
+        dst.write(out.as_ref().window(Samples::ZERO..n))?;
     }
     Ok(pull)
 }
@@ -199,7 +202,8 @@ pub enum PumpPass {
 /// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, TransportPosition, Unforkable};
 /// use tutti_session::{PumpLoop, PumpPass};
 /// use tutti_graph::{OutPort, Source};
-/// use tutti_types::{Beat, Bpm, ChannelLayout, MaxBlock, SampleRate, Samples, Sink};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, MaxBlock, SampleRate, Samples};
+/// use tutti_buffers::Sink;
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{TapAlign, TapId};
 ///
@@ -261,11 +265,11 @@ pub enum PumpPass {
 /// - **The width check is mandatory.** [`new`](Self::new) is the one place both
 ///   endpoints are in scope before a frame moves, so a width mismatch is an
 ///   error there rather than a file whose channels rotate every frame.
-pub struct PumpLoop<I, O> {
+pub struct PumpLoop<I: Source, O> {
     src: I,
     sink: O,
     /// Allocated once at construction; `pump_once` never grows it.
-    scratch: Vec<f32>,
+    scratch: Vec<I::Sample>,
     /// Set when the source answered [`Pull::Failed`], so
     /// [`finalize`](Self::finalize) can say so after the sink closed.
     source_failed: bool,
@@ -277,7 +281,7 @@ pub struct PumpLoop<I, O> {
     lost: Arc<AtomicU64>,
 }
 
-impl<I, O> std::fmt::Debug for PumpLoop<I, O> {
+impl<I: Source, O> std::fmt::Debug for PumpLoop<I, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PumpLoop")
             .field("scratch_len", &self.scratch.len())
@@ -288,7 +292,7 @@ impl<I, O> std::fmt::Debug for PumpLoop<I, O> {
 impl<I, O> PumpLoop<I, O>
 where
     I: Source,
-    O: Sink,
+    O: Sink<Sample = I::Sample>,
 {
     /// A loop over `src` and `sink` moving at most `capacity` frames a pass.
     ///
@@ -323,7 +327,7 @@ where
         Ok(Self {
             src,
             sink,
-            scratch: vec![0.0; frames.interleaved_len(layout)],
+            scratch: vec![I::Sample::SILENCE; frames.interleaved_len(layout)],
             source_failed: false,
             failed: Arc::new(AtomicBool::new(false)),
             lost: Arc::new(AtomicU64::new(0)),
@@ -489,7 +493,7 @@ impl Recorder<Live> {
     pub fn start<I, O>(src: I, sink: O) -> Result<Self, RecorderError>
     where
         I: Source + Send + 'static,
-        O: Sink + Send + 'static,
+        O: Sink<Sample = I::Sample> + Send + 'static,
     {
         Self::start_with_capacity(src, sink, SCRATCH_FRAMES, IDLE_PARK)
     }
@@ -510,7 +514,7 @@ impl Recorder<Live> {
     ) -> Result<Self, RecorderError>
     where
         I: Source + Send + 'static,
-        O: Sink + Send + 'static,
+        O: Sink<Sample = I::Sample> + Send + 'static,
     {
         Ok(Self::run(PumpLoop::new(src, sink, capacity)?, park))
     }
@@ -520,7 +524,7 @@ impl Recorder<Live> {
     pub fn run<I, O>(pump_loop: PumpLoop<I, O>, park: Duration) -> Self
     where
         I: Source + Send + 'static,
-        O: Sink + Send + 'static,
+        O: Sink<Sample = I::Sample> + Send + 'static,
     {
         Self::spawn(pump_loop, park)
     }
@@ -536,7 +540,7 @@ impl Recorder<Finite> {
     pub fn start_finite<I, O>(src: I, sink: O) -> Result<Self, RecorderError>
     where
         I: FiniteSource + Send + 'static,
-        O: Sink + Send + 'static,
+        O: Sink<Sample = I::Sample> + Send + 'static,
     {
         Self::start_finite_with_capacity(src, sink, SCRATCH_FRAMES)
     }
@@ -554,7 +558,7 @@ impl Recorder<Finite> {
     ) -> Result<Self, RecorderError>
     where
         I: FiniteSource + Send + 'static,
-        O: Sink + Send + 'static,
+        O: Sink<Sample = I::Sample> + Send + 'static,
     {
         Ok(Self::spawn(PumpLoop::new(src, sink, capacity)?, IDLE_PARK))
     }
@@ -583,7 +587,7 @@ impl<K> Recorder<K> {
     fn spawn<I, O>(mut pump_loop: PumpLoop<I, O>, park: Duration) -> Self
     where
         I: Source + Send + 'static,
-        O: Sink + Send + 'static,
+        O: Sink<Sample = I::Sample> + Send + 'static,
     {
         let running = Arc::new(AtomicBool::new(true));
         let failed = Arc::clone(&pump_loop.failed);

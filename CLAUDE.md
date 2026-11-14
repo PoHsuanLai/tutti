@@ -162,9 +162,9 @@ std only. A rule the compiler already enforces is not a gate.
 
 ### Edges and buffers
 
-- `Source`/`Sink` are edges: interleaved `&[f32]`, a runtime `ChannelLayout`, every count
-  in frames (`Samples`). Cross to a slice length only with `Samples::interleaved_len` /
-  `from_interleaved_len`.
+- `Source`/`Sink` are edges over a `Sample` format: a checked `Interleaved`/`InterleavedMut`
+  view, a runtime `ChannelLayout`, every count in frames (`Samples`). Cross to a slice
+  length only with `Samples::interleaved_len` / `from_interleaved_len`.
 - Width is runtime: never a const-generic channel count. A channel fold goes through
   `tutti_buffers::Fold`, built on the control side; a narrowing by index is refused, never
   truncated.

@@ -6,13 +6,14 @@
 use tutti_graph::testing as common;
 
 use common::{Kind, TestNode, prepare};
+use tutti_buffers::{InterleavedMut, Pull, Source as _};
 use tutti_graph::{CloseError, Edge, InPort, OutPort, Source};
 use tutti_graph::{
     Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, MissingSource,
     Node, NodeParts, Op, TapReader, TransportPosition,
 };
 use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
-use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Pull, Samples, Source as _};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Samples};
 
 /// A `Kind` whose fork is a fresh node of the same kind.
 struct Forkable(Kind);
@@ -614,7 +615,7 @@ fn pull_all(tap: &mut TapReader) -> (Vec<f32>, Pull) {
     let mut got = Vec::new();
     let mut buf = vec![0.0f32; tap.width() * 64];
     loop {
-        match tap.pull(&mut buf) {
+        match tap.pull(InterleavedMut::new(&mut buf, tap.layout()).unwrap()) {
             Pull::Frames(n) => got.extend_from_slice(&buf[..n.get() * tap.width()]),
             other => return (got, other),
         }

@@ -3,6 +3,7 @@
 //! park, the join) is `tests/io/recorder_thread.rs`.
 
 use super::*;
+use tutti_buffers::Interleaved;
 use tutti_codec::{FileOut, Format, Pcm, Spec};
 use tutti_types::SampleRate;
 
@@ -30,11 +31,14 @@ struct SliceSource {
 }
 
 impl Source for SliceSource {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let ch = self.layout.count() as usize;
         let total = self.samples.len() / ch;
         let n = (total - self.pos).min(out.len() / ch);
@@ -53,7 +57,7 @@ impl Source for SliceSource {
 fn pump_until_dry<I, O>(pump_loop: &mut PumpLoop<I, O>, budget: usize) -> Samples
 where
     I: Source,
-    O: Sink,
+    O: Sink<Sample = I::Sample>,
 {
     let mut total = Samples::ZERO;
     for _ in 0..budget {
@@ -196,11 +200,14 @@ fn a_non_mic_live_source_records_until_stopped() {
     }
 
     impl Source for Starving {
+        type Sample = f32;
+
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
 
-        fn pull(&mut self, out: &mut [f32]) -> Pull {
+        fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+            let out = out.samples_mut();
             let n = self.polls;
             self.polls += 1;
             // Every other pull is empty: never exhausted.
@@ -254,10 +261,13 @@ fn a_non_mic_live_source_records_until_stopped() {
 struct Collect(Arc<std::sync::Mutex<Vec<f32>>>);
 
 impl Sink for Collect {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
-    fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed> {
+    fn write(&mut self, interleaved: Interleaved<'_>) -> Result<(), SinkFailed> {
+        let interleaved = interleaved.samples();
         self.0.lock().unwrap().extend_from_slice(interleaved);
         Ok(())
     }
@@ -273,11 +283,14 @@ struct Ramp {
 }
 
 impl Source for Ramp {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let fits = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
         let n = (self.frames - self.pos).min(fits);
         if n == 0 {
@@ -359,11 +372,14 @@ struct DyingMic {
 }
 
 impl Source for DyingMic {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let dead = self.dead.load(Ordering::Acquire);
         let mut n = 0;
         for chunk in out.as_chunks_mut::<2>().0 {
@@ -480,11 +496,14 @@ struct Scripted {
 }
 
 impl Source for Scripted {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let answer = self.answers.next().unwrap_or(Pull::Ended);
         if let Pull::Frames(_) = answer {
             out[..2].copy_from_slice(&[0.5, -0.5]);
@@ -523,10 +542,12 @@ fn a_frame_delivered_before_the_failure_is_recorded() {
 fn a_failed_finite_source_is_failed_not_ended() {
     struct DeadFile;
     impl Source for DeadFile {
+        type Sample = f32;
+
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn pull(&mut self, _: &mut [f32]) -> Pull {
+        fn pull(&mut self, _: InterleavedMut<'_>) -> Pull {
             Pull::Failed
         }
     }
@@ -541,10 +562,12 @@ fn a_failed_finite_source_is_failed_not_ended() {
 fn the_loop_sums_what_the_source_lost() {
     struct Dropping;
     impl Source for Dropping {
+        type Sample = f32;
+
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn pull(&mut self, _: &mut [f32]) -> Pull {
+        fn pull(&mut self, _: InterleavedMut<'_>) -> Pull {
             Pull::Starved
         }
         fn take_lost(&mut self) -> Samples {
@@ -553,10 +576,12 @@ fn the_loop_sums_what_the_source_lost() {
     }
     struct F32Collect;
     impl Sink for F32Collect {
+        type Sample = f32;
+
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+        fn write(&mut self, _: Interleaved<'_>) -> Result<(), SinkFailed> {
             Ok(())
         }
         fn finalize(self) -> std::io::Result<()> {
@@ -578,11 +603,14 @@ struct Chunked {
 }
 
 impl Source for Chunked {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let ch = self.layout.count() as usize;
         let total = self.samples.len() / ch;
         let n = (total - self.pos).min(out.len() / ch).min(self.chunk);
@@ -602,10 +630,13 @@ struct Tally {
 }
 
 impl Sink for Tally {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.layout
     }
-    fn write(&mut self, frames: &[f32]) -> Result<(), SinkFailed> {
+    fn write(&mut self, frames: Interleaved<'_>) -> Result<(), SinkFailed> {
+        let frames = frames.samples();
         self.written.extend_from_slice(frames);
         Ok(())
     }
@@ -681,10 +712,12 @@ fn every_count_on_this_boundary_is_denominated_in_frames() {
 fn a_refusing_sink_is_the_pumps_error() {
     struct Refuse;
     impl Sink for Refuse {
+        type Sample = f32;
+
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::STEREO
         }
-        fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+        fn write(&mut self, _: Interleaved<'_>) -> Result<(), SinkFailed> {
             Err(SinkFailed)
         }
         fn finalize(self) -> std::io::Result<()> {

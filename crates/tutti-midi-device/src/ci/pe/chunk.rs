@@ -72,6 +72,8 @@ macro_rules! ranged {
     };
 }
 
+pub(super) use ranged;
+
 ranged! {
     /// A Request ID: 0 to 127 (M2-103 §5.3). It ties the chunks of a message
     /// together and a reply to its inquiry, and is unique among the

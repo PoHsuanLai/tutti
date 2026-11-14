@@ -72,7 +72,7 @@ fn a_file_appears_at_its_path_only_when_finished() {
         let spec = spec(format, 2);
         let mut encoder = Encoder::create_file(&spec, &path).unwrap();
         encoder
-            .write(Interleaved::new(&saw(2, 5_000), spec.layout()))
+            .write(Interleaved::new(&saw(2, 5_000), spec.layout()).unwrap())
             .unwrap();
         assert_eq!(
             std::fs::read(&path).unwrap(),
@@ -103,13 +103,13 @@ fn an_aborted_encoder_removes_its_file_and_leaves_the_path_alone() {
 
         let mut encoder = Encoder::create_file(&spec, &path).unwrap();
         encoder
-            .write(Interleaved::new(&saw(2, 5_000), spec.layout()))
+            .write(Interleaved::new(&saw(2, 5_000), spec.layout()).unwrap())
             .unwrap();
         encoder.abort();
 
         let mut dropped = Encoder::create_file(&spec, &path).unwrap();
         dropped
-            .write(Interleaved::new(&saw(2, 5_000), spec.layout()))
+            .write(Interleaved::new(&saw(2, 5_000), spec.layout()).unwrap())
             .unwrap();
         drop(dropped);
 
@@ -130,7 +130,7 @@ fn a_refused_block_leaves_nothing_behind_once_dropped() {
         let spec = spec(format, 2);
         let mut encoder = Encoder::create_file(&spec, &path).unwrap();
         let err = encoder
-            .write(Interleaved::new(&saw(1, 100), ChannelLayout::MONO))
+            .write(Interleaved::new(&saw(1, 100), ChannelLayout::MONO).unwrap())
             .expect_err("a mono block is not stereo");
         assert!(
             matches!(
@@ -228,7 +228,7 @@ fn a_take_that_outgrows_its_sink_fails_by_finish_at_the_latest() {
         let mut encoder = Encoder::create(&s, Full::holding(6_000)).unwrap();
         let mut failed: Option<Error> = None;
         for _ in 0..40 {
-            if let Err(e) = encoder.write(Interleaved::new(&saw(2, 4_096), s.layout())) {
+            if let Err(e) = encoder.write(Interleaved::new(&saw(2, 4_096), s.layout()).unwrap()) {
                 failed = Some(e);
                 break;
             }
@@ -276,7 +276,7 @@ fn a_file_that_crosses_its_limit_is_never_put_in_place() {
     // Dropped after the failed write: nothing left.
     let mut encoder = Encoder::create_file(&spec, &path).unwrap().limit_frames(6);
     let err = encoder
-        .write(Interleaved::new(&saw(2, 8), spec.layout()))
+        .write(Interleaved::new(&saw(2, 8), spec.layout()).unwrap())
         .expect_err("8 frames cross a limit of 6");
     assert!(
         matches!(err, Error::WavTooLarge { limit_frames: 6 }),
@@ -289,9 +289,9 @@ fn a_file_that_crosses_its_limit_is_never_put_in_place() {
     // Finished after the failed write: the first error, nothing put in place.
     let mut encoder = Encoder::create_file(&spec, &path).unwrap().limit_frames(6);
     let first = encoder
-        .write(Interleaved::new(&saw(2, 8), spec.layout()))
+        .write(Interleaved::new(&saw(2, 8), spec.layout()).unwrap())
         .unwrap_err();
-    let _ = encoder.write(Interleaved::new(&saw(2, 1), spec.layout()));
+    let _ = encoder.write(Interleaved::new(&saw(2, 1), spec.layout()).unwrap());
     let err = encoder.finish().expect_err("a partial take is not a file");
     assert_eq!(err.to_string(), first.to_string());
     assert_eq!(std::fs::read(&path).unwrap(), b"previous");
@@ -335,7 +335,7 @@ fn a_plain_sink_keeps_its_prefix_after_a_failed_write() {
         .limit_frames(6);
     assert!(
         encoder
-            .write(Interleaved::new(&saw(2, 8), spec.layout()))
+            .write(Interleaved::new(&saw(2, 8), spec.layout()).unwrap())
             .is_err()
     );
     let bytes = encoder
@@ -365,7 +365,7 @@ mod full_device {
                 .unwrap();
             let mut encoder = Encoder::create(&s, std::io::BufWriter::new(device)).unwrap();
             let mut failed = encoder
-                .write(Interleaved::new(&saw(2, 100), s.layout()))
+                .write(Interleaved::new(&saw(2, 100), s.layout()).unwrap())
                 .is_err();
             failed |= encoder.finish().is_err();
             assert!(failed, "{ext}: the take reported success on a full device");
@@ -403,7 +403,7 @@ fn a_finalized_file_waits_for_its_commit() {
         let write = |path: &std::path::Path| {
             let mut encoder = Encoder::create_file(&spec, path).unwrap();
             encoder
-                .write(Interleaved::new(&saw(2, 5_000), spec.layout()))
+                .write(Interleaved::new(&saw(2, 5_000), spec.layout()).unwrap())
                 .unwrap();
             encoder.finalize().unwrap()
         };
@@ -440,7 +440,7 @@ fn a_commit_that_cannot_rename_removes_the_temporary() {
         let spec = spec(format, 2);
         let mut encoder = Encoder::create_file(&spec, &path).unwrap();
         encoder
-            .write(Interleaved::new(&saw(2, 5_000), spec.layout()))
+            .write(Interleaved::new(&saw(2, 5_000), spec.layout()).unwrap())
             .unwrap();
         let finalized = encoder.finalize().unwrap();
         std::fs::create_dir(&path).unwrap();

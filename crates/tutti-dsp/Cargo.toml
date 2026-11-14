@@ -14,6 +14,7 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
+tutti-buffers = { version = "0.0.1", path = "../tutti-buffers" }
 # The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …),
 # `ChannelLayout`, `Interleaved` and the downmix helpers. Nothing here needs
 # the engine runtime, so this is the only tutti edge.

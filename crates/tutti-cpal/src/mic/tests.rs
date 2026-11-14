@@ -257,13 +257,13 @@ fn an_input_past_the_devices_last_is_an_error() {
     assert!(
         matches!(
             err,
-            Error::Inputs(tutti_types::FoldError::NoSuchChannel { channel: 4, .. })
+            Error::Inputs(tutti_buffers::FoldError::NoSuchChannel { channel: 4, .. })
         ),
         "{err}"
     );
     assert!(matches!(
         Error::from(Fold::select(ChannelLayout::STEREO, &[]).unwrap_err()),
-        Error::Inputs(tutti_types::FoldError::Empty(_))
+        Error::Inputs(tutti_buffers::FoldError::Empty(_))
     ));
 }
 

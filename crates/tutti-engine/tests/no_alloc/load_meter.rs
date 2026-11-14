@@ -9,13 +9,14 @@
 //! durations, by the unit tests beside it (`metering/load.rs`).
 
 use std::time::{Duration, Instant};
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -74,7 +75,7 @@ fn a_block_past_its_deadline_counts_and_peaks_once() {
     let (mut engine, _t, _ed) = engine(budget(64) * 2, 64);
     let mut meter = engine.take_load_meter().expect("not taken");
     let mut out = vec![0.0f32; 64];
-    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     let r = meter.take();
     assert_eq!(r.blocks, 1);
     assert_eq!(r.over_budget, 1);
@@ -99,11 +100,11 @@ fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
     let (mut engine, _t, _ed) = engine(budget(4096).mul_f64(1.5), 4096);
     let mut meter = engine.take_load_meter().expect("not taken");
     let mut out = vec![0.0f32; 8192];
-    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     let r = meter.take();
     assert!((1.5..2.9).contains(&r.last), "process: {}", r.last);
     assert_eq!(r.over_budget, 1);
-    engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     let r = meter.take();
     assert!((1.5..2.9).contains(&r.last), "segment: {}", r.last);
     assert_eq!((r.blocks, r.over_budget), (2, 2));
@@ -116,14 +117,15 @@ fn recording_the_load_is_allocation_free() {
     let (mut engine, _t, mut ed) = engine(Duration::ZERO, 64);
     let mut out = vec![0.0f32; 64];
     // Installing the commit allocates on the first block, before the gate.
-    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     ed.collect();
     let mut meter = engine.take_load_meter().expect("not taken");
     meter.reset();
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..16 {
-            engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
-            engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+            engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
+            engine
+                .process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
             let _ = meter.take();
         }
     });
@@ -183,14 +185,14 @@ fn events_past_a_ports_capacity_reach_the_meter() {
     let mut engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let mut meter = engine.take_load_meter().expect("not taken");
     let mut out = vec![0.0f32; 64];
-    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     assert_eq!(meter.peek().dropped_events, 100);
-    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     assert_eq!(meter.peek().dropped_events, 200);
-    engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     assert_eq!(meter.peek().dropped_events, 300);
     meter.reset();
     assert_eq!(meter.peek().dropped_events, 0);
-    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
     assert_eq!(meter.take().dropped_events, 100);
 }

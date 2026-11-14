@@ -956,8 +956,8 @@ impl<S> SessionBuilder<S> {
             Some(declared) => Graph::check_root(declared, device)?,
             None => {
                 let width = ChannelLayout::try_from(root)
-                    .map_err(|_| tutti_types::FoldError::TooWide(root))?;
-                tutti_types::Fold::widths(width, device)?;
+                    .map_err(|_| tutti_buffers::FoldError::TooWide(root))?;
+                tutti_buffers::Fold::widths(width, device)?;
             }
         }
         Ok(())

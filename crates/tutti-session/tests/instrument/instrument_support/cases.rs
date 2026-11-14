@@ -505,15 +505,15 @@ pub fn sending_allocates_nothing<S: Subject>() {
     let off = note_off(0, 64);
     let ok = assert_no_alloc::assert_no_alloc(|| {
         let a = rig.handle.keys_mut().push(Stamp::NextBlock, on).is_ok();
-        rig.session.render(&mut tutti_types::InterleavedMut::new(
-            &mut buf,
-            tutti_types::ChannelLayout::STEREO,
-        ));
+        rig.session.render(
+            &mut tutti_buffers::InterleavedMut::new(&mut buf, tutti_types::ChannelLayout::STEREO)
+                .unwrap(),
+        );
         let b = rig.handle.keys_mut().push(Stamp::NextBlock, off).is_ok();
-        rig.session.render(&mut tutti_types::InterleavedMut::new(
-            &mut buf,
-            tutti_types::ChannelLayout::STEREO,
-        ));
+        rig.session.render(
+            &mut tutti_buffers::InterleavedMut::new(&mut buf, tutti_types::ChannelLayout::STEREO)
+                .unwrap(),
+        );
         a && b
     });
     assert!(ok);

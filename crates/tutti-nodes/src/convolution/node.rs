@@ -17,10 +17,11 @@
 //! writes them after they are built. Each channel and each fork keeps only
 //! its own running state.
 
+use tutti_buffers::{Fold, FoldError};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{Amplitude, ChannelLayout, Fold, FoldError, Param, Samples, UnitParam};
+use tutti_types::{Amplitude, ChannelLayout, Param, Samples, UnitParam};
 use tutti_types::{Latency, Tail};
 
 use crate::ramp::LastGood;
@@ -913,7 +914,7 @@ mod golden {
     /// channel `o` is `gain * sum_k ir_o[k] * x_c[n - k]`, `latency_samples`
     /// late, with `c` the input channel that output reads (width 1, a shared
     /// IR per channel, one IR per channel, and the mono fold of a stereo input
-    /// feeding two IRs; the fold is `tutti_types::Fold`'s, checked on its own). The sum is computed here in `f64` from the definition.
+    /// feeding two IRs; the fold is `tutti_buffers::Fold`'s, checked on its own). The sum is computed here in `f64` from the definition.
     ///
     /// The tolerance is `1e-4`: the FFT's twiddle factors come from the
     /// platform's `sin`/`cos`, and the sum has hundreds of products of

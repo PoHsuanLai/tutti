@@ -30,6 +30,7 @@ use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::{PluginRef, PluginState};
 use tutti_plugin_types::PluginFailure;
 // Only the Linux-only server-death tests name these.
+use tutti_buffers::InterleavedMut;
 #[cfg(target_os = "linux")]
 use tutti_plugin_types::{BridgeError, TerminationReason};
 use tutti_session::BufferMaster;
@@ -38,7 +39,7 @@ use tutti_session::{
     PluginLoadRequest, Range, Session, SessionEvent,
 };
 use tutti_session::{RecoveryFailure, ReloadCause};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
@@ -283,7 +284,7 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     let deadline = Instant::now() + Duration::from_secs(10);
     while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
         assert!(Instant::now() < deadline, "the probe never died");
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
         std::thread::sleep(Duration::from_millis(5));
     }
 
@@ -458,7 +459,7 @@ const APPLY_GAIN: (&str, &str) = ("TUTTI_CLAP_PROBE_APPLY_GAIN", "1");
 /// Renders one block and returns whether any sample was non-zero.
 fn renders_sound(s: &mut Session) -> bool {
     let mut out = vec![0.0f32; BLOCK * 2];
-    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
     out.iter().any(|&x| x != 0.0)
 }
 
@@ -1029,7 +1030,7 @@ fn a_killed_server_reads_died_then_reloading() {
     let deadline = Instant::now() + Duration::from_secs(10);
     while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
         assert!(Instant::now() < deadline, "the probe never died");
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
         std::thread::sleep(Duration::from_millis(5));
     }
     let PluginHealth::Died { cause } = s.plugin(node).unwrap().health() else {

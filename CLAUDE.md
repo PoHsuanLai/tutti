@@ -166,7 +166,7 @@ std only. A rule the compiler already enforces is not a gate.
   in frames (`Samples`). Cross to a slice length only with `Samples::interleaved_len` /
   `from_interleaved_len`.
 - Width is runtime: never a const-generic channel count. A channel fold goes through
-  `tutti_types::Fold`, built on the control side; a narrowing by index is refused, never
+  `tutti_buffers::Fold`, built on the control side; a narrowing by index is refused, never
   truncated.
 - Every `Source::pull` answers `Starved` (not yet) or `Ended` (never again) correctly, and
   `Failed` only after the frames before it.

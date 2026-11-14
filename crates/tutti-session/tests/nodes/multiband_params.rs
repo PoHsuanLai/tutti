@@ -12,6 +12,7 @@
 
 use std::f64::consts::{PI, TAU};
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::ForkByClone;
 #[cfg(feature = "modulation")]
 use tutti_modulation::Lfo;
@@ -21,7 +22,7 @@ use tutti_nodes::{MultibandCompressorNode, MultibandControls};
 use tutti_session::RouteSpec;
 use tutti_session::{InPort, Key, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate};
 #[cfg(feature = "modulation")]
 use tutti_types::{BeatsPerCycle, Depth};
 use tutti_types::{CompressionRatio, Db, Hz, Seconds, UnitAddr, UnitParam};
@@ -97,7 +98,7 @@ fn render(s: &mut Session, frames: usize) -> [Vec<f32>; 2] {
     let mut all = [Vec::new(), Vec::new()];
     let mut buf = vec![0.0f32; 128 * 2];
     for _ in 0..frames / 128 {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         for frame in buf.as_chunks::<2>().0 {
             all[0].push(frame[0]);
             all[1].push(frame[1]);

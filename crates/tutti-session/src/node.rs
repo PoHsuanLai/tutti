@@ -182,6 +182,15 @@ impl SessionNode for tutti_midi_runtime::MidiClipNode {
     }
 }
 
+/// The MPE transform: its `MpeTransformControls`, no params; the modes it
+/// replaced freed by its reclaimer.
+#[cfg(feature = "midi")]
+impl SessionNode for tutti_midi_runtime::MpeTransformNode {
+    fn reclaimer(controls: &tutti_midi_runtime::MpeTransformControls) -> Option<Reclaimer> {
+        Some(Reclaimer::of(controls))
+    }
+}
+
 /// The harmony node: its `HarmonyControls`, no params; the timelines it
 /// replaced freed by its reclaimer.
 #[cfg(feature = "midi")]
@@ -210,9 +219,7 @@ param_session_node!(tutti_nodes::VbapPannerNode, tutti_nodes::HrtfBinauralNode);
 
 // The synth as a graph node: one MIDI event input, and its live params
 // (master volume, unison detune and spread) as a `ParamSet`, so a param
-// write reaches it and a fork of it starts from what was set. Added through
-// `Session::add_instrument` it takes the session's MPE mode
-// (`SessionInstrument`).
+// write reaches it and a fork of it starts from what was set.
 #[cfg(feature = "synth")]
 param_session_node!(tutti_polysynth::PolySynth);
 
@@ -301,6 +308,9 @@ mod tests {
         #[cfg(feature = "midi")]
         {
             assert!(keeps_one(tutti_midi_runtime::MidiClipNode::new([])));
+            assert!(keeps_one(tutti_midi_runtime::MpeTransformNode::new(
+                tutti_midi_protocol::MpeMode::Disabled
+            )));
             assert!(keeps_one(tutti_midi_runtime::HarmonyNode::new([])));
             assert!(keeps_one(tutti_midi_runtime::MidiIngestNode::new(
                 std::num::NonZeroUsize::MIN

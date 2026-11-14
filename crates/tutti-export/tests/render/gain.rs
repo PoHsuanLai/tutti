@@ -5,6 +5,7 @@
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::{render_normalized_to_file, render_to_file};
+use tutti_buffers::Interleaved;
 use tutti_codec::{Format, Pcm};
 use tutti_dsp::DitherShape;
 use tutti_export::{Normalize, RenderGraph, Setup};
@@ -12,7 +13,7 @@ use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_nodes::testing::Osc;
 use tutti_transport::FrozenClock;
-use tutti_types::{ChannelLayout, Db, Hz, Interleaved, SampleRate, Seconds};
+use tutti_types::{ChannelLayout, Db, Hz, SampleRate, Seconds};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -103,8 +104,11 @@ fn a_loudness_normalized_export_reports_the_gain_to_its_target() {
         .map(Result::unwrap)
         .collect();
     let meter = LoudnessConfig::new(RATE, ChannelLayout::STEREO);
-    let written_loudness =
-        measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO)).unwrap();
+    let written_loudness = measure_loudness(
+        &meter,
+        Interleaved::new(&samples, ChannelLayout::STEREO).unwrap(),
+    )
+    .unwrap();
     assert!(
         (written_loudness.lufs.get() + 23.0).abs() < 0.1,
         "{written_loudness:?}"

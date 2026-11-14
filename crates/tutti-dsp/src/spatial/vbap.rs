@@ -6,7 +6,8 @@
 //! last frame, keeps the result of the previous block, and renders each
 //! speaker's channel with [`VbapGains::render_channel`].
 
-use tutti_types::{ArcDegrees, Azimuth, Elevation, Fold, Spread, StereoWidth};
+use tutti_buffers::Fold;
+use tutti_types::{ArcDegrees, Azimuth, Elevation, Spread, StereoWidth};
 
 mod error;
 mod layout;

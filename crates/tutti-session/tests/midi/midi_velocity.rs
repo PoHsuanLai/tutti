@@ -8,9 +8,10 @@
 
 use crate::common::{MF, Seen, Tap, note, offline};
 use std::sync::Arc;
+use tutti_buffers::InterleavedMut;
 use tutti_midi_protocol::channel_voice;
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut};
+use tutti_types::{Beat, BeatDuration, ChannelLayout};
 use tutti_ump::Voice2;
 
 #[test]
@@ -29,7 +30,7 @@ fn velocity_keeps_its_full_width() {
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut buf = vec![0.0f32; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
 
     let mut velocities: Vec<u16> = seen
         .lock()

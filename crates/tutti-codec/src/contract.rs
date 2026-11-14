@@ -4,7 +4,8 @@
 use crate::test_sink::{Flaky, Full};
 use crate::{Format, FormatWriter, Result, Spec};
 use std::io::{BufWriter, Cursor, Seek, Write};
-use tutti_types::{ChannelLayout, Interleaved, SampleRate};
+use tutti_buffers::Interleaved;
+use tutti_types::{ChannelLayout, SampleRate};
 
 fn spec(format: Format) -> Spec {
     Spec::of_width(format, ChannelLayout::STEREO, SampleRate::SR_44K1)
@@ -22,7 +23,7 @@ fn input(frames: usize) -> Vec<f32> {
 }
 
 fn block(samples: &[f32]) -> Interleaved<'_> {
-    Interleaved::new(samples, ChannelLayout::STEREO)
+    Interleaved::new(samples, ChannelLayout::STEREO).unwrap()
 }
 
 /// Runs the cases against one format. `make` starts a writer of it in a sink;

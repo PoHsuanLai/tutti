@@ -22,7 +22,8 @@ fn ramp(channels: u16, frames: usize) -> Vec<f32> {
 
 fn write_all(spec: &Spec, samples: &[f32]) -> Vec<u8> {
     let mut w = WavWriter::create(spec, wav_pcm(spec), Cursor::new(Vec::new())).unwrap();
-    w.write(Interleaved::new(samples, spec.layout())).unwrap();
+    w.write(Interleaved::new(samples, spec.layout()).unwrap())
+        .unwrap();
     w.finish().unwrap().into_inner()
 }
 
@@ -175,11 +176,12 @@ fn the_limit_stops_at_a_whole_frame_and_a_take_ending_on_it_is_clean() {
     let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
     w.limit_frames(5);
     let block = ramp(2, 3);
-    w.write(Interleaved::new(&block, s.layout())).unwrap();
-    w.write(Interleaved::new(&block[..4], s.layout()))
+    w.write(Interleaved::new(&block, s.layout()).unwrap())
+        .unwrap();
+    w.write(Interleaved::new(&block[..4], s.layout()).unwrap())
         .expect("exactly the limit is clean");
     let err = w
-        .write(Interleaved::new(&block[..2], s.layout()))
+        .write(Interleaved::new(&block[..2], s.layout()).unwrap())
         .expect_err("one frame past");
     assert!(
         matches!(err, Error::WavTooLarge { limit_frames: 5 }),
@@ -191,7 +193,7 @@ fn the_limit_stops_at_a_whole_frame_and_a_take_ending_on_it_is_clean() {
     w.limit_frames(5);
     let eight = ramp(2, 8);
     let err = w
-        .write(Interleaved::new(&eight, s.layout()))
+        .write(Interleaved::new(&eight, s.layout()).unwrap())
         .expect_err("8 frames cross a limit of 5");
     assert!(
         matches!(err, Error::WavTooLarge { limit_frames: 5 }),
@@ -243,18 +245,6 @@ fn the_frame_limit_fits_both_32_bit_sizes() {
     }
 }
 
-/// A trailing partial frame is not written: the file always holds whole frames.
-#[test]
-fn a_trailing_partial_frame_is_not_written() {
-    let s = spec(2, Pcm::Int16);
-    let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
-    w.write(Interleaved::new(&[0.5, 0.5, 0.5], s.layout()))
-        .unwrap();
-    let bytes = w.finish().unwrap().into_inner();
-    assert_eq!(bytes.len(), 44 + 4);
-    assert_eq!(u32_at(&bytes, 40), 4);
-}
-
 /// A full disk in the middle of a take is an error from the write that hit it,
 /// not a short file that reports success, and what landed before it stays
 /// readable once the header is back-patched over bytes already there.
@@ -264,9 +254,10 @@ fn a_trailing_partial_frame_is_not_written() {
 fn a_full_disk_mid_take_fails_the_write_that_hit_it() {
     let s = spec(2, Pcm::Int16);
     let mut w = WavWriter::create(&s, Pcm::Int16, Full::holding(44 + 6 * 4)).unwrap();
-    w.write(Interleaved::new(&ramp(2, 4), s.layout())).unwrap();
+    w.write(Interleaved::new(&ramp(2, 4), s.layout()).unwrap())
+        .unwrap();
     let err = w
-        .write(Interleaved::new(&ramp(2, 6), s.layout()))
+        .write(Interleaved::new(&ramp(2, 6), s.layout()).unwrap())
         .expect_err("two of those frames do not fit");
     match err {
         Error::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::StorageFull),
@@ -290,7 +281,8 @@ fn a_dropped_writer_leaves_a_readable_file() {
     let mut sink = Cursor::new(Vec::new());
     {
         let mut w = WavWriter::create(&s, Pcm::Int16, &mut sink).unwrap();
-        w.write(Interleaved::new(&ramp(2, 7), s.layout())).unwrap();
+        w.write(Interleaved::new(&ramp(2, 7), s.layout()).unwrap())
+            .unwrap();
     }
     let reader = hound::WavReader::new(Cursor::new(sink.into_inner())).unwrap();
     assert_eq!(reader.len(), 14);
@@ -301,7 +293,8 @@ fn a_dropped_writer_leaves_a_readable_file() {
 fn a_finished_writer_hands_back_its_sink_untouched_by_drop() {
     let s = spec(2, Pcm::Int16);
     let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
-    w.write(Interleaved::new(&ramp(2, 7), s.layout())).unwrap();
+    w.write(Interleaved::new(&ramp(2, 7), s.layout()).unwrap())
+        .unwrap();
     let bytes = w.finish().unwrap().into_inner();
     assert_eq!(bytes.len(), 44 + 7 * 4);
 }

@@ -2441,6 +2441,7 @@ name = "tutti"
 version = "0.0.1"
 dependencies = [
  "tempfile",
+ "tutti-buffers",
  "tutti-codec",
  "tutti-cpal",
  "tutti-dsp",
@@ -2525,6 +2526,7 @@ dependencies = [
 name = "tutti-buffers"
 version = "0.0.1"
 dependencies = [
+ "assert_no_alloc",
  "libm",
  "thiserror 2.0.21",
  "tutti-fixtures",
@@ -2598,6 +2600,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "tutti-buffers",
  "tutti-codec",
  "tutti-fixtures",
  "tutti-types",
@@ -2628,6 +2631,7 @@ dependencies = [
  "hound",
  "tempfile",
  "thiserror 2.0.21",
+ "tutti-buffers",
  "tutti-codec",
  "tutti-engine",
  "tutti-graph",
@@ -2655,6 +2659,7 @@ dependencies = [
  "rustfft",
  "serde",
  "thiserror 2.0.21",
+ "tutti-buffers",
  "tutti-dsp",
  "tutti-fixtures",
  "tutti-types",
@@ -2669,6 +2674,7 @@ dependencies = [
  "bytemuck",
  "ringbuf",
  "thiserror 2.0.21",
+ "tutti-buffers",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-metering",
@@ -2691,6 +2697,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "tutti-buffers",
  "tutti-codec",
  "tutti-dsp",
  "tutti-fixtures",
@@ -2733,6 +2740,7 @@ dependencies = [
  "proptest",
  "ringbuf",
  "thiserror 2.0.21",
+ "tutti-buffers",
  "tutti-curve",
  "tutti-fixtures",
  "tutti-graph",
@@ -2751,6 +2759,7 @@ dependencies = [
  "rand",
  "serde",
  "thiserror 2.0.21",
+ "tutti-buffers",
  "tutti-dsp",
  "tutti-fixtures",
  "tutti-graph",
@@ -2854,6 +2863,7 @@ dependencies = [
  "crossbeam-queue",
  "serde",
  "thiserror 2.0.21",
+ "tutti-buffers",
  "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",
@@ -2886,6 +2896,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tutti-buffers",
  "tutti-curve",
  "tutti-dsp",
  "tutti-engine",
@@ -2917,6 +2928,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tutti-au-host",
+ "tutti-buffers",
  "tutti-clap-host",
  "tutti-clap-test-plugin",
  "tutti-codec",
@@ -3178,6 +3190,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "tutti-buffers",
  "tutti-codec",
  "tutti-dsp",
  "tutti-engine",
@@ -3206,6 +3219,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "tutti-buffers",
  "tutti-clap-test-plugin",
  "tutti-codec",
  "tutti-cpal",
@@ -3329,7 +3343,6 @@ dependencies = [
 name = "tutti-types"
 version = "0.0.1"
 dependencies = [
- "assert_no_alloc",
  "atomic_float",
  "libm",
  "serde",
@@ -3355,6 +3368,7 @@ dependencies = [
 name = "tutti-verify"
 version = "0.0.0"
 dependencies = [
+ "tutti-buffers",
  "tutti-codec",
  "tutti-dsp",
  "tutti-export",

@@ -576,7 +576,7 @@ fn a_caller_can_still_fold_to_stereo_itself() {
     assert!(matches!(decoder.pull(&mut native), Pull::Frames(_)));
 
     let mut stereo = [0.0f32; 2];
-    tutti_types::Fold::to_width(decoder.topology(), tutti_types::ChannelLayout::STEREO)
+    tutti_buffers::Fold::to_width(decoder.topology(), tutti_types::ChannelLayout::STEREO)
         .expect("a 5.1 file places into stereo")
         .frame(&native[..ch], &mut stereo);
 

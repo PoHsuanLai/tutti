@@ -1,10 +1,11 @@
 //! A late publish: a map whose step is
 //! behind the playhead moves no beat.
 
+use tutti_buffers::InterleavedMut;
 use tutti_session::Session;
 use tutti_tempo::{TempoMap, TempoPoint};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 512;
@@ -25,7 +26,7 @@ fn a_step_published_behind_the_playhead_moves_no_beat() {
         .expect("builds");
     let mut buf = vec![0.0f32; BLOCK * 2];
     let mut block = |s: &Session| {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         s.playhead().beat().get()
     };
 

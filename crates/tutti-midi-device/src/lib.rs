@@ -108,7 +108,7 @@ pub use endpoint::{
     BlockError, Capabilities, Endpoint, FunctionBlock, FunctionBlockBuilder, MAX_FUNCTION_BLOCKS,
     UMP_VERSION,
 };
-pub use id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection};
+pub use id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection, WinMmDevice};
 pub use inquiry::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT, IdentityInquiry, InquiryAction};
 pub use learned::{Learned, Match, SavedDevice};
 pub use name::{BlockName, EndpointName, Name, NameError, ProductInstanceId};

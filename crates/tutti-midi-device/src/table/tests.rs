@@ -352,6 +352,35 @@ fn a_saved_ordinal_above_zero_is_ambiguous_even_with_one_device_present() {
     );
 }
 
+fn named(name: &str) -> WinMmDevice {
+    WinMmDevice::Named {
+        name: name.to_owned(),
+        manufacturer: 1,
+        product: 2,
+    }
+}
+
+/// A saved WinMM identity with an interface path is the device itself: it
+/// resolves exactly, where one with a name alone is only the same name.
+#[test]
+fn a_winmm_interface_path_resolves_exactly_and_a_name_only_by_name() {
+    let mut table = DeviceTable::default();
+    let on = |n, identity| OsDevice {
+        handle: handle(n),
+        identity,
+        name: "USB MIDI".into(),
+        direction: PortDirection::Input,
+    };
+    let path = Identity::winmm_input(WinMmDevice::Interface("\\\\?\\usb#vid_1".into()));
+    let by_path = added(table.apply(OsChange::Present(on(1, path))));
+    let by_name = added(table.apply(OsChange::Present(on(
+        2,
+        Identity::winmm_input(named("Other")),
+    ))));
+    assert_eq!(table.resolve(&by_path), Resolved::Exact(by_path.clone()));
+    assert_eq!(table.resolve(&by_name), Resolved::SameName(by_name.clone()));
+}
+
 /// An input and an output of one WinMM unit share a name and driver ids, so
 /// each is told by its direction: neither takes the other's ordinal.
 #[test]
@@ -365,12 +394,12 @@ fn a_winmm_input_and_output_of_one_unit_are_both_ordinal_zero() {
     };
     let input = added(table.apply(OsChange::Present(on(
         1,
-        Identity::winmm_input("USB MIDI", 1, 2),
+        Identity::winmm_input(named("USB MIDI")),
         PortDirection::Input,
     ))));
     let output = added(table.apply(OsChange::Present(on(
         2,
-        Identity::winmm_output("USB MIDI", 1, 2),
+        Identity::winmm_output(named("USB MIDI")),
         PortDirection::Output,
     ))));
     assert_eq!((input.id.ordinal(), output.id.ordinal()), (0, 0));

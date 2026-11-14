@@ -5,20 +5,28 @@ use std::time::{Duration, Instant};
 use super::anchor::Anchor;
 use super::bytes::{ByteIn, ByteOut, Wire};
 use super::poll;
-use super::ports::{PortInfo, Side, endpoint, endpoint_id, endpoints, slot_of};
+use super::ports::{PortInfo, Side, endpoint, endpoint_id, endpoints, locate, slot_of};
+use super::schedule::Schedule;
 use crate::Devices;
 use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::ChangeSink;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
-use tutti_midi_device::{DeviceEvent, EndpointId, Identity, OsDevice, PortDirection};
+use tutti_midi_device::{DeviceEvent, EndpointId, Identity, OsDevice, PortDirection, WinMmDevice};
 use tutti_ump::{Message, MidiGroup, Sysex7Packet, SysexStatus, Ump};
+
+fn named(name: &str, product: u16) -> WinMmDevice {
+    WinMmDevice::Named {
+        name: name.to_owned(),
+        manufacturer: 0x41,
+        product,
+    }
+}
 
 fn info(name: &str) -> PortInfo {
     PortInfo {
         name: name.to_owned(),
-        manufacturer: 0x41,
-        product: 7,
+        device: named(name, 7),
     }
 }
 
@@ -40,10 +48,45 @@ fn an_id_refuses_the_port_that_took_its_position() {
     let slot = slot_of(endpoint_id(Side::Input, 1, &info("Keystep")));
     assert!(!slot.matches(&info("Launchpad")));
     let other_product = PortInfo {
-        product: 8,
+        device: named("Keystep", 8),
         ..info("Keystep")
     };
     assert!(!slot.matches(&other_product));
+}
+
+#[test]
+fn an_interface_path_names_the_device_whatever_its_position_or_name() {
+    let path = |name: &str| PortInfo {
+        name: name.to_owned(),
+        device: WinMmDevice::Interface("\\\\?\\usb#vid_0001".to_owned()),
+    };
+    let slot = slot_of(endpoint_id(Side::Input, 3, &path("Keystep")));
+    // The same device, listed elsewhere with a different cut of its name.
+    assert!(slot.matches(&path("Keystep Pro MIDI")));
+    let other = PortInfo {
+        device: WinMmDevice::Interface("\\\\?\\usb#vid_0002".to_owned()),
+        ..path("Keystep")
+    };
+    assert!(!slot.matches(&other));
+}
+
+#[test]
+fn a_device_that_moved_in_the_list_is_found_where_it_went_and_one_gone_is_not() {
+    let slot = slot_of(endpoint_id(Side::Input, 2, &info("B")));
+    let list = |names: &[&str]| -> Vec<(u32, PortInfo)> {
+        names.iter().zip(0..).map(|(n, i)| (i, info(n))).collect()
+    };
+    assert_eq!(
+        locate(slot, list(&["A", "C", "B"])),
+        Some(2),
+        "where it was"
+    );
+    assert_eq!(
+        locate(slot, list(&["B", "C"])),
+        Some(0),
+        "an earlier device left"
+    );
+    assert_eq!(locate(slot, list(&["A", "C"])), None, "unplugged");
 }
 
 #[test]
@@ -52,8 +95,11 @@ fn the_input_and_the_output_of_one_unit_have_different_ids_and_identities() {
     let output = endpoint(Side::Output, 0, info("USB MIDI"));
     assert_ne!(input.id, output.id);
     assert_ne!(input.identity, output.identity);
-    assert_eq!(input.identity, Identity::winmm_input("USB MIDI", 0x41, 7));
-    assert_eq!(output.identity, Identity::winmm_output("USB MIDI", 0x41, 7));
+    assert_eq!(input.identity, Identity::winmm_input(named("USB MIDI", 7)));
+    assert_eq!(
+        output.identity,
+        Identity::winmm_output(named("USB MIDI", 7))
+    );
 }
 
 #[test]
@@ -191,6 +237,40 @@ fn a_failed_send_stops_the_message_and_is_returned() {
     assert_eq!(failed, Err("no"));
 }
 
+// ---- schedule -------------------------------------------------------------
+
+#[test]
+fn a_schedule_releases_the_earliest_first_and_ties_in_push_order() {
+    let t0 = Instant::now();
+    let at = |ms| t0 + Duration::from_millis(ms);
+    let mut held = Schedule::new();
+    held.push(at(30), "late");
+    held.push(at(10), "first");
+    held.push(at(10), "second");
+    held.push(at(20), "middle");
+    assert_eq!(held.len(), 4);
+    let now = at(25);
+    let due: Vec<_> = std::iter::from_fn(|| held.pop_due(now)).collect();
+    assert_eq!(due, ["first", "second", "middle"]);
+    assert_eq!(held.pop_due(now), None, "the last is still to wait");
+}
+
+#[test]
+fn a_schedule_says_how_long_until_the_earliest_and_zero_when_late() {
+    let t0 = Instant::now();
+    let mut held = Schedule::new();
+    assert_eq!(held.wait(t0), None);
+    held.push(t0 + Duration::from_millis(40), ());
+    assert_eq!(
+        held.wait(t0 + Duration::from_millis(15)),
+        Some(Duration::from_millis(25))
+    );
+    assert_eq!(
+        held.wait(t0 + Duration::from_millis(90)),
+        Some(Duration::ZERO)
+    );
+}
+
 // ---- anchor ---------------------------------------------------------------
 
 #[test]
@@ -230,7 +310,7 @@ static LISTED: Mutex<Vec<OsDevice>> = Mutex::new(Vec::new());
 fn device(n: u64, name: &str) -> OsDevice {
     OsDevice {
         handle: EndpointId::from_raw(n),
-        identity: Identity::winmm_input(name, 1, 1),
+        identity: Identity::winmm_input(named(name, 1)),
         name: name.to_owned(),
         direction: PortDirection::Input,
     }

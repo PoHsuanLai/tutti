@@ -11,6 +11,8 @@
 //!   and UMP to bytes on the way out, SysEx reassembled whole.
 //! - [`anchor`]: an arrival stamp in milliseconds since the port started, as an
 //!   `Instant`.
+//! - [`schedule`]: items held until their time and released in order, for an
+//!   output that sends each event when it is due.
 //! - [`poll`]: a device watch for an OS that cannot say a device came or went,
 //!   by listing again on a timer.
 //!
@@ -22,6 +24,7 @@ pub(super) mod anchor;
 pub(super) mod bytes;
 pub(super) mod poll;
 pub(super) mod ports;
+pub(super) mod schedule;
 
 #[cfg(test)]
 mod tests;

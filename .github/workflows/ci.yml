@@ -292,6 +292,12 @@ jobs:
       # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
+      # The winmm MIDI backend against the runner's own winmm: no MIDI input,
+      # and the built-in GS Wavetable Synth output. Only these two crates, so
+      # the build is the two and their dependencies.
+      - uses: taiki-e/install-action@nextest
+      - name: MIDI backend tests
+        run: cargo nextest run --locked -p tutti-winmm-ffi -p tutti-midi-hardware
 
   # The AU host on macOS. Every AU crate is `#![cfg(target_os = "macos")]`, so
   # the Linux and Windows clippy jobs compile it to nothing and a lint in it

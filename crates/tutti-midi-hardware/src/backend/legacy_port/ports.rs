@@ -1,7 +1,7 @@
 //! What names a byte port: its identity, and the id it is opened by.
 
 use crate::capability::{EndpointInfo, UmpCapability};
-use tutti_midi_device::{EndpointId, Identity};
+use tutti_midi_device::{EndpointId, Identity, WinMmDevice};
 
 /// Which way a port goes. Inputs and outputs are numbered separately by such an
 /// API, so a position alone names neither.
@@ -16,12 +16,10 @@ pub(in crate::backend) enum Side {
 /// What a driver reports of one port.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::backend) struct PortInfo {
-    /// The product name.
+    /// The product name, as shown.
     pub name: String,
-    /// The manufacturer id.
-    pub manufacturer: u16,
-    /// The product id.
-    pub product: u16,
+    /// What names the device: its interface path where the driver gives one.
+    pub device: WinMmDevice,
 }
 
 /// The parts of an [`EndpointId`] a byte port mints.
@@ -39,17 +37,16 @@ const OUTPUT_BIT: u64 = 1 << 63;
 const FINGERPRINT_BITS: u32 = 31;
 const FINGERPRINT_SHIFT: u32 = 32;
 
-/// A 31-bit FNV-1a digest of what the driver reports: the part of an id that
-/// says which device was at a position.
+/// A 31-bit FNV-1a digest of what names the device: the part of an id that says
+/// which device was at a position.
 pub(in crate::backend) fn fingerprint(info: &PortInfo) -> u32 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let bytes = info
-        .name
+    let hash = info
+        .device
+        .to_string()
         .bytes()
-        .chain(info.manufacturer.to_le_bytes())
-        .chain(info.product.to_le_bytes());
-    let hash = bytes.fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME));
+        .fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME));
     ((hash >> 32) ^ hash) as u32 & ((1 << FINGERPRINT_BITS) - 1)
 }
 
@@ -90,12 +87,32 @@ impl Slot {
     }
 }
 
+/// The position of the port `slot` was made for among `listed` (position and
+/// what the driver reports there): the position it was made at when that is
+/// still the same device, otherwise where the device went (a list shifts when
+/// another is unplugged). `None` when the device is not listed.
+pub(in crate::backend) fn locate(
+    slot: Slot,
+    listed: impl IntoIterator<Item = (u32, PortInfo)>,
+) -> Option<u32> {
+    let mut moved = None;
+    for (index, info) in listed {
+        if slot.matches(&info) {
+            if index == slot.index {
+                return Some(index);
+            }
+            moved.get_or_insert(index);
+        }
+    }
+    moved
+}
+
 /// The endpoint of the port at `index` on `side`: a MIDI 1.0 port with no
 /// Function Blocks, named as the driver names it.
 pub(in crate::backend) fn endpoint(side: Side, index: u32, info: PortInfo) -> EndpointInfo {
     let identity = match side {
-        Side::Input => Identity::winmm_input(info.name.as_str(), info.manufacturer, info.product),
-        Side::Output => Identity::winmm_output(info.name.as_str(), info.manufacturer, info.product),
+        Side::Input => Identity::winmm_input(info.device.clone()),
+        Side::Output => Identity::winmm_output(info.device.clone()),
     };
     EndpointInfo {
         id: endpoint_id(side, index, &info),

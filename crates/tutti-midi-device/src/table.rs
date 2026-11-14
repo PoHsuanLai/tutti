@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection};
+use crate::id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection, WinMmDevice};
 
 /// One device as a backend sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,8 +209,11 @@ impl DeviceTable {
     ///   port is told by its name and direction: `Exact` for the one present
     ///   port with both, `Ambiguous` (the unit's ports) when none or several
     ///   have.
-    /// - An ALSA or WinMM identity is names alone (the client and port name, or
-    ///   the driver's product name and ids): `SameName` for the lone
+    /// - A WinMM identity with a device interface path names the device across a
+    ///   replug: `Exact` for the lone present device at ordinal 0 that still
+    ///   goes the saved way.
+    /// - An ALSA identity, or a WinMM one with no path, is names alone (the
+    ///   client and port name, or the driver's product name and ids): `SameName` for the lone
     ///   present device when the saved ordinal is 0 and it still goes the
     ///   saved way (it cannot be told from another unit of the same name),
     ///   `Ambiguous` for a saved ordinal above 0, several present devices, or
@@ -241,7 +244,16 @@ impl DeviceTable {
                 }
             }
             (
-                Identity::Alsa { .. } | Identity::WinMmInput { .. } | Identity::WinMmOutput { .. },
+                Identity::WinMmInput(WinMmDevice::Interface(_))
+                | Identity::WinMmOutput(WinMmDevice::Interface(_)),
+                [only],
+            ) if saved.id.ordinal() == 0 && serves(only.direction, saved.direction) => {
+                Resolved::Exact((*only).clone())
+            }
+            (
+                Identity::Alsa { .. }
+                | Identity::WinMmInput(WinMmDevice::Named { .. })
+                | Identity::WinMmOutput(WinMmDevice::Named { .. }),
                 [only],
             ) if saved.id.ordinal() == 0 && serves(only.direction, saved.direction) => {
                 Resolved::SameName((*only).clone())

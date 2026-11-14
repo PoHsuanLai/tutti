@@ -5,7 +5,7 @@
 
 use tutti_midi_device::{
     DeviceEvent, DeviceInfo, DeviceTable, EndpointId, Identity, OsChange, OsDevice, PortDirection,
-    Resolved,
+    Resolved, WinMmDevice,
 };
 
 fn listed(identity: Identity, count: u64) -> (DeviceTable, Vec<DeviceInfo>) {
@@ -36,8 +36,12 @@ fn a_device_round_trips() {
         Identity::Product("abc".into()),
         Identity::CoreMidi(-7),
         Identity::alsa("Keystep", "MIDI 1"),
-        Identity::winmm_input("Keystep", 0x41, 0x7),
-        Identity::winmm_output("Keystep", 0x41, 0x7),
+        Identity::winmm_input(WinMmDevice::Named {
+            name: "Keystep".into(),
+            manufacturer: 0x41,
+            product: 7,
+        }),
+        Identity::winmm_output(WinMmDevice::Interface("path".into())),
     ] {
         let (_, infos) = listed(identity, 3);
         for info in infos {
@@ -54,12 +58,16 @@ fn the_document_names_each_identity_and_the_ordinal() {
             r#"{"identity":{"Alsa":{"client":"Keystep","port":"MIDI 1"}},"ordinal":1}"#,
         ),
         (
-            Identity::winmm_input("K", 1, 2),
-            r#"{"identity":{"WinMmInput":{"name":"K","manufacturer":1,"product":2}},"ordinal":1}"#,
+            Identity::winmm_input(WinMmDevice::Named {
+                name: "K".into(),
+                manufacturer: 1,
+                product: 2,
+            }),
+            r#"{"identity":{"WinMmInput":{"Named":{"name":"K","manufacturer":1,"product":2}}},"ordinal":1}"#,
         ),
         (
-            Identity::winmm_output("K", 1, 2),
-            r#"{"identity":{"WinMmOutput":{"name":"K","manufacturer":1,"product":2}},"ordinal":1}"#,
+            Identity::winmm_output(WinMmDevice::Interface("p".into())),
+            r#"{"identity":{"WinMmOutput":{"Interface":"p"}},"ordinal":1}"#,
         ),
         (
             Identity::Product("abc".into()),

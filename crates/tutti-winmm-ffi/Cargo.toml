@@ -15,7 +15,14 @@ workspace = true
 
 [target.'cfg(windows)'.dependencies]
 thiserror = { workspace = true }
-windows-sys = { version = "0.61", features = ["Win32_Media", "Win32_Media_Audio"] }
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Media",
+  "Win32_Media_Audio",
+  "Win32_Media_Multimedia",
+  "Win32_Security",
+  "Win32_System_Threading",
+] }
 
 [package.metadata.docs.rs]
 targets = ["x86_64-pc-windows-msvc"]

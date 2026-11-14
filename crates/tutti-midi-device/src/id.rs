@@ -47,29 +47,13 @@ pub enum Identity {
         /// The port's name.
         port: String,
     },
-    /// A Windows Multimedia (WinMM) input port. WinMM numbers its ports by
-    /// position in a list that shifts when a device comes or goes, and names a
-    /// port by a product string cut to 31 characters, so the name and the
-    /// driver's manufacturer and product ids stand in. An input and an output
-    /// of one unit share all three, so the direction is part of the identity.
-    WinMmInput {
-        /// The product name the driver reports.
-        name: String,
-        /// The manufacturer id the driver reports.
-        manufacturer: u16,
-        /// The product id the driver reports.
-        product: u16,
-    },
+    /// A Windows Multimedia (WinMM) input port. The direction is part of the
+    /// identity because an input and an output of one unit share what names
+    /// the device.
+    WinMmInput(WinMmDevice),
     /// A Windows Multimedia (WinMM) output port; see
     /// [`WinMmInput`](Self::WinMmInput).
-    WinMmOutput {
-        /// The product name the driver reports.
-        name: String,
-        /// The manufacturer id the driver reports.
-        manufacturer: u16,
-        /// The product id the driver reports.
-        product: u16,
-    },
+    WinMmOutput(WinMmDevice),
 }
 
 impl Identity {
@@ -82,23 +66,50 @@ impl Identity {
         }
     }
 
-    /// A WinMM input port known by the driver's product name and ids.
+    /// A WinMM input port.
     #[must_use]
-    pub fn winmm_input(name: impl Into<String>, manufacturer: u16, product: u16) -> Self {
-        Self::WinMmInput {
-            name: name.into(),
-            manufacturer,
-            product,
-        }
+    pub fn winmm_input(device: WinMmDevice) -> Self {
+        Self::WinMmInput(device)
     }
 
-    /// A WinMM output port known by the driver's product name and ids.
+    /// A WinMM output port.
     #[must_use]
-    pub fn winmm_output(name: impl Into<String>, manufacturer: u16, product: u16) -> Self {
-        Self::WinMmOutput {
-            name: name.into(),
-            manufacturer,
-            product,
+    pub fn winmm_output(device: WinMmDevice) -> Self {
+        Self::WinMmOutput(device)
+    }
+}
+
+/// What names a WinMM port: the best the driver gives.
+///
+/// WinMM numbers ports by position in a list that shifts when a device comes or
+/// goes. A driver that reports a device interface path gives a name that
+/// survives a replug; one that does not leaves the product name (cut to 31
+/// characters) and the driver's ids.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum WinMmDevice {
+    /// The device interface path the driver reports.
+    Interface(String),
+    /// The product name and ids, for a driver that reports no path.
+    Named {
+        /// The product name the driver reports.
+        name: String,
+        /// The manufacturer id the driver reports.
+        manufacturer: u16,
+        /// The product id the driver reports.
+        product: u16,
+    },
+}
+
+impl fmt::Display for WinMmDevice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Interface(path) => f.write_str(path),
+            Self::Named {
+                name,
+                manufacturer,
+                product,
+            } => write!(f, "{name}/{manufacturer:04x}:{product:04x}"),
         }
     }
 }
@@ -155,16 +166,8 @@ impl fmt::Display for DeviceId {
             Identity::Product(id) => write!(f, "product:{id}")?,
             Identity::CoreMidi(id) => write!(f, "coremidi:{id}")?,
             Identity::Alsa { client, port } => write!(f, "alsa:{client}/{port}")?,
-            Identity::WinMmInput {
-                name,
-                manufacturer,
-                product,
-            } => write!(f, "winmm-in:{name}/{manufacturer:04x}:{product:04x}")?,
-            Identity::WinMmOutput {
-                name,
-                manufacturer,
-                product,
-            } => write!(f, "winmm-out:{name}/{manufacturer:04x}:{product:04x}")?,
+            Identity::WinMmInput(device) => write!(f, "winmm-in:{device}")?,
+            Identity::WinMmOutput(device) => write!(f, "winmm-out:{device}")?,
         }
         write!(f, "#{}", self.ordinal)
     }

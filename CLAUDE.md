@@ -37,7 +37,8 @@ std only. A rule the compiler already enforces is not a gate.
   `vendor/vst3-sdk/`; the gate asserts SHAs). Linux needs ALSA headers (`libasound2-dev
   pkg-config`).
 - **Windows:** `cargo xtask check-windows` lints for MSVC from Linux; CI's `clippy
-  (windows)` lints natively, and no CI job runs tests on Windows. A vst3 SDK enum constant
+  (windows)` lints natively and also runs `tutti-winmm-ffi`'s and `tutti-midi-hardware`'s
+  tests there (no other CI job runs tests on Windows). A vst3 SDK enum constant
   is `c_uint` on unix and `c_int` on Windows: cast it with `helpers::sdk_enum_i32`. Read
   the engineering notes before touching `tutti-plugin-ipc`'s transport or plugin loading.
 

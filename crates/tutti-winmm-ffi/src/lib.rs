@@ -12,7 +12,9 @@
 //! |---|---|
 //! | `input_count`, `output_count`, `input_caps`, `output_caps` | the ports winmm lists now, by position, and what the driver reports of each |
 //! | `MidiIn` | an open input: short messages and SysEx buffers delivered to a closure on the driver's thread, each with winmm's millisecond stamp; closing it returns every buffer first |
+//! | `input_interface`, `output_interface` | the device interface path a driver gives a port, which names the device across a replug |
 //! | `MidiOut` | an open output: a short message, or a SysEx sent whole |
+//! | `Sleeper` | a high-resolution waitable timer and a wake signal: one wait that ends at a time or when woken |
 //!
 //! Each `unsafe` block carries one `// SAFETY:` argument where it is introduced;
 //! `undocumented_unsafe_blocks` and `missing_safety_doc` are denied.
@@ -27,8 +29,12 @@ mod caps;
 mod error;
 mod input;
 mod output;
+mod sleeper;
 
-pub use caps::{Caps, input_caps, input_count, output_caps, output_count};
+pub use caps::{
+    Caps, input_caps, input_count, input_interface, output_caps, output_count, output_interface,
+};
 pub use error::Error;
 pub use input::{Event, MidiIn};
 pub use output::MidiOut;
+pub use sleeper::{Sleeper, Woken};

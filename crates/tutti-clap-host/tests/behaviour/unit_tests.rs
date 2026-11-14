@@ -38,6 +38,7 @@ use crate::support;
 use support::main_thread;
 #[allow(unused_imports)]
 use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputStreamRaw};
+use support::{midi_events, note_expressions, param_changes};
 
 // ── MIDI conversion via `(Offset, Ump)` and `WireMidi` ──
 //
@@ -206,7 +207,7 @@ fn test_output_event_list_push_note_on() {
     }
 
     assert_eq!(list.len(), 1);
-    let midi_out = list.to_midi_events();
+    let midi_out = midi_events(&list);
     assert_eq!(midi_out.len(), 1);
     let event = &midi_out[0];
     assert!(matches!(
@@ -261,7 +262,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
         assert!(push_fn(raw as *const _, &note.header as *const _));
     }
 
-    let midi_out = list.to_midi_events();
+    let midi_out = midi_events(&list);
     assert_eq!(midi_out.len(), 1, "the note-off must survive conversion");
     let event = &midi_out[0];
     assert!(event.ump.is_note_off());
@@ -316,7 +317,7 @@ fn a_wildcard_note_off_with_an_opaque_note_id_is_dropped() {
     }
 
     assert!(
-        list.to_midi_events().is_empty(),
+        midi_events(&list).is_empty(),
         "an unaddressable wildcard must be dropped, not bound to a phantom voice"
     );
 }
@@ -345,7 +346,7 @@ fn test_output_event_list_push_midi_cc() {
         assert!(push_fn(raw as *const _, &midi.header as *const _));
     }
 
-    let midi_out = list.to_midi_events();
+    let midi_out = midi_events(&list);
     assert_eq!(midi_out.len(), 1);
     let event = &midi_out[0];
     assert_eq!(event.offset, 33);
@@ -408,7 +409,7 @@ fn test_output_event_list_push_param_value() {
         push_fn(raw as *const _, &param.header as *const _);
     }
 
-    let changes = list.to_param_changes();
+    let changes = param_changes(&list);
     assert_eq!(changes.queues.len(), 1);
     assert_eq!(changes.queues[0].param_id, 7u32.into());
     assert!((changes.queues[0].points[0].value.get() - 0.42).abs() < 0.001);
@@ -467,7 +468,7 @@ fn test_note_expression_roundtrip_through_output_list() {
         push_fn(raw as *const _, &expr.header as *const _);
     }
 
-    let expressions = list.to_note_expressions();
+    let expressions = note_expressions(&list);
     assert_eq!(expressions.len(), 1);
     assert_eq!(expressions[0].expression_type, NoteExpressionType::Tuning);
     assert_eq!(expressions[0].note_id, 5);
@@ -593,7 +594,7 @@ fn test_output_list_filters_midi_from_mixed_events() {
 
     assert_eq!(list.len(), 2);
     // to_param_changes should only return the param, not the note
-    assert_eq!(list.to_param_changes().queues.len(), 1);
+    assert_eq!(param_changes(&list).queues.len(), 1);
 }
 
 // ── Event types through the output list FFI ──
@@ -725,7 +726,7 @@ fn test_output_list_push_param_gesture_begin_end() {
     }
 
     // Gesture events should not appear as param changes
-    assert_eq!(list.to_param_changes().queues.len(), 0);
+    assert_eq!(param_changes(&list).queues.len(), 0);
 }
 
 // ── Transport constants ──

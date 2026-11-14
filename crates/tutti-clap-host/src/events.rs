@@ -16,9 +16,7 @@
 //! function-wide allow silently re-permits the very wrap it should prevent.
 #![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
-use crate::types::{
-    ClapNoteExpression, NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue,
-};
+use crate::types::{ClapNoteExpression, NoteExpressionType, ParameterChanges, ParameterPoint};
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_DONT_RECORD, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX,
     CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF,
@@ -35,7 +33,6 @@ use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     Normalized, ParamEdit, ParamId, ParamMapping, RtMidiEvents, SYSEX_MESSAGE_CAPACITY,
     StableOrder, WireMidi, note_id_to_channel_note, plugin_note_id, push_sysex, sysex_assembler,
-    sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;
@@ -1604,7 +1601,11 @@ impl InputEventList {
     /// already added at the same frame. Room is the caller's
     /// ([`reserve`](Self::reserve)): at most the graph's
     /// `MAX_TRANSPORT_CHANGES` a block.
-    pub(crate) fn add_transport(&mut self, time: u32, mut event: clap_event_transport) -> &mut Self {
+    pub(crate) fn add_transport(
+        &mut self,
+        time: u32,
+        mut event: clap_event_transport,
+    ) -> &mut Self {
         event.header.time = time;
         self.events.push(ClapEvent::Transport(event));
         self
@@ -1928,29 +1929,9 @@ impl OutputEventList {
         true
     }
 
-    /// Extracts MIDI events from the output as UMP packets with the time the
-    /// plugin reported ([`WireMidi`]),
-    /// dropping non-MIDI events.
-    #[must_use]
-    pub fn to_midi_events(&self) -> Vec<WireMidi> {
-        let mut out = Vec::new();
-        for e in &self.events {
-            match e.sysex_bytes() {
-                // A message with a payload byte of 128 or more is malformed: dropped.
-                Some((bytes, time)) => out.extend(
-                    sysex_packets(bytes)
-                        .into_iter()
-                        .flatten()
-                        .map(|ump| WireMidi { offset: time, ump }),
-                ),
-                None => out.extend(e.to_midi()),
-            }
-        }
-        out
-    }
-
-    /// RT-safe variant of [`Self::to_midi_events`] that drains into a
-    /// caller-supplied [`RtMidiEvents`]. Clears `out` first. `out` is an
+    /// Drains the MIDI events, as UMP packets with the time the plugin
+    /// reported ([`WireMidi`]), into a caller-supplied [`RtMidiEvents`],
+    /// dropping non-MIDI events. Clears `out` first. `out` is an
     /// `RtVec`, whose capacity is inline and fixed, so this never allocates:
     /// events past that capacity are dropped and `out` reports the overflow.
     /// A plugin's SysEx arrives as UMP SysEx7 packets
@@ -1972,26 +1953,7 @@ impl OutputEventList {
         }
     }
 
-    /// Extracts parameter-value events into a [`ParameterChanges`] grouped
-    /// by parameter ID. Allocates as it needs to and keeps every point, each
-    /// queue sized to its points; off the audio thread only.
-    #[must_use]
-    pub fn to_param_changes(&self) -> ParameterChanges {
-        let mut grouped: Vec<(ParamId, Vec<ParameterPoint>)> = Vec::new();
-        for (addr, point) in self.param_points() {
-            match grouped.iter_mut().find(|(a, _)| *a == addr) {
-                Some((_, points)) => points.push(point),
-                None => grouped.push((addr, vec![point])),
-            }
-        }
-        let mut changes = ParameterChanges::new();
-        for (addr, points) in grouped {
-            changes.add_queue(ParameterQueue::from_points(addr, points));
-        }
-        changes
-    }
-
-    /// RT-safe variant of [`Self::to_param_changes`] that drains into a
+    /// Drains the parameter-value events, grouped by parameter ID, into a
     /// caller-supplied `ParameterChanges`, **bounded by the room `out` was
     /// reserved with**: build it once, off the audio thread, with
     /// [`ParameterChanges::reserved`] (the plugin's parameter count, and
@@ -2070,20 +2032,11 @@ impl OutputEventList {
         })
     }
 
-    /// Extracts note-expression events into the safe
-    /// [`ClapNoteExpression`] form, dropping other events.
-    pub fn to_note_expressions(&self) -> Vec<ClapNoteExpression> {
-        self.events
-            .iter()
-            .filter_map(clap_event_to_note_expression)
-            .collect()
-    }
-
-    /// RT-safe variant of [`Self::to_note_expressions`] that drains into a
-    /// caller-supplied [`RtNoteExpressions`], an `RtVec` of fixed inline
+    /// Drains the note-expression events, in the safe [`ClapNoteExpression`]
+    /// form, into a caller-supplied [`RtNoteExpressions`], an `RtVec` of fixed inline
     /// capacity: it never allocates, and expressions past the capacity are
     /// dropped and reported by `out`.
-    pub(crate) fn fill_note_expressions(&self, out: &mut RtNoteExpressions) {
+    pub fn fill_note_expressions(&self, out: &mut RtNoteExpressions) {
         out.clear();
         for event in &self.events {
             if let Some(ne) = clap_event_to_note_expression(event)
@@ -2244,6 +2197,7 @@ impl EventSink for OutputEventList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ParameterQueue;
     use tutti_fixtures::midi as fx;
 
     use tutti_graph::Offset;

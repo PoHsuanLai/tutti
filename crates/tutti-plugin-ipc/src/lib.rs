@@ -35,12 +35,12 @@ mod transport;
 #[cfg(test)]
 mod process_pipeline_tests;
 
-pub use batcher::{BlockPayload, Chunks};
 pub(crate) use batcher::Batcher;
-pub use client::audio::{BridgeEvent, BridgeThread, HarmonyInputs, Submitted};
-pub(crate) use client::audio::BridgeListener;
-pub use client::{PluginBridge};
+pub use batcher::{BlockPayload, Chunks};
 pub(crate) use client::EditorLoader;
+pub use client::PluginBridge;
+pub(crate) use client::audio::BridgeListener;
+pub use client::audio::{BridgeEvent, BridgeThread, HarmonyInputs, Submitted};
 // The bridge's free-buffer pool, for the delivery test in `tutti-plugin` that
 // fills it the way the node does.
 #[doc(hidden)]

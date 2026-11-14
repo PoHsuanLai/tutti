@@ -285,7 +285,6 @@ pub use instance::{
 // `tutti_plugin_types::NoteExpressionValue`). The native parameter types
 // (`ClapParamInfo` / `ClapParamFlags`) stay crate-private: the boundary speaks
 // the shared `ParameterInfo` via `ClapLoaded::parameter_list`.
-pub use types::ClapNoteExpression;
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout, Color,
@@ -293,6 +292,7 @@ pub use types::{
     NotePortInfo, ParamAutomationState, ParameterChanges, ParameterPoint, ParameterQueue,
     PluginInfo, StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle, WireMidi,
 };
+pub use types::{ClapNoteExpression, RtNoteExpressions};
 
 // Test-only global allocator for RT-safety regression tests.
 #[cfg(test)]

@@ -641,7 +641,10 @@ impl AudioBridge {
     /// # Errors
     ///
     /// As [`open_editor_in_server`](Self::open_editor_in_server).
-    pub(crate) fn set_editor_size_in_server(&self, size: Size) -> std::result::Result<Size, EditorError> {
+    pub(crate) fn set_editor_size_in_server(
+        &self,
+        size: Size,
+    ) -> std::result::Result<Size, EditorError> {
         if self.lifecycle.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }

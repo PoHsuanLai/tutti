@@ -249,9 +249,7 @@ pub use bridge_error::{BridgeError, BridgeResult, PluginForkError};
 pub use channels::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, MAX_BLOCK_CHANNELS, Sample,
 };
-pub use classification::{
-    ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories,
-};
+pub use classification::{ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories};
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use driver::{Hand, Lifecycle, Seat};
 pub use editor::{
@@ -277,7 +275,11 @@ pub use harmony::{
     ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
 };
-pub use lifecycle::{EFFECT_CAPACITY, Effect, Event, FDS_PER_TICK, FdId, HostOp, MAX_STEP_EFFECTS, Notice, Prepare, Reply, Request, RescanScope, RestartRules, Stage, State, TIMERS_PER_TICK, TimerId, standing, step};
+pub use lifecycle::{
+    EFFECT_CAPACITY, Effect, Event, FDS_PER_TICK, FdId, HostOp, MAX_STEP_EFFECTS, Notice, Prepare,
+    Reply, Request, RescanScope, RestartRules, Stage, State, TIMERS_PER_TICK, TimerId, standing,
+    step,
+};
 pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
 pub use measured::{
@@ -304,15 +306,11 @@ pub use parameters::{
 pub use pipeline::{BlockCounts, ChunkCounters, MAX_CHUNK};
 pub use presets::{Preset, PresetId, PresetSupport};
 #[cfg(feature = "probe-wire")]
-pub use probe_wire::{
-    ProbeOutcome, ResultError, read_result, write_result,
-};
+pub use probe_wire::{ProbeOutcome, ResultError, read_result, write_result};
 pub use process::{BlockStatus, ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::{RenderMode, RenderModeSupport};
 pub use sample_format::{SampleFormat, negotiate};
-pub use sysex::{
-    SYSEX_MESSAGE_CAPACITY, push_sysex, sysex_assembler, sysex_packets,
-};
+pub use sysex::{SYSEX_MESSAGE_CAPACITY, push_sysex, sysex_assembler, sysex_packets};
 pub use transport::{
     BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportChange, TransportChanges,
     TransportFlags, TransportInfo, TransportPosition, is_usable,

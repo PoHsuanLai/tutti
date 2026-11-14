@@ -3,8 +3,8 @@
 //!
 //! Available with the `testing` feature; enable it from `[dev-dependencies]`.
 //!
-//! - [`Const`] and [`Osc`] are sources: a constant, or a naive sine, saw,
-//!   square or triangle ([`Waveform`]).
+//! - [`Const`] and [`Osc`] are sources: a constant, or a sine, saw, square or
+//!   triangle ([`OscillatorWave`]) in its naive closed form.
 //! - [`vbap_mix()`] and [`bass_send`] wire a panner per source onto the output
 //!   channels (and the LFE's low-passed send, found from the topology).
 //! - [`Through`], [`Split`] and [`Sink`] are plumbing: pass-through, fan-out
@@ -46,6 +46,7 @@ mod vbap_mix;
 pub use vbap_mix::{bass_send, vbap_mix};
 
 use std::f64::consts::TAU;
+use tutti_dsp::OscillatorWave;
 
 use tutti_graph::{
     Cx, ForkByClone, IntoNode, Io, Node, NodeParts, ParamSet, Prepare, Shape, Status,
@@ -134,35 +135,21 @@ impl Node for Const {
     fn reset(&mut self) {}
 }
 
-/// The closed-form shape an [`Osc`] evaluates at each phase.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Waveform {
-    /// `sin(2π·phase)` — starts at 0, rising.
-    Sine,
-    /// `2·phase − 1` — a rising ramp from −1, wrapping to −1 at each cycle.
-    Saw,
-    /// `+1` for the first half-cycle, `−1` for the second.
-    Square,
-    /// `1 − 4·|phase − ½|` — −1 at the cycle start, +1 at the half.
-    Triangle,
-}
-
-impl Waveform {
-    /// The waveform at `phase` in cycles, `0..1`.
-    #[inline]
-    fn at(self, phase: f64) -> f64 {
-        match self {
-            Self::Sine => (phase * TAU).sin(),
-            Self::Saw => 2.0 * phase - 1.0,
-            Self::Square => {
-                if phase < 0.5 {
-                    1.0
-                } else {
-                    -1.0
-                }
+/// The naive closed form of `wave` at `phase` in cycles, `0..1`: no
+/// band-limiting, so a test reads the exact shape.
+#[inline]
+fn naive(wave: OscillatorWave, phase: f64) -> f64 {
+    match wave {
+        OscillatorWave::Sine => (phase * TAU).sin(),
+        OscillatorWave::Saw => 2.0 * phase - 1.0,
+        OscillatorWave::Square => {
+            if phase < 0.5 {
+                1.0
+            } else {
+                -1.0
             }
-            Self::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
         }
+        OscillatorWave::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
     }
 }
 
@@ -178,7 +165,7 @@ impl Waveform {
 /// prepared ([`Node::prepare`], which a graph does at insert).
 #[derive(Clone, Debug)]
 pub struct Osc {
-    waveform: Waveform,
+    waveform: OscillatorWave,
     frequency: Hz,
     amplitude: Amplitude,
     layout: ChannelLayout,
@@ -194,7 +181,7 @@ pub struct Osc {
 impl Osc {
     /// Creates a mono, unity-amplitude oscillator of `waveform` at `frequency`.
     #[must_use]
-    pub fn new(waveform: Waveform, frequency: Hz) -> Self {
+    pub fn new(waveform: OscillatorWave, frequency: Hz) -> Self {
         Self {
             waveform,
             frequency,
@@ -208,22 +195,22 @@ impl Osc {
 
     /// Creates a sine oscillator.
     pub fn sine(frequency: Hz) -> Self {
-        Self::new(Waveform::Sine, frequency)
+        Self::new(OscillatorWave::Sine, frequency)
     }
 
     /// Creates a naive (not band-limited) saw oscillator.
     pub fn saw(frequency: Hz) -> Self {
-        Self::new(Waveform::Saw, frequency)
+        Self::new(OscillatorWave::Saw, frequency)
     }
 
     /// Creates a naive (not band-limited) square oscillator.
     pub fn square(frequency: Hz) -> Self {
-        Self::new(Waveform::Square, frequency)
+        Self::new(OscillatorWave::Square, frequency)
     }
 
     /// Creates a naive (not band-limited) triangle oscillator.
     pub fn triangle(frequency: Hz) -> Self {
-        Self::new(Waveform::Triangle, frequency)
+        Self::new(OscillatorWave::Triangle, frequency)
     }
 
     /// Scales the output by `amplitude`.
@@ -239,7 +226,7 @@ impl Osc {
     /// `phase` is in turns and is wrapped into `[0, 1)` here, so `1.25` and
     /// `-0.75` both start a quarter-cycle in. `Phase` is a bare `pub` newtype,
     /// so an unwrapped value is constructible, and the closed forms in
-    /// [`Waveform`] assume `0..1` — a saw started at `1.25` would emit `1.5`,
+    /// naive closed forms assume `0..1` — a saw started at `1.25` would emit `1.5`,
     /// off the end of its range, until the first wrap.
     #[must_use]
     pub fn with_phase(mut self, phase: Phase) -> Self {
@@ -258,7 +245,7 @@ impl Osc {
     /// The next sample, advancing the phase.
     #[inline]
     fn next(&mut self) -> f32 {
-        let y = self.waveform.at(self.phase) * f64::from(self.amplitude.get());
+        let y = naive(self.waveform, self.phase) * f64::from(self.amplitude.get());
         self.phase += f64::from(self.frequency.get()) / self.sample_rate.get();
         self.phase -= self.phase.floor();
         y as f32

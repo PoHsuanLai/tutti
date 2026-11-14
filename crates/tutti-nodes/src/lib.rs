@@ -40,6 +40,8 @@
 //!   control lane evaluates): an audio generator, whose output feeds a node's
 //!   audio input. Its `LfoClock` is free (a rate in `Hz`, a param) or synced to the
 //!   transport beat (a span fixed at build); its depth and rate are read per frame.
+//! - **Oscillator** — [`OscillatorNode`], a mono source: a sine, or a saw, square or triangle
+//!   band-limited by `tutti_dsp::Oscillator`; its frequency (`Frequency`) and level (`Volume`) are read per frame.
 //! - **Dry/wet** — the convolver, delay, chorus/flanger, phaser and the two reverbs output their wet signal only; blend with the input through the graph's `set_mix`.
 //! - **Mixing** — `BusStripNode` (volume / balance; a mute or bypass is the graph's `NodeMode`).
 //!   Summing is the graph's: a port or an output channel sums its sources; so is
@@ -248,6 +250,9 @@ mod modulator;
 // `lfo`, so `use tutti_nodes::LfoShape` works.
 pub use lfo::{LfoClock, LfoNode, LfoShape, ModulatorNode, Waveform};
 pub use modulator::Modulator;
+
+mod oscillator;
+pub use oscillator::OscillatorNode;
 
 mod delay;
 pub use delay::DelayNode;

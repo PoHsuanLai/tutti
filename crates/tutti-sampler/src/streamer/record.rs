@@ -274,7 +274,7 @@ impl Streams {
 
 /// Applies `cmd` to `streams` and says what the driver does about it.
 ///
-/// A command for a stream the table no longer holds changes nothing and asks
+/// A command for a stream the table does not hold changes nothing and asks
 /// for nothing: commands race the streams they name, and an id is minted once
 /// and never reused, so a late command cannot reach another stream.
 pub(super) fn step(streams: &mut Streams, cmd: Cmd) -> &[Effect] {

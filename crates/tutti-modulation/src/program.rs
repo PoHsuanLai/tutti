@@ -1,5 +1,4 @@
-//! [`ControlProgram`]: what one target's control lane evaluates (design doc
-//! 014 §4).
+//! [`ControlProgram`]: what one target's control lane evaluates.
 //!
 //! A program is a description: a base (an automation curve, else the
 //! target's knob) plus offsets (time-function [`Layer`]s and signal-driven

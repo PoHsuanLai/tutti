@@ -93,7 +93,7 @@ fn an_open_is_opening_until_its_reader_is_delivered() {
 /// A close frees the stream's region in the step that handles it: the ring
 /// (its writer, decoder and resident wave with it) is dead when the step
 /// returns, the stream's status says it is closed (what a fork of its voice
-/// asks), and the table no longer holds it.
+/// asks), and the table does not hold it.
 #[test]
 fn a_close_frees_the_region_in_that_step() {
     let mut streams = Streams::new();

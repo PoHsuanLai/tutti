@@ -84,7 +84,9 @@ tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 criterion.workspace = true
 # The crate's own `testing` surface, for the integration tests.
 #
-# A dev-dependency on self is how a feature reaches `tests/` unconditionally.
+# A dev-dependency on self is how a feature reaches `tests/` unconditionally:
+# `required-features` on the test target would skip `tier_parity` when the
+# feature is off, and a plain `cargo nextest run` would report green without it.
 tutti-sampler = { path = ".", features = ["testing", "decode-wav", "decode-flac", "decode-mp3", "serde"] }
 # Stimulus nodes (`tutti_nodes::testing`).
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }

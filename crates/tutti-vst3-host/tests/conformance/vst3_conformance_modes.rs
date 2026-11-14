@@ -37,9 +37,7 @@ use conformance_support::*;
 /// entitled to behave differently here, and could not.
 #[test]
 fn offline_mode_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
@@ -98,9 +96,7 @@ fn offline_mode_is_spec_clean() {
 /// plugin must tolerate it, so this sweeps them all.
 #[test]
 fn prefetch_mode_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
@@ -157,9 +153,7 @@ fn prefetch_mode_is_spec_clean() {
 /// refused the toggle outright, would both fail to reach this state.
 #[test]
 fn live_realtime_prefetch_toggle_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let _plugins = plugin_guard();
     let path = probe_path();
 
@@ -299,9 +293,7 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
 /// offline, which is what a bounce asked for.
 #[test]
 fn offline_instance_refuses_the_live_toggle() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let _plugins = plugin_guard();
     let path = probe_path();
     let Ok(mut inst) = Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
@@ -407,7 +399,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
 /// Needs only a sample plugin, not the HostChecker sources.
 #[test]
 fn host_context_is_borrowed_not_consumed() {
-    // Hand-rolled the same vacuous skip `harness_ready` did, for the same
+    // Hand-rolled the same vacuous skip `require_harness` did, for the same
     // reason and with the same consequence. It needs only a plugin, not the
     // HostChecker sources — but a plugin is not optional either, so the
     // requirement is asserted rather than shrugged at.

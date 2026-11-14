@@ -393,16 +393,9 @@ impl AtomicSampleRate {
 
 /// A raw number that is not a sample rate: NaN, infinite, zero or negative
 /// (see [`SampleRate::new`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("a sample rate is finite and above zero, got {0}")]
 pub struct SampleRateOutOfRange(pub f64);
-
-impl core::fmt::Display for SampleRateOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "a sample rate is finite and above zero, got {}", self.0)
-    }
-}
-
-impl core::error::Error for SampleRateOutOfRange {}
 
 #[cfg(test)]
 mod tests;

@@ -142,12 +142,52 @@ fn a_size_that_reaches_past_its_list_is_refused() {
 /// `ifil` is four bytes. Another size is refused, not read as four.
 #[test]
 fn a_version_chunk_of_the_wrong_size_is_refused() {
-    let mut file = insert_first(base(), b"INFO", &chunk(b"iver", &[2, 0, 1, 0, 9, 9]));
+    let mut file = insert_first(base(), b"INFO", &chunk(b"ifil", &[2, 0, 1, 0, 9, 9]));
     let error = load(std::mem::take(&mut file)).unwrap_err();
     assert!(
-        matches!(error, Error::InvalidChunkSize(id) if &id == b"iver"),
+        matches!(error, Error::InvalidChunkSize(id) if &id == b"ifil"),
         "{error:?}"
     );
+}
+
+/// An `iver` that is not four bytes is ignored, and the file loads and is
+/// taken to use no ROM samples: its ROM version stays at the default, where a
+/// four-byte `iver` of 2.1 is read.
+/// Spec: sf2.info.iver.invalid
+#[test]
+fn an_iver_that_is_not_four_bytes_is_ignored() {
+    let good = load(insert_first(
+        base(),
+        b"INFO",
+        &chunk(b"iver", &[2, 0, 1, 0]),
+    ))
+    .unwrap();
+    assert_eq!(
+        (
+            good.info().rom_version().major(),
+            good.info().rom_version().minor()
+        ),
+        (2, 1)
+    );
+
+    let default = load(base()).unwrap();
+    for size in [0usize, 2, 3, 6] {
+        let data = vec![9u8; size];
+        let font = load(insert_first(base(), b"INFO", &chunk(b"iver", &data)))
+            .unwrap_or_else(|e| panic!("iver of {size} bytes: {e}"));
+        assert_eq!(
+            (
+                font.info().rom_version().major(),
+                font.info().rom_version().minor()
+            ),
+            (
+                default.info().rom_version().major(),
+                default.info().rom_version().minor()
+            ),
+            "iver of {size} bytes"
+        );
+        assert_eq!(font.presets().len(), 1);
+    }
 }
 
 /// A file cut anywhere is an error and never a panic.

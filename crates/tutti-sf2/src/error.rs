@@ -47,7 +47,7 @@ pub enum Error {
         actual: [u8; 4],
     },
     /// A chunk's size reaches past the end of its list, or is not the size its
-    /// id has (`ifil` and `iver` are four bytes). The id is shown with any
+    /// id has (`ifil` is four bytes). The id is shown with any
     /// byte that is not printable ASCII as `?`; `????` when not even a chunk
     /// header fits in what is left of the list.
     #[error("the '{}' chunk has an invalid size", Code(.0))]

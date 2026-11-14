@@ -19,7 +19,7 @@
 //! - `CLAUDE.md`.
 //!
 //! [`BASELINE`] holds the count each file had when the gate began, settled by
-//! the shared [ratchet](super::ratchet).
+//! the shared [`ratchet`].
 
 use super::lex::comments;
 use super::ratchet::{self, Found, Wording};

@@ -91,9 +91,9 @@ The reviewer checks:
 10. **Scope.** One concern; the CLAUDE.md lines it makes false are updated in it and
     listed in the description; a departure from the design is raised before merge.
 11. **Coherence.** One concept has one name and one type across the workspace (the
-    units, the buffer views, `Counter<Losses>`, `PushError`, `Source` for audio only);
-    the change adds no second way to do what an existing item does and duplicates no
-    helper; it uses the crate's constructor, error and module shapes; a new pattern
+    units, the buffer views such as `Interleaved`, `Samples` for a count of frames,
+    `Source` for audio only); the change adds no second way to do what an existing
+    item does and duplicates no helper; it uses the crate's constructor, error and module shapes; a new pattern
     replaces the old one everywhere in the same pull request, or is not introduced.
 12. **Idiomatic Rust.** `rustfmt` and `clippy -D warnings` clean; `?`, iterators and
     borrowing where they fit; generics and `impl Trait` as the guidelines advise; no

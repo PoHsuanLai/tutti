@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use tutti_midi_hardware::{
-    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, PeerProfiles, PortDirection,
-    ProfileSwitch, ReportAsk, ReportPeer, Resolved, SavedDevice,
+    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, InputTiming, Learned, Match, PeerProfiles,
+    PortDirection, ProfileSwitch, ReportAsk, ReportPeer, Resolved, SavedDevice,
 };
 use tutti_ump::DeviceIdentity;
 
@@ -79,7 +79,7 @@ impl Midi<'_> {
     /// an input, the device has no free slot, or the OS refuses it.
     pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
         let io = self.io.as_deref_mut().ok_or(MidiError::NoHardware)?;
-        io.connect_input(device)?;
+        io.connect_input(device, InputTiming::Arrival)?;
         self.state.lost.forget_open_inputs(io);
         Ok(())
     }
@@ -424,7 +424,7 @@ impl MidiState {
         let mut opened_input = false;
         if wanted.is_input() && found.direction.is_input() {
             let was_open = io.is_input_connected(&found.id);
-            io.connect_input(&found.id)?;
+            io.connect_input(&found.id, InputTiming::Arrival)?;
             opened_input = !was_open;
         }
         if wanted.is_output()

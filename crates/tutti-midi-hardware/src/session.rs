@@ -38,6 +38,7 @@ use crate::ci::{CiChange, CiPeerInfo, Heard, PeerId};
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
+use crate::port::TimeSource;
 use crate::process::{ProcessChange, ReportAsk, ReportError, ReportPeer};
 use crate::profiles::{PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange};
 use crate::stream::{DeviceStream, InputTiming, Negotiation};
@@ -268,6 +269,15 @@ impl MidiSession {
     /// input. An output that will not open
     /// leaves the input connected and the device as the OS describes it.
     ///
+    /// `timing` is the source of the input's event times:
+    /// [`InputTiming::JitterReduction`] asks the device for JR Timestamps and
+    /// places its events by them once it agrees, while [`InputTiming::Arrival`]
+    /// is the OS's arrival stamp. An input already open with another timing
+    /// keeps its port and its queued events: its time source follows at once
+    /// (arrival until the device agrees to JR), and the UMP Stream negotiation
+    /// runs again with the new request, reported by [`poll`](Self::poll) as a
+    /// settle is.
+    ///
     /// # Errors
     ///
     /// [`Error::NoDeviceNamed`] when a name matches no input (listing the
@@ -276,33 +286,21 @@ impl MidiSession {
     /// shape a stale id takes after a hot-plug — and [`Error::WrongDirection`]
     /// when it is not an input. Otherwise whatever the backend raises while
     /// opening the port.
-    pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
-        self.connect_input_timed(device, InputTiming::Arrival)
-    }
-
-    /// [`connect_input`](Self::connect_input) with the source of the input's
-    /// event times chosen: [`InputTiming::JitterReduction`] asks the device for
-    /// JR Timestamps and places its events by them once it agrees, while
-    /// [`InputTiming::Arrival`] is the OS's arrival stamp.
-    ///
-    /// An input already open with another timing is closed and opened again,
-    /// since the timing is asked of the device at the open.
-    ///
-    /// # Errors
-    ///
-    /// As [`connect_input`](Self::connect_input).
-    pub fn connect_input_timed(
+    pub fn connect_input(
         &mut self,
         device: impl Into<DeviceQuery>,
         timing: InputTiming,
     ) -> Result<()> {
         let id = device.into().pick(self.inputs())?;
         // An input whose reader died is replaced, not kept: it is silent.
-        if self
-            .inputs
-            .get(&id)
-            .is_some_and(|held| held.timing == timing && held.input.is_alive())
+        if let Some(held) = self.inputs.get_mut(&id)
+            && held.input.is_alive()
         {
+            if held.timing != timing {
+                held.stream.retime(timing);
+                held.timing = timing;
+                follow_timing(&self.ports, held);
+            }
             return Ok(());
         }
         if let Some(mut held) = self.inputs.remove(&id) {
@@ -677,10 +675,12 @@ impl MidiSession {
 /// Makes the port's copy of SysEx7 packets what the negotiation wants.
 /// Points the port's event times at what the device's configuration says: its
 /// JR Timestamps where it sends them and the input was opened to use them.
+/// Arrival until the device has settled.
 fn follow_timing(ports: &HardwareMidiInputs, held: &Held) {
-    if let Some(stream) = held.stream.settled() {
-        ports.time_source(held.input.slot(), held.timing.source(stream.config()));
-    }
+    let source = held.stream.settled().map_or(TimeSource::Arrival, |stream| {
+        held.timing.source(stream.config())
+    });
+    ports.time_source(held.input.slot(), source);
 }
 
 fn sync_hearing(ports: &HardwareMidiInputs, held: &mut Held, ci: bool) {

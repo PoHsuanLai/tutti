@@ -55,7 +55,8 @@ fn open() -> Loopback {
     let (Some(inp), Some(out)) = (pick(&inputs), pick(&outputs)) else {
         panic!("no `Midi Through` port: `sudo modprobe snd-seq-dummy`");
     };
-    io.connect_input(&inp.id).expect("connect input");
+    io.connect_input(&inp.id, tutti_midi_hardware::InputTiming::Arrival)
+        .expect("connect input");
     graph.apply();
     let sink = io.connect_output(&out.id).expect("connect output");
     std::thread::sleep(Duration::from_millis(200));

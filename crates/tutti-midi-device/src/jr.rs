@@ -46,6 +46,11 @@ pub const DRIFT_SPAN: Duration = Duration::from_secs(1);
 /// (M2-104 §7.2.2.1), so a sender that keeps it never gets here.
 pub const LOST_AFTER: Duration = Duration::from_secs(1);
 
+/// How long before its arrival a JR Clock may map: a clock older than the
+/// silence that loses the clock is not live, so the line does not describe its
+/// sender.
+const STALE_AFTER: Duration = LOST_AFTER;
+
 /// A sender clock's wrap, in ticks.
 const WRAP: f64 = 65_536.0;
 
@@ -109,8 +114,10 @@ impl JrTime {
 pub enum ClockHeard {
     /// It joined the window.
     Taken,
-    /// It came after a silence of more than [`LOST_AFTER`]: the window started
-    /// over with it.
+    /// It came after a silence of more than [`LOST_AFTER`], or does not fit the
+    /// line the window holds (it maps after its arrival by more than the
+    /// window's jitter, or more than [`LOST_AFTER`] before it, as a sender
+    /// whose clock restarted or jumped does): the window started over with it.
     Restarted,
     /// Its time is not after the last one's (it was reordered, or sent twice):
     /// it is ignored. A clock is monotonic but for the wrap (M2-104 §7.2.2.1).
@@ -187,25 +194,32 @@ impl JrReceiver {
     /// `arrival`.
     pub fn clock(&mut self, ticks: u16, arrival: Instant) -> ClockHeard {
         let mut heard = ClockHeard::Taken;
-        let unwrapped = match self.last {
-            None => i64::from(ticks),
+        let mut unwrapped = i64::from(ticks);
+        let mut late = false;
+        match self.last {
+            None => {}
             Some((_, at)) if arrival.saturating_duration_since(at) > LOST_AFTER => {
                 // The wrap count of a clock heard after this long is unknown.
-                self.len = 0;
-                self.start = 0;
+                self.restart();
                 heard = ClockHeard::Restarted;
-                i64::from(ticks)
             }
             Some((last, _)) => {
                 // The sender's step, a signed 16-bit difference: under half a
                 // wrap, because the silence is.
                 let step = i64::from(ticks.wrapping_sub(last).cast_signed());
-                if step <= 0 {
-                    return ClockHeard::Late;
+                unwrapped = self.newest().map_or(unwrapped, |r| r.ticks + step);
+                if self.off_line(unwrapped, arrival) {
+                    self.restart();
+                    unwrapped = i64::from(ticks);
+                    heard = ClockHeard::Restarted;
+                } else {
+                    late = step <= 0;
                 }
-                self.newest().map_or(i64::from(ticks), |r| r.ticks + step)
             }
-        };
+        }
+        if late {
+            return ClockHeard::Late;
+        }
         let origin = *self.origin.get_or_insert(arrival);
         let reading = Reading {
             ticks: unwrapped,
@@ -219,6 +233,28 @@ impl JrReceiver {
         self.len += 1;
         self.last = Some((ticks, arrival));
         heard
+    }
+
+    /// Empties the window, keeping the origin of its seconds.
+    fn restart(&mut self) {
+        self.len = 0;
+        self.start = 0;
+    }
+
+    /// Whether a clock of unwrapped sender time `ticks` that arrived at
+    /// `arrival` cannot come from the sender the window describes: its send
+    /// time on the line is after its arrival by more than the window's jitter
+    /// and a tick (a message is not heard before it is sent, the jitter bounds
+    /// how much earlier than the line an arrival has been, and a tick is the
+    /// sender's rounding), or is more than
+    /// [`STALE_AFTER`] before it (older than a live clock).
+    fn off_line(&self, ticks: i64, arrival: Instant) -> bool {
+        let (Some(origin), Some(line)) = (self.origin, self.line()) else {
+            return false;
+        };
+        let sent = line.slope * (ticks - line.ticks0) as f64 / f64::from(TICK_HZ) + line.offset;
+        let age = seconds_from(origin, arrival) - sent;
+        age < -(line.jitter + 1.0 / f64::from(TICK_HZ)) || age > STALE_AFTER.as_secs_f64()
     }
 
     /// The host time of a message that a JR Timestamp of sender time `ticks`

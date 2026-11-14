@@ -92,7 +92,7 @@
 //!
 //! ```rust,no_run
 //! use std::sync::Arc;
-//! use tutti_midi_hardware::{DeviceInlets, MidiSession};
+//! use tutti_midi_hardware::{DeviceInlets, InputTiming, MidiSession};
 //! use tutti_graph::Offset;
 //! use tutti_fixtures::midi;
 //! use tutti_ump::{MidiChannel, NoteVelocity};
@@ -110,7 +110,7 @@
 //!
 //! // Connect by id when the choice matters (see "Matching by name" below).
 //! if let Some(first) = session.inputs().first() {
-//!     session.connect_input(&first.id)?;
+//!     session.connect_input(&first.id, InputTiming::Arrival)?;
 //! }
 //! // Or by name: one `DeviceQuery` form for connect and disconnect.
 //! session.disconnect_input("keystep");

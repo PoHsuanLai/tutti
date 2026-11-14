@@ -22,7 +22,7 @@ fn jr(utility: Utility) -> Ump {
 fn settled(timing: InputTiming, device: Endpoint) -> (Wire, Rig, DeviceStream) {
     let mut wire = session_over(UmpCapability::midi2(), PortDirection::Duplex, device);
     wire.session
-        .connect_input_timed(&wire.id.clone(), timing)
+        .connect_input(&wire.id.clone(), timing)
         .unwrap();
     let stream = settle(&mut wire);
     let mut rig = Rig::over(wire.session.ports().inlets(), wire.start);
@@ -86,7 +86,7 @@ fn txjr_is_asked_for_only_by_an_input_opened_for_jr() {
             offering_both(),
         );
         wire.session
-            .connect_input_timed(&wire.id.clone(), timing)
+            .connect_input(&wire.id.clone(), timing)
             .unwrap();
         let mut asked = Vec::new();
         let mut settled = None;
@@ -210,4 +210,38 @@ fn events_are_placed_in_the_order_they_arrive() {
     let at = |ump| heard.iter().find(|h| h.2 == ump).expect("heard").1;
     assert_eq!(heard.len(), 2);
     assert!(at(first) <= at(second));
+}
+
+/// Changing an open input's timing keeps its port: the events queued before the
+/// change are all heard, the device is asked again with the new request, and
+/// events after the settle are placed by the new source.
+#[test]
+fn changing_an_open_inputs_timing_keeps_its_queued_events() {
+    let (mut wire, mut rig, first) = settled(InputTiming::Arrival, offering_both());
+    assert!(!first.config().tx_jr);
+    let notes: Vec<Ump> = (0..3)
+        .map(|n| midi::note_on(MidiChannel::FIRST, 70 + n, 0xFFFF))
+        .collect();
+    for (n, note) in notes.iter().enumerate() {
+        assert!(
+            wire.counters
+                .send_input(wire.raw, *note, wire.at(1_000 + 10 * n as u64))
+        );
+    }
+    let id = wire.id.clone();
+    wire.session
+        .connect_input(&id, InputTiming::JitterReduction)
+        .unwrap();
+    assert_eq!(wire.counters.opens(), 1, "the port is not reopened");
+    let mut settled = None;
+    for ms in 10..20 {
+        settled = settled.or(wire.tick(ms).1.pop());
+    }
+    assert!(settled.expect("asked again, and settled").1.config().tx_jr);
+    let (frame, heard) = note_delayed_by_10ms(&wire, &mut rig);
+    assert_near(frame, frame_at(1_000 + 312 + LATENCY));
+    for note in &notes {
+        assert!(heard.contains(note), "{note:?} was lost by the change");
+    }
+    assert_eq!(heard.len(), 4);
 }

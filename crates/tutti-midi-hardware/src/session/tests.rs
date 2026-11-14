@@ -63,7 +63,8 @@ fn enumeration_passes_the_backend_through() {
 fn connecting_an_input_makes_it_connected() {
     let (mut s, _, _) = session();
     assert!(!s.is_any_input_connected());
-    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro"), InputTiming::Arrival)
+        .unwrap();
     assert!(s.is_any_input_connected());
     assert_eq!(s.connected_input_names(), vec!["Keystep Pro".to_string()]);
 }
@@ -73,8 +74,10 @@ fn connecting_an_input_makes_it_connected() {
 #[test]
 fn connecting_an_open_input_is_idempotent() {
     let (mut s, _, opens) = session();
-    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
-    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro"), InputTiming::Arrival)
+        .unwrap();
+    s.connect_input(&input(&s, "Keystep Pro"), InputTiming::Arrival)
+        .unwrap();
     assert_eq!(opens.load(Ordering::SeqCst), 1, "the port opens once");
     assert_eq!(s.connected_input_names().len(), 1);
 }
@@ -82,7 +85,7 @@ fn connecting_an_open_input_is_idempotent() {
 #[test]
 fn by_name_matching_is_case_insensitive_substring() {
     let (mut s, _, _) = session();
-    s.connect_input("keystep").unwrap();
+    s.connect_input("keystep", InputTiming::Arrival).unwrap();
     assert_eq!(s.connected_input_names(), vec!["Keystep Pro".to_string()]);
 }
 
@@ -92,7 +95,9 @@ fn connecting_an_absent_device_is_an_error_not_a_silent_noop() {
     let mut s = MidiSession::open_over(backend, inlets()).unwrap();
     // A name that matches nothing says what it searched, so a typo shows what
     // was there.
-    let Err(Error::NoDeviceNamed { name, searched }) = s.connect_input("nonexistent") else {
+    let Err(Error::NoDeviceNamed { name, searched }) =
+        s.connect_input("nonexistent", InputTiming::Arrival)
+    else {
         panic!("a name that matches no input is NoDeviceNamed");
     };
     assert_eq!(name, "nonexistent");
@@ -111,15 +116,17 @@ fn connecting_an_absent_device_is_an_error_not_a_silent_noop() {
             .recv_timeout(std::time::Duration::from_secs(10))
             .is_ok()
     );
-    assert!(s.connect_input(&gone).is_err());
+    assert!(s.connect_input(&gone, InputTiming::Arrival).is_err());
     assert!(!s.is_any_input_connected());
 }
 
 #[test]
 fn disconnecting_closes_only_the_named_input() {
     let (mut s, _, _) = session();
-    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
-    s.connect_input(&input(&s, "IAC Bus 1")).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro"), InputTiming::Arrival)
+        .unwrap();
+    s.connect_input(&input(&s, "IAC Bus 1"), InputTiming::Arrival)
+        .unwrap();
     s.disconnect_input("iac");
     assert_eq!(s.connected_input_names(), vec!["Keystep Pro".to_string()]);
     s.disconnect_all_inputs();
@@ -134,7 +141,7 @@ fn disconnecting_closes_only_the_named_input() {
 fn a_query_by_id_and_by_name_reach_the_same_device() {
     let (mut s, _, _) = session();
     let keystep = input(&s, "Keystep Pro");
-    s.connect_input("pro").unwrap();
+    s.connect_input("pro", InputTiming::Arrival).unwrap();
     assert!(s.is_input_connected(&keystep), "by name");
     assert!(s.disconnect_input(&keystep), "by id");
     assert!(!s.disconnect_input("pro"), "nothing is open to close");
@@ -142,8 +149,8 @@ fn a_query_by_id_and_by_name_reach_the_same_device() {
     // Both open inputs' names contain an "s"; the disconnect closes the
     // lowest id.
     let iac = input(&s, "IAC Bus 1");
-    s.connect_input(&keystep).unwrap();
-    s.connect_input(&iac).unwrap();
+    s.connect_input(&keystep, InputTiming::Arrival).unwrap();
+    s.connect_input(&iac, InputTiming::Arrival).unwrap();
     assert!(
         iac < keystep,
         "the fixture's ids: {iac:?} below {keystep:?}"
@@ -269,12 +276,15 @@ fn each_connected_output_is_its_own_value_on_its_own_device() {
 #[test]
 fn hot_plug_cycles_keep_the_port_set_bounded() {
     let (mut s, _, opens) = session();
-    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
-    s.connect_input(&input(&s, "IAC Bus 1")).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro"), InputTiming::Arrival)
+        .unwrap();
+    s.connect_input(&input(&s, "IAC Bus 1"), InputTiming::Arrival)
+        .unwrap();
     for cycle in 0..100 {
         s.disconnect_input(&input(&s, "Keystep Pro"));
         assert_eq!(s.ports().list_input_ports().len(), 1, "cycle {cycle}");
-        s.connect_input(&input(&s, "Keystep Pro")).unwrap();
+        s.connect_input(&input(&s, "Keystep Pro"), InputTiming::Arrival)
+            .unwrap();
         assert_eq!(s.ports().list_input_ports().len(), 2, "cycle {cycle}");
         assert_eq!(s.ports().port_count(), 2, "cycle {cycle}");
     }
@@ -362,7 +372,8 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
 #[test]
 fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
     let (mut s, log) = logging_session(false);
-    s.connect_input(&input(&s, "Logged")).unwrap();
+    s.connect_input(&input(&s, "Logged"), InputTiming::Arrival)
+        .unwrap();
     let ports = Arc::clone(s.ports());
     assert_eq!(ports.list_input_ports().len(), 1);
 
@@ -379,7 +390,10 @@ fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
 fn a_refused_open_leaves_no_port() {
     let (mut s, _log) = logging_session(true);
     for _ in 0..3 {
-        assert!(s.connect_input(&input(&s, "Logged")).is_err());
+        assert!(
+            s.connect_input(&input(&s, "Logged"), InputTiming::Arrival)
+                .is_err()
+        );
     }
     assert!(!s.is_any_input_connected());
     assert!(s.ports().list_input_ports().is_empty());

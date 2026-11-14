@@ -328,6 +328,16 @@ impl Negotiation {
         }
     }
 
+    /// The input is now opened with `timing`: a device that is asked what it is
+    /// is asked again, with the request `timing` makes, and is unsettled until
+    /// it answers. A device that is not asked has nothing to renegotiate.
+    pub(crate) fn retime(&mut self, timing: InputTiming) {
+        self.timing = timing;
+        if self.os.is_ump_endpoint() && self.out.is_some() {
+            self.run = Run::Idle;
+        }
+    }
+
     /// What is known, once it is settled.
     pub(crate) fn settled(&self) -> Option<DeviceStream> {
         match &self.run {

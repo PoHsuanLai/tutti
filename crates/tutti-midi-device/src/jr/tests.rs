@@ -265,3 +265,44 @@ fn reset_forgets_the_clock() {
     rx.reset();
     assert_eq!(rx.lock(now), JrLock::Waiting);
 }
+
+/// A clock that jumps by `jump` seconds (the sender restarted, or was set)
+/// restarts the window at the first clock after it, and a timestamp after the
+/// next few clocks is mapped to the new clock, with no silence between.
+fn assert_relocks_after_a_jump(jump: f64) {
+    let mut link = Link::new(0.0, 40_000.0, Duration::ZERO);
+    link.latency = 3 * MS;
+    let mut rx = JrReceiver::new();
+    let mut t = 0.0;
+    while t < 3.0 {
+        assert_eq!(link.clock(&mut rx, t), ClockHeard::Taken);
+        t += 0.1;
+    }
+    link.phase += jump * f64::from(TICK_HZ);
+    assert_eq!(
+        link.clock(&mut rx, t),
+        ClockHeard::Restarted,
+        "a jump of {jump} s"
+    );
+    t += 0.1;
+    for _ in 0..WINDOW {
+        assert_eq!(link.clock(&mut rx, t), ClockHeard::Taken);
+        t += 0.1;
+    }
+    let (error, ..) = link.error(&rx, t + 0.05);
+    assert!(error < 40e-6, "{error} s after a jump of {jump} s");
+}
+
+/// A sender clock that jumps forward maps after its arrival, which no line of
+/// a live sender does: the window restarts and the clock is mapped again.
+#[test]
+fn a_sender_clock_that_jumps_forward_is_relocked() {
+    assert_relocks_after_a_jump(0.5);
+}
+
+/// One that jumps back by more than the silence that loses a clock maps more
+/// than [`LOST_AFTER`] before its arrival, and is relocked the same way.
+#[test]
+fn a_sender_clock_that_jumps_back_is_relocked() {
+    assert_relocks_after_a_jump(-1.02);
+}

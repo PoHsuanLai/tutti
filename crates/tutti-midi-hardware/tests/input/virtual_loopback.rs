@@ -67,7 +67,8 @@ fn what_a_virtual_source_sends_reaches_a_session_input_in_order() {
     let source = VirtualSource::open(&spec).expect("a virtual source");
     let (mut io, mut graph) = session();
     let device = listed(|| io.inputs(), &spec);
-    io.connect_input(&device.id).expect("connects");
+    io.connect_input(&device.id, tutti_midi_hardware::InputTiming::Arrival)
+        .expect("connects");
     graph.apply();
     std::thread::sleep(Duration::from_millis(200));
     graph.listen(Duration::from_millis(50));

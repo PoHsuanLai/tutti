@@ -31,6 +31,8 @@ atomic_float = { version = "1.1", default-features = false, features = ["atomic_
 # coefficient does not depend on the platform's C math library.
 libm = "0.2.15"
 serde = { version = "1", optional = true, features = ["derive"] }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # The meter `Deserialize` impls are the untrusted-document edge, so they are

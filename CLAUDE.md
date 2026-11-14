@@ -190,6 +190,9 @@ std only. A rule the compiler already enforces is not a gate.
 - A pure algorithm over slices goes in `tutti-dsp` (a measurement in `tutti-measure`); a
   node file holds only the `Node` adapter.
 - A new trait states its boundary in one sentence without "and".
+- An error type derives `thiserror::Error` with its text in `#[error(..)]`; a hand
+  `impl Error for` is a row of the gate's allow-list with its reason (`cargo xtask
+  check-errors`), and a `pub` type named `...Error` implements `Error`.
 - Naming: an algorithm uses the theory name, a spec keeps its own, a *frame* is one value
   per channel, a *sample* is one value. A user-facing node API keeps the control word.
 - A comment states what the code does and the invariant it holds, in the present tense;

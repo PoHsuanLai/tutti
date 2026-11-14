@@ -62,7 +62,7 @@ fn release_takes_one_plain_version() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 42);
+    assert_eq!(RECIPES.len(), 43);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
@@ -89,6 +89,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
     for (recipe, gate) in [
         ("check-layout", "gate check-layout"),
         ("check-ffi", "gate check-ffi"),
+        ("check-errors", "gate check-errors"),
         ("check-guards", "gate check-guards"),
         ("check-hosting", "gate check-hosting"),
         ("check-session", "gate check-session"),
@@ -108,6 +109,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-canonical-paths",
         "gate check-layout",
         "gate check-ffi",
+        "gate check-errors",
         "gate check-guards",
         "gate check-hosting",
         "gate check-session",

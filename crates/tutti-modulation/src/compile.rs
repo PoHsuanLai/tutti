@@ -341,26 +341,32 @@ impl Eq for Compiled {}
 ///
 /// This is the modulation compiler's error; the graph compiler's is
 /// `tutti_graph::CompileError`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompileError {
     /// Two sources with one key.
+    #[error("two sources share key {}", .0.0)]
     DuplicateSource(SourceKey),
     /// Two routes with one key.
+    #[error("two routes share key {}", .0.0)]
     DuplicateRoute(RouteKey),
     /// Two targets with one key.
+    #[error("two targets share key {0:?}")]
     DuplicateTarget(TargetKey),
     /// A route from a source not declared.
+    #[error("route {}: its source is not declared", .route.0)]
     UnknownSource {
         /// The route.
         route: RouteKey,
     },
     /// A depth route to a route not declared.
+    #[error("route {}: the route it scales is not declared", .route.0)]
     UnknownRoute {
         /// The depth route.
         route: RouteKey,
     },
     /// A route to a target not declared: a route needs the target's range.
+    #[error("route {}: its target is not declared", .route.0)]
     UndeclaredTarget {
         /// The route.
         route: RouteKey,
@@ -368,17 +374,25 @@ pub enum CompileError {
     /// A source whose params are out of their domain: a NaN anywhere, a
     /// clock's rate, period or phase or a constant that is not finite, a negative or infinite time, a sustain outside `[0, 1]`, a drawn wave
     /// whose points do not ascend in `[0, 1)` with finite values.
+    #[error("source {}: a param out of its domain", .0.0)]
     BadSource(SourceKey),
     /// An LFO declared with a rate anchor: anchors are the compiler's.
+    #[error("source {}: a rate anchor is the compiler's to set", .0.0)]
     AnchorDeclared(SourceKey),
     /// A target range with a NaN bound.
+    #[error("target {0:?}: a NaN range bound")]
     NanRange(TargetKey),
     /// An automation curve that is not frozen (its `Curve::frozen` returns
     /// a copy): a program compares it by identity, and reads it on the
     /// audio thread.
+    #[error("target {0:?}: an automation curve not frozen")]
     LiveCurve(TargetKey),
     /// A target with more than [`MAX_LANE_LAYERS`](crate::MAX_LANE_LAYERS)
     /// time-function layers.
+    #[error(
+        "target {target:?}: {count} layers, past MAX_LANE_LAYERS ({})",
+        crate::MAX_LANE_LAYERS
+    )]
     TooManyLayers {
         /// The target.
         target: TargetKey,
@@ -387,6 +401,10 @@ pub enum CompileError {
     },
     /// A target with more than [`MAX_LANE_INPUTS`](crate::MAX_LANE_INPUTS)
     /// signal-source routes.
+    #[error(
+        "target {target:?}: {count} input layers, past MAX_LANE_INPUTS ({})",
+        crate::MAX_LANE_INPUTS
+    )]
     TooManyInputs {
         /// The target.
         target: TargetKey,
@@ -395,72 +413,29 @@ pub enum CompileError {
     },
     /// A depth route to a route that is itself a depth route: `depth_by`
     /// chains are one deep.
+    #[error("route {}: a depth_by chain deeper than one", .route.0)]
     DepthByChain {
         /// The outer depth route.
         route: RouteKey,
     },
     /// A depth route from a signal-driven source, or to a route from one: a
     /// depth is scaled by a time function only.
+    #[error("route {}: depth_by takes a time function on both sides", .route.0)]
     DepthBySignal {
         /// The depth route.
         route: RouteKey,
     },
     /// Two depth routes to one route: a layer has one `depth_by`.
+    #[error("route {}: two depth routes", .route.0)]
     TwoDepthBy {
         /// The route both go to.
         route: RouteKey,
     },
     /// Two layers of one target derived the same [`LayerId`] (a 64-bit hash
     /// collision of their route keys).
+    #[error("target {0:?}: two layers share an id")]
     LayerIdCollision(TargetKey),
 }
-
-impl fmt::Display for CompileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DuplicateSource(k) => write!(f, "two sources share key {}", k.0),
-            Self::DuplicateRoute(k) => write!(f, "two routes share key {}", k.0),
-            Self::DuplicateTarget(k) => write!(f, "two targets share key {k:?}"),
-            Self::UnknownSource { route } => {
-                write!(f, "route {}: its source is not declared", route.0)
-            }
-            Self::UnknownRoute { route } => {
-                write!(f, "route {}: the route it scales is not declared", route.0)
-            }
-            Self::UndeclaredTarget { route } => {
-                write!(f, "route {}: its target is not declared", route.0)
-            }
-            Self::BadSource(k) => write!(f, "source {}: a param out of its domain", k.0),
-            Self::AnchorDeclared(k) => {
-                write!(f, "source {}: a rate anchor is the compiler's to set", k.0)
-            }
-            Self::NanRange(k) => write!(f, "target {k:?}: a NaN range bound"),
-            Self::LiveCurve(k) => write!(f, "target {k:?}: an automation curve not frozen"),
-            Self::TooManyLayers { target, count } => write!(
-                f,
-                "target {target:?}: {count} layers, past MAX_LANE_LAYERS ({})",
-                crate::MAX_LANE_LAYERS
-            ),
-            Self::TooManyInputs { target, count } => write!(
-                f,
-                "target {target:?}: {count} input layers, past MAX_LANE_INPUTS ({})",
-                crate::MAX_LANE_INPUTS
-            ),
-            Self::DepthByChain { route } => {
-                write!(f, "route {}: a depth_by chain deeper than one", route.0)
-            }
-            Self::DepthBySignal { route } => write!(
-                f,
-                "route {}: depth_by takes a time function on both sides",
-                route.0
-            ),
-            Self::TwoDepthBy { route } => write!(f, "route {}: two depth routes", route.0),
-            Self::LayerIdCollision(k) => write!(f, "target {k:?}: two layers share an id"),
-        }
-    }
-}
-
-impl std::error::Error for CompileError {}
 
 /// The clock a macro's constant layer carries: it reads none, and a beat
 /// clock has no corners for a constant.

@@ -22,16 +22,9 @@ use tutti_types::SampleRate;
 /// leaves a dead streamer accepting `Stream`/`Loop`/`Stop` indefinitely and
 /// doing nothing — indistinguishable, from the caller's side, from working
 /// playback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("streamer thread is gone; the command was discarded")]
 pub struct StreamerGone;
-
-impl core::fmt::Display for StreamerGone {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "streamer thread is gone; the command was discarded")
-    }
-}
-
-impl std::error::Error for StreamerGone {}
 
 /// The file a stream plays: where it is, its own rate and, when the streamer
 /// holds it decoded whole, the wave.

@@ -5,7 +5,7 @@
 //! 8.4.9 and 8.4.8, and limited to 0..1) times the dry gains it follows. Nothing is read from another
 //! render.
 
-mod support;
+use crate::support;
 
 use support::font::{Inst, Preset, font};
 use support::rig::Rig;

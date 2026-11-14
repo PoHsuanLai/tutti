@@ -831,7 +831,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn a_normalized_keeps_the_range_contract() {
-        tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        let c = tutti_fixtures::RangeContract {
             new: Normalized::new,
             get: Normalized::get,
             of: Some(Normalized::of),
@@ -846,7 +846,9 @@ mod tests {
                 f64::INFINITY,
                 f64::NEG_INFINITY,
             ],
-        });
+        };
+        tutti_fixtures::check_range_contract(&c);
+        tutti_fixtures::check_range_serde(&c);
     }
 
     /// `clamped` pins to the nearest bound and maps NaN to zero.

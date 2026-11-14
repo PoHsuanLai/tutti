@@ -2280,12 +2280,12 @@ mod tests {
     }
 
     /// The offset `k` frames into the block.
-    fn at(k: u32) -> Offset {
-        Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+    fn at(k: usize) -> Offset {
+        Offset::of(Samples(k), Samples(BLOCK))
     }
 
     /// The packet of `words`, zero-padded to four, at offset `k`.
-    fn packet(k: u32, words: &[u32]) -> UmpAt {
+    fn packet(k: usize, words: &[u32]) -> UmpAt {
         let mut w = [0u32; 4];
         w[..words.len()].copy_from_slice(words);
         (at(k), Ump(w))
@@ -2893,9 +2893,9 @@ mod tests {
             let mut list = InputEventList::new();
             list.reserve(200 * points + 16);
             list.add_param_changes(&changes, &[], false);
-            for frame in [0u32, 100, 475] {
-                list.add_midi(&(at(frame), midi::note_off(MidiChannel::FIRST, 60, 0)));
-                list.add_midi(&(at(frame), midi::note_on(MidiChannel::FIRST, 60, 0x8000)));
+            for frame in [0usize, 100, 475] {
+                list.add_midi(&(at(frame), fx::note_off(MidiChannel::FIRST, 60, 0)));
+                list.add_midi(&(at(frame), fx::note_on(MidiChannel::FIRST, 60, 0x8000)));
             }
             list
         };
@@ -3110,7 +3110,7 @@ mod tests {
 
     fn cc_message(group: u8) -> UmpAt {
         (
-            Offset::new(0, Samples(64)).expect("inside the block"),
+            Offset::of(Samples(0), Samples(64)),
             Message::Midi1(
                 Address::new(MidiGroup::new(group).unwrap(), MidiChannel::FIRST),
                 Voice1::ControlChange {
@@ -3154,7 +3154,7 @@ mod tests {
                 tutti_ump::Sysex7Packets::from_payload(MidiGroup::new(group).unwrap(), &payload)
                     .expect("seven-bit bytes");
             let ump = packets.into_iter().next().expect("one packet");
-            (Offset::new(0, Samples(64)).expect("inside the block"), ump)
+            (Offset::of(Samples(0), Samples(64)), ump)
         };
         let mut list = InputEventList::new();
         list.reserve_sysex();
@@ -4107,7 +4107,7 @@ mod tests {
     }
 
     /// The SysEx7 packets of `payload`, each `time` frames into the block.
-    fn sysex_packets(payload: &[u8], time: u32) -> Vec<UmpAt> {
+    fn sysex_packets(payload: &[u8], time: usize) -> Vec<UmpAt> {
         Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
             .expect("a payload of 7-bit bytes")
             .collect::<Vec<Ump>>()

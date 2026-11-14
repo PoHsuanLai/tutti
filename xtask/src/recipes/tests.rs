@@ -174,34 +174,30 @@ fn test_all_does_not_repeat_the_plugin_builds() {
 #[test]
 fn bench_save_and_cmp_name_the_baseline() {
     let save = dry("bench-save", &["x"]);
-    assert_eq!(save.len(), 10);
+    assert_eq!(save.len(), 9);
     assert!(save.iter().all(|l| l.ends_with("-- --save-baseline x")));
     let cmp = dry("bench-cmp", &[]);
     assert!(cmp.iter().all(|l| l.ends_with("-- --baseline main")));
 }
 
 #[test]
-fn bench_smoke_runs_the_benches_then_the_comparison() {
+fn bench_smoke_runs_every_bench_once() {
     let s = dry("bench-smoke", &[]);
-    assert_eq!(s.len(), 11);
-    assert!(s[..10].iter().all(|l| l.ends_with("-- --test")));
-    assert_eq!(
-        s[10],
-        "cargo bench --locked -p arc-lend-compare --bench compare -- --test"
-    );
+    assert_eq!(s.len(), 9);
+    assert!(s.iter().all(|l| l.ends_with("-- --test")));
 }
 
 #[test]
 fn loom_recipes_carry_their_environment() {
     let s = dry("loom", &[]);
     assert_eq!(
-        s[1],
-        "LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS='--cfg loom' cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact"
+        s[0],
+        "LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS='--cfg loom' cargo test --locked -p tutti-rt --release --test pos_ring_loom"
     );
     assert_eq!(
         dry("check-loom", &[]),
         [
-            "RUSTFLAGS='--cfg loom' cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"
+            "RUSTFLAGS='--cfg loom' cargo clippy --locked -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"
         ]
     );
 }
@@ -217,8 +213,7 @@ fn loom_runs_only_the_models_it_is_named() {
             "RUSTFLAGS='--cfg loom' cargo test --locked -p tutti-rt --release --test handoff_loom -- --nocapture",
         ]
     );
-    assert_eq!(dry("loom", &["loom"]).len(), 2, "arc-lend's two runs");
-    for bad in ["handoff", "nothing_loom"] {
+    for bad in ["handoff", "nothing_loom", "loom"] {
         let args = [bad.to_owned()];
         assert!(plan("loom", &args, &ctx()).is_err(), "{bad}");
     }
@@ -298,6 +293,15 @@ fn profile_bench_keeps_its_defaults_and_its_glob() {
     assert_eq!(
         s[1],
         "samply record target/profiling/deps/engine_render-* --bench --profile-time 10"
+    );
+}
+
+#[test]
+fn book_builds_into_its_own_dir_or_the_one_named() {
+    assert_eq!(dry("book", &[]), ["mdbook build book"]);
+    assert_eq!(
+        dry("book", &["/srv/site/book"]),
+        ["mdbook build book --dest-dir /srv/site/book"]
     );
 }
 
@@ -405,4 +409,17 @@ fn coverage_takes_a_package_list_in_place_of_the_workspace() {
         "{run}"
     );
     assert!(!run.contains("--workspace"));
+}
+
+/// Each no_std crate is built bare and once per listed feature, for the bare-metal target.
+#[test]
+fn check_no_std_builds_each_listed_crate_for_the_bare_metal_target() {
+    let steps = dry("check-no-std", &[]);
+    assert_eq!(
+        steps,
+        [
+            "cargo build --locked -p tutti-ump --no-default-features --target thumbv7em-none-eabihf",
+            "cargo build --locked -p tutti-ump --no-default-features --target thumbv7em-none-eabihf --features serde",
+        ]
+    );
 }

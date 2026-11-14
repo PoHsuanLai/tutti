@@ -264,7 +264,7 @@ fn stamp_then_observe_recovers_spacing() {
     // Two events 0.25 s apart at 48 kHz → the receiver reconstructs ~0.25 s.
     let sr = 48_000.0;
     let stamper = JrStamper::new(SampleRate::of(sr));
-    let quarter_second = (sr * 0.25) as u32; // 12000 samples
+    let quarter_second = 12_000; // 0.25 s of samples at 48 kHz
     let events = [
         at(0, midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
         at(

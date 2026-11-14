@@ -54,7 +54,7 @@ fn ramp(frames: usize, base: f32) -> Vec<f32> {
     (0..frames).map(|i| base + i as f32 * 0.001).collect()
 }
 
-fn note(offset: u32, on: bool) -> UmpAt {
+fn note(offset: usize, on: bool) -> UmpAt {
     let (group, channel) = (MidiGroup::FIRST, MidiChannel::of(0));
     let ump = if on {
         // 7-bit 100, widened (M2-115).
@@ -66,7 +66,7 @@ fn note(offset: u32, on: bool) -> UmpAt {
     } else {
         midi::note_off(tutti_ump::Address::new(group, channel), 60, 0)
     };
-    let offset = Offset::new(offset as usize, Samples(BLOCK)).unwrap();
+    let offset = Offset::of(Samples(offset), Samples(BLOCK));
     (offset, ump)
 }
 

@@ -345,7 +345,7 @@ impl TransportFeed {
             self.source.advance(frames);
             return TransportInfo::default();
         }
-        let Some(at) = Offset::new(0, Samples(frames)) else {
+        let Some(at) = Offset::new(Samples(0), Samples(frames)) else {
             return self.last;
         };
         self.last = self.source.block(features).at(cx, at, frames, tempo);
@@ -732,13 +732,12 @@ pub(super) fn render_with<P: Processor>(
     let mut midi_events = std::mem::take(midi);
     tutti_plugin_types::insertion_sort_by_key(&mut midi_events, |e| e.offset);
     // The block's MIDI as the graph's `(Offset, Ump)`: every offset came from
-    // an `Offset` of this block (the node's intake), so none is clamped here;
-    // the `min` only keeps a stray one inside the block.
-    let last = size.saturating_sub(1);
+    // an `Offset` of this block (the node's intake), so the clamp only keeps
+    // a stray one inside the block.
     let block = Samples(size);
     let timed: ArrayVec<UmpAt, MIDI_STACK_CAPACITY> = midi_events
         .iter()
-        .filter_map(|e| Some((Offset::new((e.offset as usize).min(last), block)?, e.ump)))
+        .map(|e| (Offset::clamped(e.offset, block), e.ump))
         .collect();
     let Some(processor) = processor else {
         unlent.fetch_add(1, Ordering::Relaxed);

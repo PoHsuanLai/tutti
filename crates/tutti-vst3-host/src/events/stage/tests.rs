@@ -17,8 +17,8 @@ fn registered(rpn: Rpn, value: ControlValue) -> Ump {
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 fn midi_only(midi: &[UmpAt]) -> InputEvents<'_> {
@@ -333,7 +333,7 @@ fn a_full_block_from_every_source_stages_without_allocating() {
     let midi: Vec<UmpAt> = (0..MIDI_STACK_CAPACITY)
         .map(|i| {
             (
-                at(2 * i as u32),
+                at(2 * i),
                 midi::note_on(MidiChannel::FIRST, (i % 128) as u8, 0x8000),
             )
         })
@@ -417,7 +417,7 @@ fn events_on_one_frame_keep_their_source_order() {
             } else {
                 (Offset::ZERO, midi::note_on(MidiChannel::FIRST, i, 0x8000))
             };
-            (at(u32::from(i / 12)), e.1)
+            (at(usize::from(i / 12)), e.1)
         })
         .collect();
     // 20 expressions a frame, frames 9 down to 0.
@@ -477,16 +477,11 @@ fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
     let midi: Vec<UmpAt> = (0..ons)
         .map(|i| {
             (
-                at(i as u32),
+                at(i),
                 midi::note_on(MidiChannel::FIRST, (i % 100) as u8, 0x8000),
             )
         })
-        .chain((0..10u8).map(|k| {
-            (
-                at(ons as u32),
-                midi::note_off(MidiChannel::FIRST, 100 + k, 0),
-            )
-        }))
+        .chain((0..10u8).map(|k| (at(ons), midi::note_off(MidiChannel::FIRST, 100 + k, 0))))
         .collect();
     let chords = [chord(0, 1)];
     let src = InputEvents {
@@ -538,7 +533,7 @@ fn note_expressions_past_their_budget_leave_the_harmony_room() {
     let midi: Vec<UmpAt> = (0..MIDI_STACK_CAPACITY)
         .map(|i| {
             (
-                at(i as u32),
+                at(i),
                 midi::note_on(MidiChannel::FIRST, (i % 128) as u8, 0x8000),
             )
         })

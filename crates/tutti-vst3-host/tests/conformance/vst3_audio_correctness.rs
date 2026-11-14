@@ -54,8 +54,8 @@ use tutti_vst3_host::{
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 use crate::active;
@@ -719,10 +719,7 @@ fn note_on_takes_effect_at_its_sample_offset() {
     let mut failures = Vec::new();
 
     for &offset in &[0usize, 1, 63, 128, 511] {
-        let midi = [(
-            at(offset as u32),
-            midi::note_on(MidiChannel::FIRST, 60, 0x8000),
-        )];
+        let midi = [(at(offset), midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
         let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
         let ch0 = &rendered.out[0][0];
 
@@ -1157,7 +1154,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     const NOTE_EXPR_BASE: f32 = 5000.0;
     const TUNING_TYPE_ID: f32 = 2.0;
 
-    let quarter_bend = |frame: u32| {
+    let quarter_bend = |frame: usize| {
         (
             at(frame),
             midi::per_note_pitch_bend(MidiChannel::FIRST, 60, signed_f32_to_bend(0.25).get()),

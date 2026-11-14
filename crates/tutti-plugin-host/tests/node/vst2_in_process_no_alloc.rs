@@ -28,7 +28,7 @@ static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
 /// `event` on frame 0 of a 64-frame block.
 fn at_start(event: Ump) -> Event {
-    Event::midi(Offset::new(0, Samples(64)).expect("inside"), event)
+    Event::midi(Offset::of(Samples(0), Samples(64)), event)
 }
 
 #[test]
@@ -178,8 +178,8 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     let mut events: Vec<Event> = Vec::with_capacity(2 * PARAMS as usize);
     let mut block = |unit: &mut Direct<tutti_plugin_host::PluginNode<Vst2Loaded>>, b: u32| {
         events.clear();
-        for k in 0..2 {
-            let at = Offset::new(32 * k as usize, Samples(64)).expect("inside");
+        for (k, frame) in [(0u32, 0usize), (1, 32)] {
+            let at = Offset::of(Samples(frame), Samples(64));
             for id in 0..PARAMS {
                 let ramp = ParamRamp::foreign(id, value(b, k, id), Samples(0));
                 events.push(Event::ramp(at, ramp));

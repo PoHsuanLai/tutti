@@ -34,8 +34,8 @@ fn spec_note_id(channel: u8, note: u8) -> i32 {
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 /// Encodes one event on a fresh stream (every per-note bend range at the
@@ -165,9 +165,10 @@ fn note_off_lands_in_note_off_variant() {
 /// indexes its own buffers with, out of bounds, where nothing here can catch it.
 #[test]
 fn a_huge_frame_offset_saturates_rather_than_going_negative() {
+    let last = usize::try_from(u32::MAX).unwrap();
     let event = (
         // A block of 2^32 frames, so that its last offset is `u32::MAX`.
-        Offset::new(u32::MAX as usize, Samples(u32::MAX as usize + 1)).unwrap(),
+        Offset::of(Samples(last), Samples(last + 1)),
         midi::note_on(MidiChannel::FIRST, 60, 0x8000),
     );
     let vst3 = encode(&event).expect("NoteOn should convert");

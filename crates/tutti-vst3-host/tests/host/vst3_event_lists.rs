@@ -20,8 +20,8 @@ use vst3::Steinberg::{kResultFalse, kResultOk};
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 fn midi_only(midi: &[UmpAt]) -> InputEvents<'_> {
@@ -338,7 +338,7 @@ fn a_banked_program_change_is_not_staged_and_is_counted() {
     assert_eq!(stager.unsendable_dropped(), 1);
 }
 
-fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
+fn sysex_packets(payload: &[u8], frame: usize) -> Vec<UmpAt> {
     Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
         .expect("a payload of 7-bit bytes")
         .collect::<Vec<Ump>>()

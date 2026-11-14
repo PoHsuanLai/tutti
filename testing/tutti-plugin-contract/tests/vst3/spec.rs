@@ -28,7 +28,7 @@ fn active<F: Format<L = Vst3Loaded>>() -> Active<Vst3Loaded> {
 }
 
 fn at(frame: usize, ump: tutti_ump::Ump) -> UmpAt {
-    (Offset::new(frame, Samples(BLOCK)).unwrap(), ump)
+    (Offset::of(Samples(frame), Samples(BLOCK)), ump)
 }
 
 fn silent_block(a: &mut Active<Vst3Loaded>, midi: &[UmpAt]) {

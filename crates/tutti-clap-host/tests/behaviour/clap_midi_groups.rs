@@ -20,7 +20,7 @@ use tutti_ump::{Bank, ControlValue, Message, RegisteredPerNoteController, System
 const BLOCK: usize = 1_000;
 
 fn at(k: usize) -> Offset {
-    Offset::new(k, Samples(BLOCK)).expect("inside the block")
+    Offset::of(Samples(k), Samples(BLOCK))
 }
 
 fn group(n: u8) -> MidiGroup {

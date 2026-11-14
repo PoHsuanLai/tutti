@@ -102,15 +102,15 @@ fn process_honors_frame_offset_within_block() {
     /// Multiples of the 8-frame resolution `SoundFontUnit` resolves.
     const OFFSETS: [usize; 3] = [16, 32, 48];
 
-    let note = |offset: u32| {
+    let note = |offset: usize| {
         let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
         (
-            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            Offset::of(Samples(offset), Samples(BLOCK)),
             midi::note_on(MidiChannel::FIRST, 60, velocity),
         )
     };
 
-    let render_at = |offset: u32| {
+    let render_at = |offset: usize| {
         let mut unit =
             Hand::new(SoundFontUnit::new(Arc::clone(&sf), settings).expect("create SoundFontUnit"));
         render_process_blocks(&mut unit, BLOCK, BLOCKS, &[note(offset)])
@@ -122,7 +122,7 @@ fn process_honors_frame_offset_within_block() {
         "the offset-0 note must sound at all, else every comparison below is vacuous"
     );
 
-    let shifted: Vec<Vec<(f32, f32)>> = OFFSETS.iter().map(|&o| render_at(o as u32)).collect();
+    let shifted: Vec<Vec<(f32, f32)>> = OFFSETS.iter().map(|&o| render_at(o)).collect();
 
     for (i, &offset) in OFFSETS.iter().enumerate() {
         // The whole property: offset N is offset 0, N frames later, exactly.
@@ -187,12 +187,12 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     // an RMS a threshold can see. Six blocks (384 frames) is not enough, and a
     // precondition that fails is what caught it.
     const BLOCKS: usize = 48;
-    const SECOND_OFFSET: u32 = 32;
+    const SECOND_OFFSET: usize = 32;
 
-    let note = |key: u8, offset: u32| {
+    let note = |key: u8, offset: usize| {
         let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
         (
-            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            Offset::of(Samples(offset), Samples(BLOCK)),
             midi::note_on(MidiChannel::FIRST, key, velocity),
         )
     };
@@ -211,7 +211,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     // The independent reference: key 67 at offset 0, delayed by SECOND_OFFSET
     // frames *here*, not by the unit. Padding the head with silence is what the
     // unit is supposed to produce before the event fires.
-    let shift = SECOND_OFFSET as usize;
+    let shift = SECOND_OFFSET;
     let second_at_zero = render(&[note(67, 0)]);
     let second_shifted: Vec<(f32, f32)> = core::iter::repeat_n((0.0, 0.0), shift)
         .chain(second_at_zero.iter().copied())
@@ -250,8 +250,8 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     // And the second note genuinely arrives late: before its offset, the
     // combined render must equal the first note alone.
     assert_eq!(
-        both[..SECOND_OFFSET as usize],
-        first_alone[..SECOND_OFFSET as usize],
+        both[..SECOND_OFFSET],
+        first_alone[..SECOND_OFFSET],
         "before frame {SECOND_OFFSET} only the offset-0 note may be audible"
     );
 }
@@ -276,12 +276,12 @@ fn event_at_last_frame_of_block_still_applies() {
     let settings = Settings::new();
     const BLOCK: usize = 64;
     const BLOCKS: usize = 6;
-    const LAST: u32 = BLOCK as u32 - 1;
+    const LAST: usize = BLOCK - 1;
 
-    let note = |offset: u32| {
+    let note = |offset: usize| {
         let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
         (
-            Offset::new(offset as usize, Samples(BLOCK)).unwrap(),
+            Offset::of(Samples(offset), Samples(BLOCK)),
             midi::note_on(MidiChannel::FIRST, 60, velocity),
         )
     };
@@ -300,7 +300,7 @@ fn event_at_last_frame_of_block_still_applies() {
     );
     // Applied at frame 63 and not earlier.
     assert_eq!(
-        rms(&late[..LAST as usize]),
+        rms(&late[..LAST]),
         0.0,
         "an event at frame {LAST} may not sound before frame {LAST}"
     );

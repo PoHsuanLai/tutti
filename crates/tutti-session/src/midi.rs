@@ -358,7 +358,8 @@ impl UmpOut {
     /// latency, less the device's, plus the offset), and the sink schedules it;
     /// without, every event goes at once. An event whose time is more than
     /// [`MAX_OUTPUT_AHEAD`](tutti_midi_runtime::MAX_OUTPUT_AHEAD) ahead is not
-    /// sent, and the call returns how many were refused. The JR stamps keep the
+    /// sent, and the call returns how many were refused; a batch whose span no
+    /// block on this target can hold is refused whole. The JR stamps keep the
     /// events' spacing whether or not they are scheduled.
     pub fn send_frames(&mut self, events: &[(Frame, Ump)], timing: Option<&OutputTiming>) -> usize {
         let (Some(first), Some(last)) = (
@@ -367,7 +368,10 @@ impl UmpOut {
         ) else {
             return 0;
         };
-        let span = Samples((last.get() - first.get()) as usize + 1);
+        // `None` only for a span no block on this target can hold.
+        let Some(span) = last.since(first).map(|d| d + Samples(1)) else {
+            return events.len();
+        };
         let plan = timing.map(|t| OutputPlan::new(t.terms));
         let mut batch = core::mem::take(&mut self.rebased);
         let mut sends = core::mem::take(&mut self.sends);
@@ -386,7 +390,7 @@ impl UmpOut {
                 _ => SendAt::Now,
             };
             // Always `Some`: every rebased frame is below the span.
-            if let Some(at) = Offset::new((frame.get() - first.get()) as usize, span) {
+            if let Some(at) = frame.since(first).and_then(|d| Offset::new(d, span)) {
                 batch.push((at, ump));
                 sends.push((at, send));
             }
@@ -2242,9 +2246,9 @@ mod tests {
         (out, count)
     }
 
-    fn note(offset: u32) -> UmpAt {
+    fn note(offset: usize) -> UmpAt {
         (
-            Offset::new(offset as usize, Samples(512)).unwrap(),
+            Offset::of(Samples(offset), Samples(512)),
             midi::note_on(MidiChannel::FIRST, 60, 0x8000),
         )
     }
@@ -2360,7 +2364,7 @@ mod tests {
         let offsets: Vec<_> = sent.iter().map(|e| e.0).collect();
         assert_eq!(
             offsets,
-            [250, 0, 999].map(|o| Offset::new(o, span).unwrap()),
+            [250, 0, 999].map(|o| Offset::of(Samples(o), span)),
             "each event's spacing from the earliest"
         );
         out.set_stamping(true);
@@ -2393,7 +2397,7 @@ mod tests {
         let span = Samples(11);
         assert_eq!(
             sent.iter().map(|e| e.0).collect::<Vec<_>>(),
-            [0, 10].map(|o| Offset::new(o, span).unwrap())
+            [0, 10].map(|o| Offset::of(Samples(o), span))
         );
     }
 

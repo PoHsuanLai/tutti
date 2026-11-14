@@ -118,7 +118,7 @@ mod tests {
     fn render(mut node: Box<dyn Node>, rate: SampleRate, frames: usize) -> Vec<f32> {
         node.prepare(&Prepare::new(rate, MaxBlock::of(Samples(64))));
         let note = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
-        let at = Offset::new(0, Samples(64)).expect("inside");
+        let at = Offset::of(Samples(0), Samples(64));
         let first = [Event::midi(at, note)];
         let mut out = Vec::with_capacity(frames);
         let mut frame = 0u64;

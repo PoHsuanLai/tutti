@@ -947,7 +947,7 @@ fn take_sysex_input(controls: &ProbeControls) -> (u32, u32, Vec<u8>) {
 
 /// The offset `k` frames into `drive_midi_block`'s 64-frame block.
 fn at(k: usize) -> Offset {
-    Offset::new(k, Samples(64)).expect("inside the block")
+    Offset::of(Samples(k), Samples(64))
 }
 
 /// The SysEx7 packets of `payload`, each `k` frames into the block.

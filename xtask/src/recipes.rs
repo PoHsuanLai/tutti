@@ -118,20 +118,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "run the suites a workspace run leaves dark (see check-features)",
     ),
-    (
-        "miri",
-        "",
-        "miri over tutti-rt and arc-lend (needs nightly + miri)",
-    ),
+    ("miri", "", "miri over tutti-rt (needs nightly + miri)"),
     (
         "loom",
         "[<model>...]",
         "the loom models, as CI runs them (or only those named, e.g. handoff_loom)",
-    ),
-    (
-        "loom-full",
-        "",
-        "the ArcLend loom models at the deeper preemption bound",
     ),
     (
         "check-jack",
@@ -162,11 +153,6 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "bench-smoke",
         "",
         "run every bench exactly once, no measurement",
-    ),
-    (
-        "bench-compare",
-        "[harness args]",
-        "arc-lend against arc-swap, basedrop, left-right and locks",
     ),
     (
         "profile-bench",
@@ -275,6 +261,12 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "rustdoc over every member's features together, and per feature for tutti-session and tutti",
     ),
+    (
+        "gates",
+        "",
+        "rustfmt, xtask's own tests and every source gate: no workspace build (the pre-push hook)",
+    ),
+    ("fmt", "", "cargo fmt --check"),
     ("lint", "", "cargo fmt --check and workspace clippy"),
     (
         "check-windows",
@@ -288,11 +280,21 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     ("check-loom", "", "clippy under --cfg loom"),
     (
+        "check-no-std",
+        "",
+        "build each no_std crate for a bare-metal target (needs `rustup target add thumbv7em-none-eabihf`)",
+    ),
+    (
         "verify-audio",
         "[OUT=/tmp/tutti-verify]",
         "render the audio cases and verify them with the Python checks (needs uv)",
     ),
     ("deny", "", "RustSec advisories (needs cargo-deny)"),
+    (
+        "book",
+        "[OUT]",
+        "build the book with mdbook into book/build, or into OUT (relative to book/)",
+    ),
     (
         "package",
         "",
@@ -363,6 +365,21 @@ impl Planner<'_> {
         }
     }
 
+    /// Each crate of `NO_STD_CRATES` built for `NO_STD_TARGET` without its default
+    /// features, and once more with each feature it lists: a `std` use in the crate
+    /// has no such target to link against, so the build fails.
+    fn check_no_std(&mut self) {
+        for (krate, features) in NO_STD_CRATES {
+            let build = format!(
+                "cargo build --locked -p {krate} --no-default-features --target {NO_STD_TARGET}"
+            );
+            self.run(Cmd::sh(&build));
+            for f in *features {
+                self.run(Cmd::sh(&format!("{build} --features {f}")));
+            }
+        }
+    }
+
     /// A dependency: planned once per invocation, with no arguments.
     fn dep(&mut self, name: &str) -> Result<(), String> {
         if self.done.insert(name.to_owned()) {
@@ -400,13 +417,13 @@ impl Planner<'_> {
             "test"
                 | "test-doc"
                 | "bench"
-                | "bench-compare"
                 | "check-paths"
                 | "loom"
                 | "bench-save"
                 | "bench-cmp"
                 | "profile-bench"
                 | "verify-audio"
+                | "book"
                 | "release"
                 | "conformance-inventory"
                 | "conformance"
@@ -429,7 +446,7 @@ impl Planner<'_> {
                 self.run(Cmd::sh("cargo test --locked --doc -p tutti-session --all-features").args(args));
             }
             "test-release" => self.lines(&[
-                "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph",
+                "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p tutti-graph",
             ]),
             "test-all" => {
                 for d in ["test", "test-features", "test-doc", "test-release"] {
@@ -455,7 +472,6 @@ impl Planner<'_> {
                     .collect();
                 self.lines(&chosen);
             }
-            "loom-full" => self.lines(LOOM_FULL),
             "check-jack" => self.lines(&[
                 "cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings",
             ]),
@@ -474,9 +490,7 @@ impl Planner<'_> {
             }
             "bench-smoke" => {
                 self.bench(&["--".into(), "--test".into()]);
-                self.bench_compare(&["--test".into()]);
             }
-            "bench-compare" => self.bench_compare(args),
             "profile-bench" => {
                 let [bench, pkg, secs] =
                     Self::params(name, args, ["engine_render", "tutti-nodes", "10"])?;
@@ -548,10 +562,11 @@ impl Planner<'_> {
             "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
             "check-paths" => self.out.push(Step::Gate(Gate::CanonicalPaths(args.to_vec()))),
-            "lint" => self.lines(&[
-                "cargo fmt --all --check",
-                "cargo clippy --locked --workspace --all-targets -- -D warnings",
-            ]),
+            "fmt" => self.lines(&["cargo fmt --all --check"]),
+            "lint" => {
+                self.dep("fmt")?;
+                self.lines(&["cargo clippy --locked --workspace --all-targets -- -D warnings"]);
+            }
             "check-windows" => self.check_windows(),
             "doc" => {
                 self.lines(&[
@@ -566,9 +581,18 @@ impl Planner<'_> {
                     r#"RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps"#,
                 ]);
             }
+            "check-no-std" => self.check_no_std(),
             "check-loom" => self.lines(&[
-                r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
+                r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
             ]),
+            "book" => {
+                let [out] = Self::params(name, args, [""])?;
+                if out.is_empty() {
+                    self.lines(&["mdbook build book"]);
+                } else {
+                    self.lines(&[format!("mdbook build book --dest-dir {out}")]);
+                }
+            }
             "verify-audio" => {
                 let [out] = Self::params(name, args, ["/tmp/tutti-verify"])?;
                 self.lines(&[
@@ -597,15 +621,23 @@ impl Planner<'_> {
                 self.out.push(Step::RequireCargoDeny);
                 self.lines(&["cargo deny --locked check advisories"]);
             }
+            "gates" => {
+                self.dep("fmt")?;
+                self.lines(&["cargo test --locked -p xtask"]);
+                for d in [
+                    "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
+                    "check-layout", "check-range-types", "check-hosting", "check-lints",
+                    "check-value-traits", "check-submodule-pins", "check-doc-refs",
+                    "check-pointers", "check-platform-seam",
+                ] {
+                    self.dep(d)?;
+                }
+            }
             "ci" => {
                 for d in [
-                    "lint", "deny", "check-paths", "check-session", "check-guards",
-                    "check-ffi", "check-errors", "check-layout", "check-range-types", "check-hosting",
-                    "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers",
-                    "check-platform-seam", "check-conformance",
+                    "gates", "lint", "deny", "check-conformance",
                     "check-features", "package",
-                    "check-loom", "test", "test-features", "test-doc",
+                    "check-no-std", "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",
                 ] {
                     self.dep(d)?;
@@ -621,10 +653,6 @@ impl Planner<'_> {
         for l in BENCH {
             self.run(Cmd::sh(l).args(args));
         }
-    }
-
-    fn bench_compare(&mut self, args: &[String]) {
-        self.run(Cmd::sh("cargo bench --locked -p arc-lend-compare --bench compare --").args(args));
     }
 
     /// The justfile wrote the stub header to `${TMPDIR:-/tmp}/tutti-winstub`;
@@ -648,7 +676,7 @@ impl Planner<'_> {
             ));
         };
         win(
-            "--workspace --all-targets --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract",
+            "--workspace --all-targets --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude tutti-vst3-host --exclude tutti-plugin-server --exclude tutti-plugin-probe --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract --exclude tutti-verify",
         );
         for a in [
             "-p tutti-shared-plugin --all-targets",
@@ -663,6 +691,13 @@ impl Planner<'_> {
         }
     }
 }
+
+/// A target with no `std`: a crate that builds for it uses only `core` and `alloc`.
+const NO_STD_TARGET: &str = "thumbv7em-none-eabihf";
+
+/// The `#![no_std]` crates, each with the features (besides `std`) built on top of
+/// the bare build. A crate that becomes `no_std` is one line here.
+const NO_STD_CRATES: &[(&str, &[&str])] = &[("tutti-ump", &["serde"])];
 
 const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings"#,
@@ -737,13 +772,9 @@ const TEST_FEATURES: &[&str] = &[
 const MIRI: &[&str] = &[
     r#"cargo +nightly miri test --locked -p tutti-rt --lib"#,
     r#"MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p tutti-rt --lib edits"#,
-    r#"cargo +nightly miri test --locked -p arc-lend"#,
-    r#"MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p arc-lend --lib"#,
 ];
 
 const LOOM: &[&str] = &[
-    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers"#,
-    r#"LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact"#,
     r#"LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test pos_ring_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test packed_atomic_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test seq_cell_loom"#,
@@ -762,11 +793,6 @@ const LOOM: &[&str] = &[
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test wake_flag_loom"#,
 ];
 
-const LOOM_FULL: &[&str] = &[
-    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers"#,
-    r#"LOOM_MAX_PREEMPTIONS=5 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact"#,
-];
-
 /// Adding a bench means adding a line here: there is no sweep that would pick
 /// one up silently (the justfile's contract, which CI mirrors).
 const BENCH: &[&str] = &[
@@ -779,7 +805,6 @@ const BENCH: &[&str] = &[
     r#"cargo bench --locked -p tutti-midi-runtime --bench clip_node"#,
     r#"cargo bench --locked -p tutti-sampler   --bench voice_pool"#,
     r#"cargo bench --locked -p tutti-plugin-host --bench vst2_in_process"#,
-    r#"cargo bench --locked -p arc-lend --bench lend"#,
 ];
 
 #[cfg(test)]

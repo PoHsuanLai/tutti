@@ -166,7 +166,7 @@ impl Node for Hold {
                     NoteVelocity::new(0xC000),
                 ),
             ));
-            let at = Offset::new(0, Samples(io.frames())).expect("a non-empty block");
+            let at = Offset::of(Samples(0), Samples(io.frames()));
             if io.event_out(0).push(Event::midi(at, note)).is_ok() {
                 self.sent += 1;
             }

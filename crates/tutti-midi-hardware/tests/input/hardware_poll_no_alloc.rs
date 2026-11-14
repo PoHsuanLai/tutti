@@ -93,6 +93,7 @@ impl Rig {
         editor.insert(INGEST, "in", MidiIngestNode::new(inlets.slots()));
         for change in inlets.take_changes() {
             if let InletChange::Attach { slot, node } = change {
+                let slot = slot.index();
                 let key = NodeKey(100 + slot as u64);
                 editor.insert(key, "inlet", node);
                 editor.spec_mut().connect_events(

@@ -55,7 +55,7 @@ fn freeverb_retargets_and_renders_without_allocating() {
 
     let rate = SampleRate::SR_48K;
     let design = FreeverbFamily;
-    let mut realization = design.realized();
+    let mut realization = design.realized(rate);
     realization.prepare(
         &design.reach(&Reach::at(rate)),
         &Setup {
@@ -114,7 +114,7 @@ fn the_fdn_retargets_and_renders_without_allocating() {
 
     let rate = SampleRate::SR_48K;
     let design = FdnFamily::new(8, Seconds(8.0), true).unwrap();
-    let mut realization = design.realized();
+    let mut realization = design.realized(rate);
     realization.prepare(
         &design.reach(&Reach::at(rate)),
         &Setup {

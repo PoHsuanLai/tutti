@@ -213,7 +213,7 @@ pub enum ClapEvent {
 /// direction reads each channel's range from the stream
 /// ([`PerNoteState`], which scales a bend by it).
 fn emitted_bend_range_semitones() -> f64 {
-    f64::from(PitchBendSensitivity::MPE_DEFAULT.semitones().get())
+    f64::from(PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones().get())
 }
 
 /// The per-note controllers with a CLAP note expression, and the expression
@@ -931,7 +931,7 @@ impl InputEventList {
     /// sensitivity at the MPE default, ±48 (RP-053), until the stream sets
     /// another.
     fn per_note_state(ports: usize) -> PerNoteState {
-        PerNoteState::new(ports, PitchBendSensitivity::MPE_DEFAULT.semitones())
+        PerNoteState::new(ports, PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones())
     }
 
     /// Sets the note dialect of the plugin's input note port: `true` sends

@@ -20,7 +20,9 @@ use tutti_graph::{
     TransportPosition,
 };
 use tutti_graph::{IntoNode as _, NodeKey};
-use tutti_midi_protocol::{channel_voice, widen_velocity};
+use tutti_midi_protocol::{
+    MpeZoneConfig, MpeZones, PitchBendSensitivity, channel_voice, widen_velocity,
+};
 use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, DeviceInlets, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
     MidiIngestNode, MidiInputPorts, SlotCountMismatch,
@@ -714,6 +716,124 @@ fn a_requested_mpe_mode_is_adopted_once() {
         .collect();
     let folded: Vec<Option<u8>> = music[1..].iter().map(|s| note_of(s.2)).collect();
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
+}
+
+/// **A device's MPE Profile zones switch that device's rules alone** (M2-120
+/// section 3.3, Table 15). Two devices each send Reset All Controllers on
+/// member channel 2 in three blocks. The Profile is enabled on the first
+/// device before block 1 and disabled before block 2: the Profile makes
+/// Reset All Controllers on a Member Channel prohibited, so the first device's
+/// is ignored in block 1 alone, and the second device's, with no zones, is
+/// heard in every block. Enabling sends the zone's channels All Sound Off and
+/// Reset All Controllers once, ahead of the block's events.
+#[test]
+fn a_devices_profile_zones_switch_its_rules_alone() {
+    let reset = |frame: usize| cc_at(frame, 2, CCNumber::RESET_ALL, 0);
+    let device = || Script::new(vec![vec![reset(0)], vec![reset(1)], vec![reset(2)]]);
+    let inlets = DeviceInlets::new(
+        NonZeroUsize::new(2).unwrap(),
+        EventCapacity::of(64),
+        Duration::ZERO,
+    );
+    let (first, _second) = (inlets.open().unwrap(), inlets.open().unwrap());
+    let Ingest {
+        node,
+        inlets: nodes,
+    } = Ingest::devices(vec![device(), device()]);
+    let node = Ingest {
+        node: node.following(&inlets).expect("two slots each"),
+        inlets: nodes,
+    };
+    let (_ed, mut exec, controls, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
+    let zone = MpeZones::single(
+        MpeZoneConfig::profile(
+            MidiChannel::of(0),
+            4,
+            PitchBendSensitivity::MPE_PROFILE_DEFAULT,
+        )
+        .unwrap(),
+    );
+    let group = MidiGroup::FIRST;
+    block(&mut exec, 512);
+    controls.set_mpe_profile(first.slot(), group, Some(zone));
+    block(&mut exec, 512);
+    controls.set_mpe_profile(first.slot(), group, None);
+    block(&mut exec, 512);
+    let seen = seen.lock().unwrap();
+    let is_reset = |ev: &Ump| {
+        matches!(
+            (*ev).decode(),
+            Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. }))
+                if controller == CCNumber::RESET_ALL
+        )
+    };
+    // Block 1's frames are 512 to 1023: the Reset All Controllers of the
+    // zone's four channels at its first frame, and the second device's own at
+    // frame 513 alone.
+    let block_one: Vec<(usize, u64)> = seen
+        .iter()
+        .filter(|s| (512..1024).contains(&s.1) && is_reset(&s.2))
+        .map(|s| (s.0, s.1))
+        .collect();
+    assert_eq!(
+        block_one,
+        [(0, 512), (1, 512), (2, 512), (2, 513), (3, 512)],
+        "{seen:?}"
+    );
+    let heard = |first: u64| {
+        seen.iter()
+            .filter(|s| (first..first + 512).contains(&s.1) && s.0 == 2 && is_reset(&s.2))
+            .count()
+    };
+    assert_eq!(heard(0), 2, "both devices before the Profile");
+    // Both devices again, and the Reset All Controllers that leaving the
+    // Profile sends to the channel.
+    assert_eq!(heard(1024), 3);
+}
+
+/// Clearing a slot's zones sets each of its Groups to none: the device's
+/// Reset All Controllers on a Member Channel, ignored under the Profile, is
+/// heard again.
+#[test]
+fn clearing_a_slots_profiles_returns_it_to_the_rules_it_had() {
+    let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(64), Duration::ZERO);
+    let device = inlets.open().unwrap();
+    let reset = cc_at(1, 2, CCNumber::RESET_ALL, 0);
+    let (_ed, mut exec, controls, seen) = ingest(
+        following(Script::new(vec![vec![], vec![reset], vec![reset]]), &inlets),
+        MIDI_INPUT_PORTS as u16,
+        512,
+    );
+    let zone = MpeZones::single(
+        MpeZoneConfig::profile(
+            MidiChannel::of(0),
+            4,
+            PitchBendSensitivity::MPE_PROFILE_DEFAULT,
+        )
+        .unwrap(),
+    );
+    // The first block takes the device's slot over; the zones come after it.
+    block(&mut exec, 512);
+    controls.set_mpe_profile(device.slot(), MidiGroup::FIRST, Some(zone));
+    block(&mut exec, 512);
+    controls.clear_mpe_profiles(device.slot());
+    block(&mut exec, 512);
+    let heard_at = |frame: u64| {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|s| {
+                s.1 == frame
+                    && matches!(
+                        s.2.decode(),
+                        Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. }))
+                            if controller == CCNumber::RESET_ALL
+                    )
+            })
+            .count()
+    };
+    assert_eq!(heard_at(513), 0, "ignored while the Profile is enabled");
+    assert_eq!(heard_at(1025), 1, "heard once the zones are cleared");
 }
 
 /// **A host-set mode's reset goes ahead of the block's own events.** The

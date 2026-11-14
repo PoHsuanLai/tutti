@@ -552,7 +552,7 @@ fn a_held_makeup_applies_exactly() {
 /// length renders (a default compressor, with nothing keyed, passes the signal).
 #[test]
 fn a_block_of_the_prepared_length_renders() {
-    let mut k = design().realized();
+    let mut k = design().realized(RATE);
     k.prepare(
         &(),
         &Setup {

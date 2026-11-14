@@ -101,11 +101,13 @@ impl CrossoverNode {
     ///
     /// # Errors
     ///
-    /// [`CrossoverError`] if the frequencies are invalid at 48 kHz (see
-    /// [`CrossoverControls::new`]), or `layout` has no channels, more than a bus
-    /// holds (16), or `bands * channels` exceeds the graph's 64 ports.
+    /// [`CrossoverError`] if the frequencies are not finite, above 0 and strictly
+    /// increasing (see [`CrossoverControls::ordered`]), or `layout` has no channels, more
+    /// than a bus holds (16), or `bands * channels` exceeds the graph's 64 ports. A
+    /// frequency at or above the prepared rate's Nyquist is not refused: the design holds
+    /// it under that rate.
     pub fn new(layout: ChannelLayout, frequencies: &[Hz]) -> Result<Self, CrossoverError> {
-        let controls = CrossoverControls::new(frequencies, SampleRate::DEFAULT)?;
+        let controls = CrossoverControls::ordered(frequencies)?;
         let channels = usize::from(layout.count());
         let input = BusTopology::assumed(layout).ok_or(CrossoverError::Channels { channels })?;
         let design = CrossoverFamily::new(input, frequencies.len() + 1)?;

@@ -7,7 +7,8 @@ use std::num::{NonZeroU16, NonZeroUsize};
 use assert_no_alloc::assert_no_alloc;
 use tutti_midi_protocol::{
     Addressee, ChannelMask, GeneralMidi, Heard, KeyChange, KeyChanges, KeyTable, MpeZoneConfig,
-    MpeZones, OctaveOffsets, Timing, TuningFrequency, TuningMessage, TuningName, Universal,
+    MpeZones, OctaveOffsets, PitchBendSensitivity, Timing, TuningFrequency, TuningMessage,
+    TuningName, Universal,
 };
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{
@@ -45,7 +46,14 @@ fn rules(mode: Mode) -> Rules {
 fn step_is_allocation_free_in_every_mode() {
     for mode in [Mode::Poly, Mode::Mono, Mode::Legato] {
         let mut core = Voicing::new(rules(mode));
-        core.set_zones(MpeZones::new(MpeZoneConfig::lower(3), None));
+        core.set_zones(MpeZones::new(
+            MpeZoneConfig::lower(
+                3,
+                PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+            ),
+            None,
+        ));
         let mut voices: Vec<(VoiceId, Amplitude)> = Vec::with_capacity(4096);
         let ch = |n| MidiChannel::of(n);
         let cc = |n: u8, v: u32| Voice2::ControlChange {

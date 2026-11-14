@@ -306,7 +306,7 @@ impl Family for LimiterFamily {
         *out = LimiterMember::of(c, self.lookahead, rate);
     }
 
-    fn recurrence(&self) -> LimiterRecurrence {
+    fn recurrence(&self, _: SampleRate) -> LimiterRecurrence {
         LimiterRecurrence {
             lookahead: self.lookahead,
             channels: usize::from(self.input.layout().count()),

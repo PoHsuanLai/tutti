@@ -63,6 +63,10 @@ pub struct StandardProfile {
 }
 
 impl StandardProfile {
+    /// The MPE Profile (M2-120 section 3.2, Table 4): bank `0x31`, number
+    /// `0x00`, version `0x01`, level `0x01`.
+    pub const MPE: Self = Self::new(U7::of(0x31), U7::of(0x00), U7::of(0x01), U7::of(0x01));
+
     /// A Standard Defined Profile. Every combination of the four bytes is one;
     /// what each means is the Profile's specification's (byte 5, the level, is
     /// M2-102 §3.2's).
@@ -144,6 +148,9 @@ pub enum ProfileId {
 }
 
 impl ProfileId {
+    /// The MPE Profile ([`StandardProfile::MPE`]).
+    pub const MPE: Self = Self::Standard(StandardProfile::MPE);
+
     /// The five wire bytes.
     #[must_use]
     pub fn to_bytes(self) -> [u8; 5] {

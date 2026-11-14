@@ -24,8 +24,15 @@ use tutti_ump::{BendValue, ControlValue};
 /// and every other channel its member, with the default bend ranges.
 fn lower_zone() -> MpeMode {
     MpeMode::Zones(
-        MpeZones::new(MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS), None)
-            .expect("a lower zone alone is a layout"),
+        MpeZones::new(
+            MpeZoneConfig::lower(
+                MpeZoneConfig::MAX_MEMBERS,
+                PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+            ),
+            None,
+        )
+        .expect("a lower zone alone is a layout"),
     )
 }
 
@@ -1103,9 +1110,12 @@ fn test_mpe_per_voice_pitch_bend() {
 #[test]
 fn a_zones_member_range_sets_the_per_note_bend_range() {
     let swept = |member_semitones: u8| {
-        let zone = MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS)
-            .unwrap()
-            .with_member_pitch_bend_range(PitchBendSensitivity::of(member_semitones));
+        let zone = MpeZoneConfig::lower(
+            MpeZoneConfig::MAX_MEMBERS,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::of(member_semitones),
+        )
+        .unwrap();
         let mut synth = synth(SynthConfig {
             oscillator: OscillatorType::Sine,
             mpe: MpeMode::Zones(MpeZones::new(Some(zone), None).unwrap()),

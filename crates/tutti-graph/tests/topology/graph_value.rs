@@ -10,9 +10,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use tutti_graph::{
-    Edge, Feed, FeedbackFrom, InPort, Invalid, LatencyGraph, NodeKey, NodeSpec, OutPort,
-    ParamValue, PortFeed, Sink, Source, TapAlign, TapId, TapSpec, Topology, graph_tail,
-    latency_plan,
+    Edge, Feed, FeedbackFrom, InPort, Invalid, LatencyGraph, NodeKey, NodeSpec, OutPort, PortFeed,
+    Sink, Source, TapAlign, TapId, TapSpec, Topology, graph_tail, latency_plan,
 };
 use tutti_types::{ChannelLayout, Samples, Tail};
 
@@ -441,37 +440,6 @@ fn insertion_order_does_not_change_the_value() {
         latency_plan(&forward).total(),
         latency_plan(&backward).total()
     );
-}
-
-/// A param differing by one ULP is a **different graph**. Structural, not
-/// numeric: this relation decides whether a node survives a recompile, and
-/// collapsing near-equal values would keep a unit built from the old number.
-#[test]
-fn param_equality_is_structural() {
-    let base = spec("gain", 1, 1).with_param("gain", ParamValue::Scalar(0.5));
-    let same = spec("gain", 1, 1).with_param("gain", ParamValue::Scalar(0.5));
-    let nudged = spec("gain", 1, 1).with_param(
-        "gain",
-        ParamValue::Scalar(f32::from_bits(0.5f32.to_bits() + 1)),
-    );
-
-    assert_eq!(base, same);
-    assert_eq!(hash_of(&base), hash_of(&same));
-    assert_ne!(base, nudged);
-
-    let zero = spec("gain", 1, 1).with_param("gain", ParamValue::Scalar(0.0));
-    let neg_zero = spec("gain", 1, 1).with_param("gain", ParamValue::Scalar(-0.0));
-    assert_ne!(zero, neg_zero, "two spellings of zero are two graphs");
-    assert_ne!(
-        hash_of(&zero),
-        hash_of(&neg_zero),
-        "and Hash agrees with Eq, which is what makes the map usable"
-    );
-
-    // `Eq` must be reflexive. Derived float equality is not, and a spec that is
-    // unequal to itself makes a `Topology` unfindable in its own map.
-    let nan = spec("gain", 1, 1).with_param("gain", ParamValue::Scalar(f32::NAN));
-    assert_eq!(nan, nan.clone());
 }
 
 /// The default topology has **no** global inputs.

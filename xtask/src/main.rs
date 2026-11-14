@@ -159,6 +159,48 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
                 eprintln!("xtask: {e}");
                 1
             }),
+        Step::Conformance { results, out } => gates::conformance_site(&ctx.root, results, out)
+            .map_err(|e| {
+                eprintln!("xtask: {e}");
+                1
+            }),
+        Step::InLlvmCovEnv(c) => {
+            let shown = process::Command::new("cargo")
+                .args(["llvm-cov", "show-env"])
+                .current_dir(&ctx.root)
+                .output()
+                .map_err(|e| {
+                    eprintln!("xtask: cannot run `cargo llvm-cov show-env`: {e}");
+                    1
+                })?;
+            if !shown.status.success() {
+                eprintln!("xtask: `cargo llvm-cov show-env` failed");
+                return Err(1);
+            }
+            let mut c = c.clone();
+            for line in String::from_utf8_lossy(&shown.stdout).lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    c = c.env(k.trim(), v.trim().trim_matches(['"', '\'']));
+                }
+            }
+            run(&c, ctx)
+        }
+        Step::RequireLlvmCov => {
+            let ok = process::Command::new("cargo")
+                .args(["llvm-cov", "--version"])
+                .stdout(process::Stdio::null())
+                .stderr(process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if ok {
+                Ok(())
+            } else {
+                eprintln!(
+                    "cargo-llvm-cov is not installed; run: cargo install cargo-llvm-cov --locked"
+                );
+                Err(1)
+            }
+        }
         Step::RequireCargoDeny => {
             let ok = process::Command::new("cargo")
                 .args(["deny", "--version"])

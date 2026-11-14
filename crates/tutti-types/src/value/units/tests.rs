@@ -93,6 +93,7 @@ fn every_new_clamped_passes_nan_and_saturates_infinity() {
     check!(Confidence, 0.0, 1.0);
     check!(Correlation, -1.0, 1.0);
     check!(Pan, -1.0, 1.0);
+    check!(StereoBalance, -1.0, 1.0);
     check!(Velocity, 0.0, 1.0);
     check!(Elevation, -90.0, 90.0);
     check!(PlaybackRate, 0.25, 4.0);

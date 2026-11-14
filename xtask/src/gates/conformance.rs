@@ -503,6 +503,19 @@ pub(super) fn check(
             Err(why) => r.say(format!("{label} inventory not checked: {why}")),
         }
     }
+    // A hand-written SF2 row names its section as `SF2 §<n>[.<n>]*`, checked with or
+    // without the text; that the section exists is checked below, against the text.
+    for (path, row) in &rows {
+        if row.id.starts_with("sf2.")
+            && !sf2_spec::owns(&row.id)
+            && sf2_spec::section_number(&row.section).is_none()
+        {
+            r.fail(format!(
+                "{path}: the SF2 row `{}` has section `{}`, which is not `SF2 §<n>`",
+                row.id, row.section
+            ));
+        }
+    }
     match sf2().and_then(|text| sf2_spec::extract(&text)) {
         Ok(spec) => {
             let want: BTreeSet<[String; 4]> = spec
@@ -546,9 +559,9 @@ pub(super) fn check(
                 if row.id.starts_with("sf2.") && !sf2_spec::owns(&row.id) {
                     let known = sf2_spec::section_number(&row.section)
                         .is_some_and(|n| spec.headings.contains(n));
-                    if !known {
+                    if sf2_spec::section_number(&row.section).is_some() && !known {
                         r.fail(format!(
-                            "{path}: the SF2 row `{}` has section `{}`, which is not `SF2 §<n>` of a section the text has",
+                            "{path}: the SF2 row `{}` has section `{}`, a section the text does not have",
                             row.id, row.section
                         ));
                     }
@@ -1342,6 +1355,28 @@ mod tests {
         }
         for section in ["SF2 §9.9", "§1.1", "1.1", ""] {
             let r = sf2_run(&hand(section), Ok(sf2_spec::SAMPLE), Require::default());
+            assert!(
+                has(&r, "the SF2 row `sf2.riff.form` has section"),
+                "{section}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hand_written_sf2_section_is_well_formed_even_without_the_text() {
+        let hand = |section: &str| {
+            format!(
+                "{}\nsf2.riff.form | reader | | | {section} | words | | |",
+                sf2_rows()
+            )
+        };
+        let absent = || Err("TUTTI_SF2_SPEC is not set".to_owned());
+        for section in ["SF2 §1.1", "SF2 §9.9", "SF2 §8.1.2"] {
+            let r = sf2_run(&hand(section), absent(), Require::default());
+            assert!(r.passed(), "{section}: {:?}", r.findings);
+        }
+        for section in ["SF2 §", "SF2 §1.", "SF2 §x.1", "SF2 §1..2", "§1.1", ""] {
+            let r = sf2_run(&hand(section), absent(), Require::default());
             assert!(
                 has(&r, "the SF2 row `sf2.riff.form` has section"),
                 "{section}"

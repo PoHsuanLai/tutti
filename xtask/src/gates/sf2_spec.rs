@@ -70,9 +70,13 @@ pub(super) fn section_label(n: &str) -> String {
     format!("SF2 §{n}")
 }
 
-/// The section number of a `section` column, when it is one.
+/// The section number of a `section` column, when it is `SF2 §<n>[.<n>]*`.
 pub(super) fn section_number(column: &str) -> Option<&str> {
-    column.strip_prefix("SF2 §")
+    let number = column.strip_prefix("SF2 §")?;
+    let well_formed = number
+        .split('.')
+        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    well_formed.then_some(number)
 }
 
 /// One extracted spec item. `text` is the passage behind it (for the person

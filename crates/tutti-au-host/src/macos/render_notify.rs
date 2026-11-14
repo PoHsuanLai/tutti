@@ -19,7 +19,7 @@ mod tests {
     use crate::parameters::ParamAddress;
     use crate::processor::AuProcessor;
     use crate::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
-    use tutti_plugin_types::{Loaded, MainThreadMarker, MaxBlock, Prepare, SampleRate};
+    use tutti_plugin_types::{Loaded, MaxBlock, Prepare, SampleRate};
 
     /// `ScheduleAddress::GLOBAL` must name the same place the other two address
     /// types do. They are deliberately separate types, so nothing but a test

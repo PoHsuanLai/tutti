@@ -1452,8 +1452,7 @@ Seven gaps had to close before the flip:
    A figure past `MAX_NODE_LATENCY` is refused (`LatencyTooLong`), not
    clamped. The reference interpreter reads latency from the spec, as the
    compiler does.
-   **`Editor::set_tail(key, Tail)`** is its twin for the tail ceiling (doc 023
-   step 2): the same guards and the same authority until a re-prepare, but it
+   **`Editor::set_tail(key, Tail)`** is its twin for the tail ceiling: the same guards and the same authority until a re-prepare, but it
    takes the shape's `Tail` (so `Unbounded` can be declared), refuses a finite
    tail past `MAX_NODE_TAIL` (`TailTooLong`), and **does not cut a crossfade**:
    a ceiling feeds no PDC. The ceiling moves at the next commit; on a shrink

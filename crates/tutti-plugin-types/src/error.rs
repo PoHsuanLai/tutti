@@ -114,7 +114,7 @@ impl Delivered {
     }
 }
 
-/// Why a preset call did not do what it was asked (design 029 section 2.4).
+/// Why a preset call did not do what it was asked.
 ///
 /// Three answers a bare `Option<bool>` kept in one value: the plugin has no
 /// route to presets, it was asked and refused, or it is gone.

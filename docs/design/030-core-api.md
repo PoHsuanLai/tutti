@@ -4,8 +4,8 @@ This document lists the friction a user meets when writing an app against
 tutti's core surfaces through the `tutti` umbrella, and orders the lanes that
 remove it. The surfaces are the session, the device, the graph, the transport,
 tempo, modulation, the sampler, the codec, export, and writing a custom node.
-[Doc 029](029-plugin-api.md) does the same for plugin hosting; the MIDI
-session's plan (lanes L1e to L1h) does it for MIDI. The three share one set of
+Plugin hosting does the same, and so does the MIDI
+session's plan (lanes L1e to L1h). The three share one set of
 conventions (§2).
 
 Status: inventory, two designs (§4, §5) and the one lane (§6); the lane is built through step 12. Written 2026-11-12
@@ -52,7 +52,7 @@ Writing a custom node takes 11 lines for a fixed gain and about 30 for a
 modulatable one. A param'd node lists its params four times, and forgetting one
 of them (`param_base`) silently disables modulation.
 
-## 2. Conventions (shared with doc 029 and the MIDI plan)
+## 2. Conventions (shared with the plugin API and the MIDI plan)
 
 1. **Events nest by area**, pulled from `update()`: `SessionEvent::Plugin {
    node, event }`, `SessionEvent::Midi(MidiEvent)`, and core's own as it
@@ -293,7 +293,7 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
    - T7: checked `Law` parameters;
    - C1: no assumed 44.1 kHz.
 2. **Graph surface 1** (doc 013), in four PRs. The plugins session's view
-   (doc 029 step 2) builds on 2a and takes 2c's `ParamRef`.
+   (plugin hosting's session view) builds on 2a and takes 2c's `ParamRef`.
    - 2a (#639, built): typed `Key<N>`, `OutPort`/`InPort`, one wiring
      vocabulary, no `Silence`.
    - 2b (#644, built): declicked wiring (§4).

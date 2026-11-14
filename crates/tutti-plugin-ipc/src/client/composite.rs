@@ -21,8 +21,8 @@ use tutti_types::SampleRate;
 
 /// Gives the audio instance the editor instance's state when the user changed
 /// it: the half of the mirror that carries what the user changed in the editor
-/// and is not a parameter (a sample loaded in the plugin's UI, a mode switch;
-/// design 021 Q8). Parameters already travel as edits.
+/// and is not a parameter (a sample loaded in the plugin's UI, a mode switch). Parameters
+/// already travel as edits.
 ///
 /// **"Changed" is against `baseline`**, the editor's own state when it was
 /// last in step with the audio instance (read right after the open's sync,
@@ -59,7 +59,7 @@ fn pull_editor_state(
 /// GUI instance. Audio processing goes through `AudioBridge` (IPC to
 /// plugin-server child process). Editor/GUI operations load the plugin
 /// in-process on first `open_editor` call, or, for a bridge made with no
-/// [`EditorLoader`], run in the server (doc 029 section 6.5).
+/// [`EditorLoader`], run in the server.
 pub struct PluginBridge {
     audio: AudioBridge,
     /// The file and the plugin in it, which the editor-only instance loads
@@ -620,7 +620,7 @@ impl PluginBridge {
             // Flush pending GUI param changes before closing.
             self.forward_edits(gui.poll_edits(main));
             // What the user changed in the editor that is not a parameter
-            // reaches the audio instance (design 021 Q8). Read while the view
+            // reaches the audio instance. Read while the view
             // is still attached.
             self.pull_editor_state(main, gui.as_mut());
             gui.close_editor(main);
@@ -990,7 +990,7 @@ mod gui_mirror_tests {
 
 #[cfg(test)]
 mod state_back_tests {
-    //! The editor's state reaching the audio instance (design 021 Q8), on a
+    //! The editor's state reaching the audio instance, on a
     //! stand-in editor: the decision is the bridge's, and each format's
     //! `save_state` is its host crate's.
     use super::*;

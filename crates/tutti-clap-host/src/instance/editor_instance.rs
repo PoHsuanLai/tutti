@@ -33,7 +33,7 @@ fn lookup_range(table: &[ParamBounds], id: u32) -> Option<&ParamBounds> {
 ///
 /// It is what [`OutOfProcess::load_editor`](tutti_plugin_types::OutOfProcess)
 /// builds: `ClapLoaded` is hostable in this process and over IPC (the twin of
-/// the refusal on `Vst2Loaded`, design 021 §3.4):
+/// the refusal on `Vst2Loaded`):
 ///
 /// ```
 /// use tutti_plugin_types::{InProcess, OutOfProcess};

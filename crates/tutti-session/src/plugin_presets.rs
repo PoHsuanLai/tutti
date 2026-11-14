@@ -1,4 +1,4 @@
-//! A hosted plugin's presets (design 029 section 2.4): what the format can do
+//! A hosted plugin's presets: what the format can do
 //! with them, the list where there is one, and a load that says what happened.
 //!
 //! Presets are the main thread's (VST3, VST2 and AU answer them there), so the

@@ -1,6 +1,6 @@
 //! The streamer's drivers, as a typestate: a streamer is [`Built`], then
 //! either [`Running`] on its own thread or `ByHand`, stepped on the caller's
-//! (doc 025 §2.5; the `Lifecycle` shape of design 016).
+//! (doc 025 §2.5).
 //!
 //! The two drivers own the same streamer-local state (`Local`: the stream
 //! table and the scratch), so a streamer is one or the other for its whole

@@ -99,8 +99,8 @@ fn a_pool_spent_chunk_reaches_a_clap_plugin_whole() {
     }
 }
 
-// Moved from `tutti-plugin-ipc`'s `payload_pool` tests with the crate split
-// (design 021 step 3): it fills the bridge's buffers through this node's
+// Moved from `tutti-plugin-ipc`'s `payload_pool` tests with the crate split:
+// it fills the bridge's buffers through this node's
 // delivery.
 /// **A buffer of the room before a re-prepare is dropped on its way
 /// back, never handed to the node** (the sequence that broke it). A

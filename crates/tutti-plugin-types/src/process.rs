@@ -121,7 +121,7 @@ impl<'a> ProcessContext<'a> {
 }
 
 /// What a plugin says about itself at the end of a block, in a form every
-/// format that has one shares (doc 023 section 5.3). Only CLAP has a live
+/// format that has one shares. Only CLAP has a live
 /// per-block status (`clap_process_status`); VST2, VST3 and AU report
 /// [`Continue`](Self::Continue) always, so the node reports nothing for them
 /// and the declared tail ceiling stands.

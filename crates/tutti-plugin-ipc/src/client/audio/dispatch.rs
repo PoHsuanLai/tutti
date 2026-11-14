@@ -388,7 +388,7 @@ pub(super) struct Lane {
     pub(super) owed: Owed,
 }
 
-/// The bridge's two connections to the server (doc 029 section 6.5). **Each is
+/// The bridge's two connections to the server. **Each is
 /// in order, one request at a time, and independent of the other**: the audio
 /// lane carries `ProcessAudio` and `Reset` (the server's render thread answers
 /// them) and the control lane every other request and the plugin's unsolicited

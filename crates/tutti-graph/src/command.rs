@@ -123,12 +123,14 @@ pub struct CommandId {
 static NEXT_PAIR: AtomicU64 = AtomicU64::new(0);
 
 /// Why [`Editor::schedule`](crate::Editor::schedule) refused a command.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ScheduleError {
     /// Nothing has been committed yet, so there is no node to address.
+    #[error("nothing committed yet")]
     NoPlan,
     /// The plan sent last has no such node, or the node no such event input.
+    #[error("node {} has no event input {}", .to.node.0, .to.port)]
     NoSuchPort {
         /// The port asked for.
         to: EventIn,
@@ -136,12 +138,14 @@ pub enum ScheduleError {
     /// [`COMMAND_CAPACITY`] commands are outstanding (or, for a cancel,
     /// [`CANCEL_CAPACITY`] cancels are queued). Nothing was sent; retry once
     /// some have landed.
+    #[error("{} commands outstanding", COMMAND_CAPACITY)]
     Backpressure,
     /// A parameter ramp was addressed to a node that does not honour event
     /// offsets sample-accurately: automation would land at the wrong time,
     /// silently. The same rule as
     /// [`CompileError::ResolutionTooCoarse`](crate::CompileError::ResolutionTooCoarse)
     /// for a marked edge.
+    #[error("a ramp into node {} port {}, which honours events only at {sink:?}", .to.node.0, .to.port)]
     ResolutionTooCoarse {
         /// The port asked for.
         to: EventIn,
@@ -150,10 +154,12 @@ pub enum ScheduleError {
     },
     /// The editor is poisoned (see
     /// [`CommitError::Poisoned`](crate::CommitError::Poisoned)).
+    #[error("the editor is poisoned; build a new pair")]
     Poisoned,
     /// A cancel named a command this editor never issued: one from another
     /// editor/executor pair (an id kept across a rebuild), or one not
     /// scheduled yet. Nothing was sent.
+    #[error("{id:?} was not issued by this editor")]
     UnknownCommand {
         /// The id.
         id: CommandId,
@@ -173,27 +179,6 @@ impl ScheduleError {
         }
     }
 }
-
-impl std::fmt::Display for ScheduleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoPlan => write!(f, "nothing committed yet"),
-            Self::NoSuchPort { to } => {
-                write!(f, "node {} has no event input {}", to.node.0, to.port)
-            }
-            Self::Backpressure => write!(f, "{COMMAND_CAPACITY} commands outstanding"),
-            Self::ResolutionTooCoarse { to, sink } => write!(
-                f,
-                "a ramp into node {} port {}, which honours events only at {sink:?}",
-                to.node.0, to.port
-            ),
-            Self::Poisoned => write!(f, "the editor is poisoned; build a new pair"),
-            Self::UnknownCommand { id } => write!(f, "{id:?} was not issued by this editor"),
-        }
-    }
-}
-
-impl std::error::Error for ScheduleError {}
 
 /// A command as it travels: `Copy`, so the ring moves it without a box.
 #[derive(Clone, Copy, Debug)]

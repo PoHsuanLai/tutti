@@ -15,7 +15,7 @@
 //! spectral cross-check against librosa lives in `examples/verify_synth.py`;
 //! everything here is self-contained.
 
-mod support;
+use crate::support;
 
 use std::num::NonZeroUsize;
 use support::{BLOCK, Hand};

@@ -4,7 +4,7 @@ use thiserror::Error;
 
 /// Why [`Session::open_heard_tap`](crate::Session::open_heard_tap) or
 /// [`Session::close_heard_tap`](crate::Session::close_heard_tap) refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum HeardTapError {
     /// The session has no engine, so nothing renders to tap (a detached
@@ -55,7 +55,7 @@ pub enum ScheduleError {
 }
 
 /// The session refused to set the project tempo. Nothing is published.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum TempoError {
     /// The session follows a live tempo (`Midi::follow_tempo`, feature

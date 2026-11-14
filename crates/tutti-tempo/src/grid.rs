@@ -1,4 +1,3 @@
-use std::fmt;
 use tutti_types::{Beat, Bpm, Frame, SampleRate};
 
 /// The length in frames of a [`Cell`]: how often a ramp's tempo is re-seated.
@@ -16,16 +15,9 @@ use tutti_types::{Beat, Bpm, Frame, SampleRate};
 pub struct CellGrid(u64);
 
 /// A [`CellGrid`] of zero frames was asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("a cell grid is at least one frame, not {0}")]
 pub struct CellGridError(pub u64);
-
-impl fmt::Display for CellGridError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "a cell grid is at least one frame, not {}", self.0)
-    }
-}
-
-impl std::error::Error for CellGridError {}
 
 impl CellGrid {
     /// The grid of `frames` frames, or `None` for 0.

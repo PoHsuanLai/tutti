@@ -58,23 +58,12 @@ const WRITE: u32 = 1 << 31;
 
 /// A borrow refused because another claim on the same element (or chunk)
 /// is held.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("element {index} is claimed elsewhere: two borrows would alias")]
 pub struct ClaimConflict {
     /// The element or chunk index.
     pub index: usize,
 }
-
-impl std::fmt::Display for ClaimConflict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "element {} is claimed elsewhere: two borrows would alias",
-            self.index
-        )
-    }
-}
-
-impl std::error::Error for ClaimConflict {}
 
 /// One claim word per element or chunk, allocated on the control thread and
 /// reused by every [`SplitMut`] / [`SplitRw`] built over it.

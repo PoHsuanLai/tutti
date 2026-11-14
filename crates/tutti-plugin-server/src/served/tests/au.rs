@@ -57,25 +57,26 @@ impl Served<AuLoaded> {
 ///
 /// `AU_SAMPLE_PLUGIN` overrides the choice with a bundle path (its first
 /// Audio Unit) for a machine that has something more interesting installed.
-fn au_fixture() -> Option<(String, Load)> {
+fn au_fixture() -> (String, Load) {
     fn loadable(path: &str, load: &Load) -> bool {
         AuInstance::load_with(&main_thread(), Path::new(path), load, 44100.0, 512).is_ok()
     }
 
     if let Ok(named) = std::env::var("AU_SAMPLE_PLUGIN") {
-        if loadable(&named, &Load::new()) {
-            return Some((named, Load::new()));
-        }
-        eprintln!("AU_SAMPLE_PLUGIN={named} would not load; falling back");
+        assert!(
+            loadable(&named, &Load::new()),
+            "AU_SAMPLE_PLUGIN={named} names a bundle whose first unit would not load"
+        );
+        return (named, Load::new());
     }
     const BUNDLE: &str = "/System/Library/Components/CoreAudio.component";
     const FALLBACK: &str = "au.aufx.lmtr.appl";
     let load = Load::new().plugin(FALLBACK);
-    if loadable(BUNDLE, &load) {
-        return Some((BUNDLE.to_string(), load));
-    }
-    eprintln!("no loadable AU found (tried {FALLBACK}); skipping");
-    None
+    assert!(
+        loadable(BUNDLE, &load),
+        "{FALLBACK} in {BUNDLE} would not load; macOS ships it, so this host cannot load an AU"
+    );
+    (BUNDLE.to_string(), load)
 }
 
 /// An AU latency, tail or parameter-list change must reach the drained
@@ -95,9 +96,7 @@ fn au_fixture() -> Option<(String, Load)> {
 #[test]
 fn an_au_property_change_reaches_the_event_list() {
     let _lock = crate::test_utils::plugin_load_lock();
-    let Some((fixture, load)) = au_fixture() else {
-        return;
-    };
+    let (fixture, load) = au_fixture();
     let mut plugin =
         AuInstance::load_with(&main_thread(), Path::new(&fixture), &load, 44100.0, 512)
             .expect("the AU fixture resolved but would not load");
@@ -155,9 +154,7 @@ fn an_au_property_change_reaches_the_event_list() {
 #[test]
 fn an_au_latency_poll_refreshes_the_cached_wiring() {
     let _lock = crate::test_utils::plugin_load_lock();
-    let Some((fixture, load)) = au_fixture() else {
-        return;
-    };
+    let (fixture, load) = au_fixture();
     let mut au = AuInstance::load_with(&main_thread(), Path::new(&fixture), &load, 44100.0, 512)
         .expect("the AU fixture resolved but would not load");
 

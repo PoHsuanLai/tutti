@@ -1,5 +1,5 @@
-//! What a probe measured of a plugin, and what it made of the figures (doc 023
-//! section 6): the record `PluginDescriptor::measured` holds, the verdict beside
+//! What a probe measured of a plugin, and what it made of the figures: the record
+//! `PluginDescriptor::measured` holds, the verdict beside
 //! the plugin's own claim, and the configuration a figure belongs to.
 //!
 //! A claim is the plugin's word, a measurement is one experiment at one
@@ -12,7 +12,7 @@ use tutti_types::{Db, MaxBlock, SampleRate, Samples};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// The probe's floor: output at or below it is silence (doc 023 Q3). Not exact
+/// The probe's floor: output at or below it is silence. Not exact
 /// silence, because a plugin's own dither or denoise noise is not a tail, and
 /// not a per-plugin knob, because a floor chosen per plugin hides a dishonest
 /// tail. Recorded in every [`ProbeConfig`].
@@ -204,7 +204,7 @@ impl LatencyVerdict {
     }
 }
 
-/// What a probe measured of a plugin (doc 023 section 6): the figures a plugin's
+/// What a probe measured of a plugin: the figures a plugin's
 /// own claim is checked against, and the verdict of the check.
 ///
 /// The probe measures at two configurations and keeps one record

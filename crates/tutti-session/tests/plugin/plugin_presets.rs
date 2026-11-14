@@ -1,4 +1,4 @@
-//! A hosted plugin's presets through the main-thread view (design 029 step 4):
+//! A hosted plugin's presets through the main-thread view:
 //! what the format can do with them, a list that loads by id, a file that
 //! loads by path, and the three typed answers of a load.
 //!

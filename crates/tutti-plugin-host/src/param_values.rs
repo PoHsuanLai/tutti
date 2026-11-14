@@ -17,7 +17,7 @@
 //! same read again: landing it replaces the declarations and the values
 //! together, so a value never outlives the declaration it was read against.
 //!
-//! **Every format reports** (doc 029 section 6.1): each plugin's own edits reach
+//! **Every format reports**: each plugin's own edits reach
 //! the parameter callback as [`ParamEdit`](tutti_plugin_types::ParamEdit)s, in
 //! process through `Control::take_reported_edits` and through the plugin-server
 //! as `BridgeMessage::ParameterChanged`.

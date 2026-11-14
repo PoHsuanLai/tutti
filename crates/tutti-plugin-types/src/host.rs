@@ -226,7 +226,7 @@ pub trait Control: EditorWindow {
     /// Appends the parameter edits the plugin reported of its own accord (its
     /// editor moving a knob, its own automation), oldest first, to `out`: each
     /// a [`ParamEdit`], so a gesture's `Begin`, its changes and its `End` come
-    /// in the order the plugin made them (doc 029 section 6.1).
+    /// in the order the plugin made them.
     ///
     /// Every format reports them here: VST2's `audioMasterBeginEdit`,
     /// `audioMasterAutomate` and `audioMasterEndEdit`, VST3's `beginEdit`,
@@ -333,8 +333,7 @@ pub trait Processor: Send {
     /// Per format: CLAP `plugin.reset`; VST3 `setProcessing(false)`, started
     /// again in the next block (the SDK calls it a way to reset buffers, a
     /// request a plugin may ignore); VST2 `effStopProcess`, started again in the next
-    /// block (likewise a request). Every format drops a SysEx open across the reset
-    /// (design 016 §6.2).
+    /// block (likewise a request). Every format drops a SysEx open across the reset.
     fn reset(&mut self);
 
     /// The frames this Processor renders in, if it renders in fixed chunks

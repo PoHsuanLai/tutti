@@ -1,4 +1,4 @@
-//! A hosted plugin's diagnostics and buses (design 029 step 4): the counts and
+//! A hosted plugin's diagnostics and buses: the counts and
 //! figures a host shows, whichever hosting runs the plugin, and the graph's bus
 //! handles for wiring it.
 //!

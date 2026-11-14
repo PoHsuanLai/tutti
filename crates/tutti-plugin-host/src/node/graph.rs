@@ -82,8 +82,8 @@ where
             .ports
             .with_events(1, midi_out)
             .with_latency(latency)
-            // The ceiling: the plugin's claim, raised by what a probe
-            // measured (nothing yet, doc 023 step 3), never lowered.
+            // The ceiling: the plugin's claim, raised by what a probe measured
+            // (empty until a probe ran with `--measure`), never lowered.
             .with_tail(Processing::new(tail).ceiling())
     }
 
@@ -551,7 +551,7 @@ fn asleep(out: &ProcessOutput, outs: &[&mut [f32]]) -> bool {
         && outs.iter().all(|c| c.iter().all(|&x| x == 0.0))
 }
 
-/// The status a block ends with (doc 023 section 5.3). A plugin that slept
+/// The status a block ends with. A plugin that slept
 /// through the whole block rings out nothing: **no tail, and [`Status::Idle`]**,
 /// which is what lets the executor park a node with an event input (every
 /// instrument): the executor still calls it the moment a note or any input

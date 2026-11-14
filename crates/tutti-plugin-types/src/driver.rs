@@ -25,7 +25,7 @@ use crate::{
 /// [`local`](Self::local) is the end for a user with no realtime thread:
 /// [`Effect::Lend`] does nothing and [`Effect::Recall`] answers
 /// [`Reply::Returned`] at once. [`threaded`](Self::threaded) pairs it with the
-/// realtime thread's [`tutti_rt::Rt`] (doc 016 §2.6): `Lend` moves the
+/// realtime thread's [`tutti_rt::Rt`]: `Lend` moves the
 /// Processor into the handoff, `Recall` asks for it back, and
 /// [`Lifecycle::drive`] collects it on a tick and steps [`Event::Returned`].
 #[derive(Debug)]

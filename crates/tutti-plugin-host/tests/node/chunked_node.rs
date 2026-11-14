@@ -1,5 +1,5 @@
 //! The generic plugin node over a Processor that renders in chunks
-//! (`Processor::chunk`, design 021 §10.4, step 4b PR 2): where it cuts a
+//! (`Processor::chunk`): where it cuts a
 //! block, the transport each piece reads, `reset`, the loss reports in
 //! `ProcessOutput`, harmony, and that the audio path stays allocation-free.
 //!
@@ -447,7 +447,7 @@ fn note_on(frame: usize, len: usize) -> Event {
 /// then 28+64+8, then 56+44, then 20+64+16. The audio the pieces carry joins
 /// back to the block bit for bit (the plugin copies its input), and **every
 /// piece reads the transport at its chunk's first frame** (the contract of
-/// `Processor::chunk`, amended in design 021 step 4b PR 3a: the transport is
+/// `Processor::chunk`: the transport is
 /// chunk-level, like the parameters).
 #[test]
 fn a_block_is_cut_at_the_chunk_edges_and_each_piece_reads_its_chunks_transport() {

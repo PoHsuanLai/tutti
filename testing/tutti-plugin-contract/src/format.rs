@@ -42,7 +42,7 @@ pub trait Format {
     /// Where a parameter point lands.
     const PARAM_TIMING: ParamTiming;
     /// How far a parameter's value may move through the format's own
-    /// representation and still be the value written (design 029 §6.3): 0 for a
+    /// representation and still be the value written: 0 for a
     /// format that keeps a double, the `f32` epsilon for one that keeps a
     /// single (an AU holds its parameters as `f32` in plain units, so a plain
     /// default such as 632.4555... comes back as the nearest `f32`). Relative,

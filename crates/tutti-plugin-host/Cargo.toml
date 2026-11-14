@@ -18,8 +18,8 @@ workspace = true
 [dependencies]
 # The editor's sizes, which name their unit (`dpi::Size`).
 dpi.workspace = true
-# Design 021 section 6.1: the vocabulary, the graph, the transport and the
-# value types. No `tutti-plugin-ipc`, no format host, no `tutti-plugin`.
+# The vocabulary, the graph, the transport and the value types. No `tutti-plugin-ipc`, no format
+# host, no `tutti-plugin`.
 tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 tutti-transport = { version = "0.0.1", path = "../tutti-transport" }

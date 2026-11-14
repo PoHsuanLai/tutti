@@ -118,20 +118,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "run the suites a workspace run leaves dark (see check-features)",
     ),
-    (
-        "miri",
-        "",
-        "miri over tutti-rt and arc-lend (needs nightly + miri)",
-    ),
+    ("miri", "", "miri over tutti-rt (needs nightly + miri)"),
     (
         "loom",
         "[<model>...]",
         "the loom models, as CI runs them (or only those named, e.g. handoff_loom)",
-    ),
-    (
-        "loom-full",
-        "",
-        "the ArcLend loom models at the deeper preemption bound",
     ),
     (
         "check-jack",
@@ -162,11 +153,6 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "bench-smoke",
         "",
         "run every bench exactly once, no measurement",
-    ),
-    (
-        "bench-compare",
-        "[harness args]",
-        "arc-lend against arc-swap, basedrop, left-right and locks",
     ),
     (
         "profile-bench",
@@ -411,7 +397,6 @@ impl Planner<'_> {
             "test"
                 | "test-doc"
                 | "bench"
-                | "bench-compare"
                 | "check-paths"
                 | "loom"
                 | "bench-save"
@@ -441,7 +426,7 @@ impl Planner<'_> {
                 self.run(Cmd::sh("cargo test --locked --doc -p tutti-session --all-features").args(args));
             }
             "test-release" => self.lines(&[
-                "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph",
+                "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p tutti-graph",
             ]),
             "test-all" => {
                 for d in ["test", "test-features", "test-doc", "test-release"] {
@@ -467,7 +452,6 @@ impl Planner<'_> {
                     .collect();
                 self.lines(&chosen);
             }
-            "loom-full" => self.lines(LOOM_FULL),
             "check-jack" => self.lines(&[
                 "cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings",
             ]),
@@ -486,9 +470,7 @@ impl Planner<'_> {
             }
             "bench-smoke" => {
                 self.bench(&["--".into(), "--test".into()]);
-                self.bench_compare(&["--test".into()]);
             }
-            "bench-compare" => self.bench_compare(args),
             "profile-bench" => {
                 let [bench, pkg, secs] =
                     Self::params(name, args, ["engine_render", "tutti-nodes", "10"])?;
@@ -580,7 +562,7 @@ impl Planner<'_> {
                 ]);
             }
             "check-loom" => self.lines(&[
-                r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
+                r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
             ]),
             "book" => {
                 let [out] = Self::params(name, args, [""])?;
@@ -650,10 +632,6 @@ impl Planner<'_> {
         for l in BENCH {
             self.run(Cmd::sh(l).args(args));
         }
-    }
-
-    fn bench_compare(&mut self, args: &[String]) {
-        self.run(Cmd::sh("cargo bench --locked -p arc-lend-compare --bench compare --").args(args));
     }
 
     /// The justfile wrote the stub header to `${TMPDIR:-/tmp}/tutti-winstub`;
@@ -766,13 +744,9 @@ const TEST_FEATURES: &[&str] = &[
 const MIRI: &[&str] = &[
     r#"cargo +nightly miri test --locked -p tutti-rt --lib"#,
     r#"MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p tutti-rt --lib edits"#,
-    r#"cargo +nightly miri test --locked -p arc-lend"#,
-    r#"MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p arc-lend --lib"#,
 ];
 
 const LOOM: &[&str] = &[
-    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers"#,
-    r#"LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact"#,
     r#"LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test pos_ring_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test packed_atomic_loom"#,
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test seq_cell_loom"#,
@@ -791,11 +765,6 @@ const LOOM: &[&str] = &[
     r#"RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test wake_flag_loom"#,
 ];
 
-const LOOM_FULL: &[&str] = &[
-    r#"RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers"#,
-    r#"LOOM_MAX_PREEMPTIONS=5 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact"#,
-];
-
 /// Adding a bench means adding a line here: there is no sweep that would pick
 /// one up silently (the justfile's contract, which CI mirrors).
 const BENCH: &[&str] = &[
@@ -808,7 +777,6 @@ const BENCH: &[&str] = &[
     r#"cargo bench --locked -p tutti-midi-runtime --bench clip_node"#,
     r#"cargo bench --locked -p tutti-sampler   --bench voice_pool"#,
     r#"cargo bench --locked -p tutti-plugin-host --bench vst2_in_process"#,
-    r#"cargo bench --locked -p arc-lend --bench lend"#,
 ];
 
 #[cfg(test)]

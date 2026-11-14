@@ -2556,6 +2556,7 @@ dependencies = [
 name = "tutti-curve"
 version = "0.0.1"
 dependencies = [
+ "thiserror 2.0.21",
  "tutti-types",
 ]
 
@@ -2646,6 +2647,7 @@ dependencies = [
  "proptest",
  "ringbuf",
  "serde",
+ "thiserror 2.0.21",
  "tutti-curve",
  "tutti-fixtures",
  "tutti-graph",
@@ -2768,6 +2770,7 @@ dependencies = [
 name = "tutti-modulation"
 version = "0.0.1"
 dependencies = [
+ "thiserror 2.0.21",
  "tutti-curve",
  "tutti-types",
  "tutti-ump",
@@ -3039,6 +3042,7 @@ dependencies = [
  "bytemuck",
  "libc",
  "loom",
+ "thiserror 2.0.21",
  "thread-priority",
  "windows",
 ]
@@ -3190,6 +3194,7 @@ dependencies = [
  "libm",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "tutti-fixtures",
  "tutti-types",
 ]
@@ -3200,6 +3205,7 @@ version = "0.0.1"
 dependencies = [
  "atomic_float",
  "crossbeam-queue",
+ "thiserror 2.0.21",
  "tutti-graph",
  "tutti-rt",
  "tutti-tempo",
@@ -3215,6 +3221,7 @@ dependencies = [
  "libm",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "tutti-fixtures",
 ]
 

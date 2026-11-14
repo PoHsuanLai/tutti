@@ -95,21 +95,9 @@ impl From<MaxBlock> for Samples {
 }
 
 /// A block of no frames or more than [`u32::MAX`] (see [`MaxBlock::new`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a block holds from one frame to {} frames, got {}", u32::MAX, .0)]
 pub struct InvalidMaxBlock(pub Samples);
-
-impl core::fmt::Display for InvalidMaxBlock {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "a block holds from one frame to {} frames, got {}",
-            u32::MAX,
-            self.0
-        )
-    }
-}
-
-impl core::error::Error for InvalidMaxBlock {}
 
 #[cfg(test)]
 mod tests {

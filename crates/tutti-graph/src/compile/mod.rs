@@ -115,13 +115,16 @@ pub enum CycleEdge {
 ///
 /// This is the graph compiler's error; the modulation compiler's is
 /// `tutti_modulation::CompileError`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompileError {
     /// A feedback edge's delay is shorter than the `MaxBlock` being compiled
     /// for: a block cannot read samples it has not produced yet. For an
     /// offline render, prepare with a smaller maximum block — never shorten
     /// the loop, or the bounce would not sound like playback.
+    #[error(
+        "feedback edge {edge:?} delays {delay} frames, less than the maximum block {max_block}"
+    )]
     FeedbackTooShort {
         /// The edge, named by its sink.
         edge: CycleEdge,
@@ -131,11 +134,13 @@ pub enum CompileError {
         max_block: Samples,
     },
     /// No shape was supplied for a node.
+    #[error("no shape for node {}", .node.0)]
     MissingShape {
         /// The node.
         node: NodeKey,
     },
     /// The node's shape disagrees with the widths its spec declared.
+    #[error("node {} declares {}in/{}out but its unit is {}in/{}out", .node.0, .declared.0.count(), .declared.1.count(), .shape.0.count(), .shape.1.count())]
     WidthMismatch {
         /// The node.
         node: NodeKey,
@@ -145,6 +150,7 @@ pub enum CompileError {
         shape: (ChannelLayout, ChannelLayout),
     },
     /// An event edge names a port past a node's declared event ports.
+    #[error("{}", event_port_out_of_range(.at, .from))]
     EventPortOutOfRange {
         /// The sink port of the bad edge.
         at: EventIn,
@@ -152,6 +158,7 @@ pub enum CompileError {
         from: Option<EventOut>,
     },
     /// A node has more than [`MAX_PORTS`] channels or event ports on a side.
+    #[error("node {} has {count} ports on one side; the limit is {}", .node.0, MAX_PORTS)]
     TooManyPorts {
         /// The node.
         node: NodeKey,
@@ -160,6 +167,7 @@ pub enum CompileError {
     },
     /// The shape's latency disagrees with the spec's: one of the two is
     /// stale.
+    #[error("node {} declares {declared} frames of latency but its unit reports {shape}", .node.0)]
     LatencyMismatch {
         /// The node.
         node: NodeKey,
@@ -169,6 +177,7 @@ pub enum CompileError {
         shape: Latency,
     },
     /// The shape's tail disagrees with the spec's.
+    #[error("node {} declares tail {declared:?} but its unit reports {shape:?}", .node.0)]
     TailMismatch {
         /// The node.
         node: NodeKey,
@@ -181,6 +190,8 @@ pub enum CompileError {
     /// [`GraphSpec::require_resolution`](crate::GraphSpec::require_resolution))
     /// targets a node that declares a coarser one: sample-accurate automation
     /// into a block-rate node, say.
+    #[error("event edge from node {} port {} into node {} port {} requires {required:?} \
+                 timing, but the sink honours only {sink:?}", .from.node.0, .from.port, .at.node.0, .at.port)]
     ResolutionTooCoarse {
         /// The sink port.
         at: EventIn,
@@ -193,11 +204,13 @@ pub enum CompileError {
     },
     /// A modulated param its node does not declare
     /// ([`Shape::params`](crate::Shape::params)).
+    #[error("node {} does not declare {:?} modulatable", .at.node.0, .at.param)]
     UnknownParam {
         /// The param port.
         at: ParamIn,
     },
     /// A param source names an event output its node does not have.
+    #[error("param {:?} of node {}: source {from:?} is not an output of its node", .at.param, .at.node.0)]
     ParamSourceOutOfRange {
         /// The param port.
         at: ParamIn,
@@ -205,6 +218,7 @@ pub enum CompileError {
         from: EventOut,
     },
     /// An edge gain's source names an event output its node does not have.
+    #[error("gain of an edge into {sink:?}: source {from:?} is not an output of its node")]
     GainSourceOutOfRange {
         /// The sink of the edge whose gain it drives.
         sink: Sink,
@@ -213,6 +227,7 @@ pub enum CompileError {
     },
     /// A cycle that no feedback edge breaks. Every direct edge inside the
     /// cycle's strongly connected component is listed, in key order.
+    #[error("unbroken cycle through {} edges", .edges.len())]
     Cycle {
         /// The edges.
         edges: Vec<CycleEdge>,
@@ -221,99 +236,23 @@ pub enum CompileError {
     /// gone or its topology no longer folds into the other's (a node replaced
     /// by one with another layout), or a lane overlaps an edge. Never a
     /// silent drop (doc 013, "Buses and coercion between declared layouts").
+    #[error("{0}")]
     Bus(crate::BusError),
 }
 
-impl std::fmt::Display for CompileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Bus(e) => write!(f, "{e}"),
-            Self::FeedbackTooShort {
-                edge,
-                delay,
-                max_block,
-            } => write!(
-                f,
-                "feedback edge {edge:?} delays {delay} frames, less than the maximum block {max_block}"
-            ),
-            Self::MissingShape { node } => write!(f, "no shape for node {}", node.0),
-            Self::WidthMismatch {
-                node,
-                declared,
-                shape,
-            } => write!(
-                f,
-                "node {} declares {}in/{}out but its unit is {}in/{}out",
-                node.0,
-                declared.0.count(),
-                declared.1.count(),
-                shape.0.count(),
-                shape.1.count()
-            ),
-            Self::EventPortOutOfRange { at, from } => match from {
-                Some(from) => write!(
-                    f,
-                    "event edge into node {} port {}: source node {} has no event output {}",
-                    at.node.0, at.port, from.node.0, from.port
-                ),
-                None => write!(f, "node {} has no event input {}", at.node.0, at.port),
-            },
-            Self::TooManyPorts { node, count } => write!(
-                f,
-                "node {} has {count} ports on one side; the limit is {MAX_PORTS}",
-                node.0
-            ),
-            Self::LatencyMismatch {
-                node,
-                declared,
-                shape,
-            } => write!(
-                f,
-                "node {} declares {declared} frames of latency but its unit reports {shape}",
-                node.0
-            ),
-            Self::TailMismatch {
-                node,
-                declared,
-                shape,
-            } => write!(
-                f,
-                "node {} declares tail {declared:?} but its unit reports {shape:?}",
-                node.0
-            ),
-            Self::ResolutionTooCoarse {
-                at,
-                from,
-                required,
-                sink,
-            } => write!(
-                f,
-                "event edge from node {} port {} into node {} port {} requires {required:?} \
-                 timing, but the sink honours only {sink:?}",
-                from.node.0, from.port, at.node.0, at.port
-            ),
-            Self::UnknownParam { at } => write!(
-                f,
-                "node {} does not declare {:?} modulatable",
-                at.node.0, at.param
-            ),
-            Self::ParamSourceOutOfRange { at, from } => write!(
-                f,
-                "param {:?} of node {}: source {from:?} is not an output of its node",
-                at.param, at.node.0
-            ),
-            Self::GainSourceOutOfRange { sink, from } => write!(
-                f,
-                "gain of an edge into {sink:?}: source {from:?} is not an output of its node"
-            ),
-            Self::Cycle { edges } => write!(f, "unbroken cycle through {} edges", edges.len()),
-        }
+/// Where an audio input reads from, before colouring.
+/// The message of a [`CompileError::EventPortOutOfRange`]: the source's port
+/// when the edge has a source, else the sink's own.
+fn event_port_out_of_range(at: &EventIn, from: &Option<EventOut>) -> String {
+    match from {
+        Some(from) => format!(
+            "event edge into node {} port {}: source node {} has no event output {}",
+            at.node.0, at.port, from.node.0, from.port
+        ),
+        None => format!("node {} has no event input {}", at.node.0, at.port),
     }
 }
 
-impl std::error::Error for CompileError {}
-
-/// Where an audio input reads from, before colouring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ARef {
     Val(u32),

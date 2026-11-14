@@ -30,7 +30,7 @@ use conformance_support::*;
 /// The harness itself works: checks are linked and the table is populated.
 #[test]
 fn hostcheck_is_linked() {
-    harness_ready();
+    require_harness();
     let n = unsafe { hc_num_log_events() };
     assert!(
         n > 100,
@@ -60,9 +60,7 @@ fn hostcheck_is_linked() {
 /// first-audio-class-wins.
 #[test]
 fn report_multi_class_bundle_coverage() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
 
     let mut bundles = 0usize;
     let mut audio_classes = 0usize;
@@ -123,9 +121,7 @@ fn report_multi_class_bundle_coverage() {
 /// the state of the other 54.
 #[test]
 fn every_audio_class_survives_a_block() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
 
     let mut driven = 0usize;
     let mut failures = Vec::new();
@@ -248,9 +244,7 @@ fn sidechain_input_buses_are_staged() {
 /// plugin's own bus layout.
 #[test]
 fn steady_state_block_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -299,9 +293,7 @@ fn steady_state_block_is_spec_clean() {
 /// the host must not report a stale `numSamples` or mis-size its bus buffers.
 #[test]
 fn partial_block_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -356,9 +348,7 @@ fn partial_block_is_spec_clean() {
 /// mismatch by comparing against the negotiated `ProcessSetup`.
 #[test]
 fn f64_processing_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -424,9 +414,7 @@ fn f64_processing_is_spec_clean() {
 /// stale value, trips the latter.
 #[test]
 fn transport_across_blocks_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -486,9 +474,7 @@ fn transport_across_blocks_is_spec_clean() {
 /// orphaned note, which is exactly how it would be heard.
 #[test]
 fn note_lifecycle_across_blocks_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -591,9 +577,7 @@ fn note_lifecycle_across_blocks_is_spec_clean() {
 /// Points are fed deliberately out of order — the host must sort them.
 #[test]
 fn parameter_changes_are_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -658,9 +642,7 @@ fn parameter_changes_are_spec_clean() {
 /// Feed events deliberately out of order — the host is required to sort.
 #[test]
 fn midi_event_list_is_spec_clean() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let midi = [
         (
             at(200),

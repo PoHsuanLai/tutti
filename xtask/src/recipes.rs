@@ -212,6 +212,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-comments",
+        "",
+        "no comment gains a citation of a design doc, audit, pull request, commit or CLAUDE.md",
+    ),
+    (
         "check-alloc-binaries",
         "",
         "no top-level test file installs AllocDisabler: allocation tests are modules of the area binary",
@@ -526,6 +531,7 @@ impl Planner<'_> {
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-comments" => self.out.push(Step::Gate(Gate::Comments)),
             "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance" => {
@@ -634,7 +640,8 @@ impl Planner<'_> {
                     "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
                     "check-layout", "check-range-types", "check-hosting", "check-lints",
                     "check-value-traits", "check-submodule-pins", "check-doc-refs",
-                    "check-pointers", "check-platform-seam", "check-alloc-binaries",
+                    "check-pointers", "check-comments", "check-platform-seam",
+                    "check-alloc-binaries",
                 ] {
                     self.dep(d)?;
                 }

@@ -194,6 +194,7 @@ jobs:
       - run: cargo xtask check-value-traits
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
+      - run: cargo xtask check-comments
       - run: cargo xtask check-alloc-binaries
       # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are
       # exempt and the temporary rows in the gate are a ratchet.

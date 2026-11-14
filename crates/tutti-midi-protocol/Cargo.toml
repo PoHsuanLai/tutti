@@ -15,7 +15,8 @@ workspace = true
 
 [features]
 default = []
-# serde for `PitchBendSensitivity`, which `MpeZoneConfig` persists.
+# serde for the values a project saves: `PitchBendSensitivity` (which `MpeZoneConfig`
+# persists), the MPE values, `MtcRate` and `SmpteFrameRate`.
 serde = ["dep:serde", "tutti-ump/serde"]
 
 [dependencies]

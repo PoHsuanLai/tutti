@@ -74,6 +74,7 @@ const ERR_INVALID_PROPERTY: i32 = -10879;
 /// converted to samples, or that wrote the `f32` bit pattern into an `f64`
 /// slot, would still return `noErr` — the probe refuses any width but 8 bytes,
 /// and the read-back pins the number rather than merely its presence.
+/// Spec: au.prop.PresentationLatency
 #[test]
 fn a_presentation_latency_write_arrives_with_its_seconds_intact() {
     let au = Misbehaviour::None.open_initialized(RATE, BLOCK);
@@ -211,6 +212,7 @@ fn every_corpus_unit_refuses_presentation_latency_and_the_refusal_is_reported() 
 /// to coincide. The probe's table is deliberately neither scope-uniform nor
 /// id-sorted (see `PROBE_DEPENDENT_PARAMS`), so a transposition and a reordering
 /// both fail here.
+/// Spec: au.prop.DependentParameters
 #[test]
 fn dependent_parameters_decode_in_order_with_scope_and_id_unswapped() {
     let au = Misbehaviour::None.open_initialized(RATE, BLOCK);

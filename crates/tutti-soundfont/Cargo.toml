@@ -1,6 +1,6 @@
 [package]
 name = "tutti-soundfont"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Plays SoundFont 2 (.sf2) instruments from MIDI"
@@ -14,21 +14,21 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
-tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+tutti-midi-runtime = { version = "0.0.1", path = "../tutti-midi-runtime", default-features = false }
+tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 # `Node`, `ForkSource`: the player as a graph node, and its own way into a
 # fork of the graph (an export), as `tutti-plugin`'s `PluginClient`
 # has one.
-tutti-graph = { path = "../tutti-graph" }
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # The voice's low-pass is `tutti-dsp`'s `SvfModel` biquad.
-tutti-dsp = { path = "../tutti-dsp" }
-tutti-sf2 = { path = "../tutti-sf2" }
-tutti-voicing = { path = "../tutti-voicing" }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp" }
+tutti-sf2 = { version = "0.0.1", path = "../tutti-sf2" }
+tutti-voicing = { version = "0.0.1", path = "../tutti-voicing" }
 
 thiserror = { workspace = true }
-tutti-types = { path = "../tutti-types", default-features = false }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
 # The font-to-synth swap of the chase test (`tests/chase.rs`).

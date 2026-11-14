@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "A VST2 shell plugin with two sub-plugins, for the host's shell enumeration and sub-plugin choice"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/tutti"
+repository = "https://github.com/tutti-audio/tutti"
 publish = false
 
 # A loadable VST2 shared library (`VSTPluginMain`) whose category is `kPlugCategShell`

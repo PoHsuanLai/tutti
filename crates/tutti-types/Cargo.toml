@@ -1,10 +1,9 @@
 [package]
 name = "tutti-types"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 # The name is an unrelated project's on crates.io; publishing is the owner's call.
-publish = false
 description = "Shared building blocks for audio code: units such as hertz and decibels, channel layouts and audio streams"
 license.workspace = true
 repository.workspace = true
@@ -32,6 +31,8 @@ atomic_float = { version = "1.1", default-features = false, features = ["atomic_
 # coefficient does not depend on the platform's C math library.
 libm = "0.2.15"
 serde = { version = "1", optional = true, features = ["derive"] }
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # The meter `Deserialize` impls are the untrusted-document edge, so they are

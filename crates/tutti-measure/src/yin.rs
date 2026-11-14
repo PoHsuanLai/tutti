@@ -95,20 +95,6 @@ impl YinConfig {
         self.sample_rate
     }
 
-    /// Lowest detectable frequency in [`Hz`] — the one that sets the longest
-    /// period, and so the minimum buffer length.
-    #[inline]
-    pub fn min_freq(&self) -> Hz {
-        self.min_freq
-    }
-
-    /// Highest detectable frequency in [`Hz`], validated below Nyquist at
-    /// construction.
-    #[inline]
-    pub fn max_freq(&self) -> Hz {
-        self.max_freq
-    }
-
     /// The YIN aperiodicity cutoff as a [`Confidence`], `0.01..=0.5`. A
     /// reading's threshold, not a blend.
     #[inline]
@@ -118,13 +104,13 @@ impl YinConfig {
 
     /// Shortest period the range can express — set by the *highest* frequency.
     #[inline]
-    pub fn min_period(&self) -> Samples {
+    pub(crate) fn min_period(&self) -> Samples {
         Samples((self.sample_rate.get() / self.max_freq.get() as f64) as usize)
     }
 
     /// Longest period — set by the *lowest* frequency.
     #[inline]
-    pub fn max_period(&self) -> Samples {
+    pub(crate) fn max_period(&self) -> Samples {
         Samples((self.sample_rate.get() / self.min_freq.get() as f64) as usize)
     }
 

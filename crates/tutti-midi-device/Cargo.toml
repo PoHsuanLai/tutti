@@ -1,13 +1,12 @@
 [package]
 name = "tutti-midi-device"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Keeps track of MIDI devices and speaks MIDI-CI, MIDI 2.0's discovery and profile protocol"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-publish = false
 keywords = ["midi", "audio", "hot-plug"]
 categories = ["multimedia::audio"]
 
@@ -23,7 +22,7 @@ serde = ["dep:serde", "tutti-ump/serde"]
 bitflags = "2"
 thiserror = { workspace = true }
 unicode-normalization = { workspace = true }
-tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 winnow = { workspace = true }
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 serde = { version = "1", optional = true, features = ["derive"] }

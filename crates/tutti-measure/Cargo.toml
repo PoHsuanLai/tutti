@@ -1,6 +1,6 @@
 [package]
 name = "tutti-measure"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Measures audio: loudness (EBU R128), pitch, onsets, stereo correlation, spectra, tempo, key and chords"
@@ -16,12 +16,12 @@ workspace = true
 [dependencies]
 # The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …),
 # `ChannelLayout`, `Interleaved` and the downmix helpers.
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 
 # `RealFft`/`FftScratch` (the CPU-independent real FFT every kernel here runs
 # on), `Complex`, `StftGeometry`, `Grid` and the `Error` they share with the
 # sampler's vocoder.
-tutti-dsp = { path = "../tutti-dsp", default-features = false }
+tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false }
 
 # EBU R128 loudness metering (`loudness`). An online meter, which is why the
 # streaming Config/State/step shape fits it without buffering the signal.

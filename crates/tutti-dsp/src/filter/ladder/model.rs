@@ -117,7 +117,7 @@ impl LadderModel {
 
     /// The type.
     #[must_use]
-    pub fn ladder_type(&self) -> LadderType {
+    pub(crate) fn ladder_type(&self) -> LadderType {
         self.controls.ty
     }
 
@@ -129,7 +129,7 @@ impl LadderModel {
 
     /// The coefficients the ladder is solved at.
     #[must_use]
-    pub fn coeffs(&self) -> &LadderCoeffs {
+    pub(crate) fn coeffs(&self) -> &LadderCoeffs {
         &self.coeffs
     }
 
@@ -164,7 +164,7 @@ impl LadderModel {
     /// side). They are the bilinear images (prewarped at the cutoff) of the
     /// continuous poles.
     #[must_use]
-    pub fn poles(&self) -> [Complex64; 4] {
+    fn poles(&self) -> [Complex64; 4] {
         let g1 = self.g1();
         let p = 1.0 - 2.0 * g1;
         let c = self.coeffs.k * g1.powi(4);

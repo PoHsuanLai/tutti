@@ -15,7 +15,7 @@
 #else
 #define stringFileDescription "Tutti Audio Correctness Probe"
 #endif
-#define stringCompanyWeb "https://github.com/PoHsuanLai/tutti"
+#define stringCompanyWeb "https://github.com/tutti-audio/tutti"
 #define stringCompanyEmail "mailto:none@example.com"
 #define stringCompanyName "Tutti"
 #define stringLegalCopyright "Test fixture — not a distributable audio plug-in"

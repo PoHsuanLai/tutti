@@ -106,7 +106,7 @@ use std::sync::atomic::Ordering;
 use tutti_graph::{IntoNode, Node, NodeParts, Shape};
 use tutti_plugin_host::{
     InProcClient, InvalidateSink, ParameterChangeSink, PluginControls, PluginHandle, PluginNode,
-    RefreshSink, client_over,
+    RefreshSink, TransportSink, client_over,
 };
 use tutti_plugin_ipc::{
     BridgeConfig, BridgeEvent, Ipc, IpcController, IpcOrigin, Launched, PluginBridge,
@@ -204,6 +204,7 @@ pub struct PluginClient<S = Unbound> {
     param_sink: ParameterChangeSink,
     refresh_sink: RefreshSink,
     invalidate_sink: InvalidateSink,
+    transport_sink: TransportSink,
     /// The served plugin's control side (its bridge and the server's lifetime
     /// guard), shared with `PluginClient::handle`.
     served: IpcController,
@@ -330,6 +331,7 @@ impl PluginClient<Unbound> {
         let param_sink = ParameterChangeSink::new();
         let refresh_sink = RefreshSink::new();
         let invalidate_sink = InvalidateSink::new();
+        let transport_sink = TransportSink::new();
 
         // Route the bridge's events into the shared cells and sinks, through
         // `Ipc::forward_events`. The listener runs on the bridge thread and
@@ -344,6 +346,7 @@ impl PluginClient<Unbound> {
         let listener_param_sink = param_sink.clone();
         let listener_refresh_sink = refresh_sink.clone();
         let listener_invalidate_sink = invalidate_sink.clone();
+        let listener_transport_sink = transport_sink.clone();
         ipc.forward_events(Some(Arc::new(move |ev| match ev {
             BridgeEvent::LatencyChanged { samples } => {
                 // The atomic is the terminus: `AtomicUsize` needs a
@@ -378,6 +381,7 @@ impl PluginClient<Unbound> {
             // The wake it raises is bound through `Control::bind_wake` and
             // raised by `Ipc` before this listener runs.
             BridgeEvent::ProcessRequested => {}
+            BridgeEvent::Transport { request } => listener_transport_sink.fire(request),
         })));
 
         // The parameter list, once, while loading blocks anyway: the node's
@@ -430,6 +434,7 @@ impl PluginClient<Unbound> {
             param_sink,
             refresh_sink,
             invalidate_sink,
+            transport_sink,
             served,
             origin,
             plugin,
@@ -468,6 +473,7 @@ impl PluginClient<Unbound> {
             param_sink,
             refresh_sink,
             invalidate_sink,
+            transport_sink,
             served,
             origin,
             plugin,
@@ -485,6 +491,7 @@ impl PluginClient<Unbound> {
             param_sink,
             refresh_sink,
             invalidate_sink,
+            transport_sink,
             served,
             origin,
             plugin,
@@ -536,6 +543,7 @@ impl<S> PluginClient<S> {
         )
         .with_refresh_sink(self.refresh_sink().clone())
         .with_invalidate_sink(self.invalidate_sink().clone())
+        .with_transport_sink(self.transport_sink().clone())
         .with_server_pid(pid)
     }
 
@@ -549,6 +557,10 @@ impl<S> PluginClient<S> {
 
     pub(crate) fn invalidate_sink(&self) -> &InvalidateSink {
         &self.invalidate_sink
+    }
+
+    pub(crate) fn transport_sink(&self) -> &TransportSink {
+        &self.transport_sink
     }
 
     /// Returns the plugin's reported latency in **frames**: its own figure, without

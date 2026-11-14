@@ -273,12 +273,6 @@ impl PeakState {
         Self::default()
     }
 
-    /// Whole frames consumed so far, excluding anything still pending.
-    #[inline]
-    pub fn consumed(&self) -> Samples {
-        self.consumed
-    }
-
     /// Drops every carry and the consumed count, so the next chunk starts a
     /// fresh stream. Scratch capacity is kept.
     pub fn reset(&mut self) {
@@ -575,7 +569,7 @@ mod tests {
                         step_peaks(&cfg, &mut state, Interleaved::new(part, layout), &mut out);
                     }
                     assert_eq!(
-                        state.consumed(),
+                        state.consumed,
                         Samples(500),
                         "{layout:?}, block {block}, chunk {chunk}: frame count"
                     );
@@ -627,7 +621,7 @@ mod tests {
             blocks.is_empty(),
             "a quad chunk must not be blocked as stereo"
         );
-        assert_eq!(state.consumed(), Samples(0));
+        assert_eq!(state.consumed, Samples(0));
     }
 
     #[test]
@@ -776,7 +770,7 @@ mod tests {
             &mut out,
         );
 
-        assert_eq!(state.consumed(), Samples(200));
+        assert_eq!(state.consumed, Samples(200));
     }
 
     #[test]
@@ -874,7 +868,7 @@ mod tests {
             "the carried 50 samples were discarded"
         );
         assert_eq!(ch(&blocks, 0)[0].min, 2.0);
-        assert_eq!(state.consumed(), Samples(100));
+        assert_eq!(state.consumed, Samples(100));
     }
 
     /// `reset` must clear every channel's carry, not just the first — a stereo

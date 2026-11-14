@@ -11,6 +11,7 @@
 mod cmd;
 mod gates;
 mod recipes;
+mod release;
 
 use cmd::Cmd;
 use recipes::{Ctx, RECIPES, Step};
@@ -148,11 +149,58 @@ fn execute(step: &Step, ctx: &Ctx) -> Result<(), u8> {
             if report.passed() { Ok(()) } else { Err(1) }
         }
         Step::DocFeatures => doc_features(ctx),
+        Step::Package => package(ctx),
+        Step::Release(v) => release::run(&ctx.root, v).map_err(|e| {
+            eprintln!("xtask: release: {e}");
+            1
+        }),
         Step::ConformanceInventory(format) => gates::conformance_inventory(&ctx.root, format)
             .map_err(|e| {
                 eprintln!("xtask: {e}");
                 1
             }),
+        Step::Conformance { results, out } => gates::conformance_site(&ctx.root, results, out)
+            .map_err(|e| {
+                eprintln!("xtask: {e}");
+                1
+            }),
+        Step::InLlvmCovEnv(c) => {
+            let shown = process::Command::new("cargo")
+                .args(["llvm-cov", "show-env"])
+                .current_dir(&ctx.root)
+                .output()
+                .map_err(|e| {
+                    eprintln!("xtask: cannot run `cargo llvm-cov show-env`: {e}");
+                    1
+                })?;
+            if !shown.status.success() {
+                eprintln!("xtask: `cargo llvm-cov show-env` failed");
+                return Err(1);
+            }
+            let mut c = c.clone();
+            for line in String::from_utf8_lossy(&shown.stdout).lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    c = c.env(k.trim(), v.trim().trim_matches(['"', '\'']));
+                }
+            }
+            run(&c, ctx)
+        }
+        Step::RequireLlvmCov => {
+            let ok = process::Command::new("cargo")
+                .args(["llvm-cov", "--version"])
+                .stdout(process::Stdio::null())
+                .stderr(process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if ok {
+                Ok(())
+            } else {
+                eprintln!(
+                    "cargo-llvm-cov is not installed; run: cargo install cargo-llvm-cov --locked"
+                );
+                Err(1)
+            }
+        }
         Step::RequireCargoDeny => {
             let ok = process::Command::new("cargo")
                 .args(["deny", "--version"])
@@ -202,6 +250,34 @@ fn doc_features(ctx: &Ctx) -> Result<(), u8> {
     }
     eprintln!("FAIL: rustdoc failed for: {}", failed.join(" "));
     Err(1)
+}
+
+/// `cargo package` over every crate under `crates/`: a directory there holding
+/// a `Cargo.toml` is a crate of that name.
+fn package(ctx: &Ctx) -> Result<(), u8> {
+    let dir = ctx.root.join("crates");
+    let mut names: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .flatten()
+            .filter(|e| e.path().join("Cargo.toml").is_file())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+        Err(e) => {
+            eprintln!("xtask: cannot read {}: {e}", dir.display());
+            return Err(1);
+        }
+    };
+    names.sort();
+    let mut c = Cmd::sh("cargo package --locked --no-verify");
+    for n in &names {
+        c = c.arg("-p").arg(n.as_str());
+    }
+    println!("+ {}", c.display());
+    match command(&c, ctx).status() {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) => Err(1),
+        Err(e) => Err(spawn_failed(&c, &e)),
+    }
 }
 
 fn command(c: &Cmd, ctx: &Ctx) -> process::Command {

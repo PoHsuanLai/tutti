@@ -267,6 +267,7 @@ mod tests {
         }
     }
 
+    /// Spec: vst3.IAttributeList.setString, vst3.IAttributeList.getString
     #[test]
     fn test_attr_set_get_string_roundtrip() {
         let attrs = AttributeList::new();

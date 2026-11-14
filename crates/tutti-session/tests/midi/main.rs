@@ -2,6 +2,8 @@
 
 // A held key across a retarget and a re-route.
 #[cfg(feature = "midi")]
+mod common;
+#[cfg(feature = "midi")]
 mod held_keys;
 // Clips, live inputs, routes and the hardware out (`Session::midi`).
 #[cfg(feature = "midi")]
@@ -35,3 +37,9 @@ mod midi_follow;
 // A map published with its step behind the playhead moves no beat.
 #[cfg(feature = "midi")]
 mod follow_late_publish;
+// The session follows a MIDI Beat Clock or MIDI Time Code from the input.
+#[cfg(feature = "midi-hardware")]
+mod midi_clock_follow;
+// The session follows MIDI Machine Control from the input and sends it from the transport.
+#[cfg(feature = "midi-hardware")]
+mod midi_machine_control;

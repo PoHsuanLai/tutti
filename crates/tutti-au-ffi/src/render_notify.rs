@@ -471,6 +471,7 @@ mod tests {
     /// `PreRender` is `1 << 2` and `PostRender` is `1 << 3` — note they are not
     /// bits 0 and 1, so a hand-rolled `1`/`2` would silently match nothing and
     /// the notify would decode every call as "neither phase" and drop it.
+    /// Spec: au.render.PreRender, au.render.PostRender
     #[test]
     fn the_render_action_flags_match_the_header() {
         assert_eq!(K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER, 1 << 2);
@@ -503,6 +504,7 @@ mod tests {
     /// Each variant must lower into its own union arm with the tag that names
     /// it. A crossed wire here is the exact bug the typed enum exists to make
     /// unrepresentable, so assert the lowering rather than trusting the match.
+    /// Spec: au.param.event.Immediate, au.param.event.Ramped
     #[test]
     fn each_variant_lowers_into_its_own_union_arm() {
         let addr = ScheduleAddress {

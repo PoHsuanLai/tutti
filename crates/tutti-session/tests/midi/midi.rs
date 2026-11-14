@@ -3,8 +3,9 @@
 //! renders. A [`Tap`] stands in for a synth: it logs every MIDI event its
 //! event input receives with its absolute frame.
 
+use crate::common::{MF, Seen, blocks, note, offline, play, tap};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
 use tutti_session::Stamp;
 use tutti_types::MaxBlock;
@@ -12,18 +13,17 @@ use tutti_types::MaxBlock;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
-use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Refused, Shape, Status};
+use tutti_graph::Refused;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
 use tutti_session::{
     EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiError, MidiEvent, MidiRouteRule,
-    NoSuchMidiRoute, PHASES, PhaseCx, RouteDeclarer, Session, SessionEvent, SessionNode, UmpOut,
+    NoSuchMidiRoute, PHASES, PhaseCx, RouteDeclarer, Session, SessionEvent, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -36,87 +36,12 @@ fn update_at(s: &mut Session, now: Instant) -> Vec<SessionEvent> {
 }
 
 const RATE: f64 = 48_000.0;
-const MF: u16 = 0x8000;
-
-/// `(absolute frame, event)` of every MIDI event a [`Tap`] received.
-type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
-
-/// A stand-in synth: one MIDI event input, logged with each event's
-/// absolute frame.
-struct Tap(Seen);
-
-impl Node for Tap {
-    fn shape(&self) -> Shape {
-        Shape::EMPTY.with_events(1, 0)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
-        let mut seen = self.0.lock().unwrap();
-        for e in io.events(0) {
-            if let EventKind::Midi(Ump(data)) = e.kind {
-                let at = cx.env.frame.get() + u64::from(e.offset.get());
-                seen.push((at, Ump(data)));
-            }
-        }
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
-
-impl IntoNode for Tap {
-    type Controls = ();
-    fn into_parts(self) -> NodeParts<()> {
-        IntoNode::into_parts(tutti_graph::Unforkable(self))
-    }
-}
-
-impl SessionNode for Tap {}
-
-/// An offline session at 48 kHz, stereo: the builder's MIDI nodes in.
-fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
-}
-
-/// A tap in `s`'s graph, and what it hears.
-fn tap(s: &mut Session) -> (NodeKey, Seen) {
-    let seen = Seen::default();
-    let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
-    (node.erase(), seen)
-}
-
-/// A note-on/note-off pair as timed events.
-fn note(number: u8, start: Beat, duration: BeatDuration) -> [TimedMidiEvent; 2] {
-    [
-        TimedMidiEvent::new(
-            start,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, MF),
-        )
-        .unwrap(),
-        TimedMidiEvent::new(
-            start + duration,
-            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
-        )
-        .unwrap(),
-    ]
-}
 
 /// Plays the transport from beat 0 and renders `frames` frames in 512-frame
 /// blocks.
 fn roll(s: &Session, frames: usize) {
-    s.transport()
-        .motion()
-        .try_send(MotionEvent::Play)
-        .expect("room");
-    let mut buf = vec![0.0f32; 512 * 2];
-    for _ in 0..frames.div_ceil(512) {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-    }
+    play(s);
+    blocks(s, frames.div_ceil(512));
 }
 
 fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
@@ -150,7 +75,7 @@ fn a_clip_plays_its_note_on_its_frame() {
         .play_clip(
             synth,
             Beat(0.0),
-            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .expect("the tap takes MIDI");
     let _ = s.update();
@@ -166,7 +91,7 @@ fn a_clip_edit_updates_in_place() {
     let mut s = offline();
     let (synth, seen) = tap(&mut s);
     s.midi()
-        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(1.0)))
+        .play_clip(synth, Beat(0.0), note(60, MF, Beat(0.0), BeatDuration(1.0)))
         .unwrap();
     let clip = s.midi().clip(synth).expect("the target's clip");
     let _ = s.update();
@@ -176,7 +101,7 @@ fn a_clip_edit_updates_in_place() {
         .play_clip(
             synth,
             Beat(0.0),
-            note(64, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(64, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .unwrap();
     let _ = s.update();
@@ -202,7 +127,7 @@ fn a_clip_starts_at_the_beat_it_is_given() {
         .play_clip(
             synth,
             Beat(1.0),
-            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .expect("the tap takes MIDI");
     let _ = s.update();
@@ -219,7 +144,7 @@ fn a_clip_start_that_is_not_finite_is_refused() {
     for bad in [nan, Beat(f64::INFINITY)] {
         assert!(matches!(
             s.midi()
-                .play_clip(synth, bad, note(60, Beat(0.0), BeatDuration(1.0))),
+                .play_clip(synth, bad, note(60, MF, Beat(0.0), BeatDuration(1.0))),
             Err(MidiError::BeatNotFinite(_))
         ));
     }
@@ -296,7 +221,11 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     let mut s = offline();
     let (old, old_seen) = tap(&mut s);
     s.midi()
-        .play_clip(old, Beat(0.0), note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
+        .play_clip(
+            old,
+            Beat(0.0),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
+        )
         .unwrap();
     let clip = s.midi().clip(old).expect("the target's clip");
     let mut live = s.midi().input(old).unwrap();
@@ -662,7 +591,7 @@ fn the_sessions_midi_nodes_keep_their_reclaimers() {
     let mut s = offline();
     let (synth, _) = tap(&mut s);
     s.midi()
-        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(1.0)))
+        .play_clip(synth, Beat(0.0), note(60, MF, Beat(0.0), BeatDuration(1.0)))
         .expect("the tap takes MIDI");
     let clip = s.midi().clip(synth).expect("the target's clip");
     assert!(s.graph_ref().testing().keeps_reclaimer(clip), "the clip's");
@@ -713,6 +642,12 @@ fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// The session's OS MIDI layer, read.
+#[cfg(feature = "midi-hardware")]
+fn hw(s: &Session) -> &tutti_midi_hardware::MidiSession {
+    s.testing_midi_io().expect("the OS MIDI layer")
+}
+
 #[cfg(feature = "midi-hardware")]
 fn plug(
     fake: &tutti_midi_hardware::test_support::FakeCounters,
@@ -752,10 +687,9 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("keys").expect("connects");
-    assert_eq!(io.connected_input_names(), ["Keys"]);
-    assert_eq!(io.ports().list_input_ports().len(), 1);
+    s.midi().connect_input("keys").expect("connects");
+    assert_eq!(hw(&s).connected_input_names(), ["Keys"]);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
 
     fake.unplug(EndpointId::from_raw(1));
     assert_eq!(
@@ -766,11 +700,14 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
         ]
     );
     assert!(
-        !io.is_any_input_connected(),
+        !hw(&s).is_any_input_connected(),
         "no longer listed as connected"
     );
-    assert!(io.connected_input_names().is_empty());
-    assert!(io.ports().list_input_ports().is_empty(), "the port is gone");
+    assert!(hw(&s).connected_input_names().is_empty());
+    assert!(
+        hw(&s).ports().list_input_ports().is_empty(),
+        "the port is gone"
+    );
 }
 
 /// A session over a fake OS with the device `Keys` (id 1) and `Pads` (id 2)
@@ -812,10 +749,7 @@ fn keyboards(
 /// Connects `name`, and updates: the `Poll` phase wires the new inlet.
 #[cfg(feature = "midi-hardware")]
 fn connect(s: &mut Session, name: &str) {
-    s.testing_midi_io()
-        .expect("the OS MIDI layer")
-        .connect_input(name)
-        .expect("connects");
+    s.midi().connect_input(name).expect("connects");
     let _ = s.update();
 }
 
@@ -860,9 +794,7 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
     notes.sort_unstable();
     assert_eq!(notes, vec![60, 64], "both devices are heard");
 
-    s.testing_midi_io()
-        .expect("the OS MIDI layer")
-        .disconnect_input("keys");
+    let _ = s.midi().disconnect_input("keys");
     let _ = s.update();
     assert_eq!(
         plan_nodes(&s),
@@ -890,9 +822,7 @@ fn a_disconnected_device_ends_its_held_key_once() {
     assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
     roll(&s, 8_192);
     assert_eq!(note_ons(&seen).len(), 1);
-    s.testing_midi_io()
-        .expect("the OS MIDI layer")
-        .disconnect_input("keys");
+    let _ = s.midi().disconnect_input("keys");
     let _ = s.update();
     roll(&s, 8_192);
     let offs: Vec<u8> = seen
@@ -967,13 +897,15 @@ fn a_device_whose_inlet_overflows_is_reported() {
 fn a_device_past_the_slots_is_refused() {
     let (mut s, fake, seen) = keyboards(std::num::NonZeroUsize::MIN);
     connect(&mut s, "keys");
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    let refused = io.connect_input("pads").unwrap_err();
+    let refused = s.midi().connect_input("pads").unwrap_err();
     assert!(
-        matches!(refused, tutti_midi_hardware::Error::NoFreeSlot(_)),
+        matches!(
+            refused,
+            tutti_session::MidiError::Hardware(tutti_midi_hardware::Error::NoFreeSlot(_))
+        ),
         "{refused:?}"
     );
-    assert_eq!(io.ports().list_input_ports().len(), 1);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
     roll(&s, 1_024);
     assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
     roll(&s, 8_192);
@@ -987,9 +919,8 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_output("synth").expect("connects");
-    assert!(io.output().is_some());
+    s.midi().connect_output("synth").expect("connects");
+    assert!(s.midi().output().is_some());
 
     fake.unplug(EndpointId::from_raw(10));
     assert_eq!(
@@ -999,7 +930,7 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
             ("output lost", "Synth".to_string())
         ]
     );
-    assert!(io.output().is_none());
+    assert!(s.midi().output().is_none());
 }
 
 /// **A watch that dies is reported once**, with its reason: the list is frozen
@@ -1036,15 +967,14 @@ fn a_remembered_device_resolves_through_the_session() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    let saved = io.devices().list().remove(0);
+    let saved = hw(&s).devices().list().remove(0);
     assert_eq!(
-        io.devices().resolve(&saved),
+        hw(&s).devices().resolve(&saved),
         Resolved::SameName(saved.clone())
     );
     fake.unplug(EndpointId::from_raw(1));
     let _ = s.update();
-    assert_eq!(io.devices().resolve(&saved), Resolved::Missing);
+    assert_eq!(hw(&s).devices().resolve(&saved), Resolved::Missing);
 }
 
 /// **Another device's removal leaves a held input and output alone.**
@@ -1056,18 +986,17 @@ fn another_devices_removal_leaves_a_held_input_open() {
     plug(&fake, 2, "Pads", PortDirection::Input);
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("keys").expect("connects");
-    io.connect_output("synth").expect("connects");
+    s.midi().connect_input("keys").expect("connects");
+    s.midi().connect_output("synth").expect("connects");
 
     fake.unplug(EndpointId::from_raw(2));
     assert_eq!(
         device_events(&s.update()),
         [("removed", "Pads".to_string())]
     );
-    assert_eq!(io.connected_input_names(), ["Keys"]);
-    assert_eq!(io.ports().list_input_ports().len(), 1);
-    assert!(io.output().is_some());
+    assert_eq!(hw(&s).connected_input_names(), ["Keys"]);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
+    assert!(s.midi().output().is_some());
 }
 
 /// **The feeds are partial, as audio's declarations are: an edge a host
@@ -1090,6 +1019,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     let (other, _) = tap(&mut s);
     let (hand, _) = s.graph().add(MidiClipNode::new(note(
         62,
+        MF,
         Beat(1.0 / 3.0),
         BeatDuration(1.0),
     )));
@@ -1100,7 +1030,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .play_clip(
             synth,
             Beat(0.0),
-            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .unwrap();
     let clip = s.midi().clip(synth).expect("the target's clip");
@@ -1190,8 +1120,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("wire").expect("connects");
+    s.midi().connect_input("wire").expect("connects");
 
     let mut device = Endpoint::new(Capabilities {
         midi1: true,
@@ -1221,7 +1150,8 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
         panic!("one StreamSettled event expected, got {settled:?}");
     };
     assert_eq!(
-        io.inputs()
+        hw(&s)
+            .inputs()
             .iter()
             .find(|d| d.id == *id)
             .map(|d| d.name.as_str()),
@@ -1229,7 +1159,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     );
     assert_eq!(stream.basis(), Basis::Negotiated);
     assert_eq!(stream.config().protocol, Protocol::Midi2);
-    assert_eq!(io.stream(id), Some(*stream));
+    assert_eq!(hw(&s).stream(id), Some(*stream));
 }
 
 /// **A MIDI-CI peer of an input the session holds open is a session event**
@@ -1250,8 +1180,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("wire").expect("connects");
+    s.midi().connect_input("wire").expect("connects");
     // Off by default: the app says who it is, with an id it registered.
     s.midi()
         .enable_ci(tutti_ump::DeviceIdentity {
@@ -1279,7 +1208,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     })
     .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    let peer = Muid::new(0x0012_3456).unwrap();
+    let peer = Muid::of(0x0012_3456);
     let data = DiscoveryData::new(
         tutti_ump::DeviceIdentity {
             manufacturer: tutti_ump::ManufacturerId::of(0x41),
@@ -1334,7 +1263,8 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
         panic!("one peer found, got {found:?}");
     };
     assert_eq!(
-        io.inputs()
+        hw(&s)
+            .inputs()
             .iter()
             .find(|d| d.id == *device_id)
             .map(|d| d.name.as_str()),
@@ -1375,8 +1305,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("wire").expect("connects");
+    s.midi().connect_input("wire").expect("connects");
     let identity = |manufacturer| DeviceIdentity {
         manufacturer,
         family: [U7::of(1); 2],
@@ -1403,7 +1332,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     })
     .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    let peer = Muid::new(0x0012_3456).unwrap();
+    let peer = Muid::of(0x0012_3456);
     let profile = ProfileId::Standard(StandardProfile::new(
         U7::of(0x21),
         U7::of(2),
@@ -1537,6 +1466,188 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     assert_eq!(listed[0].channels(), Some(ProfileChannels::of(2)));
 }
 
+/// **A MIDI-CI peer's MIDI Message Report is asked for through the session**
+/// (M2-101 section 9): a peer whose Discovery Reply declares Process Inquiry is
+/// sent an Inquiry: Process Inquiry Capabilities by the session's tick; its reply
+/// with MIDI Message Report makes it a `Midi::report_peers` handle
+/// (`MidiEvent::CiProcess`); `Midi::report` sends an Inquiry: MIDI Message Report
+/// (Sub-ID#2 `0x42`) with the bitmaps asked, and the peer's Reply and End are
+/// reported as `ReportBegan` and `ReportEnded`.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
+    use tutti_midi_device::{
+        BlockName, CI_VERSION, ChannelControllers, CiCategories, CiDeviceId, CiHeader, CiMessage,
+        DataControl, Decoded, DiscoveryData, MaxSysexSize, Muid, NoteData, ProcessFeatures,
+        ReportRequest, ReportScope, SystemMessages,
+    };
+    use tutti_midi_hardware::{Capabilities, Endpoint, FunctionBlock, ProcessChange};
+    use tutti_ump::{
+        DeviceIdentity, Direction, FirstGroup, FunctionBlockId, GroupSpan, ManufacturerId,
+        SysexAssembler, SysexStep, U7,
+    };
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Wire", PortDirection::Duplex);
+    let _ = s.update();
+    s.midi().connect_input("wire").expect("connects");
+    let identity = |manufacturer| DeviceIdentity {
+        manufacturer,
+        family: [U7::of(1); 2],
+        model: [U7::of(2); 2],
+        revision: [U7::of(3); 4],
+    };
+    s.midi()
+        .enable_ci(identity(ManufacturerId::NON_COMMERCIAL))
+        .expect("hardware");
+    let block = FunctionBlock::builder(
+        FunctionBlockId::new(0).unwrap(),
+        Direction::Bidirectional,
+        FirstGroup::new(0).unwrap(),
+        GroupSpan::new(1).unwrap(),
+    )
+    .midi_ci(2, 0)
+    .name(BlockName::new("Main").unwrap())
+    .build()
+    .unwrap();
+    let mut device = Endpoint::new(Capabilities {
+        midi1: true,
+        midi2: true,
+        ..Capabilities::default()
+    })
+    .with_function_block(block);
+    let raw = EndpointId::from_raw(7);
+    let peer = Muid::of(0x0012_3456);
+    let at = |device_id| CiHeader {
+        device_id,
+        ci_version: CI_VERSION,
+        source: peer,
+    };
+    let asked = ReportScope::FunctionBlock {
+        system: SystemMessages::SONG_POSITION,
+        controllers: ChannelControllers::CONTROL_CHANGE,
+        notes: NoteData::empty(),
+    };
+    let room = SysexAssembler::room_for(256, 1, 16);
+    let mut assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16);
+    let start = Instant::now();
+    let mut seen = Vec::new();
+    let mut inquiries = Vec::new();
+    let mut device_id = None;
+    let mut asked_for = false;
+    for ms in 0..80 {
+        let now = start + Duration::from_millis(ms);
+        for event in update_at(&mut s, now) {
+            match event {
+                SessionEvent::Midi(MidiEvent::CiPeer { device, .. }) => device_id = Some(device),
+                SessionEvent::Midi(MidiEvent::CiProcess { change, .. }) => seen.push(change),
+                _ => {}
+            }
+        }
+        if !asked_for
+            && seen
+                .iter()
+                .any(|c| matches!(c, ProcessChange::Capabilities { .. }))
+            && let Some(id) = &device_id
+        {
+            let peers = s.midi().report_peers(id);
+            let [handle] = &peers[..] else {
+                panic!("one peer that can be asked: {peers:?}");
+            };
+            s.midi()
+                .report(handle.ask(ReportRequest::new(DataControl::Full, asked)))
+                .expect("the peer supports it");
+            asked_for = true;
+        }
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(raw) {
+            if let Ok(message @ tutti_ump::Message::Stream(_)) = ump.decode() {
+                device.reply(message, &mut answers);
+                continue;
+            }
+            assembler.begin_block();
+            let SysexStep::Complete(done) = assembler.push(ump) else {
+                continue;
+            };
+            match CiMessage::decode(assembler.message(done).payload()) {
+                Decoded::Message(CiMessage::Discovery { header, .. }) => {
+                    let data = DiscoveryData::new(
+                        identity(ManufacturerId::of(0x41)),
+                        CiCategories::PROCESS_INQUIRY,
+                        MaxSysexSize::of(256),
+                    );
+                    answers.extend(
+                        CiMessage::DiscoveryReply {
+                            header: CiHeader::new(peer),
+                            to: header.source,
+                            data,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::ProcessCapabilitiesInquiry { header, .. }) => {
+                    answers.extend(
+                        CiMessage::ProcessCapabilitiesReply {
+                            header: at(CiDeviceId::FunctionBlock),
+                            to: header.source,
+                            features: ProcessFeatures::MIDI_MESSAGE_REPORT,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::MessageReportInquiry {
+                    header,
+                    control,
+                    scope,
+                    ..
+                }) => {
+                    inquiries.push((header.device_id, control, scope));
+                    answers.extend(
+                        CiMessage::MessageReportReply {
+                            header: at(header.device_id),
+                            to: header.source,
+                            scope,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                    answers.extend(
+                        CiMessage::MessageReportEnd {
+                            header: at(header.device_id),
+                            to: header.source,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                _ => {}
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(raw, ump, now));
+        }
+    }
+    assert_eq!(
+        inquiries,
+        [(CiDeviceId::FunctionBlock, DataControl::Full, asked)],
+        "one Inquiry: MIDI Message Report, on the Function Block, as asked"
+    );
+    let ended = [
+        ProcessChange::ReportBegan {
+            group: MidiGroup::FIRST,
+            muid: peer,
+            declared: asked,
+        },
+        ProcessChange::ReportEnded {
+            group: MidiGroup::FIRST,
+            muid: peer,
+        },
+    ];
+    let report: Vec<_> = seen
+        .iter()
+        .filter(|c| !matches!(c, ProcessChange::Capabilities { .. }))
+        .collect();
+    assert_eq!(report, ended.iter().collect::<Vec<_>>());
+}
+
 /// **The hardware out JR-stamps only as its device's configuration says**
 /// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
 /// Configuration Notification has said it receives them). The
@@ -1554,13 +1665,8 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     plug(&fake, 7, "Dev", PortDirection::Duplex);
     let _ = s.update();
     let raw = EndpointId::from_raw(7);
-    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input("dev").expect("connects");
-    io.connect_output("dev").expect("connects");
-    s.midi().set_hardware_out(Some(UmpOut::new(
-        Box::new(io.clone()),
-        SampleRate::of(RATE),
-    )));
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
 
     // The device answers the session's Stream messages as an Endpoint does.
     let mut device = Endpoint::new(Capabilities {

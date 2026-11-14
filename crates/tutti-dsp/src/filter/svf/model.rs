@@ -113,7 +113,7 @@ impl SvfModel {
     /// The coefficients of the trapezoidal form, which carry `g`, `k` and the
     /// output weights.
     #[must_use]
-    pub fn coeffs(&self) -> &SvfCoeffs {
+    pub(crate) fn coeffs(&self) -> &SvfCoeffs {
         &self.coeffs
     }
 
@@ -150,7 +150,7 @@ impl SvfModel {
     /// `z = (1 + g s) / (1 - g s)`. The roots are found in the cancellation-free
     /// form (a real pair `q` and `1 / q`).
     #[must_use]
-    pub fn poles(&self) -> [Complex64; 2] {
+    fn poles(&self) -> [Complex64; 2] {
         let (g, k) = (self.coeffs.g, self.coeffs.k);
         let map = |s: Complex64| (1.0 + g * s) / (1.0 - g * s);
         let disc = k * k - 4.0;

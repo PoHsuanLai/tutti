@@ -28,23 +28,47 @@ fn dry(name: &str, args: &[&str]) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn every_recipe_plans_with_no_arguments() {
-    for (name, ..) in RECIPES {
-        assert!(!dry(name, &[]).is_empty(), "{name}");
+/// The fewest arguments `name` plans with: none, except the version
+/// `release` needs.
+fn least_args(name: &str) -> &'static [&'static str] {
+    match name {
+        "release" => &["0.1.0"],
+        "conformance" => &["--results", "r"],
+        _ => &[],
     }
 }
 
 #[test]
-fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 42);
+fn every_recipe_plans_with_its_least_arguments() {
+    for (name, ..) in RECIPES {
+        assert!(!dry(name, least_args(name)).is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn release_takes_one_plain_version() {
+    assert_eq!(
+        dry("release", &["0.1.0"]),
+        ["release 0.1.0: set the workspace version and path pins, write the changelog section"]
+    );
+    for bad in [&[][..], &["v0.1.0"], &["0.1"], &["0.1.0", "x"]] {
+        assert!(
+            plan(
+                "release",
+                &bad.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+                &ctx()
+            )
+            .is_err(),
+            "{bad:?}"
+        );
+    }
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.
 #[test]
 fn no_recipe_runs_a_shell_script() {
     for (name, ..) in RECIPES {
-        for line in dry(name, &[]) {
+        for line in dry(name, least_args(name)) {
             assert!(!line.contains("scripts/"), "{name}: {line}");
         }
     }
@@ -64,6 +88,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
     for (recipe, gate) in [
         ("check-layout", "gate check-layout"),
         ("check-ffi", "gate check-ffi"),
+        ("check-errors", "gate check-errors"),
         ("check-guards", "gate check-guards"),
         ("check-hosting", "gate check-hosting"),
         ("check-session", "gate check-session"),
@@ -71,6 +96,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         ("check-value-traits", "gate check-value-traits"),
         ("check-doc-refs", "gate check-doc-refs"),
         ("check-pointers", "gate check-pointers"),
+        ("check-platform-seam", "gate check-platform-seam"),
         ("check-conformance", "gate check-conformance"),
     ] {
         assert_eq!(dry(recipe, &[]), [gate]);
@@ -83,6 +109,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-canonical-paths",
         "gate check-layout",
         "gate check-ffi",
+        "gate check-errors",
         "gate check-guards",
         "gate check-hosting",
         "gate check-session",
@@ -90,6 +117,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-value-traits",
         "gate check-doc-refs",
         "gate check-pointers",
+        "gate check-platform-seam",
         "gate check-conformance",
     ] {
         assert!(ci.iter().any(|l| l == want), "{want}");
@@ -215,6 +243,19 @@ fn check_windows_stubs_under_the_target_dir() {
 }
 
 #[test]
+fn package_packages_without_building_and_ci_runs_it() {
+    assert_eq!(
+        dry("package", &[]),
+        ["cargo package --locked --no-verify -p <each crate under crates/>"]
+    );
+    assert!(
+        dry("ci", &[])
+            .iter()
+            .any(|l| l.starts_with("cargo package --locked --no-verify"))
+    );
+}
+
+#[test]
 fn deny_probes_cargo_deny_first() {
     let steps = plan("deny", &[], &ctx()).unwrap();
     assert_eq!(steps[0], Step::RequireCargoDeny);
@@ -264,7 +305,7 @@ fn profile_bench_keeps_its_defaults_and_its_glob() {
 fn verify_audio_defaults_its_out_dir() {
     let s = dry("verify-audio", &[]);
     assert_eq!(s.len(), 11);
-    assert!(s[0].ends_with("render_cases -- /tmp/tutti-verify/sampler"));
+    assert!(s[0].ends_with("render_sampler_cases -- /tmp/tutti-verify/sampler"));
     assert!(dry("verify-audio", &["o"])[10].ends_with("verify_dsp.py o/dsp"));
 }
 
@@ -300,4 +341,68 @@ fn a_dependency_asked_for_twice_runs_once() {
     p.dep("plugin-probe").unwrap();
     p.dep("plugin-probe").unwrap();
     assert_eq!(p.out.len(), 1);
+}
+
+#[test]
+fn conformance_reads_its_options_and_defaults_the_output() {
+    let s = dry("conformance", &["--results", "junit"]);
+    assert_eq!(s.len(), 1);
+    assert_eq!(
+        s[0],
+        "conformance: join /repo/junit/<os>.xml to the inventories, write /repo/site/conformance/index.html, ../index.html and ../badges/*.json"
+    );
+    let s = dry("conformance", &["--out", "o", "--results", "j"]);
+    assert!(s[0].contains("/repo/j/<os>.xml") && s[0].contains("write /repo/o/index.html"));
+}
+
+#[test]
+fn conformance_refuses_a_missing_repeated_or_unknown_option() {
+    let plan = |a: &[&str]| {
+        let a: Vec<String> = a.iter().map(|s| (*s).to_owned()).collect();
+        plan("conformance", &a, &ctx())
+    };
+    assert!(plan(&[]).unwrap_err().contains("--results"));
+    assert!(plan(&["--results"]).unwrap_err().contains("needs a value"));
+    assert!(
+        plan(&["--results", "a", "--results", "b"])
+            .unwrap_err()
+            .contains("twice")
+    );
+    assert!(plan(&["--nope", "a"]).is_err());
+}
+
+#[test]
+fn coverage_builds_the_plugins_under_llvm_cov_then_runs_it() {
+    let steps = plan("coverage", &[], &ctx()).unwrap();
+    assert_eq!(steps[0], Step::RequireLlvmCov);
+    assert_eq!(
+        steps[1].display(),
+        "(cargo llvm-cov show-env) cargo build --locked -p tutti-plugin-server --bin plugin-server"
+    );
+    assert!(
+        steps[2]
+            .display()
+            .ends_with("-p tutti-plugin-probe --bin plugin-probe")
+    );
+    let run = steps[3].display();
+    assert!(
+        run.starts_with("cargo llvm-cov nextest --locked --ignore-run-fail --workspace"),
+        "{run}"
+    );
+    assert!(run.ends_with("--html --output-dir site/coverage"), "{run}");
+    assert_eq!(steps.len(), 4);
+}
+
+#[test]
+fn coverage_takes_a_package_list_in_place_of_the_workspace() {
+    let s = dry(
+        "coverage",
+        &["--package", "tutti-clap-host,tutti-ump", "--out", "o"],
+    );
+    let run = s.last().unwrap();
+    assert!(
+        run.contains("-p tutti-clap-host -p tutti-ump --html --output-dir o"),
+        "{run}"
+    );
+    assert!(!run.contains("--workspace"));
 }

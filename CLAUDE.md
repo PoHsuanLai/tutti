@@ -190,6 +190,9 @@ std only. A rule the compiler already enforces is not a gate.
 - A pure algorithm over slices goes in `tutti-dsp` (a measurement in `tutti-measure`); a
   node file holds only the `Node` adapter.
 - A new trait states its boundary in one sentence without "and".
+- An error type derives `thiserror::Error` with its text in `#[error(..)]`; a hand
+  `impl Error for` is a row of the gate's allow-list with its reason (`cargo xtask
+  check-errors`), and a `pub` type named `...Error` implements `Error`.
 - Naming: an algorithm uses the theory name, a spec keeps its own, a *frame* is one value
   per channel, a *sample* is one value. A user-facing node API keeps the control word.
 - A comment states what the code does and the invariant it holds, in the present tense;
@@ -205,7 +208,7 @@ One workspace at the root; the `members` list is the source of truth. `crates/` 
 ships (directory name = package name, no nesting), `testing/` is never shipped, `xtask/`
 holds the development commands (std only, no dependencies, `publish = false`), and
 `vendor/` holds the VST3 SDK, which is never edited. No crate depends on Bevy; the Bevy
-adapter is [PoHsuanLai/bevy-tutti](https://github.com/PoHsuanLai/bevy-tutti).
+adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 
 **Layering.** Normal and build dependencies point strictly down this list
 (dev-dependencies may go anywhere); `cargo xtask check-layout` holds it:

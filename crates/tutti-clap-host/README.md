@@ -4,11 +4,11 @@ A host for CLAP plugins written in Rust, with no `unsafe` code needed on your si
 
 It loads a CLAP plugin, runs audio and MIDI through it, and exposes its parameters, saved state and editor window. Most people will use it through `tutti-plugin`, but it can be used directly if you only want to host CLAP plugins in your own application; it depends on a few other tutti crates for shared types.
 
-This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
 ### Contribution
 

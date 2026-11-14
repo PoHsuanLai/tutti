@@ -6,7 +6,7 @@ use super::*;
 // These three are *readings*: values the engine measures and reports back.
 //
 // That distinction is what separates them from the controls they resemble.
-// `Correlation` and `Pan` share `Depth`'s range and most of its algebra, and
+// `Correlation` and `StereoBalance` share `Depth`'s range and most of its algebra, and
 // `Confidence` shares `Mix`'s range — but a meter's phase coherence is not an
 // LFO's modulation amount, and swapping them is silent. This is the same
 // argument `Q` and `Resonance` settle by splitting: two quantities that
@@ -112,36 +112,31 @@ impl Correlation {
 }
 
 unit! {
-    /// Position on the left/right axis, `-1..1`. `-1` is hard left, `0`
-    /// center, `+1` hard right.
+    /// Where a stereo signal's energy sits on the left/right axis, `-1..1`:
+    /// `(R - L) / (L + R)` of the two channels' levels. `-1` is all left, `0`
+    /// even, `+1` all right.
     ///
-    /// A *position*, like [`Azimuth`] — but on a segment rather than a circle,
-    /// so it saturates at the ends instead of wrapping, and unlike `Azimuth`
-    /// it orders (left really is less than right).
-    ///
-    /// Distinct from [`Depth`] for the reason this section exists: a pan
-    /// position and a modulation amount are different quantities that happen
-    /// to share a range.
-    pub struct Pan(pub f32): Unit, Ordered, Bounded, Signed;
+    /// A reading, not a [`Pan`]: it is measured from a signal, not set on a
+    /// processor. Feeding a meter's balance back as a pan position is a
+    /// crossing a caller spells out, `Pan(balance.get())`.
+    pub struct StereoBalance(pub f32): Unit, Ordered, Bounded, Signed;
 }
-// NOT `Scalable`: half of a pan position is not a pan position — the
-// same argument `Mix` makes. Moving a source is `Azimuth::lerp_shortest`'s
-// job on the circle, and interpolation here is a `lerp`, not a `*`.
-// NOT `Additive`: two pan positions do not sum into a third.
+// NOT `Scalable`: a ratio of measured energy rescaled is no longer that ratio.
+// NOT `Additive`: two balances do not sum into a third.
 
-impl Pan {
-    /// Hard left.
-    pub const LEFT: Pan = Pan(-1.0);
-    /// Centered — equal in both channels.
-    pub const CENTER: Pan = Pan(0.0);
-    /// Hard right.
-    pub const RIGHT: Pan = Pan(1.0);
+impl StereoBalance {
+    /// All of the energy in the left channel.
+    pub const LEFT: StereoBalance = StereoBalance(-1.0);
+    /// Equal energy in both channels.
+    pub const CENTER: StereoBalance = StereoBalance(0.0);
+    /// All of the energy in the right channel.
+    pub const RIGHT: StereoBalance = StereoBalance(1.0);
 
     /// Constrain into `-1..=1`.
     #[inline]
     #[must_use]
-    pub fn new_clamped(v: f32) -> Pan {
-        Pan(v).clamp(Self::LEFT, Self::RIGHT)
+    pub fn new_clamped(v: f32) -> StereoBalance {
+        StereoBalance(v).clamp(Self::LEFT, Self::RIGHT)
     }
 }
 

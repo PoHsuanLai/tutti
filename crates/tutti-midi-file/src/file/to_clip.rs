@@ -16,7 +16,7 @@ use unicode_normalization::UnicodeNormalization;
 use crate::{FileEvent, Meta, MidiFile, Result, SmfFormat, TextKind, Tick, Track};
 
 /// Why a file cannot be a clip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum ToClipError {
     /// A format 2 file holds independent sequences, each on its own

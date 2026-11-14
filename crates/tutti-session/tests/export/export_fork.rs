@@ -741,6 +741,23 @@ fn an_unforkable_node_refuses_the_export_by_key() {
     }
 }
 
+/// **A live audio input refuses the bounce by its key.** An inlet's frames
+/// come from a thread of its own, so a fork of it would render silence where
+/// the signal is: the bounce is refused naming the inlet, not written as a
+/// file that looks complete.
+#[test]
+fn a_live_audio_inlet_refuses_the_bounce_by_key() {
+    let mut session = session();
+    let (ring, _producer) =
+        tutti_graph::InletRing::pair(ChannelLayout::STEREO, Samples(256), SampleRate::of(RATE));
+    let inlet = session.graph().add_inlet(ring).expect("the graph's rate");
+    session.graph().connect(inlet, Root).unwrap().hard();
+    match refused(&mut session, buffers(0.05)) {
+        BounceError::NotForkable { node } => assert_eq!(node, inlet.erase()),
+        other => panic!("expected the inlet's refusal by key, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The fork is gathered when the export starts and built where the job runs
 // ---------------------------------------------------------------------------

@@ -12,6 +12,8 @@
 //!   no graph edit.
 //! - [`InvalidateSink`]: the plugin changed structurally
 //!   ([`PluginInvalidation`], incl. latency); rewire + re-plan PDC.
+//! - [`TransportSink`]: the plugin asked the transport to do something
+//!   ([`TransportRequest`]); the application decides, and may do nothing.
 //!
 //! Each fans out to its subscribers, each ended by dropping its
 //! [`Subscription`]; there is no slot to replace and nothing to clear.
@@ -20,7 +22,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 use tutti_plugin_types::ParamEdit;
-use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
+use tutti_plugin_types::{PluginInvalidation, PluginRefresh, TransportRequest};
 
 /// A fan-out of callbacks for one kind of plugin notification, `A`.
 ///
@@ -82,6 +84,9 @@ pub enum Notice {
     Refresh(PluginRefresh),
     /// The plugin changed structurally (latency, tail, buses, a reload).
     Invalidate(PluginInvalidation),
+    /// The plugin asked the host's transport to do something. The host owns
+    /// the transport and may refuse.
+    Transport(TransportRequest),
 }
 
 /// A plugin-initiated parameter edit: a [`ParamEdit`] (the parameter, its value
@@ -96,6 +101,9 @@ pub type RefreshSink = Listener<PluginRefresh>;
 /// PDC must re-run. Latency and IO changes share one listener because they
 /// demand the identical host response.
 pub type InvalidateSink = Listener<PluginInvalidation>;
+/// **Transport requests** ([`TransportRequest`]): the plugin asked the host to
+/// start, stop, jump or loop. Each is delivered, in the order made.
+pub type TransportSink = Listener<TransportRequest>;
 
 impl<A> Clone for Listener<A> {
     fn clone(&self) -> Self {

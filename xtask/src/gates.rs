@@ -11,16 +11,20 @@
 mod canonical_paths;
 mod clap_sys;
 mod conformance;
+mod conformance_site;
 mod decode_boundary;
 mod doc_features;
 mod doc_refs;
+mod errors;
 mod ffi;
 mod guards;
 mod hosting;
+mod junit;
 mod layout;
 mod lex;
 mod lints;
 mod midi_spec;
+mod platform_seam;
 mod pointers;
 mod prose;
 mod range_types;
@@ -29,6 +33,7 @@ mod submodule_pins;
 mod test_paths;
 mod toml;
 mod value_traits;
+mod vst3_sdk;
 
 pub(crate) use doc_features::doc_runs;
 
@@ -96,6 +101,8 @@ pub(crate) enum Gate {
     Layout,
     /// `unsafe` lives only in the crates that hold it.
     Ffi,
+    /// Every error type derives `thiserror::Error`.
+    Errors,
     /// Every host callback runs under the panic guard.
     Guards,
     /// Every hosting impl is listed in the plugin contract.
@@ -110,6 +117,8 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// A platform cfg stands only on a `mod` declaration.
+    PlatformSeam,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
 }
@@ -123,6 +132,7 @@ impl Gate {
             Gate::SubmodulePins => "gate check-submodule-pins".to_owned(),
             Gate::Layout => "gate check-layout".to_owned(),
             Gate::Ffi => "gate check-ffi".to_owned(),
+            Gate::Errors => "gate check-errors".to_owned(),
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
@@ -130,6 +140,7 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
@@ -146,6 +157,7 @@ impl Gate {
             }
             Gate::Layout => layout::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::Ffi => ffi::check(&tree),
+            Gate::Errors => errors::check(&tree, errors::ALLOW),
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
@@ -155,15 +167,15 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
-                let midi = midi_spec_text();
                 let require =
                     conformance::Require::parse(std::env::var("TUTTI_CONFORMANCE").ok().as_deref());
                 conformance::check(
                     &tree,
                     sys.as_ref().map(|t| t as &dyn Tree).map_err(Clone::clone),
-                    midi.as_deref().map_err(Clone::clone),
+                    &midi_spec_text,
                     require,
                 )
             }
@@ -196,10 +208,11 @@ fn clap_sys_tree(repo: &RealTree) -> Result<RealTree, String> {
     })
 }
 
-/// The text of the M2-104 spec: the `.txt` of it in the `TUTTI_MIDI_SPECS`
-/// directory (searched recursively), or else what `pdftotext -layout` makes of
-/// the PDF there. The error names what is missing.
-fn midi_spec_text() -> Result<String, String> {
+/// The text of the spec `doc` names: the `.txt` of it in the
+/// `TUTTI_MIDI_SPECS` directory (searched recursively), or else what
+/// `pdftotext -layout` makes of the PDF there. The error names what is
+/// missing.
+fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
     let dir = std::env::var_os("TUTTI_MIDI_SPECS")
         .map(PathBuf::from)
         .ok_or("TUTTI_MIDI_SPECS is not set")?;
@@ -208,7 +221,7 @@ fn midi_spec_text() -> Result<String, String> {
         all.iter()
             .find(|p| {
                 let name = p.rsplit('/').next().unwrap_or(p);
-                name.starts_with("M2-104-UM") && name.ends_with(ext)
+                name.starts_with(doc.source) && name.ends_with(ext)
             })
             .cloned()
     };
@@ -218,7 +231,8 @@ fn midi_spec_text() -> Result<String, String> {
     }
     let pdf = find(".pdf").ok_or_else(|| {
         format!(
-            "no M2-104-UM .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
+            "no {}* .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
+            doc.source,
             dir.display()
         )
     })?;
@@ -234,26 +248,118 @@ fn midi_spec_text() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `conformance --results <dir> --out <dir>`: the dashboard at `<out>/index.html`,
+/// the landing page beside it at `<out>/../index.html` and the badges at `<out>/../badges/<area>-<os>.json`, from the JUnit files
+/// `<dir>/<os>.xml` (an OS with no file has run nothing).
+pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Result<(), String> {
+    let mut texts = Vec::new();
+    let entries = fs::read_dir(results).map_err(|e| {
+        format!(
+            "cannot read the results directory {}: {e}",
+            results.display()
+        )
+    })?;
+    let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    files.sort();
+    for path in files {
+        if path.extension().is_some_and(|x| x == "xml")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            let os = conformance_site::Os::from_name(stem)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let xml =
+                fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            texts.push((os, String::from_utf8_lossy(&xml).into_owned()));
+        }
+    }
+    if texts.is_empty() {
+        return Err(format!("no <os>.xml JUnit file in {}", results.display()));
+    }
+    let tree = RealTree {
+        root: root.to_path_buf(),
+    };
+    let report = conformance_site::report(&tree, &texts)?;
+    let site = out.parent().unwrap_or(out);
+    let badges_dir = site.join("badges");
+    let mut files = vec![
+        (out.join("index.html"), conformance_site::dashboard(&report)),
+        (site.join("index.html"), conformance_site::landing()),
+    ];
+    for (name, json) in conformance_site::badges(&report) {
+        files.push((badges_dir.join(name), json));
+    }
+    for (path, contents) in files {
+        fs::create_dir_all(path.parent().expect("a file path has a parent"))
+            .and_then(|()| fs::write(&path, contents))
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
+    for f in &report {
+        for os in conformance_site::Os::ALL {
+            let name = os.name();
+            if !f.has_results(os) {
+                println!("{} {name}: no results", f.name);
+                continue;
+            }
+            let (covered, failing, applicable) = f.counts(os);
+            println!(
+                "{} {name}: {covered}/{applicable} covered, {failing} failing",
+                f.name
+            );
+        }
+    }
+    Ok(())
+}
+
 /// `conformance-inventory <format>`: rewrite the format's inventory file from
 /// its spec source, keeping the hand-written columns.
 pub(crate) fn conformance_inventory(root: &Path, format: &str) -> Result<(), String> {
     match format {
         "clap" => clap_inventory(root),
         "midi" => midi_inventory(root),
+        "vst3" => vst3_inventory(root),
         _ => Err(format!(
-            "no inventory extractor for `{format}` (`clap` or `midi`)"
+            "no inventory extractor for `{format}` (`clap`, `vst3` or `midi`)"
         )),
     }
+}
+
+fn vst3_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    let items = vst3_sdk::extract(&repo)?;
+    let path = "testing/conformance/vst3.txt";
+    let (text, added, removed) = conformance::regenerate_vst3(repo.read(path).as_deref(), &items)?;
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} rows", items.len());
+    for id in &added {
+        println!("added {id} (no paraphrase: the gate refuses it until one is written)");
+    }
+    for id in &removed {
+        println!("removed {id}: its row is gone from the file; check its tests' tags");
+    }
+    Ok(())
 }
 
 fn midi_inventory(root: &Path) -> Result<(), String> {
     let repo = RealTree {
         root: root.to_path_buf(),
     };
-    let items = midi_spec::extract(&midi_spec_text()?)?;
-    let path = "testing/conformance/midi-m2-104.txt";
-    let (text, added, removed) = conformance::regenerate_midi(repo.read(path).as_deref(), &items)?;
-    let file = root.join(path);
+    for doc in midi_spec::DOCS {
+        midi_doc_inventory(root, &repo, doc)?;
+    }
+    Ok(())
+}
+
+fn midi_doc_inventory(root: &Path, repo: &RealTree, doc: &midi_spec::Doc) -> Result<(), String> {
+    let items = midi_spec::extract(doc, &midi_spec_text(doc)?)?;
+    let path = format!("testing/conformance/{}", doc.file);
+    let (text, added, removed) =
+        conformance::regenerate_midi(doc, repo.read(&path).as_deref(), &items)?;
+    let file = root.join(&path);
     fs::create_dir_all(file.parent().expect("a file path has a parent"))
         .and_then(|()| fs::write(&file, text))
         .map_err(|e| format!("cannot write {}: {e}", file.display()))?;

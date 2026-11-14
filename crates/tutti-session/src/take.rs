@@ -49,13 +49,13 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, OnceLock};
 
 use thiserror::Error;
+use tutti_buffers::{Interleaved, Sink, SinkFailed};
 use tutti_codec::{FileOut, Format, Spec};
 use tutti_cpal::StreamLatency;
 use tutti_graph::{MissingSource, NodeKey, TapAlign, TapReader};
 use tutti_tempo::TempoMap;
 use tutti_types::{
-    At, Beat, ChannelLayout, Frame, SampleRate, Samples, Seconds, Sink, SinkFailed,
-    first_frame_at_or_after,
+    At, Beat, ChannelLayout, Frame, SampleRate, Samples, Seconds, first_frame_at_or_after,
 };
 
 use crate::jobs::{JobFailed, Landed, Landings};
@@ -226,7 +226,7 @@ impl TakeTarget {
     /// A sink of the caller's. It must be as wide as the input and at the
     /// graph's rate (a sink carries no rate to check); a width that differs is
     /// [`TakeError::Width`].
-    pub fn sink(sink: impl Sink + Send + 'static) -> Self {
+    pub fn sink(sink: impl Sink<Sample = f32> + Send + 'static) -> Self {
         Self {
             kind: TargetKind::Sink(Box::new(sink)),
         }
@@ -236,17 +236,17 @@ impl TakeTarget {
 /// A [`Sink`] that can be finalized through a box.
 trait DynSink: Send {
     fn layout(&self) -> ChannelLayout;
-    fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed>;
+    fn write(&mut self, frames: Interleaved<'_, f32>) -> Result<(), SinkFailed>;
     fn finalize(self: Box<Self>) -> std::io::Result<()>;
 }
 
-impl<S: Sink + Send> DynSink for S {
+impl<S: Sink<Sample = f32> + Send> DynSink for S {
     fn layout(&self) -> ChannelLayout {
         Sink::layout(self)
     }
 
-    fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed> {
-        Sink::write(self, interleaved)
+    fn write(&mut self, frames: Interleaved<'_, f32>) -> Result<(), SinkFailed> {
+        Sink::write(self, frames)
     }
 
     fn finalize(self: Box<Self>) -> std::io::Result<()> {
@@ -928,6 +928,11 @@ impl Pump {
         let width = usize::from(layout.count());
         let mut scratch = vec![0.0f32; PASS_FRAMES * width];
         let silence = vec![0.0f32; PASS_FRAMES * width];
+        // A whole number of frames at the tap's width, so the view builds; a
+        // zero-width tap has nothing to take.
+        let Ok(silence) = Interleaved::new(&silence, layout) else {
+            return Err(TakeError::NeverStarted);
+        };
         let mut placement: Option<Placement> = None;
         // The graph frame the next frame written belongs to.
         let mut cursor: Option<Frame> = None;
@@ -962,7 +967,7 @@ impl Pump {
                 // place as silence so the take stays aligned.
                 if let Some(next) = cursor {
                     let gap = lo.since(next).map_or(0, Samples::get);
-                    if !write_silence(&mut *self.sink, &silence, width, gap) {
+                    if !write_silence(&mut *self.sink, silence, gap) {
                         failed = true;
                         break 'pump;
                     }
@@ -978,7 +983,13 @@ impl Pump {
                 }
                 let from = lo.since(first).map_or(0, Samples::get);
                 let to = hi.since(first).map_or(0, Samples::get);
-                if self.sink.write(&scratch[from * width..to * width]).is_err() {
+                // `popped` whole frames at the tap's width, so the view builds.
+                let Ok(popped_view) = Interleaved::new(&scratch[..popped * width], layout) else {
+                    failed = true;
+                    break 'pump;
+                };
+                let kept = popped_view.window(Samples(from)..Samples(to));
+                if self.sink.write(kept).is_err() {
                     failed = true;
                     break 'pump;
                 }
@@ -997,7 +1008,7 @@ impl Pump {
             && self.reader.next_frame() >= end
         {
             let gap = end.since(next).map_or(0, Samples::get);
-            if write_silence(&mut *self.sink, &silence, width, gap) {
+            if write_silence(&mut *self.sink, silence, gap) {
                 written += gap;
                 lost += gap;
             } else {
@@ -1044,11 +1055,14 @@ impl Pump {
 
 /// Writes `frames` frames of silence, a pass at a time. `false`: the sink
 /// refused.
-fn write_silence(sink: &mut dyn DynSink, silence: &[f32], width: usize, frames: usize) -> bool {
+fn write_silence(sink: &mut dyn DynSink, silence: Interleaved<'_, f32>, frames: usize) -> bool {
     let mut left = frames;
     while left > 0 {
-        let now = left.min(silence.len() / width);
-        if sink.write(&silence[..now * width]).is_err() {
+        let now = left.min(silence.len().get());
+        if sink
+            .write(silence.window(Samples::ZERO..Samples(now)))
+            .is_err()
+        {
             return false;
         }
         left -= now;
@@ -1068,11 +1082,12 @@ mod tests {
     struct Keep(Arc<Mutex<Vec<f32>>>);
 
     impl Sink for Keep {
+        type Sample = f32;
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::MONO
         }
-        fn write(&mut self, interleaved: &[f32]) -> Result<(), SinkFailed> {
-            self.0.lock().unwrap().extend_from_slice(interleaved);
+        fn write(&mut self, frames: Interleaved<'_, f32>) -> Result<(), SinkFailed> {
+            self.0.lock().unwrap().extend_from_slice(frames.samples());
             Ok(())
         }
         fn finalize(self) -> std::io::Result<()> {

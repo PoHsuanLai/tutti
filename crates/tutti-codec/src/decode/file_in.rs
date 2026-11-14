@@ -2,11 +2,11 @@
 //!
 //! [`FileIn`] decodes an audio file sequentially, frame by frame, without
 //! loading the whole file into RAM. It is a [`Source`]: [`pull`] fills a
-//! caller buffer of flat interleaved `f32` **at the file's own channel width**
+//! caller's interleaved `f32` view **at the file's own channel width**
 //! from the current cursor and reports how many **frames** it produced (a short
 //! count, then [`Pull::Ended`] at end-of-stream, or [`Pull::Failed`] at a decode
 //! fault). [`layout`](Source::layout) reports that
-//! width, so a caller sizes its buffer from the trait and never has to ask the
+//! width, so a caller sizes its view from the trait and never has to ask the
 //! concrete type.
 //!
 //! It is the read edge, the counterpart of [`FileOut`](crate::FileOut).
@@ -34,8 +34,8 @@ use symphonia::core::codecs::audio::well_known::CODEC_ID_FLAC;
 use symphonia::core::errors::{Error, SeekErrorKind};
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use symphonia::core::units::Timestamp;
+use tutti_buffers::{FiniteSource, InterleavedMut, Pull, Source};
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
-use tutti_types::{FiniteSource, Pull, Source};
 
 use super::error::convert;
 use super::placement::{topology_of, unstated};
@@ -56,7 +56,7 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 ///
 /// Decodes sequentially without loading the whole file into memory (compare
 /// [`Wave::read`](crate::Wave::read)). [`pull`](Source::pull) fills a
-/// flat interleaved `f32` buffer **at the file's own channel width** and
+/// interleaved `f32` view **at the file's own channel width** and
 /// returns the frames produced; a short count and then [`Pull::Ended`] mark the
 /// end of the file. It does not downmix: [`topology`](Self::topology) says which speaker each
 /// channel feeds, and a caller wanting another width builds a
@@ -71,16 +71,18 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 ///
 /// ```no_run
 /// use tutti_codec::FileIn;
-/// use tutti_types::{Pull, Samples, Source};
+/// use tutti_buffers::{InterleavedMut, Pull, Source};
+/// use tutti_types::Samples;
 ///
 /// let mut file = FileIn::open("take.flac")?;
 /// let width = usize::from(file.layout().count());
 /// let mut buf = vec![0.0f32; 1024 * width];
+/// let out = InterleavedMut::new(&mut buf, file.layout())?;
 /// file.seek(Samples(48_000))?; // start one second in, at 48 kHz
-/// if let Pull::Frames(frames) = file.pull(&mut buf) {
+/// if let Pull::Frames(frames) = file.pull(out) {
 ///     println!("read {} frames of {width} channels", frames.get());
 /// }
-/// # Ok::<(), tutti_codec::DecodeError>(())
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct FileIn {
     reader: Box<dyn FormatReader>,
@@ -521,29 +523,31 @@ impl FileIn {
 impl FiniteSource for FileIn {}
 
 impl Source for FileIn {
+    type Sample = f32;
+
     /// The file's own width, which is what [`pull`](Self::pull) produces.
     fn layout(&self) -> ChannelLayout {
         self.topology.layout()
     }
 
-    /// Flat interleaved at [`layout`](Self::layout)'s width. `out` holds
-    /// `out.len() / channels` frames, and the count is that many FRAMES at
-    /// most, never samples.
-    ///
-    /// A trailing partial frame is not filled: a short frame desynchronises the
-    /// interleave for everything after it.
+    /// `out` holds `out.len()` frames, and the count is that many FRAMES at
+    /// most, never samples. A view of another width than
+    /// [`layout`](Self::layout) is [`Failed`](Pull::Failed).
     ///
     /// Frames and a verdict never arrive together: the frames read before a
     /// decode fault come first, and the fault is the next pull's
     /// [`Failed`](Pull::Failed). A pull that finds nothing left and no fault is
     /// [`Ended`](Pull::Ended).
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_, f32>) -> Pull {
+        if out.layout() != self.layout() {
+            return Pull::Failed;
+        }
         // Not through `fill_sequential_interleaved`, whose `Err` is a copy of
         // the fault: here it would be dropped.
         if self.fault.is_some() {
             return Pull::Failed;
         }
-        let (filled, fault) = self.fill(out);
+        let (filled, fault) = self.fill(out.samples_mut());
         self.fault = fault;
         if filled > 0 {
             Pull::Frames(Samples(filled))

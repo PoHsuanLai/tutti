@@ -196,7 +196,5 @@ crates/tutti-session/src/session.rs::Session::render_frame  pending
 crates/tutti-session/src/session.rs::Session::render_frame_at  pending
 crates/tutti-transport/src/lib.rs::RenderClock::render_graph  pending
 crates/tutti-transport/src/offline.rs::OfflineTimeline::render_graph  pending
-crates/tutti-types/src/io.rs::Sink::write  pending
-crates/tutti-types/src/io.rs::Source::pull  pending
 crates/tutti-vst2-host/src/processor.rs::Vst2Processor::process_f32  pending
 crates/tutti-vst2-host/src/processor.rs::Vst2Processor::process_f64  pending

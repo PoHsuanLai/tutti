@@ -38,7 +38,7 @@ impl Node for Probe {
         let events = io.events(0);
         for i in 0..io.frames() {
             io.output(0)[i] = 0.0;
-            let at = Offset::new(i, cx.env.block_len).expect("inside");
+            let at = Offset::of(Samples(i), cx.env.block_len);
             io.output(1)[i] = cx.env.transport_at(at).beat().get() as f32;
         }
         for e in events {
@@ -51,7 +51,7 @@ impl Node for Probe {
 }
 
 fn at(k: usize, block: usize) -> Offset {
-    Offset::new(k, Samples(block)).expect("inside the block")
+    Offset::of(Samples(k), Samples(block))
 }
 
 /// `drive_input` plays each event on its frame, hands the node the `Env`'s

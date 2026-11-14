@@ -37,8 +37,8 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, ParameterChanges, TransportInfo}
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 #[allow(unused_imports)]
@@ -237,7 +237,7 @@ fn process_with_hundreds_of_events_does_not_allocate() {
 
     // Built off the audio thread. Four events a frame across the 64-frame
     // block, alternating on and off so no note is left sounding.
-    let midi: Vec<UmpAt> = (0..256u32)
+    let midi: Vec<UmpAt> = (0..256usize)
         .map(|i| {
             let note = (i / 2 % 128) as u8;
             let e = if i % 2 == 0 {

@@ -189,7 +189,7 @@ impl Plugin {
     /// # Errors
     ///
     /// The same as [`open`](Self::open).
-    pub fn open_with(
+    pub(crate) fn open_with(
         main: Option<&MainThread>,
         audio: &AudioConfig,
         plugin: &PluginRef,

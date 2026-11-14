@@ -187,7 +187,7 @@ impl PluginRef {
     /// have an id, the same id; when either has none (it names the file's first
     /// plugin), the same file.
     #[must_use]
-    pub fn is_same_plugin(&self, other: &Self) -> bool {
+    pub(crate) fn is_same_plugin(&self, other: &Self) -> bool {
         self.format == other.format
             && match (&self.id, &other.id) {
                 (Some(a), Some(b)) => a == b,

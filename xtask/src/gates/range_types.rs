@@ -91,11 +91,6 @@ pub(super) const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "permanent: the persisted shape `TryFrom` reads and checks",
     ),
     (
-        "crates/tutti-midi-protocol/src/mpe/zone.rs",
-        "MpeZonesRaw",
-        "permanent: the persisted shape `TryFrom` reads and checks",
-    ),
-    (
         "crates/tutti-plugin-db/src/wire.rs",
         "Raw",
         "permanent: the persisted shape `TryFrom` reads and checks",

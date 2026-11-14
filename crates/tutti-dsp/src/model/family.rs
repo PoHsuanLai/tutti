@@ -167,13 +167,14 @@ pub trait Family: Clone + Send {
         member
     }
 
-    /// An unprepared recurrence for this family. Control side; allocates.
-    fn recurrence(&self) -> Self::Recurrence;
+    /// An unprepared recurrence for this family at `rate`, the rate its first
+    /// [`prepare`](Recurrence::prepare) will be for. Control side; allocates.
+    fn recurrence(&self, rate: SampleRate) -> Self::Recurrence;
 
-    /// An unprepared runner of this family's recurrence, at rest on the family's blank
-    /// member. Control side; allocates.
-    fn realized(&self) -> Realized<Self::Recurrence> {
-        Realized::new(self.recurrence(), &self.blank(SampleRate::DEFAULT))
+    /// An unprepared runner of this family's recurrence at `rate`, at rest on the
+    /// family's blank member there. Control side; allocates.
+    fn realized(&self, rate: SampleRate) -> Realized<Self::Recurrence> {
+        Realized::new(self.recurrence(rate), &self.blank(rate))
     }
 }
 

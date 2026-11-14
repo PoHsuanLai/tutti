@@ -55,7 +55,7 @@ use tutti_graph::{
 };
 use tutti_graph::{
     EventCapacity, EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec, MissingSource,
-    TapAlign,
+    TapAlign, Topology,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -292,6 +292,9 @@ pub struct Graph {
     /// Edited since the last commit: what `update()` commits on, and what a
     /// local render commits first.
     edited: bool,
+    /// The refusal reported last, until a commit is sent: a spec that keeps
+    /// failing the same way is reported once.
+    refused: Option<CommitError>,
     /// Plans sent, for a host (or a test) asking whether an update sent one.
     commits: u64,
     /// Threads per block, the caller included (`0` for one per core).
@@ -392,13 +395,15 @@ impl std::fmt::Debug for Graph {
 }
 
 /// What a commit came to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Committed {
     /// Sent.
     Sent,
-    /// Refused for good (logged): the same spec fails the same way, so
-    /// nothing to retry until the next edit.
-    Refused,
+    /// Refused, with why. The plan sent last keeps playing and the edit flag
+    /// stays set, so each update tries the spec again until an edit fixes it;
+    /// [`Session::update`](crate::Session::update) reports a refusal once, as
+    /// [`SessionEvent::CommitRefused`](crate::SessionEvent::CommitRefused).
+    Refused(CommitError),
     /// Refused for now — the executor has not drained enough commits, or a
     /// re-prepare is between its halves. The edit flag stays set, and the
     /// next update retries.
@@ -466,6 +471,7 @@ impl Graph {
             }),
             nodes: BTreeMap::new(),
             edited: true,
+            refused: None,
             commits: 0,
             render_workers: crate::Workers::SERIAL,
             render_worker_start: None,
@@ -2801,6 +2807,18 @@ impl Graph {
         self.widen_refusal
     }
 
+    /// The audio wiring as it stands: the nodes, the edges into every input
+    /// port, the root's output sources and its input width, including edits
+    /// no commit has sent yet ([`is_edited`](Self::is_edited)). A read-only
+    /// view of what [`connect`](Self::connect) and its kin write; the
+    /// graph's other declarations (event edges, params, modes) are not part
+    /// of it.
+    ///
+    /// An edge that is fading out stays here until its fade ends.
+    pub fn topology(&self) -> &Topology {
+        &self.editor.spec().topology
+    }
+
     /// The topology the root was declared with, if one was.
     pub fn root_topology(&self) -> Option<&tutti_types::ChannelTopology> {
         self.root.as_ref()
@@ -3021,23 +3039,31 @@ impl Graph {
         self.editor.take_unreported_event_losses()
     }
 
-    /// `Editor::commit`. `Sent` clears the edit flag; `Retry` keeps it.
+    /// `Editor::commit`. `Sent` clears the edit flag; `Refused` and `Retry` keep it.
     pub(crate) fn commit(&mut self) -> Committed {
         match self.editor.commit() {
             Ok(()) => {
                 self.edited = false;
+                self.refused = None;
                 self.commits += 1;
                 self.pump_local();
                 Committed::Sent
             }
             Err(CommitError::Backpressure | CommitError::Repreparing) => Committed::Retry,
-            Err(e) => {
-                // Not retried: the same spec fails the same way next update.
-                // The next edit marks the graph edited again.
-                tracing::error!("graph: commit refused: {e}");
-                Committed::Refused
-            }
+            // Kept edited: an edit the flag does not see (a mix, a mode) can
+            // make the same spec compile.
+            Err(e) => Committed::Refused(e),
         }
+    }
+
+    /// Whether `e` differs from the refusal reported last since a commit was
+    /// sent, remembering it: a refusal is reported once, not every update.
+    pub(crate) fn newly_refused(&mut self, e: &CommitError) -> bool {
+        if self.refused.as_ref() == Some(e) {
+            return false;
+        }
+        self.refused = Some(e.clone());
+        true
     }
 
     /// Render one frame on the local executor, under `transport`.

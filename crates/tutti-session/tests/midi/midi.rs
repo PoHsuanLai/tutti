@@ -1466,6 +1466,292 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     assert_eq!(listed[0].channels(), Some(ProfileChannels::of(2)));
 }
 
+/// A MIDI-CI peer that lists the MPE Profile (M2-120 section 3.2) disabled on
+/// Channel 1, enables it when asked with the Number of Channels (appendix A.3
+/// and A.4) and disables it when asked, over the fake OS.
+#[cfg(feature = "midi-hardware")]
+struct MpePeer {
+    device: tutti_midi_hardware::Endpoint,
+    assembler: tutti_ump::SysexAssembler<Box<[u8]>>,
+    muid: tutti_midi_device::Muid,
+}
+
+#[cfg(feature = "midi-hardware")]
+impl MpePeer {
+    const RAW: u64 = 7;
+
+    fn new() -> Self {
+        use tutti_midi_hardware::{Capabilities, Endpoint, FunctionBlock};
+        use tutti_ump::{Direction, FirstGroup, FunctionBlockId, GroupSpan, SysexAssembler};
+        let block = FunctionBlock::builder(
+            FunctionBlockId::new(0).unwrap(),
+            Direction::Bidirectional,
+            FirstGroup::new(0).unwrap(),
+            GroupSpan::new(1).unwrap(),
+        )
+        .midi_ci(2, 0)
+        .name(tutti_midi_device::BlockName::new("Main").unwrap())
+        .build()
+        .unwrap();
+        let room = SysexAssembler::room_for(256, 1, 16);
+        Self {
+            device: Endpoint::new(Capabilities {
+                midi1: true,
+                midi2: true,
+                ..Capabilities::default()
+            })
+            .with_function_block(block),
+            assembler: SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16),
+            muid: tutti_midi_device::Muid::of(0x0012_3456),
+        }
+    }
+
+    /// What the session sent the peer, answered as the peer would.
+    fn answer(&mut self, fake: &tutti_midi_hardware::test_support::FakeCounters, now: Instant) {
+        use tutti_midi_device::{
+            CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiMessage, Decoded, DiscoveryData,
+            MaxSysexSize, ProfileId, ProfileLists,
+        };
+        use tutti_ump::{DeviceIdentity, ManufacturerId, SysexStep, U7};
+        let at = |device_id| CiHeader {
+            device_id,
+            ci_version: CI_VERSION,
+            source: self.muid,
+        };
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(EndpointId::from_raw(Self::RAW)) {
+            if let Ok(message @ tutti_ump::Message::Stream(_)) = ump.decode() {
+                self.device.reply(message, &mut answers);
+                continue;
+            }
+            self.assembler.begin_block();
+            let SysexStep::Complete(done) = self.assembler.push(ump) else {
+                continue;
+            };
+            match CiMessage::decode(self.assembler.message(done).payload()) {
+                Decoded::Message(CiMessage::Discovery { header, .. }) => {
+                    let data = DiscoveryData::new(
+                        DeviceIdentity {
+                            manufacturer: ManufacturerId::of(0x41),
+                            family: [U7::of(1); 2],
+                            model: [U7::of(2); 2],
+                            revision: [U7::of(3); 4],
+                        },
+                        CiCategories::PROFILE_CONFIGURATION,
+                        MaxSysexSize::of(256),
+                    );
+                    answers.extend(
+                        CiMessage::DiscoveryReply {
+                            header: CiHeader::new(self.muid),
+                            to: header.source,
+                            data,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::ProfileInquiry { header, .. }) => {
+                    for (address, lists) in [
+                        (
+                            CiDeviceId::Channel(MidiChannel::of(0)),
+                            ProfileLists::new(vec![], vec![ProfileId::MPE]).unwrap(),
+                        ),
+                        (CiDeviceId::FunctionBlock, ProfileLists::none()),
+                    ] {
+                        answers.extend(
+                            CiMessage::ProfileReply {
+                                header: at(address),
+                                to: header.source,
+                                profiles: lists,
+                            }
+                            .packets(MidiGroup::FIRST),
+                        );
+                    }
+                }
+                Decoded::Message(CiMessage::SetProfileOn {
+                    header, channels, ..
+                }) => answers.extend(
+                    CiMessage::ProfileEnabled {
+                        header: at(header.device_id),
+                        profile: ProfileId::MPE,
+                        channels,
+                    }
+                    .packets(MidiGroup::FIRST),
+                ),
+                Decoded::Message(CiMessage::SetProfileOff { header, .. }) => answers.extend(
+                    CiMessage::ProfileDisabled {
+                        header: at(header.device_id),
+                        profile: ProfileId::MPE,
+                        channels: tutti_midi_device::ProfileChannels::of(4),
+                    }
+                    .packets(MidiGroup::FIRST),
+                ),
+                _ => {}
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(EndpointId::from_raw(Self::RAW), ump, now));
+        }
+    }
+}
+
+/// **A device that enables the MPE Profile switches its input's ingest to the
+/// Profile's rules, and disabling it switches back** (M2-120 sections 3.3,
+/// 3.5 and Table 15). The session asks a peer to enable the Profile on
+/// Channel 1 with four Channels; the Enabled Report is the zone, so the zone
+/// channels' Reset All Controllers and Pitch Bend Sensitivities of 48 reach
+/// the synth, and Omni Off on a Member Channel, which the Profile prohibits
+/// and which passes with no zone, is dropped. Disabling is the same stop,
+/// and Omni Off passes again. Closing the input clears the zones with its slot.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
+    use tutti_fixtures::midi::BendRanges;
+    use tutti_midi_device::{ProfileChange, ProfileState};
+    use tutti_midi_hardware::{ChannelCount, ListedProfile, ProfilesChange};
+    use tutti_midi_protocol::{MpeZoneConfig, MpeZones, PitchBendSensitivity};
+    use tutti_ump::{CCNumber, Message, Voice2};
+
+    let (backend, fake) =
+        tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
+    let mut s = Session::builder()
+        .midi_hardware_over(backend)
+        .build_offline(
+            SampleRate::of(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
+        .expect("builds");
+    let (synth, seen) = tap(&mut s);
+    s.midi()
+        .route(MidiRouteRule::any_channel().to(synth))
+        .expect("routes");
+    plug(&fake, MpePeer::RAW, "Wire", PortDirection::Duplex);
+    let _ = s.update();
+    s.midi().connect_input("wire").expect("connects");
+    s.midi()
+        .enable_ci(tutti_ump::DeviceIdentity {
+            manufacturer: tutti_ump::ManufacturerId::NON_COMMERCIAL,
+            family: [tutti_ump::U7::of(1); 2],
+            model: [tutti_ump::U7::of(2); 2],
+            revision: [tutti_ump::U7::of(3); 4],
+        })
+        .expect("hardware");
+    let mut peer = MpePeer::new();
+    play(&s);
+    let start = Instant::now();
+    let clock = std::cell::Cell::new(0u64);
+    // Runs the session and the peer for `ms` milliseconds; the profile
+    // changes the session reported.
+    let mut run = |s: &mut Session, ms: u64| {
+        let mut changes = Vec::new();
+        for _ in 0..ms {
+            clock.set(clock.get() + 1);
+            let now = start + Duration::from_millis(clock.get());
+            for event in update_at(s, now) {
+                if let SessionEvent::Midi(MidiEvent::CiProfiles { device, change }) = event {
+                    changes.push((device, change));
+                }
+            }
+            peer.answer(&fake, now);
+            blocks(s, 1);
+        }
+        changes
+    };
+    let changes = run(&mut s, 60);
+    let (device, _) = changes
+        .iter()
+        .find(|(_, c)| matches!(c, ProfilesChange::Known { .. }))
+        .expect("the peer's Profiles are known");
+    let device = device.clone();
+    let all: Vec<_> = s.midi().profiles(&device)[0].listed().collect();
+    let [ListedProfile::Channel(listed)] = all.as_slice() else {
+        panic!("one Profile on a Channel: {all:?}");
+    };
+    assert_eq!(all[0].state(), ProfileState::Disabled);
+
+    // The device speaks MIDI 1.0, which the ingest widens.
+    let omni_off = |channel: u8| {
+        midi::m1_cc(
+            MidiChannel::of(channel),
+            CCNumber::of(124),
+            tutti_ump::U7::of(0),
+        )
+    };
+    let omni_offs = |seen: &Seen| {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(
+                    e.decode(),
+                    Ok(Message::Midi2(a, Voice2::ControlChange { controller, .. }))
+                        if controller == CCNumber::of(124) && a.channel.get() == 2
+                )
+            })
+            .count()
+    };
+    let raw = EndpointId::from_raw(MpePeer::RAW);
+
+    // Not enabled: Omni Off on channel 3 passes.
+    assert!(fake.send_input(raw, omni_off(2), Instant::now()));
+    let _ = run(&mut s, 5);
+    assert_eq!(omni_offs(&seen), 1, "no zone, no rule");
+
+    // Enabled with four Channels from Channel 1.
+    s.midi()
+        .set_profile(listed.enable(ChannelCount::new(4).unwrap()))
+        .expect("the peer lists it");
+    let changes = run(&mut s, 60);
+    assert!(
+        changes.iter().any(|(_, c)| matches!(
+            c,
+            ProfilesChange::Changed {
+                change: ProfileChange::Enabled,
+                ..
+            }
+        )),
+        "{changes:?}"
+    );
+    let peers = s.midi().profiles(&device);
+    assert_eq!(
+        peers[0].mpe_zones(),
+        Some(MpeZones::single(
+            MpeZoneConfig::profile(
+                MidiChannel::of(0),
+                4,
+                PitchBendSensitivity::MPE_PROFILE_DEFAULT
+            )
+            .unwrap()
+        ))
+    );
+    let mut ranges = BendRanges::default();
+    for (_, ump) in seen.lock().unwrap().iter() {
+        ranges.observe(ump);
+    }
+    for channel in 1..=3 {
+        assert_eq!(
+            ranges.semitones(MidiChannel::of(channel)),
+            48.0,
+            "member {channel}"
+        );
+    }
+    assert!(fake.send_input(raw, omni_off(2), Instant::now()));
+    let _ = run(&mut s, 5);
+    assert_eq!(omni_offs(&seen), 1, "the Profile prohibits it on a Member");
+
+    // Disabled: the rules are MPE-less again.
+    let listed: Vec<_> = s.midi().profiles(&device)[0].listed().collect();
+    let [ListedProfile::Channel(listed)] = listed.as_slice() else {
+        panic!("one Profile on a Channel: {listed:?}");
+    };
+    s.midi().set_profile(listed.disable()).expect("lists it");
+    let _ = run(&mut s, 60);
+    assert_eq!(s.midi().profiles(&device)[0].mpe_zones(), None);
+    assert!(fake.send_input(raw, omni_off(2), Instant::now()));
+    let _ = run(&mut s, 5);
+    assert_eq!(omni_offs(&seen), 2, "no zone, no rule");
+}
+
 /// **A MIDI-CI peer's MIDI Message Report is asked for through the session**
 /// (M2-101 section 9): a peer whose Discovery Reply declares Process Inquiry is
 /// sent an Inquiry: Process Inquiry Capabilities by the session's tick; its reply

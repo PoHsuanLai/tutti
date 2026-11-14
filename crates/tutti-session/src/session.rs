@@ -147,6 +147,10 @@ impl std::fmt::Debug for ModInput<'_> {
 /// Something an [`update`](Session::update) found for the host.
 #[non_exhaustive]
 pub enum SessionEvent {
+    /// The graph's edits could not be committed: the plan sent last keeps
+    /// playing. Each update tries again; a refusal is reported once, until a
+    /// commit is sent or it fails another way.
+    CommitRefused(tutti_graph::CommitError),
     /// A crossfade that waited out a re-prepare
     /// ([`Crossfade::Waiting`](crate::Crossfade::Waiting)) swapped its node
     /// in: `controls` are the incoming node's `IntoNode::Controls`, boxed
@@ -257,6 +261,7 @@ pub enum SessionEvent {
 impl std::fmt::Debug for SessionEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CommitRefused(e) => f.debug_tuple("CommitRefused").field(e).finish(),
             Self::CrossfadeLanded { node, id, .. } => f
                 .debug_struct("CrossfadeLanded")
                 .field("node", node)
@@ -633,7 +638,7 @@ impl Session {
                 self.resumed |= repreparing && !self.graph.is_repreparing();
             }
             Phase::Commit => {
-                let sent = self.graph.is_edited() && self.commit() == Committed::Sent;
+                let sent = self.graph.is_edited() && self.commit_reporting(out);
                 if !sent && self.resumed {
                     self.publish_sent();
                 }
@@ -651,7 +656,7 @@ impl Session {
                     // The re-apply's commit, as the update's own: published
                     // on `Sent`.
                     if self.mods.reapply(&mut self.graph, cx.mods, cx.now, out) {
-                        self.commit();
+                        self.commit_reporting(out);
                     }
                     self.mods.resync(&mut self.graph);
                 }
@@ -811,6 +816,20 @@ impl Session {
             self.publish_sent();
         }
         committed
+    }
+
+    /// [`commit`](Self::commit), a refusal pushed onto `out`: whether it sent.
+    fn commit_reporting(&mut self, out: &mut Vec<SessionEvent>) -> bool {
+        match self.commit() {
+            Committed::Sent => true,
+            Committed::Refused(e) => {
+                if self.graph.newly_refused(&e) {
+                    out.push(SessionEvent::CommitRefused(e));
+                }
+                false
+            }
+            Committed::Retry => false,
+        }
     }
 
     /// Publish the compensation of the plan sent last: the per-channel

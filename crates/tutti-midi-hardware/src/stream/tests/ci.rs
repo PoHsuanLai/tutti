@@ -1264,6 +1264,120 @@ fn a_set_profile_on_names_the_channel_and_its_enabled_report_updates_the_table()
     assert_eq!(entry.channels(), Some(ProfileChannels::of(3)));
 }
 
+/// M2-120 section 3.2 (Table 4) names the MPE Profile, and the peer's Enabled
+/// Report (appendix A.4) gives the Number of Channels, the Manager and its
+/// Members: that is the zone the session reads. A disabled Profile, one
+/// enabled with a single Channel (a Manager with no Member), and one on the
+/// Group are no zone.
+#[test]
+fn an_enabled_mpe_profile_is_a_zone_of_the_channels_its_report_gave() {
+    use tutti_midi_protocol::{MpeZoneConfig, PitchBendSensitivity};
+    let (mut wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
+    known_profiles(&mut wire, ours, vec![], vec![ProfileId::MPE], vec![]);
+    let zones = |wire: &Wire| wire.session.profiles(&wire.id)[0].mpe_zones();
+    assert_eq!(zones(&wire), None, "supported, not enabled");
+    for (channels, zone) in [
+        (
+            5,
+            MpeZoneConfig::profile(
+                MidiChannel::of(0),
+                5,
+                PitchBendSensitivity::MPE_PROFILE_DEFAULT,
+            ),
+        ),
+        (1, None),
+        (
+            16,
+            MpeZoneConfig::profile(
+                MidiChannel::of(0),
+                16,
+                PitchBendSensitivity::MPE_PROFILE_DEFAULT,
+            ),
+        ),
+    ] {
+        say(
+            &wire,
+            GROUP_0,
+            &CiMessage::ProfileEnabled {
+                header: CiHeader {
+                    device_id: channel(0),
+                    ..CiHeader::new(peer())
+                },
+                profile: ProfileId::MPE,
+                channels: ProfileChannels::of(channels),
+            },
+            120,
+        );
+        let _ = polled(&mut wire, 130);
+        assert_eq!(
+            zones(&wire),
+            zone.map(tutti_midi_protocol::MpeZones::single),
+            "{channels} channels"
+        );
+    }
+    say(
+        &wire,
+        GROUP_0,
+        &CiMessage::ProfileDisabled {
+            header: CiHeader {
+                device_id: channel(0),
+                ..CiHeader::new(peer())
+            },
+            profile: ProfileId::MPE,
+            channels: ProfileChannels::of(16),
+        },
+        140,
+    );
+    let _ = polled(&mut wire, 150);
+    assert_eq!(zones(&wire), None, "disabled again");
+}
+
+/// M2-120 section 3.6.3: the Channel Response Type Notification is Profile
+/// Specific Data of the MPE Profile on the zone's Manager Channel, one byte.
+/// It reaches the app as a change, read as a [`ChannelResponse`]; the same
+/// data of another Profile, or one that is not a notification, is not one.
+#[test]
+fn a_channel_response_notification_is_read_off_the_specific_data() {
+    use tutti_midi_device::{Destination, SpecificData};
+    use tutti_midi_protocol::ChannelResponse;
+    let (mut wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
+    known_profiles(&mut wire, ours, vec![ProfileId::MPE], vec![], vec![]);
+    let data = |profile: ProfileId, bytes: &[u8]| CiMessage::ProfileSpecificData {
+        header: CiHeader {
+            device_id: channel(3),
+            ..CiHeader::new(peer())
+        },
+        to: Destination::Muid(ours),
+        profile,
+        data: SpecificData::new(bytes.to_vec()).unwrap(),
+    };
+    let mut read = Vec::new();
+    for (ms, message) in [
+        (120, data(ProfileId::MPE, &[0x01])),
+        (130, data(ProfileId::MPE, &[0x00])),
+        (140, data(ProfileId::MPE, &[0x02])),
+        (150, data(profile(2), &[0x01])),
+    ] {
+        say(&wire, GROUP_0, &message, ms);
+        let changes = polled(&mut wire, ms + 5);
+        let events = profile_events(&changes);
+        let [change] = events.as_slice() else {
+            panic!("one change: {events:?}");
+        };
+        assert!(matches!(change, ProfilesChange::SpecificData { .. }));
+        read.push(change.mpe_channel_response());
+    }
+    assert_eq!(
+        read,
+        [
+            Some((MidiChannel::of(3), ChannelResponse::Monophonic)),
+            Some((MidiChannel::of(3), ChannelResponse::Polyphonic)),
+            None,
+            None
+        ]
+    );
+}
+
 /// M2-101 section 7.8's note and 7.9: on the Group or the Function Block the
 /// Number Channels Requested is 0x0000 (the width of what is addressed), and a
 /// Set Profile Off (Sub-ID#2 `0x23`, Table 25) names only the Profile; the Disabled

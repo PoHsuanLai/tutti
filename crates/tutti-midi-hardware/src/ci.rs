@@ -1066,7 +1066,17 @@ impl Member {
                     request,
                     outcome,
                 },
-                // Profile Specific Data is a Profile's own, which tutti has none of.
+                ProfileAction::SpecificData {
+                    address,
+                    profile,
+                    data,
+                } => ProfilesChange::SpecificData {
+                    group,
+                    muid,
+                    address,
+                    profile,
+                    data,
+                },
                 _ => continue,
             });
         }

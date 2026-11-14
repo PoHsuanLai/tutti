@@ -104,7 +104,7 @@ impl NodeFamily for BrickwallFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
+    use crate::test_support::{RATE_44K, prepared, prepared_at, tick, tick_fed};
     use tutti_graph::contract::assert_param_fork;
     use tutti_graph::{Node, ParamNode};
     use tutti_types::{ChannelLayout, Tail, UnitParam};
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_clips_at_ceiling() {
-        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
+        let mut bw = prepared(BrickwallLimiterNode::new(Db::new(0.0)));
 
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[2.0, -3.0], &mut out);
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_adjustable_ceiling() {
-        let mut bw = BrickwallLimiterNode::new(Db::new(-6.0));
+        let mut bw = prepared(BrickwallLimiterNode::new(Db::new(-6.0)));
         let ceiling_lin = Db::new(-6.0).to_amplitude().get();
 
         let mut out = [0.0f32; 2];
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_passes_quiet_signal() {
-        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
+        let mut bw = prepared(BrickwallLimiterNode::new(Db::new(0.0)));
 
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[0.3, -0.2], &mut out);
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn brickwall_fed_ceiling_modulates_clip() {
         // A fed ceiling held low clips harder than one held high.
-        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
+        let mut bw = prepared(BrickwallLimiterNode::new(Db::new(0.0)));
         let mut out = [0.0f32; 2];
         // Ceiling -12 dB ≈ 0.251 linear: 1.0 clips to ~0.251.
         tick_fed(&mut bw, &[1.0, 1.0], &[Some(-12.0)], &mut out);
@@ -267,10 +267,10 @@ mod tests {
             })
             .collect();
         let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
-        let mut bw = BrickwallLimiterNode::with_bus(
+        let mut bw = prepared(BrickwallLimiterNode::with_bus(
             BusTopology::unassigned(ChannelLayout::from(3u16)).unwrap(),
             Db::new(0.0),
-        );
+        ));
         let out = drive(&mut bw, RATE, &refs, &[Some(&fed)]);
         for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
             for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
@@ -295,10 +295,10 @@ mod tests {
 
     #[test]
     fn brickwall_with_bus_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiterNode::with_bus(
+        let mut bw = prepared(BrickwallLimiterNode::with_bus(
             BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
             Db::new(0.0),
-        );
+        ));
         assert_eq!(bw.shape().audio_in().count(), 6);
         assert_eq!(bw.shape().audio_out().count(), 6);
         let mut out = [0.0f32; 6];

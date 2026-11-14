@@ -261,7 +261,10 @@ impl Freeverb {
 /// stable loop, is ignored. The network's pre-delay, width and wet gain are not read:
 /// [`FreeverbFamily`](crate::FreeverbFamily) never sets them.
 #[derive(Clone, Debug)]
-pub struct FreeverbRecurrence;
+pub struct FreeverbRecurrence {
+    /// The rate an unprepared runner starts at; `prepare` sets the rate it runs at.
+    rate: SampleRate,
+}
 
 /// The comb feedback and damping [`FreeverbRecurrence`] asks for: what its κ writes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -299,8 +302,8 @@ impl Approach for FreeverbCoeffs {
 }
 
 impl FreeverbRecurrence {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(rate: SampleRate) -> Self {
+        Self { rate }
     }
 }
 
@@ -318,9 +321,9 @@ impl Recurrence for FreeverbRecurrence {
             coeffs: FreeverbCoeffs {
                 feedback: Glide::landed(Freeverb::ROOM_FEEDBACK),
                 damp: Glide::landed(Freeverb::DAMPING),
-                ramp: ramp(SampleRate::DEFAULT.get()),
+                ramp: ramp(self.rate.get()),
             },
-            state: Freeverb::new(SampleRate::DEFAULT),
+            state: Freeverb::new(self.rate),
             target: FreeverbTarget {
                 feedback: Freeverb::ROOM_FEEDBACK,
                 damp: Freeverb::DAMPING,
@@ -339,6 +342,7 @@ impl Recurrence for FreeverbRecurrence {
         state: &mut Freeverb,
         _: &mut FreeverbTarget,
     ) {
+        self.rate = setup.rate;
         c.ramp = ramp(setup.rate.get());
         if setup.rate.get().round() != state.rate.get() {
             *state = Freeverb::new(setup.rate);

@@ -284,13 +284,25 @@ impl Lanes<'_> {
 /// [`MultibandControls::gain_reduction_db`] once inserted: the band's deepest reduction
 /// in the last block.
 pub struct MultibandCompressorNode {
+    rig: Rig,
+    /// What [`prepare`](Node::prepare) builds from the rate it is given: `None` until the
+    /// node is prepared.
+    tuned: Option<Tuned>,
+}
+
+/// What the node is without a rate: its cells and the family.
+struct Rig {
     layout: ChannelLayout,
     family: MultibandFamily,
-    realization: Realized<MultibandRecurrence>,
     bands: Vec<Band>,
     splits: Splits,
     /// The last set of crossover frequencies that was valid.
     crossover: CrossoverControls,
+}
+
+/// The node prepared for one rate and block size.
+struct Tuned {
+    realization: Realized<MultibandRecurrence>,
     /// The member the realization was last retargeted to: designed in place.
     member: Box<MultibandMember>,
     /// The settings `member` is the design of.
@@ -303,8 +315,8 @@ pub struct MultibandCompressorNode {
 impl fmt::Debug for MultibandCompressorNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MultibandCompressorNode")
-            .field("layout", &self.layout)
-            .field("bands", &self.bands.len())
+            .field("layout", &self.rig.layout)
+            .field("bands", &self.rig.bands.len())
             .finish_non_exhaustive()
     }
 }
@@ -320,7 +332,8 @@ impl MultibandCompressorNode {
     /// The crossovers start at 1 kHz (2 bands), 200 Hz and 3 kHz (3), or
     /// 120 Hz, 1 kHz and 6 kHz (4). Each band starts at a -18 dB threshold,
     /// 2:1, 10 ms attack, 100 ms release, hard knee, 0 dB makeup, neither
-    /// bypassed nor soloed.
+    /// bypassed nor soloed. The node has no rate until the graph's `prepare` gives it
+    /// one, and renders silence before.
     ///
     /// # Errors
     ///
@@ -333,35 +346,30 @@ impl MultibandCompressorNode {
         // shape does): a width past one bus has none.
         let input = BusTopology::unassigned(layout).ok_or(CrossoverError::Channels { channels })?;
         let family = MultibandFamily::new(input, bands)?;
-        let rate = SampleRate::DEFAULT;
         let defaults = default_crossovers(bands);
-        let crossover = CrossoverControls::new(defaults, rate)?;
-        let mut node = Self {
-            layout,
-            realization: family.realized(),
-            member: Box::new(family.blank(rate)),
-            family,
-            bands: (0..bands).map(|_| Band::new()).collect(),
-            splits: Splits::new(defaults),
-            crossover,
-            applied: None,
-            rate,
-            position: 0,
-        };
-        node.retune(rate, tutti_types::MaxBlock::of(tutti_types::Samples(1)));
-        Ok(node)
+        let crossover = CrossoverControls::ordered(defaults)?;
+        Ok(Self {
+            rig: Rig {
+                layout,
+                family,
+                bands: (0..bands).map(|_| Band::new()).collect(),
+                splits: Splits::new(defaults),
+                crossover,
+            },
+            tuned: None,
+        })
     }
 
     /// How many bands there are.
     #[must_use]
     pub fn bands(&self) -> usize {
-        self.bands.len()
+        self.rig.bands.len()
     }
 
     /// The channel layout, the width of both input and output.
     #[must_use]
     pub fn layout(&self) -> ChannelLayout {
-        self.layout
+        self.rig.layout
     }
 
     /// Band `band`'s largest gain reduction in the last block, in [`Db`] (see
@@ -369,58 +377,67 @@ impl MultibandCompressorNode {
     /// band.
     #[must_use]
     pub fn gain_reduction_db(&self, band: usize) -> Db {
-        self.bands
+        self.rig
+            .bands
             .get(band)
             .map_or(Db::UNITY, |b| b.reduction.load())
     }
+}
 
-    /// Prepares the realization for `rate` and blocks of up to `max_block`.
-    fn retune(&mut self, rate: SampleRate, max_block: tutti_types::MaxBlock) {
-        self.rate = rate;
-        self.realization.prepare(
-            &(),
-            &Setup {
-                rate: self.rate,
-                max_block,
-            },
-        );
-        self.applied = None;
-        self.clear();
-    }
-
-    /// Back to silence, the meters at unity.
-    fn clear(&mut self) {
-        self.realization.reset();
-        self.position = 0;
+impl Rig {
+    /// The meters at unity.
+    fn clear_meters(&mut self) {
         for b in &mut self.bands {
             b.reduction.store(Db::UNITY);
         }
     }
 
-    /// The settings at frame `at` of the block.
-    fn read(&mut self, lanes: &Lanes<'_>, at: usize) -> MultibandSettings {
+    /// The settings at frame `at` of the block, at `rate`.
+    fn read(&mut self, rate: SampleRate, lanes: &Lanes<'_>, at: usize) -> MultibandSettings {
         let nb = self.bands.len();
         // `read` fits every entry to the rate, so only a set that is out of order or not
         // above 0 is refused, and the last good one stands.
-        let targets = self
-            .splits
-            .read(self.rate, |i| lanes.cutoff[i].map(|l| l[at]));
-        if let Ok(set) = CrossoverControls::new(&targets[..nb - 1], self.rate) {
+        let targets = self.splits.read(rate, |i| lanes.cutoff[i].map(|l| l[at]));
+        if let Ok(set) = CrossoverControls::new(&targets[..nb - 1], rate) {
             self.crossover = set;
         }
         let mut settings = MultibandSettings {
             crossover: self.crossover,
-            bands: [BandSettings::DEFAULT; Self::MAX_BANDS],
+            bands: [BandSettings::DEFAULT; MultibandCompressorNode::MAX_BANDS],
         };
         for (b, band) in self.bands.iter_mut().enumerate() {
             settings.bands[b] = band.read(&lanes.band[b], at);
         }
         settings
     }
+}
+
+impl Tuned {
+    /// Prepares a realization for `rate` and blocks of up to `max_block`.
+    fn new(rig: &mut Rig, rate: SampleRate, max_block: tutti_types::MaxBlock) -> Self {
+        let mut realization = rig.family.realized(rate);
+        realization.prepare(&(), &Setup { rate, max_block });
+        let mut tuned = Self {
+            realization,
+            member: Box::new(rig.family.blank(rate)),
+            applied: None,
+            rate,
+            position: 0,
+        };
+        tuned.clear(rig);
+        tuned
+    }
+
+    /// Back to silence, the meters at unity.
+    fn clear(&mut self, rig: &mut Rig) {
+        self.realization.reset();
+        self.position = 0;
+        rig.clear_meters();
+    }
 
     /// Designs `settings` into the node's member and retargets the realization.
-    fn apply(&mut self, settings: MultibandSettings) {
-        self.family
+    fn apply(&mut self, rig: &Rig, settings: MultibandSettings) {
+        rig.family
             .member_into(&settings, self.rate, &mut self.member);
         self.realization.retarget(&self.member);
         self.applied = Some(settings);
@@ -430,6 +447,7 @@ impl MultibandCompressorNode {
     /// cut to them.
     fn render(
         &mut self,
+        rig: &Rig,
         input: &[&[f32]],
         output: &mut [&mut [f32]],
         lanes: &Lanes<'_>,
@@ -448,7 +466,7 @@ impl MultibandCompressorNode {
         }
         let width = input.len();
         let mut feed = Feed::new(&audio[..width]);
-        for (b, lane) in lanes.band.iter().enumerate().take(self.bands.len()) {
+        for (b, lane) in lanes.band.iter().enumerate().take(rig.bands.len()) {
             if let Some(lane) = lane[THRESHOLD] {
                 feed = feed.with_lane(b, &lane[frames.clone()]);
             }
@@ -464,6 +482,7 @@ impl MultibandCompressorNode {
     /// a segment an earlier block began is rendered with the member that block set.
     fn render_steps(
         &mut self,
+        rig: &mut Rig,
         input: &[&[f32]],
         output: &mut [&mut [f32]],
         lanes: &Lanes<'_>,
@@ -476,15 +495,15 @@ impl MultibandCompressorNode {
             .steps(position, size, self.applied.is_none())
             .filter(|step| step.grid_point)
         {
-            let target = self.read(lanes, step.solve_at);
+            let target = rig.read(self.rate, lanes, step.solve_at);
             if self.applied.as_ref() != Some(&target) {
-                self.render(input, output, lanes, held..step.frames.start);
-                self.apply(target);
-                self.render(input, output, lanes, step.frames.clone());
+                self.render(rig, input, output, lanes, held..step.frames.start);
+                self.apply(rig, target);
+                self.render(rig, input, output, lanes, step.frames.clone());
                 held = step.frames.end;
             }
         }
-        self.render(input, output, lanes, held..size);
+        self.render(rig, input, output, lanes, held..size);
     }
 }
 
@@ -493,18 +512,18 @@ impl MultibandCompressorNode {
 // them by kind and band (`declared_param_at`), not by port. A band's make-up gain is addressed as
 // `GainDb`.
 tutti_graph::declare_params!([] MultibandCompressorNode, n {
-    [b in 0..n.bands.len()] {
-        Threshold => Db = &n.bands[b].threshold,
-        Knee => Db = &n.bands[b].knee,
-        Ratio => CompressionRatio = &n.bands[b].ratio,
-        Attack => Seconds = &n.bands[b].attack,
-        Release => Seconds = &n.bands[b].release,
-        GainDb => Db = &n.bands[b].makeup;
-        Bypass => bool = &n.bands[b].bypass,
-        Solo => bool = &n.bands[b].solo,
+    [b in 0..n.rig.bands.len()] {
+        Threshold => Db = &n.rig.bands[b].threshold,
+        Knee => Db = &n.rig.bands[b].knee,
+        Ratio => CompressionRatio = &n.rig.bands[b].ratio,
+        Attack => Seconds = &n.rig.bands[b].attack,
+        Release => Seconds = &n.rig.bands[b].release,
+        GainDb => Db = &n.rig.bands[b].makeup;
+        Bypass => bool = &n.rig.bands[b].bypass,
+        Solo => bool = &n.rig.bands[b].solo,
     },
-    [i in 0..n.bands.len() - 1] {
-        Cutoff => Hz = n.splits.param(i),
+    [i in 0..n.rig.bands.len() - 1] {
+        Cutoff => Hz = n.rig.splits.param(i),
     },
 });
 
@@ -516,14 +535,14 @@ impl Node for MultibandCompressorNode {
     /// for each, per channel. The tail is [`Tail::Unknown`], as the other IIR
     /// filters': the crossover rings after the input stops.
     fn shape(&self) -> Shape {
-        Shape::through_unassigned(self.layout)
+        Shape::through_unassigned(self.rig.layout)
             .with_cost(Cost::Heavy)
             .with_tail(Tail::Unknown)
             .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
-        self.retune(p.sample_rate(), p.max_block());
+        self.tuned = Some(Tuned::new(&mut self.rig, p.sample_rate(), p.max_block()));
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -531,11 +550,12 @@ impl Node for MultibandCompressorNode {
         if n == 0 {
             return Status::Modified;
         }
-        let position = self.position;
-        self.position += n as u64;
+        if self.tuned.is_none() {
+            return Status::Silent;
+        }
 
         // What the graph drives on each port, taken before the split of `io`.
-        let nb = self.bands.len();
+        let nb = self.rig.bands.len();
         let mut lanes = Lanes {
             band: [[None; PER_BAND]; Self::MAX_BANDS],
             cutoff: [None; MAX_CROSSOVERS],
@@ -579,27 +599,35 @@ impl Node for MultibandCompressorNode {
 
         // The controls at the block's last frame, and whether the member moves inside the
         // block: a driven port, or a cell that moved (it lands at the next grid point).
-        let target = self.read(&lanes, n - 1);
-        let moved = self.applied.as_ref().is_some_and(|a| *a != target);
+        let Self { rig, tuned } = self;
+        let Some(t) = tuned else {
+            return Status::Silent;
+        };
+        let position = t.position;
+        t.position += n as u64;
+        let target = rig.read(t.rate, &lanes, n - 1);
+        let moved = t.applied.as_ref().is_some_and(|a| *a != target);
         if lanes.driven() || moved {
-            self.render_steps(input, output, &lanes, position);
+            t.render_steps(rig, input, output, &lanes, position);
         } else {
-            if self.applied.is_none() {
-                self.apply(target);
+            if t.applied.is_none() {
+                t.apply(rig, target);
             }
-            self.render(input, output, &lanes, 0..n);
+            t.render(rig, input, output, &lanes, 0..n);
         }
 
         // Each band's deepest reduction in the block, the recurrence's reading.
-        let reading = self.realization.take_reading();
-        for (band, deepest) in self.bands.iter().zip(reading.iter()) {
+        let reading = t.realization.take_reading();
+        for (band, deepest) in rig.bands.iter().zip(reading.iter()) {
             band.reduction.store(deepest);
         }
         Status::Modified
     }
 
     fn reset(&mut self) {
-        self.clear();
+        if let Some(t) = &mut self.tuned {
+            t.clear(&mut self.rig);
+        }
     }
 
     fn param_base(&self, port: usize) -> Option<f32> {
@@ -612,16 +640,20 @@ impl Node for MultibandCompressorNode {
 impl Clone for MultibandCompressorNode {
     fn clone(&self) -> Self {
         Self {
-            layout: self.layout,
-            family: self.family,
-            realization: self.realization.fresh(),
-            bands: self.bands.clone(),
-            splits: self.splits.clone(),
-            crossover: self.crossover,
-            member: self.member.clone(),
-            applied: self.applied,
-            rate: self.rate,
-            position: 0,
+            rig: Rig {
+                layout: self.rig.layout,
+                family: self.rig.family,
+                bands: self.rig.bands.clone(),
+                splits: self.rig.splits.clone(),
+                crossover: self.rig.crossover,
+            },
+            tuned: self.tuned.as_ref().map(|t| Tuned {
+                realization: t.realization.fresh(),
+                member: t.member.clone(),
+                applied: t.applied,
+                rate: t.rate,
+                position: 0,
+            }),
         }
     }
 }
@@ -636,11 +668,11 @@ impl ParamNode for MultibandCompressorNode {
     /// its state cleared.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.splits.detach();
-        for b in &mut fork.bands {
+        fork.rig.splits.detach();
+        for b in &mut fork.rig.bands {
             b.detach();
         }
-        fork.clear();
+        fork.rig.clear_meters();
         fork
     }
 }
@@ -651,7 +683,12 @@ impl IntoNode for MultibandCompressorNode {
     type Controls = MultibandControls;
 
     fn into_parts(self) -> NodeParts<MultibandControls> {
-        let reductions = self.bands.iter().map(|b| b.reduction.handle()).collect();
+        let reductions = self
+            .rig
+            .bands
+            .iter()
+            .map(|b| b.reduction.handle())
+            .collect();
         let NodeParts {
             node,
             controls,

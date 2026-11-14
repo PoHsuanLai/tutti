@@ -24,6 +24,7 @@ use super::CrossoverModel;
 use super::CrossoverState;
 use super::bands::{
     CrossoverError, MAX_BANDS, MAX_SPLITS, MIN_BANDS, SOLVE_CEILING, check_bands, validate,
+    validate_order,
 };
 use crate::Lerp;
 use crate::{ChannelRecurrence, Filter};
@@ -48,9 +49,27 @@ impl CrossoverControls {
     /// Nyquist.
     pub fn new(frequencies: &[Hz], rate: SampleRate) -> Result<Self, CrossoverError> {
         validate(frequencies, rate)?;
+        Ok(Self::of(frequencies))
+    }
+
+    /// The set `frequencies` for a rate not yet known: [`new`](Self::new) without the
+    /// Nyquist check, which a rate is needed for. The design holds each split under
+    /// the rate it runs at ([`fit_to_rate`](crate::fit_to_rate)), so a split above a
+    /// rate's Nyquist is clamped there, not refused.
+    ///
+    /// # Errors
+    ///
+    /// [`CrossoverError`]: a band count outside 2 to 6, or frequencies that are not
+    /// finite, above 0 and strictly increasing.
+    pub fn ordered(frequencies: &[Hz]) -> Result<Self, CrossoverError> {
+        validate_order(frequencies)?;
+        Ok(Self::of(frequencies))
+    }
+
+    fn of(frequencies: &[Hz]) -> Self {
         let mut set = [Hz(0.0); MAX_SPLITS];
         set[..frequencies.len()].copy_from_slice(frequencies);
-        Ok(Self { frequencies: set })
+        Self { frequencies: set }
     }
 }
 

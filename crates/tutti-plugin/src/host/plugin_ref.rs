@@ -104,7 +104,7 @@ fn in_process_built(format: PluginFormat) -> bool {
 /// Made from a scanned plugin ([`PluginRef::from`] a
 /// [`PluginEntry`]) or, for a file found by hand, [`file`](Self::file), which
 /// names the file's first plugin. With the `serde` feature it persists, and
-/// [`is_same_plugin`](Self::is_same_plugin) is how a reloaded project finds
+/// `is_same_plugin` is how a reloaded project finds
 /// out whether two refs name one plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -187,7 +187,7 @@ impl PluginRef {
     /// have an id, the same id; when either has none (it names the file's first
     /// plugin), the same file.
     #[must_use]
-    pub fn is_same_plugin(&self, other: &Self) -> bool {
+    pub(crate) fn is_same_plugin(&self, other: &Self) -> bool {
         self.format == other.format
             && match (&self.id, &other.id) {
                 (Some(a), Some(b)) => a == b,
@@ -251,7 +251,7 @@ impl From<&PluginEntry<'_>> for PluginRef {
 ///
 /// A state is the plugin's own opaque bytes. Restoring them into another
 /// plugin is meaningless at best, so a state carries its [`PluginRef`] and a
-/// restore into a plugin that [is not that one](PluginRef::is_same_plugin) is
+/// restore into a plugin that is not that one (`PluginRef::is_same_plugin`) is
 /// refused with
 /// [`StateError::OtherPlugin`](tutti_plugin_types::StateError::OtherPlugin).
 /// A version of the plugin is not part of the identity: plugins read the

@@ -86,7 +86,7 @@ pub struct NoteExpressionValue {
 /// A plain `Vec`. The producers reuse one value across blocks and clear it in
 /// place ([`ProcessOutput::clear`](crate::ProcessOutput::clear)), so its
 /// capacity survives and a warm block does not allocate.
-pub type NoteExpressionVec = Vec<NoteExpressionValue>;
+pub(crate) type NoteExpressionVec = Vec<NoteExpressionValue>;
 
 /// One block's note-expression samples.
 #[derive(Debug, Clone, Default)]

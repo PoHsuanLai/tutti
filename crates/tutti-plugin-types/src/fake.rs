@@ -211,7 +211,6 @@ struct Shared {
     panic_on_activate: AtomicBool,
     stuck: AtomicU32,
     rebuild_fails: AtomicBool,
-    block_fails: AtomicBool,
     panic_in_deactivate: AtomicBool,
     panic_in_rebuild: AtomicBool,
     panic_in_latency: AtomicBool,
@@ -288,7 +287,6 @@ impl FakePlugin {
             panic_on_activate: AtomicBool::new(false),
             stuck: AtomicU32::new(0),
             rebuild_fails: AtomicBool::new(false),
-            block_fails: AtomicBool::new(false),
             panic_in_deactivate: AtomicBool::new(false),
             panic_in_rebuild: AtomicBool::new(false),
             panic_in_latency: AtomicBool::new(false),
@@ -376,11 +374,6 @@ impl FakePlugin {
     /// How many parameter edits the next activation's ring holds.
     pub fn edit_capacity(&self, capacity: usize) {
         self.0.edit_capacity.store(capacity, Ordering::Relaxed);
-    }
-
-    /// Makes `process` return an error.
-    pub fn fail_blocks(&self, fail: bool) {
-        self.0.block_fails.store(fail, Ordering::Relaxed);
     }
 
     /// The latency the plugin reports from now on.
@@ -906,9 +899,6 @@ impl Processor for FakeProcessor {
             }
         };
         log.push(Call::Process(frames));
-        if self.shared.block_fails.load(Ordering::Relaxed) {
-            return Err(PluginError::Process("the fake failed the block".into()));
-        }
         Ok(())
     }
 

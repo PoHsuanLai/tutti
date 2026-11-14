@@ -282,18 +282,12 @@ impl LoadedPlugin {
         widths(&self.outputs)
     }
 
-    /// Returns `true` if the plugin exposes more than one bus in either
-    /// direction (sidechain / aux).
-    pub fn multi_bus(&self) -> bool {
-        self.inputs.len() > 1 || self.outputs.len() > 1
-    }
-
     /// Returns `true` if every bus in both directions has a
     /// [`placement`](PluginBus::placement): the consistency a caller routing
     /// by speaker depends on. False when any bus's placement is unknown or
     /// disagrees with its width, which is not an error, just not enough
     /// information.
-    pub fn topology_is_complete(&self) -> bool {
+    pub(crate) fn topology_is_complete(&self) -> bool {
         self.inputs
             .iter()
             .chain(&self.outputs)
@@ -368,7 +362,6 @@ mod tests {
             back.input_widths(),
             vec![ChannelLayout::STEREO, ChannelLayout::MONO]
         );
-        assert!(back.multi_bus());
         assert!(back.latency());
     }
 
@@ -454,7 +447,6 @@ mod tests {
         assert!(back.inputs.is_empty());
         assert_eq!(back.total_inputs(), 0);
         assert_eq!(back.features, Features::empty());
-        assert!(!back.multi_bus());
         assert!(!back.latency());
     }
 

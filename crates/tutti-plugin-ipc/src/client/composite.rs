@@ -237,7 +237,7 @@ impl PluginBridge {
     }
 
     /// Hand block `seq` to the bridge without waiting. See
-    /// [`AudioBridge::submit`]: `param_changes` is swapped for a free buffer
+    /// `AudioBridge::submit`: `param_changes` is swapped for a free buffer
     /// when it goes, and [`Submitted::block`] means the block was accepted,
     /// never that its output is ready.
     pub fn submit(
@@ -266,13 +266,13 @@ impl PluginBridge {
     /// Reserve the buffers a block's parameter changes travel in, each with
     /// room for `queues` queues of `points` points. Control thread. See
     /// [`AudioBridge::reserve_param_changes`].
-    pub fn reserve_param_changes(&self, queues: usize, points: usize) {
+    pub(crate) fn reserve_param_changes(&self, queues: usize, points: usize) {
         self.audio.reserve_param_changes(queues, points);
     }
 
     /// Block `seq`'s MIDI-out, and any earlier block's still queued. See
     /// [`AudioBridge::take_replies`].
-    pub fn take_replies(
+    pub(crate) fn take_replies(
         &self,
         seq: u64,
         midi_out: &mut MidiEventVec,
@@ -288,7 +288,7 @@ impl PluginBridge {
         self.audio.set_listener(listener);
     }
 
-    /// [`AudioBridge::set_parameter_rt`], mirrored into an open editor.
+    /// `AudioBridge::set_parameter_rt`, mirrored into an open editor.
     pub fn set_parameter_rt(&self, param_id: ParamId, value: Normalized) -> bool {
         // Cosmetic GUI mirror (keeps the display in sync): queued for the next
         // `editor_idle`, `try_lock` and a bounded ring so the `_rt` contract
@@ -319,14 +319,14 @@ impl PluginBridge {
         self.audio.set_automation_state_rt(mode)
     }
 
-    /// See [`AudioBridge::set_track_info`]. The audio instance only: the
+    /// See `AudioBridge::set_track_info`. The audio instance only: the
     /// editor's instance has no track.
     pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> Delivered {
         self.audio.set_track_info(info)
     }
 
     /// See [`AudioBridge::set_sample_rate_rt`].
-    pub fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
+    pub(crate) fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
         self.audio.set_sample_rate_rt(rate)
     }
 
@@ -341,11 +341,11 @@ impl PluginBridge {
     }
 
     /// See [`AudioBridge::reset_rt`].
-    pub fn reset_rt(&self) -> bool {
+    pub(crate) fn reset_rt(&self) -> bool {
         self.audio.reset_rt()
     }
 
-    /// See [`AudioBridge::audio_buffer`].
+    /// See `AudioBridge::audio_buffer`.
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {
         self.audio.audio_buffer()
     }
@@ -356,60 +356,60 @@ impl PluginBridge {
         self.audio.dropped_midi_cell()
     }
 
-    /// See [`AudioBridge::is_crashed`].
+    /// See `AudioBridge::is_crashed`.
     pub fn is_crashed(&self) -> bool {
         self.audio.is_crashed()
     }
 
     /// How many plugin parameter-change events the bridge dropped. See
-    /// [`AudioBridge::dropped_parameter_events`](super::audio::AudioBridge::dropped_parameter_events).
+    /// `AudioBridge::dropped_parameter_events`.
     pub fn dropped_parameter_events(&self) -> u64 {
         self.audio.dropped_parameter_events()
     }
 
     /// How many abandoned replies the bridge thread has taken back off the
     /// socket. See
-    /// [`AudioBridge::settled_replies`](super::audio::AudioBridge::settled_replies).
+    /// `AudioBridge::settled_replies`.
     #[cfg(any(test, feature = "testing"))]
     pub fn settled_replies(&self) -> u64 {
         self.audio.settled_replies()
     }
 
     /// How many blocks' replies the bridge thread abandoned. See
-    /// [`AudioBridge::abandoned_replies`](super::audio::AudioBridge::abandoned_replies).
+    /// `AudioBridge::abandoned_replies`.
     #[cfg(any(test, feature = "testing"))]
     pub fn abandoned_replies(&self) -> u64 {
         self.audio.abandoned_replies()
     }
 
-    /// See [`AudioBridge::block_counts`](super::audio::AudioBridge::block_counts).
+    /// See `AudioBridge::block_counts`.
     pub fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
         self.audio.block_counts()
     }
 
     /// See [`AudioBridge::mark_crashed`](super::audio::AudioBridge::mark_crashed).
-    pub fn mark_crashed(&self, cause: PluginFailure) {
+    pub(crate) fn mark_crashed(&self, cause: PluginFailure) {
         self.audio.mark_crashed(cause);
     }
 
     /// Why the bridge died, or `None` while it is alive. See
-    /// [`AudioBridge::crash_cause`](super::audio::AudioBridge::crash_cause).
+    /// `AudioBridge::crash_cause`.
     pub fn crash_cause(&self) -> Option<PluginFailure> {
         self.audio.crash_cause()
     }
 
     /// The refused rate and reason, while the plugin is refused. See
-    /// [`AudioBridge::rate_refusal`](super::audio::AudioBridge::rate_refusal).
+    /// `AudioBridge::rate_refusal`.
     pub fn rate_refusal(&self) -> Option<(SampleRate, String)> {
         self.audio.rate_refusal()
     }
 
-    /// See [`AudioBridge::rate_refused`](super::audio::AudioBridge::rate_refused).
+    /// See `AudioBridge::rate_refused`.
     pub fn rate_refused(&self) -> bool {
         self.audio.rate_refused()
     }
 
-    /// See [`AudioBridge::set_rate_timeout`](super::audio::AudioBridge::set_rate_timeout).
+    /// See `AudioBridge::set_rate_timeout`.
     #[cfg(any(test, feature = "testing"))]
     pub fn set_rate_timeout(&self, timeout: std::time::Duration) {
         self.audio.set_rate_timeout(timeout);
@@ -452,7 +452,7 @@ impl PluginBridge {
     }
 
     /// Opens the editor in `parent`, loading the editor-only instance with
-    /// the [`EditorLoader`] on the first open and giving it the audio instance's
+    /// the `EditorLoader` on the first open and giving it the audio instance's
     /// state.
     ///
     /// # Errors
@@ -727,11 +727,11 @@ impl PluginBridge {
         }
     }
 
-    /// See [`AudioBridge::save_state`].
+    /// See `AudioBridge::save_state`.
     ///
     /// # Errors
     ///
-    /// As [`AudioBridge::save_state`].
+    /// As `AudioBridge::save_state`.
     pub fn save_state(
         &self,
         state_use: tutti_plugin_types::StateUse,
@@ -749,7 +749,7 @@ impl PluginBridge {
     ///
     /// # Errors
     ///
-    /// As [`AudioBridge::load_state`].
+    /// As `AudioBridge::load_state`.
     pub fn load_state(
         &self,
         main: &MainThread,
@@ -766,12 +766,12 @@ impl PluginBridge {
         audio
     }
 
-    /// See [`AudioBridge::parameters`].
+    /// See `AudioBridge::parameters`.
     pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
         self.audio.parameters()
     }
 
-    /// See [`AudioBridge::parameter`].
+    /// See `AudioBridge::parameter`.
     pub fn parameter(&self, param_id: ParamId) -> Option<Normalized> {
         self.audio.parameter(param_id)
     }

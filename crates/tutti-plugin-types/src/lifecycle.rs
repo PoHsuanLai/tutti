@@ -35,7 +35,7 @@ use crate::{
 pub const EFFECT_CAPACITY: usize = 14;
 
 /// The effects of one [`step`], in the order to perform them.
-pub type Effects = ArrayVec<Effect, EFFECT_CAPACITY>;
+pub(crate) type Effects = ArrayVec<Effect, EFFECT_CAPACITY>;
 
 /// How many due timers one tick runs. The rest stay pending: see
 /// [`State::has_backlog`].
@@ -634,7 +634,7 @@ impl State {
 
     /// Whether a plan is under way, so an effect's reply is awaited.
     #[must_use]
-    pub fn is_busy(&self) -> bool {
+    pub(crate) fn is_busy(&self) -> bool {
         self.plan.wait != Wait::Idle
     }
 }

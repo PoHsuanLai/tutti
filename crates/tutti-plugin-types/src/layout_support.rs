@@ -43,7 +43,7 @@ impl LayoutSupport {
     /// it into `Full` would have a caller ask for a speaker on a bus that never
     /// named one.
     ///
-    /// Completeness is [`LoadedPlugin::topology_is_complete`], which requires
+    /// Completeness is `LoadedPlugin::topology_is_complete`, which requires
     /// more than presence: each topology's width must match the count beside
     /// it, since the count sizes the buffers and two descriptions of one bus
     /// cannot be adjudicated.
@@ -57,17 +57,6 @@ impl LayoutSupport {
             .chain(&loaded.outputs)
             .any(|b| b.topology.is_some());
         if any { Self::Partial } else { Self::None }
-    }
-
-    /// Returns whether *every* bus can be routed by speaker.
-    ///
-    /// The predicate a caller checks before doing anything that needs a
-    /// placement for each channel — a downmix that must find the LFE, say. False
-    /// for [`Partial`](Self::Partial): a per-bus caller reads the buses
-    /// individually instead.
-    #[must_use]
-    pub fn is_complete(self) -> bool {
-        matches!(self, Self::Full)
     }
 
     /// Returns whether any bus reported a placement at all.
@@ -105,7 +94,7 @@ mod tests {
     fn every_bus_answering_is_full() {
         let loaded = one_bus_each(Some(stereo()), Some(stereo()));
         assert_eq!(LayoutSupport::of(&loaded), LayoutSupport::Full);
-        assert!(LayoutSupport::of(&loaded).is_complete());
+        assert_eq!(LayoutSupport::of(&loaded), LayoutSupport::Full);
         assert!(LayoutSupport::of(&loaded).has_any());
     }
 
@@ -119,8 +108,9 @@ mod tests {
         let loaded = one_bus_each(Some(stereo()), None);
         let support = LayoutSupport::of(&loaded);
         assert_eq!(support, LayoutSupport::Partial);
-        assert!(
-            !support.is_complete(),
+        assert_ne!(
+            support,
+            LayoutSupport::Full,
             "a partial answer must not license per-channel routing"
         );
         assert!(support.has_any(), "the bus that did answer is still usable");
@@ -145,7 +135,7 @@ mod tests {
         let mono = ChannelTopology::smpte(ChannelLayout::MONO).expect("mono has an order");
         let loaded = one_bus_each(Some(mono), Some(stereo()));
         assert_eq!(LayoutSupport::of(&loaded), LayoutSupport::Partial);
-        assert!(!LayoutSupport::of(&loaded).is_complete());
+        assert_ne!(LayoutSupport::of(&loaded), LayoutSupport::Full);
     }
 
     /// A plugin with no buses at all is `Full`, vacuously.

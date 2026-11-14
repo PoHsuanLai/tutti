@@ -402,7 +402,7 @@ impl Vst2Processor {
     /// (`host_write`). Returns how many queues were
     /// refused, because they name a parameter the plugin does not have or one it
     /// exposes no `setParameter` for. Realtime-safe.
-    pub fn write_automation(&mut self, changes: &ParameterChanges) -> u32 {
+    pub(crate) fn write_automation(&mut self, changes: &ParameterChanges) -> u32 {
         let mut refused = 0;
         for queue in &changes.queues {
             let Some(point) = queue.points.last() else {

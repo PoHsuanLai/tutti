@@ -59,7 +59,7 @@
 
 use tutti_types::{PitchClass, Samples};
 
-use crate::ranged::ranged;
+use tutti_types::ranged;
 
 use crate::chroma::{CLASSES, ChromaConfig};
 use crate::{Error, Result};

@@ -32,11 +32,11 @@ use tutti_types::{Bpm, Confidence, Db, SampleRate, Samples, Seconds};
 
 use crate::beat;
 use crate::onset::{DetectionFunction, OnsetConfig, OnsetState, onset_lag, step_onset};
-use crate::ranged::ranged;
 use crate::xcorr::cross_correlate;
 use crate::{Error, Result};
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
+use tutti_types::ranged;
 
 /// The default analysis window, in samples.
 const WINDOW: usize = 1024;

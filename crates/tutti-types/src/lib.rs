@@ -139,6 +139,10 @@
 #[macro_use]
 pub mod value;
 
+// `ranged!` is `#[macro_export]`ed: it is the one way any crate writes a
+// range-checked type, used as `tutti_types::ranged!`.
+mod ranged;
+
 // Private: everything public in these is re-exported at the root below, so the
 // module path would be a second name for a type that already has one.
 mod bus;

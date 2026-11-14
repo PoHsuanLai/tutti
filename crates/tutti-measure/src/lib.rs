@@ -281,7 +281,6 @@ mod peaks;
 mod pitch;
 #[cfg(test)]
 mod range_contracts;
-mod ranged;
 mod silence;
 mod spectrum;
 mod stereo;

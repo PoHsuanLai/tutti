@@ -69,10 +69,10 @@ use tutti_dsp::FrameCount;
 use tutti_types::{Amplitude, Cents, Db, Note, SampleRate, Samples, Seconds};
 
 use crate::onset::{DetectionFunction, OnsetConfig, detect_onsets, onset_lag};
-use crate::ranged::ranged;
 use crate::yin::{PitchEstimate, YinConfig, yin_track};
 use crate::{Error, Result};
 use tutti_dsp::FftScratch;
+use tutti_types::ranged;
 
 /// The longest YIN frame accepted. YIN allocates several buffers of about this
 /// size, so an absurd `min_freq` would otherwise ask for gigabytes.

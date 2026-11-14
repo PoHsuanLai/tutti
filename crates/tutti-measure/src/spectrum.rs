@@ -63,13 +63,13 @@
 
 use tutti_types::{Db, Hz, SampleRate, Samples, Seconds};
 
-use crate::ranged::ranged;
 use crate::stereo::Ballistics;
 use crate::{Error, Result};
 use tutti_dsp::Complex32;
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
 use tutti_dsp::{BinCount, FrameCount};
+use tutti_types::ranged;
 
 /// The smallest and largest window accepted.
 const MIN_WINDOW: usize = 64;

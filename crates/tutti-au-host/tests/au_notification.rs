@@ -344,7 +344,7 @@ fn load_state_notifies_listeners() {
     // Capture state at one value, then move the parameter somewhere else, so the
     // restore has something real to put back.
     au.set_parameter(p.id, p.range.min).expect("set to min");
-    let state = au.get_state(&main_thread()).expect("get_state");
+    let state = au.get_state(main_thread()).expect("get_state");
     assert!(!state.is_empty(), "AUDelay produces a non-empty state blob");
     au.set_parameter(p.id, p.range.max).expect("set to max");
 
@@ -360,7 +360,7 @@ fn load_state_notifies_listeners() {
     // Discard anything the two writes above generated; only the restore counts.
     log.clear();
 
-    au.set_state(&main_thread(), &state).expect("set_state");
+    au.set_state(main_thread(), &state).expect("set_state");
 
     assert!(
         log.wait_for_at_least(1),

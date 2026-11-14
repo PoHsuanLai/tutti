@@ -149,7 +149,7 @@ mod tests {
         let main = tutti_fixtures::main_thread();
         let (_collector, work) = tutti_plugin_types::MainWork::new();
         let mut gui = AuEditorInstance::load(
-            &main,
+            main,
             &work,
             Path::new("/System/Library/Components/CoreAudio.component"),
             &Load::new().plugin("au.aufx.dely.appl"),
@@ -168,9 +168,9 @@ mod tests {
             .expect("AUDelay declares parameters with ranges wider than 0..=1");
         let id = ParamId::new(wide.id);
 
-        Editor::set_parameter(&mut gui, &main, id, Normalized::of(1.0));
+        Editor::set_parameter(&mut gui, main, id, Normalized::of(1.0));
         assert_eq!(gui.inner.get_parameter(wide.id).unwrap(), wide.range.max);
-        Editor::set_parameter(&mut gui, &main, id, Normalized::of(0.0));
+        Editor::set_parameter(&mut gui, main, id, Normalized::of(0.0));
         assert_eq!(gui.inner.get_parameter(wide.id).unwrap(), wide.range.min);
     }
 }

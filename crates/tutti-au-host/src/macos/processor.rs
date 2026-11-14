@@ -664,7 +664,7 @@ mod tests {
         let comp = find_component(&desc).expect("AUDelay ships with macOS");
         let au = AuLoaded::new(comp, SampleRate::SR_48K, 512).unwrap();
         let prepare = Prepare::new(SampleRate::SR_48K, MaxBlock::of(tutti_types::Samples(512)));
-        au.activate(&tutti_fixtures::main_thread(), prepare)
+        au.activate(tutti_fixtures::main_thread(), prepare)
             .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
     }
 

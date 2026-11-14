@@ -38,7 +38,7 @@ fn delay_loaded() -> AuLoaded {
 
 fn activate(au: AuLoaded) -> (AuProcessor, AuController) {
     let prepare = Prepare::new(RATE, MaxBlock::of(tutti_types::Samples(BLOCK as _)));
-    au.activate(&tutti_fixtures::main_thread(), prepare)
+    au.activate(tutti_fixtures::main_thread(), prepare)
         .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
 }
 
@@ -113,7 +113,7 @@ fn a_non_realtime_parameter_is_written_between_blocks_not_by_the_render() {
         "the fixture moves the ordinary parameter"
     );
 
-    Control::flush_edits(&mut controller, &main);
+    Control::flush_edits(&mut controller, main);
     assert_eq!(
         plain(&controller, DELAY_TIME),
         2.0,
@@ -161,7 +161,7 @@ fn the_blocks_last_value_reaches_other_listeners_at_the_tick_not_the_render() {
         heard.lock().unwrap()
     );
 
-    Control::flush_edits(&mut controller, &main);
+    Control::flush_edits(&mut controller, main);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while heard.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -192,7 +192,7 @@ fn the_tick_does_not_write_the_value_back_over_a_later_one() {
 
     // As if a later block had moved the parameter on.
     tutti_au_host::parameters::set(controller.unit(), DRY_WET, 10.0).unwrap();
-    Control::flush_edits(&mut controller, &main);
+    Control::flush_edits(&mut controller, main);
     assert_eq!(
         plain(&controller, DRY_WET),
         10.0,
@@ -241,7 +241,7 @@ fn many_blocks_between_ticks_tell_each_parameter_once() {
         "the render notified a listener"
     );
 
-    Control::flush_edits(&mut controller, &main);
+    Control::flush_edits(&mut controller, main);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while heard.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -271,7 +271,7 @@ fn wait_for_edits(controller: &mut AuController, want: usize) -> Vec<ParamEdit> 
     let mut heard = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while heard.len() < want && std::time::Instant::now() < deadline {
-        Control::take_reported_edits(controller, &main, &mut heard);
+        Control::take_reported_edits(controller, main, &mut heard);
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     heard

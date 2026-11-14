@@ -16,7 +16,7 @@ const CORE_AUDIO: &str = "/System/Library/Components/CoreAudio.component";
 
 fn load_id(id: &str) -> Result<AuLoaded, PluginError> {
     AuLoaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         Path::new(CORE_AUDIO),
         &Load::new().plugin(id),
@@ -55,7 +55,7 @@ fn each_declared_id_loads_the_unit_with_that_triple() {
 #[test]
 fn no_choice_loads_the_first_audio_unit_and_never_an_afil_entry() {
     let loaded = AuLoaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         Path::new(CORE_AUDIO),
         &Load::new(),
@@ -106,7 +106,7 @@ fn a_path_that_is_not_a_bundle_is_refused() {
         &file,
     ] {
         let reason = scanning_reason(AuLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             &Load::new(),

@@ -59,7 +59,7 @@ impl Served<AuLoaded> {
 /// Audio Unit) for a machine that has something more interesting installed.
 fn au_fixture() -> (String, Load) {
     fn loadable(path: &str, load: &Load) -> bool {
-        AuInstance::load_with(&main_thread(), Path::new(path), load, 44100.0, 512).is_ok()
+        AuInstance::load_with(main_thread(), Path::new(path), load, 44100.0, 512).is_ok()
     }
 
     if let Ok(named) = std::env::var("AU_SAMPLE_PLUGIN") {
@@ -97,14 +97,13 @@ fn au_fixture() -> (String, Load) {
 fn an_au_property_change_reaches_the_event_list() {
     let _lock = crate::test_utils::plugin_load_lock();
     let (fixture, load) = au_fixture();
-    let mut plugin =
-        AuInstance::load_with(&main_thread(), Path::new(&fixture), &load, 44100.0, 512)
-            .expect("the AU fixture resolved but would not load");
+    let mut plugin = AuInstance::load_with(main_thread(), Path::new(&fixture), &load, 44100.0, 512)
+        .expect("the AU fixture resolved but would not load");
 
     // Nothing pending: the drain must be empty, or the assertions below
     // would pass on a stuck request rather than on the ones raised here.
     assert!(
-        plugin.poll(&main_thread()).is_empty(),
+        plugin.poll(main_thread()).is_empty(),
         "a freshly loaded plugin reported an event nobody raised"
     );
 
@@ -113,7 +112,7 @@ fn an_au_property_change_reaches_the_event_list() {
     Request::TailChanged.raise(&requests);
     Request::RescanParams(RescanScope::Info).raise(&requests);
 
-    let events = plugin.poll(&main_thread());
+    let events = plugin.poll(main_thread());
     assert!(
         events
             .iter()
@@ -138,7 +137,7 @@ fn an_au_property_change_reaches_the_event_list() {
     // re-fired every block would spam the host with resyncs, and a latency
     // event does a PDC re-plan each time.
     assert!(
-        plugin.poll(&main_thread()).is_empty(),
+        plugin.poll(main_thread()).is_empty(),
         "the requests were not cleared by the drain"
     );
 }
@@ -155,7 +154,7 @@ fn an_au_property_change_reaches_the_event_list() {
 fn an_au_latency_poll_refreshes_the_cached_wiring() {
     let _lock = crate::test_utils::plugin_load_lock();
     let (fixture, load) = au_fixture();
-    let mut au = AuInstance::load_with(&main_thread(), Path::new(&fixture), &load, 44100.0, 512)
+    let mut au = AuInstance::load_with(main_thread(), Path::new(&fixture), &load, 44100.0, 512)
         .expect("the AU fixture resolved but would not load");
 
     // Poison the cache before polling. Without this the test cannot fail:
@@ -169,7 +168,7 @@ fn an_au_latency_poll_refreshes_the_cached_wiring() {
     Request::LatencyChanged.raise(&requests);
     Request::TailChanged.raise(&requests);
 
-    let events = au.poll(&main_thread());
+    let events = au.poll(main_thread());
     let reported_latency = events
         .iter()
         .find_map(|e| match e {
@@ -216,7 +215,7 @@ const CORE_AUDIO: &str = "/System/Library/Components/CoreAudio.component";
 
 fn delay() -> AuInstance {
     AuInstance::load_with(
-        &main_thread(),
+        main_thread(),
         Path::new(CORE_AUDIO),
         &Load::new().plugin("au.aufx.dely.appl"),
         RATE,
@@ -268,7 +267,7 @@ fn test_au_enumerate_and_load() {
 #[test]
 fn test_au_parameter_list_via_trait() {
     let au = delay();
-    let params = au.parameters(&main_thread());
+    let params = au.parameters(main_thread());
     assert!(
         !params.is_empty(),
         "AUDelay should have parameters through `ServedPlugin`"
@@ -432,7 +431,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
     let control: &dyn Control = &loaded;
     assert!(
         !control
-            .wiring(&main_thread())
+            .wiring(main_thread())
             .features
             .contains(Features::TRANSPORT),
         "no callbacks, no TRANSPORT bit"
@@ -452,7 +451,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
     };
     let prepare = Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(512)));
     assert!(
-        au.drive(&main_thread(), Event::Op(HostOp::Activate(prepare)))
+        au.drive(main_thread(), Event::Op(HostOp::Activate(prepare)))
             .is_none()
     );
     let transport = TransportInfo::new().with_tempo(150.0).with_playing(true);
@@ -471,7 +470,7 @@ fn direct_parameter_path_is_normalized_end_to_end() {
 
     // The cutoff parameter is the one whose range makes the bug audible.
     let cutoff = au
-        .parameters(&main)
+        .parameters(main)
         .into_iter()
         .find(|p| {
             p.bounds()
@@ -481,7 +480,7 @@ fn direct_parameter_path_is_normalized_end_to_end() {
     let (min, max) = cutoff.bounds().expect("a plain range");
     let addr = cutoff.id();
 
-    au.set_parameter(&main, addr, Normalized::of(1.0));
+    au.set_parameter(main, addr, Normalized::of(1.0));
     let plain = tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), addr.get())
         .expect("cutoff is readable");
     assert!(
@@ -494,10 +493,10 @@ fn direct_parameter_path_is_normalized_end_to_end() {
         "a plain {plain} means the normalized value went through unscaled: \
              the inaudible-filter bug"
     );
-    assert!((au.normalized(&main, addr) - 1.0).abs() < 1e-3);
+    assert!((au.normalized(main, addr) - 1.0).abs() < 1e-3);
 
-    au.set_parameter(&main, addr, Normalized::of(0.0));
-    assert!((au.normalized(&main, addr)).abs() < 1e-3);
+    au.set_parameter(main, addr, Normalized::of(0.0));
+    assert!((au.normalized(main, addr)).abs() < 1e-3);
 }
 
 #[test]
@@ -505,11 +504,11 @@ fn test_au_state_roundtrip_via_trait() {
     let mut au = delay();
 
     let state = au
-        .save_state(&main_thread(), StateUse::Project)
+        .save_state(main_thread(), StateUse::Project)
         .expect("save should succeed");
     assert!(!state.is_empty(), "State should not be empty");
 
-    au.load_state(&main_thread(), &state, StateUse::Project)
+    au.load_state(main_thread(), &state, StateUse::Project)
         .expect("restore should succeed");
 }
 
@@ -528,7 +527,7 @@ fn param_automation_denormalizes_and_reads_back_normalized() {
     // Pick a writable parameter with a genuinely wide plain range: one
     // whose max is far from 1.0, so identity-vs-denormalized is decidable.
     let target = au
-        .parameters(&main_thread())
+        .parameters(main_thread())
         .into_iter()
         .find(|p| {
             p.bounds().is_some_and(|(_, max)| max > 2.0)
@@ -572,7 +571,7 @@ fn param_automation_denormalizes_and_reads_back_normalized() {
         );
 
         // And the read path inverts it.
-        let read_back = au.normalized(&main_thread(), target.id());
+        let read_back = au.normalized(main_thread(), target.id());
         assert!(
             (read_back - normalized).abs() <= 1e-4,
             "param {} ('{}'): should read back as the normalized {normalized}, \
@@ -600,14 +599,14 @@ fn au_parameter_text_denormalizes_and_reports_absence_honestly() {
     let main = main_thread();
 
     let target = au
-        .parameters(&main)
+        .parameters(main)
         .into_iter()
         .find(|p| p.bounds().is_some_and(|(_, max)| max > 2.0))
         .expect("AUDelay should expose a wide-range parameter");
     let (min, max) = target.bounds().expect("AU declares a plain range");
 
     // The write path lands full scale on `max`, not on the raw `1.0`.
-    au.set_parameter(&main, target.id(), Normalized::of(1.0));
+    au.set_parameter(main, target.id(), Normalized::of(1.0));
     let after = tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), target.id().get())
         .expect("param is readable");
     let tolerance = (max - min).abs() * 1e-4;
@@ -620,7 +619,7 @@ fn au_parameter_text_denormalizes_and_reports_absence_honestly() {
 
     // The AU is asked, and declines.
     assert_eq!(
-        au.parameter_text(&main, target.id(), Normalized::of(1.0)),
+        au.parameter_text(main, target.id(), Normalized::of(1.0)),
         None,
         "param {} ('{}'): no Apple AU implements ParameterStringFromValue. \
              A Some() here means macOS gained the property: re-measure and \
@@ -629,7 +628,7 @@ fn au_parameter_text_denormalizes_and_reports_absence_honestly() {
         target.name(),
     );
     assert_eq!(
-        au.parameter_value_from_text(&main, target.id(), "1000 Hz"),
+        au.parameter_value_from_text(main, target.id(), "1000 Hz"),
         None,
         "nor ParameterValueFromString: a fabricated number here would be \
              written into the user's preset",

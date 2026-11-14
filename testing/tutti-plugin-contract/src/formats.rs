@@ -145,7 +145,7 @@ impl Format for Au {
 
     fn load() -> Self::L {
         tutti_au_host::AuLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &plugin::au_bundle(),
             &tutti_plugin_types::Load::new().plugin(tutti_shared_plugin::AU_ID),

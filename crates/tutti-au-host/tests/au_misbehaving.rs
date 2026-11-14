@@ -560,7 +560,7 @@ fn a_partial_render_leaves_a_bounded_tail() {
 #[test]
 fn a_failing_class_info_save_is_an_error() {
     let au = Misbehaviour::FailsClassInfo.open_initialized(RATE, BLOCK);
-    let result = au.get_state(&main_thread());
+    let result = au.get_state(main_thread());
     assert!(
         result.is_err(),
         "an AU refusing kAudioUnitProperty_ClassInfo must produce an error, not \
@@ -583,7 +583,7 @@ fn a_failing_class_info_restore_is_an_error_and_the_au_survives() {
     // rejecting `ClassInfo` rather than from the host declining to parse input.
     let good = Misbehaviour::None.open_initialized(RATE, BLOCK);
     let blob = good
-        .get_state(&main_thread())
+        .get_state(main_thread())
         .expect("well-behaved probe saves state");
     assert!(
         !blob.is_empty(),
@@ -591,7 +591,7 @@ fn a_failing_class_info_restore_is_an_error_and_the_au_survives() {
          exercise set_state's empty-input short circuit instead of the AU's refusal"
     );
 
-    let result = au.set_state(&main_thread(), &blob);
+    let result = au.set_state(main_thread(), &blob);
     assert!(
         result.is_err(),
         "an AU refusing a ClassInfo write must produce an error: {result:?}"

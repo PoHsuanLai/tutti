@@ -152,9 +152,9 @@ fn test_save_load_state() {
     let mut inst = Au::new(comp, tutti_types::SampleRate::SR_44K1, 512).unwrap();
     inst.initialize().unwrap();
 
-    let state = inst.get_state(&main_thread()).unwrap();
+    let state = inst.get_state(main_thread()).unwrap();
     assert!(!state.is_empty());
-    inst.set_state(&main_thread(), &state).unwrap();
+    inst.set_state(main_thread(), &state).unwrap();
 }
 
 /// Presets and bypass must work in the `Loaded` state, before
@@ -401,7 +401,7 @@ mod halves {
         let comp = find_apple_delay().expect("AUDelay should be present");
         let loaded = AuLoaded::new(comp, rate, block as u32).unwrap();
         loaded
-            .activate(&main_thread(), prepare(rate, block))
+            .activate(main_thread(), prepare(rate, block))
             .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
     }
 
@@ -412,17 +412,14 @@ mod halves {
     fn a_deactivation_rejoins_the_instance_the_activation_split() {
         let (processor, controller) = active(tutti_types::SampleRate::SR_44K1, 512);
         let unit = controller.unit().clone();
-        let loaded = AuLoaded::deactivate(&main_thread(), processor, controller)
+        let loaded = AuLoaded::deactivate(main_thread(), processor, controller)
             .unwrap_or_else(|s| panic!("AUDelay deactivates: {}", s.reason));
         assert!(
             loaded.unit().same_unit(&unit),
             "the rejoined unit is the one split"
         );
         let (p, c) = loaded
-            .activate(
-                &main_thread(),
-                prepare(tutti_types::SampleRate::SR_48K, 256),
-            )
+            .activate(main_thread(), prepare(tutti_types::SampleRate::SR_48K, 256))
             .unwrap_or_else(|e| panic!("reactivates at another rate: {}", e.reason));
         assert_eq!(c.sample_rate(), tutti_types::SampleRate::SR_48K);
         assert_eq!(c.block_size(), 256);
@@ -435,7 +432,7 @@ mod halves {
     fn halves_of_two_activations_are_stuck_and_handed_back() {
         let (p1, c1) = active(tutti_types::SampleRate::SR_44K1, 512);
         let (p2, c2) = active(tutti_types::SampleRate::SR_44K1, 512);
-        let stuck = match AuLoaded::deactivate(&main_thread(), p1, c2) {
+        let stuck = match AuLoaded::deactivate(main_thread(), p1, c2) {
             Ok(_) => panic!("a pair from two activations was rejoined"),
             Err(stuck) => stuck,
         };
@@ -457,7 +454,7 @@ mod halves {
     fn automation_through_plugin_io_is_denormalized_and_reads_back_normalized() {
         let (mut processor, controller) = active(tutti_types::SampleRate::SR_44K1, 64);
         let main = main_thread();
-        let target = Control::parameters(&controller, &main)
+        let target = Control::parameters(&controller, main)
             .into_iter()
             .find(|p| {
                 p.bounds().is_some_and(|(_, max)| max > 2.0)
@@ -497,7 +494,7 @@ mod halves {
                 (f64::from(plain) - expected_plain).abs() < 1e-3 * (max - min).abs().max(1.0),
                 "{normalized} must land on {expected_plain}, not stay {plain}"
             );
-            let read = Control::parameter(&controller, &main, target.id()).expect("declared");
+            let read = Control::parameter(&controller, main, target.id()).expect("declared");
             assert!(
                 (read.get() - normalized).abs() < 1e-3,
                 "the read is normalized: {read:?} for {normalized}"
@@ -511,13 +508,13 @@ mod halves {
     fn a_controller_parameter_round_trips_normalized() {
         let (_processor, mut controller) = active(tutti_types::SampleRate::SR_44K1, 512);
         let main = main_thread();
-        let id = Control::parameters(&controller, &main)
+        let id = Control::parameters(&controller, main)
             .into_iter()
             .find(|p| p.bounds().is_some_and(|(_, max)| max > 2.0))
             .expect("a wide-range parameter")
             .id();
-        Control::set_parameter(&mut controller, &main, id, Normalized::of(0.25));
-        let read = Control::parameter(&controller, &main, id).unwrap();
+        Control::set_parameter(&mut controller, main, id, Normalized::of(0.25));
+        let read = Control::parameter(&controller, main, id).unwrap();
         assert!((read.get() - 0.25).abs() < 1e-3, "{read:?}");
         let _ = ParamId::new(id.get());
     }
@@ -530,10 +527,10 @@ mod halves {
         let main = main_thread();
         Request::LatencyChanged.raise(controller.requests());
         let mut out = Vec::new();
-        Control::take_requests(&mut controller, &main, &mut out);
+        Control::take_requests(&mut controller, main, &mut out);
         assert_eq!(out, [Request::LatencyChanged]);
         out.clear();
-        Control::take_requests(&mut controller, &main, &mut out);
+        Control::take_requests(&mut controller, main, &mut out);
         assert!(out.is_empty(), "taken once");
         let _ = taken;
     }
@@ -545,8 +542,8 @@ mod halves {
         let (_processor, controller) = active(tutti_types::SampleRate::SR_44K1, 512);
         let main = main_thread();
         assert_eq!(
-            Controller::latency(&controller, &main),
-            Control::wiring(&controller, &main).latency_samples
+            Controller::latency(&controller, main),
+            Control::wiring(&controller, main).latency_samples
         );
     }
 
@@ -563,7 +560,7 @@ mod halves {
         let sampler = support::corpus::SAMPLER.require();
         let (p, c) = AuLoaded::new(sampler.component, tutti_types::SampleRate::SR_44K1, 512)
             .unwrap()
-            .activate(&main_thread(), offline)
+            .activate(main_thread(), offline)
             .unwrap_or_else(|e| panic!("AUSampler activates: {}", e.reason));
         assert!(
             c.render_mode_accepted(),
@@ -575,7 +572,7 @@ mod halves {
         let comp = find_apple_delay().expect("AUDelay should be present");
         let (p, c) = AuLoaded::new(comp, tutti_types::SampleRate::SR_44K1, 512)
             .unwrap()
-            .activate(&main_thread(), offline)
+            .activate(main_thread(), offline)
             .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason));
         assert!(
             !c.render_mode_accepted(),
@@ -594,7 +591,7 @@ mod tail {
     use tutti_types::Samples;
 
     fn wiring_tail(au: &Au) -> PluginTail {
-        Control::wiring(&**au, &main_thread()).tail
+        Control::wiring(&**au, main_thread()).tail
     }
 
     /// An AU that declines `kAudioUnitProperty_TailTime` is `Unknown`, never

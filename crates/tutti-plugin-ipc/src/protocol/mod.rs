@@ -28,7 +28,7 @@ pub(crate) mod wire;
 ///   and struct-update paths, not this wire.
 /// - **Version 24** appended `ParameterInfo::measures` (an `Option<ParamUnit>`, a
 ///   variant index) and `role` (an `Option<u16>`, a `UnitParam` discriminant)
-///   to every entry of a `ParameterList` and `ParameterInfoResponse`: two
+///   to every entry of a `ParameterList`: two
 ///   `0x00` bytes after `group` when both are `None`. No recorded golden holds
 ///   a `ParameterInfo`, so none needed re-recording.
 /// - An **enum variant** is a varint discriminant over declaration order, so a
@@ -101,7 +101,10 @@ pub(crate) mod wire;
 /// - **Version 38** writes an editor size as a `dpi::Size`, which says whether it
 ///   is in physical pixels or logical points: `SetEditorSize`, `EditorOpened`,
 ///   `EditorSized` and `EditorWantsSize` carried a pair of integers with no unit.
-pub const PROTOCOL_VERSION: u32 = 38;
+/// - **Version 39** removed `PluginUnloaded`, `GetParameterInfo` and
+///   `ParameterInfoResponse`, which nothing sent; the variants after them
+///   renumber.
+pub const PROTOCOL_VERSION: u32 = 39;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -899,8 +902,8 @@ mod tests {
         assert_eq!(back.expr_ints.changes[0].value, -42);
     }
 
-    /// **A parameter's typed unit and role cross the wire**, in a `ParameterList`
-    /// and a `ParameterInfoResponse`, and an untyped one stays untyped.
+    /// **A parameter's typed unit and role cross the wire**, in a `ParameterList`,
+    /// and an untyped one stays untyped.
     #[test]
     fn a_parameters_unit_and_role_cross_the_wire() {
         use tutti_plugin_types::ParamUnit;
@@ -926,13 +929,5 @@ mod tests {
             (parameters[1].measures(), parameters[1].role()),
             (None, None)
         );
-
-        let one = BridgeMessage::ParameterInfoResponse { info: Some(typed) };
-        let BridgeMessage::ParameterInfoResponse { info: Some(info) } =
-            postcard::from_bytes(&postcard::to_allocvec(&one).unwrap()).unwrap()
-        else {
-            panic!("a ParameterInfoResponse decodes as one");
-        };
-        assert_eq!(info.measures(), Some(ParamUnit::Pan));
     }
 }
